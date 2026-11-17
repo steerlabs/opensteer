@@ -73,8 +73,14 @@ integration("local servers as plugin tools", () => {
       device: { name: "Living room TV", kind: "tv" },
     });
     expect(added).toMatchObject({
-      server: { name: "tv", path: "tools.tv", kind: "program", state: "waiting" },
+      server: {
+        name: "tv",
+        path: expect.stringMatching(/^tools\["local-tv-[0-9a-f]{8}"\]$/u),
+        kind: "program",
+        state: "waiting",
+      },
     });
+    const pair = `${(added as { server: { path: string } }).server.path}.pair`;
     expect(
       await gateway.call("local_server_add", {
         name: "tv",
@@ -128,14 +134,16 @@ integration("local servers as plugin tools", () => {
     });
     await vi.waitFor(
       async () => {
-        const found = await gateway.call("plugin_search", { namespace: "tv" });
+        const found = await gateway.call("plugin_search", {
+          namespace: /"([^"]+)"/u.exec(pair)?.[1],
+        });
         expect(JSON.stringify(found), "The server's tools were not listed").toContain(
-          "tools.tv.pair",
+          JSON.stringify(pair).slice(1, -1),
         );
       },
       { timeout: 30_000 },
     );
-    expect(await pluginPath(gateway, "pair", "pair")).toBe("tools.tv.pair");
+    expect(await pluginPath(gateway, "pair", "pair")).toBe(pair);
 
     // Two tasks call it at once. Each question reaches the person for its own call only.
     const second = await dispatchCallerRun(host, caller, { key: "pair-b", title: "Pair again" });
@@ -143,7 +151,7 @@ integration("local servers as plugin tools", () => {
     const otherGateway = await integrationGateway(second.integrationTools);
     closers.unshift(() => otherGateway.close());
     const call = (target: typeof gateway) =>
-      target.call("plugin_call", { calls: { path: "tools.tv.pair", input: {} } });
+      target.call("plugin_call", { calls: { path: pair, input: {} } });
     const callA = call(gateway);
     const askedA = await pendingInput(host);
     const callB = call(otherGateway);
@@ -197,7 +205,7 @@ integration("local servers as plugin tools", () => {
     });
     try {
       const queued = gateway.call("plugin_call", {
-        calls: { path: "tools.tv.pair", input: { mode: "queued" } },
+        calls: { path: pair, input: { mode: "queued" } },
       });
       await withTimeout(entered.promise, 10000, {
         timeoutError: () => new Error("Call did not enter the session queue"),
@@ -228,7 +236,7 @@ integration("local servers as plugin tools", () => {
     }
     const failed = await withTimeout(
       gateway.call("plugin_call", {
-        calls: { path: "tools.tv.pair", input: { mode: "error" } },
+        calls: { path: pair, input: { mode: "error" } },
       }),
       30_000,
       { timeoutError: () => new Error("The server's reflected error did not return") },

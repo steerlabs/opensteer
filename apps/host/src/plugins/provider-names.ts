@@ -1,16 +1,17 @@
 import { createHash } from "node:crypto";
 
-// Reserve disjoint address roots without restricting the names people may register.
+// Local tools and plugins get disjoint address roots, so neither can take the other's name.
+// The short identity suffix keeps a local tool's address stable when another one shares its name.
+const suffix = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 8);
+
 export function pluginNamespace(slug: string): string {
-  return /^(?:local|plugin)-/u.test(slug)
-    ? `plugin-${slug.slice(0, 23)}-${createHash("sha256").update(slug).digest("hex").slice(0, 32)}`
-    : slug;
+  return /^(?:local|plugin)-/u.test(slug) ? `plugin-${slug.slice(0, 45)}-${suffix(slug)}` : slug;
 }
 
 export function localNamespace(slug: string, id: string): string {
-  const suffix = createHash("sha256").update(id).digest("hex").slice(0, 32);
-  if (slug.startsWith("local-") && slug.endsWith(`-${suffix}`)) return slug;
-  return `local-${slug.slice(0, 24).replace(/-+$/u, "")}-${suffix}`;
+  const end = `-${suffix(id)}`;
+  if (slug.startsWith("local-") && slug.endsWith(end)) return slug;
+  return `local-${slug.slice(0, 48).replace(/-+$/u, "")}${end}`;
 }
 
 /** The engine's address rule: a DNS label, never one of its reserved roots. */

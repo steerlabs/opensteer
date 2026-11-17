@@ -2187,6 +2187,11 @@ const opensteerSteps = new Map<string, OpensteerStep>([
 
   ["plugin_execute", said(["Running a plugin program", "Ran a plugin program"], "puzzle")],
   ["plugin_resume", said(["Continuing a plugin program", "Continued a plugin program"], "puzzle")],
+  ["plugin_skills", said(["Reading a plugin's skills", "Read a plugin's skills"], "puzzle")],
+  [
+    "plugin_resources",
+    said(["Checking a plugin's background work", "Checked a plugin's background work"], "puzzle"),
+  ],
   [
     "opensteer_plugin_export",
     said(["Exporting plugin source", "Exported plugin source"], "folder"),
@@ -2303,6 +2308,14 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ],
 
   ["opensteer_plugin_list", said(["Looking up plugins", "Looked up plugins"], "puzzle")],
+  [
+    "opensteer_plugin_catalog",
+    said(["Searching the plugin catalog", "Searched the plugin catalog"], "puzzle"),
+  ],
+  [
+    "opensteer_plugin_resource_update",
+    said(["Updating a plugin's background work", "Updated a plugin's background work"], "puzzle"),
+  ],
   [
     "opensteer_plugin_install",
     (_tool, args) =>
