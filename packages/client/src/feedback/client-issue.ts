@@ -142,7 +142,7 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
             `Not ${issue.done ?? "changed"}. ${issue.reason === "offline" ? "You're offline." : `Can't reach ${name}.`}`,
           );
     case "unconfirmed":
-      return result(`Couldn't confirm ${issue.happened ?? "it went through"}.`, "check");
+      return result(`Couldn't confirm ${issue.happened ?? "this change"}.`, "check");
     case "rejected": {
       const reason = rejectionDetail(issue.reason);
       return result(

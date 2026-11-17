@@ -98,7 +98,8 @@ export function AddPersonalScreen(): ReactNode {
         // A refusal says so, with the computer's own reason where it gave a safe one.
         setFailure(
           issue.code === "rejected"
-            ? presentClientIssue({ ...issue, action: "connect this phone", done: "connected" }).title
+            ? presentClientIssue({ ...issue, action: "connect this phone", done: "connected" })
+                .title
             : "Couldn't reach that computer. Check the address and try again.",
         );
       })

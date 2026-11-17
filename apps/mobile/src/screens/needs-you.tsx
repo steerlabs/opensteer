@@ -79,7 +79,11 @@ function NeedsYouList({ client, deploymentId }: { client: HostClient; deployment
   );
 }
 
-const dismissSpec = { label: "dismiss this ask", done: "dismissed", happened: "this ask was dismissed" } as const;
+const dismissSpec = {
+  label: "dismiss this ask",
+  done: "dismissed",
+  happened: "this ask was dismissed",
+} as const;
 
 function NeedsYouRow(props: {
   readonly client: HostClient;

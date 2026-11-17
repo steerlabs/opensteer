@@ -557,7 +557,7 @@ function Place(props: {
   /** A tap's team work: its outcome is the line above the composer until the next one. */
   const attempt = (
     on: TeamSessionClient | NonNullable<typeof personal>,
-    spec: { readonly label: string; readonly done: string },
+    spec: { readonly label: string; readonly done: string; readonly happened?: string },
     work: () => Promise<unknown>,
   ): Promise<boolean> =>
     teamOutcome(on, spec, work).then((outcome) => {
@@ -847,12 +847,19 @@ function Place(props: {
             style: "destructive",
             text: "Delete",
             onPress: () =>
-              void attempt(session, { label: "delete this message", done: "deleted" }, () =>
-                command(session, {
-                  type: "team.message.delete",
-                  channelId,
-                  messageId: message.id,
-                }),
+              void attempt(
+                session,
+                {
+                  label: "delete this message",
+                  done: "deleted",
+                  happened: "this message was deleted",
+                },
+                () =>
+                  command(session, {
+                    type: "team.message.delete",
+                    channelId,
+                    messageId: message.id,
+                  }),
               ),
           },
         ]);
@@ -873,9 +880,13 @@ function Place(props: {
       return;
     }
     let taskId: string | null = null;
-    const found = await attempt(personal, { label: "open that task", done: "opened" }, async () => {
-      taskId = await new PersonalTeamLinks(personal.rpc).task(teamId, channelId, threadRoot);
-    });
+    const found = await attempt(
+      personal,
+      { label: "open that task", done: "opened", happened: "that task opened" },
+      async () => {
+        taskId = await new PersonalTeamLinks(personal.rpc).task(teamId, channelId, threadRoot);
+      },
+    );
     if (!found) return;
     if (taskId !== null) enterSide({ name: "Thread", params: { deploymentId, threadId: taskId } });
     else setFailure(localLine("That task isn't on your computer.", "muted"));
@@ -890,7 +901,11 @@ function Place(props: {
     if (file === undefined || opening !== null) return;
     setFailure(null);
     setOpening(file.filename);
-    await attempt(session, { label: "open this file", done: "opened" }, () => shareFile(file));
+    await attempt(
+      session,
+      { label: "open this file", done: "opened", happened: "this file opened" },
+      () => shareFile(file),
+    );
     setOpening(null);
   };
   const shareFile = async (file: TeamMessage["attachments"][number]): Promise<void> => {
@@ -1039,8 +1054,10 @@ function Place(props: {
               );
               if (pending === undefined) return;
               if (choice === "retry")
-                void attempt(session, { label: "send this message", done: "sent" }, () =>
-                  session.reconcilePending(),
+                void attempt(
+                  session,
+                  { label: "send this message", done: "sent", happened: "this message was sent" },
+                  () => session.reconcilePending(),
                 );
               else
                 void (
@@ -1053,11 +1070,14 @@ function Place(props: {
             },
             onCardAction: (requestId, action) => {
               if (action === "cancel" || action === "stop")
-                void attempt(session, { label: "stop this", done: "stopped" }, () =>
-                  command(session, {
-                    type: "team.agent.request.cancel",
-                    requestId: TeamAgentRequestIdSchema.parse(requestId),
-                  }),
+                void attempt(
+                  session,
+                  { label: "stop this", done: "stopped", happened: "it stopped" },
+                  () =>
+                    command(session, {
+                      type: "team.agent.request.cancel",
+                      requestId: TeamAgentRequestIdSchema.parse(requestId),
+                    }),
                 );
               else void openTask(requestId, null);
             },

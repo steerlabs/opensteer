@@ -197,7 +197,7 @@ it("checks persisted pending ids after restarting the client before it resends",
     await vi.waitFor(
       () =>
         expect(first.getSnapshot().error, "send acknowledgement was never lost").toBe(
-          "Couldn't confirm it went through.",
+          "Couldn't confirm this change.",
         ),
       { timeout: 1000 },
     );

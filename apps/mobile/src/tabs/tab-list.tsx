@@ -549,7 +549,11 @@ const TabRow = memo(function TabRow(props: TabRowProps & { readonly place: Place
       ? props.moving.tabId === tab.tabId
       : props.moving.group.tabIds.includes(tab.tabId));
   const title = tabTitle(tab);
-  const closing = useScreenAction(hostClient, tabActionKey("close", tab.tabId), tabActionSpecs.close);
+  const closing = useScreenAction(
+    hostClient,
+    tabActionKey("close", tab.tabId),
+    tabActionSpecs.close,
+  );
   const moved = useScreenAction(hostClient, tabActionKey("move", tab.tabId), tabActionSpecs.move);
   const busy = closing.running || moved.running;
   // An action on this tab answers in the subtitle's place, so the row keeps its height.

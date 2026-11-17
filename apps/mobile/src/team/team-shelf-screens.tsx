@@ -145,7 +145,7 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
   const run = (
     input: HostApiCommandInput,
     after?: () => void,
-    spec: { readonly label: string; readonly done: string } = {
+    spec: { readonly label: string; readonly done: string; readonly happened?: string } = {
       label: "change this",
       done: "changed",
     },

@@ -538,10 +538,13 @@ export function TeamNewMessageScreen(props: TeamParams): ReactNode {
     if (!ready || session === null) return;
     setBusy(true);
     setLine(null);
-    void teamOutcome(session, { label: "start this message", done: "started" }, () =>
-      session.rpc["commands.dispatch"]({ type: "team.dm.open", participants: [...chosen] }).then(
-        unwrapRpcResult,
-      ),
+    void teamOutcome(
+      session,
+      { label: "start this message", done: "started", happened: "this message was started" },
+      () =>
+        session.rpc["commands.dispatch"]({ type: "team.dm.open", participants: [...chosen] }).then(
+          unwrapRpcResult,
+        ),
     ).then((outcome) => {
       if (outcome.kind === "confirmed") {
         if (outcome.value.type === "team.dm.open") openChannel(outcome.value.channel.id);

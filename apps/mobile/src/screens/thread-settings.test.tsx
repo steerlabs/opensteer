@@ -375,7 +375,7 @@ describe("Expo engine/account/model journeys", () => {
     await press(cursor.models[0]!.displayName);
     await press("Full access");
     await press("Use Cursor");
-    expect(document.body.textContent).toContain("Couldn't confirm it went through.");
+    expect(document.body.textContent).toContain("Couldn't confirm this change.");
     expect(execution).not.toHaveBeenCalled();
   });
 
@@ -741,7 +741,7 @@ describe("Expo engine/account/model journeys", () => {
       document.querySelector<HTMLButtonElement>('[aria-label="This conversation"]')!.click(),
     );
     await press("Full access");
-    expect(document.body.textContent).toContain("Couldn't confirm it went through.");
+    expect(document.body.textContent).toContain("Couldn't confirm this change.");
     expect(snapshot.threads[0]!.accessMode).toBe("approval-required");
     expect(execution).not.toHaveBeenCalled();
   });

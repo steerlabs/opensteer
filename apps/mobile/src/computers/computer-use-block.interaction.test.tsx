@@ -190,7 +190,7 @@ describe("ComputerUseBlock on the phone", () => {
     });
     await mount({ dispatch, view: view({ apps: [row(notes)] }) });
     await click(button("Remove Notes"));
-    expect(text()).toContain("Couldn't confirm it went through.");
+    expect(text()).toContain("Couldn't confirm this change.");
     expect(text()).not.toContain("Studio is offline.");
     expect(button("Remove Notes").disabled).toBe(false);
   });
@@ -247,7 +247,7 @@ describe("ComputerUseBlock on the phone", () => {
       });
       const control = button(action);
       await click(control);
-      expect(control.parentElement?.textContent).toContain("Couldn't confirm it went through.");
+      expect(control.parentElement?.textContent).toContain("Couldn't confirm this change.");
       expect(control.disabled).toBe(false);
     },
   );
@@ -264,7 +264,7 @@ describe("ComputerUseBlock on the phone", () => {
     await click(button("Add app"));
     await click(button("Can see"));
     expect(maybeButton("Close")).toBeNull();
-    expect(text()).toContain("Couldn't confirm it went through.");
+    expect(text()).toContain("Couldn't confirm this change.");
     expect(installed).toHaveBeenCalledOnce();
     expect(button("Add app").disabled).toBe(false);
   });

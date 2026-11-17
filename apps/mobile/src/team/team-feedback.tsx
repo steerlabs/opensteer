@@ -49,7 +49,7 @@ export function useTeamOutcomes(): {
   readonly line: ActionLineValue | null;
   readonly attempt: (
     on: ClientSession,
-    spec: { readonly label: string; readonly done: string },
+    spec: { readonly label: string; readonly done: string; readonly happened?: string },
     work: () => Promise<unknown>,
   ) => Promise<boolean>;
   readonly say: (line: ActionLineValue | null) => void;
@@ -58,7 +58,7 @@ export function useTeamOutcomes(): {
   const attempt = useCallback(
     (
       on: ClientSession,
-      spec: { readonly label: string; readonly done: string },
+      spec: { readonly label: string; readonly done: string; readonly happened?: string },
       work: () => Promise<unknown>,
     ) =>
       teamOutcome(on, spec, work).then((outcome) => {

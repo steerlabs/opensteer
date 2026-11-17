@@ -298,7 +298,11 @@ function ClosedTab(props: {
   readonly tabId: TabId;
 }): ReactNode {
   const { hostClient, intent, tabId } = props;
-  const reopening = useScreenAction(hostClient, tabActionKey("reopen", tabId), tabActionSpecs.reopen);
+  const reopening = useScreenAction(
+    hostClient,
+    tabActionKey("reopen", tabId),
+    tabActionSpecs.reopen,
+  );
   const reopen = async () => {
     // Renewed before the answer: the reopened tab's first ask may land before it.
     intent.current = tabId;
@@ -331,7 +335,11 @@ const retriable: ReadonlySet<TabUnavailableCode> = new Set(["paused", "protected
 function UnavailableTab(props: { readonly hostClient: HostClient; readonly tab: Tab }): ReactNode {
   const { hostClient, tab } = props;
   const closing = useTabClose(hostClient, tab.tabId);
-  const retrying = useScreenAction(hostClient, tabActionKey("open", tab.tabId), tabActionSpecs.open);
+  const retrying = useScreenAction(
+    hostClient,
+    tabActionKey("open", tab.tabId),
+    tabActionSpecs.open,
+  );
   const retry = () =>
     void retrying.run(async () => {
       const viewer = await hostClient.activateTab(tab.tabId, { wake: true });

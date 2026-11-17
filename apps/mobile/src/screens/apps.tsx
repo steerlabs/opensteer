@@ -169,8 +169,10 @@ const doneWords: Record<AppAction, string> = {
 function appActionLine(name: string, action: AppAction, check: () => void): ActionLineValue {
   return {
     key: `${action}:${name}`,
-    text: presentClientIssue({ code: "unconfirmed", happened: `“${name}” was ${doneWords[action]}` })
-      .title,
+    text: presentClientIssue({
+      code: "unconfirmed",
+      happened: `“${name}” was ${doneWords[action]}`,
+    }).title,
     tone: "muted",
     link: { label: "Check", onPress: check },
     haptic: "warning",

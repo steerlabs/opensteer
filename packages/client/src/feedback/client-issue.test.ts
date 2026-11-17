@@ -17,7 +17,7 @@ describe("safe client issues", () => {
     expect(say({ code: "not-sent", reason: "offline", ...words })).toBe(
       "Not sent. You're offline.",
     );
-    expect(say({ code: "unconfirmed" })).toBe("Couldn't confirm it went through.");
+    expect(say({ code: "unconfirmed" })).toBe("Couldn't confirm this change.");
   });
   it("never exposes upstream messages or unknown refusal details", () => {
     for (const error of [

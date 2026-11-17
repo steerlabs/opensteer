@@ -486,7 +486,7 @@ describe("team synchronization", () => {
         attachmentIds: [],
       });
       await vi.waitFor(
-        () => expect(f.client.getSnapshot().error).toBe("Couldn't confirm it went through."),
+        () => expect(f.client.getSnapshot().error).toBe("Couldn't confirm this change."),
         {
           timeout: 1000,
         },

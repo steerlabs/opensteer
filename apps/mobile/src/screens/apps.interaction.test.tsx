@@ -239,7 +239,9 @@ describe("the Apps page", () => {
     await press(button(container, "Start Ferry tracker"));
     await waitFor(
       () =>
-        rowText(container, "Ferry tracker").includes("Couldn't confirm “Ferry tracker” was started."),
+        rowText(container, "Ferry tracker").includes(
+          "Couldn't confirm “Ferry tracker” was started.",
+        ),
       "the failure was shown",
     );
     expect(container.textContent).not.toContain("Port 51034");

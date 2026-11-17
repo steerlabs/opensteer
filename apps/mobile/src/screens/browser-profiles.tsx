@@ -125,7 +125,11 @@ function BrowserProfilesSettings({
   const home = homes
     ? (homes.options.find(({ id }) => id === chosenHome)?.id ?? homes.initial)
     : null;
-  const createSpec = { label: "create the profile", done: "created", happened: "the profile was created" } as const;
+  const createSpec = {
+    label: "create the profile",
+    done: "created",
+    happened: "the profile was created",
+  } as const;
   const creation = useScreenAction<string, void>(hostClient, "browser-profile-create", {
     ...createSpec,
     execute: async (name) => {

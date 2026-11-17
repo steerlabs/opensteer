@@ -395,7 +395,7 @@ describe("mobile browsing history", () => {
     remove.mockRejectedValueOnce(new Error("Try again later"));
     await render();
     await press("Remove from history");
-    expect(text()).toContain("Couldn't confirm it went through.");
+    expect(text()).toContain("Couldn't confirm this change.");
     expect(text()).not.toContain("Try again later");
   });
 });
