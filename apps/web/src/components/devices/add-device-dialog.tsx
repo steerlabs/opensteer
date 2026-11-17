@@ -18,6 +18,7 @@ import { OptionRow } from "../option-row.js";
 import { SettingsError } from "../settings/primitives.js";
 import { AddIphoneDialog } from "./add-iphone-dialog.js";
 import { cancelDeviceSetup } from "./device-access.js";
+import { IphoneSetupOnMac } from "./iphone-setup-needs.js";
 import { localEnrollmentModules } from "./this-device.js";
 
 type Choice = "sign-in" | "iphone-screen" | "agent-phone" | "server";
@@ -154,13 +155,7 @@ export function AddDeviceDialog({
 function IphoneScreenOnMac() {
   return (
     <div className="add-device__panel">
-      <p>
-        Your agent sees and controls the iPhone’s screen through one of your Macs, plugged in or on
-        the same Wi‑Fi. The iPhone doesn’t need Opensteer.
-      </p>
-      <p className="notice" role="status">
-        Plug the iPhone into that Mac and set it up in Opensteer there.
-      </p>
+      <IphoneSetupOnMac />
     </div>
   );
 }

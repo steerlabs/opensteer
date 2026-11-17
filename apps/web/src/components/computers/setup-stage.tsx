@@ -6,6 +6,8 @@ export type SetupTone = "working" | "you" | "done" | "problem";
 
 export interface SetupStageProps {
   readonly actions?: ReactNode;
+  /** Context below the actions, such as what setup needs, so the answer stays near the ask. */
+  readonly after?: ReactNode;
   /** Shown between the words and the actions: a list to pick from, or how-to. */
   readonly body?: ReactNode;
   /** Where the person acts, said above the title while setup waits on them. */
@@ -16,6 +18,11 @@ export interface SetupStageProps {
   readonly step?: number | undefined;
   readonly title: string;
   readonly tone: SetupTone;
+  /**
+   * What setup is watching for while it waits on the person; it moves on by
+   * itself once it sees it, so there is nothing to press.
+   */
+  readonly waiting?: string | undefined;
 }
 
 /**
@@ -27,6 +34,7 @@ export interface SetupStageProps {
  */
 export function SetupStage({
   actions,
+  after,
   body,
   cue,
   detail,
@@ -35,6 +43,7 @@ export function SetupStage({
   steps,
   title,
   tone,
+  waiting,
 }: SetupStageProps & { readonly steps: number }) {
   const ref = useRef<HTMLElement | null>(null);
   // The button just pressed can leave with the phase it belonged to; focus
@@ -53,11 +62,18 @@ export function SetupStage({
         {cue ? <p className="phone-setup__cue">{cue}</p> : null}
         <h3 className="phone-setup__title">{title}</h3>
         {detail ? <p className="phone-setup__detail">{detail}</p> : null}
+        {waiting ? (
+          <p className="phone-setup__waiting">
+            <span aria-hidden="true" className="phone-setup__pulse" />
+            {waiting}
+          </p>
+        ) : null}
       </div>
       {body}
       {actions ? <div className="phone-setup__actions">{actions}</div> : null}
+      {after}
       {step === undefined ? null : (
-        <ol aria-hidden="true" className="phone-setup__rail">
+        <ol aria-label={`Step ${step + 1} of ${steps}`} className="phone-setup__rail" role="img">
           {Array.from({ length: steps }, (_, index) => (
             <li
               className={index < step ? "is-done" : index === step ? "is-current" : undefined}

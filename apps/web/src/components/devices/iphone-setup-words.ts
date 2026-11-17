@@ -1,30 +1,37 @@
 import type {
   DesktopIphoneSetupReason,
-  DesktopIphoneSetupStatus,
+  DesktopIphoneSetupStage,
 } from "@opensteer/protocol/desktop";
 
 /**
- * What the person does about a setup reason: check again once they've acted,
- * start setup over because the Mac no longer holds it, or nothing because
- * this Mac can't do it at all. Cancel is always offered beside it.
+ * What the person does about a reason outside the setup dialog (the Same Wi‑Fi
+ * row): try again once they've acted, start over, or nothing because this Mac
+ * can't do it. The dialog itself follows the setup's own `action`.
  */
 export type IphoneSetupRecovery = "check" | "restart" | "none";
 
 export interface IphoneSetupWords {
-  /** The button that answers it, when that isn't "Check again". */
+  /** The button that answers it outside the dialog, when that isn't "Try again". */
   readonly action?: string;
   /** Where the person acts, when it's their move. */
   readonly cue?: "On the iPhone" | "On this Mac";
   readonly detail: string;
-  /** Steps shown behind "Open instructions", for a fix with more than one move. */
-  readonly instructions?: readonly string[];
+  /** The exact moves, shown in order where the person reads them. */
+  readonly steps?: readonly string[];
+  /** A less likely fix, behind a disclosure. */
+  readonly more?: { readonly summary: string; readonly lines: readonly string[] };
+  /** What setup watches for while it waits; it carries on by itself once it sees it. */
+  readonly waiting?: string;
   readonly recovery: IphoneSetupRecovery;
   readonly title: string;
   /** The person can fix it; otherwise it's a problem setup reports. */
   readonly yours: boolean;
 }
 
-const replug = "Unplug the iPhone, plug it back in, unlock it, then check again.";
+const replugSteps = [
+  "Unplug the iPhone and plug it back in.",
+  "Unlock it and leave the screen on.",
+] as const;
 
 /** What trying Wi‑Fi again asks the Mac to do after a reason. */
 export function wifiRetryAction(
@@ -34,34 +41,86 @@ export function wifiRetryAction(
   return reason === "wifi-pairing-required" || reason === "wifi-identity-mismatch" ? "pair" : last;
 }
 
-/** Plain words and one way forward for each typed reason setup can stop on. */
+/** Each stage in a few words, for the progress rail and the screen reader's step count. */
+export const iphoneStageLabels: Readonly<Record<Exclude<DesktopIphoneSetupStage, "done">, string>> =
+  {
+    mac: "Check this Mac",
+    connect: "Plug in the iPhone",
+    trust: "Trust this Mac",
+    "developer-mode": "Turn on Developer Mode",
+    prepare: "Get the iPhone ready",
+    wifi: "Choose Wi‑Fi",
+    add: "Add it",
+  };
+
+/** Plain words and the way forward for each typed reason setup can wait or stop on. */
 export function iphoneSetupWords(
   reason: DesktopIphoneSetupReason,
   context: {
     readonly deploymentName: string;
     readonly osVersion: string | null;
-    readonly step: DesktopIphoneSetupStatus["step"];
+    readonly stage: DesktopIphoneSetupStage;
   },
 ): IphoneSetupWords {
   switch (reason) {
+    case "xcode-missing":
+      return {
+        cue: "On this Mac",
+        detail:
+          "Opensteer uses Apple’s free developer tools to see and control an iPhone’s screen. It’s a large download, and setup carries on by itself once it’s installed.",
+        recovery: "check",
+        title: "Install Xcode from the App Store",
+        waiting: "Waiting for Xcode to install…",
+        yours: true,
+      };
+    case "xcode-setup-required":
+    case "developer-image-missing":
+      return {
+        cue: "On this Mac",
+        detail:
+          "Xcode adds its iPhone support the first time it opens. Agree to its terms, let it finish, then you can quit it.",
+        more: {
+          summary: "Xcode is open but nothing happens?",
+          lines: [
+            "In Xcode, open Settings › Components.",
+            "Make sure iOS is installed, or click Get next to it.",
+          ],
+        },
+        recovery: "check",
+        title: "Open Xcode once",
+        waiting: "Waiting for Xcode’s iPhone support…",
+        yours: true,
+      };
+    case "developer-image-incompatible":
+      return {
+        cue: "On this Mac",
+        detail:
+          "The iPhone runs a newer iOS than this Mac’s Xcode knows. Update Xcode in the App Store, then open it once.",
+        recovery: "check",
+        title: "Update Xcode",
+        waiting: "Waiting for the newer Xcode…",
+        yours: true,
+      };
     case "no-phone":
       return {
-        detail: "Use a cable that carries data and unlock the iPhone, then check again.",
+        cue: "On the iPhone",
+        detail: "Use a cable that carries data, then unlock the iPhone.",
         recovery: "check",
-        title: "Plug the iPhone into this Mac",
+        title: "Plug your iPhone into this Mac",
+        waiting: "Looking for an iPhone…",
         yours: true,
       };
     case "bridge-not-built":
       return {
         detail: "This copy of Opensteer was built without its iPhone helper.",
         recovery: "none",
-        title: "This build can’t reach iPhones",
+        title: "This copy of Opensteer can’t reach iPhones",
         yours: false,
       };
     case "bridge-signature-invalid":
       return {
         detail:
-          "Its iPhone helper didn’t pass its signature check, so it wasn’t started. Reinstall Opensteer, then try again.",
+          "Its iPhone helper didn’t pass its signature check, so it wasn’t started. Reinstall Opensteer, then start over.",
         recovery: "restart",
         title: "Opensteer needs reinstalling",
         yours: false,
@@ -69,7 +128,7 @@ export function iphoneSetupWords(
     case "bridge-protocol-mismatch":
       return {
         detail:
-          "Its iPhone helper is from another version. Quit and reopen Opensteer to finish updating.",
+          "Its iPhone helper is from another version. Quit and reopen Opensteer, then start over.",
         recovery: "restart",
         title: "Opensteer is partway through an update",
         yours: false,
@@ -91,58 +150,54 @@ export function iphoneSetupWords(
         yours: false,
       };
     case "candidate-gone":
+    case "phone-disconnected":
       return {
-        detail: "Plug it back in and choose it again.",
+        cue: "On the iPhone",
+        detail: "Plug it back in with the same cable and unlock it.",
         recovery: "check",
-        title: "That iPhone was unplugged",
+        title: "The iPhone was unplugged",
+        waiting: "Waiting for the iPhone to come back…",
         yours: true,
       };
     case "owned-by-another-deployment":
       return {
         detail: `Another Opensteer on this Mac already controls it. Remove it there first to add it to ${context.deploymentName}.`,
         recovery: "check",
-        title: "This iPhone is set up elsewhere",
+        title: "This iPhone is set up in another Opensteer",
         yours: true,
       };
     case "identity-mismatch":
       return {
-        detail: "The phone that answered isn’t the one you chose. Choose it again.",
-        recovery: "check",
+        detail: "The phone that answered isn’t the one you chose. Start over and choose it again.",
+        recovery: "restart",
         title: "That’s a different iPhone",
         yours: false,
       };
     case "wifi-not-enabled":
       return {
-        action: "Try again",
-        detail:
-          "The iPhone didn’t switch it on. Keep it unlocked and plugged into this Mac, then try again.",
+        detail: "Keep it unlocked and plugged into this Mac, then try again.",
         recovery: "check",
-        title: "Wi‑Fi access didn’t turn on",
+        title: "The iPhone didn’t turn on Wi‑Fi access",
         yours: true,
       };
     case "local-network-permission-required":
       return {
-        action: "Try again",
         cue: "On this Mac",
-        detail:
-          "macOS asks before an app looks for devices on your Wi‑Fi. Allow it for Opensteer, then try again.",
-        instructions: [
-          "Open System Settings → Privacy & Security → Local Network.",
-          "Turn on Opensteer.",
-          "Then try again here.",
-        ],
+        detail: "macOS asks before an app looks for devices on your Wi‑Fi.",
         recovery: "check",
-        title: "Let Opensteer find the iPhone on your network",
+        steps: ["Open System Settings › Privacy & Security › Local Network.", "Turn on Opensteer."],
+        title: "Let Opensteer find the iPhone on your Wi‑Fi",
+        waiting: "Waiting for Local Network access…",
         yours: true,
       };
     case "wifi-phone-not-found":
       return {
-        action: "Try again",
         cue: "On the iPhone",
         detail:
-          "Join it to the same Wi‑Fi as this Mac and unlock it, then try again. Some guest and office networks keep devices apart.",
+          "Join it to the same Wi‑Fi as this Mac and unlock it. Some guest and office networks keep devices apart.",
         recovery: "check",
         title: "This Mac can’t find the iPhone on Wi‑Fi",
+        waiting: "Looking for the iPhone on Wi‑Fi…",
         yours: true,
       };
     case "wifi-pairing-required":
@@ -153,6 +208,7 @@ export function iphoneSetupWords(
           "Keep it unlocked and plugged into this Mac. If it asks, tap Trust and enter its passcode.",
         recovery: "check",
         title: "Pair the iPhone for Wi‑Fi",
+        waiting: "Waiting for the iPhone…",
         yours: true,
       };
     case "wifi-transport-unsupported":
@@ -173,9 +229,11 @@ export function iphoneSetupWords(
       };
     case "unsupported-ios":
       return {
-        detail: `Screen control works with iOS 27.${context.osVersion ? ` This iPhone has iOS ${context.osVersion}.` : ""} Update it in Settings → General → Software Update, then check again.`,
+        cue: "On the iPhone",
+        detail: `Screen control needs iOS 27 or later.${context.osVersion ? ` This iPhone has iOS ${context.osVersion}.` : ""} Update it in Settings › General › Software Update.`,
         recovery: "check",
         title: "This iPhone needs iOS 27",
+        waiting: "Waiting for the update…",
         yours: true,
       };
     case "unsupported-device":
@@ -190,43 +248,52 @@ export function iphoneSetupWords(
       return {
         cue: "On the iPhone",
         detail:
-          "Unlock it, tap Trust when it asks about this Mac, then enter the iPhone’s passcode.",
-        instructions: [
-          "Don’t see the question? Unplug the iPhone and plug it back in while it’s unlocked.",
-          "Then check again here.",
-        ],
+          "Unlock it. When it asks “Trust This Computer?”, tap Trust and enter the iPhone’s passcode.",
+        more: {
+          summary: "Don’t see the question?",
+          lines: ["Unplug the iPhone and plug it back in while it’s unlocked. It asks again."],
+        },
         recovery: "check",
-        title: "Tap Trust on the iPhone",
+        title: "Tap Trust on your iPhone",
+        waiting: "Waiting for you to tap Trust…",
         yours: true,
       };
     case "trust-denied":
       return {
         cue: "On the iPhone",
-        detail:
-          "It was told not to trust this Mac. Reset that answer on the iPhone, then plug it back in and tap Trust.",
-        instructions: [
-          "On the iPhone, open Settings → General → Transfer or Reset iPhone → Reset.",
-          "Tap Reset Location & Privacy and enter the passcode. This resets which computers it trusts, not your data.",
-          "Unplug the iPhone, plug it back in, unlock it and tap Trust.",
-          "Then check again here.",
+        detail: "It was told Don’t Trust. That’s easy to undo.",
+        steps: [
+          "Unplug the iPhone and plug it back in.",
+          "Unlock it.",
+          "When it asks “Trust This Computer?”, tap Trust and enter its passcode.",
         ],
+        more: {
+          summary: "It doesn’t ask again?",
+          lines: [
+            "As a last resort, on the iPhone open Settings › General › Transfer or Reset iPhone › Reset › Reset Location & Privacy.",
+            "This makes it ask again about every computer. It also resets the location, camera, photos and other permissions you’ve given apps, so each app asks again. Your data and apps stay.",
+          ],
+        },
         recovery: "check",
-        title: "The iPhone didn’t trust this Mac",
+        title: "Plug it in again and tap Trust",
+        waiting: "Waiting for you to tap Trust…",
         yours: true,
       };
     case "pairing-revoked":
       return {
         cue: "On the iPhone",
-        detail: "Unlock it and tap Trust when it asks again, then check again.",
+        detail: "Unlock it and tap Trust when it asks about this Mac.",
         recovery: "check",
         title: "The iPhone stopped trusting this Mac",
+        waiting: "Waiting for you to tap Trust…",
         yours: true,
       };
     case "pairing-failed":
       return {
-        detail: replug,
+        detail: "The iPhone and this Mac didn’t finish pairing.",
         recovery: "check",
-        title: "The iPhone and this Mac didn’t finish pairing",
+        steps: replugSteps,
+        title: "Pairing didn’t finish",
         yours: false,
       };
     case "phone-locked":
@@ -234,122 +301,110 @@ export function iphoneSetupWords(
     case "lock-state-unknown":
       return {
         cue: "On the iPhone",
-        detail:
-          "Opensteer can’t reach it while it’s locked. Unlock it, keep the screen on, then check again.",
+        detail: "Opensteer can’t reach it while it’s locked, and never enters your passcode.",
         recovery: "check",
-        title: "Unlock the iPhone",
+        title: "Unlock your iPhone",
+        waiting: "Waiting for you to unlock it…",
         yours: true,
       };
     case "developer-mode-required":
       return {
         cue: "On the iPhone",
-        detail: "It lets this Mac see and control the screen. Turning it on restarts the iPhone.",
-        instructions: [
-          "Open Settings → Privacy & Security, then Developer Mode near the bottom.",
+        detail: "It lets this Mac see and control the screen. The switch is there now.",
+        steps: [
+          "Open Settings › Privacy & Security › Developer Mode. It’s near the bottom.",
           "Turn it on and tap Restart.",
-          "When the iPhone is back, unlock it, tap Turn On and enter the passcode.",
-          "Then check again here.",
+          "After the restart, unlock the iPhone, tap Turn On and enter its passcode.",
         ],
+        more: {
+          summary: "What happens when it restarts?",
+          lines: [
+            "The iPhone disconnects for a minute or two. Leave it plugged in; setup picks up again by itself when it’s back.",
+          ],
+        },
         recovery: "check",
         title: "Turn on Developer Mode",
+        waiting: "Waiting for Developer Mode…",
         yours: true,
       };
     case "restart-required":
       return {
         cue: "On the iPhone",
-        detail:
-          "After it restarts, unlock it, tap Turn On for Developer Mode and enter the passcode. Then check again.",
+        detail: "Developer Mode turns on after a restart. Restart it if it didn’t ask to.",
+        steps: ["After the restart, unlock the iPhone, tap Turn On and enter its passcode."],
         recovery: "check",
         title: "Restart the iPhone",
+        waiting: "Waiting for the iPhone to restart…",
         yours: true,
       };
     case "waiting-for-phone":
-    case "phone-disconnected":
       return {
+        cue: "On the iPhone",
         detail:
-          "It’s restarting or was unplugged. When it’s back on this Mac, unlock it and check again.",
+          "When it’s back, unlock it, tap Turn On and enter its passcode. Keep it plugged in.",
         recovery: "check",
-        title: "Waiting for the iPhone",
+        title: "Your iPhone is restarting",
+        waiting: "Waiting for the iPhone to come back…",
         yours: true,
       };
     case "developer-mode-status-unknown":
       return {
         cue: "On the iPhone",
-        detail:
-          "Unlock it and make sure Settings → Privacy & Security → Developer Mode is on, then check again.",
+        detail: "Unlock it and check that Settings › Privacy & Security › Developer Mode is on.",
         recovery: "check",
-        title: "Opensteer couldn’t tell if Developer Mode is on",
-        yours: true,
-      };
-    case "developer-image-missing":
-      return {
-        cue: "On this Mac",
-        detail:
-          "Opensteer uses Apple’s developer files to see and control an iPhone’s screen. They come with Xcode, and you add them once.",
-        instructions: [
-          "Install Xcode from the App Store.",
-          "Open Xcode once and let it finish installing its components.",
-          "In Xcode → Settings → Components, make sure iOS is installed.",
-          "Then check again here. Xcode doesn’t need to stay open.",
-        ],
-        recovery: "check",
-        title: "This Mac needs Xcode’s iPhone support",
-        yours: true,
-      };
-    case "developer-image-incompatible":
-      return {
-        cue: "On this Mac",
-        detail:
-          "Xcode’s iPhone support on this Mac is older than this iPhone. Update Xcode from the App Store, open it once, then check again.",
-        recovery: "check",
-        title: "Xcode needs an update",
+        title: "Check Developer Mode on the iPhone",
+        waiting: "Waiting for the iPhone…",
         yours: true,
       };
     case "developer-image-mount-failed":
       return {
-        detail: `The iPhone didn’t load Apple’s developer files. ${replug}`,
+        detail: "The iPhone didn’t accept Apple’s developer tools from this Mac.",
         recovery: "check",
-        title: "Developer services didn’t start",
+        steps: replugSteps,
+        title: "Couldn’t get the iPhone ready",
         yours: false,
       };
     case "personalization-network-unavailable":
       return {
         cue: "On this Mac",
         detail:
-          "Apple signs the developer files for each iPhone the first time. Connect this Mac to the internet, then check again.",
+          "The first time, Apple signs its developer tools for this iPhone online. Connect this Mac to the internet.",
         recovery: "check",
         title: "This step needs the internet",
+        waiting: "Waiting for the internet…",
         yours: true,
       };
     case "personalization-rejected":
       return {
-        detail: "Update the iPhone and Xcode, then check again.",
+        detail: "Update the iPhone and Xcode, then try again.",
         recovery: "check",
-        title: "Apple didn’t sign the developer files for this iPhone",
+        title: "Apple didn’t approve its developer tools for this iPhone",
         yours: false,
       };
     case "phone-in-use":
     case "input-media-conflict":
       return {
         cue: "On this Mac",
-        detail: "Quit Xcode or any other tool connected to the iPhone, then check again.",
+        detail: "Quit Xcode or any other tool connected to the iPhone.",
         recovery: "check",
         title: "Another app is using the iPhone",
+        waiting: "Waiting for the iPhone to be free…",
         yours: true,
       };
     case "native-service-missing":
     case "protocol-unsupported":
       return {
-        detail: "Update the iPhone and Xcode, then check again.",
+        detail: "Update the iPhone and Xcode, then try again.",
         recovery: "check",
         title: "This iPhone doesn’t offer what screen control needs",
         yours: false,
       };
     case "tunnel-failed":
       return {
-        detail: replug,
+        detail: "This Mac couldn’t open a connection to the iPhone.",
         recovery: "check",
-        title: "Opensteer couldn’t connect to the iPhone",
+        steps: replugSteps,
+        title: "Couldn’t connect to the iPhone",
         yours: false,
       };
     case "screen-off":
@@ -357,9 +412,10 @@ export function iphoneSetupWords(
     case "wake-on-phone-required":
       return {
         cue: "On the iPhone",
-        detail: "Unlock it and leave the screen on, then check again.",
+        detail: "Unlock it and leave the screen on.",
         recovery: "check",
-        title: "Wake the iPhone",
+        title: "Wake your iPhone",
+        waiting: "Waiting for the screen…",
         yours: true,
       };
     case "screenshot-failed":
@@ -368,10 +424,10 @@ export function iphoneSetupWords(
     case "display-configuration-unsupported":
       return {
         cue: "On the iPhone",
-        detail:
-          "Unlock it, go to the Home Screen and turn off screen mirroring if it’s on. Then check again.",
+        detail: "Unlock it, go to the Home Screen and turn off Screen Mirroring if it’s on.",
         recovery: "check",
         title: "Opensteer couldn’t see the screen",
+        waiting: "Waiting for the screen…",
         yours: true,
       };
     case "host-offline":
@@ -390,28 +446,28 @@ export function iphoneSetupWords(
       };
     case "runner-not-enrolled":
       return {
-        detail: `Add this Mac to ${context.deploymentName} in Devices first. It controls the iPhone.`,
+        detail: `It controls the iPhone, so add this Mac to ${context.deploymentName} in Devices first.`,
         recovery: "restart",
         title: "This Mac isn’t one of your devices yet",
         yours: true,
       };
     case "runner-module-not-allowed":
       return {
-        detail: `What this Mac may do for ${context.deploymentName} doesn’t include phone screens.`,
+        detail: `This Mac’s access in ${context.deploymentName} doesn’t include phone screens. Check what it may do on its page in Devices.`,
         recovery: "check",
-        title: "This Mac can’t control phones",
-        yours: false,
+        title: "This Mac isn’t allowed to control phones",
+        yours: true,
       };
     case "driver-conflict":
       return {
-        detail: "Another Mac already controls this iPhone. Detach it there first, then try again.",
+        detail: "Disconnect screen control on that Mac first, then try again.",
         recovery: "check",
         title: "Another Mac controls this iPhone",
         yours: true,
       };
     case "phone-already-added":
       return {
-        detail: `It’s one of ${context.deploymentName}’s devices. Choose another iPhone, or set that one up again from its own page.`,
+        detail: `It’s already one of ${context.deploymentName}’s devices. To set it up again, use Fix setup on its page.`,
         recovery: "check",
         title: "This iPhone is already added",
         yours: true,
@@ -434,9 +490,11 @@ export function iphoneSetupWords(
       };
     case "assignment-pending":
       return {
-        detail: "This Mac hasn’t taken the iPhone on yet. Check again in a moment.",
+        detail:
+          "Opensteer on this Mac is starting screen control. This usually takes a few seconds.",
         recovery: "check",
-        title: "Still waiting for this Mac",
+        title: "Finishing up",
+        waiting: "Starting screen control…",
         yours: false,
       };
     case "cancelled":
@@ -445,29 +503,28 @@ export function iphoneSetupWords(
     case "not-initialized":
       return {
         detail:
-          "Opensteer on this Mac stopped this setup. Start again; anything already done carries over.",
+          "Opensteer on this Mac stopped this setup. Start over; anything already done carries over.",
         recovery: "restart",
         title: "Setup stopped",
         yours: false,
       };
     default:
       return {
-        detail: replug,
+        detail: "Unplug the iPhone, plug it back in and unlock it, then try again.",
         recovery: "check",
-        title: `Setup stopped while ${stepWords[context.step]}`,
+        title: `Something went wrong while ${stageWords[context.stage]}`,
         yours: false,
       };
   }
 }
 
-const stepWords: Readonly<Record<DesktopIphoneSetupStatus["step"], string>> = {
-  attach: "adding the iPhone",
-  choose: "finding the iPhone",
-  confirm: "adding the iPhone",
-  "developer-mode": "checking Developer Mode",
-  done: "finishing",
-  observe: "looking at the screen",
-  prepare: "preparing developer services",
+const stageWords: Readonly<Record<DesktopIphoneSetupStage, string>> = {
+  mac: "checking this Mac",
+  connect: "finding the iPhone",
   trust: "pairing with the iPhone",
+  "developer-mode": "checking Developer Mode",
+  prepare: "getting the iPhone ready",
   wifi: "setting up Wi‑Fi access",
+  add: "adding the iPhone",
+  done: "finishing",
 };

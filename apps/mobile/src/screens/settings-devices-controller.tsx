@@ -3,6 +3,7 @@ import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import { unwrapRpcResult, type HostSnapshot } from "@opensteer/client/host";
 import { useHostRead } from "@opensteer/client/react";
+import { iphoneSetupNeeds, iphoneSetupOnMacSteps } from "@opensteer/client/integrations";
 import { connectDeviceDraftText } from "@opensteer/client/settings";
 import { useNavigation } from "@react-navigation/native";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -260,9 +261,28 @@ export function DevicesSettingsController(): ReactNode {
                   key: "instructions",
                   kind: "text",
                   label:
-                    "Your agent sees and controls an iPhone's screen through one of your Macs, by cable or the same Wi-Fi. Plug the iPhone into that Mac, open Devices in Opensteer there and choose Add a device, then iPhone screen control.",
+                    "Your agent sees and controls an iPhone’s screen through one of your Macs, plugged in or on the same Wi‑Fi. Setup happens in Opensteer on that Mac.",
                 },
               ],
+            },
+            {
+              key: "iphone-screen-needs",
+              title: "You’ll need",
+              rows: iphoneSetupNeeds.map((need) => ({
+                key: need.id,
+                kind: "text" as const,
+                label: need.title,
+                detail: need.detail,
+              })),
+            },
+            {
+              key: "iphone-screen-steps",
+              title: "On your Mac",
+              rows: iphoneSetupOnMacSteps.map((step, index) => ({
+                key: `step-${index}`,
+                kind: "text" as const,
+                label: `${index + 1}. ${step}`,
+              })),
             },
             {
               key: "phone",

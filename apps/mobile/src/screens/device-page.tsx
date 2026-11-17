@@ -3,6 +3,7 @@ import {
   computerConnectionsOn,
   computerUseAccessLabel,
   computerUseStops,
+  iphoneScreenKeepAwakeTip,
   phoneScreenDisconnectCopy,
   phoneScreenMac,
   phoneScreenRemovalCopy,
@@ -354,7 +355,7 @@ function DevicePage(props: {
             },
           ]
         : []),
-      ...(phone?.canView && phone.access !== null && tab.success
+      ...(phone?.canView && tab.success
         ? [
             {
               key: "open",
@@ -399,7 +400,11 @@ function DevicePage(props: {
         title: screenMac.attached
           ? phoneUseCardTitle({ driver: deviceMachine(machine).phoneDisplay?.driver ?? null })
           : "Screen control",
-        ...(failure !== null ? { footer: { text: failure, tone: "danger" as const } } : {}),
+        ...(failure !== null
+          ? { footer: { text: failure, tone: "danger" as const } }
+          : screenMac.attached
+            ? { footer: { text: iphoneScreenKeepAwakeTip } }
+            : {}),
         rows,
       } satisfies NativeSettingsSection,
       exits: {
