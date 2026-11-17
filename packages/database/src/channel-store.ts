@@ -1,8 +1,9 @@
+import { refreshInputQueue } from "./waiting-inputs.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { publishThreadSummary } from "./thread-status.js";
 import { computerConnectionDeviceId } from "./integration-store.js";
 import { getDeviceSelfRunnerId, getSelfDeviceId } from "./device-inventory-store.js";
-import { threadFromRow } from "./thread-row-mappers.js";
 import { retryDatabaseTransaction } from "./connection.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   withAdministrationTransaction,
   type AdministrationCommandIdentity,
@@ -55,7 +56,6 @@ import {
   OpensteerError,
   createId,
   nonTerminalRunStatuses,
-  type AgentEvent,
   type CredentialId,
   type EnvironmentId,
   type HarnessId,
@@ -78,7 +78,6 @@ import type {
 import { executionEnvironmentIsAvailableToUser } from "./execution-authority.js";
 import { readAgentHomeSettings } from "./agent-home-settings-store.js";
 import { enqueueThreadInputInTransaction } from "./store.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
 import { channelRunAuthorityIsCurrent } from "./channel-execution.js";
 
@@ -150,7 +149,7 @@ interface ClaimedIngress {
 
 interface AdoptedChannelIngress {
   readonly dispatchEnvironmentId: EnvironmentId | null;
-  readonly events: readonly AgentEvent[];
+
   readonly kind: "adopted";
   /** A restart that took the owner's message into the reply under way ended its tools. */
   readonly revokedGrants: readonly RevokedRunGrant[];
@@ -381,7 +380,7 @@ export class ChannelStore {
         message: "A dedicated messaging identity must use one account-wide binding",
       });
     }
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const externalIdentityId = input.connection.externalIdentityId ?? null;
       if (externalIdentityId) {
         const identityKey = JSON.stringify([
@@ -541,7 +540,7 @@ export class ChannelStore {
     const selector = ChannelRouteSelectorSchema.parse(input.selector);
     const executionPolicy = ChannelExecutionPolicySchema.parse(input.executionPolicy);
     const accessPolicy = ChannelAccessPolicySchema.parse(input.accessPolicy);
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       await assertPersonalOwner(transaction, input.createdBy);
       const account = await ownedAccount(transaction, input.accountId, input.createdBy);
       if (account.routingMode === "dedicated") {
@@ -588,7 +587,7 @@ export class ChannelStore {
     readonly ownerUserId: UserId;
   }): Promise<ChannelBinding> {
     const accessPolicy = ChannelAccessPolicySchema.parse(input.accessPolicy);
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const binding = await ownedBinding(transaction, input.bindingId, input.ownerUserId);
       await assertPersonalOwner(transaction, input.ownerUserId);
       if (binding.revision !== input.expectedRevision) {
@@ -627,7 +626,7 @@ export class ChannelStore {
     readonly externalUserId: string;
     readonly ownerUserId: UserId;
   }): Promise<ChannelAccessGrant> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       await ownedBinding(transaction, input.bindingId, input.ownerUserId);
       await assertPersonalOwner(transaction, input.ownerUserId);
       const grant = await transaction
@@ -793,7 +792,7 @@ export class ChannelStore {
     readonly account: ChannelAccount;
     readonly identity: { readonly displayName: string; readonly externalUserId: string };
   }> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       await assertPersonalOwner(transaction, input.userId);
       const now = new Date();
       const observedCode = await transaction
@@ -1036,7 +1035,7 @@ export class ChannelStore {
         message: "Messaging Runner must be connected before assignment",
       });
     }
-    await withPersonalTransaction(this.#database, async (transaction) => {
+    await commitPersonalMutation(this.#database, async (transaction) => {
       if (!input.capabilities.length) return;
       const candidates = transaction
         .selectFrom("integrationConnections")
@@ -1118,7 +1117,7 @@ export class ChannelStore {
     readonly ingressId: ChannelIngressId;
   }> {
     const event = NormalizedChannelEventSchema.parse(eventInput);
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const account = await transaction
         .selectFrom("channelAccounts")
         .innerJoin(
@@ -1198,7 +1197,7 @@ export class ChannelStore {
       .limit(1)
       .executeTakeFirst();
     if (!candidate) return null;
-    await withPersonalTransaction(this.#database, async (transaction) => {
+    await commitPersonalMutation(this.#database, async (transaction) => {
       const now = new Date();
       const maintenance = await transaction
         .selectFrom("channelIngressEvents")
@@ -1259,7 +1258,7 @@ export class ChannelStore {
         });
       }
     });
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const now = new Date();
       // One conversation is one lane: the oldest pending event in it, and only
       // while nothing else in that lane is in flight. Two messages a person
@@ -1363,7 +1362,7 @@ export class ChannelStore {
     reason: string,
     notice: { readonly accountId: ChannelAccountId; readonly text: string } | null = null,
   ): Promise<void> {
-    await withPersonalTransaction(this.#database, async (transaction) => {
+    await commitPersonalMutation(this.#database, async (transaction) => {
       const result = await transaction
         .updateTable("channelIngressEvents")
         .set({
@@ -1409,7 +1408,7 @@ export class ChannelStore {
   }): Promise<AdoptedChannelIngress | IgnoredChannelIngress> {
     return retryDatabaseTransaction(
       () =>
-        withPersonalTransaction(this.#database, async (transaction) => {
+        commitPersonalMutation(this.#database, async (transaction) => {
           const ingress = await transaction
             .selectFrom("channelIngressEvents")
             .selectAll()
@@ -1801,7 +1800,7 @@ export class ChannelStore {
             thread.status === "archived" ||
             thread.environmentId !== placement.environmentId ||
             thread.harnessInstanceId !== placement.harnessInstanceId;
-          const events: AgentEvent[] = [];
+
           if (rotate) {
             const threadId = createId("thread");
             const threadRow = await insertThread({
@@ -1827,25 +1826,10 @@ export class ChannelStore {
               iconSource: "provisional",
             });
             thread = threadRow;
-            const providerSessionId = await ensureSelectedProviderSession(transaction, threadRow, {
+            await ensureSelectedProviderSession(transaction, threadRow, {
               personalContext,
             });
-            events.push(
-              await appendHostDeploymentEvent(transaction, {
-                data: {
-                  thread: threadFromRow({
-                    ...thread,
-                    providerSessionId,
-                    continuationIdentity: null,
-                    pendingRequests: thread.pendingRequestCount,
-                  }),
-                },
-                environmentId: thread.environmentId,
-                runId: null,
-                threadId: thread.id,
-                type: "thread.created",
-              }),
-            );
+            await publishThreadSummary(transaction, thread.id);
           }
           if (!thread) {
             throw new OpensteerError({
@@ -1905,10 +1889,8 @@ export class ChannelStore {
             })
             .where("id", "=", ingress.id)
             .executeTakeFirstOrThrow();
-          events.push(...accepted.events);
           return {
             dispatchEnvironmentId: accepted.command?.environmentId ?? null,
-            events,
             kind: "adopted",
             revokedGrants: accepted.revokedGrants,
             run: accepted.run,
@@ -1919,7 +1901,7 @@ export class ChannelStore {
   }
 
   async claimDelivery(workerId: string, leaseMs = 30_000): Promise<ClaimedDeliveryRecord | null> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const now = new Date();
       await transaction
         .updateTable("channelDeliveries")
@@ -2057,7 +2039,7 @@ export class ChannelStore {
   }
 
   async startDeliveryAttempt(deliveryId: ChannelDeliveryId, claimToken: string): Promise<void> {
-    const withdrawn = await withPersonalTransaction(this.#database, async (transaction) => {
+    const withdrawn = await commitPersonalMutation(this.#database, async (transaction) => {
       const delivery = await transaction
         .selectFrom("channelDeliveries")
         .select(["accountId", "kind", "messageId"])
@@ -2446,7 +2428,7 @@ async function cancelStaleChannelInputs(
   currentRevision: number,
   now: Date,
 ): Promise<void> {
-  await transaction
+  const cancelled = await transaction
     .updateTable("threadInputs")
     .set({
       cancelReason: "channel-access-changed",
@@ -2459,7 +2441,9 @@ async function cancelStaleChannelInputs(
     .where(
       sql<boolean>`coalesce((authority_source ->> 'bindingRevision')::integer, 0) < ${currentRevision}`,
     )
+    .returning(["threadId", "messageId"])
     .execute();
+  for (const row of cancelled) await refreshInputQueue(transaction, row.threadId, row.messageId);
 }
 
 async function cancelChannelInputsForPrincipal(
@@ -2468,7 +2452,7 @@ async function cancelChannelInputsForPrincipal(
   principalId: string,
   now: Date,
 ): Promise<void> {
-  await transaction
+  const cancelled = await transaction
     .updateTable("threadInputs")
     .set({
       cancelReason: "channel-access-changed",
@@ -2481,7 +2465,9 @@ async function cancelChannelInputsForPrincipal(
     .where(sql<boolean>`authority_source ->> 'principalId' = ${principalId}`)
     .where(sql<boolean>`authority_source -> 'access' ->> 'mode' = 'approved'`)
     .where(sql<boolean>`authority_source -> 'access' ? 'grantRevision'`)
+    .returning(["threadId", "messageId"])
     .execute();
+  for (const row of cancelled) await refreshInputQueue(transaction, row.threadId, row.messageId);
 }
 
 function channelAccountFromRow(row: Selectable<ChannelAccountTable>): ChannelAccount {

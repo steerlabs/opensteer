@@ -37,9 +37,18 @@ describeStore("waiting input edits", (it) => {
       f.store.renewThreadInputLease({ ...identity, leaseId: "old-lease" }),
     ).rejects.toMatchObject({ code: "conflict" });
     await f.store.releaseThreadInputLease({ ...identity, leaseId: "old-lease" });
-    expect((await f.store.getThreadInputQueue(identity)).items[0]?.lease?.leaseId).toBe(
-      "replacement",
-    );
+    const queue = await f.store.getThreadInputQueue(identity);
+    expect(queue.items[0]?.lease).toEqual({
+      deviceLabel: "Desktop",
+      expiresAt: expect.any(String),
+    });
+    await expect(
+      f.store.renewThreadInputLease({ ...other, leaseId: "replacement" }),
+    ).resolves.toMatchObject({
+      lease: { leaseId: "replacement" },
+    });
+    const renewed = await f.store.getThreadInputQueue(identity);
+    expect(BigInt(renewed.revision)).toBeGreaterThan(BigInt(queue.revision));
     await f.store.releaseThreadInputLease(identity);
     await f.store.takeThreadInputLease({ ...identity, leaseId: "edit-1", takeOver: false });
     await expect(
@@ -62,10 +71,22 @@ describeStore("waiting input edits", (it) => {
     };
     const saved = await f.store.editThreadInput(edit);
     expect(saved.edit.revision).toBe(1);
-    expect(saved.events.map((event) => event.type)).toEqual([
-      "message.updated",
-      "thread-input.lease-changed",
-    ]);
+    const afterEdit = await f.store.getThreadInputQueue(identity);
+    expect(BigInt(afterEdit.revision)).toBeGreaterThan(BigInt(renewed.revision));
+    expect(afterEdit.items[0]).toMatchObject({
+      message: { id: sent.message.id, preview: "Edited", revision: 1 },
+      lease: null,
+    });
+    const retained = await f.database
+      .selectFrom("transcriptItems")
+      .select(["visible", "position", "view"])
+      .where("id", "=", sent.message.id)
+      .executeTakeFirstOrThrow();
+    expect(retained).toMatchObject({
+      visible: false,
+      position: null,
+      view: { edited: true, published: false },
+    });
     await f.store.cancelThreadInput({
       threadId: task.threadId,
       messageId: sent.message.id,
@@ -159,8 +180,14 @@ describeStore("waiting input edits", (it) => {
       }),
     ).rejects.toMatchObject({ code: "conflict" });
     clock.advanceBy(120_000);
-    const expired = await store.expireThreadInputLeases();
-    expect(expired.events.map((event) => event.type)).toContain("run.queued");
+    await store.expireThreadInputLeases();
+    expect(
+      await f.database
+        .selectFrom("threadInputs")
+        .select("editLeaseId")
+        .where("messageId", "=", head.message.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ editLeaseId: null });
     expect(
       await f.database
         .selectFrom("runs")

@@ -1,3 +1,7 @@
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { recoverRemovedAskTasks } from "./task-admission-store.js";
+import { recordThreadVisit } from "./thread-visits.js";
+import { installAssignmentReturnWake } from "./assignment-store.js";
 import { removeDevice } from "./device-removal-store.js";
 import * as deviceInventoryStore from "./device-inventory-store.js";
 import * as deviceDriverStore from "./device-driver-store.js";
@@ -50,7 +54,6 @@ import {
   type ThreadAccessMode,
   type ThreadExecutionBinding,
   type ThreadId,
-  type ThreadInputQueue,
   type UserId,
 } from "@opensteer/core";
 import {
@@ -131,7 +134,9 @@ import {
 import { NotificationStateStore } from "./notification-state.js";
 import { OwnerProfileStore } from "./owner-profile-store.js";
 import {
+  installPersonMessageWake,
   publishPersonMessage,
+  type PersonMessageReady,
   type PersonMessageInput,
   type PersonMessageResult,
 } from "./person-message-store.js";
@@ -160,7 +165,6 @@ import * as quietTasks from "./quiet-tasks.js";
 import { type ThreadHistoryQuery } from "./thread-history.js";
 import { latestRunStoppedByPerson, type AssignmentReturnDrain } from "./thread-inbox.js";
 import { executionNodeFromRow, runAttemptFromRow } from "./thread-row-mappers.js";
-import { drainPendingThreadStates } from "./thread-status.js";
 import * as threadStore from "./thread-store.js";
 import {
   type AdmittedThreadDelegationRequest,
@@ -224,20 +228,30 @@ export class OpensteerStore {
 
   async startVoiceCall(input: Parameters<typeof voiceStore.startVoiceCall>[2]) {
     return this.#announceRevokedGrants(
-      await voiceStore.startVoiceCall(this.#database, this.#links, input),
+      await commitPersonalMutation(this.#database, (tx) =>
+        voiceStore.startVoiceCall(tx, this.#links, input),
+      ),
     );
   }
   resolveVoiceCall(ownerId: UserId, sessionId: string) {
     return voiceStore.resolveVoiceCall(this.#database, ownerId, sessionId);
   }
   openVoiceThread(input: Parameters<typeof voiceStore.openVoiceThread>[1]) {
-    return voiceStore.openVoiceThread(this.#database, input);
+    return commitPersonalMutation(this.#database, async (tx) => {
+      const { threadId, environmentId, harnessInstanceId } = await voiceStore.openVoiceThread(
+        tx,
+        input,
+      );
+      return { threadId, environmentId, harnessInstanceId };
+    });
   }
   latestRunStoppedByPerson(threadId: ThreadId) {
     return latestRunStoppedByPerson(this.#database, threadId);
   }
   async stopVoiceCall(ownerId: UserId, sessionId: string) {
-    const result = await voiceStore.stopVoiceCall(this.#database, this.#links, ownerId, sessionId);
+    const result = await commitPersonalMutation(this.#database, (tx) =>
+      voiceStore.stopVoiceCall(tx, this.#links, ownerId, sessionId),
+    );
     if (result) this.#announceRevokedGrants(result);
     return result;
   }
@@ -1210,7 +1224,10 @@ export class OpensteerStore {
   drainPendingAssignmentReturns(limit?: number): Promise<AssignmentReturnDrain> {
     return threadStore.drainPendingAssignmentReturns(this.#database, limit);
   }
-  drainAssignmentReturn(assignmentId: AssignmentId): Promise<readonly AgentEvent[]> {
+  onAssignmentReturnReady(wake: (assignmentId: AssignmentId) => void | Promise<void>) {
+    return installAssignmentReturnWake(this.#database, wake);
+  }
+  drainAssignmentReturn(assignmentId: AssignmentId): Promise<void> {
     return threadStore.drainAssignmentReturn(this.#database, assignmentId);
   }
   async updateThreadExecutionSelection(input: {
@@ -1226,7 +1243,6 @@ export class OpensteerStore {
   }): Promise<{
     readonly asOfSequence: Sequence;
     readonly thread: Thread;
-    readonly event: AgentEvent | null;
     readonly wasDuplicate: boolean;
   }> {
     return threadStore.updateThreadExecutionSelection(this.#database, input);
@@ -1239,7 +1255,6 @@ export class OpensteerStore {
   }): Promise<{
     readonly asOfSequence: Sequence;
     readonly thread: Thread;
-    readonly events: readonly AgentEvent[];
   }> {
     return threadStore.resumeThreadInputQueue(this.#database, input);
   }
@@ -1346,7 +1361,8 @@ export class OpensteerStore {
     readonly authority?: import("./thread-caller.js").ThreadCallerAuthority;
     readonly threadId: ThreadId;
     readonly requestedBy: UserId;
-  }): Promise<ThreadInputQueue> {
+    readonly expectedRevision?: string;
+  }) {
     return threadStore.getThreadInputQueue(this.#database, input);
   }
   async enqueueAdmittedThreadInput(
@@ -1573,10 +1589,11 @@ export class OpensteerStore {
   }): Promise<readonly AgentEvent[]> {
     return executionRecovery.failRunForRefusedRunnerEvent(this.#database, this.#links, input);
   }
-  async drainPendingThreadStates(
-    onCommitted?: (events: readonly AgentEvent[]) => void,
-  ): Promise<readonly AgentEvent[]> {
-    return drainPendingThreadStates(this.#database, onCommitted);
+  recoverRemovedAskTasks(): Promise<void> {
+    return recoverRemovedAskTasks(this.#database);
+  }
+  recordThreadVisit(input: Parameters<typeof recordThreadVisit>[1]) {
+    return recordThreadVisit(this.#database, input);
   }
   async recoverThreadWorkQueues(): Promise<readonly AgentEvent[]> {
     return executionRecovery.recoverThreadWorkQueues(this.#database);
@@ -1695,6 +1712,9 @@ export class OpensteerStore {
     readonly userId: UserId;
   }): Promise<TaskPage> {
     return snapshotStore.taskPageForUser(this.#database, this.notificationState, input);
+  }
+  onPersonMessageReady(wake: (message: PersonMessageReady) => void | Promise<void>) {
+    return installPersonMessageWake(this.#database, wake);
   }
   publishPersonMessage(input: PersonMessageInput): Promise<PersonMessageResult> {
     return publishPersonMessage(this.#database, input);

@@ -310,13 +310,10 @@ it("admits readable owner-authored words and file-only asks with immutable reply
   expect(first.content).not.toEqual(attached.content);
 });
 
-it("freezes publication once and projects Host delivery events and history", async () => {
+it("freezes publication once and preserves canonical delivery state", async () => {
   const f = await fixture();
   const ask = await f.ask();
-  const events: import("@opensteer/core").AgentEvent[] = [];
-  const ledger = new PersonalTeamRequestsStore(f.database, undefined, (event) =>
-    events.push(event),
-  );
+  const ledger = new PersonalTeamRequestsStore(f.database);
   const payload = { bodyMarkdown: "Frozen answer", attachmentIds: [] };
   const run = await f.start(ask.receipt.runId!);
   await f.emit(run.run.id, run.bindingGeneration, payload.bodyMarkdown);
@@ -348,11 +345,6 @@ it("freezes publication once and projects Host delivery events and history", asy
   const teamMessageId = TeamMessageIdSchema.parse("42");
   await ledger.publication(f.origin.teamId, ask.requestId, "accepted", teamMessageId);
   await ledger.publication(f.origin.teamId, ask.requestId, "blocked", null, "late failure");
-  expect(
-    events.map((event) =>
-      event.type === "run.delivery-updated" ? event.data.delivery.state : null,
-    ),
-  ).toEqual(["sending", "sent"]);
   expect(
     await f.database
       .selectFrom("runs")
@@ -1015,7 +1007,7 @@ it("bounds Deployment-wide Needs you and rolls navigation up without changing Re
     });
     if (snapshotError) throw snapshotError;
     const committed = await f.database
-      .selectFrom("deploymentEventState")
+      .selectFrom("clientSyncState")
       .select("sequence")
       .executeTakeFirstOrThrow();
     release.resolve();
@@ -1351,13 +1343,26 @@ it("keeps a reply that says nothing out of the transcript, and a file-only reply
     );
   const before = await sequence();
   const blank = await reply([{ type: "text", text: " \n" }]);
-  expect(blank.committed.event.type).toBe("assistant.message");
-  expect(blank.committed.compensatingEvents).toEqual([]);
+  expect(blank.committed.wasDuplicate).toBe(false);
+  const blankReceipt = await f.database
+    .selectFrom("runnerEventReceipts")
+    .select("ordinal")
+    .where("runId", "=", run.id)
+    .where("ordinal", "=", 1)
+    .executeTakeFirst();
+  expect(blankReceipt).toBeDefined();
   expect(await sequence()).toBe(before);
   const file = await reply([
     { type: "artifact", artifactId: "art_report", mediaType: "text/csv", name: "deals.csv" },
   ]);
-  expect(file.committed.compensatingEvents.map(({ type }) => type)).toEqual(["message.created"]);
+  expect(
+    await f.database
+      .selectFrom("transcriptItems")
+      .select(["id", "visible"])
+      .where("threadId", "=", task.id)
+      .where("id", "in", [blank.messageId, file.messageId])
+      .execute(),
+  ).toEqual([{ id: file.messageId, visible: true }]);
   expect(
     (
       await f.database

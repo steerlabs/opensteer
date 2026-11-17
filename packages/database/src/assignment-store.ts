@@ -1,3 +1,9 @@
+import { isOfflineSettlement, personalTransactionDatabase } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { publishThreadCard } from "./message-visibility.js";
+import { transcriptPreview } from "./transcript-store.js";
+import { invalidateThreadCollection } from "./thread-status.js";
+import { refreshInputQueue } from "./waiting-inputs.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 
 import { revokeRunGrants, type RevokedRunGrant } from "./run-grants.js";
@@ -9,7 +15,6 @@ import {
   createId,
   nonTerminalRunStatuses,
   utf8Prefix,
-  type AgentEvent,
   type AssignmentId,
   type AssignmentSummary,
   type RunId,
@@ -18,8 +23,6 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { CommandRow, DatabaseSchema, DelegationTable } from "./schema.js";
-import { threadInputFromRow } from "./thread-row-mappers.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
 import {
   idempotencyConflict,
   jsonValue,
@@ -54,6 +57,7 @@ export async function assignmentSummaryInTransaction(
       .select(["id", "status", "modelSelection"])
       .where("assignmentId", "=", row.id)
       .orderBy("runOrdinal", "desc")
+      .limit(1)
       .executeTakeFirstOrThrow(),
     row.parentRunId === null
       ? Promise.resolve(null)
@@ -103,149 +107,113 @@ export async function assignmentSummaryInTransaction(
   });
 }
 
-async function assignmentWorkerEventInTransaction(
-  transaction: Transaction<DatabaseSchema>,
-  row: Selectable<DelegationTable>,
-  type: "assignment.created" | "assignment.updated",
-  runId: RunId | null,
-): Promise<AgentEvent> {
-  return appendAssignmentWorkerEvent(
-    transaction,
-    await assignmentSummaryInTransaction(transaction, row),
-    type,
-    runId,
-  );
+type AssignmentReturnWake = (assignmentId: AssignmentId) => void | Promise<void>;
+const assignmentReturnWakes = new WeakMap<Kysely<DatabaseSchema>, AssignmentReturnWake>();
+
+export function installAssignmentReturnWake(
+  database: Kysely<DatabaseSchema>,
+  wake: AssignmentReturnWake,
+) {
+  assignmentReturnWakes.set(database, wake);
+  return () => {
+    if (assignmentReturnWakes.get(database) === wake) assignmentReturnWakes.delete(database);
+  };
 }
-function appendAssignmentWorkerEvent(
-  transaction: Transaction<DatabaseSchema>,
-  assignment: AssignmentSummary,
-  type: "assignment.created" | "assignment.updated",
-  runId: RunId | null,
-): Promise<AgentEvent> {
-  return appendHostDeploymentEvent(transaction, {
-    data: {
-      assignment,
-    },
-    environmentId: assignment.workerThread.environmentId,
-    runId,
-    threadId: assignment.workerThread.id,
-    type,
+
+export async function publishAssignmentSummaries(
+  tx: Transaction<DatabaseSchema>,
+  row: Selectable<DelegationTable>,
+  wakeReturn = false,
+): Promise<void> {
+  if (isOfflineSettlement(tx)) return;
+  await commitPersonalMutation(tx, async (tx, mutation) => {
+    const assignment = await assignmentSummaryInTransaction(tx, row);
+    const view = transcriptPreview({
+      title: assignment.workerThread.title,
+      status: assignment.status,
+      preview: assignment.resultPreview ?? assignment.objectivePreview,
+    });
+    await publishThreadCard(tx, mutation, {
+      id: `assignment:${row.id}`,
+      threadId: row.childThreadId,
+      runId: null,
+      kind: "assignment",
+      delegationId: row.id,
+      createdAt: row.createdAt,
+      view,
+    });
+    if (row.parentThreadId) {
+      if (row.status !== "open" && row.resultStatus === "delivered") {
+        await publishThreadCard(tx, mutation, {
+          id: `delegation:${row.id}`,
+          threadId: row.parentThreadId,
+          runId: row.parentRunId,
+          kind: "delegation",
+          delegationId: row.id,
+          createdAt: row.finishedAt ?? row.updatedAt,
+          view,
+        });
+      }
+      await invalidateThreadCollection(tx, row.parentThreadId, "assignments");
+    }
+    if (wakeReturn && row.status !== "open" && row.resultStatus === "pending") {
+      const database = personalTransactionDatabase(tx);
+      const wake = database && assignmentReturnWakes.get(database);
+      if (wake) mutation.reaction(() => wake(row.id));
+    }
   });
 }
 
-export async function assignmentEventsInTransaction(
-  transaction: Transaction<DatabaseSchema>,
-  row: Selectable<DelegationTable>,
-  type: "assignment.created" | "assignment.updated",
-  runId: RunId | null = null,
-): Promise<readonly AgentEvent[]> {
-  return [
-    await appendAssignmentWorkerEvent(
-      transaction,
-      await assignmentSummaryInTransaction(transaction, row),
-      type,
-      runId,
-    ),
-  ];
-}
-
-/** Reserve every summary destination before a name or symbol writer takes its Thread lock. */
 export async function lockThreadNameDestinations(
-  transaction: Transaction<DatabaseSchema>,
+  tx: Transaction<DatabaseSchema>,
   threadId: ThreadId,
 ): Promise<ThreadId | null> {
-  const worker = await transaction
+  const worker = await tx
     .selectFrom("threads")
     .select("id")
     .where("id", "=", threadId)
+    .where("removedAt", "is", null)
     .executeTakeFirst();
   return worker?.id ?? null;
 }
 
-export async function assignmentNameEventsForThread(
-  transaction: Transaction<DatabaseSchema>,
-  threadId: ThreadId,
-): Promise<readonly AgentEvent[]> {
-  const assignments = await transaction
-    .selectFrom("delegations")
-    .select("id")
-    .where("childThreadId", "=", threadId)
-    .orderBy("id", "asc")
-    .forNoKeyUpdate()
-    .execute();
-  const events: AgentEvent[] = [];
-  for (const assignment of assignments) {
-    const row = await transaction
-      .updateTable("delegations")
-      .set((expression) => ({
-        revision: expression("revision", "+", 1),
-        updatedAt: new Date(),
-      }))
-      .where("id", "=", assignment.id)
-      .returningAll()
-      .executeTakeFirstOrThrow();
-    // Name writers hold no Run lock; null attribution keeps the event's
-    // foreign-key check from acquiring one after the Assignment lock.
-    events.push(
-      ...(await assignmentEventsInTransaction(transaction, row, "assignment.updated", null)),
-    );
-  }
-  return events;
-}
-async function touchAssignment(
-  transaction: Transaction<DatabaseSchema>,
-  assignmentId: AssignmentId,
-  runId: RunId,
-): Promise<readonly AgentEvent[]> {
-  const row = await transaction
+async function touchAssignment(tx: Transaction<DatabaseSchema>, assignmentId: AssignmentId) {
+  const row = await tx
     .updateTable("delegations")
-    .set((expression) => ({
-      revision: expression("revision", "+", 1),
-      updatedAt: new Date(),
-    }))
+    .set((eb) => ({ revision: eb("revision", "+", 1), updatedAt: new Date() }))
     .where("id", "=", assignmentId)
     .returningAll()
     .executeTakeFirstOrThrow();
-  return [await assignmentWorkerEventInTransaction(transaction, row, "assignment.updated", runId)];
+  await publishAssignmentSummaries(tx, row);
 }
 
-/** Pending counts also feed task cards; publish their corrected worker summary after projection. */
-export async function assignmentStateEventsForThread(
-  transaction: Transaction<DatabaseSchema>,
+export async function refreshAssignmentWorkerSummaries(
+  tx: Transaction<DatabaseSchema>,
   threadId: ThreadId,
-): Promise<readonly AgentEvent[]> {
-  const rows = await transaction
-    .updateTable("delegations")
-    .set((expression) => ({
-      revision: expression("revision", "+", 1),
-      updatedAt: new Date(),
-    }))
+): Promise<void> {
+  const assignments = await tx
+    .selectFrom("delegations")
+    .select("id")
     .where("childThreadId", "=", threadId)
     .where("status", "=", "open")
-    .returningAll()
+    .orderBy("id")
+    .limit(128)
+    .forNoKeyUpdate()
     .execute();
-  const events: AgentEvent[] = [];
-  for (const row of rows) {
-    // A deferred projection holds no Run lock. Null attribution preserves
-    // ./lock-order.ts through the event's foreign-key check.
-    events.push(
-      await assignmentWorkerEventInTransaction(transaction, row, "assignment.updated", null),
-    );
-  }
-  return events;
+  for (const { id } of assignments) await touchAssignment(tx, id);
 }
 
 /** A Run's progress changes what its Assignment's card shows. */
 export async function assignmentActivityEventsForRun(
   transaction: Transaction<DatabaseSchema>,
   runId: RunId,
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   const run = await transaction
     .selectFrom("runs")
     .select("assignmentId")
     .where("id", "=", runId)
     .executeTakeFirst();
-  return run?.assignmentId ? touchAssignment(transaction, run.assignmentId, runId) : [];
+  if (run?.assignmentId) await touchAssignment(transaction, run.assignmentId);
 }
 
 /**
@@ -407,7 +375,7 @@ export async function settleAssignmentAfterRun(
     };
     readonly status: "completed" | "failed" | "interrupted";
   },
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   const row = await transaction
     .selectFrom("delegations")
     .select("status")
@@ -422,7 +390,7 @@ export async function settleAssignmentAfterRun(
       assignmentId: input.assignmentId,
     }))
   ) {
-    return touchAssignment(transaction, input.assignmentId, input.run.id);
+    return touchAssignment(transaction, input.assignmentId);
   }
   const reply = await finalReplyOfRun(transaction, input.run);
   const resultText =
@@ -445,18 +413,11 @@ export async function settleAssignmentAfterRun(
     .where("status", "=", "open")
     .returningAll()
     .executeTakeFirstOrThrow();
-  return [
-    await assignmentWorkerEventInTransaction(
-      transaction,
-      finished,
-      "assignment.updated",
-      input.run.id,
-    ),
-  ];
+  await publishAssignmentSummaries(transaction, finished, true);
 }
 export interface AssignmentMutationResult {
   readonly assignment: AssignmentSummary;
-  readonly events: readonly AgentEvent[];
+
   readonly wasDuplicate: boolean;
 }
 export interface CancelAssignmentInput {
@@ -596,7 +557,6 @@ export async function cancelAssignmentInTransaction(
       .executeTakeFirstOrThrow();
     return {
       assignment: await assignmentSummaryInTransaction(transaction, row),
-      events: [],
       interruptCommands: [],
       revokedGrants: [],
       wasDuplicate: true,
@@ -702,7 +662,7 @@ export async function cancelAssignmentInTransaction(
   const now = new Date();
   // The return stays pending: delivery tells the parent with a passive report.
   const updatedRows = await cancelAssignmentRowsInTransaction(transaction, ids, now);
-  const events: AgentEvent[] = [];
+
   const cancelledInputs = await transaction
     .updateTable("threadInputs")
     .set({
@@ -715,22 +675,7 @@ export async function cancelAssignmentInTransaction(
     .returningAll()
     .execute();
   for (const row of cancelledInputs) {
-    const thread = await transaction
-      .selectFrom("threads")
-      .select(["environmentId"])
-      .where("id", "=", row.threadId)
-      .executeTakeFirstOrThrow();
-    events.push(
-      await appendHostDeploymentEvent(transaction, {
-        data: {
-          input: threadInputFromRow(row),
-        },
-        environmentId: thread.environmentId,
-        runId: null,
-        threadId: row.threadId,
-        type: "thread-input.updated",
-      }),
-    );
+    await refreshInputQueue(transaction, row.threadId, row.messageId);
   }
   // Live and durable alike: nothing the stopped work asked for stays open.
   const pendingRequests = await transaction
@@ -740,13 +685,11 @@ export async function cancelAssignmentInTransaction(
     .where("runs.assignmentId", "in", ids)
     .where("requests.status", "=", "pending")
     .execute();
-  events.push(
-    ...(await cancelPending(transaction, {
-      reason: "source-closed",
-      resolvedAt: now,
-      requestIds: pendingRequests.map(({ id }) => id),
-    })),
-  );
+  await cancelPending(transaction, {
+    reason: "source-closed",
+    resolvedAt: now,
+    requestIds: pendingRequests.map(({ id }) => id),
+  });
   const actorRun = input.actorRunId
     ? await transaction
         .selectFrom("runs")
@@ -760,17 +703,15 @@ export async function cancelAssignmentInTransaction(
   for (const run of actorRun ? [...lockedRuns, actorRun] : lockedRuns) {
     // An unbound Run has never reached a Runner and now never will.
     if (run.status === "queued" || (run.status === "starting" && run.bindingGeneration === null)) {
-      events.push(
-        ...(await finalizeRunTransaction(transaction, {
-          completedAt: now,
-          links,
-          queuedInputCancellation: "activation-input",
-          requestCancellationReason: "source-closed",
-          runId: run.id,
-          source: "host",
-          status: "interrupted",
-        })),
-      );
+      await finalizeRunTransaction(transaction, {
+        completedAt: now,
+        links,
+        queuedInputCancellation: "activation-input",
+        requestCancellationReason: "source-closed",
+        runId: run.id,
+        source: "host",
+        status: "interrupted",
+      });
       continue;
     }
     const command = await transaction
@@ -833,14 +774,7 @@ export async function cancelAssignmentInTransaction(
     .orderBy("id", "asc")
     .execute();
   for (const row of terminalRows) {
-    events.push(
-      ...(await assignmentEventsInTransaction(
-        transaction,
-        row,
-        "assignment.updated",
-        input.actorRunId ?? null,
-      )),
-    );
+    await publishAssignmentSummaries(transaction, row, true);
   }
   const target = terminalRows.find(({ id }) => id === input.assignmentId);
   if (!target)
@@ -855,13 +789,7 @@ export async function cancelAssignmentInTransaction(
     interruptCommands.flatMap(({ runId }) => (runId ? [runId] : [])),
     "assignment-cancelled",
   );
-  return {
-    assignment,
-    events,
-    interruptCommands,
-    revokedGrants,
-    wasDuplicate: false,
-  };
+  return { assignment, interruptCommands, revokedGrants, wasDuplicate: false };
 }
 
 /** The caller reserves the complete Assignment tree before mutating it. */

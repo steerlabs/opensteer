@@ -8,7 +8,6 @@ import {
 } from "@opensteer/database/test-support/store";
 import { readEmptyPersonalResources } from "@opensteer/database/test-support/store";
 import {
-  AgentEventSchema,
   createId,
   HarnessIdSchema,
   markColorAllocationOrder,
@@ -16,14 +15,12 @@ import {
   nextMarkColor,
   provisionalThreadTitle,
   threadTitleRequestMaxLength,
-  type AgentEvent,
   type ContentPart,
   type ThreadId,
 } from "@opensteer/core";
 import {
   AttachmentStore,
   createDatabase,
-  mayNotify,
   migrateToLatest,
   OpensteerStore,
   TriggerStore,
@@ -69,7 +66,6 @@ integration.sequential("Thread title lifecycle", () => {
   const store = new OpensteerStore(database, {
     readPersonalResources: readEmptyPersonalResources,
   });
-  const published: AgentEvent[] = [];
   const commands = new CommandService({
     admission: new KeyedAdmissionQueue({
       maxInFlight: 6,
@@ -77,7 +73,7 @@ integration.sequential("Thread title lifecycle", () => {
       maxQueuedCommands: 64,
     }),
     onExecutionQueued: () => undefined,
-    onDeploymentEvent: (event) => published.push(event),
+    onDeploymentEvent: () => undefined,
     store,
   });
   beforeAll(async () => {
@@ -88,7 +84,6 @@ integration.sequential("Thread title lifecycle", () => {
     console.info(`Thread title receipts: ${evidenceRoot}`);
   });
   beforeEach(async () => {
-    published.length = 0;
     await sql`truncate table deployments, users restart identity cascade`.execute(database);
     await sql`insert into principals(id, kind, user_id, display_name)
       values ('pri_00000000-0000-4000-8000-000000000001', 'system', null, 'Opensteer')
@@ -104,16 +99,15 @@ integration.sequential("Thread title lifecycle", () => {
             .selectFrom("threads")
             .select(["id", "title", "titleSource", "icon", "iconSource", "color"])
             .execute(),
-          events: await database
-            .selectFrom("deploymentEvents")
-            .select(["sequence", "threadId", "type", "data"])
+          changes: await database
+            .selectFrom("clientChanges")
+            .select(["sequence", "scopeKey", "entityKind", "entityId", "operation", "payload"])
             .orderBy("sequence")
             .execute(),
           commands: await database
             .selectFrom("commands")
             .select(["type", "idempotencyKey", "payload", "status"])
             .execute(),
-          published,
         },
         null,
         2,
@@ -178,6 +172,21 @@ integration.sequential("Thread title lifecycle", () => {
       threadId,
       title,
     });
+  const syncHead = async () =>
+    (await database.selectFrom("clientSyncState").select("sequence").executeTakeFirstOrThrow())
+      .sequence;
+  const taskChanges = (threadId: ThreadId, after: string) =>
+    database
+      .selectFrom("clientChanges")
+      .select(["sequence", "payload"])
+      .where("scopeKey", "=", "shell")
+      .where("entityKind", "=", "task")
+      .where("operation", "=", "upsert")
+      .where("entityId", "=", threadId)
+      .where("sequence", ">", after)
+      .orderBy("sequence")
+      .execute();
+
   it("opts in only explicit new tasks and preserves chosen titles", async () => {
     const f = await fixture();
     const chosen = await f.create();
@@ -213,23 +222,19 @@ integration.sequential("Thread title lifecycle", () => {
     const { thread } = await f.create({
       generateTitle: true,
     });
+    const head = await syncHead();
     const key = randomUUID();
     const result = await rename(f, thread.id, "  Chosen name  ", key);
     expect(result.thread.title).toBe("Chosen name");
-    expect(published).toHaveLength(1);
-    expect(published[0]).toMatchObject({
-      type: "thread.state-changed",
-      sequence: result.asOfSequence,
-      data: {
-        title: "Chosen name",
-        status: "idle",
-        inputQueuePaused: false,
-        pendingRequests: 0,
+    expect(await taskChanges(thread.id, head)).toMatchObject([
+      {
+        sequence: result.asOfSequence,
+        payload: { title: "Chosen name", status: "idle", pendingRequestCount: 0 },
       },
-    });
+    ]);
     await rename(f, thread.id, "Later name");
     expect((await rename(f, thread.id, "Chosen name", key)).thread.title).toBe("Later name");
-    expect(published).toHaveLength(2);
+    expect(await taskChanges(thread.id, head)).toHaveLength(2);
     await expect(rename(f, thread.id, "Different", key)).rejects.toMatchObject({
       code: "conflict",
     });
@@ -260,14 +265,14 @@ integration.sequential("Thread title lifecycle", () => {
     });
     const head = (
       await database
-        .selectFrom("deploymentEventState")
+        .selectFrom("clientSyncState")
         .select("sequence")
         .where("deploymentId", "=", f.deploymentId)
         .executeTakeFirstOrThrow()
     ).sequence;
     const result = await rename(f, thread.id, thread.title);
     expect(result.asOfSequence).toBe(head);
-    expect(published).toEqual([]);
+    expect(await syncHead()).toBe(head);
     expect(await row(thread.id)).toMatchObject({
       titleSource: "chosen",
     });
@@ -308,12 +313,10 @@ integration.sequential("Thread title lifecycle", () => {
       ),
     );
     expect(results.filter(Boolean)).toHaveLength(1);
-    const event = results.find((value) => value !== null)!.event;
-    if (event.type !== "thread.state-changed") throw new Error("Expected a state event");
-    expect(await row(thread.id)).toMatchObject({
-      titleSource: "generated",
-      title: event.data.title,
-    });
+    const chosen = ["First candidate", "Other candidate"][
+      results.findIndex((value) => value !== null)
+    ];
+    expect(await row(thread.id)).toMatchObject({ titleSource: "generated", title: chosen });
     expect(
       await store.applyGeneratedThreadName({
         threadId: thread.id,
@@ -418,7 +421,7 @@ integration.sequential("Thread title lifecycle", () => {
       .execute();
     await rename(f, thread.id, "Person's title");
     const result = await apply();
-    expect(result?.event.type).toBe("thread.state-changed");
+    expect(result).toBe(thread.id);
     expect(await row(thread.id)).toMatchObject({
       title: "Person's title",
       titleSource: "chosen",
@@ -905,14 +908,15 @@ integration.sequential("Thread title lifecycle", () => {
       iconSource: "chosen",
       titleSource: "provisional",
     });
-    expect(published.filter((e) => e.type === "thread.state-changed")).toMatchObject([
-      {
-        data: {
-          icon: "plane",
-          title: thread.title,
-        },
-      },
-    ]);
+    expect(
+      await database
+        .selectFrom("clientChanges")
+        .select("entityId")
+        .where("scopeKey", "=", `thread:${thread.id}`)
+        .where("entityId", "=", "thread-details")
+        .where("operation", "=", "invalidate")
+        .execute(),
+    ).toEqual([{ entityId: "thread-details" }]);
     await commands.setThreadIcon({
       ...input,
       idempotencyKey: randomUUID(),
@@ -943,13 +947,13 @@ integration.sequential("Thread title lifecycle", () => {
       threadId: pending.thread.id,
       icon: "plane",
     });
-    published.length = 0;
+    const head = await syncHead();
     await commands.setThreadIcon({
       ...input,
       threadId: pending.thread.id,
       idempotencyKey: randomUUID(),
     });
-    expect(published).toEqual([]);
+    expect(await syncHead()).toBe(head);
     expect((await row(pending.thread.id)).iconSource).toBe("chosen");
     expect(
       await store.applyGeneratedThreadName({
@@ -966,12 +970,10 @@ integration.sequential("Thread title lifecycle", () => {
       title: "Ignore",
       icon: "plane",
     });
-    expect(generated?.event).toMatchObject({
-      type: "thread.state-changed",
-      data: {
-        title: chosen.thread.title,
-        icon: "plane",
-      },
+    expect(generated).toBe(chosen.thread.id);
+    expect(await row(chosen.thread.id)).toMatchObject({
+      title: chosen.thread.title,
+      icon: "plane",
     });
     const pending = await f.create({
       generateTitle: true,
@@ -987,12 +989,7 @@ integration.sequential("Thread title lifecycle", () => {
       title: "New name",
       icon: "hotel",
     });
-    expect(result?.event).toMatchObject({
-      data: {
-        title: "New name",
-        icon: "document",
-      },
-    });
+    expect(result).toBe(pending.thread.id);
     expect(await row(pending.thread.id)).toMatchObject({
       titleSource: "generated",
       iconSource: "chosen",
@@ -1006,20 +1003,17 @@ integration.sequential("Thread title lifecycle", () => {
     const both = await f.create({
       generateTitle: true,
     });
-    const before = published.length;
+    const before = await syncHead();
     const combined = await store.applyGeneratedThreadName({
       threadId: both.thread.id,
       title: "Combined",
       icon: "plane",
     });
-    expect(combined?.events).toHaveLength(1);
-    expect(combined?.event).toMatchObject({
-      data: {
-        title: "Combined",
-        icon: "plane",
-      },
-    });
-    expect(published).toHaveLength(before);
+    expect(combined).toBe(both.thread.id);
+    expect(await taskChanges(both.thread.id, before)).toMatchObject([
+      { payload: { title: "Combined" } },
+    ]);
+    expect(await row(both.thread.id)).toMatchObject({ title: "Combined", icon: "plane" });
     await rename(f, both.thread.id, "Person");
     expect((await row(both.thread.id)).icon).toBe("plane");
   });
@@ -1057,19 +1051,14 @@ integration.sequential("Thread title lifecycle", () => {
       }));
     expect(unread(snapshot)).toEqual(unread(before));
     expect(snapshot.messages).toEqual(before.messages);
-    const markEvent = await database
-      .selectFrom("deploymentEvents")
-      .selectAll()
-      .where("sequence", "=", result.asOfSequence)
-      .executeTakeFirstOrThrow();
     expect(
-      mayNotify(
-        AgentEventSchema.parse({
-          ...markEvent,
-          createdAt: markEvent.createdAt.toISOString(),
-        }),
-      ),
-    ).toBe(false);
+      await database
+        .selectFrom("clientChanges")
+        .select("entityId")
+        .where("sequence", "=", result.asOfSequence)
+        .where("entityKind", "in", ["attention", "item", "request"])
+        .execute(),
+    ).toEqual([]);
     expect(
       (
         await store.taskPageForUser({
@@ -1080,20 +1069,10 @@ integration.sequential("Thread title lifecycle", () => {
       icon: "plane",
       color: thread.color,
     });
-    const history = await store.threadEventPageForOwner({
-      ownerId: f.userId,
-      threadId: thread.id,
-    });
-    expect(history?.thread).toMatchObject({
-      icon: "plane",
-      color: thread.color,
-    });
-    const events = await database
-      .selectFrom("deploymentEvents")
-      .select(["type", "data"])
-      .where("threadId", "=", thread.id)
-      .execute();
-    for (const event of events.filter((value) => value.type === "thread.state-changed"))
-      expect(event.data).toHaveProperty("icon", "plane");
+    const current = await store.getThreadForOwner(thread.id, f.userId);
+    expect(current).toMatchObject({ icon: "plane", color: thread.color });
+    expect(await taskChanges(thread.id, before.sequence)).toMatchObject([
+      { sequence: result.asOfSequence, payload: { title: thread.title } },
+    ]);
   });
 });

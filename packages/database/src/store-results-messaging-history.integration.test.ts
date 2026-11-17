@@ -475,34 +475,20 @@ describeStore("PostgreSQL store", (it) => {
       resultRunId: delegated.run.id,
       resultText: childResult,
     });
-    const resultEvents = await store.drainAssignmentReturn(delegated.assignment.id);
-    expect(resultEvents.map(({ type }) => type)).toContain("message.created");
-    expect(resultEvents.map(({ type }) => type)).toContain("run.queued");
-    const settlementEvent = resultEvents.find(
-      (event) => event.type === "assignment.updated" && event.threadId === delegated.thread.id,
-    );
-    expect(settlementEvent).toMatchObject({
-      data: {
-        assignment: {
-          id: delegated.assignment.id,
-          returnStatus: "delivered",
-          status: "completed",
-          resultPreview: expect.stringMatching(/^The evidence is ready/u),
-        },
-      },
-      threadId: delegated.thread.id,
-      type: "assignment.updated",
+    await store.drainAssignmentReturn(delegated.assignment.id);
+    const assignments = await store.listThreadAssignmentsForOwner({
+      threadId: fixture.thread.id,
+      ownerId: fixture.userId,
     });
-    if (
-      settlementEvent?.type !== "assignment.updated" ||
-      !settlementEvent.data.assignment.resultPreview
-    ) {
-      throw new Error("Expected Assignment result preview");
-    }
-    expect(
-      Buffer.byteLength(settlementEvent.data.assignment.resultPreview, "utf8"),
-    ).toBeLessThanOrEqual(8 * 1_024);
-    expect(settlementEvent.data.assignment.resultPreview).not.toBe(childResult);
+    const settled = assignments?.assignments.find(({ id }) => id === delegated.assignment.id);
+    expect(settled).toMatchObject({
+      id: delegated.assignment.id,
+      returnStatus: "delivered",
+      status: "completed",
+      resultPreview: expect.stringMatching(/^The evidence is ready/u),
+    });
+    expect(Buffer.byteLength(settled!.resultPreview!, "utf8")).toBeLessThanOrEqual(8 * 1_024);
+    expect(settled!.resultPreview).not.toBe(childResult);
     expect(replayed).toMatchObject({
       compensatingEvents: [],
       wasDuplicate: true,
@@ -646,9 +632,7 @@ describeStore("PostgreSQL store", (it) => {
       replies: ["The worker finished while the parent still runs"],
       suffix: "delegation-result-delivery-unknown-child",
     });
-    const delivered = await store.drainAssignmentReturn(delegated.assignment.id);
-    expect(delivered.map(({ type }) => type)).toContain("message.created");
-    expect(delivered.map(({ type }) => type)).toContain("assignment.updated");
+    await store.drainAssignmentReturn(delegated.assignment.id);
     const steered = await database
       .selectFrom("threadInputs")
       .select(["messageId", "policy", "state", "steerCommandId"])
@@ -725,7 +709,7 @@ describeStore("PostgreSQL store", (it) => {
     ).resolves.toEqual({
       resultStatus: "delivered",
     });
-    await expect(store.drainAssignmentReturn(delegated.assignment.id)).resolves.toEqual([]);
+    await expect(store.drainAssignmentReturn(delegated.assignment.id)).resolves.toBeUndefined();
   });
   it.for(["failed", "interrupted"] as const)(
     "settles the Assignment from how its child Run ended: %s",
@@ -757,14 +741,13 @@ describeStore("PostgreSQL store", (it) => {
         replies: ["Checked two of the three sources"],
         suffix: `delegation-result-${outcome}-child`,
       });
-      const events = await store.drainAssignmentReturn(delegated.assignment.id);
+      await store.drainAssignmentReturn(delegated.assignment.id);
       const assignment = await database
         .selectFrom("delegations")
         .select(["status", "resultStatus", "resultText"])
         .where("id", "=", delegated.assignment.id)
         .executeTakeFirstOrThrow();
       if (outcome === "failed") {
-        expect(events.map(({ type }) => type)).toContain("message.created");
         expect(assignment).toEqual({
           resultStatus: "delivered",
           resultText:
@@ -783,14 +766,20 @@ describeStore("PostgreSQL store", (it) => {
         });
       } else {
         // A person stopped this Run, not the task; a later Run continues it.
-        expect(events).toEqual([]);
+        expect(
+          await database
+            .selectFrom("threadInputs")
+            .select("messageId")
+            .where("idempotencyKey", "=", `assignment-return:${delegated.assignment.id}`)
+            .executeTakeFirst(),
+        ).toBeUndefined();
         expect(assignment).toEqual({
           resultStatus: "pending",
           resultText: null,
           status: "open",
         });
       }
-      await expect(store.drainAssignmentReturn(delegated.assignment.id)).resolves.toEqual([]);
+      await expect(store.drainAssignmentReturn(delegated.assignment.id)).resolves.toBeUndefined();
     },
   );
   it.for(["archived-thread", "disabled-owner"] as const)(
@@ -848,20 +837,15 @@ describeStore("PostgreSQL store", (it) => {
           .where("id", "=", fixture.userId)
           .execute();
       }
-      const events = await store.drainAssignmentReturn(delegated.assignment.id);
-      expect(events).toContainEqual(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            assignment: expect.objectContaining({
-              id: delegated.assignment.id,
-              returnStatus: "undeliverable",
-              status: "completed",
-            }),
-          }),
-          threadId: delegated.thread.id,
-          type: "assignment.updated",
-        }),
-      );
+      await store.drainAssignmentReturn(delegated.assignment.id);
+      expect(
+        await database
+          .selectFrom("transcriptItems")
+          .select("id")
+          .where("threadId", "=", delegated.thread.id)
+          .where("delegationId", "=", delegated.assignment.id)
+          .execute(),
+      ).toEqual([{ id: `assignment:${delegated.assignment.id}` }]);
       await expect(
         database
           .selectFrom("messages")
@@ -889,7 +873,7 @@ describeStore("PostgreSQL store", (it) => {
           .where("status", "=", "queued")
           .executeTakeFirst(),
       ).toBeUndefined();
-      await expect(store.drainAssignmentReturn(delegated.assignment.id)).resolves.toEqual([]);
+      await expect(store.drainAssignmentReturn(delegated.assignment.id)).resolves.toBeUndefined();
     },
   );
   it("charges delegation fan-out once per causal root and not per lifetime Thread", async ({
@@ -1106,12 +1090,19 @@ describeStore("PostgreSQL store", (it) => {
       threadId: fixture.thread.id,
     });
     expect(resumed.thread.inputQueuePaused).toBe(false);
-    expect(resumed.events.map(({ type }) => type)).toEqual([
-      "thread.input-queue-updated",
-      "message.placed",
-      "run.queued",
-      "thread.state-changed",
-    ]);
+    expect(
+      await database
+        .selectFrom("clientChanges")
+        .select(["entityKind", "entityId"])
+        .where("scopeKey", "=", `thread:${fixture.thread.id}`)
+        .where("sequence", "=", resumed.asOfSequence)
+        .execute(),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ entityKind: "run-queue" }),
+        { entityKind: "collection", entityId: "input-queue" },
+      ]),
+    );
     await expect(
       database
         .selectFrom("runs")
@@ -1294,13 +1285,15 @@ describeStore("PostgreSQL store", (it) => {
     if (adopted.kind !== "adopted" || !adopted.run) {
       throw new Error("Expected channel ingress adoption to queue a Run");
     }
-    expect(adopted.events.map(({ type }) => type)).toEqual([
-      "thread.created",
-      "message.created",
-      "message.placed",
-      "run.queued",
-      "thread.state-changed",
-    ]);
+    expect(
+      await database
+        .selectFrom("transcriptItems")
+        .select(["visible", "view"])
+        .where("threadId", "=", adopted.run.threadId)
+        .where("runId", "=", adopted.run.id)
+        .where("kind", "=", "message")
+        .execute(),
+    ).toMatchObject([{ visible: true, view: { published: false } }]);
     const followupCommitted = await channels.commitIngress(configured.connection.id, {
       ...event,
       content: [
@@ -1331,7 +1324,6 @@ describeStore("PostgreSQL store", (it) => {
       run: null,
     });
     if (followup.kind !== "adopted") throw new Error("Expected channel follow-up adoption");
-    expect(followup.events.map(({ type }) => type)).toEqual(["message.created"]);
     const followupRow = await database
       .selectFrom("channelIngressEvents")
       .innerJoin("threadInputs", "threadInputs.messageId", "channelIngressEvents.messageId")

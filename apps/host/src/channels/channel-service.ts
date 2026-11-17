@@ -26,7 +26,6 @@ import {
   OpensteerError,
   isLoopbackHostname,
   RunnerIdSchema,
-  type AgentEvent,
   type EnvironmentId,
   type HarnessId,
   type RunnerId,
@@ -52,7 +51,6 @@ interface ChannelServiceOptions {
   readonly credentials: CredentialService;
   /** Named because an adopted channel message makes one work location dispatchable. */
   readonly onExecutionQueued: (environmentId: EnvironmentId) => void;
-  readonly onDeploymentEvent: (event: AgentEvent) => void;
   readonly relay: MessagingRelayHub;
   readonly runners: ChannelRunners;
   readonly store: OpensteerStore;
@@ -69,7 +67,6 @@ export class ChannelService {
   readonly #channels: ChannelStore;
   readonly #credentials: CredentialService;
   readonly #onExecutionQueued: (environmentId: EnvironmentId) => void;
-  readonly #onDeploymentEvent: (event: AgentEvent) => void;
   readonly #relay: MessagingRelayHub;
   readonly #runners: ChannelRunners;
   readonly #store: OpensteerStore;
@@ -84,7 +81,6 @@ export class ChannelService {
     this.#channels = options.channels;
     this.#credentials = options.credentials;
     this.#onExecutionQueued = options.onExecutionQueued;
-    this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#relay = options.relay;
     this.#runners = options.runners;
     this.#store = options.store;
@@ -736,7 +732,6 @@ export class ChannelService {
         });
         if (result.kind === "adopted") {
           this.#store.announceRevokedGrants(result.revokedGrants);
-          for (const event of result.events) this.#onDeploymentEvent(event);
           if (result.dispatchEnvironmentId) {
             this.#onExecutionQueued(result.dispatchEnvironmentId);
           }
