@@ -5219,7 +5219,6 @@ export class BrowserService {
       const main = homes.find((home) => home.kind === "main");
       const hostingBrowser = connected.find((placement) => placement.runnerId === main?.id);
       if (hostingBrowser) return placementSelector(hostingBrowser);
-      if (main && this.#targetResolver?.waitForTarget) return { kind: "runner", runnerId: main.id };
     }
     if (environmentId) {
       const colocated = connected.filter((placement) =>
@@ -5236,6 +5235,9 @@ export class BrowserService {
     if (connected.length > 1) throw runnerPlacementConflict(connected);
     const incompatible = placements.find((placement) => placement.unavailableReason);
     if (incompatible?.unavailableReason) throw unavailable(incompatible.unavailableReason);
+    // Nothing is connected yet: the hosting computer's browser is the one on its way.
+    const main = this.#personal ? homes.find((home) => home.kind === "main") : undefined;
+    if (main && this.#targetResolver?.waitForTarget) return { kind: "runner", runnerId: main.id };
     throw unavailable("No Browser Runtime is connected.");
   }
 

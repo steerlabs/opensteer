@@ -5048,6 +5048,32 @@ describe("BrowserService", () => {
     expect(runtime.connectionCount()).toBe(1);
   });
 
+  it("opens an agent Guest on a connected browser while the hosting computer is still away", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const ownerId = createId("user");
+    const main = testRunner({});
+    const laptop = testRunner({ agents: false });
+    const repository = new MemoryBrowserRepository(ownerId);
+    repository.mainRunnerId = main.runnerId;
+    const service = placementService({
+      keys,
+      ownerId,
+      repository,
+      runtime,
+      runners: [laptop],
+      personal: true,
+      awaitsBrowsers: true,
+    });
+    await expect(
+      service.openAgentSession({ agentBindingId: "run:guest", ownerId, fresh: true }),
+    ).resolves.toMatchObject({
+      session: { placement: { kind: "runner", runnerId: laptop.runnerId } },
+    });
+  });
+
   it.each(["person", "agent"] as const)(
     "opens a homed profile on a browser-only device for a %s",
     async (caller) => {
@@ -5720,6 +5746,8 @@ function testRunner(input: {
 
 function placementService(options: {
   readonly personal?: boolean;
+  /** Admission waits that never succeed, so choosing an absent computer fails fast. */
+  readonly awaitsBrowsers?: boolean;
   readonly keys: { readonly privateKey: KeyObject };
   readonly ownerId: UserId;
   readonly repository?: MemoryBrowserRepository;
@@ -5730,6 +5758,9 @@ function placementService(options: {
   // tests are about, not what happens after the browser answers.
   const relay = runnerTarget({ url: options.runtime.url });
   const targetResolver: BrowserRuntimeTargetResolver = {
+    ...(options.awaitsBrowsers
+      ? { waitForTarget: () => Promise.reject(new Error("That browser never arrived.")) }
+      : {}),
     placements: () =>
       options.runners.map((runner) => ({
         agents: runner.agents === true,

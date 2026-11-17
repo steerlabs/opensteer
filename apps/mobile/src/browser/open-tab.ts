@@ -12,7 +12,11 @@ import { tabRoute } from "./surface-route.js";
 let openings = 0;
 export type OpeningTabRoute = { deploymentId: string; address: string; openingId: number };
 
-/** The pending screen belongs only to this action, never to a late answer. */
+/**
+ * The opening screen stands in for the tab until the Host answers, and the
+ * answer settles that screen wherever it now sits in the stack: a screen the
+ * person covered is still theirs to come back to, one they left is not.
+ */
 export async function openMobileTab(input: {
   navigation: Omit<NavigationProp<ParamListBase>, "getState"> & {
     getState(): NavigationState | undefined;
@@ -33,36 +37,33 @@ export async function openMobileTab(input: {
       openingId,
     }),
   );
-  let cancelled = false;
-  const selected = () => {
+  const opening = () => {
     const state = navigation.getState();
-    if (!state) return null;
-    const route = state.routes[state.index];
-    return route?.name === "OpeningTab" &&
-      isRecord(route.params) &&
-      route.params["openingId"] === openingId
-      ? { source: route.key, target: state.key }
-      : null;
+    const route = state?.routes.find(
+      (candidate) =>
+        candidate.name === "OpeningTab" &&
+        isRecord(candidate.params) &&
+        candidate.params["openingId"] === openingId,
+    );
+    return state && route ? { source: route.key, target: state.key } : null;
   };
-  const unsubscribe = navigation.addListener("state", () => {
-    if (!selected()) cancelled = true;
-  });
+  let tab: Awaited<ReturnType<HostClient["openTab"]>>;
   try {
-    const tab = await input.hostClient.openTab(input.target);
-    if (!cancelled && selected())
-      navigation.dispatch({
-        ...StackActions.replace(
-          "WorkspaceBrowser",
-          tabRoute(input.deploymentId, tab.tabId, input.threadId),
-        ),
-        ...selected(),
-      });
+    tab = await input.hostClient.openTab(input.target);
   } catch (error) {
-    if (!cancelled && selected()) {
-      navigation.dispatch({ ...StackActions.pop(), ...selected() });
-      input.failed(error);
-    }
-  } finally {
-    unsubscribe();
+    const pending = opening();
+    if (!pending) return;
+    navigation.dispatch({ ...StackActions.pop(), ...pending });
+    input.failed(error);
+    return;
   }
+  const pending = opening();
+  if (pending)
+    navigation.dispatch({
+      ...StackActions.replace(
+        "WorkspaceBrowser",
+        tabRoute(input.deploymentId, tab.tabId, input.threadId),
+      ),
+      ...pending,
+    });
 }

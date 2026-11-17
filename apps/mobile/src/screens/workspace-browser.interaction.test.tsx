@@ -142,7 +142,6 @@ vi.mock("@react-navigation/native", async () => {
       canGoBack: () => true,
       dispatch: state.dispatch,
       getState: () => ({ key: "stack", index: state.routes.length - 1, routes: state.routes }),
-      addListener: () => () => undefined,
       goBack: state.goBack,
       isFocused: () => state.navigationFocused,
       setOptions: state.setOptions,

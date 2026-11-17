@@ -216,7 +216,18 @@ describe("PersonalDeploymentSupervisor", () => {
   });
 
   it("publishes the owned Host before Runner connection and cancels the pending tail on stop", async () => {
-    const fixture = supervisorFixture(null);
+    // First setup: the Host has no main computer until the Runner enrolls, so setup stays.
+    const fresh = supervisorFixture(null);
+    fresh.host.waitForRunner.mockReturnValueOnce(new Promise(() => undefined));
+    const setup = fresh.supervisor.start();
+    await vi.waitFor(() => expect(fresh.host.waitForRunner).toHaveBeenCalledOnce());
+    expect(fresh.supervisor.status.state).toBe("starting");
+    await fresh.supervisor.stop();
+    await setup;
+
+    const fixture = supervisorFixture(
+      deploymentManifest({ databaseInitialized: true, ownerInitialized: true }),
+    );
     fixture.host.waitForRunner.mockReturnValueOnce(new Promise(() => undefined));
     const starting = fixture.supervisor.start();
     await vi.waitFor(() => expect(fixture.host.waitForRunner).toHaveBeenCalledOnce());
@@ -270,7 +281,9 @@ describe("PersonalDeploymentSupervisor", () => {
   });
 
   it("recovers a Runner crash during the ready startup tail through degraded backoff", async () => {
-    const fixture = supervisorFixture(null);
+    const fixture = supervisorFixture(
+      deploymentManifest({ databaseInitialized: true, ownerInitialized: true }),
+    );
     const observed = observeStatus(fixture.supervisor);
     fixture.host.waitForRunner.mockReturnValueOnce(new Promise(() => undefined));
     const starting = fixture.supervisor.start();
@@ -558,16 +571,15 @@ describe("PersonalDeploymentSupervisor", () => {
 
   it("tears down every child when this computer's browser cannot start", async () => {
     const fixture = supervisorFixture(null);
-    const observed = observeStatus(fixture.supervisor);
     fixture.localRuntimes.startBrowser.mockRejectedValueOnce(new Error("browser bridge failed"));
     await expect(fixture.supervisor.start()).rejects.toThrow("browser bridge failed");
     expect(fixture.supervisor.status).toMatchObject({
       issue: { code: "browser-unavailable", component: "browser" },
-      state: "degraded",
+      state: "repair-required",
     });
-    await waitForRecovery(fixture, observed);
+    // The browser comes up before the Runner that relays it, so a failed
+    // bridge leaves only the Host and its database to tear down.
     expect(fixture.processes.kills).toEqual(["host:SIGTERM", "postgresql:SIGTERM"]);
-    await fixture.supervisor.stop();
   });
 
   it("initializes PostgreSQL from a staged password file that is removed afterwards", async () => {
@@ -869,9 +881,8 @@ describe("PersonalDeploymentSupervisor", () => {
     expect(fixture.supervisor.status).toMatchObject({
       canStart: true,
       issue: { code: "runner-unavailable", component: "runner" },
-      state: "degraded",
+      state: "repair-required",
     });
-    await fixture.supervisor.stop();
   });
 
   it("fails safely when a persisted private port is occupied without changing authority", async () => {
@@ -1625,6 +1636,11 @@ function supervisorFixture(
     credentials,
     files: restarts.files ?? files,
     host,
+    // A Deployment that already exists has a Runner that enrolled on an earlier launch.
+    inspectRunnerIdentity: async () =>
+      existing
+        ? { enrolled: true, environmentId: existing.environmentId, runnerId: existing.runnerId }
+        : null,
     localRuntimes,
     loopbackPorts,
     processes,

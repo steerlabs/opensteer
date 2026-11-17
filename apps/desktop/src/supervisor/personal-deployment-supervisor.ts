@@ -131,6 +131,7 @@ interface PersonalDeploymentSupervisorOptions {
   readonly files: PersonalDeploymentFilesystemPort;
   readonly host: PersonalHostControlPort;
   readonly localRuntimes: PersonalLocalRuntimePort;
+  readonly inspectRunnerIdentity?: typeof inspectRunnerIdentity;
   readonly loopbackPorts?: PersonalLoopbackPortPort;
   readonly now?: () => Date;
   readonly log?: ShutdownLog;
@@ -231,6 +232,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   readonly #files: PersonalDeploymentFilesystemPort;
   readonly #host: PersonalHostControlPort;
   readonly #localRuntimes: PersonalLocalRuntimePort;
+  readonly #inspectRunnerIdentity: typeof inspectRunnerIdentity;
   readonly #listeners = new Set<StatusListener>();
   readonly #loopbackPorts: PersonalLoopbackPortPort;
   readonly #now: () => Date;
@@ -295,6 +297,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     this.#files = options.files;
     this.#host = options.host;
     this.#localRuntimes = options.localRuntimes;
+    this.#inspectRunnerIdentity = options.inspectRunnerIdentity ?? inspectRunnerIdentity;
     this.#processes = options.processes;
     this.#portalOrigin = options.portalOrigin ? new URL(String(options.portalOrigin)).origin : null;
     this.#release = options.release ?? (() => readPersonalRuntimeRelease(options.releaseDirectory));
@@ -366,7 +369,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     if (!manifest || manifest.deploymentId !== deploymentId || manifest.runnerId !== runnerId) {
       return { local: false, reason: "not-local" };
     }
-    const identity = await inspectRunnerIdentity(
+    const identity = await this.#inspectRunnerIdentity(
       (await this.#files.prepare(manifest)).runnerDataDirectory,
     );
     if (!identity?.enrolled || identity.runnerId !== runnerId) {
@@ -782,12 +785,19 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         }),
       );
       throwIfAborted(signal, "Personal setup was cancelled.");
+      const publishReady = (step: DesktopPersonalDeploymentStep) => {
+        this.#setStatus({ issue: null, state: "ready", step });
+        this.#log("desktop.startup.step.finished", {
+          step: "ready",
+          elapsedMs: performance.now() - started,
+        });
+      };
+      // The Host knows this Mac as its main computer only once the Runner has
+      // enrolled; before that, setup stays on screen until the Runner connects.
+      const enrolled =
+        (await this.#inspectRunnerIdentity(paths.runnerDataDirectory))?.enrolled === true;
       this.#assertExpectedStack("host");
-      this.#setStatus({ issue: null, state: "ready", step: "connecting-computer" });
-      this.#log("desktop.startup.step.finished", {
-        step: "ready",
-        elapsedMs: performance.now() - started,
-      });
+      if (enrolled) publishReady("connecting-computer");
 
       const browser = await browserStart;
       this.#setStatus({
@@ -828,7 +838,8 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
           "Runner",
         ),
       );
-      this.#setStatus({ step: "preparing-agent-home" });
+      if (enrolled) this.#setStatus({ step: "preparing-agent-home" });
+      else publishReady("preparing-agent-home");
       await this.#startupStep("agent-home", () =>
         withTimeout(
           this.#host.ensureAgentHome(origin, manifest.deploymentId, signal),

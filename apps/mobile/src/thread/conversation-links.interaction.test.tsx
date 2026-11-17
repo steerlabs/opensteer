@@ -11,7 +11,7 @@ import { MockHostClient, mockIphoneRunnerId } from "@opensteer/client/mock";
 const linking = vi.hoisted(() => ({ openURL: vi.fn(async () => undefined) }));
 const navigation = vi.hoisted(() => ({
   dispatch: vi.fn(),
-  listeners: new Set<() => void>(),
+  pushes: 0,
   routes: [] as { key: string; name: string; params: Record<string, unknown> }[],
 }));
 
@@ -42,10 +42,6 @@ vi.mock("@react-navigation/native", () => ({
   },
   useNavigation: () => ({
     dispatch: navigation.dispatch,
-    addListener: (_event: string, listener: () => void) => {
-      navigation.listeners.add(listener);
-      return () => navigation.listeners.delete(listener);
-    },
     getState: () => ({ index: navigation.routes.length - 1, routes: navigation.routes }),
     isFocused: () => true,
   }),
@@ -77,7 +73,7 @@ afterEach(() => {
   linking.openURL.mockClear();
   navigation.dispatch.mockReset();
   navigation.routes = [];
-  navigation.listeners.clear();
+  navigation.pushes = 0;
 });
 
 /** This phone, enrolled in the Deployment as the mock world's iPhone, or nowhere. */
@@ -129,21 +125,29 @@ function conversation(input: { readonly enrolled: boolean }) {
   };
   // The tab the tap pushed, as the stack now holds it.
   navigation.dispatch.mockImplementation(
-    (action: { type: string; name?: string; params?: Record<string, unknown> }) => {
+    (action: {
+      type: string;
+      name?: string;
+      params?: Record<string, unknown>;
+      source?: string;
+    }) => {
+      // An action with a source acts on that route wherever it sits, as the stack router does.
+      const at = action.source
+        ? navigation.routes.findIndex(({ key }) => key === action.source)
+        : navigation.routes.length - 1;
       if (action.type === "PUSH")
         navigation.routes.push({
-          key: `route-${navigation.routes.length}`,
+          key: `route-${navigation.pushes++}`,
           name: action.name!,
           params: action.params!,
         });
-      if (action.type === "POP") navigation.routes.pop();
+      if (action.type === "POP") navigation.routes.splice(at, 1);
       if (action.type === "REPLACE")
-        navigation.routes.splice(-1, 1, {
-          key: `replacement`,
+        navigation.routes.splice(at, 1, {
+          key: `route-${navigation.pushes++}`,
           name: action.name!,
           params: action.params!,
         });
-      for (const listener of navigation.listeners) listener();
     },
   );
   return { deploymentId, host, tap, threadId };
@@ -215,7 +219,37 @@ describe("a conversation's links on a phone that lends a browser", () => {
     await act(async () => resolve(tab));
     expect(navigation.routes).toEqual([]);
     expect(open).toHaveBeenCalledTimes(1);
-    expect(navigation.listeners.size).toBe(0);
+  });
+
+  it("settles an opening screen the person covered, so Back returns to the tab", async () => {
+    const { host, tap } = conversation({ enrolled: true });
+    const tab = [...host.getSnapshot().tabs.rows.values()][0]!;
+    let resolve!: (value: typeof tab) => void;
+    opens(host).mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    tap("the photo");
+    navigation.dispatch({ type: "PUSH", name: "Settings", params: {} });
+    await act(async () => resolve(tab));
+    expect(navigation.routes.map(({ name }) => name)).toEqual(["WorkspaceBrowser", "Settings"]);
+  });
+
+  it("removes a covered opening screen whose open failed", async () => {
+    const { host, tap } = conversation({ enrolled: true });
+    let reject!: (error: Error) => void;
+    opens(host).mockImplementationOnce(
+      () =>
+        new Promise((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    tap("the photo");
+    navigation.dispatch({ type: "PUSH", name: "Settings", params: {} });
+    await act(async () => reject(new Error("not available")));
+    expect(navigation.routes.map(({ name }) => name)).toEqual(["Settings"]);
   });
 
   it("opens the computer's own address on the conversation's computer", () => {
