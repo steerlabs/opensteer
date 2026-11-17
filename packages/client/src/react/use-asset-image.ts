@@ -10,7 +10,7 @@ import {
 } from "react";
 import { AttachmentIdSchema } from "@opensteer/core";
 import type { HostClient } from "../host/client.js";
-import type { AssetVariant, FileSource } from "@opensteer/protocol";
+import type { AssetVariant, AssetSource } from "@opensteer/protocol";
 import type { AssetImage } from "../host/asset-urls.js";
 
 export const TranscriptImageContext = createContext<{
@@ -22,7 +22,7 @@ export function useTranscriptImages(): boolean {
   return useContext(TranscriptImageContext)?.client.getSnapshot().agentImagesAvailable === true;
 }
 export function useAssetImage(
-  source: FileSource | string,
+  source: AssetSource | string,
   variant: AssetVariant = "preview",
   options: { readonly enabled?: boolean } = {},
 ) {
@@ -57,12 +57,16 @@ export function useAssetImage(
       ? source
       : source.kind === "path"
         ? source.path
-        : source.attachmentId;
-  const fileSource = useMemo<FileSource>(
+        : source.kind === "transcript-image"
+          ? source.imageId
+          : source.attachmentId;
+  const fileSource = useMemo<AssetSource>(
     () =>
       kind === "path"
         ? { kind, path: identity }
-        : { kind, attachmentId: AttachmentIdSchema.parse(identity) },
+        : kind === "transcript-image"
+          ? { kind, imageId: identity }
+          : { kind, attachmentId: AttachmentIdSchema.parse(identity) },
     [kind, identity],
   );
   const stateKey = JSON.stringify([owner, threadId, kind, identity, variant, enabled]);

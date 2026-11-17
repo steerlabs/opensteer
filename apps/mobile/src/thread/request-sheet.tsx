@@ -1,3 +1,4 @@
+import { useThreadTranscript } from "@opensteer/client/react";
 import { setPhoneDisplayAccess } from "@opensteer/client/integrations";
 import {
   browserAccessChoices,
@@ -159,11 +160,34 @@ function SubscribedRequestSheet(props: {
   const navigation = useNavigation();
   const { snapshot } = useHostSnapshot(props.hostClient);
   const { requestId, threadId } = props;
-  const request =
-    (snapshot.requests[threadId] ?? []).find(({ id }) => id === requestId) ??
-    snapshot.waitingRequests.find(({ request }) => request.id === requestId)?.request ??
-    null;
-  const pending = request?.status === "pending" ? request : null;
+  const transcript = useThreadTranscript(props.hostClient, threadId);
+  const pending =
+    transcript.requests.find(({ id, status }) => id === requestId && status === "pending") ?? null;
+  const reviewing =
+    !transcript.synchronized ||
+    transcript.requestsRefreshing ||
+    transcript.pendingRequestIds?.includes(requestId) ||
+    transcript.moreRequests;
+  useEffect(() => {
+    if (
+      !transcript.synchronized ||
+      pending ||
+      transcript.requestsRefreshing ||
+      transcript.pendingRequestIds?.includes(requestId) ||
+      !transcript.moreRequests
+    )
+      return;
+    void props.hostClient.loadMoreOverlays(threadId, "requests").catch(() => undefined);
+  }, [
+    pending,
+    props.hostClient,
+    requestId,
+    threadId,
+    transcript.moreRequests,
+    transcript.pendingRequestIds,
+    transcript.requestsRefreshing,
+    transcript.synchronized,
+  ]);
   // Admitted and gone can both ask to close; only the sheet itself may go back.
   const close = useRef(() => undefined as void);
   close.current = () => {
@@ -171,13 +195,18 @@ function SubscribedRequestSheet(props: {
   };
   // Answered elsewhere, withdrawn or admitted: there is nothing left to decide here.
   useEffect(() => {
-    if (pending === null) close.current();
-  }, [pending === null]);
-  if (pending === null || snapshot.user === null) return null;
+    if (!reviewing && pending === null) close.current();
+  }, [reviewing, pending === null]);
+  if (pending === null || snapshot.user === null)
+    return reviewing ? (
+      <View style={styles.gone}>
+        <ActivityIndicator color={color.muted} />
+      </View>
+    ) : null;
   return (
     <SheetForRequest
       {...props}
-      canRespond={canRespondToRequests(snapshot)}
+      canRespond={transcript.synchronized && canRespondToRequests(snapshot)}
       machines={snapshot.machines}
       onClose={() => close.current()}
       surface={deriveSurface([pending], snapshot.user)}
@@ -208,14 +237,7 @@ function ReferencedRequest(props: {
   const [attempt, setAttempt] = useState(0);
   const [read, setRead] = useState<TargetedRead>({ state: "loading" });
   // The conversation's Requests stay live while it is open, so an answer given here shows.
-  useEffect(() => hostClient.observeThread(threadId), [hostClient, threadId]);
-  const held = useHostSelector(
-    hostClient,
-    (snapshot) =>
-      (snapshot.requests[threadId] ?? []).find(({ id }) => id === requestId) ??
-      snapshot.waitingRequests.find(({ request }) => request.id === requestId)?.request ??
-      null,
-  );
+  const transcript = useThreadTranscript(hostClient, threadId);
   useEffect(() => {
     let current = true;
     setRead({ state: "loading" });
@@ -231,7 +253,12 @@ function ReferencedRequest(props: {
       current = false;
     };
   }, [attempt, hostClient, requestId, threadId]);
-  if (held?.status === "pending")
+  const held = transcript.requests.find(({ id }) => id === requestId);
+  if (
+    held?.status === "pending" ||
+    transcript.pendingRequestIds?.includes(requestId) ||
+    (read.state === "read" && read.request?.status === "pending" && transcript.moreRequests)
+  )
     return (
       <SubscribedRequestSheet
         deploymentId={deploymentId}
@@ -242,7 +269,7 @@ function ReferencedRequest(props: {
       />
     );
   const request = held ?? (read.state === "read" ? read.request : null);
-  if (request !== null)
+  if (request !== null && request.status !== "pending")
     return (
       <SettledRequest
         onClose={() => navigation.goBack()}
@@ -253,7 +280,7 @@ function ReferencedRequest(props: {
         request={request}
       />
     );
-  if (read.state === "loading")
+  if (read.state === "loading" || (request?.status === "pending" && !transcript.synchronized))
     return (
       <View style={[styles.gone, styles.referenced]}>
         <ActivityIndicator color={color.muted} />

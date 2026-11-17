@@ -11,6 +11,7 @@ import type {
   BrowserSessionSummary,
   HarnessSummary,
   HostSnapshot,
+  TranscriptFixtureSnapshot,
   MessageEntry,
   RunQueueEntry,
   TaskEntry,
@@ -118,9 +119,9 @@ type OptimisticCommandPatch =
 
 type PatchMap = {
   readonly [Type in OptimisticCommandPatch["type"]]: (
-    snapshot: HostSnapshot,
+    snapshot: TranscriptFixtureSnapshot,
     patch: Extract<OptimisticCommandPatch, { readonly type: Type }>,
-  ) => HostSnapshot;
+  ) => TranscriptFixtureSnapshot;
 };
 
 export const optimisticCommandPatches = {
@@ -206,9 +207,9 @@ export const optimisticCommandPatches = {
 } satisfies PatchMap;
 
 export function applyOptimisticCommandPatch(
-  snapshot: HostSnapshot,
+  snapshot: TranscriptFixtureSnapshot,
   patch: OptimisticCommandPatch,
-): HostSnapshot {
+): TranscriptFixtureSnapshot {
   switch (patch.type) {
     case "browser.profile.create":
       return optimisticCommandPatches[patch.type](snapshot, patch);
@@ -263,9 +264,9 @@ export function applyOptimisticCommandPatch(
 }
 
 function replaceHarness(
-  snapshot: HostSnapshot,
+  snapshot: TranscriptFixtureSnapshot,
   { harness }: { readonly harness: HarnessSummary },
-): HostSnapshot {
+): TranscriptFixtureSnapshot {
   return {
     ...snapshot,
     harnesses: snapshot.harnesses.map((candidate) =>
@@ -275,9 +276,9 @@ function replaceHarness(
 }
 
 function replaceHarnessAndNormalizeDefaults(
-  snapshot: HostSnapshot,
+  snapshot: TranscriptFixtureSnapshot,
   { harness }: { readonly harness: HarnessSummary },
-): HostSnapshot {
+): TranscriptFixtureSnapshot {
   return {
     ...snapshot,
     harnesses: normalizeHarnessDefaults(
@@ -292,9 +293,9 @@ function replaceHarnessAndNormalizeDefaults(
 }
 
 function deleteHarness(
-  snapshot: HostSnapshot,
+  snapshot: TranscriptFixtureSnapshot,
   { harnessInstanceId }: { readonly harnessInstanceId: string },
-): HostSnapshot {
+): TranscriptFixtureSnapshot {
   const removed = snapshot.harnesses.find(({ id }) => id === harnessInstanceId);
   const remaining = snapshot.harnesses.filter(({ id }) => id !== harnessInstanceId);
   return {
@@ -334,9 +335,9 @@ function normalizeHarnessDefaults(
  * refresh would show two defaults for the same engine in between.
  */
 function setDefaultHarness(
-  snapshot: HostSnapshot,
+  snapshot: TranscriptFixtureSnapshot,
   { harness }: { readonly harness: HarnessSummary },
-): HostSnapshot {
+): TranscriptFixtureSnapshot {
   return {
     ...snapshot,
     harnesses: snapshot.harnesses.map((candidate) => {
@@ -360,9 +361,9 @@ function setDefaultHarness(
  * count left one too high orders a refetch of the page it just patched.
  */
 function resolveRequest(
-  snapshot: HostSnapshot,
+  snapshot: TranscriptFixtureSnapshot,
   { requestId }: { readonly requestId: string },
-): HostSnapshot {
+): TranscriptFixtureSnapshot {
   // A question answered from another conversation may be one this client
   // only holds as waiting on its reader, never in its Thread's own list.
   const waitingRequests = snapshot.waitingRequests.filter(
@@ -386,9 +387,9 @@ function resolveRequest(
 }
 
 function upsertBrowserProfile(
-  snapshot: HostSnapshot,
+  snapshot: TranscriptFixtureSnapshot,
   { profile }: { readonly profile: BrowserProfileSummary },
-): HostSnapshot {
+): TranscriptFixtureSnapshot {
   return {
     ...snapshot,
     browserProfiles: [
@@ -399,10 +400,10 @@ function upsertBrowserProfile(
 }
 
 /** Names, symbols and shared Done follow every held copy without replacing activity or reply previews. */
-export function withThreadNames(
-  snapshot: HostSnapshot,
+export function withThreadNames<Snapshot extends HostSnapshot>(
+  snapshot: Snapshot,
   nameOf: (thread: ThreadSummary) => ThreadName,
-): HostSnapshot {
+): Snapshot {
   const threadName = <T extends ThreadSummary>(thread: T): T => {
     const name = nameOf(thread);
     return name.title === thread.title &&
@@ -458,9 +459,9 @@ export function withThreadNames(
 }
 
 function replaceThread(
-  snapshot: HostSnapshot,
+  snapshot: TranscriptFixtureSnapshot,
   { thread }: { readonly thread: ThreadSummary },
-): HostSnapshot {
+): TranscriptFixtureSnapshot {
   return {
     ...snapshot,
     threads: snapshot.threads.map((candidate) =>
@@ -476,9 +477,9 @@ function replaceThread(
 }
 
 function patchSentMessage(
-  snapshot: HostSnapshot,
+  snapshot: TranscriptFixtureSnapshot,
   patch: Extract<OptimisticCommandPatch, { readonly type: "thread.sendMessage" }>,
-): HostSnapshot {
+): TranscriptFixtureSnapshot {
   const transcript = snapshot.transcripts[patch.threadId] ?? [];
   // Realtime may already have placed, delivered or withdrawn this input. The
   // admission-time reply fills a gap; it cannot replace that later lifecycle.
@@ -528,10 +529,10 @@ function patchSentMessage(
  * has no truth to patch, and its first read will include the message anyway.
  */
 function appendQueuedInput(
-  inputQueues: HostSnapshot["inputQueues"],
+  inputQueues: TranscriptFixtureSnapshot["inputQueues"],
   threadId: string,
   item: ThreadInputQueueItem | null,
-): HostSnapshot["inputQueues"] {
+): TranscriptFixtureSnapshot["inputQueues"] {
   const queue = inputQueues[threadId];
   if (!item || !queue) return inputQueues;
   if (queue.items.some((existing) => existing.message.id === item.message.id)) return inputQueues;
@@ -539,9 +540,9 @@ function appendQueuedInput(
 }
 
 function dropQueuedInput(
-  snapshot: HostSnapshot,
+  snapshot: TranscriptFixtureSnapshot,
   { messageId, threadId }: { readonly messageId: string; readonly threadId: string },
-): HostSnapshot {
+): TranscriptFixtureSnapshot {
   const queue = snapshot.inputQueues[threadId];
   if (!queue?.items.some((item) => item.message.id === messageId)) return snapshot;
   return {
@@ -555,11 +556,11 @@ function dropQueuedInput(
 
 /** The queue with one waiting message changed in place; the same object when it holds none. */
 function patchQueueItem(
-  inputQueues: HostSnapshot["inputQueues"],
+  inputQueues: TranscriptFixtureSnapshot["inputQueues"],
   threadId: string,
   matches: (item: ThreadInputQueueItem) => boolean,
   patch: (item: ThreadInputQueueItem) => ThreadInputQueueItem | null,
-): HostSnapshot["inputQueues"] {
+): TranscriptFixtureSnapshot["inputQueues"] {
   const queue = inputQueues[threadId];
   const held = queue?.items.find(matches);
   if (!queue || !held) return inputQueues;
@@ -581,12 +582,12 @@ function patchQueueItem(
  * ended, so it never clears a lease another device has taken since.
  */
 export function withEditLease(
-  inputQueues: HostSnapshot["inputQueues"],
+  inputQueues: TranscriptFixtureSnapshot["inputQueues"],
   threadId: string,
   messageId: string,
   lease: ThreadInputEditLeaseView | null,
   releasing?: string,
-): HostSnapshot["inputQueues"] {
+): TranscriptFixtureSnapshot["inputQueues"] {
   return patchQueueItem(
     inputQueues,
     threadId,
@@ -605,13 +606,13 @@ export function withEditLease(
  * Host's projection when it sent one.
  */
 export function withEditedWaitingMessage(
-  snapshot: HostSnapshot,
+  snapshot: TranscriptFixtureSnapshot,
   threadId: string,
   message: MessageView,
   edit: MessageEdit | undefined,
   input?: ThreadInputQueueItem["input"],
   leaseId?: string,
-): HostSnapshot {
+): TranscriptFixtureSnapshot {
   const transcript = snapshot.transcripts[threadId];
   const stale = (held: MessageView) =>
     edit !== undefined && (held.edit?.revision ?? 0) > edit.revision;
@@ -671,13 +672,13 @@ export function withEditedWaitingMessage(
  * until the team confirms and the Host moves it into line.
  */
 function answerTeamAsk(
-  snapshot: HostSnapshot,
+  snapshot: TranscriptFixtureSnapshot,
   patch: {
     readonly decision: "approve" | "decline";
     readonly requestId: string;
     readonly teamId: string;
   },
-): HostSnapshot {
+): TranscriptFixtureSnapshot {
   let inputQueues = snapshot.inputQueues;
   for (const threadId of Object.keys(inputQueues)) {
     inputQueues = patchQueueItem(
@@ -703,9 +704,9 @@ function answerTeamAsk(
  * withdrawal event will fold, so the Host's word changes nothing on arrival.
  */
 function withdrawQueuedInput(
-  snapshot: HostSnapshot,
+  snapshot: TranscriptFixtureSnapshot,
   patch: { readonly messageId: string; readonly threadId: string; readonly withdrawnAt: string },
-): HostSnapshot {
+): TranscriptFixtureSnapshot {
   const dropped = dropQueuedInput(snapshot, patch);
   const transcript = dropped.transcripts[patch.threadId];
   if (!transcript?.some((entry) => entry.id === patch.messageId)) return dropped;

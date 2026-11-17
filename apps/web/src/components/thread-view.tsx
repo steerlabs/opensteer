@@ -1,3 +1,4 @@
+import { useThreadTranscript, usePersonalResources } from "@opensteer/client/react";
 import { useTaskSourceView } from "../team/team-attachments.js";
 import { useThreadVisits } from "@opensteer/client/react";
 import { ThreadServerApprovals } from "./computer-apps/thread-server-approvals.js";
@@ -114,12 +115,16 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
   const { hostClient, placements, snapshot } = useShell();
   const { nav } = useWorkspace();
   const navigate = useNavigate();
+  const transcript = useThreadTranscript(hostClient, threadId);
+  usePersonalResources(hostClient, threadResourceKinds);
   const thread = snapshot.threads.find((candidate) => candidate.id === threadId) ?? null;
   const missing =
     thread === null && threadId !== null && snapshot.threadLookups[threadId] === "missing";
   useEffect(() => {
-    if (threadId) hostClient.activateThread(threadId);
-  }, [hostClient, threadId, thread?.id]);
+    if (!threadId) return;
+    hostClient.activateThread(threadId);
+    return () => hostClient.deactivateThread?.(threadId);
+  }, [hostClient, threadId]);
   // Back to where the reader came from, or Home when a link opened the app here.
   const back = () => {
     const state: unknown = window.history.state;
@@ -172,9 +177,14 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
   return (
     <ThreadView
       key={`${snapshot.deploymentId ?? ""}:${snapshot.user?.id ?? ""}:${thread.id}`}
-      requests={snapshot.requests[thread.id] ?? []}
-      canLoadEarlier={snapshot.transcriptWindows[thread.id]?.hasMore ?? false}
-      entries={snapshot.transcripts[thread.id] ?? []}
+      requests={transcript.requests}
+      canLoadEarlier={transcript.hasMore}
+      canLoadNewer={transcript.hasNewer}
+      moreRequests={transcript.moreRequests}
+      moreTools={transcript.moreTools ?? false}
+      moreNodes={transcript.moreNodes ?? false}
+      inputQueueError={transcript.inputQueueError}
+      entries={transcript.entries}
       environmentStatus={
         snapshot.environments.find((item) => item.id === thread.environmentId)?.status ??
         "disconnected"
@@ -186,14 +196,32 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
           (thread.id !== snapshot.voiceThreadId || placement.driverKind === "codex"),
       )}
       thread={thread}
+      runQueue={transcript.runQueue}
+      detailCurrent={transcript.synchronized}
     />
   );
 }
 
+const threadResourceKinds = [
+  "environment",
+  "harness",
+  "harness-catalog",
+  "harness-auth",
+  "settings",
+] as const;
+const noRuns: readonly import("@opensteer/client/host").RunQueueEntry[] = [];
+
 interface ThreadViewProps {
-  requests: Request[];
+  requests: readonly Request[];
   canLoadEarlier: boolean;
-  entries: TranscriptEntry[];
+  canLoadNewer?: boolean;
+  moreRequests?: boolean;
+  moreTools?: boolean;
+  moreNodes?: boolean;
+  inputQueueError?: unknown;
+  entries: readonly TranscriptEntry[];
+  detailCurrent?: boolean;
+  runQueue?: readonly import("@opensteer/client/host").RunQueueEntry[];
   environmentStatus: EnvironmentStatus;
   executionPlacements: ThreadPlacementOption[];
   thread: ThreadSummary;
@@ -211,10 +239,17 @@ const renderPasswordsSuggestion = (offer: PasswordsSetupOffer) => (
 
 function ThreadView({
   canLoadEarlier,
+  canLoadNewer = false,
+  moreRequests = false,
+  moreTools = false,
+  moreNodes = false,
+  inputQueueError,
   entries,
   environmentStatus,
   executionPlacements,
   requests,
+  runQueue = noRuns,
+  detailCurrent = true,
   thread,
 }: ThreadViewProps) {
   const teamSource = useTaskSourceView(thread.teamOrigin);
@@ -357,6 +392,10 @@ function ThreadView({
       setFocusTarget(null);
       return;
     }
+    if (!known && moreRequests && detailCurrent) {
+      void hostClient.loadMoreOverlays(thread.id, "requests").catch(reportActionError);
+      return;
+    }
     if (!dockedRequests.some((item) => item.surface.request.id === focusTarget.id)) return;
     if (openRequestId !== focusTarget.id) {
       openRequest(focusTarget.id);
@@ -374,7 +413,17 @@ function ThreadView({
       setFocusTarget(null);
     });
     return () => cancelAnimationFrame(frame);
-  }, [dockedRequests, focusTarget, openRequest, openRequestId, requests]);
+  }, [
+    detailCurrent,
+    dockedRequests,
+    focusTarget,
+    hostClient,
+    moreRequests,
+    openRequest,
+    openRequestId,
+    requests,
+    thread.id,
+  ]);
   const conversational = thread.purpose === "voice";
   // In work, a message waiting behind the current turn stands unsent at the
   // conversation's foot until a Run takes it. In a conversation the reply under
@@ -398,15 +447,15 @@ function ThreadView({
 
   const threadRunQueue = useMemo(
     () =>
-      snapshot.runQueue
+      runQueue
         .filter((run) => run.threadId === thread.id)
         .toSorted((left, right) => left.runOrdinal - right.runOrdinal),
-    [snapshot.runQueue, thread.id],
+    [runQueue, thread.id],
   );
   // The same answer every surface gives: what this Thread is doing, and
   // which Run, if any, a Stop would reach.
-  const activity = threadActivity({ entries, runQueue: snapshot.runQueue, thread });
-  const stopTarget = threadStopTarget({ runQueue: snapshot.runQueue, thread });
+  const activity = threadActivity({ entries, runQueue: runQueue, thread });
+  const stopTarget = threadStopTarget({ runQueue: runQueue, thread });
 
   /**
    * What a candidate AI would do to this conversation, decided before
@@ -641,6 +690,26 @@ function ThreadView({
       ? [...anchorRow.querySelectorAll<HTMLElement>("[data-message-id]")].find(visible)
       : undefined;
     const anchor = anchorMessage ?? anchorRow;
+    const item = entries.find(({ id }) => id === anchorMessage?.dataset.messageId);
+    if (item)
+      hostClient.setTranscriptAnchor(
+        thread.id,
+        "itemId" in item ? (item.itemId ?? item.id) : item.id,
+      );
+    else if (anchorRow?.dataset.transcriptRow) {
+      const group = groupTranscriptEntries(conversation).find(
+        ({ key }) => key === anchorRow.dataset.transcriptRow,
+      );
+      const first =
+        group?.kind === "turn"
+          ? (group.turn.work[0] ?? group.turn.reply ?? group.turn.run)
+          : group?.entry;
+      if (first)
+        hostClient.setTranscriptAnchor(
+          thread.id,
+          "itemId" in first ? (first.itemId ?? first.id) : first.id,
+        );
+    }
     const button = scroller?.querySelector<HTMLElement>(".transcript__load-earlier") ?? null;
     earlierMotion.current?.cancel();
     if (scroller)
@@ -713,8 +782,14 @@ function ThreadView({
     } catch (error) {
       return unreachable(error);
     }
+    const anchored = hostClient
+      .getThreadTranscript(thread.id)
+      ?.getSnapshot()
+      .entries.find((entry) => entry.kind === "message" && entry.id === messageId);
+    if (anchored?.kind === "message")
+      hostClient.setTranscriptAnchor(thread.id, anchored.itemId ?? anchored.id);
     if (
-      !(hostClient.getSnapshot().transcripts[thread.id] ?? []).some(
+      !(hostClient.getThreadTranscript(thread.id)?.getSnapshot().entries ?? []).some(
         (entry) => entry.kind === "message" && entry.id === messageId,
       )
     )
@@ -855,12 +930,12 @@ function ThreadView({
     requestAnimationFrame(() => composerInputRef.current?.focus());
   };
 
-  const canRespond = canRespondToRequests(snapshot);
+  const canRespond = detailCurrent && canRespondToRequests(snapshot);
   const connection = describeHostConnection(snapshot);
-  const live = showsHostLive(snapshot) && environmentStatus === "connected";
+  const live = detailCurrent && showsHostLive(snapshot) && environmentStatus === "connected";
   // What this client holds of the account is current only while it is live.
   const startHold = live
-    ? threadStartHold({ environments: snapshot.environments, runQueue: snapshot.runQueue, thread })
+    ? threadStartHold({ environments: snapshot.environments, runQueue: runQueue, thread })
     : null;
   const composerPlaceholder = thread.teamOrigin
     ? "Message your agent privately"
@@ -1273,7 +1348,17 @@ function ThreadView({
                   {/* An anchored search leaves the reader in an older window, and the only
           way back is to load the live one — so the offer stands whether or not
           anything new has arrived since. */}
-                  {historical ? (
+                  {canLoadNewer ? (
+                    <button
+                      className="transcript__jump"
+                      type="button"
+                      onClick={() =>
+                        void hostClient.loadNewerTranscript(thread.id).catch(reportActionError)
+                      }
+                    >
+                      <Icon name="chevron-down" /> Load newer
+                    </button>
+                  ) : historical ? (
                     <button
                       className="transcript__jump"
                       disabled={returning}
@@ -1335,6 +1420,46 @@ function ThreadView({
                   openId={openRequestId}
                   threadId={thread.id}
                 />
+                {inputQueueError !== undefined ? (
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={() =>
+                      void hostClient.loadThreadInputQueue(thread.id).catch(reportActionError)
+                    }
+                  >
+                    Retry loading waiting messages
+                  </button>
+                ) : null}
+                {(["tools", "nodes"] as const).map((kind) =>
+                  (kind === "tools" ? moreTools : moreNodes) ? (
+                    <button
+                      key={kind}
+                      className="btn"
+                      type="button"
+                      disabled={!canRespond}
+                      onClick={() =>
+                        void hostClient.loadMoreOverlays(thread.id, kind).catch(reportActionError)
+                      }
+                    >
+                      {kind === "tools" ? "Show more tools" : "Show more subagents"}
+                    </button>
+                  ) : null,
+                )}
+                {moreRequests ? (
+                  <button
+                    className="btn"
+                    disabled={!canRespond}
+                    type="button"
+                    onClick={() =>
+                      void hostClient
+                        .loadMoreOverlays(thread.id, "requests")
+                        .catch(reportActionError)
+                    }
+                  >
+                    Show more requests
+                  </button>
+                ) : null}
               </div>
 
               {conversational && activityView ? (

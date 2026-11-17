@@ -1,3 +1,19 @@
+import { ItemTextStore } from "../host/item-text-store.js";
+import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
+import {
+  mockMessageContent,
+  mockOverlayRows,
+  mockResourceView,
+  mockRequestRevision,
+  mockScopedShell,
+  mockScopedDetail,
+  mockScopedItems,
+  mockScopedLive,
+  mockScopedCursor,
+  mockScopedResource,
+  boundedMockPage,
+} from "./mock-scoped-personal.js";
+import type { ThreadViewSource, ThreadViewState } from "../host/scoped-thread-reader.js";
 import {
   DeviceComputerAppSetupRequestReaderSchema,
   type DeviceComputerAppSetupRequest,
@@ -7,14 +23,13 @@ import {
   DeviceIntegrationConnectionSummarySchema,
   type DeviceIntegrationConnectionSummary,
 } from "@opensteer/integration-core";
-import { clientRpcSuccessSchema } from "../host/device-readers.js";
 import {
   clientCommandSchema,
   deviceAccessCommand,
-  deviceDriversApiVersion,
   type MachineAccessUpdateInput,
 } from "../host/device-commands.js";
-import { deviceMachine, deviceDriverKey } from "../host/device-projection.js";
+import { deviceDriverKey } from "../host/device-projection.js";
+import { mockDeviceMachine } from "./mock-device-machine.js";
 import {
   mockIphoneScreenDevice,
   mockIphoneScreenSession,
@@ -36,7 +51,6 @@ import { AssetUrlStore } from "../host/asset-urls.js";
 import { ReferenceStore } from "../references/store.js";
 import { TranscriptFileController } from "../host/transcript-files.js";
 import { openWaitingMessageEditor } from "../host/waiting-message-editor.js";
-import { isDeviceAccessRequestEvent } from "@opensteer/protocol";
 import { deviceAccess } from "@opensteer/protocol";
 import { hostsDeployment } from "../computers/computers.js";
 import { heldThread, listedRowThreadId } from "../host/task-list.js";
@@ -53,7 +67,7 @@ import type {
   MockBrowserSource as HostSnapshot,
   MockBrowserSession as BrowserSessionSummary,
 } from "./mock-browser-source.js";
-import { BrowserSessionIdSchema, previewToolOutput } from "@opensteer/core";
+import { BrowserSessionIdSchema } from "@opensteer/core";
 import type { PersonalTabLineage } from "../host/client.js";
 import { MockTabCatalog, seedMockApps } from "./mock-tabs.js";
 import { placeList as tabPlaceList } from "../host/places.js";
@@ -61,7 +75,6 @@ import type { WindowId } from "@opensteer/core";
 import { createTabsClient, type TabsClientPort } from "../host/tabs-client.js";
 import { TabViewers } from "../host/tab-viewers.js";
 import type { TabsClient } from "../host/tabs-contract.js";
-import { AgentEventViewSchema } from "@opensteer/core";
 import { TabIdSchema, type App, type TabId, type TabTarget } from "@opensteer/core";
 import type {
   AppCommand,
@@ -71,7 +84,8 @@ import type {
 } from "@opensteer/protocol";
 import { seedMockSubagents } from "./mock-subagents.js";
 import { seedMockSubagentScene, type MockSubagentScene } from "./mock-subagent-scenes.js";
-import { NodeDetailStore, type NodeDetailSubscription } from "../host/node-detail.js";
+import type { NodeDetailSnapshot, NodeDetailSubscription } from "../host/node-detail.js";
+import { nodeTranscriptCard } from "../host/transcript-item-view.js";
 
 import {
   CreateBrowserProfileBodySchema,
@@ -92,6 +106,7 @@ import {
 } from "@opensteer/core";
 import {
   EnvironmentIdSchema,
+  ExecutionNodeIdSchema,
   HarnessIdSchema,
   HarnessInstanceIdSchema,
   ModelIdSchema,
@@ -120,7 +135,6 @@ import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 
 import { BrowserPasskeys } from "../host/browser-passkeys.js";
 import { BrowserPreferences } from "../host/browser-preferences.js";
-import { emptySavedViewReadiness } from "../host/saved-host-view.js";
 
 import { sha256 } from "@noble/hashes/sha2.js";
 import { channelProviderCatalog } from "@opensteer/channel-core";
@@ -175,9 +189,6 @@ import {
   sameProviderContinuationIdentity,
   type AgentEvent,
   AgentEventSchema,
-  nodeDetailEventNodeId,
-  ExecutionNodeIdSchema,
-  compareSequence,
   type AssignmentSummary,
   type AssignmentView,
   type Attachment,
@@ -284,7 +295,7 @@ import type {
   HarnessAuthenticationEnvelope,
   HarnessSummary,
   HostClient,
-  HostSnapshot as PublicHostSnapshot,
+  TranscriptFixtureSnapshot as PublicHostSnapshot,
   MachineAccessHistoryPage,
   MachineAccessUpdateOutcome,
   MessageEntry,
@@ -306,7 +317,7 @@ import type {
 import { HostClientRequestError, mainDoneTasks } from "../host/client.js";
 import { computerViewMethods } from "../host/computer-views.js";
 import type { ExecutionChoice, ExecutionSelection } from "../host/execution-preferences.js";
-import { dispatchDeviceCommand, createInMemoryHostApiClient } from "../host/host-api-client.js";
+import { createInMemoryHostApiClient } from "../host/host-api-client.js";
 import {
   rpcErrorStatus,
   unwrapRpcResult,
@@ -325,9 +336,7 @@ import { withPublishedReplies } from "../host/thread-visits.js";
 import { ThreadStateProjection } from "../host/thread-state.js";
 import {
   assignmentReturnId,
-  drawnLiveStream,
   finishRunEntries,
-  foldTranscriptEvent,
   isTerminalRunEntryStatus,
   requestReceipt,
   threadInputDelivery,
@@ -1973,6 +1982,72 @@ function mockReaderThread<Thread extends { readonly id: string; readonly pending
   return { ...thread, pendingRequests: Math.max(0, thread.pendingRequests - hidden) };
 }
 
+function rpcNotFound(message: string) {
+  return { ok: false as const, error: { code: "not_found" as const, message, retryable: false } };
+}
+
+function mockItemsPage(
+  client: MockHostState,
+  input: z.output<(typeof hostApi)["thread.items.page"]["payload"]> & { nodeId?: string },
+) {
+  const snapshot = client.getSnapshot();
+  const revision = String(snapshot.revision);
+  const { threadId, nodeId } = input;
+  const boundary = input.before ?? input.after;
+  if (
+    boundary &&
+    (boundary.orderRevision !== revision ||
+      boundary.threadId !== threadId ||
+      boundary.nodeId !== (nodeId ?? null) ||
+      boundary.viewerId !== snapshot.user?.id ||
+      boundary.deploymentId !== snapshot.deploymentId)
+  )
+    return rpcSuccess({ kind: "history-reset" as const, orderRevision: revision });
+  const all = mockScopedItems(snapshot, threadId, nodeId, revision, client.nodeEvents);
+  const anchor = input.anchorItemId ?? input.aroundMessageId;
+  const index = anchor
+    ? all.findIndex(
+        (row) => row.id === anchor || (row.kind === "message" && row.messageId === anchor),
+      )
+    : -1;
+  if (anchor && index < 0)
+    return input.anchorItemId
+      ? rpcSuccess({
+          kind: "history-reset" as const,
+          orderRevision: revision,
+          anchorUnavailable: true as const,
+        })
+      : rpcNotFound("Item unavailable.");
+  const indexAtCursor = boundary ? all.findIndex(({ id }) => id === boundary.beforeId) : -1;
+  if (boundary && indexAtCursor < 0)
+    return rpcSuccess({ kind: "history-reset" as const, orderRevision: revision });
+  const limit = input.limit ?? 50;
+  const end = input.before
+    ? indexAtCursor
+    : input.after
+      ? Math.min(all.length, indexAtCursor + limit + 1)
+      : index >= 0
+        ? Math.min(all.length, index + Math.ceil(limit / 2))
+        : all.length;
+  const start = input.after ? indexAtCursor + 1 : Math.max(0, end - limit);
+  const items = boundedMockPage(all.slice(start, end), input.after !== undefined);
+  const hasMore = items.length > 0 && items[0] !== all[0];
+  return rpcSuccess({
+    kind: "page" as const,
+    threadId,
+    nodeId: nodeId ? ExecutionNodeIdSchema.parse(nodeId) : null,
+    items,
+    orderRevision: revision,
+    revision,
+    hasMore,
+    nextBefore: hasMore ? mockScopedCursor(snapshot, threadId, nodeId, revision, items[0]) : null,
+    nextAfter:
+      items.length && items.at(-1) !== all.at(-1)
+        ? mockScopedCursor(snapshot, threadId, nodeId, revision, items.at(-1))
+        : null,
+  });
+}
+
 function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): HostApiHandlers {
   let referenceFailurePending = failureId !== undefined;
   const handlers: Partial<HostApiHandlers> = {
@@ -2254,6 +2329,165 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       const row = client.tabCatalog.store.get(tabId);
       return rpcSuccess({ favicon: await client.places.icon(tabId, input.iconRef, row) });
     },
+    "personal.shell.get": async ({ selectedThreadId }) =>
+      rpcSuccess(mockScopedShell(client.getSnapshot(), mockThread, selectedThreadId)),
+    "thread.snapshot.get": async ({ threadId, nodeId }) => {
+      const detail = mockScopedDetail(
+        client.getSnapshot(),
+        mockThread,
+        threadId,
+        nodeId,
+        undefined,
+        undefined,
+        client.nodeEvents,
+      );
+      return detail ? rpcSuccess(detail) : rpcNotFound("Conversation unavailable.");
+    },
+    "thread.items.page": async (input) => mockItemsPage(client, input),
+    "node.items.page": async (input) => mockItemsPage(client, input),
+    "thread.overlays.page": async ({ threadId, nodeId, kind, cursor, expectedRevision }) => {
+      const snapshot = client.getSnapshot();
+      const revision = String(snapshot.revision);
+      const [at, rawOffset] = cursor?.split(":") ?? [revision, "0"];
+      const offset = Number(rawOffset);
+      if (
+        at !== revision ||
+        (expectedRevision && expectedRevision !== revision) ||
+        !Number.isSafeInteger(offset) ||
+        offset < 0
+      )
+        return {
+          ok: false,
+          error: { code: "conflict", message: "Overlay changed", retryable: false },
+        };
+      const all = mockOverlayRows(snapshot, threadId, nodeId, kind, revision, client.nodeEvents);
+      const nextOffset = offset + 20;
+      return rpcSuccess({
+        threadId,
+        nodeId: nodeId ?? null,
+        kind,
+        revision,
+        entries: all.slice(offset, nextOffset),
+        next: nextOffset < all.length ? `${revision}:${nextOffset}` : null,
+      });
+    },
+    "transcript.item.get": async ({ threadId, nodeId, itemId, expectedRevision }) => {
+      const snapshot = client.getSnapshot();
+      const item = mockScopedItems(
+        snapshot,
+        threadId,
+        nodeId,
+        String(snapshot.revision),
+        client.nodeEvents,
+      ).find(({ id }) => id === itemId);
+      if (item && expectedRevision !== undefined && expectedRevision !== item.revision)
+        return {
+          ok: false,
+          error: { code: "conflict", message: "Item changed", retryable: false },
+        };
+      const address = { threadId, nodeId: nodeId ?? null };
+      if (item && nodeId) {
+        const event = client.nodeEvents.find((row) => row.eventId === itemId);
+        if (event?.type === "node.message" || event?.type === "reasoning.completed")
+          return rpcSuccess({
+            ...address,
+            item,
+            body: { kind: "text", text: event.data.text },
+            truncated: false,
+          });
+        if (event?.type === "tool.started") {
+          const callId = event.data.callId;
+          const completion = client.nodeEvents.find(
+            (row) =>
+              row.type === "tool.completed" &&
+              row.runId === event.runId &&
+              row.data.nodeId === nodeId &&
+              row.data.callId === callId,
+          );
+          const output = completion?.type === "tool.completed" ? completion.data.output : undefined;
+          return rpcSuccess({
+            ...address,
+            item,
+            truncated: false,
+            body: {
+              kind: "tool",
+              arguments: event.data.arguments,
+              ...(output ? { output: { text: output.text, truncation: output.truncation } } : {}),
+            },
+          });
+        }
+      }
+      const row = snapshot.transcripts[threadId]?.find(({ id }) => id === itemId);
+      if (!item || !row) return rpcNotFound("Item unavailable.");
+      if (row.kind === "tool")
+        return rpcSuccess({
+          ...address,
+          item,
+          body: {
+            kind: "tool",
+            arguments: row.arguments,
+            output: row.output && { text: row.output.text, truncation: row.output.truncation },
+          },
+          truncated: false,
+        });
+      if (row.kind === "reasoning")
+        return rpcSuccess({
+          ...address,
+          item,
+          body: { kind: "text", text: row.text },
+          truncated: false,
+        });
+      if (row.kind === "assignment")
+        return rpcSuccess({
+          ...address,
+          item,
+          body: { kind: "assignment", assignment: row.assignment },
+          truncated: false,
+        });
+      if (row.kind === "message")
+        return rpcSuccess(
+          hostApi["transcript.item.get"].success.parse({
+            ...address,
+            item,
+            truncated: false,
+            body: {
+              kind: "message",
+              message: {
+                id: row.id,
+                threadId,
+                runId: row.runId,
+                author: row.author,
+                createdAt: row.createdAt,
+                kind: row.messageKind,
+                content: mockMessageContent(row),
+                published: row.published ?? true,
+                edit: row.edit,
+                quote: row.quote,
+                policy: row.policy,
+              },
+            },
+          }),
+        );
+      return rpcNotFound("Item has no body.");
+    },
+    "resources.get": async ({ kind }) => {
+      const snapshot = client.getSnapshot();
+      return rpcSuccess({
+        revision: String(snapshot.revision),
+        view: mockResourceView(snapshot, kind),
+      });
+    },
+    "resources.detail.get": async ({ kind }) =>
+      rpcSuccess(
+        hostApi["resources.detail.get"].success.parse({
+          revision: String(client.getSnapshot().revision),
+          data: mockScopedResource(
+            hostApi["bootstrap.get"].success.parse(client.bootstrap()),
+            kind,
+          ),
+          next: null,
+        }),
+      ),
     "bootstrap.get": async () =>
       rpcSuccess(hostApi["bootstrap.get"].success.parse(client.bootstrap())),
     "tabs.get": async ({ tabId }) => {
@@ -2450,7 +2684,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       client.checkRepositoryAccess(input.connectionId).then(rpcSuccess).catch(mockRefusal),
     "integrations.get": async () =>
       rpcSuccess(
-        clientRpcSuccessSchema("integrations.get").parse(
+        hostApi["integrations.get"].success.parse(
           await client.loadIntegrations(),
         ) as RpcData<"integrations.get">,
       ),
@@ -2584,115 +2818,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
         return mockRefusal(error);
       }
     },
-    // The preview projects transcripts directly; it keeps no durable event log
-    // to page back through. Turn paging needs no additional projection here.
-    "tool.output.get": async ({ threadId, runId, callId, nodeId }) => {
-      const entry = (client.getSnapshot().transcripts[threadId] ?? []).find(
-        (entry) =>
-          entry.kind === "tool" &&
-          entry.runId === runId &&
-          entry.callId === callId &&
-          entry.nodeId === nodeId,
-      );
-      const event = client.nodeEvents.find(
-        (event) =>
-          event.type === "tool.completed" &&
-          event.threadId === threadId &&
-          event.runId === runId &&
-          event.data.callId === callId &&
-          event.data.nodeId === nodeId,
-      );
-      const output =
-        entry?.kind === "tool"
-          ? entry.output
-          : event?.type === "tool.completed"
-            ? event.data.output
-            : undefined;
-      if (!output) throw new Error("Tool output not found");
-      return rpcSuccess({ output });
-    },
-    "thread.events.list": async ({ threadId, deviceAccessRequests }) => {
-      const thread = client.getSnapshot().threads.find((item) => item.id === threadId);
-      if (!thread) throw new Error("Thread not found.");
-      return rpcSuccess(
-        hostApi["thread.events.list"].success.parse({
-          asOfSequence: SequenceSchema.parse(String(client.getSnapshot().revision)),
-          thread: mockThread(mockReaderThread(client.getSnapshot(), thread, deviceAccessRequests)),
-          events: [],
-          threadId,
-          window: { ...mockWindow(0), threadId },
-        }),
-      );
-    },
-    "node.events.list": async ({
-      threadId,
-      nodeId,
-      through,
-      before,
-      toolOutputs,
-      deviceAccessRequests,
-      limit = 100,
-    }) => {
-      const own = (client.getSnapshot().transcripts[threadId] ?? []).find(
-        (entry) => entry.kind === "node" && entry.nodeId === nodeId,
-      );
-      if (own?.kind !== "node" || !own.runId)
-        return mockRefusal(
-          new HostClientRequestError({
-            code: "not_found",
-            message: "Subagent not found",
-            status: 404,
-          }),
-        );
-      const all = client.nodeEvents.filter(
-        (event) =>
-          event.threadId === threadId &&
-          event.type !== "place.entered" &&
-          nodeDetailEventNodeId(event) === nodeId &&
-          (deviceAccessRequests === "include" || !isDeviceAccessRequestEvent(event)) &&
-          (!through || compareSequence(event.sequence, through) <= 0) &&
-          (!before || compareSequence(event.sequence, SequenceSchema.parse(before)) < 0),
-      );
-      // The history page schema still names places by their old identity; tab places stay out.
-      const events = all
-        .slice(-limit)
-        .flatMap((event) =>
-          event.type === "place.entered"
-            ? []
-            : [toolOutputs === "preview" ? previewToolOutput(event) : event],
-        );
-      const hasMore = all.length > events.length;
-      return rpcSuccess(
-        hostApi["node.events.list"].success.parse({
-          threadId,
-          nodeId,
-          node: {
-            attemptId: createId("runAttempt"),
-            effort: own.effort,
-            endedAt: own.completedAt,
-            id: own.nodeId,
-            kind: own.nodeKind,
-            model: own.model,
-            parentNodeId: own.parentNodeId,
-            phaseIndex: own.phaseIndex,
-            phases: own.phases,
-            prompt: own.prompt,
-            result: own.result,
-            runId: own.runId,
-            startedAt: own.createdAt,
-            status: own.status,
-            title: own.title,
-            usage: own.usage ?? null,
-          },
-          events,
-          window: {
-            ...mockWindow(events.length),
-            hasMore,
-            nextBefore: hasMore ? events[0]?.sequence : null,
-          },
-        }),
-      );
-    },
     "thread.assignments.list": async ({ open, threadId, deviceAccessRequests }) => {
       const assignments = client
         .listThreadAssignments(threadId)
@@ -2765,10 +2890,43 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       return rpcSuccess(hostApi["thread.browserUsage.get"].success.parse({ threadId, uses }));
     },
     "thread.inputQueue.get": async (input) =>
-      rpcSuccess(client.loadThreadInputQueue(input.threadId)),
-    "thread.message.revisions.list": async (input) =>
-      rpcSuccess(client.messageRevisionPage(input.messageId, input.before)),
-    "thread.live.get": async (input) => rpcSuccess(client.liveStreams(input.threadId)),
+      rpcSuccess({
+        ...client.loadThreadInputQueue(input.threadId),
+        revision: String(client.getSnapshot().revision),
+      }),
+    "thread.message.revisions.list": async (input) => {
+      if (input.leaseId !== undefined) {
+        const current = client
+          .loadThreadInputQueue(input.threadId)
+          .items.find(({ message }) => message.id === input.messageId);
+        if (
+          current?.lease?.leaseId !== input.leaseId ||
+          (current?.message.edit?.revision ?? 0) !== input.expectedRevision
+        )
+          return {
+            ok: false,
+            error: { code: "conflict", message: "Waiting message changed", retryable: false },
+          };
+      }
+      const page = client.messageRevisionPage(input.messageId, input.before);
+      if (input.expectedRevision !== 0 || page.revisions.length) return rpcSuccess(page);
+      const row = client
+        .loadThreadInputQueue(input.threadId)
+        .items.find(({ message }) => message.id === input.messageId);
+      if (!row?.lease || row.message.edit) return rpcNotFound("Waiting message unavailable.");
+      return rpcSuccess({
+        revisions: [
+          {
+            revision: 0,
+            content: row.message.content,
+            author: row.message.author,
+            deviceLabel: null,
+            createdAt: row.message.createdAt,
+          },
+        ],
+        hasMore: false,
+      });
+    },
     "thread.requests.list": async (input) => {
       const snapshot = client.getSnapshot();
       if (!heldThread(snapshot, input.threadId))
@@ -2779,6 +2937,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
             status: 404,
           }),
         );
+      const revision = String(snapshot.revision);
       const target = input.requestId ? client.referenceRequest(input.requestId) : undefined;
       const requests = (
         input.requestId
@@ -2789,14 +2948,29 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       ).filter(
         (request) =>
           request.originatingThreadId === input.threadId &&
+          (!input.review ||
+            input.review.some(
+              ({ id, revision: expected }) =>
+                id === request.id && expected === mockRequestRevision(request, revision),
+            )) &&
           (input.requestId !== undefined || request.status === "pending") &&
-          (input.deviceAccessRequests === "include" || request.kind !== "device.access"),
+          (input.review !== undefined ||
+            input.requestId !== undefined ||
+            input.deviceAccessRequests === "include" ||
+            request.kind !== "device.access"),
       );
       return rpcSuccess(
         hostApi["thread.requests.list"].success.parse({
           requests,
           threadId: input.threadId,
           window: mockWindow(requests.length),
+          ...(input.review || input.requestId
+            ? {
+                reviewedRevisions: Object.fromEntries(
+                  requests.map((request) => [request.id, mockRequestRevision(request, revision)]),
+                ),
+              }
+            : {}),
         }),
       );
     },
@@ -2818,9 +2992,12 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
 
     "thread.messages.list": async (input) => rpcSuccess(client.listThreadMessages(input)),
   };
-  return new Proxy(handlers, {
-    get: (target, name) => Reflect.get(target, name) ?? unsupportedMockRpc,
-  }) as HostApiHandlers;
+  return new Proxy(
+    { ...handlers, "tasks.page": handlers["tasks.list"]! },
+    {
+      get: (target, name) => Reflect.get(target, name) ?? unsupportedMockRpc,
+    },
+  ) as HostApiHandlers;
 }
 
 /** A queued message joins the conversation where a Run takes it, as the Host places it. */
@@ -3773,7 +3950,7 @@ function mockBootstrap(
   sourceConfigs: ReadonlyMap<string, Readonly<Record<string, string>>>,
 ) {
   return {
-    apiVersion: deviceDriversApiVersion,
+    apiVersion: scopedPersonalApiVersion,
     deploymentId: snapshot.deploymentId,
     personalSettings: snapshot.personalSettings,
     can: snapshot.can,
@@ -3809,6 +3986,12 @@ const MockMacAnswerSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
+
+type MockHistoryWindow = {
+  readonly ids: ReadonlySet<string>;
+  readonly before: import("@opensteer/protocol/transcript").TranscriptOrderCursor | null;
+  readonly after: import("@opensteer/protocol/transcript").TranscriptOrderCursor | null;
+};
 
 export class MockHostClient implements HostClient {
   deploymentSnapshot(
@@ -3942,7 +4125,6 @@ export class MockHostClient implements HostClient {
   get searchSuggestionRequests() {
     return this.#state.searchSuggestionRequests;
   }
-  readonly #nodeDetails: NodeDetailStore;
   readonly #state: MockHostState;
   readonly #places: MockPlaceWorld;
   readonly #worldSubscription: () => void;
@@ -3991,6 +4173,7 @@ export class MockHostClient implements HostClient {
       this.#state.getSnapshot,
       (snapshot) =>
         this.#state.updatePlaces({
+          ...this.#state.getSnapshot(),
           ...snapshot,
           browserSessions: this.#state.getSnapshot().browserSessions,
         }),
@@ -4084,29 +4267,6 @@ export class MockHostClient implements HostClient {
         }),
     });
     this.#state.onReferenceEvent = (event) => this.references.accept(event);
-    this.#nodeDetails = new NodeDetailStore({
-      available: () => true,
-      nodes: (threadId) =>
-        (this.getSnapshot().transcripts[threadId] ?? []).filter((entry) => entry.kind === "node"),
-      read: async (input) => {
-        const page = unwrapRpcResult(
-          await this.rpc["node.events.list"]({
-            ...input,
-            nodeId: ExecutionNodeIdSchema.parse(input.nodeId),
-            deviceAccessRequests: "include",
-          }),
-        );
-        return {
-          ...page,
-          events: page.events.map((event) => AgentEventViewSchema.parse(event)),
-        };
-      },
-      sendWatch: (deploymentId, nodeId) => {
-        const sequence = this.#state.nodeEvents.at(-1)?.sequence ?? SequenceSchema.parse("0");
-        queueMicrotask(() => this.#nodeDetails.watched(deploymentId, nodeId, sequence));
-        return true;
-      },
-    });
     const views = computerViewMethods(
       this.rpc,
       () => undefined,
@@ -4498,7 +4658,232 @@ export class MockHostClient implements HostClient {
   watchNode(threadId: string, nodeId: string): NodeDetailSubscription {
     const thread = this.getSnapshot().threads.find((entry) => entry.id === threadId);
     if (!thread) throw new Error("Conversation not found.");
-    return this.#nodeDetails.open(threadId, nodeId, this.getSnapshot().deploymentId!);
+    let releasePage: (() => void) | undefined;
+    let rows: NodeDetailSnapshot["entries"] = [];
+    let before: import("@opensteer/protocol/transcript").TranscriptOrderCursor | null = null;
+    let offset = 0;
+    let status: NodeDetailSnapshot["status"] = "loading";
+    const sources = new Set<() => void>();
+    const onChange = () => {
+      for (const listener of sources) listener();
+    };
+    const read = (): NodeDetailSnapshot => {
+      const node = (this.getSnapshot().transcripts[threadId] ?? []).find(
+        (entry) => entry.kind === "node" && entry.nodeId === nodeId,
+      );
+      return {
+        threadId,
+        nodeId,
+        node: node?.kind === "node" ? node : null,
+        entries: rows,
+        status: node ? status : "missing",
+        hasMore: before !== null,
+        loadingOlder: false,
+        error: null,
+      };
+    };
+    const load = async (reset: boolean) => {
+      if (!reset && !before) return;
+      const current = ++offset;
+      const page = unwrapRpcResult(
+        await this.rpc["node.items.page"]({
+          threadId,
+          nodeId,
+          ...(!reset && before ? { before } : {}),
+        }),
+      );
+      if (current !== offset || page.kind !== "page") return;
+      const entries = page.items.flatMap((item) => nodeTranscriptCard(item) ?? []);
+      rows = reset ? entries : [...entries, ...rows];
+      before = page.nextBefore;
+      status = "ready";
+      view = read();
+      onChange();
+    };
+    let view = read();
+    void load(true).catch(() => undefined);
+    releasePage = this.subscribe(() => {
+      view = read();
+      onChange();
+    });
+    return {
+      getSnapshot: () => view,
+      subscribe: (listener) => {
+        sources.add(listener);
+        return () => sources.delete(listener);
+      },
+      loadOlder: () => load(false),
+      retry: () => {
+        void load(true).catch(() => undefined);
+      },
+      release: () => {
+        ++offset;
+        view = { ...view, status: "closed", entries: [], node: null };
+        releasePage?.();
+        sources.clear();
+      },
+    };
+  }
+
+  scopedShell(selected?: string, revision?: string) {
+    return mockScopedShell(this.getSnapshot(), mockThread, selected, revision);
+  }
+
+  scopedResource(kind: import("@opensteer/protocol/resources").PersonalResourceKind) {
+    return mockResourceView(this.getSnapshot(), kind);
+  }
+
+  scopedDetail(threadId: string, nodeId?: string, anchor?: string, revision?: string) {
+    return mockScopedDetail(
+      this.getSnapshot(),
+      mockThread,
+      threadId,
+      nodeId,
+      anchor,
+      revision,
+      this.#state.nodeEvents,
+    );
+  }
+
+  readonly #mockHistory = new Map<string, MockHistoryWindow>();
+  readonly #mockOverlays = new Map<string, string | null>();
+
+  readonly #transcriptSources = new Map<string, ThreadViewSource>();
+
+  getThreadTranscript(threadId: string): ThreadViewSource {
+    const held = this.#transcriptSources.get(threadId);
+    if (held) return held;
+    const empty: readonly never[] = [];
+    let previous: PublicHostSnapshot | undefined;
+    let data: ThreadViewState | undefined;
+    let priorWindow: MockHistoryWindow | undefined;
+    let priorOverlay: string | null | undefined;
+    const source = {
+      subscribe: this.subscribe,
+      getSnapshot: () => {
+        const value = this.getSnapshot();
+        const window = this.#mockHistory.get(threadId);
+        const overlay = this.#mockOverlays.get(`${threadId}:requests`);
+        if (value === previous && window === priorWindow && overlay === priorOverlay && data)
+          return data;
+        priorWindow = window;
+        priorOverlay = overlay;
+        previous = value;
+        const whole = value.transcripts[threadId] ?? empty;
+        const entries = window ? whole.filter(({ id }) => window.ids.has(id)) : whole;
+        const requests = value.requests[threadId] ?? empty;
+        const runQueue = value.runQueue.filter((run) => run.threadId === threadId);
+        const inputQueue = value.inputQueues[threadId] ?? null;
+        const synchronized = value.connection === "connected";
+        const hasMore = window
+          ? window.before !== null
+          : (value.transcriptWindows[threadId]?.hasMore ?? false);
+        const hasNewer = window?.after != null;
+        const moreRequests = overlay === undefined ? requests.length > 20 : overlay !== null;
+        if (
+          data &&
+          entries === data.entries &&
+          requests === data.requests &&
+          inputQueue === data.inputQueue &&
+          synchronized === data.synchronized &&
+          hasMore === data.hasMore &&
+          hasNewer === data.hasNewer &&
+          moreRequests === data.moreRequests &&
+          runQueue.length === data.runQueue.length &&
+          runQueue.every((row, i) => row === data!.runQueue[i])
+        )
+          return data;
+        data = {
+          entries,
+          requests,
+          runQueue,
+          inputQueue,
+          synchronized,
+          hasMore,
+          moreRequests,
+          hasNewer,
+        };
+        return data;
+      },
+    };
+    if (this.#transcriptSources.size >= 100) {
+      const oldest = this.#transcriptSources.keys().next();
+      if (!oldest.done) {
+        this.#transcriptSources.delete(oldest.value);
+        this.#mockHistory.delete(oldest.value);
+        for (const kind of ["requests", "tools", "nodes"])
+          this.#mockOverlays.delete(`${oldest.value}:${kind}`);
+      }
+    }
+    this.#transcriptSources.set(threadId, source);
+    return source;
+  }
+
+  readonly #transcriptTexts = new Map<string, { store: ItemTextStore; release: () => void }>();
+
+  scopedLive(
+    ...args: Parameters<typeof mockScopedLive> extends [unknown, ...infer Rest] ? Rest : never
+  ) {
+    return mockScopedLive(this.getSnapshot(), ...args);
+  }
+
+  getThreadItemText(threadId: string, nodeId?: string) {
+    if (nodeId) return;
+    const id = ThreadIdSchema.safeParse(threadId);
+    if (!id.success) return;
+    const existing = this.#transcriptTexts.get(threadId);
+    if (existing) return existing.store;
+    const store = new ItemTextStore();
+    store.generation(1);
+    let previous = new Set<string>();
+    const update = () => {
+      const revision = String(this.getSnapshot().revision);
+      const frames = this.scopedLive(
+        { kind: "thread", threadId: id.data },
+        "detail:0",
+        1,
+        revision,
+      );
+      const current = new Set(frames.map(({ itemId }) => itemId));
+      for (const itemId of previous) if (!current.has(itemId)) store.finishItem(itemId);
+      for (const frame of frames) store.apply(frame, revision);
+      previous = current;
+    };
+    update();
+    const release = this.subscribe(update);
+    this.#transcriptTexts.set(threadId, { store, release });
+    if (this.#transcriptTexts.size > 8) {
+      const oldest = this.#transcriptTexts.entries().next().value!;
+      oldest[1].release();
+      oldest[1].store.clear();
+      this.#transcriptTexts.delete(oldest[0]);
+    }
+    return store;
+  }
+
+  async readTranscriptItem(threadId: string, itemId: string) {
+    const result = await this.rpc["transcript.item.get"]({ threadId, itemId });
+    return result.ok ? result.data : undefined;
+  }
+
+  setTranscriptAnchor() {}
+  async loadMoreOverlays(threadId: string, kind: "requests" | "tools" | "nodes") {
+    const key = `${threadId}:${kind}`;
+    const cursor =
+      this.#mockOverlays.get(key) ?? this.scopedDetail(threadId)?.overlayCursors?.[kind];
+    if (!cursor || this.#mockOverlays.get(key) === null) return;
+    const page = unwrapRpcResult(
+      await this.rpc["thread.overlays.page"]({ threadId, kind, cursor }),
+    );
+    this.#mockOverlays.set(key, page.next);
+    this.#state.refreshBrowserView();
+  }
+  async loadNewerTranscript(threadId: string) {
+    const window = this.#mockHistory.get(threadId);
+    if (window?.after) await this.#readMockHistory(threadId, { after: window.after });
+  }
+  watchPersonalResource() {
+    return () => {};
   }
 
   observeThread(_threadId: string): () => void {
@@ -4574,7 +4959,7 @@ export class MockHostClient implements HostClient {
         dispatch: (command) => this.dispatch(command),
         leases: this.#editLeases,
         // The mock's snapshot is its Host, so it always holds the version taken.
-        holdsRevision: async () => undefined,
+        readRevision: async () => undefined,
         now: () => Date.now(),
       },
       threadId,
@@ -4693,31 +5078,34 @@ export class MockHostClient implements HostClient {
   }
 
   async loadTranscriptAround(threadId: string, messageId: string): Promise<void> {
-    const result = await this.rpc["thread.messages.list"]({
-      threadId,
-      aroundMessageId: messageId,
-      limit: 50,
-    });
-    if (!result.ok) throw new Error(result.error.message);
-    // The preview keeps the whole transcript resident, including the requested source.
-    this.#state.updatePlaces({
-      ...this.#state.getSnapshot(),
-      savedViewReadiness: {
-        ...(this.#state.getSnapshot().savedViewReadiness ?? emptySavedViewReadiness()),
-      },
-    });
+    await this.#readMockHistory(threadId, { aroundMessageId: messageId });
   }
 
   async loadLatestTranscript(threadId: string): Promise<void> {
     if (!this.#state.getSnapshot().threads.some((thread) => thread.id === threadId))
       throw new Error("Thread not found.");
-    const snapshot = this.#state.getSnapshot();
-    this.#state.updatePlaces({
-      ...snapshot,
-      savedViewReadiness: {
-        ...(snapshot.savedViewReadiness ?? emptySavedViewReadiness()),
-      },
+    await this.#readMockHistory(threadId, {});
+  }
+
+  async #readMockHistory(
+    threadId: string,
+    query: Omit<Parameters<HostApiClient["thread.items.page"]>[0], "threadId">,
+  ): Promise<void> {
+    const page = unwrapRpcResult(await this.rpc["thread.items.page"]({ threadId, ...query }));
+    if (page.kind === "history-reset") {
+      this.#mockHistory.delete(threadId);
+      this.#state.refreshBrowserView();
+      return;
+    }
+    const held = this.#mockHistory.get(threadId);
+    const ids = new Set(query.before || query.after ? held?.ids : []);
+    for (const { id } of page.items) ids.add(id);
+    this.#mockHistory.set(threadId, {
+      ids,
+      before: query.after ? (held?.before ?? page.nextBefore) : page.nextBefore,
+      after: query.before ? (held?.after ?? page.nextAfter ?? null) : (page.nextAfter ?? null),
     });
+    this.#state.refreshBrowserView();
   }
 
   subscribePersonalRemoteAccess(listener: () => void): () => void {
@@ -4758,14 +5146,17 @@ export class MockHostClient implements HostClient {
     this.#state.loadEarlierNeedsYou();
   }
   async readRequest(threadId: string, requestId: string): Promise<Request | null> {
-    const { requests } = unwrapRpcResult(
+    const { requests, reviewedRevisions } = unwrapRpcResult(
       await this.rpc["thread.requests.list"]({
         deviceAccessRequests: "include",
         requestId: RequestIdSchema.parse(requestId),
         threadId: ThreadIdSchema.parse(threadId),
       }),
     );
-    return requests.find(({ id }) => id === requestId) ?? null;
+    const request = requests.find(({ id }) => id === requestId);
+    if (!request) return null;
+    const reviewed = { ...request, reviewedRevision: reviewedRevisions?.[request.id] };
+    return reviewed;
   }
 
   async loadDoneTasks(deploymentId?: string): Promise<void> {
@@ -4885,11 +5276,7 @@ export class MockHostClient implements HostClient {
     const parsed = clientCommandSchema.parse(
       browserProfileHomeCommand(command, this.#state.getSnapshot().browserProfileHomes),
     );
-    const result =
-      (parsed.type === "machine.access.update" && "deviceId" in parsed) ||
-      (parsed.type === "integration.computer.setup.set" && "deviceId" in parsed.input)
-        ? await dispatchDeviceCommand(this.rpc, parsed)
-        : await this.rpc["commands.dispatch"](hostApi["commands.dispatch"].payload.parse(parsed));
+    const result = await this.rpc["commands.dispatch"](parsed);
     if (result.ok) return result.data;
     // The same typed refusal the real client raises, so a surface branches on
     // the code here exactly as it would against a Host.
@@ -4902,12 +5289,16 @@ export class MockHostClient implements HostClient {
   }
 
   dispose(): void {
+    for (const { store, release } of this.#transcriptTexts.values()) {
+      release();
+      store.clear();
+    }
+    this.#transcriptTexts.clear();
     clearRunPageViews(this);
     clearRunPlacePictures(this);
     this.references.dispose();
     this.transcriptFiles.dispose();
     this.assetUrls.dispose();
-    this.#nodeDetails.clear();
     this.#personShowListeners.clear();
     this.browserHistory.dispose();
     this.#computerViews.clear();
@@ -4920,8 +5311,9 @@ export class MockHostClient implements HostClient {
     return this.#state.load();
   }
 
-  loadEarlierTranscript(threadId: string): Promise<void> {
-    return this.#state.loadEarlierTranscript(threadId);
+  async loadEarlierTranscript(threadId: string): Promise<void> {
+    const before = this.#mockHistory.get(threadId)?.before;
+    if (before) await this.#readMockHistory(threadId, { before });
   }
 
   loadThreadInputQueue(threadId: string): Promise<ThreadInputQueue> {
@@ -5000,11 +5392,8 @@ export class MockHostClient implements HostClient {
   }
 
   async updateMachineAccess(input: MachineAccessUpdateInput): Promise<MachineAccessUpdateOutcome> {
-    const command = deviceAccessCommand(input, `mock-machine-access:${crypto.randomUUID()}`, true);
-    const result =
-      command.type === "machine.access.update" && "deviceId" in command
-        ? unwrapRpcResult(await dispatchDeviceCommand(this.rpc, command))
-        : await this.dispatch(command);
+    const command = deviceAccessCommand(input, `mock-machine-access:${crypto.randomUUID()}`);
+    const result = await this.dispatch(command);
     if (result.type !== "machine.access.update") {
       throw new Error("Access settings command mismatch.");
     }
@@ -5252,7 +5641,7 @@ class MockHostState {
         "guest" in target && target.computerId
           ? this.snapshot.machines.find(({ id }) => id === target.computerId)
           : null;
-      const runnerId = targetDevice ? deviceMachine(targetDevice).selfRunnerId : null;
+      const runnerId = targetDevice ? mockDeviceMachine(targetDevice).selfRunnerId : null;
       if ("guest" in target && target.computerId && !runnerId)
         throw new Error("This device cannot host browser pages.");
       const opened = await this.places.openTarget({
@@ -5758,7 +6147,11 @@ class MockHostState {
 
   bootstrap() {
     this.publishedSnapshot();
-    return mockBootstrap(this.snapshot, this.tabCatalog.store, this.harnessSourceConfigs);
+    return mockBootstrap(
+      { ...this.snapshot, machines: this.publishedSnapshot().machines },
+      this.tabCatalog.store,
+      this.harnessSourceConfigs,
+    );
   }
 
   receiveAgentInput(threadId: string, author: MessageEntry["author"], body: string): void {
@@ -5780,12 +6173,28 @@ class MockHostState {
     this.onReferenceEvent?.(event);
     const previous = this.snapshot.threads.find(({ id }) => id === event.threadId);
     this.sequence = Math.max(this.sequence, Number(event.sequence));
-    this.#threadState.record(event);
     this.update({
       ...this.snapshot,
       threads: this.snapshot.threads.map((thread) =>
         thread.id === event.threadId
-          ? this.#threadState.reconcile(thread, event.sequence, thread)
+          ? this.#threadState.reconcile(
+              {
+                ...thread,
+                ...event.data,
+                title: event.data.title ?? thread.title,
+                icon: event.data.icon === undefined ? thread.icon : event.data.icon,
+                doneAt: event.data.doneAt === undefined ? thread.doneAt : event.data.doneAt,
+                doneReason:
+                  event.data.doneReason === undefined ? thread.doneReason : event.data.doneReason,
+                latestRunCompletedAt:
+                  event.data.latestRunCompletedAt === undefined
+                    ? thread.latestRunCompletedAt
+                    : event.data.latestRunCompletedAt,
+                updatedAt: event.data.updatedAt ?? event.createdAt,
+              },
+              event.sequence,
+              thread,
+            )
           : thread,
       ),
     });
@@ -6266,6 +6675,7 @@ class MockHostState {
   private sessions: AuthSessionSummary[];
   private snapshot: HostSnapshot;
   #published: PublicHostSnapshot | null = null;
+  readonly #deviceViews = new WeakMap<MachineSummary[], MachineSummary[]>();
   #pendingBrowserNotification: ReturnType<typeof setTimeout> | null = null;
   readonly tabCatalog = new MockTabCatalog();
   /** The person's published apps, as the mock Host keeps them. */
@@ -6283,7 +6693,19 @@ class MockHostState {
       this.#published,
       this.snapshot,
     );
-    this.#published = { ...published, tabs: this.tabCatalog.store };
+    let machines = this.#deviceViews.get(published.machines);
+    if (!machines) {
+      machines = published.machines.map((machine) =>
+        machine.capabilities === undefined &&
+        machine.ownership === "deployment" &&
+        !machine.allowedModules.includes("agents")
+          ? machine
+          : mockDeviceMachine(machine),
+      );
+
+      this.#deviceViews.set(published.machines, machines);
+    }
+    this.#published = { ...published, machines, tabs: this.tabCatalog.store };
   }
 
   constructor(options: MockHostClientOptions = {}) {
@@ -6668,7 +7090,7 @@ class MockHostState {
     if (command.type === "integration.computer.setup.request" && "deviceId" in command.input) {
       const { deviceId, ...input } = command.input;
       const machine = this.snapshot.machines.find(({ id }) => id === deviceId);
-      const self = machine ? deviceMachine(machine).selfRunnerId : null;
+      const self = machine ? mockDeviceMachine(machine).selfRunnerId : null;
       if (!self || (input.kind === "app" && isPhoneDisplayDefinitionId(input.definitionId)))
         throw mockBadRequest("Allow phone access from any Opensteer app.");
       return rpcSuccess({
@@ -6680,7 +7102,7 @@ class MockHostState {
       const { deviceId, ...input } = command.input;
       const machine = this.snapshot.machines.find(({ id }) => id === deviceId);
       if (!machine) throw mockNotFound("Device not found.");
-      const selfRunnerId = deviceMachine(machine).selfRunnerId;
+      const selfRunnerId = mockDeviceMachine(machine).selfRunnerId;
       if (
         !selfRunnerId &&
         (input.definitionId !== machine.phoneDisplay?.definitionId || input.app !== null)
@@ -8952,7 +9374,7 @@ class MockHostState {
     if (this.snapshot.machines.find((machine) => machine.id === machineId)?.kind === "home")
       throw new Error("Home cannot be removed");
     const machine = this.snapshot.machines.find((machine) => machine.id === machineId);
-    const selfRunnerId = machine ? deviceMachine(machine).selfRunnerId : null;
+    const selfRunnerId = machine ? mockDeviceMachine(machine).selfRunnerId : null;
     this.#screenConnections.delete(machineId);
     this.sessions = this.sessions.filter((session) => session.deviceId !== machineId);
     let snapshot = this.snapshot;
@@ -8999,7 +9421,7 @@ class MockHostState {
       !this.snapshot.machines.some(
         (machine) =>
           machine.id === machineId &&
-          deviceMachine(machine).selfRunnerId !== null &&
+          mockDeviceMachine(machine).selfRunnerId !== null &&
           (machine.ownership === "mine" || machine.kind === "home"),
       )
     )
@@ -9281,7 +9703,7 @@ class MockHostState {
 
   private selfDeviceId(runnerId: string) {
     const machine = this.snapshot.machines.find(
-      (machine) => deviceMachine(machine).selfRunnerId === runnerId,
+      (machine) => mockDeviceMachine(machine).selfRunnerId === runnerId,
     );
     if (!machine) throw new Error("This Runner has no Device.");
     return DeviceIdSchema.parse(machine.id);
@@ -9290,7 +9712,7 @@ class MockHostState {
     request: DeviceComputerAppSetupRequest,
   ): ComputerAppSetupRequest {
     const machine = this.snapshot.machines.find(({ id }) => id === request.deviceId);
-    const runnerId = machine ? deviceMachine(machine).selfRunnerId : null;
+    const runnerId = machine ? mockDeviceMachine(machine).selfRunnerId : null;
     if (!runnerId) throw new Error("This Device has no local app approval to review.");
     const { deviceId: _deviceId, ...rest } = request;
     return { ...rest, runnerId };
@@ -9300,7 +9722,7 @@ class MockHostState {
       const machine = this.snapshot.machines.find(({ id }) => id === request.deviceId);
       return Date.parse(request.expiresAt) > this.now().getTime() &&
         machine &&
-        deviceMachine(machine).selfRunnerId
+        mockDeviceMachine(machine).selfRunnerId
         ? [this.legacyComputerSetupRequest(request)]
         : [];
     });
@@ -9412,7 +9834,7 @@ class MockHostState {
       throw new Error(`${definition.name} can only be read.`);
     }
     const machine = this.ownedComputer(input.runnerId);
-    if (!deviceMachine(machine).phoneDisplay && machine.device?.platform === "ios") {
+    if (!mockDeviceMachine(machine).phoneDisplay && machine.device?.platform === "ios") {
       this.ownedComputer(input.runnerId);
       if (!definition.computerApp.platforms.includes("ios"))
         throw new Error("This app is not supported on this computer.");
@@ -9420,7 +9842,7 @@ class MockHostState {
     const phone =
       isPhoneDisplayDefinitionId(input.definitionId) &&
       input.app === null &&
-      deviceMachine(machine).phoneDisplay?.definitionId === input.definitionId;
+      mockDeviceMachine(machine).phoneDisplay?.definitionId === input.definitionId;
     if (isPhoneDisplayDefinitionId(input.definitionId) && !phone) {
       throw new Error("That is not this device’s phone display connection.");
     }
@@ -9616,9 +10038,9 @@ class MockHostState {
   } {
     const machine = this.ownedComputer(input.runnerId);
     if (
-      deviceMachine(machine).phoneDisplay ||
+      mockDeviceMachine(machine).phoneDisplay ||
       machine.selfRunnerId === null ||
-      deviceMachine(machine).kind === "phone"
+      mockDeviceMachine(machine).kind === "phone"
     )
       throw new HostClientRequestError({
         code: "bad_request",
@@ -11179,8 +11601,6 @@ class MockHostState {
     return color;
   }
 
-  async loadEarlierTranscript(_threadId: string): Promise<void> {}
-
   renameThread(threadId: string, title: string): ThreadSummary {
     const thread = this.snapshot.threads.find((thread) => thread.id === threadId);
     if (!thread) throw new Error("Task not found.");
@@ -11239,7 +11659,16 @@ class MockHostState {
       ...this.snapshot,
       transcripts: {
         ...this.snapshot.transcripts,
-        [threadId]: foldTranscriptEvent(transcript, event),
+        [threadId]: [
+          ...transcript,
+          {
+            kind: "place",
+            id: event.eventId,
+            runId,
+            createdAt: event.createdAt,
+            ...event.data,
+          },
+        ],
       },
     });
   }
@@ -11443,47 +11872,22 @@ class MockHostState {
   }
 
   private publishThreadExecution(thread: ThreadSummary): void {
-    // The Host records the switch as an event, and its marker is what that
-    // event folds into, live or reloaded.
-    const recorded = AgentEventSchema.parse({
-      createdAt: thread.updatedAt,
-      data: { thread: mockThread(thread) },
-      environmentId: thread.environmentId,
-      eventId: createId("event"),
+    const marker: TranscriptEntry = {
+      kind: "selection",
+      id: createId("event"),
       runId: null,
-      sequence: String(++this.sequence),
-      threadId: thread.id,
-      type: "thread.execution-updated",
-    });
+      createdAt: thread.updatedAt,
+      harnessInstanceId: thread.harnessInstanceId,
+      modelSelection: thread.modelSelection,
+      providerSessionId: thread.providerSessionId,
+    };
     this.update({
       ...this.snapshot,
       threads: this.snapshot.threads.map((item) => (item.id === thread.id ? thread : item)),
       transcripts: {
         ...this.snapshot.transcripts,
-        [thread.id]: foldTranscriptEvent(this.snapshot.transcripts[thread.id] ?? [], recorded),
+        [thread.id]: [...(this.snapshot.transcripts[thread.id] ?? []), marker],
       },
-    });
-  }
-
-  /** The streams a reply is still writing, as the Host's live read reports them. */
-  liveStreams(threadId: string) {
-    const thread = this.snapshot.threads.find(({ id }) => id === threadId);
-    if (!thread) throw new Error("Thread not found.");
-    const runs = new Map<string, unknown[]>();
-    for (const entry of this.snapshot.transcripts[threadId] ?? []) {
-      const drawn = drawnLiveStream(entry);
-      if (!drawn) continue;
-      runs.set(drawn.runId, [
-        ...(runs.get(drawn.runId) ?? []),
-        { ...drawn.key, length: drawn.text.length, op: "replace", text: drawn.text },
-      ]);
-    }
-    return hostApi["thread.live.get"].success.parse({
-      runs: [...runs].map(([runId, items]) => ({
-        afterSequence: String(this.sequence),
-        progress: { items, runId, threadId },
-      })),
-      threadId,
     });
   }
 
@@ -14398,7 +14802,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
     searchSuggestionsAvailable: true,
     iphoneAppsAvailable: true,
     devicesAvailable: true,
-    deviceDriversAvailable: true,
     ownerViewWindowsAvailable: true,
     voiceAvailable: true,
 

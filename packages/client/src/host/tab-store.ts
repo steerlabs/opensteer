@@ -93,6 +93,29 @@ export class TabStore implements TabsReadModel {
     return true;
   }
 
+  replaceCurrent(snapshot: TabBootstrap): boolean {
+    if (snapshot.layout.revision < this.#layout.revision) return false;
+    this.#receiver.seed(snapshot.tabs as Tab[], { layout: snapshot.layout as TabLayout });
+    this.#complete = snapshot.complete;
+    this.#syncing = !snapshot.complete;
+    this.#publish();
+    return true;
+  }
+
+  invalidateInventory(): void {
+    this.#ahead = null;
+    this.replaceCurrent({ tabs: [], layout: this.#layout, complete: false });
+  }
+
+  invalidateLayout(): void {
+    this.#ahead = null;
+    this.replaceCurrent({
+      tabs: [...this.#rows.values()],
+      layout: { revision: this.#layout.revision, items: [] },
+      complete: this.#complete,
+    });
+  }
+
   /** "resync" asks the caller to request a fresh stream; the rows shown stay until it lands. */
   apply(message: TabStream): "applied" | "staged" | "resync" {
     const result = this.#receiver.apply(message as KeyedStreamMessage<Tab, Meta, "tabId">);

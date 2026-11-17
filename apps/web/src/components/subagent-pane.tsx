@@ -1,3 +1,4 @@
+import { useThreadTranscript } from "@opensteer/client/react";
 import {
   Suspense,
   lazy,
@@ -22,7 +23,7 @@ import {
   type NodeEntry,
   type SubagentDetail,
 } from "@opensteer/client/host";
-import { SubagentSteps } from "./agent-activity.js";
+import { SubagentSteps, type TranscriptTextScope } from "./agent-activity.js";
 import { useShell } from "./app-shell.js";
 import { Icon } from "./icon.js";
 import { RequestStack, useDockedRequests } from "./input-surface.js";
@@ -92,9 +93,14 @@ export function SubagentPane({
   threadTitle: string;
 }) {
   const { hostClient, snapshot: shown } = useShell();
+  const { entries } = useThreadTranscript(hostClient, threadId);
   const snapshot = useMemo(
-    () => (live ? shown : { ...shown, connection: "offline" as const }),
-    [live, shown],
+    () => ({
+      ...shown,
+      connection: live ? shown.connection : ("offline" as const),
+      transcripts: { [threadId]: entries },
+    }),
+    [entries, live, shown, threadId],
   );
   const { detail, watch } = useNodeDetail(hostClient, threadId, nodeId);
   const summary =
@@ -241,6 +247,7 @@ export function SubagentPane({
           {view ? (
             <PaneBody
               live={live}
+              scope={{ client: hostClient, threadId, nodeId, generation: detail?.generation }}
               onOpenAncestor={(id) => onOpen(id, false)}
               onRoot={onClose}
               onRetry={() => watch?.retry()}
@@ -285,6 +292,7 @@ function isTyping(target: EventTarget): boolean {
 
 function PaneBody({
   live,
+  scope,
   onEarlier,
   onOpenAncestor,
   onRetry,
@@ -294,6 +302,7 @@ function PaneBody({
   view,
 }: {
   live: boolean;
+  scope: TranscriptTextScope;
   onEarlier: () => void;
   onOpenAncestor: (nodeId: string) => void;
   onRetry: () => void;
@@ -375,6 +384,7 @@ function PaneBody({
           <h3 className="eyebrow eyebrow--micro">Steps</h3>
           <Steps
             live={live}
+            scope={scope}
             onEarlier={onEarlier}
             onRetry={onRetry}
             settled={settled}
@@ -410,12 +420,14 @@ function Outcome({ card, result }: { card: AgentCard; result: string | null }) {
 
 function Steps({
   live,
+  scope,
   onEarlier,
   onRetry,
   settled,
   view,
 }: {
   live: boolean;
+  scope: TranscriptTextScope;
   onEarlier: () => void;
   onRetry: () => void;
   settled: boolean;
@@ -461,7 +473,7 @@ function Steps({
               {view.loadingEarlier ? "Loading…" : "Show earlier steps"}
             </button>
           ) : null}
-          <SubagentSteps active={!settled} entries={view.entries} live={live} />
+          <SubagentSteps active={!settled} entries={view.entries} live={live} scope={scope} />
           {view.card.moving && view.card.detail[0] ? (
             <div aria-label="Subagent status" className="work work--live">
               <div className="work__head">
@@ -493,10 +505,11 @@ function PaneFooter({
   threadId: string;
   view: SubagentDetail;
 }) {
-  const { snapshot } = useShell();
+  const { hostClient } = useShell();
+  const { requests } = useThreadTranscript(hostClient, threadId);
   const engine = useContext(AgentEngine);
   const { card } = view;
-  const items = useDockedRequests(threadId, snapshot.requests[threadId] ?? noRequests, false);
+  const items = useDockedRequests(threadId, requests, false);
   const own = card.requestId
     ? items.filter((item) => item.surface.request.id === card.requestId)
     : [];
@@ -537,5 +550,3 @@ function PaneFooter({
     </div>
   );
 }
-
-const noRequests: readonly never[] = [];

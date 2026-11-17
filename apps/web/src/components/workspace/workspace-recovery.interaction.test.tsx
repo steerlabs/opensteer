@@ -10,7 +10,12 @@ import type {
   DesktopWebLinkDelivery,
 } from "@opensteer/protocol/desktop";
 
-import { placeList, taskList, workerAssignment, type HostSnapshot } from "@opensteer/client/host";
+import {
+  placeList,
+  taskList,
+  workerAssignment,
+  type TranscriptFixtureSnapshot,
+} from "@opensteer/client/host";
 
 import { AppShell } from "../app-shell.js";
 
@@ -43,7 +48,7 @@ describe("the review's findings", () => {
       const thread = getSnapshot().threads.find(
         (entry) => entry.listed && entry.purpose === "task",
       )!;
-      const cache = new WeakMap<HostSnapshot, HostSnapshot>();
+      const cache = new WeakMap<TranscriptFixtureSnapshot, TranscriptFixtureSnapshot>();
       vi.spyOn(source, "getSnapshot").mockImplementation(() => {
         const snapshot = getSnapshot();
         let offline = cache.get(snapshot);
@@ -382,7 +387,10 @@ describe("the review's findings", () => {
         };
       });
       const real = source.getSnapshot;
-      let copy: { readonly from: HostSnapshot; readonly to: HostSnapshot } | null = null;
+      let copy: {
+        readonly from: TranscriptFixtureSnapshot;
+        readonly to: TranscriptFixtureSnapshot;
+      } | null = null;
       vi.spyOn(source, "getSnapshot").mockImplementation(() => {
         const base = real();
         if (hidden === null) return base;

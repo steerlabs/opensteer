@@ -12,7 +12,7 @@ import type {
   ReferenceResolveInput,
   ReferenceResolveResult,
 } from "@opensteer/protocol";
-import type { HostSnapshot } from "../host/client.js";
+import type { TranscriptFixtureSnapshot } from "../host/client.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { ReferenceStore } from "./store.js";
 import { localReference, localTeamReference } from "./local.js";
@@ -29,7 +29,7 @@ afterEach(() => {
 });
 function setup() {
   vi.useFakeTimers({ toFake: ["Date"] });
-  let snapshot: HostSnapshot = {
+  let snapshot: TranscriptFixtureSnapshot = {
     ...base,
     session: "authenticated",
     connection: "connected",
@@ -71,7 +71,7 @@ function setup() {
     read,
     calls,
     snapshot: () => snapshot,
-    update: (patch: Partial<HostSnapshot>) => {
+    update: (patch: Partial<TranscriptFixtureSnapshot>) => {
       snapshot = { ...snapshot, ...patch };
       changed();
     },
@@ -288,7 +288,7 @@ it("bounds idle metadata to 1024, keeps retained entries, and settles disposal",
   await rejected;
   calls[0]!.answer.resolve({ results: [task(id)] });
   expect(store.read(id)).toEqual({ state: "unresolved" });
-  const snapshot: HostSnapshot = {
+  const snapshot: TranscriptFixtureSnapshot = {
     ...base,
     session: "authenticated",
     connection: "connected",

@@ -3,7 +3,7 @@ import type {
   BrowserSessionSummary,
   BrowserInventory,
   BrowserTabSummary,
-  HostSnapshot,
+  TranscriptFixtureSnapshot,
   PersonalTabLineage,
 } from "../host/client.js";
 
@@ -31,7 +31,7 @@ export interface MockBrowserSession extends BrowserSessionSummary {
   catalog?: MockBrowserCatalog;
   surfaces: BrowserTabSummary[];
 }
-export interface MockBrowserSource extends HostSnapshot {
+export interface MockBrowserSource extends TranscriptFixtureSnapshot {
   browserSessions: MockBrowserSession[];
   browserGroups?: PersonalTabLineage[] | undefined;
 }

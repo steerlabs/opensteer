@@ -146,6 +146,13 @@ export function utf8HeadAndTail(
   };
 }
 
+export function utf8Tail(text: string, maximumBytes: number): string {
+  if (text.length * 3 <= maximumBytes) return text;
+  const bytes = encoder.encode(text);
+  if (bytes.byteLength <= maximumBytes) return text;
+  return decoder.decode(bytes.subarray(utf8SuffixBoundary(bytes, bytes.byteLength - maximumBytes)));
+}
+
 /**
  * Convert one adapter-selected semantic result into readable text. Provider
  * envelopes are selected before this shared function; text content blocks and

@@ -1,7 +1,3 @@
-import { clientRpcSuccessSchema } from "./device-readers.js";
-import { clientCommandSchema } from "./device-commands.js";
-import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
-import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import {
   HostApiErrorSchema,
   TranscriptFileContentSchema,
@@ -15,7 +11,11 @@ import {
   type RpcInput,
   type RpcOutput,
 } from "@opensteer/protocol";
-import { apiVersionHeaders } from "@opensteer/deployment-authority";
+import {
+  apiVersionHeaders,
+  hostApiVersionHeader,
+  hostApiCurrentHeader,
+} from "@opensteer/deployment-authority";
 import { attachmentMaxBytes } from "@opensteer/core";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { formatIssues } from "@opensteer/shared/validationIssues";
@@ -38,7 +38,7 @@ const responseEnvelopes = new Map(
   Object.entries(hostApi).map(([name, declaration]) => [
     name,
     z.discriminatedUnion("ok", [
-      z.object({ data: clientRpcSuccessSchema(name as keyof typeof hostApi), ok: z.literal(true) }),
+      z.object({ data: declaration.success, ok: z.literal(true) }),
       z.object({ error: declaration.error, ok: z.literal(false) }),
     ]),
   ]),
@@ -47,13 +47,30 @@ const responseEnvelopes = new Map(
 export interface HttpHostApiClientOptions {
   readonly baseUrl: URL;
   readonly kind?: "personal" | "team";
+  readonly personalVersion?: number;
   readonly fetch: Fetch;
   /** IPC adapters return buffered bodies together with their headers. */
   readonly bufferedResponses?: boolean;
   readonly assertResponseCurrent?: (response: Response) => void;
+  readonly onSignedOut?: () => void;
   readonly onAuthenticationRequired: () => void;
   readonly onVersionMismatch?: () => void;
 }
+
+const scopedReadLimits = {
+  "personal.shell.get": 96 * 1024,
+  "thread.snapshot.get": 128 * 1024,
+  "thread.items.page": 128 * 1024,
+  "node.items.page": 128 * 1024,
+  "transcript.item.get": 1024 * 1024,
+  "thread.inputQueue.get": 96 * 1024,
+  "thread.overlays.page": 16 * 1024,
+  "resources.get": 32 * 1024,
+  "resources.detail.get": 64 * 1024,
+  "tasks.page": 64 * 1024,
+  "needsYou.get": 64 * 1024,
+} satisfies Partial<Record<keyof typeof hostApi, number>>;
+const personalReadLimit: Partial<Record<keyof typeof hostApi, number>> = scopedReadLimits;
 
 const maximumRpcPayloadBytes = 1 * 1_024 * 1_024;
 
@@ -73,21 +90,6 @@ type Invoke = <Name extends keyof typeof hostApi>(
   input: unknown,
   call: RpcCallOptions | undefined,
 ) => Promise<RpcOutput<(typeof hostApi)[Name]>>;
-const deviceDispatchers = new WeakMap<
-  HostApiClient,
-  (
-    command: z.input<typeof clientCommandSchema>,
-  ) => Promise<RpcOutput<(typeof hostApi)["commands.dispatch"]>>
->();
-export function dispatchDeviceCommand(
-  rpc: HostApiClient,
-  command: z.input<typeof clientCommandSchema>,
-) {
-  const dispatch = deviceDispatchers.get(rpc);
-  if (!dispatch) throw new Error("Update this Opensteer to use Device access commands.");
-  return dispatch(command);
-}
-
 /** The declaration record is the member list, so a property the API does not
  * declare stays undefined rather than becoming a callable that 404s. */
 function hostApiClientProxy(invoke: Invoke): HostApiClient {
@@ -103,7 +105,6 @@ function hostApiClientProxy(invoke: Invoke): HostApiClient {
       },
     },
   ) as HostApiClient;
-  deviceDispatchers.set(client, (command) => invoke("commands.dispatch", command, undefined));
   return client;
 }
 
@@ -130,9 +131,7 @@ async function dispatchInMemory<Name extends keyof typeof hostApi>(
   const declaration = hostApi[name];
   try {
     const handler = handlers[name] as HostApiHandler<Name>;
-    const payload = (
-      name === "commands.dispatch" ? clientCommandSchema : declaration.payload
-    ).parse(input) as z.output<(typeof hostApi)[Name]["payload"]>;
+    const payload = declaration.payload.parse(input) as z.output<(typeof hostApi)[Name]["payload"]>;
     const binaryBody = call?.body === undefined ? undefined : binaryChunks(call.body);
     const output = await handler(payload, {
       ...context,
@@ -141,7 +140,7 @@ async function dispatchInMemory<Name extends keyof typeof hostApi>(
     });
     if (!output.ok) return output as RpcOutput<(typeof hostApi)[Name]>;
     return {
-      data: clientRpcSuccessSchema(name).parse(output.data),
+      data: declaration.success.parse(output.data),
       ok: true,
     } as RpcOutput<(typeof hostApi)[Name]>;
   } catch (error) {
@@ -173,9 +172,7 @@ async function request<Name extends keyof typeof hostApi>(
   call: RpcCallOptions | undefined,
 ): Promise<RpcOutput<(typeof hostApi)[Name]>> {
   const declaration = hostApi[name];
-  const parsedPayload = (
-    name === "commands.dispatch" ? clientCommandSchema : declaration.payload
-  ).safeParse(input);
+  const parsedPayload = declaration.payload.safeParse(input);
   if (!parsedPayload.success)
     return rpcError("invalid-payload", `Invalid input for ${name}.`, false);
   const payload = parsedPayload.data;
@@ -186,13 +183,12 @@ async function request<Name extends keyof typeof hostApi>(
   if (declaration.method === "GET" || "binaryRequest" in declaration) {
     url.searchParams.set("input", serialized);
   }
-  const diagnostic = name === "bootstrap.get" ? bootstrapReadDiagnostics.takeSummary() : undefined;
   const deadline = new HostResponseDeadline(call?.signal);
   const maximumBytes = declaration.stream
     ? name === "file.content"
       ? transcriptFileContentMaxBytes
       : attachmentMaxBytes
-    : 16 * 1_024 * 1_024;
+    : (options.personalVersion && personalReadLimit[name]) || 16 * 1_024 * 1_024;
   const headersTimeoutMs =
     // Opening or waking a tab may start its browser first.
     name === "commands.dispatch" &&
@@ -226,11 +222,16 @@ async function request<Name extends keyof typeof hostApi>(
           : {}),
         credentials: "include",
         headers: {
-          ...(diagnostic ? { [bootstrapDiagnosticHeader]: JSON.stringify(diagnostic) } : {}),
           accept: declaration.stream ? "*/*" : "application/json",
           // Every rpc request states the versions this app speaks. It is sent from
           // here alone so no caller can reach a Host without having negotiated.
           ...apiVersionHeaders(options.kind === "team" ? "team" : "personal"),
+          ...(options.kind !== "team" && options.personalVersion
+            ? {
+                [hostApiVersionHeader]: String(options.personalVersion),
+                [hostApiCurrentHeader]: String(options.personalVersion),
+              }
+            : {}),
           ...(declaration.method === "POST"
             ? {
                 "content-type":
@@ -283,6 +284,7 @@ async function request<Name extends keyof typeof hostApi>(
     options.assertResponseCurrent?.(response);
     const parsed = responseEnvelopes.get(name)!.safeParse(body);
     if (parsed.success) {
+      if (name === "auth.signOut" && parsed.data.ok) options.onSignedOut?.();
       if (
         !parsed.data.ok &&
         ["unsupported-version", "api-version-mismatch"].includes(parsed.data.error.reason ?? "")

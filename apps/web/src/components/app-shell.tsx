@@ -1,3 +1,4 @@
+import { usePersonalResources } from "@opensteer/client/react";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { VoiceContext } from "@opensteer/client/react";
@@ -244,7 +245,29 @@ const sidebarWidthRange: PaneSizeRange = {
 const selectHostSnapshot = (snapshot: HostSnapshot) => snapshot;
 const selectNothing = () => null;
 /** Tasks that need the reader, each once: what the sidebar's count and the app's badge both say. */
-const selectAttentionCount = (snapshot: HostSnapshot) => taskAttention(snapshot).length;
+const selectAttentionCount = (snapshot: HostSnapshot) =>
+  snapshot.needsYouCount ?? taskAttention(snapshot).length;
+
+const workspaceResources = ["tab", "tab-layout", "browser-availability"] as const;
+const settingsResources = [
+  "settings",
+  "identity",
+  "owner-profile",
+  "machine",
+  "environment",
+  "harness",
+  "harness-catalog",
+  "harness-auth",
+] as const;
+const placesResources = [
+  "tab",
+  "tab-layout",
+  "machine",
+  "browser-profile",
+  "browser-home",
+  "browser-placement",
+  "browser-availability",
+] as const;
 
 export function AppShell({
   deploymentAccess = null,
@@ -269,6 +292,14 @@ export function AppShell({
   const toast = useToast();
   const location = useLocation();
   const settingsMode = isSettingsPath(location.pathname);
+  usePersonalResources(
+    hostClient,
+    settingsMode
+      ? settingsResources
+      : /^\/(places|browser|computers)(\/|$)/.test(location.pathname)
+        ? placesResources
+        : workspaceResources,
+  );
   // Setup, like Settings, covers the workspace: no sidebar, no place beside it.
   const setupMode = isSetupPath(location.pathname);
   const fullWindow = settingsMode || setupMode;

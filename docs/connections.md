@@ -46,16 +46,15 @@ sockets, but a fence-closed socket still reports its close so its owner can reco
 
 An ordinary RPC failure is an operation error, not evidence the Deployment is offline. Timeouts
 abort without replay, cancellation wins, and an authentication refusal acts when headers arrive.
-Availability follows bootstrap, authentication, network and realtime; cancellation and stale fences
-never claim the Host was unreachable. Deadlines and size limits live in the transport.
+Availability follows the shell subscription, authentication, network and realtime.
+Cancellation and stale fences never claim the Host was unreachable. Deadlines and size limits live in the transport.
 
 ## What a person is told
 
-Brief reconnects keep the Connected presentation and resume from the cursor, while answering
-Requests still needs a synchronized Host. Hidden surfaces must not accrue outage time. Report
-connection state without moving content. The personal event stream decides the personal
-connection; team transports retry quietly and independently.
-[The lifecycle](../packages/client/src/host/lifecycle.ts) owns presentation timing.
+The personal shell decides the connection state. Conversation actions need a
+synchronized detail scope. Backgrounded clients release detail subscriptions
+and resume the scopes their foreground views still observe. The team transport
+retries independently.
 
 A phone can report the same network path after an actual move. Probe unchanged paths before
 replacing sockets; a failed probe invalidates the whole path.

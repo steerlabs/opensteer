@@ -1,3 +1,4 @@
+import { requestDecisionRevision } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import {
   localMcpSecretServers,
@@ -578,8 +579,16 @@ function Plugins({
                   if (optionId !== "declined" && !(await authorizeAiSharing(aiSharing, host)))
                     return;
                   if (!isCurrent()) return;
+                  const reviewed = await host.readRequest(pending.originatingThreadId, pending.id);
+                  if (!isCurrent()) return;
+                  if (
+                    reviewed?.status !== "pending" ||
+                    JSON.stringify(reviewed.presentation) !== JSON.stringify(pending.presentation)
+                  )
+                    throw new Error("Request changed");
                   await host.dispatch({
                     type: "request.respond",
+                    ...requestDecisionRevision(reviewed),
                     requestId: request.requestId,
                     response: { kind: "choice", optionId },
                     idempotencyKey: mutationIdempotencyKey("plugin-request"),

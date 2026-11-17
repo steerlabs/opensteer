@@ -1,9 +1,4 @@
-import {
-  machineSelfRunnerId,
-  deviceMachine,
-  deviceReasonLabel,
-  hasDeviceProjection,
-} from "../host/device-projection.js";
+import { machineSelfRunnerId, deviceReasonLabel } from "../host/device-projection.js";
 import type { IntegrationDefinitionSummaryView } from "@opensteer/integration-core";
 import type { MachineSummary, RunnerDevicePlatform } from "@opensteer/protocol";
 import { formatRelativeTime } from "../host/thread-list-model.js";
@@ -75,7 +70,7 @@ export function computersOverview(input: {
  */
 export function isServiceMachine(machine: MachineSummary): boolean {
   return (
-    !hasDeviceProjection(machine) &&
+    machine.capabilities === undefined &&
     machine.ownership === "deployment" &&
     !machine.allowedModules.includes("agents")
   );
@@ -87,9 +82,7 @@ export function isServiceMachine(machine: MachineSummary): boolean {
  * service.
  */
 export function hostsDeployment(machine: MachineSummary): boolean {
-  return hasDeviceProjection(machine) || machine.kind !== undefined
-    ? machine.kind === "home"
-    : machine.ownership === "deployment" && !isServiceMachine(machine);
+  return machine.kind === "home";
 }
 
 /** The computer you are at, then the ones that are there, away, and expected. */
@@ -323,7 +316,7 @@ export function computerUses(
     if (phone?.access) uses.push({ kind: "screen" });
   }
   const policy = machine.access?.policy;
-  if (policy && policy.reach !== "nobody" && deviceMachine(machine).capabilities?.files.supported) {
+  if (policy && policy.reach !== "nobody" && machine.capabilities?.files.supported) {
     const folders = policy.shares.filter((share) => share.path.trim() !== "").length;
     if (folders > 0) uses.push({ count: folders, kind: "folders" });
     if (policy.commands) uses.push({ kind: "commands" });
@@ -372,10 +365,9 @@ export function computerRole(
   appsLoaded: boolean,
 ): ComputerRole | null {
   if (machine.status === "pending") return "waiting";
-  if (deviceMachine(machine).selfRunnerId && machine.modules.agents) return "works";
+  if (machine.selfRunnerId && machine.modules.agents) return "works";
   // A device that lends its browser has shared something even with no app on.
-  if (uses.length > 0 || deviceMachine(machine).capabilities?.browser.enabled === true)
-    return "uses";
+  if (uses.length > 0 || machine.capabilities?.browser.enabled === true) return "uses";
   if (!appsLoaded) return null;
   return "idle";
 }
@@ -412,9 +404,7 @@ export function computerStatus(machine: MachineSummary, now = new Date()): Compu
     machine.status === "update-pending"
   )
     return {
-      label:
-        machine.detail ??
-        `Update ${deviceMachine(machine).phoneDisplay?.setup.location === "android-usb" ? "Agent Phone" : "Opensteer"} on ${machine.name}.`,
+      label: machine.detail ?? `Update Opensteer on ${machine.name}.`,
       tone: "waiting",
     };
   if (machine.status === "online") return { label: "Online", tone: "online" };
@@ -453,6 +443,6 @@ export function computerUsesChosenElsewhere(machine: MachineSummary): string {
 }
 
 function isDataPhone(machine: MachineSummary): boolean {
-  const projected = deviceMachine(machine);
+  const projected = machine;
   return projected.kind === "phone" && !projected.phoneDisplay;
 }

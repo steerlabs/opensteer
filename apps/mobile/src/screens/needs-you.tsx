@@ -4,7 +4,7 @@ import { useHostSelector } from "@opensteer/client/react";
 import { needsYouEntryKey, type HostClient } from "@opensteer/client/host";
 import type { NeedsYouEntry, NeedsYouTeamAskEntry } from "@opensteer/protocol";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 import { AppText } from "../ui/primitives.js";
@@ -27,6 +27,15 @@ export function NeedsYouScreen(props: StaticScreenProps<{ readonly deploymentId:
  */
 function NeedsYouList({ client, deploymentId }: { client: HostClient; deploymentId: string }) {
   const page = useHostSelector(client, (snapshot) => snapshot.needsYou);
+  const summaries = useHostSelector(client, (snapshot) => snapshot.attentionSummaries);
+  const count = useHostSelector(client, (snapshot) => snapshot.needsYouCount);
+  const ready = useHostSelector(client, (snapshot) => snapshot.connection === "connected");
+  useEffect(() => {
+    if (ready && count && page === null)
+      void client
+        .loadEarlierNeedsYou()
+        .catch((error: unknown) => setFailure(operationDetail(error, "Could not load requests.")));
+  }, [client, count, page, ready, summaries]);
   const navigation = useNavigation();
   const [loading, setLoading] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -61,7 +70,16 @@ function NeedsYouList({ client, deploymentId }: { client: HostClient; deployment
   return (
     <Screen>
       <ScrollView contentContainerStyle={{ padding: space[16], gap: space[16] }}>
-        {page?.entries.length === 0 ? <AppText tone="muted">Nothing needs you.</AppText> : null}
+        {count === 0 || page?.entries.length === 0 ? (
+          <AppText tone="muted">Nothing needs you.</AppText>
+        ) : null}
+        {page === null &&
+          summaries?.map((entry) => (
+            <View key={entry.id} style={{ gap: space[8], padding: space[16] }}>
+              <AppText>{entry.title}</AppText>
+              {entry.preview ? <AppText tone="muted">{entry.preview}</AppText> : null}
+            </View>
+          ))}
         {page?.entries.map((entry) => {
           const key = needsYouEntryKey(entry);
           const destination = entryDestination(entry);

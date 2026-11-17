@@ -2,7 +2,7 @@
 
 import type {
   HostClient,
-  HostSnapshot,
+  TranscriptFixtureSnapshot,
   NodeDetailSnapshot,
   NodeEntry,
 } from "@opensteer/client/host";
@@ -167,11 +167,13 @@ async function scene(name: MockSubagentScene) {
   const client = new MockHostClient({ latencyMs: 0, places: "absent", subagents: name });
   clients.push(client);
   await client.load();
-  const current: HostSnapshot = { ...client.getSnapshot(), connection: "connected" };
+  const current: TranscriptFixtureSnapshot = { ...client.getSnapshot(), connection: "connected" };
   const thread = current.threads.find(({ title }) => title === "Fix checkout on mobile")!;
   harness.hostClient = {
     ...client,
     getSnapshot: () => current,
+    getThreadTranscript: (threadId: string) => client.getThreadTranscript(threadId),
+    observeThread: (threadId: string) => client.observeThread(threadId),
     subscribe: () => () => undefined,
   } as unknown as HostClient;
   const node = (title: string) =>

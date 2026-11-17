@@ -1,6 +1,6 @@
-import type { HostClient, HostSnapshot, TranscriptEntry } from "./client.js";
+import type { HostClient, TranscriptFixtureSnapshot, TranscriptEntry } from "./client.js";
 
-type ReplyProjection = Pick<HostSnapshot, "transcripts" | "publishedReplyAt">;
+type ReplyProjection = Pick<TranscriptFixtureSnapshot, "transcripts" | "publishedReplyAt">;
 
 function newestPublishedReply(entries: readonly TranscriptEntry[]): string | undefined {
   let latest: string | undefined;
@@ -54,8 +54,8 @@ export function trackThreadVisits(
   let pending: string | null = null;
   let acknowledged: string | null = null;
   let again = false;
-  let threads: HostSnapshot["threads"] | null = null;
-  let thread: HostSnapshot["threads"][number] | undefined;
+  let threads: TranscriptFixtureSnapshot["threads"] | null = null;
+  let thread: TranscriptFixtureSnapshot["threads"][number] | undefined;
   let completion: string | null | undefined;
   let reply: string | undefined;
   let visit: string | null | undefined;

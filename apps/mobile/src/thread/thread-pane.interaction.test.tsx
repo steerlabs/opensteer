@@ -14,7 +14,7 @@ import {
   RunPlaceStore,
   reconcileBrowserLastPictures,
   type HostClient,
-  type HostSnapshot,
+  type TranscriptFixtureSnapshot,
   type MessageEntry,
   type ReasoningEntry,
   type RequestReceiptEntry,
@@ -1113,7 +1113,7 @@ function snapshotFor(input: {
   readonly requests?: readonly Request[];
   readonly run: { readonly id: string; readonly status: "running" | "waiting" } | null;
   readonly threadId: string;
-}): HostSnapshot {
+}): TranscriptFixtureSnapshot {
   const status = input.run === null ? "idle" : input.run.status;
   const environmentId = base.threads.find(({ id }) => id === input.threadId)?.environmentId;
   return {
@@ -1252,10 +1252,10 @@ const idleDisplaySocket = () => ({
 });
 
 /** A Host whose snapshot the test moves, recording what the phone asks of it. */
-function fakeHost(initial: HostSnapshot) {
+function fakeHost(initial: TranscriptFixtureSnapshot) {
   let snapshot = initial;
   // What the Host answers the next "Load earlier" with: the transcript with that page merged in.
-  let earlierPage: HostSnapshot | null = null;
+  let earlierPage: TranscriptFixtureSnapshot | null = null;
   const listeners = new Set<() => void>();
   const runPlaces = new RunPlaceStore();
   const placeActivity = new PlaceActivityStore();
@@ -1308,11 +1308,55 @@ function fakeHost(initial: HostSnapshot) {
     save: vi.fn(async (_content: readonly object[]) => ({ editedAt: at, revision: 1 })),
     touch: vi.fn(),
   };
+  const views = new Map<string, ReturnType<typeof buildTranscriptView>>();
+  const noRows = [] as const;
+  function buildTranscriptView(value: TranscriptFixtureSnapshot, id: string) {
+    return {
+      entries: value.transcripts[id] ?? noRows,
+      requests: value.requests[id] ?? noRows,
+      runQueue: value.runQueue.filter(({ threadId }) => threadId === id),
+      inputQueue: value.inputQueues[id] ?? null,
+      synchronized: value.connection === "connected",
+      hasMore: value.transcriptWindows[id]?.hasMore ?? false,
+      hasNewer: false,
+      moreRequests: false,
+    };
+  }
+  function transcriptView(value: TranscriptFixtureSnapshot, id: string) {
+    const existing = views.get(id);
+    const next = buildTranscriptView(value, id);
+    if (
+      existing &&
+      existing.entries === next.entries &&
+      existing.requests === next.requests &&
+      existing.inputQueue === next.inputQueue &&
+      existing.synchronized === next.synchronized &&
+      existing.hasMore === next.hasMore &&
+      existing.runQueue.length === next.runQueue.length &&
+      existing.runQueue.every((run, index) => run === next.runQueue[index])
+    )
+      return existing;
+    views.set(id, next);
+    return next;
+  }
   const client = {
     acceptBrowserWatchFrame: vi.fn((sessionId: string, token: string, surfaceId: string) =>
       watch.accept(sessionId, surfaceId, token),
     ),
     activateThread: vi.fn(),
+    observeThread: () => () => {},
+    getThreadItemText: () => undefined,
+    setTranscriptAnchor: () => {},
+    watchPersonalResource: () => () => {},
+    getThreadTranscript: (id: string) => {
+      return {
+        subscribe: (listener: () => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        getSnapshot: () => transcriptView(snapshot, id),
+      };
+    },
     // What a mounted tab preview reads: the Host's latest place and a passive picture.
     browserWatchFrames: {
       accept: (sessionId: string, surfaceId: string, token: string) =>
@@ -1413,12 +1457,12 @@ function fakeHost(initial: HostSnapshot) {
       act(() => sockets.at(-1)!.close(1006));
     },
     /** The transcript the Host has once the phone loads its earlier page. */
-    holdEarlier(next: HostSnapshot) {
+    holdEarlier(next: TranscriptFixtureSnapshot) {
       earlierPage = next;
     },
     loadEarlierTranscript,
     loadTranscriptAround,
-    move(next: HostSnapshot) {
+    move(next: TranscriptFixtureSnapshot) {
       snapshot = next;
       act(() => {
         for (const listener of listeners) listener();
@@ -1636,9 +1680,9 @@ function savedElsewhere(
 
 /** `snapshot` with `item` as the task's only waiting input. */
 function withWaiting(
-  snapshot: HostSnapshot,
+  snapshot: TranscriptFixtureSnapshot,
   item: ThreadInputQueue["items"][number],
-): HostSnapshot {
+): TranscriptFixtureSnapshot {
   return {
     ...snapshot,
     inputQueues: { [workId]: { ...snapshot.inputQueues[workId]!, items: [item] } },
@@ -1917,7 +1961,7 @@ describe("a conversation with a page", () => {
     expect(
       second.container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
     ).toBe("Explain this");
-    host.move({ ...host.client.getSnapshot(), browserSessions: [] });
+    host.move({ ...(host.client.getSnapshot() as TranscriptFixtureSnapshot), browserSessions: [] });
     await type(second.container, "Message", "Explain the page I saw");
     await press(second.container, "Send message");
     expect(host.dispatch).toHaveBeenCalledWith(
@@ -2014,7 +2058,7 @@ it("renders this thread's transcript, stream, requests, input queue, run queue a
   });
   const host = fakeHost(snapshot);
   const { container } = await mount(host, workId);
-  const move = async (patch: Partial<HostSnapshot>) => {
+  const move = async (patch: Partial<TranscriptFixtureSnapshot>) => {
     const before = harness.paneRenders;
     snapshot = { ...snapshot, ...patch };
     host.move(snapshot);
@@ -2689,7 +2733,7 @@ describe("surfaces belonging to one reply", () => {
       },
     });
     const firstWork = [notes, phone("First phone"), joinedFirst, first];
-    const initial: HostSnapshot = {
+    const initial: TranscriptFixtureSnapshot = {
       ...snapshotFor({
         entries: [ask, ran(runId, { replyMessageId: first.id, status: "completed" }), ...firstWork],
         machines: [],
@@ -4746,7 +4790,7 @@ it("floats active voice while its dock's pane is hidden and docks again when vis
 function voiceThreadSnapshot(input: {
   readonly entries?: readonly TranscriptEntry[];
   readonly requests?: readonly Request[];
-}): HostSnapshot {
+}): TranscriptFixtureSnapshot {
   const snapshot = snapshotFor({
     entries: input.entries ?? [],
     run: null,
@@ -4763,13 +4807,13 @@ function voiceThreadSnapshot(input: {
   };
 }
 
-function waitingOn(request: Request): HostSnapshot["waitingRequests"][number] {
+function waitingOn(request: Request): TranscriptFixtureSnapshot["waitingRequests"][number] {
   return {
     assignments: [],
     presentation: null,
     request,
     subagent: null,
-  } as unknown as HostSnapshot["waitingRequests"][number];
+  } as unknown as TranscriptFixtureSnapshot["waitingRequests"][number];
 }
 
 function askedHere(title: string): Request {
@@ -5405,7 +5449,7 @@ describe("the Run's page above the conversation", () => {
       data: { tabId, title: `Live page ${sequence}`, site: "https://example.com" },
     });
   /** The person's tabs with the Run's page among them. */
-  const withPage = (snapshot: HostSnapshot): HostSnapshot => ({
+  const withPage = (snapshot: TranscriptFixtureSnapshot): TranscriptFixtureSnapshot => ({
     ...snapshot,
     tabs: tabStoreFixture([
       tabFixture({ tabId: pageTab, url: "https://example.com/" }),
@@ -5601,7 +5645,7 @@ describe("the Run's page above the conversation", () => {
       const renders = harness.nativeRenders;
       const reply = wrote("Still streaming", runId, conversationId);
       host.move({
-        ...host.client.getSnapshot(),
+        ...(host.client.getSnapshot() as TranscriptFixtureSnapshot),
         transcripts: { [conversationId]: [ran(runId), reply] },
       });
       expect(harness.nativeRenders).toBe(renders);
@@ -5689,7 +5733,7 @@ describe("the Run's page above the conversation", () => {
   });
 });
 
-it("opens a task with a whole-turn page in one read", async () => {
+it("draws the scoped conversation cut on its first pane render", async () => {
   const source = new MockHostClient({ latencyMs: 0 });
   await source.load();
   const fixture = conversationHistoryHost(source);
@@ -5705,8 +5749,6 @@ it("opens a task with a whole-turn page in one read", async () => {
       },
       { timeout: 1000 },
     );
-    expect(fixture.requests).toHaveLength(1);
-    expect(fixture.requests[0]).toMatchObject({ turns: 10 });
   } finally {
     fixture.client.dispose();
     source.dispose();

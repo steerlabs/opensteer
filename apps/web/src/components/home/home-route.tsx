@@ -1,3 +1,4 @@
+import { usePersonalResources } from "@opensteer/client/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import type { ThreadAccessMode } from "@opensteer/core";
@@ -26,9 +27,18 @@ import { useWorkspace } from "../workspace/workspace-context.js";
 import { useComposerContext } from "../workspace/composer-context.js";
 import { TasksHome } from "./tasks-home.js";
 
+const homeResources = [
+  "environment",
+  "harness",
+  "harness-catalog",
+  "harness-auth",
+  "settings",
+] as const;
+
 /** Home: what should your agent do, and the composer that starts it. */
 export function HomeRoute() {
   const { hostClient, snapshot } = useShell();
+  usePersonalResources(hostClient, homeResources);
   const navigate = useNavigate();
   const draftId = useTaskDraftId();
   const [suggestion, setSuggestion] = useState<{

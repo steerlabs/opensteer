@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import type { HostClient, HostSnapshot, NodeEntry } from "@opensteer/client/host";
+import type { HostClient, TranscriptFixtureSnapshot, NodeEntry } from "@opensteer/client/host";
 import { MockHostClient, type MockSubagentScene } from "@opensteer/client/mock";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -124,7 +124,7 @@ async function scene(name: MockSubagentScene) {
   const client = new MockHostClient({ latencyMs: 0, places: "absent", subagents: name });
   clients.push(client);
   await client.load();
-  let current: HostSnapshot = { ...client.getSnapshot(), connection: "connected" };
+  let current: TranscriptFixtureSnapshot = { ...client.getSnapshot(), connection: "connected" };
   const thread = current.threads.find(({ title }) => title === "Fix checkout on mobile")!;
   const listeners = new Set<() => void>();
   const hostClient = {
@@ -136,7 +136,7 @@ async function scene(name: MockSubagentScene) {
     },
   } as unknown as HostClient;
   harness.hostClient = hostClient;
-  const move = (next: HostSnapshot) => {
+  const move = (next: TranscriptFixtureSnapshot) => {
     current = next;
     act(() => {
       for (const listener of listeners) listener();

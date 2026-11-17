@@ -1,8 +1,12 @@
+import {
+  ScopedClientMessageSchema,
+  type ScopedHostMessage,
+} from "@opensteer/protocol/personal-sync";
+import { PersonalResourceKindSchema } from "@opensteer/protocol/resources";
 import { assertDeviceSessionAllowed } from "@opensteer/client/computers";
 import type { HostApiClient, PasswordSignInCard } from "@opensteer/protocol";
 import type { PasswordSignInAccount } from "@opensteer/client/host";
 import { createId, DeploymentIdSchema, RunnerIdSchema } from "@opensteer/core";
-import { hostApi } from "@opensteer/protocol";
 import {
   DesktopDownloadSchema,
   DesktopDownloadTargetSchema,
@@ -39,20 +43,11 @@ import {
   type DesktopComputerAppSetup,
 } from "@opensteer/protocol/desktop";
 
-import { previewBootstrap, previewDate, previewDeploymentSnapshot } from "./preview-bootstrap.js";
+import { previewPersonalHost, previewDate } from "./preview-personal-host.js";
 
 const previewParameter = "desktop-preview";
 const previewPersonalOrigin = "http://127.0.0.1:4310";
 
-/**
- * The rpc declaration owns the bootstrap contract, so the simulator derives its
- * route and response body from the same record the real client reads. A renamed
- * or reshaped member becomes a compile error here instead of an onboarding
- * preview that answers 501 to the only request the shell makes.
- */
-const bootstrapMember = "bootstrap.get";
-const bootstrapDeclaration = hostApi[bootstrapMember];
-const bootstrapPath = `/v1/rpc/${bootstrapMember}`;
 /** Bridge requests carry an origin-relative path; this base only makes it parseable. */
 const previewRequestBase = "http://desktop-preview.invalid";
 
@@ -120,6 +115,16 @@ export function desktopPreviewBridge(
   const previewEnvironmentId = createId("environment");
   const previewRunnerId = createId("runner");
   const previewUserId = createId("user");
+  const previewSessionId = createId("authSession");
+  function previewHostData(selected: DesktopDeploymentSummary) {
+    return previewPersonalHost(selected, {
+      environmentId: previewEnvironmentId,
+      runnerId: previewRunnerId,
+      userId: previewUserId,
+      sessionId: previewSessionId,
+    });
+  }
+
   const signedInDeployments = new Set<string>();
   const socketPaths = new Map<string, string>();
   let socketOrdinal = 0;
@@ -512,19 +517,16 @@ export function desktopPreviewBridge(
           ok: false,
         });
       }
-      if (
-        request.method === bootstrapDeclaration.method &&
-        new URL(request.path, previewRequestBase).pathname === bootstrapPath
-      ) {
+      const url = new URL(request.path, previewRequestBase);
+      const payload = JSON.parse(url.searchParams.get("input") ?? "{}") as Record<string, unknown>;
+      const data = previewHostData(selected);
+      if (url.pathname === "/v1/rpc/personal.shell.get")
+        return jsonResponse(200, { ok: true, data: data.shell });
+      if (url.pathname === "/v1/rpc/resources.detail.get") {
+        const kind = PersonalResourceKindSchema.parse(payload.kind);
         return jsonResponse(200, {
-          data: bootstrapDeclaration.success.parse(
-            previewBootstrap(selected, {
-              environmentId: previewEnvironmentId,
-              runnerId: previewRunnerId,
-              userId: previewUserId,
-            }),
-          ),
           ok: true,
+          data: data.resource(kind),
         });
       }
       return jsonResponse(501, {
@@ -668,22 +670,40 @@ export function desktopPreviewBridge(
       } catch {
         return;
       }
-      if (!isSubscribeFrame(frame)) return;
+      const parsed = ScopedClientMessageSchema.safeParse(frame);
       const selected = selectedDeployment(selection);
-      if (!selected) return;
-      emitSocket({
-        connectionId: input.connectionId,
-        data: JSON.stringify({
-          snapshot: previewDeploymentSnapshot(selected.id),
-          type: "host.snapshot",
-        }),
-        type: "text",
-      });
-      emitSocket({
-        connectionId: input.connectionId,
-        data: JSON.stringify({ sequence: "0", type: "host.synchronized" }),
-        type: "text",
-      });
+      if (!parsed.success || !selected) return;
+      const message = parsed.data;
+      const emit = (data: ScopedHostMessage | { type: "host.pong"; nonce: string }) =>
+        emitSocket({ connectionId: input.connectionId, data: JSON.stringify(data), type: "text" });
+      if (message.type === "client.ping") {
+        emit({ type: "host.pong", nonce: message.nonce });
+        return;
+      }
+      const writesShell =
+        message.type === "client.attach" ||
+        (message.type === "client.subscribe" && message.scope.kind === "shell");
+      if (!writesShell && message.type !== "client.resources.watch") return;
+      const data = previewHostData(selected);
+      if (writesShell) {
+        const address = {
+          subscriptionId: "shell" as const,
+          generation: message.generation,
+          scope: { kind: "shell" as const },
+          throughSequence: "0",
+        };
+        emit({ ...address, type: "host.snapshot", snapshot: data.shell });
+        emit({ ...address, type: "host.synchronized" });
+      }
+      if (message.type === "client.attach" || message.type === "client.resources.watch") {
+        for (const kind of message.interests)
+          emit({
+            type: "host.resource",
+            subscriptionId: "shell",
+            generation: message.generation,
+            ...data.summary(kind),
+          });
+      }
     },
 
     signOut: async () => {
@@ -1308,15 +1328,6 @@ function jsonResponse(status: number, body: unknown) {
     ok: true,
     data: { body: JSON.stringify(body), headers: { contentType: "application/json" }, status },
   });
-}
-
-function isSubscribeFrame(value: unknown): value is { readonly type: "client.subscribe" } {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "type" in value &&
-    value.type === "client.subscribe"
-  );
 }
 
 function subscribe<Value>(

@@ -2,7 +2,7 @@ import {
   conversationSurfaces,
   taskFamily,
   type FamilyTask,
-  type HostSnapshot,
+  type TranscriptFixtureSnapshot,
   type TaskFamily,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
@@ -36,7 +36,7 @@ const acting =
   (tabId) =>
     (byTab[tabId] ?? []).map((threadId) => ({ threadId: ThreadIdSchema.parse(threadId) }));
 const nobody = acting({});
-const glance = (snapshot: HostSnapshot, threadId: string, activity = nobody) =>
+const glance = (snapshot: TranscriptFixtureSnapshot, threadId: string, activity = nobody) =>
   aroundGlanceSelector(threadId, activity)(snapshot);
 const noTabs = tabStoreFixture([]);
 
@@ -161,10 +161,11 @@ describe("around a conversation", () => {
     const byTab: Record<string, readonly string[]> = {};
     const select = aroundGlanceSelector(home, acting(byTab));
     const before = select(source);
-    const after = select({
+    const activity = {
       ...source,
       transcripts: { ...source.transcripts, [home]: [...(source.transcripts[home] ?? [])] },
-    });
+    };
+    const after = select(activity);
     expect(sameAroundGlance(before, after)).toBe(true);
     expect(sameAroundGlance(before, select({ ...source, threadAutomations: {} }))).toBe(false);
     byTab[own.key] = [home];

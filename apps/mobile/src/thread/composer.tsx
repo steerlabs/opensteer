@@ -149,6 +149,7 @@ export function Composer(props: {
   readonly conversationActions: readonly NativeMenuOption[];
   readonly placeholder: string;
   readonly requests: readonly Request[];
+  readonly onMoreRequests?: () => void;
   /**
    * Words handed back to the composer, such as a queued message taken back to
    * be reworded. Each new value joins the draft once, ahead of what is there.
@@ -848,6 +849,11 @@ export function Composer(props: {
     );
   return (
     <View style={styles.dock}>
+      {props.onMoreRequests ? (
+        <Pressable accessibilityRole="button" onPress={props.onMoreRequests}>
+          <AppText role="caption">Show more requests</AppText>
+        </Pressable>
+      ) : null}
       {surface === null ? null : question !== null ? (
         <Animated.View entering={appear}>
           <QuestionRequestCard

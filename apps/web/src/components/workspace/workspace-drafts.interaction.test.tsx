@@ -6,7 +6,7 @@ import { MockHostClient } from "@opensteer/client/mock";
 import {
   HostClientRequestError,
   placeList,
-  type HostSnapshot,
+  type TranscriptFixtureSnapshot,
   type PlaceItem,
 } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
@@ -294,7 +294,7 @@ describe("the draft's places", () => {
       expect(titles()).toEqual([other.title]);
       // A snapshot that can no longer prove the end never brings the closed page back.
       const connected = client.getSnapshot.bind(client);
-      const seen = new WeakMap<HostSnapshot, HostSnapshot>();
+      const seen = new WeakMap<TranscriptFixtureSnapshot, TranscriptFixtureSnapshot>();
       const offline = vi.spyOn(client, "getSnapshot").mockImplementation(() => {
         const snapshot = connected();
         if (!seen.has(snapshot)) seen.set(snapshot, { ...snapshot, connection: "offline" });

@@ -9,7 +9,7 @@ import {
   HostClientRequestError,
   taskList,
   type ActionReview,
-  type HostSnapshot,
+  type TranscriptFixtureSnapshot,
   type ReviewedAction,
 } from "@opensteer/client/host";
 import { useActionReview } from "@opensteer/client/react";
@@ -36,7 +36,7 @@ vi.mock("./primitives.js", () => ({
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | null = null;
 let client: MockHostClient;
-let snapshot: HostSnapshot;
+let snapshot: TranscriptFixtureSnapshot;
 const listeners = new Set<() => void>();
 const errors = vi.fn();
 let heldReview: ActionReview | null = null;
@@ -61,7 +61,7 @@ async function setup() {
     };
   });
 }
-async function emit(next: HostSnapshot) {
+async function emit(next: TranscriptFixtureSnapshot) {
   await act(async () => {
     snapshot = next;
     for (const listener of listeners) listener();

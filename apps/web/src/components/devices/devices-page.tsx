@@ -10,6 +10,7 @@ import {
 } from "@opensteer/client/computers";
 import { otherDeviceLine, pluginPath } from "@opensteer/client/settings";
 import { unwrapRpcResult } from "@opensteer/client/host";
+import { useHostSelector } from "@opensteer/client/react";
 import { isAgentPhone } from "@opensteer/client/integrations";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { useShell } from "../app-shell.js";
@@ -37,6 +38,7 @@ export const otherDeviceIcon: Record<OtherDevice["kind"], IconName> = {
 
 export function DevicesSection() {
   const { desktopBridge, hostClient, snapshot } = useShell();
+  const machinePreview = useHostSelector(hostClient, (state) => state.resourceSummaries?.machine);
   const toast = useToast();
   const hereId = useHereId();
   const [adding, setAdding] = useState(false);
@@ -57,6 +59,7 @@ export function DevicesSection() {
     otherDevices: overview.data?.otherDevices ?? [],
   });
   const homeName = snapshot.machines.find(hostsDeployment)?.name ?? "Home";
+  const knownMachines = new Set<string>(snapshot.machines.map(({ id }) => id));
 
   function signOut(row: SignedInDeviceRow) {
     if (signingOut) return;
@@ -96,6 +99,15 @@ export function DevicesSection() {
         {view.devices.map((row) => (
           <DeviceListRow here={row.machine.id === hereId} key={row.machine.id} row={row} />
         ))}
+        {machinePreview?.entries.map(({ id, label }) =>
+          label && !knownMachines.has(id) ? (
+            <li className="card__row devices-row" key={id}>
+              <span className="card__row-body">
+                <span className="card__row-title">{label}</span>
+              </span>
+            </li>
+          ) : null,
+        )}
       </ul>
       {sessions.data === null && !sessions.error ? (
         <LoadingRows label="Loading devices" rows={1} />

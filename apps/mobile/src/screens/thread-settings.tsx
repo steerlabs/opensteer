@@ -1,3 +1,4 @@
+import { useThreadTranscript, usePersonalResources } from "@opensteer/client/react";
 import {
   canContinueThreadOnPlacement,
   routeOnAccount,
@@ -169,6 +170,8 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
     [props.deploymentId, props.snapshot.user?.id, props.threadId],
   );
   const { gate, owner } = useThreadMutation(scope);
+  const { runQueue } = useThreadTranscript(props.hostClient, props.threadId);
+  usePersonalResources(props.hostClient, settingsResources);
 
   // Set on mount rather than at creation, so StrictMode's replayed effect
   // leaves a mounted sheet able to report its own failures.
@@ -185,7 +188,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
   );
   const disabledReason = settingsDisabledReason({
     canRespond: canRespondToRequests(props.snapshot),
-    hasRun: props.snapshot.runQueue.some((run) => run.threadId === props.threadId),
+    hasRun: runQueue.length > 0,
     mutationOwner: owner,
     kind: "thread",
     thread: props.thread,
@@ -245,7 +248,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
     if (thread === undefined) return { error: "This thread is no longer here." };
     const reason = settingsDisabledReason({
       canRespond: canRespondToRequests(snapshot),
-      hasRun: snapshot.runQueue.some((run) => run.threadId === props.threadId),
+      hasRun: runningHere(props.hostClient, props.threadId),
       mutationOwner: null,
       kind: "thread",
       thread,
@@ -550,7 +553,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
       setFailure("This AI is not available right now, so it cannot be started fresh.");
       return;
     }
-    if (runningHere(props.hostClient.getSnapshot(), props.threadId)) {
+    if (runningHere(props.hostClient, props.threadId)) {
       setFailure("Finish or stop this response before starting fresh.");
       return;
     }
@@ -670,9 +673,11 @@ interface ExecutionSwitchReview {
   readonly expectedSelection: ExecutionSelection;
 }
 
+const settingsResources = ["harness-catalog", "harness-auth", "agent-home-settings"] as const;
+
 /** A Run that has not finished is what a switch has to wait for. */
-function runningHere(snapshot: HostSnapshot, threadId: string): boolean {
-  return snapshot.runQueue.some((run) => run.threadId === threadId);
+function runningHere(client: HostClient, threadId: string): boolean {
+  return (client.getThreadTranscript(threadId)?.getSnapshot().runQueue.length ?? 0) > 0;
 }
 
 /**

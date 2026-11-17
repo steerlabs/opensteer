@@ -1,4 +1,5 @@
 import {
+  AuthSessionIdSchema,
   DeploymentIdSchema,
   ExecutionNodeIdSchema,
   RequestIdSchema,
@@ -12,7 +13,11 @@ import {
   utf8ByteLength,
 } from "@opensteer/core";
 import { z } from "zod";
-import { HostBootstrapSchema } from "./bootstrap.js";
+import {
+  AuthenticatedUserViewSchema,
+  PersonalCapabilitiesViewSchema,
+  PersonalSessionSurfaceSchema,
+} from "./bootstrap.js";
 import {
   InstalledResourceRevisionsSchema,
   PersonalResourceInterestsSchema,
@@ -206,10 +211,10 @@ export const PersonalShellSnapshotSchema = z.strictObject({
   resourceRevisions: PersonalResourceRevisionsSchema,
   session: z
     .strictObject({
-      sessionId: HostBootstrapSchema.shape.sessionId,
-      user: HostBootstrapSchema.shape.user,
-      sessionSurface: HostBootstrapSchema.shape.sessionSurface,
-      can: HostBootstrapSchema.shape.can,
+      sessionId: AuthSessionIdSchema,
+      user: AuthenticatedUserViewSchema,
+      sessionSurface: PersonalSessionSurfaceSchema,
+      can: PersonalCapabilitiesViewSchema,
     })
     .optional(),
   nextBefore: z.string().max(4096).nullable().optional(),

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useHostSelector } from "@opensteer/client/react";
 import { needsYouEntryKey, type HostClient } from "@opensteer/client/host";
 import type { NeedsYouEntry } from "@opensteer/protocol";
@@ -15,6 +15,17 @@ export function NeedsYouList({
   onOpen: (entry: NeedsYouEntry) => void;
 }) {
   const page = useHostSelector(client, (snapshot) => snapshot.needsYou);
+  const summaries = useHostSelector(client, (snapshot) => snapshot.attentionSummaries);
+  const count = useHostSelector(client, (snapshot) => snapshot.needsYouCount);
+  const ready = useHostSelector(client, (snapshot) => snapshot.connection === "connected");
+  useEffect(() => {
+    if (ready && count && page === null)
+      void client
+        .loadEarlierNeedsYou()
+        .catch((error: unknown) =>
+          setFailure(error instanceof Error ? error.message : "Could not load requests."),
+        );
+  }, [client, count, page, ready, summaries]);
   const [loading, setLoading] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [dismissing, setDismissing] = useState<string | null>(null);
@@ -47,8 +58,15 @@ export function NeedsYouList({
   };
   return (
     <Dialog title="Needs you" onClose={onClose}>
-      {page?.entries.length === 0 ? <p>Nothing needs you.</p> : null}
+      {count === 0 || page?.entries.length === 0 ? <p>Nothing needs you.</p> : null}
       <ul className="side-list" aria-label="Needs you">
+        {page === null &&
+          summaries?.map((entry) => (
+            <li key={entry.id}>
+              {entry.title}
+              {entry.preview ? <p>{entry.preview}</p> : null}
+            </li>
+          ))}
         {page?.entries.map((entry) => (
           <NeedsYouRow
             dismissing={dismissing === needsYouEntryKey(entry)}

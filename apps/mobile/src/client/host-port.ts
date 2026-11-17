@@ -18,6 +18,7 @@ import {
   type HostClient,
   type HostCapabilityReader,
   type BrowserPreferencesStorage,
+  type PersonalStreamCache,
 } from "@opensteer/client/host";
 import { DeploymentIdSchema, type DeploymentId, type MessageOrigin } from "@opensteer/core";
 import type { HostCapability } from "@opensteer/deployment-authority";
@@ -61,6 +62,7 @@ export type HostEpochAgreement =
  */
 export interface MobileHostPort {
   readonly credentials: DeploymentCredentials;
+  clearPersonalStreamCache?(deploymentId: DeploymentId): Promise<void>;
   attach(input: {
     readonly assetRoute?: import("@opensteer/client/host").AssetRoute;
     readonly authorization: HostAuthorization;
@@ -87,6 +89,7 @@ export type MobileHostPortFactory = (input: {
 
 export function createNetworkHostPort(options: {
   readonly browserPreferencesStorage?: BrowserPreferencesStorage;
+  readonly streamCache?: (deploymentId: DeploymentId) => PersonalStreamCache;
   readonly fetch: HostFetch;
   readonly lifecycle: ClientLifecycle;
   readonly now: () => Date;
@@ -99,6 +102,11 @@ export function createNetworkHostPort(options: {
   const maintenanceNetwork = createMaintenanceNetwork(options);
   return ({ oauth, sessions, sessionExchange }) => ({
     credentials: createDeploymentCredentials({ now: options.now, oauth, sessions }),
+    clearPersonalStreamCache: async (deploymentId) => {
+      const cache = options.streamCache?.(deploymentId);
+      if (cache?.removeDeployment) await cache.removeDeployment(deploymentId);
+      else await cache?.clear?.();
+    },
 
     desktopUpdates: ({ catalog, deploymentId }) => {
       const credentials = createDeploymentCredentials({ now: options.now, oauth, sessions });
@@ -141,9 +149,12 @@ export function createNetworkHostPort(options: {
         origin,
         openWebSocket: options.openWebSocket,
       });
+      const cacheDeploymentId = connection.authority.document.deploymentId;
+      const cache = options.streamCache?.(cacheDeploymentId);
       const client = new HttpHostClient({
         ...(assetRoute ? { assetRoute } : {}),
-        deviceAccessRequests: "include",
+        ...(cache ? { streamCache: cache, cacheDeploymentId } : {}),
+
         baseUrl: origin,
         ...(options.browserPreferencesStorage
           ? { browserPreferencesStorage: options.browserPreferencesStorage }
@@ -152,6 +163,7 @@ export function createNetworkHostPort(options: {
         fetch: network.fetch,
         lifecycle: options.lifecycle,
         origin: options.origin,
+        prepareSocket: () => authorization.current(),
         webSocketFactory: network.webSocketFactory,
       });
       registerPhoneEnrollmentHost(client, {

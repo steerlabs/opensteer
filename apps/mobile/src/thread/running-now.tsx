@@ -7,7 +7,7 @@ import {
   type HostSnapshot,
   type RunningNow,
 } from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
+import { useHostSelector, useThreadTranscript } from "@opensteer/client/react";
 import { memo, useMemo, type ReactNode } from "react";
 import { Pressable, StyleSheet, View, useWindowDimensions } from "react-native";
 import { dismissKeyboard } from "../ui/composer-editor.js";
@@ -34,12 +34,22 @@ export function useRunningNow(
   threadId: string,
   reachable: boolean,
 ): RunningNow | null {
+  const { entries, requests } = useThreadTranscript(hostClient, threadId);
   const select = useMemo(() => {
     const cache = new SubagentCache();
     return heldSelector((snapshot: HostSnapshot) =>
-      runningNow(reachable ? snapshot : { ...snapshot, connection: "offline" }, threadId, cache),
+      runningNow(
+        {
+          ...snapshot,
+          connection: reachable ? snapshot.connection : "offline",
+          transcripts: { [threadId]: entries },
+          requests: { [threadId]: requests },
+        },
+        threadId,
+        cache,
+      ),
     );
-  }, [reachable, threadId]);
+  }, [entries, reachable, requests, threadId]);
   return useHostSelector(hostClient, select, sameRunningNow);
 }
 

@@ -68,15 +68,21 @@ export class PersonalShellStore {
         return true;
       case "host.synchronized":
         if (old.through !== frame.throughSequence) return false;
-        if (!old.synchronized) this.#replace({ ...old, synchronized: true });
+        const snapshot =
+          old.snapshot && frame.shellProgress
+            ? { ...old.snapshot, ...frame.shellProgress }
+            : old.snapshot;
+        if (!old.synchronized || snapshot !== old.snapshot)
+          this.#replace({ ...old, snapshot, synchronized: true });
         return true;
       case "host.snapshot": {
-        if (!("tasks" in frame.snapshot)) return false;
+        if (!("tasks" in frame.snapshot) || old.synchronized) return false;
         const snapshot = frame.snapshot;
         const sameViewer =
           old.snapshot?.epoch === snapshot.epoch &&
           old.snapshot.viewerId === snapshot.viewerId &&
-          old.snapshot.deploymentId === snapshot.deploymentId;
+          old.snapshot.deploymentId === snapshot.deploymentId &&
+          old.snapshot.session?.sessionId === snapshot.session?.sessionId;
         const tasks = new Map(
           snapshot.tasks.map((task) => {
             const prior = sameViewer ? old.tasks.get(task.id) : undefined;
@@ -167,6 +173,10 @@ export class PersonalShellStore {
           ...old,
           through: frame.throughSequence,
           taskIds: ids,
+          snapshot:
+            old.snapshot && frame.shellProgress
+              ? { ...old.snapshot, ...frame.shellProgress }
+              : old.snapshot,
           tasks: tasks ?? old.tasks,
           visits: visits ?? old.visits,
           attention: attention ?? old.attention,
@@ -175,6 +185,35 @@ export class PersonalShellStore {
         return true;
       }
     }
+  }
+
+  removeTask(threadId: string) {
+    const old = this.#state;
+    const attention = new Map([...old.attention].filter(([, row]) => row.threadId !== threadId));
+    if (!old.tasks.has(threadId) && attention.size === old.attention.size) return;
+    const tasks = new Map(old.tasks);
+    const visits = new Map(old.visits);
+    tasks.delete(threadId);
+    visits.delete(threadId);
+    this.#replace({
+      ...old,
+      tasks,
+      visits,
+      attention,
+      taskIds: old.taskIds.filter((id) => id !== threadId),
+      invalidated: new Set([...old.invalidated, "tasks"]),
+    });
+  }
+
+  checkpoint(state = this.#state): ShellSnapshot | undefined {
+    const { snapshot, tasks, taskIds, visits, attention, invalidated } = state;
+    if (!snapshot || invalidated.size) return;
+    return {
+      ...snapshot,
+      tasks: taskIds.flatMap((id) => tasks.get(id) ?? []),
+      visits: [...visits.values()],
+      attention: [...attention.values()],
+    };
   }
 
   #replace(state: ShellState) {

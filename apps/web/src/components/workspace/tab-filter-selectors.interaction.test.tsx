@@ -7,7 +7,7 @@ import { useTabDeviceChoice, useTabFilterMatches } from "@opensteer/client/react
 import {
   TabStore,
   type HostClient,
-  type HostSnapshot,
+  type TranscriptFixtureSnapshot,
   type TabDeviceChoice,
 } from "@opensteer/client/host";
 import { DeviceIdSchema, TabIdSchema, ThreadIdSchema } from "@opensteer/core";
@@ -37,7 +37,7 @@ it("derives tab matches and device counts only when the tab list changes", () =>
       layout: { revision: 1, items: rows.map((row) => ({ kind: "tab", tabId: row.tabId })) },
     },
   });
-  let snapshot: HostSnapshot = { ...base, tabs: store };
+  let snapshot: TranscriptFixtureSnapshot = { ...base, tabs: store };
   const listeners = new Set<() => void>();
   const client = {
     getSnapshot: () => snapshot,
@@ -48,7 +48,7 @@ it("derives tab matches and device counts only when the tab list changes", () =>
       };
     },
   } as unknown as HostClient;
-  const publish = (next: HostSnapshot) =>
+  const publish = (next: TranscriptFixtureSnapshot) =>
     act(() => {
       snapshot = next;
       for (const listener of listeners) listener();

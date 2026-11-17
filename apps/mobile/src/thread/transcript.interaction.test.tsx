@@ -11,7 +11,7 @@ import {
   placeList,
   type DelegationEntry,
   type HostClient,
-  type HostSnapshot,
+  type TranscriptFixtureSnapshot,
   type MessageEntry,
   type NodeEntry,
   type PlaceEntry,
@@ -678,7 +678,7 @@ describe("a turn's subagents", () => {
   async function pane() {
     const loaded = new MockHostClient({ latencyMs: 0, subagents: "absent" });
     await loaded.load();
-    let current: HostSnapshot = { ...loaded.getSnapshot(), connection: "connected" };
+    let current: TranscriptFixtureSnapshot = { ...loaded.getSnapshot(), connection: "connected" };
     loaded.dispose();
     const listeners = new Set<() => void>();
     const hostClient = {

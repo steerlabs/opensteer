@@ -14,10 +14,9 @@ export interface HostAuthorization {
  * One deployment's authorization header, read once per request and remembered.
  *
  * A WebSocket is opened synchronously — the constructor takes its headers and
- * returns — so a socket cannot await a token refresh. It carries what the most
- * recent request obtained instead, which is sound because the client always
- * loads over HTTP before it subscribes, and a stale header is answered by the
- * Host with a 401 that ends the socket rather than by a silent downgrade.
+ * returns. The personal client primes the deployment's credential before it
+ * opens its scoped socket. Other socket callers use the credential obtained
+ * for their owning attachment.
  */
 export function createHostAuthorization(load: () => Promise<string | null>): HostAuthorization {
   let remembered: string | null = null;

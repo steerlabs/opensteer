@@ -7,9 +7,7 @@ function readerInputs(snapshot: HostSnapshot): readonly unknown[] {
     snapshot.connection,
     snapshot.environments,
     snapshot.network,
-    snapshot.requests,
     snapshot.threads,
-    snapshot.transcripts,
     snapshot.waitingRequests,
   ];
 }

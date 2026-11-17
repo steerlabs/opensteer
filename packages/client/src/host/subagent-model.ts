@@ -576,7 +576,7 @@ export function conversationSubagents(
   threadId: string,
   { tasks = true }: { readonly tasks?: boolean } = {},
 ): AgentRoster {
-  const entries = reader.transcripts[threadId] ?? [];
+  const entries = reader.transcripts?.[threadId] ?? [];
   const nodes = transcriptNodes(entries);
   const workflows = new Set(
     nodes.filter((node) => node.nodeKind === "workflow").map((node) => node.nodeId),
@@ -638,7 +638,7 @@ export function subagentTurnModel(
   },
   cache?: SubagentCache,
 ): TurnAgents {
-  const nodes = transcriptNodes(reader.transcripts[threadId] ?? []);
+  const nodes = transcriptNodes(reader.transcripts?.[threadId] ?? []);
   const rows: SubagentTurnRow[] = [];
   let pending: AgentCard[] = [];
   const group = (cards: readonly AgentCard[], key = "") => {

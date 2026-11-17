@@ -1809,6 +1809,8 @@ export class MobileClient {
       else {
         if (options.revoke) await this.#revokePersonalSession(connection, options.removed);
         await this.sessions.clear(id);
+        if (this.#attachedDeploymentId === id) this.#disposeHostClient();
+        await this.#host.clearPersonalStreamCache?.(id);
       }
     } catch (error) {
       await this.#republish();
@@ -1835,6 +1837,8 @@ export class MobileClient {
       else {
         if (options.revoke) await this.#revokePersonalSession(connection, options.removed);
         await this.sessions.clear(id);
+        if (this.#attachedDeploymentId === id) this.#disposeHostClient();
+        await this.#host.clearPersonalStreamCache?.(id);
       }
     } catch (error) {
       await this.#republish();
@@ -2421,15 +2425,9 @@ export class MobileClient {
       const resolved = resolveConnection(connection, null, { authorization });
       const verified = await this.#host.verifyEpoch(resolved, connection);
       if (typeof verified === "string") return null;
-      const result = await withTimeout(
-        client.rpc["attention.get"](
-          verified.capabilities.includes("devices-v1") ? { deviceAccessRequests: "include" } : {},
-        ),
-        deadlineMs,
-        {
-          timeoutError: () => new Error("The computer did not answer in time."),
-        },
-      );
+      const result = await withTimeout(client.rpc["attention.get"]({}), deadlineMs, {
+        timeoutError: () => new Error("The computer did not answer in time."),
+      });
       return result.ok ? result.data : null;
     } catch {
       return null;

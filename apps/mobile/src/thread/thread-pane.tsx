@@ -1,3 +1,5 @@
+import { AnswerPill } from "./answer-pill.js";
+import { useThreadTranscript, usePersonalResources } from "@opensteer/client/react";
 import { TranscriptImageContext } from "@opensteer/client/react";
 import { readTail, type TailReading } from "@opensteer/shared/tailFollow";
 import { useThreadVisits } from "@opensteer/client/react";
@@ -42,7 +44,7 @@ import {
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
 import type { BrowserPageContentPart } from "@opensteer/core";
 import { useTeamsSnapshot } from "../team/team-context.js";
-import { useHostSnapshot, useThreadInputQueue, useWaitingInputs } from "@opensteer/client/react";
+import { useHostSnapshot, useWaitingInputs } from "@opensteer/client/react";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { conversationActions } from "./conversation-actions.js";
 import {
@@ -267,11 +269,7 @@ function selectThreadPane(snapshot: HostSnapshot, threadId: string) {
     machines: snapshot.machines,
     waitingRequests: snapshot.waitingRequests,
     thread: snapshot.threads.find(({ id }) => id === threadId) ?? null,
-    entries: snapshot.transcripts[threadId],
-    window: snapshot.transcriptWindows[threadId],
-    ownRequests: snapshot.requests[threadId],
     lookup: snapshot.threadLookups[threadId],
-    runQueue: snapshot.runQueue.filter((run) => run.threadId === threadId),
     // These helpers read requester/worker Threads and delegated work. Select their
     // answers against the full store so unrelated transcript maps cannot go stale.
     task: taskHeading(snapshot, threadId),
@@ -294,13 +292,19 @@ function sameThreadPaneSelection(left: ThreadPaneSelection, right: ThreadPaneSel
           left.requester?.threadId === right.requester?.threadId &&
           left.requester?.title === right.requester?.title
         );
-      case "runQueue":
-        return sameEntries(left.runQueue, right.runQueue);
       default:
         return left[key] === right[key];
     }
   });
 }
+
+const threadResourceKinds = [
+  "environment",
+  "harness",
+  "harness-catalog",
+  "harness-auth",
+  "settings",
+] as const;
 
 export function ThreadPane(props: ThreadPaneProps): ReactNode {
   const threadId = props.threadId;
@@ -430,6 +434,11 @@ function ThreadPaneForUser(
   const deploymentId = props.deploymentId;
   const { hostClient, onHeader, threadId } = props;
   const inView = usePaneInView();
+  const navigationFocused = useIsFocused();
+  const appForeground = useAppForeground();
+  const showing = inView && navigationFocused && appForeground;
+  const threadDetail = useThreadTranscript(hostClient, threadId, showing);
+  usePersonalResources(showing ? hostClient : null, threadResourceKinds);
   useFocusEffect(
     useCallback(() => {
       // The Host holds one active Thread. A task stays mounted under the one
@@ -438,7 +447,11 @@ function ThreadPaneForUser(
       // it as it comes into view, not merely as it mounts.
       if (!inView) return;
       hostClient.activateThread(threadId);
-      return notifications.enterThread({ deploymentId, threadId });
+      const leave = notifications.enterThread({ deploymentId, threadId });
+      return () => {
+        leave();
+        hostClient.deactivateThread?.(threadId);
+      };
     }, [deploymentId, hostClient, inView, notifications, threadId]),
   );
   // Whether this conversation is the screen in front of the reader. Read
@@ -447,9 +460,7 @@ function ThreadPaneForUser(
   // render it first mounts on. The sidebar covers the screen without blurring
   // the route under it, so it counts as looking away too.
   const sidebarVisible = useSidebarVisible();
-  const navigationFocused = useIsFocused();
   const focused = navigationFocused && !sidebarVisible && inView;
-  const appForeground = useAppForeground();
   // What an arriving alert has to know before it interrupts: an alert about
   // the conversation in front of the reader, at its latest activity, is telling
   // them what they are already watching.
@@ -460,8 +471,8 @@ function ThreadPaneForUser(
     );
   }, [atTail, deploymentId, focused, historical, notifications, props.threadId]);
 
-  const inputQueue = useThreadInputQueue(hostClient, threadId);
-  const waiting = useWaitingInputs(hostClient, threadId);
+  const inputQueue = threadDetail.inputQueue;
+  const waiting = useWaitingInputs(hostClient, threadId, false);
   // A waiting message is held for editing only while its task is in front of
   // the reader: under another screen, out of view or in the background, it goes on.
   const editing = useWaitingEdit(
@@ -496,13 +507,14 @@ function ThreadPaneForUser(
   );
 
   const thread = snapshot.thread;
-  const canRespond = canRespondToRequests(snapshot);
+  const canRespond = threadDetail.synchronized && canRespondToRequests(snapshot);
   const environment = snapshot.environments.find(({ id }) => id === thread?.environmentId);
-  const live = showsHostLive(snapshot) && environment?.status === "connected";
+  const live =
+    threadDetail.synchronized && showsHostLive(snapshot) && environment?.status === "connected";
   const connectionLabel =
     canRespond && environment?.status === "disconnected" ? `${environment.name} offline` : null;
 
-  const entries = useMemo(() => snapshot.entries ?? [], [snapshot.entries, threadId]);
+  const entries = threadDetail.entries;
   // A voice conversation reads as messages, each reply's steps in its
   // Activity; a task keeps its whole trace in view.
   const conversational = thread?.purpose === "voice";
@@ -514,7 +526,7 @@ function ThreadPaneForUser(
   // The same answer every surface gives: what this Thread is doing, and
   // which Run, if any, a Stop would reach.
   const activity =
-    thread === null ? "idle" : threadActivity({ entries, runQueue: snapshot.runQueue, thread });
+    thread === null ? "idle" : threadActivity({ entries, runQueue: threadDetail.runQueue, thread });
   // The message this phone owes the Host. Sent to a Thread at rest it starts
   // the next turn, so it is drawn there at once and the Host's copy takes its
   // place; sent behind a turn at work it waits, and the bar holds it as the
@@ -560,7 +572,7 @@ function ThreadPaneForUser(
     live && thread !== null
       ? threadStartHold({
           environments: snapshot.environments,
-          runQueue: snapshot.runQueue,
+          runQueue: threadDetail.runQueue,
           thread,
         })
       : null;
@@ -584,7 +596,7 @@ function ThreadPaneForUser(
     return heldGroups.current;
   }, [grouped]);
   const stopTarget =
-    thread === null ? null : threadStopTarget({ runQueue: snapshot.runQueue, thread });
+    thread === null ? null : threadStopTarget({ runQueue: threadDetail.runQueue, thread });
   const keptStop = useKeptComputerStop(hostClient, stopTarget?.id ?? null);
   const computers = useMemo<TranscriptComputers>(
     () => ({ hostClient, kept: keptStop, machines: snapshot.machines }),
@@ -606,7 +618,7 @@ function ThreadPaneForUser(
         : groups.map((group) => ({ group, key: group.key })),
     [computers, conversational, groups, live, snapshot.waitingRequests],
   );
-  const canLoadEarlier = snapshot.window?.hasMore ?? false;
+  const canLoadEarlier = threadDetail.hasMore;
 
   // A link may name the Request it is about. A Request still pending is docked
   // in the composer, which is already on screen; one already answered left its
@@ -635,14 +647,29 @@ function ThreadPaneForUser(
   const anchorMessageId = props.messageId ?? null;
   const anchored = useRef<string | null>(null);
   useEffect(() => {
-    if (anchorMessageId === null || anchored.current === anchorMessageId) return;
+    if (
+      !threadDetail.synchronized ||
+      anchorMessageId === null ||
+      anchored.current === anchorMessageId
+    )
+      return;
     anchored.current = anchorMessageId;
     setHistorical(true);
     follow(false);
-    void hostClient.loadTranscriptAround(threadId, anchorMessageId).catch((error: unknown) => {
-      setFailure(operationDetail(error, "That update could not be opened."));
-    });
-  }, [anchorMessageId, follow, hostClient, threadId]);
+    void hostClient
+      .loadTranscriptAround(threadId, anchorMessageId)
+      .then(() => {
+        const item = hostClient
+          .getThreadTranscript(threadId)
+          ?.getSnapshot()
+          .entries.find(({ id }) => id === anchorMessageId);
+        if (item?.kind === "message")
+          hostClient.setTranscriptAnchor(threadId, item.itemId ?? item.id);
+      })
+      .catch((error: unknown) => {
+        setFailure(operationDetail(error, "That update could not be opened."));
+      });
+  }, [anchorMessageId, follow, hostClient, threadId, threadDetail.synchronized]);
 
   /** Puts the live conversation back and returns the reader to its foot. */
   const returnToLatest = useCallback((): void => {
@@ -702,9 +729,24 @@ function ThreadPaneForUser(
     shownHead.current = { key: head.key, runId: head.turn.runId };
   }
 
+  const visibleItem = useRef<string | undefined>(undefined);
+  const onVisibleItems = useRef(
+    ({ viewableItems }: { viewableItems: readonly { item: TranscriptItem }[] }) => {
+      const row = viewableItems[0]?.item;
+      if (row?.kind !== "group") return;
+      const group = row.group;
+      const entry =
+        group.kind === "turn"
+          ? (group.turn.work[0] ?? group.turn.reply ?? group.turn.run)
+          : group.entry;
+      visibleItem.current =
+        (entry && ("itemId" in entry ? (entry.itemId ?? entry.id) : entry.id)) || undefined;
+    },
+  ).current;
   const loadEarlier = useCallback(() => {
     if (paging.current || !canLoadEarlier) return;
     paging.current = true;
+    if (visibleItem.current) hostClient.setTranscriptAnchor(threadId, visibleItem.current);
     setFailure(null);
     setLoadingEarlier(true);
     void hostClient
@@ -719,7 +761,7 @@ function ThreadPaneForUser(
   }, [canLoadEarlier, hostClient, threadId]);
 
   const pendingRequest =
-    requestId !== null && (snapshot.ownRequests ?? []).some((request) => request.id === requestId);
+    requestId !== null && (threadDetail.requests ?? []).some((request) => request.id === requestId);
   // An answer on a page not loaded yet is paged back to. Whether it has a row
   // is not the question: in a conversation it never does.
   useEffect(() => {
@@ -906,8 +948,8 @@ function ThreadPaneForUser(
     [askedRequestId, snapshot.waitingRequests],
   );
   const dockableRequests = useMemo(
-    () => (snapshot.ownRequests ?? []).filter(({ id }) => id !== askedRequestId),
-    [askedRequestId, snapshot.ownRequests],
+    () => (threadDetail.requests ?? []).filter(({ id }) => id !== askedRequestId),
+    [askedRequestId, threadDetail.requests],
   );
   const taskScope = useMemo<TaskScope>(
     () => ({
@@ -1013,8 +1055,8 @@ function ThreadPaneForUser(
   );
 
   const threadRuns = useMemo(
-    () => snapshot.runQueue.filter((run) => run.threadId === threadId),
-    [snapshot.runQueue, threadId],
+    () => threadDetail.runQueue.filter((run) => run.threadId === threadId),
+    [threadDetail.runQueue, threadId],
   );
   const indicator = useMemo(
     () => threadActivityIndicator(activity, { conversation: conversational, groups, startHold }),
@@ -1117,7 +1159,14 @@ function ThreadPaneForUser(
       ? null
       : (waiting?.find((item) => item.messageId === editing.edit?.messageId) ?? null);
   const passwordsOffer = useMemo(() => passwordsSetupOffer(groups), [groups]);
-  const listFooter =
+  const loadMoreActivity = (kind: "tools" | "nodes") => {
+    void hostClient
+      .loadMoreOverlays(threadId, kind)
+      .catch((error: unknown) =>
+        setFailure(operationDetail(error, "More activity could not be loaded.")),
+      );
+  };
+  const conversationFooter =
     passwordsOffer !== null && viewerUserId !== null && !(voiceThread && onCall) ? (
       <>
         <PasswordsSuggestion
@@ -1132,6 +1181,52 @@ function ThreadPaneForUser(
     ) : (
       (queueFooter ?? undefined)
     );
+
+  const listFooter = (
+    <>
+      {threadDetail.inputQueueError !== undefined ? (
+        <AnswerPill
+          tone="secondary"
+          label="Retry loading waiting messages"
+          onPress={() => {
+            void hostClient
+              .loadThreadInputQueue(threadId)
+              .catch((error: unknown) =>
+                setFailure(operationDetail(error, "Waiting messages could not be loaded.")),
+              );
+          }}
+        />
+      ) : null}
+      {conversationFooter}
+      {threadDetail.hasNewer ? (
+        <AnswerPill
+          tone="secondary"
+          label="Load newer"
+          onPress={() => {
+            void hostClient
+              .loadNewerTranscript(threadId)
+              .catch((error: unknown) =>
+                setFailure(operationDetail(error, "Newer activity could not be loaded.")),
+              );
+          }}
+        />
+      ) : null}
+      {threadDetail.moreTools ? (
+        <AnswerPill
+          tone="secondary"
+          label="Show more tools"
+          onPress={() => loadMoreActivity("tools")}
+        />
+      ) : null}
+      {threadDetail.moreNodes ? (
+        <AnswerPill
+          tone="secondary"
+          label="Show more subagents"
+          onPress={() => loadMoreActivity("nodes")}
+        />
+      ) : null}
+    </>
+  );
 
   // Never under a finger: the list moves only where the reader puts it.
   const keepPinned = (): void => {
@@ -1308,6 +1403,7 @@ function ThreadPaneForUser(
           flinging.current = false;
         }}
         onScroll={handleScroll}
+        onViewableItemsChanged={onVisibleItems}
         onScrollBeginDrag={() => {
           dragging.current = true;
         }}
@@ -1547,6 +1643,19 @@ function ThreadPaneForUser(
                       : threadComposerPlaceholder(items.length === 0 && !canLoadEarlier)
                   }
                   requests={dockableRequests}
+                  {...(threadDetail.moreRequests
+                    ? {
+                        onMoreRequests: () => {
+                          void hostClient
+                            .loadMoreOverlays(threadId, "requests")
+                            .catch((error: unknown) =>
+                              setFailure(
+                                operationDetail(error, "More requests couldn’t be loaded."),
+                              ),
+                            );
+                        },
+                      }
+                    : {})}
                   restore={restoredDraft}
                   running={stopTarget !== null}
                   // A task card in a conversation stops its own task, and a task's

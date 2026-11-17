@@ -2,7 +2,7 @@ import { SettingsComputerEnrollment } from "./settings-computer-enrollment.js";
 import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import { unwrapRpcResult, type HostSnapshot } from "@opensteer/client/host";
-import { useHostRead } from "@opensteer/client/react";
+import { useHostRead, usePersonalResources } from "@opensteer/client/react";
 import { iphoneSetupNeeds, iphoneSetupOnMacSteps } from "@opensteer/client/integrations";
 import { connectDeviceDraftText } from "@opensteer/client/settings";
 import { useNavigation } from "@react-navigation/native";
@@ -22,6 +22,8 @@ import type { NativeSettingsSection } from "./native-settings-page.types.js";
 import { otherDevicesSettingsRows } from "./settings-model.js";
 import { useSettingsHost } from "./use-settings-host.js";
 
+const deviceResources = ["machine"] as const;
+
 export function DevicesSettingsController(): ReactNode {
   const [adding, setAdding] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -32,6 +34,8 @@ export function DevicesSettingsController(): ReactNode {
   const iphone = useIphoneAppsState(useIphoneApps());
   const leave = useLeaveSheets(selection.deploymentId, selection.hostClient);
   const host = selection.hostClient;
+  usePersonalResources(host, deviceResources);
+  const machinePreview = useHostValue(host, (state) => state.resourceSummaries?.machine, undefined);
   const deploymentId = selection.deploymentId;
   const overview = useHostRead(
     host === null ? null : () => host.rpc["devices.overview.get"]({}).then(unwrapRpcResult),
@@ -153,6 +157,10 @@ export function DevicesSettingsController(): ReactNode {
     }
   };
 
+  const knownMachines = new Set<string>(snapshot?.machines.map(({ id }) => id));
+  const previewRows = machinePreview?.entries.flatMap(({ id, label }) =>
+    label && !knownMachines.has(id) ? [{ key: id, label, kind: "text" as const }] : [],
+  );
   const nativeSections: NativeSettingsSection[] = [
     ...(failure === null
       ? []
@@ -164,6 +172,7 @@ export function DevicesSettingsController(): ReactNode {
             footer: { text: failure, tone: "danger" as const },
           },
         ]),
+    ...(previewRows?.length ? [{ key: "device-preview", title: "", rows: previewRows }] : []),
     ...sections.map((section) => ({
       key: section.key,
       title: section.title,

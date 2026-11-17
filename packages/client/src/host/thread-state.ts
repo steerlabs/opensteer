@@ -1,7 +1,7 @@
-import { compareSequence, type AgentEventView as AgentEvent, type Sequence } from "@opensteer/core";
+import { compareSequence, type Sequence } from "@opensteer/core";
 import type { ThreadSummary } from "./client.js";
 
-const unloadedThreadLimit = 4096;
+const unloadedThreadLimit = 128;
 
 export type ThreadName = Pick<ThreadSummary, "title" | "icon"> &
   Partial<Pick<ThreadSummary, "doneAt" | "doneReason" | "latestRunCompletedAt" | "lastVisitedAt">>;
@@ -21,39 +21,6 @@ type ThreadState = { returnHint?: ThreadSummary["returnHint"] } & Pick<
 export class ThreadStateProjection {
   readonly #loaded = new Map<string, ThreadState>();
   readonly #unloaded = new Map<string, ThreadState>();
-
-  #coverageFloor: Sequence | null = null;
-
-  cover(sequence: Sequence): void {
-    const previous = this.#coverageFloor;
-    if (previous === null || compareSequence(sequence, previous) > 0)
-      this.#coverageFloor = sequence;
-  }
-
-  needsRead(thread: Pick<ThreadSummary, "id">, sequence: Sequence): boolean {
-    const floor = this.#coverageFloor;
-    if (floor === null || compareSequence(sequence, floor) >= 0) return false;
-    const loaded = this.#loaded.get(thread.id);
-    return loaded === undefined || compareSequence(loaded.stateSequence, floor) < 0;
-  }
-
-  record(event: AgentEvent): boolean {
-    const state =
-      event.type === "thread.state-changed"
-        ? event.data
-        : event.type === "thread.created" ||
-            event.type === "thread.execution-updated" ||
-            event.type === "thread.listed"
-          ? event.data.thread
-          : null;
-    if (!state) return false;
-    this.#accept(event.threadId, {
-      ...state,
-      stateSequence: event.sequence,
-      updatedAt: state.updatedAt ?? event.createdAt,
-    });
-    return true;
-  }
 
   reconcile(
     summary: ThreadSummary,
@@ -158,29 +125,17 @@ export class ThreadStateProjection {
     this.#unloaded.delete(id);
     this.#unloaded.set(id, state);
     if (this.#unloaded.size > unloadedThreadLimit) {
-      const [evictedId, evicted] = this.#unloaded.entries().next().value!;
-      this.cover(evicted.stateSequence);
-      this.#unloaded.delete(evictedId);
+      this.#unloaded.delete(this.#unloaded.keys().next().value!);
     }
   }
 
-  checkpoint() {
-    return {
-      coverage: this.#coverageFloor,
-      loaded: [...this.#loaded],
-      unloaded: [...this.#unloaded],
-    };
-  }
-  restore(checkpoint: ReturnType<ThreadStateProjection["checkpoint"]>): void {
-    this.clear();
-    this.#coverageFloor = checkpoint.coverage;
-    for (const [id, state] of checkpoint.loaded) this.#loaded.set(id, state);
-    for (const [id, state] of checkpoint.unloaded) this.#remember(id, state);
+  forget(threadId: string) {
+    this.#loaded.delete(threadId);
+    this.#unloaded.delete(threadId);
   }
 
   clear(): void {
     this.#loaded.clear();
     this.#unloaded.clear();
-    this.#coverageFloor = null;
   }
 }

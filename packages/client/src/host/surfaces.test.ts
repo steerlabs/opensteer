@@ -4,7 +4,6 @@ import {
   BrowserSessionIdSchema,
   createId,
   SequenceSchema,
-  AgentEventViewSchema,
   TabIdSchema,
   ThreadIdSchema,
   type Tab,
@@ -86,7 +85,7 @@ it("names a message page from its listed tab, and as it was sent once that tab c
 });
 
 describe("liveWork", () => {
-  it("preserves idle surface ordering after a maintenance state event", () => {
+  it("preserves idle surface ordering after a maintenance state revision", () => {
     const projection = new ThreadStateProjection();
     const older = {
       ...task(1, "Older", "idle"),
@@ -96,24 +95,7 @@ describe("liveWork", () => {
       ...task(2, "Newer", "idle"),
       thread: { ...task(2, "Newer", "idle").thread, updatedAt: "2026-01-02T00:00:00.000Z" },
     };
-    projection.record(
-      AgentEventViewSchema.parse({
-        eventId: createId("event"),
-        type: "thread.state-changed",
-        threadId: older.thread.id,
-        environmentId: createId("environment"),
-        runId: null,
-        sequence: "2",
-        createdAt: "2026-01-03T00:00:00.000Z",
-        data: {
-          status: "idle",
-          inputQueuePaused: false,
-          pendingRequests: 0,
-          updatedAt: older.thread.updatedAt,
-          returnHint: null,
-        },
-      }),
-    );
+    projection.reconcile({ ...older.thread, returnHint: null }, SequenceSchema.parse("2"));
     const projected = projection.reconcile(older.thread, SequenceSchema.parse("1"));
     expect(projected.updatedAt).toBe(older.thread.updatedAt);
     expect(

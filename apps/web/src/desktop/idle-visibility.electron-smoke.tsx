@@ -42,7 +42,6 @@ const smoke = {
     const client = new HttpHostClient({
       baseUrl: origin,
       lifecycle: browserClientLifecycle(),
-      refreshIntervalMs: 0,
     });
     await client.load();
     const control = client.retainBrowserViewer(sessionId, surfaceId);

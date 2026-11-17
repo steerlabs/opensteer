@@ -96,7 +96,6 @@ const taskListSourceKeys = [
   "threads",
   "environments",
   "runQueue",
-  "requests",
 ] as const satisfies readonly (keyof HostSnapshot)[];
 
 export type TaskListSource = Pick<HostSnapshot, (typeof taskListSourceKeys)[number]>;
@@ -538,10 +537,11 @@ export function taskWaitingReason(
     | "activeTasks"
     | "environments"
     | "runQueue"
-    | "requests"
     | "waitingRequests"
     | "assignments"
-  >,
+  > & {
+    readonly requests?: Readonly<Record<string, readonly import("@opensteer/core").Request[]>>;
+  },
   threadId: string,
 ): TaskWaitingReason | null {
   const thread =
@@ -556,7 +556,7 @@ export function taskWaitingReason(
     return null;
   const readerRequests = new Set(snapshot.waitingRequests.map(({ request }) => request.id));
   if (
-    snapshot.requests[threadId]?.some(
+    snapshot.requests?.[threadId]?.some(
       (request) => request.status === "pending" && !readerRequests.has(request.id),
     )
   )

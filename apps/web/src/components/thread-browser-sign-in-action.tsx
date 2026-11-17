@@ -1,3 +1,4 @@
+import { requestDecisionRevision } from "@opensteer/client/host";
 import { useEffect, useId, useRef, useState } from "react";
 import type { BrowserSourceId, Request } from "@opensteer/core";
 import {
@@ -129,6 +130,7 @@ export function BrowserSignInRequestBody({
             ? { decision: "allow", sourceId }
             : { decision: "decline" },
         idempotencyKey: mutationIdempotencyKey(`browser-sign-in:${request.id}`),
+        ...requestDecisionRevision(request),
         requestId: request.id,
         type: "browser.sign-in.respond",
       })

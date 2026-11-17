@@ -1,5 +1,5 @@
 import { profileHomeChoice } from "./browser-profile-settings.js";
-import { deviceMachine } from "./device-projection.js";
+import { mockDeviceMachine } from "../mock/mock-device-machine.js";
 import { mockIphoneScreenDevice } from "../mock/mock-screen-devices.js";
 import { tabFixture, tabStoreFixture } from "../test-support/tab-fixtures.js";
 import type { MachineSummary } from "@opensteer/protocol";
@@ -37,6 +37,7 @@ function machine(id: string, name: string, overrides: Partial<MachineSummary> = 
     allowedModules: ["browser"],
     device: id === phone ? { form: "phone", platform: "ios" } : null,
     id,
+    selfRunnerId: id,
     modules: { browser: { checkedAt: null, detail: null, readiness: "ready" } },
     name,
     status: "online",
@@ -253,9 +254,14 @@ describe("new tab", () => {
 
 it("keeps browser placement and homes on the projected self Runner", () => {
   const legacy = machine(phone, "My phone");
-  const projected = { ...deviceMachine(legacy), id: "dev_00000000-0000-4000-8000-00000000000f" };
+  const projected = {
+    ...mockDeviceMachine(legacy),
+    id: "dev_00000000-0000-4000-8000-00000000000f",
+  };
   const screen = mockIphoneScreenDevice();
-  const snapshot = world({ machines: [projected, deviceMachine(machine(mini, "Home")), screen] });
+  const snapshot = world({
+    machines: [projected, mockDeviceMachine(machine(mini, "Home")), screen],
+  });
   const input = browsingOn(snapshot, projected.id);
   expect(input).toEqual({
     identity: { kind: "guest" },

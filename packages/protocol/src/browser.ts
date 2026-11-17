@@ -1422,25 +1422,30 @@ export const AgentBrowserSessionSummarySchema = HostedBrowserSessionSchema.omit(
 });
 export type AgentBrowserSessionSummary = z.infer<typeof AgentBrowserSessionSummarySchema>;
 
+export const BrowserProfileDeletionsViewSchema = z
+  .array(z.unknown())
+  .max(128)
+  .transform((values) =>
+    values.flatMap((value) => {
+      const parsed = PendingBrowserProfileDeletionSchema.safeParse(value);
+      return parsed.success ? [parsed.data] : [];
+    }),
+  )
+  .optional();
+export const BrowserPlacementsViewSchema = z.array(BrowserPlacementSchema).max(129);
+export const BrowserProfileHomesViewSchema = z.array(RunnerIdSchema).max(129).optional();
+export const BrowserProfilesViewSchema = z.array(BrowserProfileSchema).max(128);
+
 export const HostedBrowserBootstrapSchema = z.object({
-  profileDeletions: z
-    .array(z.unknown())
-    .max(128)
-    .transform((values) =>
-      values.flatMap((value) => {
-        const parsed = PendingBrowserProfileDeletionSchema.safeParse(value);
-        return parsed.success ? [parsed.data] : [];
-      }),
-    )
-    .optional(),
+  profileDeletions: BrowserProfileDeletionsViewSchema,
   available: z.boolean(),
-  placements: z.array(BrowserPlacementSchema).max(129),
+  placements: BrowserPlacementsViewSchema,
   /**
    * The computers this person may make a profile on, connected or not. Absent
    * from a Host older than profile homes, which is offered no choice.
    */
-  profileHomes: z.array(RunnerIdSchema).max(129).optional(),
-  profiles: z.array(BrowserProfileSchema).max(128),
+  profileHomes: BrowserProfileHomesViewSchema,
+  profiles: BrowserProfilesViewSchema,
 });
 export type HostedBrowserBootstrap = z.infer<typeof HostedBrowserBootstrapSchema>;
 

@@ -1,3 +1,6 @@
+import type { HostClient } from "@opensteer/client/host";
+import { AnswerPill } from "./answer-pill.js";
+import { useTranscriptMessage, useTranscriptText } from "@opensteer/client/react";
 import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
 import { useNavigation } from "@react-navigation/native";
 import { sideMemory } from "../side-memory.js";
@@ -471,7 +474,15 @@ function ReplyBubble(props: {
   readonly onActivity?: (() => void) | undefined;
   readonly onReply: ((message: MessageEntry) => void) | undefined;
 }): ReactNode {
-  const { message, onReply } = props;
+  const scope = useContext(TaskScopeContext);
+  const [expanded, setExpanded] = useState(false);
+  const message = useTranscriptMessage(
+    scope?.hostClient ?? null,
+    scope?.threadId ?? null,
+    props.message,
+    expanded,
+  );
+  const { onReply } = props;
   const parts = useMemo(() => replyParts(message.body), [message.body]);
   const reply = useMemo(
     () => (onReply === undefined ? undefined : () => onReply(message)),
@@ -507,6 +518,11 @@ function ReplyBubble(props: {
       ) : (
         <MessageAttachments attachments={message.attachments ?? []} />
       )}
+      {props.message.previewTruncated && !expanded ? (
+        <Pressable accessibilityRole="button" onPress={() => setExpanded(true)}>
+          <AppText>Read full reply</AppText>
+        </Pressable>
+      ) : null}
       {/* The record of a finished reply; while its Run works, the conversation's header follows it. */}
       {props.turn === undefined || turnState(props.turn) === "settled" ? (
         <ReplySurfaces
@@ -914,6 +930,9 @@ export function SubagentSteps(props: {
   readonly active: boolean;
   readonly agentScope: AgentScope;
   readonly live: boolean;
+  readonly threadId?: string | undefined;
+  readonly nodeId?: string | undefined;
+  readonly generation?: number | undefined;
   readonly entries: readonly SubagentDetailEntry[];
   readonly onOpenStep: (entryId: string) => void;
 }): ReactNode {
@@ -957,23 +976,25 @@ export function SubagentSteps(props: {
           switch (entry.kind) {
             case "message":
               return (
-                <View key={entry.id} style={styles.assistant}>
-                  <Markdown text={entry.text} />
-                </View>
+                <NodeMessage
+                  key={entry.id}
+                  entry={entry}
+                  client={props.agentScope.hostClient}
+                  threadId={props.threadId}
+                  nodeId={props.nodeId}
+                  generation={props.generation}
+                />
               );
             case "reasoning":
               return (
                 <ReasoningRow
                   active={false}
                   key={entry.id}
-                  reasoning={{
-                    createdAt: "",
-                    id: entry.id,
-                    kind: "reasoning",
-                    runId: null,
-                    state: "done",
-                    text: entry.text,
-                  }}
+                  reasoning={entry}
+                  client={props.agentScope.hostClient}
+                  threadId={props.threadId}
+                  nodeId={props.nodeId}
+                  generation={props.generation}
                 />
               );
             case "agent":
@@ -1103,11 +1124,57 @@ function StepsRow(props: {
  * than in a sheet that would cover it. A thought first seen in an active turn stays
  * open when it completes; historical thoughts remain one-line disclosures.
  */
+function NodeMessage(props: {
+  entry: Extract<SubagentDetailEntry, { kind: "message" }>;
+  client?: HostClient | undefined;
+  threadId?: string | undefined;
+  nodeId?: string | undefined;
+  generation?: number | undefined;
+}) {
+  const { entry, client, threadId, nodeId, generation } = props;
+  const [expanded, expand] = useState(false);
+  const text = useTranscriptText({
+    client,
+    threadId,
+    nodeId,
+    generation,
+    itemId: entry.id,
+    revision: entry.itemRevision,
+    expanded: expanded && entry.previewTruncated === true,
+    preview: entry.text,
+  });
+  return (
+    <View style={styles.assistant}>
+      <Markdown text={text.text} />
+      {entry.previewTruncated && !expanded ? (
+        <AnswerPill tone="secondary" label="Show full message" onPress={() => expand(true)} />
+      ) : null}
+    </View>
+  );
+}
+
 function ReasoningRow(props: {
   readonly active: boolean;
   readonly reasoning: ReasoningEntry;
+  readonly client?: HostClient | undefined;
+  readonly threadId?: string | undefined;
+  readonly nodeId?: string | undefined;
+  readonly generation?: number | undefined;
 }): ReactNode {
   const [open, setOpen] = useState(props.active || props.reasoning.state === "streaming");
+  const scope = useContext(TaskScopeContext);
+  const client = props.client ?? scope?.hostClient;
+  const threadId = props.threadId ?? scope?.threadId;
+  const text = useTranscriptText({
+    client,
+    threadId,
+    nodeId: props.nodeId,
+    generation: props.generation,
+    itemId: props.reasoning.itemId,
+    revision: props.reasoning.itemRevision,
+    expanded: open && props.reasoning.previewTruncated === true,
+    preview: props.reasoning.text,
+  });
   return (
     <View>
       <StepHead
@@ -1119,7 +1186,7 @@ function ReasoningRow(props: {
       {open ? (
         <Animated.View entering={appear} exiting={exit} style={styles.thought}>
           <AppText selectable role="secondary" tone="muted">
-            {props.reasoning.text}
+            {text.text}
           </AppText>
         </Animated.View>
       ) : null}
@@ -1265,16 +1332,29 @@ function AssistantMessage(props: {
   readonly answer: boolean;
   readonly message: MessageEntry;
 }): ReactNode {
-  const { body } = props.message;
+  const scope = useContext(TaskScopeContext);
+  const [expanded, setExpanded] = useState(false);
+  const message = useTranscriptMessage(
+    scope?.hostClient ?? null,
+    scope?.threadId ?? null,
+    props.message,
+    expanded,
+  );
+  const { body } = message;
   return (
     // No bubble, and the full measure: an agent's turn is long markdown with
     // headings, lists and code in it, and a bubble around that is a column
     // narrowed for nothing. The side it sits on is what says who wrote it. Its
     // words stay selectable, so holding them selects and its marks sit under it.
     <View style={styles.assistant}>
-      {body ? <Markdown streaming={props.message.streaming === true} text={body} /> : null}
-      <MessageAttachments attachments={props.message.attachments ?? []} />
-      {props.message.streaming === true ? null : (
+      {body ? <Markdown streaming={message.streaming === true} text={body} /> : null}
+      {props.message.previewTruncated && !expanded ? (
+        <Pressable accessibilityRole="button" onPress={() => setExpanded(true)}>
+          <AppText>Read full reply</AppText>
+        </Pressable>
+      ) : null}
+      <MessageAttachments attachments={message.attachments ?? []} />
+      {message.streaming === true ? null : (
         <View style={styles.marks}>
           {props.answer && body ? (
             <CopyMark accessibilityLabel="Copy reply" style={styles.mark} text={body} />
@@ -1327,7 +1407,14 @@ export function Message(props: {
   readonly onOpenThread: (threadId: string) => void;
   readonly viewerUserId: string | null;
 }): ReactNode {
-  const { message, open } = props;
+  const { open } = props;
+  const scope = useContext(TaskScopeContext);
+  const message = useTranscriptMessage(
+    scope?.hostClient ?? null,
+    scope?.threadId ?? null,
+    props.message,
+    open && props.message.messageKind !== "assistant",
+  );
   const preview = useMemo(() => incomingMessagePreview(message), [message]);
   const body = preview.truncated && !open ? preview.text : message.body;
   // What the reader sends rises once, as it is written down here; the Host's
@@ -1359,7 +1446,7 @@ export function Message(props: {
     <MessageFold
       lines={messageFoldLines(message, props.viewerUserId)}
       mine={mine && !props.queued}
-      more={preview.truncated}
+      more={preview.truncated || props.message.previewTruncated === true}
       onToggle={props.onToggle}
       open={open}
     >

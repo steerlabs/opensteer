@@ -1,3 +1,4 @@
+import { useThreadTranscript } from "@opensteer/client/react";
 import { TranscriptImageContext } from "@opensteer/client/react";
 import {
   canRespondToRequests,
@@ -160,6 +161,7 @@ function AttachedSubagent(props: {
     (focused || ownStepOpen) && foreground,
   );
   const snapshot = watched.snapshot;
+  const { entries, requests } = useThreadTranscript(hostClient, threadId, focused);
   // Out of reach of the conversation's computer, everything here is what was last known.
   const live = useHostSelector(
     hostClient,
@@ -175,24 +177,23 @@ function AttachedSubagent(props: {
   const select = useCallback(
     (host: HostSnapshot): SubagentDetail | null => {
       const summary =
-        transcriptNodes(host.transcripts[threadId] ?? []).find((node) => node.nodeId === nodeId) ??
-        snapshot?.node ??
-        null;
+        transcriptNodes(entries).find((node) => node.nodeId === nodeId) ?? snapshot?.node ?? null;
       if (summary === null || summary.nodeKind === "task") return null;
-      return subagentDetail(
-        snapshot ?? loadingSnapshot(threadId, nodeId),
-        summary,
-        live ? host : { ...host, connection: "offline" },
-      );
+      return subagentDetail(snapshot ?? loadingSnapshot(threadId, nodeId), summary, {
+        ...host,
+        connection: live ? host.connection : "offline",
+        transcripts: { [threadId]: entries },
+      });
     },
-    [live, nodeId, snapshot, threadId],
+    [entries, live, nodeId, snapshot, threadId],
   );
   const detail = useHostSelector(hostClient, select, samePlain);
   const siblings = useHostSelector(
     hostClient,
     useCallback(
-      (host: HostSnapshot) => subagentSiblings(host, threadId, nodeId),
-      [nodeId, threadId],
+      (host: HostSnapshot) =>
+        subagentSiblings({ ...host, transcripts: { [threadId]: entries } }, threadId, nodeId),
+      [entries, nodeId, threadId],
     ),
     sameSiblings,
   );
@@ -222,18 +223,15 @@ function AttachedSubagent(props: {
   // A workflow's members report to the conversation; a subagent's own, to it.
   const parentNodeId = useHostSelector(
     hostClient,
-    useCallback(
-      (host: HostSnapshot) => {
-        const parent = detail?.parent.nodeId;
-        return parent !== undefined &&
-          transcriptNodes(host.transcripts[threadId] ?? []).some(
-            (node) => node.nodeId === parent && node.nodeKind !== "workflow",
-          )
-          ? parent
-          : null;
-      },
-      [detail?.parent.nodeId, threadId],
-    ),
+    useCallback(() => {
+      const parent = detail?.parent.nodeId;
+      return parent !== undefined &&
+        transcriptNodes(entries).some(
+          (node) => node.nodeId === parent && node.nodeKind !== "workflow",
+        )
+        ? parent
+        : null;
+    }, [detail?.parent.nodeId, entries]),
   );
   const reportsTo =
     parentNodeId !== null && detail !== null
@@ -329,7 +327,7 @@ function AttachedSubagent(props: {
     });
   }, [glass, hop, navigation, noun, shownHop, title]);
 
-  const question = useHostSelector(
+  const waitingQuestion = useHostSelector(
     hostClient,
     useCallback(
       (host: HostSnapshot) =>
@@ -340,6 +338,7 @@ function AttachedSubagent(props: {
       [card?.requestId],
     ),
   );
+  const question = requests.find(({ id }) => id === card?.requestId) ?? waitingQuestion;
   const user = useHostSelector(hostClient, selectUser);
   const canRespond = useHostSelector(hostClient, canRespondToRequests);
   const surface = useMemo<SurfaceModel | null>(
@@ -819,6 +818,9 @@ function Steps(props: {
             active={!props.settled}
             agentScope={props.agentScope}
             entries={detail.entries}
+            threadId={detail.card.opens?.threadId}
+            nodeId={detail.card.nodeId ?? undefined}
+            generation={detail.generation}
             live={props.live}
             onOpenStep={props.onOpenStep}
           />

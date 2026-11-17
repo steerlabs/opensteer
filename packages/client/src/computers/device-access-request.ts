@@ -4,7 +4,11 @@ import {
   type DeviceInitialAccess,
   type MachineAccessPolicy,
 } from "@opensteer/protocol";
-import type { HostClient, MachineAccessUpdateOutcome } from "../host/client.js";
+import {
+  requestDecisionRevision,
+  type HostClient,
+  type MachineAccessUpdateOutcome,
+} from "../host/client.js";
 
 export type DeviceSwitchName = "browser" | "apps" | "files";
 
@@ -33,19 +37,29 @@ export async function answerDeviceAccessRequest(
   if (decision === "declined") {
     await client.dispatch({
       type: "request.respond",
+      ...requestDecisionRevision(request),
       idempotencyKey: globalThis.crypto.randomUUID(),
       requestId: request.id,
       response: { kind: "external", value: { decision: "declined" } },
     });
     return;
   }
-  return turnOnDeviceAccess(client, request.payload.machineId, request.payload.access);
+  const { expectedRevision } = requestDecisionRevision(request);
+  return turnOnDeviceAccess(
+    client,
+    request.payload.machineId,
+    request.payload.access,
+    expectedRevision === undefined
+      ? undefined
+      : { requestId: request.id, revision: expectedRevision },
+  );
 }
 
 export async function turnOnDeviceAccess(
   client: Pick<HostClient, "getSnapshot" | "refresh" | "updateMachineAccess">,
   machineId: string,
   access: DeviceSwitchName,
+  requestReview?: { readonly requestId: string; readonly revision: string },
 ): Promise<MachineAccessUpdateOutcome> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const machine = client.getSnapshot().machines.find((entry) => entry.id === machineId);
@@ -57,6 +71,7 @@ export async function turnOnDeviceAccess(
       deviceId: machineId,
       expectedRevision: machine.access.revision,
       policy: withDeviceSwitch(machine.access.policy, access, true),
+      ...(requestReview ? { requestReview } : {}),
     });
     if (result.outcome === "updated") return result;
     await client.refresh();
