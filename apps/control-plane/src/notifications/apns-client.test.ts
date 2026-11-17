@@ -92,6 +92,7 @@ describe("ApnsClient", () => {
       deploymentId,
       kind: "request-opened",
       threadId,
+      body: { deepLink: `com.opensteer.mobile:/deployments/${deploymentId}/threads/${threadId}` },
     });
   });
 
@@ -115,6 +116,31 @@ describe("ApnsClient", () => {
       "thread-id": `${message.data.deploymentId}:${message.data.threadId}`,
     });
     expect(payload.preview).toBe(message.data.preview);
+    expect(payload.body).toEqual({ deepLink: message.data.deepLink });
+    expect(payload.body).not.toHaveProperty("preview");
+  });
+
+  it.each([
+    { threadId: "thread", channelId: "channel", noticeId: "notice", expected: "thread" },
+    { channelId: "channel", noticeId: "notice", expected: "channel" },
+    { noticeId: "notice", expected: "notice" },
+  ])("groups by the most specific target: $expected", async ({ expected, ...target }) => {
+    const transport = vi.fn<ApnsTransport>(async () => ({ body: "", status: 200 }));
+    const message = notificationMessage({
+      deploymentId,
+      kind: "request-opened",
+      requestId: null,
+      threadId: null,
+    });
+    await client(transport).send({
+      apsEnvironment: "development",
+      expiresAt,
+      message: { ...message, data: { ...message.data, ...target } },
+      collapseKey: "group",
+      token,
+    });
+    const payload = JSON.parse(transport.mock.calls[0]![0].body);
+    expect(payload.aps["thread-id"]).toBe(`${deploymentId}:${expected}`);
   });
 
   it("does not expose arbitrary provider or transport text", async () => {

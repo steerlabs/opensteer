@@ -89,10 +89,12 @@ export class ApnsClient {
         origin: apnsOrigins[input.apsEnvironment],
         body: JSON.stringify({
           ...input.message.data,
+          // Expo reads remote content.data from body; the extension reads the root.
+          body: { deepLink: input.message.data.deepLink },
           aps: {
             alert: { body: input.message.body, title: input.message.title },
             sound: "default",
-            "thread-id": `${input.message.data.deploymentId}:${input.message.data.channelId ?? input.message.data.threadId ?? input.message.data.teamId}`,
+            "thread-id": `${input.message.data.deploymentId}:${input.message.data.threadId ?? input.message.data.channelId ?? input.message.data.noticeId ?? ""}`,
             ...(input.message.data.preview ? { "mutable-content": 1 } : {}),
           },
         }),
