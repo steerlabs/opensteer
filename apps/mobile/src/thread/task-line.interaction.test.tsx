@@ -305,7 +305,10 @@ describe("a task's row on a phone", () => {
     await act(async () =>
       node.querySelector<HTMLButtonElement>('[data-menu-action="stop"]')!.click(),
     );
-    expect(node.querySelector("[data-confirm]"), "asked to confirm a Stop that can't go").toBeNull();
+    expect(
+      node.querySelector("[data-confirm]"),
+      "asked to confirm a Stop that can't go",
+    ).toBeNull();
     expect(node.textContent).toContain("Not stopped. You're offline.");
     expect(cancel).not.toHaveBeenCalled();
   });

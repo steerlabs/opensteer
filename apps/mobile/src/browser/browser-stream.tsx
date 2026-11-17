@@ -254,8 +254,8 @@ function BrowserStreamView({
           : undefined;
       setLeaseError(null);
       return release;
-    } catch (error) {
-      setLeaseError(error instanceof Error ? error.message : "This page can’t be shown.");
+    } catch {
+      setLeaseError("This page can’t be shown.");
       return;
     }
   }, [active, attempt, awake, hostClient, interactive, native, session.id, sharedWatch, tabId]);

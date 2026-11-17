@@ -1,4 +1,3 @@
-import { classifyClientFailure } from "@opensteer/client/connections";
 import { computerTargetId } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import {
@@ -40,6 +39,7 @@ import {
   type LoadedAccessRequest,
   integrationAuthorizationSettled,
   integrationAuthorizationCancelUnconfirmedDetail,
+  integrationAuthorizationCancelUnknownDetail,
 } from "@opensteer/client/integrations";
 import { useNavigation } from "@react-navigation/native";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -430,8 +430,17 @@ export function IntegrationConnectCard(props: {
               signal: signIn.signal,
             })
           : null;
+    let cancelUnconfirmed = false;
     const status =
-      started && (await integrationAuthorizationSettled(started, () => setCancelUnconfirmed(true)));
+      started &&
+      (await integrationAuthorizationSettled(started, () => {
+        cancelUnconfirmed = true;
+        setCancelUnconfirmed(true);
+      }).catch((error: unknown) => {
+        // Once a Cancel couldn't be confirmed, a failure leaves its outcome unknown.
+        if (cancelUnconfirmed) throw new ConnectStop(integrationAuthorizationCancelUnknownDetail);
+        throw error;
+      }));
     if (generation !== operationGeneration.current) return;
     if (!status) throw new ConnectStop("Open integration settings to finish this connection.");
     const outcome = integrationAuthorizationError(status.status, status.failureCode);
@@ -1313,21 +1322,15 @@ function RepositoryAccessStep({
 }
 
 /** A step this card found can't go on, in words written for the person. */
-class ConnectStop extends Error {}
+class ConnectStop extends Error {
+  constructor(readonly words: string) {
+    super(words);
+  }
+}
 
-/**
- * Words written for the person: this card's own stops, and the shared
- * integration steps' plain errors. Anything typed (a lost or refused answer)
- * is said by the action's outcome instead, never as its raw text.
- */
+/** This card's own stops; anything else is said by the action's outcome, never its raw text. */
 function stopWords(reason: unknown): string | null {
-  if (reason instanceof ConnectStop) return reason.message;
-  return reason instanceof Error &&
-    reason.constructor === Error &&
-    classifyClientFailure(reason).kind === "unexpected" &&
-    reason.message.trim() !== ""
-    ? reason.message
-    : null;
+  return reason instanceof ConnectStop ? reason.words : null;
 }
 const styles = StyleSheet.create({
   actionPrimary: { flex: 1.4 },

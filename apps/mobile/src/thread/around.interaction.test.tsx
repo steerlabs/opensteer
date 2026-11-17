@@ -154,9 +154,10 @@ vi.mock("../ui/mobile-client-context.js", () => ({
 }));
 vi.mock("expo-haptics", () => ({ selectionAsync: harness.haptic }));
 vi.mock("../ui/action-line.js", () => ({
-  RowSubtitle: (props: { readonly subtitle: ReactNode; readonly line: { text: string } | null }) => (
-    <p>{props.line?.text ?? props.subtitle}</p>
-  ),
+  RowSubtitle: (props: {
+    readonly subtitle: ReactNode;
+    readonly line: { text: string } | null;
+  }) => <p>{props.line?.text ?? props.subtitle}</p>,
 }));
 vi.mock("../ui/bar-title.js", () => ({
   barGlassInset: 8,

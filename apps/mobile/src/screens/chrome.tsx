@@ -273,7 +273,9 @@ function SourceRow(props: {
     },
     reconcile: async (name) => {
       const found = (await readSources(hostClient)).sources.find(({ id }) => id === source.id);
-      return found?.name === name ? { kind: "confirmed", value: undefined } : notDone(renameSpec.done);
+      return found?.name === name
+        ? { kind: "confirmed", value: undefined }
+        : notDone(renameSpec.done);
     },
     retry: () => rename(),
   });

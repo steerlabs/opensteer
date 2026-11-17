@@ -312,7 +312,10 @@ describe("adding this iPhone", () => {
     });
 
     // The refusal is carried as its code; the Host's own words never reach the screen.
-    expect(outcome).toEqual({ failure: { kind: "host-refused", reason: "conflict" }, kind: "failed" });
+    expect(outcome).toEqual({
+      failure: { kind: "host-refused", reason: "conflict" },
+      kind: "failed",
+    });
     if (outcome.kind !== "failed") throw new Error("Expected a failed add");
     expect(addIphoneFailureText(outcome.failure, "Opensteer")).not.toContain("still waiting");
     expect(fake.device.calls).not.toContain("discardPendingEnrollment");

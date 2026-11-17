@@ -514,14 +514,14 @@ function WatchFooter(props: {
           <ActionLine line={line} numberOfLines={2} />
         </View>
       ) : (
-      <AppText role="caption" style={styles.barWords} tone="muted">
-        {`A ${noun} reports to `}
-        <AppText role="caption" style={styles.strong} tone="soft">
-          {footer.reportsTo}
+        <AppText role="caption" style={styles.barWords} tone="muted">
+          {`A ${noun} reports to `}
+          <AppText role="caption" style={styles.strong} tone="soft">
+            {footer.reportsTo}
+          </AppText>
+          {". You can watch it, not message it."}
+          {footer.noStop === null ? null : ` ${footer.noStop}`}
         </AppText>
-        {". You can watch it, not message it."}
-        {footer.noStop === null ? null : ` ${footer.noStop}`}
-      </AppText>
       )}
       <SubagentStop card={card} hostClient={props.hostClient} look="button" />
     </View>

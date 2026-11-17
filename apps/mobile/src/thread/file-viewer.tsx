@@ -4,23 +4,8 @@ import type { FileSource } from "@opensteer/protocol";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { Image } from "expo-image";
 import { clientIssueActions } from "@opensteer/client/feedback";
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type ReactNode,
-} from "react";
-import {
-  FlatList,
-  PixelRatio,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { FlatList, PixelRatio, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import {
   ImageHold,
   openImageSource,

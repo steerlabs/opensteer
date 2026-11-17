@@ -358,7 +358,7 @@ function NewTask(props: {
         if (mounted.current) {
           const key = `start:${Date.now()}`;
           if (error instanceof NotStarted)
-            setLine({ key, text: error.message, tone: "muted", haptic: "warning" });
+            setLine({ key, text: error.words, tone: "muted", haptic: "warning" });
           else if (claimed === null) setLine(issueLine({ code: "storage-unavailable" }, key));
           else if (isHostRefusal(error)) {
             const issue = clientIssue(error, { operation: "action", label: "start this task" });
@@ -495,7 +495,11 @@ function NewTask(props: {
 function noop(): void {}
 
 /** A reason this screen itself has for not starting the task; nothing was written down. */
-class NotStarted extends Error {}
+class NotStarted extends Error {
+  constructor(readonly words: string) {
+    super(words);
+  }
+}
 
 /**
  * What a new task reads — Agent home, the AI it would start on and whether

@@ -87,8 +87,8 @@ export function LocalPhoneTab(props: {
     }
     return;
   }, [held, hostClient, ready]);
-  if (failure)
-    return status(failure instanceof Error ? failure.message : "This tab could not open.");
+  // Said as a fact about the tab; why it couldn't open is the connection's to say.
+  if (failure) return status("This tab could not open.");
   if (!held || !ready || !feed.admitted) return status(feed.error ?? "Opening…");
   return (
     <PhoneBrowserTabHost

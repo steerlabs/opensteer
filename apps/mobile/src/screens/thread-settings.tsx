@@ -1452,7 +1452,11 @@ function SubscribedNewThread(props: {
 }
 
 /** A check this sheet made itself, whose words are its own and safe to show. */
-class SettingsChanged extends Error {}
+class SettingsChanged extends Error {
+  constructor(readonly words: string) {
+    super(words);
+  }
+}
 
 /** Known before anything is sent: the computer can't be reached right now. */
 function notSent(session: ClientSession): string | null {
@@ -1462,7 +1466,7 @@ function notSent(session: ClientSession): string | null {
 
 /** A change that didn't land, in the sheet's own words or the shared outcome words. */
 function changeFailure(error: unknown): string | null {
-  if (error instanceof SettingsChanged) return error.message;
+  if (error instanceof SettingsChanged) return error.words;
   const issue = clientIssue(error, { operation: "action", label: "change this" });
   return issue === null ? null : presentClientIssue(issue).title;
 }

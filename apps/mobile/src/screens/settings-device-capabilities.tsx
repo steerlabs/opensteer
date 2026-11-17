@@ -60,9 +60,7 @@ export function SettingsDeviceCapabilities({
       });
     },
     reconcile: async () =>
-      machineNow() === undefined
-        ? { kind: "confirmed", value: undefined }
-        : notDone("removed"),
+      machineNow() === undefined ? { kind: "confirmed", value: undefined } : notDone("removed"),
   });
   const pending = access.running || removal.running;
   const line = access.line ?? removal.line;

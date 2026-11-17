@@ -16,7 +16,6 @@ import { PlaceholderRows } from "../ui/placeholder.js";
 import { AppText, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { useTeamSession } from "./team-context.js";
 
-
 const expiryChoices: readonly TeamInviteExpiryDays[] = [1, 7, 30];
 
 /** Dark modules on a light tile with its quiet zone: cameras read dark-on-light in any theme. */

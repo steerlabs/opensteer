@@ -325,7 +325,9 @@ function ProfileRow({
         setDraft(null);
       },
       reconcile: async (name) =>
-        current()?.name === name ? { kind: "confirmed", value: undefined } : notDone(renameSpec.done),
+        current()?.name === name
+          ? { kind: "confirmed", value: undefined }
+          : notDone(renameSpec.done),
       retry: () => rename(),
     },
   );

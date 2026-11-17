@@ -1,6 +1,7 @@
 import { BrowserEditingStore, type BrowserCommand } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
+import { DeviceOwnerUnconfirmed } from "../thread/device-owner.js";
 import { createPageAutofill } from "./page-autofill.js";
 
 const surfaceId = BrowserSurfaceIdSchema.parse("page-1");
@@ -115,7 +116,7 @@ describe("page autofill", () => {
 
   it("says why a fill did not happen, except when the person cancelled", async () => {
     const { autofill, events, offer, store } = setup(async () => {
-      throw new Error("Confirm with Face ID.");
+      throw new DeviceOwnerUnconfirmed("Confirm with Face ID.");
     });
     offer();
     await autofill.choose(unconfirmed);

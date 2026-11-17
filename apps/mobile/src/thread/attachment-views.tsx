@@ -6,14 +6,7 @@ import {
   type ArtifactContentPart,
 } from "@opensteer/core";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import {
-  ActivityIndicator,
-  Image,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  View,
-} from "react-native";
+import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { TranscriptImageContext } from "@opensteer/client/react";
 import { ImageHold, personalImageSource } from "../images/image-actions.js";
 import { shareChatAttachment } from "../platform/attachment-draft-files.js";

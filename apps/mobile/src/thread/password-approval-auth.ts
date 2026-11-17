@@ -1,4 +1,5 @@
 import * as LocalAuthentication from "expo-local-authentication";
+import { DeviceOwnerUnconfirmed } from "./device-owner.js";
 
 const purposes = {
   login: {
@@ -22,7 +23,7 @@ export async function authenticatePasswordApproval(
     disableDeviceFallback: false,
   });
   if (!result.success && !["user_cancel", "app_cancel", "system_cancel"].includes(result.error))
-    throw new Error(
+    throw new DeviceOwnerUnconfirmed(
       `Confirm with Face ID, fingerprint or your device passcode to ${purposes[purpose].refused}.`,
     );
   return result.success;

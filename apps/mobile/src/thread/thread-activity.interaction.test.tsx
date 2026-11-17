@@ -66,6 +66,7 @@ vi.mock("./message-hold.js", () => ({
 }));
 vi.mock("../ui/copy-mark.js", () => ({ CopyMark: () => null }));
 vi.mock("./attachment-views.js", () => ({ MessageAttachments: () => null }));
+vi.mock("../ui/action-line.js", () => ({ ActionLine: () => null }));
 vi.mock("../markdown/markdown.js", () => ({
   Markdown: ({ text }: { text: string }) => <p>{text}</p>,
   PlainProse: ({ text }: { text: string }) => <p>{text}</p>,
