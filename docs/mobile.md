@@ -70,7 +70,7 @@ Execution preferences belong to the Host: never silently replace an unavailable 
 computer, and a pending execution change blocks Send. A hidden mounted pane neither claims the
 active Thread nor records visits. Visits follow the presented task while the app is in the foreground and acknowledge Host completion
 and published reply timestamps independently of scroll position. Layout uses measured geometry,
-folds and text size, never device names. Integration OAuth's browser return is
+folds and text size, never device names. Plugin account OAuth's browser return is
 only a wake-up: read the attempt back with the same Host credential. Transcript links are classified by
 [classifyHref](../packages/core/src/hrefs.ts) and opened by the rendering surface's own
 Deployment, so generated content cannot switch Deployments or reach the OS. The composer field is

@@ -142,7 +142,7 @@ describe("computer use action schema", () => {
   });
 });
 
-// The published schema is the contract integration_describe gives to integration_call.
+// The native operation contract rejects actions the helper cannot execute.
 describe.each(["android-phone", "macos-app"] as const)("%s saved login contract", (id) => {
   const variants = catalogActionVariants(id);
   const textSchema = variants.get("type")!.properties.text;

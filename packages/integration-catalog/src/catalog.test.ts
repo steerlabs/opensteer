@@ -58,5 +58,4 @@ describe("device catalog", () => {
     if (!messages) throw new Error("The catalog must define apple-messages");
     expect(parseComputerAppConfig(messages).kind).toBeUndefined();
   });
-
 });

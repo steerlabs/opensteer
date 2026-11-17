@@ -111,7 +111,7 @@ export interface ComputerAppApprovalTask {
 
 /**
  * The one way anything asks for an app on a Mac: a task through
- * `integration_request`, the picker, and unblocking all come here.
+ * `app_access_request`, the picker, and unblocking all come here.
  *
  * A waiting approval that already covers the ask is joined. Anything else
  * replaces it under a new id — wider access, the app as the Mac now resolves

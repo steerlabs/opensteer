@@ -17,6 +17,8 @@ import {
   readPluginWebhookSetup,
   readPluginWorkflowRuns,
   removePlugin,
+  removePluginWebhook,
+  confirmPluginWebhookRemoval,
   setPluginAccess,
   startPluginWorkflow,
   stopPluginWorkflow,
@@ -29,6 +31,8 @@ import type { HostClient } from "@opensteer/client/host";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useState, type ReactNode } from "react";
 import { Alert } from "react-native";
+import { AppFrame } from "../thread/app-frame.js";
+import { Sheet } from "../ui/sheet.js";
 import { confirmDestructive } from "./confirm.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
@@ -66,6 +70,7 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
   const action = usePluginAction(host);
   const [access, setAccess] = useState<PluginAccess | null>(null);
   const [starting, setStarting] = useState<Workflow | null>(null);
+  const [pageOpen, setPageOpen] = useState(false);
   const [webhook, setWebhook] = useState<string | null>(null);
   const hasSchedules = (detail.data?.schedules.length ?? 0) > 0;
   const hasWorkflows = (detail.data?.workflows?.length ?? 0) > 0;
@@ -135,8 +140,18 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
             .filter(Boolean)
             .join(" · "),
         },
-        ...(data.page?.unavailable
-          ? [{ key: "page", kind: "text" as const, label: data.page.unavailable }]
+        ...(data.page
+          ? [
+              {
+                key: "page",
+                kind: "button" as const,
+                label: "Open page",
+                ...(data.page.unavailable ? { detail: data.page.unavailable } : {}),
+                disabled: Boolean(data.page.unavailable) || !data.page.reference,
+                opens: true,
+                onPress: () => setPageOpen(true),
+              },
+            ]
           : []),
       ],
       ...(action.error ? { footer: { text: action.error, tone: "danger" as const } } : {}),
@@ -407,13 +422,10 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
                 : entry.status === "stopping"
                   ? "Stopping"
                   : "Stopped",
-        opens: entry.status === "setup-required",
-        disabled: entry.status !== "setup-required",
+        opens: true,
         onPress: () => setWebhook(entry.id),
       })),
-      footer: {
-        text: "Webhook events reach this computer once Opensteer's webhook route is set up for it.",
-      },
+      ...(data.webhookUnavailable ? { footer: { text: data.webhookUnavailable } } : {}),
     });
   if (data.versions.length)
     sections.push({
@@ -483,10 +495,18 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
           workflow={starting}
         />
       ) : null}
+      {pageOpen && data.page?.reference && !data.page.unavailable ? (
+        <Sheet open title={plugin.name} onClose={() => setPageOpen(false)}>
+          <AppFrame client={host} appId={data.page.reference.pluginId} kind="plugin" />
+        </Sheet>
+      ) : null}
       {webhook ? (
         <WebhookSetup
           host={host}
-          onClose={() => setWebhook(null)}
+          onClose={() => {
+            setWebhook(null);
+            void detail.reload();
+          }}
           pluginId={plugin.id}
           webhookId={webhook}
         />
@@ -558,15 +578,22 @@ function WebhookSetup(props: {
     () => readPluginWebhookSetup(props.host, props.pluginId, props.webhookId),
     props.webhookId,
   );
+  const action = usePluginAction(props.host);
   return (
     <NativeSettingsPage
-      sheet={{ title: "Set up the webhook", onClose: props.onClose }}
+      sheet={{
+        title: setup.data?.step === "remove" ? "Remove the webhook" : "Webhook",
+        onClose: props.onClose,
+      }}
       sections={[
         {
           key: "setup",
           title: "",
           rows: setup.data
             ? [
+                ...(setup.data.unavailable
+                  ? [{ key: "unavailable", kind: "text" as const, label: setup.data.unavailable }]
+                  : []),
                 ...(setup.data.instructions
                   ? [{ key: "how", kind: "text" as const, label: setup.data.instructions }]
                   : []),
@@ -588,8 +615,43 @@ function WebhookSetup(props: {
                       },
                     ]
                   : []),
+                {
+                  key: "remove",
+                  kind: "button",
+                  label:
+                    setup.data.step === "remove"
+                      ? "I've removed it at the service"
+                      : "Remove webhook",
+                  destructive: true,
+                  disabled: action.pending !== null,
+                  onPress: () => {
+                    if (setup.data?.step === "remove")
+                      action.run("confirm", () =>
+                        confirmPluginWebhookRemoval(
+                          props.host,
+                          props.pluginId,
+                          props.webhookId,
+                        ).then(props.onClose),
+                      );
+                    else
+                      action.run("remove", () =>
+                        removePluginWebhook(props.host, props.pluginId, props.webhookId).then(
+                          async () => {
+                            const next = await readPluginWebhookSetup(
+                              props.host,
+                              props.pluginId,
+                              props.webhookId,
+                            );
+                            if (next.step === "done") props.onClose();
+                            else await setup.reload();
+                          },
+                        ),
+                      );
+                  },
+                },
               ]
             : [{ key: "loading", kind: "text", label: setup.error ?? "Loading setup…" }],
+          ...(action.error ? { footer: { text: action.error, tone: "danger" as const } } : {}),
         },
       ]}
     />

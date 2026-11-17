@@ -134,7 +134,8 @@ which can replace the reply.
 
 Private resources belong to the personal owner. Connection ceilings and person-approved
 resource access only narrow authority; removing access cannot erase instructions already in
-engine history. Plugin owner settings remain person-only.
+engine history. Plugin agent-access settings remain person-only; an agent may request an account
+link but cannot approve its consent. See [Plugins](plugins.md) for execution and restart authority.
 
 Every capability names the current attempt's grant. Admission needs a live binding and matching
 Runner boot; reporting needs the binding so a stopped Run can record its end. Revocation and

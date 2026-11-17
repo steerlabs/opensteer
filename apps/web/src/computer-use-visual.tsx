@@ -149,9 +149,6 @@ const connection = (
 ) =>
   ({
     accountIdentifier: null,
-    applicationSource: null,
-    authMethodId: "computer",
-    authorizationDigest: null,
     computer: { access, app, blockedAt, policyRevision: null, runnerId },
     connectionMethod: "computer",
     createdAt: "2026-09-19T00:00:00.000Z",
@@ -159,10 +156,8 @@ const connection = (
     displayName: `${app.displayName} on Alex’s MacBook Pro`,
     externalIdentityId: null,
     externalTenantId: null,
-    grantedScopes: [],
     id,
     provider: "macos-app",
-    providerApplicationId: null,
     status: blockedAt === null ? "connected" : "paused",
     statusDetail: null,
     updatedAt: "2026-09-19T00:00:00.000Z",

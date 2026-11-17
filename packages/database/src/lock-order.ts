@@ -150,9 +150,8 @@ export const databaseLockOrder = [
   "host_oauth_clients",
   "host_oauth_refresh_tokens",
   "host_oauth_consents",
-  // Provider identity and Connection authority precede channel routing.
+  // Account authorization and Connection authority precede channel routing.
   "integration_auth_attempts",
-  "advisory:provider-account",
   "integration_connections",
   // Complete channel parents precede Binding, Identity, Grant and conversation state.
   "channel_accounts",
@@ -354,12 +353,7 @@ export function advisoryLockResource(key: string, seed: number): string {
   }
   if (!Array.isArray(value)) return "advisory:identity";
   if (value[1] === "runner-enrollment-idempotency") return "advisory:runner-enrollment";
-  for (const name of [
-    "command-idempotency",
-    "trigger-create",
-    "attachment-upload",
-    "provider-account",
-  ])
+  for (const name of ["command-idempotency", "trigger-create", "attachment-upload"])
     if (value[0] === name) return `advisory:${name}`;
   if (value.length === 5) return "advisory:lane";
   if (value.length === 3) return "advisory:channel-identity";

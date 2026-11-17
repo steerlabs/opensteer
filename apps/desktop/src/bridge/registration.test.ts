@@ -252,10 +252,7 @@ describe("desktop bridge", () => {
       };
       integrationAuthorizations.accept(buildIntegrationAuthorizationAppReturn("desktop", next));
       await integrationAuthorizations.settled();
-      return [
-        desktopBridgeChannels.integrationAuthorizationReturn,
-        next,
-      ] as const;
+      return [desktopBridgeChannels.integrationAuthorizationReturn, next] as const;
     };
     // Electron reports a route change as a load; only a new document ends the subscription.
     fire("did-start-loading");

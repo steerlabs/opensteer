@@ -75,7 +75,7 @@ export async function readAgentPluginName(directory: string): Promise<string | n
  * forbids them in `env`. `device` names the physical thing the plugin
  * controls, which lists it under Devices instead of Plugins.
  */
-export const opensteerExtensionNamespace = "com.opensteer";
+const opensteerExtensionNamespace = "com.opensteer";
 const OpensteerExtensionSchema = z.strictObject({
   device: PluginDeviceSchema.optional(),
   secrets: z
@@ -147,7 +147,7 @@ const HeaderSchema = z
       ) {
         context.addIssue({
           code: "custom",
-          message: `Secret-bearing remote header ${name} is not stored in Agent Plugin manifests; use MCP OAuth`,
+          message: `Secret-bearing header ${name} is not stored in local-server packages; launch a program that reads a declared secret`,
         });
       }
     }
@@ -226,7 +226,7 @@ interface LoadedAgentPlugin {
   readonly skills: readonly LoadedAgentPluginSkill[];
 }
 
-export interface LoadedAgentPluginSkill {
+interface LoadedAgentPluginSkill {
   readonly description: string;
   readonly digest: string;
   readonly directory: string;
@@ -259,7 +259,6 @@ export type LoadedAgentPluginServer =
  */
 export async function loadAgentPlugin(input: {
   readonly pluginId: string;
-  readonly migrateLegacyData?: boolean;
   readonly dataDirectory: string;
   readonly directory: string;
 }): Promise<LoadedAgentPlugin> {
@@ -301,14 +300,6 @@ export async function loadAgentPlugin(input: {
   if (!/^[a-zA-Z0-9_-]+(?:-[a-zA-Z0-9_-]+)*$/u.test(input.pluginId))
     throw new Error("Invalid plugin id");
   const pluginData = join(resolve(input.dataDirectory), input.pluginId);
-  if (input.migrateLegacyData && !(await optionalLstat(pluginData))) {
-    const legacy = join(resolve(input.dataDirectory), manifest.name);
-    const legacyStat = await optionalLstat(legacy);
-    if (legacyStat) {
-      await requireRealDirectory(legacy, "Legacy plugin data");
-      await rename(legacy, pluginData);
-    }
-  }
   await mkdir(pluginData, { mode: 0o700, recursive: true });
   const resolvedData = await realpath(pluginData);
 
@@ -623,12 +614,13 @@ function materializeRemote(
   const url = new URL(server.url);
   const loopback = isLoopbackHostname(url.hostname);
   if (
-    (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) ||
+    !loopback ||
+    (url.protocol !== "https:" && url.protocol !== "http:") ||
     url.username ||
     url.password ||
     url.hash
   ) {
-    throw new Error("remote MCP URL must be HTTPS, or HTTP on an exact loopback host");
+    throw new Error("A local server URL must use HTTP or HTTPS on an exact loopback host");
   }
   return Object.freeze({
     headers: Object.freeze({ ...server.headers }),

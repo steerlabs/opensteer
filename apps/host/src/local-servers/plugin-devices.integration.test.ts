@@ -339,9 +339,7 @@ describeStore("plugin devices", (test) => {
         target = { kind: "plugin", pluginId } as const;
       const data = join(directory, "plugins", "data", pluginId, "pairing");
       await writeFile(data, "retained");
-      expect((await platform.settings.row(run.userId, target)).permissions.canRemove).toBe(
-        true,
-      );
+      expect((await platform.settings.row(run.userId, target)).permissions.canRemove).toBe(true);
       await expect(platform.settings.row(foreign, target)).rejects.toMatchObject({
         code: "forbidden",
       });

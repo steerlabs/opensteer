@@ -22,8 +22,8 @@ export const computerGuestLibrary = String.raw`
   async function resolve(kind, query, computer) {
     const entries = await call(kind);
     const q = String(query).toLowerCase();
-    const matches = entries.filter(entry => [entry.id,entry.name,entry.bundleId].some(value => value && value.toLowerCase() === q) && (!computer || entry.computer === computer));
-    if(matches.length !== 1) throw new ComputerError("app-not-allowed",matches.length ? "Choose one: " + matches.map(entry=>entry.name+" on "+entry.computer).join(", ") : "No approved " + (kind === "apps" ? "app" : "phone") + " matches " + query + ". Search integrations for access.");
+    const matches = entries.filter(entry => [entry.id,entry.name,entry.bundleId,...(kind === "phones" ? [entry.computerId] : [])].some(value => value && value.toLowerCase() === q) && (!computer || entry.computer === computer));
+    if(matches.length !== 1) throw new ComputerError("app-not-allowed",matches.length ? "Choose one: " + matches.map(entry=>entry.name+" on "+entry.computer).join(", ") : "No approved " + (kind === "apps" ? "app" : "phone") + " matches " + query + ". Call computer_apps, then app_access_request for access.");
     return matches[0];
   }
   const windowStates = new Map();

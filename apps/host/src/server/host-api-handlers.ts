@@ -143,7 +143,8 @@ export function createHostApiHandlers(
       return rpcSuccess(overview);
     },
     ...createSettingsReadHandlers({
-      otherDevices: (owner, machines) => devices.devices.store.settings.otherDevices(owner, machines),
+      otherDevices: (owner, machines) =>
+        devices.devices.store.settings.otherDevices(owner, machines),
       machines: coreHandlers["machines.list"],
     }),
     "computer.app.windows": async (input, context) => {

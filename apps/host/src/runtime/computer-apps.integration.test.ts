@@ -211,9 +211,9 @@ integration("computer apps", () => {
     closers.unshift(() => gateway.close());
 
     const held = await startHeldRequest(host, run.runId, () =>
-      gateway.call("integration_request", {
+      gateway.call("app_access_request", {
         access: "read",
-        integration: "apple-messages",
+        dataApp: "messages",
         reason: "Read recent conversations",
       }),
     );
@@ -257,9 +257,9 @@ integration("computer apps", () => {
     );
     await setComputerApp(host, computer, writeSetup, writeSetup.id);
     const writeHeld = await startHeldRequest(host, run.runId, () =>
-      gateway.call("integration_request", {
+      gateway.call("app_access_request", {
         access: "read-write",
-        integration: "apple-messages",
+        dataApp: "messages",
         reason: "Send a message",
       }),
     );
@@ -320,9 +320,9 @@ integration("computer apps", () => {
       to: { address: "friend@example.test" },
     });
     expect(narrowed.failure).toContain("Messages on Studio Mac allows reading only.");
-    expect(narrowed.failure).toContain(
-      `call integration_request with integration \\"apple-messages\\", account \\"${enabled.connection.id}\\" and access \\"read-write\\"`,
-    );
+    expect(narrowed.failure).toContain("app_access_request");
+    expect(narrowed.failure).toContain("dataApp");
+    expect(narrowed.failure).toContain("read-write");
 
     const widenSetup = await requestComputerAppSetup(
       host,
@@ -412,9 +412,9 @@ integration("computer apps", () => {
       { headers: host.ownerHeaders },
     );
     const pendingHeld = await startHeldRequest(host, run.runId, () =>
-      gateway.call("integration_request", {
+      gateway.call("app_access_request", {
         access: "read-write",
-        integration: "apple-messages",
+        dataApp: "messages",
         reason: "Send a follow-up",
       }),
     );
@@ -556,9 +556,9 @@ integration("computer apps", () => {
     const gateway = await integrationGateway(run.integrationTools);
     closers.unshift(() => gateway.close());
     const held = await startHeldRequest(host, run.runId, () =>
-      gateway.call("integration_request", {
+      gateway.call("app_access_request", {
         access: "read",
-        integration: "apple-messages",
+        dataApp: "messages",
         reason: "Read recent conversations",
       }),
     );

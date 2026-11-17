@@ -72,12 +72,6 @@
   font-size: var(--text-root);
 }
 
-.check-list--scroll {
-  max-height: 280px;
-  overflow-y: auto;
-  padding-right: 2px;
-}
-
 /* An integration access Request: head, accounts, then the answer at the foot. */
 .connect-card {
   --connect-row: 40px;

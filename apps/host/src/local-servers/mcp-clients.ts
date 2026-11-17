@@ -18,12 +18,6 @@ import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { boundedToolDescription, boundedToolTitle } from "@opensteer/integration-core/tool-schemas";
 import { ComputerMcpTransport } from "./computer-mcp-transport.js";
 
-/**
- * The MCP clients the Host holds: sessions with servers its computers run and,
- * for service integrations, with servers on the internet. One pool holds both,
- * so an installation that changes ends every session its servers have open.
- */
-
 export const connectionTimeoutMs = 15_000;
 export const toolCallTimeoutMs = 60_000;
 export const maximumToolsPerServer = 2_000;
@@ -45,14 +39,6 @@ export interface UpstreamClient {
   readonly fingerprint: string;
   /** Lets this client go, and not whichever client later holds its place. */
   readonly letGo: () => void;
-  readonly responseRedactor: (() => CredentialResponseRedactor) | null;
-  readonly credentialRevision?: () => number | null;
-}
-
-/** The OAuth side of a client, for a server that signs its connection in. */
-export interface McpClientAuthorization {
-  credentialRevision(): number | null;
-  responseRedactor(): CredentialResponseRedactor;
 }
 
 export class McpClientPool {
@@ -74,56 +60,31 @@ export class McpClientPool {
 
   /**
    * The client one call uses, shared with every other call on the same server
-   * and connection while its transport and credentials stay what they were.
+   * and connection while its approved launch stays current.
    */
-  async client<Authorization extends McpClientAuthorization>(
+  async client(
     callable: CallableIntegrationTool,
-    options: {
-      readonly authorization: () => Promise<Authorization | undefined>;
-      readonly connect: (
-        authorization: Authorization | undefined,
-        signal: AbortSignal,
-      ) => Promise<Client>;
-    },
+    connect: (signal: AbortSignal) => Promise<Client>,
   ): Promise<UpstreamClient> {
     const { server } = callable;
     const connectionId = callable.grant.connectionId;
     const key = `${server.id}:${connectionId ?? "deployment"}`;
     const fingerprint = integrationSchemaDigest({ connectionId, transport: server.transport });
-    const authProvider = connectionId ? await options.authorization() : undefined;
     const current = this.#clients.get(key);
     if (current) {
-      return current.client.then(async (value) => {
-        if (value.fingerprint === fingerprint) {
-          const clientRevision = value.credentialRevision?.();
-          const storedRevision = authProvider?.credentialRevision();
-          if (clientRevision === storedRevision) return value;
-          if (clientRevision == null || storedRevision == null || !connectionId)
-            throw new Error("MCP credential revision is unavailable");
-          if (storedRevision <= clientRevision) return value;
-          const latest = await options.authorization();
-          if (this.#clients.get(key) !== current) return this.client(callable, options);
-          const latestRevision = latest?.credentialRevision();
-          const currentRevision = value.credentialRevision?.();
-          if (latestRevision == null || currentRevision == null)
-            throw new Error("MCP credential revision is unavailable");
-          if (latestRevision <= currentRevision) return value;
-        }
+      return current.client.then((value) => {
+        if (value.fingerprint === fingerprint) return value;
         this.letGo(key, current);
-        return this.client(callable, options);
+        return this.client(callable, connect);
       });
     }
-    // Another call may have started this client meanwhile; it is shared.
-    if (this.#clients.has(key)) return this.client(callable, options);
     return this.open(key, callable.installation.id, async (signal) => {
-      const client = await options.connect(authProvider, signal);
+      const client = await connect(signal);
       return {
         client,
         // Kept here because the SDK lets go of a transport once it closes.
         computer: client.transport instanceof ComputerMcpTransport ? client.transport : null,
         fingerprint,
-        ...(authProvider ? { credentialRevision: () => authProvider.credentialRevision() } : {}),
-        responseRedactor: authProvider ? () => authProvider.responseRedactor() : null,
       };
     }).client;
   }

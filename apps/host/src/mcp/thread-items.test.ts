@@ -48,15 +48,12 @@ it.each([
   expect(withheldTool(name)).toBe(true);
 });
 
-it.each([
-  "shell",
-  "integration_call",
-  "opensteer_task_read",
-  "computer_list",
-  "custom_integration_request",
-])("keeps %s", (name) => {
-  expect(withheldTool(name)).toBe(false);
-});
+it.each(["shell", "plugin_call", "opensteer_task_read", "computer_list", "local_server_add"])(
+  "keeps %s",
+  (name) => {
+    expect(withheldTool(name)).toBe(false);
+  },
+);
 
 it("names a file a message carries", () => {
   const item = messageItem(

@@ -206,9 +206,6 @@ describe("computer app auxiliary frames", () => {
 
     const connection = {
       accountIdentifier: null,
-      applicationSource: null,
-      authMethodId: "computer",
-      authorizationDigest: null,
       computer: {
         access: "read-write",
         app: null,
@@ -222,10 +219,8 @@ describe("computer app auxiliary frames", () => {
       displayName: "Mac mini",
       externalIdentityId: null,
       externalTenantId: null,
-      grantedScopes: [],
       id: createIntegrationId("connection"),
       provider: "apple-messages",
-      providerApplicationId: null,
       status: "connected",
       statusDetail: null,
       statusReason: null,

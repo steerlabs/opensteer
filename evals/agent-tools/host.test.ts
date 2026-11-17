@@ -17,8 +17,8 @@ it("returns a fixture refusal as an MCP tool error after validation", async () =
       profile: "task",
       source: { commit: "a".repeat(40), note: "Mock errors retain production input validation" },
       turns: ["Inspect availability"],
-      mocks: { integration_search: { $error: "Service is offline." } },
-      expect: { calls: [{ tool: "integration_search", args: { query: "mail" } }] },
+      mocks: { plugin_search: { $error: "Service is offline." } },
+      expect: { calls: [{ tool: "plugin_search", args: { query: "mail" } }] },
     }),
   )[0]!;
   const host = await startFakeHost(testCase);
@@ -61,7 +61,7 @@ it("serves the production inventory and validates mocked calls through real MCP 
       profile: "task",
       turns: ["hi"],
       mocks: {
-        integration_search: { $responses: [{ marker: "first" }, { marker: "second" }] },
+        plugin_search: { $responses: [{ marker: "first" }, { marker: "second" }] },
         opensteer_automation_list: {
           $byArgs: [{ args: { systemRole: "memory-light" }, result: { marker: "light" } }],
         },
@@ -84,22 +84,20 @@ it("serves the production inventory and validates mocked calls through real MCP 
       expect(host.endpoints.get(name)?.tools.some(({ name }) => name === "computer_use")).toBe(
         true,
       );
-      expect(host.endpoints.get(name)?.tools.some(({ name }) => name === "integration_call")).toBe(
-        true,
-      );
+      expect(host.endpoints.get(name)?.tools.some(({ name }) => name === "plugin_call")).toBe(true);
       const valid = await client.callTool({
-        name: "integration_search",
+        name: "plugin_search",
         arguments: { query: "mail" },
       });
       expect(valid.isError).not.toBe(true);
       expect(JSON.stringify(valid)).toContain("first");
       const invalid = await client.callTool({
-        name: "integration_search",
+        name: "plugin_search",
         arguments: { unexpected: true },
       });
       expect(invalid.isError).toBe(true);
       const second = await client.callTool({
-        name: "integration_search",
+        name: "plugin_search",
         arguments: { query: "mail" },
       });
       expect(JSON.stringify(second)).toContain("second");
@@ -169,9 +167,9 @@ it("validates prompt overhaul case inputs and mocked positive calls with product
           const args =
             required.tool === "computer_use"
               ? { code: 'return await app("Notes")' }
-              : required.tool === "integration_call"
-                ? { ...required.args, arguments: {} }
-                : required.tool === "integration_search"
+              : required.tool === "plugin_call"
+                ? { calls: { ...(required.args.calls as object), input: {} } }
+                : required.tool === "plugin_search"
                   ? { query: "Notes" }
                   : required.args;
           await client.callTool({
@@ -213,9 +211,12 @@ it("validates the new surface cases with each caller's production inventory", as
           name: required.tool,
           arguments: {
             ...required.args,
-            ...(["integration_request", "saved_login_request", "chrome_cookies_request"].includes(
-              required.tool,
-            )
+            ...([
+              "plugin_account_request",
+              "app_access_request",
+              "saved_login_request",
+              "chrome_cookies_request",
+            ].includes(required.tool)
               ? { reason: "Complete the account check" }
               : {}),
             ...(["opensteer_task_delegate", "opensteer_task_create"].includes(required.tool)

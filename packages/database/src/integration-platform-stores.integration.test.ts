@@ -857,11 +857,11 @@ integration.sequential("PostgreSQL computer app connections", () => {
     });
     expect(created.created).toBe(true);
     expect(created.connection).toMatchObject({
-      authorizationDigest: null,
       computer: { access: "read", runnerId: setup.runnerId },
       connectionMethod: "computer",
       displayName: "Mac lifecycle",
     });
+    expect(created.connection).not.toHaveProperty("authorizationDigest");
     const readTool = await database
       .selectFrom("integrationTools")
       .select(["id", "name"])
@@ -2815,6 +2815,25 @@ integration.sequential("PostgreSQL computer app connections", () => {
       ({ kind }) => kind === "server",
     );
     if (!asked) throw new Error("The server's computer was not asked");
+    await setLaunch({ EDITION: "unreviewed" });
+    let sealedUnreviewedSecrets = false;
+    await expect(
+      platform.localMcp.approve({
+        actorUserId: setup.ownerUserId,
+        runnerId: setup.runnerId,
+        setupRequestId: asked.id,
+        secrets: async () => {
+          sealedUnreviewedSecrets = true;
+          return Buffer.from("unreviewed");
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: "This server changed since the computer was asked about it; it will be asked again.",
+    });
+    expect(sealedUnreviewedSecrets).toBe(false);
+    expect((await platform.localMcp.get(setup.gui.serverId))?.approvedLaunchDigest).toBeNull();
+    await setLaunch({});
     await platform.localMcp.approve({
       actorUserId: setup.ownerUserId,
       runnerId: setup.runnerId,
@@ -3482,7 +3501,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
     });
     // Every listing that projects a computer connection carries the app.
     await expect(
-      listIntegrationConnections(database, setup.ownerUserId).then((rows) => rows.map(({ computer }) => computer?.app ?? null)),
+      listIntegrationConnections(database, setup.ownerUserId).then((rows) =>
+        rows.map(({ computer }) => computer?.app ?? null),
+      ),
     ).resolves.toEqual(
       expect.arrayContaining([
         null,
@@ -5100,7 +5121,7 @@ function localServerInstallation(
     description: "Records for the team",
     id: installationId,
     manifest: { name: "records" },
-    name: `plugin-${installationId}`,
+    name: `plugin-${installationId.replaceAll("_", "-")}`,
     provenance: { snapshotDigest: "c".repeat(64), standard: "agent-plugins/1.0.0" },
     sourceKind: "plugin" as const,
     status: "active" as const,
@@ -5109,10 +5130,6 @@ function localServerInstallation(
     version: null,
   };
 }
-
-
-
-
 
 async function runningRunFixture(store: OpensteerStore, suffix: string) {
   const personal = await personalFixtureOwner(

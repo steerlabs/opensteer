@@ -837,9 +837,6 @@ function readyOperation(operation = "query_messages") {
 function connection(access: "read" | "read-write"): IntegrationConnectionSummary {
   return {
     accountIdentifier: null,
-    applicationSource: null,
-    authMethodId: "computer",
-    authorizationDigest: null,
     computer: { access, app: null, blockedAt: null, policyRevision: null, runnerId: macMini },
     connectionMethod: "computer",
     createdAt: "2026-09-02T10:20:00.000Z",
@@ -847,10 +844,8 @@ function connection(access: "read" | "read-write"): IntegrationConnectionSummary
     displayName: "Mac mini",
     externalIdentityId: null,
     externalTenantId: null,
-    grantedScopes: [],
     id: "con_00000000-0000-4000-8000-000000000009",
     provider: "apple-messages",
-    providerApplicationId: null,
     status: "connected",
     statusDetail: null,
     updatedAt: "2026-09-02T10:20:00.000Z",

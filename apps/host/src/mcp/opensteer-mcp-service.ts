@@ -459,8 +459,7 @@ export class OpensteerMcpService {
       // written, a provider's content (text, images, its error) as it came,
       // and a record as JSON with its structured copy.
       if (typeof result === "string") return { content: [{ type: "text" as const, text: result }] };
-      if (tool?.output === ComputerUseOutputSchema)
-        return ComputerUseOutputSchema.parse(result);
+      if (tool?.output === ComputerUseOutputSchema) return ComputerUseOutputSchema.parse(result);
       if (pluginHold && result.status === "pending" && typeof result.executionId === "string") {
         const held = await pluginHold.service.hold({
           caller: pluginHold.caller,

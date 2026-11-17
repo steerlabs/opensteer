@@ -319,7 +319,7 @@ describe("foldTranscriptEvent", () => {
       arguments: { arguments: {}, toolRef: "igr_x.itl_y.z" },
       callId: "call-1",
       integration: subject,
-      tool: { name: "integration_call", namespace: "opensteer.integrations" },
+      tool: { name: "computer.click", namespace: "opensteer.integrations" },
     });
     const completed = event("tool.completed", {
       callId: "call-1",

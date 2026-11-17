@@ -602,18 +602,16 @@ integration.sequential("iPhone integrations Host contract", () => {
         mcpServers: { fixture: { type: "stdio", command: "node", args: [] } },
       }),
     );
-    const mcp = await command(
-      host,
-      {
-        type: "plugin.install",
-        idempotencyKey: randomUUID(),
-        input: { directory: pluginDirectory, runnerId: phone.runnerId },
-      },
-      admin,
-    );
-    expect(mcp.status, await mcp.clone().text()).toBe(403);
-    expect(await mcp.json()).toMatchObject({
-      error: { message: "Local servers can't run on an iPhone." },
+    await expect(
+      host.runtime.localServers.installPackage({
+        actorUserId: host.ownerId,
+        directory: pluginDirectory,
+        requestId: "iphone-local-server-refused",
+        runnerId: phone.runnerId,
+      }),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+      message: "Local servers can't run on an iPhone.",
     });
     const connection = await host.store.database
       .selectFrom("integrationConnections")
@@ -1125,9 +1123,9 @@ async function grant(
   connectionId: string,
   access: IntegrationAccess,
 ) {
-  const held = gateway.call("integration_request", {
+  const held = gateway.call("app_access_request", {
     access,
-    integration: "apple-calendar",
+    dataApp: "calendar",
     reason: "Use phone Calendar",
   });
   const pending = () =>

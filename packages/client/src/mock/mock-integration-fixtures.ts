@@ -8,26 +8,17 @@ import {
   type IntegrationDefinitionSummary,
   type IntegrationGrant,
   type IntegrationPlatformDashboard,
-  type IntegrationProviderApplication,
-  type IntegrationProviderAuthorization,
-  type IntegrationProviderManifest,
   type IntegrationInstallationId,
   type IntegrationServerId,
 } from "@opensteer/integration-core";
 
 type MockInstallationEntry = IntegrationPlatformDashboard["installations"][number];
-type MockMcpConnection = IntegrationPlatformDashboard["connections"][number];
 
 interface MockIntegrationState {
-  applications: IntegrationProviderApplication[];
-  callbackUrls: Record<string, string>;
   catalog: IntegrationCatalogEntry[];
   connections: IntegrationConnectionSummary[];
   grants: IntegrationGrant[];
   installations: MockInstallationEntry[];
-  mcpConnections: MockMcpConnection[];
-  providerAuthorizations: Record<string, IntegrationProviderAuthorization>;
-  providers: IntegrationProviderManifest[];
 }
 
 interface MockToolSeed {
@@ -402,82 +393,6 @@ export function mockComputerAppInstallation(input: {
   };
 }
 
-export function mockIntegrationInstallation(input: {
-  readonly createdAt: string;
-  readonly definition: IntegrationDefinitionSummary;
-  readonly installedBy: UserId;
-  readonly digest: string;
-  readonly providerApplicationRequired: boolean;
-  readonly tools: readonly MockToolSeed[];
-}): MockInstallationEntry {
-  const { createdAt, definition } = input;
-  const installationId = createIntegrationId("installation");
-  const serverId = createIntegrationId("server");
-  return {
-    installation: {
-      createdAt,
-      description: definition.description,
-      id: installationId,
-      manifest: { definition, digest: input.digest, kind: "catalog" },
-      name: definition.id,
-      provenance: { installedBy: input.installedBy, source: "catalog" },
-      revision: 1,
-      sourceKind: "built-in",
-      status: "active",
-      title: definition.name,
-      trust: "built-in",
-      updatedAt: createdAt,
-      version: null,
-    },
-    servers: [
-      {
-        connectionRequirement: {
-          definitionId: definition.id,
-          kind: "provider",
-          provider: definition.provider,
-          providerApplicationRequired: input.providerApplicationRequired,
-        },
-        id: serverId,
-        installationId,
-        name: definition.id,
-        status: "active",
-        statusDetail: null,
-        toolGeneration: 1,
-        transportType: "adapter",
-        updatedAt: createdAt,
-      },
-    ],
-    tools: input.tools.map((tool) => ({
-      annotations: {},
-      connectionId: null,
-      description: tool.description,
-      id: createIntegrationId("tool"),
-      name: tool.name,
-      schemaDigest: mockIntegrationDigest(`${definition.id}-tool-${tool.name}`),
-      serverId,
-      status: "active",
-      title: tool.title,
-    })),
-  };
-}
-
-export function mockCatalogTools(
-  definition: IntegrationDefinitionSummary,
-): readonly MockToolSeed[] {
-  return [
-    {
-      description: `${definition.name} operations.`,
-      name: `${definition.id}_operations`,
-      title: `${definition.name} operations`,
-    },
-  ];
-}
-
-/**
- * A representative deployment: installed presets with connected, key-based,
- * and failing accounts, one catalog-only preset, one remote MCP server, and
- * the provider-authorization spread the connect and admin flows branch on.
- */
 /** The local server the preview lists under "On your devices", registered by an agent. */
 export const mockNotesServer = {
   installationId: "iin_00000000-0000-4000-8000-0000000000a1" as IntegrationInstallationId,
@@ -583,9 +498,6 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
     readonly policyRevision: number | null;
   }): IntegrationConnectionSummary => ({
     accountIdentifier: null,
-    applicationSource: null,
-    authMethodId: "computer",
-    authorizationDigest: null,
     computer: {
       access: input.access,
       app: input.app,
@@ -599,10 +511,8 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
     displayName: `${input.app.displayName} on Mac mini`,
     externalIdentityId: null,
     externalTenantId: null,
-    grantedScopes: [],
     id: input.id,
     provider: mockComputerUseDefinition.provider,
-    providerApplicationId: null,
     // A blocked app keeps its connection so it can be unblocked, and nothing more.
     status: input.blockedAt === null ? "connected" : "paused",
     statusDetail: null,
@@ -611,8 +521,6 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
   });
 
   return {
-    applications: [],
-    callbackUrls: {},
     catalog: [
       ...mockIphoneAppDefinitions.map((definition) => ({
         definition,
@@ -638,11 +546,6 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
     connections: [
       {
         accountIdentifier: null,
-        // An app on a computer holds no credential and no OAuth posture, so it
-        // carries no authorization digest to describe one.
-        applicationSource: null,
-        authMethodId: "computer",
-        authorizationDigest: null,
         computer: {
           access: "read",
           app: null,
@@ -656,10 +559,8 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
         displayName: "Mac mini",
         externalIdentityId: null,
         externalTenantId: null,
-        grantedScopes: [],
         id: messagesConnectionId,
         provider: "apple-messages",
-        providerApplicationId: null,
         status: "connected",
         statusDetail: null,
         statusReason: null,
@@ -667,9 +568,6 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
       },
       {
         accountIdentifier: null,
-        applicationSource: null,
-        authMethodId: "computer",
-        authorizationDigest: null,
         // On, at the higher ceiling, on a Mac that is asleep: the connection
         // and its grants stand, and the row says the change waits.
         computer: {
@@ -685,10 +583,8 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
         displayName: "Studio iMac",
         externalIdentityId: null,
         externalTenantId: null,
-        grantedScopes: [],
         id: messagesAwayConnectionId,
         provider: "apple-messages",
-        providerApplicationId: null,
         status: "connected",
         statusDetail: null,
         statusReason: null,
@@ -718,9 +614,6 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
       }),
       {
         accountIdentifier: null,
-        applicationSource: null,
-        authMethodId: "computer",
-        authorizationDigest: null,
         computer: {
           access: "read-write",
           app: null,
@@ -734,10 +627,8 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
         displayName: "Pixel 7",
         externalIdentityId: null,
         externalTenantId: null,
-        grantedScopes: [],
         id: agentPhoneConnectionId,
         provider: mockAgentPhoneDefinition.provider,
-        providerApplicationId: null,
         status: "connected",
         statusDetail: null,
         statusReason: null,
@@ -758,8 +649,5 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
         installedBy: ownerUserId,
       }),
     ],
-    mcpConnections: [],
-    providerAuthorizations: {},
-    providers: [],
   };
 }

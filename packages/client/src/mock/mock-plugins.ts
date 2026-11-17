@@ -619,6 +619,7 @@ function refusal(code: "not_found" | "conflict" | "bad_request", message: string
 }
 
 export class MockPlugins {
+  readonly #removingWebhooks = new Set<string>();
   readonly catalog = buildCatalog();
   plugins: MockPlugin[];
   accounts: ConnectedAccountView[];
@@ -803,7 +804,16 @@ export class MockPlugins {
       workflows: ready ? plugin.workflows : null,
       webhooks: plugin.webhooks,
       page: plugin.hasPage
-        ? { url: null, unavailable: "Plugin pages can't be opened from Opensteer yet." }
+        ? {
+            url: null,
+            reference: { kind: "plugin", pluginId: plugin.id },
+            unavailable:
+              plugin.access === "off"
+                ? "Turn on this plugin before opening its page."
+                : !ready
+                  ? "Connect an account before opening this page."
+                  : null,
+          }
         : null,
     };
   }
@@ -1111,9 +1121,17 @@ export class MockPlugins {
 
   reads(): Pick<HostApiHandlers, keyof typeof pluginReads> {
     return {
-      // A mock Host serves no plugin pages.
-      "plugins.page.view": async () => {
-        throw refusal("not_found", "This plugin's page isn't available in mock mode");
+      "plugins.page.view": async ({ pluginId, theme }) => {
+        await this.#ready();
+        const plugin = this.#plugin(pluginId);
+        const page = this.detail(plugin).page;
+        if (!page || page.unavailable)
+          throw refusal("conflict", page?.unavailable ?? "This plugin has no page.");
+        const document = `<!doctype html><html style="color-scheme:${theme};font:16px system-ui;padding:24px"><title>Plugin page</title><h1>${plugin.name}</h1><p>Your plugin's page opens here.</p><label>Find an issue <input placeholder="Search issues"></label><p>Connected to your work account</p><script>parent.postMessage({type:"opensteer-app:ready"},"*");</script></html>`;
+        return rpcSuccess({
+          path: "/mock-plugin-page",
+          entryUrl: `data:text/html,${encodeURIComponent(document)}`,
+        });
       },
       "plugins.installed.list": async () => {
         const local = this.scenario === "empty" ? [] : this.local();
@@ -1178,11 +1196,17 @@ export class MockPlugins {
         const webhook = this.#plugin(pluginId).webhooks.find((entry) => entry.id === webhookId);
         if (!webhook) throw refusal("not_found", "That webhook is gone.");
         return rpcSuccess({
-          step: webhook.status === "setup-required" ? "configure" : "done",
+          step: this.#removingWebhooks.has(webhook.id)
+            ? "remove"
+            : webhook.status === "setup-required"
+              ? "configure"
+              : "done",
           webhook,
           callbackUrl: `https://hooks.opensteer.example/${webhook.id}`,
-          instructions: null,
-          revision: null,
+          instructions: this.#removingWebhooks.has(webhook.id)
+            ? "Remove this webhook in the service settings, then confirm below."
+            : null,
+          revision: "mock-webhook-1",
           stateSchema: null,
           signingSecret: null,
         });
@@ -1363,10 +1387,36 @@ export class MockPlugins {
         );
         this.#changed();
         return { type: command.type };
-      case "plugins.webhook.setup.complete":
-      case "plugins.webhook.remove":
-      case "plugins.webhook.removal.confirm":
+      case "plugins.webhook.setup.complete": {
+        const webhook = this.#plugin(command.pluginId).webhooks.find(
+          (entry) => entry.id === command.webhookId,
+        );
+        if (!webhook) throw refusal("not_found", "That webhook is gone.");
+        if (command.revision !== "mock-webhook-1")
+          throw refusal("conflict", "Webhook setup changed. Open it again.");
+        webhook.status = "active";
+        this.#changed();
         return { type: command.type };
+      }
+      case "plugins.webhook.remove": {
+        const webhook = this.#plugin(command.pluginId).webhooks.find(
+          (entry) => entry.id === command.webhookId,
+        );
+        if (!webhook) throw refusal("not_found", "That webhook is gone.");
+        webhook.status = "stopping";
+        this.#removingWebhooks.add(webhook.id);
+        this.#changed();
+        return { type: command.type };
+      }
+      case "plugins.webhook.removal.confirm": {
+        const plugin = this.#plugin(command.pluginId);
+        if (!this.#removingWebhooks.has(command.webhookId))
+          throw refusal("conflict", "Remove the webhook before confirming its cleanup.");
+        plugin.webhooks = plugin.webhooks.filter((entry) => entry.id !== command.webhookId);
+        this.#removingWebhooks.delete(command.webhookId);
+        this.#changed();
+        return { type: command.type };
+      }
     }
   }
 

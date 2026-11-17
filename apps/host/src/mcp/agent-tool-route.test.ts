@@ -167,7 +167,7 @@ it("derives the Run from its token and matches MCP success, input, unknown-tool 
     "tool.completed",
   ]);
   expect(f.published[2]!.data).toMatchObject({ arguments: null });
-  expect(f.handler.mock.calls[0]![0].input).toMatchObject({ cursor: 2, limit: 10, query: "mail" });
+  expect(f.handler.mock.calls[0]![0].input).toMatchObject({ cursor: 2, limit: 20, query: "mail" });
   expect(f.handler.mock.calls[0]![0].caller).toEqual(f.caller);
   expect(
     (
@@ -231,7 +231,7 @@ it("joins in-flight retries, persists a single pair and replays without another 
   expect(f.published.map((event) => event.type)).toEqual(["tool.started", "tool.completed"]);
   expect(f.published[0]!.data).toMatchObject({
     callId: `harness:${f.caller.claims.runId}:1:${request.callId}`,
-    arguments: { query: "mail", limit: 10 },
+    arguments: { query: "mail", limit: 20 },
   });
 });
 

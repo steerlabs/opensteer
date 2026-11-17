@@ -4,9 +4,7 @@ import {
   personalBrowserRepository,
 } from "@opensteer/database/test-support/store";
 import { createId, type UserId } from "@opensteer/core";
-import {
-  BrowserSourceStore,
-} from "@opensteer/database";
+import { BrowserSourceStore } from "@opensteer/database";
 import { describeStore } from "@opensteer/database/test-support/store";
 import { RealtimeHub } from "@opensteer/orchestration";
 import type { HostToClientMessage } from "@opensteer/protocol";
@@ -37,10 +35,7 @@ function mcp(dependencies: AdministrationDependencies, userId: UserId) {
     accessMode: "full-access",
   };
   const handlers = administrationToolHandlers(
-    new AdministrationToolHandlers(
-      new AdministrationService(dependencies, vi.fn()),
-      () => true,
-    ),
+    new AdministrationToolHandlers(new AdministrationService(dependencies, vi.fn()), () => true),
   );
   const service = new OpensteerMcpService({
     callers: { authenticate: async () => caller },
@@ -685,5 +680,4 @@ describeStore("MCP administration", (it) => {
       await channels.close();
     }
   });
-
 });

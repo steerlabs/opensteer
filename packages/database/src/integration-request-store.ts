@@ -83,19 +83,12 @@ export interface PreparedIntegrationInstallFulfillment {
   readonly material: Omit<InstallIntegrationInput, "actorUserId" | "requestId">;
 }
 
-/**
- * Requests for service integrations: installing one, and access to an
- * installation's account, with the grants their fulfilment writes in the same
- * transaction. Device access and setup Requests stay with `RequestStore`.
- */
+/** Device app and local-server access, settled with their grants in one transaction. */
 export class IntegrationRequestStore {
   readonly #database: Kysely<DatabaseSchema>;
   readonly #requests: Pick<RequestStore, "create">;
 
-  constructor(
-    database: Kysely<DatabaseSchema>,
-    requests: Pick<RequestStore, "create">,
-  ) {
+  constructor(database: Kysely<DatabaseSchema>, requests: Pick<RequestStore, "create">) {
     this.#database = database;
     this.#requests = requests;
   }
@@ -257,7 +250,7 @@ export class IntegrationRequestStore {
           connectionId: decision.connectionId,
           installationId: row.detailInstallationId,
           ownerUserId: input.resolvedBy,
-            requestedAccess: row.detailAccess,
+          requestedAccess: row.detailAccess,
           requestedServerId: row.detailRequestedServerId,
         });
       }
@@ -267,7 +260,7 @@ export class IntegrationRequestStore {
               ...decision,
               installationId: row.detailInstallationId,
               ownerUserId: input.resolvedBy,
-                    requestedServerId: row.detailRequestedServerId,
+              requestedServerId: row.detailRequestedServerId,
             })
           : null;
       // Resource and grant fences precede Request projection; a changed discovery
@@ -505,6 +498,17 @@ export class IntegrationRequestStore {
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
   }): Promise<BoundIntegrationAccessInstallation> {
+    if (
+      !installedIntegrationMatchesReviewedManifest(
+        input.preparedFulfillment.material.installation,
+        input.preparedFulfillment.approvalManifest,
+      )
+    ) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Prepared device installation does not match the reviewed manifest",
+      });
+    }
     return withPersonalTransaction(this.#database, async (transaction) => {
       const observed = await transaction
         .selectFrom("requests")
@@ -840,7 +844,7 @@ function integrationInstallationFromRequestRow(row: {
   readonly name: string;
   readonly provenance: unknown;
   readonly revision: number;
-  readonly sourceKind: "plugin" | "built-in" | "proposed" | "remote-mcp";
+  readonly sourceKind: "plugin" | "built-in";
   readonly status: "active" | "disabled" | "needs-attention";
   readonly title: string;
   readonly trust: "administrator-approved" | "built-in" | "verified-publisher";

@@ -214,7 +214,6 @@ function messages(): IntegrationDefinitionSummary {
 function calendar(): IntegrationDefinitionSummary {
   return {
     adapter: "computer",
-    apiKey: null,
     authMethods: [{ id: "computer", kind: "computer", label: "This Mac" }],
     computerApp: {
       accessLabels: { read: "Can read", readWrite: "Can read and change" },

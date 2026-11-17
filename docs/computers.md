@@ -123,7 +123,7 @@ Run ceiling and the person's per-plugin agent access. An unavailable provider li
 says why; a call never moves to another computer that has the same app. Plugins lists the owner's
 providers outside any task's ceiling and sets their agent access. A device app's approvals stay on
 its device's page; a local server's page also carries its approval state, secrets and removal, and
-the launch review itself is answered as above.
+the launch review pins the chosen computer and declared secrets.
 
 Only the computer's current owner approves new or broader access, unblocks apps and enables
 automatic app approval, which is Mac-only, from any signed-in device. Review verifies GUI identity
@@ -138,8 +138,8 @@ reach every agent process.
 ## MCP servers on a computer
 
 Program and loopback MCP servers run on the chosen computer, never with Host authority, and default
-to the Deployment's hosting computer. Internet servers run through the Host over HTTPS, and Host
-loopback is refused. A Host-local program path never implies the files exist on another computer.
+to the Deployment's hosting computer. Internet MCP endpoints run in sandboxed plugins;
+registering a local server never grants access to a Host-local path on another computer.
 
 The owner reviews the exact launch and target computer from any signed-in device. Launch
 arguments, environment and headers appear only in that review, never shared events or agent

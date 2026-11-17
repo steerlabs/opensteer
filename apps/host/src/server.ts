@@ -792,18 +792,6 @@ export async function createHostServer(
       );
       return reply.code(204).send();
     });
-    app.post(
-      "/v1/personal-remote-access/account-unlink/repair-hosted-oauth",
-      async (request, reply) => {
-        PersonalHostAccountUnlinkStepRequestSchema.parse(request.body);
-        const caller = await dependencies.authenticator.authenticateSessionContext(
-          request.headers,
-          { mutation: true },
-        );
-        await personalRemoteAccess.markHostedOAuthConnectionsForRepair(caller);
-        return reply.code(204).send();
-      },
-    );
     app.put("/v1/personal-remote-access/connect-projection", async (request, reply) => {
       const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
         mutation: true,

@@ -51,8 +51,9 @@ describe("DefaultIntegrationAuthAttemptLifecycle", () => {
     expect(store.created?.launchTicketHash).not.toBe(started.launchTicket);
     expect(store.created?.encryptedPayload.toString("utf8")).not.toContain("sealed-value");
     expect(store.created?.encryptedPayload.toString("utf8")).not.toContain("accounts.example");
-    await expect(lifecycle.status({ id, ownerUserId })).resolves.toMatchObject({
-      connectionId: null,
+    await expect(lifecycle.status({ id, ownerUserId })).resolves.toEqual({
+      expiresAt: store.created?.expiresAt,
+      failureCode: null,
       status: "pending",
     });
   });

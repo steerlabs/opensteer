@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import {
   AgentEventSchema,
   createToolOutput,
-  legacyIntegrationsNamespace,
+  computerToolNamespace,
   type AgentEvent,
   type EnvironmentId,
   type IntegrationCallSubject,
@@ -40,7 +40,7 @@ export class ComputerOperationStore {
         type: "tool.started",
         data: {
           callId: `computer:${randomUUID()}`,
-          tool: { namespace: legacyIntegrationsNamespace, name: `computer.${input.operation}` },
+          tool: { namespace: computerToolNamespace, name: `computer.${input.operation}` },
           arguments: input.window === undefined ? {} : { window: input.window },
           integration: input.subject,
         },

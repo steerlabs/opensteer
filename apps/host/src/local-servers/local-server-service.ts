@@ -267,7 +267,6 @@ export class LocalServerService {
       ),
       computer: null,
       fingerprint: launchDigest,
-      responseRedactor: null,
     }));
     const { signal } = listing.cancel;
     try {
@@ -421,10 +420,7 @@ export class LocalServerService {
   }
 
   #client(callable: CallableIntegrationTool): Promise<UpstreamClient> {
-    return this.clients.client(callable, {
-      authorization: async () => undefined,
-      connect: (_authorization, signal) => this.#connect(callable.server, signal),
-    });
+    return this.clients.client(callable, (signal) => this.#connect(callable.server, signal));
   }
 
   /**

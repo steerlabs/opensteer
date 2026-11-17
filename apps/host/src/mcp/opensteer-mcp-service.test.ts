@@ -224,79 +224,74 @@ async function connect(url: URL, token: string) {
   return client;
 }
 describe("Opensteer MCP spine", () => {
-  it.each([
-    "pending",
-    "pending-active",
-    "settled",
-    "live",
-    "other-run",
-    "integration",
-  ] as const)("keeps non-held results and pending guidance compatible (%s)", async (state) => {
-    const f = await httpFixture();
-    const requestId = createId("request");
-    Object.assign(f.options.store.requests, {
-      get: vi.fn(async () => ({
-        id: requestId,
-        mode: state === "live" ? "live" : "durable",
-        status: state === "settled" ? "fulfilled" : "pending",
-        originatingRunId: state === "other-run" ? createId("run") : f.run.claims.runId,
-      })),
-    });
-    const pending = { requestId, kind: "browser.access", status: "pending", replayed: false };
-    Object.assign(f.handlers, {
-      saved_login_request: async () => ({
-        status: "pending",
-        site: "https://example.com",
-        requestId,
-        replayed: false,
-      }),
-      browser_profile_request: async () => pending,
-      computer_use: async () => ({
-        content: [{ type: "text", text: JSON.stringify(pending) }],
-        structuredContent: pending,
-      }),
-    });
-    try {
-      let sessionId = "detached-parking-test";
-      if (state === "pending-active") {
-        const initialized = await fetch(f.url, {
+  it.each(["pending", "pending-active", "settled", "live", "other-run", "integration"] as const)(
+    "keeps non-held results and pending guidance compatible (%s)",
+    async (state) => {
+      const f = await httpFixture();
+      const requestId = createId("request");
+      Object.assign(f.options.store.requests, {
+        get: vi.fn(async () => ({
+          id: requestId,
+          mode: state === "live" ? "live" : "durable",
+          status: state === "settled" ? "fulfilled" : "pending",
+          originatingRunId: state === "other-run" ? createId("run") : f.run.claims.runId,
+        })),
+      });
+      const pending = { requestId, kind: "browser.access", status: "pending", replayed: false };
+      Object.assign(f.handlers, {
+        saved_login_request: async () => ({
+          status: "pending",
+          site: "https://example.com",
+          requestId,
+          replayed: false,
+        }),
+        browser_profile_request: async () => pending,
+        computer_use: async () => ({
+          content: [{ type: "text", text: JSON.stringify(pending) }],
+          structuredContent: pending,
+        }),
+      });
+      try {
+        let sessionId = "detached-parking-test";
+        if (state === "pending-active") {
+          const initialized = await fetch(f.url, {
+            method: "POST",
+            headers: {
+              authorization: "Bearer run",
+              accept: "application/json, text/event-stream",
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "initialize",
+              params: {
+                protocolVersion: "2025-11-25",
+                capabilities: {},
+                clientInfo: { name: "parking", version: "1" },
+              },
+            }),
+          });
+          sessionId = initialized.headers.get("mcp-session-id")!;
+          await initialized.arrayBuffer();
+        }
+        const response = await fetch(f.url, {
           method: "POST",
           headers: {
             authorization: "Bearer run",
             accept: "application/json, text/event-stream",
             "content-type": "application/json",
+            "mcp-session-id": sessionId,
+            "mcp-protocol-version": "2025-11-25",
           },
           body: JSON.stringify({
             jsonrpc: "2.0",
-            id: 1,
-            method: "initialize",
-            params: {
-              protocolVersion: "2025-11-25",
-              capabilities: {},
-              clientInfo: { name: "parking", version: "1" },
-            },
-          }),
-        });
-        sessionId = initialized.headers.get("mcp-session-id")!;
-        await initialized.arrayBuffer();
-      }
-      const response = await fetch(f.url, {
-        method: "POST",
-        headers: {
-          authorization: "Bearer run",
-          accept: "application/json, text/event-stream",
-          "content-type": "application/json",
-          "mcp-session-id": sessionId,
-          "mcp-protocol-version": "2025-11-25",
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: "pending-call",
-          method: "tools/call",
-          params:
-            state === "integration"
-              ? { name: "computer_use", arguments: { code: "print(1)" } }
-              : state === "settled"
+            id: "pending-call",
+            method: "tools/call",
+            params:
+              state === "integration"
+                ? { name: "computer_use", arguments: { code: "print(1)" } }
+                : state === "settled"
                   ? {
                       name: "saved_login_request",
                       arguments: { site: "example.com", reason: "Check email" },
@@ -308,21 +303,22 @@ describe("Opensteer MCP spine", () => {
                         suggestion: { kind: "new", suggestedName: "Personal" },
                       },
                     },
-        }),
-      });
-      const body = await response.json();
-      expect(body.error).toBeUndefined();
-      expect(body.result.isError, JSON.stringify(body)).not.toBe(true);
-      expect(response.headers.get("x-opensteer-request-pending")).toBeNull();
-      if (state.startsWith("pending"))
-        expect(body.result.content.map((part: { text: string }) => part.text).join("\n")).toContain(
-          requestPendingGuidance,
-        );
-      if (state === "integration") expect(f.options.store.requests.get).not.toHaveBeenCalled();
-    } finally {
-      await f.service.close();
-    }
-  });
+          }),
+        });
+        const body = await response.json();
+        expect(body.error).toBeUndefined();
+        expect(body.result.isError, JSON.stringify(body)).not.toBe(true);
+        expect(response.headers.get("x-opensteer-request-pending")).toBeNull();
+        if (state.startsWith("pending"))
+          expect(
+            body.result.content.map((part: { text: string }) => part.text).join("\n"),
+          ).toContain(requestPendingGuidance);
+        if (state === "integration") expect(f.options.store.requests.get).not.toHaveBeenCalled();
+      } finally {
+        await f.service.close();
+      }
+    },
+  );
   it.each([false, true])(
     "holds a Request until answered, including an early answer (%s)",
     async (early) => {

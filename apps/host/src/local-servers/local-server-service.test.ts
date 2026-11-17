@@ -1,10 +1,8 @@
-import type {} from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createId } from "@opensteer/core";
 
 import { describe, expect, it } from "vitest";
 import { carriesApproval } from "../local-servers/local-server-service.js";
 import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
-import type {} from "../devices/device-service.js";
 
 /** A call with no Run behind it, as a Trigger occurrence makes. */
 describe("carriesApproval", () => {

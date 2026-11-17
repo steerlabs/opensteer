@@ -1292,13 +1292,6 @@ describe("Personal remote administration intents", () => {
     ).toMatchObject({ state: "activating", linkGeneration: replacement, accountOperation: null });
   });
 
-  it("refuses hosted OAuth repair from a revoked session", async () => {
-    await database.deleteFrom("authSessions").where("id", "=", session.id).execute();
-    await expect(service().markHostedOAuthConnectionsForRepair({ session })).rejects.toMatchObject({
-      code: "unauthorized",
-    });
-  });
-
   it("keeps idempotent retries identical and serializes simultaneous devices", async () => {
     const administration = service().administration;
     const intent = {

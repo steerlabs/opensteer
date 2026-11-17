@@ -1,7 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
 import { inject } from "vitest";
-import type {} from "./integration-global-setup.test-support.js";
 
 const slot = Number(process.env.VITEST_POOL_ID);
 const databases = inject("integrationDatabases");

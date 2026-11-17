@@ -1,5 +1,4 @@
 import { createId, emptyExecutionPreferences, type Thread } from "@opensteer/core";
-import { IntegrationConnectionAuthStore } from "@opensteer/database";
 import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -13,6 +12,8 @@ import {
 import type { AgentToolHandlers } from "./handlers/types.js";
 import type { AgentCaller } from "./agent-caller.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
+import { localServerToolHandlers } from "./handlers/local-servers.js";
+import type { LocalServerRegistry } from "../local-servers/local-server-registry.js";
 
 const userId = createId("user");
 let owner: Awaited<
@@ -54,26 +55,6 @@ function fixture() {
     accessMode: "full-access",
   };
   const realtime = { broadcast: vi.fn(), publish: vi.fn(), publishNotificationPreference: vi.fn() };
-  const platform = {
-    store: {
-      connections: new IntegrationConnectionAuthStore(owner.database),
-      settings: {
-        detail: vi.fn(async () => ({ row: { placement: { revision: 0 } } })),
-        setEnabled: vi.fn(),
-      },
-      getConnectionKind: vi.fn(async () => "provider-account"),
-      listGrants: vi.fn(async () => []),
-      listInstallations: vi.fn(async () => []),
-      listMcpOAuthConnections: vi.fn(async () => []),
-      revokeMcpOAuthConnection: vi.fn(),
-      plugins: {
-        listForUser: vi.fn(async () => [{ id: "p", name: "Plugin", config: { token: "secret" } }]),
-        setActivation: vi.fn(),
-      },
-    },
-    revokeGrant: vi.fn(),
-    uninstallIntegration: vi.fn(),
-  };
   const store = {
     database: owner.database,
     replayAdministrationCommand: vi.fn(async () => undefined),
@@ -119,10 +100,6 @@ function fixture() {
   const deps = {
     store,
     realtime,
-    integrations: {
-      platform,
-      service: { disconnect: vi.fn(async () => ({ disconnected: true, secret: "secret" })) },
-    },
     channels: {
       service: {
         setConnectionStatus: vi.fn(),
@@ -137,9 +114,15 @@ function fixture() {
     runners: { isRunnerConnected: vi.fn(() => true) },
   };
   const service = new AdministrationService(deps as unknown as AdministrationDependencies, vi.fn());
-  const handlers = administrationToolHandlers(
-    new AdministrationToolHandlers(service, (id) => id === environmentId),
-  );
+  const handlers = {
+    ...administrationToolHandlers(
+      new AdministrationToolHandlers(service, (id) => id === environmentId),
+    ),
+    ...localServerToolHandlers({
+      remove: vi.fn(),
+      list: async () => [],
+    } as unknown as LocalServerRegistry),
+  };
   const mcp = new OpensteerMcpService({
     callers: { authenticate: async () => caller },
     handlers: handlers as AgentToolHandlers,
@@ -153,7 +136,7 @@ function fixture() {
       name: "Engine",
     },
     computer_update: { computerId: machineId, name: "Mac" },
-    integration_remove: { target: "account", connectionId },
+    local_server_remove: { name: "tv" },
     opensteer_messaging_bridge_update: { bridgeId: connectionId, paused: true },
     browser_profile_update: { profileId, name: "Work" },
   };
@@ -175,7 +158,7 @@ function fixture() {
 const mutations = [
   "opensteer_ai_account_update",
   "computer_update",
-  "integration_remove",
+  "local_server_remove",
   "opensteer_messaging_bridge_update",
   "browser_profile_update",
 ] as const;
@@ -183,12 +166,19 @@ const reads = [
   "opensteer_defaults_read",
   "computer_list",
   "browser_profile_list",
-  "integration_list",
+  "local_server_list",
   "opensteer_messaging_bridge_list",
 ] as const;
 describe("administration through the MCP service", () => {
   it.each(mutations)("executes %s and refuses the same action below full-access", async (name) => {
     const f = fixture();
+    if (name === "local_server_remove")
+      f.setCaller({
+        ...f.caller(),
+        kind: "run",
+        thread: { id: createId("thread") } as Thread,
+        claims: {} as never,
+      });
     expect(
       await f.mcp.callTool("token", name, f.inputs[name], { operationKey: "write" }),
     ).toMatchObject({ ok: true });
@@ -237,7 +227,7 @@ describe("administration through the MCP service", () => {
     ).rejects.toThrow("Changing settings requires full-access");
     expect(f.deps.store.rememberExecutionChoice).toHaveBeenCalledOnce();
   });
-  it("strips config, tokens and nested plugin launch details", async () => {
+  it("strips provider config and browser session tokens", async () => {
     const f = fixture();
     for (const [name, input] of [
       ["opensteer_defaults_read", {}],

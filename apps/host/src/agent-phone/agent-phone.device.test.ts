@@ -134,6 +134,7 @@ import {
   installFixture,
   jpegSize,
   phoneRowOf,
+  phoneCommands,
   readObservation,
   readPhoneStatus,
   readReceipts,
@@ -159,7 +160,7 @@ import {
   type PhoneAgent,
   type PhoneObservationText,
   type PhoneRow,
-  type PhoneToolRefs,
+  type PhoneCommands,
   type Receipt,
   type TestCertificateAuthority,
   type TlsFrontDoor,
@@ -204,7 +205,7 @@ interface Agent extends PhoneAgent {
 
 const PhoneAppsSchema = z.object({
   apps: z.array(z.object({ label: z.string(), packageName: z.string() })),
-  nextOffset: z.number().int().nonnegative().nullable(),
+  nextCursor: z.string().nullable(),
   total: z.number().int().nonnegative(),
 });
 
@@ -635,16 +636,13 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
   }
 
   async function phoneRow(agent: Agent, runnerId: RunnerId): Promise<PhoneRow> {
-    return phoneRowOf(
-      await call(agent, "integration_search", { query: "Android phone" }),
-      runnerId,
-    );
+    return phoneRowOf(await call(agent, "computer_apps", { query: "Android phone" }), runnerId);
   }
 
-  async function toolRefs(agent: Agent, runnerId: RunnerId): Promise<PhoneToolRefs> {
+  async function commandsFor(agent: Agent, runnerId: RunnerId): Promise<PhoneCommands> {
     const row = await phoneRow(agent, runnerId);
-    if (!row.toolRefs) throw new Error(`The phone is not callable: ${JSON.stringify(row)}`);
-    return row.toolRefs;
+    if (!row.callable) throw new Error(`The phone is not callable: ${JSON.stringify(row)}`);
+    return phoneCommands(row);
   }
 
   /** One page of the phone's launchable apps, as an agent lists them by the phone's runnerId. */
@@ -652,64 +650,64 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
     agent: Agent,
     runnerId: RunnerId,
     query: string,
-    offset = 0,
+    cursor: string | null = null,
   ): Promise<z.infer<typeof PhoneAppsSchema>> {
     return PhoneAppsSchema.parse(
-      resultJson(await call(agent, "integration_search", { limit: 20, offset, query, runnerId })),
+      resultJson(
+        await call(agent, "computer_apps", {
+          limit: 20,
+          ...(cursor ? { cursor } : {}),
+          query,
+          computerId: runnerId,
+        }),
+      ),
     );
   }
 
   async function observe(
     agent: Agent,
-    refs: PhoneToolRefs,
+    refs: PhoneCommands,
   ): Promise<{
     readonly observation: PhoneObservationText;
     readonly result: ToolResult;
   }> {
-    const result = await call(agent, "integration_call", { toolRef: refs.observe });
+    const result = await call(agent, "computer_use", { code: refs.observe });
     if (result.isError) throw new Error(`Observe was refused: ${resultText(result)}`);
     return { observation: readObservation(resultText(result)), result };
   }
 
   function act(
     agent: Agent,
-    refs: PhoneToolRefs,
-    observationId: string,
+    refs: PhoneCommands,
     actions: readonly AndroidPhoneAction[],
   ): Promise<ToolResult> {
     if (!refs.act) throw new Error("This agent may not act on the phone.");
-    return call(agent, "integration_call", {
-      arguments: { actions, observationId },
-      toolRef: refs.act,
-    });
+    return call(agent, "computer_use", { code: `${refs.act}(${JSON.stringify(actions)})` });
   }
 
   /** An act that must succeed, and the observation it returns. */
   async function actOk(
     agent: Agent,
-    refs: PhoneToolRefs,
-    observationId: string,
+    refs: PhoneCommands,
     actions: readonly AndroidPhoneAction[],
   ): Promise<{ readonly observation: PhoneObservationText; readonly result: ToolResult }> {
-    const result = await act(agent, refs, observationId, actions);
+    const result = await act(agent, refs, actions);
     if (result.isError) throw new Error(`The act failed: ${resultText(result)}`);
     return { observation: readObservation(resultText(result)), result };
   }
 
   /** Look first, then wake a dark phone or dismiss its nonsecure keyguard. */
-  async function lookAwake(agent: Agent, refs: PhoneToolRefs): Promise<PhoneObservationText> {
+  async function lookAwake(agent: Agent, refs: PhoneCommands): Promise<PhoneObservationText> {
     const { observation } = await observe(agent, refs);
     if (observation.screen === "on" && !observation.locked) return observation;
-    return (await actOk(agent, refs, observation.observationId, [{ type: "wake" }])).observation;
+    return (await actOk(agent, refs, [{ type: "wake" }])).observation;
   }
 
   /** Home, then the fixture app, the way an agent opens an app by its package. */
-  async function openFixture(agent: Agent, refs: PhoneToolRefs): Promise<PhoneObservationText> {
-    const awake = await lookAwake(agent, refs);
-    const home = await actOk(agent, refs, awake.observationId, [{ to: "home", type: "navigate" }]);
-    const launched = await actOk(agent, refs, home.observation.observationId, [
-      { packageName: fixturePackage, type: "launch" },
-    ]);
+  async function openFixture(agent: Agent, refs: PhoneCommands): Promise<PhoneObservationText> {
+    await lookAwake(agent, refs);
+    await actOk(agent, refs, [{ to: "home", type: "navigate" }]);
+    const launched = await actOk(agent, refs, [{ packageName: fixturePackage, type: "launch" }]);
     return untilShown(agent, refs, launched.observation, "button", "Record a tap");
   }
 
@@ -718,7 +716,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
    * proves the batch started; the waits leave time to withdraw its authority.
    * `laterTapDueAt` is when the second tap would land if nothing stopped it.
    */
-  async function startWaitingBatch(agent: Agent, refs: PhoneToolRefs, waits = 1) {
+  async function startWaitingBatch(agent: Agent, refs: PhoneCommands, waits = 1) {
     const fixture = await openFixture(agent, refs);
     await clearReceipts(phone());
     const tap: AndroidPhoneAction = {
@@ -726,7 +724,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       target: { index: elementIndex(fixture, "button", "Record a tap") },
       type: "tap",
     };
-    const acting = act(agent, refs, fixture.observationId, [
+    const acting = act(agent, refs, [
       tap,
       ...Array.from({ length: waits }, () => ({ ms: 5_000, type: "wait" as const })),
       tap,
@@ -750,7 +748,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
    */
   async function untilShown(
     agent: Agent,
-    refs: PhoneToolRefs,
+    refs: PhoneCommands,
     first: PhoneObservationText,
     role: string,
     label: string,
@@ -769,7 +767,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
   /** The Opensteer app's own window can stay in front a moment after it finished; an agent looks again. */
   async function observeOutsideOpensteer(
     agent: Agent,
-    refs: PhoneToolRefs,
+    refs: PhoneCommands,
   ): Promise<PhoneObservationText> {
     const ours = (observation: PhoneObservationText) =>
       observation.foreground.endsWith(`(${agentPhonePackageName})`);
@@ -784,7 +782,8 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
 
   function refusalOf(result: ToolResult): string {
     if (!result.isError) throw new Error(`Expected a refusal, got:\n${resultText(result)}`);
-    return resultText(result);
+    return z.object({ error: z.object({ message: z.string() }) }).parse(result.structuredContent)
+      .error.message;
   }
 
   /**
@@ -976,31 +975,24 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
     // ---- 2. An agent in the owner's Main ------------------------------------
     const caller = await newCaller("caller-1");
     const agentA = await startAgent(caller, { title: "Text the driver" });
-    let refsA!: PhoneToolRefs;
-    let firstObservation = "";
+    let refsA!: PhoneCommands;
 
     await step("main agent finds the phone", async () => {
       const row = await phoneRow(agentA, runnerId);
       expect(row).toMatchObject({
         access: "read-write",
         approval: "approved",
-        inUse: false,
+        callable: true,
         name: phoneName,
-        runnerId,
+        computerId: runnerId,
         state: "ready",
-        toolRefs: {
-          act: expect.any(String),
-          observe: expect.any(String),
-          release: expect.any(String),
-        },
       });
-      refsA = row.toolRefs!;
+      refsA = phoneCommands(row);
     });
 
     await step("a dark screen shows nothing and wake turns it on", async () => {
       await sleepScreen();
       const dark = await observe(agentA, refsA);
-      firstObservation = dark.observation.observationId;
       expect(dark.observation).toMatchObject({
         elementCount: 0,
         screen: "off",
@@ -1010,7 +1002,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       expect(resultText(dark.result)).toContain(
         'The screen is off, so there is nothing to see. Act with {"type":"wake"} to turn it on.',
       );
-      const woke = await actOk(agentA, refsA, dark.observation.observationId, [{ type: "wake" }]);
+      const woke = await actOk(agentA, refsA, [{ type: "wake" }]);
       expect(woke.observation.headline).toBe("Turned the screen on");
       expect(woke.observation.screen).toBe("on");
       expect(await screenIsOn()).toBe(true);
@@ -1024,7 +1016,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       try {
         await device.shell("locksettings set-disabled false");
         await device.shell("input keyevent KEYCODE_POWER");
-        const locked = await eventually(
+        await eventually(
           "the dedicated phone's nonsecure keyguard to show while dark",
           async () => {
             const current = (await observe(agentA, refsA)).observation;
@@ -1034,7 +1026,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
           },
           15_000,
         );
-        const woke = await actOk(agentA, refsA, locked.observationId, [{ type: "wake" }]);
+        const woke = await actOk(agentA, refsA, [{ type: "wake" }]);
         expect(woke.observation).toMatchObject({ screen: "on", locked: false, secureLock: false });
         await screenshot("nonsecure-keyguard-dismissed-by-agent");
       } finally {
@@ -1065,19 +1057,21 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
         const found = await phoneApps(agentA, runnerId, "Agent Phone");
         expect(found).toEqual({
           apps: [{ label: "Agent Phone fixture", packageName: fixturePackage }],
-          nextOffset: null,
+          nextCursor: null,
           total: 1,
         });
         // Every page together: each package once, all of them counted, ours absent.
         const listed: { label: string; packageName: string }[] = [];
-        let offset: number | null = 0;
+        let cursor: string | null = null;
+        let more = true;
         let total = -1;
-        while (offset !== null) {
-          const page = await phoneApps(agentA, runnerId, "", offset);
+        while (more) {
+          const page = await phoneApps(agentA, runnerId, "", cursor);
           if (total === -1) total = page.total;
           expect(page.total).toBe(total);
           listed.push(...page.apps);
-          offset = page.nextOffset;
+          cursor = page.nextCursor;
+          more = cursor !== null;
         }
         expect(listed).toHaveLength(total);
         expect(new Set(listed.map(({ packageName }) => packageName)).size).toBe(total);
@@ -1086,14 +1080,10 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
         // Listing is not control: it took no hold on the phone.
         expect(await phoneSessions(runnerId)).toHaveLength(1);
 
-        const awake = await lookAwake(agentA, refsA);
-        const home = await actOk(agentA, refsA, awake.observationId, [
-          { to: "home", type: "navigate" },
-        ]);
+        await lookAwake(agentA, refsA);
+        await actOk(agentA, refsA, [{ to: "home", type: "navigate" }]);
         expect(await activityResumed(device, fixtureActivities.main)).toBe(false);
-        await actOk(agentA, refsA, home.observation.observationId, [
-          { packageName: found.apps[0]!.packageName, type: "launch" },
-        ]);
+        await actOk(agentA, refsA, [{ packageName: found.apps[0]!.packageName, type: "launch" }]);
         await eventually(
           "Android to have the fixture in front",
           async () => ((await activityResumed(device, fixtureActivities.main)) ? true : undefined),
@@ -1108,7 +1098,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       expect(fixture.foreground).toBe(`Agent Phone fixture (${fixturePackage})`);
       expect(actions(await readReceipts(device))).toEqual([]);
 
-      const tapped = await actOk(agentA, refsA, fixture.observationId, [
+      const tapped = await actOk(agentA, refsA, [
         {
           count: 1,
           target: { index: elementIndex(fixture, "button", "Record a tap") },
@@ -1118,7 +1108,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       expect(tapped.observation.headline).toBe('Tapped "Record a tap"');
       expect(counts(await readReceipts(device))).toEqual({ button_tap: 1 });
 
-      const typed = await actOk(agentA, refsA, tapped.observation.observationId, [
+      const typed = await actOk(agentA, refsA, [
         {
           submit: true,
           target: { index: elementIndex(tapped.observation, "edittext", "Type here") },
@@ -1142,7 +1132,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
         expect.objectContaining({ detail: `0:${typedText}` }),
       ]);
 
-      const scrolled = await actOk(agentA, refsA, typed.observation.observationId, [
+      const scrolled = await actOk(agentA, refsA, [
         {
           amount: 1,
           direction: "down",
@@ -1168,7 +1158,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       expect(scrolls).toHaveLength(1);
       expect(Number(scrolls[0]!.detail)).toBeGreaterThan(1);
 
-      const dragged = await actOk(agentA, refsA, scrolled.observation.observationId, [
+      const dragged = await actOk(agentA, refsA, [
         {
           durationMs: 600,
           from: { index: elementIndex(scrolled.observation, "textview", "Drag me") },
@@ -1186,7 +1176,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
         expect.objectContaining({ detail: "target" }),
       ]);
 
-      const pressed = await actOk(agentA, refsA, dragged.observation.observationId, [
+      const pressed = await actOk(agentA, refsA, [
         {
           durationMs: 1_000,
           target: { index: elementIndex(dragged.observation, "textview", "Long-press me") },
@@ -1225,7 +1215,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       expect(picture?.mimeType).toBe("image/jpeg");
       expect(jpegSize(picture!.data)).toEqual(observation.geometry);
       expect(resultText(result)).not.toMatch(/secure.content/iu);
-      const tapped = await actOk(agentA, refsA, observation.observationId, [
+      const tapped = await actOk(agentA, refsA, [
         {
           count: 1,
           target: { index: elementIndex(observation, "button", "Secure tap") },
@@ -1238,22 +1228,6 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
         expect.objectContaining({ detail: "", kind: "secure_tap" }),
       ]);
       await screenshot("secure-window-blacked-out-by-android");
-    });
-
-    await step("a stale observation runs nothing", async () => {
-      const fixture = await openFixture(agentA, refsA);
-      const before = actions(await readReceipts(device));
-      const stale = await act(agentA, refsA, firstObservation, [
-        {
-          count: 1,
-          target: { index: elementIndex(fixture, "button", "Record a tap") },
-          type: "tap",
-        },
-      ]);
-      expect(refusalOf(stale)).toBe(
-        `Stopped. Observation ${firstObservation} is not this phone's latest; observe again.\nNothing was done. Observe the phone before acting further.`,
-      );
-      expect(actions(await readReceipts(device))).toEqual(before);
     });
 
     await step(
@@ -1272,7 +1246,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
           { ms: 4_000, type: "wait" },
         ];
         const actedAt = Date.now();
-        const acting = act(agentA, refsA, fixture.observationId, [tap, ...waits, tap]);
+        const acting = act(agentA, refsA, [tap, ...waits, tap]);
         await eventually(
           "the batch's first tap to reach the fixture",
           async () => (counts(await readReceipts(device)).button_tap === 1 ? true : undefined),
@@ -1282,7 +1256,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
         // The phone runs one look or batch at a time: this look waits behind
         // the batch past its own 30 s deadline.
         const queuedAt = Date.now();
-        const queued = await call(agentA, "integration_call", { toolRef: refsA.observe });
+        const queued = await call(agentA, "computer_use", { code: refsA.observe });
         measurements.queuedObserveAnsweredMs = Date.now() - queuedAt;
         expect(refusalOf(queued)).toContain("The request expired before it ran.");
         expect(measurements.queuedObserveAnsweredMs).toBeLessThan(hostBudgetMs.observe);
@@ -1292,8 +1266,8 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
         expect(measurements.nearLimitBatchAnsweredMs).toBeLessThan(hostBudgetMs.act);
         expect(counts(await readReceipts(device))).toEqual({ button_tap: 2 });
         // The expired look never ran, so the batch's own observation is still the latest.
-        const latest = readObservation(resultText(acted));
-        await actOk(agentA, refsA, latest.observationId, [{ to: "home", type: "navigate" }]);
+        readObservation(resultText(acted));
+        await actOk(agentA, refsA, [{ to: "home", type: "navigate" }]);
       },
     );
 
@@ -1331,7 +1305,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
               operation === "type"
                 ? { submit: false, target: { index }, text: "wrong field", type: "type" }
                 : { target: { index }, type: "clear" };
-            const refused = refusalOf(await act(agentA, refsA, editor.observationId, [action]));
+            const refused = refusalOf(await act(agentA, refsA, [action]));
             expect(refused).toContain(`Element [${index}]`);
             expect(refused).toContain("is no longer on screen; observe again.");
             expect(
@@ -1339,7 +1313,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
             ).toEqual([]);
             const fresh = (await observe(agentA, refsA)).observation;
             expect(elementIndex(fresh, "edittext", "Keep me")).toEqual(index);
-            await actOk(agentA, refsA, fresh.observationId, [{ target: { index }, type: "clear" }]);
+            await actOk(agentA, refsA, [{ target: { index }, type: "clear" }]);
             expect(
               (await readReceipts(device)).filter(({ kind }) => kind === "rebound_text"),
             ).toEqual([expect.objectContaining({ detail: "" })]);
@@ -1373,7 +1347,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
             : undefined,
         10_000,
       );
-      await actOk(agentA, refsA, editor.observationId, [
+      await actOk(agentA, refsA, [
         { submit: false, target: { index }, text: "accepted", type: "type" },
       ]);
       expect((await readReceipts(device)).filter(({ kind }) => kind === "rebound_text")).toEqual([
@@ -1405,7 +1379,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       );
       // A batch that would touch the app is refused whole: not even its Home runs.
       const refused = refusalOf(
-        await act(agentA, refsA, observation.observationId, [
+        await act(agentA, refsA, [
           { to: "home", type: "navigate" },
           { count: 1, target: { x: 10, y: 10 }, type: "tap" },
         ]),
@@ -1415,15 +1389,13 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       );
       expect(
         refusalOf(
-          await act(agentA, refsA, observation.observationId, [
-            { packageName: agentPhonePackageName, type: "launch" },
-          ]),
+          await act(agentA, refsA, [{ packageName: agentPhonePackageName, type: "launch" }]),
         ),
       ).toBe("Agents may not open the Opensteer Agent Phone app; launch another app.");
       expect(await activityResumed(device, agentPhoneActivities.main)).toBe(true);
       expect(actions(await readReceipts(device))).toEqual(before);
       // Leaving is always allowed, and the launcher is named as it names itself.
-      await actOk(agentA, refsA, observation.observationId, [{ to: "home", type: "navigate" }]);
+      await actOk(agentA, refsA, [{ to: "home", type: "navigate" }]);
       const home = await observeOutsideOpensteer(agentA, refsA);
       const launcher = /^(.+) \(([^()]+)\)$/u.exec(home.foreground);
       expect(launcher, home.foreground).not.toBeNull();
@@ -1436,33 +1408,31 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
     // ---- 3. Concurrency ----------------------------------------------------
     const grantB = await grantPhone(runnerId, "read-write");
     let agentB = await startAgent(caller, { title: "Order lunch" });
-    let refsB!: PhoneToolRefs;
+    let refsB!: PhoneCommands;
 
     await step("a second task finds the phone held and is told by whom", async () => {
       const row = await phoneRow(agentB, runnerId);
       expect(row).toMatchObject({ access: "read-write", inUse: true });
-      expect(row.nextAction).toContain(
-        `${phoneName} is already being used by another task. (Task: Text the driver)`,
-      );
-      refsB = row.toolRefs!;
-      const busy = refusalOf(await call(agentB, "integration_call", { toolRef: refsB.observe }));
+      expect(row.inUse).toBe(true);
+      refsB = phoneCommands(row);
+      const busy = refusalOf(await call(agentB, "computer_use", { code: refsB.observe }));
       expect(busy).toContain(
         `${phoneName} is already being used by another task. (Task: Text the driver)`,
       );
     });
 
     await step("release hands the phone over, and releasing nothing is fine", async () => {
-      expect(resultText(await call(agentA, "integration_call", { toolRef: refsA.release }))).toBe(
-        `Released ${phoneName}. Another task can use it now.`,
-      );
+      expect(resultJson(await call(agentA, "computer_use", { code: refsA.release }))).toEqual({
+        released: true,
+      });
       const seen = await observe(agentB, refsB);
       expect(seen.observation.headline).toBe(`Looked at ${phoneName}`);
-      expect(resultText(await call(agentB, "integration_call", { toolRef: refsB.release }))).toBe(
-        `Released ${phoneName}. Another task can use it now.`,
-      );
-      expect(resultText(await call(agentA, "integration_call", { toolRef: refsA.release }))).toBe(
-        `This task was not holding ${phoneName}, so there was nothing to release.`,
-      );
+      expect(resultJson(await call(agentB, "computer_use", { code: refsB.release }))).toEqual({
+        released: true,
+      });
+      expect(resultJson(await call(agentA, "computer_use", { code: refsA.release }))).toEqual({
+        released: false,
+      });
       await finish(agentB);
     });
 
@@ -1474,40 +1444,38 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       });
       const row = await phoneRow(agentC, runnerId);
       expect(row).toMatchObject({ access: "read", approval: "approved" });
-      expect(row.nextAction).toBe(
-        `Call integration_call with the toolRefs: observe, and release when you are done so another task can use the phone. This task may only look at ${phoneName}; to act, ask with integration_request {kind: "computer-app", runnerId, access, reason} and access "read-write".`,
-      );
-      expect(Object.keys(row.toolRefs!).sort()).toEqual(["observe", "release"]);
+      expect(row.access).toBe("read");
+      expect(row).not.toHaveProperty("toolRefs");
+      expect(Object.keys(phoneCommands(row)).sort()).toEqual(["observe", "release"]);
       await sleepScreen();
-      const { observation } = await observe(agentC, row.toolRefs!);
+      const { observation } = await observe(agentC, phoneCommands(row));
       expect(observation.screen).toBe("off");
-      // The act toolRef another task holds is no authority here, and `wake` is an act.
+      // Code copied from another task carries no authority; waking still needs read-write.
       const refused = refusalOf(
-        await call(agentC, "integration_call", {
-          arguments: { actions: [{ type: "wake" }], observationId: observation.observationId },
-          toolRef: refsA.act!,
+        await call(agentC, "computer_use", {
+          code: `${refsA.act}(${JSON.stringify([{ type: "wake" }])})`,
         }),
       );
-      expect(refused).toBe("Integration operation is no longer available; search again");
+      expect(refused).toContain("read-write access");
       expect(await screenIsOn()).toBe(false);
       expect(
-        resultText(await call(agentC, "integration_call", { toolRef: row.toolRefs!.release })),
-      ).toBe(`Released ${phoneName}. Another task can use it now.`);
+        resultJson(await call(agentC, "computer_use", { code: phoneCommands(row).release })),
+      ).toEqual({ released: true });
       await finish(agentC);
       await finish(agentA);
     });
 
     // ---- 5. Stops and pause ------------------------------------------------
     const agentA2 = await startAgent(caller, { title: "Book the table" });
-    let refsA2!: PhoneToolRefs;
+    let refsA2!: PhoneCommands;
     const agentA3 = await startAgent(caller, { title: "Pay the bill" });
-    let refsA3 = await toolRefs(agentA3, runnerId);
+    let refsA3 = await commandsFor(agentA3, runnerId);
 
     /** The waiting task's next Run takes the phone, then lets it go. */
     async function nextTaskTakesThePhone(): Promise<void> {
-      refsA2 = await toolRefs(agentA2, runnerId);
+      refsA2 = await commandsFor(agentA2, runnerId);
       expect((await observe(agentA2, refsA2)).observation.headline).toBe(`Looked at ${phoneName}`);
-      await call(agentA2, "integration_call", { toolRef: refsA2.release });
+      await call(agentA2, "computer_use", { code: refsA2.release });
     }
 
     await step(
@@ -1516,7 +1484,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
         const lockedAgent = await startAgent(caller, {
           title: "Unlock the phone",
         });
-        const lockedRefs = await toolRefs(lockedAgent, runnerId);
+        const lockedRefs = await commandsFor(lockedAgent, runnerId);
         const credential = await stagePhonePin(device, redaction);
         const observations: PhoneObservationText[] = [];
         const look = async () => {
@@ -1536,7 +1504,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
             15_000,
           );
           expect(current).toMatchObject({ locked: true, secureLock: true, screen: "off" });
-          await actOk(lockedAgent, lockedRefs, current.observationId, [{ type: "wake" }]);
+          await actOk(lockedAgent, lockedRefs, [{ type: "wake" }]);
           current = await eventually(
             "awake secure lock screen to draw",
             async () => {
@@ -1547,7 +1515,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
             },
             15_000,
           );
-          await actOk(lockedAgent, lockedRefs, current.observationId, [
+          await actOk(lockedAgent, lockedRefs, [
             {
               type: "swipe",
               from: {
@@ -1580,7 +1548,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
               new RegExp(`^${digit}(?:\\s+[A-Za-z]+)?$`, "u").test(label?.trim() ?? ""),
             );
             if (!key) throw new Error("The observed keypad is missing a required digit control");
-            await actOk(lockedAgent, lockedRefs, current.observationId, [
+            await actOk(lockedAgent, lockedRefs, [
               { type: "tap", count: 1, target: { index: key.index } },
             ]);
             current = await look();
@@ -1590,7 +1558,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
           );
           if (!confirm)
             throw new Error(`No observed confirm control on secure keypad: ${current.treeText}`);
-          await actOk(lockedAgent, lockedRefs, current.observationId, [
+          await actOk(lockedAgent, lockedRefs, [
             { type: "tap", count: 1, target: { index: confirm.index } },
           ]);
           current = await eventually(
@@ -1605,7 +1573,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
           expect(current).toMatchObject({ locked: false, secureLock: true });
           const fixture = await openFixture(lockedAgent, lockedRefs);
           await clearReceipts(device);
-          await actOk(lockedAgent, lockedRefs, fixture.observationId, [
+          await actOk(lockedAgent, lockedRefs, [
             {
               type: "tap",
               count: 1,
@@ -1654,10 +1622,10 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
         const stoppedAgent = await startAgent(caller, {
           title: "Stop locally with observations in transit",
         });
-        const stoppedRefs = await toolRefs(stoppedAgent, runnerId);
+        const stoppedRefs = await commandsFor(stoppedAgent, runnerId);
         const { acting } = await startWaitingBatch(stoppedAgent, stoppedRefs);
         const queued = Array.from({ length: 3 }, () =>
-          call(stoppedAgent, "integration_call", { toolRef: stoppedRefs.observe }),
+          call(stoppedAgent, "computer_use", { code: stoppedRefs.observe }),
         );
         const recordStop = vi
           .spyOn(host.store, "recordComputerUseStop")
@@ -1673,9 +1641,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
           await Promise.all([acting, ...queued]);
           expect(counts(await readReceipts(device))).toEqual({ button_tap: 1 });
           expect(
-            refusalOf(
-              await call(stoppedAgent, "integration_call", { toolRef: stoppedRefs.observe }),
-            ),
+            refusalOf(await call(stoppedAgent, "computer_use", { code: stoppedRefs.observe })),
           ).toBe(`Computer use was stopped for this task on ${phoneName}.`);
           await eventually(
             "the first Stop-ledger write to fail without claiming persistence",
@@ -1714,7 +1680,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       const lostAgent = await startAgent(caller, {
         title: "Stop lost on the way",
       });
-      const lostRefs = await toolRefs(lostAgent, runnerId);
+      const lostRefs = await commandsFor(lostAgent, runnerId);
       expect((await observe(lostAgent, lostRefs)).observation.headline).toBe(
         `Looked at ${phoneName}`,
       );
@@ -1766,9 +1732,9 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
             : undefined,
         reconnectBudgetMs,
       );
-      expect(
-        refusalOf(await call(lostAgent, "integration_call", { toolRef: lostRefs.observe })),
-      ).toBe(`Computer use was stopped for this task on ${phoneName}.`);
+      expect(refusalOf(await call(lostAgent, "computer_use", { code: lostRefs.observe }))).toBe(
+        `Computer use was stopped for this task on ${phoneName}.`,
+      );
       await device.shell("input keyevent KEYCODE_HOME");
       await nextTaskTakesThePhone();
       await finish(lostAgent);
@@ -1778,7 +1744,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       const stoppedAgent = await startAgent(caller, {
         title: "Stop a waiting task",
       });
-      const stoppedRefs = await toolRefs(stoppedAgent, runnerId);
+      const stoppedRefs = await commandsFor(stoppedAgent, runnerId);
       const { acting } = await startWaitingBatch(stoppedAgent, stoppedRefs);
       const [held] = await phoneSessions(runnerId);
       if (!held) throw new Error("The waiting task has no phone session to stop.");
@@ -1796,7 +1762,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       expect(Date.now() - stoppedAt).toBeLessThan(promptStopMs);
       expect(counts(await readReceipts(device))).toEqual({ button_tap: 1 });
       expect(
-        refusalOf(await call(stoppedAgent, "integration_call", { toolRef: stoppedRefs.observe })),
+        refusalOf(await call(stoppedAgent, "computer_use", { code: stoppedRefs.observe })),
       ).toBe(`Computer use was stopped for this task on ${phoneName}.`);
       await nextTaskTakesThePhone();
       await finish(stoppedAgent);
@@ -1806,10 +1772,10 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       const stoppedAgent = await startAgent(caller, {
         title: "Stop a drag mid-hold",
       });
-      const stoppedRefs = await toolRefs(stoppedAgent, runnerId);
+      const stoppedRefs = await commandsFor(stoppedAgent, runnerId);
       const fixture = await openFixture(stoppedAgent, stoppedRefs);
       await clearReceipts(device);
-      const acting = act(stoppedAgent, stoppedRefs, fixture.observationId, [
+      const acting = act(stoppedAgent, stoppedRefs, [
         {
           durationMs: 600,
           from: { index: elementIndex(fixture, "textview", "Drag me") },
@@ -1857,7 +1823,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       const stopped = await startAgent(caller, {
         title: "Stopped by its person",
       });
-      const stoppedRefs = await toolRefs(stopped, runnerId);
+      const stoppedRefs = await commandsFor(stopped, runnerId);
       const { acting, laterTapDueAt } = await startWaitingBatch(stopped, stoppedRefs, 3);
       expect(await phoneSessions(runnerId)).toHaveLength(1);
       const stoppedAt = Date.now();
@@ -1888,7 +1854,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
         title: "Restarted mid-task",
       });
       const first = restarted.run.attempt;
-      await lookAwake(restarted, await toolRefs(restarted, runnerId));
+      await lookAwake(restarted, await commandsFor(restarted, runnerId));
       const [superseded] = await phoneSessions(runnerId);
       if (!superseded) throw new Error("The first attempt holds no phone session.");
       // A steer restarts the Run: the first attempt's authority ends, and its session with it.
@@ -1920,8 +1886,8 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
         title: "Restarted mid-task, replacement attempt",
       };
       closers.push(() => replacement.gateway.close());
-      const refs = await toolRefs(replacement, runnerId);
-      const seen = await lookAwake(replacement, refs);
+      const refs = await commandsFor(replacement, runnerId);
+      await lookAwake(replacement, refs);
       const [own] = await phoneSessions(runnerId);
       expect(own?.sessionId).toEqual(expect.any(String));
       expect(own!.sessionId).not.toBe(superseded.sessionId);
@@ -1932,16 +1898,16 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       expect((await phoneSessions(runnerId)).map(({ sessionId }) => sessionId)).toEqual([
         own!.sessionId,
       ]);
-      await actOk(replacement, refs, seen.observationId, [{ to: "home", type: "navigate" }]);
-      expect(
-        resultText(await call(replacement, "integration_call", { toolRef: refs.release })),
-      ).toBe(`Released ${phoneName}. Another task can use it now.`);
+      await actOk(replacement, refs, [{ to: "home", type: "navigate" }]);
+      expect(resultJson(await call(replacement, "computer_use", { code: refs.release }))).toEqual({
+        released: true,
+      });
       await finish(replacement);
       await restarted.gateway.close();
     });
 
     await step("pause on the phone stops agents and ends the session", async () => {
-      refsA2 = await toolRefs(agentA2, runnerId);
+      refsA2 = await commandsFor(agentA2, runnerId);
       await lookAwake(agentA2, refsA2);
       expect(await phoneSessions(runnerId)).toHaveLength(1);
       await flipPause();
@@ -1962,26 +1928,22 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       });
       // The task whose session the pause ended is told so, for observe and act alike.
       const stopped = `Computer use was stopped for this task on ${phoneName}.`;
-      expect(refusalOf(await call(agentA2, "integration_call", { toolRef: refsA2.observe }))).toBe(
+      expect(refusalOf(await call(agentA2, "computer_use", { code: refsA2.observe }))).toBe(
         stopped,
       );
-      expect(
-        refusalOf(await act(agentA2, refsA2, firstObservation, [{ to: "home", type: "navigate" }])),
-      ).toBe(stopped);
+      expect(refusalOf(await act(agentA2, refsA2, [{ to: "home", type: "navigate" }]))).toBe(
+        stopped,
+      );
       // A task that held nothing is refused too, while the phone is paused.
       const pausedObserve = refusalOf(
-        await call(agentA3, "integration_call", { toolRef: refsA3.observe }),
+        await call(agentA3, "computer_use", { code: refsA3.observe }),
       );
-      const pausedAct = refusalOf(
-        await act(agentA3, refsA3, firstObservation, [{ to: "home", type: "navigate" }]),
-      );
+      const pausedAct = refusalOf(await act(agentA3, refsA3, [{ to: "home", type: "navigate" }]));
       const paused = "Paused on the phone: its owner has stopped agents from using it.";
       expect(pausedObserve).toBe(paused);
       expect(pausedAct).toBe(paused);
       // What a task searching for the phone reads is a sentence about the phone.
-      const search = resultText(
-        await call(agentA3, "integration_search", { query: "Android phone" }),
-      );
+      const search = resultText(await call(agentA3, "computer_apps", { query: "Android phone" }));
       expect(search).toContain(
         `${phoneName} is paused on the phone. The person can resume it there.`,
       );
@@ -2003,7 +1965,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       );
       await waitForOnline(runnerId, 15_000);
       // The task the person stopped stays stopped; a new one may use the phone.
-      expect(refusalOf(await call(agentA2, "integration_call", { toolRef: refsA2.observe }))).toBe(
+      expect(refusalOf(await call(agentA2, "computer_use", { code: refsA2.observe }))).toBe(
         `Computer use was stopped for this task on ${phoneName}.`,
       );
       expect((await observe(agentA3, refsA3)).observation.headline).toBe(`Looked at ${phoneName}`);
@@ -2038,7 +2000,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       expect(counts(await readReceipts(device))).toEqual({ button_tap: 1 });
       const narrow = await phoneRow(agentA3, runnerId);
       expect(narrow).toMatchObject({ access: "read" });
-      expect(Object.keys(narrow.toolRefs!).sort()).toEqual(["observe", "release"]);
+      expect(Object.keys(phoneCommands(narrow)).sort()).toEqual(["observe", "release"]);
       const asked = resultJson(
         await call(agentA3, "app_access_request", {
           access: "read-write",
@@ -2085,10 +2047,10 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       );
       const widened = await phoneRow(agentA3, runnerId);
       expect(widened).toMatchObject({ access: "read-write", approval: "approved" });
-      refsA3 = widened.toolRefs!;
+      refsA3 = phoneCommands(widened);
       expect(refsA3.act).toEqual(expect.any(String));
-      const awake = await lookAwake(agentA3, refsA3);
-      await actOk(agentA3, refsA3, awake.observationId, [{ to: "home", type: "navigate" }]);
+      await lookAwake(agentA3, refsA3);
+      await actOk(agentA3, refsA3, [{ to: "home", type: "navigate" }]);
     });
 
     // ---- 7. Network loss and unreadable frames ---------------------------
@@ -2097,7 +2059,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       async () => {
         const fixture = await openFixture(agentA3, refsA3);
         await clearReceipts(device);
-        const acting = act(agentA3, refsA3, fixture.observationId, [
+        const acting = act(agentA3, refsA3, [
           {
             count: 1,
             target: { index: elementIndex(fixture, "button", "Record a tap") },
@@ -2299,17 +2261,17 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
 
     // ---- 8. Host restart ---------------------------------------------------
     let agentE!: Agent;
-    let refsE!: PhoneToolRefs;
+    let refsE!: PhoneCommands;
     await step("the phone reconnects to a restarted Host by itself", async () => {
       for (const close of closers.splice(0).reverse()) await close().catch(() => undefined);
       await host.restart();
       await waitForOnline(runnerId, reconnectBudgetMs);
       const restartedCaller = await newCaller("caller-2");
       agentE = await startAgent(restartedCaller, { title: "After the restart" });
-      refsE = await toolRefs(agentE, runnerId);
+      refsE = await commandsFor(agentE, runnerId);
       const fixture = await openFixture(agentE, refsE);
       await clearReceipts(device);
-      await actOk(agentE, refsE, fixture.observationId, [
+      await actOk(agentE, refsE, [
         {
           count: 1,
           target: { index: elementIndex(fixture, "button", "Record a tap") },
@@ -2351,7 +2313,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
           expect(onlineMs - bootedMs).toBeLessThanOrEqual(rebootOnlineBudgetMs);
           const before = counts(await readReceipts(device)).button_tap ?? 0;
           const fixture = await openFixture(agentE, refsE);
-          await actOk(agentE, refsE, fixture.observationId, [
+          await actOk(agentE, refsE, [
             {
               count: 1,
               target: { index: elementIndex(fixture, "button", "Record a tap") },
@@ -2370,11 +2332,11 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       agentB = await startAgent(restartedCaller, {
         title: "Order lunch again",
       });
-      refsB = await toolRefs(agentB, runnerId);
-      expect(resultText(await call(agentE, "integration_call", { toolRef: refsE.release }))).toBe(
-        `Released ${phoneName}. Another task can use it now.`,
-      );
-      const { acting, observationId } = await startWaitingBatch(agentB, refsB);
+      refsB = await commandsFor(agentB, runnerId);
+      expect(resultJson(await call(agentE, "computer_use", { code: refsE.release }))).toEqual({
+        released: true,
+      });
+      const { acting } = await startWaitingBatch(agentB, refsB);
       expect(await phoneSessions(runnerId)).toHaveLength(1);
       const revokedAt = Date.now();
       const revoked = await testRpcData(
@@ -2392,9 +2354,9 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       expect(refusalOf(await acting)).toContain("ended before this answer arrived");
       expect(Date.now() - revokedAt).toBeLessThan(promptStopMs);
       expect(counts(await readReceipts(device))).toEqual({ button_tap: 1 });
-      expect(
-        refusalOf(await act(agentB, refsB, observationId, [{ to: "home", type: "navigate" }])),
-      ).toBe("Integration operation is no longer available; search again");
+      expect(refusalOf(await act(agentB, refsB, [{ to: "home", type: "navigate" }]))).toBe(
+        "Integration operation is no longer available; search again",
+      );
     });
 
     // ---- 12. Remove --------------------------------------------------------

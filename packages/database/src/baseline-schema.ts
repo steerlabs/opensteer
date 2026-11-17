@@ -2358,7 +2358,6 @@ create index host_account_adoption_proofs_pending on host_account_adoption_proof
 create index integration_auth_attempts_expiry on integration_auth_attempts USING btree (expires_at);
 create UNIQUE index integration_auth_attempts_launch_ticket on integration_auth_attempts USING btree (launch_ticket_hash);
 create index integration_auth_attempts_owner_flow_status on integration_auth_attempts USING btree (owner_user_id, flow, status, created_at DESC);
-create UNIQUE index integration_connections_definition_identity_unique on integration_connections USING btree (integration_definition_id, external_tenant_id, external_identity_id) NULLS NOT DISTINCT WHERE ((connection_kind = 'provider-account'::text) AND (external_identity_id IS NOT NULL) AND (status <> 'revoked'::text));
 create UNIQUE index integration_connections_computer_live_unique on integration_connections USING btree (integration_definition_id, runner_id, coalesce(computer_app_key, '')) WHERE ((connection_kind = 'computer'::text) AND (status <> 'revoked'::text));
 create index integration_connections_kind_owner_updated on integration_connections USING btree (connection_kind, owner_user_id, updated_at DESC);
 create index integration_connections_owner_updated on integration_connections USING btree (owner_user_id, updated_at DESC);

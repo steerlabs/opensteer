@@ -9,24 +9,21 @@ import {
 } from "./native-authorization.js";
 
 describe("native sign-in returns", () => {
-  it.each(["oauthAttempt", "mcpOauthAttempt"] as const)(
-    "round trips an opaque %s identifier",
-    (kind) => {
-      const value = {
-        attemptId: createIntegrationId(kind),
-        deploymentId: createId("deployment"),
-      };
-      const callback = buildNativeIntegrationAuthorizationCallback(value);
-      expect(parseNativeIntegrationAuthorizationCallback(callback)).toEqual({
-        ...value,
-        returnProof: null,
-      });
-      expect(callback).toBe(
-        `${opensteerMobileIntegrationAuthorizationCallback}?deployment_id=${value.deploymentId}&attempt_id=${value.attemptId}`,
-      );
-      expect(callback).not.toMatch(/ticket|code|token|host|success/iu);
-    },
-  );
+  it.each(["oauthAttempt"] as const)("round trips an opaque %s identifier", (kind) => {
+    const value = {
+      attemptId: createIntegrationId(kind),
+      deploymentId: createId("deployment"),
+    };
+    const callback = buildNativeIntegrationAuthorizationCallback(value);
+    expect(parseNativeIntegrationAuthorizationCallback(callback)).toEqual({
+      ...value,
+      returnProof: null,
+    });
+    expect(callback).toBe(
+      `${opensteerMobileIntegrationAuthorizationCallback}?deployment_id=${value.deploymentId}&attempt_id=${value.attemptId}`,
+    );
+    expect(callback).not.toMatch(/ticket|code|token|host|success/iu);
+  });
 
   it.each([
     "https://example.test/oauth/integration-callback?deployment_id=dep_x&attempt_id=ioa_x",

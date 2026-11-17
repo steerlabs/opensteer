@@ -217,7 +217,11 @@ export class LocalServerRegistry {
     await store.plugins.assertCanRemove(pluginId, actor);
     for (const installation of await store.listInstallations())
       if (installation.pluginId === pluginId)
-        await this.uninstall({ installationId: installation.id, actorUserId: actor.userId, requestId });
+        await this.uninstall({
+          installationId: installation.id,
+          actorUserId: actor.userId,
+          requestId,
+        });
     await store.plugins.remove(pluginId, administration);
     await this.#options.localServers.removePluginData(pluginId);
   }
@@ -232,7 +236,10 @@ export class LocalServerRegistry {
     readonly threadId?: ThreadId | undefined;
     readonly requestId: string;
     readonly runnerId: RunnerId | undefined;
-  }): Promise<{ readonly installation: IntegrationInstallation; readonly issues: readonly unknown[] }> {
+  }): Promise<{
+    readonly installation: IntegrationInstallation;
+    readonly issues: readonly unknown[];
+  }> {
     const { store, localServers } = this.#options;
     const name = await readAgentPluginName(input.directory);
     const currentPlugin = (await store.plugins.list()).find(

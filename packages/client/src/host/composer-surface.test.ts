@@ -123,26 +123,22 @@ describe("deriveSurface", () => {
     expect(deriveSurface([durable], viewer)?.textRole).toBe("message");
   });
 
-  it("keeps the approve/decline choice semantics for integration installs", () => {
+  it("keeps the approve/decline choice semantics for plugin approvals", () => {
     const durable = pendingRequest({
-      kind: "integration.install",
-      mode: "durable",
-      payload: {
-        kind: "integration.install",
-        manifest: catalogManifest(),
-        reason: "Install Calendar",
-      },
+      kind: "plugin.approval",
+      mode: "live",
+      payload: { kind: "plugin.approval", executionId: "execution", interactionId: "interaction" },
       presentation: {
         kind: "choice",
         options: [
-          { hint: "reject-once", id: "declined", label: "Not now" },
-          { hint: "confirm", id: "installed", label: "Install" },
+          { hint: "reject-once", id: "decline", label: "Not now" },
+          { hint: "confirm", id: "accept", label: "Allow" },
         ],
-        title: "Install Test Calendar?",
+        title: "Create Calendar event?",
       },
     });
     const surface = deriveSurface([durable], viewer);
-    expect(surface?.request.kind).toBe("integration.install");
+    expect(surface?.request.kind).toBe("plugin.approval");
     expect(surface?.textRole).toBe("message");
   });
 

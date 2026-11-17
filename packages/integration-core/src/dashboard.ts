@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { IntegrationDefinitionSummarySchema, IntegrationDefinitionSummaryViewSchema } from "./adapter.js";
+import {
+  IntegrationDefinitionSummarySchema,
+  IntegrationDefinitionSummaryViewSchema,
+} from "./adapter.js";
 import { IntegrationInstallationIdSchema } from "./ids.js";
 import {
   IntegrationAuthorizationSurfaceSchema,
@@ -33,6 +36,10 @@ export const IntegrationInstallManifestSchema = z.strictObject({
   definition: IntegrationDefinitionSummarySchema,
   digest: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
   kind: z.literal("catalog"),
+});
+export const IntegrationInstallManifestViewSchema = z.object({
+  ...IntegrationInstallManifestSchema.shape,
+  definition: IntegrationDefinitionSummaryViewSchema,
 });
 export type IntegrationInstallManifest = z.infer<typeof IntegrationInstallManifestSchema>;
 

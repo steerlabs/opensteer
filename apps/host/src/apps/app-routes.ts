@@ -1,4 +1,3 @@
-import type {} from "@fastify/websocket";
 import { Readable } from "node:stream";
 import { hostInternalRoutePaths } from "../server/internal-routes.js";
 import { unversionedRoute } from "../server/unversioned-route.js";

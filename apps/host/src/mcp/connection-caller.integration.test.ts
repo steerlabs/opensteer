@@ -1,9 +1,6 @@
 import { z } from "zod";
 import { DeviceToolHandlers } from "./handlers/devices.js";
-import {
-  IntegrationPlatformStore,
-  type IntegrationRequester,
-} from "@opensteer/database";
+import { IntegrationPlatformStore, type IntegrationRequester } from "@opensteer/database";
 import { AppStore, TriggerStore } from "@opensteer/database";
 import { TriggerService } from "../triggers/trigger-service.js";
 import { TriggerToolHandlers } from "./handlers/triggers.js";

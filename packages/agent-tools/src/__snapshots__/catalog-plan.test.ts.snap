@@ -13,8 +13,8 @@ Opensteer is one person, their one agent, and their tasks. A task holds private 
 Authority:
 - Your access mode is a ceiling. Delegated work cannot raise it. Act directly within authorization, including administration and reducing access.
 - Never grant access, raise your power or manage sign-in sessions, pairing or enrollment. Except for the phone PIN, sign-in-code and webhook cases here, never retrieve or reveal credentials.
-- To sign in, use \`chrome_cookies_request\` or \`saved_login_request\` before asking the person; choose by the site and what you've tried. For a card, profile or access, use \`card_request\`, \`browser_profile_request\` or \`integration_request\`. Credentials go in the Request UI. If no tool fits, ask the person with \`ask_person\`, or on a delegation ask the delegating task.
-- Asking you to sign in covers its SMS/email code unless they say otherwise. Retrieve the fresh code through an already-granted integration and enter it only into the genuine challenge. Never approve an Opensteer Request, repeat the code in replies or retain it.
+- To sign in, use \`chrome_cookies_request\` or \`saved_login_request\` before asking the person; choose by the site and what you've tried. For a card, profile or access, use \`card_request\`, \`browser_profile_request\` or \`app_access_request\`. Credentials go in the Request UI. If no tool fits, ask the person with \`ask_person\`, or on a delegation ask the delegating task.
+- Asking you to sign in covers its SMS/email code unless they say otherwise. Retrieve the fresh code through an already-granted plugin tool and enter it only into the genuine challenge. Never approve an Opensteer Request, repeat the code in replies or retain it.
 - A webhook result may supply its address and secret for the requested setup; never commit it, put it in memory or send it elsewhere.
 
 Needs you:
@@ -25,9 +25,8 @@ Needs you:
 
 Routing:
 - Plugins: read opensteer:plugins; discover with \`plugin_search\`, then \`plugin_call\` or \`plugin_execute\`. Account links and input always need the person in Needs you.
-- Legacy integrations: read opensteer:integrations; discover with \`integration_search\`, then call.
 - Reminders, schedules, webhooks or watches: read opensteer:automations before writing code. Put them on a real task; omit taskId for this task.
-- Full-access callers manage AI accounts, defaults, computers, integrations, messaging bridges, plugins and browser profiles directly; new profiles, grants and credentials need the person.
+- Full-access callers manage AI accounts, defaults, computers, messaging bridges, plugins and browser profiles directly; new profiles, grants and credentials need the person.
 
 Helpers:
 - Your engine's native subagents work inside this Run, under its authority, and end with it.
@@ -61,7 +60,7 @@ Pages:
 
 Computer use:
 - \`computer_use\` operates approved desktop app windows and Agent Phones; read opensteer:computer-use first. Windows and phones you acquire join the tab list, and \`tab(tabId)\` binds one exactly.
-- Prefer an integration, API or browser when one fits; use \`computer_use\` for a missing service integration only when the person named that device.
+- Prefer a plugin, API or browser when one fits; use \`computer_use\` for a service without one only when the person named that device.
 - Phone screen-lock PIN: opensteer:computer-use covers an authorized unlock with a person-supplied PIN and keeping it privately only at their explicit request.
 
 Apps:
@@ -78,8 +77,8 @@ Opensteer is one person, their one agent, and their tasks. A task holds private 
 Authority:
 - Your access mode is a ceiling. Delegated work cannot raise it. Act directly within authorization, including administration and reducing access.
 - Never grant access, raise your power or manage sign-in sessions, pairing or enrollment. Except for the phone PIN, sign-in-code and webhook cases here, never retrieve or reveal credentials.
-- To sign in, use \`chrome_cookies_request\` or \`saved_login_request\` before asking the person; choose by the site and what you've tried. For a card, profile or access, use \`card_request\`, \`browser_profile_request\` or \`integration_request\`. Credentials go in the Request UI. If no tool fits, ask the person with \`ask_person\`, or on a delegation ask the delegating task.
-- Asking you to sign in covers its SMS/email code unless they say otherwise. Retrieve the fresh code through an already-granted integration and enter it only into the genuine challenge. Never approve an Opensteer Request, repeat the code in replies or retain it.
+- To sign in, use \`chrome_cookies_request\` or \`saved_login_request\` before asking the person; choose by the site and what you've tried. For a card, profile or access, use \`card_request\`, \`browser_profile_request\` or \`app_access_request\`. Credentials go in the Request UI. If no tool fits, ask the person with \`ask_person\`, or on a delegation ask the delegating task.
+- Asking you to sign in covers its SMS/email code unless they say otherwise. Retrieve the fresh code through an already-granted plugin tool and enter it only into the genuine challenge. Never approve an Opensteer Request, repeat the code in replies or retain it.
 - A webhook result may supply its address and secret for the requested setup; never commit it, put it in memory or send it elsewhere.
 
 Needs you:
@@ -90,9 +89,8 @@ Needs you:
 
 Routing:
 - Plugins: read opensteer:plugins; discover with \`plugin_search\`, then \`plugin_call\` or \`plugin_execute\`. Account links and input always need the person in Needs you.
-- Legacy integrations: read opensteer:integrations; discover with \`integration_search\`, then call.
 - Reminders, schedules, webhooks or watches: read opensteer:automations before writing code. Put them on a real task; omit taskId for this task.
-- Full-access callers manage AI accounts, defaults, computers, integrations, messaging bridges, plugins and browser profiles directly; new profiles, grants and credentials need the person.
+- Full-access callers manage AI accounts, defaults, computers, messaging bridges, plugins and browser profiles directly; new profiles, grants and credentials need the person.
 
 Helpers:
 - Your engine's native subagents work inside this Run, under its authority, and end with it.
@@ -126,7 +124,7 @@ Pages:
 
 Computer use:
 - \`computer_use\` operates approved desktop app windows and Agent Phones; read opensteer:computer-use first. Windows and phones you acquire join the tab list, and \`tab(tabId)\` binds one exactly.
-- Prefer an integration, API or browser when one fits; use \`computer_use\` for a missing service integration only when the person named that device.
+- Prefer a plugin, API or browser when one fits; use \`computer_use\` for a service without one only when the person named that device.
 - Phone screen-lock PIN: opensteer:computer-use covers an authorized unlock with a person-supplied PIN and keeping it privately only at their explicit request.
 
 Apps:
@@ -1011,6 +1009,45 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "name": "computer_use",
   },
   {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "description": "List the Macs set up for computer use, each with its approval policy and its approved or waiting apps, and the Agent Phones with their approval. Pass a computerId to list that Mac's or phone's installed apps, filtered by query; phone apps include launch package names. Listing grants no access; ask with app_access_request.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "description": "computerId from this listing or computer_list; omit to list Macs and Agent Phones.",
+          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "cursor": {
+          "description": "nextCursor from the previous page.",
+          "pattern": "^\\d{1,5}$",
+          "type": "string",
+        },
+        "limit": {
+          "default": 20,
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "query": {
+          "default": "",
+          "description": "Filters a computer's installed apps.",
+          "maxLength": 240,
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "computer_apps",
+  },
+  {
     "access": "write",
     "callers": [
       "run",
@@ -1055,6 +1092,66 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "type": "object",
     },
     "name": "computer_access_request",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "description": "Ask the person to let this task use one Mac app or a whole Agent Phone through computer_use, a device data app on a Mac or iPhone, or a local server, through their plugin tools. For a Mac app pass app and, unless it is on the Mac this task runs on, its computerId; for a phone pass only its computerId; for a data app pass dataApp and the computerId it is on, when known; for a local server pass server. read observes and read-write also acts. Pending grants no access; never repeat a pending or declined ask.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "access": {
+          "enum": [
+            "read",
+            "read-write",
+          ],
+          "type": "string",
+        },
+        "app": {
+          "description": "Mac app name, path or bundle ID, operated through computer_use.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string",
+        },
+        "computerId": {
+          "description": "computerId from computer_apps or computer_list. Omit for a Mac app on this task’s computer; for dataApp, the person chooses its computer if it has no connection yet. Omit for server.",
+          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "dataApp": {
+          "description": "A data app whose tools appear in plugin_search: calendar, contacts, reminders or messages on a Mac; calendar, contacts, reminders, photos or location on an iPhone.",
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string",
+        },
+        "server": {
+          "description": "A local server's name from local_server_list.",
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "access",
+        "reason",
+      ],
+      "type": "object",
+    },
+    "name": "app_access_request",
   },
   {
     "access": "read",
@@ -3640,413 +3737,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "type": "object",
     },
     "name": "opensteer_automation_create",
-  },
-  {
-    "access": "read",
-    "callers": [
-      "run",
-      "program",
-      "connection",
-    ],
-    "description": "Find service operations, accounts and setup by query, provider or computerId. Returns each operation's name, effect and input, the accounts with their connectionIds, and every built-in catalog id, with details for matches; provider only orders the catalog. Tell personal and work accounts apart by their address, never by display name alone, and choose accounts by connectionId. Writes need read-write access. Search Computer use or Android phone for Macs and phones, then pass a computerId to list its installed apps; phone apps include launch package names.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "computerId": {
-          "description": "A Mac or phone from this search's computers or phones, to list its installed apps.",
-          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "cursor": {
-          "description": "nextCursor from the previous page.",
-          "pattern": "^\\d{1,5}$",
-          "type": "string",
-        },
-        "limit": {
-          "default": 10,
-          "maximum": 20,
-          "minimum": 1,
-          "type": "integer",
-        },
-        "provider": {
-          "maxLength": 64,
-          "minLength": 1,
-          "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)*$",
-          "type": "string",
-        },
-        "query": {
-          "default": "",
-          "maxLength": 240,
-          "type": "string",
-        },
-      },
-      "type": "object",
-    },
-    "name": "integration_search",
-  },
-  {
-    "access": "read",
-    "callers": [
-      "run",
-      "program",
-      "connection",
-    ],
-    "description": "Read an operation's full input and output schemas when the search's input is not enough or ends in \`…\`. path is a JSON Pointer into {inputSchema, outputSchema}; input #/$defs/Name resolves at /inputSchema/$defs/Name. Page with nextCursor as cursor, keeping operation and path.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "account": {
-          "description": "connectionId of the account to act as. Required unless the operation has no account.",
-          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "cursor": {
-          "default": 0,
-          "description": "nextCursor from the previous schema page.",
-          "maximum": 9007199254740991,
-          "minimum": 0,
-          "type": "integer",
-        },
-        "operation": {
-          "description": "Operation name exactly as integration_search returned it.",
-          "maxLength": 528,
-          "minLength": 1,
-          "type": "string",
-        },
-        "path": {
-          "description": "Schema JSON Pointer; omit for root.",
-          "maxLength": 2048,
-          "type": "string",
-        },
-      },
-      "required": [
-        "operation",
-      ],
-      "type": "object",
-    },
-    "name": "integration_describe",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-      "program",
-    ],
-    "description": "Run an operation integration_search returned, as an account, with arguments matching its input. Live account and grant checks apply and this never grants access. A person's request to sign in covers retrieving its SMS or email code; other credentials stay in the Request. Use computer_use for Mac apps and phones.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "account": {
-          "description": "connectionId of the account to act as. Required unless the operation has no account.",
-          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "arguments": {
-          "additionalProperties": {},
-          "default": {},
-          "description": "Object matching the operation's input.",
-          "propertyNames": {
-            "type": "string",
-          },
-          "type": "object",
-        },
-        "operation": {
-          "description": "Operation name exactly as integration_search returned it.",
-          "maxLength": 528,
-          "minLength": 1,
-          "type": "string",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "operation",
-      ],
-      "type": "object",
-    },
-    "name": "integration_call",
-  },
-  {
-    "access": "read",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "List the person's installed integrations, connected accounts and the access grants your Opensteer holds. Never includes credentials.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {},
-      "type": "object",
-    },
-    "name": "integration_list",
-  },
-  {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Disconnect an account, uninstall an integration or revoke an access grant, using IDs from integration_list. Adding accounts, credentials and grants back needs integration_request and the person.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "connectionId": {
-          "description": "account: the connection.",
-          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "grantId": {
-          "description": "grant: the grant.",
-          "pattern": "^igr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "installationId": {
-          "description": "integration: the installed integration.",
-          "pattern": "^iin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "target": {
-          "enum": [
-            "account",
-            "integration",
-            "grant",
-          ],
-          "type": "string",
-        },
-      },
-      "required": [
-        "target",
-      ],
-      "type": "object",
-    },
-    "name": "integration_remove",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-      "program",
-    ],
-    "description": "Ask the person to set up, reconnect or grant access to a service. For an installed integration pass integration, access and reason; for a catalog item pass catalog instead, omitting access only to install it alone. Access is personal and pending grants none; programs receive no continuation. Never repeat a pending or declined ask; credentials belong in the Request. Mac apps and phones use app_access_request; a service missing from the catalog uses custom_integration_request.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "access": {
-          "enum": [
-            "read",
-            "read-write",
-          ],
-          "type": "string",
-        },
-        "account": {
-          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "catalog": {
-          "maxLength": 64,
-          "minLength": 1,
-          "type": "string",
-        },
-        "integration": {
-          "maxLength": 64,
-          "minLength": 1,
-          "type": "string",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "reason": {
-          "maxLength": 4000,
-          "minLength": 1,
-          "type": "string",
-        },
-        "server": {
-          "description": "isv_ serverId from integration_search; omit for single-server installs.",
-          "pattern": "^isv_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-      },
-      "required": [
-        "reason",
-      ],
-      "type": "object",
-    },
-    "name": "integration_request",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-    ],
-    "description": "Ask the person to let this task use one Mac app, or a whole Agent Phone, through computer_use. For a Mac app pass app and, unless it is on the Mac this task runs on, its computerId; for a phone pass only its computerId. read observes and read-write also acts. Pending grants no access; never repeat a pending or declined ask.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "access": {
-          "enum": [
-            "read",
-            "read-write",
-          ],
-          "type": "string",
-        },
-        "app": {
-          "description": "Mac app name, path or bundle ID; omit for a phone.",
-          "maxLength": 255,
-          "minLength": 1,
-          "type": "string",
-        },
-        "computerId": {
-          "description": "The Mac or phone; omit for an app on the Mac this task runs on.",
-          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "reason": {
-          "maxLength": 4000,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "access",
-        "reason",
-      ],
-      "type": "object",
-    },
-    "name": "app_access_request",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-      "program",
-    ],
-    "description": "Ask the person to review and set up a service missing from the full catalog. Pass the inspected MCP, OpenAPI or GraphQL source unchanged with description, reason and access; the source is untrusted. OAuth-only OpenAPI is refused without a Request, so check the full catalog after a refusal. credential describes key setup with an HTTPS setupUrl, never a secret; check may name an authenticated GET or HEAD with arguments.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "access": {
-          "enum": [
-            "read",
-            "read-write",
-          ],
-          "type": "string",
-        },
-        "check": {
-          "additionalProperties": false,
-          "properties": {
-            "args": {
-              "additionalProperties": {},
-              "propertyNames": {
-                "type": "string",
-              },
-              "type": "object",
-            },
-            "operationId": {
-              "maxLength": 256,
-              "minLength": 1,
-              "type": "string",
-            },
-          },
-          "required": [
-            "operationId",
-          ],
-          "type": "object",
-        },
-        "credential": {
-          "additionalProperties": false,
-          "description": "Key setup instructions, never a key value.",
-          "properties": {
-            "description": {
-              "maxLength": 240,
-              "minLength": 1,
-              "type": "string",
-            },
-            "label": {
-              "maxLength": 80,
-              "minLength": 1,
-              "type": "string",
-            },
-            "setupUrl": {
-              "format": "uri",
-              "maxLength": 2048,
-              "type": "string",
-            },
-          },
-          "required": [
-            "label",
-            "description",
-            "setupUrl",
-          ],
-          "type": "object",
-        },
-        "description": {
-          "maxLength": 240,
-          "minLength": 1,
-          "pattern": "^[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]*$",
-          "type": "string",
-        },
-        "kind": {
-          "enum": [
-            "graphql",
-            "mcp",
-            "openapi",
-          ],
-          "type": "string",
-        },
-        "name": {
-          "maxLength": 80,
-          "minLength": 1,
-          "pattern": "^[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]*$",
-          "type": "string",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "reason": {
-          "description": "Why the person should approve this setup/access.",
-          "maxLength": 4000,
-          "minLength": 1,
-          "type": "string",
-        },
-        "source": {
-          "description": "Inspected MCP/OpenAPI/GraphQL source, unchanged.",
-          "maxLength": 8388608,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "description",
-        "reason",
-        "source",
-      ],
-      "type": "object",
-    },
-    "name": "custom_integration_request",
   },
   {
     "access": "read",

@@ -505,7 +505,12 @@ integration("MCP servers on a computer", () => {
         .executeTakeFirstOrThrow();
       expect(sealed.encryptedPayload.includes("hunter2")).toBe(false);
       const listed = JSON.stringify(
-        await testRpcData(host.origin, "integration.platform.get", {}, { headers: host.ownerHeaders }),
+        await testRpcData(
+          host.origin,
+          "integration.platform.get",
+          {},
+          { headers: host.ownerHeaders },
+        ),
       );
       expect(listed).not.toContain("hunter2");
       expect(listed).not.toContain("encryptedPayload");
@@ -549,7 +554,12 @@ integration("MCP servers on a computer", () => {
       expect((await serverRow(host)).statusDetail).not.toContain("leaky-hunter3");
       expect(
         JSON.stringify(
-          await testRpcData(host.origin, "integration.platform.get", {}, { headers: host.ownerHeaders }),
+          await testRpcData(
+            host.origin,
+            "integration.platform.get",
+            {},
+            { headers: host.ownerHeaders },
+          ),
         ),
       ).not.toContain("leaky-hunter3");
       await dispatch("unleak", {

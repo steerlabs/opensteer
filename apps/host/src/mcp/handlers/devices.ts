@@ -227,8 +227,7 @@ export class DeviceToolHandlers {
         scope.requestedBy,
       );
       const computer = [...machines, ...phones].find((machine) => machine.runnerId === runnerId);
-      if (computer)
-        return pendingResult(replay, true, pendingOnComputerNextAction(computer.name));
+      if (computer) return pendingResult(replay, true, pendingOnComputerNextAction(computer.name));
     }
     return requestResult(replay, true);
   }
@@ -316,8 +315,8 @@ export class DeviceToolHandlers {
       throw refused(
         "conflict",
         installed.unavailableReason === "offline"
-          ? `${machine.name} is offline.`
-          : `${machine.name} isn’t ready to list apps yet.`,
+          ? `${machine.name} is offline. Wait for it to reconnect before calling computer_apps with this computerId again.`
+          : `${machine.name} cannot list apps yet. Update Opensteer on that computer, then call computer_apps with its computerId.`,
       );
     const holders = approvals.computerAppHolders(runnerId);
     const apps = installed.apps.map(({ identity }) => {
@@ -376,8 +375,9 @@ export class DeviceToolHandlers {
       this.#devices.listCallableTools(requester),
       this.#pendingApprovals(requester.ownerUserId),
     ]);
-    const heldElsewhere = <Holder extends { readonly runId: string }>(holder: Holder | undefined) =>
-      holder && !(run && holder.runId === run.runId) ? holder : null;
+    const heldElsewhere = <Holder extends { readonly runId: string }>(
+      holder: Holder | undefined,
+    ) => (holder && !(run && holder.runId === run.runId) ? holder : null);
     const computers = machines.map(({ runnerId, name, state, appApproval, apps }) => {
       const machine = { name, state, appApproval };
       const holders = approvals.computerAppHolders(runnerId);
@@ -391,7 +391,8 @@ export class DeviceToolHandlers {
         apps: [
           ...apps.map(({ connectionId, ...app }) => {
             const key = app.bundleId.toLowerCase();
-            const toolRefs = app.status === "approved" ? computerToolRefs(callable, connectionId) : {};
+            const toolRefs =
+              app.status === "approved" ? computerToolRefs(callable, connectionId) : {};
             const holder = holders.get(key);
             const discovery = computerAppDiscovery({
               app: app.name,
@@ -546,11 +547,9 @@ function requestResult(request: Pick<Request, "id" | "kind" | "status">, replaye
 function requestGuidance(request: Pick<Request, "kind" | "status">, replayed: boolean): string {
   switch (request.status) {
     case "pending": {
-      // Approving a Mac app happens on the computer itself, so the sentence says where rather
-      // than letting an agent wait for a click anywhere else.
       const asked =
         request.kind === "computer.app.access"
-          ? "The person has been asked to approve this on that computer."
+          ? "The person has been asked to approve this app in Opensteer."
           : "The person has been asked in Opensteer.";
       // A deduplicated ask belongs to the task that opened it, so its outcome is delivered there.
       return replayed

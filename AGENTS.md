@@ -62,6 +62,9 @@ of you, say so plainly and get sign-off before breaking it.
   A **run ticket** is the team's scoped, expiring request, not a portable bearer token.
 - **Messaging bridge**: external messaging that starts or continues a task.
 - **Request**: an answer, approval or sign-in a Run needs from a person.
+- **Plugin**: a sandboxed program offering tools, pages and background work. A **connected account**
+  stores credentials; the person reviews each plugin's link to it. A **local tool** reaches a
+  device data app or a server on a computer through the same tool namespace.
 - **Engine**: an agent CLI driven through `packages/harness*`.
   **Agent Phone**: an Android phone made usable by agents through `apps/agent-phone`.
 - **Stable** and **Beta**: desktop update channels; Beta gets main builds and Stable gets
@@ -257,18 +260,19 @@ Runner, browser and messaging runtimes, cloudflared and signed native helpers.
 
 ## Where code lives
 
-| Area                                           | Entry points                                                                               |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Personal/team Host and hosted Account service  | `apps/host`, `apps/control-plane`                                                          |
-| Team chat, link, knowledge and deployment      | `apps/host/src/team`, `apps/host/src/team-links`, `apps/host/src/knowledge`, `deploy/team` |
-| Web, Electron and Expo clients                 | `apps/web`, `apps/desktop`, `apps/mobile`                                                  |
-| Agent execution and auxiliary services         | `apps/runner`, `apps/browser-runtime`, `apps/channel-runtime`                              |
-| Android app that makes a phone a computer      | `apps/agent-phone` (Kotlin), `packages/agent-phone-setup`                                  |
-| Domain types, wire contracts and persistence   | `packages/core`, `packages/protocol`, `packages/database`                                  |
-| Shared client, scheduling and engine contracts | `packages/client`, `packages/orchestration`, `packages/harness`                            |
-| Agent tool-use behavioral evals                | `evals/agent-tools`                                                                        |
-| Public landing page and its hero demo          | `apps/marketing`                                                                           |
-| Repository tooling and cross-package guards    | `scripts`, `tests`                                                                         |
+| Area                                           | Entry points                                                                                            |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Personal/team Host and hosted Account service  | `apps/host`, `apps/control-plane`                                                                       |
+| Team chat, link, knowledge and deployment      | `apps/host/src/team`, `apps/host/src/team-links`, `apps/host/src/knowledge`, `deploy/team`              |
+| Web, Electron and Expo clients                 | `apps/web`, `apps/desktop`, `apps/mobile`                                                               |
+| Agent execution and auxiliary services         | `apps/runner`, `apps/browser-runtime`, `apps/channel-runtime`                                           |
+| Android app that makes a phone a computer      | `apps/agent-phone` (Kotlin), `packages/agent-phone-setup`                                               |
+| Domain types, wire contracts and persistence   | `packages/core`, `packages/protocol`, `packages/database`                                               |
+| Shared client, scheduling and engine contracts | `packages/client`, `packages/orchestration`, `packages/harness`                                         |
+| Plugins and local tools                        | `apps/host/src/plugins`, `apps/host/src/local-servers`, `apps/host/src/devices`, `vendor/plugin-engine` |
+| Agent tool-use behavioral evals                | `evals/agent-tools`                                                                                     |
+| Public landing page and its hero demo          | `apps/marketing`                                                                                        |
+| Repository tooling and cross-package guards    | `scripts`, `tests`                                                                                      |
 
 ## Taste
 

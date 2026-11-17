@@ -119,7 +119,42 @@ create temporary table service_requests on commit drop as
     where installation_id in (select id from service_installations)
       or requested_server_id in (select id from service_servers)
       or requested_connection_id in (select id from service_connections)
-      or (installation_id is null and manifest->>'kind' = 'proposal');
+      or (installation_id is null and manifest is not null
+        and (manifest->>'kind' <> 'catalog' or manifest->'definition'->>'adapter' is distinct from 'computer'))
+  union select id from requests where kind = 'integration.access' and (
+    payload->>'installationId' in (select id from service_installations)
+    or payload->>'requestedServerId' in (select id from service_servers)
+    or payload->>'requestedConnectionId' in (select id from service_connections)
+    or (payload->'manifest' is not null and payload->'manifest' <> 'null'::jsonb
+      and payload->'manifest'->'definition'->>'adapter' is distinct from 'computer'))
+  union select data->'request'->>'id' from deployment_events
+    where type like 'request.%' and (
+      data->'request'->>'kind' in ('integration.install', 'integration.input')
+      or (data->'request'->>'kind' = 'integration.access' and (
+        data->'request'->'payload'->>'installationId' in (select id from service_installations)
+        or data->'request'->'payload'->>'requestedServerId' in (select id from service_servers)
+        or data->'request'->'payload'->>'requestedConnectionId' in (select id from service_connections)
+        or (data->'request'->'payload'->'manifest' is not null
+          and data->'request'->'payload'->'manifest' <> 'null'::jsonb
+          and data->'request'->'payload'->'manifest'->'definition'->>'adapter' is distinct from 'computer'))));
+delete from deployment_events where type like 'request.%' and (
+  data->>'requestId' in (select id from service_requests)
+  or data->'request'->>'id' in (select id from service_requests)
+  or data->'request'->>'kind' in ('integration.install', 'integration.input')
+  or (data->'request'->>'kind' = 'integration.access' and
+    data->'request'->'payload'->'manifest' is not null and
+    data->'request'->'payload'->'manifest' <> 'null'::jsonb and
+    data->'request'->'payload'->'manifest'->'definition'->>'adapter' is distinct from 'computer'));
+update deployment_events set data = jsonb_set(data - 'integration', '{tool}',
+  '{"name":"retired_service","namespace":"history"}'::jsonb)
+  where type = 'tool.started' and data->'tool'->>'name' in
+    ('integration_search', 'integration_describe', 'integration_call', 'integration_request',
+      'integration_list', 'integration_remove', 'custom_integration_request');
+delete from task_question_notices where request_id in (select id from service_requests);
+delete from request_call_joins where request_id in (select id from service_requests);
+delete from watch_control_requests where request_id in (select id from service_requests);
+delete from trigger_control_requests where request_id in (select id from service_requests);
+delete from agent_control_requests where request_id in (select id from service_requests);
 delete from request_continuations where request_id in (select id from service_requests);
 delete from requests where id in (select id from service_requests);
 
@@ -133,6 +168,8 @@ delete from integration_tool_definitions where connection_id in (select id from 
   or server_id in (select id from service_servers)
   or server_id in (select id from integration_servers
     where installation_id in (select id from service_installations));
+delete from credential_access_audit where connection_id in (select id from service_connections)
+  or credential_id in (select credential_id from service_connections);
 delete from integration_connections where id in (select id from service_connections);
 delete from credentials where id in (select credential_id from service_connections);
 delete from integration_server_secrets where server_id in (select id from service_servers)
@@ -143,6 +180,7 @@ delete from integration_servers where id in (select id from service_servers)
 delete from integration_installations where id in (select id from service_installations);
 delete from plugin_owner_settings where target->>'kind' = 'service';
 
+drop index if exists integration_connections_definition_identity_unique;
 drop table if exists mcp_oauth_credentials;
 drop table if exists integration_application_source_defaults;
 alter table integration_connections

@@ -28,7 +28,7 @@ import {
   startPersonalQueuedRunFixture,
 } from "../packages/database/src/personal-run-fixture.test-support.js";
 import { AgentHomeFiles } from "../apps/host/src/threads/agent-home-files.js";
-import { withFolderPluginPackage } from "../apps/host/src/integrations/folder-plugin-package.js";
+import { withFolderPluginPackage } from "../apps/host/src/local-servers/folder-plugin-package.js";
 import { PluginService } from "../apps/host/src/plugins/plugin-service.js";
 import { PluginAuthority } from "../apps/host/src/plugins/plugin-authority.js";
 import { PluginExecutions } from "../apps/host/src/plugins/plugin-executions.js";

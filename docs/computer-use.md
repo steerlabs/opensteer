@@ -134,9 +134,10 @@ Bridge credentials travel privately, never in the startup environment that same-
 can read. One authenticated bridge owns its sessions, and nested deadlines must leave outer
 cleanup time. Native errors must not disclose paths.
 
-Every app operation rechecks callable rows, digests, connection access, grant and Run capability
-immediately before Mac dispatch; the plugin tools never reach Computer use or Agent Phone rows. The `computer_use` REPL guest
-has no Node, filesystem, network, process or timers, and its state is per Run attempt, not storage.
+Computer control and device data apps share device authority, but expose different operations.
+Plugin providers cannot reach Computer use or Agent Phone control; those belong to `computer_use`.
+Its isolated guest has no Node, filesystem, network, process or timers. Handles belong to one Run
+attempt and cannot be saved as authority for another.
 Dispatched mutations are never retried. Stop is durable per Run and Mac across reconnects and
 restarts, and only native `reason: user` records it; remote Stop returns once Host authority is
 withdrawn. The transcript keeps sanitized receipts, never screenshots, AX trees or typed text.

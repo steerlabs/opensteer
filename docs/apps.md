@@ -38,11 +38,11 @@ the Run's guide.
 App tool outputs carry app identity and publication metadata, never a viewing credential or a
 token-bearing URL; clients get viewing authority on their own and treat the whole URL as private.
 
-Plugin pages use the same viewing gateway, origins and isolation. Their operations act as the
-owner viewing the page, with the plugin's current account links and standing access setting. A
-mutation that requires tool approval fails, as in the framework's own page host; pages cannot
-pause for a Request. Plugin pages are viewing targets, not published Apps: the tab model pins a
-published App's computer and numeric publication version, which plugins do not have.
+Plugin pages use the same viewing gateway, origins and isolation, acting as the owner rather than
+a Run. [Plugin access](plugins.md#pages-callbacks-and-skills) governs their account links and
+standing permission; an operation requiring tool approval fails instead of pausing for Needs you.
+A plugin viewing reference has no computer or numeric publication version, so it cannot be saved
+as a published App in the tab model.
 
 ## Origins
 

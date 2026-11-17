@@ -136,9 +136,9 @@ integration("local servers as plugin tools", () => {
     const callB = call(otherGateway);
     const answers = (code: string) => ({
       code,
-      count: 7,
+      count: 6723672367236723,
       enabled: true,
-      ratio: 0.25,
+      ratio: -13.75,
       room: "Den",
     });
     expect(askedA.runId).toBe(first.runId);
@@ -149,16 +149,40 @@ integration("local servers as plugin tools", () => {
     await respond(host, askedB.id, answers("CD34"));
     const resultB = await settled(callB, otherGateway);
     // The server echoes the code's last digits; answered values themselves are redacted.
+    const redacted = {
+      "****": "paired",
+      received: {
+        code: "****",
+        count: "****************",
+        enabled: "****",
+        ratio: "******",
+        room: "***",
+      },
+    };
     expect(resultA).toMatchObject({
-      result: { execution: { value: { value: { digits: "89" } } } },
+      result: { execution: { value: { value: { digits: "89", ...redacted } } } },
     });
     expect(resultB).toMatchObject({
-      result: { execution: { value: { value: { digits: "34" } } } },
+      result: { execution: { value: { value: { digits: "34", ...redacted } } } },
     });
+    expect(JSON.stringify([resultA, resultB])).not.toMatch(/AB89|CD34/u);
+    const failed = await withTimeout(
+      gateway.call("plugin_call", {
+        calls: { path: "tools.tv.pair", input: { mode: "error" } },
+      }),
+      30_000,
+      { timeoutError: () => new Error("The server's reflected error did not return") },
+    );
+    expect(JSON.stringify(failed)).toContain("****");
+    expect(JSON.stringify(failed)).not.toMatch(/AB89|CD34/u);
     // Answers reach only the server: no Request or event keeps the code.
     const stored = await host.store.database.selectFrom("requests").selectAll().execute();
     const events = await host.store.database.selectFrom("deploymentEvents").selectAll().execute();
-    expect(JSON.stringify([stored, events])).not.toContain("AB89");
+    const commands = await host.store.database.selectFrom("commands").selectAll().execute();
+    const history = await host.store.database.selectFrom("threadInputs").selectAll().execute();
+    expect(JSON.stringify([stored, events, commands, history])).not.toMatch(
+      /AB89|CD34|6723672367236723|-13\.75/u,
+    );
 
     // Removed: its tools are gone and its data removal reaches the Mac.
     await gateway.call("local_server_remove", { name: "tv" });
@@ -244,11 +268,14 @@ const { StdioServerTransport } = require(${sdk("server/stdio.js")});
 const { CallToolRequestSchema, ListToolsRequestSchema } = require(${sdk("types.js")});
 const server = new Server({ name: "tv", version: "1" }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "pair", description: "Pair with the TV", inputSchema: { type: "object" } }] }));
-server.setRequestHandler(CallToolRequestSchema, async () => {
+let acceptedCode;
+server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
+  if (params.arguments?.mode === "error") throw new Error("Pairing failed with " + acceptedCode);
   const properties = { code: { type: "string", title: "Pairing code", minLength: 4, maxLength: 4 }, count: { type: "integer" }, enabled: { type: "boolean" }, ratio: { type: "number" }, room: { type: "string", enum: ["Living room", "Den"] } };
   const result = await server.elicitInput({ message: "Enter the code shown on your TV", requestedSchema: { type: "object", properties, required: Object.keys(properties) } }, { timeout: 180000, maxTotalTimeout: 180000 });
   if (result.action !== "accept") return { content: [{ type: "text", text: result.action }] };
-  return { content: [{ type: "text", text: "paired" }], structuredContent: { digits: result.content.code.slice(2) } };
+  acceptedCode = result.content.code;
+  return { content: [{ type: "text", text: "paired" }], structuredContent: { digits: result.content.code.slice(2), received: result.content, [result.content.code]: "paired" } };
 });
 server.connect(new StdioServerTransport());
 `,

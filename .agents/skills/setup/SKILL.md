@@ -6,7 +6,7 @@ description: Use when enrolling a computer in an Opensteer Deployment or resolvi
 # Setup
 
 Lending a computer, connecting plugin accounts and wiring messaging.
-[Computers](../../../docs/computers.md), [Plugin account OAuth](../../../docs/integration-oauth.md) and
+[Computers](../../../docs/computers.md), [Plugin account OAuth](../../../docs/plugin-accounts.md) and
 [Messaging](../../../docs/messaging.md) hold the authority rules.
 
 ## Safety rules
@@ -24,6 +24,6 @@ Lending a computer, connecting plugin accounts and wiring messaging.
 ## Procedures
 
 - [Computers](references/computers.md): enrollment, app access, agent SSH.
-- [Plugin account OAuth](references/integration-oauth.md): managed and custom apps, checks.
+- [Plugin account OAuth](references/plugin-accounts.md): managed and custom apps, checks.
 - [Messaging](references/messaging.md): Slack, new providers, checks.
 - [Team server](../team-server/SKILL.md): Docker testing and first-owner setup renewal.

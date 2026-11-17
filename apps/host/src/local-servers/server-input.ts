@@ -147,7 +147,24 @@ export class ServerInput {
           JSON.stringify({
             mode: "form",
             message: call.redactor().redactText(params.message),
-            requestedSchema: params.requestedSchema,
+            requestedSchema: {
+              ...params.requestedSchema,
+              // Choice values and constraints must still match the server's validator.
+              properties: Object.fromEntries(
+                Object.entries(params.requestedSchema.properties).map(([name, property]) => [
+                  name,
+                  {
+                    ...property,
+                    ...(property.title === undefined
+                      ? {}
+                      : { title: call.redactor().redactText(property.title) }),
+                    ...(property.description === undefined
+                      ? {}
+                      : { description: call.redactor().redactText(property.description) }),
+                  },
+                ]),
+              ),
+            },
           }),
         ),
         AbortSignal.any([call.signal, signal]),

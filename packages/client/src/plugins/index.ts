@@ -46,6 +46,9 @@ export function readInstalledPlugins(client: PluginsHost) {
 export function readPlugin(client: PluginsHost, pluginId: string) {
   return client.rpc["plugins.get"]({ pluginId }).then(unwrapRpcResult);
 }
+export function readPluginPageView(client: PluginsHost, pluginId: string, theme: "light" | "dark") {
+  return client.rpc["plugins.page.view"]({ pluginId, theme }).then(unwrapRpcResult);
+}
 export function readConnectedAccounts(client: PluginsHost) {
   return client.rpc["plugins.accounts.list"]({}).then(unwrapRpcResult);
 }
@@ -158,6 +161,14 @@ export const completePluginWebhookSetup = (
   client: PluginsHost,
   input: CommandInput<"plugins.webhook.setup.complete">,
 ) => command(client, "plugins.webhook.setup.complete", input);
+
+export const removePluginWebhook = (client: PluginsHost, pluginId: string, webhookId: string) =>
+  command(client, "plugins.webhook.remove", { pluginId, webhookId });
+export const confirmPluginWebhookRemoval = (
+  client: PluginsHost,
+  pluginId: string,
+  webhookId: string,
+) => command(client, "plugins.webhook.removal.confirm", { pluginId, webhookId });
 
 /** Answers one of the three plugin Requests through the ordinary Request path. */
 export function respondToPluginRequest(

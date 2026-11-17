@@ -7,7 +7,6 @@ import type { AgentCallerResolver } from "../mcp/agent-caller.js";
 import type { TabServicePort } from "../tabs/ports.js";
 import { normalizeHostError } from "../server/http-errors.js";
 import { DeviceAccessRefusal } from "../administration/device-access.js";
-import type {} from "@fastify/websocket";
 import { OpensteerError } from "@opensteer/core";
 import {
   BrowserActionRequestSchema,

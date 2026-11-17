@@ -1,7 +1,10 @@
 import type { Thread } from "@opensteer/core";
 import type { RunCapabilityClaims } from "../agents/run-capability.js";
 import type { DeviceServicesTestHarness } from "../devices/device-services.test-support.js";
-import type { TriggerCapabilityClaims, TriggerControlScope } from "../triggers/trigger-control-service.js";
+import type {
+  TriggerCapabilityClaims,
+  TriggerControlScope,
+} from "../triggers/trigger-control-service.js";
 import type { AgentCaller, RunCaller } from "./agent-caller.js";
 import { DeviceToolHandlers } from "./handlers/devices.js";
 import { agentToolHandlers } from "./handlers/index.js";
@@ -65,9 +68,7 @@ export function createIntegrationMcpFixture(options: {
           teamOrigin: null,
         } as Thread;
         const base = {
-          key: run
-            ? `run:${run.runId}`
-            : `trigger:${(claims as TriggerScope).occurrenceId}`,
+          key: run ? `run:${run.runId}` : `trigger:${(claims as TriggerScope).occurrenceId}`,
           userId: claims.requestedBy,
           accessMode: thread.accessMode,
         };

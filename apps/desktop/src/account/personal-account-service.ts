@@ -26,7 +26,6 @@ const unlinkSteps = [
   "revoke-account-sessions",
   "revoke-connect-resource",
   "remove-host-link",
-  "repair-hosted-oauth-connections",
   "retain-local-data",
 ] as const satisfies readonly PersonalAccountUnlinkStep[];
 
@@ -43,11 +42,7 @@ export class DesktopPersonalAccountService {
   >;
   readonly #host: Pick<
     DesktopPersonalHostRemoteAdapter,
-    | "removeAccountLinkForUnlink"
-    | "repairHostedOAuthConnectionsForUnlink"
-    | "revokeAccountSessionsForUnlink"
-    | "resumeAccountLink"
-    | "status"
+    "removeAccountLinkForUnlink" | "revokeAccountSessionsForUnlink" | "resumeAccountLink" | "status"
   >;
   readonly #link: Pick<DesktopPersonalAccountLinkCoordinator, "ensureLinkedForMutation">;
   readonly #links: Pick<
@@ -71,7 +66,6 @@ export class DesktopPersonalAccountService {
     readonly host: Pick<
       DesktopPersonalHostRemoteAdapter,
       | "removeAccountLinkForUnlink"
-      | "repairHostedOAuthConnectionsForUnlink"
       | "revokeAccountSessionsForUnlink"
       | "resumeAccountLink"
       | "status"
@@ -432,9 +426,6 @@ export class DesktopPersonalAccountService {
         return;
       case "remove-host-link":
         await this.#host.removeAccountLinkForUnlink();
-        return;
-      case "repair-hosted-oauth-connections":
-        await this.#host.repairHostedOAuthConnectionsForUnlink();
         return;
       case "retain-local-data":
         return;

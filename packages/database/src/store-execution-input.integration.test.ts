@@ -1559,7 +1559,7 @@ describeStore("PostgreSQL store", (it) => {
           arguments: args,
           callId: "call-bulk-rows",
           tool: {
-            name: "integration_call",
+            name: "plugin_call",
             namespace: "opensteer.integrations",
           },
         },
@@ -1735,7 +1735,7 @@ describeStore("PostgreSQL store", (it) => {
       },
       callId: "call-act",
       tool: {
-        name: "integration_call",
+        name: "plugin_call",
         namespace: "opensteer",
       },
     };

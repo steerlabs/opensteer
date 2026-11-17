@@ -309,6 +309,25 @@ describe("computer REPL worker boundary", () => {
     await run("await w.observe(); await p.observe()");
     expect(acquisitions).toEqual(["window-tab", "phone-tab"]);
   });
+  it("binds the phone computerId from discovery when names are identical", async () => {
+    const bound: string[] = [];
+    const { run } = setup(async (request) => {
+      if (request.operation === "phones")
+        return {
+          value: [
+            { id: "connection-a", name: "Phone", computerId: "computer-a" },
+            { id: "connection-b", name: "Phone", computerId: "computer-b" },
+          ],
+        };
+      if (request.operation === "bind") {
+        bound.push(request.target!);
+        return { value: { tabId: "phone-tab" } };
+      }
+      throw new Error("Unexpected operation");
+    });
+    expect(output(await run('return (await phone("computer-b")).name'))).toBe('"Phone"');
+    expect(bound).toEqual(["connection-b"]);
+  });
   it("requires a new observation after explicitly reacquiring a native target", async () => {
     const snapshots: unknown[] = [];
     const { run } = setup(async (request) => {

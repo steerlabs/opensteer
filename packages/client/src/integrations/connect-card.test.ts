@@ -1,13 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { LoadedAccessRequest } from "./access-request.js";
 import { mockMessagesDefinition } from "../mock/mock-integration-fixtures.js";
-import {
-  collapsedAccountRows,
-  connectCard,
-} from "./connect-card.js";
+import { collapsedAccountRows, connectCard } from "./connect-card.js";
 
 /** An access Request for Messages on a computer, or for a local server needing no account. */
-function loaded(kind: "computer" | "none" | "provider" = "computer", count = 0) {
+function loaded(kind: "computer" | "none" = "computer", count = 0) {
   const connections = Array.from({ length: count }, (_, i) => ({
     id: `connection-${i}`,
     definitionId: mockMessagesDefinition.id,
@@ -43,16 +40,7 @@ function loaded(kind: "computer" | "none" | "provider" = "computer", count = 0) 
               name: "messages",
               status: "active",
               connectionRequirement:
-                kind === "computer"
-                  ? { kind, definitionId: mockMessagesDefinition.id }
-                  : kind === "provider"
-                    ? {
-                        kind,
-                        definitionId: "gmail",
-                        provider: "google",
-                        providerApplicationRequired: true,
-                      }
-                    : { kind },
+                kind === "computer" ? { kind, definitionId: mockMessagesDefinition.id } : { kind },
             },
           ],
           tools: connections.flatMap(({ id }) => [

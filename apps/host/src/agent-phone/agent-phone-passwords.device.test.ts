@@ -37,6 +37,7 @@ import {
   eventually,
   installFixture,
   phoneRowOf,
+  phoneCommands,
   readObservation,
   readReceipts,
   Redaction,
@@ -50,7 +51,7 @@ import {
   type AndroidDevice,
   type AgentGateway,
   type TlsFrontDoor,
-  type PhoneToolRefs,
+  type PhoneCommands,
   type ToolResult,
 } from "./agent-phone-device.test-support.js";
 
@@ -325,14 +326,11 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
             evidence.scan(`raw:${name}`, JSON.stringify(result));
             return result;
           };
-          const row = phoneRowOf(
-            await call("integration_search", { query: "Android phone" }),
-            phoneId,
-          );
-          if (!row.toolRefs?.act) throw new Error("Phone has no act tool");
-          const refs: PhoneToolRefs = row.toolRefs;
+          const row = phoneRowOf(await call("computer_apps", { query: "Android phone" }), phoneId);
+          if (!phoneCommands(row).act) throw new Error("Phone has no act tool");
+          const refs: PhoneCommands = phoneCommands(row);
           const observe = async () => {
-            const result = await call("integration_call", { toolRef: refs.observe });
+            const result = await call("computer_use", { code: refs.observe });
             expect(result.isError).not.toBe(true);
             return readObservation(resultText(result));
           };
@@ -385,9 +383,8 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           const authorize = authority.commands.findLast((c) => c.type === "login.authorize");
           if (authorize?.type !== "login.authorize") throw new Error("Missing authorization");
           const act = async (actions: readonly AndroidPhoneAction[], active = gateway) => {
-            const result = await active.call("integration_call", {
-              toolRef: refs.act!,
-              arguments: { observationId: observation.observationId, actions },
+            const result = await active.call("computer_use", {
+              code: `${refs.act}(${JSON.stringify(actions)})`,
             });
             results.push(result);
             evidence.scan("raw:act", JSON.stringify(result));
@@ -588,13 +585,13 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
               const observer = await connectAgentGateway(host, observerRun.integrationTools);
               gateways.push(observer);
               const observerRow = phoneRowOf(
-                await observer.call("integration_search", {
+                await observer.call("computer_apps", {
                   query: "Android phone",
                 }),
                 phoneId,
               );
-              const barrier = await observer.call("integration_call", {
-                toolRef: observerRow.toolRefs!.observe,
+              const barrier = await observer.call("computer_use", {
+                code: phoneCommands(observerRow).observe,
               });
               results.push(barrier);
               expect(barrier.isError).not.toBe(true);
