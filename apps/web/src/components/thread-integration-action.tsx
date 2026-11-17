@@ -58,6 +58,8 @@ import {
 import { isPhoneDisplayDefinitionId, RunnerIdSchema } from "@opensteer/core";
 import { ComputerAppPicker } from "./computer-apps/computer-app-picker.js";
 import { createConnectOperations } from "./integrations/connect-operations.js";
+import { presentFailure, Refusal } from "./use-action.js";
+import { presentReadFailure } from "@opensteer/client/feedback";
 
 export function ThreadIntegrationAction({
   disabled = false,
@@ -309,7 +311,8 @@ export function ThreadIntegrationAction({
           }));
       })
       .catch((reason: unknown) => {
-        if (!cancelled) setError(errorMessage(reason));
+        // The card's own read: "Couldn't load this account."
+        if (!cancelled) setError(presentReadFailure(reason, "this account"));
       });
     return () => {
       cancelled = true;
@@ -823,7 +826,7 @@ export function ThreadIntegrationAction({
       })
       .then((result) => {
         if (result.type !== "integration.apiKey.connect") {
-          throw new Error("No connected account is recorded here. Try again.");
+          throw new Refusal("No connected account is recorded here. Try again.");
         }
         // An older Host does not say which account the key made; the person
         // then chooses it with Use rather than the card guessing.
@@ -838,7 +841,7 @@ export function ThreadIntegrationAction({
         setApiKeyOpen(false);
         setReload((value) => value + 1);
       })
-      .catch((reason: unknown) => setApiKeyError(errorMessage(reason)))
+      .catch((reason: unknown) => setApiKeyError(presentFailure(reason, "connect", "connected")))
       .finally(() => setPending(false));
   };
 
@@ -1377,6 +1380,7 @@ export function integrationAccountCanChange(
   return plan.requestedConnectionId === null;
 }
 
+/** A failure in the app's words, never the exception's own text. */
 function errorMessage(reason: unknown): string {
-  return reason instanceof Error ? reason.message : "The integration request could not be loaded.";
+  return presentFailure(reason, "connect this");
 }

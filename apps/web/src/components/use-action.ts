@@ -74,6 +74,8 @@ export function useAction<I = void, O = unknown>(
 } {
   const current = useRef(spec);
   current.current = spec;
+  // A `Refusal` the work threw is said in its own words, beside the control.
+  const refused = useRef<Refusal | null>(null);
   const owner = session ?? localSession;
   const action: ClientAction<I, O> = useMemo(
     () =>
@@ -82,7 +84,14 @@ export function useAction<I = void, O = unknown>(
         label: spec.label,
         ...(spec.done ? { done: spec.done } : {}),
         ...(spec.thing ? { thing: spec.thing } : {}),
-        execute: (input, signal) => current.current.execute(input, signal),
+        execute: async (input, signal) => {
+          try {
+            return await current.current.execute(input, signal);
+          } catch (error) {
+            if (error instanceof Refusal) refused.current = error;
+            throw error;
+          }
+        },
         reconcile: (input, signal) =>
           current.current.reconcile?.(input, signal) ?? Promise.resolve(null),
       }),
@@ -102,12 +111,19 @@ export function useAction<I = void, O = unknown>(
     () =>
       state.issue === null
         ? null
-        : actionLine(state.issue, spec.reconcile ? () => void action.reconcile() : null),
+        : refused.current
+          ? {
+              ...actionLine(state.issue, null),
+              text: refused.current.words,
+              tone: "danger" as const,
+            }
+          : actionLine(state.issue, spec.reconcile ? () => void action.reconcile() : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [action, state.issue, spec.reconcile === undefined],
   );
   const run = useMemo(
     () => (input: I) => {
+      refused.current = null;
       action.dismiss();
       return action.run(input);
     },
@@ -152,25 +168,39 @@ export async function runAction<O>(
     readonly execute: (signal: AbortSignal) => Promise<O>;
   },
 ): Promise<ActionOutcome<O>> {
+  const caught: { refusal: Refusal | null } = { refusal: null };
   const action = createClientAction<void, O>(session ?? localSession, {
     key: spec.label,
     label: spec.label,
     ...(spec.done ? { done: spec.done } : {}),
     ...(spec.thing ? { thing: spec.thing } : {}),
-    execute: (_input, signal) => spec.execute(signal),
+    execute: async (_input, signal) => {
+      try {
+        return await spec.execute(signal);
+      } catch (error) {
+        if (error instanceof Refusal) caught.refusal = error;
+        throw error;
+      }
+    },
   });
   try {
-    return await action.run(undefined);
+    const outcome = await action.run(undefined);
+    if (caught.refusal && outcome.kind !== "confirmed") refusals.set(outcome, caught.refusal.words);
+    return outcome;
   } finally {
     action.dispose();
   }
 }
 
+/** The app's own words for an outcome its work refused with a `Refusal`. */
+const refusals = new WeakMap<ActionOutcome<unknown>, string>();
+
 /** The words for an outcome that wasn't confirmed; null when it was, or there is nothing to say. */
 export function outcomeWords(outcome: ActionOutcome<unknown>): string | null {
-  return outcome.kind === "confirmed" || outcome.issue === null
-    ? null
-    : presentClientIssue(outcome.issue).title;
+  if (outcome.kind === "confirmed") return null;
+  const refused = refusals.get(outcome);
+  if (refused !== undefined) return refused;
+  return outcome.issue === null ? null : presentClientIssue(outcome.issue).title;
 }
 
 /** A read's own failure, in its own words: never the connection's. */
@@ -208,6 +238,20 @@ export async function runRead<T>(
   }
 }
 
+/**
+ * A refusal this app decides and words itself ("This conversation changed while
+ * you were choosing. Choose again."). Only these words reach the screen; an
+ * arbitrary exception's text never does.
+ */
+export class Refusal extends Error {
+  readonly words: string;
+  constructor(words: string) {
+    super(words);
+    this.name = "Refusal";
+    this.words = words;
+  }
+}
+
 /** An action the shared owner did not confirm, carried through a promise chain. */
 export class ActionNotDone extends Error {
   readonly outcome: ActionOutcome<unknown>;
@@ -238,6 +282,7 @@ export async function act<O>(
  * confirmed action into a failure, and never shows an exception's text.
  */
 export function failureWords(reason: unknown): string | null {
+  if (reason instanceof Refusal) return reason.words;
   return reason instanceof ActionNotDone ? outcomeWords(reason.outcome) : null;
 }
 
@@ -268,7 +313,7 @@ export function toastError(
   label = "do this",
 ) {
   return (reason: unknown): void => {
-    if (reason instanceof ActionNotDone) {
+    if (reason instanceof ActionNotDone || reason instanceof Refusal) {
       toastFailure(toast)(reason);
       return;
     }
@@ -298,4 +343,19 @@ export function useDisposedWithView(owner: { dispose(): void }): void {
       );
     };
   }, [owner]);
+}
+
+/** Answering a Request: "Not sent. You're offline." before it goes, the Host's reason after. */
+export const requestAnswer = { label: "answer this request", done: "sent" } as const;
+
+/**
+ * A failure that didn't run through `act`, said by the shared presenter:
+ * a refusal with the Host's safe reason where it has one, otherwise an honest
+ * "couldn't". Never the exception's own text.
+ */
+export function presentFailure(reason: unknown, label = "do this", done?: string): string {
+  if (reason instanceof Refusal) return reason.words;
+  if (reason instanceof ActionNotDone) return outcomeWords(reason.outcome) ?? "";
+  const issue = clientIssue(reason, { operation: "action", label });
+  return issue ? presentClientIssue({ ...issue, ...(done ? { done } : {}) }).title : "";
 }

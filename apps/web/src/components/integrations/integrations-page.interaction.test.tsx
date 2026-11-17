@@ -845,7 +845,7 @@ describe("Settings repairs each GitHub account the way the Host says it needs", 
 
     expect(
       [...container.querySelectorAll('[role="alert"]')].map((node) => node.textContent),
-    ).toEqual(["This deployment could not be reached.", unavailable]);
+    ).toEqual(["Couldn't load your accounts.", "Couldn't load repository access."]);
     expect(container.textContent).toContain("Repository access is still required");
     expect(buttonWithText(container, "Recheck repository access")?.disabled).toBe(false);
   });
@@ -1118,7 +1118,7 @@ describe("Settings retires only the page read failure that a newer read supersed
     await vi.waitFor(() =>
       expect(
         [...container.querySelectorAll('[role="alert"]')].map((node) => node.textContent),
-      ).toEqual([failed]),
+      ).toEqual(["Couldn't load your accounts."]),
     );
     expect(sectionRows(container, "Accounts")).toHaveLength(2);
 
@@ -1145,7 +1145,9 @@ describe("Settings retires only the page read failure that a newer read supersed
     });
     await click(buttonWithText(container, "Recheck repository access"));
     await vi.waitFor(() =>
-      expect(container.querySelector('[role="alert"]')?.textContent).toBe(failed),
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+        "Couldn't load repository access.",
+      ),
     );
     expect(container.textContent).toContain("Repository access is still required");
   });

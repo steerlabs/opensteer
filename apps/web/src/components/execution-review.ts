@@ -1,3 +1,4 @@
+import { Refusal } from "./use-action.js";
 import type { ThreadAccessMode } from "@opensteer/core";
 import {
   accessModeOptions,
@@ -199,8 +200,8 @@ export async function applyThreadExecution(input: {
   const accessMode = reviewed?.accessMode;
   if (accessMode) {
     const live = recheck();
-    if (live.kind === "busy") throw new Error(live.reason);
-    if (live.kind === "unavailable") throw new Error(live.detail);
+    if (live.kind === "busy") throw new Refusal(live.reason);
+    if (live.kind === "unavailable") throw new Refusal(live.detail);
     const stillAsReviewed =
       live.kind !== "compatible" &&
       live.access?.offered.includes(accessMode) === true &&
@@ -208,20 +209,13 @@ export async function applyThreadExecution(input: {
         ? continuation === undefined
         : continuation?.expectedProviderSessionId === live.expectedProviderSessionId);
     if (!stillAsReviewed) {
-      throw new Error("This conversation changed while you were choosing. Choose again.");
+      throw new Refusal("This conversation changed while you were choosing. Choose again.");
     }
     await hostClient.updateThreadAccess(threadId, accessMode);
   }
-  try {
-    await (continuation
-      ? hostClient.updateThreadExecution(threadId, change, {
-          expectedProviderSessionId: continuation.expectedProviderSessionId,
-        })
-      : hostClient.updateThreadExecution(threadId, change));
-  } catch (error) {
-    if (!accessMode) throw error;
-    const label = accessModeOptions.find((option) => option.mode === accessMode)?.label;
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`${reason} Its access is now ${label ?? accessMode}.`);
-  }
+  await (continuation
+    ? hostClient.updateThreadExecution(threadId, change, {
+        expectedProviderSessionId: continuation.expectedProviderSessionId,
+      })
+    : hostClient.updateThreadExecution(threadId, change));
 }

@@ -38,7 +38,13 @@ import { createConnectOperations } from "./connect-operations.js";
 
 import { useToast } from "../toast.js";
 import { agentAccessSectionId } from "./grants-section.js";
-import { message, platformIntegrations, providerLabel } from "./helpers.js";
+import {
+  message,
+  platformIntegrations,
+  providerLabel,
+  readMessage,
+  repositoryMessage,
+} from "./helpers.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "@opensteer/client/host";
 
 type View =
@@ -260,7 +266,7 @@ export function useIntegrationEditor({
       return signal.aborted ? null : access;
     } catch (reason) {
       if (signal.aborted) return null;
-      setError(message(reason));
+      setError(repositoryMessage(reason));
       // An account that cannot be reloaded keeps its repository step.
       const loaded = await reload().catch(() => null);
       if (signal.aborted) return null;
@@ -341,7 +347,7 @@ export function useIntegrationEditor({
       (reason: unknown) => {
         if (latestRead.current?.read !== read) return;
         latestRead.current = null;
-        setReadError(message(reason));
+        setReadError(readMessage(reason));
         answer.reject(reason);
       },
     );

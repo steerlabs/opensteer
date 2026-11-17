@@ -260,7 +260,7 @@ export function PlaceBrowserView({
       setRetentionFailure({
         hostClient,
         key,
-        message: error instanceof Error ? error.message : "This tab can’t be shown.",
+        message: "This tab can’t be shown.",
       });
       onReportError(error);
     }

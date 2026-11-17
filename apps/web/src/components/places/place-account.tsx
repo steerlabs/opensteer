@@ -104,14 +104,11 @@ function useAccountLeaves(
       (memberships) => {
         if (live) setResult({ state: "ready", names: memberships.map(({ name }) => name) });
       },
-      (reason: unknown) => {
+      () => {
         if (live)
           setResult({
             state: "error",
-            message:
-              reason instanceof Error
-                ? reason.message
-                : "This Mac’s device memberships could not be read.",
+            message: "This Mac’s device memberships could not be read.",
           });
       },
     );
@@ -169,13 +166,9 @@ export function SignOutDialog({
                   composerDrafts.clearAll();
                   onClose();
                 })
-                .catch((reason: unknown) => {
+                .catch(() => {
                   setPending(false);
-                  setError(
-                    reason instanceof Error && reason.message
-                      ? reason.message
-                      : "Signing out didn’t finish. Try again.",
-                  );
+                  setError("Signing out didn’t finish. Try again.");
                 });
             }}
             type="button"

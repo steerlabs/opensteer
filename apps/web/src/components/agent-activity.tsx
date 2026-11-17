@@ -141,6 +141,7 @@ import { AreaLink } from "./workspace/area-link.js";
 import { DelegationLine } from "./task-line.js";
 import { EditedMark } from "./message-revisions.js";
 import { AgentFolds, AgentGroupRow, AgentRow, AgentsLive, WorkflowRow } from "./subagent-rows.js";
+import { act, failureWords } from "./use-action.js";
 
 // Fetched with this module, not when a reply is first drawn: until it lands a
 // reply shows its raw Markdown, and on a weak link that wait is what people see.
@@ -2826,11 +2827,10 @@ function CompactionDivider({ run }: { run: RunEntry }) {
           type="button"
           onClick={() => {
             setBusy(true);
-            void client
-              .stopRun(threadId)
-              .catch((e: unknown) =>
-                setError(e instanceof Error ? e.message : "Could not stop summary."),
-              )
+            void act(client, { label: "stop", thing: "this summary", done: "stopped" }, () =>
+              client.stopRun(threadId),
+            )
+              .catch((e: unknown) => setError(failureWords(e) ?? "Could not stop summary."))
               .finally(() => setBusy(false));
           }}
         >

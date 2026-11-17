@@ -48,7 +48,6 @@ import {
 } from "@opensteer/protocol/desktop";
 import { type ExecutionPreferences, type ThreadAccessMode } from "@opensteer/core";
 import { conversationPath, fromLivePage, useMediaQuery } from "../ui-utils.js";
-import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import {
   ConnectionGateScope,
   ShellConnectionPill,
@@ -134,6 +133,7 @@ import {
 import { AccountSignInDialog, type AddHarnessAccount } from "./account-sign-in-dialog.js";
 import { useToast } from "./toast.js";
 import { useTeams } from "../team/team-attachments.js";
+import { presentFailure } from "./use-action.js";
 
 export interface ShellContext {
   /**
@@ -1151,14 +1151,12 @@ function ShellPill({
   return <ShellConnectionPill current={current} others={others} />;
 }
 
-/** A failure said in the shared presenter's words, never the exception's own text. */
 function failureWords(error: unknown, label = "complete this action"): string {
-  const issue = clientIssue(error, { operation: "action", label });
-  return issue ? presentClientIssue(issue).title : "";
+  return presentFailure(error, label);
 }
 
 function signInFailureWords(error: unknown): string {
-  return failureWords(error, "sign in");
+  return presentFailure(error, "sign in");
 }
 
 /**

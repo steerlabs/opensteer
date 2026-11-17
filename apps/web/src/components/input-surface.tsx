@@ -28,6 +28,8 @@ import { useComposerContext } from "./workspace/composer-context.js";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 import { TaskMark, TaskBadge } from "./workspace/task-mark.js";
 import { sendMessageCommand, storageUnavailable } from "../host/message-outbox.js";
+import { ActionLine } from "./action-line.js";
+import { requestAnswer, useAction } from "./use-action.js";
 import { VoiceButton, VoiceDock } from "./voice.js";
 import { ThreadBrowserRequestAction } from "./thread-browser-access-action.js";
 import { ThreadBrowserSignInAction } from "./thread-browser-sign-in-action.js";
@@ -118,8 +120,18 @@ export function InputSurface({
   /** Chat's composer, which offers the voice button beside Send. */
   voice?: boolean;
 }) {
-  const { hostClient, snapshot, reportActionError } = useShell();
+  const { hostClient, snapshot } = useShell();
   const { deploymentId } = snapshot;
+  const reopen = useAction(
+    hostClient,
+    {
+      label: "reopen",
+      thing: "this task",
+      done: "reopened",
+      execute: () => hostClient.setTaskDone(threadId, false),
+    },
+    `reopen:${threadId}`,
+  );
   const userId = snapshot.user?.id ?? null;
   const draftKey = composerDraftKeyFor(deploymentId, userId, { kind: "thread", threadId });
   const context = useComposerContext({ auto: autoContext, draftKey, hostClient });
@@ -169,12 +181,13 @@ export function InputSurface({
           <button
             className="btn btn--ghost"
             type="button"
-            disabled={disabled}
-            onClick={() => void hostClient.setTaskDone(threadId, false).catch(reportActionError)}
+            disabled={reopen.running}
+            onClick={() => void reopen.run()}
           >
             <strong>Reopen</strong>
           </button>
         </p>
+        {reopen.line ? <ActionLine line={reopen.line} /> : null}
       </div>
     );
   }
@@ -659,9 +672,24 @@ function ActionBody({
   surface: SurfaceModel;
   threadId: string;
 }) {
-  const { hostClient, reportActionError } = useShell();
+  const { hostClient } = useShell();
   const [pendingId, setPendingId] = useState<string | null>(null);
   const { request } = surface;
+  // Approve and deny stay enabled offline; the answer says it wasn't sent, under the buttons.
+  const answer = useAction(
+    hostClient,
+    {
+      ...requestAnswer,
+      execute: (response: RequestResponse) =>
+        hostClient.dispatch({
+          idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
+          requestId: request.id,
+          response,
+          type: "request.respond",
+        }),
+    },
+    `request:${request.id}`,
+  );
 
   if (surface.denied) {
     return <DeniedRequestBody denied={surface.denied} request={request} />;
@@ -691,16 +719,9 @@ function ActionBody({
   const respond = (response: RequestResponse, busyId: string) => {
     if (pendingId || disabled) return;
     setPendingId(busyId);
-    void hostClient
-      .dispatch({
-        idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
-        requestId: request.id,
-        response,
-        type: "request.respond",
-      })
-      .catch(reportActionError)
-      .finally(() => setPendingId(null));
+    void answer.run(response).finally(() => setPendingId(null));
   };
+  const line = answer.line ? <ActionLine line={answer.line} wrap /> : null;
 
   if (request.presentation.kind === "choice") {
     return (
@@ -723,6 +744,7 @@ function ActionBody({
           options={request.presentation.options}
           pendingId={pendingId}
         />
+        {line}
       </>
     );
   }
@@ -736,6 +758,7 @@ function ActionBody({
         onRespond={(response) => respond(response, "form")}
         pending={disabled || pendingId !== null}
       />
+      {line}
     </>
   );
 }

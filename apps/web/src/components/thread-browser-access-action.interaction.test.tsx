@@ -6,7 +6,28 @@ import type { Request } from "@opensteer/core";
 import { ThreadBrowserRequestAction } from "./thread-browser-access-action.js";
 
 const shell = vi.hoisted(() => ({
-  hostClient: { dispatch: vi.fn() },
+  hostClient: {
+    // Connected: the answer goes out rather than being held as not sent.
+    connection: {
+      getSnapshot: () => ({
+        phase: "ready",
+        network: "online",
+        scope: {
+          authorityKey: "host",
+          deploymentId: "deployment",
+          viewerId: "viewer",
+          loginId: "login",
+        },
+        readyRevision: 1,
+        showInterruption: false,
+        issue: null,
+        trying: false,
+      }),
+      subscribe: () => () => undefined,
+      retry: () => undefined,
+    },
+    dispatch: vi.fn(),
+  },
   reportActionError: vi.fn(),
   snapshot: {
     browserProfiles: [{ id: "personal", name: "Personal", revision: 1 }],
@@ -41,8 +62,9 @@ it("keeps a failed approval beside the selected profile and retries without an e
   };
   expect(selected()).not.toBeNull();
   await act(async () => submit().click());
+  // A lost answer is said honestly, never in the exception's own words.
   expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-    "Connection interrupted",
+    "Couldn't confirm this change.",
   );
   expect(selected()).not.toBeNull();
   expect(shell.reportActionError).not.toHaveBeenCalled();

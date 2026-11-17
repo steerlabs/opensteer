@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { HostClient } from "@opensteer/client/host";
 import { threadTitleMaxLength } from "@opensteer/core";
+import { act, failureWords } from "./use-action.js";
 
 export function ThreadTitleEditor(props: {
   readonly hostClient: HostClient;
@@ -27,10 +28,12 @@ export function ThreadTitleEditor(props: {
     setSaving(true);
     setError(null);
     try {
-      await props.hostClient.renameThread(props.threadId, title);
+      await act(props.hostClient, { label: "rename", thing: "this task", done: "renamed" }, () =>
+        props.hostClient.renameThread(props.threadId, title),
+      );
       props.onClose();
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "The task could not be renamed.");
+      setError(failureWords(failure) ?? "The task could not be renamed.");
       setSaving(false);
       input.current?.focus();
     }

@@ -69,6 +69,8 @@ const rejectionReasons: Readonly<Record<string, string>> = {
   "browser-session-closed": "This tab is closed.",
   "personal-remote-access-off": "Turn on Use from anywhere to add a computer.",
   "resource-exhausted": "Too many messages waiting.",
+  "integration-key-rejected": "The service turned this key away.",
+  "integration-key-unchecked": "Opensteer couldn't check this key. Check it and its permissions.",
 };
 
 function rejectionDetail(reason: string | undefined): string | undefined {

@@ -639,9 +639,9 @@ describe("the draft's places", () => {
         { type: "text", text: "Can you see my screen?" },
         reference(keynote),
       ]);
-      expect(
-        element(".delivery [role=status]").closest(".delivery")!.textContent,
-      ).toContain(keynote.title);
+      expect(element(".delivery [role=status]").closest(".delivery")!.textContent).toContain(
+        keynote.title,
+      );
       act(() => root?.unmount());
       setRoot(null);
       document.body.replaceChildren();
@@ -689,9 +689,9 @@ describe("unconfirmed sends keep every place exactly", () => {
       "computer-app",
     ]);
     expect(first.content[1]?.auto).toBe(true);
-    expect(
-      element(".delivery [role=status]").closest(".delivery")!.textContent,
-    ).toContain(app.title);
+    expect(element(".delivery [role=status]").closest(".delivery")!.textContent).toContain(
+      app.title,
+    );
     // The page reloads: the kept message is sent again as exactly what was sent.
     act(() => root?.unmount());
     setRoot(null);

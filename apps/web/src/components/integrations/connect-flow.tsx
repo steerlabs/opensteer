@@ -27,7 +27,7 @@ import {
   type IntegrationAuthorizationReturnRoute,
 } from "../../integrations/integration-authorization.js";
 import { IntegrationIcon } from "./integration-icon.js";
-import { message, secretFieldLabel } from "./helpers.js";
+import { message, readMessage, repositoryMessage, secretFieldLabel } from "./helpers.js";
 import {
   canSetUpOwnApp,
   authorizationConnection,
@@ -181,7 +181,7 @@ export function ConnectFlow({
         setError(next.detail ?? message(reason));
         setStep({ kind: "choose" });
       } else {
-        setError(message(reason));
+        setError(repositoryMessage(reason));
         setStep((current) =>
           current.kind === "repository-access"
             ? current
@@ -395,7 +395,7 @@ export function ConnectFlow({
       const reloaded = await operations.reloadDashboard();
       if (owns(controller)) setLive(reloaded);
     } catch (reason) {
-      if (owns(controller)) setError(message(reason));
+      if (owns(controller)) setError(readMessage(reason));
     } finally {
       settle(controller);
     }

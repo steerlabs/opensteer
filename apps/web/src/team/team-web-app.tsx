@@ -240,7 +240,7 @@ function TeamSignIn({
       window.sessionStorage.removeItem(teamPageReturnKey);
       setBusy(false);
       setError(
-        `${failure instanceof Error ? failure.message : "Sign-in couldn’t start."}${oauthQuery ? " Close this browser and start sign-in again in the Opensteer app." : ""}`,
+        `Sign-in couldn’t start.${oauthQuery ? " Close this browser and start sign-in again in the Opensteer app." : ""}`,
       );
     }
   };

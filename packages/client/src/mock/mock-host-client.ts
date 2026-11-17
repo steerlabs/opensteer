@@ -10074,7 +10074,12 @@ class MockHostState {
     if (!definition) throw new Error("Integration not found.");
     // The Host's own words when a checked key is turned away; nothing is saved.
     if (definition.apiKey?.check && Object.values(input.values).includes(mockRejectedApiKey)) {
-      throw new Error(`${definition.name} rejected this key.`);
+      throw new HostClientRequestError({
+        code: "conflict",
+        message: `${definition.name} rejected this key.`,
+        reason: "integration-key-rejected",
+        status: 409,
+      });
     }
     const timestamp = this.now().toISOString();
     if (input.connectionId) {

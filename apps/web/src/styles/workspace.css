@@ -3050,12 +3050,14 @@ button.start-apps__row--away:focus-visible {
   }
 
   /* Open, the conversation takes all but the place's own bar. */
-  .workspace--phone-stage .workspace__conversation:has(> .thread--sheet-open) {
+  .workspace--phone-stage
+    .workspace__conversation:has(> .thread--sheet-open, > .gated > .thread--sheet-open) {
     height: calc(100% - 64px - env(safe-area-inset-top, 0px));
     max-height: none;
   }
 
-  .workspace--phone-stage .workspace__conversation > :not(.thread) {
+  /* A task route's gate wrapper is part of the task, not a place beside it. */
+  .workspace--phone-stage .workspace__conversation > :not(.thread, .gated) {
     max-height: 56dvh;
     overflow-y: auto;
   }

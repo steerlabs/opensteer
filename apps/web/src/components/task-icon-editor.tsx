@@ -3,6 +3,7 @@ import { mutationIdempotencyKey, threadMark, type HostClient } from "@opensteer/
 import { useTaskSnapshot } from "./task-rows.js";
 import { Popover } from "./popover.js";
 import { TaskIconPicker } from "./task-icon-picker.js";
+import { act, failureWords } from "./use-action.js";
 
 export function TaskIconEditor({
   anchor,
@@ -28,18 +29,17 @@ export function TaskIconEditor({
             if (saving) return;
             setSaving(true);
             setError(null);
-            void hostClient
-              .dispatch({
+            void act(hostClient, { label: "change", thing: "this icon", done: "changed" }, () =>
+              hostClient.dispatch({
                 type: "thread.icon.set",
                 idempotencyKey: mutationIdempotencyKey(`thread-icon:${threadId}`),
                 threadId,
                 icon,
-              })
+              }),
+            )
               .then(onClose)
               .catch((failure: unknown) => {
-                setError(
-                  failure instanceof Error ? failure.message : "The icon could not be changed.",
-                );
+                setError(failureWords(failure) ?? "The icon could not be changed.");
                 setSaving(false);
               });
           }}

@@ -114,7 +114,12 @@ function sourcesUnder(directory: string): string[] {
 interface Violation {
   readonly file: string;
   readonly line: number;
-  readonly rule: "raw-presenter" | "transport-error" | "connection-notice" | "message-unwrap";
+  readonly rule:
+    | "raw-presenter"
+    | "transport-error"
+    | "connection-notice"
+    | "message-unwrap"
+    | "message-fallback";
   readonly name: string;
 }
 
@@ -274,6 +279,46 @@ function violationsIn(
         });
     }
   });
+  // An exception's own text shown with a fallback for anything else:
+  // `error instanceof Error ? error.message : "It didn't work."`.
+  walk(program, (node) => {
+    if (node.type !== "ConditionalExpression") return;
+    const alternate = node["alternate"];
+    const fallback =
+      isNode(alternate) &&
+      ((alternate.type === "StringLiteral" && nameOf(alternate) !== "") ||
+        alternate.type === "TemplateLiteral" ||
+        (alternate.type === "CallExpression" && nameOf(alternate["callee"]) === "String"));
+    if (!fallback) return;
+    const tested = new Set<string>();
+    walk(node["test"] as SyntaxNode, (inner) => {
+      if (
+        inner.type === "BinaryExpression" &&
+        inner["operator"] === "instanceof" &&
+        isNode(inner["left"]) &&
+        inner["left"].type === "Identifier" &&
+        nameOf(inner["right"]) === "Error"
+      )
+        tested.add(nameOf(inner["left"]));
+    });
+    if (tested.size === 0) return;
+    walk(node["consequent"] as SyntaxNode, (inner) => {
+      const object = inner["object"];
+      if (
+        (inner.type === "MemberExpression" || inner.type === "OptionalMemberExpression") &&
+        nameOf(inner["property"]) === "message" &&
+        isNode(object) &&
+        object.type === "Identifier" &&
+        tested.has(nameOf(object))
+      )
+        found.push({
+          file,
+          line: inner.loc?.start.line ?? 0,
+          rule: "message-fallback",
+          name: `${nameOf(object)}.message`,
+        });
+    });
+  });
   return found;
 }
 
@@ -321,6 +366,8 @@ describe("client feedback boundary", () => {
           "feedback.presentActionFailure(error);",
           'export { safeMessage as words } from "@opensteer/shared/safeMessage";',
           "if (!result.ok) setError(result.error.message);",
+          'setError(failure instanceof Error ? failure.message : "Couldn\'t rename it.");',
+          "const words = reason instanceof Error && reason.message ? reason.message : `No.`;",
         ].join("\n"),
       ),
     ).toEqual([
@@ -331,6 +378,8 @@ describe("client feedback boundary", () => {
       "raw-presenter safeMessage",
       "raw-presenter presentActionFailure",
       "message-unwrap result.error.message",
+      "message-fallback failure.message",
+      "message-fallback reason.message",
     ]);
   });
 
@@ -349,6 +398,10 @@ describe("client feedback boundary", () => {
           "const text = message.message;",
           "const words = error.reason;",
           "const failed = run.error.message;",
+          // A reason code parsed out of a message is not text shown to anyone.
+          'const code = error instanceof Error ? error.message : "";',
+          "const detail = dev && error instanceof Error ? error.message : null;",
+          'const said = other instanceof Error ? error.message : "Couldn\'t.";',
           "// import { presentActionFailure } from '@opensteer/client/feedback';",
         ].join("\n"),
       ),

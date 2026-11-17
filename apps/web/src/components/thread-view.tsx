@@ -102,6 +102,7 @@ import { useTaskDirectory } from "./workspace/task-directory.js";
 import { PersonalReferences } from "./references/reference-scope.js";
 import { Unavailable } from "./references/unavailable.js";
 import { useConnectionGate, useConnectionLive } from "./connection-shell.js";
+import { Gated } from "./connection-gate.js";
 import { notFound, useLinkedRequest } from "./references/linked-request.js";
 
 export function ThreadRoute() {
@@ -139,34 +140,34 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
         ? { resource: "this task", onRetry: () => hostClient.activateThread(threadId) }
         : null,
   });
-  if (!thread) {
-    // A link to a task that was deleted, or that this reader may not see, says so.
-    if (missing)
-      return (
-        <div className="thread">
-          <Unavailable onBack={back} />
-        </div>
-      );
-    return <div className="thread">{gate}</div>;
-  }
+  // A link to a task that was deleted, or that this reader may not see, says so;
+  // otherwise its connection or its own read does, until the task arrives and
+  // renders in the same frame under the gate as it fades.
+  const gateView = thread ? null : (
+    <div className="thread">{missing ? <Unavailable onBack={back} /> : gate}</div>
+  );
   return (
-    <ThreadView
-      key={`${snapshot.deploymentId ?? ""}:${snapshot.user?.id ?? ""}:${thread.id}`}
-      requests={snapshot.requests[thread.id] ?? []}
-      canLoadEarlier={snapshot.transcriptWindows[thread.id]?.hasMore ?? false}
-      entries={snapshot.transcripts[thread.id] ?? []}
-      environmentStatus={
-        snapshot.environments.find((item) => item.id === thread.environmentId)?.status ??
-        "disconnected"
-      }
-      executionPlacements={placements.filter(
-        (placement) =>
-          placement.environmentId === thread.environmentId &&
-          // Only Codex carries a call, so this Thread can change account but not engine.
-          (thread.id !== snapshot.voiceThreadId || placement.driverKind === "codex"),
-      )}
-      thread={thread}
-    />
+    <Gated gate={gateView}>
+      {thread ? (
+        <ThreadView
+          key={`${snapshot.deploymentId ?? ""}:${snapshot.user?.id ?? ""}:${thread.id}`}
+          requests={snapshot.requests[thread.id] ?? []}
+          canLoadEarlier={snapshot.transcriptWindows[thread.id]?.hasMore ?? false}
+          entries={snapshot.transcripts[thread.id] ?? []}
+          environmentStatus={
+            snapshot.environments.find((item) => item.id === thread.environmentId)?.status ??
+            "disconnected"
+          }
+          executionPlacements={placements.filter(
+            (placement) =>
+              placement.environmentId === thread.environmentId &&
+              // Only Codex carries a call, so this Thread can change account but not engine.
+              (thread.id !== snapshot.voiceThreadId || placement.driverKind === "codex"),
+          )}
+          thread={thread}
+        />
+      ) : null}
+    </Gated>
   );
 }
 

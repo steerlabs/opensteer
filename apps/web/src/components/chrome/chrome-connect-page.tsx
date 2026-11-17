@@ -17,12 +17,9 @@ export function ChromeConnectPage({ fragment }: { readonly fragment: string }) {
   const [link] = useState((): ChromeConnectLinkState => {
     try {
       return { error: null, link: readChromeConnectLink(fragment, window.location.origin) };
-    } catch (reason) {
+    } catch {
       return {
-        error:
-          reason instanceof Error
-            ? reason.message
-            : "This link doesn’t work. Go back to Opensteer and choose Connect Chrome again.",
+        error: "This link doesn’t work. Go back to Opensteer and choose Connect Chrome again.",
         link: null,
       };
     }
