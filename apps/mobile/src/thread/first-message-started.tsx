@@ -2,7 +2,7 @@ import type { HostClient } from "@opensteer/client/host";
 import type { UserId } from "@opensteer/core";
 import { useMemo, type ReactNode } from "react";
 import { View } from "react-native";
-import type { PendingCommand } from "../client/thread-drafts.js";
+import type { TaskStartRecord } from "../client/thread-drafts.js";
 import { TranscriptHostClientContext } from "./attachment-views.js";
 import { OwedMessageStatus, type OwedState } from "./owed-message.js";
 import { owedMessageEntry } from "./owed-message-model.js";
@@ -10,7 +10,7 @@ import { Message } from "./transcript.js";
 
 /** What a sent first message shows of itself, from the moment Send is pressed. */
 export type FirstMessageSent = Pick<
-  PendingCommand,
+  TaskStartRecord,
   "attachments" | "browserPage" | "idempotencyKey" | "text"
 >;
 

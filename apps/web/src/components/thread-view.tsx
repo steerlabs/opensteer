@@ -1,3 +1,5 @@
+import { useOptionalMessageOutbox } from "@opensteer/client/react";
+import { hostMessageOutbox, projectMessageOutbox } from "@opensteer/client/host";
 import { useTaskSourceView } from "../team/team-attachments.js";
 import { useThreadVisits } from "@opensteer/client/react";
 import { ThreadServerApprovals } from "./computer-apps/thread-server-approvals.js";
@@ -85,7 +87,6 @@ import type { ComposerQuote, ComposerRestore } from "./composer.js";
 import { InputSurface, RequestStack, focusOpenRequest, useRequestDock } from "./input-surface.js";
 import { useVoiceOn } from "@opensteer/client/react";
 import { VoiceStart } from "./voice.js";
-import { usePendingSends } from "./pending-sends.js";
 import { WaitingInputs } from "./waiting-inputs.js";
 import { setThreadReading } from "./thread-reading.js";
 import { ThreadFind } from "./thread-find.js";
@@ -320,11 +321,8 @@ function ThreadView({
     [snapshot.tabs, snapshot.browserProfiles, tabRevision],
   );
   // The composer's own record: words sent as new from an open edit are kept the same way.
-  const pendingSends = usePendingSends(
-    snapshot.deploymentId && snapshot.user?.id
-      ? { deploymentId: snapshot.deploymentId, threadId: thread.id, userId: snapshot.user.id }
-      : null,
-  );
+  const outbox = hostMessageOutbox(hostClient);
+  const outboxState = useOptionalMessageOutbox(outbox);
   // The Tasks count opens a task at its exact request; one already answered stays answered.
   const location = useLocation();
   const focusRequest =
@@ -1212,7 +1210,16 @@ function ThreadView({
                         conversation={conversational}
                         live={live}
                         computers={computers}
-                        entries={conversation}
+                        entries={
+                          snapshot.user && outboxState
+                            ? projectMessageOutbox(
+                                outboxState,
+                                thread.id,
+                                conversation,
+                                snapshot.user.id,
+                              )
+                            : conversation
+                        }
                         waitingRequests={snapshot.waitingRequests}
                         assignments={snapshot.assignments}
                         inputQueuePaused={thread.inputQueuePaused}
@@ -1225,7 +1232,6 @@ function ThreadView({
                               inputs={waiting}
                               onError={reportActionError}
                               paused={inputQueue.paused}
-                              pendingSends={pendingSends}
                               resumable={thread.status !== "archived"}
                               threadId={thread.id}
                               viewerUserId={snapshot.user?.id ?? null}

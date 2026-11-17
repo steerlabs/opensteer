@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import {
   assignmentPresentation,
   taskOwner,
@@ -33,7 +34,6 @@ import {
   type ReactNode,
 } from "react";
 import { AccessibilityInfo, Alert, Pressable, StyleSheet, View } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { ActionReviewSheet } from "../ui/action-review.js";
 import { AgentOrb } from "../team/team-marks.js";
@@ -495,7 +495,7 @@ export function useAssignmentStop(
         cancelLabel="Keep working"
         onClose={dismiss}
         onError={(error) =>
-          Alert.alert(`${title} was not stopped`, operationDetail(error, "Try again."))
+          Alert.alert(`${title} was not stopped`, presentActionFailure(error, "Try again."))
         }
       />
     ),

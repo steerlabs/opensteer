@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { useTabSuggestions } from "./tab-suggestions.js";
 import { BrowserPageMenu, type BrowserPageMenuAction } from "./browser-page-menu.js";
 import { editingClipboardMaxBytes } from "@opensteer/protocol/editing";
@@ -72,7 +73,6 @@ import {
 } from "../../modules/remote-text-input/src/editing-proxy.js";
 import { LegacyInput } from "../../modules/remote-text-input/src/legacy-input.js";
 import type { EditingTargetAbilities } from "@opensteer/client/editing";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget, type as textType } from "../theme.js";
 import type { NativeMenuOption, NativeMenuSection } from "../thread/composer-menu.js";
 import { GlassSurface } from "../ui/glass.js";
@@ -501,7 +501,7 @@ export function BrowserPage(props: {
         if (failed) setProblem(failed.error.message);
       })
       .catch((error: unknown) =>
-        setProblem(operationDetail(error, "This tab could not be closed.")),
+        setProblem(presentActionFailure(error, "This tab could not be closed.")),
       );
   };
   const openTab = () => {

@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import {
   deploymentStatusFromPersonalStack,
   deploymentStatusSelectable,
@@ -18,11 +19,11 @@ import {
   type DesktopPersonalDeploymentStatus,
 } from "@opensteer/protocol/desktop";
 import {
-  ConnectionSupervisor,
-  detachedStatus,
-  type ConnectionSupervisorSnapshot,
-} from "./connection-supervisor.js";
-import { classifyClientFailure, clientPublicDetail } from "@opensteer/client/connections";
+  ConnectionAttachment,
+  detachedAttachmentStatus,
+  type ConnectionAttachmentSnapshot,
+} from "./connection-attachment.js";
+import { classifyClientFailure } from "@opensteer/client/connections";
 import type { CatalogProjection, DeploymentAccessCatalogDeployment } from "./access-projection.js";
 import type { HostSessionObservation } from "@opensteer/client/auth";
 
@@ -140,7 +141,6 @@ type ForegroundOperationKind =
 export class DeploymentAccessService {
   readonly #listeners = new Set<(snapshot: DeploymentAccessSnapshot) => void>();
   readonly #ports: DeploymentAccessPorts;
-  readonly #schedule: (callback: () => void, delayMilliseconds: number) => unknown;
   readonly #unsubscribers: Array<() => void> = [];
   #account = accountState({
     account: { available: false, detail: null, identity: null, status: "signed-out" },
@@ -172,7 +172,7 @@ export class DeploymentAccessService {
     { readonly abort: AbortController; readonly done: Promise<void> }
   >();
   #revision = 0;
-  #supervisor: ConnectionSupervisor | null = null;
+  #supervisor: ConnectionAttachment | null = null;
   #supervisorUnsubscribe: (() => void) | null = null;
   #unavailable: readonly DeploymentAccessUnavailable[] = [];
 
@@ -185,7 +185,6 @@ export class DeploymentAccessService {
   ) {
     this.#ports = ports;
     this.#now = options.now ?? (() => Date.now());
-    this.#schedule = options.schedule ?? ((callback, delay) => setTimeout(callback, delay));
     this.#unsubscribers.push(
       ports.account.subscribe((state) => {
         const previous = this.#account;
@@ -235,7 +234,7 @@ export class DeploymentAccessService {
       this.#ports.account.currentState().catch((error: unknown): DesktopAccountAuthState => ({
         account: {
           available: this.#ports.account.available,
-          detail: clientPublicDetail(error, "Desktop Account credentials could not be loaded."),
+          detail: presentActionFailure(error, "Desktop Account credentials could not be loaded."),
           identity: null,
           status: "error",
         },
@@ -545,12 +544,10 @@ export class DeploymentAccessService {
 
   networkChanged(): void {
     if (this.#account.status === "signed-in") void this.#refreshDirectory("ambient", "network");
-    if (this.#selectedAttachmentIsReady()) this.#selectedSupervisor()?.resume();
   }
 
   wake(): void {
     if (this.#account.status === "signed-in") void this.#refreshDirectory("ambient", "wake");
-    if (this.#selectedAttachmentIsReady()) this.#selectedSupervisor()?.resume();
   }
 
   dispose(): void {
@@ -732,7 +729,7 @@ export class DeploymentAccessService {
       return;
     }
     this.#disposeSupervisor();
-    const supervisor = new ConnectionSupervisor({
+    const supervisor = new ConnectionAttachment({
       attachmentKey: selected.key,
       close: () => this.#ports.hostSession.closeCurrent(),
       deploymentId: selected.id,
@@ -741,7 +738,6 @@ export class DeploymentAccessService {
         this.#interactiveAttachment = false;
         return this.#ports.hostSession.establish(deploymentId, interactive);
       },
-      schedule: this.#schedule,
     });
     this.#supervisor = supervisor;
     this.#supervisorUnsubscribe = supervisor.subscribe(() => this.#publish());
@@ -754,11 +750,11 @@ export class DeploymentAccessService {
     this.#supervisor = null;
   }
 
-  #connectionSnapshot(deployment: DeploymentAccessCatalogDeployment): ConnectionSupervisorSnapshot {
+  #connectionSnapshot(deployment: DeploymentAccessCatalogDeployment): ConnectionAttachmentSnapshot {
     if (this.#supervisor && deployment.id === this.#catalog.selectedDeploymentId) {
       return this.#supervisor.snapshot();
     }
-    return { failure: null, status: detachedStatus(deployment.key) };
+    return { failure: null, status: detachedAttachmentStatus(deployment.key) };
   }
 
   #selectedDeployment(): DeploymentAccessCatalogDeployment | null {
@@ -811,7 +807,7 @@ export class DeploymentAccessService {
     return this.#personal?.deploymentId === selected.id && this.#personal.state === "ready";
   }
 
-  #selectedSupervisor(): ConnectionSupervisor | null {
+  #selectedSupervisor(): ConnectionAttachment | null {
     return this.#supervisor;
   }
 
@@ -1053,7 +1049,7 @@ export function classifyPortFailure(
   return {
     classification: failure.classification,
     code: `${port}-${machineCode(failure.reason)}`,
-    detail: clientPublicDetail(error, `${port} operation failed.`),
+    detail: presentActionFailure(error, `${port} operation failed.`),
   };
 }
 

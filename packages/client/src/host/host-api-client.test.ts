@@ -288,7 +288,7 @@ it("asks for sign-in as soon as a refusal's headers arrive, even if its body sta
     await vi.advanceTimersByTimeAsync(20_000);
     await expect(pending).resolves.toMatchObject({
       ok: false,
-      error: { reason: "transport-timed-out", retryable: true },
+      error: { code: "unauthorized", reason: "sign-in-required", retryable: false },
     });
   } finally {
     vi.useRealTimers();

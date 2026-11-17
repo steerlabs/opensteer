@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import {
   followWaitingDraft,
   HostClientRequestError,
@@ -16,7 +17,6 @@ import type { ContentPart } from "@opensteer/core";
 import * as Haptics from "expo-haptics";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { dismissKeyboard } from "../ui/composer-editor.js";
-import { operationDetail } from "../client/mobile-client.js";
 
 /** One waiting message open in place on this phone. */
 export interface WaitingEdit {
@@ -142,7 +142,7 @@ export function useWaitingEdit(
             shown?.messageId === messageId
               ? {
                   ...shown,
-                  failure: operationDetail(error, "This message can’t be edited right now."),
+                  failure: presentActionFailure(error, "This message can’t be edited right now."),
                   phase: "refused",
                 }
               : shown,
@@ -160,7 +160,7 @@ export function useWaitingEdit(
     // field lets go first: Android hands the focus of a field that disappears
     // to the composer, which keeps the keyboard up as if a message were still
     // being written.
-    if (editRef.current !== null) dismissKeyboard();
+    if (editRef.current !== null) void dismissKeyboard();
     setKept(null);
   }, [letGo]);
 
@@ -283,7 +283,7 @@ export function useWaitingEdit(
       // Only the edit this save came from closes; it ended the lease itself.
       if (lease.current === held) {
         lease.current = null;
-        dismissKeyboard();
+        void dismissKeyboard();
         setKept(null);
       }
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -306,8 +306,8 @@ export function useWaitingEdit(
           : {
               ...current,
               failure: settled
-                ? operationDetail(error, "This message changed before your edit was saved.")
-                : operationDetail(error, "Your edit wasn’t saved. Try again."),
+                ? presentActionFailure(error, "This message changed before your edit was saved.")
+                : presentActionFailure(error, "Your edit wasn’t saved. Try again."),
               phase: away ? "away" : "open",
             },
       );

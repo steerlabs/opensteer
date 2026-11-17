@@ -1,3 +1,4 @@
+import { createHttpHostApiClient } from "../host/host-api-client.js";
 import { describe, expect, it, vi } from "vitest";
 import {
   SequenceSchema,
@@ -456,9 +457,12 @@ describe("team synchronization", () => {
         mentions: [],
         attachmentIds: [],
       });
-      await vi.waitFor(() => expect(f.client.getSnapshot().error).toBe("Acknowledgement lost."), {
-        timeout: 1000,
-      });
+      await vi.waitFor(
+        () => expect(f.client.getSnapshot().error).toBe("Couldn't confirm this change."),
+        {
+          timeout: 1000,
+        },
+      );
       expect(f.host.messages.size).toBe(1);
       expect((await f.persistence.load(scope))?.pending).toHaveLength(1);
       const callsAt = f.host.calls.length;
@@ -705,7 +709,7 @@ describe("a team server swap", () => {
 
       // Disconnected on purpose, nothing reaches the team until connecting again.
       f.client.disconnect();
-      expect(f.client.getSnapshot().unreachable).toBe(true);
+      expect(f.client.connection.getSnapshot().phase).toBe("idle");
       f.client.connect();
       expect(f.client.getSnapshot().unreachable).toBe(false);
     } finally {
@@ -779,7 +783,8 @@ describe("a team server swap", () => {
         expect(await f.persistence.load(scope)).not.toBeNull();
 
         f.refuse(null);
-        await vi.advanceTimersByTimeAsync(12_000);
+        f.client.connection.retry();
+        await vi.advanceTimersByTimeAsync(0);
         expect(f.client.getSnapshot()).toMatchObject({
           versionRefusal: null,
           connection: "connected",
@@ -832,4 +837,43 @@ describe("a team server swap", () => {
       f.dispose();
     }
   });
+});
+
+it("evicts a team's admitted content on 401 headers before a stalled body", async () => {
+  vi.useFakeTimers();
+  const host = new MockTeamHost(),
+    persistence = createMemoryTeamPersistence();
+  const rpc = createHttpHostApiClient({
+    baseUrl: new URL("https://team.example"),
+    kind: "team",
+    onAuthenticationRequired: () => {},
+    fetch: async (input) => {
+      if (String(input).includes("team.bootstrap.get"))
+        return Response.json(await host.rpc["team.bootstrap.get"]({}));
+      return new Response(new ReadableStream({ start() {} }), { status: 401 });
+    },
+  });
+  const client = new TeamSessionClient({ scope, rpc, persistence, connect: host.connect });
+  try {
+    await client.load();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getSnapshot().bootstrap).not.toBeNull();
+    const reading = client.rpc["team.members.list"]({});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getSnapshot()).toMatchObject({
+      bootstrap: null,
+      sidebar: null,
+      ended: "sign-in",
+    });
+    expect(client.connection.getSnapshot().scope).toBeNull();
+    await vi.advanceTimersByTimeAsync(20_000);
+    await expect(reading).resolves.toMatchObject({
+      ok: false,
+      error: { code: "unauthorized", retryable: false },
+    });
+  } finally {
+    client.dispose();
+    host.dispose();
+    vi.useRealTimers();
+  }
 });

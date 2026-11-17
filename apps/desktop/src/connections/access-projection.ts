@@ -1,4 +1,4 @@
-import type { HostCapability } from "@opensteer/deployment-authority";
+import { hostKeyFingerprint, type HostCapability } from "@opensteer/deployment-authority";
 import type { DeploymentId } from "@opensteer/core";
 import type { DesktopDeploymentSummary } from "@opensteer/protocol/desktop";
 import { describeConnectionAccess, type LocalHostRuntime } from "@opensteer/client/connections";
@@ -15,6 +15,7 @@ import type {
  * this person may drop.
  */
 export interface DeploymentAccessCatalogDeployment extends DesktopDeploymentSummary {
+  readonly authorityKey?: string | undefined;
   readonly capabilities?: readonly HostCapability[] | null;
   readonly accountAccess: "owner" | "member" | null;
   readonly accountLivenessExpiresAt: string | null;
@@ -80,6 +81,11 @@ export class DesktopAccessProjection {
           hasVerifiedAccountRoute: fromAccount && facts.hasVerifiedRoute,
           id: document.deploymentId,
           key: facts.key,
+          authorityKey: JSON.stringify([
+            connection.authority.document.deploymentId,
+            connection.authority.document.hostInstanceId,
+            hostKeyFingerprint(connection.authority.publicKey.spki),
+          ]),
           kind: connection.kind,
           lastUsedAt: connection.lastUsedAt,
           name: connection.name,

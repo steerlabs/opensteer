@@ -1,3 +1,4 @@
+import { presentClientIssue, presentActionFailure } from "@opensteer/client/feedback";
 import {
   canRespondToRequests,
   describeEvent,
@@ -29,7 +30,6 @@ import {
   Text,
   View,
 } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import {
   color,
   controlFontScaleLimit,
@@ -149,8 +149,12 @@ function ScheduleView(props: {
       setFailure(null);
       void schedulesClient(hostClient)
         .act(triggerId, action)
+        .then((outcome) => {
+          if (outcome.kind !== "confirmed" && outcome.issue)
+            setFailure(presentClientIssue(outcome.issue).title);
+        })
         .catch((error: unknown) =>
-          setFailure(operationDetail(error, "The schedule could not be changed.")),
+          setFailure(presentActionFailure(error, "The schedule could not be changed.")),
         )
         .finally(() => setPending(null));
     },
@@ -203,7 +207,7 @@ function ScheduleView(props: {
           )
         ) : (
           <>
-            {state.status === "offline" ? (
+            {state.status === "failed" ? (
               <ScheduleProblem onRetry={() => void reload()} state={state} />
             ) : null}
             <ScheduleBody
@@ -246,7 +250,7 @@ function ScheduleBody(props: {
       else await props.hostClient.resumeThreadInputQueue(worker.id);
       await schedulesClient(props.hostClient).detail(item.id).refresh();
     } catch (error) {
-      setRecoveryError(operationDetail(error, "The worker could not be changed."));
+      setRecoveryError(presentActionFailure(error, "The worker could not be changed."));
     } finally {
       setRecovering(false);
     }

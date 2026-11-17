@@ -1,18 +1,7 @@
-import { useMemo } from "react";
-import {
-  createPendingSendStore,
-  HostClientRequestError,
-  messageDraftParts,
-  type PendingSendCommand,
-  type PendingSendScope,
-} from "@opensteer/client/host";
-import { ContentPartSchema, MessageContentSchema, type PlaceContentPart } from "@opensteer/core";
-import {
-  artifactParts,
-  messageText,
-  type SentContentPart,
-} from "./attachments/attachment-parts.js";
-import type { PendingSends, PendingSubmission } from "./composer.js";
+import { hostMessageOutbox, type HostClient } from "@opensteer/client/host";
+import { type PendingSendCommand, type PendingSendScope } from "@opensteer/client/host";
+import { MessageContentSchema } from "@opensteer/core";
+import type { PendingSubmission } from "./composer.js";
 
 /** Why nothing can be sent from this browser, in words a person can act on. */
 export const pendingStorageUnavailable =
@@ -53,93 +42,29 @@ export function sendMessageCommand(
   };
 }
 
-/** Where this Thread keeps a message until the Host answers it, or why nothing can be sent. */
-export type PendingSendsState = { readonly sends: PendingSends } | { readonly unavailable: string };
-
-/**
- * This Thread's unacknowledged message, kept in the browser's storage under
- * the deployment and user it is sent as. A message is never sent without being
- * kept first, so where the scope is unknown or storage is refused this says
- * why instead, and nothing is sent.
- */
-export function usePendingSends(scope: PendingSendScope | null): PendingSendsState {
-  const deploymentId = scope?.deploymentId ?? "";
-  const threadId = scope?.threadId ?? "";
-  const userId = scope?.userId ?? "";
-  return useMemo(() => {
-    if (!deploymentId || !threadId || !userId) return { unavailable: pendingScopeUnavailable };
-    const storage = browserStorage();
-    if (!storage) return { unavailable: pendingStorageUnavailable };
-    const store = createPendingSendStore(storage);
-    const at: PendingSendScope = { deploymentId, threadId, userId };
-    const sends: PendingSends = {
-      claim: (submission) => {
-        store.claim(at, sendMessageCommand(threadId, submission));
-      },
-      clear: (idempotencyKey) => store.clear(at, idempotencyKey),
-      discard: () => store.discard(at),
-      read: () => {
-        const command = store.read(at);
-        return command ? pendingSubmission(command) : null;
-      },
-    };
-    return { sends };
-  }, [deploymentId, threadId, userId]);
-}
-
 /**
  * Keeps the first message of a Thread just created, before anything sends
  * it. The Thread's own composer sends it when it opens, exactly as kept.
  */
-export function claimFirstMessage(scope: PendingSendScope, submission: PendingSubmission): void {
-  const storage = browserStorage();
-  if (!storage) throw new Error(pendingStorageUnavailable);
-  createPendingSendStore(storage).claim(scope, sendMessageCommand(scope.threadId, submission));
-}
-
-/** The Host may or may not have taken it: the answer was lost, not a refusal. */
-export function unanswered(error: unknown): boolean {
-  return !(error instanceof HostClientRequestError) || error.status >= 500 || error.status === 408;
-}
-
-/**
- * The Host has answered, so the record has done its job. Failing to erase it
- * leaves a replay of an answered key, which the Host answers the same way.
- */
-export function forgetPending(pendingSends: PendingSends | null, idempotencyKey: string): void {
-  try {
-    pendingSends?.clear(idempotencyKey);
-  } catch {
-    // The answer stands either way; see above.
-  }
+export async function claimFirstMessage(
+  client: HostClient,
+  scope: PendingSendScope,
+  submission: PendingSubmission,
+): Promise<void> {
+  const outbox = hostMessageOutbox(client);
+  const identity = client.connection.getSnapshot().scope;
+  if (
+    !outbox ||
+    identity?.deploymentId !== scope.deploymentId ||
+    identity.viewerId !== scope.userId
+  )
+    throw new Error(pendingScopeUnavailable);
+  await outbox.enqueue(sendMessageCommand(scope.threadId, submission));
 }
 
 /** Whether a message can be kept here at all; checked before anything is created for one. */
 export function pendingStorageAvailable(): boolean {
   return browserStorage() !== null;
-}
-
-function pendingSubmission(command: PendingSendCommand): PendingSubmission {
-  return {
-    attachments: artifactParts(command.content),
-    body: messageText(command.content),
-    ...(command.compaction ? { compaction: command.compaction } : {}),
-    // The accepted content, exactly: a retry after a reload sends the same message.
-    content: command.content.map((part) => ContentPartSchema.parse(part)),
-    ...placeParts(command.content),
-    idempotencyKey: command.idempotencyKey,
-    ...(typeof command.quotedMessageId === "string"
-      ? { quotedMessageId: command.quotedMessageId }
-      : {}),
-  };
-}
-
-/** The places a kept message includes — every page, app and phone, exactly as kept. */
-function placeParts(content: readonly SentContentPart[]): {
-  readonly places?: readonly PlaceContentPart[];
-} {
-  const { places } = messageDraftParts(content.map((part) => ContentPartSchema.parse(part)));
-  return places.length > 0 ? { places } : {};
 }
 
 function browserStorage(): Storage | null {

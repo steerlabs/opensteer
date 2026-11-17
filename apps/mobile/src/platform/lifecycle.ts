@@ -54,7 +54,7 @@ export function createMobileLifecycle(options: {
 
   let snapshot: ClientLifecycleSnapshot = {
     network: "unknown",
-    visibility: appState.currentState === "active" ? "foreground" : "background",
+    visibility: appState.currentState === "background" ? "background" : "foreground",
   };
 
   // Every notification is forwarded, repeats included, because a move between
@@ -95,6 +95,7 @@ export function createMobileLifecycle(options: {
   });
 
   const appStateSubscription = appState.addEventListener("change", (state) => {
+    if (state !== "active" && state !== "background") return;
     const visibility = state === "active" ? "foreground" : "background";
     if (visibility === snapshot.visibility) return;
     snapshot = { ...snapshot, visibility };

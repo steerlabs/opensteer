@@ -41,8 +41,11 @@ export function clientIssue(
 ): ClientIssue | null {
   const failure = classifyClientFailure(error);
   if (failure.kind === "cancelled") return null;
+  if (failure.reason === "storage-unavailable") return { code: "storage-unavailable" };
+  if (failure.reason === "queue-full") return { code: "queue-full" };
   if (failure.code === "unauthorized") return { code: "sign-in" };
-  if (failure.reason === "client-too-old") return { code: "update-app" };
+  if (["client-too-old", "api-version-mismatch", "unsupported-version"].includes(failure.reason))
+    return { code: "update-app" };
   if (failure.reason === "host-too-old") return { code: "update-server" };
   if (failure.kind === "session") return { code: "access-lost" };
   if (context.operation !== "action")
@@ -69,7 +72,12 @@ export function clientDisplayName(
   name: string | null | undefined,
   target: "computer" | "team" = "computer",
 ): string {
-  const safe = name?.replace(/[\u0000-\u001f\u007f]/gu, "").trim();
+  const safe = name
+    ? Array.from(name)
+        .filter((character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127)
+        .join("")
+        .trim()
+    : undefined;
   return safe && (target === "team" ? safe.length <= 80 : safe.length <= 18)
     ? safe
     : target === "team"
@@ -144,7 +152,121 @@ export function presentMessageDelivery(
   phase: "waiting" | "sending" | "rejected",
   issue?: ClientIssue,
 ): string {
+  if (issue?.code === "unconfirmed") return presentClientIssue(issue).title;
   if (phase === "sending") return "Sending…";
   if (phase === "waiting") return "Waiting to send";
   return `Not sent. ${rejectionReasons[issue?.reason ?? ""] ?? `${clientDisplayName(issue?.name)} didn't accept it.`}`;
+}
+
+export function presentActionFailure(error: unknown, _context?: string): string {
+  const issue = clientIssue(error, { operation: "action", label: "complete this action" });
+  return issue ? presentClientIssue(issue).title : "";
+}
+export function presentDeliveryActions(): {
+  readonly edit: string;
+  readonly delete: string;
+  readonly discard: string;
+} {
+  return { edit: "Edit", delete: "Delete", discard: "Don't send" };
+}
+
+export function presentConnectionGate(
+  state: import("../connections/connection-controller.js").ClientConnectionState,
+): ClientIssuePresentation {
+  const name = clientDisplayName(state.name, state.target);
+  if (!state.showInterruption)
+    return { title: `Connecting to ${name}…`, detail: null, action: null };
+  const issue = state.issue;
+  if (!issue) return { title: `Connecting to ${name}…`, detail: null, action: null };
+  const value = { ...issue, ...(state.name ? { name: state.name } : {}), target: state.target };
+  if (issue.code === "connection")
+    return issue.reason === "offline"
+      ? {
+          title: "You're offline",
+          detail: "Your tasks will show up when you're back online.",
+          action: null,
+        }
+      : {
+          title: `Can't reach ${name}`,
+          detail:
+            state.target === "team"
+              ? "Your own tasks still work."
+              : "Make sure it's on and connected to the internet.",
+          action: "retry",
+        };
+  if (issue.code === "sign-in")
+    return { title: `Sign in to ${name}`, detail: "You were signed out.", action: "sign-in" };
+  if (issue.code === "update-app")
+    return {
+      title: "Update Opensteer",
+      detail: `${name} needs a newer version of this app.`,
+      action: "update",
+    };
+  if (issue.code === "update-server")
+    return {
+      title: `${name} needs an update`,
+      detail: "Update Opensteer on it to use it from here.",
+      action: null,
+    };
+  return presentClientIssue(value);
+}
+export function presentConnectionDetail(
+  issue: ClientIssue,
+  device: "phone" | "device" = "device",
+): ClientIssuePresentation {
+  const name = clientDisplayName(issue.name, issue.target);
+  switch (issue.code) {
+    case "connection":
+      return issue.reason === "offline"
+        ? {
+            title: `This ${device} is offline`,
+            detail: "Messages you send will go out when you're back online.",
+            action: null,
+          }
+        : issue.reason === "unreachable"
+          ? {
+              title: "Can't reach it",
+              detail: "Make sure it's on and connected to the internet. Opensteer keeps trying.",
+              action: "retry",
+            }
+          : {
+              title: "Reconnecting…",
+              detail:
+                "Opensteer is reconnecting on its own. Messages you send will go out when it's back.",
+              action: null,
+            };
+    case "sign-in":
+      return {
+        title: "Signed out",
+        detail: `Sign in again to keep using ${name}.`,
+        action: "sign-in",
+      };
+    case "update-app":
+      return {
+        title: "This app needs an update",
+        detail: `${name} runs a newer Opensteer.`,
+        action: "update",
+      };
+    case "update-server":
+      return {
+        title: "Needs an update",
+        detail: `Update Opensteer on ${name} to keep using it from here.`,
+        action: null,
+      };
+    default:
+      return presentClientIssue(issue);
+  }
+}
+export const clientIssueActions = {
+  retry: "Retry",
+  tryNow: "Try now",
+  tryAgain: "Try again",
+  signIn: "Sign in",
+  update: "Update",
+  reload: "Reload",
+  check: "Check",
+} as const;
+
+export function presentSavedViewConnection(issue: ClientIssue | null): string {
+  return issue ? `${presentClientIssue(issue).title} · Saved view` : "Updating…";
 }

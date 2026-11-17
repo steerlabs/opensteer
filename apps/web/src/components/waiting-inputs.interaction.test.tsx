@@ -1,3 +1,6 @@
+import { MockHostClient } from "@opensteer/client/mock";
+import { initializeMessageOutbox, createMessageOutboxStorage } from "@opensteer/client/host";
+import { createId } from "@opensteer/core";
 // @vitest-environment happy-dom
 
 import { act } from "react";
@@ -15,7 +18,6 @@ import {
 import type { ContentPart, ThreadInputQueue } from "@opensteer/core";
 import { TranscriptHostClientContext } from "./attachments/message-attachments.js";
 import { TranscriptMessage } from "./agent-activity.js";
-import type { PendingSends, PendingSubmission } from "./composer.js";
 import { WaitingInputs } from "./waiting-inputs.js";
 import { rewrite, textareaView } from "./composer-editor.test-support.js";
 
@@ -100,13 +102,16 @@ function ask(id: string, text: string, flags: Partial<Item> = {}): Item {
   } as unknown as Item;
 }
 
-function inputsOf(items: Item[], options: { paused?: boolean } = {}): WaitingInput[] {
+function inputsOf(
+  items: Item[],
+  options: { paused?: boolean; threadId?: string } = {},
+): WaitingInput[] {
   return waitingInputs(
     {
       items,
       paused: options.paused ?? false,
       steerRunId: null,
-      threadId: "thread",
+      threadId: options.threadId ?? "thread",
     } as unknown as ThreadInputQueue,
     { ownsLease: () => false },
   );
@@ -135,26 +140,6 @@ function edited(at: Item, text: string, revision: number): Item {
   } as Item;
 }
 
-/** The browser's kept-send record for this Thread, in memory. */
-function memorySends(): PendingSends & { readonly kept: () => PendingSubmission | null } {
-  let kept: PendingSubmission | null = null;
-  return {
-    claim: (submission) => {
-      if (kept && kept.idempotencyKey !== submission.idempotencyKey)
-        throw new Error("This thread already has a message awaiting acknowledgement.");
-      kept = submission;
-    },
-    clear: (key) => {
-      if (kept?.idempotencyKey === key) kept = null;
-    },
-    discard: () => {
-      kept = null;
-    },
-    kept: () => kept,
-    read: () => kept,
-  };
-}
-
 function render(
   client: HostClient,
   inputs: WaitingInput[],
@@ -162,7 +147,6 @@ function render(
     disabled?: boolean;
     paused?: boolean;
     onError?: (error: unknown) => void;
-    sends?: PendingSends;
   } = {},
 ) {
   return (
@@ -173,9 +157,8 @@ function render(
         inputs={inputs}
         onError={options.onError ?? vi.fn()}
         paused={options.paused ?? false}
-        pendingSends={{ sends: options.sends ?? memorySends() }}
         resumable
-        threadId="thread"
+        threadId={inputs[0]?.threadId ?? "thread"}
         viewerUserId="me"
       />
     </MemoryRouter>
@@ -228,7 +211,7 @@ async function press(target: Pick<Element, "dispatchEvent">, key: string) {
 
 describe("WaitingInputs", () => {
   it("keeps one image read when a queued message is taken before download finishes", async () => {
-    const client = new HttpHostClient({ baseUrl: "http://127.0.0.1", refreshIntervalMs: 0 });
+    const client = new HttpHostClient({ baseUrl: "http://127.0.0.1" });
     const bytes = {
       ok: true as const,
       data: {
@@ -457,7 +440,7 @@ describe("WaitingInputs", () => {
     expect(editor.save).not.toHaveBeenCalled();
   });
 
-  it("keeps the words when the save is refused or the message is taken, and can send them as new", async () => {
+  it("keeps the words when the save is refused or the message is taken", async () => {
     const editor = fakeEditor({
       save: vi.fn(async () => {
         throw new HostClientRequestError({ code: "conflict", message: "changed", status: 409 });
@@ -482,17 +465,6 @@ describe("WaitingInputs", () => {
     act(() => root?.render(render(client, [])));
     expect(field(container)?.value).toBe("Open a draft PR");
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("took this message");
-
-    await act(async () => button(container, "Send as new message").click());
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        content: [{ text: "Open a draft PR", type: "text" }],
-        delivery: "queue",
-        threadId: "thread",
-        type: "thread.sendMessage",
-      }),
-    );
-    expect(field(container)).toBeNull();
   });
 
   it("another device's edit holds the message here: no editing, Answer waits, Release frees it", async () => {
@@ -614,37 +586,50 @@ describe("WaitingInputs", () => {
     expect(decideTeamAsk).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 2 }));
   });
 
-  it("sends kept words as a new message once: an unconfirmed send is retried under its key", async () => {
+  it("hands an edit to the app outbox before closing its editor", async () => {
     const editor = fakeEditor({
       save: vi.fn(async () => {
         throw new HostClientRequestError({ code: "conflict", message: "taken", status: 409 });
       }),
     });
+    const client = new MockHostClient({ latencyMs: 0 });
     const dispatch = vi
-      .fn()
-      .mockRejectedValueOnce(new TypeError("The connection was lost."))
-      .mockResolvedValue({});
-    const client = {
-      dispatch,
-      editWaitingMessage: vi.fn(async () => editor),
-    } as unknown as HostClient;
-    const sends = memorySends();
-    const container = mount(
-      render(client, inputsOf([item("mine", "Old", { canEdit: true })]), { sends }),
-    );
-    await clickWords(container, "mine");
-    await write(field(container)!, "Keep my edit");
-    await press(field(container)!, "Enter");
-    await act(async () => button(container, "Send as new message").click());
-
-    // Kept before it left, and still kept: the Host may have it.
-    expect(sends.kept()?.idempotencyKey).toBe(dispatch.mock.calls[0]![0].idempotencyKey);
-    expect(field(container)?.value).toBe("Keep my edit");
-    await act(async () => button(container, "Send again").click());
-    expect(dispatch).toHaveBeenCalledTimes(2);
-    expect(dispatch.mock.calls[1]![0]).toEqual(dispatch.mock.calls[0]![0]);
-    expect(sends.kept()).toBeNull();
-    expect(field(container)).toBeNull();
+      .spyOn(client, "dispatch")
+      .mockRejectedValue(new TypeError("The connection was lost."));
+    client.editWaitingMessage = async () => editor;
+    const records = new Map<string, string>();
+    const outbox = initializeMessageOutbox(client, {
+      storage: createMessageOutboxStorage({
+        read: async (key) => records.get(key) ?? null,
+        write: async (key, value) => {
+          records.set(key, value);
+        },
+        remove: async (key) => {
+          records.delete(key);
+        },
+      }),
+      drafts: { restore: async () => "restored" },
+    });
+    try {
+      const container = mount(
+        render(
+          client,
+          inputsOf([item("mine", "Old", { canEdit: true })], { threadId: createId("thread") }),
+        ),
+      );
+      await clickWords(container, "mine");
+      await write(field(container)!, "Keep my edit");
+      await press(field(container)!, "Enter");
+      await act(async () => button(container, "Send as new message").click());
+      expect(field(container)).toBeNull();
+      expect(records.size).toBe(1);
+      expect(outbox.getSnapshot().messages).toMatchObject([
+        { command: { content: [{ type: "text", text: "Keep my edit" }] } },
+      ]);
+      expect(dispatch).toHaveBeenCalledOnce();
+    } finally {
+      client.dispose();
+    }
   });
 
   it("a save under way holds its editor: Escape waits, and only that save closes it", async () => {

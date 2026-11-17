@@ -1,3 +1,6 @@
+import { useSyncExternalStore } from "react";
+const noConnectionSubscription = () => () => {};
+const noConnectionSnapshot = () => null;
 import { deploymentPolicy } from "@opensteer/core";
 import type { AgentConnectionAuthorizationTarget } from "@opensteer/protocol";
 import type { DesktopLocalExecutionStatus } from "@opensteer/protocol/desktop";
@@ -240,6 +243,18 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     if (!selected || passkeyMode === null) return null;
     return createBrowserHostClient({
       desktopMedia: true,
+      ...(selectedConnection?.authorityKey
+        ? { authorityKey: selectedConnection.authorityKey }
+        : {}),
+      presentation: {
+        name: selected.name,
+        target: "computer",
+        route: selected.onThisComputer
+          ? "same-computer"
+          : selected.access === "connect"
+            ? "connect"
+            : "private-network",
+      },
       passkeys: {
         mode: passkeyMode,
         present: async (requestId) => {
@@ -258,6 +273,11 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     });
   }, [bridge, hostTransportIdentity, passkeyMode]);
 
+  const connection = useSyncExternalStore(
+    hostClient?.connection.subscribe ?? noConnectionSubscription,
+    hostClient?.connection.getSnapshot ?? noConnectionSnapshot,
+    hostClient?.connection.getSnapshot ?? noConnectionSnapshot,
+  );
   useEffect(() => () => hostClient?.dispose(), [hostClient]);
 
   const facts = useMemo(
@@ -333,7 +353,11 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
 
   function surface(snapshot: DeploymentAccessSnapshot, places: DesktopPlaces) {
     const choosing = chooserFor !== null && chooserFor === selected?.id;
-    const presentation = choosing ? "picker" : desktopAccessPresentationFromSnapshot(snapshot);
+    const presentation = choosing
+      ? "picker"
+      : connection && connection.readyRevision > 0
+        ? "ready"
+        : desktopAccessPresentationFromSnapshot(snapshot);
     const activeScreen = screen;
     const busy =
       connectingPrivate ||
@@ -547,7 +571,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     }
 
     const opening = settingUpHere ? <SetupOpening /> : null;
-    if (selectedConnection?.status !== "connected" || !hostClient) {
+    if (!hostClient || (!connection?.readyRevision && selectedConnection?.status !== "connected")) {
       if (opening && !operationError) return opening;
       return (
         <DesktopLoadingScreen

@@ -1,9 +1,9 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import type { QuietTaskDays } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
 import Constants from "expo-constants";
 import { useCallback, useRef, useState, type ReactNode } from "react";
 import { Linking } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import type { NotificationPreferences } from "../notifications/push-registration.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { useMobileNotifications, usePushRegistration } from "../ui/notifications-context.js";
@@ -49,7 +49,7 @@ export function GeneralSettingsController(): ReactNode {
             void hostClient
               .setQuietTaskDays(days)
               .catch((error: unknown) =>
-                setQuietError(operationDetail(error, "That setting could not be saved.")),
+                setQuietError(presentActionFailure(error, "That setting could not be saved.")),
               )
               .finally(() => setQuietDays(null));
           },
@@ -63,7 +63,7 @@ export function GeneralSettingsController(): ReactNode {
     setNotificationError(null);
     setNotificationWorking(true);
     void operation()
-      .catch((error: unknown) => setNotificationError(operationDetail(error, fallback)))
+      .catch((error: unknown) => setNotificationError(presentActionFailure(error, fallback)))
       .finally(() => {
         notificationInFlight.current = false;
         setNotificationWorking(false);

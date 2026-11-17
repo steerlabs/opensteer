@@ -445,7 +445,6 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
 
     console.info("Z4: reading local task");
     personalClient = new HttpHostClient({
-      refreshIntervalMs: 0,
       baseUrl: personal.hostOrigin,
       fetch: (url, init) =>
         fetch(url, {

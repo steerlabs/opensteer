@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { MenuView, type MenuComponentRef } from "@expo/ui/community/menu";
 import {
   heldThread,
@@ -24,7 +25,6 @@ import {
   View,
   type AccessibilityActionEvent,
 } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import {
   color,
   controlFontScaleLimit,
@@ -307,7 +307,8 @@ export function setTaskDone(
         AccessibilityInfo.announceForAccessibility(done ? "Marked Done" : "Reopened");
         if (done) advance?.(next);
       },
-      (error: unknown) => Alert.alert("Task not changed", operationDetail(error, "Try again.")),
+      (error: unknown) =>
+        Alert.alert("Task not changed", presentActionFailure(error, "Try again.")),
     );
   };
   if (done && thread && taskUnderWay(thread)) {

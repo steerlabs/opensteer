@@ -1,6 +1,6 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { useRef, useState, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { space } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 
@@ -33,7 +33,7 @@ export function useBlockActions(
       // the next machine update brings the list up to date.
       .then(() => onChanged().catch(() => undefined))
       .catch((error: unknown) =>
-        setFailure({ key, message: operationDetail(error, "That did not change anything.") }),
+        setFailure({ key, message: presentActionFailure(error, "That did not change anything.") }),
       )
       .finally(() => {
         acting.current = false;

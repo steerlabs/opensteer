@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { MenuView, type MenuAction } from "@expo/ui/community/menu";
 import type { HostClient, WaitingInput } from "@opensteer/client/host";
 import type { ContentPart } from "@opensteer/core";
@@ -5,7 +6,6 @@ import * as Haptics from "expo-haptics";
 import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Platform, Pressable, StyleSheet, View } from "react-native";
 import Animated, { LinearTransition } from "react-native-reanimated";
-import { operationDetail } from "../client/mobile-client.js";
 import {
   color,
   controlBorderWidth,
@@ -65,7 +65,7 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
       void Haptics.selectionAsync();
     } catch (error) {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setFailure(operationDetail(error, fallback));
+      setFailure(presentActionFailure(error, fallback));
     } finally {
       busy.current = false;
       setBusyId(null);

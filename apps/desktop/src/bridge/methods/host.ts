@@ -1,4 +1,8 @@
-import { HostTransportError } from "@opensteer/client/connections";
+import {
+  HostTransportError,
+  ClientOperationError,
+  classifyClientFailure,
+} from "@opensteer/client/connections";
 import type { DesktopHostResult } from "@opensteer/protocol/desktop";
 import type { WebContents } from "electron";
 import {
@@ -156,7 +160,13 @@ async function hostResult<Data>(operation: () => Promise<Data>): Promise<Desktop
     return { ok: true, data: await operation() };
   } catch (error) {
     // Electron serializes thrown errors as strings and loses their classification.
-    if (!(error instanceof HostTransportError)) throw error;
-    return DesktopHostTransportFailureSchema.parse({ ok: false, error: { code: error.code } });
+    if (!(error instanceof ClientOperationError)) throw error;
+    return DesktopHostTransportFailureSchema.parse({
+      ok: false,
+      error: {
+        code: error instanceof HostTransportError ? error.code : "unreachable",
+        failure: classifyClientFailure(error),
+      },
+    });
   }
 }

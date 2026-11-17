@@ -1,3 +1,11 @@
+import { disposeMessageOutbox } from "../host/message-outbox.js";
+import {
+  createConnectionController,
+  type ConnectionAttempt,
+  type ConnectionLease,
+} from "../connections/connection-controller.js";
+import { classifyClientFailure } from "../connections/operation-error.js";
+import { HostTransportError } from "../connections/host-transport-error.js";
 import {
   DeviceComputerAppSetupRequestReaderSchema,
   type DeviceComputerAppSetupRequest,
@@ -3811,6 +3819,69 @@ const MockMacAnswerSchema = z.discriminatedUnion("kind", [
 type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
 export class MockHostClient implements HostClient {
+  #ownsConnection = true;
+  #scopeProvider:
+    (() => import("../connections/connection-controller.js").ClientScope | null) | undefined;
+  #connectionController = createConnectionController({
+    driver: { connect: (attempt) => this.openConnection(attempt) },
+  });
+  get connection() {
+    return this.#connectionController;
+  }
+  adoptConnection(
+    connection: import("../connections/connection-controller.js").ConnectionController,
+    scope?: () => import("../connections/connection-controller.js").ClientScope | null,
+  ): void {
+    if (this.#ownsConnection) this.#connectionController.dispose();
+    this.#ownsConnection = false;
+    this.#connectionController = connection;
+    this.#scopeProvider = scope;
+  }
+  async openConnection(attempt: ConnectionAttempt): Promise<ConnectionLease> {
+    await this.load();
+    attempt.signal.throwIfAborted();
+    const snapshot = this.getSnapshot();
+    if (snapshot.session !== "authenticated" || !snapshot.user || !snapshot.deploymentId)
+      throw new HostClientRequestError({
+        code: "unauthorized",
+        status: 401,
+        message: "Sign in to continue.",
+        retryable: false,
+      });
+    attempt.acceptScope(
+      this.#scopeProvider?.() ?? {
+        authorityKey: "mock",
+        deploymentId: snapshot.deploymentId,
+        viewerId: snapshot.user.id,
+        loginId: snapshot.sessionId ?? "mock",
+      },
+    );
+    let finish!: (failure: ReturnType<typeof classifyClientFailure>) => void;
+    const closed = new Promise<ReturnType<typeof classifyClientFailure>>((resolve) => {
+      finish = resolve;
+    });
+    const unsubscribe = this.subscribe(() => {
+      const next = this.getSnapshot();
+      if (next.session !== "authenticated" || next.connection !== "connected") {
+        const failure = classifyClientFailure(
+          next.session !== "authenticated"
+            ? new HostClientRequestError({
+                code: "unauthorized",
+                status: 401,
+                message: "Sign in to continue.",
+                retryable: false,
+              })
+            : new HostTransportError("unreachable"),
+        );
+        unsubscribe();
+        attempt.fail?.(failure);
+        finish(failure);
+      }
+    });
+    const lease = { closed, probe: async () => {}, close: unsubscribe };
+    attempt.admit?.(lease);
+    return lease;
+  }
   deploymentSnapshot(
     sequence = String(this.getSnapshot().revision),
     deviceAccessRequests: "include" | "omit" = "include",
@@ -4167,6 +4238,20 @@ export class MockHostClient implements HostClient {
     this.renewComputerView = views.renewComputerView;
     this.listApprovedComputerApps = views.listApprovedComputerApps;
     this.listComputerAppWindows = views.listComputerAppWindows;
+    this.#state.subscribe(() => {
+      if (
+        this.getSnapshot().session !== "authenticated" &&
+        this.connection.getSnapshot().scope !== null
+      )
+        this.connection.invalidateScope();
+      if (
+        this.#ownsConnection &&
+        this.getSnapshot().session === "authenticated" &&
+        this.connection.getSnapshot().phase === "blocked"
+      )
+        this.connection.retry();
+    });
+    this.connection.start();
   }
 
   applyThreadStateChanged(event: Extract<AgentEvent, { type: "thread.state-changed" }>): void {
@@ -4913,10 +4998,16 @@ export class MockHostClient implements HostClient {
     this.#computerViews.clear();
     this.#worldSubscription();
     this.#places.dispose();
+    disposeMessageOutbox(this);
+    if (this.#ownsConnection) this.connection.dispose();
     this.#state.dispose();
   }
 
   load(): Promise<void> {
+    if (this.#ownsConnection) {
+      if (this.connection.getSnapshot().phase === "blocked") this.connection.retry();
+      else this.connection.start();
+    }
     return this.#state.load();
   }
 

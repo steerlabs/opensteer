@@ -1,5 +1,5 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
-import { useMobileNotifications } from "../ui/notifications-context.js";
 import { provisionalThreadTitle, type BrowserPageContentPart, type UserId } from "@opensteer/core";
 import {
   canRespondToRequests,
@@ -30,14 +30,12 @@ import type { ComposerEditorHandle } from "@opensteer/client/references";
 import * as Haptics from "expo-haptics";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 import Animated, { useReducedMotion } from "react-native-reanimated";
-import { operationDetail } from "../client/mobile-client.js";
-import { newTaskDraftKey, type PendingCommand } from "../client/thread-drafts.js";
+import { newTaskDraftKey, type TaskStartRecord } from "../client/thread-drafts.js";
 import type { FirstMessageAttachmentDraftScope } from "../platform/attachment-draft-files.js";
 import { color, space } from "../theme.js";
 import {
   attachmentKey,
   draftAttachmentPart,
-  forgetDraftFiles,
   useDraftAttachments,
 } from "../thread/draft-attachments.js";
 import {
@@ -51,7 +49,6 @@ import {
   handOverFirstMessage,
 } from "../thread/first-message.js";
 import { FirstMessageStarted, type FirstMessageSent } from "../thread/first-message-started.js";
-import { beginPendingDelivery, sendPendingMessage } from "../thread/send-pending-message.js";
 import { dismissKeyboard } from "../ui/composer-editor.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { bubbleSettleMs, exit } from "../ui/motion.js";
@@ -115,7 +112,6 @@ function NewTask(props: {
   readonly voice?: boolean;
 }): ReactNode {
   const navigation = useNavigation<NativeStackNavigationProp<RootParamList>>();
-  const notifications = useMobileNotifications();
   const client = useMobileClient();
   const drafts = client.drafts;
   const { snapshot } = useHostSnapshot(props.hostClient, sameNewTaskSnapshot);
@@ -126,7 +122,7 @@ function NewTask(props: {
   const draft = drafts.readDraft(deploymentId, userId, draftKey);
   const agentHome = snapshot.personalSettings?.agentHome.path ?? null;
   const text = draft?.text ?? "";
-  const held = drafts.readPending(deploymentId, userId, draftKey);
+  const held = drafts.readTaskStart(deploymentId, userId, draftKey);
   const input = useRef<ComposerEditorHandle>(null);
   const files = useMemo<FirstMessageAttachmentDraftScope>(
     () => ({ deploymentId, draftId, kind: "new-task", userId }),
@@ -192,7 +188,7 @@ function NewTask(props: {
   const aiSharing = useAiSharing();
   const send = useCallback(
     async (
-      existing: PendingCommand | null,
+      existing: TaskStartRecord | null,
       requestedSelection: ExecutionSelection | null = null,
     ): Promise<void> => {
       if (inFlight.current) return;
@@ -296,7 +292,8 @@ function NewTask(props: {
           ...(generateTitle ? { generateTitle: true } : {}),
         });
         let opened = false;
-        const owed = await handOverFirstMessage({
+        await handOverFirstMessage({
+          hostClient,
           claimed,
           deploymentId,
           draftKey,
@@ -309,7 +306,7 @@ function NewTask(props: {
             const rising = reduceMotion ? 0 : sentAt.current + bubbleSettleMs - Date.now();
             await Promise.all([keyboardDown.current, rising > 0 ? delay(rising) : undefined]);
             const active = client.getSnapshot().selection;
-            const shown = drafts.readPending(deploymentId, userId, draftKey);
+            const shown = drafts.readTaskStart(deploymentId, userId, draftKey);
             opened =
               mounted.current &&
               active.deploymentId === deploymentId &&
@@ -321,40 +318,6 @@ function NewTask(props: {
           threadId: thread.id,
           userId,
         });
-        if (opened) return;
-        // The reader left while the task was being made, so no composer is
-        // about to send this. It goes now, under the key it was claimed with;
-        // if it cannot, it stays owed and the task's composer sends it when
-        // the task is next opened.
-        const finishDelivery = beginPendingDelivery(drafts, deploymentId, userId, owed);
-        if (finishDelivery === null) return;
-        let outcome: "failed" | undefined;
-        try {
-          if (
-            !(await sendPendingMessage(
-              hostClient,
-              owed,
-              () => authorizeAiSharing(aiSharing, hostClient),
-              notifications.registration,
-            ))
-          )
-            return;
-          const cleared = await drafts.clearPending(
-            deploymentId,
-            userId,
-            thread.id,
-            owed.idempotencyKey,
-          );
-          if (cleared) {
-            forgetDraftFiles({ deploymentId, threadId: thread.id, userId }, owed.localUris ?? []);
-          }
-        } catch (error) {
-          // Still owed under its key; the task says so when it is opened.
-          outcome = "failed";
-          throw error;
-        } finally {
-          finishDelivery(outcome);
-        }
       } catch (error) {
         // Only a screen still here can take the message back as a draft; one
         // that has gone leaves it held, and the next visit shows it.
@@ -362,7 +325,7 @@ function NewTask(props: {
           // The Host said no, so no task was made: the message goes back to
           // being a draft, to be changed and sent anew under new keys.
           const refused = claimed;
-          await drafts.clearPending(deploymentId, userId, draftKey, refused.idempotencyKey).then(
+          await drafts.clearTaskStart(deploymentId, userId, draftKey, refused.idempotencyKey).then(
             (cleared) => {
               if (!cleared) return;
               changeText(refused.text);
@@ -377,7 +340,7 @@ function NewTask(props: {
             () => undefined,
           );
         }
-        setFailure(operationDetail(error, "The task could not be started."));
+        setFailure(presentActionFailure(error, "The task could not be started."));
       } finally {
         inFlight.current = false;
         setSending(false);
@@ -394,7 +357,6 @@ function NewTask(props: {
       files,
       hostClient,
       includedPage,
-      notifications,
       onStarted,
       reduceMotion,
       staged,

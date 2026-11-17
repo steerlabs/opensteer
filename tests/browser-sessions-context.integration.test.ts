@@ -120,7 +120,6 @@ run("Browser Sessions through a whole deployment", () => {
       );
       const client = new HttpHostClient({
         baseUrl: stack.hostOrigin,
-        refreshIntervalMs: 0,
         fetch: (input, init) => {
           const headers = new Headers(init?.headers);
           headers.set("cookie", stack.sessionCookie);
@@ -390,7 +389,6 @@ run("Browser Sessions through a whole deployment", () => {
     if (!owner) throw new Error("Missing owner");
     const client = new HttpHostClient({
       baseUrl: stack.hostOrigin,
-      refreshIntervalMs: 0,
       fetch: (input, init) => {
         const headers = new Headers(init?.headers);
         headers.set("cookie", stack.sessionCookie);

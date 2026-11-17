@@ -39,7 +39,8 @@ import {
   tabKindNoun,
   tabTitle,
 } from "./tab-entries.js";
-import { useOperation, useTabListSpans } from "./use-tabs.js";
+import { useTabListSpans } from "./use-tabs.js";
+import { useClientOperation } from "@opensteer/client/react";
 
 /** Chrome's group tints, as the web draws them. */
 export const tabGroupTint: Record<TabGroupColor, string> = {
@@ -96,7 +97,7 @@ export function TabList(props: TabListProps): ReactNode {
   const layout = useTabLayout(hostClient);
   const spans = useTabListSpans(hostClient);
   const signIns = useHostSelector(hostClient, selectSignIns);
-  const operation = useOperation();
+  const operation = useClientOperation(hostClient, "tab-list");
   const [moving, setMoving] = useState<Moving | null>(null);
   const [naming, setNaming] = useState<Naming | null>(null);
   const matches = props.matches ?? null;

@@ -1,4 +1,4 @@
-import { ClientOperationError } from "./operation-error.js";
+import { ClientOperationError, type ClientFailureOptions } from "./operation-error.js";
 
 export type HostTransportErrorCode =
   "response-too-large" | "timed-out" | "deployment-changed" | "cancelled" | "unreachable";
@@ -26,15 +26,14 @@ const details = {
   },
 } as const;
 
-/** The observing boundary classifies a failure; IPC carries only its code. */
+/** The legacy code remains available when a peer cannot carry the observed failure. */
 export class HostTransportError extends ClientOperationError {
   readonly code: HostTransportErrorCode;
   readonly retryable: boolean;
 
-  constructor(code: HostTransportErrorCode, options?: ErrorOptions) {
+  constructor(code: HostTransportErrorCode, options?: ClientFailureOptions) {
     const detail = details[code];
-    super(detail.message, detail.retryable ? "transient" : "blocked", {
-      ...options,
+    super(detail.message, (options?.retryable ?? detail.retryable) ? "transient" : "blocked", {
       code,
       reason: code,
       retryable: detail.retryable,
@@ -45,9 +44,10 @@ export class HostTransportError extends ClientOperationError {
           : code === "response-too-large"
             ? "protocol"
             : "transport",
+      ...options,
     });
     this.name = code === "cancelled" ? "AbortError" : "HostTransportError";
     this.code = code;
-    this.retryable = detail.retryable;
+    this.retryable = options?.retryable ?? detail.retryable;
   }
 }

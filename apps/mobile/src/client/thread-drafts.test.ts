@@ -1,8 +1,6 @@
-import type { HostClient } from "@opensteer/client/host";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import { BrowserPageContentPartSchema, ModelSelectionSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
-import { sendPendingMessage } from "../thread/send-pending-message.js";
 import { createThreadDraftStore, newTaskDraftKey, sameDraftSummary } from "./thread-drafts.js";
 
 const filePath = "/private/drafts.json";
@@ -68,14 +66,14 @@ describe("createThreadDraftStore", () => {
     await drafts.load();
     await drafts.writeDraft(deploymentId, userId, otherThreadId, "private draft");
     await drafts.writeDraftPage(deploymentId, userId, otherThreadId, page);
-    await drafts.claimPending(deploymentId, userId, threadId, {
+    await drafts.claimTaskStart(deploymentId, userId, threadId, {
       idempotencyKey: "message:private",
       text: "private message",
       threadId,
     });
 
     expect(drafts.readDraft(deploymentId, otherUserId, otherThreadId)).toBeNull();
-    expect(drafts.readPending(deploymentId, otherUserId, threadId)).toBeNull();
+    expect(drafts.readTaskStart(deploymentId, otherUserId, threadId)).toBeNull();
   });
 
   it("keeps the page Ask put on a draft through edits and a restart, until it is removed or sent", async () => {
@@ -101,20 +99,20 @@ describe("createThreadDraftStore", () => {
     expect(relaunched.readDraft(deploymentId, userId, threadId)).toBeNull();
 
     await relaunched.writeDraftPage(deploymentId, userId, threadId, page);
-    await relaunched.claimPending(deploymentId, userId, threadId, {
+    await relaunched.claimTaskStart(deploymentId, userId, threadId, {
       browserPage: page,
       idempotencyKey: "message:page",
       text: "Which is cheapest?",
       threadId,
     });
     expect(relaunched.readDraft(deploymentId, userId, threadId)).toBeNull();
-    expect(relaunched.readPending(deploymentId, userId, threadId)?.browserPage).toEqual(page);
+    expect(relaunched.readTaskStart(deploymentId, userId, threadId)?.browserPage).toEqual(page);
   });
 
   it("brings back the exact command a killed app was sending, key and all", async () => {
     const { drafts, privateFiles } = open();
     await drafts.load();
-    await drafts.claimPending(deploymentId, userId, threadId, {
+    await drafts.claimTaskStart(deploymentId, userId, threadId, {
       idempotencyKey: "message:abc",
       text: referenced,
       threadId,
@@ -123,7 +121,7 @@ describe("createThreadDraftStore", () => {
     const relaunched = open(privateFiles).drafts;
     await relaunched.load();
 
-    expect(relaunched.readPending(deploymentId, userId, threadId)).toEqual({
+    expect(relaunched.readTaskStart(deploymentId, userId, threadId)).toEqual({
       createdAt: "2026-09-14T12:00:00.000Z",
       delivery: "queue",
       idempotencyKey: "message:abc",
@@ -142,21 +140,21 @@ describe("createThreadDraftStore", () => {
       text: "Answer this update",
       threadId,
     };
-    await drafts.claimPending(deploymentId, userId, threadId, command);
+    await drafts.claimTaskStart(deploymentId, userId, threadId, command);
 
     const relaunched = open(privateFiles).drafts;
     await relaunched.load();
-    expect(relaunched.readPending(deploymentId, userId, threadId)).toMatchObject(command);
-    await expect(relaunched.claimPending(deploymentId, userId, threadId, command)).resolves.toBe(
+    expect(relaunched.readTaskStart(deploymentId, userId, threadId)).toMatchObject(command);
+    await expect(relaunched.claimTaskStart(deploymentId, userId, threadId, command)).resolves.toBe(
       undefined,
     );
     await expect(
-      relaunched.claimPending(deploymentId, userId, threadId, {
+      relaunched.claimTaskStart(deploymentId, userId, threadId, {
         ...command,
         quotedMessageId: "msg_0192f4a1-5555-4000-8000-000000000005",
       }),
     ).rejects.toThrow(/awaiting acknowledgement/u);
-    expect(relaunched.readPending(deploymentId, userId, threadId)).toMatchObject(command);
+    expect(relaunched.readTaskStart(deploymentId, userId, threadId)).toMatchObject(command);
   });
 
   it("replays attachment order with the original send after a restart and rejects a changed retry", async () => {
@@ -183,17 +181,17 @@ describe("createThreadDraftStore", () => {
       text: "compare these",
       threadId,
     };
-    await drafts.claimPending(deploymentId, userId, threadId, command);
+    await drafts.claimTaskStart(deploymentId, userId, threadId, command);
     const relaunched = open(privateFiles).drafts;
     await relaunched.load();
-    expect(relaunched.readPending(deploymentId, userId, threadId)).toMatchObject(command);
+    expect(relaunched.readTaskStart(deploymentId, userId, threadId)).toMatchObject(command);
     await expect(
-      relaunched.claimPending(deploymentId, userId, threadId, {
+      relaunched.claimTaskStart(deploymentId, userId, threadId, {
         ...command,
         attachments: [second, first],
       }),
     ).rejects.toThrow(/awaiting acknowledgement/);
-    expect(relaunched.readPending(deploymentId, userId, threadId)).toMatchObject(command);
+    expect(relaunched.readTaskStart(deploymentId, userId, threadId)).toMatchObject(command);
   });
 
   it("does not expose unattributed version two state to either signed-in user", async () => {
@@ -222,16 +220,16 @@ describe("createThreadDraftStore", () => {
     await drafts.load();
 
     expect(drafts.readDraft(deploymentId, userId, threadId)).toBeNull();
-    expect(drafts.readPending(deploymentId, userId, threadId)).toBeNull();
+    expect(drafts.readTaskStart(deploymentId, userId, threadId)).toBeNull();
     expect(drafts.readDraft(deploymentId, otherUserId, threadId)).toBeNull();
-    expect(drafts.readPending(deploymentId, otherUserId, threadId)).toBeNull();
+    expect(drafts.readTaskStart(deploymentId, otherUserId, threadId)).toBeNull();
   });
 
   it("clears the draft when the command that carries it is claimed", async () => {
     const { drafts } = open();
     await drafts.load();
     await drafts.writeDraft(deploymentId, userId, threadId, "send me");
-    await drafts.claimPending(deploymentId, userId, threadId, {
+    await drafts.claimTaskStart(deploymentId, userId, threadId, {
       idempotencyKey: "message:abc",
       text: "send me",
       threadId,
@@ -243,14 +241,14 @@ describe("createThreadDraftStore", () => {
   it("keeps typing out of the command in flight", async () => {
     const { drafts } = open();
     await drafts.load();
-    await drafts.claimPending(deploymentId, userId, threadId, {
+    await drafts.claimTaskStart(deploymentId, userId, threadId, {
       idempotencyKey: "message:abc",
       text: "send me",
       threadId,
     });
     await drafts.writeDraft(deploymentId, userId, threadId, "and another thing");
 
-    expect(drafts.readPending(deploymentId, userId, threadId)?.text).toBe("send me");
+    expect(drafts.readTaskStart(deploymentId, userId, threadId)?.text).toBe("send me");
     expect(drafts.readDraft(deploymentId, userId, threadId)?.text).toBe("and another thing");
   });
 
@@ -262,7 +260,7 @@ describe("createThreadDraftStore", () => {
     privateFiles.failWrites = true;
 
     await expect(
-      drafts.claimPending(deploymentId, userId, threadId, {
+      drafts.claimTaskStart(deploymentId, userId, threadId, {
         idempotencyKey: "message:abc",
         text: "send me",
         threadId,
@@ -270,7 +268,7 @@ describe("createThreadDraftStore", () => {
     ).rejects.toThrow(/no space/u);
 
     // Nothing was claimed, and the draft the person typed is still theirs.
-    expect(drafts.readPending(deploymentId, userId, threadId)).toBeNull();
+    expect(drafts.readTaskStart(deploymentId, userId, threadId)).toBeNull();
     expect(drafts.readDraft(deploymentId, userId, threadId)?.text).toBe("send me");
   });
 
@@ -278,21 +276,23 @@ describe("createThreadDraftStore", () => {
     const privateFiles = new FlakyFilesystem();
     const { drafts } = open(privateFiles);
     await drafts.load();
-    await drafts.claimPending(deploymentId, userId, threadId, {
+    await drafts.claimTaskStart(deploymentId, userId, threadId, {
       idempotencyKey: "message:original",
       text: "keep me",
       threadId,
     });
     privateFiles.failWrites = true;
-    await expect(drafts.clearPending(deploymentId, userId, threadId)).rejects.toThrow(/no space/u);
-    expect(drafts.readPending(deploymentId, userId, threadId)?.idempotencyKey).toBe(
+    await expect(drafts.clearTaskStart(deploymentId, userId, threadId)).rejects.toThrow(
+      /no space/u,
+    );
+    expect(drafts.readTaskStart(deploymentId, userId, threadId)?.idempotencyKey).toBe(
       "message:original",
     );
     privateFiles.failWrites = false;
     await drafts.writeDraft(deploymentId, userId, otherThreadId, "later edit");
     const relaunched = open(privateFiles).drafts;
     await relaunched.load();
-    expect(relaunched.readPending(deploymentId, userId, threadId)?.idempotencyKey).toBe(
+    expect(relaunched.readTaskStart(deploymentId, userId, threadId)?.idempotencyKey).toBe(
       "message:original",
     );
   });
@@ -301,12 +301,12 @@ describe("createThreadDraftStore", () => {
     const { drafts, privateFiles } = open();
     await drafts.load();
     const results = await Promise.allSettled([
-      drafts.claimPending(deploymentId, userId, threadId, {
+      drafts.claimTaskStart(deploymentId, userId, threadId, {
         idempotencyKey: "message:first",
         text: "first",
         threadId,
       }),
-      drafts.claimPending(deploymentId, userId, threadId, {
+      drafts.claimTaskStart(deploymentId, userId, threadId, {
         idempotencyKey: "message:second",
         text: "second",
         threadId,
@@ -315,7 +315,7 @@ describe("createThreadDraftStore", () => {
     expect(results.map((result) => result.status)).toEqual(["fulfilled", "rejected"]);
     const relaunched = open(privateFiles).drafts;
     await relaunched.load();
-    expect(relaunched.readPending(deploymentId, userId, threadId)?.idempotencyKey).toBe(
+    expect(relaunched.readTaskStart(deploymentId, userId, threadId)?.idempotencyKey).toBe(
       "message:first",
     );
   });
@@ -341,15 +341,15 @@ describe("createThreadDraftStore", () => {
   it("never hands one Thread's command to another", async () => {
     const { drafts, privateFiles } = open();
     await drafts.load();
-    await drafts.claimPending(deploymentId, userId, threadId, {
+    await drafts.claimTaskStart(deploymentId, userId, threadId, {
       idempotencyKey: "message:abc",
       text: "send me",
       threadId,
     });
 
-    expect(drafts.readPending(deploymentId, userId, otherThreadId)).toBeNull();
+    expect(drafts.readTaskStart(deploymentId, userId, otherThreadId)).toBeNull();
     expect(
-      drafts.readPending("dep_0192f4a1-9999-4000-8000-000000000009", userId, threadId),
+      drafts.readTaskStart("dep_0192f4a1-9999-4000-8000-000000000009", userId, threadId),
     ).toBeNull();
 
     // A file that files a command under the wrong Thread is not this Thread's
@@ -371,7 +371,7 @@ describe("createThreadDraftStore", () => {
     );
     const relaunched = open(privateFiles).drafts;
     await relaunched.load();
-    expect(relaunched.readPending(deploymentId, userId, threadId)).toBeNull();
+    expect(relaunched.readTaskStart(deploymentId, userId, threadId)).toBeNull();
   });
 
   it("never loses a draft to a newer one", async () => {
@@ -472,7 +472,7 @@ describe("new-task drafts", () => {
         status: "staged",
       },
     ]);
-    await drafts.claimPending(deploymentId, userId, newTaskDraftKey(second), {
+    await drafts.claimTaskStart(deploymentId, userId, newTaskDraftKey(second), {
       idempotencyKey: "pending-old",
       text: "Obsolete pending",
       threadId: newTaskDraftKey(second),
@@ -482,7 +482,7 @@ describe("new-task drafts", () => {
       ],
       start,
     });
-    await drafts.claimPending(deploymentId, userId, newTaskDraftKey("home"), {
+    await drafts.claimTaskStart(deploymentId, userId, newTaskDraftKey("home"), {
       idempotencyKey: "pending-home",
       text: "Held home",
       threadId: newTaskDraftKey("home"),
@@ -502,10 +502,10 @@ describe("new-task drafts", () => {
       "Home words",
     );
     expect(
-      relaunched.readPending(deploymentId, userId, newTaskDraftKey("home"))?.idempotencyKey,
+      relaunched.readTaskStart(deploymentId, userId, newTaskDraftKey("home"))?.idempotencyKey,
     ).toBe("pending-home");
     expect(relaunched.readDraft(deploymentId, userId, newTaskDraftKey(first))).toBeNull();
-    expect(relaunched.readPending(deploymentId, userId, newTaskDraftKey(second))).toBeNull();
+    expect(relaunched.readTaskStart(deploymentId, userId, newTaskDraftKey(second))).toBeNull();
     expect(relaunched.readDraft(deploymentId, userId, threadId)?.text).toBe("Task reply");
     expect(forgetDraftFiles.mock.calls).toEqual([
       [{ deploymentId, userId, kind: "new-task", draftId: first }, ["file:///draft-old"]],
@@ -541,7 +541,7 @@ describe("new-task drafts", () => {
     const { drafts } = open();
     await drafts.load();
     const key = newTaskDraftKey(first);
-    await drafts.claimPending(deploymentId, userId, key, {
+    await drafts.claimTaskStart(deploymentId, userId, key, {
       idempotencyKey: "message:held",
       start,
       text: "Held",
@@ -549,7 +549,7 @@ describe("new-task drafts", () => {
     });
     await drafts.writeDraft(deploymentId, userId, key, "Typed after");
     await drafts.discardDraft(deploymentId, userId, key);
-    expect(drafts.readPending(deploymentId, userId, key)?.idempotencyKey).toBe("message:held");
+    expect(drafts.readTaskStart(deploymentId, userId, key)?.idempotencyKey).toBe("message:held");
   });
 
   it("shows the sidebar nothing new for a keystroke or another reader", async () => {
@@ -607,12 +607,7 @@ describe("a draft file from the release that steered approvals", () => {
     return privateFiles;
   }
 
-  function host() {
-    const dispatch = vi.fn(async (_command: unknown) => ({ type: "thread.sendMessage" }));
-    return { dispatch, hostClient: { dispatch } as unknown as HostClient };
-  }
-
-  it("sends a held message as an ordinary message under the key it was saved with", async () => {
+  it("decodes a held message for review under its original key", async () => {
     const privateFiles = previousRelease({
       drafts: {
         [entryKey]: { text: heldSteer.draftText, updatedAt: heldSteer.createdAt, userId },
@@ -622,7 +617,7 @@ describe("a draft file from the release that steered approvals", () => {
     const { drafts } = open(privateFiles);
     await drafts.load();
 
-    const pending = drafts.readPending(deploymentId, userId, threadId);
+    const pending = drafts.readTaskStart(deploymentId, userId, threadId);
     expect(pending).toEqual({
       createdAt: heldSteer.createdAt,
       delivery: "queue",
@@ -635,19 +630,21 @@ describe("a draft file from the release that steered approvals", () => {
     // invite sending them twice.
     expect(drafts.readDraft(deploymentId, userId, threadId)).toBeNull();
 
-    const { dispatch, hostClient } = host();
     if (pending === null) throw new Error("The held message was not carried over.");
-    await sendPendingMessage(hostClient, pending, async () => true);
-    expect(dispatch.mock.calls).toEqual([
-      [
-        {
-          content: [{ text: heldSteer.text, type: "text" }],
-          delivery: "queue",
-          idempotencyKey: heldSteer.messageIdempotencyKey,
-          threadId,
-          type: "thread.sendMessage",
-        },
-      ],
+    const recovered = await drafts.legacyMessages.load({
+      authorityKey: "old-host",
+      deploymentId,
+      viewerId: userId,
+      loginId: "reviewing-login",
+    });
+    expect(recovered.map((entry) => entry.command)).toEqual([
+      {
+        content: [{ text: heldSteer.text, type: "text" }],
+        delivery: "queue",
+        idempotencyKey: heldSteer.messageIdempotencyKey,
+        threadId,
+        type: "thread.sendMessage",
+      },
     ]);
   });
 
@@ -664,12 +661,12 @@ describe("a draft file from the release that steered approvals", () => {
     expect(saved).not.toContain(heldSteer.idempotencyKey);
     expect(saved).not.toContain(requestId);
     expect(saved).not.toContain(heldSteer.optionId);
-    expect(drafts).not.toHaveProperty("readPendingSteer");
-    expect(drafts).not.toHaveProperty("claimPendingSteer");
+    expect(drafts).not.toHaveProperty("readTaskStartSteer");
+    expect(drafts).not.toHaveProperty("claimTaskStartSteer");
 
     const relaunched = open(privateFiles).drafts;
     await relaunched.load();
-    expect(relaunched.readPending(deploymentId, userId, threadId)?.idempotencyKey).toBe(
+    expect(relaunched.readTaskStart(deploymentId, userId, threadId)?.idempotencyKey).toBe(
       heldSteer.messageIdempotencyKey,
     );
   });
@@ -681,8 +678,8 @@ describe("a draft file from the release that steered approvals", () => {
     const second = open(privateFiles).drafts;
     await second.load();
 
-    expect(second.readPending(deploymentId, userId, threadId)).toEqual(
-      first.readPending(deploymentId, userId, threadId),
+    expect(second.readTaskStart(deploymentId, userId, threadId)).toEqual(
+      first.readTaskStart(deploymentId, userId, threadId),
     );
   });
 
@@ -694,7 +691,7 @@ describe("a draft file from the release that steered approvals", () => {
     const { drafts } = open(privateFiles);
     await drafts.load();
 
-    expect(drafts.readPending(deploymentId, userId, threadId)?.text).toBe(heldSteer.text);
+    expect(drafts.readTaskStart(deploymentId, userId, threadId)?.text).toBe(heldSteer.text);
     expect(drafts.readDraft(deploymentId, userId, threadId)?.text).toBe("newer draft");
   });
 
@@ -727,7 +724,7 @@ describe("a draft file from the release that steered approvals", () => {
 
     // Sent alone they would lose what they were meant to go with, so nothing
     // is owed and the draft stays as it was.
-    expect(drafts.readPending(deploymentId, userId, threadId)).toBeNull();
+    expect(drafts.readTaskStart(deploymentId, userId, threadId)).toBeNull();
     expect(drafts.readDraft(deploymentId, userId, threadId)).toEqual({
       attachments,
       quote,
@@ -749,7 +746,7 @@ describe("a draft file from the release that steered approvals", () => {
     const { drafts } = open(privateFiles);
     await expect(drafts.load()).resolves.toBeUndefined();
 
-    expect(drafts.readPending(deploymentId, userId, threadId)).toBeNull();
+    expect(drafts.readTaskStart(deploymentId, userId, threadId)).toBeNull();
     expect(drafts.readDraft(deploymentId, userId, threadId)).toBeNull();
   });
 
@@ -758,11 +755,11 @@ describe("a draft file from the release that steered approvals", () => {
     const { drafts } = open(privateFiles);
     await drafts.load();
 
-    expect(drafts.readPending(deploymentId, otherUserId, threadId)).toBeNull();
+    expect(drafts.readTaskStart(deploymentId, otherUserId, threadId)).toBeNull();
     expect(drafts.readDraft(deploymentId, otherUserId, threadId)).toBeNull();
   });
 
-  it("replays a message the previous release still owed exactly as it was first sent", async () => {
+  it("decodes a previous message with its exact content, quote and files", async () => {
     // As the previous release wrote it: each file in the order its schema
     // names the fields, which is also the order it dispatched them in.
     const owed = {
@@ -788,24 +785,26 @@ describe("a draft file from the release that steered approvals", () => {
     const { drafts } = open(privateFiles);
     await drafts.load();
 
-    const pending = drafts.readPending(deploymentId, userId, threadId);
+    const pending = drafts.readTaskStart(deploymentId, userId, threadId);
     expect(pending).toEqual({ ...owed, delivery: "queue" });
-    const { dispatch, hostClient } = host();
     if (pending === null) throw new Error("The owed message was not loaded.");
-    await sendPendingMessage(hostClient, pending, async () => true);
-    expect(JSON.stringify(dispatch.mock.calls[0]?.[0])).toBe(
-      JSON.stringify({
-        content: [{ text: "compare these", type: "text" }, ...owed.attachments],
-        delivery: "queue",
-        idempotencyKey: "message:owed",
-        quotedMessageId: owed.quotedMessageId,
-        threadId,
-        type: "thread.sendMessage",
-      }),
-    );
+    const recovered = await drafts.legacyMessages.load({
+      authorityKey: "old-host",
+      deploymentId,
+      viewerId: userId,
+      loginId: "reviewing-login",
+    });
+    expect(recovered[0]?.command).toEqual({
+      content: [{ text: "compare these", type: "text" }, ...owed.attachments],
+      delivery: "queue",
+      idempotencyKey: "message:owed",
+      quotedMessageId: owed.quotedMessageId,
+      threadId,
+      type: "thread.sendMessage",
+    });
   });
 
-  it("replays a stored steering delivery exactly as stored", async () => {
+  it("keeps a stored steering delivery unchanged for review", async () => {
     const owed = {
       createdAt: "2026-09-14T10:00:00.000Z",
       delivery: "steer",
@@ -818,12 +817,16 @@ describe("a draft file from the release that steered approvals", () => {
     const { drafts } = open(privateFiles);
     await drafts.load();
 
-    const pending = drafts.readPending(deploymentId, userId, threadId);
+    const pending = drafts.readTaskStart(deploymentId, userId, threadId);
     expect(pending).toEqual(owed);
-    const { dispatch, hostClient } = host();
     if (pending === null) throw new Error("The owed message was not loaded.");
-    await sendPendingMessage(hostClient, pending, async () => true);
-    expect(dispatch).toHaveBeenCalledWith({
+    const recovered = await drafts.legacyMessages.load({
+      authorityKey: "old-host",
+      deploymentId,
+      viewerId: userId,
+      loginId: "reviewing-login",
+    });
+    expect(recovered[0]?.command).toEqual({
       content: [{ text: "change course", type: "text" }],
       delivery: "steer",
       idempotencyKey: "message:steer",
@@ -839,12 +842,12 @@ it.each(["compactFirst", "keepFullHistory"] as const)(
     const { drafts, privateFiles } = open();
     await drafts.load();
     const command = { text: "Continue", threadId, idempotencyKey: "compaction-choice", compaction };
-    await drafts.claimPending(deploymentId, userId, threadId, command);
+    await drafts.claimTaskStart(deploymentId, userId, threadId, command);
     const restored = open(privateFiles).drafts;
     await restored.load();
-    expect(restored.readPending(deploymentId, userId, threadId)).toMatchObject(command);
+    expect(restored.readTaskStart(deploymentId, userId, threadId)).toMatchObject(command);
     await expect(
-      restored.claimPending(deploymentId, userId, threadId, {
+      restored.claimTaskStart(deploymentId, userId, threadId, {
         ...command,
         compaction: compaction === "compactFirst" ? "keepFullHistory" : "compactFirst",
       }),

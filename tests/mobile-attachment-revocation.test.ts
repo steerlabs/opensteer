@@ -95,7 +95,6 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
               baseUrl: origin,
               capabilities,
               ...network,
-              refreshIntervalMs: 60_000,
             });
             const dispose = host.dispose.bind(host);
             host.dispose = () => {

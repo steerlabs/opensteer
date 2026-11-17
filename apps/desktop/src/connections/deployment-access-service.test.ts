@@ -1,3 +1,4 @@
+import { ClientOperationError, HostTransportError } from "@opensteer/client/connections";
 import { createId } from "@opensteer/core";
 import {
   DesktopDeploymentSummarySchema,
@@ -123,11 +124,11 @@ describe("DeploymentAccessService", () => {
     service.dispose();
   });
 
-  it("runs transient retries only when the connection supervisor's retry is due", async () => {
+  it("keeps main attachment one-shot until the renderer requests another attempt", async () => {
     const target = deployment();
     const fixture = fakePorts({ deployments: [target] });
     fixture.establish
-      .mockRejectedValueOnce(new TypeError("network unavailable"))
+      .mockRejectedValueOnce(new HostTransportError("unreachable"))
       .mockResolvedValueOnce({
         attachmentKey: target.key!,
         deploymentId: target.id,
@@ -145,8 +146,8 @@ describe("DeploymentAccessService", () => {
       failure: { retryable: true },
       status: "offline",
     });
-    expect(scheduled).toHaveLength(1);
-    scheduled[0]!();
+    expect(scheduled).toHaveLength(0);
+    await service.retry();
     await settle();
     expect(fixture.establish).toHaveBeenCalledTimes(2);
     expect(service.snapshot().deployments[0]?.status).toBe("connected");
@@ -732,7 +733,7 @@ describe("DeploymentAccessService", () => {
     const first = deployment({ name: "A" });
     const second = deployment({ name: "B" });
     const fixture = fakePorts({ deployments: [first, second] });
-    fixture.establish.mockRejectedValueOnce(new TypeError("network unavailable"));
+    fixture.establish.mockRejectedValueOnce(new HostTransportError("unreachable"));
     const scheduled: Array<() => void> = [];
     const service = new DeploymentAccessService(fixture.ports, {
       schedule: (callback) => scheduled.push(callback),
@@ -775,7 +776,7 @@ describe("DeploymentAccessService", () => {
     expect(snapshot.personalSetup).toMatchObject({
       canStart: false,
       issue: {
-        detail: "The deployment connection catalog on this computer is incompatible or corrupt.",
+        detail: "Couldn't confirm this change.",
       },
       state: "repair-required",
     });
@@ -839,7 +840,7 @@ describe("DeploymentAccessService", () => {
   it("classifies every effect-port failure at its seam", () => {
     const ports: readonly DeploymentAccessPort[] = ["catalog", "directory"];
     for (const port of ports) {
-      expect(classifyPortFailure(port, new TypeError("network unavailable")).classification).toBe(
+      expect(classifyPortFailure(port, new HostTransportError("unreachable")).classification).toBe(
         "transient",
       );
       expect(classifyPortFailure(port, new Error("Authority changed.")).classification).toBe(
@@ -866,7 +867,10 @@ describe("DeploymentAccessService", () => {
       schemaVersion: 2,
     });
     vi.mocked(fixture.ports.directory.syncAccountDeployments).mockRejectedValueOnce(
-      new Error("Account Host discovery was rejected."),
+      new ClientOperationError("PRIVATE discovery detail", "blocked", {
+        reason: "rejected",
+        provenance: "host",
+      }),
     );
     const service = new DeploymentAccessService(fixture.ports);
 
@@ -874,8 +878,8 @@ describe("DeploymentAccessService", () => {
     await settle();
 
     expect(service.snapshot().directoryFailure).toEqual({
-      code: "directory-blocked",
-      detail: "Account Host discovery was rejected.",
+      code: "directory-rejected",
+      detail: "Couldn't complete this action.",
       retryable: false,
     });
     service.dispose();
@@ -962,7 +966,7 @@ describe("DeploymentAccessService", () => {
       account: { available: true, status: "signed-out" },
       deployments: [],
       personalSetup: {
-        issue: { detail: "Personal deployment manifest is incompatible or corrupt." },
+        issue: { detail: "Couldn't confirm this change." },
         state: "repair-required",
       },
     });
@@ -980,7 +984,7 @@ describe("DeploymentAccessService", () => {
 
     expect(service.snapshot().account).toMatchObject({
       available: true,
-      detail: "Credential cache is corrupt.",
+      detail: "Couldn't confirm this change.",
       status: "error",
     });
     expect(service.snapshot().account.available).toBe(true);
@@ -1161,7 +1165,7 @@ describe("DeploymentAccessService", () => {
       await service.initialize();
       fixture.clock.now += 60_000;
       vi.mocked(fixture.ports.directory.syncAccountDeployments).mockRejectedValueOnce(
-        new TypeError("fetch failed"),
+        new HostTransportError("unreachable"),
       );
       await service.checkDeployments();
       const failure = service.snapshot().directoryFailure;
@@ -1229,7 +1233,7 @@ describe("DeploymentAccessService", () => {
       await service.initialize();
       fixture.clock.now += 5 * 60_000;
       vi.mocked(fixture.ports.directory.syncAccountDeployments).mockRejectedValueOnce(
-        Object.assign(new TypeError("fetch failed")),
+        Object.assign(new HostTransportError("unreachable")),
       );
 
       await service.checkDeployments();
@@ -1259,7 +1263,7 @@ describe("DeploymentAccessService", () => {
 
       fixture.clock.now += 5 * 60_000;
       vi.mocked(fixture.ports.directory.syncAccountDeployments).mockRejectedValueOnce(
-        new TypeError("fetch failed"),
+        new HostTransportError("unreachable"),
       );
       await service.checkDeployments();
       expect(service.snapshot().deployments[0]?.statusInfo).toMatchObject({
@@ -1396,7 +1400,7 @@ describe("DeploymentAccessService", () => {
         const lab = deployment({ name: "Lab server" });
         const fixture = fakePorts({ deployments: [lab] });
         if (outcome === "unreachable") fixture.probe.mockResolvedValueOnce("unreachable");
-        else fixture.probe.mockRejectedValueOnce(new TypeError("fetch failed"));
+        else fixture.probe.mockRejectedValueOnce(new HostTransportError("unreachable"));
         const service = new DeploymentAccessService(fixture.ports, fixture.options);
         await service.initialize();
 

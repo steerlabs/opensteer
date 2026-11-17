@@ -1,3 +1,5 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
+import { useConnectionNotice } from "@opensteer/client/react";
 import Animated from "react-native-reanimated";
 import { move } from "../ui/motion.js";
 import {
@@ -24,7 +26,6 @@ import {
   View,
   type ListRenderItemInfo,
 } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { AppText, Notice, SecondaryButton, SectionLabel, StatusDot } from "../ui/primitives.js";
 import { useListContentInsets } from "../ui/screen.js";
@@ -74,7 +75,8 @@ export function TasksPane(props: {
   const { hostClient, query } = props;
   const doneOnly = props.done === true;
   const insets = useListContentInsets(space[32]);
-  const { loadError, snapshot } = useHostSnapshot(hostClient, samePaneSource);
+  const { snapshot } = useHostSnapshot(hostClient, samePaneSource);
+  const loadError = useConnectionNotice(hostClient.connection);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -90,7 +92,7 @@ export function TasksPane(props: {
     if (!keepsDone || !authenticated) return;
     let live = true;
     void hostClient.loadDoneTasks().catch((error: unknown) => {
-      if (live) setFailure(operationDetail(error, "Done tasks could not be loaded."));
+      if (live) setFailure(presentActionFailure(error, "Done tasks could not be loaded."));
     });
     return () => {
       live = false;
@@ -214,7 +216,7 @@ export function TasksPane(props: {
       ...(moreDone ? [hostClient.loadEarlierDoneTasks()] : []),
     ])
       .catch((error: unknown) => {
-        setFailure(operationDetail(error, "Earlier tasks could not be loaded."));
+        setFailure(presentActionFailure(error, "Earlier tasks could not be loaded."));
       })
       .finally(() => {
         loadingEarlierRef.current = false;
@@ -225,7 +227,7 @@ export function TasksPane(props: {
   const signIn = useCallback((): void => {
     setFailure(null);
     void props.onSignIn().catch((error: unknown) => {
-      setFailure(operationDetail(error, "Sign-in did not finish. Try again."));
+      setFailure(presentActionFailure(error, "Sign-in did not finish. Try again."));
     });
   }, [props.onSignIn]);
 
@@ -359,7 +361,7 @@ export function TasksPane(props: {
             void hostClient
               .refresh()
               .catch((error: unknown) => {
-                setFailure(operationDetail(error, "This deployment could not be refreshed."));
+                setFailure(presentActionFailure(error, "This deployment could not be refreshed."));
               })
               .finally(() => setRefreshing(false));
           }}

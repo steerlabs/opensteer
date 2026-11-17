@@ -1,5 +1,10 @@
+import { browserClientLifecycle } from "../host/browser-lifecycle.js";
 import { DeploymentIdSchema } from "@opensteer/core";
-import { createHttpHostApiClient, type WebSocketClient } from "@opensteer/client/host";
+import {
+  createHttpHostApiClient,
+  forwardRpcAuthentication,
+  type WebSocketClient,
+} from "@opensteer/client/host";
 import {
   TeamBinaryUploadMetadataSchema,
   TeamBootstrapSchema,
@@ -85,20 +90,24 @@ export function browserTeamSession(input: {
     onAuthenticationRequired: () => undefined,
   });
   let first = input.bootstrap ?? null;
+  const rpc = first
+    ? new Proxy(http, {
+        get: (target, property) => {
+          if (property !== "team.bootstrap.get" || !first) return Reflect.get(target, property);
+          const data = first;
+          first = null;
+          return async () => ({ data, ok: true });
+        },
+      })
+    : http;
+  forwardRpcAuthentication(http, rpc);
   return {
     scope: input.scope,
+    ...(input.bootstrap ? { name: input.bootstrap.teamName } : {}),
+    lifecycle: browserClientLifecycle(),
     persistence: localTeamPersistence,
     // One round trip before the first screen, not two, on a slow link.
-    rpc: first
-      ? new Proxy(http, {
-          get: (target, property) => {
-            if (property !== "team.bootstrap.get" || !first) return Reflect.get(target, property);
-            const data = first;
-            first = null;
-            return async () => ({ data, ok: true });
-          },
-        })
-      : http,
+    rpc,
     // A browser can't set headers on the upgrade, so the version rides in the address.
     connect: () =>
       new WebSocket(
@@ -141,6 +150,7 @@ export function browserTeamSession(input: {
  * bridge pinned to the team's own Host, which holds its credential.
  */
 export function desktopTeamSession(input: {
+  readonly name?: string;
   readonly owner?: TeamRuntimeOwner;
   readonly bridge: OpensteerDesktopBridge;
   readonly origin: string;
@@ -217,7 +227,9 @@ export function desktopTeamSession(input: {
   };
   return {
     scope: input.scope,
+    ...(input.name ? { name: input.name } : {}),
     ...(owner ? { owner } : {}),
+    lifecycle: browserClientLifecycle({ socketTrustWindowMs: Number.POSITIVE_INFINITY }),
     persistence: owner ? ownedLocalTeamPersistence(owner) : localTeamPersistence,
     rpc: createHttpHostApiClient({
       baseUrl: new URL(input.origin),

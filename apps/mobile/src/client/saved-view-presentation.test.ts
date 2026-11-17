@@ -109,11 +109,33 @@ it("debounces projection changes for two seconds and distinguishes offline/unava
   controller.select(f.s.hostIdentity.deploymentId, f.s, () => true);
   controller.attach(f.client);
   await vi.waitFor(() => expect(controller.getSnapshot().tasks.source).toBe("saved"));
-  controller.connection("offline", false);
+  const base = f.client.connection.getSnapshot();
+  controller.connection({
+    ...base,
+    phase: "recovering",
+    network: "offline",
+    showInterruption: false,
+    issue: { code: "connection", reason: "offline" },
+  });
+  expect(controller.getSnapshot().tasks).toMatchObject({ label: "Updating…" });
+  controller.connection({
+    ...base,
+    phase: "recovering",
+    network: "offline",
+    showInterruption: true,
+    issue: { code: "connection", reason: "offline" },
+  });
   expect(controller.getSnapshot().tasks).toMatchObject({ label: "Offline · Saved view" });
-  controller.connection("online", true);
-  expect(controller.getSnapshot().tasks).toMatchObject({ label: "Unavailable · Saved view" });
-  controller.connection("online", false);
+  controller.connection({
+    ...base,
+    phase: "recovering",
+    showInterruption: true,
+    issue: { code: "connection", reason: "unreachable" },
+  });
+  expect(controller.getSnapshot().tasks).toMatchObject({
+    label: "Can't reach your computer · Saved view",
+  });
+  controller.connection(base);
   expect(controller.getSnapshot().tasks).toMatchObject({ label: "Updating…" });
   vi.useFakeTimers();
   f.publish({

@@ -1,8 +1,9 @@
+import { HostTransportError } from "@opensteer/client/connections";
 import { createId } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
-import { ConnectionSupervisor } from "./connection-supervisor.js";
+import { ConnectionAttachment } from "./connection-attachment.js";
 
-describe("ConnectionSupervisor", () => {
+describe("ConnectionAttachment", () => {
   it("fences a stale completion after a route swap", async () => {
     const deploymentId = createId("deployment");
     let complete: ((value: Observation) => void) | undefined;
@@ -12,7 +13,7 @@ describe("ConnectionSupervisor", () => {
           complete = resolve;
         }),
     );
-    const supervisor = new ConnectionSupervisor({
+    const supervisor = new ConnectionAttachment({
       attachmentKey: "route:1",
       deploymentId,
       establish,
@@ -27,35 +28,32 @@ describe("ConnectionSupervisor", () => {
     expect(supervisor.snapshot().status).toBe("idle");
   });
 
-  it("owns bounded retry and connects only when its scheduled generation is current", async () => {
+  it("leaves retry scheduling to the shared controller", async () => {
     const deploymentId = createId("deployment");
-    const scheduled: Array<() => void> = [];
     const establish = vi
       .fn()
-      .mockRejectedValueOnce(new TypeError("network unavailable"))
+      .mockRejectedValueOnce(new HostTransportError("unreachable"))
       .mockResolvedValueOnce({ attachmentKey: "route:1", deploymentId, outcome: "ready" });
-    const supervisor = new ConnectionSupervisor({
+    const attachment = new ConnectionAttachment({
       attachmentKey: "route:1",
       deploymentId,
       establish,
-      schedule: (callback) => scheduled.push(callback),
     });
-
-    supervisor.attach();
+    attachment.attach();
     await settle();
-    expect(supervisor.snapshot()).toMatchObject({
+    expect(attachment.snapshot()).toMatchObject({
       status: "offline",
       failure: { retryable: true },
     });
-    expect(scheduled).toHaveLength(1);
-    scheduled[0]!();
+    expect(establish).toHaveBeenCalledTimes(1);
+    attachment.attach();
     await settle();
-    expect(supervisor.snapshot()).toMatchObject({ status: "connected", failure: null });
+    expect(attachment.snapshot().status).toBe("connected");
   });
 
   it("reports sign-in as a retryable state and missing remote access as its own", async () => {
     const deploymentId = createId("deployment");
-    const supervisor = new ConnectionSupervisor({
+    const supervisor = new ConnectionAttachment({
       attachmentKey: "route:1",
       deploymentId,
       establish: async () => ({ attachmentKey: "route:1", deploymentId, outcome: "needs-sign-in" }),
@@ -76,7 +74,7 @@ describe("ConnectionSupervisor", () => {
 
   it("publishes a browser authorization as its own state, stoppable and retryable", async () => {
     const deploymentId = createId("deployment");
-    const supervisor = new ConnectionSupervisor({
+    const supervisor = new ConnectionAttachment({
       attachmentKey: "route:1",
       deploymentId,
       establish: async () => ({
@@ -105,7 +103,7 @@ describe("ConnectionSupervisor", () => {
 
   it("carries a Host's own timeout out of authorizing and into a signalled repair", async () => {
     const deploymentId = createId("deployment");
-    const supervisor = new ConnectionSupervisor({
+    const supervisor = new ConnectionAttachment({
       attachmentKey: "route:1",
       deploymentId,
       establish: async () => ({ attachmentKey: "route:1", deploymentId, outcome: "authorizing" }),
@@ -140,7 +138,7 @@ describe("ConnectionSupervisor", () => {
       order.push("establish");
       return { attachmentKey: liveKey, deploymentId, outcome: "ready" as const };
     });
-    const supervisor = new ConnectionSupervisor({
+    const supervisor = new ConnectionAttachment({
       attachmentKey: liveKey,
       deploymentId,
       close,
@@ -169,7 +167,7 @@ describe("ConnectionSupervisor", () => {
       deploymentId,
       outcome: "ready" as const,
     }));
-    const supervisor = new ConnectionSupervisor({
+    const supervisor = new ConnectionAttachment({
       attachmentKey: "route:1",
       deploymentId,
       establish,
@@ -184,7 +182,7 @@ describe("ConnectionSupervisor", () => {
 
   it("returns a cancelled attempt to idle instead of to a failure", async () => {
     const deploymentId = createId("deployment");
-    const supervisor = new ConnectionSupervisor({
+    const supervisor = new ConnectionAttachment({
       attachmentKey: "route:1",
       deploymentId,
       establish: () => new Promise<Observation>(() => undefined),
@@ -198,54 +196,6 @@ describe("ConnectionSupervisor", () => {
 
     expect(supervisor.snapshot()).toMatchObject({ failure: null, status: "idle" });
     expect(supervisor.canRetry()).toBe(true);
-  });
-
-  it("fences a retry that was already scheduled when it stopped being selected", async () => {
-    const deploymentId = createId("deployment");
-    const scheduled: Array<() => void> = [];
-    const establish = vi.fn().mockRejectedValue(new TypeError("network unavailable"));
-    const supervisor = new ConnectionSupervisor({
-      attachmentKey: "route:1",
-      deploymentId,
-      establish,
-      schedule: (callback) => scheduled.push(callback),
-    });
-
-    supervisor.attach();
-    await settle();
-    expect(scheduled).toHaveLength(1);
-    supervisor.deactivate();
-    scheduled[0]!();
-    await settle();
-
-    expect(establish).toHaveBeenCalledOnce();
-    expect(supervisor.snapshot()).toMatchObject({ failure: null, status: "idle" });
-  });
-
-  it("resumes on an ambient trigger only from a failure", async () => {
-    const deploymentId = createId("deployment");
-    const establish = vi
-      .fn()
-      .mockRejectedValueOnce(new TypeError("network unavailable"))
-      .mockResolvedValue({ attachmentKey: "route:1", deploymentId, outcome: "ready" });
-    const supervisor = new ConnectionSupervisor({
-      attachmentKey: "route:1",
-      deploymentId,
-      establish,
-      schedule: () => undefined,
-    });
-
-    supervisor.resume();
-    expect(establish).not.toHaveBeenCalled();
-
-    supervisor.attach();
-    await settle();
-    supervisor.resume();
-    await settle();
-    expect(supervisor.snapshot().status).toBe("connected");
-
-    supervisor.resume();
-    expect(establish).toHaveBeenCalledTimes(2);
   });
 });
 

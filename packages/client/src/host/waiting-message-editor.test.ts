@@ -47,7 +47,6 @@ async function setup() {
   const client = new HttpHostClient({
     baseUrl: "http://mock-host",
     webSocketFactory: host.connect,
-    refreshIntervalMs: 0,
     fetch: async (input, init) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
       const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : null;

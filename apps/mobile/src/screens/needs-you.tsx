@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { teamAskerLabel } from "@opensteer/client/team";
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { useHostSelector } from "@opensteer/client/react";
@@ -6,7 +7,6 @@ import type { NeedsYouEntry, NeedsYouTeamAskEntry } from "@opensteer/protocol";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { AppText } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 import { space, touchTarget } from "../theme.js";
@@ -53,7 +53,7 @@ function NeedsYouList({ client, deploymentId }: { client: HostClient; deployment
         teamId: entry.teamId,
       });
     } catch (error) {
-      setFailure(operationDetail(error, "That ask could not be dismissed."));
+      setFailure(presentActionFailure(error, "That ask could not be dismissed."));
     } finally {
       setDismissing(null);
     }

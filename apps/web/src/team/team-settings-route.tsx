@@ -572,6 +572,7 @@ function AuditPage({ view }: { readonly view: TeamView }) {
           nextCursor: page.hasMore ? (page.audit.at(-1)?.id ?? null) : null,
         })),
     `audit:${view.team.teamId}`,
+    view.client,
   );
   const rows = list.items.filter((entry) =>
     only === "all"

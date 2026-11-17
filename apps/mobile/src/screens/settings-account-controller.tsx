@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { remoteAccessDisconnectWarning } from "@opensteer/client/host";
 import { usePersonalRemoteAccess, useRemoteAccess } from "@opensteer/client/react";
 import { sessionActivityLine, settingsSessionRows } from "@opensteer/client/settings";
@@ -5,7 +6,6 @@ import type { AuthSessionSummary } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Alert, Linking } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import { mobileRemoteAccessPort } from "../client/remote-access-port.js";
@@ -87,7 +87,7 @@ function AccountSettingsContent(props: {
     setAccountError(null);
     setAccountWorking(true);
     void operation()
-      .catch((error: unknown) => setAccountError(operationDetail(error, fallback)))
+      .catch((error: unknown) => setAccountError(presentActionFailure(error, fallback)))
       .finally(() => {
         accountInFlight.current = false;
         setAccountWorking(false);
@@ -147,7 +147,7 @@ function AccountSettingsContent(props: {
                 if (props.sessionId !== undefined) navigation.goBack();
               })
               .catch((error: unknown) =>
-                setSessionsError(operationDetail(error, "Sign-out didn’t finish. Try again.")),
+                setSessionsError(presentActionFailure(error, "Sign-out didn’t finish. Try again.")),
               )
               .finally(() => setRemoving(false));
           },

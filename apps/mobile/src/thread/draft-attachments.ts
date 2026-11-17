@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import {
   attachmentMaxBytes,
   attachmentMessageMaxBytes,
@@ -7,7 +8,6 @@ import {
 } from "@opensteer/core";
 import { HostClientRequestError, stageAttachment, type HostClient } from "@opensteer/client/host";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { operationDetail } from "../client/mobile-client.js";
 import { type DraftAttachment, type ThreadDraftStore } from "../client/thread-drafts.js";
 import type { PastedImages } from "../../modules/composer-editor/index.js";
 import {
@@ -222,7 +222,7 @@ export function useDraftAttachments(options: {
         (error: unknown) => {
           if (controller.signal.aborted) return;
           update(key, {
-            error: operationDetail(error, "This file could not be uploaded."),
+            error: presentActionFailure(error, "This file could not be uploaded."),
             retryable: retryable(error),
             status: "error",
           });
@@ -378,7 +378,8 @@ export function useDraftAttachments(options: {
     try {
       picked = kind === "photo" ? await pickChatPhoto(files) : await pickChatFile(files);
     } catch (error) {
-      if (mounted.current) setNotice(operationDetail(error, "That file could not be attached."));
+      if (mounted.current)
+        setNotice(presentActionFailure(error, "That file could not be attached."));
       return;
     }
     if (picked !== null) add(picked);
@@ -394,7 +395,7 @@ export function useDraftAttachments(options: {
         try {
           picked = await importPastedImage(files, image);
         } catch (error) {
-          problem = operationDetail(error, "A pasted image could not be attached.");
+          problem = presentActionFailure(error, "A pasted image could not be attached.");
           continue;
         }
       } else discardPastedImage(image.uri);

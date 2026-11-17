@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { formatRelativeTime, messageAuthorName, type HostClient } from "@opensteer/client/host";
 import type { ThreadMessagePage } from "@opensteer/protocol";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -11,7 +12,6 @@ import {
   View,
   type ListRenderItemInfo,
 } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, radius, space, touchTarget, type } from "../theme.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
@@ -89,7 +89,7 @@ function ThreadFind(props: {
           setNextBefore(page.window.nextBefore ?? null);
         })
         .catch((error: unknown) => {
-          setFailure(operationDetail(error, "This conversation could not be searched."));
+          setFailure(presentActionFailure(error, "This conversation could not be searched."));
         })
         .finally(() => setSearching(false));
     },

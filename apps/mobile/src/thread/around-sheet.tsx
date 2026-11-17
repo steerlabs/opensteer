@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import {
   canRespondToRequests,
   conversationThreadIds,
@@ -44,7 +45,6 @@ import {
 } from "react-native";
 import { opensteerAppGlyph } from "../browser/agent-surface.js";
 import { useOpenPlace, useShowTab } from "../tabs/viewer-open.js";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, radius, space, type } from "../theme.js";
 import { AgentOrb } from "../team/team-marks.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
@@ -788,20 +788,26 @@ const ScheduleRow = memo(function ScheduleRow(props: {
     schedulesClient(hostClient)
       .act(automation.id, on ? "resume" : "pause")
       .then(
-        (confirmed) =>
+        (confirmed) => {
+          if (confirmed.kind !== "confirmed" || confirmed.value.type !== "trigger.status.set") {
+            setAsked((held) => (held === mine ? null : held));
+            return;
+          }
+          const paused = confirmed.value.trigger.status === "paused";
           setAsked((held) =>
             held === mine
               ? {
-                  paused: confirmed.item.status === "paused",
+                  paused,
                   revision: hostClient.getSnapshot().triggerRevision,
                 }
               : held,
-          ),
+          );
+        },
         (error: unknown) => {
           setAsked((held) => (held === mine ? null : held));
           Alert.alert(
             `${automation.name} was not changed`,
-            operationDetail(error, "The schedule could not be changed."),
+            presentActionFailure(error, "The schedule could not be changed."),
           );
         },
       );

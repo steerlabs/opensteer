@@ -337,13 +337,11 @@ function SheetForRequest(props: {
         />
       </ScrollView>
     );
-  const pendingMessage = owner === "message" || drafts.readPending(deploymentId, userId, threadId);
+  const pendingMessage = owner === "message";
   return (
     <RequestSheetContent
       canRespond={props.canRespond}
-      canStartResponse={() =>
-        !archived && drafts.readPending(deploymentId, userId, threadId) === null
-      }
+      canStartResponse={() => !archived && owner !== "message"}
       disabledReason={
         archived
           ? "This thread is archived."

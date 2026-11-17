@@ -38,7 +38,6 @@ async function fixture(count: number, fetchOverride?: (host: MockPersonalHost) =
       capabilities: ["quiet-tasks-v1"],
       fetch: fetchOverride?.(host) ?? host.fetch,
       webSocketFactory: host.connect,
-      refreshIntervalMs: 0,
     });
   cleanups.push(() => {
     client.dispose();

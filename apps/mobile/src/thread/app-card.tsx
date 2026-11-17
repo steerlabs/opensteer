@@ -11,7 +11,7 @@ import {
 } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { opensteerAppGlyph } from "../browser/agent-surface.js";
-import { useOperation } from "../tabs/use-tabs.js";
+import { useClientOperation } from "@opensteer/client/react";
 import { color, radius, space } from "../theme.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
@@ -35,7 +35,7 @@ function Card(props: { readonly client: HostClient; readonly entry: AppEntry }):
   const { appId } = entry;
   const tabs = useContext(TranscriptAppTabsContext);
   const [title, setTitle] = useState(entry.title);
-  const operation = useOperation();
+  const operation = useClientOperation(client, `app:${appId}`);
   const model = client.getSnapshot().tabs;
   // The app's one tab, while it is in the list: only the list's membership changes it.
   const readTab = useCallback((): TabId | null => {

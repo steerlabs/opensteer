@@ -161,7 +161,7 @@ async function binaryHostRequest(
 }
 
 function unwrapHostResult<Data>(result: DesktopHostResult<Data>): Data {
-  if (!result.ok) throw new HostTransportError(result.error.code);
+  if (!result.ok) throw new HostTransportError(result.error.code, result.error.failure);
   return result.data;
 }
 

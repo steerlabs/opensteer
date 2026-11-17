@@ -1,6 +1,7 @@
+import { connectionNotice, type ClientConnectionState } from "@opensteer/client/connections";
+import { presentSavedViewConnection } from "@opensteer/client/feedback";
 import type { SavedViewCache } from "./saved-view-cache.js";
 import {
-  describeHostConnection,
   projectSavedTasks,
   savedViewScopeKey,
   sameTaskListSource,
@@ -50,7 +51,7 @@ export class SavedViewPresentation {
   #userId: string | null = null;
   #savedUserId: string | null = null;
   #tasks: SavedTask[] | undefined;
-  #label = "Updating…";
+  #label = presentSavedViewConnection(null);
 
   constructor(options: { readonly cache: SavedViewCache; readonly now?: () => Date }) {
     this.#cache = options.cache;
@@ -187,13 +188,8 @@ export class SavedViewPresentation {
     this.#userId = null;
     this.#publish({ tasks: blocked, failure: this.#state.failure });
   }
-  connection(network: string, unavailable: boolean): void {
-    const label =
-      network === "offline"
-        ? "Offline · Saved view"
-        : unavailable
-          ? "Unavailable · Saved view"
-          : "Updating…";
+  connection(state: ClientConnectionState | null): void {
+    const label = presentSavedViewConnection(state ? connectionNotice(state) : null);
     if (label === this.#label) return;
     this.#label = label;
     this.#relabel();
@@ -272,8 +268,7 @@ export class SavedViewPresentation {
     const client = this.#client;
     if (!client || this.#blocked || this.#disposed || !this.#lease()) return;
     const snapshot = client.getSnapshot();
-    const connection = describeHostConnection(snapshot);
-    this.connection(snapshot.network, connection.label === "Unavailable");
+    this.connection(client.connection.getSnapshot());
     if (snapshot.session === "authentication-required") {
       this.#invalidate();
       this.#detach?.();

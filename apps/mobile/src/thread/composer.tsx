@@ -1,3 +1,7 @@
+import { useMobileNotifications } from "../ui/notifications-context.js";
+import { presentActionFailure } from "@opensteer/client/feedback";
+import { hostMessageOutbox } from "@opensteer/client/host";
+import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import type { ComposerEditorHandle } from "@opensteer/client/references";
 import { ComposerEditor } from "../ui/composer-editor.js";
@@ -19,10 +23,8 @@ import { useId } from "react";
 import { useDictation } from "../dictation/context.js";
 import { DictationBar, DictationMic, DictationStatus } from "../dictation/controls.js";
 import { dictationLabels, dictationView } from "@opensteer/client/dictation";
-import { useMobileNotifications } from "../ui/notifications-context.js";
 import {
   deriveSurface,
-  isHostRefusal,
   mutationIdempotencyKey,
   type HostClient,
   type UsageLimitNotice,
@@ -42,13 +44,11 @@ import * as Haptics from "expo-haptics";
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
-  type RefObject,
 } from "react";
 import {
   AccessibilityInfo,
@@ -60,9 +60,8 @@ import {
 } from "react-native";
 import Animated from "react-native-reanimated";
 import { pageIdentity } from "../browser/surface-route.js";
-import { operationDetail } from "../client/mobile-client.js";
 import type {
-  PendingCommand,
+  TaskStartRecord,
   ThreadDraftQuote,
   ThreadDraftStore,
 } from "../client/thread-drafts.js";
@@ -85,16 +84,10 @@ import { NativeMenu, type NativeMenuOption } from "./composer-menu.js";
 import { composerView } from "./composer-model.js";
 import { ComposerPills } from "./composer-pills.js";
 import { AttachmentStrip } from "./attachment-views.js";
-import {
-  attachmentKey,
-  draftAttachmentPart,
-  forgetDraftFiles,
-  useDraftAttachments,
-} from "./draft-attachments.js";
+import { attachmentKey, draftAttachmentPart, useDraftAttachments } from "./draft-attachments.js";
 import { AnswerBar } from "./answer-bar.js";
 import { QuestionRequestCard } from "./question-card.js";
 import { RequestCard } from "./request-card.js";
-import { beginPendingDelivery, sendPendingMessage } from "./send-pending-message.js";
 import type { ThreadMutationClaim, ThreadMutationGate } from "./thread-mutation-gate.js";
 import { UsageNotice } from "./usage-notice.js";
 
@@ -176,15 +169,14 @@ export function Composer(props: {
    * The pane draws the message this Thread owes in its transcript, with its
    * own way to send it again, so the bar does not repeat it.
    */
-  readonly owedInline?: boolean;
   /** Where the bar puts its way to send the owed message again, for the transcript to offer. */
-  readonly retryRef?: RefObject<(() => void) | null>;
 }): ReactNode {
   const aiSharing = useAiSharing();
   const surface = useMemo(
     () => deriveSurface(props.requests, props.user, props.highlightRequestId),
     [props.highlightRequestId, props.requests, props.user],
   );
+  const outbox = hostMessageOutbox(props.hostClient);
   const notifications = useMobileNotifications();
   const { deploymentId, drafts, hostClient, threadId } = props;
   const userId = props.user.id;
@@ -217,7 +209,6 @@ export function Composer(props: {
     }, [dictation, inView, owner]),
   );
   const quote = draft?.quote ?? null;
-  const pending = drafts.readPending(deploymentId, userId, threadId);
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -248,9 +239,8 @@ export function Composer(props: {
   const draftWrite = useRef(0);
   /** The key already tried while this connection has been up, so a refusal is
    * not retried on a loop. A reconnection is what makes it worth trying again. */
-  const attempted = useRef<string | null>(null);
   /** A message the Host refused, on its way back into the draft. */
-  const [refused, setRefused] = useState<PendingCommand | null>(null);
+  const [refused, setRefused] = useState<TaskStartRecord | null>(null);
   /**
    * False once this bar is gone. A refusal that arrives after that leaves the
    * command on the phone, to be answered again and handed back to the draft
@@ -291,7 +281,7 @@ export function Composer(props: {
       : null,
   );
   const readOnly = done === "closed" || (props.readOnly ?? false);
-  const disabled = props.disabledReason !== null || !props.canRespond || readOnly;
+  const disabled = props.disabledReason !== null || outbox === null || readOnly;
   const textHidden = surface !== null && surface.textRole === "hidden";
   // A question the viewer can answer turns this bar into its answer field,
   // unless a message is already being written here: that draft keeps the bar
@@ -308,10 +298,10 @@ export function Composer(props: {
   const view = composerView({
     attachments: staged.items.length,
     attachmentsReady,
-    canRespond: props.canRespond,
+    canRespond: outbox !== null,
     disabledReason: props.disabledReason,
     focused,
-    pendingCommand: pending !== null,
+    pendingCommand: false,
     presenting,
     readOnly,
     running: props.running,
@@ -320,9 +310,8 @@ export function Composer(props: {
     textHidden,
     voice: voiceReady,
   });
-  const canSend =
-    view.canSend || (dictating && !disabled && !sending && pending === null && attachmentsReady);
-  const requestBlocked = disabled || sending || pending !== null;
+  const canSend = view.canSend || (dictating && !disabled && !sending && attachmentsReady);
+  const requestBlocked = disabled || !props.canRespond || sending;
   // A typed `@` offers references to put in the words, until the caret leaves it.
   const referenceQuery =
     focused && !dictating && !disabled && !textHidden && !answering
@@ -522,109 +511,13 @@ export function Composer(props: {
    * this returns null.
    */
   const claimMessage = useCallback(
-    (): ThreadMutationClaim | null =>
-      props.mutationGate.resume("message") ?? props.mutationGate.acquire("message"),
+    (): ThreadMutationClaim | null => props.mutationGate.acquire("message"),
     [props.mutationGate],
   );
 
-  const deliver = useCallback(
-    async (command: PendingCommand): Promise<void> => {
-      const endDelivery = beginPendingDelivery(drafts, deploymentId, userId, command);
-      if (endDelivery === null) return;
-      let failed = false;
-      try {
-        if (
-          !(await sendPendingMessage(
-            hostClient,
-            command,
-            () => authorizeAiSharing(aiSharing, hostClient),
-            notifications.registration,
-          ))
-        ) {
-          // Not shared, so not sent: still owed, and offered again.
-          failed = true;
-          return;
-        }
-        // Acknowledged, and only now: until this line the command is still the
-        // one this phone owes the Host.
-        const cleared = await drafts.clearPending(
-          deploymentId,
-          userId,
-          threadId,
-          command.idempotencyKey,
-        );
-        // The Host holds the message and its files, so this phone's copies of
-        // them have done their job.
-        if (cleared) {
-          forgetDraftFiles({ deploymentId, threadId, userId }, command.localUris ?? []);
-        }
-      } catch (error) {
-        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        failed = true;
-        if (isHostRefusal(error) && mounted.current) {
-          // The Host answered no, so the message is no longer owed: its words
-          // and files go back to the draft to be changed, and the next send is
-          // a new message under a new key. The copies stay with the draft.
-          try {
-            if (await drafts.clearPending(deploymentId, userId, threadId, command.idempotencyKey)) {
-              setRefused(command);
-            }
-          } catch {
-            // Still held on this phone; Try again repeats the same refusal.
-          }
-        }
-        setFailure(operationDetail(error, "That message did not reach your deployment."));
-      } finally {
-        // Still owed after a failure, it says so where it is drawn until the next try.
-        endDelivery(
-          failed &&
-            drafts.readPending(deploymentId, userId, threadId)?.idempotencyKey ===
-              command.idempotencyKey
-            ? "failed"
-            : undefined,
-        );
-      }
-    },
-    [aiSharing, deploymentId, drafts, hostClient, notifications, threadId, userId],
-  );
-
-  const deliverExclusively = useCallback(
-    async (command: PendingCommand): Promise<void> => {
-      if (inFlight.current) return;
-      const claim = claimMessage();
-      if (claim === null) return;
-      inFlight.current = true;
-      setSending(true);
-      setFailure(null);
-      try {
-        await deliver(command);
-      } finally {
-        inFlight.current = false;
-        setSending(false);
-        if (drafts.readPending(deploymentId, userId, threadId) === null) {
-          props.mutationGate.release(claim);
-        }
-      }
-    },
-    [claimMessage, deliver, deploymentId, drafts, props.mutationGate, threadId, userId],
-  );
-
-  useEffect(() => {
-    // A command the device came back holding, or one left over from a lost
-    // answer, is retried when there is a Host to retry it to — with the key and
-    // the words it was claimed under, never re-keyed.
-    if (!props.canRespond || readOnly) {
-      attempted.current = null;
-      return;
-    }
-    if (pending === null || attempted.current === pending.idempotencyKey) return;
-    attempted.current = pending.idempotencyKey;
-    void deliverExclusively(pending);
-  }, [deliverExclusively, pending, props.canRespond, readOnly]);
-
   const returnHint = useHostSelector(
     hostClient,
-    (snapshot) => snapshot.threads.find((t) => t.id === threadId)?.returnHint,
+    (snapshot) => snapshot.threads.find((thread) => thread.id === threadId)?.returnHint,
   );
   const compactionOffer = useCompactionOffer(
     returnHint,
@@ -635,12 +528,7 @@ export function Composer(props: {
     sourceText: string,
     choice?: import("@opensteer/core").CompactionSendChoice,
   ): Promise<void> => {
-    if (
-      !canSend ||
-      inFlight.current ||
-      drafts.readPending(deploymentId, userId, threadId) !== null ||
-      (sourceText.trim() === "" && staged.items.length === 0)
-    )
+    if (!canSend || inFlight.current || (sourceText.trim() === "" && staged.items.length === 0))
       return;
     // Every file is on the Host, or Send is not offered: words never go on
     // without the files meant to travel with them.
@@ -651,12 +539,7 @@ export function Composer(props: {
     });
     if (attachments.length !== carried.length) return;
     if (!(await authorizeAiSharing(aiSharing, hostClient))) return;
-    if (
-      !mounted.current ||
-      inFlight.current ||
-      drafts.readPending(deploymentId, userId, threadId) !== null
-    )
-      return;
+    if (!mounted.current || inFlight.current || outbox === null) return;
     const claim = claimMessage();
     if (claim === null) return;
     inFlight.current = true;
@@ -669,17 +552,27 @@ export function Composer(props: {
       // per file and null for a file only the Host holds, so a relaunch can
       // still hand a refused message's files back, or delete the copies once
       // the Host has them.
-      await drafts.claimPending(deploymentId, userId, threadId, {
-        ...(choice || compactionOffer.visible ? { compaction: choice ?? "compactFirst" } : {}),
-        ...(attachments.length > 0
-          ? { attachments, localUris: carried.map((item) => item.localUri) }
-          : {}),
-        ...(includedPage === null ? {} : { browserPage: includedPage }),
-        idempotencyKey: mutationIdempotencyKey("message"),
-        ...(quote === null ? {} : { quotedMessageId: quote.messageId }),
-        text: sourceText.trim(),
-        threadId,
-      });
+      if (!outbox) return;
+      await outbox.enqueue(
+        {
+          type: "thread.sendMessage",
+          threadId,
+          content: [
+            ...(sourceText.trim() ? [{ type: "text" as const, text: sourceText.trim() }] : []),
+            ...(includedPage ? [includedPage] : []),
+            ...attachments,
+          ],
+          delivery: "queue",
+          idempotencyKey: mutationIdempotencyKey("message"),
+          ...(choice || compactionOffer.visible ? { compaction: choice ?? "compactFirst" } : {}),
+          ...(quote ? { quotedMessageId: quote.messageId } : {}),
+        },
+        { localAttachmentUris: carried.map((item) => item.localUri) },
+      );
+      void notifications.registration.afterSuccessfulSend();
+      const draftNow = drafts.readDraft(deploymentId, userId, threadId);
+      if (draftNow?.text === sourceText)
+        await drafts.writeDraft(deploymentId, userId, threadId, "");
       // Felt as it is written down, which is when the transcript draws it.
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       if (choice === "keepFullHistory") compactionOffer.dismiss();
@@ -690,24 +583,14 @@ export function Composer(props: {
       if (left === "" || left === sourceText) replaceText("");
       changeQuote(null);
       setDeclinedPage(null);
-      const claimed = drafts.readPending(deploymentId, userId, threadId);
-      if (claimed === null) return;
-      // The message holds the files now; files picked meanwhile stay on the strip.
       staged.release(carried.map(attachmentKey));
-      attempted.current = claimed.idempotencyKey;
-      await deliver(claimed);
     } catch (error) {
-      setFailure(
-        drafts.readPending(deploymentId, userId, threadId) === null
-          ? "Couldn't save your message on this phone, so it wasn't sent. Try again."
-          : operationDetail(error, "That message did not reach your deployment."),
-      );
+      const issue = clientIssue(error, { operation: "action", label: "save this message" });
+      setFailure(issue ? presentClientIssue(issue).title : null);
     } finally {
       inFlight.current = false;
       setSending(false);
-      if (drafts.readPending(deploymentId, userId, threadId) === null) {
-        props.mutationGate.release(claim);
-      }
+      props.mutationGate.release(claim);
     }
   };
 
@@ -736,20 +619,6 @@ export function Composer(props: {
     }
   };
 
-  const retry = (): void => {
-    if (!props.canRespond || readOnly || pending === null) return;
-    attempted.current = pending.idempotencyKey;
-    void deliverExclusively(pending);
-  };
-  const { retryRef } = props;
-  useLayoutEffect(() => {
-    if (retryRef === undefined) return;
-    retryRef.current = retry;
-    return () => {
-      retryRef.current = null;
-    };
-  });
-
   const stop = async (): Promise<void> => {
     if (stoppingRef.current || props.runStopping || !props.canRespond) return;
     stoppingRef.current = true;
@@ -758,7 +627,7 @@ export function Composer(props: {
     try {
       await props.hostClient.stopRun(props.threadId);
     } catch (error) {
-      setFailure(operationDetail(error, "Opensteer could not be asked to stop."));
+      setFailure(presentActionFailure(error, "Opensteer could not be asked to stop."));
     } finally {
       stoppingRef.current = false;
       setStopping(false);
@@ -766,17 +635,13 @@ export function Composer(props: {
   };
 
   const canStartRequestResponse = (): boolean =>
-    props.canRespond &&
-    !readOnly &&
-    props.disabledReason === null &&
-    !inFlight.current &&
-    drafts.readPending(deploymentId, userId, threadId) === null;
+    props.canRespond && !readOnly && props.disabledReason === null && !inFlight.current;
 
   const requestDisabledReason = readOnly
     ? "This thread is archived."
     : props.disabledReason !== null
       ? props.disabledReason
-      : sending || pending !== null
+      : sending
         ? "Finish sending your message before responding."
         : null;
 
@@ -835,7 +700,7 @@ export function Composer(props: {
               void hostClient
                 .setTaskDone(threadId, false)
                 .catch((error: unknown) =>
-                  Alert.alert("Task not reopened", operationDetail(error, "Try again.")),
+                  Alert.alert("Task not reopened", presentActionFailure(error, "Try again.")),
                 )
             }
           >
@@ -882,18 +747,6 @@ export function Composer(props: {
             key={surface.request.id}
             mutationGate={props.mutationGate}
             surface={surface}
-          />
-        </Animated.View>
-      )}
-      {pending === null || props.owedInline === true ? null : (
-        <Animated.View entering={enter} exiting={exit}>
-          <PendingMessage
-            attachments={pending.attachments ?? []}
-            canRetry={props.canRespond && !readOnly}
-            onRetry={retry}
-            pageTitle={pending.browserPage?.title ?? null}
-            sending={sending}
-            text={pending.text}
           />
         </Animated.View>
       )}
@@ -1180,60 +1033,6 @@ export function Composer(props: {
  * The message this phone still owes the Host: shown with its own words, so a
  * send that has not landed is visible rather than lost between the composer and
  * the transcript.
- */
-function PendingMessage(props: {
-  readonly attachments: readonly { readonly artifactId: string; readonly name: string }[];
-  readonly canRetry: boolean;
-  readonly onRetry: () => void;
-  /** The page the message includes, by the title it had when it was sent. */
-  readonly pageTitle: string | null;
-  readonly sending: boolean;
-  readonly text: string;
-}): ReactNode {
-  return (
-    <View style={styles.pending}>
-      {props.pageTitle === null ? null : (
-        <AppText numberOfLines={1} role="caption" tone="muted">
-          {props.pageTitle || "Page"}
-        </AppText>
-      )}
-      {props.text ? (
-        <AppText numberOfLines={3} role="secondary" tone="soft">
-          {props.text}
-        </AppText>
-      ) : null}
-      {props.attachments.map((part) => (
-        <AppText key={part.artifactId} numberOfLines={1} role="caption" tone="muted">
-          {part.name}
-        </AppText>
-      ))}
-      <View style={styles.pendingFoot}>
-        <AppText role="caption" tone="muted">
-          {props.sending ? "Sending…" : "Not sent yet."}
-        </AppText>
-        {props.sending ? null : (
-          <Pressable
-            accessibilityLabel="Send this message again"
-            accessibilityRole="button"
-            hitSlop={space[8]}
-            accessibilityState={{ disabled: !props.canRetry }}
-            disabled={!props.canRetry}
-            onPress={props.onRetry}
-            style={[styles.pendingRetry, !props.canRetry && styles.disabled]}
-          >
-            <AppText role="secondaryMedium" tone="ember">
-              Try again
-            </AppText>
-          </Pressable>
-        )}
-      </View>
-    </View>
-  );
-}
-
-/**
- * The page the next message includes, top-left in the box: its title, and ×
- * to leave it out of this message.
  */
 function IncludedPage(props: {
   readonly onRemove: () => void;

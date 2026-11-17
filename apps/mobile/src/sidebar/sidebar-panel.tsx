@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import Animated from "react-native-reanimated";
 import { move } from "../ui/motion.js";
 import { SavedTasks } from "./saved-tasks.js";
@@ -57,7 +58,6 @@ import {
   touchTarget,
   type,
 } from "../theme.js";
-import { operationDetail } from "../client/mobile-client.js";
 import { DeploymentMarkView } from "../threads/deployment-mark.js";
 import {
   deploymentIdentity,
@@ -380,7 +380,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     void hostClient
       .loadEarlierTasks()
       .catch((error: unknown) =>
-        setEarlierFailure(operationDetail(error, "Earlier tasks could not be loaded.")),
+        setEarlierFailure(presentActionFailure(error, "Earlier tasks could not be loaded.")),
       )
       .finally(() => setLoadingEarlier(false));
   }, [hostClient, loadingEarlier]);

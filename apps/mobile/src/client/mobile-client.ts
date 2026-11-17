@@ -1,3 +1,14 @@
+import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
+import {
+  createMessageOutboxStorage,
+  disposeMessageOutbox,
+  initializeMessageOutbox,
+  type MessageOutboxStorage,
+} from "@opensteer/client/host";
+import {
+  createConnectionController,
+  type ConnectionController,
+} from "@opensteer/client/connections";
 import type { HostApiCommandInput, HostApiCommandOutput } from "@opensteer/protocol";
 import { delay } from "@opensteer/shared/delay";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -29,7 +40,6 @@ import {
   HostAttachmentFence,
   HostTransportError,
   ClientOperationError,
-  clientPublicDetail,
   CapabilityVerificationError,
   emptyDeploymentCatalog,
   resolveConnection,
@@ -105,6 +115,7 @@ import type {
  * not. `hostClient` is non-null exactly when `status` is `connected`.
  */
 export interface MobileSelection {
+  readonly session?: import("@opensteer/client/connections").ClientSession | null;
   readonly connection: DeploymentConnection | null;
   readonly deploymentId: DeploymentId | null;
   readonly hostClient: HostClient | null;
@@ -179,6 +190,11 @@ async function dispatchWithin(
 }
 
 export interface MobileClientOptions {
+  readonly afterMessageSent?: () => void;
+  readonly forgetMessageFiles?: (
+    scope: { readonly deploymentId: string; readonly userId: string; readonly threadId: string },
+    uris: readonly (string | null)[],
+  ) => void | Promise<void>;
   readonly notificationPreviews?: NotificationPreviews | null;
   readonly lifecycle?: ClientLifecycle;
   readonly savedViewStore?: SavedViewStore;
@@ -253,6 +269,7 @@ export class MobileClient {
   readonly usageNotices: UsageNoticeDismissals;
   /** Unsent message text, per Thread, kept where a killed app cannot lose it. */
   readonly drafts: ThreadDraftStore;
+  readonly #messageStorage: MessageOutboxStorage;
   readonly oauth: NativeOAuthManager;
   readonly sessionExchange: HostSessionExchange;
   readonly sessions: PersonalSessionStore;
@@ -317,6 +334,10 @@ export class MobileClient {
   /** `undefined` is the one-time, first-launch auto-selection opportunity. */
   #selectionPreference: DeploymentId | null | undefined;
   #hostClient: HostClient | null = null;
+  #connection: ConnectionController | null = null;
+  get lifecycle(): ClientLifecycle | undefined {
+    return this.#lifecycle;
+  }
   #hostOrigin: string | null = null;
   #hostClientDetach: (() => void) | null = null;
   #storageFailure: string | null = null;
@@ -332,7 +353,11 @@ export class MobileClient {
     savedViewFailure: null,
   };
 
+  readonly #afterMessageSent: MobileClientOptions["afterMessageSent"];
+  readonly #forgetMessageFiles: MobileClientOptions["forgetMessageFiles"];
   constructor(options: MobileClientOptions) {
+    this.#afterMessageSent = options.afterMessageSent;
+    this.#forgetMessageFiles = options.forgetMessageFiles;
     this.portalOrigin = options.portalOrigin ?? null;
     this.#notificationPreviews = options.notificationPreviews ?? null;
     this.#savedViewCache = new SavedViewCache({
@@ -350,8 +375,8 @@ export class MobileClient {
         options.lifecycle.onBackground(() => {
           void this.savedViews.flush();
         }),
-        options.lifecycle.onNetworkChange((network) =>
-          this.savedViews.connection(network, this.#attachmentState === "offline"),
+        options.lifecycle.onNetworkChange(() =>
+          this.savedViews.connection(this.#connection?.getSnapshot() ?? null),
         ),
       );
     this.#detach.push(
@@ -399,6 +424,23 @@ export class MobileClient {
               JSON.stringify(entries),
             );
         },
+      },
+    });
+    const outboxDirectory = `${options.draftsFilePath.slice(0, options.draftsFilePath.lastIndexOf("/"))}/message-outbox`;
+    this.#messageStorage = createMessageOutboxStorage({
+      read: async (key) => {
+        const bytes = await options.privateFiles.readFile(
+          `${outboxDirectory}/${key}.json`,
+          10 * 1024 * 1024,
+        );
+        return bytes === null ? null : new TextDecoder().decode(bytes);
+      },
+      write: async (key, value) => {
+        await options.privateFiles.ensureDirectory(outboxDirectory);
+        await options.privateFiles.writeFileAtomic(`${outboxDirectory}/${key}.json`, value);
+      },
+      remove: async (key) => {
+        await options.privateFiles.removeFile(`${outboxDirectory}/${key}.json`);
       },
     });
     this.drafts = createThreadDraftStore({
@@ -898,10 +940,7 @@ export class MobileClient {
     void this.#notificationPreviews?.reconcile().catch(noop);
     await this.#savedViewCache.retryInvalidation();
     await this.directoryRefresh.request("app-focus");
-    const id = this.#state.selection.deploymentId;
-    if (id !== null && this.#hostClient === null && this.#attachmentState === "offline") {
-      await this.retrySelection();
-    }
+    this.#connection?.wake();
   }
 
   /**
@@ -1272,7 +1311,15 @@ export class MobileClient {
                       )
                         resolve();
                     };
-                    detach = client === null ? this.subscribe(ready) : client.subscribe(ready);
+                    if (client === null) detach = this.subscribe(ready);
+                    else {
+                      const releaseHost = client.subscribe(ready),
+                        releaseConnection = client.connection.subscribe(ready);
+                      detach = () => {
+                        releaseHost();
+                        releaseConnection();
+                      };
+                    }
                     ready();
                   }),
                   wait,
@@ -1549,8 +1596,70 @@ export class MobileClient {
     return this.#attachmentAttempt;
   }
 
-  /** Resolves and attaches one locally committed choice outside the mutation queue. */
   async #attachSelection(
+    id: DeploymentId,
+    selectionAttempt: number,
+    options: AttachmentOptions = {},
+  ): Promise<AttachmentOutcome> {
+    if (!this.#isCurrentSelection(id, selectionAttempt)) return { kind: "superseded" };
+    if (this.#connection) {
+      this.#connection.retry();
+      return this.#hostClient ? { kind: "attached" } : { kind: "unroutable" };
+    }
+    let first!: (outcome: AttachmentOutcome) => void;
+    const initial = new Promise<AttachmentOutcome>((resolve) => {
+      first = resolve;
+    });
+    const selected = this.#state.catalog.deployments.find(
+      (row) => row.authority.document.deploymentId === id,
+    );
+    const connection = createConnectionController({
+      ...(this.#lifecycle ? { lifecycle: this.#lifecycle } : {}),
+      presentation: {
+        name: this.#state.rows.find((row) => row.deploymentId === id)?.name ?? null,
+        target: "computer",
+        route: selected?.source.kind === "manual" ? "private-network" : "connect",
+      },
+      driver: {
+        connect: async (attempt) => {
+          let outcome: AttachmentOutcome;
+          if (!this.#hostClient || this.#attachmentGeneration !== this.#fence.generation) {
+            this.#disposeHostClient();
+            try {
+              outcome = await this.#attachSelectionOnce(id, selectionAttempt, options);
+            } catch (error) {
+              first({ kind: "session-failed", error });
+              throw error;
+            }
+          } else outcome = { kind: "attached" };
+          first(outcome);
+          attempt.signal.throwIfAborted();
+          if (outcome.kind === "verification-failed")
+            throw new CapabilityVerificationError(outcome.verification);
+          if (outcome.kind === "session-failed") throw outcome.error;
+          if (outcome.kind === "needs-credential")
+            throw new HostClientRequestError({
+              code: "unauthorized",
+              message: "Sign in to continue.",
+              retryable: false,
+              status: 401,
+            });
+          if (outcome.kind !== "attached" || !this.#hostClient)
+            throw new HostTransportError("unreachable");
+          return this.#hostClient.openConnection(attempt);
+        },
+      },
+    });
+    this.#connection = connection;
+    connection.subscribe(() => {
+      void this.#republish();
+    });
+    connection.start();
+    return initial;
+  }
+
+  /** Resolves and attaches one locally committed choice outside the mutation queue. */
+  async #attachSelectionOnce(
     id: DeploymentId,
     attempt: number,
     options: AttachmentOptions = {},
@@ -1682,6 +1791,23 @@ export class MobileClient {
       const viewLoginId = await this.#viewLoginId(attachment.connection);
       if (!this.#isCurrentSelection(id, attempt) || generation !== this.#fence.generation) continue;
       const hostClient = this.#host.attach({
+        ...(this.#connection ? { connectionController: this.#connection } : {}),
+        clientScope: () => {
+          const viewer = this.#hostClient?.getSnapshot().user?.id;
+          if (!viewer || !viewLoginId) return null;
+          return {
+            authorityKey: JSON.stringify([
+              attachment.connection.authority.document.hostInstanceId,
+              hostKeyFingerprint(attachment.connection.authority.publicKey.spki),
+            ]),
+            deploymentId: id,
+            viewerId: viewer,
+            loginId: viewLoginId,
+            ...(this.oauth.accountViewLoginId()
+              ? { accountLoginId: this.oauth.accountViewLoginId()! }
+              : {}),
+          };
+        },
         assetRoute: {
           current: () => this.#fence.current(),
           onAttachmentInvalidated: (listener) => this.#fence.onInvalidated(listener),
@@ -1721,6 +1847,22 @@ export class MobileClient {
       this.#attachedViewLoginId = viewLoginId;
       this.#changingLogins.delete(id);
       this.#hostClient = hostClient;
+      initializeMessageOutbox(hostClient, {
+        storage: this.#messageStorage,
+        legacy: this.drafts.legacyMessages,
+        onConfirmed: () => this.#afterMessageSent?.(),
+        onDiscarded: (scope, entry) =>
+          this.#forgetMessageFiles?.(
+            {
+              deploymentId: scope.deploymentId,
+              threadId: entry.command.threadId,
+              userId: scope.viewerId,
+            },
+            entry.localAttachmentUris ?? [],
+          ),
+        drafts: { restore: (scope, entry) => this.drafts.restoreMessage(scope, entry) },
+        ...(this.#connection ? { session: { connection: this.#connection } } : {}),
+      });
       this.#hostOrigin = attachment.resolved.origin;
       this.#readAttachment(hostClient);
       let previewAuthenticated = false;
@@ -1763,9 +1905,6 @@ export class MobileClient {
       };
       this.savedViews.attach(hostClient);
       await this.#republish();
-      if (this.#isCurrentSelection(id, attempt) && this.#hostClient === hostClient) {
-        void hostClient.load().catch(noop);
-      }
       return { kind: "attached" };
     }
     return { kind: "superseded" };
@@ -2018,6 +2157,7 @@ export class MobileClient {
     this.savedViews.detach();
     this.#hostClientDetach?.();
     this.#hostClientDetach = null;
+    if (this.#hostClient) disposeMessageOutbox(this.#hostClient);
     this.#hostClient?.dispose();
     this.#hostClient = null;
     this.#hostOrigin = null;
@@ -2029,6 +2169,8 @@ export class MobileClient {
 
   #releaseAttachment(): void {
     this.#attachmentAttempt += 1;
+    this.#connection?.dispose();
+    this.#connection = null;
     this.#disposeHostClient();
     this.#attachedDeploymentId = null;
   }
@@ -2588,11 +2730,7 @@ export class MobileClient {
         : (catalog.deployments.find(
             ({ authority }) => authority.document.deploymentId === attachedId,
           ) ?? null);
-    const network =
-      this.#lifecycle?.getSnapshot().network ??
-      this.#hostClient?.getSnapshot().network ??
-      "unknown";
-    this.savedViews.connection(network, this.#attachmentState === "offline");
+    this.savedViews.connection(this.#connection?.getSnapshot() ?? null);
     this.#state = {
       pendingComputer: this.#pendingComputer,
       account,
@@ -2606,6 +2744,7 @@ export class MobileClient {
           signedIn: this.#credentialed.has(connection.authority.document.deploymentId),
         })),
       selection: {
+        session: this.#connection ? { connection: this.#connection } : null,
         connection,
         deploymentId: attachedId,
         hostClient:
@@ -2663,10 +2802,10 @@ export class MobileClient {
       }
       if (!this.#disposed && generation === this.#directoryGeneration) {
         this.#directoryState = {
-          detail: clientPublicDetail(
-            error,
-            "This phone could not refresh your Opensteer Account deployments.",
-          ),
+          detail: (() => {
+            const issue = clientIssue(error, { operation: "read", label: "your computers" });
+            return issue ? presentClientIssue(issue).title : null;
+          })(),
           status: "error",
           unavailable: [],
         };
@@ -2747,9 +2886,6 @@ function signedOutAccountState(): DesktopAccountAuthState {
 }
 
 /** The message a screen shows for a failed operation, with nothing leaked. */
-export function operationDetail(error: unknown, fallback: string): string {
-  return clientPublicDetail(error, fallback);
-}
 
 /**
  * A team is its own Host beside the person's Opensteer: it is listed in the

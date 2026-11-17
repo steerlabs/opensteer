@@ -1,9 +1,9 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import type { HostClient } from "@opensteer/client/host";
 import type { DeploymentId } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
 import { useCallback, useState, useSyncExternalStore, type ReactNode } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { deploymentStatusDetail, deploymentStatusLabel } from "../client/deployment-rows.js";
 import { resetToDeployments } from "../navigation-ref.js";
 import { color, space } from "../theme.js";
@@ -95,7 +95,7 @@ export function DeploymentGate(props: {
               .clearRemoved()
               .then(() => client.signIn(deploymentId))
               .catch((error: unknown) =>
-                setFailure(operationDetail(error, "Opensteer could not be opened.")),
+                setFailure(presentActionFailure(error, "Opensteer could not be opened.")),
               );
           }}
         />
@@ -156,7 +156,7 @@ export function DeploymentGate(props: {
           : runDeploymentRecovery(client, navigation, row);
     void operation
       .catch((error: unknown) => {
-        setFailure(operationDetail(error, "That deployment still could not be opened."));
+        setFailure(presentActionFailure(error, "That deployment still could not be opened."));
       })
       .finally(() => setWorking(false));
   };

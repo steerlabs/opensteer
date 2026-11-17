@@ -40,14 +40,22 @@ class ReadScheduler {
       this.#active++;
       try {
         signal.throwIfAborted();
-        return read().finally(() => { this.#active--; this.#drain(); });
+        return read().finally(() => {
+          this.#active--;
+          this.#drain();
+        });
       } catch (error) {
-        this.#active--; this.#drain();
+        this.#active--;
+        this.#drain();
         return Promise.reject<T>(error);
       }
     };
     if (this.#active < 4) return start();
-    return new Promise<T>((resolve, reject) => this.#queue.push(() => { void start().then(resolve, reject); }));
+    return new Promise<T>((resolve, reject) =>
+      this.#queue.push(() => {
+        void start().then(resolve, reject);
+      }),
+    );
   }
   #drain(): void {
     while (this.#active < 4 && this.#queue.length) {
@@ -138,7 +146,7 @@ class RetainedClientRead<T> implements ClientRead<T> {
   };
   refresh = (): Promise<void> => {
     this.#explicit = true;
-    this.#attempt = 0;
+    this.#attempt = 2;
     if (this.#listeners.size === 0) {
       const release = this.subscribe(() => {});
       return this.#settled().finally(release);
@@ -213,7 +221,7 @@ class RetainedClientRead<T> implements ClientRead<T> {
     if (newScope) {
       this.#cancel();
       this.#accepted = false;
-    this.#value = undefined;
+      this.#value = undefined;
       this.#attempt = 0;
       this.#publish(waiting);
     } else if (newEpoch || !this.#usable()) {
@@ -270,7 +278,10 @@ class RetainedClientRead<T> implements ClientRead<T> {
           const denied =
             failure.provenance === "host" &&
             ["forbidden", "not_found", "unauthorized"].includes(failure.code);
-          if (denied) { this.#accepted = false; this.#value = undefined; }
+          if (denied) {
+            this.#accepted = false;
+            this.#value = undefined;
+          }
           if (
             !denied &&
             failure.retryable &&

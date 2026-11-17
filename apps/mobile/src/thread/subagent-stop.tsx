@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { MenuView } from "@expo/ui/community/menu";
 import { useActionReview } from "@opensteer/client/react";
 import { noteSubagentStop, type AgentCard, type HostClient } from "@opensteer/client/host";
@@ -6,7 +7,6 @@ import type { ReactNode } from "react";
 import { ActionReviewSheet } from "../ui/action-review.js";
 import { Symbol } from "../ui/symbol.js";
 import { color, material, radius, touchTarget } from "../theme.js";
-import { operationDetail } from "../client/mobile-client.js";
 import { AnswerPill } from "./answer-pill.js";
 
 /**
@@ -94,7 +94,7 @@ export function SubagentStop(props: {
           if (card.nodeId !== null) noteSubagentStop(card.nodeId);
         }}
         onError={(error) =>
-          Alert.alert(`${card.title} was not stopped`, operationDetail(error, "Try again."))
+          Alert.alert(`${card.title} was not stopped`, presentActionFailure(error, "Try again."))
         }
       />
     </>

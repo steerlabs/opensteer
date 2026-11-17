@@ -1,3 +1,4 @@
+import { useConnectionNotice } from "@opensteer/client/react";
 import { useVerticalBar } from "../ui/vertical-bar.js";
 import { contactSupport } from "../report-mail.js";
 import {
@@ -96,7 +97,7 @@ import { usePhoneBrowserManager } from "../phone-browser/runtime.js";
 import { usePhoneTabPresentation } from "../phone-browser/presentation.js";
 import { ComputerOwnerView } from "../computers/phone-display.js";
 import { tabTitle } from "../tabs/tab-entries.js";
-import { useOperation } from "../tabs/use-tabs.js";
+import { useClientOperation } from "@opensteer/client/react";
 import { useTabViewer, type OpenIntent } from "../tabs/use-tab-viewer.js";
 import { computerSymbols } from "./settings-model.js";
 import { color, space, touchTarget } from "../theme.js";
@@ -167,7 +168,11 @@ export function WorkspaceBrowserScreen({ route }: StaticScreenProps<TabRoute>): 
 }
 
 function Surfaces(props: { readonly hostClient: HostClient; readonly route: TabRoute }): ReactNode {
-  const { snapshot, loadError, reload } = useHostSnapshot(props.hostClient);
+  const { snapshot } = useHostSnapshot(props.hostClient);
+  const loadError = useConnectionNotice(props.hostClient.connection);
+  const reload = useCallback(async () => {
+    props.hostClient.connection.retry();
+  }, [props.hostClient]);
   const presence = useScreenPresence();
   const authorized = snapshot.session === "authenticated" && snapshot.user !== null;
   // Coming back into view, not out from under a sheet: the page never left the stream.
@@ -326,7 +331,7 @@ function ClosedTab(props: {
   readonly intent: OpenIntent;
   readonly tabId: TabId;
 }): ReactNode {
-  const reopening = useOperation();
+  const reopening = useClientOperation(props.hostClient, `reopen:${props.tabId}`);
   const { hostClient, intent, tabId } = props;
   const reopen = async () => {
     // Renewed before the answer: the reopened tab's first ask may land before it.
@@ -360,7 +365,7 @@ const retriable: ReadonlySet<TabUnavailableCode> = new Set(["paused", "protected
 function UnavailableTab(props: { readonly hostClient: HostClient; readonly tab: Tab }): ReactNode {
   const { hostClient, tab } = props;
   const closing = useTabClose(hostClient, tab.tabId);
-  const retrying = useOperation();
+  const retrying = useClientOperation(hostClient, `open:${tab.tabId}`);
   const retry = () =>
     void retrying.run(async () => {
       const viewer = await hostClient.activateTab(tab.tabId, { wake: true });
@@ -559,7 +564,7 @@ function Focused(
   );
 
   // A new tab of this page's profile, over this one, so Back returns here.
-  const opening = useOperation();
+  const opening = useClientOperation(hostClient, `new-tab:${tab.tabId}`);
   const onOpenTab = useCallback(
     (url: string) => {
       if (tab.kind !== "page") return;
@@ -1092,7 +1097,7 @@ function useTabClose(
   hostClient: HostClient,
   tabId: TabId,
 ): { readonly close: () => void; readonly closing: boolean; readonly failure: string | null } {
-  const operation = useOperation();
+  const operation = useClientOperation(hostClient, `close:${tabId}`);
   const { run } = operation;
   const [attempted, setAttempted] = useState<TabId | null>(null);
   const close = useCallback(() => {

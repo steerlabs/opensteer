@@ -72,6 +72,26 @@ describe("createMobileLifecycle", () => {
     lifecycle.dispose();
   });
 
+  it("keeps iOS inactive in the preceding state, including an initially inactive app", () => {
+    const appState = new FakeAppState();
+    appState.currentState = "inactive";
+    const lifecycle = createMobileLifecycle({ appState, network: new FakeNetwork() });
+    const seen: string[] = [];
+    lifecycle.onBackground(() => seen.push("background"));
+    lifecycle.onForeground(() => seen.push("foreground"));
+    expect(lifecycle.getSnapshot().visibility).toBe("foreground");
+    appState.change("active");
+    appState.change("inactive");
+    appState.change("active");
+    expect(seen).toEqual([]);
+    appState.change("background");
+    appState.change("inactive");
+    expect(lifecycle.getSnapshot().visibility).toBe("background");
+    appState.change("active");
+    expect(seen).toEqual(["background", "foreground"]);
+    lifecycle.dispose();
+  });
+
   it("re-reads the network on every return to the foreground", async () => {
     const appState = new FakeAppState();
     const network = new FakeNetwork();

@@ -36,12 +36,14 @@ describe("retained client reads", () => {
     vi.useFakeTimers();
     const session = controlledClientSession();
     session.change({ phase: "recovering" });
-    let attempts = 0;
+    let attempts = 0,
+      available = false;
     const read = createClientRead(session, {
       key: "items",
       label: "items",
       read: async () => {
         attempts++;
+        if (available) return "recovered";
         throw new HostTransportError("timed-out");
       },
     });
@@ -55,6 +57,9 @@ describe("retained client reads", () => {
     expect(read.getSnapshot()).toMatchObject({ status: "failed", issue: { code: "read-failed" } });
     await vi.advanceTimersByTimeAsync(30_000);
     expect(attempts).toBe(3);
+    available = true;
+    await read.refresh();
+    expect(read.getSnapshot()).toMatchObject({ status: "ready", data: "recovered", issue: null });
     read.dispose();
   });
   it("coalesces a burst during an active read into exactly one trailing read", async () => {
@@ -118,7 +123,7 @@ describe("retained client reads", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(read.getSnapshot().data).toBe("new viewer value");
     refusal = true;
-    read.refresh();
+    void read.refresh();
     await vi.advanceTimersByTimeAsync(0);
     expect(read.getSnapshot()).toMatchObject({
       status: "failed",

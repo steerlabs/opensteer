@@ -39,7 +39,7 @@ const harness = vi.hoisted(() => ({
   dispatch: vi.fn(),
   drafts: {
     readDraft: vi.fn((): { text: string } | null => null),
-    readPending: vi.fn(() => null),
+    readTaskStart: vi.fn(() => null),
   },
   panels: [] as {
     docked: boolean;

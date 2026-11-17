@@ -3,6 +3,7 @@ import { clientIssue } from "../feedback/client-issue.js";
 import {
   connectionInterruptionHoldMs,
   realtimeIdleProbeMs,
+  realtimeIdleProbeDeadlineMs,
   socketProbeDeadlineMs,
   socketTrustWindowMs,
   type ClientLifecycle,
@@ -62,10 +63,12 @@ export interface ConnectionAttempt {
   readonly signal: AbortSignal;
   readonly epoch: number;
   admit?(lease: ConnectionLease): void;
+  fail?(failure: ClientFailure): void;
   acceptScope(scope: ClientScope): void;
 }
 export interface ConnectionLease {
   readonly closed: Promise<ClientFailure>;
+  lastProgressAt?(): number;
   probe(signal: AbortSignal): Promise<void>;
   close(): void;
 }
@@ -151,9 +154,15 @@ class SessionConnectionController implements ConnectionController {
             this.#waiting();
             return;
           }
-          if (path === "same" && previous === network) {
+          if (path === "same" && previous !== "offline") {
             if (this.#lease) this.#checkLease(true);
-          } else this.#restart(false);
+          } else if (!(
+            this.#controller &&
+            !this.#lease &&
+            previous === network &&
+            this.#unreadable > 0
+          ))
+            this.#restart(false);
         }),
       );
   }
@@ -173,6 +182,14 @@ class SessionConnectionController implements ConnectionController {
     this.#restart(false);
   };
   wake = (): void => {
+    if (this.#desired && this.#lease && !this.#suspended()) {
+      this.#checkLease(false, true);
+      this.#idle ??= setInterval(
+        () => this.#checkLease(),
+        this.#options.liveness?.idleMs ?? realtimeIdleProbeMs,
+      );
+      unrefTimer(this.#idle);
+    }
     if (this.#desired && !this.#controller && this.#state.phase !== "blocked") this.#restart(false);
   };
   retry = (): void => {
@@ -188,7 +205,8 @@ class SessionConnectionController implements ConnectionController {
     this.#publish({ phase: "idle", trying: false, showInterruption: false, issue: null });
   };
   invalidateScope = (): void => {
-    this.#cancel();
+    this.#cancel(true);
+    this.#clearHold();
     this.#publish({
       scope: null,
       phase: "blocked",
@@ -224,7 +242,7 @@ class SessionConnectionController implements ConnectionController {
       (this.#state.visibility === "background" && !this.#keepsAlive())
     );
   }
-  #cancel(): void {
+  #cancel(clearScope = false): void {
     if (this.#retry) clearTimeout(this.#retry);
     if (this.#idle) clearInterval(this.#idle);
     this.#retry = null;
@@ -235,7 +253,19 @@ class SessionConnectionController implements ConnectionController {
     this.#lease = null;
     this.#probe = null;
     this.#probeFollowsNetwork = false;
-    this.#publish({ epoch: this.#state.epoch + 1, trying: false });
+    this.#publish({
+      epoch: this.#state.epoch + 1,
+      ...(clearScope ? { scope: null } : {}),
+      trying: false,
+      phase:
+        this.#state.phase === "blocked"
+          ? "blocked"
+          : this.#desired
+            ? this.#state.readyRevision
+              ? "recovering"
+              : "connecting"
+            : "idle",
+    });
     controller?.abort(new HostTransportError("cancelled"));
     lease?.close();
   }
@@ -272,7 +302,7 @@ class SessionConnectionController implements ConnectionController {
       }
       if (this.#lease === lease) return;
       this.#lease = lease;
-      this.#attempt = 0;
+      if (this.#unreadable) this.#attempt = 0;
       this.#unreadable = 0;
       this.#retryNotBefore = 0;
       this.#explicit = false;
@@ -285,7 +315,10 @@ class SessionConnectionController implements ConnectionController {
         readyRevision: this.#state.readyRevision + 1,
         lastConnectedAt: Date.now(),
       });
-      this.#idle = setInterval(() => this.#checkLease(), (this.#options.liveness?.idleMs ?? realtimeIdleProbeMs));
+      this.#idle = setInterval(
+        () => this.#checkLease(),
+        this.#options.liveness?.idleMs ?? realtimeIdleProbeMs,
+      );
       unrefTimer(this.#idle);
       void lease.closed.then(
         (failure) => {
@@ -302,21 +335,29 @@ class SessionConnectionController implements ConnectionController {
         signal: controller.signal,
         epoch: this.#state.epoch,
         admit,
+        fail: (failure) => {
+          if (current()) this.#failed(failure);
+        },
         acceptScope: (scope) => {
           if (current() && clientScopeKey(scope) !== clientScopeKey(this.#state.scope))
             this.#publish({ scope });
         },
       });
-    } catch (error) { this.#failed(classifyClientFailure(error)); return; }
+    } catch (error) {
+      this.#failed(classifyClientFailure(error));
+      return;
+    }
     void operation.then(admit, (error) => {
-        if (current()) this.#failed(classifyClientFailure(error));
-      });
+      if (current()) this.#failed(classifyClientFailure(error));
+    });
   }
   #waiting(): void {
     if (!this.#desired) return;
     this.#publish({
       phase: this.#state.readyRevision === 0 ? "connecting" : "recovering",
-      issue: this.#connectionIssue(),
+      issue: this.#connectionIssue(
+        this.#state.issue?.code === "connection" && this.#state.issue.reason === "unreachable",
+      ),
       trying: false,
     });
     if (this.#state.visibility === "foreground" && !this.#hold && !this.#state.showInterruption) {
@@ -347,7 +388,13 @@ class SessionConnectionController implements ConnectionController {
   }
   #failed(failure: ClientFailure): void {
     const explicit = this.#explicit;
-    this.#cancel();
+    if (
+      this.#state.phase === "ready" &&
+      this.#state.lastConnectedAt !== null &&
+      Date.now() - this.#state.lastConnectedAt >= 10_000
+    )
+      this.#attempt = 0;
+    this.#cancel(failure.code === "unauthorized");
     if (!this.#desired) return;
     if (!failure.retryable && failure.kind !== "cancelled") {
       this.#clearHold();
@@ -406,22 +453,33 @@ class SessionConnectionController implements ConnectionController {
       duration < (this.#options.lifecycle?.socketTrustWindowMs ?? socketTrustWindowMs) &&
       this.#state.network !== "offline"
     ) {
-      this.#checkLease();
-      this.#idle ??= setInterval(() => this.#checkLease(), (this.#options.liveness?.idleMs ?? realtimeIdleProbeMs));
+      this.#checkLease(false, true);
+      this.#idle ??= setInterval(
+        () => this.#checkLease(),
+        this.#options.liveness?.idleMs ?? realtimeIdleProbeMs,
+      );
       unrefTimer(this.#idle);
     } else this.#restart(false);
   }
-  #checkLease(followsNetwork = false): void {
+  #checkLease(followsNetwork = false, force = false): void {
     this.#probeFollowsNetwork ||= followsNetwork;
     const lease = this.#lease,
       controller = this.#controller;
     if (!lease || !controller || this.#probe || this.#suspended()) return;
+    if (
+      !force &&
+      !followsNetwork &&
+      lease.lastProgressAt &&
+      Date.now() - lease.lastProgressAt() < (this.#options.liveness?.idleMs ?? realtimeIdleProbeMs)
+    )
+      return;
     const probe = new AbortController();
     const aborted = () => probe.abort(controller.signal.reason);
     controller.signal.addEventListener("abort", aborted, { once: true });
     const timer = setTimeout(
       () => probe.abort(new HostTransportError("timed-out")),
-      this.#options.liveness?.deadlineMs ?? socketProbeDeadlineMs,
+      this.#options.liveness?.deadlineMs ??
+        (force || followsNetwork ? socketProbeDeadlineMs : realtimeIdleProbeDeadlineMs),
     );
     unrefTimer(timer);
     const failed = new Promise<never>((_, reject) =>
@@ -430,9 +488,13 @@ class SessionConnectionController implements ConnectionController {
     const pending = Promise.race([lease.probe(probe.signal), failed])
       .catch((error) => {
         if (this.#controller === controller) {
-          if (this.#probeFollowsNetwork)
+          if (this.#probeFollowsNetwork) {
             this.#publish({ pathRevision: this.#state.pathRevision + 1 });
-          this.#failed(classifyClientFailure(error));
+            this.#restart(false);
+          } else {
+            this.#failed(classifyClientFailure(error));
+            this.#restart(false);
+          }
         }
       })
       .finally(() => {

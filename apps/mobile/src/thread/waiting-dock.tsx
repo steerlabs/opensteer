@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import {
   waitingDraftSave,
   type HostClient,
@@ -7,7 +8,6 @@ import {
 import * as Haptics from "expo-haptics";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AccessibilityInfo, Pressable, StyleSheet, View } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { controlBorderWidth, controlFontScaleLimit, material, radius, space } from "../theme.js";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { AppText } from "../ui/primitives.js";
@@ -63,7 +63,7 @@ export function useAskDecisions(hostClient: HostClient): AskDecisions {
         );
       } catch (error) {
         if (!mounted.current) return;
-        const detail = operationDetail(
+        const detail = presentActionFailure(
           error,
           decision === "approve"
             ? "Your answer didn’t reach the team."

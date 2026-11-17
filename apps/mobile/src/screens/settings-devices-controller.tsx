@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { SettingsComputerEnrollment } from "./settings-computer-enrollment.js";
 import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
@@ -11,7 +12,6 @@ import { thisPhoneNoun } from "../computers/phone-noun.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import { movePhoneHere } from "../phone-setup/move-phone-here.js";
 import { phoneMembership } from "../phone-setup/phone-setup.js";
-import { operationDetail } from "../client/mobile-client.js";
 import { headerActions } from "../navigation-header.js";
 import { useMobileClient, useHostValue, useMobileState } from "../ui/mobile-client-context.js";
 import { useLeaveSheets } from "./leave-sheets.js";
@@ -36,10 +36,12 @@ export function DevicesSettingsController(): ReactNode {
   const overview = useHostRead(
     host === null ? null : () => host.rpc["devices.overview.get"]({}).then(unwrapRpcResult),
     "devices-overview",
+    host,
   );
   const sessions = useHostRead(
     host === null ? null : () => host.rpc["sessions.list"]({}).then(unwrapRpcResult),
     "devices-sessions",
+    host,
   );
   const reloadOverview = overview.reload;
   const reloadSessions = sessions.reload;
@@ -127,7 +129,7 @@ export function DevicesSettingsController(): ReactNode {
               navigation.navigate("SetUpPhone", { deploymentId }),
             ).catch((error: unknown) =>
               setFailure(
-                operationDetail(error, `This ${thisPhoneNoun} couldn't leave ${elsewhere}.`),
+                presentActionFailure(error, `This ${thisPhoneNoun} couldn't leave ${elsewhere}.`),
               ),
             );
           },
@@ -145,7 +147,7 @@ export function DevicesSettingsController(): ReactNode {
               .removeHostSession(opens.session)
               .then(reloadSessions)
               .catch((error: unknown) =>
-                setFailure(operationDetail(error, "That device couldn't be signed out.")),
+                setFailure(presentActionFailure(error, "That device couldn't be signed out.")),
               );
           },
         });

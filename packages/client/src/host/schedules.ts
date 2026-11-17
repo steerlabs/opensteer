@@ -1,15 +1,14 @@
+import { createClientActionFamily, type ActionOutcome } from "../actions/client-action.js";
+import type { HostApiCommandOutput } from "@opensteer/protocol";
+import { createClientRead, type ClientRead, type ClientReadState } from "../reads/client-read.js";
+import { presentClientIssue } from "../feedback/client-issue.js";
 import {
   ScheduleAnchorInvalidation,
   type ScheduleAnchorState,
 } from "./schedule-anchor-invalidation.js";
 import type { TriggerSummary, TriggerSource } from "@opensteer/triggers/models";
 import { triggerOccurrenceErrorMessage } from "@opensteer/triggers/models";
-import {
-  HostClientRequestError,
-  type HostClient,
-  type HostSnapshot,
-  type TriggerDetail,
-} from "./client.js";
+import { type HostClient, type HostSnapshot, type TriggerDetail } from "./client.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "./host-session-client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
 import { conversationName } from "./conversation-presentation.js";
@@ -59,14 +58,7 @@ export interface ScheduleDetail {
     readonly replies: readonly TriggerDetail["downstreamRuns"][number][];
   }[];
 }
-export type ScheduleState<T> =
-  | { readonly status: "ready"; readonly data: T; readonly error: null }
-  | {
-      readonly status: "loading" | "offline" | "unavailable" | "error";
-      readonly data: null;
-      readonly error: string | null;
-      readonly errorCode?: string;
-    };
+export type ScheduleState<T> = ClientReadState<T> & { readonly error: string | null };
 
 export function scheduleTiming(source: TriggerSource): string {
   if (source.kind !== "schedule") return describeEvent(source.kind, null);
@@ -165,37 +157,17 @@ export function scheduleDetail(
   };
 }
 
-const loadingScheduleState = { status: "loading", data: null, error: null } as const;
-
-function scheduleReaderScope(snapshot: HostSnapshot): string {
-  return JSON.stringify([snapshot.session, snapshot.user?.id, snapshot.deploymentId]);
-}
-
-/** A screen owns the subscription. No schedule read is part of attachment/bootstrap. */
 export class ScheduleResource<Wire, Data> {
-  #state: ScheduleState<Data> = loadingScheduleState;
-  #readerScope: string | undefined;
-  #listeners = new Set<() => void>();
-  #unsubscribe: (() => void) | undefined;
-  #version = 0;
-  #signature = "";
-  #wire: Wire | undefined;
+  readonly resource: ClientRead<Wire>;
   readonly client: HostClient;
-  readonly read: () => Promise<Wire>;
-  readonly present: (wire: Wire, snapshot: HostSnapshot) => Data;
-  readonly detail: boolean;
-  readonly discoverRuns: (wire: Wire) => boolean;
-  readonly relatedRuns: (wire: Wire) => readonly string[];
-  #projection = "";
+  readonly #present: (wire: Wire, snapshot: HostSnapshot) => Data;
+  readonly #listeners = new Set<() => void>();
   readonly #anchors = new ScheduleAnchorInvalidation();
-  #releaseAnchors: (() => void) | undefined;
-  readonly anchorThreads: (
-    wire: Wire,
-    snapshot: HostSnapshot,
-  ) => readonly ({ id: string } & ScheduleAnchorState)[];
-  get retained(): boolean {
-    return this.#listeners.size > 0;
-  }
+  #wire: Wire | undefined;
+  #wireChanged: (() => void) | null = null;
+  #source: ClientReadState<Wire> | null = null;
+  #projection = "";
+  #state: ScheduleState<Data> = { status: "waiting", data: null, issue: null, error: null };
   constructor(
     client: HostClient,
     read: () => Promise<Wire>,
@@ -209,202 +181,164 @@ export class ScheduleResource<Wire, Data> {
     discoverRuns: (wire: Wire) => boolean = () => false,
   ) {
     this.client = client;
-    this.read = read;
-    this.present = present;
-    this.detail = detail;
-    this.relatedRuns = relatedRuns;
-    this.discoverRuns = discoverRuns;
-    this.anchorThreads = anchorThreads;
+    this.#present = present;
+    this.resource = createClientRead(client, {
+      key: detail ? "schedule-detail" : "schedules",
+      label: "schedules",
+      remember: true,
+      read: async (signal) => {
+        const revision = this.#anchors.controlRevision;
+        const wire = await read();
+        signal.throwIfAborted();
+        if (revision !== this.#anchors.controlRevision) {
+          this.resource.invalidate();
+          throw new DOMException("The anchor changed while reading.", "AbortError");
+        }
+        this.#wire = wire;
+        const held = new Map(this.#anchors.anchors);
+        this.#anchors.anchors.clear();
+        for (const anchor of anchorThreads(wire, client.getSnapshot()))
+          this.#anchors.anchors.set(anchor.id, { ...held.get(anchor.id), ...anchor });
+        this.#wireChanged?.();
+        if (revision !== this.#anchors.controlRevision) this.resource.invalidate();
+        return wire;
+      },
+      subscribeInvalidation: (invalidate) => {
+        const release = this.#anchors.retain(client);
+        let signature = "";
+        const changed = (notify = true) => {
+          const snapshot = client.getSnapshot();
+          const next = JSON.stringify([
+            snapshot.triggerRevision,
+            this.#anchors.revision,
+            snapshot.threads
+              .filter((row) => this.#anchors.anchors.has(row.id))
+              .map(
+                ({
+                  id,
+                  status,
+                  doneAt,
+                  inputQueuePaused,
+                  environmentId,
+                  harnessInstanceId,
+                  modelSelection,
+                  accessMode,
+                }) => [
+                  id,
+                  status,
+                  doneAt,
+                  inputQueuePaused,
+                  environmentId,
+                  harnessInstanceId,
+                  modelSelection,
+                  accessMode,
+                ],
+              ),
+            this.#wire !== undefined && (detail || discoverRuns(this.#wire))
+              ? snapshot.runQueue
+                  .filter(
+                    (row) =>
+                      (detail && this.#wire !== undefined && discoverRuns(this.#wire)) ||
+                      this.#anchors.anchors.has(row.threadId) ||
+                      (this.#wire !== undefined && relatedRuns(this.#wire).includes(row.id)),
+                  )
+                  .map(({ id, status }) => [id, status])
+              : null,
+          ]);
+          if (next !== signature) {
+            if (signature && notify) invalidate();
+            signature = next;
+          }
+          this.#listeners.forEach((listener) => listener());
+        };
+        this.#wireChanged = () => changed(false);
+        const unsubscribe = client.subscribe(changed);
+        changed();
+        return () => {
+          unsubscribe();
+          release();
+          this.#wire = undefined;
+          this.#wireChanged = null;
+        };
+      },
+    });
   }
-  // React reads before subscribing, including after a hidden screen changes readers.
-  readonly getSnapshot = (): ScheduleState<Data> =>
-    this.#readerScope === scheduleReaderScope(this.client.getSnapshot())
-      ? this.#state
-      : loadingScheduleState;
-  readonly subscribe = (listener: () => void): (() => void) => {
+  get retained(): boolean {
+    return this.#listeners.size > 0;
+  }
+  getSnapshot = (): ScheduleState<Data> => {
+    const source = this.resource.getSnapshot(),
+      snapshot = this.client.getSnapshot();
+    const projection = JSON.stringify([
+      snapshot.threads.map(({ id, title, icon, color }) => [id, title, icon, color]),
+      snapshot.tasks,
+      snapshot.activeTasks,
+    ]);
+    if (source === this.#source && projection === this.#projection) return this.#state;
+    this.#source = source;
+    this.#projection = projection;
+    this.#state =
+      source.status === "ready"
+        ? {
+            ...source,
+            data: this.#present(source.data, snapshot),
+            error: source.issue ? presentClientIssue(source.issue).title : null,
+          }
+        : { ...source, error: source.issue ? presentClientIssue(source.issue).title : null };
+    return this.#state;
+  };
+  subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
-    if (this.#listeners.size === 1) {
-      this.#releaseAnchors = this.#anchors.retain(this.client);
-      this.#unsubscribe = this.client.subscribe(() => this.#changed());
-      this.#signature = "";
-      this.#changed();
-    }
+    const release = this.resource.subscribe(listener);
     return () => {
+      release();
       this.#listeners.delete(listener);
-      if (this.#listeners.size === 0) {
-        this.#releaseAnchors?.();
-        this.#unsubscribe?.();
-        this.#unsubscribe = undefined;
-        this.#version++;
-        // No observer can detect a sign-out/sign-in cycle while this is hidden.
-        this.#wire = undefined;
-        this.#readerScope = undefined;
-        this.#state = loadingScheduleState;
-        this.#projection = "";
-      }
     };
   };
-  #publish(state: ScheduleState<Data>): void {
-    if (JSON.stringify(this.#state) === JSON.stringify(state)) return;
-    this.#state = state;
-    for (const listener of this.#listeners) listener();
-  }
-  #readSignature(s: HostSnapshot): string {
-    return JSON.stringify([
-      scheduleReaderScope(s),
-      s.connection,
-      s.network,
-      s.triggerRevision,
-      this.#anchors.revision,
-      s.threads
-        .filter(({ id }) => this.#anchors.anchors.has(id))
-        .map(
-          ({
-            id,
-            status,
-            doneAt,
-            inputQueuePaused,
-            environmentId,
-            harnessInstanceId,
-            modelSelection,
-            accessMode,
-          }) => [
-            id,
-            status,
-            doneAt,
-            inputQueuePaused,
-            environmentId,
-            harnessInstanceId,
-            modelSelection,
-            accessMode,
-          ],
-        ),
-      // Queued inputs have no Run ID or target in triggers.get until admitted.
-      // Ordinary details must discover them; lists and managed workers stay scoped.
-      this.#wire !== undefined && this.discoverRuns(this.#wire)
-        ? s.runQueue.map(({ id }) => id)
-        : null,
-      this.detail
-        ? s.runQueue
-            .filter(
-              ({ id, threadId }) =>
-                this.#anchors.anchors.has(threadId) ||
-                (this.#wire !== undefined && this.relatedRuns(this.#wire).includes(id)),
-            )
-            .map(({ id, status }) => [id, status])
-        : null,
-    ]);
-  }
-  #changed(): void {
-    const s = this.client.getSnapshot();
-    const signature = this.#readSignature(s);
-    if (signature !== this.#signature) {
-      this.#signature = signature;
-      void this.refresh().catch(() => undefined);
-    } else if (this.#wire !== undefined && this.#state.status === "ready") {
-      const projection = JSON.stringify([
-        s.threads.map(({ id, title, icon, color }) => [id, title, icon, color]),
-        s.tasks,
-        s.activeTasks,
-      ]);
-      if (projection === this.#projection) return;
-      this.#projection = projection;
-      this.#publish({ status: "ready", data: this.present(this.#wire, s), error: null });
-    }
-  }
-  async refresh(): Promise<void> {
-    const version = ++this.#version;
-    const snapshot = this.client.getSnapshot();
-    const readerScope = scheduleReaderScope(snapshot);
-    const keepData = this.#readerScope === readerScope && this.#state.status === "ready";
-    this.#readerScope = readerScope;
-    if (!keepData) {
-      this.#wire = undefined;
-      this.#anchors.anchors.clear();
-    }
-    if (!scheduleOnline(snapshot)) {
-      this.#publish({
-        status: "offline",
-        data: null,
-        error: "Connect to the Host to view schedules.",
-      });
-      return;
-    }
-    if (!keepData) this.#publish({ status: "loading", data: null, error: null });
-    // Before discovery establishes the anchor, hidden control events cannot be
-    // scoped. A scalar fence keeps this window bounded without retaining events.
-    const discovering = this.#anchors.anchors.size === 0;
-    const controlRevision = this.#anchors.controlRevision;
-    try {
-      const wire = await this.read();
-      if (
-        version !== this.#version ||
-        !scheduleOnline(this.client.getSnapshot()) ||
-        readerScope !== scheduleReaderScope(this.client.getSnapshot())
-      )
-        return;
-      if (discovering && controlRevision !== this.#anchors.controlRevision) {
-        await this.refresh();
-        return;
-      }
-      this.#wire = wire;
-      const previousAnchors = new Map(this.#anchors.anchors);
-      this.#anchors.anchors.clear();
-      if (this.retained) {
-        for (const thread of this.anchorThreads(wire, this.client.getSnapshot()))
-          this.#anchors.anchors.set(thread.id, { ...previousAnchors.get(thread.id), ...thread });
-      }
-      this.#signature = this.#readSignature(this.client.getSnapshot());
-      this.#publish({
-        status: "ready",
-        data: this.present(wire, this.client.getSnapshot()),
-        error: null,
-      });
-    } catch (error) {
-      if (
-        version !== this.#version ||
-        readerScope !== scheduleReaderScope(this.client.getSnapshot())
-      )
-        return;
-      this.#wire = undefined;
-      const unavailable =
-        error instanceof HostClientRequestError &&
-        ((error.status === 404 && !this.detail) ||
-          error.status === 405 ||
-          error.status === 501 ||
-          error.code === "unsupported");
-      this.#publish({
-        status: unavailable ? "unavailable" : "error",
-        ...(error instanceof HostClientRequestError ? { errorCode: error.code } : {}),
-        data: null,
-        error: unavailable
-          ? "Schedules are unavailable on this Host."
-          : error instanceof Error
-            ? error.message
-            : "Unable to load schedules.",
-      });
-      throw error;
-    }
-  }
+  refresh = (): Promise<void> => this.resource.refresh();
+  invalidate = (): void => this.resource.invalidate();
+  evict = (): void => this.resource.evict();
+  dispose = (): void => this.resource.dispose();
 }
-function scheduleOnline(snapshot: HostSnapshot): boolean {
-  return (
-    snapshot.connection === "connected" &&
-    snapshot.session === "authenticated" &&
-    snapshot.network !== "offline"
-  );
-}
-
 export class SchedulesClient {
   readonly list: ScheduleResource<readonly TriggerSummary[], readonly ScheduleItem[]>;
   readonly #details = new Map<string, ScheduleResource<TriggerDetail, ScheduleDetail>>();
   readonly #keys = new Map<string, string>();
-  readonly #actions = new Map<string, Promise<ScheduleDetail>>();
+  readonly #actions: ReturnType<
+    typeof createClientActionFamily<
+      {
+        readonly triggerId: string;
+        readonly action: "pause" | "resume" | "run";
+        readonly idempotencyKey: string;
+        readonly payload?: unknown;
+      },
+      HostApiCommandOutput
+    >
+  >;
   readonly client: HostClient;
   readonly deploymentId: string | undefined;
   constructor(client: HostClient, deploymentId?: string) {
     this.client = client;
     this.deploymentId = deploymentId;
+    this.#actions = createClientActionFamily(client, {
+      label: "change this schedule",
+      execute: ({ triggerId, action, idempotencyKey, payload }) =>
+        client.dispatch(
+          action === "run"
+            ? {
+                type: "trigger.run",
+                triggerId,
+                idempotencyKey,
+                ...(payload === undefined ? {} : { payload }),
+              }
+            : {
+                type: "trigger.status.set",
+                triggerId,
+                idempotencyKey,
+                status: action === "pause" ? "paused" : "active",
+              },
+        ),
+    });
     this.list = new ScheduleResource<readonly TriggerSummary[], readonly ScheduleItem[]>(
       client,
       async () =>
@@ -439,65 +373,30 @@ export class SchedulesClient {
     }
     return resource;
   }
-  /** Coalesce taps in flight; a later Run now tap is a new, explicit request. */
   act(
     triggerId: string,
     action: "pause" | "resume" | "run",
     idempotencyKey?: string,
     payload?: unknown,
-  ): Promise<ScheduleDetail> {
-    if (!scheduleOnline(this.client.getSnapshot()))
-      return Promise.reject(new Error("Connect to the Host to change schedules."));
-    const identity = `${this.client.getSnapshot().user?.id}:${triggerId}:${action}`;
-    const held = this.#actions.get(identity);
-    if (held) return held;
+  ): Promise<ActionOutcome<HostApiCommandOutput>> {
+    const identity = `${triggerId}:${action}`;
+    const owner = this.#actions.for(identity);
     const key =
       idempotencyKey ?? this.#keys.get(identity) ?? mutationIdempotencyKey(`schedule:${identity}`);
     this.#keys.set(identity, key);
-    const userId = this.client.getSnapshot().user?.id;
-    const pending = (async () => {
-      await this.client.dispatch(
-        action === "run"
-          ? {
-              type: "trigger.run",
-              triggerId,
-              idempotencyKey: key,
-              ...(payload === undefined ? {} : { payload }),
-            }
-          : {
-              type: "trigger.status.set",
-              triggerId,
-              idempotencyKey: key,
-              status: action === "pause" ? "paused" : "active",
-            },
-      );
-      if (
-        !scheduleOnline(this.client.getSnapshot()) ||
-        this.client.getSnapshot().user?.id !== userId
-      )
-        throw new Error("Reconnect to the Host to confirm the schedule.");
-      const detail = this.detail(triggerId);
-      await detail.refresh();
-      if (this.list.retained) await this.list.refresh();
-      const state = detail.getSnapshot();
-      if (state.status !== "ready")
-        throw new Error("Unable to confirm the schedule from the Host.");
-      this.#keys.delete(identity);
-      return state.data;
-    })()
-      .catch(async (error: unknown) => {
-        if (action !== "run") throw error;
-        // Older Hosts ignore the run key. Never resend to resolve uncertainty.
+    const pending = owner.run({
+      triggerId,
+      action,
+      idempotencyKey: key,
+      ...(payload === undefined ? {} : { payload }),
+    });
+    void pending.then((outcome) => {
+      if (outcome.kind === "confirmed") {
         this.#keys.delete(identity);
-        if (this.client.getSnapshot().user?.id === userId) {
-          await this.detail(triggerId)
-            .refresh()
-            .catch(() => undefined);
-        }
-        throw new Error("Couldn't confirm the run started — check Recent runs", { cause: error });
-      })
-      .finally(() => this.#actions.delete(identity));
-    this.#actions.set(identity, pending);
+        this.detail(triggerId).invalidate();
+        this.list.invalidate();
+      }
+    });
     return pending;
   }
 }

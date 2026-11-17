@@ -28,7 +28,7 @@ import {
 import { Pressable, StyleSheet, View } from "react-native";
 import { tabRoute } from "../browser/surface-route.js";
 import { TabList } from "../tabs/tab-list.js";
-import { useOperation } from "../tabs/use-tabs.js";
+import { useClientOperation } from "@opensteer/client/react";
 import { color, space, touchTarget } from "../theme.js";
 import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
 import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
@@ -99,7 +99,7 @@ function TabsForReader(props: {
   const insets = useListContentInsets(space[32]);
   const syncing = useTabsSyncing(hostClient);
   const [filter, setFilter] = useState<TabFilter>(allTabs);
-  const reopen = useOperation();
+  const reopen = useClientOperation(hostClient, "reopen-tabs");
   // The shared filter: it reads only what it matches on, so a title arriving recomputes nothing.
   const shared = useMemo<SharedTabFilter>(
     () => ({ agents: filter.agents, device: filter.computerId, profile: null }),

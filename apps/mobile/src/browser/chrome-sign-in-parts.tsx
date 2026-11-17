@@ -1,8 +1,8 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import type { BrowserSourceInspection } from "@opensteer/protocol/browser-sources";
 import { useEffect, useState, type ReactNode } from "react";
 import { AppState, Pressable, StyleSheet, View } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 
@@ -42,7 +42,7 @@ export function useChromeInspection(
           setError(null);
         })
         .catch((reason: unknown) => {
-          if (live) setError(operationDetail(reason, "Opensteer couldn’t check Chrome."));
+          if (live) setError(presentActionFailure(reason, "Opensteer couldn’t check Chrome."));
         });
     };
     check();

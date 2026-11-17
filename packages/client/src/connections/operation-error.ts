@@ -112,6 +112,11 @@ export function classifyClientFailure(error: unknown): ClientFailure {
       stringField(error, "provenance"),
       stringField(error, "code") !== null,
     );
+  const retryable =
+    !cancelled &&
+    (observed.retryable ??
+      booleanField(error, "retryable") ??
+      (error instanceof ClientOperationError ? error.classification === "transient" : false));
   const kind: ClientFailureKind = cancelled
     ? "cancelled"
     : (observed.kind ??
@@ -131,13 +136,10 @@ export function classifyClientFailure(error: unknown): ClientFailure {
                 ].includes(reason)
               ? "session"
               : provenance === "host"
-                ? "rejection"
+                ? retryable || ["internal", "unavailable"].includes(code)
+                  ? "service"
+                  : "rejection"
                 : "unexpected"));
-  const retryable =
-    !cancelled &&
-    (observed.retryable ??
-      booleanField(error, "retryable") ??
-      (error instanceof ClientOperationError ? error.classification === "transient" : false));
   return {
     classification: retryable ? "transient" : "blocked",
     kind,
@@ -165,15 +167,6 @@ export function failureProvenance(
   if (reason === "invalid-response" || reason === "unknown-method") return "protocol";
   if (reason === "invalid-payload") return "local";
   return host ? "host" : "local";
-}
-
-/** Strips credentials an upstream message may have echoed back verbatim. */
-export function clientPublicDetail(error: unknown, fallback: string): string {
-  const detail = error instanceof Error && error.message.trim() ? error.message.trim() : fallback;
-  return detail
-    .replace(/Bearer\s+[^\s]+/giu, "Bearer [redacted]")
-    .replace(/os_secret_[A-Za-z0-9_-]+/gu, "os_secret_[redacted]")
-    .slice(0, 2_000);
 }
 
 function booleanField(value: unknown, field: string): boolean | null {

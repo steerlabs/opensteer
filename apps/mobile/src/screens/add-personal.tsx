@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import type { VerifiedPersonalHostEndpoint } from "@opensteer/client/connections";
 import { useNavigation, useRoute, type RouteProp } from "@react-navigation/native";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -7,7 +8,6 @@ import {
   defaultDeploymentName,
   verifyPersonalDeployment,
 } from "../client/add-deployment.js";
-import { operationDetail } from "../client/mobile-client.js";
 import type { RootParamList } from "../navigation.js";
 import { resetToDeployment } from "../navigation-ref.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
@@ -93,7 +93,7 @@ export function AddPersonalScreen(): ReactNode {
       .catch((error: unknown) => {
         if (attempt.current !== current) return;
         setFailure(
-          operationDetail(error, "That computer did not accept this phone with that code."),
+          presentActionFailure(error, "That computer did not accept this phone with that code."),
         );
       })
       .finally(() => {

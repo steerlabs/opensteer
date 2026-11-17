@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import {
   browserProfileDeleteConsequence,
   browserProfileDeletionRows,
@@ -23,7 +24,6 @@ import {
   useWindowDimensions,
   type ScrollViewInstance,
 } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { useHereDeviceId } from "../computers/here-device.js";
 import { HomeMenu } from "./profile-home-menu.js";
 import { color, material, space, touchTarget } from "../theme.js";
@@ -68,7 +68,7 @@ export function BrowserProfilesScreen({
                   .openDeployment(deploymentId)
                   .catch((error: unknown) =>
                     setFailure(
-                      operationDetail(error, "That deployment still could not be opened."),
+                      presentActionFailure(error, "That deployment still could not be opened."),
                     ),
                   )
                   .finally(() => setOpening(false));
@@ -146,7 +146,7 @@ function BrowserProfilesSettings({
       })
       .then(() => setDraft(null))
       .catch((error: unknown) =>
-        setFailure(operationDetail(error, "The profile could not be created.")),
+        setFailure(presentActionFailure(error, "The profile could not be created.")),
       )
       .finally(() => setBusy(false));
   };
@@ -322,7 +322,7 @@ function ProfileRow({
       .dispatch(command)
       .then(() => done?.())
       .catch((error: unknown) =>
-        setFailure(operationDetail(error, "The profile could not be changed.")),
+        setFailure(presentActionFailure(error, "The profile could not be changed.")),
       )
       .finally(() => setBusy(false));
   };
