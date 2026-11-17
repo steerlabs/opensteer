@@ -3445,22 +3445,32 @@ async function attachThreadSocket(socket: WebSocket, threadId: ThreadId) {
 }
 
 async function waitForRunItem(socket: WebSocket, status: "failed" | "completed") {
-  const frame = ScopedHostMessageSchema.parse(
-    await waitForMessage(socket, (raw) => {
-      const frame = ScopedHostMessageSchema.safeParse(raw);
-      return (
-        frame.success &&
-        frame.data.type === "host.changes" &&
-        frame.data.changes.some(
-          (change) =>
-            change.entityKind === "item" &&
-            change.operation === "upsert" &&
-            change.value.kind === "run" &&
-            change.value.view.status === status,
-        )
-      );
-    }),
-  );
+  const observed = new Set<string>();
+  const raw = await waitForMessage(socket, (raw) => {
+    const parsed = ScopedHostMessageSchema.safeParse(raw);
+    if (!parsed.success) {
+      observed.add(raw.type);
+      return false;
+    }
+    const frame = parsed.data;
+    observed.add(`${frame.subscriptionId} ${frame.type}`);
+    if (frame.type !== "host.changes") return false;
+    return frame.changes.some((change) => {
+      if (
+        change.entityKind !== "item" ||
+        change.operation !== "upsert" ||
+        change.value.kind !== "run"
+      )
+        return false;
+      observed.add(`Run ${change.value.view.status}`);
+      return change.value.view.status === status;
+    });
+  }).catch((error: unknown) => {
+    throw new Error(`No ${status} Run card arrived. Frames observed: ${[...observed].join(", ")}`, {
+      cause: error,
+    });
+  });
+  const frame = ScopedHostMessageSchema.parse(raw);
   if (frame.type !== "host.changes") throw new Error("Expected changed Run");
   return frame.changes.flatMap((change) =>
     change.entityKind === "item" &&
@@ -3471,7 +3481,6 @@ async function waitForRunItem(socket: WebSocket, status: "failed" | "completed")
       : [],
   )[0];
 }
-
 async function waitForCondition(
   predicate: () => Promise<boolean>,
   timeoutMs = 10_000,
