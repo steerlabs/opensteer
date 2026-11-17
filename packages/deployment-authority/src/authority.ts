@@ -42,8 +42,7 @@ export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
 /** Personal and team transports negotiate their own mandatory contract version. */
 export const hostApiVersion = 56;
 /**
- * The team API this tree speaks, and the oldest peer it still serves. See the
- * compatibility policy in docs/teams.md before changing either; the wire
+ * The team API this tree speaks, and the oldest peer it still serves. The wire
  * snapshot test refuses a breaking schema change without a bump.
  */
 export const teamApiVersion = 4;

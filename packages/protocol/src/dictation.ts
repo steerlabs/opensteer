@@ -6,7 +6,7 @@ import { z } from "zod";
  * SpeechAnalyzer recognizes speech in a native process on the person's own
  * Mac or iPhone; audio never leaves that process, and only text, an input
  * level and the session's lifecycle cross into JavaScript. No Host is
- * involved. See docs/dictation.md.
+ * involved.
  */
 
 /**

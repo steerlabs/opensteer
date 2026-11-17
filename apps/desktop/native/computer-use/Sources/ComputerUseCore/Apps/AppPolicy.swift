@@ -14,7 +14,7 @@ public struct AppVerdict: Sendable, Equatable {
   public let reason: String
 }
 
-/// The deny list and the elevated-risk list (docs/computer-use.md#approval-model).
+/// The deny list and the elevated-risk list.
 ///
 /// This is the helper's own floor, not an approval list: the Host is the
 /// authority for approvals (invariant 3), and nothing a Host says makes a

@@ -170,8 +170,8 @@ routing, and Watch never receives them ([Passwords](passwords.md#filling-for-peo
 
 ## Profile state
 
-Profile listing, opening, CDP and tab reach follow the [Run resource authority
-rule](agent-orchestration.md#run-tool-authority); driving needs `read-write`. Only people create
+Profile listing, opening, CDP and tab reach follow the Run resource authority
+rule; driving needs `read-write`. Only people create
 profiles; an agent asks with a browser-access Request. Private profile access is decided for the personal owner and current caller ceiling, never
 by team membership. Consent never limits whether the owner may watch their own profile.
 Guest state cannot be promoted, so choose the profile before signing in.

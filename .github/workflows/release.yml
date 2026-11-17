@@ -502,7 +502,7 @@ jobs:
       VERSION: ${{ needs.preflight.outputs.version }}
       TEAM_HOST_IMAGE: ${{ needs.team-images.outputs.host_image }}
       TEAM_GATEWAY_IMAGE: ${{ needs.team-images.outputs.gateway_image }}
-      # Made outside this repo for the `teams` environment; see docs/hosted-teams.md.
+      # Made outside this repo for the `teams` environment.
       TEAMS_WORKLOAD_IDENTITY_PROVIDER: projects/920572344872/locations/global/workloadIdentityPools/github/providers/github-teams-deployer
       TEAMS_DEPLOYER: gha-teams-deployer@opensteer-admin.iam.gserviceaccount.com
     steps:

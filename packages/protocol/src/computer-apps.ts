@@ -299,8 +299,8 @@ export const HostIntegrationsCancelSchema = z.strictObject({
 export type HostIntegrationsCancel = z.infer<typeof HostIntegrationsCancelSchema>;
 
 /**
- * One session with an MCP server this computer runs for its Deployment
- * (`docs/computers.md`, "MCP servers on a computer"). The Host is the
+ * One session with an MCP server this computer runs for its Deployment.
+ * The Host is the
  * server's MCP client; the Runner starts the launch its owner approved on
  * this computer — or reaches its loopback — and carries JSON-RPC messages
  * both ways without reading them. A session ends when either side closes it

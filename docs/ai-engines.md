@@ -139,8 +139,7 @@ MCP servers from it; Runners never rebuild a tool list from their own release, a
 [credential proxy](../apps/runner/src/credentials/credential-proxy.ts) gives each Run a secret
 usable only for its tool endpoints, never put on a command line and revoked on interrupt. Loopback
 alone is no tenant isolation. Token refresh belongs to the Runner boot holding the Run; refusal ends
-access, temporary unavailability does not
-([Run tool authority](agent-orchestration.md#run-tool-authority)).
+access, temporary unavailability does not.
 
 Codex Request tools use a second server so the model calls them directly: code-mode cells can
 otherwise yield while the Request is held and let the model keep acting. `longRequestHold` requires

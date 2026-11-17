@@ -380,7 +380,7 @@
     "deadline": "2026-11-04T00:00:00Z",
     "sha": "5b2ca8f41b358e52b5cb0cb87bca773949ce8f18",
     "evidence": [
-      "R2 batch is invalid: the field reads Batchj instead of Batch because the batch Ctrl-Option-J also types j. The standalone shortcut also types j and passes. A control-character payload and an NSEvent with separate charactersIgnoringModifiers both failed to correct this behavior. Reproduce the named batch on its browser or AppKit target. Acceptance: the existing journey reads exactly Batch and the chord behavior matches its contract; see docs/computer-use.md for the posted-control-chord limitation."
+      "R2 batch is invalid: the field reads Batchj instead of Batch because the batch Ctrl-Option-J also types j. The standalone shortcut also types j and passes. A control-character payload and an NSEvent with separate charactersIgnoringModifiers both failed to correct this behavior. Reproduce the named batch on its browser or AppKit target. Acceptance: the existing journey reads exactly Batch and the chord behavior matches its contract"
     ]
   },
   {
@@ -393,7 +393,7 @@
     "deadline": "2026-11-04T00:00:00Z",
     "sha": "5b2ca8f41b358e52b5cb0cb87bca773949ce8f18",
     "evidence": [
-      "R2 batch is invalid: the field reads Batchj instead of Batch because the batch Ctrl-Option-J also types j. The standalone shortcut also types j and passes. A control-character payload and an NSEvent with separate charactersIgnoringModifiers both failed to correct this behavior. Reproduce the named batch on its browser or AppKit target. Acceptance: the existing journey reads exactly Batch and the chord behavior matches its contract; see docs/computer-use.md for the posted-control-chord limitation."
+      "R2 batch is invalid: the field reads Batchj instead of Batch because the batch Ctrl-Option-J also types j. The standalone shortcut also types j and passes. A control-character payload and an NSEvent with separate charactersIgnoringModifiers both failed to correct this behavior. Reproduce the named batch on its browser or AppKit target. Acceptance: the existing journey reads exactly Batch and the chord behavior matches its contract"
     ]
   },
   {

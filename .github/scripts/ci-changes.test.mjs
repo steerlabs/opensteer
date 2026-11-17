@@ -352,7 +352,7 @@ test("an unrelated edit, even a global one, runs no macOS task", () => {
   const launcher = decide(["scripts/test-integration.ts"], realGraph);
   assert.equal(launcher.full, true);
   assert.deepEqual(launcher.nativeMac, []);
-  assert.deepEqual(decide(["docs/testing.md"], realGraph).nativeMac, []);
+  assert.deepEqual(decide(["docs/releases.md"], realGraph).nativeMac, []);
 });
 test("Swift sources, node manifests and the CI definition select their tasks", () => {
   assert.deepEqual(swiftOnly(decide(["apps/desktop/native/passwords/Package.swift"], realGraph)), [
@@ -652,7 +652,7 @@ test("native-windows runs for its Go modules, closure, CI definition and Windows
   for (const file of [
     "apps/web/src/app-model.ts",
     "scripts/test-integration.ts",
-    "docs/testing.md",
+    "docs/releases.md",
     "apps/desktop/process-supervisor-x/main.go",
   ])
     assert.equal(windows([file]), false, file);

@@ -1,7 +1,7 @@
 import { buildSwiftProducts } from "./build-swift-products.js";
 /**
  * Build `Opensteer Computer Use.app` — the only process on a Mac that holds the
- * Accessibility and Screen Recording grants (docs/computer-use.md#the-helper).
+ * Accessibility and Screen Recording grants.
  *
  *   pnpm --filter @opensteer/desktop build:computer-use-helper
  *
