@@ -101,7 +101,7 @@ describe("what a person has written and not sent", () => {
     expect(savedDrafts()).toHaveLength(1);
   });
 
-  it("shows the Host's reason in the composer when it refuses a new task", async () => {
+  it("shows the safe refusal in the composer when the Host refuses a new task", async () => {
     await mount("/");
     await settle();
     vi.spyOn(client, "createThread").mockRejectedValue(
@@ -115,9 +115,7 @@ describe("what a person has written and not sent", () => {
     await click(element(".composer__send"));
     await settle(50);
 
-    expect(element(".composer__error").textContent).toContain(
-      "This folder is on another computer.",
-    );
+    expect(element(".composer__error").textContent).toBe("Not started. You don't have access.");
     expect(composerText(field())).toBe("Start over there");
   });
 
@@ -193,7 +191,7 @@ describe("what a person has written and not sent", () => {
 
     await back();
     expect(composerText(field())).toBe("Do the thing");
-    expect(element(".composer__error").textContent).toContain("That is not allowed here.");
+    expect(element(".composer__error").textContent).toBe("Not started. You don't have access.");
   });
 
   it("hands a refused task to the draft reopened before the answer came", async () => {

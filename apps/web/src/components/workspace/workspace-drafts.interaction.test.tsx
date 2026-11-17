@@ -163,15 +163,19 @@ describe("the draft's places", () => {
         await click(element(`.side-tab[data-place-key="${other.key}"] .side-tab__main`));
         expected = other.title;
       } else {
-        // Sending starts the next draft at the press; it reads the same page for itself.
+        // A durable send closes this draft even while the Host's answer is outstanding.
         const real = client.dispatch.bind(client);
-        vi.spyOn(client, "dispatch").mockImplementationOnce(async (...args) => {
-          await sent.promise;
+        vi.spyOn(client, "dispatch").mockImplementation(async (...args) => {
+          if (args[0].type === "thread.sendMessage") await sent.promise;
           return real(...args);
         });
         await write(field, "What is this?");
         await click(element(".composer__send"));
-        expected = place.title;
+        await act(async () => {
+          await vi.waitFor(() => expect(history.at(-1)?.path).toMatch(/^\/tasks\//), {
+            timeout: 1000,
+          });
+        });
       }
       await settle(100);
       expect(chipTitle()).toBe(expected);
@@ -278,12 +282,22 @@ describe("the draft's places", () => {
       await settle(100);
       expect(titles()).toEqual([place.title, other.title]);
       if (how === "handed back") {
-        // A refused message comes back with its places exactly as they were sent.
-        vi.spyOn(client, "dispatch").mockRejectedValueOnce(
-          new HostClientRequestError({ code: "forbidden", message: "Refused", status: 403 }),
-        );
+        // Editing a refused message restores its places exactly as they were sent.
+        const real = client.dispatch.bind(client);
+        const dispatch = vi.spyOn(client, "dispatch").mockImplementation(async (...args) => {
+          if (args[0].type === "thread.sendMessage")
+            throw new HostClientRequestError({
+              code: "forbidden",
+              message: "Refused",
+              status: 403,
+            });
+          return real(...args);
+        });
         await click(element(".composer__send"));
         await settle(100);
+        await click(element(".msg--user-row [role=status] button"));
+        await settle(100);
+        dispatch.mockRestore();
         expect(titles()).toEqual([place.title, other.title]);
       }
       const close = async (closed: PlaceItem) => {
@@ -305,9 +319,15 @@ describe("the draft's places", () => {
       expect(document.querySelector(".context-chip--gone")).not.toBeNull();
       const dispatch = vi.spyOn(client, "dispatch");
       dispatch.mockClear();
-      await click(element(".composer__send"));
-      await settle(100);
-      expect(sends(dispatch)).toHaveLength(1);
+      if (how === "handed back") {
+        await act(async () => client.connection.stop());
+        await click(element(".composer__send"));
+        expect(sends(dispatch)).toHaveLength(0);
+      }
+      offline.mockRestore();
+      await act(async () => client.connection.retry());
+      if (how === "held") await click(element(".composer__send"));
+      await vi.waitFor(() => expect(sends(dispatch)).toHaveLength(1), { timeout: 1000 });
       const command = sends(dispatch)[0]!;
       expect(command.content.filter((part) => part.type !== "text")).toEqual([
         expect.objectContaining({
@@ -316,11 +336,10 @@ describe("the draft's places", () => {
           tabId: other.destination.tabId,
         }),
       ]);
-      offline.mockRestore();
     },
   );
 
-  it("hands a forbidden message back ahead of the newer draft without duplicate places or refusal UI", async () => {
+  it("keeps a refused message and its places separate from a newer draft", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     await settle(100);
     const place = pageTab();
@@ -329,17 +348,20 @@ describe("the draft's places", () => {
     )!;
     const refusal = deferred<void>();
     const message = `This message includes the browser page "${place.title}", which you can no longer see. Remove the page and send the message again.`;
-    vi.spyOn(client, "dispatch").mockImplementationOnce(async () => {
-      await refusal.promise;
-      throw new HostClientRequestError({ code: "forbidden", message, status: 403 });
+    const real = client.dispatch.bind(client);
+    vi.spyOn(client, "dispatch").mockImplementation(async (...args) => {
+      if (args[0].type === "thread.sendMessage") {
+        await refusal.promise;
+        throw new HostClientRequestError({ code: "forbidden", message, status: 403 });
+      }
+      return real(...args);
     });
-    const field = element<HTMLElement>("[data-composer-input]");
-    await write(field, "First message");
+    await write(element("[data-composer-input]"), "First message");
     await click(element(".composer__send"));
     await settle(100);
+    const field = element<HTMLElement>("[data-composer-input]");
     await write(field, "Newer draft");
-    // Put the duplicate after a newer pick so the returned message must reorder it.
-    await click(element(".context-chip__remove"));
+    // The newer draft deliberately picks two pages, including one on the original message.
     for (const pick of [other, place]) {
       await click(element('.composer__attach[aria-label="Attach"]'));
       await click(
@@ -354,20 +376,26 @@ describe("the draft's places", () => {
     ).toEqual([other.title, place.title]);
     await act(async () => refusal.resolve());
     await settle(100);
-    expect(composerText(field)).toBe("First message\nNewer draft");
+    const rejected = element(".msg--user-row [role=status]").closest(".msg--user-row")!;
+    expect(rejected.textContent).toContain("First message");
+    expect(rejected.textContent).toContain(place.title);
+    expect(rejected.textContent).toContain("Not sent. You don't have access.");
+    await click(element("button", element("[role=status]", rejected)));
+    expect(composerText(field)).toBe("Newer draft");
     expect(
       [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent),
-    ).toEqual([place.title, other.title]);
-    expect(document.body.textContent).toContain(message);
+    ).toEqual([other.title, place.title]);
+    expect(rejected.isConnected).toBe(true);
+    expect(document.body.textContent).not.toContain(message);
     expect(document.querySelector(".context-chip--refused, .context-refusal")).toBeNull();
     expect(document.body.textContent).not.toContain("Send without it");
     expect(document.body.textContent).not.toContain("Include it");
-    // The page came back automatic, but the newer draft picked it: closing it keeps that pick.
+    // Closing a page explicitly picked by the newer draft keeps that pick.
     await act(async () => client.closeTabs([place.key]));
     await settle(100);
     expect(
       [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent),
-    ).toEqual([place.title, other.title]);
+    ).toEqual([other.title, place.title]);
   });
 
   it("an automatic page alone does not enable Send; an explicit pick alone does", async () => {
@@ -611,7 +639,9 @@ describe("the draft's places", () => {
         { type: "text", text: "Can you see my screen?" },
         reference(keynote),
       ]);
-      expect(element(".held-message").textContent).toContain(keynote.title);
+      expect(
+        element(".msg--user-row [role=status]").closest(".msg--user-row")!.textContent,
+      ).toContain(keynote.title);
       act(() => root?.unmount());
       setRoot(null);
       document.body.replaceChildren();
@@ -659,7 +689,9 @@ describe("unconfirmed sends keep every place exactly", () => {
       "computer-app",
     ]);
     expect(first.content[1]?.auto).toBe(true);
-    expect(element(".held-message").textContent).toContain(app.title);
+    expect(
+      element(".msg--user-row [role=status]").closest(".msg--user-row")!.textContent,
+    ).toContain(app.title);
     // The page reloads: the kept message is sent again as exactly what was sent.
     act(() => root?.unmount());
     setRoot(null);

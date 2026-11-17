@@ -878,12 +878,7 @@ function ThreadView({
       <span className="thread__connection" role="status">
         <span className="thread__connection-label">{connectionLabel}</span>
         {connection.action === "retry" ? (
-          <button
-            type="button"
-            onClick={() =>
-              void hostClient.refresh({ retryConnection: true }).catch(() => undefined)
-            }
-          >
+          <button type="button" onClick={() => hostClient.connection.retry()}>
             Retry
           </button>
         ) : null}
