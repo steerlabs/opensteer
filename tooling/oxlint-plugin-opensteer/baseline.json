@@ -1,7 +1,4 @@
 {
-  "apps/browser-extension/e2e/browser-source-journey.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
   "apps/browser-runtime/src/browser/browser-test-acquisition.test.ts": {
     "no-unit-test-timeout:b1f431e661237a2109f3": 1,
     "no-unreasoned-skip-or-retry:a6e350cf90a1dcdd6a2d": 1

@@ -166,7 +166,7 @@ import {
   applyOptimisticCommandPatch,
   withEditedWaitingMessage,
   withEditLease,
-  withThreadNames,
+  withThreadState,
 } from "./optimistic-command-patches.js";
 import { PlaceActivityStore } from "./place-activity.js";
 import { placeByKey } from "./places.js";
@@ -381,6 +381,8 @@ interface DeploymentChannel {
   progressAt: number;
   reconnectAttempt: number;
   reconnectTimer: Timer | null;
+  /** Whether this subscription was answered by replay, which carries events but never notices. */
+  resumed: boolean;
   socket: WebSocketClient | null;
   synchronized: boolean;
   /** Replay and sync frames this client could not read since it last synchronized. */
@@ -905,6 +907,7 @@ export class HttpHostClient {
   #bootstrapFailed = false;
   #rereadPending: BootstrapReason | null = null;
   #waitingRead: "again" | "idle" | "reading" = "idle";
+  #tasksStale = false;
 
   readonly #taskReads = new Map<string | null, { again: boolean; done: Promise<void> }>();
   /** Per task list, the one read of a later page in flight, for the viewer that asked. */
@@ -2743,8 +2746,8 @@ export class HttpHostClient {
         if (!this.#disposed)
           this.#update(
             thread
-              ? withThreadNames(this.#snapshot, (current) =>
-                  current.id === threadId ? this.#threadState.name(thread) : current,
+              ? withThreadState(this.#snapshot, (current) =>
+                  current.id === threadId ? this.#threadState.view(thread) : current,
                 )
               : this.#snapshot,
           );
@@ -3378,15 +3381,23 @@ export class HttpHostClient {
     this.#update({ ...this.#snapshot, waitingRequests });
   }
 
+  /** A page entry follows the newest thread state, but counts only the Requests its reader may see. */
+  #reconcilePageThread(thread: ThreadSummary, asOfSequence: Sequence): ThreadSummary {
+    const reconciled = this.#threadState.reconcile(thread, asOfSequence);
+    return reconciled.pendingRequests === thread.pendingRequests
+      ? reconciled
+      : { ...reconciled, pendingRequests: thread.pendingRequests };
+  }
+
+  /** A task notice is owed until a read answers it: one that arrives hidden waits for the foreground. */
   #rereadTasks(): void {
-    if (
-      this.#disposed ||
-      this.#visibility === "background" ||
-      this.#snapshot.session !== "authenticated"
-    )
-      return;
+    if (this.#disposed || this.#snapshot.session !== "authenticated") return;
+    this.#tasksStale = this.#visibility === "background";
+    if (this.#tasksStale) return;
     for (const scope of [null, "active", "done:*"])
-      void this.#readFirstTaskPage(scope, "changed").catch(() => undefined);
+      void this.#readFirstTaskPage(scope, "changed").catch(() => {
+        this.#tasksStale = true;
+      });
   }
 
   loadDoneTasks(): Promise<void> {
@@ -3538,7 +3549,7 @@ export class HttpHostClient {
             .filter((entry) => !this.#removedThreads.has(entry.thread.id))
             .map((entry) => ({
               ...entry,
-              thread: this.#threadState.reconcile(
+              thread: this.#reconcilePageThread(
                 toThreadSummary(
                   entry.thread,
                   this.#snapshot.environments,
@@ -3580,6 +3591,7 @@ export class HttpHostClient {
         status: 404,
       });
     }
+    const generation = this.#viewerGeneration;
     const result = await this.dispatch({
       done,
       idempotencyKey: mutationIdempotencyKey(`done:${threadId}`),
@@ -3587,6 +3599,7 @@ export class HttpHostClient {
       type: "thread.done.set",
     });
     if (result.type !== "thread.done.set") throw new Error("Done command mismatch.");
+    if (generation !== this.#viewerGeneration) return;
     this.#mergeVisits([result.thread]);
     const thread = this.#threadState.reconcile(
       toThreadSummary(result.thread, this.#snapshot.environments, this.#snapshot.harnesses),
@@ -3855,6 +3868,9 @@ export class HttpHostClient {
     this.#startRefresh();
     if (this.#snapshot.session === "authenticated")
       void this.#refresh("foreground").catch(() => undefined);
+    // A replaced socket answers what is owed once it synchronizes, so it is not read twice.
+    if (this.#tasksStale && [...this.#channels.values()].every(({ synchronized }) => synchronized))
+      this.#rereadTasks();
   }
 
   /**
@@ -4065,6 +4081,7 @@ export class HttpHostClient {
         progressAt: 0,
         reconnectAttempt: 0,
         reconnectTimer: null,
+        resumed: false,
         socket: null,
         synchronized: false,
         unreadableFrames: 0,
@@ -4134,6 +4151,7 @@ export class HttpHostClient {
         channel.apiVersion = this.#servedApiVersion;
         channel.cursor = zeroSequence;
       }
+      channel.resumed = true;
       try {
         socket.send(
           JSON.stringify({
@@ -4483,6 +4501,12 @@ export class HttpHostClient {
     }
     if (message.type === "host.resync-required") {
       this.references.reconnect();
+      // A Host behind this cursor restarted its history: state read from the old one,
+      // including answers still in flight, would outrank the snapshot that follows.
+      if (message.reason === "cursor-ahead") {
+        this.#viewerGeneration += 1;
+        this.#threadState.clear();
+      }
       channel.cursor = zeroSequence;
       channel.reconnectAttempt = 0;
       this.#closeChannel(channel, true, 4009, "Fresh snapshot required");
@@ -4491,6 +4515,7 @@ export class HttpHostClient {
     }
     if (message.type === "host.snapshot") {
       this.#applyDeploymentSnapshot(message.snapshot);
+      channel.resumed = false;
       channel.cursor = message.snapshot.sequence;
       this.#persistCheckpoint(channel);
       return;
@@ -4606,6 +4631,7 @@ export class HttpHostClient {
         this.#scheduleLiveRefresh(thread.id, channel.deploymentId);
     }
     const reconnected = channel.reconnectAttempt > 0 || channel.unreadableFrames > 0;
+    const resumed = reconnected || channel.resumed;
     channel.synchronized = true;
     this.#nodeDetails.connected(channel.deploymentId);
     channel.reconnectAttempt = 0;
@@ -4614,13 +4640,12 @@ export class HttpHostClient {
     if (reconnected) this.#reread("reconnect");
     this.#sendAck(channel);
     this.#recomputeConnection();
-    // A task notice sent while this socket was away is lost with it, and so is
-    // a triggers notice.
-    if (reconnected) {
+    // Notices sent while no socket listened are lost, and replay does not carry them.
+    if (resumed) {
       this.#rereadTasks();
       this.#rereadWaitingRequests();
-    }
-    if (reconnected) this.#refreshShownAutomations(channel.deploymentId);
+      this.#refreshShownAutomations(channel.deploymentId);
+    } else if (this.#tasksStale) this.#rereadTasks();
     // A usage notice sent while this socket was away is lost: a shown
 
     // and one not shown is read whole when it next is. One shown while the
@@ -4715,10 +4740,9 @@ export class HttpHostClient {
     const taskPage = (page: import("@opensteer/protocol").TaskPage): TaskListState => ({
       entries: page.tasks.map((entry) => ({
         ...entry,
-        thread: toThreadSummary(
-          entry.thread,
-          this.#snapshot.environments,
-          this.#snapshot.harnesses,
+        thread: this.#reconcilePageThread(
+          toThreadSummary(entry.thread, this.#snapshot.environments, this.#snapshot.harnesses),
+          snapshot.sequence,
         ),
       })),
       window: page.window,
@@ -5263,6 +5287,7 @@ export class HttpHostClient {
     this.#targetedWatch.clear();
     this.#targetedControl.clear();
     this.#reportedTimeZone = null;
+    this.#tasksStale = false;
     this.#threadState.clear();
     this.#threadRenames.clear();
     this.#threadIcons.clear();
@@ -5559,9 +5584,9 @@ export class HttpHostClient {
       visits[id] = at;
     }
     snapshot = { ...snapshot, threadVisits: visits };
-    this.#threadState.retainLoaded(snapshot.threads);
-    snapshot = withThreadNames(snapshot, (thread) => ({
-      ...this.#threadState.name(thread),
+    this.#threadState.retainLoaded(incoming);
+    snapshot = withThreadState(snapshot, (thread) => ({
+      ...this.#threadState.view(thread),
       lastVisitedAt: snapshot.threadVisits[thread.id] ?? thread.lastVisitedAt,
       ...(this.#threadRenames.has(thread.id)
         ? { title: this.#threadRenames.get(thread.id)!.title }

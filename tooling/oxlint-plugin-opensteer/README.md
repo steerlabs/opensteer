@@ -4,7 +4,7 @@ An oxlint JS plugin loaded directly from `.oxlintrc.json`; it needs no build. It
 [tests/test-lint-rules.test.ts](../../tests/test-lint-rules.test.ts). The rules cover
 `*.test.ts(x)`, `*.test-support.ts` and code under `tests/`; the retry check also covers
 `vitest*.config.*`, and suppression reasons are required in every file. Together they enforce
-the waiting rules in [AGENTS.md](../../AGENTS.md#verifying). Each rule is prefixed `opensteer/`.
+the waiting rules in [AGENTS.md](../../AGENTS.md). Each rule is prefixed `opensteer/`.
 
 - `no-real-time-wait-in-tests`: no real sleeps, including through local wrappers and aliased
   timer imports. Await the event, use a `vi.waitFor`/`vi.waitUntil` condition, or fake timers.

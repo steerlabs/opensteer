@@ -307,8 +307,7 @@ const oidcReturnPathSchema = z
 /**
  * The request headers every rpc caller states its versions in. Phones, Agent
  * Phones, Runners and open windows update apart from their Host, so it serves
- * every caller whose window overlaps its own ("API compatibility" in
- * docs/connections.md).
+ * every caller whose window overlaps its own.
  */
 export {
   hostApiCurrentHeader,

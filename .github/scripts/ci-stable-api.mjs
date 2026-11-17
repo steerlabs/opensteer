@@ -15,8 +15,7 @@ function version(source, name, { optional = false } = {}) {
 
 /**
  * Neither minimum may exclude the latest published Stable desktop: its Macs and
- * self-hosted teams must keep working as apps update. See "API compatibility"
- * in docs/connections.md.
+ * self-hosted teams must keep working as apps update.
  */
 export function checkStableApi(root = process.cwd()) {
   const git = (...args) =>
@@ -43,7 +42,7 @@ export function checkStableApi(root = process.cwd()) {
   };
   if (team.minimum > team.published)
     throw new Error(
-      `minimumTeamApiVersion ${team.minimum} excludes ${tag} (teamApiVersion ${team.published}). Keep Stable team servers compatible; see docs/connections.md#api-compatibility.`,
+      `minimumTeamApiVersion ${team.minimum} excludes ${tag} (teamApiVersion ${team.published}). Keep Stable team servers compatible.`,
     );
   // A Stable from before the personal window serves one exact version; there is no floor to keep.
   const personal =
@@ -55,7 +54,7 @@ export function checkStableApi(root = process.cwd()) {
         };
   if (personal && personal.minimum > personal.published)
     throw new Error(
-      `minimumHostApiVersion ${personal.minimum} excludes ${tag} (hostApiVersion ${personal.published}). Keep Stable Macs reachable; see docs/connections.md#api-compatibility.`,
+      `minimumHostApiVersion ${personal.minimum} excludes ${tag} (hostApiVersion ${personal.published}). Keep Stable Macs reachable.`,
     );
   return { tag, team, personal };
 }

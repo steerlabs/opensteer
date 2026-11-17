@@ -1208,6 +1208,7 @@ function makeService(options: {
           throw new Error("Unexpected Request withdrawal");
         }),
     },
+    messageTeamSources: async () => new Map(),
     threadMessagePageForOwner: async (input: {
       maxItems: number;
       ownerId: typeof ownerId;

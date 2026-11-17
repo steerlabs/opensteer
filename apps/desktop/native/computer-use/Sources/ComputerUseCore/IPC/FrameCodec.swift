@@ -1,7 +1,7 @@
 import Foundation
 
 /// Framing for the Unix socket: a 4-byte big-endian length followed by UTF-8
-/// JSON, at most 4 MiB (docs/computer-use.md#the-helper).
+/// JSON, at most 4 MiB.
 public enum Frame {
   public static let maxBytes = 4 * 1_024 * 1_024
 

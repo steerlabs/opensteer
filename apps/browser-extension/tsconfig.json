@@ -10,5 +10,5 @@
     "noEmit": true,
     "types": ["vitest/globals"]
   },
-  "include": ["src", "scripts", "e2e"]
+  "include": ["src", "scripts"]
 }

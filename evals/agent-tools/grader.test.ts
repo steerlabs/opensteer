@@ -54,6 +54,36 @@ describe("trajectory grading failure modes", () => {
     expect(checks.every((c) => c.pass)).toBe(false);
     expect(checks.filter((c) => !c.pass)).toHaveLength(3);
   });
+  it("matches source checkpoints in plugin call inputs", () => {
+    const c = parseCases(
+      line({
+        expect: {
+          callsArgMatch: [
+            {
+              tool: "plugin_call",
+              path: ["calls", "input"],
+              pattern: "msg-X|2026-11-16T14:30",
+            },
+          ],
+        },
+      }),
+    )[0]!;
+    for (const args of [{ afterId: "msg-X" }, { query: "after:2026-11-16T14:30:00Z" }])
+      expect(
+        grade(
+          c.expect,
+          [{ tool: "plugin_call", args: { calls: { input: args } }, valid: true }],
+          "",
+        ).every((c) => c.pass),
+      ).toBe(true);
+    expect(
+      grade(
+        c.expect,
+        [{ tool: "plugin_call", args: { calls: { input: { since: "yesterday" } } }, valid: true }],
+        "",
+      ).every((c) => c.pass),
+    ).toBe(false);
+  });
   it("orders repeated occurrences and enforces counts and final text", () => {
     const c = parseCases(
       line({

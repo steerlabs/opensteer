@@ -3,7 +3,7 @@
  * `off` (the default) observes no lock order but still fails on deadlocks and
  * serialization failures; `enforce`, which the full integration run sets, also fails
  * on violations and cycles; `record` keeps every acquisition without failing, for
- * diagnosis only. See docs/testing.md#lock-order-modes.
+ * diagnosis only.
  */
 export type LockOrderMode = "enforce" | "record" | "off";
 

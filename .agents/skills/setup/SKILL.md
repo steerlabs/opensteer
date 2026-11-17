@@ -6,8 +6,7 @@ description: Use when enrolling a computer in an Opensteer Deployment or resolvi
 # Setup
 
 Lending a computer, connecting plugin accounts and wiring messaging.
-[Computers](../../../docs/computers.md), [Plugin account OAuth](../../../docs/plugin-accounts.md) and
-[Messaging](../../../docs/messaging.md) hold the authority rules.
+[Plugin account OAuth](../../../docs/plugin-accounts.md) holds the account authority rules.
 
 ## Safety rules
 

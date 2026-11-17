@@ -152,8 +152,7 @@ MCP servers from it; Runners never rebuild a tool list from their own release, a
 [credential proxy](../apps/runner/src/credentials/credential-proxy.ts) gives each Run a secret
 usable only for its tool endpoints, never put on a command line and revoked on interrupt. Loopback
 alone is no tenant isolation. Token refresh belongs to the Runner boot holding the Run; refusal ends
-access, temporary unavailability does not
-([Run tool authority](agent-orchestration.md#run-tool-authority)).
+access, temporary unavailability does not.
 
 Codex Request tools use a second server so the model calls them directly: code-mode cells can
 otherwise yield while the Request is held and let the model keep acting. `longRequestHold` requires
@@ -166,14 +165,15 @@ Claude defers Opensteer tool schemas through ToolSearch, which must stay availab
 Its synthetic project root supplies loose skills without the real project settings, though CLAUDE.md
 and `.claude/rules` can still load. An organization-managed Claude policy overrides Opensteer's
 per-Run settings, so Opensteer's guarantees assume none. Engine permission callbacks become Requests
-in every access mode. Plugin-tool approvals follow the separate [plugin execution policy](plugins.md).
+in every access mode. Plugin-tool approvals follow each plugin tool's approval policy.
 
 ## Instructions and skills
 
 Skills have unique full names (`plugin:skill`, or bare for loose folder skills); duplicates fail
 the Run, and no layer shadows another. Instructions supplement the engine's system prompt and never
 confer Host authority. Plugin skills come from the active deployment's cached source, so planning
-a Run does not wake the plugin engine; see [Plugins](plugins.md). Cross-tool routing stays in the Run guide so Claude can choose tools before
+a Run does not wake the plugin engine. Cross-tool routing stays in the Run guide so Claude can
+choose tools before
 loading deferred schemas. ACP engines differ in resume and cancellation, so each driver declares
 its own rather than inferring it from the ACP version.
 

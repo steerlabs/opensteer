@@ -1,3 +1,6 @@
+// Check current authority at admission and again at handover after a long wait.
+// Setting changes never wait on plugin work. Work already handed over may finish.
+
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { pluginOwnerId } from "./engine-protocol.js";

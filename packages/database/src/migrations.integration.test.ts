@@ -15,7 +15,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
 import {
   tabsAndAppsMigrationName,
-  deviceDriversMigrationName,
   agentHomeSettingsMigrationName,
   dropSpecialistsMigrationName,
   MigrationLineageError,
@@ -793,14 +792,7 @@ describe("fresh personal/team lineage", () => {
     ]);
   });
   it("drops service integrations and keeps device, messaging and local-server rows", async () => {
-    await migrateToLatest(database, {
-      getMigrations: async () =>
-        Object.fromEntries(
-          Object.entries(await migrationProvider().getMigrations()).filter(
-            ([name]) => name <= deviceDriversMigrationName,
-          ),
-        ),
-    });
+    await migrateToLatest(database, migrationsBefore(dropSpecialistsMigrationName));
     const { userId, runnerId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
     // The storage only databases made before this migration have.
     await sql`create table integration_provider_applications (id text primary key);
@@ -1006,6 +998,16 @@ describe("fresh personal/team lineage", () => {
     );
     await migrateToLatest(database);
 
+    expect(
+      (
+        await sql<{
+          indexname: string;
+        }>`select indexname from pg_indexes where schemaname = 'public'
+        and indexname in ('messages_created_at', 'thread_inputs_updated_at') order by indexname`.execute(
+          database,
+        )
+      ).rows,
+    ).toEqual([{ indexname: "messages_created_at" }, { indexname: "thread_inputs_updated_at" }]);
     expect(
       (await database.selectFrom("requests").select("id").execute()).map(({ id }) => id).sort(),
     ).toEqual(keptRequests.sort());
