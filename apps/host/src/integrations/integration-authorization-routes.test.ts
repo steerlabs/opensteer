@@ -3,14 +3,14 @@ import { createId } from "@opensteer/core";
 import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HostAuthenticator } from "../identity/auth.js";
-import type { IntegrationAuthAttemptLifecycle } from "./integration-auth-attempt-service.js";
+import type { IntegrationAuthAttemptLifecycle } from "../access/integration-auth-attempt-service.js";
 import {
   failIntegrationAuthorizationBrowser,
   finishIntegrationAuthorizationBrowser,
   handleIntegrationAuthorizationCommand,
   readIntegrationAuthorizationBinding,
   registerIntegrationAuthorizationRoutes,
-} from "./integration-authorization-routes.js";
+} from "../access/integration-authorization-routes.js";
 import { testHostApiContext } from "../server/test-host-api-context.js";
 
 const apps: ReturnType<typeof Fastify>[] = [];

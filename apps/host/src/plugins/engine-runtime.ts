@@ -1,3 +1,4 @@
+import { oauthReviewDigest } from "./oauth-review.js";
 import { join } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -23,6 +24,16 @@ import {
   OwnerId,
   AppId,
   AccountId,
+  AccountConnectionId,
+  OAuthClientId,
+  OAuthAttemptId,
+  OAuthClientChoice,
+  OAuthClientInputs,
+  OAuthBrokerFailed,
+  OAuthAttemptRecord,
+  FirstPartyOAuthClient,
+  aesGcmCredentials,
+  type OAuthOptions,
   AppAccounts,
   VersionId,
   ProviderId,
@@ -75,6 +86,7 @@ import {
   operations,
   callbackOperations,
   PluginServiceError,
+  PluginBrokerError,
   JsonSchema,
   type EngineInit,
   type PluginCaller,
@@ -197,6 +209,94 @@ export async function startEngine(
         phase("sdk");
         const hostScope = yield* Scope.Scope;
         const repositories = filesystemRepositories(join(config.directory, "repositories"));
+        let oauthConfiguration = {
+          clients: [],
+        } as import("./engine-protocol.js").PluginOAuthConfiguration;
+        const configureOAuth = (linked: boolean) =>
+          callback("oauthConfiguration", { linked }).pipe(
+            Effect.tap((configuration) =>
+              Effect.sync(() => {
+                oauthConfiguration = configuration;
+              }),
+            ),
+          );
+        const brokerCall = <K extends import("./engine-protocol.js").PluginBrokerOperation>(
+          operation: K,
+          input: import("./engine-protocol.js").PluginBrokerInput<K>,
+        ) =>
+          callback(operation, input).pipe(
+            Effect.mapError(
+              (error) =>
+                new OAuthBrokerFailed({
+                  reason: error instanceof PluginBrokerError ? error.reason : "unavailable",
+                }),
+            ),
+          );
+        const oauth: OAuthOptions = {
+          httpClient: egress.client,
+          clientName: "Opensteer",
+          urlPolicy: egress.policy,
+          get firstPartyClients() {
+            return oauthConfiguration.clients.map((client) =>
+              Schema.decodeUnknownSync(FirstPartyOAuthClient)(client),
+            );
+          },
+          get clientMetadataUrl() {
+            return (
+              oauthConfiguration.metadataUrl ??
+              new URL("/v1/plugin-oauth/client-metadata.json", config.origin).href
+            );
+          },
+          get clientMetadataRedirectUri() {
+            return (
+              oauthConfiguration.metadataRedirectUri ??
+              new URL("/v1/plugin-oauth/callback", config.origin).href
+            );
+          },
+          broker: {
+            start: (input) =>
+              brokerCall("oauthStart", {
+                connection: input.connection,
+                owner: input.owner,
+                binding: { ...input.binding, scopes: [...input.binding.scopes] },
+              }),
+            pull: (input) =>
+              brokerCall("oauthPull", {
+                attemptId: input.attemptId,
+                binding: { ...input.binding, scopes: [...input.binding.scopes] },
+              }).pipe(Effect.map(Redacted.make)),
+            refresh: (input) =>
+              brokerCall("oauthRefresh", {
+                attemptId: input.attemptId,
+                resultId: input.resultId,
+                binding: { ...input.binding, scopes: [...input.binding.scopes] },
+                refreshToken: Redacted.value(input.refreshToken),
+                grantedScopes: [...input.grantedScopes],
+              }).pipe(Effect.map(Redacted.make)),
+            acknowledge: (input) =>
+              brokerCall("oauthAcknowledge", {
+                attemptId: input.attemptId,
+                resultId: input.resultId,
+                kind: input.kind,
+                binding: { ...input.binding, scopes: [...input.binding.scopes] },
+              }).pipe(Effect.asVoid),
+            revoke: (input) =>
+              brokerCall("oauthRevoke", {
+                attemptId: input.attemptId,
+                binding: { ...input.binding, scopes: [...input.binding.scopes] },
+                tokens: {
+                  ...Redacted.value(input.tokens),
+                  grantedScopes: [...Redacted.value(input.tokens).grantedScopes],
+                },
+              }).pipe(Effect.asVoid),
+            validate: (binding) => accountAdapter.validateBinding(binding.accountLinkGeneration),
+          },
+        };
+        yield* configureOAuth(true).pipe(Effect.catch(() => Effect.void));
+        const credentialAdapter = yield* aesGcmCredentials(
+          Redacted.make(config.secret),
+          globalThis.crypto,
+        );
         const engine = yield* createPluginEngine({
           database,
           secret: Redacted.make(config.secret),
@@ -211,7 +311,7 @@ export async function startEngine(
           registry: memoryRegistry(),
           cache: { durable: local.declarations },
           background: (work) => Effect.forkIn(work, hostScope).pipe(Effect.as(true)),
-          oauth: { httpClient: egress.client, clientName: "Opensteer", urlPolicy: egress.policy },
+          oauth,
           events: {
             sender: httpEventSender(egress),
             authorize: (target) =>
@@ -288,6 +388,9 @@ export async function startEngine(
         );
         const pages = enginePages(engine, local.runtime, blobs, database, accountAdapter);
         return {
+          configureOAuth,
+          credentialAdapter,
+          sql,
           engine,
           owner,
           accountAdapter,
@@ -577,6 +680,150 @@ export async function startEngine(
             yield* accountAdapter.unlink(operations.unlinkAccount.input.parse(raw));
             yield* composed.scheduler.wakeWebhookSources;
             return null;
+          case "pinOAuth":
+            return yield* accountAdapter.pinConnection(operations.pinOAuth.input.parse(raw));
+          case "prepareOAuth":
+            return yield* accountAdapter.prepare(operations.prepareOAuth.input.parse(raw));
+          case "oauthMethods": {
+            const input = operations.oauthMethods.input.parse(raw);
+            yield* composed.configureOAuth(input.linked);
+            const connection = yield* engine.accountConnections.get({
+              connection: AccountConnectionId.make(input.connection),
+              owner,
+            });
+            const methods = [];
+            for (const [method, definition] of Object.entries(
+              connection.provider.definition.auth,
+            )) {
+              if (definition.type !== "oauth2") {
+                methods.push({
+                  method,
+                  oneClick: false,
+                  setup: { ...definition, kind: "secrets", scopes: [] },
+                });
+                continue;
+              }
+              const setup = yield* engine.accountConnections.oauthSetup({
+                owner,
+                provider: connection.provider.id,
+                method,
+                redirectUri: input.redirectUri,
+              });
+              const clients =
+                setup.grant === "authorization_code"
+                  ? yield* engine.oauthClients.list({ owner, issuer: setup.issuer })
+                  : [];
+              methods.push({
+                method,
+                oneClick: setup.firstParty !== undefined,
+                setup: { ...setup, kind: "oauth2", clients },
+              });
+            }
+            return methods;
+          }
+          case "startOAuth": {
+            const input = operations.startOAuth.input.parse(raw);
+            const configuration = yield* composed.configureOAuth(input.linked);
+            if (oauthReviewDigest(configuration) !== input.configurationDigest)
+              return yield* Effect.fail(
+                new PluginServiceError(
+                  "consent-changed",
+                  "OAuth client configuration changed since review",
+                ),
+              );
+            yield* accountAdapter.reviewedConnection(input.connection, input.consent);
+            const result = yield* engine.accountConnections.startOAuth({
+              connection: AccountConnectionId.make(input.connection),
+              owner,
+              method: input.method,
+              redirectUri: input.redirectUri,
+              ...(input.client
+                ? { client: Schema.decodeUnknownSync(OAuthClientChoice)(input.client) }
+                : {}),
+            });
+            if (result.status !== "redirect" || result.brokerAttemptId) return result;
+            const rows = yield* composed.sql<{
+              id: string;
+              encrypted: Uint8Array;
+            }>`select attempt.id, attempt.encrypted from plugin_engine_oauth_attempts attempt join plugin_engine_account_connections connection on connection.oauth_attempt = attempt.id where connection.id = ${input.connection}`;
+            const row = rows[0];
+            if (!row)
+              return yield* Effect.fail(
+                new PluginServiceError("engine", "OAuth preparation is unavailable"),
+              );
+            const decrypted = yield* composed.credentialAdapter.decrypt(
+              OAuthAttemptId.make(row.id),
+              Redacted.make(row.encrypted),
+            );
+            const attempt = yield* Schema.decodeUnknownEffect(OAuthAttemptRecord)(
+              Redacted.value(decrypted),
+            );
+            if (!("server" in attempt))
+              return yield* Effect.fail(
+                new PluginServiceError("engine", "OAuth relay is unavailable"),
+              );
+            const connection = yield* engine.accountConnections.get({
+              connection: AccountConnectionId.make(input.connection),
+              owner,
+            });
+            const method = connection.provider.definition.auth[input.method];
+            const separator = method?.type === "oauth2" ? (method.scopeSeparator ?? " ") : " ";
+            return {
+              ...result,
+              relay: {
+                clientId: attempt.client.client_id,
+                issuer: attempt.server.issuer_derived ? null : attempt.server.issuer,
+                authorizationEndpoint: attempt.server.authorization_endpoint,
+                authorizationResponseIssuerParameterSupported:
+                  attempt.server.authorization_response_iss_parameter_supported ?? false,
+                usesPkce: new URL(result.authorizationUrl).searchParams.has("code_challenge"),
+                scopeSeparator: separator,
+              },
+              scopes: (new URL(result.authorizationUrl).searchParams.get("scope") ?? "")
+                .split(separator)
+                .filter(Boolean),
+            };
+          }
+          case "completeOAuth": {
+            const input = operations.completeOAuth.input.parse(raw);
+            const connection = AccountConnectionId.make(input.connection);
+            return input.attemptId
+              ? yield* engine.managedAccounts.completeBrokeredOAuth({
+                  connection,
+                  owner,
+                  attemptId: input.attemptId,
+                })
+              : yield* engine.accountConnections.completeOAuth({
+                  connection,
+                  owner,
+                  callbackUrl: Redacted.make(input.callbackUrl ?? ""),
+                });
+          }
+          case "cancelOAuth":
+            return yield* engine.accountConnections.cancel({
+              connection: AccountConnectionId.make(
+                operations.cancelOAuth.input.parse(raw).connection,
+              ),
+              owner,
+            });
+          case "oauthStatus":
+            return yield* engine.accountConnections.get({
+              connection: AccountConnectionId.make(
+                operations.oauthStatus.input.parse(raw).connection,
+              ),
+              owner,
+            });
+          case "saveOAuthApp": {
+            const input = operations.saveOAuthApp.input.parse(raw);
+            return yield* engine.oauthClients.register(
+              Schema.decodeUnknownSync(OAuthClientInputs.register)({ ...input, owner }),
+            );
+          }
+          case "removeOAuthApp":
+            return yield* engine.oauthClients.remove({
+              client: OAuthClientId.make(operations.removeOAuthApp.input.parse(raw).client),
+              owner,
+            });
           case "search":
             return yield* searchCatalog(
               backend(context),

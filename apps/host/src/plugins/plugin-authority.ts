@@ -19,6 +19,15 @@ const discovery = new Set([
 ]);
 const management = new Set(["install", "export", "activate", "remove"]);
 const personOnly = new Set([
+  "pinOAuth",
+  "prepareOAuth",
+  "oauthMethods",
+  "startOAuth",
+  "completeOAuth",
+  "cancelOAuth",
+  "oauthStatus",
+  "saveOAuthApp",
+  "removeOAuthApp",
   "createApiKeyAccount",
   "removeAccount",
   "reviewAccountLink",

@@ -2348,6 +2348,20 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "voice.context": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.say": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.stop": async () => rpcSuccess({}),
+    "plugin.authorization.get": async () => {
+      throw new HostClientRequestError({
+        code: "not_found",
+        message: "Plugin sign-in preview is unavailable",
+        status: 404,
+      });
+    },
+    "plugin.authorization.methods": async () => {
+      throw new HostClientRequestError({
+        code: "not_found",
+        message: "Plugin sign-in preview is unavailable",
+        status: 404,
+      });
+    },
     "integration.authorization.get": async (input) =>
       rpcSuccess(await client.getIntegrationAuthorization(input.attemptId)),
     "integration.grants.list": async () =>

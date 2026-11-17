@@ -4,7 +4,7 @@ import {
   type IntegrationAccountBinding,
   IntegrationAccountBindingSchema,
   validateIntegrationAccountBinding,
-} from "./integration-account-binding.js";
+} from "../access/integration-account-binding.js";
 import { inspectGitHubRepositoryAccess } from "./github-repository-access.js";
 import {
   ConnectIntegrationApiKeySchema,
@@ -87,8 +87,8 @@ import { graphqlAdapter, mcpAdapter, openApiAdapter } from "@opensteer/integrati
 import { integrationDefinitions } from "@opensteer/integration-catalog";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import { z } from "zod";
-import type { IntegrationAuthAttemptLifecycle } from "./integration-auth-attempt-service.js";
-import { integrationAuthAttemptLifetimeMilliseconds } from "./integration-auth-attempt-service.js";
+import type { IntegrationAuthAttemptLifecycle } from "../access/integration-auth-attempt-service.js";
+import { integrationAuthAttemptLifetimeMilliseconds } from "../access/integration-auth-attempt-service.js";
 import type { HostedOAuthBrokerClient } from "../access/hosted-oauth-broker-client.js";
 import {
   canonicalAuthorizationRepair,

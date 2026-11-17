@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { OAuthMethodConfigSchema, type OAuthMethodConfig } from "@opensteer/integration-core";
-import { OAuthBrokerProviderSchema } from "@opensteer/control-plane-protocol";
+import {
+  OAuthBrokerProviderSchema,
+  OAuthBrokerManagedPlacementSchema,
+} from "@opensteer/control-plane-protocol";
 
 const HttpsEndpointSchema = z.url().refine((value) => {
   const url = new URL(value);
@@ -18,6 +21,7 @@ const ProviderFieldsSchema = z.strictObject({
   installationUrl: z.url().optional(),
   allowedScopes: z.array(ScopeSchema).max(512),
   oauth: OAuthMethodConfigSchema,
+  placement: OAuthBrokerManagedPlacementSchema.optional(),
 });
 
 function validateProvider(

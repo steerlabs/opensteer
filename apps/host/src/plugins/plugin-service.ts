@@ -11,6 +11,11 @@ import {
   operations,
   callbackOperations,
   PluginServiceError,
+  PluginBrokerError,
+  type PluginBrokerOperation,
+  type PluginBrokerInput,
+  type PluginBrokerOutput,
+  type PluginOAuthConfiguration,
   type EngineInit,
   type PluginOperation,
   type PluginInput,
@@ -59,6 +64,12 @@ export interface PluginServiceOptions {
     input: Record<string, PluginJson>,
     signal: AbortSignal,
   ) => Promise<boolean>;
+  readonly oauthConfiguration?: (linked: boolean) => Promise<PluginOAuthConfiguration>;
+  readonly oauthBroker?: <K extends PluginBrokerOperation>(
+    operation: K,
+    input: PluginBrokerInput<K>,
+    signal: AbortSignal,
+  ) => Promise<PluginBrokerOutput<K>>;
   readonly onExecution?: (execution: PluginExecution) => void;
   readonly onDiagnostic?: (phase: string) => void;
   readonly onState?: (state: PluginServiceState) => void;
@@ -461,7 +472,19 @@ export class PluginService {
     this.#touch();
     try {
       let result: unknown;
-      if (message.operation === "authorize")
+      if (message.operation === "oauthConfiguration")
+        result = (await this.#options.oauthConfiguration?.(
+          callbackOperations.oauthConfiguration.input.parse(message.input).linked,
+        )) ?? { clients: [] };
+      else if (message.operation.startsWith("oauth")) {
+        if (!this.#options.oauthBroker) throw new PluginBrokerError("unavailable");
+        const operation = message.operation as PluginBrokerOperation;
+        result = await this.#options.oauthBroker(
+          operation,
+          callbackOperations[operation].input.parse(message.input),
+          controller.signal,
+        );
+      } else if (message.operation === "authorize")
         result = this.#options.authorize
           ? await this.#options.authorize(
               callbackOperations.authorize.input.parse(message.input),
@@ -509,6 +532,7 @@ export class PluginService {
         error: {
           code: error instanceof PluginServiceError ? error.code : "engine",
           message: error instanceof PluginServiceError ? error.message : "Host callback failed",
+          ...(error instanceof PluginBrokerError ? { brokerReason: error.reason } : {}),
         },
       });
     } finally {
@@ -613,6 +637,15 @@ export class PluginService {
   readonly activate = this.#method("activate");
   readonly remove = this.#method("remove");
   readonly accounts = this.#method("accounts");
+  readonly pinOAuth = this.#method("pinOAuth");
+  readonly prepareOAuth = this.#method("prepareOAuth");
+  readonly oauthMethods = this.#method("oauthMethods");
+  readonly startOAuth = this.#method("startOAuth");
+  readonly completeOAuth = this.#method("completeOAuth");
+  readonly cancelOAuth = this.#method("cancelOAuth");
+  readonly oauthStatus = this.#method("oauthStatus");
+  readonly saveOAuthApp = this.#method("saveOAuthApp");
+  readonly removeOAuthApp = this.#method("removeOAuthApp");
   readonly createApiKeyAccount = this.#method("createApiKeyAccount");
   readonly removeAccount = this.#method("removeAccount");
   readonly reviewAccountLink = this.#method("reviewAccountLink");

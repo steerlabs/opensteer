@@ -34,7 +34,7 @@ import {
 } from "@opensteer/control-plane-protocol";
 import { OpensteerError, createId } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
-import { handleIntegrationAuthorizationCommand } from "./integration-authorization-routes.js";
+import { handleIntegrationAuthorizationCommand } from "../access/integration-authorization-routes.js";
 import { testHostApiContext } from "../server/test-host-api-context.js";
 import { canonicalAuthorizationRepair } from "../identity/auth.js";
 import {

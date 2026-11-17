@@ -94,3 +94,5 @@ export {
   type ToolError,
   type ToolFailure,
 } from "@opensteer/core";
+
+export * from "./plugin-oauth.js";

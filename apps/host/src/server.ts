@@ -1,3 +1,4 @@
+import { registerPluginOAuthRoutes } from "./plugins/plugin-oauth-routes.js";
 import type { TabService } from "./tabs/tab-service.js";
 import type { AgentToolActivityStore, DatabaseSchema } from "@opensteer/database";
 import { registerAgentToolRoute } from "./mcp/agent-tool-route.js";
@@ -278,12 +279,12 @@ import {
   sealRequestResponse,
   type RequestResponseVault,
 } from "./identity/request-response-vault.js";
-import type { IntegrationAuthAttemptLifecycle } from "./integrations/integration-auth-attempt-service.js";
+import type { IntegrationAuthAttemptLifecycle } from "./access/integration-auth-attempt-service.js";
 import {
   createIntegrationAuthorizationRpcHandlers,
   registerIntegrationAuthorizationRoutes,
   type IntegrationAuthorizationRpcOptions,
-} from "./integrations/integration-authorization-routes.js";
+} from "./access/integration-authorization-routes.js";
 import type { IntegrationDashboardService } from "./integrations/integration-dashboard-service.js";
 import {
   createIntegrationPlatformRpcHandlers,
@@ -371,6 +372,7 @@ const HarnessAuthenticationParamsSchema = z.strictObject({
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
+  readonly pluginOAuth?: import("./plugins/plugin-oauth-service.js").PluginOAuthService;
   readonly pluginRequests?: Pick<
     import("./plugins/plugin-executions.js").PluginExecutions,
     "respond"
@@ -477,9 +479,17 @@ export async function createHostServer(
     logger: options.logger ?? false,
     requestIdHeader: false,
     logController: new LogController({
-      disableRequestLogging: (request) =>
-        hasAppAuthority(request.headers) ||
-        (request.url ?? "").split("?", 1)[0]?.startsWith("/media/") === true,
+      disableRequestLogging: (request) => {
+        const path = (request.url ?? "").split("?", 1)[0] ?? "";
+        return (
+          hasAppAuthority(request.headers) ||
+          path.startsWith("/media/") ||
+          path.startsWith("/v1/integration-authorizations/") ||
+          path === "/v1/plugin-oauth/callback" ||
+          path.startsWith("/v1/integrations/oauth/callback/") ||
+          path === "/v1/integration-platform/mcp-oauth/callback"
+        );
+      },
     }),
   });
   const appGateway = new AppGateway({
@@ -631,6 +641,7 @@ export async function createHostServer(
       (await dependencies.personalRemoteAccess?.service.status())?.route ?? null,
   };
   const integrationAuthorizationRpcOptions: IntegrationAuthorizationRpcOptions = {
+    ...(dependencies.pluginOAuth ? { plugins: dependencies.pluginOAuth } : {}),
     attempts: dependencies.integrations.authAttempts,
     authenticator: dependencies.authenticator,
     deploymentId: dependencies.discovery.document.deploymentId,
@@ -638,6 +649,8 @@ export async function createHostServer(
     mcpOauth: dependencies.integrations.mcpOauth,
   };
   registerIntegrationAuthorizationRoutes(app, integrationAuthorizationRpcOptions);
+  if (dependencies.pluginOAuth)
+    registerPluginOAuthRoutes(app, dependencies.pluginOAuth, dependencies.authenticator);
   const integrationRpcOptions: IntegrationRpcOptions = {
     pluginsChanged: (viewers) =>
       dependencies.realtime.sendToUsers(viewers, { type: "host.plugins-changed" }),
@@ -2540,6 +2553,7 @@ export async function createHostServer(
       coreRpcHandlers,
       handleCoreCommand,
       dependencies.computerViews,
+      dependencies.pluginOAuth,
     ),
     ...(dependencies.connections
       ? createConnectionRpcHandlers(dependencies.connections)

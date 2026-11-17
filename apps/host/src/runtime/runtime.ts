@@ -1,3 +1,5 @@
+import { PluginOAuthService } from "../plugins/plugin-oauth-service.js";
+import { PluginOAuthStore } from "../plugins/plugin-oauth-store.js";
 import { PluginAuthority } from "../plugins/plugin-authority.js";
 import { PluginExecutions } from "../plugins/plugin-executions.js";
 import { PluginAgentStore } from "@opensteer/database";
@@ -210,8 +212,8 @@ import {
   SignedTokenService,
   signHostDiscovery,
 } from "../identity/host-keys.js";
-import { resolveIntegrationAccountBinding } from "../integrations/integration-account-binding.js";
-import { DefaultIntegrationAuthAttemptLifecycle } from "../integrations/integration-auth-attempt-service.js";
+import { resolveIntegrationAccountBinding } from "../access/integration-account-binding.js";
+import { DefaultIntegrationAuthAttemptLifecycle } from "../access/integration-auth-attempt-service.js";
 import { integrationCallSubject } from "../integrations/integration-call-subject.js";
 import { IntegrationDashboardService } from "../integrations/integration-dashboard-service.js";
 import { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
@@ -415,6 +417,7 @@ export function runnerRegistrationHook<T>(
 export interface PersonalHostRuntime {
   readonly kind: "personal";
   readonly plugins: PluginService;
+  readonly pluginOAuth: PluginOAuthService;
   readonly pluginAgentSettings: PluginAgentStore;
   readonly pluginRequests: PluginExecutions;
   readonly pluginTools: PluginToolHandlers;
@@ -533,6 +536,7 @@ export async function createHostRuntime(
   let threadStateStopped = false;
   let taskQuestions: TaskQuestionNotices | undefined;
   let pluginService: PluginService | undefined;
+  let pluginOAuth: PluginOAuthService | undefined;
   let pluginExecutions: PluginExecutions | undefined;
   let pluginChangeNotices: PluginChangeNotices | undefined;
   try {
@@ -1077,6 +1081,12 @@ export async function createHostRuntime(
       dataDirectory,
       owner: "personal",
       authorize: (input) => pluginAuthority.authorize(input),
+      oauthConfiguration: (linked) =>
+        pluginOAuth ? pluginOAuth.configuration(linked) : Promise.resolve({ clients: [] }),
+      oauthBroker: (operation, input) => {
+        if (!pluginOAuth) throw new Error("Plugin sign-in is unavailable");
+        return pluginOAuth.broker(operation, input);
+      },
       onExecution: (execution) => pluginExecutions?.report(execution),
       onState: (state) => {
         if (state.status === "restarting" || state.status === "unavailable")
@@ -1087,7 +1097,6 @@ export async function createHostRuntime(
       credentialKey,
       origin: config.canonicalOrigin.origin,
     });
-    void pluginService.start().catch(() => undefined);
     credentialKey.fill(0);
     await credentials.initialize();
     const integrationAuthAttempts = new DefaultIntegrationAuthAttemptLifecycle({
@@ -2645,6 +2654,23 @@ export async function createHostRuntime(
         );
       },
     });
+    pluginOAuth = new PluginOAuthService({
+      plugins: pluginService,
+      store: new PluginOAuthStore(database, integrationVault),
+      attempts: integrationAuthAttempts,
+      origin: config.canonicalOrigin.origin,
+      owner: async () => (await personalSettings(database)).ownerId,
+      ...(hostedOAuthBroker
+        ? {
+            broker: {
+              client: hostedOAuthBroker.broker,
+              deploymentAuthorityDigest: hostedOAuthBroker.deploymentAuthorityDigest,
+            },
+          }
+        : {}),
+      accountLinked: (input) => pluginTools.accountLinked(input),
+    });
+    void pluginService.start().catch(() => undefined);
     const agentTools = new OpensteerMcpService({
       pluginExecutions,
       teamsAvailable: async () =>
@@ -2857,6 +2883,7 @@ export async function createHostRuntime(
         teamLinks: async () => (await ensureLinks()).links,
         harnessAuthenticationCoordinator,
         pluginRequests: pluginExecutions,
+        pluginOAuth,
         integrations: {
           authAttempts: integrationAuthAttempts,
           continuations,
@@ -3163,6 +3190,7 @@ export async function createHostRuntime(
       pluginAgentSettings: pluginAgentStore,
       pluginRequests: pluginExecutions,
       pluginTools,
+      pluginOAuth,
       authorityLost: authorityLease.lost,
       settleExecutionLeases: () => executionLeaseLoop.settled(),
       async close() {

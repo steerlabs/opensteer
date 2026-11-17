@@ -325,6 +325,27 @@ export const AcknowledgeHostedOAuthRefreshRequestSchema = z.strictObject({
   transactionId: HostedOAuthRefreshTransactionIdSchema,
 });
 
+export const OAuthBrokerManagedPlacementSchema = z.strictObject({
+  hosts: z
+    .array(
+      z
+        .string()
+        .regex(
+          /^(\*\.)?[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)*(?::[0-9]{1,5})?$/u,
+        ),
+    )
+    .min(1),
+  header: z
+    .string()
+    .regex(/^[!#$%&'*+.^_`|~0-9a-z-]+$/u)
+    .optional(),
+  scheme: z
+    .string()
+    .regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u)
+    .nullable()
+    .optional(),
+});
+
 export const OAuthBrokerPublicMetadataSchema = z
   .object({
     pluginProviders: z
@@ -337,6 +358,7 @@ export const OAuthBrokerPublicMetadataSchema = z
           revocationUrl: z.url().optional(),
           allowedScopes: z.array(z.string().min(1).max(256)).max(512),
           scopeSeparator: z.string().min(1).max(4),
+          placement: OAuthBrokerManagedPlacementSchema.optional(),
         }),
       )
       .optional(),

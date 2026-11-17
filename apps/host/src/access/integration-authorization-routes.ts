@@ -23,9 +23,9 @@ import type { HostAuthenticator } from "../identity/auth.js";
 import {
   integrationAuthAttemptLifetimeMilliseconds,
   type IntegrationAuthAttemptLifecycle,
-} from "./integration-auth-attempt-service.js";
-import type { McpOAuthService } from "./mcp-oauth-service.js";
-import type { IntegrationService } from "./integration-service.js";
+} from "../access/integration-auth-attempt-service.js";
+import type { McpOAuthService } from "../integrations/mcp-oauth-service.js";
+import type { IntegrationService } from "../integrations/integration-service.js";
 
 const AttemptParamsSchema = z.strictObject({
   attemptId: IntegrationAuthorizationAttemptIdSchema,
@@ -38,6 +38,7 @@ export interface IntegrationAuthorizationRpcOptions {
   readonly attempts: IntegrationAuthAttemptLifecycle;
   readonly authenticator: HostAuthenticator;
   readonly deploymentId: DeploymentId;
+  readonly plugins?: import("../plugins/plugin-oauth-service.js").PluginOAuthService;
   readonly integrations?: IntegrationService;
   readonly mcpOauth?: McpOAuthService;
 }
@@ -127,6 +128,7 @@ export function registerIntegrationAuthorizationRoutes(
     async (request, reply) => {
       const { attemptId } = AttemptParamsSchema.parse(request.params);
       const { ticket } = LaunchQuerySchema.parse(request.query);
+      await options.plugins?.validateLaunch(attemptId);
       const launched = await options.attempts.launch({ id: attemptId, launchTicket: ticket });
       if (!launched) throw unavailableAttempt();
       // A sign-in through the Account service launches from any origin that
@@ -235,8 +237,8 @@ export function registerOAuthCallbackRoute<Id, Prepared>(
         status: result.status,
         surface: result.surface,
       });
-    } catch (error) {
-      request.log.warn({ attemptId, err: error }, `${label} authorization callback failed`);
+    } catch {
+      request.log.warn({ attemptId }, `${label} authorization callback failed`);
       clearIntegrationAuthorizationBinding(
         reply,
         String(attemptId),

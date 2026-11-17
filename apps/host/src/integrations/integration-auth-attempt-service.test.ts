@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
   DefaultIntegrationAuthAttemptLifecycle,
   integrationAuthAttemptLifetimeMilliseconds,
-} from "./integration-auth-attempt-service.js";
+} from "../access/integration-auth-attempt-service.js";
 
 describe("DefaultIntegrationAuthAttemptLifecycle", () => {
   it("stores only digests and a sealed launch destination with the shared TTL", async () => {

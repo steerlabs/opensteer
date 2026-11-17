@@ -121,6 +121,8 @@ export const hostApiScopes = {
   "voice.say": "mutation",
   "voice.stop": "mutation",
   "voice.context": "mutation",
+  "plugin.authorization.get": "session",
+  "plugin.authorization.methods": "session",
   "integration.authorization.get": "session",
   "integration.grants.list": "session",
   "integration.computer.policy.get": "session",

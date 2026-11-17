@@ -3,6 +3,10 @@ import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import { z } from "zod";
 import { isBareOrigin } from "@opensteer/core";
 import {
+  CreatePluginOAuthAttemptRequestSchema,
+  CreatePluginOAuthCallbackRelayRequestSchema,
+  CreatePluginOAuthRefreshRequestSchema,
+  CreatePluginOAuthRevocationRequestSchema,
   AcknowledgeHostedOAuthRefreshRequestSchema,
   AcknowledgeHostedOAuthResultRequestSchema,
   CreateHostedOAuthAttemptRequestSchema,
@@ -52,6 +56,42 @@ export class HostedOAuthBrokerClient {
     );
   }
 
+  async createPluginAttempt(
+    input: import("@opensteer/control-plane-protocol").CreatePluginOAuthAttemptRequest,
+  ) {
+    return CreateHostedOAuthAttemptResponseSchema.parse(
+      await this.#request("/v1/host/oauth-broker/attempts", {
+        body: CreatePluginOAuthAttemptRequestSchema.parse(input),
+        method: "POST",
+      }),
+    );
+  }
+  async createPluginCallbackRelay(
+    input: z.infer<typeof CreatePluginOAuthCallbackRelayRequestSchema>,
+  ) {
+    return CreateHostedOAuthAttemptResponseSchema.parse(
+      await this.#request("/v1/host/oauth-broker/callback-relays", {
+        body: CreatePluginOAuthCallbackRelayRequestSchema.parse(input),
+        method: "POST",
+      }),
+    );
+  }
+  async refreshPlugin(input: z.infer<typeof CreatePluginOAuthRefreshRequestSchema>) {
+    return CreateHostedOAuthRefreshResponseSchema.parse(
+      await this.#request("/v1/host/oauth-broker/refreshes", {
+        body: CreatePluginOAuthRefreshRequestSchema.parse(input),
+        method: "POST",
+      }),
+    );
+  }
+  async revokePlugin(input: z.infer<typeof CreatePluginOAuthRevocationRequestSchema>) {
+    return CreateHostedOAuthRevocationResponseSchema.parse(
+      await this.#request("/v1/host/oauth-broker/revocations", {
+        body: CreatePluginOAuthRevocationRequestSchema.parse(input),
+        method: "POST",
+      }),
+    );
+  }
   async createAttempt(input: CreateHostedOAuthAttemptRequest) {
     return CreateHostedOAuthAttemptResponseSchema.parse(
       await this.#request("/v1/host/oauth-broker/attempts", {

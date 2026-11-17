@@ -22,7 +22,7 @@ import type { IntegrationPlatformService } from "./integration-platform-service.
 import type { DeviceService } from "../devices/device-service.js";
 import type { LocalServerService } from "../local-servers/local-server-service.js";
 import type { McpOAuthService } from "./mcp-oauth-service.js";
-import { registerOAuthCallbackRoute } from "./integration-authorization-routes.js";
+import { registerOAuthCallbackRoute } from "../access/integration-authorization-routes.js";
 import { requirePersonalSession, requireSurface } from "../server/rpc-context.js";
 
 export interface IntegrationPlatformRpcOptions {

@@ -11,7 +11,7 @@ import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/acces
 import { createIntegrationId, McpOAuthAttemptIdSchema } from "@opensteer/integration-core/ids";
 import { IntegrationPlatformStore, IntegrationAuthAttemptStore } from "@opensteer/database";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
-import type { IntegrationAuthAttemptLifecycle } from "./integration-auth-attempt-service.js";
+import type { IntegrationAuthAttemptLifecycle } from "../access/integration-auth-attempt-service.js";
 import {
   createMachineAccessDatabase,
   startPrivateMachineHost,

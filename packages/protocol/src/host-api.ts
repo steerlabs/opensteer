@@ -1,3 +1,9 @@
+import {
+  pluginOAuthCommands,
+  pluginOAuthOutputs,
+  PluginOAuthMethodsSchema,
+  PluginOAuthStatusSchema,
+} from "./plugin-oauth.js";
 import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
 import { MachineSummarySchema } from "./machines.js";
 import { OwnerWindowInfoSchema } from "./computer-use.js";
@@ -789,6 +795,8 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("runner.enrollment.retire"),
   }),
+  // Plugin account sign-in.
+  ...pluginOAuthCommands(idempotencyKeySchema),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     input: BeginMcpAuthorizationSchema,
@@ -1327,6 +1335,8 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("integration.server.secrets.set") }),
   z.object({ type: z.literal("integration.computer.policy.set"), appApproval: z.literal("ask") }),
   z.object({ type: z.literal("integration.computer.app.block") }),
+  // Plugin account sign-in.
+  ...pluginOAuthOutputs,
   IntegrationAuthorizationStatusViewSchema.extend({
     type: z.literal("integration.authorization.cancel"),
   }),
@@ -1900,6 +1910,17 @@ const hostApiGroup3 = defineRpc({
   "voice.stop": declaration("POST", VoiceStopInputSchema, VoiceEmptyResultSchema),
   /** Replaces what the call's agent knows the person is looking at. */
   "voice.context": declaration("POST", VoiceContextInputSchema, VoiceEmptyResultSchema),
+  // Plugin account sign-in.
+  "plugin.authorization.get": declaration(
+    "GET",
+    z.strictObject({ attemptId: IntegrationAuthorizationAttemptIdSchema }),
+    PluginOAuthStatusSchema,
+  ),
+  "plugin.authorization.methods": declaration(
+    "GET",
+    z.strictObject({ connection: z.string().min(1) }),
+    PluginOAuthMethodsSchema,
+  ),
   "integration.authorization.get": declaration(
     "GET",
     z.strictObject({ attemptId: IntegrationAuthorizationAttemptIdSchema }),

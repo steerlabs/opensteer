@@ -328,6 +328,18 @@ export function migrationProvider(): MigrationProvider {
             await sql.raw(PLUGIN_HOST_SQL).execute(database);
           },
         },
+        "0030_plugin_oauth": {
+          async up(database) {
+            await sql
+              .raw(
+                `CREATE TABLE plugin_oauth_records (
+              id text PRIMARY KEY, owner_user_id text NOT NULL REFERENCES users(id),
+              expires_at timestamptz, begun_at timestamptz, encrypted_payload bytea NOT NULL
+            ); CREATE INDEX plugin_oauth_records_expiry ON plugin_oauth_records(expires_at) WHERE expires_at IS NOT NULL;`,
+              )
+              .execute(database);
+          },
+        },
       };
     },
   };

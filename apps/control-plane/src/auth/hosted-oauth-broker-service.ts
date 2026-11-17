@@ -219,6 +219,7 @@ export class HostedOAuthBrokerService {
                 : {}),
               allowedScopes: application.allowedScopes,
               scopeSeparator: application.oauth.scopeSeparator,
+              ...(application.placement ? { placement: application.placement } : {}),
             },
           ]),
       ),

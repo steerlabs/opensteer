@@ -1,3 +1,5 @@
+import { PluginAccountConsentSchema } from "@opensteer/core";
+import { PluginOAuthClientChoiceSchema } from "@opensteer/protocol";
 import { z } from "zod";
 
 export const JsonSchema = z.json();
@@ -13,11 +15,7 @@ const files = z.array(
 );
 export const CallerSchema = z.strictObject({ caller: id, mode: z.enum(["ask", "automatic"]) });
 export type PluginCaller = z.infer<typeof CallerSchema>;
-export const ConsentSchema = z.strictObject({
-  digest: z.string().regex(/^[a-f0-9]{64}$/u),
-  sites: z.array(z.string()),
-  credential: z.enum(["sealed", "value"]),
-});
+export const ConsentSchema = PluginAccountConsentSchema;
 export type PluginConsent = z.infer<typeof ConsentSchema>;
 const plugin = z.strictObject({ plugin: id });
 const target = { plugin: id, requirement: id, scope: z.enum(["app", "user"]) };
@@ -236,6 +234,54 @@ export const operations = {
     output: JsonSchema,
   },
   unlinkAccount: { input: z.strictObject({ ...target, account: id }), output: JsonSchema },
+  pinOAuth: {
+    input: z.strictObject({
+      connection: id,
+      ownerUserId: id,
+      localId: id,
+      account: z.strictObject({ issuer: z.url(), subject: id, linkGeneration: id }).nullable(),
+    }),
+    output: z.null(),
+  },
+  prepareOAuth: {
+    input: z.strictObject(target),
+    output: z.strictObject({
+      connection: id,
+      consent: ConsentSchema,
+      callbackProvider: z.enum(["plugin", "mcp"]),
+    }),
+  },
+  oauthMethods: {
+    input: z.strictObject({ connection: id, redirectUri: z.url(), linked: z.boolean() }),
+    output: z.array(z.strictObject({ method: id, oneClick: z.boolean(), setup: object })),
+  },
+  startOAuth: {
+    input: z.strictObject({
+      connection: id,
+      consent: ConsentSchema,
+      method: id,
+      redirectUri: z.url(),
+      linked: z.boolean(),
+      configurationDigest: id,
+      client: PluginOAuthClientChoiceSchema.optional(),
+    }),
+    output: object,
+  },
+  completeOAuth: {
+    input: z.strictObject({
+      connection: id,
+      attemptId: id.optional(),
+      callbackUrl: z.url().optional(),
+    }),
+    output: AccountSchema,
+  },
+  cancelOAuth: { input: z.strictObject({ connection: id }), output: JsonSchema },
+  oauthStatus: { input: z.strictObject({ connection: id }), output: object },
+  saveOAuthApp: {
+    input: z.strictObject({ issuer: z.url(), clientId: id, clientSecret: id.optional() }),
+    output: object,
+  },
+  removeOAuthApp: { input: z.strictObject({ client: id }), output: JsonSchema },
   search: {
     input: search,
     output: z
@@ -323,7 +369,94 @@ export const HostProviderSchema = z.strictObject({
   tools: z.array(HostToolSchema),
 });
 export type PluginHostProvider = z.infer<typeof HostProviderSchema>;
+export const BrokerBindingSchema = z.strictObject({
+  provider: id,
+  revision: z.number().int().positive(),
+  redirectUri: z.url(),
+  scopes: z.array(id),
+  accountLinkGeneration: id,
+  requirementDigest: id,
+  clientDigest: id,
+});
+const brokerAttempt = { attemptId: id, binding: BrokerBindingSchema };
+const brokerTokens = z.strictObject({
+  accessToken: id,
+  tokenType: id,
+  refreshToken: id.optional(),
+  grantedScopes: z.array(id),
+  expiresAt: z.number().int().nonnegative().optional(),
+});
+const brokerResult = z.strictObject({ ...brokerAttempt, tokens: brokerTokens });
+export const OAuthConfigurationSchema = z.strictObject({
+  clients: z.array(object),
+  metadataUrl: z.url().optional(),
+  metadataRedirectUri: z.url().optional(),
+});
+export type PluginOAuthConfiguration = z.infer<typeof OAuthConfigurationSchema>;
+export const brokerCallbackOperations = {
+  oauthStart: {
+    input: z.strictObject({
+      connection: id,
+      owner: id,
+      binding: BrokerBindingSchema.omit({ accountLinkGeneration: true }),
+    }),
+    output: z.strictObject({
+      attemptId: id,
+      authorizationUrl: z.url(),
+      expiresAt: z.number(),
+      accountLinkGeneration: id,
+    }),
+  },
+  oauthPull: { input: z.strictObject(brokerAttempt), output: brokerResult },
+  oauthRefresh: {
+    input: z.strictObject({
+      ...brokerAttempt,
+      resultId: id,
+      refreshToken: id,
+      grantedScopes: z.array(id),
+    }),
+    output: brokerResult,
+  },
+  oauthAcknowledge: {
+    input: z.strictObject({
+      ...brokerAttempt,
+      kind: z.enum(["authorization", "refresh"]),
+      resultId: id,
+    }),
+    output: z.null(),
+  },
+  oauthRevoke: {
+    input: z.strictObject({ ...brokerAttempt, tokens: brokerTokens }),
+    output: z.null(),
+  },
+} as const;
+export type PluginBrokerOperation = keyof typeof brokerCallbackOperations;
+export type PluginBrokerInput<K extends PluginBrokerOperation> = z.infer<
+  (typeof brokerCallbackOperations)[K]["input"]
+>;
+export type PluginBrokerOutput<K extends PluginBrokerOperation> = z.infer<
+  (typeof brokerCallbackOperations)[K]["output"]
+>;
+export const BrokerFailureReasonSchema = z.enum([
+  "unavailable",
+  "grant_rejected",
+  "client_rejected",
+  "binding_changed",
+  "invalid_response",
+]);
+export class PluginBrokerError extends Error {
+  readonly reason: z.infer<typeof BrokerFailureReasonSchema>;
+  constructor(reason: z.infer<typeof BrokerFailureReasonSchema>) {
+    super("Account broker operation failed");
+    this.reason = reason;
+  }
+}
 export const callbackOperations = {
+  ...brokerCallbackOperations,
+  oauthConfiguration: {
+    input: z.strictObject({ linked: z.boolean() }),
+    output: OAuthConfigurationSchema,
+  },
   authorize: { input: AuthorizationSchema, output: AuthorizationResultSchema },
   providers: { input: CallerSchema, output: z.array(HostProviderSchema) },
   providerCall: {
@@ -351,6 +484,7 @@ export const EngineErrorSchema = z.strictObject({
   ]),
   message: z.string(),
   tag: z.string().optional(),
+  brokerReason: BrokerFailureReasonSchema.optional(),
 });
 export class PluginServiceError extends Error {
   readonly code: z.infer<typeof EngineErrorSchema>["code"];

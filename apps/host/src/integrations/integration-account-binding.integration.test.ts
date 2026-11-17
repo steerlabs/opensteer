@@ -6,7 +6,7 @@ import { expect } from "vitest";
 import {
   IntegrationAccountBindingSchema,
   resolveIntegrationAccountBinding,
-} from "./integration-account-binding.js";
+} from "../access/integration-account-binding.js";
 const issuer = "https://accounts.opensteer.test";
 describeStore("personal integration Account binding", (it) => {
   it("preserves the active personal link generation and follows replacement", async ({
