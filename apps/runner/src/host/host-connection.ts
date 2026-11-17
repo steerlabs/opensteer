@@ -454,8 +454,8 @@ export class ReconnectingHostConnection {
    * The Host learns this computer's engines only from a hello, so when a CLI
    * has appeared or gone since this socket's, the Runner reconnects to say
    * hello again. Runs survive that; trigger programs do not, so it waits while
-   * one is running or a command the Host sent is still queued, and the next
-   * heartbeat looks again.
+   * one is running or a command the Host sent is still queued. This check
+   * runs when a caller explicitly refreshes this computer's engines.
    */
   recheckEngines(): void {
     const advertised = this.#advertisedEngines;

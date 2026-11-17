@@ -2159,8 +2159,6 @@ export async function createHostServer(
         );
         if (result.outcome === "conflict")
           return { outcome: "conflict" as const, type: command.type };
-        if (result.requestEvents.length) dependencies.integrations.continuations.notify();
-        await markMachine();
         return { outcome: "updated" as const, revision: result.revision, type: command.type };
       }
       case "personal.remoteAccess.request": {
@@ -2618,9 +2616,7 @@ export async function createHostServer(
       app.log,
       async (identity) => {
         if (dependencies.runners.isRunnerConnected(identity.runnerId)) return;
-        if (await dependencies.store.recordRunnerUpdateRequired(identity)) {
-          await markMachine();
-        }
+        await dependencies.store.recordRunnerUpdateRequired(identity);
       },
     );
   });

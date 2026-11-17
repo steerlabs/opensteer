@@ -2,6 +2,7 @@ import { requireSelfDeviceId } from "./device-inventory-store.js";
 import { deviceOwnershipIn } from "./machine-ownership.js";
 import type { DeviceId } from "@opensteer/core";
 import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { fulfillDeviceAccessRequestsInTransaction } from "./request-store.js";
 import { assertRequestRevision } from "./request-persistence.js";
 import { type AgentEvent, deploymentPolicy } from "@opensteer/core";
@@ -298,7 +299,7 @@ export async function updateDeviceAccessPolicy(
     ...(input.requestReview ? { requestReview: input.requestReview } : {}),
     ...(input.legacyRunnerId ? { runnerId: input.legacyRunnerId } : { deviceId: input.deviceId }),
   };
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     if (input.idempotency) {
       const { key, requestedBy } = input.idempotency;
       await lockCommandIdempotency(transaction, requestedBy, key);
@@ -417,6 +418,13 @@ export async function updateDeviceAccessPolicy(
     const result = updated
       ? { outcome: "updated" as const, revision: updated.accessPolicyRevision, changed }
       : { outcome: "conflict" as const };
+    if (updated) {
+      mutation.bumpResource("machine");
+      if (changed.browser) {
+        mutation.bumpResource("browser-availability");
+        mutation.bumpResource("browser-placement");
+      }
+    }
     if (input.idempotency) {
       await recordMachineAccessCommand(transaction, {
         idempotency: input.idempotency,

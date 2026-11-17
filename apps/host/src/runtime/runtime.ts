@@ -1852,9 +1852,12 @@ export async function createHostRuntime(
           auxiliaryModuleOwners[stream.fence.module](stream.identity.runnerId, reason);
         },
         onShellFullDiskAccess: async (identity, value) => {
-          await store.setRunnerShellFullDiskAccess(identity.runnerId, value);
-          announceResources("machine");
-          if (value) await machineFullDiskAccess.fulfillForMachine(identity.runnerId);
+          const changed = await store.setRunnerShellFullDiskAccess(
+            identity.runnerId,
+            value,
+            identity.connectionGeneration,
+          );
+          if (changed && value) await machineFullDiskAccess.fulfillForMachine(identity.runnerId);
         },
         authorize: async (identity) => authorizeRunnerRegistration(store, identity),
         onEvent: async (identity, event) => {
@@ -1879,8 +1882,9 @@ export async function createHostRuntime(
             runnerId: identity.runnerId,
           });
           if (committed.duplicateRunUsage) reportDuplicateRunUsage(event.runId);
+          if (committed.revokedGrants.length) endGrants(committed.revokedGrants);
           if (event.type === "run.started")
-            await trackLiveRun(event.runId, event.bindingGeneration);
+            await trackLiveRun(event.runId, event.bindingGeneration).catch(reportMutationFailure);
           return committed.throughOrdinal;
         },
         onEventRefused: async (identity, event, refusal) => {

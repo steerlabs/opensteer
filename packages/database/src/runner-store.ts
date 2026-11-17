@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import { canonicalRunnerPublicKeyPem } from "@opensteer/runner-auth";
 import { cancelPending } from "./request-cancellation.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 
 import { lockBrowserProfile } from "./browser-profile-storage-store.js";
 import {
@@ -1928,17 +1929,26 @@ export async function setRunnerShellFullDiskAccess(
   database: Kysely<DatabaseSchema>,
   runnerId: RunnerId,
   fullDiskAccess: boolean,
+  connectionGeneration?: number,
 ): Promise<boolean> {
-  const result = await database
-    .updateTable("runners")
-    .set({
-      moduleDescriptors: sql`jsonb_set(module_descriptors, '{shell,fullDiskAccess}', to_jsonb(${fullDiskAccess}::boolean))`,
-    })
-    .where("id", "=", runnerId)
-    .where("revokedAt", "is", null)
-    .where(sql<boolean>`module_descriptors ? 'shell'`)
-    .executeTakeFirst(databaseOperationOptions());
-  return result.numUpdatedRows > 0n;
+  return commitPersonalMutation(database, async (tx, mutation) => {
+    let update = tx
+      .updateTable("runners")
+      .set({
+        moduleDescriptors: sql`jsonb_set(module_descriptors, '{shell,fullDiskAccess}', to_jsonb(${fullDiskAccess}::boolean))`,
+      })
+      .where("id", "=", runnerId)
+      .where("revokedAt", "is", null)
+      .where(sql<boolean>`module_descriptors ? 'shell'`)
+      .where(
+        sql<boolean>`module_descriptors #> '{shell,fullDiskAccess}' IS DISTINCT FROM to_jsonb(${fullDiskAccess}::boolean)`,
+      );
+    if (connectionGeneration !== undefined)
+      update = update.where("connectionGeneration", "=", String(connectionGeneration));
+    const result = await update.returning("id").executeTakeFirst(databaseOperationOptions());
+    if (result) mutation.bumpResource("machine");
+    return !!result;
+  });
 }
 export async function authenticateRunnerConnection(
   database: Kysely<DatabaseSchema>,
@@ -1958,17 +1968,19 @@ export async function recordRunnerUpdateRequired(
     readonly reason: "agent-phone-outdated" | "runner-outdated";
   },
 ): Promise<boolean> {
-  const result = await database
-    .updateTable("runners")
-    .set({
-      updateRequired: input.reason,
-      updatedAt: new Date(),
-    })
-    .where("id", "=", input.runnerId)
-    .where("connectionGeneration", "=", String(input.connectionGeneration))
-    .where("revokedAt", "is", null)
-    .executeTakeFirst(databaseOperationOptions());
-  return result.numUpdatedRows === 1n;
+  return commitPersonalMutation(database, async (tx, mutation) => {
+    const result = await tx
+      .updateTable("runners")
+      .set({ updateRequired: input.reason, updatedAt: new Date() })
+      .where("id", "=", input.runnerId)
+      .where("connectionGeneration", "=", String(input.connectionGeneration))
+      .where("revokedAt", "is", null)
+      .where(sql<boolean>`update_required IS DISTINCT FROM ${input.reason}`)
+      .returning("id")
+      .executeTakeFirst(databaseOperationOptions());
+    if (result) mutation.bumpResource("machine");
+    return !!result;
+  });
 }
 
 /**

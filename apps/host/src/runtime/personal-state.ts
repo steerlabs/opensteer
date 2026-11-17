@@ -35,8 +35,7 @@ export async function initializePersonalState(
   // Agent home comes back if it was deleted; a path that now resolves elsewhere is refused below.
   await mkdir(config.agentHome, { recursive: true });
   const path = await realpath(config.agentHome);
-  // Reconciliation runs this repeatedly; once settings exist it must not hold the
-  // Deployment event fence that every personal writer queues behind.
+  // Reconciliation can skip the personal mutation fence once settings exist.
   if (!existing)
     await commitPersonalMutation(database, async (tx, mutation) => {
       if (await initializePersonalSettings(tx, ownerId, { computerId: hosting.id, path })) {

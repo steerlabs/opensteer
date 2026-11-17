@@ -1172,7 +1172,7 @@ export async function dispatchRequestResponse(
   commandId: CommandRow["id"],
   send: (beforeAck: () => Promise<void>) => Promise<void>,
 ): Promise<SucceededCommand> {
-  const requestId = await commitPersonalMutation(database, async (transaction) => {
+  const intent = await commitPersonalMutation(database, async (transaction) => {
     const observed = await transaction
       .selectFrom("commands")
       .innerJoin("requests", "requests.responseCommandId", "commands.id")
@@ -1247,6 +1247,7 @@ export async function dispatchRequestResponse(
       !requestRow ||
       requestRow.mode !== "live" ||
       requestRow.status !== "pending" ||
+      requestRow.revision !== payload.expectedRevision ||
       requestRow.responseCommandId !== commandId ||
       requestRow.originatingRunId !== observed.runId ||
       requestRow.originatingThreadId !== observed.threadId ||
@@ -1268,21 +1269,46 @@ export async function dispatchRequestResponse(
       throw requestResponseDispatchConflict();
     }
     await stampDispatchIntent(transaction, commandId);
-    return request.id;
+    return {
+      requestId: request.id,
+      revision: requestRow.revision,
+      runId: observed.runId,
+      threadId: observed.threadId,
+      agentResponder,
+    };
   });
   let result: SucceededCommand | undefined;
-  await send(async () => {
-    result = await commitPersonalMutation(database, async (tx) => {
-      const succeeded = await succeedCommandInTransaction(tx, commandId);
-      const resolved = await tx
-        .selectFrom("requests")
-        .select("status")
-        .where("id", "=", requestId)
-        .executeTakeFirst();
-      if (!resolved || resolved.status === "pending") throw requestResponseDispatchConflict();
-      return succeeded;
+  try {
+    await send(async () => {
+      result = await commitPersonalMutation(database, async (tx) => {
+        const pending = await tx
+          .selectFrom("requests")
+          .select("id")
+          .where("id", "=", intent.requestId)
+          .where("revision", "=", intent.revision)
+          .where("responseCommandId", "=", commandId)
+          .where("status", "=", "pending")
+          .executeTakeFirst();
+        if (!pending || !(await runHasActiveGrant(tx, intent.runId)))
+          throw requestResponseDispatchConflict();
+        if (intent.agentResponder)
+          await assertAgentRequestTarget(tx, intent.agentResponder.authority, intent.threadId, {
+            admitted: true,
+          });
+        const succeeded = await succeedCommandInTransaction(tx, commandId);
+        const accepted = await tx
+          .selectFrom("commands")
+          .select("id")
+          .where("id", "=", commandId)
+          .where("status", "=", "succeeded")
+          .executeTakeFirst();
+        if (!accepted) throw requestResponseDispatchConflict();
+        return succeeded;
+      });
     });
-  });
+  } catch (error) {
+    if (!result) throw error;
+  }
   if (!result) throw requestResponseDispatchConflict();
   return result;
 }
