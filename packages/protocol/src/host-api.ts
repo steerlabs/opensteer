@@ -258,7 +258,7 @@ import {
   DeviceSessionBindingProofSchema,
 } from "./devices.js";
 
-import { defineRpc, type RpcClient, type RpcHandlers } from "./rpc.js";
+import { defineRpc, type RpcClient, type RpcDeclaration, type RpcHandlers } from "./rpc.js";
 import { RunnerModuleNameSchema } from "./runner-identity.js";
 import {
   HarnessAuthenticationStateViewSchema,
@@ -375,6 +375,17 @@ const deviceConnectionViewSchema = DeviceIntegrationConnectionSummaryViewSchema.
 
 const deviceSetupRequestViewSchema = DeviceComputerAppSetupRequestViewSchema.extend({
   runnerId: RunnerIdSchema.optional(),
+});
+
+export const IntegrationDashboardResponseSchema = IntegrationDashboardViewSchema.extend({
+  connections: z
+    .array(z.union([IntegrationConnectionSummaryViewSchema, deviceConnectionViewSchema]))
+    .max(500),
+});
+export const ComputerAppSetupListResponseSchema = z.object({
+  requests: z
+    .array(z.union([ComputerAppSetupRequestViewSchema, deviceSetupRequestViewSchema]))
+    .max(1_000),
 });
 
 export const IphoneScreenAttachCommandSchema = z.strictObject({
@@ -1576,12 +1587,17 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
+// Keep schema implementation types out of the shared RPC registry.
 const declaration = <Payload extends z.ZodType, Success extends z.ZodType>(
   method: "GET" | "POST",
   payload: Payload,
   success: Success,
   stream?: true,
-) => ({ error: HostApiErrorSchema, method, payload, success, ...(stream ? { stream } : {}) });
+): RpcDeclaration<
+  z.ZodType<Payload["_zod"]["output"], Payload["_zod"]["input"]>,
+  z.ZodType<Success["_zod"]["output"], Success["_zod"]["input"]>,
+  typeof HostApiErrorSchema
+> => ({ error: HostApiErrorSchema, method, payload, success, ...(stream ? { stream } : {}) });
 
 const workspaceBootstrapOutput: z.ZodType<HostBootstrap> = HostBootstrapSchema;
 // Named groups keep TypeScript declaration serialization below its size limit.
@@ -2037,11 +2053,7 @@ const hostApiGroup3 = defineRpc({
   "integration.computer.setup.list": declaration(
     "GET",
     emptyInputSchema,
-    z.object({
-      requests: z
-        .array(z.union([ComputerAppSetupRequestViewSchema, deviceSetupRequestViewSchema]))
-        .max(1_000),
-    }),
+    ComputerAppSetupListResponseSchema,
   ),
   /** Plugin servers on the caller's computers whose secrets the caller may change; never values. */
   "integration.server.secrets.list": declaration(
@@ -2115,15 +2127,7 @@ const hostApiGroup4 = defineRpc({
     z.strictObject({ connectionId: IntegrationConnectionIdSchema }),
     IntegrationRepositoryAccessViewSchema,
   ),
-  "integrations.get": declaration(
-    "GET",
-    emptyInputSchema,
-    IntegrationDashboardViewSchema.extend({
-      connections: z
-        .array(z.union([IntegrationConnectionSummaryViewSchema, deviceConnectionViewSchema]))
-        .max(500),
-    }),
-  ),
+  "integrations.get": declaration("GET", emptyInputSchema, IntegrationDashboardResponseSchema),
   "machine.access.history": declaration(
     "GET",
     z.strictObject({
