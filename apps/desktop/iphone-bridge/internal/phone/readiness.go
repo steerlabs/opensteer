@@ -49,16 +49,12 @@ func (s *Session) capabilities() wire.Capabilities {
 	}
 	result := unavailableCapabilities("")
 	result.Observe = available(true, deviceInfoService, screenshotService)
-	result.Act = available(true, deviceInfoService, hidService, DisplayService)
+	result.Act = available(true, deviceInfoService, hidService)
+	if result.Act == nil && s.state.Rotation == nil {
+		result.Act = reasonPointer(wire.GeometryUnavailable)
+	}
 	result.Launch = available(true, deviceInfoService, appService, inventoryService)
 	result.InstalledApps = available(false, inventoryService)
-	if result.Act == nil && (s.media == nil || !s.media.Ready()) {
-		reason := s.inputReason
-		if reason == "" {
-			reason = wire.MediaRequired
-		}
-		result.Act = reasonPointer(reason)
-	}
 	return result
 }
 func (s *Session) Probe(ctx context.Context) error {
@@ -74,15 +70,11 @@ func (s *Session) Probe(ctx context.Context) error {
 }
 func (s *Session) stopControl() error {
 	s.mu.Lock()
-	screen, media := s.screen, s.media
-	s.screen, s.media = nil, nil
-	s.inputReason = ""
+	screen := s.screen
+	s.screen = nil
 	s.mu.Unlock()
 	if screen != nil {
 		screen.close()
-	}
-	if media != nil {
-		return media.Close()
 	}
 	return nil
 }
@@ -99,7 +91,10 @@ func (m *Manager) probe(ctx context.Context, token string) error {
 	_, err := m.withPhone(ctx, ref, func(ctx context.Context, p *localPhone) (interface{}, error) {
 		s, err := m.ensureTransport(ctx, p)
 		if err == nil {
-			err = s.Probe(ctx)
+			err = m.ensureDeveloperServices(ctx, p, s)
+			if err == nil {
+				err = s.Probe(ctx)
+			}
 		}
 		m.mu.Lock()
 		p.readinessReason = ""

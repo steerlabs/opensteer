@@ -96,3 +96,30 @@ func TestTSSUsesCancellationAndBoundedReplies(t *testing.T) {
 type zeroReader struct{}
 
 func (zeroReader) Read(b []byte) (int, error) { clear(b); return len(b), nil }
+
+func TestCompatibleMountedCryptexBuild(t *testing.T) {
+	for _, test := range []struct {
+		installed, selected string
+		want                bool
+	}{
+		{"27.2.52.0", "27.2.52.0", true}, {"27.2.53.0", "27.2.52.0", true}, {"27.2.52.1", "27.2.52.0", true}, {"27.2.51.0", "27.2.52.0", false}, {"28.2.52.0", "27.2.52.0", false}, {"27.3.52.0", "27.2.52.0", false}, {"27.2.invalid.0", "27.2.52.0", false},
+	} {
+		if got := compatibleCryptexBuild(test.installed, test.selected); got != test.want {
+			t.Fatalf("%s vs %s: %v", test.installed, test.selected, got)
+		}
+	}
+}
+
+func TestDirectTunnelMounterDoesNotRequireUSBMuxVersionLookup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d := ios.DeviceEntry{DeviceID: -1, Context: ctx, Address: "fd00::2", Rsd: ios.RsdHandshakeResponse{Services: map[string]ios.RsdServiceEntry{cryptexServiceName: {Port: 1234}}}}
+	m, err := NewImageMounter(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	if _, ok := m.(*CryptexDeveloperDiskImageMounter); !ok {
+		t.Fatal("direct tunnel required a usbmux-backed mounter")
+	}
+}

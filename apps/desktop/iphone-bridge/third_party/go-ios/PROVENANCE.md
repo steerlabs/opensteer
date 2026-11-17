@@ -27,9 +27,11 @@ Opensteer patches:
 - Supplied-connection RSD constructor, expected-identity validation before host
   announcement, validated service maps/ports and propagated announcement errors.
 - Bounded HTTP/2 frame and stream input. Existing bounded XPC decoder retained.
-- A supplied-channel display constructor, typed CoreDevice errors, and media stop
-  using this client's UUID with stopAll=false. Rejection/channel loss is an error;
-  there is no global-stop fallback. Apple's scoped-stop behavior is unqualified.
+- A supplied-channel display constructor and typed CoreDevice errors. Stop uses
+  this client's UUID and upstream's required `stopAll=true`; EOF, closed-channel
+  and connection-reset responses after sending stop count as success. Explicit
+  rejection, malformed replies, send failure and cancellation remain errors.
+  The bridge does not start media streams for input.
 - Context-bound Apple TSS client without proxies or redirects and with a bounded
   response; safe personalization error types. No image-download implementation
   or convenience mount that unmounts another client's image is carried.
@@ -56,3 +58,40 @@ THIRD_PARTY_NOTICES.md lists every module linked into the bridge.
   There are no Objective-C factories, audit fallback or device fixtures.
 - PlistCodec.DecodeLimit lets installation-proxy consumers cap a chunk before
   allocating its body. Native screen endpoints remain in internal/phone.
+
+Hardware-path corrections:
+
+- Carry only `ios/amfi`'s connection and `RevealDevMode` (action 0) from the
+  pinned MIT upstream. Enable/reboot operations are excluded. Unlike upstream,
+  reveal requires a boolean `success=true`, not merely a present success key.
+- Use upstream `NewImageMounter` and its existing iOS 17+ composite to try
+  cryptex first and personalized mounting second. A direct RemotePairing tunnel
+  with no usbmux device uses cryptex without a lockdown version lookup; the
+  personalized fallback requires a lockdown route. Never unmount another image.
+  Cryptex comparison uses the installed DDI's `CFBundleVersion` from
+  `cryptex_info`, not manifest `Cryptex1,Version`. A numerically newer build in
+  the same major/minor release train is accepted; older or other trains are
+  left alone and reported in use. The bridge also accepts already working
+  developer services without replacing their image.
+- The input media gate is removed. Upstream [#887](https://github.com/danielpaulus/go-ios/pull/887),
+  merged as `63c0d5705a010b03c340de888ba6c7c4052d763b`, explicitly reports Indigo
+  contacts working without a display stream on an iPhone Duo running iOS 27.1,
+  on both displays and in each orientation. The older `hid.Session` raw-report
+  prerequisite does not apply to `hid.DigitizerSession`. Its wire tests keep
+  each contact's display fixed. Upstream `display/receiver.go`'s userspace-stream
+  refusal therefore does not block Indigo input. UDP support is retained in
+  the general userspace tunnel, but input has no RTP receiver or stream dependency.
+- Native bridge behavior follows pinned upstream `ios/hid/controls.go`'s
+  250 ms close grace after the last attempted event, including abort releases;
+  `ios/screencapture`'s `displayUniqueID`; `ios/hid/digitizer.go`'s numeric
+  `displayId` target and native normalized axes; and `ios/accessibility`'s
+  `com.apple.accessibility.axAuditDaemon.remoteserver` service name.
+
+Synthetic qualification covers the real redacted two-display shape, all rotations,
+selection and state changes, release grace, refresh, automatic remount, AMFI reveal,
+media-stop transport failures, logging scrubbing and shutdown with open stdin.
+Hardware qualification remains necessary for iOS 27.2+ Indigo touch/button delivery
+without video, cancellation releases and grace on USB/Wi-Fi, fold/rotation transitions,
+AMFI Settings visibility, cryptex-to-personalized fallback and post-reboot recovery,
+compatibility of newer DDI builds, and AX service availability/coordinate accuracy.
+No hardware was accessed while applying these corrections.

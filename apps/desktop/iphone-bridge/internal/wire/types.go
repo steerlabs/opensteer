@@ -100,6 +100,9 @@ type PhoneRef struct {
 	LocalPhoneID string `json:"localPhoneId"`
 	NativeEpoch  uint64 `json:"nativeEpoch"`
 }
+type ImagesParams struct {
+	ImageRoots []string `json:"imageRoots"`
+}
 type InitParams struct {
 	PrivateRoot string   `json:"privateRoot"`
 	ImageRoots  []string `json:"imageRoots"`
@@ -198,6 +201,8 @@ func Params(r Request) (interface{}, error) {
 		v = &Empty{}
 	case "init":
 		v = &InitParams{}
+	case "images.refresh":
+		v = &ImagesParams{}
 	// Wi-Fi setup is main-process-only and always names an epoch-fenced phone.
 	case "setup.enableWifi", "setup.disableWifi", "setup.pairWifi":
 		v = &PhoneRef{}
@@ -205,7 +210,7 @@ func Params(r Request) (interface{}, error) {
 		v = &IdentityParams{}
 	case "binding.forget", "setup.withdrawWifi":
 		v = &ForgetBindingParams{}
-	case "setup.inspect", "setup.pair":
+	case "setup.inspect", "setup.pair", "setup.revealDeveloperMode":
 		v = &PhoneRef{}
 	case "phone.forget":
 		v = &ForgetParams{}
@@ -258,13 +263,12 @@ func Params(r Request) (interface{}, error) {
 			return nil, ErrProtocol
 		}
 	case *InitParams:
-		if p.PrivateRoot == "" || len(p.PrivateRoot) > 4096 || p.ImageRoots == nil || len(p.ImageRoots) > 8 {
+		if p.PrivateRoot == "" || len(p.PrivateRoot) > 4096 || !validImageRoots(p.ImageRoots) {
 			return nil, ErrProtocol
 		}
-		for _, s := range p.ImageRoots {
-			if s == "" || len(s) > 4096 {
-				return nil, ErrProtocol
-			}
+	case *ImagesParams:
+		if !validImageRoots(p.ImageRoots) {
+			return nil, ErrProtocol
 		}
 	case *CancelParams:
 		if p.RequestID == 0 || p.RequestID >= r.ID {
@@ -306,4 +310,16 @@ func DecodeRequest(b []byte) (Request, error) {
 	}
 	_, err := Params(r)
 	return r, err
+}
+
+func validImageRoots(roots []string) bool {
+	if roots == nil || len(roots) > 8 {
+		return false
+	}
+	for _, root := range roots {
+		if root == "" || len(root) > 4096 {
+			return false
+		}
+	}
+	return true
 }

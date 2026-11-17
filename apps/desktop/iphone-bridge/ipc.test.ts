@@ -5,41 +5,43 @@ import {
   iphoneNativeMessageSchema,
 } from "../../../packages/protocol/src/iphone-bridge.js";
 
-describe.each(["ipc-golden.json", "screen-ipc-golden.json", "ipc-wifi-golden.json"])(
-  "iPhone native IPC golden fixtures: %s",
-  (filename) => {
-    const fixtures: unknown = JSON.parse(
-      readFileSync(new URL(`./testdata/${filename}`, import.meta.url), "utf8"),
-    );
-    it("accepts the locally authored Go/TS messages", () => {
-      expect(Array.isArray(fixtures)).toBe(true);
-      if (!Array.isArray(fixtures)) throw new Error("Expected fixture array");
-      for (const fixture of fixtures) {
-        expect(
-          iphoneNativeRequestSchema.safeParse(fixture).success ||
-            iphoneNativeMessageSchema.safeParse(fixture).success,
-        ).toBe(true);
-      }
-    });
-    it("rejects extra fields and stale cancellation targets", () => {
-      const request = {
-        kind: "request",
-        protocolVersion: 1,
-        id: 2,
-        timeoutMs: 1000,
-        method: "request.cancel",
-        params: { requestId: 2 },
-      };
-      expect(iphoneNativeRequestSchema.safeParse(request).success).toBe(false);
+describe.each([
+  "ipc-golden.json",
+  "screen-ipc-golden.json",
+  "ipc-wifi-golden.json",
+  "ipc-setup-golden.json",
+])("iPhone native IPC golden fixtures: %s", (filename) => {
+  const fixtures: unknown = JSON.parse(
+    readFileSync(new URL(`./testdata/${filename}`, import.meta.url), "utf8"),
+  );
+  it("accepts the locally authored Go/TS messages", () => {
+    expect(Array.isArray(fixtures)).toBe(true);
+    if (!Array.isArray(fixtures)) throw new Error("Expected fixture array");
+    for (const fixture of fixtures) {
       expect(
-        iphoneNativeRequestSchema.safeParse({
-          ...request,
-          params: { requestId: 1, secret: "sentinel" },
-        }).success,
-      ).toBe(false);
-    });
-  },
-);
+        iphoneNativeRequestSchema.safeParse(fixture).success ||
+          iphoneNativeMessageSchema.safeParse(fixture).success,
+      ).toBe(true);
+    }
+  });
+  it("rejects extra fields and stale cancellation targets", () => {
+    const request = {
+      kind: "request",
+      protocolVersion: 1,
+      id: 2,
+      timeoutMs: 1000,
+      method: "request.cancel",
+      params: { requestId: 2 },
+    };
+    expect(iphoneNativeRequestSchema.safeParse(request).success).toBe(false);
+    expect(
+      iphoneNativeRequestSchema.safeParse({
+        ...request,
+        params: { requestId: 1, secret: "sentinel" },
+      }).success,
+    ).toBe(false);
+  });
+});
 
 it("rejects unsupported native input and mismatched image geometry", () => {
   const request = {
@@ -83,6 +85,37 @@ it("rejects unsupported native input and mismatched image geometry", () => {
         ...response.result,
         screenshot: { mimeType: "image/jpeg", base64: "", width: 99, height: 200 },
       },
+    }).success,
+  ).toBe(false);
+});
+
+it("uses identical init/refresh root bounds and strict reveal references", () => {
+  for (const roots of [null, Array(9).fill("/Restore"), [""], ["x".repeat(4097)]]) {
+    for (const method of ["init", "images.refresh"]) {
+      const params =
+        method === "init"
+          ? { privateRoot: "/private/root", imageRoots: roots }
+          : { imageRoots: roots };
+      expect(
+        iphoneNativeRequestSchema.safeParse({
+          kind: "request",
+          protocolVersion: 1,
+          id: 1,
+          timeoutMs: 1000,
+          method,
+          params,
+        }).success,
+      ).toBe(false);
+    }
+  }
+  expect(
+    iphoneNativeRequestSchema.safeParse({
+      kind: "request",
+      protocolVersion: 1,
+      id: 1,
+      timeoutMs: 1000,
+      method: "setup.revealDeveloperMode",
+      params: { localPhoneId: "phone", nativeEpoch: 0 },
     }).success,
   ).toBe(false);
 });

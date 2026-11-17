@@ -3,43 +3,39 @@ package phone
 import (
 	"context"
 	"github.com/danielpaulus/go-ios/ios"
-	"github.com/danielpaulus/go-ios/ios/tunnel"
 	"github.com/steerlabs/opensteer/iphone-bridge/internal/wire"
-	"gvisor.dev/gvisor/pkg/tcpip"
-	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
-	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"io"
 	"net"
 	"testing"
 	"time"
 )
 
-func TestDirectWifiInventoryAndLaunchValidationUseVerifiedTunnel(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	a, b := net.Pipe()
-	left, err := tunnel.OpenPacketStream(ctx, a, "fd00::1", "fd00::2", 1280)
-	if err != nil {
+func TestDirectWifiInventoryAndLaunchValidationUseSessionServices(t *testing.T) {
+	m := newTestManager(t)
+	id := "direct-inventory-fixture"
+	m.wifi[id] = wirelessState{Enabled: true}
+	if err := m.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	right, err := tunnel.OpenPacketStream(ctx, b, "fd00::2", "fd00::1", 1280)
-	if err != nil {
-		t.Fatal(err)
+	p := m.phones[m.identities[id]]
+	if p.entry.DeviceID != -1 {
+		t.Fatal("test acquired a usbmux device")
 	}
-	defer func() { _ = left.Close(); _ = right.Close(); left.Wait(); right.Wait() }()
-	listener, err := gonet.ListenTCP(right.Stack, tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFromSlice(net.ParseIP("fd00::2").To16()), Port: 10001}, ipv6.ProtocolNumber)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
+	screen, backend, action := screenFixture(t)
+	lifetime, stop := context.WithCancel(context.Background())
+	defer stop()
+	connections := make(chan net.Conn, 2)
 	served := make(chan error, 1)
 	go func() {
 		for range 2 {
-			conn, err := listener.Accept()
-			if err != nil {
-				served <- err
+			var conn net.Conn
+			select {
+			case conn = <-connections:
+			case <-lifetime.Done():
+				served <- lifetime.Err()
 				return
 			}
+			var err error
 			_ = conn.SetDeadline(time.Now().Add(time.Second))
 			codec := ios.NewPlistCodec()
 			checkin, err := codec.Decode(conn)
@@ -77,20 +73,23 @@ func TestDirectWifiInventoryAndLaunchValidationUseVerifiedTunnel(t *testing.T) {
 		}
 		served <- nil
 	}()
-	m := newTestManager(t)
-	id := "direct-inventory-fixture"
-	m.wifi[id] = wirelessState{Enabled: true}
-	if err := m.reconcile(); err != nil {
-		t.Fatal(err)
+	s := &Session{identity: id, announced: true, services: ios.RsdHandshakeResponse{Udid: id, Services: map[string]ios.RsdServiceEntry{"com.apple.mobile.installation_proxy.shim.remote": {Port: 10001}}}, screen: screen}
+	s.dialTCP = func(ctx context.Context, port uint16) (net.Conn, error) {
+		if port != 10001 {
+			t.Fatalf("inventory bypassed session service map: %d", port)
+		}
+		client, peer := net.Pipe()
+		if deadline, ok := ctx.Deadline(); ok {
+			_ = client.SetDeadline(deadline)
+		}
+		context.AfterFunc(ctx, func() { _ = client.Close() })
+		connections <- peer
+		return client, nil
 	}
-	p := m.phones[m.identities[id]]
-	if p.entry.DeviceID != -1 {
-		t.Fatal("test acquired a usbmux device")
-	}
-	screen, backend, action := screenFixture(t)
-	s := &Session{tunnel: left, identity: id, announced: true, services: ios.RsdHandshakeResponse{Udid: id, Services: map[string]ios.RsdServiceEntry{"com.apple.mobile.installation_proxy.shim.remote": {Port: 10001}}}, screen: screen}
 	p.session, p.binding, p.sessionID, p.access = s, "b", "s", "control"
 	screen.observation.NativeEpoch = p.epoch
+	ctx, cancel := context.WithTimeout(lifetime, 3*time.Second)
+	defer cancel()
 	result, err := m.installedApps(ctx, &wire.AppsParams{BindingToken: "b", NativeEpoch: p.epoch, Limit: 100})
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +100,10 @@ func TestDirectWifiInventoryAndLaunchValidationUseVerifiedTunnel(t *testing.T) {
 	}
 	action.NativeEpoch = p.epoch
 	action.Actions = []wire.Action{{Kind: "launch", AppID: apps.Apps[0].AppID}}
-	if _, err := m.screenOperation(ctx, action); err != nil {
+	cancel()
+	actionCtx, cancelAction := context.WithTimeout(lifetime, 3*time.Second)
+	defer cancelAction()
+	if _, err := m.screenOperation(actionCtx, action); err != nil {
 		t.Fatal(err)
 	}
 	if backend.launches != 1 {
@@ -112,7 +114,7 @@ func TestDirectWifiInventoryAndLaunchValidationUseVerifiedTunnel(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-ctx.Done():
+	case <-actionCtx.Done():
 		t.Fatal("tunnel inventory service did not finish")
 	}
 }

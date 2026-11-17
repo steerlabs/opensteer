@@ -79,17 +79,6 @@ func (g Geometry) Normalize(p wire.Point) (wire.Point, error) {
 }
 func finite(f float64) bool { return !math.IsInf(f, 0) && !math.IsNaN(f) }
 
-func samePNGDimensions(a, b []byte) bool {
-	if len(a) > 32<<20 || len(b) > 32<<20 {
-		return false
-	}
-	x, e := png.DecodeConfig(bytes.NewReader(a))
-	if e != nil {
-		return false
-	}
-	y, e := png.DecodeConfig(bytes.NewReader(b))
-	return e == nil && x.Width == y.Width && x.Height == y.Height
-}
 func captureMatches(data []byte, g Geometry) bool {
 	if len(data) > 32<<20 {
 		return false

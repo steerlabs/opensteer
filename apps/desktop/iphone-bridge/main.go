@@ -10,18 +10,37 @@ import (
 
 	"github.com/danielpaulus/go-ios/ios"
 	"github.com/google/uuid"
+	"github.com/steerlabs/opensteer/iphone-bridge/internal/diagnostic"
 	"github.com/steerlabs/opensteer/iphone-bridge/internal/phone"
 	"github.com/steerlabs/opensteer/iphone-bridge/internal/wire"
 )
 
 func run() error {
-	ios.SetLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	logger, logFile, err := diagnostic.Open(os.Getenv("OPENSTEER_IPHONE_BRIDGE_LOG"))
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+	ios.SetLogger(logger)
+	slog.SetDefault(logger)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	server := &wire.Server{BootID: uuid.New().String()}
 	server.Handler = phone.NewManager(ctx, phone.SystemUSB{}, server.Publish)
-	return server.Run(ctx, os.Stdin, os.Stdout)
+	// Go opens Darwin FIFOs without kqueue polling. Register a nonblocking
+	// duplicate so Close interrupts the reader even while the parent keeps stdin open.
+	fd, err := syscall.Dup(int(os.Stdin.Fd()))
+	if err != nil {
+		return err
+	}
+	syscall.CloseOnExec(fd)
+	if err := syscall.SetNonblock(fd, true); err != nil {
+		syscall.Close(fd)
+		return err
+	}
+	input := os.NewFile(uintptr(fd), "bridge-stdin")
+	defer input.Close()
+	return server.Run(ctx, input, os.Stdout)
 }
 func main() {
 	// Recover without printing a panic value: native errors may contain private device data.

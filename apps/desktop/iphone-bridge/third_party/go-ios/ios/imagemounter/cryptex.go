@@ -276,7 +276,7 @@ func (c *CryptexDeveloperDiskImageMounter) IsImageMounted(imagePath string) (boo
 		return false, fmt.Errorf("IsImageMounted: %w", err)
 	}
 	for _, cryptex := range installed {
-		if cryptex == image {
+		if cryptex.Identifier == image.Identifier && compatibleCryptexBuild(cryptex.Version, image.Version) {
 			return true, nil
 		}
 	}
@@ -596,4 +596,37 @@ func toUint64(v interface{}) (uint64, bool) {
 		return i, err == nil
 	}
 	return 0, false
+}
+
+// CFBundleVersion is the installed DDI build, unlike Cryptex1,Version in the manifest.
+// A newer build in the same release train can keep serving the required services.
+func compatibleCryptexBuild(installed, selected string) bool {
+	if installed == selected {
+		return true
+	}
+	a, b := strings.Split(installed, "."), strings.Split(selected, ".")
+	if len(a) != 4 || len(b) != 4 {
+		return false
+	}
+	var av, bv [4]uint64
+	for i := range 4 {
+		var err error
+		av[i], err = strconv.ParseUint(a[i], 10, 32)
+		if err != nil {
+			return false
+		}
+		bv[i], err = strconv.ParseUint(b[i], 10, 32)
+		if err != nil {
+			return false
+		}
+	}
+	if av[0] != bv[0] || av[1] != bv[1] {
+		return false
+	}
+	for i := 2; i < 4; i++ {
+		if av[i] != bv[i] {
+			return av[i] > bv[i]
+		}
+	}
+	return true
 }

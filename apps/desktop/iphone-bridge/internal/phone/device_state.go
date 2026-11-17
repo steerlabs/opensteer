@@ -2,7 +2,10 @@ package phone
 
 import (
 	"context"
+	"encoding/json"
+	"log/slog"
 	"reflect"
+	"time"
 
 	"github.com/danielpaulus/go-ios/ios/coredevice"
 	"github.com/danielpaulus/go-ios/ios/xpc"
@@ -19,11 +22,12 @@ type xpcChannel interface {
 }
 type channelOpener func(context.Context, string) (xpcChannel, error)
 type DeviceState struct {
-	Lock      string `json:"lock"`
-	Display   string `json:"display"`
-	Rotation  *int   `json:"rotation"`
-	DisplayID uint64 `json:"displayId"`
-	uniqueID  string
+	Lock          string `json:"lock"`
+	Display       string `json:"display"`
+	Rotation      *int   `json:"rotation"`
+	DisplayID     uint64 `json:"displayId"`
+	configuration string
+	uniqueID      string
 }
 
 func unknownState() DeviceState { return DeviceState{Lock: "unknown", Display: "unknown"} }
@@ -41,14 +45,23 @@ func (s DeviceState) safe() error {
 }
 func (s DeviceState) same(t DeviceState) bool { return reflect.DeepEqual(s, t) }
 func exchange(ctx context.Context, open channelOpener, service string, request map[string]interface{}, before func() error, effect bool) (map[string]interface{}, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, Classify(err, wire.NativeServiceFailed)
-	}
 	conn, err := open(ctx, service)
 	if err != nil {
 		return nil, Classify(err, wire.NativeServiceFailed)
 	}
 	defer conn.Close()
+	return exchangeOn(ctx, conn, request, before, effect)
+}
+func exchangeOn(ctx context.Context, conn xpcChannel, request map[string]interface{}, before func() error, effect bool) (result map[string]interface{}, err error) {
+	start := time.Now()
+	defer func() {
+		reason := ""
+		if err != nil {
+			reason = string(Classify(err, wire.NativeServiceFailed).Code)
+		}
+		feature, _ := request["CoreDevice.featureIdentifier"].(string)
+		slog.Debug("bridge.service", "service", feature, "reason", reason, "durationMs", time.Since(start).Milliseconds())
+	}()
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 	if before != nil {
@@ -60,6 +73,7 @@ func exchange(ctx context.Context, open channelOpener, service string, request m
 		return nil, Classify(err, wire.NativeServiceFailed)
 	}
 	failure := func(err error) error {
+		slog.Debug("bridge.native-error", "err", err)
 		if effect {
 			return &wire.Failure{Code: wire.OutcomeUnknown, Effect: "unknown"}
 		}
@@ -73,7 +87,7 @@ func exchange(ctx context.Context, open channelOpener, service string, request m
 		return nil, failure(err)
 	}
 	if err := coredevice.ResponseError(reply); err != nil {
-		return nil, wire.Fail(wire.NativeServiceFailed)
+		return nil, Classify(err, wire.NativeServiceFailed)
 	}
 	output, ok := reply["CoreDevice.output"].(map[string]interface{})
 	if !ok {
@@ -83,7 +97,12 @@ func exchange(ctx context.Context, open channelOpener, service string, request m
 }
 func readDeviceState(ctx context.Context, open channelOpener) (DeviceState, error) {
 	state := unknownState()
-	lock, err := exchange(ctx, open, deviceInfoService, coredevice.BuildRequest(uuid.New().String(), "com.apple.coredevice.feature.getlockstate", map[string]interface{}{}), nil, false)
+	conn, err := open(ctx, deviceInfoService)
+	if err != nil {
+		return state, Classify(err, wire.NativeServiceFailed)
+	}
+	defer conn.Close()
+	lock, err := exchangeOn(ctx, conn, coredevice.BuildRequest(uuid.New().String(), "com.apple.coredevice.feature.getlockstate", map[string]interface{}{}), nil, false)
 	if err != nil {
 		return state, err
 	}
@@ -97,36 +116,30 @@ func readDeviceState(ctx context.Context, open channelOpener) (DeviceState, erro
 	if hasRequired && !required && hasUnlocked && unlocked {
 		state.Lock = "unlocked"
 	}
-	display, err := exchange(ctx, open, deviceInfoService, coredevice.BuildRequest(uuid.New().String(), "com.apple.coredevice.feature.getdisplayinfo", map[string]interface{}{}), nil, false)
+	display, err := exchangeOn(ctx, conn, coredevice.BuildRequest(uuid.New().String(), "com.apple.coredevice.feature.getdisplayinfo", map[string]interface{}{}), nil, false)
 	if err != nil {
 		return state, err
 	}
-	displays, ok := display["displays"].([]interface{})
-	if !ok || len(displays) != 1 {
-		return state, wire.Fail(wire.DisplayUnsupported)
+	d, err := selectDisplay(display)
+	if err != nil {
+		return state, err
 	}
-	d, ok := displays[0].(map[string]interface{})
-	if !ok {
-		return state, wire.Fail(wire.DisplayUnsupported)
+	shape, err := json.Marshal([3]interface{}{d["bounds"], d["nativeSize"], d["pointScale"]})
+	if err != nil {
+		return state, wire.Fail(wire.GeometryUnavailable)
 	}
-	if external, _ := d["external"].(bool); external {
-		return state, wire.Fail(wire.DisplayUnsupported)
-	}
-	id, ok := unsigned(d["displayId"])
-	if !ok || id > 9007199254740991 {
-		return state, wire.Fail(wire.DisplayUnsupported)
-	}
-	state.DisplayID = id
+	state.configuration = string(shape)
+	state.DisplayID, _ = unsigned(d["displayId"])
 	state.uniqueID, _ = d["uniqueId"].(string)
-	if active, ok := d["active"].(bool); ok {
-		if active {
-			state.Display = "on"
-		} else {
-			state.Display = "off"
-		}
+	backlight, _ := d["backlightState"].(string)
+	if backlight == "" {
+		backlight, _ = display["backlightState"].(string)
 	}
-	if rotation, ok := unsigned(d["rotation"]); ok && (rotation == 0 || rotation == 90 || rotation == 180 || rotation == 270) {
-		r := int(rotation)
+	if backlight == "on" || backlight == "off" {
+		state.Display = backlight
+	}
+	orientation, _ := d["currentOrientation"].(string)
+	if r, ok := map[string]int{"rot0": 0, "rot90": 90, "rot180": 180, "rot270": 270}[orientation]; ok {
 		state.Rotation = &r
 	}
 	return state, nil
@@ -145,4 +158,63 @@ func unsigned(v interface{}) (uint64, bool) {
 		}
 	}
 	return 0, false
+}
+
+func selectDisplay(output map[string]interface{}) (map[string]interface{}, error) {
+	displays, ok := output["displays"].([]interface{})
+	if !ok || len(displays) == 0 || len(displays) > 16 {
+		return nil, wire.Fail(wire.DisplayUnsupported)
+	}
+	var active, primary, only map[string]interface{}
+	usable := 0
+	for _, value := range displays {
+		d, ok := value.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if inUse, _ := d["active"].(bool); inUse {
+			if active != nil {
+				return nil, wire.Fail(wire.DisplayUnsupported)
+			}
+			active = d
+		}
+		if main, _ := d["primary"].(bool); main {
+			if primary != nil {
+				return nil, wire.Fail(wire.DisplayUnsupported)
+			}
+			primary = d
+		}
+		if usableDisplay(d, len(displays)) {
+			usable++
+			only = d
+		}
+	}
+	selected := active
+	if selected == nil {
+		selected = primary
+	}
+	if selected == nil && usable == 1 {
+		selected = only
+	}
+	if selected == nil || !usableDisplay(selected, len(displays)) {
+		return nil, wire.Fail(wire.DisplayUnsupported)
+	}
+	return selected, nil
+}
+func usableDisplay(d map[string]interface{}, count int) bool {
+	external, _ := d["external"].(bool)
+	if kind, ok := d["type"].(map[string]interface{}); ok {
+		if _, exists := kind["external"]; exists {
+			external = true
+		}
+	}
+	if external {
+		return false
+	}
+	id, ok := unsigned(d["displayId"])
+	if !ok || id > 9007199254740991 {
+		return false
+	}
+	unique, _ := d["uniqueId"].(string)
+	return count == 1 || unique != ""
 }

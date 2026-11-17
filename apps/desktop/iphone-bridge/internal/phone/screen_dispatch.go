@@ -24,7 +24,7 @@ func (m *Manager) screenCall(ctx context.Context, ref wire.ScreenRef, control bo
 				return wire.Fail(wire.StaleEpoch)
 			}
 			if control && access != "control" {
-				return wire.Fail(wire.MediaRequired)
+				return wire.Fail(wire.Unsupported)
 			}
 			return nil
 		}
@@ -67,6 +67,9 @@ func (m *Manager) installedApps(ctx context.Context, p *wire.AppsParams) (interf
 		}
 		session, err := m.ensureTransport(ctx, phone)
 		if err != nil {
+			return nil, err
+		}
+		if err := m.ensureDeveloperServices(ctx, phone, session); err != nil {
 			return nil, err
 		}
 		apps, err := readInstalledApps(ctx, session)
@@ -123,22 +126,7 @@ func (m *Manager) screenOperation(ctx context.Context, params interface{}) (inte
 			if nativeSession == nil {
 				return nil, wire.Fail(wire.NoSession)
 			}
-			nativeGuard := guard
-			guard = func() error {
-				if err := nativeGuard(); err != nil {
-					return err
-				}
-				for _, action := range p.Actions {
-					switch action.Kind {
-					case "tap", "longPress", "swipe", "drag", "navigate", "type", "clear":
 
-						if !nativeSession.MediaReady() {
-							return wire.Fail(wire.MediaRequired)
-						}
-					}
-				}
-				return nil
-			}
 			for _, action := range p.Actions {
 				if action.Kind != "launch" {
 					continue

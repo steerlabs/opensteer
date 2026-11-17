@@ -11,7 +11,7 @@ import (
 	"github.com/steerlabs/opensteer/iphone-bridge/internal/wire"
 )
 
-const remoteAXService = "com.apple.accessibility.axAuditDaemon.remoteAXService"
+const remoteAXService = "com.apple.accessibility.axAuditDaemon.remoteserver"
 
 func axCall(id int, selector string, argument interface{}) ([]byte, error) {
 	payload, e := nskeyedarchiver.ArchiveBin(selector)

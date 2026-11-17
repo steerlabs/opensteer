@@ -57,6 +57,11 @@ func NewDeveloperDiskImageMounter(device ios.DeviceEntry, version *semver.Versio
 // only mounted with the personalized mounter if that fails, while listing, checking and
 // unmounting consider the images of both.
 func NewImageMounter(device ios.DeviceEntry) (ImageMounter, error) {
+	// A direct RemotePairing tunnel has no usbmux device for lockdown queries.
+	// Cryptex needs only RSD; the personalized fallback needs a lockdown route.
+	if device.DeviceID < 1 && SupportsCryptexDDI(device) {
+		return NewCryptexDeveloperDiskImageMounter(device)
+	}
 	version, err := ios.GetProductVersion(device)
 	if err != nil {
 		return nil, fmt.Errorf("NewImageMounter: failed to get device version. %w", err)
