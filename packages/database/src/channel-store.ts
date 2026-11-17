@@ -1,3 +1,4 @@
+import { refreshInputQueue } from "./waiting-inputs.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { computerConnectionDeviceId } from "./integration-store.js";
@@ -2427,7 +2428,7 @@ async function cancelStaleChannelInputs(
   currentRevision: number,
   now: Date,
 ): Promise<void> {
-  await transaction
+  const cancelled = await transaction
     .updateTable("threadInputs")
     .set({
       cancelReason: "channel-access-changed",
@@ -2440,7 +2441,9 @@ async function cancelStaleChannelInputs(
     .where(
       sql<boolean>`coalesce((authority_source ->> 'bindingRevision')::integer, 0) < ${currentRevision}`,
     )
+    .returning(["threadId", "messageId"])
     .execute();
+  for (const row of cancelled) await refreshInputQueue(transaction, row.threadId, row.messageId);
 }
 
 async function cancelChannelInputsForPrincipal(
@@ -2449,7 +2452,7 @@ async function cancelChannelInputsForPrincipal(
   principalId: string,
   now: Date,
 ): Promise<void> {
-  await transaction
+  const cancelled = await transaction
     .updateTable("threadInputs")
     .set({
       cancelReason: "channel-access-changed",
@@ -2462,7 +2465,9 @@ async function cancelChannelInputsForPrincipal(
     .where(sql<boolean>`authority_source ->> 'principalId' = ${principalId}`)
     .where(sql<boolean>`authority_source -> 'access' ->> 'mode' = 'approved'`)
     .where(sql<boolean>`authority_source -> 'access' ? 'grantRevision'`)
+    .returning(["threadId", "messageId"])
     .execute();
+  for (const row of cancelled) await refreshInputQueue(transaction, row.threadId, row.messageId);
 }
 
 function channelAccountFromRow(row: Selectable<ChannelAccountTable>): ChannelAccount {
