@@ -171,9 +171,10 @@ function abortReason(signal: AbortSignal): Error {
 export { IntegrationAuthorizationAttempts } from "./authorization-attempts.js";
 
 export class IntegrationAuthorizationCancelledError extends Error {
+  readonly reason = "cancelled";
+
   constructor() {
     super("Integration authorization was cancelled.");
-    this.name = "AbortError";
   }
 }
 
