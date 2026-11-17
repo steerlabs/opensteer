@@ -7,6 +7,7 @@ import {
   type IsolationLevel,
   type Transaction,
 } from "kysely";
+import { addAbortListener } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { Client, Pool, type PoolClient } from "pg";
 import {
@@ -80,14 +81,28 @@ export function createDatabase<Schema = DatabaseSchema>(
         const execute = connection.executeQuery.bind(connection);
         connection.executeQuery = async (query) => {
           const operation = databaseOperation();
-          if (operation?.transaction) {
-            operation.signal.throwIfAborted();
-            // Set the remaining absolute budget before each statement. The server
-            // cancels lock waits before Kysely can enqueue a rollback over them.
-            const remaining = Math.max(1, Math.ceil(operation.expiresAt - Date.now()));
-            await execute(CompiledQuery.raw(`set local statement_timeout = ${remaining}`));
+          if (!operation?.transaction) return execute(query);
+          operation.signal.throwIfAborted();
+          const remaining = Math.max(1, Math.ceil(operation.expiresAt - Date.now()));
+          await execute(CompiledQuery.raw(`set local statement_timeout = ${remaining}`));
+          await connection.collectSessionInfo?.();
+          operation.signal.throwIfAborted();
+          const pending = execute(query);
+          let cancellation: Promise<void> | undefined;
+          const abort = addAbortListener(operation.signal, () => {
+            cancellation = connection
+              .cancelQuery?.(async () => {
+                throw new Error("PostgreSQL control connection is unavailable");
+              })
+              .catch(() => undefined);
+          });
+          try {
+            return await pending;
+          } finally {
+            abort[Symbol.dispose]();
+            // Join the cancellation before the transaction rolls back or releases this session.
+            await cancellation;
           }
-          return execute(query);
         };
       },
       pool: {
