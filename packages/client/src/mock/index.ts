@@ -10,3 +10,4 @@ export { mockSubagentScenes, type MockSubagentScene } from "./mock-subagent-scen
 export * from "./mock-personal-host.js";
 export { mockDeviceAccessRequest } from "./mock-devices.js";
 export * from "./mock-screen-devices.js";
+export * from "./mock-iphone-setup.js";
