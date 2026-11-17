@@ -177,7 +177,7 @@ export function DesktopPersonalSetup({
       : status.state === "stopping"
         ? "Stopping this computer"
         : firstRun
-          ? `Setting up ${thisComputerLabel().replace(/^This /u, "this ")}`
+          ? `Starting Opensteer on ${thisComputerLabel().replace(/^This /u, "this ")}`
           : "Starting Opensteer";
   return (
     <SetupFrame
@@ -204,7 +204,7 @@ export function DesktopPersonalSetup({
           <SetupFooter
             action={
               <button className="btn btn--primary" onClick={onRetry} type="button">
-                Set up {thisComputerLabel().replace(/^This /u, "this ")}
+                Start Opensteer
               </button>
             }
           />
@@ -230,7 +230,7 @@ export function DesktopPersonalSetup({
           icon={<Icon name="laptop" />}
           title={computerName}
           tone={failed ? "attention" : "idle"}
-          trailing={failed || stopped ? null : <SetupStatus label="Setting up" state="working" />}
+          trailing={failed || stopped ? null : <SetupStatus label="Starting" state="working" />}
         />
       </SetupList>
       {failed && !canRetry ? (

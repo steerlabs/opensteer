@@ -1126,6 +1126,10 @@ async function runDesktop(
       },
       subscribe: (listener) => hostTransport.subscribe(listener),
     },
+    devices: {
+      joinedDeploymentIds: () => localRunner.joinedDeploymentIds(),
+      subscribe: (listener) => localRunner.subscribe(listener),
+    },
     direct: {
       addRoute: async (input) => {
         await directRoutes.add(input);

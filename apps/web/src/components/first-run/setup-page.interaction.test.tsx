@@ -389,7 +389,7 @@ it("keeps the step open with the reason when the choice cannot be saved", async 
   expect(button("Continue").disabled).toBe(false);
 });
 
-it("walks a Mac through AI, Set up this Mac and phone, remembering the step until Finish", async () => {
+it("walks a Mac through AI, this Mac and phone, remembering the step until Finish", async () => {
   const { access, bridge } = desktopBridge();
   onThisMac(bridge, access);
   const key = `opensteer.setup.v1:${shell.snapshot.deploymentId}`;
@@ -398,13 +398,13 @@ it("walks a Mac through AI, Set up this Mac and phone, remembering the step unti
     "Step 1 of 3",
   );
   await act(async () => button("Continue").click());
-  expect(container.textContent).toContain("Set up this Mac");
+  expect(container.textContent).toContain("Your agent on this Mac");
   expect(localStorage.getItem(key)).toBe("permissions");
 
   // A setup left here resumes here.
   act(() => root?.unmount());
   await mount();
-  expect(container.textContent).toContain("Set up this Mac");
+  expect(container.textContent).toContain("Your agent on this Mac");
 
   // Apps is on, so macOS's grants for it come next; they can wait.
   await act(async () => button("Continue").click());
@@ -412,7 +412,7 @@ it("walks a Mac through AI, Set up this Mac and phone, remembering the step unti
   await act(async () => button("Do this later").click());
   expect(container.textContent).toContain("Connect your phone");
   await act(async () => button("Back").click());
-  expect(container.textContent).toContain("Set up this Mac");
+  expect(container.textContent).toContain("Your agent on this Mac");
   await act(async () => button("Continue").click());
   await act(async () => button("Continue").click());
   // Nothing on the phone step is on yet, so leaving it is skipping it.

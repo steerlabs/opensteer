@@ -98,6 +98,12 @@ interface DirectPort {
 export type DeploymentProbeOutcome =
   "client-too-old" | "host-too-old" | "identity-mismatch" | "reachable" | "unreachable";
 
+interface DevicesPort {
+  /** Opensteers this computer has joined as a device and not left. */
+  joinedDeploymentIds(): Promise<ReadonlySet<string>>;
+  subscribe(listener: () => void): () => void;
+}
+
 interface PlacesPort {
   /** Whether this computer has a network at all; without one, nothing is checked. */
   online(): boolean;
@@ -108,6 +114,7 @@ interface PlacesPort {
 export interface DeploymentAccessPorts {
   readonly account: AccountPort;
   readonly catalog: CatalogPort;
+  readonly devices: DevicesPort;
   readonly direct: DirectPort;
   readonly directory: DirectoryPort;
   readonly hostSession: HostSessionPort;
@@ -149,6 +156,11 @@ export class DeploymentAccessService {
   #catalog: CatalogProjection = { deployments: [], revision: 0, selectedDeploymentId: null };
   #catalogFailure: string | null = null;
   #directoryCheck: Promise<void> | null = null;
+  #joined: ReadonlySet<string> = new Set();
+  /** Why this computer's memberships are unknown; null once any read has succeeded. */
+  #joinedFailure: string | null = null;
+  #joinedKnown = false;
+  #joinedRead = 0;
   #directoryFailure: DeploymentAccessFailure | null = null;
   /** When the Account's list was last read successfully, or null if never. */
   #directoryReadAt: number | null = null;
@@ -226,6 +238,7 @@ export class DeploymentAccessService {
         this.#personalLink = status;
         this.#publish();
       }),
+      ports.devices.subscribe(() => void this.#reloadJoined()),
     );
   }
 
@@ -253,6 +266,7 @@ export class DeploymentAccessService {
         }),
       ),
       this.#ports.personalAccount.status().catch(() => unavailablePersonalAccountLink()),
+      this.#reloadJoined(),
     ]);
     this.#account = accountState(account);
     this.#catalog = catalogResult.catalog;
@@ -788,6 +802,8 @@ export class DeploymentAccessService {
     this.#interactiveAttachment = interactive;
     const selected = this.#selectedDeployment();
     if (!selected || !this.#supervisor) return;
+    // An Account place opens through the Account; its sign-in reopens it.
+    if (selected.source === "account" && this.#account.status !== "signed-in") return;
     if (!this.#selectedAttachmentIsReady()) {
       this.#pendingAttachmentDeploymentId = selected.id;
       this.#publish();
@@ -847,19 +863,56 @@ export class DeploymentAccessService {
    * fix — and it is derived, so a later good read clears it on its own.
    */
   #personalSetup(): DesktopPersonalDeploymentStatus | null {
-    if (this.#personal === null || this.#catalogFailure === null) return this.#personal;
-    return bootstrapFailurePersonalStatus(this.#personal, this.#catalogFailure);
+    if (this.#personal === null) return null;
+    if (this.#catalogFailure !== null)
+      return bootstrapFailurePersonalStatus(this.#personal, this.#catalogFailure);
+    // Only a computer that hosts nothing yet could start one; a running Host is
+    // not this file's to stop.
+    if (this.#joinedFailure !== null && this.#personal.deploymentId === null)
+      return bootstrapFailurePersonalStatus(this.#personal, this.#joinedFailure);
+    return this.#personal;
   }
 
   /**
    * Account places are shown only while that Account is signed in: a list
-   * from a sign-in that ended describes nothing a person can open. The one
-   * exception is the place a person is in, which never vanishes under them.
+   * from a sign-in that ended describes nothing a person can open. The
+   * exceptions are the place a person is in, which never vanishes under them,
+   * and places this computer joined, which a sign-in ending never leaves.
    */
   readonly #shown = (deployment: DeploymentAccessCatalogDeployment): boolean =>
     deployment.source !== "account" ||
     this.#account.status === "signed-in" ||
-    deployment.id === this.#catalog.selectedDeploymentId;
+    deployment.id === this.#catalog.selectedDeploymentId ||
+    this.#joined.has(deployment.id);
+
+  /**
+   * The one writer of this computer's memberships; the latest read wins. A
+   * failed read keeps the last good answer, and with none yet it is reported,
+   * because a computer that can't tell what it joined must not offer to start
+   * an Opensteer as if it had joined nothing.
+   */
+  async #reloadJoined(): Promise<void> {
+    const read = ++this.#joinedRead;
+    let joined: ReadonlySet<string> | null = null;
+    let failure: string | null = null;
+    try {
+      joined = await this.#ports.devices.joinedDeploymentIds();
+    } catch (error) {
+      failure = classifyPortFailure("devices", error).detail;
+    }
+    if (this.#disposed || read !== this.#joinedRead) return;
+    if (joined) {
+      if (this.#joinedKnown && sameIds(joined, this.#joined)) return;
+      this.#joined = joined;
+      this.#joinedKnown = true;
+      this.#joinedFailure = null;
+    } else if (this.#joinedKnown || failure === this.#joinedFailure) {
+      return;
+    } else {
+      this.#joinedFailure = failure;
+    }
+    this.#publish();
+  }
 
   /**
    * Every row's status comes from whichever authority actually knows the
@@ -1043,7 +1096,7 @@ function freezeSnapshot(snapshot: DeploymentAccessSnapshot): DeploymentAccessSna
   return Object.freeze(snapshot);
 }
 
-export type DeploymentAccessPort = "catalog" | "directory";
+export type DeploymentAccessPort = "catalog" | "devices" | "directory";
 
 export function classifyPortFailure(
   port: DeploymentAccessPort,
@@ -1069,4 +1122,8 @@ function machineCode(value: string): string {
 
 function operationUnavailable(operation: string): Error {
   return new Error(`Deployment access operation is not available now: ${operation}`);
+}
+
+function sameIds(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  return left.size === right.size && [...left].every((id) => right.has(id));
 }

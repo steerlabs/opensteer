@@ -150,7 +150,7 @@ export function assertDeviceSessionAllowed(
   membership: DesktopDeviceMembership | null | undefined,
 ): void {
   if (membership?.state === "removed" || membership?.state === "leaving")
-    throw new Error("This Mac was removed. Choose Set up again to reconnect.");
+    throw new Error("This Mac was removed. Choose Connect again to reconnect.");
   if (membership?.sessionState === "confirming")
     throw new Error("Waiting for the Runner to confirm this Mac is still a device.");
   if (membership?.sessionState === "sign-in-again")

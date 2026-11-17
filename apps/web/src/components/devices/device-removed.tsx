@@ -10,7 +10,7 @@ export function DeviceRemovedScreen({
   bridge,
   deploymentId,
   name,
-  onSetUpAgain,
+  onConnectAgain,
   unconfirmed,
   detail,
   onChoose,
@@ -18,8 +18,8 @@ export function DeviceRemovedScreen({
   readonly bridge: Pick<OpensteerDesktopBridge, "cancel" | "setUpDevice" | "select">;
   readonly deploymentId: string;
   readonly name: string;
-  /** Opens setup again, signing in first where this window has no session. */
-  readonly onSetUpAgain: () => void | Promise<void>;
+  /** Connects again, signing in first where this window has no session. */
+  readonly onConnectAgain: () => void | Promise<void>;
   /** The signed leave hasn't reached the Host yet. */
   readonly unconfirmed: boolean;
   readonly detail?: string;
@@ -55,12 +55,12 @@ export function DeviceRemovedScreen({
           onClick={() =>
             run(async () => {
               await resumeDeviceSignIn(bridge, deploymentId);
-              await onSetUpAgain();
+              await onConnectAgain();
             })
           }
           type="button"
         >
-          Set up again
+          Connect again
         </button>
         <button
           className="btn btn--ghost"
