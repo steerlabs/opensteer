@@ -183,7 +183,7 @@ integration("Personal realtime stream through the Desktop bridge", () => {
   }, 90_000);
   it("replays a reply committed while the open channel was silent", async () => {
     await journey(stack!, apps, {
-      closes: ["Liveness probe unanswered"],
+      closes: ["Client closed"],
       fault: async (app) => app.silenceRealtime(),
       liveness: quickLiveness,
       name: "silent-channel",
@@ -191,7 +191,7 @@ integration("Personal realtime stream through the Desktop bridge", () => {
   }, 90_000);
   it("gives up on a replacement that opens but never synchronizes, and backs off to one that does", async () => {
     await journey(stack!, apps, {
-      closes: ["Liveness probe unanswered", "Realtime channel silent"],
+      closes: ["Client closed", "Realtime channel silent"],
       fault: async (app) => app.silenceRealtime(1),
       liveness: quickLiveness,
       name: "silent-replacement",
