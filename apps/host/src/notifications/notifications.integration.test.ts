@@ -10,7 +10,6 @@ import {
   ModelSelectionSchema,
   NotificationViewSchema,
   TriggerIdSchema,
-  zeroSequence,
   type MessageId,
   type NotificationView,
   type RunId,
@@ -225,14 +224,11 @@ integration("Notifications", () => {
     );
     socket.send(
       JSON.stringify({
-        type: "client.subscribe",
-        threadId: rootTask,
+        type: "client.attach",
         apiVersion: hostApiVersion,
-        cursor: {
-          deploymentId: stack.host.deployment.id,
-          apiVersion: hostApiVersion,
-          afterSequence: zeroSequence,
-        },
+        generation: 1,
+        interests: [],
+        installed: {},
       }),
     );
     await synchronized;

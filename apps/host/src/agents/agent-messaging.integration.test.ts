@@ -28,7 +28,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { type RunToolScope, type RunToolTokenService } from "./run-tool-tokens.js";
 import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
 import { AgentCallerResolver } from "../mcp/agent-caller.js";
-import { readEmptyPersonalResources } from "@opensteer/database/test-support/store";
 const evidenceRoot = join(tmpdir(), "opensteer-title-review", randomUUID());
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -45,12 +44,8 @@ integration("agent-to-agent messaging round trip", () => {
     connectionString: databaseUrl ?? "postgres://unconfigured",
     maxConnections: 4,
   });
-  const store = new OpensteerStore(database, {
-    readPersonalResources: readEmptyPersonalResources,
-  });
-  const realtime = new RealtimeHub({
-    store,
-  });
+  const store = new OpensteerStore(database);
+  const realtime = new RealtimeHub();
   const claimsByToken = new Map<string, RunToolScope>();
   const admission = new KeyedAdmissionQueue({
     maxInFlight: 4,

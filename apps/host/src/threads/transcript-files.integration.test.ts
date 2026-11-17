@@ -240,7 +240,7 @@ it("requires exact persisted output provenance for both tool-card paths and fina
     const open = await f.files.open({ threadId: f.task.threadId, source }, f.actor);
     expect(open).toMatchObject({
       status: "ok",
-      resource: { kind: "transcript-image", imageId },
+      resource: { kind: "output-image", imageId, revision: "1" },
       preview: { kind: "image", image: { status: "ok" } },
     });
     if (open.status !== "ok") throw Error("Expected generated image");
