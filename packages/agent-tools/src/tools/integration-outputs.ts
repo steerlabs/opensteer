@@ -96,15 +96,12 @@ export const IntegrationSearchOutputSchema = z.object({
   computer: ComputerSchema.optional(),
   apps: z
     .array(
-      z.union([
-        AppSchema,
-        z.object({
-          label: z.string(),
-          packageName: z.string(),
-          access: z.never().optional(),
-          blocked: z.never().optional(),
-        }),
-      ]),
+      z.object({
+        label: z.string(),
+        packageName: z.string(),
+        access: z.never().optional(),
+        blocked: z.never().optional(),
+      }),
     )
     .optional(),
   total: z.number(),
@@ -134,6 +131,9 @@ export const IntegrationCallOutputSchema = z.object({
   isError: z.boolean().optional(),
 });
 export const IntegrationRequestOutputSchema = z.object({
+  computerId: z.string().optional(),
+  computer: z.string().optional(),
+  app: z.object({ displayName: z.string(), bundleId: z.string() }).nullable().optional(),
   link: AgentLinkSchema.optional(),
   status: RequestStatusSchema,
   kind: z.string(),

@@ -429,13 +429,6 @@ export class IntegrationToolHandlers {
         },
         inventory.machines,
       );
-      if (installed.unavailableReason)
-        throw refused(
-          "conflict",
-          installed.unavailableReason === "offline"
-            ? `${machine.name} is offline.`
-            : `${machine.name} isn’t ready to list apps yet.`,
-        );
       const apps = installed.apps.map(({ identity }) => ({
         name: identity.displayName,
         bundleId: identity.bundleId,
@@ -448,7 +441,6 @@ export class IntegrationToolHandlers {
           ...access.machine(machine),
           apps,
         },
-        apps,
         total: installed.total,
         nextCursor: nextCursor(offset + apps.length < installed.total),
       };
@@ -1026,7 +1018,12 @@ function computerAccessResult(
     kind: "computer.app.access",
     requestId: null,
     status: "fulfilled",
-    next: "Use computer_use to see and operate approved apps and phones.",
+    computerId: created.computerId,
+    computer: created.computer,
+    app: created.app,
+    next: created.app
+      ? `${created.app.displayName} on ${created.computer} is ready. Use app(${JSON.stringify(created.app.displayName)}, {computer:${JSON.stringify(created.computer)}}) in computer_use.`
+      : `${created.computer} is ready. Use phone(${JSON.stringify(created.computerId)}) in computer_use.`,
   };
   return {
     content: [{ text: JSON.stringify(output), type: "text" as const }],
@@ -1148,9 +1145,7 @@ function integrationRequestGuidance(
         request.kind === "integration.access"
           ? "The user has been asked in Opensteer."
           : request.kind === "computer.app.access"
-            ? // Approving happens on the computer itself, so the sentence says
-              // where rather than letting an agent wait for a click anywhere else.
-              "The user has been asked to approve this on that computer."
+            ? "The user has been asked to approve this from any Opensteer app."
             : "The user has been asked in Opensteer to approve this integration installation.";
       // A Trigger occurrence ends before any user answers, and nothing resumes
       // it, so promising a reply on this thread would be a lie.
