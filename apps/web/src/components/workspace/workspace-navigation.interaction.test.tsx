@@ -1160,6 +1160,8 @@ describe("a link arriving at the start page", () => {
       link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
     expect(held.open).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('[aria-label="Opening tab"]')?.textContent).toContain(address);
+    expect(document.querySelector('[aria-label="Opening tab"] .spinner')).not.toBeNull();
     const before = history.length;
     // The older answer lands first: it shows nothing, and it spoils nothing for the newer one.
     await held.release(0);

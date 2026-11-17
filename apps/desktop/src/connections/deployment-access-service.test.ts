@@ -299,7 +299,15 @@ describe("DeploymentAccessService", () => {
       statusInfo: { reason: null, status: "starting" },
     });
 
-    fixture.emitPersonal({ ...readyPersonalStatus, deploymentId: local.id });
+    fixture.emitPersonal({
+      ...readyPersonalStatus,
+      deploymentId: local.id,
+      components: {
+        ...readyPersonalStatus.components,
+        runner: { state: "starting", version: null },
+        browser: { state: "starting", version: null },
+      },
+    });
     await settle();
 
     expect(fixture.establish).toHaveBeenCalledOnce();

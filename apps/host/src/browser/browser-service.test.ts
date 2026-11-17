@@ -5048,6 +5048,32 @@ describe("BrowserService", () => {
     expect(runtime.connectionCount()).toBe(1);
   });
 
+  it("opens an agent Guest on a connected browser while the hosting computer is still away", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const ownerId = createId("user");
+    const main = testRunner({});
+    const laptop = testRunner({ agents: false });
+    const repository = new MemoryBrowserRepository(ownerId);
+    repository.mainRunnerId = main.runnerId;
+    const service = placementService({
+      keys,
+      ownerId,
+      repository,
+      runtime,
+      runners: [laptop],
+      personal: true,
+      awaitsBrowsers: true,
+    });
+    await expect(
+      service.openAgentSession({ agentBindingId: "run:guest", ownerId, fresh: true }),
+    ).resolves.toMatchObject({
+      session: { placement: { kind: "runner", runnerId: laptop.runnerId } },
+    });
+  });
+
   it.each(["person", "agent"] as const)(
     "opens a homed profile on a browser-only device for a %s",
     async (caller) => {
@@ -5720,6 +5746,8 @@ function testRunner(input: {
 
 function placementService(options: {
   readonly personal?: boolean;
+  /** Admission waits that never settle: an open that waits on an absent computer hangs. */
+  readonly awaitsBrowsers?: boolean;
   readonly keys: { readonly privateKey: KeyObject };
   readonly ownerId: UserId;
   readonly repository?: MemoryBrowserRepository;
@@ -5730,6 +5758,7 @@ function placementService(options: {
   // tests are about, not what happens after the browser answers.
   const relay = runnerTarget({ url: options.runtime.url });
   const targetResolver: BrowserRuntimeTargetResolver = {
+    ...(options.awaitsBrowsers ? { waitForTarget: () => new Promise<void>(() => undefined) } : {}),
     placements: () =>
       options.runners.map((runner) => ({
         agents: runner.agents === true,
@@ -8229,3 +8258,106 @@ function memoryTabs() {
   } as unknown as TabStore;
   return { rows, store, add, close };
 }
+
+it.each(["register", "inventory", "revoke", "offline", "expire", "close"] as const)(
+  "handles a browser opening during startup: %s",
+  async (outcome) => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const relay = runnerTarget({ url: runtime.url });
+    if (outcome !== "offline" && outcome !== "inventory") repository.mainRunnerId = relay.runnerId;
+    let available = false;
+    const waiters = new Set<() => void>();
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const service = new BrowserService({
+      ...nativeProfileOptions(),
+      ...profileStateOptions,
+      personal: true,
+      repository,
+      signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
+      targetResolver: {
+        pendingAdmission: () => outcome === "inventory",
+        placements: () => (available ? relay.placements() : []),
+        resolve: (placement) => (available ? relay.resolve(placement) : undefined),
+        waitForTarget: (_runnerId, signal) =>
+          new Promise<void>((resolve, reject) => {
+            const done = () => {
+              waiters.delete(done);
+              signal.removeEventListener("abort", abort);
+              resolve();
+            };
+            const abort = () => {
+              waiters.delete(done);
+              signal.removeEventListener("abort", abort);
+              reject(signal.reason);
+            };
+            waiters.add(done);
+            signal.addEventListener("abort", abort, { once: true });
+            entered();
+          }),
+      },
+    });
+    cleanups.push(() => service.close());
+    const command = {
+      type: "browser.tab.open" as const,
+      idempotencyKey: randomUUID(),
+      identity: { kind: "guest" as const },
+      ...(outcome === "offline" || outcome === "inventory"
+        ? { placement: { kind: "runner" as const, runnerId: relay.runnerId } }
+        : {}),
+    };
+    if (outcome === "expire") vi.useFakeTimers();
+    try {
+      const opening = service.openTab(ownerId, command);
+      const settled = opening.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      if (outcome === "offline") {
+        expect(await settled).toMatchObject({ error: { reason: "browser-placement-unavailable" } });
+      } else {
+        await withTimeout(
+          Promise.race([
+            waiting,
+            settled.then(() => {
+              throw new Error("Open refused before admission");
+            }),
+          ]),
+          1_000,
+          { timeoutError: () => new Error("Open never waited for browser admission") },
+        );
+        if (outcome === "revoke") {
+          eligibleRunners.delete(relay.runnerId);
+          available = true;
+          for (const done of waiters) done();
+          expect(await settled).toMatchObject({
+            error: { reason: "browser-placement-unavailable" },
+          });
+          expect(await repository.listBrowserSessions(ownerId)).toHaveLength(0);
+        } else if (outcome === "register" || outcome === "inventory") {
+          const duplicate = service.openTab(ownerId, command);
+          available = true;
+          for (const done of waiters) done();
+          const result = await opening;
+          expect(await duplicate).toEqual(result);
+          expect(await repository.listBrowserSessions(ownerId)).toHaveLength(1);
+          expect(repository.tabOpens.size).toBe(1);
+        } else if (outcome === "close") {
+          await service.close();
+          expect(await settled).toMatchObject({ error: { code: "runner_offline" } });
+        } else {
+          await vi.advanceTimersByTimeAsync(18_000);
+          expect(await settled).toMatchObject({ error: { reason: "browser-open.timeout" } });
+        }
+      }
+      expect(waiters.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
