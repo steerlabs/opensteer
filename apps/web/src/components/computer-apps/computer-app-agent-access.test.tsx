@@ -161,7 +161,7 @@ describe("ComputerAppAgentAccess", () => {
 
     expect(select(mounted.container, "Agent access to Messages").value).toBe("read");
     expect(mounted.container.querySelector('[role="alert"]')?.textContent).toContain(
-      "Couldn't confirm this change.",
+      "Couldn't confirm agent access changed.",
     );
 
     host.list.mockRejectedValueOnce(new Error("Grants are unavailable."));

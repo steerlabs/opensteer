@@ -193,7 +193,7 @@ export function DesktopWelcome({
   usePlaceChecks(bridge, account.status === "signed-in");
   const run = (operation: () => Promise<void>) => {
     setActionError(null);
-    void act(null, { label: "do this", done: "done", happened: "it was done" }, operation).catch(
+    void act(null, { label: "do this", done: "done" }, operation).catch(
       (reason: unknown) => setActionError(failureWords(reason)),
     );
   };
@@ -355,7 +355,7 @@ export function DesktopChooser({
   const run = (operation: () => Promise<void>) => {
     setPending(true);
     setActionError(null);
-    void act(null, { label: "do this", done: "done", happened: "it was done" }, operation)
+    void act(null, { label: "do this", done: "done" }, operation)
       .catch((reason: unknown) => setActionError(failureWords(reason)))
       .finally(() => setPending(false));
   };

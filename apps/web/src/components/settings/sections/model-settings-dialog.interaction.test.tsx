@@ -201,7 +201,7 @@ describe("model context sizes", () => {
     expect(button(row("Llama 3.3 70B"), "Change").disabled).toBe(false);
     await act(async () => fail(new Error("A run is using this account. Try again when it ends.")));
     expect(row("Qwen3 8B").querySelector('[role="alert"]')?.textContent).toContain(
-      "Couldn't confirm this change.",
+      "Couldn't confirm this was saved.",
     );
     expect(row("Qwen3 8B").querySelector<HTMLInputElement>("input")!.value).toBe("40960");
   });

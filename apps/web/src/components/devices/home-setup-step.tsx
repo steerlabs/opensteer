@@ -65,7 +65,7 @@ export function HomeSetupStep({
       if (switchable && home && access && deviceAccess(access.policy).apps !== apps) {
         const result = await act(
           hostClient,
-          { label: "change this", done: "changed", happened: "this changed" },
+          { label: "change this", done: "changed" },
           () =>
             hostClient.updateMachineAccess({
               expectedRevision: access.revision,

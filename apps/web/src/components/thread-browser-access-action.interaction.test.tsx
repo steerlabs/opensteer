@@ -64,7 +64,7 @@ it("keeps a failed approval beside the selected profile and retries without an e
   await act(async () => submit().click());
   // A lost answer is said honestly, never in the exception's own words.
   expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-    "Couldn't confirm this change.",
+    "Couldn't confirm your answer was sent.",
   );
   expect(selected()).not.toBeNull();
   expect(shell.reportActionError).not.toHaveBeenCalled();

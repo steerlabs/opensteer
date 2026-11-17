@@ -223,7 +223,7 @@ function QuietTasksRow() {
     const days = QuietTaskDaysSchema.parse(Number(value));
     setPending(days);
     setError(null);
-    void act(hostClient, { label: "change this", done: "changed", happened: "this changed" }, () =>
+    void act(hostClient, { label: "change this", done: "changed" }, () =>
       hostClient.setQuietTaskDays(days),
     )
       .catch((cause: unknown) => setError(failureWords(cause)))

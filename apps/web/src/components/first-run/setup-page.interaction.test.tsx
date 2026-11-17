@@ -405,7 +405,7 @@ it("keeps the step open with the reason when the choice cannot be saved", async 
   await mount();
   await act(async () => button("Continue").click());
   expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-    "Couldn't confirm this change.",
+    "Couldn't confirm this was saved.",
   );
   expect(button("Continue").disabled).toBe(false);
 });
@@ -820,7 +820,7 @@ it("keeps an address change and its failure on screen instead of the old code", 
   );
   await act(async () => button("Turn on").click());
   expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-    "Couldn't confirm this change.",
+    "Couldn't confirm this turned on.",
   );
   expect(container.querySelector('input[aria-label="Your HTTPS address"]')).not.toBeNull();
   expect(container.querySelector(".setup-scan__svg")).toBeNull();

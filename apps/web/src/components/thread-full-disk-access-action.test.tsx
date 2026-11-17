@@ -81,7 +81,7 @@ describe("ThreadFullDiskAccessAction", () => {
     await click(button(page.container, "Not now"));
 
     // An answer that never came is said honestly, never as the exception's own text.
-    expect(page.container.textContent).toContain("Couldn't confirm this change.");
+    expect(page.container.textContent).toContain("Couldn't confirm your answer was sent.");
     expect(page.container.textContent).not.toContain("The deployment refused that.");
     expect(button(page.container, "Not now").disabled).toBe(false);
   });

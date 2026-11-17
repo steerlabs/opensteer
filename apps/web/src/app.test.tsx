@@ -179,7 +179,7 @@ describe("App automatic OIDC sign-in", () => {
 
     expect(beginOidcSignIn).toHaveBeenCalledTimes(1);
     expect(browser.assign).not.toHaveBeenCalled();
-    expect(markup).toContain("Couldn&#x27;t confirm this change.");
+    expect(markup).toContain("Couldn&#x27;t confirm you were signed in.");
     expect(browser.values.get("opensteer.oidc.auto-attempt")).toBeDefined();
   });
 });

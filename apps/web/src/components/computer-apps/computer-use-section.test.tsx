@@ -98,7 +98,7 @@ describe("ComputerUseBlock", () => {
     });
     await click(button(container, "Set up on this Mac"));
     expect(container.querySelector("[role=alert]")?.textContent).toBe(
-      "Couldn't confirm this change.",
+      "Couldn't confirm System Settings opened.",
     );
   });
 
@@ -365,7 +365,7 @@ describe("ComputerUseBlock", () => {
     await click(button(candidate, "Can see"));
     expect(candidate.getAttribute("aria-busy")).toBe("true");
     await act(async () => review.reject(new Error("Can't verify this app right now.")));
-    expect(candidate.textContent).toContain("Couldn't confirm this change.");
+    expect(candidate.textContent).toContain("Couldn't confirm this app was added.");
     expect(button(candidate, "Can see")?.disabled).toBe(false);
   });
 

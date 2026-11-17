@@ -113,7 +113,7 @@ export function ComputerUseBlock({
     try {
       await act(
         hostClient,
-        { label: "change this", done: "changed", happened: "this changed" },
+        { label: "change this", done: "changed" },
         operation,
       );
       // A failed reload after a successful mutation does not undo the change.

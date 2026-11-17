@@ -427,7 +427,6 @@ function EnableSwitch({ row, reload }: { row: PluginRow; reload: () => void }) {
             void runAction(hostClient, {
               label: "change this",
               done: "changed",
-              happened: "this changed",
               execute: () =>
                 hostClient.dispatch({
                   type: "settings.plugin.enabled.set",
