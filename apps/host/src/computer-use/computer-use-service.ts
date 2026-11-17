@@ -2048,7 +2048,7 @@ export class ComputerUseService {
     clearInterval(this.#sweep);
     const sessions = [...this.#sessions.values()];
     await Promise.allSettled(sessions.map((session) => this.#closeSession(session)));
-    while (this.#writes.size > 0) await Promise.allSettled([...this.#writes]);
+    while (this.#writes.size > 0) await Promise.allSettled(this.#writes);
   }
 
   // ---- projection ------------------------------------------------------
