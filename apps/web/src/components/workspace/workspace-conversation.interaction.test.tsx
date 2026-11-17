@@ -634,7 +634,10 @@ describe("a conversation's page above it at phone width", () => {
     },
   };
   async function opened() {
-    await mount(`/tasks/${waiting}`, { width: 390 });
+    await mount(`/tasks/${waiting}`, {
+      width: 390,
+      mock: { subagents: "absent", automations: "absent" },
+    });
     await vi.waitFor(
       () =>
         expect(

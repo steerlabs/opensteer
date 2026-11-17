@@ -400,25 +400,19 @@ integration("live streaming across the deployment", () => {
     // An invalid ordinal triggers the real store's refusal without racing lease
     // recovery, which may requeue an expired Run before its next event arrives.
     const commit = active.host.store.commitRunnerEvent.bind(active.host.store);
-    vi.spyOn(active.host.store, "commitRunnerEvent").mockImplementation((input) =>
-      commit(
-        input.event.runId === refused
-          ? {
-              ...input,
-              event: {
-                ...input.event,
-                ordinal: input.event.ordinal + 1,
-              },
-            }
-          : input,
-      ),
-    );
+    let refusedOrdinal: number | undefined;
+    vi.spyOn(active.host.store, "commitRunnerEvent").mockImplementation((input) => {
+      if (input.event.runId !== refused) return commit(input);
+      refusedOrdinal ??= input.event.ordinal;
+      return commit({ ...input, event: { ...input.event, ordinal: input.event.ordinal + 1 } });
+    });
     await writeFile(releaseFile, "");
     await waitFor(async () => (await runStatus(refused)).status === "failed", 30_000, "refused");
     await waitFor(async () => (await runStatus(healthy)).status === "completed", 60_000, "healthy");
+    expect(refusedOrdinal).toBeDefined();
     expect((await runStatus(refused)).failure).toMatchObject({
       code: "runner_event_refused",
-      message: expect.stringContaining("out of sequence"),
+      message: expect.stringContaining(`Expected Runner ordinal ${refusedOrdinal}`),
     });
     const connectionAfter = await active.host.store.database
       .selectFrom("runners")

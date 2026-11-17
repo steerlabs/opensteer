@@ -340,13 +340,16 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       await waitFor(
         "the hosted runtime to be a Browser placement",
         async () => {
-          const { browser } = await testRpcData(hostOrigin, "bootstrap.get", {}, { headers });
-          return (
-            browser.available &&
-            browser.placements.some(
-              (placement) =>
-                placement.available && placement.runnerId === personal.agentHome.computerId,
-            )
+          const { view } = await testRpcData(
+            hostOrigin,
+            "resources.get",
+            {
+              kind: "browser-placement",
+            },
+            { headers },
+          );
+          return view.entries.some(
+            ({ id, status }) => id === personal.agentHome.computerId && status === "available",
           );
         },
         60_000,
