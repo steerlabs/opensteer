@@ -2103,7 +2103,7 @@ integration.sequential("conversation delivery", () => {
       .selectAll()
       .where("id", "=", pending.message.id)
       .executeTakeFirstOrThrow();
-    const templateInput = await database
+    const { approvalSort: _approvalSort, ...templateInput } = await database
       .selectFrom("threadInputs")
       .selectAll()
       .where("messageId", "=", pending.message.id)

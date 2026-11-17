@@ -122,7 +122,7 @@ it("fences Messaging binding edits, idempotent ingress and queued replies to cur
       database,
     );
     const deliveryId = createChannelId("delivery");
-    await sql`insert into channel_deliveries(id,account_id,conversation_id,message_id,audience,kind,content,status,part_count) values(${deliveryId},${accountId},${conversationId},${replyId},'conversation','reply','[{"type":"text","text":"reply"}]','pending',1)`.execute(
+    await sql`insert into channel_deliveries(id,account_id,conversation_id,message_id,audience,kind,content,status,part_count,next_attempt_at) values(${deliveryId},${accountId},${conversationId},${replyId},'conversation','reply','[{"type":"text","text":"reply"}]','pending',1,now()-interval '1 second')`.execute(
       database,
     );
     const claimed = await store.claimDelivery(p.runnerId);
@@ -174,8 +174,8 @@ it("fences Messaging binding edits, idempotent ingress and queued replies to cur
       database,
     );
     const allowedDeliveryId = createChannelId("delivery");
-    await sql`insert into channel_deliveries(id,account_id,conversation_id,message_id,audience,kind,content,status,part_count)
-      values(${allowedDeliveryId},${accountId},${conversationId},${allowedReplyId},'conversation','reply','[{"type":"text","text":"reply"}]','pending',1)`.execute(
+    await sql`insert into channel_deliveries(id,account_id,conversation_id,message_id,audience,kind,content,status,part_count,next_attempt_at)
+      values(${allowedDeliveryId},${accountId},${conversationId},${allowedReplyId},'conversation','reply','[{"type":"text","text":"reply"}]','pending',1,now()-interval '1 second')`.execute(
       database,
     );
     const allowed = await store.claimDelivery(p.runnerId);

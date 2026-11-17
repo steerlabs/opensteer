@@ -6225,7 +6225,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
       const mainRead = await mainAsk("read");
       const opened = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read"));
       const allowed = await allowPhoneFromClient(storeFixture, setup, "read", opened.setupRequest);
-      expect(allowed.fulfilledRequestIds).toEqual([opened.request.id]);
+      expect([...allowed.fulfilledRequestIds].sort()).toEqual(
+        [opened.request.id, mainRead.request.id].sort(),
+      );
       expect(allowed.grants).toEqual([
         expect.objectContaining({
           access: "read",

@@ -2504,7 +2504,6 @@ describeStore("PostgreSQL store", (it) => {
     expect(earlier?.window).toMatchObject({
       hasMore: true,
       itemCount: 1,
-      totalItems: 3,
     });
     const oldest = await store.threadMessagePageForOwner({
       before: earlier!.window.nextBefore!,
@@ -2823,23 +2822,39 @@ describeStore("PostgreSQL store", (it) => {
     expect(all.nextBefore).toBeNull();
     const starts = all.items.flatMap(({ isTurnStart }, index) => (isTurnStart ? [index] : []));
     expect(starts).toHaveLength(3);
-    const [, second, third] = starts as [number, number, number];
+    const [first, second, third] = starts as [number, number, number];
     const newest = await page({ maxTurns: 2 });
-    expect(newest.items).toEqual(all.items.slice(second));
+    expect(newest.items).toEqual(all.items.slice(first + 1));
     expect(newest.hasMore).toBe(true);
-    expect(newest.nextBefore).toMatchObject({ beforeId: all.items[second]!.id });
+    expect(newest.nextBefore).toMatchObject({ beforeId: all.items[first + 1]!.id });
     const oldest = await page({ cursor: newest.nextBefore!, maxTurns: 2 });
-    expect(oldest.items).toEqual(all.items.slice(0, second));
+    expect(oldest.items).toEqual(all.items.slice(0, first + 1));
     expect(oldest.hasMore).toBe(false);
     const newestTurn = all.items.slice(third);
-    expect((await page({ maxBytes: 8192, maxTurns: 1 })).items).toEqual(newestTurn);
-    const counted = await page({ limit: 3, maxTurns: 1 });
-    expect(counted.items).toEqual(all.items.slice(-3));
+    const bounded = await page({ maxBytes: 8192, maxTurns: 1 });
+    expect(bounded.items).toEqual(all.items.slice(second + 1));
+    expect(bounded.items.slice(-newestTurn.length)).toEqual(newestTurn);
+    expect(Buffer.byteLength(JSON.stringify(bounded))).toBeLessThanOrEqual(8192);
+    const counted = await page({ limit: 2, maxTurns: 1 });
+    expect(counted.items).toEqual(newestTurn.slice(-2));
     const rest = await page({ cursor: counted.nextBefore!, maxTurns: 1 });
-    expect(rest.items).toEqual(all.items.slice(third, -3));
-    const tool = all.items.find((item) => item.kind === "tool" && item.view.truncated);
+    expect(rest.items).toEqual(all.items.slice(second + 1, -2));
+    const { id: toolCallId } = await database
+      .selectFrom("toolCalls")
+      .select("id")
+      .where("threadId", "=", thread.id)
+      .where("callId", "=", "call-2-1")
+      .executeTakeFirstOrThrow();
+    const tool = all.items.find((item) => item.kind === "tool" && item.toolCallId === toolCallId);
     expect(tool).toBeDefined();
     expect(Buffer.byteLength(JSON.stringify(tool))).toBeLessThan(Buffer.byteLength(large));
+    await expect(
+      readTranscriptItem(database, {
+        itemId: tool!.id,
+        scope: { kind: "thread", threadId: thread.id },
+        viewerId: userId,
+      }),
+    ).resolves.toMatchObject({ kind: "item", body: { kind: "tool", output: { text: large } } });
   });
   it("persists tool output whose source text carried NUL bytes", async ({ storeFixture }) => {
     const { createRunFixture, enqueueHumanTrigger, store } = storeFixture;
@@ -2998,7 +3013,7 @@ describeStore("PostgreSQL store", (it) => {
         runnerBootId: "boot-event-order",
         runnerId,
       }),
-    ).rejects.toThrow(/out of sequence; expected 0/);
+    ).rejects.toMatchObject({ code: "conflict", message: "Expected Runner ordinal 0" });
     await expect(
       store.commitRunnerEvent({
         environmentId,
@@ -3053,7 +3068,10 @@ describeStore("PostgreSQL store", (it) => {
         runnerBootId: "boot-event-order",
         runnerId,
       }),
-    ).rejects.toThrow(/already committed with different content/);
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: "Runner ordinal was already used by another statement",
+    });
     await expect(
       store.commitRunnerEvent({
         environmentId,
@@ -3068,7 +3086,7 @@ describeStore("PostgreSQL store", (it) => {
         runnerBootId: "boot-event-order",
         runnerId,
       }),
-    ).rejects.toThrow(/out of sequence; expected 1/);
+    ).rejects.toMatchObject({ code: "conflict", message: "Expected Runner ordinal 1" });
     const later = await store.enqueueThreadInput({
       content: [
         {
@@ -3559,7 +3577,14 @@ describeStore("PostgreSQL store", (it) => {
     ).resolves.toEqual({
       status: "failed",
     });
-    await expect(store.succeedCommand(cancelledResponse.command.id)).resolves.toEqual([]);
+    await store.succeedCommand(cancelledResponse.command.id);
+    await expect(
+      database
+        .selectFrom("commands")
+        .select("status")
+        .where("id", "=", cancelledResponse.command.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: "failed" });
     const acceptedId = createId("request");
     await openRequest(acceptedId, 3);
     const acceptedResponse = await respond(acceptedId, "accepted");
@@ -3597,14 +3622,15 @@ describeStore("PostgreSQL store", (it) => {
     await openRequest(authorityCancelledId, 5);
     const authorityCancelledResponse = await respond(authorityCancelledId, "authority-cancelled");
     await expect(store.requests.cancelForRun(fixture.run.id, "run-ended")).resolves.toEqual([
-      expect.objectContaining({
-        data: {
-          reason: "run-ended",
-          requestId: authorityCancelledId,
-        },
-        type: "request.cancelled",
-      }),
+      authorityCancelledId,
     ]);
+    await expect(
+      database
+        .selectFrom("requests")
+        .select(["status", "cancellationReason"])
+        .where("id", "=", authorityCancelledId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: "cancelled", cancellationReason: "run-ended" });
     await expect(
       database
         .selectFrom("commands")
@@ -3624,7 +3650,7 @@ describeStore("PostgreSQL store", (it) => {
   it("holds cancellation behind the transactional Runner response boundary", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, openLiveRequest, store, database } = storeFixture;
+    const { startRunFixture, openLiveRequest, store, database, reactions } = storeFixture;
     const fixture = await startRunFixture("request-response-dispatch-fence");
     const requestId = createId("request");
     await openLiveRequest(fixture, requestId);
@@ -3681,12 +3707,16 @@ describeStore("PostgreSQL store", (it) => {
       { timeout: 1_000, interval: 5 },
     );
     releaseReceipt();
-    await expect(delivery).resolves.toEqual([
-      expect.objectContaining({
-        type: "request.resolved",
-      }),
-    ]);
+    await delivery;
     await expect(cancellation).resolves.toEqual([]);
+    expect(
+      reactions.filter(
+        (reaction) =>
+          reaction.type === "requestChanged" &&
+          reaction.requestId === requestId &&
+          reaction.status !== "pending",
+      ),
+    ).toEqual([expect.objectContaining({ type: "requestChanged", status: "fulfilled" })]);
     await expect(
       database
         .selectFrom("requests")
