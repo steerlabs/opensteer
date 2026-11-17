@@ -27,7 +27,7 @@ export interface ClientRead<T> {
 export interface ClientReadSpec<T> {
   readonly key: string;
   readonly label: string;
-  readonly remember?: boolean;
+  readonly remember?: boolean | "across-mounts";
   readonly read: (signal: AbortSignal) => Promise<T>;
   readonly subscribeInvalidation?: (invalidate: () => void) => () => void;
 }
@@ -69,7 +69,8 @@ interface RememberedRead {
   readonly value: unknown;
   forget(): void;
 }
-const remembered = new WeakMap<ClientConnection, Map<string, RememberedRead>>();
+type RetentionKey = string | (() => void);
+const remembered = new WeakMap<ClientConnection, Map<RetentionKey, RememberedRead>>();
 export function createClientRead<T>(
   session: ClientSession,
   spec: ClientReadSpec<T>,
@@ -112,7 +113,10 @@ class RetainedClientRead<T> implements ClientRead<T> {
     this.#scope = clientScopeKey(connection.scope);
     this.#epoch = connection.epoch;
     this.#revision = connection.readyRevision;
-    const held = spec.remember ? remembered.get(session.connection)?.get(spec.key) : undefined;
+    const held =
+      spec.remember === "across-mounts"
+        ? remembered.get(session.connection)?.get(spec.key)
+        : undefined;
     if (held && held.scope === this.#scope) {
       this.#accepted = true;
       this.#value = held.value as T;
@@ -154,8 +158,9 @@ class RetainedClientRead<T> implements ClientRead<T> {
           cache = new Map();
           remembered.set(this.#session.connection, cache);
         }
-        cache.get(this.#spec.key)?.forget();
-        cache.set(this.#spec.key, { scope: this.#scope, value: this.#value, forget: this.#forget });
+        const key = this.#retentionKey();
+        cache.get(key)?.forget();
+        cache.set(key, { scope: this.#scope, value: this.#value, forget: this.#forget });
         if (cache.size > 32) cache.values().next().value?.forget();
         this.#retention = setTimeout(this.#forget, 300_000);
         unrefTimer(this.#retention);
@@ -203,7 +208,7 @@ class RetainedClientRead<T> implements ClientRead<T> {
   };
   evict = (): void => {
     this.#cancel();
-    const held = remembered.get(this.#session.connection)?.get(this.#spec.key);
+    const held = remembered.get(this.#session.connection)?.get(this.#retentionKey());
     if (held?.scope === this.#scope) held.forget();
     this.#accepted = false;
     this.#value = undefined;
@@ -229,7 +234,11 @@ class RetainedClientRead<T> implements ClientRead<T> {
   };
   #releaseRemembered(): void {
     const cache = remembered.get(this.#session.connection);
-    if (cache?.get(this.#spec.key)?.forget === this.#forget) cache.delete(this.#spec.key);
+    const key = this.#retentionKey();
+    if (cache?.get(key)?.forget === this.#forget) cache.delete(key);
+  }
+  #retentionKey(): RetentionKey {
+    return this.#spec.remember === "across-mounts" ? this.#spec.key : this.#forget;
   }
   #publish(state: ClientReadState<T>): void {
     this.#state = state;
@@ -332,7 +341,7 @@ class RetainedClientRead<T> implements ClientRead<T> {
             failure.provenance === "host" &&
             ["forbidden", "not_found", "unauthorized"].includes(failure.code);
           if (denied) {
-            const held = remembered.get(this.#session.connection)?.get(this.#spec.key);
+            const held = remembered.get(this.#session.connection)?.get(this.#retentionKey());
             if (held?.scope === scope) held.forget();
             this.#accepted = false;
             this.#value = undefined;
