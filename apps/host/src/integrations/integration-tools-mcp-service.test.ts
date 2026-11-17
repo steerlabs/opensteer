@@ -1774,7 +1774,7 @@ async function createHarness(input: {
     listPendingIntegrationAccessRequests: vi.fn(async () => input.pendingAccessRequests ?? []),
   };
   const store = {
-    getComputerConnectionForCall: vi.fn(async () =>
+    getDeviceComputerConnectionForCall: vi.fn(async () =>
       input.computerConnection
         ? {
             ...input.computerConnection,

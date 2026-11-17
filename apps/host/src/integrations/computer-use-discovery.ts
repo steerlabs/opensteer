@@ -196,7 +196,7 @@ function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked }
     phone.setup?.location === "driver-mac"
       ? ` in Opensteer on ${phone.setup.driverRunnerName}`
       : " in Opensteer on its driving Mac";
-  if (reason === "driver-offline" || (!reason && phone.state === "offline"))
+  if (reason === "driver-offline" || (phone.state === "offline" && reason !== "not-connected"))
     return blocked(
       "computer_offline",
       `${phone.name}'s screen driver is offline.`,
@@ -231,7 +231,7 @@ function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked }
     case "permission-required":
       return blocked(
         "permission_required",
-        `${phone.name} needs ${reason.replaceAll("-", " ")}.`,
+        `${phone.name} needs ${reason === "trust-required" ? "the person to trust its driving Mac" : reason === "developer-mode-required" ? "Developer Mode" : reason === "setup-required" ? "screen setup" : "screen permissions"}.`,
         phone.definitionId === "android-phone"
           ? "The person can enable Opensteer's accessibility service in the phone's settings."
           : `The person can finish or fix the iPhone's screen setup${location}.`,
@@ -249,6 +249,11 @@ function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked }
         "The person can leave the protected screen; other work can continue.",
       );
     case "not-connected":
+      return blocked(
+        "unavailable",
+        `${phone.name} is not connected to its screen driver.`,
+        `The person can connect the iPhone to its Mac with a cable or the same Wi-Fi, then finish or fix setup${location}.`,
+      );
     case "helper-unavailable":
     case "connecting":
     case "unreported":
