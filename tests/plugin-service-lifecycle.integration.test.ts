@@ -1,12 +1,13 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Client } from "pg";
+import { sql } from "kysely";
 import { test, expect, vi } from "vitest";
 import {
   PluginService,
   type PluginServiceOptions,
 } from "../apps/host/src/plugins/plugin-service.js";
+import { createDatabase } from "../packages/database/src/connection.js";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
@@ -116,17 +117,14 @@ test("starts at boot for a claimed scheduled run and stops once the engine has r
   await first.health({}, caller);
   await first.close();
 
-  const database = new Client({ connectionString: url });
-  await database.connect();
+  const database = createDatabase({ connectionString: url, maxConnections: 1 });
   try {
-    await database.query(
-      `INSERT INTO plugin_engine.plugin_engine_scheduled_runs
+    await sql`INSERT INTO plugin_engine.plugin_engine_scheduled_runs
         (id, schedule_id, app, owner, name, status, scheduled_at, started_at, runner, revision)
-       VALUES ('run_lost', 'schedule_lost', 'app_lost', 'owner', 'Lost', 'running',
-        now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC', 'host', 'revision')`,
-    );
+      VALUES ('run_lost', 'schedule_lost', 'app_lost', 'owner', 'Lost', 'running',
+        now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC', 'host', 'revision')`.execute(database);
   } finally {
-    await database.end();
+    await database.destroy();
   }
 
   const service = await open();
