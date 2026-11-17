@@ -1998,7 +1998,8 @@ export class ChannelStore {
           "integrationConnections.provider",
         ])
         .where("channelDeliveries.status", "in", ["pending", "retryable-failed", "unknown"])
-        .where("channelDeliveries.nextAttemptAt", "<=", now)
+        // PostgreSQL defaults retain finer precision than JavaScript's clock.
+        .where("channelDeliveries.nextAttemptAt", "<=", sql<Date>`statement_timestamp()`)
         .where(
           sql<boolean>`not exists (
             select 1 from public.channel_deliveries ahead

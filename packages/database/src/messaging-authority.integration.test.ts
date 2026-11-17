@@ -2,7 +2,7 @@ import { createId } from "@opensteer/core";
 import { createChannelId } from "@opensteer/channel-core";
 import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { sql } from "kysely";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { ChannelStore } from "./channel-store.js";
 import { channelInputAuthorityIsCurrent } from "./channel-execution.js";
 import { createDatabase } from "./connection.js";
@@ -175,7 +175,14 @@ it("fences Messaging binding edits, idempotent ingress and queued replies to cur
       values(${allowedDeliveryId},${accountId},${conversationId},${allowedReplyId},'conversation','reply','[{"type":"text","text":"reply"}]','pending',1)`.execute(
       database,
     );
-    const allowed = await store.claimDelivery(p.runnerId);
+    let allowed: Awaited<ReturnType<ChannelStore["claimDelivery"]>>;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() - 1_000);
+    try {
+      allowed = await store.claimDelivery(p.runnerId);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(allowed?.delivery.id).toBe(allowedDeliveryId);
     await store.startDeliveryAttempt(allowedDeliveryId, allowed!.claimToken);
     await store.finishDelivery({
