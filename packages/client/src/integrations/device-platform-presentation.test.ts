@@ -71,6 +71,7 @@ const responses = {
         device: { form: "phone", platform: "ios" },
         id: "rnr_22222222-2222-4222-8222-222222222222",
         name: iphoneName,
+        kind: "phone",
       }),
     ],
   }).machines,
@@ -257,12 +258,14 @@ describe("an app whose platforms this client does not know", () => {
 });
 
 function machine(input: {
+  readonly kind?: "personal" | "phone";
   readonly apps?: readonly object[];
   readonly device: object;
   readonly id: string;
   readonly name: string;
 }) {
   return {
+    kind: input.kind ?? "personal",
     access: null,
     allowedModules: ["integrations"],
     apps: input.apps ?? null,

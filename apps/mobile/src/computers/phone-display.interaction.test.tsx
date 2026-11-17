@@ -327,6 +327,7 @@ async function setup(
         status: "online",
         // The viewer offers only the navigation and power the Host advertises for a phone.
         kind: phone ? "agent-phone" : "personal",
+        allowedModules: ["integrations"],
         computerUse: {
           displayStreamSupported: true,
           ownerViews: owner

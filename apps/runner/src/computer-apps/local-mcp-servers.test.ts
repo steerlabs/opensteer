@@ -84,7 +84,7 @@ it("runs local MCP where no native provider exists, through removal of its plugi
     });
   } finally {
     servers.detach();
-    prepared?.close?.();
+    await prepared?.close?.();
   }
 });
 

@@ -2298,7 +2298,9 @@ describe("a page beside its agent's thread", () => {
       // The agent moves on; the page keeps up in place.
       state.snapshot = agentOn("page-2");
       await render();
-      act(() => vi.advanceTimersByTime(1000));
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
       expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
         editAddress: false,
         popup: false,
@@ -2311,7 +2313,9 @@ describe("a page beside its agent's thread", () => {
       state.setParams.mockClear();
       await showTab("page-1");
       expect(element(container, "Address, example.com")).not.toBeNull();
-      act(() => vi.advanceTimersByTime(5000));
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
       expect(state.setParams).not.toHaveBeenCalled();
 
       // The conversation's live card shows the agent's tab in place, and following picks up there.
@@ -2331,7 +2335,9 @@ describe("a page beside its agent's thread", () => {
       state.focused = false;
       state.snapshot = agentOn("page-1");
       await render();
-      act(() => vi.advanceTimersByTime(5000));
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
       expect(state.setParams).not.toHaveBeenCalled();
       state.focused = true;
       await render();

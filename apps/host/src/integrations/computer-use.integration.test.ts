@@ -133,7 +133,12 @@ integration.sequential("Host computer-use approval transactions", () => {
       ),
       computerApps: {
         deviceStatus: () => null,
-        withDeviceAdmission: async (_id, action) => action(),
+        withDeviceAdmission: async (_id, action) => {
+          const next = admission.next;
+          admission.next = undefined;
+          await next?.();
+          return action();
+        },
         withDeviceAdmissions: async (_ids, action) => action(),
         requireDeviceAgentAccess: async () => {},
         requireAgentAccess: async () => {},
@@ -150,12 +155,7 @@ integration.sequential("Host computer-use approval transactions", () => {
         attached: () => true,
         machinesFor: () => [],
         openMcpSession: vi.fn(),
-        withRunnerAdmission: async (_runner, action) => {
-          const next = admission.next;
-          admission.next = undefined;
-          await next?.();
-          return action();
-        },
+        withRunnerAdmission: async (_runner, action) => action(),
         send: vi.fn(),
       },
       computerUse,

@@ -45,6 +45,6 @@ it("runs a package's .cmd shim found on the approved Path, through plugin-data r
     await expect(readFile(path.join(data, "pairing"))).rejects.toMatchObject({ code: "ENOENT" });
   } finally {
     servers.detach();
-    prepared?.close?.();
+    await prepared?.close?.();
   }
 });

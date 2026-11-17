@@ -1645,14 +1645,14 @@ describe("computer use over the desktop bridge", () => {
     teardown.push(() => prepared?.close?.());
     expect(prepared?.descriptor).toMatchObject({ macWindowVideoVersion: 1, platform: "darwin" });
     expect(prepared?.descriptor).toHaveProperty("macOwnerInputVersion", 2);
-    prepared?.close?.();
+    await prepared?.close?.();
     const standalone = await prepareIntegrationsModule({
       dataDirectory: "/tmp/opensteer-capture-descriptor",
       platform: "darwin",
     });
     expect(standalone?.descriptor).not.toHaveProperty("macWindowVideoVersion");
     expect(standalone?.descriptor).not.toHaveProperty("macOwnerInputVersion");
-    standalone?.close?.();
+    await standalone?.close?.();
   });
 
   it("reports the Mac's grants on the status cadence and refuses an invoke of the app", async () => {

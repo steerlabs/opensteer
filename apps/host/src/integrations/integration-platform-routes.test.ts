@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import { IntegrationPlatformStore, type DatabaseSchema } from "@opensteer/database";
 import type { Kysely } from "kysely";
-import { createId } from "@opensteer/core";
+import { createId, DeviceIdSchema } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HostAuthenticator } from "../identity/auth.js";
@@ -169,7 +169,33 @@ describe("integration platform OAuth routes", () => {
   it("routes computer app changes with the owner's session", async () => {
     const userId = createId("user");
     const runnerId = createId("runner");
-    const connection = { id: createIntegrationId("connection") };
+    const connection = {
+      id: createIntegrationId("connection"),
+      accountIdentifier: null,
+      applicationSource: null,
+      authMethodId: "computer",
+      authorizationDigest: null,
+      connectionMethod: "computer",
+      computer: {
+        deviceId: DeviceIdSchema.parse(runnerId),
+        access: "read",
+        app: null,
+        blockedAt: null,
+        policyRevision: null,
+      },
+      createdAt: "2026-11-16T12:00:00.000Z",
+      definitionId: "apple-messages",
+      displayName: "Messages",
+      externalIdentityId: null,
+      externalTenantId: null,
+      grantedScopes: [],
+      provider: "apple-messages",
+      providerApplicationId: null,
+      status: "connected",
+      statusDetail: null,
+      statusReason: null,
+      updatedAt: "2026-11-16T12:00:00.000Z",
+    };
     const setComputerConnection = vi.fn(async () => connection);
     const command = {
       idempotencyKey: "computer-app-set",
@@ -187,14 +213,20 @@ describe("integration platform OAuth routes", () => {
       dashboard: {} as never,
       mcpOauth: {} as McpOAuthService,
       platform: {
-        store: { connections: { assertOwner: vi.fn(async () => undefined) } },
+        store: {
+          connections: { assertOwner: vi.fn(async () => undefined) },
+          getDeviceSelfRunnerId: vi.fn(async () => runnerId),
+        },
         computerAppApprovals: { setComputerConnection },
       } as never,
     };
 
     const context = testHostApiContext(userId);
     await expect(handleIntegrationPlatformCommand(options, command, context)).resolves.toEqual({
-      connection,
+      connection: {
+        ...connection,
+        computer: { runnerId, access: "read", app: null, blockedAt: null, policyRevision: null },
+      },
       type: "integration.computer.setup.set",
     });
     expect(setComputerConnection).toHaveBeenCalledWith({
