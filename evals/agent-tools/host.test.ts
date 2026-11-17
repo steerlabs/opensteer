@@ -17,7 +17,10 @@ it("returns a fixture refusal as an MCP tool error after validation", async () =
       profile: "task",
       source: { commit: "a".repeat(40), note: "Mock errors retain production input validation" },
       turns: ["Inspect availability"],
-      mocks: { integration_search: { $error: "Service is offline." } },
+      mocks: {
+        integration_search: { $error: "Service is offline." },
+        saved_login_request: { status: "pending" },
+      },
       expect: { calls: [{ tool: "integration_search", args: { query: "mail" } }] },
     }),
   )[0]!;
@@ -40,6 +43,13 @@ it("returns a fixture refusal as an MCP tool error after validation", async () =
     expect(host.calls).toMatchObject([
       { ...call, valid: true, result: { $error: "Service is offline." } },
     ]);
+    const badOutput = await client.callTool({
+      name: "saved_login_request",
+      arguments: { tabId: "sign-in-tab", site: "https://example.com", reason: "Sign in" },
+    });
+    expect(badOutput.isError).toBe(true);
+    expect(JSON.stringify(badOutput)).toContain("invalid mock output for saved_login_request");
+    expect(host.calls.at(-1)?.valid).toBe(false);
     const invalid = await client.callTool({ name: call.tool, arguments: { unexpected: true } });
     expect(invalid.isError).toBe(true);
     expect(invalid.content).not.toEqual(result.content);
@@ -61,9 +71,30 @@ it("serves the production inventory and validates mocked calls through real MCP 
       profile: "task",
       turns: ["hi"],
       mocks: {
-        integration_search: { $responses: [{ marker: "first" }, { marker: "second" }] },
+        integration_search: {
+          $responses: [
+            {
+              operations: [],
+              results: [],
+              catalog: [],
+              total: 0,
+              nextCursor: null,
+              marker: "first",
+            },
+            {
+              operations: [],
+              results: [],
+              catalog: [],
+              total: 0,
+              nextCursor: null,
+              marker: "second",
+            },
+          ],
+        },
         opensteer_automation_list: {
-          $byArgs: [{ args: { systemRole: "memory-light" }, result: { marker: "light" } }],
+          $byArgs: [
+            { args: { systemRole: "memory-light" }, result: { automations: [], marker: "light" } },
+          ],
         },
       },
       expect: {},
@@ -177,7 +208,10 @@ it("validates prompt overhaul case inputs and mocked positive calls with product
                 ? { ...args, reason: "Check the assigned account" }
                 : args,
           });
-          expect(host.calls.at(-1)?.valid, `${c.id}: ${required.tool} args`).toBe(true);
+          expect(
+            host.calls.at(-1)?.valid,
+            `${c.id}: ${required.tool} args ${JSON.stringify(host.calls.at(-1)?.result)}`,
+          ).toBe(true);
         }
       } finally {
         await Promise.allSettled(clients.map((c) => c.close()));

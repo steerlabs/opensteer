@@ -27,6 +27,7 @@ import {
   formatReferenceLink,
   UserIdSchema,
   OpensteerError,
+  ToolBlockedError,
   refused,
   type AgentEvent,
   type Request,
@@ -346,20 +347,15 @@ export class IntegrationToolHandlers {
       [computerUseDefinitionId, androidPhoneDefinitionId].includes(definitionId ?? "")
     )
       throw refused("bad_request", computerUseToolRequiredSentence);
+    if (match?.tool) {
+      const readiness = match.entry.readiness.tools.find(
+        ({ toolId }) => toolId === match.tool?.id,
+      )?.readiness;
+      const blocked = integrationBlocked(readiness, match.entry.installation.name);
+      if (blocked) throw new ToolBlockedError(blocked);
+    }
     if (match?.grant) {
-      const { computerWrite, definitionId, entry, grant, tool } = match;
-      const readiness = entry.readiness.tools.find(({ toolId }) => toolId === tool?.id)?.readiness;
-      if (
-        tool &&
-        grant.access === "read" &&
-        readiness?.code === "ACCESS_GRANT_REQUIRED" &&
-        readiness.requiredAccess === "read-write"
-      ) {
-        throw refused(
-          "forbidden",
-          `${entry.installation.title} operation ${tool.title} makes changes, and the owner has read access as ${entry.accounts.find(({ connectionId }) => connectionId === grant.connectionId)?.account ?? grant.alias}. Call integration_request with integration "${entry.installation.name}" and access "read-write"; do not retry this call until it is fulfilled.`,
-        );
-      }
+      const { computerWrite, definitionId, entry, grant } = match;
       if (computerWrite && grant.connectionId) {
         const connection = await this.#platform.store.getComputerConnectionForCall({
           connectionId: grant.connectionId,
@@ -1122,7 +1118,7 @@ function integrationAlreadyGrantedResult(
     requestId: null,
     replayed: false,
     status: "fulfilled" as const,
-    next: `${integration} as ${account} is usable now with ${access} access. Call integration_search for available operations.`,
+    next: `${integration} as ${account} has a personal ${access} grant. This task’s access mode still limits execution. Call integration_search for operations this task can use.`,
   };
   return {
     content: [

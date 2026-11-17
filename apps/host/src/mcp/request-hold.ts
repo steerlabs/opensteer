@@ -1,3 +1,4 @@
+import { requestStillOpenGuidance } from "@opensteer/shared/requestGuidance";
 import {
   savedLoginAgentResult,
   cardAgentResult,
@@ -87,7 +88,9 @@ export class RequestHold {
           throw executionEnded;
         if (!stopped) {
           if (snapshot.run.phase !== "turn" || snapshot.run.voiceSessionId !== null)
-            return admitted ? { record: input.result } : null;
+            return admitted
+              ? { record: { ...input.result, next: requestStillOpenGuidance } }
+              : null;
           admitted = true;
           if (snapshot.queued) {
             await stopRun("queued-input");
@@ -109,9 +112,15 @@ export class RequestHold {
               input.signal.throwIfAborted();
               const delivery = await this.options.store.requests.markToolDelivered(id.data, claims);
               if (delivery === "refused") throw executionEnded;
-              return { record, text: outcome.text };
+              return { record: { ...record, next: outcome.text }, text: outcome.text };
             }
-            if (snapshot.steered) return { record: input.result };
+            if (snapshot.steered)
+              return {
+                record: {
+                  ...input.result,
+                  next: `${requestStillOpenGuidance} A private steer released this call without answering the Request.`,
+                },
+              };
           }
         }
       } catch (error) {

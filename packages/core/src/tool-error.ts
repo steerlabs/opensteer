@@ -14,3 +14,12 @@ export const BlockedSchema = z.strictObject({
   next: z.string().min(1).max(2000),
 });
 export type Blocked = z.infer<typeof BlockedSchema>;
+
+export class ToolBlockedError extends Error {
+  readonly blocked: Blocked;
+
+  constructor(blocked: Blocked) {
+    super(blocked.message);
+    this.blocked = blocked;
+  }
+}

@@ -17,7 +17,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentCaller, RunCaller } from "./agent-caller.js";
 import type { AgentToolHandlers } from "./handlers/types.js";
 import { RequestHold } from "./request-hold.js";
-import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 import { ProductToolHandlers } from "./handlers/product.js";
 
@@ -338,7 +337,7 @@ describe("Opensteer MCP spine", () => {
       expect(response.headers.get("x-opensteer-request-pending")).toBeNull();
       if (state.startsWith("pending"))
         expect(body.result.content.map((part: { text: string }) => part.text).join("\n")).toContain(
-          requestPendingGuidance,
+          "The person was asked.",
         );
       if (state === "integration") expect(f.options.store.requests.get).not.toHaveBeenCalled();
     } finally {

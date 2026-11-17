@@ -421,6 +421,18 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
                 : automation,
             ),
           };
+        const output = definition.output.safeParse(result);
+        if (!output.success) {
+          const message = `${testCase.id}: invalid mock output for ${name}: ${output.error.message}`;
+          calls[index] = {
+            at: calls[index]?.at ?? Date.now(),
+            tool: name,
+            args,
+            valid: false,
+            result: { error: message },
+          };
+          return agentToolFailureResult({ code: "invalid_mock_output", message });
+        }
         calls[index] = { at: calls[index]?.at ?? Date.now(), tool: name, args, valid, result };
         if (name === "integration_describe" || !isRecord(result)) {
           return { content: [{ type: "text", text: JSON.stringify(result) }] };
@@ -519,7 +531,7 @@ const automationWriteTools = new Set([
 function defaultResult(name: string): unknown {
   switch (name) {
     case "integration_search":
-      return { operations: [], integrations: [], catalog: [], total: 0 };
+      return { operations: [], results: [], catalog: [], total: 0, nextCursor: null };
     case "opensteer_task_list":
       return { tasks: [], nextCursor: null };
     case "opensteer_request_list":
