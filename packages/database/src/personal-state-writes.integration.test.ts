@@ -1,9 +1,11 @@
+import { createId } from "@opensteer/core";
 import { sql } from "kysely";
 import { expect, test } from "vitest";
 import { commitPersonalMutation, installPersonalMutationHooks } from "./personal-mutation.js";
 import { acceptPersonalRunnerStatement } from "./personal-runner-receipts.js";
 import { createPersonalStateFixture } from "./personal-state.test-support.js";
 import { completePersonalToolCall, startPersonalToolCall } from "./personal-tool-calls.js";
+import { readPersonalToolImage, resolvePersonalToolImages } from "./personal-tool-images.js";
 
 test("rolls back the tool, images, receipt, Run ordinal and reaction if the feed write fails", async () => {
   const fixture = await createPersonalStateFixture("target-atomicity");
@@ -102,6 +104,36 @@ test("rolls back the tool, images, receipt, Run ordinal and reaction if the feed
     expect(await database.selectFrom("toolOutputImages").select("path").execute()).toEqual([
       { path: "/fixture/output.png" },
     ]);
+    const viewerId = run.userId;
+    const threadId = run.threadId;
+    const paths = ["/fixture/output.png"];
+    const [image] = await resolvePersonalToolImages(database, { viewerId, threadId, paths });
+    expect(image).toMatchObject({ path: paths[0], mediaType: "image/png" });
+    const otherThreadId = createId("thread");
+    const thread = await database
+      .selectFrom("threads")
+      .selectAll()
+      .where("id", "=", threadId)
+      .executeTakeFirstOrThrow();
+    await database
+      .insertInto("threads")
+      .values({
+        ...thread,
+        id: otherThreadId,
+        lineageRootThreadId: otherThreadId,
+      })
+      .execute();
+    const imageId = image!.id;
+    expect(await readPersonalToolImage(database, { viewerId, threadId, imageId })).toEqual(image);
+    expect(
+      await resolvePersonalToolImages(database, { viewerId, threadId: otherThreadId, paths }),
+    ).toEqual([]);
+    expect(
+      await readPersonalToolImage(database, { viewerId, threadId: otherThreadId, imageId }),
+    ).toBeNull();
+    await expect(
+      readPersonalToolImage(database, { viewerId: createId("user"), threadId, imageId }),
+    ).rejects.toThrow("unavailable to this viewer");
     expect(reactions).toBe(1);
   } finally {
     disconnect();
