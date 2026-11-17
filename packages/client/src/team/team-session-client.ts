@@ -583,7 +583,8 @@ export class TeamSessionClient {
     const thread = rootId
       ? emptyTeamTimeline("thread", ++this.#generation, { kind: "thread", channelId, rootId })
       : null;
-    this.#update({ thread });
+    // A thread's failure is read while it waits for its root, so a new one starts clear.
+    this.#update(thread ? { thread, error: null } : { thread });
     if (thread) {
       this.#subscribe(thread);
       const lifetime = this.#lifetime;
