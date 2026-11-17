@@ -1,4 +1,3 @@
-import { databaseOperation } from "@opensteer/database";
 import { authorizeTabTarget } from "../tabs/tab-authority.js";
 import type { PageTabsPort } from "../tabs/tab-service.js";
 import type { TabActor } from "../tabs/ports.js";
@@ -149,6 +148,8 @@ const maxBrowserFrameBytes = 8 * 1_024 * 1_024;
 const maxBrowserTextBytes = 1 * 1_024 * 1_024;
 const maxPendingAgentRequests = 32;
 const agentRequestTimeoutMs = 15_000;
+/** An open's work budget; it also bounds waiting for this computer's browser to arrive. */
+const browserOpenWorkMs = 18_000;
 const maxBrowserProfiles = 128;
 /** A live state export walks every context, so it gets more room than a CDP call. */
 
@@ -1324,6 +1325,7 @@ export class BrowserService {
       identity: NonNullable<BrowserTabOpenCommand["identity"]>;
       placement?: BrowserTabOpenCommand["placement"];
     },
+    signal: AbortSignal,
   ): Promise<{
     profileId: BrowserProfileId | null;
     placement: BrowserPlacementSelector;
@@ -1372,9 +1374,10 @@ export class BrowserService {
           holder?.runnerId ??
           remembered ??
           (this.#personal ? homes.find((home) => home.kind === "main")?.id : undefined),
+        signal,
       )
     )
-      return this.#resolveIdentityOpen(ownerId, command);
+      return this.#resolveIdentityOpen(ownerId, command, signal);
     if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
     const eligible = this.#eligiblePlacements(homes).filter((candidate) => candidate.available);
     if (
@@ -1507,11 +1510,11 @@ export class BrowserService {
         message: "Opening this browser timed out. Retry to open a new page.",
         reason: "browser-open.timeout",
       });
-    const timer = setTimeout(() => cancellation.abort(timeout()), 18_000);
+    const timer = setTimeout(() => cancellation.abort(timeout()), browserOpenWorkMs);
     timer.unref?.();
     try {
       return await withDatabaseOperationSignal(budget.signal, budget.expiresAt, () =>
-        withTimeout(this.#openTab(ownerId, input, budget, agent), 18_000, {
+        withTimeout(this.#openTab(ownerId, input, budget, agent), browserOpenWorkMs, {
           signal: budget.signal,
           timeoutError: timeout,
         }),
@@ -1618,10 +1621,14 @@ export class BrowserService {
             this.#requireOpenableSession(record);
             runnerId = record.runnerId;
           } else {
-            const resolved = await this.#resolveIdentityOpen(ownerId, {
-              identity: command.identity!,
-              ...(command.placement ? { placement: command.placement } : {}),
-            });
+            const resolved = await this.#resolveIdentityOpen(
+              ownerId,
+              {
+                identity: command.identity!,
+                ...(command.placement ? { placement: command.placement } : {}),
+              },
+              budget.signal,
+            );
             const { profileId, placement } = resolved;
             identityKey = resolved.identityKey;
             runnerId = placement.runnerId;
@@ -5140,7 +5147,7 @@ export class BrowserService {
   async #waitForBrowser(
     homes: Awaited<ReturnType<OpensteerStore["listEligibleBrowserRunners"]>>,
     runnerId: RunnerId | undefined,
-    operationSignal?: AbortSignal,
+    operationSignal: AbortSignal | undefined,
   ): Promise<boolean> {
     if (this.#closed) throw unavailable("The Host browser service is shutting down.");
     const resolver = this.#targetResolver;
@@ -5157,12 +5164,18 @@ export class BrowserService {
       !resolver.pendingAdmission?.(runnerId)
     )
       return false;
+    // A restore has no open budget of its own, so it waits no longer than an open would.
     const signal = AbortSignal.any([
       this.#closing.signal,
-      operationSignal ?? databaseOperation()?.signal ?? AbortSignal.timeout(18_000),
+      operationSignal ?? AbortSignal.timeout(browserOpenWorkMs),
     ]);
-    await resolver.waitForTarget(runnerId, signal);
-    signal.throwIfAborted();
+    try {
+      await resolver.waitForTarget(runnerId, signal);
+    } catch (error) {
+      if (this.#closing.signal.aborted || operationSignal?.aborted) throw error;
+      // It never arrived or can't be admitted: the ordinary refusal explains why.
+      return false;
+    }
     return true;
   }
 
@@ -5183,12 +5196,13 @@ export class BrowserService {
     }
     const { chosenRunnerId, environmentId } = input;
     if (chosenRunnerId) {
+      const chosen = connected.filter((placement) => placement.runnerId === chosenRunnerId);
       if (
-        homes.some((home) => home.id === chosenRunnerId && home.kind === "main") ||
-        this.#targetResolver?.pendingAdmission?.(chosenRunnerId)
+        chosen.length === 0 &&
+        (homes.some((home) => home.id === chosenRunnerId && home.kind === "main") ||
+          this.#targetResolver?.pendingAdmission?.(chosenRunnerId))
       )
         return { kind: "runner", runnerId: chosenRunnerId };
-      const chosen = connected.filter((placement) => placement.runnerId === chosenRunnerId);
       if (chosen.length === 1 && chosen[0]) return placementSelector(chosen[0]);
       if (chosen.length > 1) throw runnerPlacementConflict(chosen);
       const incompatible = placements.find(
