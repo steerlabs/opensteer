@@ -13,7 +13,12 @@ import {
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
-import { DesktopApp, desktopAccessPresentationFromSnapshot } from "./desktop-app.js";
+import {
+  DesktopApp,
+  chooserNotice,
+  desktopAccessPresentationFromSnapshot,
+  placeAwaitingSignIn,
+} from "./desktop-app.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -181,7 +186,7 @@ it("carries setup from creating this computer straight into the app it opens", a
   });
   await act(async () => field.form!.requestSubmit());
   expect(container.textContent).toContain("Workshop");
-  await act(async () => button("Set up this Mac").click());
+  await act(async () => button("Start Opensteer on this").click());
   expect(createPersonalDeployment).toHaveBeenCalledExactlyOnceWith({ name: "Workshop" });
 
   // What the supervisor sends: the Deployment's id from the first step, long
@@ -208,7 +213,7 @@ it("carries setup from creating this computer straight into the app it opens", a
         }),
       ),
     );
-    await vi.waitFor(() => expect(container.textContent).toContain("Setting up this "));
+    await vi.waitFor(() => expect(container.textContent).toContain("Starting Opensteer on this "));
     expect(container.textContent).toContain("Workshop");
     expect(container.textContent).not.toContain("Welcome to Opensteer");
     expect(container.textContent).not.toContain("Open your Opensteer");
@@ -237,6 +242,79 @@ it("carries setup from creating this computer straight into the app it opens", a
 
   await act(async () => root.unmount());
   container.remove();
+});
+
+it("asks before starting a separate Opensteer when the person already has one elsewhere", async () => {
+  const elsewhere = { ...accessDeployment("idle"), name: "Studio" };
+  const access = snapshot({
+    deployments: [elsewhere],
+    personalSetup: personalStatus({ canStart: true, state: "stopped", step: null }),
+  });
+  const createPersonalDeployment = vi.fn(async () => undefined);
+  const bridge = {
+    checkDeployments: async () => undefined,
+    createPersonalDeployment,
+    getDeploymentAccessSnapshot: async () => access,
+    onHostWebSocketEvent: () => () => undefined,
+    onDeploymentAccessSnapshotChanged: () => () => undefined,
+    onNotificationActivated: () => () => undefined,
+    onLocalExecutionStatusChanged: () => () => undefined,
+  } as unknown as OpensteerDesktopBridge;
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const button = (label: string) =>
+    [...document.querySelectorAll("button")].find((candidate) =>
+      candidate.textContent?.startsWith(label),
+    );
+  try {
+    await act(async () => root.render(<DesktopApp bridge={bridge} />));
+    await vi.waitFor(() => expect(container.textContent).toContain("Studio"));
+    expect(button("Start Opensteer on")).toBeUndefined();
+
+    await act(async () => button("Start a separate Opensteer on this")!.click());
+    expect(document.body.textContent).toContain("Nothing from Studio comes with it.");
+    await act(async () => button("Cancel")!.click());
+    expect(createPersonalDeployment).not.toHaveBeenCalled();
+
+    await act(async () => button("Start a separate Opensteer on this")!.click());
+    await act(async () => button("Start separate Opensteer")!.click());
+    expect(createPersonalDeployment).toHaveBeenCalledExactlyOnceWith({});
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
+
+it("asks a Mac that joined an Opensteer to sign in again, then reopens that one", async () => {
+  const joined: DeploymentAccessDeployment = {
+    ...accessDeployment("idle"),
+    name: "Studio",
+    source: "account",
+  };
+  const access = snapshot({ deployments: [joined] });
+  const calls: string[] = [];
+  const bridge = {
+    cancel: async () => undefined,
+    checkDeployments: async () => undefined,
+    select: async ({ deploymentId }: { deploymentId: string }) => {
+      calls.push(`select ${deploymentId}`);
+    },
+    signIn: async () => {
+      calls.push("sign in");
+    },
+  };
+
+  const notice = chooserNotice(placeAwaitingSignIn(access), access, bridge);
+  expect(notice?.title).toBe("Sign in again to keep using Studio");
+  await notice?.action?.run();
+  expect(calls).toEqual([`select ${joined.id}`, "sign in"]);
+
+  // Signed in, or with another place already on screen, there is nothing to reopen.
+  expect(placeAwaitingSignIn({ ...access, selectedDeploymentId: joined.id })).toBeUndefined();
+  expect(
+    placeAwaitingSignIn({ ...access, account: { ...access.account, status: "signed-in" } }),
+  ).toBeUndefined();
 });
 
 function personalSummary(id: string) {

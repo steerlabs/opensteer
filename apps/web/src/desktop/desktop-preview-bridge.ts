@@ -831,7 +831,7 @@ export function desktopPreviewBridge(
             enrolled: removed ? false : current.runner.enrolled,
             sessionState: "ready",
           },
-          ...(removed ? { runner: inertRunner("Finish setting up this Mac.") } : {}),
+          ...(removed ? { runner: inertRunner("This Mac isn’t connected yet.") } : {}),
         });
         updateLocalExecution(resumed);
         return resumed;

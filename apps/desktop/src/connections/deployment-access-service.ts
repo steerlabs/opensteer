@@ -98,6 +98,12 @@ interface DirectPort {
 export type DeploymentProbeOutcome =
   "client-too-old" | "host-too-old" | "identity-mismatch" | "reachable" | "unreachable";
 
+interface DevicesPort {
+  /** Opensteers this computer has joined as a device and not left. */
+  joinedDeploymentIds(): Promise<ReadonlySet<string>>;
+  subscribe(listener: () => void): () => void;
+}
+
 interface PlacesPort {
   /** Whether this computer has a network at all; without one, nothing is checked. */
   online(): boolean;
@@ -108,6 +114,7 @@ interface PlacesPort {
 export interface DeploymentAccessPorts {
   readonly account: AccountPort;
   readonly catalog: CatalogPort;
+  readonly devices: DevicesPort;
   readonly direct: DirectPort;
   readonly directory: DirectoryPort;
   readonly hostSession: HostSessionPort;
@@ -149,6 +156,8 @@ export class DeploymentAccessService {
   #catalog: CatalogProjection = { deployments: [], revision: 0, selectedDeploymentId: null };
   #catalogFailure: string | null = null;
   #directoryCheck: Promise<void> | null = null;
+  #joined: ReadonlySet<string> = new Set();
+  #joinedRead = 0;
   #directoryFailure: DeploymentAccessFailure | null = null;
   /** When the Account's list was last read successfully, or null if never. */
   #directoryReadAt: number | null = null;
@@ -226,12 +235,13 @@ export class DeploymentAccessService {
         this.#personalLink = status;
         this.#publish();
       }),
+      ports.devices.subscribe(() => void this.#reloadJoined()),
     );
   }
 
   async initialize(): Promise<void> {
     this.#assertActive();
-    const [account, catalogResult, personalLink] = await Promise.all([
+    const [account, catalogResult, personalLink, joined] = await Promise.all([
       this.#ports.account.currentState().catch((error: unknown): DesktopAccountAuthState => ({
         account: {
           available: this.#ports.account.available,
@@ -253,12 +263,14 @@ export class DeploymentAccessService {
         }),
       ),
       this.#ports.personalAccount.status().catch(() => unavailablePersonalAccountLink()),
+      this.#readJoined(),
     ]);
     this.#account = accountState(account);
     this.#catalog = catalogResult.catalog;
     this.#catalogFailure = catalogResult.failure?.detail ?? null;
     this.#personal = this.#ports.personal.status;
     this.#personalLink = personalLink;
+    this.#joined = joined ?? this.#joined;
     this.#initialized = true;
     this.#reconcileSupervisor();
     this.#publish();
@@ -788,6 +800,8 @@ export class DeploymentAccessService {
     this.#interactiveAttachment = interactive;
     const selected = this.#selectedDeployment();
     if (!selected || !this.#supervisor) return;
+    // An Account place opens through the Account; its sign-in reopens it.
+    if (selected.source === "account" && this.#account.status !== "signed-in") return;
     if (!this.#selectedAttachmentIsReady()) {
       this.#pendingAttachmentDeploymentId = selected.id;
       this.#publish();
@@ -853,13 +867,29 @@ export class DeploymentAccessService {
 
   /**
    * Account places are shown only while that Account is signed in: a list
-   * from a sign-in that ended describes nothing a person can open. The one
-   * exception is the place a person is in, which never vanishes under them.
+   * from a sign-in that ended describes nothing a person can open. The
+   * exceptions are the place a person is in, which never vanishes under them,
+   * and places this computer joined, which a sign-in ending never leaves.
    */
   readonly #shown = (deployment: DeploymentAccessCatalogDeployment): boolean =>
     deployment.source !== "account" ||
     this.#account.status === "signed-in" ||
-    deployment.id === this.#catalog.selectedDeploymentId;
+    deployment.id === this.#catalog.selectedDeploymentId ||
+    this.#joined.has(deployment.id);
+
+  /** The latest read wins; a failed read keeps what was known, or null when nothing newer. */
+  async #readJoined(): Promise<ReadonlySet<string> | null> {
+    const read = ++this.#joinedRead;
+    const joined = await this.#ports.devices.joinedDeploymentIds().catch(() => null);
+    return read === this.#joinedRead ? joined : null;
+  }
+
+  async #reloadJoined(): Promise<void> {
+    const joined = await this.#readJoined();
+    if (this.#disposed || !joined || sameIds(joined, this.#joined)) return;
+    this.#joined = joined;
+    this.#publish();
+  }
 
   /**
    * Every row's status comes from whichever authority actually knows the
@@ -1069,4 +1099,8 @@ function machineCode(value: string): string {
 
 function operationUnavailable(operation: string): Error {
   return new Error(`Deployment access operation is not available now: ${operation}`);
+}
+
+function sameIds(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  return left.size === right.size && [...left].every((id) => right.has(id));
 }

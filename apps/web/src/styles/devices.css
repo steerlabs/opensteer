@@ -1,4 +1,4 @@
-/* Devices: the one list, each device's page, setting up this Mac, and the
+/* Devices: the one list, each device's page, connecting this Mac, and the
    notices a device or a browser window shows about itself. Everything here
    is built from the cards, rows, switches and setup frame used elsewhere;
    these rules only lay them out. */
@@ -289,7 +289,7 @@ a.devices-row:focus-visible {
   align-items: center;
 }
 
-/* ---- Setting up this Mac ---- */
+/* ---- Connecting this Mac ---- */
 
 .device-setup__group {
   display: flex;
@@ -420,11 +420,11 @@ a.devices-row:focus-visible {
   gap: var(--space-10);
 }
 
-/* Setting up this Mac: the recommended way in, so it carries the ember rim,
-   with the name it will be created under attached below. */
+/* Starting Opensteer on this Mac, with the name it will be created under
+   attached below. It weighs the same as connecting: neither is the default. */
 .desktop-entry__setup {
   overflow: hidden;
-  border: 1px solid var(--ember-line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
   background: var(--sheen) var(--fill-plate);
   box-shadow: var(--edge-plate);
@@ -432,7 +432,7 @@ a.devices-row:focus-visible {
 }
 
 .desktop-entry__setup:has(.desktop-entry__setup-go:hover:not(:disabled)) {
-  border-color: color-mix(in srgb, var(--ember) 40%, transparent);
+  border-color: var(--rim-selected);
 }
 
 .desktop-entry__setup-go {

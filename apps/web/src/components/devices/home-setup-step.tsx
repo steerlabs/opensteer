@@ -127,7 +127,7 @@ export function HomeSetupStep({
       }
       progress={progress}
       stepKey="home-choose"
-      title="Set up this Mac"
+      title="Your agent on this Mac"
     >
       {home ? (
         <label className="field" htmlFor={nameId}>

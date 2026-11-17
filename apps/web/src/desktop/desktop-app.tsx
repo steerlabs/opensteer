@@ -374,7 +374,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
           bridge={bridge}
           deploymentId={selected.id}
           name={selected.name}
-          onSetUpAgain={async () => {
+          onConnectAgain={async () => {
             setMembership(await bridge.getLocalExecutionStatus({ deploymentId: selected.id }));
           }}
           unconfirmed={membership?.membership?.leaveUnconfirmed === true}
@@ -532,7 +532,11 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
           />
         );
       }
-      const notice = chooserNotice(selectedConnection, snapshot.account, bridge);
+      const notice = chooserNotice(
+        selectedConnection ?? placeAwaitingSignIn(snapshot),
+        snapshot,
+        bridge,
+      );
       return (
         <DesktopChooser
           // A notice already says why the place it names could not open; its
@@ -598,14 +602,27 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
 }
 
 /**
+ * With nothing selected, the one Account place still listed while signed out.
+ * Main keeps such a place listed only because this computer joined it, so the
+ * sign-in that reopens it is the move to offer.
+ */
+export function placeAwaitingSignIn(
+  snapshot: DeploymentAccessSnapshot,
+): DeploymentAccessDeployment | undefined {
+  if (snapshot.selectedDeploymentId !== null || snapshot.account.status === "signed-in") return;
+  const waiting = snapshot.deployments.filter(({ source }) => source === "account");
+  return waiting.length === 1 ? waiting[0] : undefined;
+}
+
+/**
  * What the list of places says above itself when the place a person was in
  * cannot open: an Account place waiting on a sign-in that ended, or a place
  * that is not reachable right now. Each names the one move that helps.
  */
 export function chooserNotice(
-  selected: DeploymentAccessDeployment | undefined,
-  account: DeploymentAccessSnapshot["account"],
-  bridge: Pick<OpensteerDesktopBridge, "cancel" | "checkDeployments" | "signIn">,
+  place: DeploymentAccessDeployment | undefined,
+  snapshot: Pick<DeploymentAccessSnapshot, "account" | "selectedDeploymentId">,
+  bridge: Pick<OpensteerDesktopBridge, "cancel" | "checkDeployments" | "select" | "signIn">,
 ): {
   readonly action: {
     readonly label: string;
@@ -616,8 +633,9 @@ export function chooserNotice(
   readonly signIn: boolean;
   readonly title: string;
 } | null {
-  if (!selected) return null;
-  if (selected.source === "account" && account.status !== "signed-in") {
+  if (!place) return null;
+  const { account } = snapshot;
+  if (place.source === "account" && account.status !== "signed-in") {
     if (account.status === "authorizing") {
       return {
         // A browser tab can be closed without a word reaching this window, so
@@ -625,22 +643,28 @@ export function chooserNotice(
         action: { label: "Cancel", quiet: true, run: () => bridge.cancel() },
         body: "Finish signing in in your browser. This window continues by itself.",
         signIn: true,
-        title: `Signing in to open ${selected.name}`,
+        title: `Signing in to open ${place.name}`,
       };
     }
+    // Selecting first is what lets the sign-in reopen this place by itself.
+    const signIn = async () => {
+      if (snapshot.selectedDeploymentId !== place.id)
+        await bridge.select({ deploymentId: place.id });
+      await bridge.signIn();
+    };
     return {
-      action: account.available ? { label: "Sign in again", run: () => bridge.signIn() } : null,
-      body: `Your sign-in on this computer ended. Your work on ${selected.name} is safe and still running.`,
+      action: account.available ? { label: "Sign in again", run: signIn } : null,
+      body: `Your sign-in on this computer ended. Your work on ${place.name} is safe and still running.`,
       signIn: true,
-      title: `Sign in again to keep using ${selected.name}`,
+      title: `Sign in again to keep using ${place.name}`,
     };
   }
-  if (selected.status === "needs-remote-access" || selected.statusInfo.status === "offline") {
+  if (place.status === "needs-remote-access" || place.statusInfo.status === "offline") {
     return {
       action: { label: "Check again", run: () => bridge.checkDeployments() },
-      body: selected.statusInfo.reason,
+      body: place.statusInfo.reason,
       signIn: false,
-      title: `${selected.name} isn’t available right now`,
+      title: `${place.name} isn’t available right now`,
     };
   }
   return null;

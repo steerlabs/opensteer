@@ -230,8 +230,8 @@ out. Only 4010 or an explicit Host removal answer confirms removal and starts lo
 deadlines, route rotation and transport loss never do. After route rotation or transport loss,
 Runner success releases the fence and recovery stays automatic. After natural expiry, success keeps
 the device and its key, but only an explicit Sign in again reopens person authorization. Sign in
-again and Set up again resume authorization in main, awaiting cleanup and generation fences before
-selection; Set up again after confirmed removal needs a fresh identity. Late exchanges clear their
+again and Connect again resume authorization in main, awaiting cleanup and generation fences before
+selection; Connect again after confirmed removal needs a fresh identity. Late exchanges clear their
 session artifacts. Other Deployments and the hosting supervisor keep their authority. Leave and
 Account sign-out are in [Runner and desktop](computers.md#runner-and-desktop).
 
@@ -241,7 +241,9 @@ an unavailable refresh stays retryable and preserves credentials, drafts and pen
 
 ## The place list
 
-Account rows show only while signed in: expiry hides them, sign-out removes them. Status comes only
+Account rows show only while signed in: expiry hides them, sign-out removes them. The exceptions
+are the selected row and rows this computer joined as a device: expiry doesn't leave them, so they
+stay listed asking for the sign-in, and a returning device never sees first-run setup. Status comes only
 from an authority that can vouch for it: local supervision, the attached connection, a fresh
 verified Account read or an identity-checked manual probe. A failed check is never called offline,
 and a failed refresh never renews stale evidence. Only the Account refusing the refresh grant ends

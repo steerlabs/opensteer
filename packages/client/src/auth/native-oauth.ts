@@ -1317,7 +1317,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
       session.credential.issuerOrigin !== source.issuer ||
       session.credential.subject !== source.subject
     )
-      throw new Error("Sign in to this Account before setting up this Mac.");
+      throw new Error("Sign in to this Account before connecting this Mac.");
   }
 
   async signOutAccount(): Promise<DesktopAccountAuthState> {

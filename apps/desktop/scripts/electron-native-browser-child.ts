@@ -920,6 +920,7 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
       },
       subscribe: (listener) => catalog.subscribe(listener),
     },
+    devices: { joinedDeploymentIds: async () => new Set(), subscribe: () => () => undefined },
     direct: { addRoute: unavailable, connect: unavailable },
     directory: {
       removeFromAccount: unavailable,
