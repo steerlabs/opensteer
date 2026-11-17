@@ -252,7 +252,7 @@ export const plugin_resources = defineAgentTool({
   access: "read",
   callers: ["run", "connection"],
   description:
-    "Read a plugin's schedules and runs, workflow declarations and runs (live first, then newest, even if current declarations fail), or webhook subscriptions. Schedule/workflow definitions carry names and input schemas for configuration and starting; null means current definitions could not be evaluated, while durable runs remain readable. Pass the returned workflow cursor for the next page. These reads do not start work or reveal webhook setup secrets. Scheduled approval answers and manual webhook setup/cleanup confirmation belong to the person in Plugins.",
+    "Read a plugin's schedules and runs, workflow declarations and runs (newest first, even if current declarations fail), or webhook subscriptions. The first page carries schedule/workflow definitions with names and input schemas for configuration and starting; null means current definitions could not be evaluated, while durable runs remain readable. Pass the returned next cursor for older runs. Run outputs are shown only to your own tasks while the plugin is on; otherwise a run shows what ran, when and how it ended. These reads do not start work or reveal webhook setup secrets. Scheduled approval answers and manual webhook setup/cleanup confirmation belong to the person in Plugins.",
   input: z.strictObject({
     pluginId: id,
     resource: z.enum(["schedules", "workflows", "webhooks"]),

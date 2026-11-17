@@ -182,6 +182,39 @@ describe("a plugin sign-in", () => {
     });
   });
 
+  it("asks again as the same command when the begin answer is lost, and launches what it returns", async () => {
+    let lost = true;
+    const fake = host({
+      reads: ["completed"],
+      begin: () => {
+        if (lost) {
+          lost = false;
+          throw new HostClientRequestError({
+            code: "internal",
+            message: "The Host could not be reached.",
+            reason: "transport-timed-out",
+            status: 500,
+          });
+        }
+        return {
+          type: "plugin.authorization.begin",
+          attemptId,
+          connection: "con_1",
+          expiresAt,
+          launchTicket: "t".repeat(43),
+        };
+      },
+    });
+    const sign = surface();
+    const flow = flowOf(fake.client, sign);
+    flow.start({ option: (await choosing(flow)).options[0]! });
+    expect(await ended(flow)).toEqual({ kind: "completed", account: "acc_1" });
+    const begins = fake.sent.filter(({ type }) => type === "plugin.authorization.begin");
+    expect(begins).toHaveLength(2);
+    expect(begins[1]).toEqual(begins[0]);
+    expect(sign.opened.launch).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ["denied", { kind: "denied" }],
     ["expired", { kind: "expired" }],
@@ -215,6 +248,7 @@ describe("a plugin sign-in", () => {
     const flow = flowOf(fake.client, sign);
     flow.start({ option: (await choosing(flow)).options[0]! });
     expect(await ended(flow)).toMatchObject({ kind: "account-link-required" });
+    expect(fake.sent.filter(({ type }) => type === "plugin.authorization.begin")).toHaveLength(1);
     expect(sign.opened.abandon).toHaveBeenCalledOnce();
     expect(sign.opened.launch).not.toHaveBeenCalled();
   });

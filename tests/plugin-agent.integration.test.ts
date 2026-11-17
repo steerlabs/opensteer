@@ -1,5 +1,5 @@
 import { beforeAll, afterAll, afterEach, test, expect, vi } from "vitest";
-import { mkdtemp, rm, mkdir, writeFile, readFile, symlink } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile, rename, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -962,6 +962,15 @@ test("folder build errors are data; a fixed draft deploys a version and can roll
   expect(await call(caller, "opensteer_plugin_install", installInput, false, installKey)).toEqual(
     first,
   );
+  // The receipt answers before the folder is read: a moved draft cannot hide the finished install.
+  await rename(join(directory, folder), join(directory, "draft-moved"));
+  try {
+    expect(await call(caller, "opensteer_plugin_install", installInput, false, installKey)).toEqual(
+      first,
+    );
+  } finally {
+    await rename(join(directory, "draft-moved"), join(directory, folder));
+  }
   const deployed = record.parse(first.plugin);
   const version = record.parse(first.version);
   await writeFile(
@@ -1268,6 +1277,22 @@ test("new plugin tools enforce their caller and standing-access matrix", async (
       connectionId: connection.id,
     },
   ];
+  const started = z.object({ id: z.string() }).parse(
+    await call(callers[0]!, "opensteer_plugin_resource_update", {
+      pluginId: plugin,
+      change: { action: "workflow.start", workflow: "quick", input: {}, key: randomUUID() },
+    }),
+  );
+  await vi.waitFor(
+    async () =>
+      expect(
+        await service.manage(
+          { operation: "workflowRuns.get", input: { app: plugin, run: started.id } },
+          ownerContext,
+        ),
+      ).toMatchObject({ status: "complete" }),
+    { timeout: 10000 },
+  );
   for (const access of ["all", "read-only", "off"] as const) {
     await records.setAccess(personal.userId, plugin, access);
     for (const caller of callers) {
@@ -1282,7 +1307,18 @@ test("new plugin tools enforce their caller and standing-access matrix", async (
         resource: "workflows",
       });
       if (caller.kind === "program") await expect(resources).rejects.toThrow();
-      else await expect(resources).resolves.toHaveProperty("items");
+      else {
+        // Outputs reach the person's own agent; a connection, or any caller while off, reads
+        // only what ran, when and how it ended.
+        const items = z
+          .array(z.object({ id: z.string() }).passthrough())
+          .parse(record.parse(await resources).items);
+        const run = items.find(({ id }) => id === started.id);
+        expect(run).toMatchObject({ status: "complete" });
+        if (caller.kind === "run" && access !== "off")
+          expect(run?.output).toEqual({ preview: '"done"', truncated: false });
+        else expect(items.filter((item) => "output" in item || "failure" in item)).toEqual([]);
+      }
       const update = call(caller, "opensteer_plugin_resource_update", {
         pluginId: plugin,
         change: { action: "workflow.start", workflow: "quick", input: {}, key: randomUUID() },

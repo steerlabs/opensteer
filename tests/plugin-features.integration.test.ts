@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { sql } from "kysely";
+import { z } from "zod";
 import { createId, type AuthenticatedSession } from "../packages/core/src/index.js";
 import {
   createDatabase,
@@ -436,6 +437,55 @@ test("owner reads and commands match real catalog, accounts, schedule approvals,
     context,
   );
   await runs(fixture.plugin, "denied");
+  // History that outgrows one IPC message still reads: the newest page, each row bounded.
+  const prefix = randomUUID();
+  await sql`INSERT INTO plugin_engine.plugin_engine_scheduled_runs
+      (id, schedule_id, app, installation, owner, name, status, scheduled_at, started_at,
+       finished_at, request_id, expires_at, failure, runner, revision, answer)
+    SELECT ${prefix} || '-' || n, schedule_id, app, installation, owner, name, 'failed',
+      scheduled_at - n * interval '1 minute', started_at - n * interval '1 minute', finished_at,
+      null, null, repeat('x', 40000), runner, revision, null
+    FROM plugin_engine.plugin_engine_scheduled_runs, generate_series(1, 60) n
+    WHERE id = ${declined.id}`.execute(database);
+  const history = await api.reads()["plugins.schedule.runs"]({ pluginId: fixture.plugin }, context);
+  if (!history.ok) throw new Error("A long schedule history did not read");
+  expect(history.data.runs).toHaveLength(50);
+  expect(history.data.runs.map(({ id }) => id)).toContain(declined.id);
+  expect(Math.max(...history.data.runs.map((run) => run.failure?.length ?? 0))).toBe(1000);
+  const pending = await api
+    .reads()
+    ["plugins.schedule.runs"]({ pluginId: fixture.plugin, pending: true }, context);
+  expect(pending.ok && pending.data.runs).toEqual([]);
+  // An agent pages the whole history on start time, which never changes.
+  const agentRuns: string[] = [];
+  let scheduleCursor: string | undefined;
+  do {
+    const page = z
+      .object({ runs: z.array(z.object({ id: z.string() })), next: z.string().optional() })
+      .passthrough()
+      .parse(
+        await service.resourcesRead(
+          {
+            pluginId: fixture.plugin,
+            resource: "schedules",
+            outputs: false,
+            ...(scheduleCursor ? { cursor: scheduleCursor } : {}),
+          },
+          owner,
+        ),
+      );
+    expect(page.runs.length).toBeLessThanOrEqual(20);
+    expect("definitions" in page).toBe(scheduleCursor === undefined);
+    agentRuns.push(...page.runs.map(({ id }) => id));
+    scheduleCursor = page.next;
+  } while (scheduleCursor);
+  const stored = await sql<{
+    count: number;
+  }>`SELECT count(*)::int AS count FROM plugin_engine.plugin_engine_scheduled_runs WHERE app = ${fixture.plugin}`.execute(
+    database,
+  );
+  expect(new Set(agentRuns).size).toBe(agentRuns.length);
+  expect(agentRuns).toHaveLength(stored.rows[0]!.count);
   const discovered = await service.search({ query: "ticks" }, owner);
   const ticksPath = discovered.items.find((item) => item.path.endsWith(".ticks"))?.path;
   expect(ticksPath, "The query did not appear in the engine's catalog").toBeDefined();
@@ -1134,7 +1184,7 @@ test.each(["off", "read-only"] as const)(
   },
 );
 
-test("all workflow runs remain reachable live-first and newest-first when current declarations cannot be evaluated", async () => {
+test("workflow history pages once on creation order, shows long-lived runs first, and needs no current declarations", async () => {
   const fixture = await install("Workflow history", 1, false);
   const started = await api.command(
     {
@@ -1200,40 +1250,59 @@ test("all workflow runs remain reachable live-first and newest-first when curren
     owner,
   );
   expect((await api.detail(personal.userId, fixture.plugin)).workflows).toBeNull();
-  const ids: string[] = [];
-  const finishedDates: number[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await service.manage(
-      {
-        operation: "workflowRuns.list",
-        input: { app: fixture.plugin, limit: "2", ...(cursor ? { cursor } : {}) },
-      },
-      owner,
-    );
-    const parsed = (
-      await import("../apps/host/src/plugins/engine-feature-schemas.js")
-    ).EngineWorkflowRunPageSchema.parse(page);
-    ids.push(...parsed.items.map((run) => run.id));
-    finishedDates.push(
-      ...parsed.items
-        .filter((run) => run.status === "complete")
-        .map((run) => Date.parse(run.createdAt)),
-    );
-    cursor = parsed.next;
-  } while (cursor);
-  expect(ids).toHaveLength(8);
-  expect(new Set(ids).size).toBe(8);
-  expect(ids[0]).toBe(started.runId);
-  expect(finishedDates).toEqual([...finishedDates].sort((a, b) => b - a));
-  await api.command(
-    {
-      type: "plugins.workflow.stop",
-      pluginId: fixture.plugin,
-      runId: started.runId,
-      idempotencyKey: randomUUID(),
-    },
-    context,
+  const { EngineWorkflowRunPageSchema } =
+    await import("../apps/host/src/plugins/engine-feature-schemas.js");
+  const walk = async (live: boolean, betweenPages?: () => Promise<void>) => {
+    const runs: { id: string; createdAt: string }[][] = [];
+    let cursor: string | undefined;
+    do {
+      const page = EngineWorkflowRunPageSchema.parse(
+        await service.manage(
+          {
+            operation: "workflowRuns.list",
+            input: { app: fixture.plugin, limit: "2", live, ...(cursor ? { cursor } : {}) },
+          },
+          owner,
+        ),
+      );
+      runs.push(page.items);
+      cursor = page.next;
+      if (runs.length === 1) await betweenPages?.();
+    } while (cursor);
+    return runs;
+  };
+  // Clients see the long-lived run first, though it is the oldest; the walk still reaches all.
+  const shown = await walk(true);
+  expect(shown[0]![0]!.id).toBe(started.runId);
+  expect(new Set(shown.flat().map((run) => run.id)).size).toBe(8);
+  // Newest first on creation: a run that ends between pages is read once, where it was created.
+  const walked = (
+    await walk(false, async () => {
+      await api.command(
+        {
+          type: "plugins.workflow.stop",
+          pluginId: fixture.plugin,
+          runId: started.runId,
+          idempotencyKey: randomUUID(),
+        },
+        context,
+      );
+      await vi.waitFor(
+        async () =>
+          expect(
+            await service.manage(
+              { operation: "workflowRuns.get", input: { app: fixture.plugin, run: started.runId } },
+              owner,
+            ),
+          ).toMatchObject({ status: "terminated" }),
+        { timeout: 10000 },
+      );
+    })
+  ).flat();
+  expect(walked.map((run) => run.id)).toHaveLength(8);
+  expect(new Set(walked.map((run) => run.id)).size).toBe(8);
+  expect(walked.map((run) => Date.parse(run.createdAt))).toEqual(
+    walked.map((run) => Date.parse(run.createdAt)).sort((a, b) => b - a),
   );
   expect(
     await service.manage(

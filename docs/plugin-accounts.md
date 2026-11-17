@@ -83,6 +83,10 @@ attempt cookie, provider and state; the launch ticket cannot authorize releasing
 Relays pin the exact authorization URL, client, issuer support, scopes, redirect and PKCE choice.
 A failed exchange needs fresh consent, and replay cannot replace saved credentials.
 
+A begin whose answer was lost is sent again as the same command. While its attempt is unlaunched,
+the Host returns that attempt and ticket from the sign-in's sealed record, only to the same owner
+with identical input; no status read or creation receipt carries the ticket.
+
 ## Renewal, disconnect and failures
 
 The engine retains its grant lease and generation checks. The Host persists a pending broker

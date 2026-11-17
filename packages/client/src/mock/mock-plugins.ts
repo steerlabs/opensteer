@@ -29,6 +29,7 @@ import { IntegrationAuthorizationAttemptIdSchema } from "@opensteer/integration-
 import { HostClientRequestError } from "../host/client.js";
 import { mockNotesServer } from "./mock-integration-fixtures.js";
 import type { PluginOAuthMethods, PluginOAuthStatus } from "../plugins/sign-in.js";
+import { pluginWorkflowRunLive } from "../plugins/runs.js";
 
 export type MockSignInCommand = Extract<
   HostApiCommand,
@@ -1449,17 +1450,25 @@ export class MockPlugins {
       "plugins.workflow.runs": async ({ pluginId, workflow, cursor }) => {
         await this.#ready();
         this.#plugin(pluginId);
-        const live = (run: PluginWorkflowRunView) => ["queued", "running"].includes(run.status);
-        const runs = (this.#workflowRuns[pluginId] ?? [])
-          .filter((run) => workflow === undefined || run.workflow === workflow)
-          .sort(
-            (a, b) =>
-              Number(live(b)) - Number(live(a)) ||
-              b.createdAt.localeCompare(a.createdAt) ||
-              b.id.localeCompare(a.id),
-          );
-        const page = mockPage(runs, `runs:${pluginId}:${workflow ?? ""}`, cursor, pluginRunsMax);
-        return rpcSuccess({ runs: page.items, cursor: page.cursor });
+        // As the Host pages: newest first by creation, unfinished runs added to the first page.
+        const runs = newestFirst(
+          (this.#workflowRuns[pluginId] ?? []).filter(
+            (run) => workflow === undefined || run.workflow === workflow,
+          ),
+        );
+        const lane = cursor
+          ? []
+          : runs.filter(pluginWorkflowRunLive).slice(0, Math.floor(pluginRunsMax / 2));
+        const page = mockPage(
+          runs,
+          `runs:${pluginId}:${workflow ?? ""}`,
+          cursor,
+          pluginRunsMax - lane.length,
+        );
+        return rpcSuccess({
+          runs: [...lane, ...page.items.filter((run) => !lane.includes(run))],
+          cursor: page.cursor,
+        });
       },
       "plugins.webhook.setup.get": async ({ pluginId, webhookId }) => {
         const webhook = this.#plugin(pluginId).webhooks.find((entry) => entry.id === webhookId);

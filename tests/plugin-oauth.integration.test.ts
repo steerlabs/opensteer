@@ -619,6 +619,80 @@ test("retried sign-in preparation keeps one durable connection and session", asy
   expect(after.encryptedPayload).toEqual(before.encryptedPayload);
 });
 
+test("repeating a sign-in begin returns its one attempt and launch to that command alone, never through a read", async () => {
+  const target = await install("managed");
+  const prepared = await oauth.prepare(target, personal.userId);
+  const input = {
+    connection: prepared.connection,
+    consent: prepared.consent,
+    method: "oauth",
+    review: prepared.methods[0]!.review,
+    surface: "desktop" as const,
+    finish: "app" as const,
+    returnPath: "/settings",
+  };
+  const command = (id: string) =>
+    JSON.stringify([personal.userId, "plugin.authorization.begin", id]);
+  const key = command(randomUUID());
+  const attempts = async () =>
+    (
+      await database
+        .selectFrom("integrationAuthAttempts")
+        .select("id")
+        .where("ownerUserId", "=", personal.userId)
+        .execute()
+    ).length;
+  const [attemptsBefore, brokerBefore] = [await attempts(), createdRequests.length];
+  const first = await oauth.begin(input, personal.userId, "canonical", key);
+  expect(await oauth.begin(input, personal.userId, "canonical", key)).toEqual(first);
+  expect([await attempts(), createdRequests.length]).toEqual([
+    attemptsBefore + 1,
+    brokerBefore + 1,
+  ]);
+  // Another command, the same key with other input, or no key at all start nothing and get nothing.
+  for (const [again, againKey] of [
+    [input, command(randomUUID())],
+    [{ ...input, returnPath: "/elsewhere" }, key],
+    [input, undefined],
+  ] as const)
+    await expect(oauth.begin(again, personal.userId, "canonical", againKey)).rejects.toThrow(
+      /already has a sign-in/u,
+    );
+  await expect(
+    oauth.begin(
+      input,
+      z.custom<typeof personal.userId>().parse("usr_someone_else"),
+      "canonical",
+      key,
+    ),
+  ).rejects.toThrow();
+  expect([await attempts(), createdRequests.length]).toEqual([
+    attemptsBefore + 1,
+    brokerBefore + 1,
+  ]);
+  // The launch is never in a status read, a sealed record or a creation receipt.
+  expect(JSON.stringify(await oauth.status(first.attemptId, personal.userId))).not.toContain(
+    first.launchTicket,
+  );
+  for (const row of await database
+    .selectFrom("pluginOauthRecords")
+    .select("encryptedPayload")
+    .execute())
+    expect(Buffer.from(row.encryptedPayload).includes(first.launchTicket)).toBe(false);
+  const receipts = await sql<{
+    count: number;
+  }>`select count(*)::int as count from plugin_engine.opensteer_resource_creations where strpos(result::text, ${first.launchTicket}) > 0`.execute(
+    database,
+  );
+  expect(receipts.rows[0]?.count).toBe(0);
+  // Once launched, a repeat no longer hands out the spent launch.
+  await launch({ ...first, prepared });
+  await expect(oauth.begin(input, personal.userId, "canonical", key)).rejects.toThrow(
+    /already has a sign-in/u,
+  );
+  expect(await attempts()).toBe(attemptsBefore + 1);
+});
+
 test("one-click completion commits a reviewed managed link, fulfils its Request and continues the task; a lost rotating refresh resumes its durable transaction", async () => {
   const target = await install("managed");
   const port = createPersonalRunFixturePort(store);

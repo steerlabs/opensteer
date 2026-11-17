@@ -79,7 +79,7 @@ export interface PluginOwnerApiOptions {
   };
   readonly settings: Pick<
     PluginAgentStore,
-    "settings" | "setAccess" | "recordInstall" | "recordActivation"
+    "settings" | "versionAuthors" | "setAccess" | "recordInstall" | "recordActivation"
   >;
   /** Fulfils Requests waiting on this link; called after a person-reviewed link commits. */
   readonly accountLinked: (input: {
@@ -313,8 +313,29 @@ export class PluginOwnerApi {
     await this.#options.assertOwner(session.user.id);
     return session;
   }
-  async #settings(userId: UserId) {
-    return z.array(settingsRow).parse(await this.#options.settings.settings(userId));
+  /** Access for every plugin, and authors for only the versions named. */
+  async #settings(
+    userId: UserId,
+    versions: readonly { pluginId: string; version: string | null }[] = [],
+  ) {
+    const named = versions.flatMap(({ pluginId, version }) =>
+      version ? [{ pluginId, version }] : [],
+    );
+    const [rows, authors] = await Promise.all([
+      this.#options.settings.settings(userId),
+      this.#options.settings.versionAuthors(userId, named),
+    ]);
+    return z.array(settingsRow).parse(
+      rows.map((row) => ({
+        ...row,
+        versionAuthors: Object.fromEntries(
+          named.flatMap(({ pluginId, version }) => {
+            const author = authors.get(`${pluginId}\u0000${version}`);
+            return pluginId === row.pluginId && author ? [[version, author]] : [];
+          }),
+        ),
+      })),
+    );
   }
   #call<T>(promise: Promise<T>): Promise<T> {
     return promise.catch(hostError);
@@ -365,13 +386,16 @@ export class PluginOwnerApi {
 
   /** Every installed plugin as the list shows it; null while the engine is unavailable. */
   async #summaries(userId: UserId, signal?: AbortSignal): Promise<PluginSummaryView[] | null> {
-    const [rows, settings] = await Promise.all([
-      this.#options.service.installed({}, owner, signal).catch((error: unknown) => {
+    const rows = await this.#options.service
+      .installed({}, owner, signal)
+      .catch((error: unknown) => {
         if (error instanceof PluginServiceError && error.code === "unavailable") return null;
         return hostError(error);
-      }),
-      this.#settings(userId),
-    ]);
+      });
+    const settings = await this.#settings(
+      userId,
+      (rows ?? []).map(({ plugin }) => ({ pluginId: plugin.id, version: plugin.activeVersion })),
+    );
     return (
       rows?.map(({ plugin, links }) =>
         summary(
@@ -399,10 +423,16 @@ export class PluginOwnerApi {
 
   async detail(userId: UserId, pluginId: string, signal?: AbortSignal) {
     const service = this.#options.service;
-    const [detail, settings, accounts] = await Promise.all([
+    const [detail, accounts] = await Promise.all([
       this.#call(service.detail({ plugin: pluginId }, owner, signal)),
-      this.#settings(userId),
       this.#call(service.accounts({}, owner, signal)),
+    ]);
+    const settings = await this.#settings(userId, [
+      { pluginId, version: detail.plugin.activeVersion },
+      ...z
+        .array(z.object({ id: z.string() }))
+        .parse(detail.versions)
+        .map(({ id }) => ({ pluginId, version: id })),
     ]);
     const row = settings.find((entry) => entry.pluginId === pluginId);
     const plugin = detail.plugin;
@@ -533,11 +563,13 @@ export class PluginOwnerApi {
   ) {
     const service = this.#options.service;
     const target = { plugin: input.pluginId, requirement: input.requirement, scope: input.scope };
-    const [consent, detail, accounts, settings] = await Promise.all([
+    const [consent, detail, accounts] = await Promise.all([
       this.#call(service.reviewAccountLink(target, owner, signal)),
       this.#call(service.detail({ plugin: input.pluginId }, owner, signal)),
       this.#call(service.accounts({}, owner, signal)),
-      this.#settings(userId),
+    ]);
+    const settings = await this.#settings(userId, [
+      { pluginId: input.pluginId, version: detail.plugin.activeVersion },
     ]);
     const requirement = requirements(detail.plugin).find(
       ([name, r]) => name === input.requirement && r.scope === input.scope,
@@ -747,24 +779,29 @@ export class PluginOwnerApi {
       },
       "plugins.versions.list": async (input, context) => {
         const session = await this.#owner(context);
-        const [page, settings] = await Promise.all([
-          this.#call(
-            service.detailSection(
-              {
-                plugin: input.pluginId,
-                section: "versions",
-                ...(input.cursor ? { cursor: input.cursor } : {}),
-              },
-              owner,
-            ),
+        const page = await this.#call(
+          service.detailSection(
+            {
+              plugin: input.pluginId,
+              section: "versions",
+              ...(input.cursor ? { cursor: input.cursor } : {}),
+            },
+            owner,
           ),
-          this.#settings(session.user.id),
-        ]);
-        const row = settings.find((entry) => entry.pluginId === input.pluginId);
-        const versions = z
+        );
+        const items = z
           .array(z.object({ id: z.string(), createdAt: z.string(), active: z.boolean() }))
-          .parse(page.items)
-          .map((version) => ({ ...version, author: authorOf(row, version.id) }));
+          .parse(page.items);
+        const row = (
+          await this.#settings(
+            session.user.id,
+            items.map(({ id }) => ({ pluginId: input.pluginId, version: id })),
+          )
+        ).find((entry) => entry.pluginId === input.pluginId);
+        const versions = items.map((version) => ({
+          ...version,
+          author: authorOf(row, version.id),
+        }));
         return rpcSuccess({ versions, cursor: page.cursor });
       },
       "plugins.catalog.list": async (input, context) => {
@@ -841,7 +878,11 @@ export class PluginOwnerApi {
               service.manage(
                 {
                   operation: "schedules.runs",
-                  input: { app: input.pluginId, ...(input.pending ? { pending: true } : {}) },
+                  input: {
+                    app: input.pluginId,
+                    limit: pluginRunsMax,
+                    ...(input.pending ? { pending: true } : {}),
+                  },
                 },
                 owner,
               ),
@@ -886,6 +927,7 @@ export class PluginOwnerApi {
                 input: {
                   app: input.pluginId,
                   limit: String(pluginRunsMax),
+                  live: true,
                   ...(input.workflow ? { workflow: input.workflow } : {}),
                   ...(input.cursor ? { cursor: input.cursor } : {}),
                 },

@@ -11,13 +11,35 @@ export class PluginAgentStore {
   constructor(database: Kysely<DatabaseSchema>) {
     this.database = database;
   }
+  /** Every plugin's access, read on each authorization; per-version provenance stays out of it. */
   async settings(owner: UserId) {
     await requirePersonalOwner(this.database, owner);
     return this.database
       .selectFrom("pluginAgentSettings")
-      .selectAll()
+      .select(["pluginId", "access", "author"])
       .where("ownerUserId", "=", owner)
       .execute();
+  }
+  /** Who wrote each named version, keyed `plugin\u0000version`; unnamed versions are not read. */
+  async versionAuthors(
+    owner: UserId,
+    versions: readonly { pluginId: string; version: string }[],
+  ): Promise<ReadonlyMap<string, "catalog" | "agent">> {
+    await requirePersonalOwner(this.database, owner);
+    if (!versions.length) return new Map();
+    const { rows } = await sql<{ pluginId: string; version: string; author: string | null }>`
+      select v."pluginId", v.version, s.version_authors ->> v.version as author
+      from jsonb_to_recordset(${JSON.stringify(versions)}::jsonb) as v("pluginId" text, version text)
+      join plugin_agent_settings s on s.plugin_id = v."pluginId" and s.owner_user_id = ${owner}`.execute(
+      this.database,
+    );
+    return new Map(
+      rows.flatMap((row) =>
+        row.author === "catalog" || row.author === "agent"
+          ? [[`${row.pluginId}\u0000${row.version}`, row.author] as const]
+          : [],
+      ),
+    );
   }
   async setAccess(owner: UserId, plugin: string, access: PluginAgentAccess) {
     await requirePersonalOwner(this.database, owner);
@@ -57,8 +79,13 @@ export class PluginAgentStore {
       .execute();
   }
   async recordActivation(owner: UserId, plugin: string, version: string) {
-    const settings = (await this.settings(owner)).find((row) => row.pluginId === plugin);
-    await this.recordInstall(owner, plugin, version, settings?.versionAuthors[version] ?? "agent");
+    const authors = await this.versionAuthors(owner, [{ pluginId: plugin, version }]);
+    await this.recordInstall(
+      owner,
+      plugin,
+      version,
+      authors.get(`${plugin}\u0000${version}`) ?? "agent",
+    );
   }
   execution(id: string) {
     return this.database

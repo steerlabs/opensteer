@@ -87,6 +87,15 @@ const sessionSchema = z.strictObject({
       proven: z.boolean(),
     })
     .optional(),
+  // The launch a begin returned, so the same command repeated after a lost answer gets it again.
+  // Only begin reads it; status and every other read project their own fields.
+  begun: z
+    .strictObject({
+      command: z.string(),
+      expiresAt: z.string(),
+      launchTicket: z.string(),
+    })
+    .optional(),
 });
 type Session = z.infer<typeof sessionSchema>;
 const refreshSchema = z.strictObject({
@@ -276,7 +285,45 @@ export class PluginOAuthService {
     return { connection, consent, redirectUri: session.redirectUri, methods: reviewed };
   }
 
+  /**
+   * Starts sign-in once per connection. `key` names the person's command: repeating that command
+   * with the same input, while its attempt is still unlaunched, returns the same attempt and launch.
+   */
   async begin(
+    input: z.infer<typeof PluginOAuthBeginSchema>,
+    owner: UserId,
+    surface: Exclude<HostApiServerContext["surface"], null>,
+    key?: string,
+  ) {
+    const command = key
+      ? createHash("sha256")
+          .update(JSON.stringify([owner, key, surface, input]))
+          .digest("hex")
+      : undefined;
+    const replayed = command ? await this.#replay(input.connection, owner, command) : undefined;
+    if (replayed) return replayed;
+    const started = await this.#begin(input, owner, surface);
+    if (command) {
+      const saved = await this.#session(started.attemptId, owner);
+      saved.begun = { command, expiresAt: started.expiresAt, launchTicket: started.launchTicket };
+      await this.#saveSession(saved, owner);
+    }
+    return started;
+  }
+  async #replay(connection: string, owner: UserId, command: string) {
+    await this.assertOwner(owner);
+    const session = await this.options.store.read(connection, owner, sessionSchema);
+    if (!session?.localId || session.begun?.command !== command) return undefined;
+    const local = await this.options.attempts.status({ id: session.localId, ownerUserId: owner });
+    if (local?.status !== "pending") return undefined;
+    return {
+      attemptId: session.localId,
+      connection: session.connection,
+      expiresAt: session.begun.expiresAt,
+      launchTicket: session.begun.launchTicket,
+    };
+  }
+  async #begin(
     input: z.infer<typeof PluginOAuthBeginSchema>,
     owner: UserId,
     surface: Exclude<HostApiServerContext["surface"], null>,

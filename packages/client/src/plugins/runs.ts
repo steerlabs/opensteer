@@ -22,9 +22,10 @@ export interface PluginWorkflowRunsState {
 type Page = { readonly runs: readonly PluginWorkflowRunView[]; readonly cursor: string | null };
 
 /**
- * One plugin's workflow runs, paged by the Host's cursor in the Host's order:
- * live first, then newest. A refresh reads again every page loaded so far, so
- * a run on a later page never keeps a stale state.
+ * One plugin's workflow runs, paged by the Host's cursor: newest first by
+ * creation, with unfinished runs also on the first page, so a later page can
+ * repeat one and merging by id keeps its newest state. A refresh reads again
+ * every page loaded so far, so a run on a later page never keeps a stale state.
  */
 export class PluginWorkflowRuns {
   readonly #read: (cursor: string | null) => Promise<Page>;
