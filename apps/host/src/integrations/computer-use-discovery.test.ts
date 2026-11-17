@@ -1,0 +1,109 @@
+import { gatherComputerAccess } from "./computer-access.js";
+import type { IntegrationPlatformService } from "./integration-platform-service.js";
+import { describe, expect, it } from "vitest";
+import {
+  computerAppDiscovery,
+  phoneDiscovery,
+  type PhoneDiscoveryFacts,
+} from "./computer-use-discovery.js";
+
+const phone: PhoneDiscoveryFacts = {
+  phone: { name: "Pixel", state: "ready", computerId: "rnr_pixel" },
+  connection: { access: "read-write" },
+  callable: false,
+  canAct: false,
+  pendingPhoneAccess: false,
+  pendingPersonalGrant: false,
+  heldByAnotherRun: null,
+};
+describe("computer access", () => {
+  it("ignores this Run's holding and reports a different Run's holding", async () => {
+    const run = { runId: "run_this" } as Parameters<
+      IntegrationPlatformService["computerAccess"]
+    >[1];
+    let holdingRun = "run_this";
+    const platform = {
+      computerAppApprovals: {
+        computerUseInventory: async () => ({
+          machines: [],
+          phones: [
+            {
+              runnerId: "rnr_pixel",
+              name: "Pixel",
+              state: "ready",
+              connection: { connectionId: "connection", access: "read-write" },
+            },
+          ],
+        }),
+        computerAppHolders: () =>
+          new Map([["display:android-phone", { runId: holdingRun, threadTitle: "Calendar" }]]),
+      },
+      store: {
+        listComputerAppSetupRequests: async () => [],
+        requests: { listPendingIntegrationAccessRequests: async () => [] },
+      },
+      listCallableTools: async () => [
+        {
+          grant: { connectionId: "connection", id: "grant" },
+          tool: { name: "observe", id: "observe", schemaDigest: "digest" },
+        },
+      ],
+      computerToolEnabled: () => true,
+      computerUseVersion: () => 2,
+    } as unknown as IntegrationPlatformService;
+    const input = { ownerUserId: "user" } as Parameters<
+      IntegrationPlatformService["computerAccess"]
+    >[0];
+    const own = await gatherComputerAccess(platform, input, run);
+    expect(own.phone(own.phones[0]!)).toEqual({ access: "read" });
+    holdingRun = "run_other";
+    const other = await gatherComputerAccess(platform, input, run);
+    expect(other.phone(other.phones[0]!).blocked).toMatchObject({
+      code: "in_use",
+      message: expect.stringContaining("Calendar"),
+    });
+  });
+  it("requires a personal grant even when the phone connection exists", () => {
+    expect(phoneDiscovery(phone)).toEqual({
+      blocked: {
+        code: "access_required",
+        message: "Pixel needs access for this task.",
+        next: 'Request access with app_access_request {computerId:"rnr_pixel", access:"read-write", reason:"<why you need it>"}; the owner can approve from any Opensteer app.',
+      },
+    });
+  });
+  it.each([
+    [{ pendingPhoneAccess: true, phone: { ...phone.phone, state: "offline" } }, "access_pending"],
+    [
+      { phone: { ...phone.phone, state: "offline" }, heldByAnotherRun: { threadTitle: "Other" } },
+      "computer_offline",
+    ],
+    [{ callable: true, heldByAnotherRun: { threadTitle: "Other" } }, "in_use"],
+    [{ phone: { ...phone.phone, state: "update-required" } }, "update_required"],
+  ])("uses the most specific phone blocker", (overrides, code) => {
+    expect(phoneDiscovery({ ...phone, ...overrides }).blocked?.code).toBe(code);
+  });
+  it("reports usable read access when the task cannot act", () => {
+    expect(phoneDiscovery({ ...phone, callable: true })).toEqual({ access: "read" });
+    expect(phoneDiscovery({ ...phone, callable: true, canAct: true })).toEqual({
+      access: "read-write",
+    });
+  });
+  it("prioritizes the owner block, pending access, machine availability and holder for apps", () => {
+    const facts = {
+      app: "Notes",
+      computerId: "rnr_mac",
+      machine: { name: "Mac", state: "offline", appApproval: "ask" as const },
+      approval: { status: "blocked" as const, access: "read" as const },
+      callable: true,
+      pendingOnMac: true,
+      pendingPersonalGrant: false,
+      heldByAnotherRun: { threadTitle: "Other" },
+    };
+    expect(computerAppDiscovery(facts).blocked?.code).toBe("blocked_by_owner");
+    expect(computerAppDiscovery({ ...facts, approval: null }).blocked?.code).toBe("access_pending");
+    expect(
+      computerAppDiscovery({ ...facts, approval: null, pendingOnMac: false }).blocked?.code,
+    ).toBe("computer_offline");
+  });
+});

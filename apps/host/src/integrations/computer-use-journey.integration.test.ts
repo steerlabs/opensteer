@@ -86,10 +86,7 @@ import {
 import type { RunCapabilityClaims } from "../agents/run-capability.js";
 
 import { ComputerAppHub, type ComputerAppControlPeer } from "../computer-apps/computer-app-hub.js";
-import {
-  computerUseBusyNextStep,
-  ComputerUseService,
-} from "../computer-use/computer-use-service.js";
+import { ComputerUseService } from "../computer-use/computer-use-service.js";
 import { NativeTabTargets } from "../computer-use/native-tab-targets.js";
 import { ComputerViewService } from "../computer-use/computer-view-service.js";
 import { TabService } from "../tabs/tab-service.js";
@@ -1395,14 +1392,11 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           .filter((row) => row.type === "text")
           .map((row) => row.text)
           .join("\n"),
-      ).toContain(`incompatible-version: Update Opensteer on ${mac} to let agents use its apps.`);
+      ).toContain(`update_required: ${mac} needs an Opensteer update for computer use.`);
       expect(world.fakeMac.frames.filter((frame) => frame.operation === "windows")).toEqual([]);
       const search = json(await gateway.call("integration_search", { query: "Computer use" }));
-      expect(macRow(search).computers[0]).toMatchObject({ computerUseVersion: 1 });
+      expect(macRow(search).computers[0]).toMatchObject({ blocked: { code: "update_required" } });
       expect(search).toMatchObject({ results: [], total: 0, nextCursor: null });
-      expect(search.guidance.computers).toContain(
-        "computerUseVersion other than 2: update Opensteer on that Mac",
-      );
     } finally {
       await world.close();
     }
@@ -2275,9 +2269,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     });
     expect(row).toMatchObject({
       integration: "Computer use",
-      computers: [
-        { computerId: world.macId, name: mac, state: "ready", appApproval: "ask", apps: [] },
-      ],
+      computers: [{ computerId: world.macId, name: mac, apps: [] }],
     });
 
     // 2. Search with computerId: installed apps, each with its own next step.
@@ -2286,10 +2278,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(installed.apps).toContainEqual({
       name: "Notes",
       bundleId: "com.apple.Notes",
-      status: "not-approved",
-      callable: false,
+      blocked: expect.objectContaining({ code: "access_required" }),
     });
-    expect(installed.guidance.computers).toContain("Search with computerId to list installed apps");
     const filtered = json(
       await a.call("integration_search", { computerId: world.macId, query: "note", limit: 1 }),
     );
@@ -2323,9 +2313,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(waiting.apps.find(({ name }: { name: string }) => name === "Notes")).toEqual({
       name: "Notes",
       bundleId: "com.apple.Notes",
-      status: "not-approved",
-      pending: "mac",
-      callable: false,
+      blocked: expect.objectContaining({ code: "access_pending" }),
     });
 
     // 4. The person allows it on the Mac, which signs and consumes the request.
@@ -2339,20 +2327,15 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(notes).toEqual({
       name: "Notes",
       bundleId: "com.apple.Notes",
-      status: "approved",
+
       access: "read-write",
-      callable: true,
     });
     expect(await continuationMessage(fulfilled, inventorySource(world.platform))).toBe(
-      `Request ${fulfilled.id} was fulfilled. Notes on ${mac} is ready. Use app("Notes", {computer: "Alex's Mac"}) in computer_use. Continue.`,
+      `Notes on ${mac} is ready. Use app("Notes", {computer:"Alex's Mac"}) in computer_use.`,
     );
 
     expect(notes).not.toHaveProperty("toolRefs");
     expect(notes).not.toHaveProperty("nextAction");
-    expect(approved.guidance.computers).toContain("With callable:true, use app() in computer_use");
-    expect(approved.guidance.computers).toContain(
-      "do not poll, repeat or route around the Request",
-    );
     const [legacy] = await world.platform.listCallableTools({
       ownerUserId: world.owner.userId,
 
@@ -2421,15 +2404,13 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     const b = await world.gateway(runB);
     const held = json(await b.call("integration_search", { computerId: world.macId }));
     expect(held.apps.find(({ name }: { name: string }) => name === "Notes")).toMatchObject({
-      status: "approved",
-      inUse: true,
-      callable: false,
-      heldByTask: "Shopping list",
+      blocked: expect.objectContaining({
+        code: "in_use",
+        message: expect.stringContaining("Shopping list"),
+      }),
     });
     expect(await b.call("computer_use", { code: 'await (await app("Notes")).window()' })).toEqual(
-      refusal(
-        `busy: This app is already being used by another task. (Task: Shopping list) ${computerUseBusyNextStep}`,
-      ),
+      refusal(`in_use: Notes on ${mac} is in use by another task (Shopping list).`),
     );
 
     // 9. Stop on the Mac ends every session there; the next call says so.
@@ -2565,7 +2546,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     await world.automaticOnMac();
     const catalog = json(await a.call("integration_search", { query: "Computer use" }));
     expect(macRow(catalog)).toMatchObject({
-      computers: [{ appApproval: "automatic", computerToolEnabled: true, computerUseVersion: 2 }],
+      computers: [{ computerId: world.macId, apps: expect.any(Array) }],
     });
 
     // A new app is fulfilled in the same result and its handle works at once.
@@ -2673,8 +2654,6 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(readyCatalog.computers[0]!.apps).toContainEqual(
       expect.objectContaining({
         name: "Notes",
-        status: "approved",
-        callable: true,
       }),
     );
 
@@ -2697,30 +2676,26 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       ),
     );
     expect(await a.call("computer_use", { code: 'await app("Calendar")' })).toEqual(
-      refusal("app-not-allowed: No approved app matches Calendar. Search integrations for access."),
+      refusal(`blocked_by_owner: Calendar on ${mac} is blocked by its owner.`),
     );
     const listing = json(await a.call("integration_search", { computerId: world.macId }));
     expect(listing.apps).toEqual([
       expect.objectContaining({
         name: "Notes",
-        callable: true,
       }),
       {
         name: "Calendar",
         bundleId: "com.apple.iCal",
-        status: "blocked",
-        callable: false,
+        blocked: expect.objectContaining({ code: "blocked_by_owner" }),
       },
       expect.objectContaining({
         name: "TextEdit",
         access: "read",
-        callable: true,
       }),
       {
         name: "1Password",
         bundleId: "com.1password.1password",
-        status: "not-approved",
-        callable: false,
+        blocked: expect.objectContaining({ code: "access_required" }),
       },
     ]);
 
@@ -2735,7 +2710,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(await world.appAccess()).toEqual(before);
     expect(
       macRow(json(await a.call("integration_search", { query: "Computer use" }))).computers[0],
-    ).toMatchObject({ appApproval: "ask" });
+    ).toMatchObject({ computerId: world.macId });
 
     const runD = await world.startRun("More notes");
     // Several Macs and no runnerId: the refusal names each with its id.
@@ -2773,7 +2748,6 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     );
     const offlineCatalog = json(await a.call("integration_search", { query: "Computer use" }));
     expect(macRow(offlineCatalog).computers[0]).toMatchObject({ state: "offline" });
-    expect(offlineCatalog.guidance.computers).toContain("state offline: wait for it to return");
     expect(JSON.stringify(offlineCatalog)).not.toContain("toolRef");
     expect(await a.call("computer_use", { code: 'await (await app("Notes")).windows()' })).toEqual(
       refusal(`offline: ${mac} is offline. Notes will work again when it is back.`),
@@ -2889,9 +2863,45 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect(fakePhone.lists).toEqual([]);
     await world.allowPhoneFromClient(setup);
     const row = await phoneRow(gateway);
-    expect(row.phones[0]).toMatchObject({ approval: "approved", access });
+    expect(row.phones[0]).toMatchObject({ access });
     expect(row.phones[0]).not.toHaveProperty("toolRefs");
   }
+
+  it("keeps a connected phone visible without a personal grant and returns one blocker on every surface", async () => {
+    const world = await createWorld(database, { phone: true });
+    try {
+      const { phoneId } = phoneOf(world);
+      const run = await world.startRun("Find calendar");
+      const gateway = await world.gateway(run);
+      await grantedPhone(world, gateway, "read-write");
+      const connection = await world.phoneConnection();
+      const grant = (await world.persistence.listGrants({ ownerUserId: world.owner.userId })).find(
+        (entry) => entry.connectionId === connection.id,
+      )!;
+      await world.platform.revokeGrant({
+        grantId: grant.id,
+        ownerUserId: world.owner.userId,
+        requestId: "incident-revoke",
+      });
+      const row = (await phoneRow(gateway)).phones[0]!;
+      expect(row).toMatchObject({
+        computerId: phoneId,
+        blocked: {
+          code: "access_required",
+          next: expect.stringContaining(`computerId:${JSON.stringify(phoneId)}`),
+        },
+      });
+      expect(row).not.toHaveProperty("access");
+      const listed = await gateway.call("computer_use", { code: "print(await phones())" });
+      expect(text(listed)).toContain(JSON.stringify(row.blocked));
+      const selected = await gateway.call("computer_use", {
+        code: `await phone(${JSON.stringify(phoneId)})`,
+      });
+      expect(selected.structuredContent).toMatchObject({ error: row.blocked });
+    } finally {
+      await world.close();
+    }
+  });
 
   it("reasserts each call's authenticated executing Runner when reusing an attempt", async () => {
     const world = await createWorld(database, { phone: true });
@@ -3326,7 +3336,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     ],
   ] as const)(
     "shows %s phone readiness through the gateway",
-    async (state, sentence, readiness) => {
+    async (state, _sentence, readiness) => {
       const world = await createWorld(database, { phone: true });
       const { fakePhone } = phoneOf(world);
       const run = await world.startRun("Readiness");
@@ -3337,9 +3347,17 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         fakePhone.state = state;
         await fakePhone.attach();
       }
-      const result = json(await gateway.call("integration_search", { query: "Android phone" }));
-      expect(result.guidance.phones).toContain(sentence);
-      expect((await phoneRow(gateway)).phones[0]).toMatchObject({ state, callable: false });
+      json(await gateway.call("integration_search", { query: "Android phone" }));
+      expect((await phoneRow(gateway)).phones[0]).toMatchObject({
+        blocked: {
+          code:
+            state === "offline"
+              ? "computer_offline"
+              : state === "permission-required"
+                ? "permission_required"
+                : "unavailable",
+        },
+      });
       const entries = await world.platform.listDiscoveryInventory({
         ownerUserId: world.owner.userId,
         threadId: run.threadId,
@@ -3425,9 +3443,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect(request.status).toBe("already-available");
     const refused = await phoneCode(gatewayB, "await p.observe()");
     expect(refused).toEqual(
-      refusal(
-        `busy: ${phone} is already being used by another task. (Task: First display holder) ${computerUseBusyNextStep}`,
-      ),
+      refusal(`in_use: ${phone} is in use by another task (First display holder).`),
     );
     expect(fakePhone.received("observe")).toBe(1);
     resume();
@@ -3448,12 +3464,9 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       ...(await phoneRow(a)),
       phones: [
         {
-          approval: "not-approved",
-          callable: false,
-          computerToolEnabled: true,
+          blocked: expect.objectContaining({ code: "access_required" }),
           name: phone,
           computerId: phoneId,
-          state: "ready",
         },
       ],
     });
@@ -3504,7 +3517,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       ),
     ).toEqual([]);
     expect((await phoneRow(a)).phones[0]).toMatchObject({
-      approval: "pending",
+      blocked: { code: "access_pending" },
     });
 
     // 3. The owner allows it from a client; the continuation names the phone() handle.
@@ -3514,16 +3527,14 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const granted = (await phoneRow(a)).phones[0]!;
     expect(granted).toEqual({
       access: "read-write",
-      approval: "approved",
+
       name: phone,
-      callable: true,
-      computerToolEnabled: true,
+
       computerId: phoneId,
-      state: "ready",
     });
     expect(granted).not.toHaveProperty("toolRefs");
     expect(await continuationMessage(fulfilled, inventorySource(world.platform))).toBe(
-      `Request ${fulfilled.id} was fulfilled. ${phone} is ready. Use phone(${JSON.stringify(phone)}) in computer_use. Release it when you are done so another task can use it. Continue.`,
+      `${phone} is ready. Use phone(${JSON.stringify(phoneId)}) in computer_use.`,
     );
 
     const [row] = await world.platform.listCallableTools({
@@ -3646,15 +3657,14 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       expect(asked).not.toHaveProperty("toolRefs");
     })();
     expect((await phoneRow(b)).phones[0]).toMatchObject({
-      inUse: true,
-      callable: false,
-      heldByTask: "Text the driver",
+      blocked: expect.objectContaining({
+        code: "in_use",
+        message: expect.stringContaining("Text the driver"),
+      }),
     });
     const framesBefore = fakePhone.frames.length;
     expect(await phoneCode(b, "await p.observe()")).toEqual(
-      refusal(
-        `busy: ${phone} is already being used by another task. (Task: Text the driver) ${computerUseBusyNextStep}`,
-      ),
+      refusal(`in_use: ${phone} is in use by another task (Text the driver).`),
     );
     expect(fakePhone.frames).toHaveLength(framesBefore);
 
@@ -3835,7 +3845,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     });
 
     const lowered = (await phoneRow(gateway)).phones[0]!;
-    expect(lowered).toMatchObject({ access: "read", approval: "approved" });
+    expect(lowered).toMatchObject({ access: "read" });
     expect(lowered).not.toHaveProperty("toolRefs");
     expect(text(await phoneCode(gateway, "await p.observe()"))).toContain(`Looked at ${phone}`);
     expect(await phoneCode(gateway, 'await p.act([{ type: "wake" }])')).toEqual(
@@ -3969,6 +3979,7 @@ const tree = '[0] window "Groceries" (0,0 1200×900)\n  [1] button "New Note" (2
 /** What the continuation outbox reads, served by the platform under test. */
 function inventorySource(platform: IntegrationPlatformService): IntegrationInventorySource {
   return {
+    computerAccess: (input, run) => platform.computerAccess(input, run),
     computerUseMachines: (ownerUserId) =>
       platform.computerAppApprovals.computerUseMachines(ownerUserId),
     computerUsePhones: (ownerUserId) =>
@@ -3993,11 +4004,11 @@ function refusal(message: string) {
 
 interface CatalogRow {
   readonly computers: readonly {
-    readonly appApproval: string;
+    readonly blocked?: { readonly code: string };
     readonly apps: readonly {
       readonly name: string;
-      readonly status: string;
-      readonly callable: boolean;
+      readonly access?: string;
+      readonly blocked?: { readonly code: string };
     }[];
   }[];
   readonly definitionId: string;
@@ -4012,34 +4023,18 @@ function macRow(search: { readonly catalog: readonly CatalogRow[] }): CatalogRow
 /** The JSON a model reads from a successful result's text block. */
 function json(result: ToolResult) {
   const value = JSON.parse(text(result));
-  if (
-    value.computer ||
-    value.catalog?.some((row: { computers?: readonly unknown[] }) => row.computers?.length)
-  ) {
-    for (const rule of [
-      "app_access_request {computerId, app, access, reason}",
-      "blocked: only the computer owner can unblock it from any Opensteer app",
-      "pending:mac waits for its owner",
-      "do not poll, repeat or route around the Request",
-      "Pending grants no access; do not poll, repeat or route around the Request",
-      "do not retry in a loop",
-      "permission-required",
-      "appApproval:automatic",
-    ])
-      expect(value.guidance.computers).toContain(rule);
-  }
-  if (value.catalog?.some((row: { phones?: readonly unknown[] }) => row.phones?.length)) {
-    for (const rule of [
-      "app_access_request {computerId, access, reason}",
-      "owner approves from any Opensteer app",
-      "approval:pending",
-      "do not poll, repeat or route around the Request",
-      "do not retry in a loop",
-      "permission-required",
-      "release when done",
-      "request read-write",
-    ])
-      expect(value.guidance.phones).toContain(rule);
+  const targets = [
+    ...(value.apps ?? []).filter((app: { bundleId?: string }) => app.bundleId),
+    ...(value.catalog ?? []).flatMap(
+      (row: {
+        phones?: { access?: string; blocked?: { next: string } }[];
+        computers?: { apps: { access?: string; blocked?: { next: string } }[] }[];
+      }) => [...(row.phones ?? []), ...(row.computers ?? []).flatMap((computer) => computer.apps)],
+    ),
+  ];
+  for (const target of targets) {
+    expect(Boolean(target.access) !== Boolean(target.blocked)).toBe(true);
+    if (target.blocked) expect(target.blocked.next.length).toBeGreaterThan(0);
   }
   return value;
 }

@@ -1,3 +1,5 @@
+import { gatherComputerAccess } from "../integrations/computer-access.js";
+import type { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
 import type { BrowserSignInRequestResponse } from "@opensteer/protocol/browser-sources";
 import { createBrowserSessionId } from "@opensteer/protocol";
 import { createHash } from "node:crypto";
@@ -50,6 +52,9 @@ describe("ContinuationService", () => {
       await continuationMessage(fulfilled, {
         listDiscoveryInventory: async () => [],
         listCallableTools: async () => [],
+        computerAccess: async () => {
+          throw new Error("No computer access fixture");
+        },
         computerUseMachines: async () => [],
         computerUsePhones: async () => [],
       }),
@@ -63,6 +68,9 @@ describe("ContinuationService", () => {
       await continuationMessage(declined, {
         listDiscoveryInventory: async () => [],
         listCallableTools: async () => [],
+        computerAccess: async () => {
+          throw new Error("No computer access fixture");
+        },
         computerUseMachines: async () => [],
         computerUsePhones: async () => [],
       }),
@@ -395,6 +403,9 @@ describe("continuationMessage", () => {
     const inventory = {
       listDiscoveryInventory: async () => [],
       listCallableTools: async () => [],
+      computerAccess: async () => {
+        throw new Error("No computer access fixture");
+      },
       computerUseMachines: async () => [],
       computerUsePhones: async () => [],
     };
@@ -560,7 +571,7 @@ describe("continuationMessage", () => {
   it("does not claim access when the Mac has been removed", async () => {
     await expect(
       continuationMessage(computerAppAccessRequest("fulfilled"), withMacs(false)),
-    ).resolves.toContain("is no longer available to this task. Continue without it.");
+    ).resolves.toContain('is unavailable. Use integration_search {query:"Computer use"}');
   });
   it("reports a ready installation and points the agent at integration_search", async () => {
     const request = fulfilledRequest("integration.install");
@@ -757,6 +768,9 @@ describe("continuationMessage", () => {
 function inventory(...entries: readonly InventoryEntry[]): IntegrationInventorySource {
   return {
     listDiscoveryInventory: async () => [...entries],
+    computerAccess: async () => {
+      throw new Error("No computer access fixture");
+    },
     computerUseMachines: async () => [],
     computerUsePhones: async () => [],
     listCallableTools: async () => [],
@@ -838,6 +852,28 @@ function computerAppAccessRequest(status: "declined" | "fulfilled") {
 function withMacs(named: boolean): IntegrationInventorySource {
   return {
     ...inventory(),
+    async computerAccess(input, run) {
+      return gatherComputerAccess(
+        {
+          computerAppApprovals: {
+            computerUseInventory: async () => ({
+              machines: await this.computerUseMachines(input.ownerUserId),
+              phones: await this.computerUsePhones(input.ownerUserId),
+            }),
+            computerAppHolders: () => new Map(),
+          },
+          store: {
+            listComputerAppSetupRequests: async () => [],
+            requests: { listPendingIntegrationAccessRequests: async () => [] },
+          },
+          listCallableTools: this.listCallableTools,
+          computerToolEnabled: () => true,
+          computerUseVersion: () => 2,
+        } as unknown as IntegrationPlatformService,
+        input,
+        run,
+      );
+    },
     computerUseMachines: async () =>
       named
         ? [

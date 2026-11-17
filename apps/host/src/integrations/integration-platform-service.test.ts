@@ -4019,6 +4019,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
     };
     const lease = { sessionId: mintComputerUseSessionId() };
     const mockedComputerUse = {
+      eligibleInventory: async () => ({ machines: [], phones: [] }),
       closeForConnection: vi.fn(),
       eligibleMachines: vi.fn(async () => []),
       installedApps: vi.fn(async () => []),
@@ -4214,6 +4215,46 @@ describe("IntegrationPlatformService computer use gateway", () => {
         }),
       },
     });
+    vi.spyOn(service.computerAppApprovals, "computerUseInventory").mockImplementation(async () => ({
+      machines:
+        input.phone || input.revoked?.()
+          ? []
+          : [
+              {
+                name: "Alex's Mac",
+                runnerId,
+                ready: true,
+                state: "ready",
+                appApproval: "ask",
+                apps: [
+                  {
+                    name: notes.displayName,
+                    bundleId: notes.bundleId,
+                    connectionId: connection.id,
+                    access: input.connectionAccess ?? "read-write",
+                    status: "approved",
+                  },
+                ],
+              },
+            ],
+      phones:
+        !input.phone || input.revoked?.()
+          ? []
+          : [
+              {
+                name: "Pixel 7",
+                runnerId,
+                ready: true,
+                state: "ready",
+                blockedByOwner: false,
+                connection: {
+                  connectionId: connection.id,
+                  access: input.connectionAccess ?? "read-write",
+                },
+              },
+            ],
+    }));
+    vi.spyOn(service.computerAppApprovals, "computerAppHolders").mockReturnValue(new Map());
     return {
       callable,
       computerUse,
@@ -4722,7 +4763,12 @@ function platform(input: {
           connections: { assertOwner: vi.fn(async () => undefined) },
           computerAppRunner: vi.fn(async () => null),
           listGrants: vi.fn(async () => []),
+          listComputerAppSetupRequests: async () => [],
           ...input.store,
+          requests: {
+            listPendingIntegrationAccessRequests: async () => [],
+            ...input.store.requests,
+          },
         }
       : {
           connections: { assertOwner: vi.fn(async () => undefined) },
@@ -4730,7 +4776,7 @@ function platform(input: {
           computerAppRunner: vi.fn(async () => null),
           install: vi.fn(),
           listInstallations: vi.fn(async () => []),
-        }) as IntegrationPlatformStore,
+        }) as unknown as IntegrationPlatformStore,
   });
   services.push(service);
   return service;

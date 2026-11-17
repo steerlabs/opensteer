@@ -1,3 +1,4 @@
+import { BlockedSchema } from "@opensteer/core";
 import { z } from "zod";
 import { AgentLinkSchema } from "./agent-links.js";
 
@@ -8,46 +9,18 @@ const ReadinessSchema = z.object({
   detail: z.string().optional(),
   serverId: z.string().optional(),
 });
-const AppSchema = z.object({
-  name: z.string().optional(),
-  bundleId: z.string().optional(),
-  packageName: z.string().optional(),
-  label: z.string().optional(),
-  identity: z
-    .object({
-      displayName: z.string(),
-      bundleId: z.string().optional(),
-      packageName: z.string().optional(),
-    })
-    .optional(),
-  access: z.string().optional(),
-  status: z.string().optional(),
-  blocked: z.boolean().optional(),
-  callable: z.boolean().optional(),
-  pending: z.string().optional(),
-  inUse: z.boolean().optional(),
-  heldByTask: z.string().optional(),
-});
+const AccessSchema = z.union([
+  z.object({ access: z.enum(["read", "read-write"]), blocked: z.never().optional() }),
+  z.object({ blocked: BlockedSchema, access: z.never().optional() }),
+]);
+const AppSchema = z.object({ name: z.string(), bundleId: z.string() }).and(AccessSchema);
 const ComputerSchema = z.object({
   computerId: z.string(),
   name: z.string(),
-  state: z.string(),
-  appApproval: z.string().optional(),
-  computerToolEnabled: z.boolean(),
-  computerUseVersion: z.number().nullable().optional(),
-  apps: z.array(AppSchema).optional(),
+  blocked: BlockedSchema.optional(),
+  apps: z.array(AppSchema),
 });
-const PhoneSchema = z.object({
-  computerId: z.string(),
-  name: z.string(),
-  state: z.string(),
-  approval: z.string(),
-  access: z.string().optional(),
-  inUse: z.boolean().optional(),
-  callable: z.boolean(),
-  computerToolEnabled: z.boolean(),
-  heldByTask: z.string().optional(),
-});
+const PhoneSchema = z.object({ computerId: z.string(), name: z.string() }).and(AccessSchema);
 export const IntegrationSearchOutputSchema = z.object({
   guidance: z
     .object({
@@ -127,7 +100,19 @@ export const IntegrationSearchOutputSchema = z.object({
     )
     .optional(),
   computer: ComputerSchema.optional(),
-  apps: z.array(AppSchema).optional(),
+  apps: z
+    .array(
+      z.union([
+        AppSchema,
+        z.object({
+          label: z.string(),
+          packageName: z.string(),
+          access: z.never().optional(),
+          blocked: z.never().optional(),
+        }),
+      ]),
+    )
+    .optional(),
   total: z.number(),
   nextCursor: z.string().nullable(),
 });

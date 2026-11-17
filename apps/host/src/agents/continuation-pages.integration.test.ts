@@ -91,6 +91,9 @@ describeStore("Continuation paging", (it) => {
       integrations: {
         listDiscoveryInventory: async () => [],
         listCallableTools: async () => [],
+        computerAccess: async () => {
+          throw new Error("No computer access fixture");
+        },
         computerUseMachines: async () => [],
         computerUsePhones: async () => [],
       },

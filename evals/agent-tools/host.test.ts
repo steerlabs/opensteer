@@ -171,7 +171,9 @@ it("validates prompt overhaul case inputs and mocked positive calls with product
           await client.callTool({
             name: required.tool,
             arguments:
-              required.tool === "saved_login_request" || required.tool === "chrome_cookies_request"
+              required.tool === "saved_login_request" ||
+              required.tool === "chrome_cookies_request" ||
+              required.tool === "app_access_request"
                 ? { ...args, reason: "Check the assigned account" }
                 : args,
           });

@@ -81,7 +81,7 @@ export const computer_use = defineAgentTool({
   name: "computer_use",
   title: "Operate Mac apps and phones",
   description:
-    "Run JavaScript to operate approved Mac windows and Agent Phones; variables and handles last for this Run attempt. tab(tabId), using an ID from tab_list or tab_open, binds that exact window or phone. apps()/app() and phones()/phone() also discover and bind targets. Bound handles report tabId. Observe before using screenshot coordinates or element indices. Await calls and print() results; execution has a 100 second deadline. Read opensteer:computer-use for the window and phone API. After an outcome-unknown action, observe before repeating it.",
+    "Run JavaScript to operate approved Mac windows and Agent Phones; variables and handles last for this Run attempt. tab(tabId), using an ID from tab_list or tab_open, binds that exact window or phone. apps() and phones() list visible targets with either access (read/read-write) or blocked {code,message,next}; app(query) and phone(query) match name, id or computerId and throw that blocked error when access is missing. Bound handles report tabId. Observe before using screenshot coordinates or element indices. Await calls and print() results; execution has a 100 second deadline. Read opensteer:computer-use for the window and phone API. After an outcome-unknown action, observe before repeating it.",
   input: z.strictObject({ code: z.string().min(1).max(65536) }),
   output: IntegrationCallOutputSchema,
   capability: "computerUse",

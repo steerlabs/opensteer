@@ -219,6 +219,18 @@ describe("computer REPL worker boundary", () => {
     await service.endRun(context.runId);
     expect((await run('return "ended"')).isError).toBe(true);
   });
+  it("preserves the blocked phone recommendation when selected by computerId", async () => {
+    const blocked = {
+      code: "access_required",
+      message: "Pixel needs access for this task.",
+      next: 'Use app_access_request {computerId:"rnr_pixel", access:"read-write", reason:"Check calendar"}.',
+    };
+    const { run } = setup(async () => ({
+      value: [{ id: "connection", computerId: "rnr_pixel", name: "Pixel", blocked }],
+    }));
+    const result = await run('await phone("rnr_pixel")');
+    expect(result.structuredContent).toMatchObject({ error: blocked });
+  });
   it("serializes Promise.all, shares window snapshots and preserves emission order", async () => {
     const calls: string[] = [];
     const { run } = setup(async (request) => {

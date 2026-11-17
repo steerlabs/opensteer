@@ -7,7 +7,7 @@ export const computerGuestLibrary = String.raw`
   delete globalThis.__computerCall;
   delete globalThis.__computerPrint;
   class ComputerError extends Error {
-    constructor(code, message, performed = []) { super(message); this.name = "ComputerError"; this.code = code; this.performed = performed; }
+    constructor(code, message, performed = [], next = null) { super(message); this.name = "ComputerError"; this.code = code; this.performed = performed; this.next = next; }
   }
   async function call(operation, target = null, args = {}) {
     const result = JSON.parse(await bridge(JSON.stringify({operation,target,args})));
@@ -22,8 +22,9 @@ export const computerGuestLibrary = String.raw`
   async function resolve(kind, query, computer) {
     const entries = await call(kind);
     const q = String(query).toLowerCase();
-    const matches = entries.filter(entry => [entry.id,entry.name,entry.bundleId].some(value => value && value.toLowerCase() === q) && (!computer || entry.computer === computer));
-    if(matches.length !== 1) throw new ComputerError("app-not-allowed",matches.length ? "Choose one: " + matches.map(entry=>entry.name+" on "+entry.computer).join(", ") : "No approved " + (kind === "apps" ? "app" : "phone") + " matches " + query + ". Search integrations for access.");
+    const matches = entries.filter(entry => [entry.id,entry.name,entry.bundleId,entry.computerId].some(value => value && value.toLowerCase() === q) && (!computer || entry.computer === computer));
+    if(matches.length !== 1) throw new ComputerError("not_found",matches.length ? "Choose one: " + matches.map(entry=>entry.name+" on "+entry.computer).join(", ") : "No visible " + (kind === "apps" ? "app" : "phone") + " matches " + query + ".", [], 'Use integration_search {query:"' + (kind === "apps" ? "Computer use" : "Android phone") + '"} to find targets and access instructions.');
+    if(matches[0].blocked) { const {code,message,next}=matches[0].blocked; throw new ComputerError(code,message,[],next); }
     return matches[0];
   }
   const windowStates = new Map();
