@@ -52,6 +52,7 @@ export function clientIssue(
     return {
       code: context.operation === "read" ? "read-failed" : "refresh-failed",
       resource: context.label,
+      reason: failure.reason,
     };
   return failure.kind === "rejection"
     ? { code: "rejected", reason: failure.reason, action: context.label }
@@ -170,14 +171,31 @@ export function presentDeliveryActions(): {
   return { edit: "Edit", delete: "Delete", discard: "Don't send" };
 }
 
+export const connectedLabel = "Connected";
+export function presentConnectionStarting(
+  name?: string | null,
+  target: "computer" | "team" = "computer",
+): string {
+  return `Connecting to ${clientDisplayName(name, target)}…`;
+}
+
 export function presentConnectionGate(
   state: import("../connections/connection-controller.js").ClientConnectionState,
 ): ClientIssuePresentation {
   const name = clientDisplayName(state.name, state.target);
   if (!state.showInterruption)
-    return { title: `Connecting to ${name}…`, detail: null, action: null };
+    return {
+      title: presentConnectionStarting(state.name, state.target),
+      detail: null,
+      action: null,
+    };
   const issue = state.issue;
-  if (!issue) return { title: `Connecting to ${name}…`, detail: null, action: null };
+  if (!issue)
+    return {
+      title: presentConnectionStarting(state.name, state.target),
+      detail: null,
+      action: null,
+    };
   const value = { ...issue, ...(state.name ? { name: state.name } : {}), target: state.target };
   if (issue.code === "connection")
     return issue.reason === "offline"
@@ -270,3 +288,5 @@ export const clientIssueActions = {
 export function presentSavedViewConnection(issue: ClientIssue | null): string {
   return issue ? `${presentClientIssue(issue).title} · Saved view` : "Updating…";
 }
+
+export const clientReadPlaceholderLabel = "Not loaded yet";

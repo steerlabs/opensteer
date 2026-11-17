@@ -44,6 +44,7 @@ export class PagedList<Item, First extends KeysetPage<Item> = KeysetPage<Item>> 
     this.#resource = createClientRead(session, {
       key: "pages",
       label: "this list",
+      remember: true,
       read: async (signal) => {
         const scope = clientScopeKey(session.connection.getSnapshot().scope);
         const current = this.#resource.getSnapshot();
@@ -75,7 +76,7 @@ export class PagedList<Item, First extends KeysetPage<Item> = KeysetPage<Item>> 
       first: data?.first ?? null,
       items: data?.items ?? [],
       nextCursor: capped ? null : (data?.nextCursor ?? null),
-      loading: source.status === "loading",
+      loading: source.status === "loading" || source.status === "waiting",
       loadingMore: source.status === "ready" && source.refreshing && this.#append,
       error: source.issue,
       capped,

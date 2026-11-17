@@ -395,7 +395,7 @@ export class SchedulesClient {
         this.#keys.delete(identity);
         this.detail(triggerId).invalidate();
         this.list.invalidate();
-      }
+      } else if (outcome.kind === "unconfirmed") this.detail(triggerId).invalidate();
     });
     return pending;
   }

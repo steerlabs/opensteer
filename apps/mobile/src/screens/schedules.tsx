@@ -1,3 +1,4 @@
+import { presentClientIssue, clientReadPlaceholderLabel } from "@opensteer/client/feedback";
 import {
   schedulesClient,
   sectionAutomations,
@@ -83,7 +84,7 @@ export function ScheduleProblem(props: {
   readonly state: ScheduleState<unknown>;
 }): ReactNode {
   const { state } = props;
-  if (state.issue?.code === "access-lost") {
+  if (state.issue?.reason === "unknown-method") {
     return (
       <Notice
         detail="This Host doesn’t offer automations. Update Opensteer on the computer it runs on to see them here."
@@ -92,8 +93,14 @@ export function ScheduleProblem(props: {
       />
     );
   }
+  if (state.issue?.code === "access-lost") {
+    const copy = presentClientIssue(state.issue);
+    return <Notice title={copy.title} detail={copy.detail ?? ""} tone="neutral" />;
+  }
   if (state.status === "waiting") {
-    return <Notice detail={state.error ?? ""} title="Offline" tone="neutral" />;
+    return (
+      <ActivityIndicator accessibilityLabel={clientReadPlaceholderLabel} color={color.muted} />
+    );
   }
   return (
     <Notice

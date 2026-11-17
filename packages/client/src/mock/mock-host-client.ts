@@ -3838,7 +3838,7 @@ export class MockHostClient implements HostClient {
     this.#scopeProvider = scope;
   }
   async openConnection(attempt: ConnectionAttempt): Promise<ConnectionLease> {
-    await this.load();
+    if (!this.#ownsConnection) await this.load();
     attempt.signal.throwIfAborted();
     const snapshot = this.getSnapshot();
     if (snapshot.session !== "authenticated" || !snapshot.user || !snapshot.deploymentId)
@@ -3860,9 +3860,15 @@ export class MockHostClient implements HostClient {
     const closed = new Promise<ReturnType<typeof classifyClientFailure>>((resolve) => {
       finish = resolve;
     });
+    let wasConnected = snapshot.connection === "connected";
     const unsubscribe = this.subscribe(() => {
       const next = this.getSnapshot();
-      if (next.session !== "authenticated" || next.connection !== "connected") {
+      if (next.connection === "connected") wasConnected = true;
+      if (
+        next.session !== "authenticated" ||
+        next.connection === "offline" ||
+        (wasConnected && next.connection !== "connected")
+      ) {
         const failure = classifyClientFailure(
           next.session !== "authenticated"
             ? new HostClientRequestError({

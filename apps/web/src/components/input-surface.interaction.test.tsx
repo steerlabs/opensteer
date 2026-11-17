@@ -1,3 +1,10 @@
+import {
+  initializeMessageOutbox,
+  createMessageOutboxStorage,
+  disposeMessageOutbox,
+  type HostClient,
+} from "@opensteer/client/host";
+import { testHostConnection } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -11,7 +18,17 @@ import { resetQuestionSessionsForTests } from "./question-session.js";
 import { composerDraftKeyFor, composerDrafts } from "./composer-drafts.js";
 import { composerField, rewrite, textareaView } from "./composer-editor.test-support.js";
 
-const noPlaces = vi.hoisted(() => ({ browserSessions: [], connection: "connected", machines: [] }));
+const noPlaces = vi.hoisted(() => ({
+  browserSessions: [],
+  connection: "connected",
+  machines: [],
+  deploymentId: "deployment",
+  user: { id: "viewer" },
+  session: "authenticated",
+  sessionId: "test-login",
+  network: "online",
+  transcripts: {},
+}));
 const shell = vi.hoisted(() => ({
   desktopBridge: null,
   desktopDeployment: null,
@@ -66,12 +83,31 @@ const shell = vi.hoisted(() => ({
   localExecutionStatus: null,
 }));
 Object.assign(noPlaces, { tabs: new TabStore(), browserProfiles: [] });
-Object.assign(shell.hostClient, { tabViewer: () => null });
+Object.assign(shell.hostClient, {
+  tabViewer: () => null,
+  connection: testHostConnection(shell.hostClient as unknown as HostClient),
+});
+beforeEach(() => {
+  const records = new Map<string, string>();
+  initializeMessageOutbox(shell.hostClient as unknown as HostClient, {
+    storage: createMessageOutboxStorage({
+      read: async (key) => records.get(key) ?? null,
+      write: async (key, value) => {
+        records.set(key, value);
+      },
+      remove: async (key) => {
+        records.delete(key);
+      },
+    }),
+    drafts: { restore: async () => "restored" },
+  });
+});
 vi.mock("./app-shell.js", () => ({ useShell: () => shell }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root;
 afterEach(() => {
   act(() => root.unmount());
+  disposeMessageOutbox(shell.hostClient as unknown as HostClient);
   document.body.replaceChildren();
   shell.hostClient.dispatch.mockClear();
   shell.snapshot.waitingRequests = [];
@@ -205,6 +241,7 @@ describe("request surface connectivity", () => {
     expect(shell.hostClient.dispatch).toHaveBeenCalledOnce();
     expect(shell.hostClient.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ threadId, type: "thread.sendMessage" }),
+      { preserveOrigin: true },
     );
     expect(
       [...node.querySelectorAll(".action-rows .action-row__label")].map((item) => item.textContent),

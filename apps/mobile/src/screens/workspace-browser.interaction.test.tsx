@@ -23,7 +23,11 @@ import {
   type TabId,
 } from "@opensteer/core";
 import type { BrowserViewerSurface } from "@opensteer/protocol/browser-tabs";
-import { MemoryPrivateFilesystem, tabFixture } from "@opensteer/client/test-support";
+import {
+  MemoryPrivateFilesystem,
+  tabFixture,
+  testHostConnection,
+} from "@opensteer/client/test-support";
 import type { TabRoute } from "../browser/surface-route.js";
 import type { TabViewer } from "@opensteer/protocol";
 import {
@@ -941,6 +945,22 @@ async function setup(
     clientListeners.add(listener);
     return () => clientListeners.delete(listener);
   };
+  state.hostClient.connection ??= testHostConnection({
+    getSnapshot: () =>
+      ({
+        ...(currentSnapshot() ?? {
+          session: "checking",
+          user: null,
+          connection: "connecting",
+          network: "unknown",
+        }),
+        deploymentId: state.deploymentId,
+      }) as HostSnapshot,
+    subscribe: (listener: () => void) => {
+      clientListeners.add(listener);
+      return () => clientListeners.delete(listener);
+    },
+  });
   state.hostClient.activateTab ??= vi.fn(activate);
   state.hostClient.browserViewerSurface ??= viewerSurface;
   state.hostClient.placeActivity ??= placeActivity;
@@ -1541,7 +1561,7 @@ describe("mobile pages", () => {
 
   it("refreshes coming back into view, not out from under a sheet, and keeps the exact view while other browsers arrive", async () => {
     const { container, render } = await setup({ sessionId: "chosen" });
-    expect(state.refresh).toHaveBeenCalledTimes(1);
+    expect(state.refresh).toHaveBeenCalledTimes(0);
     state.snapshot = snapshot([session("chosen"), session("new")]);
     await render();
     expect(container.textContent).toContain("Viewing chosen");
@@ -1550,14 +1570,14 @@ describe("mobile pages", () => {
     await render();
     state.focused = true;
     await render();
-    expect(state.refresh).toHaveBeenCalledTimes(1);
+    expect(state.refresh).toHaveBeenCalledTimes(0);
     state.focused = false;
     state.drawn = false;
     await render();
     state.focused = true;
     state.drawn = true;
     await render();
-    expect(state.refresh).toHaveBeenCalledTimes(2);
+    expect(state.refresh).toHaveBeenCalledTimes(0);
   });
 
   it("refuses another deployment and a signed-out viewer", async () => {
@@ -1867,7 +1887,7 @@ describe("an app open as a tab", () => {
     const { container, closeTabs } = await openApp();
     closeTabs.mockRejectedValueOnce(new Error("The Host refused."));
     await pressAsync(appMenu(), "Close tab");
-    expect(container.textContent).toContain("This tab could not be closed.");
+    expect(container.textContent).toContain("Couldn't confirm this change.");
     expect(webView()).not.toBeNull();
     await pressAsync(container, "Try again");
     expect(closeTabs).toHaveBeenCalledTimes(2);

@@ -298,7 +298,7 @@ class RetainedClientRead<T> implements ClientRead<T> {
             unrefTimer(this.#retry);
           }
           const issue = denied
-            ? { code: "access-lost" as const }
+            ? { code: "access-lost" as const, reason: failure.reason }
             : clientIssue(error, {
                 operation: this.#accepted ? "refresh" : "read",
                 label: this.#spec.label,

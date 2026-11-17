@@ -1626,7 +1626,12 @@ export class MobileClient {
           if (!this.#hostClient || this.#attachmentGeneration !== this.#fence.generation) {
             this.#disposeHostClient();
             try {
-              outcome = await this.#attachSelectionOnce(id, selectionAttempt, options);
+              outcome = await this.#attachSelectionOnce(
+                id,
+                selectionAttempt,
+                options,
+                attempt.signal,
+              );
             } catch (error) {
               first({ kind: "session-failed", error });
               throw error;
@@ -1663,17 +1668,19 @@ export class MobileClient {
     id: DeploymentId,
     attempt: number,
     options: AttachmentOptions = {},
+    signal?: AbortSignal,
   ): Promise<AttachmentOutcome> {
+    const current = () => !signal?.aborted && this.#isCurrentSelection(id, attempt);
     let catalog: DeploymentCatalog;
     // An external catalog writer can overtake either fence read. Reassert this
     // explicit selection and resolve again; a route and a credential from two
     // different Deployments must never become one attachment.
-    while (this.#isCurrentSelection(id, attempt)) {
+    while (current()) {
       let resolution = await this.#resolve(id);
-      if (!this.#isCurrentSelection(id, attempt)) return { kind: "superseded" };
+      if (!current()) return { kind: "superseded" };
       if (resolution.kind === "superseded") {
         const restored = await this.#operations.run(async () => {
-          if (!this.#isCurrentSelection(id, attempt)) return false;
+          if (!current()) return false;
           catalog = await this.catalog.load();
           if (
             !catalog.deployments.some(({ authority }) => authority.document.deploymentId === id)
@@ -1700,6 +1707,7 @@ export class MobileClient {
         generation,
         id,
         attempt,
+        current,
       );
       if (typeof verification === "string") {
         if (verification === "superseded") return { kind: "superseded" };
@@ -1717,9 +1725,9 @@ export class MobileClient {
         this.#signedOut.add(id);
         await this.#signedOutFile.write(this.#signedOutIds());
       }
-      if (!this.#isCurrentSelection(id, attempt)) return { kind: "superseded" };
+      if (!current()) return { kind: "superseded" };
       resolution = await this.#resolve(id);
-      if (!this.#isCurrentSelection(id, attempt)) return { kind: "superseded" };
+      if (!current()) return { kind: "superseded" };
       if (generation !== this.#fence.generation || resolution.kind === "superseded") continue;
       if (resolution.kind === "unroutable") {
         this.#attachmentGeneration = this.#fence.generation;
@@ -1743,17 +1751,17 @@ export class MobileClient {
             this.#authorizationEpoch,
           );
           if (!established) {
-            if (!this.#isCurrentSelection(id, attempt)) return { kind: "superseded" };
+            if (!current()) return { kind: "superseded" };
             if (generation !== this.#fence.generation) continue;
             await this.#republish();
             return { attempt, generation, kind: "needs-credential" };
           }
           this.#sessionFailures.delete(id);
           authorization = await this.#authorizationFor(selected.connection);
-          if (!this.#isCurrentSelection(id, attempt)) return { kind: "superseded" };
+          if (!current()) return { kind: "superseded" };
           if (generation !== this.#fence.generation) continue;
           resolution = await this.#resolve(id);
-          if (!this.#isCurrentSelection(id, attempt)) return { kind: "superseded" };
+          if (!current()) return { kind: "superseded" };
           if (generation !== this.#fence.generation || resolution.kind === "superseded") continue;
           if (resolution.kind === "unroutable") {
             this.#attachmentGeneration = this.#fence.generation;
@@ -1761,7 +1769,7 @@ export class MobileClient {
             return { kind: "unroutable" };
           }
         } catch (error) {
-          if (!this.#isCurrentSelection(id, attempt)) return { kind: "superseded" };
+          if (!current()) return { kind: "superseded" };
           if (generation !== this.#fence.generation) continue;
           this.#sessionFailures.set(id, sessionFailureOf(error));
           await this.#republish();
@@ -1789,7 +1797,7 @@ export class MobileClient {
       let evidence: typeof verification | null = verification;
       let verifying: Promise<readonly HostCapability[]> | null = null;
       const viewLoginId = await this.#viewLoginId(attachment.connection);
-      if (!this.#isCurrentSelection(id, attempt) || generation !== this.#fence.generation) continue;
+      if (!current() || generation !== this.#fence.generation) continue;
       const hostClient = this.#host.attach({
         ...(this.#connection ? { connectionController: this.#connection } : {}),
         clientScope: () => {
@@ -1840,7 +1848,7 @@ export class MobileClient {
         connection: attachment.connection,
         origin: attachment.resolved.origin,
       });
-      if (generation !== this.#fence.generation || !this.#isCurrentSelection(id, attempt)) {
+      if (generation !== this.#fence.generation || !current()) {
         hostClient.dispose();
         continue;
       }
@@ -2632,9 +2640,14 @@ export class MobileClient {
     generation: number,
     deploymentId: DeploymentId,
     attempt: number,
+    current?: () => boolean,
   ): Promise<ProtocolVerificationOutcome> {
     const agreement = await this.#host.verifyEpoch(selected.resolved, selected.connection);
-    if (!this.#isCurrentSelection(deploymentId, attempt) || generation !== this.#fence.generation) {
+    if (
+      current?.() === false ||
+      !this.#isCurrentSelection(deploymentId, attempt) ||
+      generation !== this.#fence.generation
+    ) {
       return "superseded";
     }
     if (agreement === "unreachable") {
@@ -2656,7 +2669,11 @@ export class MobileClient {
     }
     this.#verification.delete(deploymentId);
     await this.#republish();
-    if (!this.#isCurrentSelection(deploymentId, attempt) || generation !== this.#fence.generation) {
+    if (
+      current?.() === false ||
+      !this.#isCurrentSelection(deploymentId, attempt) ||
+      generation !== this.#fence.generation
+    ) {
       return "superseded";
     }
     return agreement;

@@ -399,7 +399,7 @@ describe("moving and grouping without dragging", () => {
     await press(menuChoice(container, "Le Petit Jardin actions", "Move…"));
     await press(row(container, "Launch brief"));
     await waitFor(
-      () => container.textContent?.includes("That group was removed on another device.") === true,
+      () => container.textContent?.includes("Couldn't confirm this change.") === true,
       "the failure was shown",
     );
     expect(rowTitles(container)).toEqual([...launchPrep, ...outside]);
