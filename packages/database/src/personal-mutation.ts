@@ -2,6 +2,7 @@ import type { DatabaseSchema } from "./schema.js";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type {
   DeploymentId,
+  EnvironmentId,
   ExecutionNodeId,
   RequestId,
   RunAttemptId,
@@ -89,6 +90,7 @@ export type PersonalCommitReaction =
     }
   | {
       readonly type: "runChanged";
+      readonly environmentId: EnvironmentId;
       readonly runId: RunId;
       readonly threadId: ThreadId;
       readonly transition:

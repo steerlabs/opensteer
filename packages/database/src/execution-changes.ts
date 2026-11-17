@@ -88,7 +88,7 @@ export async function recordExecutionRunChange(
   mutation: PersonalMutation,
   input: Omit<
     Extract<import("./personal-mutation.js").PersonalCommitReaction, { type: "runChanged" }>,
-    "type"
+    "type" | "environmentId"
   >,
 ) {
   await tx
@@ -98,7 +98,7 @@ export async function recordExecutionRunChange(
     .execute();
   const run = await tx
     .selectFrom("runs")
-    .select(["status", "createdAt", "maintenance"])
+    .select(["status", "createdAt", "maintenance", "environmentId"])
     .where("id", "=", input.runId)
     .executeTakeFirstOrThrow();
   if (!run.maintenance && input.transition !== "usage-limit") {
@@ -120,7 +120,7 @@ export async function recordExecutionRunChange(
     });
   }
   await publishExecutionQueue(tx, mutation, input.threadId);
-  mutation.react({ type: "runChanged", ...input });
+  mutation.react({ type: "runChanged", environmentId: run.environmentId, ...input });
 }
 
 export async function publishExecutionThread(
