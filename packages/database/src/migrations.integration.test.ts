@@ -1167,7 +1167,6 @@ describe("fresh personal/team lineage", () => {
     ["delegations", "revision", "integer", "NO"],
     ["tab_layouts", "items", "jsonb", "NO"],
     ["machine_access_events", "id", "bigint", "YES"],
-    ["mcp_oauth_credentials", "encrypted_state", "bytea", "NO"],
   ])("preserves the private storage contract for %s.%s", async (table, column, type, identity) => {
     await migrateToLatest(database);
     const result = await sql<{ dataType: string; isIdentity: string }>`

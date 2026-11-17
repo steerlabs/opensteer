@@ -133,8 +133,6 @@ delete from integration_tool_definitions where connection_id in (select id from 
   or server_id in (select id from service_servers)
   or server_id in (select id from integration_servers
     where installation_id in (select id from service_installations));
-update integration_auth_attempts set result_connection_id = null
-  where result_connection_id in (select id from service_connections);
 delete from integration_connections where id in (select id from service_connections);
 delete from credentials where id in (select credential_id from service_connections);
 delete from integration_server_secrets where server_id in (select id from service_servers)
