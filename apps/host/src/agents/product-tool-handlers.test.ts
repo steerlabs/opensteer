@@ -318,7 +318,18 @@ describe("Product tool handlers", () => {
           },
           { operationKey: "tab-sign-in" },
         ),
-      ).resolves.toEqual(result);
+      ).resolves.toEqual({
+        requestId: null,
+        kind: type === "saved_login_request" ? "browser.password-sign-in" : "browser.sign-in",
+        next:
+          type === "saved_login_request"
+            ? "No saved login was released. Continue without it and report the reason."
+            : "No cookies were copied. Continue without them and report the reason.",
+        status: "fulfilled",
+        site: result.site,
+        reason: result.reason,
+        [type === "saved_login_request" ? "loginStatus" : "cookiesStatus"]: "unavailable",
+      });
       expect(
         type === "saved_login_request" ? useSavedLogin : agentCopyChromeCookies,
       ).toHaveBeenCalledWith(expect.objectContaining({ tabId, site: result.site }));
@@ -1241,6 +1252,7 @@ function makeService(options: {
       };
     },
     requests: {
+      findByCallIdentity: vi.fn(async () => null),
       visiblePage:
         options.requests?.visiblePage ??
         vi.fn(async () => {

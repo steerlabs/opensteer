@@ -1,3 +1,9 @@
+import {
+  savedLoginAgentResult,
+  cardAgentResult,
+  chromeCookiesAgentResult,
+} from "../browser/agent-request-results.js";
+import { requestResult } from "./request-result.js";
 import { OpensteerError, RequestIdSchema, type Request } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import { PasswordSignInRequestResponseSchema } from "@opensteer/protocol";
@@ -140,25 +146,41 @@ function outcomeRecord(
       : undefined;
   if (tool === "saved_login_request" && request.payload.kind === "browser.password-sign-in") {
     if (response?.outcome === "authorized" && loginRef)
-      return { status: "ready", site: request.payload.site, loginRef, account: response.account };
-    return savedLoginRequestResult(request);
+      return savedLoginAgentResult(
+        { status: "ready", site: request.payload.site, loginRef, account: response.account },
+        request,
+      );
+    return savedLoginAgentResult(savedLoginRequestResult(request), request);
   }
   if (tool === "chrome_cookies_request" && request.payload.kind === "browser.sign-in")
-    return chromeCookiesResult(request, false);
+    return chromeCookiesAgentResult(chromeCookiesResult(request, false), request);
   if (tool === "card_request" && request.payload.kind === "browser.password-sign-in") {
     const site = request.payload.site;
     if (response?.outcome === "authorized" && loginRef && outcome.publicCard)
-      return { status: "ready", site, cardRef: loginRef, ...outcome.publicCard };
+      return cardAgentResult(
+        { status: "ready", site, cardRef: loginRef, ...outcome.publicCard },
+        request,
+      );
     if (
       response?.outcome === "expired" ||
       response?.outcome === "interrupted" ||
       response?.outcome === "session-closed"
     )
-      return { status: "unavailable", site, reason: response.outcome };
-    return { status: request.status === "declined" ? "declined" : "resolved", site };
+      return cardAgentResult({ status: "unavailable", site, reason: response.outcome }, request);
+    return cardAgentResult(
+      {
+        status: request.status === "declined" ? "declined" : "unavailable",
+        site,
+        reason: "interrupted",
+      },
+      request,
+    );
   }
-  const record: Record<string, unknown> = { ...pending, status: request.status };
-  delete record.guidance;
-  delete record.nextAction;
-  return record;
+  return {
+    ...pending,
+    ...requestResult(
+      request,
+      `The request was ${request.status}. Continue using the delivered outcome.`,
+    ),
+  };
 }

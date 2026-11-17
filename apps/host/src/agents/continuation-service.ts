@@ -1,3 +1,4 @@
+import { integrationBlocked } from "../integrations/integration-blocked.js";
 import { createHash } from "node:crypto";
 import { BrowserRequestOutcomeSchema, OpensteerError, type Request } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
@@ -475,11 +476,9 @@ export async function continuationMessage(
         case "ready":
           return `${receipt} Its ${access} access is active.`;
         case "needs-grant":
-          return `${receipt} Your Opensteer still holds no access grant${detailClause(state.detail)}.`;
         case "needs-account":
-          return `${receipt} The fulfilled target is not usable${detailClause(state.detail)}.`;
         case "blocked":
-          return `${receipt} The integration is not usable: ${state.detail ?? "the integration is unavailable"}.`;
+          return `${receipt} ${state.detail} ${state.remedy}`;
       }
     }
     case "integration.install": {
@@ -503,11 +502,9 @@ export async function continuationMessage(
         case "ready":
           return `Request ${request.id} was fulfilled. ${entry.installation.title} is installed and ready. Call integration_search now to pick up its tools and continue the task.`;
         case "needs-grant":
-          return `Request ${request.id} was fulfilled. ${entry.installation.title} is installed and its account connection works, but your Opensteer holds no access grant yet${detailClause(state.detail)}. Call integration_search now, then call integration_request with this integration and the access class the task needs.`;
         case "needs-account":
-          return `Request ${request.id} was fulfilled. ${entry.installation.title} is installed but has no connected account${detailClause(state.detail)}. Call integration_request now for the account connection, then continue the task.`;
         case "blocked":
-          return `Request ${request.id} was fulfilled, but ${entry.installation.title} installed in an unusable state: ${state.detail ?? "the integration is unavailable"}. ${state.remedy}`;
+          return `Request ${request.id} was fulfilled. ${state.detail} ${state.remedy}`;
       }
     }
     case "computer.app.access": {
@@ -616,16 +613,11 @@ function installedFromManifest(
     ProposalProvenanceSchema.safeParse(provenance).data?.artifactDigest === manifest.proposal.digest
   );
 }
-type IntegrationState =
-  | {
-      readonly detail: string | null;
-      readonly disposition: "needs-account" | "needs-grant" | "ready";
-    }
-  | {
-      readonly detail: string | null;
-      readonly disposition: "blocked";
-      readonly remedy: string;
-    };
+type IntegrationState = {
+  readonly detail: string | null;
+  readonly disposition: "needs-account" | "needs-grant" | "ready" | "blocked";
+  readonly remedy: string;
+};
 
 /**
  * Access continuations scope inventory to the fulfilled connection and access,
@@ -651,60 +643,33 @@ function integrationState(
         !server || (server.connectionRequirement.kind === "none") === (target.connectionId === null)
       );
     })
-    .map(readinessState);
+    .map((readiness) => readinessState(readiness, entry.installation.name));
   return (
     states.find(({ disposition }) => disposition === "ready") ??
     states.find(({ disposition }) => disposition === "needs-grant") ??
     states.find(({ disposition }) => disposition === "needs-account") ??
     states[0] ?? {
-      detail: target
-        ? "the fulfilled target has no matching server"
-        : "the installation exposes no servers",
+      detail: `${entry.installation.name} ${target ? "has no matching server for the fulfilled target" : "exposes no servers"}.`,
       disposition: "blocked",
       remedy:
         "An administrator must repair the installation. Continue without it and tell the user.",
     }
   );
 }
-function readinessState(readiness: IntegrationReadiness): IntegrationState {
-  const detail = readiness.detail ? readiness.detail.slice(0, 240) : null;
-  switch (readiness.code) {
-    // A ready server has nothing left to explain, so any detail it still
-    // carries is stale and would only mislead.
-    case "READY":
-      return {
-        detail: null,
-        disposition: "ready",
-      };
-    case "ACCESS_GRANT_REQUIRED":
-      return {
-        detail,
-        disposition: "needs-grant",
-      };
-    case "USER_AUTHORIZATION_REQUIRED":
-    case "REAUTHORIZATION_REQUIRED":
-      return {
-        detail,
-        disposition: "needs-account",
-      };
-    case "ADMIN_CONFIGURATION_REQUIRED":
-      return {
-        detail,
-        disposition: "blocked",
-        remedy:
-          "Request access through integration_request; the connection UI offers supported personal-app setup and identifies any administrator prerequisite.",
-      };
-    case "INTEGRATION_UNAVAILABLE":
-      return {
-        detail,
-        disposition: "blocked",
-        remedy:
-          "Requesting it again will not help. Continue without it and tell the user what that detail says.",
-      };
-  }
-}
-function detailClause(detail: string | null): string {
-  return detail ? ` (${detail})` : "";
+function readinessState(readiness: IntegrationReadiness, integration: string): IntegrationState {
+  const blocked = integrationBlocked(readiness, integration);
+  return blocked
+    ? {
+        disposition:
+          blocked.code === "access_required"
+            ? "needs-grant"
+            : blocked.code === "sign_in_required" || blocked.code === "reauthorization_required"
+              ? "needs-account"
+              : "blocked",
+        detail: blocked.message,
+        remedy: blocked.next,
+      }
+    : { disposition: "ready", detail: null, remedy: "" };
 }
 function isPermanentContinuationFailure(error: unknown): boolean {
   return error instanceof OpensteerError && !error.retryable;

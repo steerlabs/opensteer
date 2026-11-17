@@ -117,7 +117,8 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         await evidence.write("sessionless-result.json", result);
         loginRef = z
           .object({
-            status: z.literal("ready"),
+            status: z.literal("fulfilled"),
+            loginStatus: z.literal("ready"),
             loginRef: z.string(),
             account: z.literal(passwordFixture.account),
           })
@@ -159,7 +160,11 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           arguments: { tabId, site: passwordFixture.site, reason: "Continue in browser" },
         });
         expect(result.structuredContent, JSON.stringify(result.structuredContent)).toEqual({
-          status: "ready",
+          requestId: null,
+          kind: "browser.password-sign-in",
+          next: "Use loginRef to sign in and continue the task.",
+          status: "fulfilled",
+          loginStatus: "ready",
           site: passwordFixture.site,
           loginRef,
           account: passwordFixture.account,
@@ -266,7 +271,8 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       );
       const approved = await cardResult;
       expect(approved.structuredContent).toMatchObject({
-        status: "ready",
+        status: "fulfilled",
+        cardStatus: "ready",
         brand: "Visa",
         lastFour: "4242",
       });
@@ -276,7 +282,8 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       });
       const cardReady = z
         .object({
-          status: z.literal("ready"),
+          status: z.literal("fulfilled"),
+          cardStatus: z.literal("ready"),
           cardRef: z.string(),
           brand: z.literal("Visa"),
           lastFour: z.literal("4242"),
@@ -344,7 +351,11 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           name: "saved_login_request",
           arguments: { site: passwordFixture.site, reason: "Return to the phone app" },
         });
-        expect(result.structuredContent).toMatchObject({ status: "ready", loginRef });
+        expect(result.structuredContent).toMatchObject({
+          status: "fulfilled",
+          loginStatus: "ready",
+          loginRef,
+        });
         expect(
           authority.commands.filter((c) => c.type === "login.authorize" && "loginRef" in c),
         ).toHaveLength(1);
@@ -358,7 +369,11 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           arguments: { site: passwordFixture.site, reason: "Reauthorize" },
         });
         const ready = z
-          .object({ status: z.literal("ready"), loginRef: z.string() })
+          .object({
+            status: z.literal("fulfilled"),
+            loginStatus: z.literal("ready"),
+            loginRef: z.string(),
+          })
           .parse(next.structuredContent);
         expect(ready.loginRef).not.toBe(loginRef);
       });
