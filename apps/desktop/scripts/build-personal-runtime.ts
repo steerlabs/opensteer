@@ -211,7 +211,8 @@ async function main(): Promise<void> {
       )),
     );
     artifacts.push(...(await stageSharpRuntime(staging, targetOs, targetArch)));
-    artifacts.push(...(await stagePluginRuntime(staging, targetOs, targetArch)));
+    const pluginArtifacts = await stagePluginRuntime(staging, targetOs, targetArch, postgresSource);
+    artifacts.push(...pluginArtifacts);
     await run(
       process.platform === "win32" ? "pnpm.cmd" : "pnpm",
       [
@@ -356,6 +357,15 @@ async function main(): Promise<void> {
         signMachOArtifacts(staging, artifacts, personalRuntimeSigningIdentity()),
       );
     }
+
+    const workerd = pluginArtifacts.find((artifact) => artifact.mode === "executable");
+    if (workerd)
+      await capture(
+        path.join(staging, ...workerd.path.split("/")),
+        ["--version"],
+        repositoryRoot,
+        5_000,
+      );
 
     for (const { entry, program } of stagedHarnesses) {
       const staged = path.join(staging, ...program.split("/"));
@@ -662,10 +672,47 @@ export async function stagePluginRuntime(
   staging: string,
   targetOs: TargetOperatingSystem,
   targetArch: TargetArchitecture,
+  nativeLibrariesSource?: string,
 ): Promise<readonly StagedArtifact[]> {
-  return (
+  const files = (
     await stagePluginEngineRuntime(path.join(staging, layout.serviceModules), targetOs, targetArch)
   ).map((file) => ({ ...file, path: `${layout.serviceModules}/${file.path}` }));
+  const binary = files.find((file) => file.mode === "executable");
+  if (targetOs === "win32" && binary) {
+    if (!nativeLibrariesSource)
+      throw new Error("Windows workerd needs the reviewed PostgreSQL runtime libraries");
+    files.push(
+      ...(await stageWorkerdWindowsLibraries(
+        nativeLibrariesSource,
+        staging,
+        path.posix.dirname(binary.path),
+      )),
+    );
+  }
+  return files;
+}
+
+export async function stageWorkerdWindowsLibraries(
+  source: string,
+  staging: string,
+  destination: string,
+): Promise<StagedArtifact[]> {
+  const libraries = new Map<string, string>();
+  for (const directory of ["bin", "lib"]) {
+    const root = path.join(source, directory);
+    for (const entry of await readdir(root, { withFileTypes: true }))
+      if (entry.isFile()) libraries.set(entry.name.toLowerCase(), path.join(root, entry.name));
+  }
+  const artifacts: StagedArtifact[] = [];
+  for (const name of ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"]) {
+    const library = libraries.get(name);
+    if (!library)
+      throw new Error(`Windows workerd requires ${name} in the reviewed PostgreSQL distribution`);
+    const relative = `${destination}/${name}`;
+    await stageFile(library, path.join(staging, ...relative.split("/")));
+    artifacts.push({ path: relative, mode: "code" });
+  }
+  return artifacts;
 }
 
 async function installedPackageDirectory(entry: string, name: string): Promise<string> {

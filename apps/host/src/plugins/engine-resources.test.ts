@@ -9,8 +9,10 @@ it.each(["ts", "js", "mjs"])("resolves the child beside a %s Host module", (exte
 });
 
 it("reports absent native targets and missing runtime files without launching the engine", async () => {
-  expect(pluginEngineUnavailableReason("win32", "arm64")).toContain("no binary for win32/arm64");
-  expect(pluginEngineUnavailableReason("linux", "x64", () => "/missing/workerd")).toContain(
+  expect(await pluginEngineUnavailableReason("win32", "arm64")).toContain(
+    "no binary for win32/arm64",
+  );
+  expect(await pluginEngineUnavailableReason("linux", "x64", () => "/missing/workerd")).toContain(
     "missing",
   );
   const actual = process.arch;
@@ -38,4 +40,10 @@ it("reports absent native targets and missing runtime files without launching th
     vi.restoreAllMocks();
   }
   expect(process.arch).toBe(actual);
+});
+
+it("reports an executable that the OS cannot load as unavailable", async () => {
+  expect(await pluginEngineUnavailableReason("linux", "x64", () => "/")).toContain(
+    "workerd cannot run",
+  );
 });

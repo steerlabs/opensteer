@@ -580,8 +580,10 @@ function verifyPersonalRuntime(resources, operatingSystem) {
       ...manifest.files
         .filter(
           ({ path, mode }) =>
-            mode === "executable" &&
-            /node_modules\/@cloudflare\/workerd-[^/]+\/bin\/workerd(?:\.exe)?$/u.test(path),
+            (mode === "executable" || mode === "code") &&
+            /node_modules\/@cloudflare\/workerd-[^/]+\/bin\/(?:workerd(?:\.exe)?|[^/]+\.dll)$/u.test(
+              path,
+            ),
         )
         .map(({ path }) => path),
       ...manifest.files

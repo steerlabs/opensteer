@@ -309,9 +309,11 @@ export async function readPersonalRuntimeRelease(
   const pluginPrograms = Object.fromEntries(
     manifest.files
       .filter((file) =>
-        /node_modules\/@cloudflare\/workerd-[^/]+\/bin\/workerd(?:\.exe)?$/u.test(file.path),
+        /node_modules\/@cloudflare\/workerd-[^/]+\/bin\/(?:workerd(?:\.exe)?|[^/]+\.dll)$/u.test(
+          file.path,
+        ),
       )
-      .map((file) => ["workerd", file.path]),
+      .map((file) => [file.path, file.path]),
   );
   const programPaths = new Set([
     ...Object.values(manifest.entrypoints),

@@ -13,7 +13,7 @@ export const pluginEngineBuildPlugin: Plugin = {
       external: true,
     }));
     build.onResolve({ filter: /^#transpile$/ }, (args) =>
-      args.importer.includes("@opencode-ai/codemode")
+      args.importer.replaceAll("\\", "/").includes("@opencode-ai/codemode")
         ? {
             path: fileURLToPath(
               new URL("../../apps/host/src/plugins/codemode-transpile.ts", import.meta.url),
@@ -29,7 +29,10 @@ export const pluginEngineBuildPlugin: Plugin = {
       }),
     );
     build.onLoad(
-      { filter: /cloudflare-runtime\/dist\/core\/node\/internal\/internal-worker\.mjs$/ },
+      {
+        filter:
+          /cloudflare-runtime[\\/]dist[\\/]core[\\/]node[\\/]internal[\\/]internal-worker\.mjs$/,
+      },
       async (args) => {
         // Refuse dependency drift instead of silently losing the runtime's worker resources.
         const original = await readFile(args.path, "utf8");

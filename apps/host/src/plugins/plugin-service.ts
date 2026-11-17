@@ -218,7 +218,8 @@ export class PluginService {
       });
       return;
     }
-    const unavailable = pluginEngineUnavailableReason();
+    const unavailable = await pluginEngineUnavailableReason();
+    if (this.#closed) return;
     if (unavailable) {
       this.#set({ status: "unavailable", generation: 0, reason: unavailable });
       return;

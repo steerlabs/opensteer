@@ -433,13 +433,6 @@ function verifySignedWindowsDesktop(context) {
   const personalExecutables = [
     ...new Set([
       ...Object.values(personalManifest.entrypoints),
-      ...personalManifest.files
-        .filter(
-          ({ path, mode }) =>
-            mode === "executable" &&
-            /node_modules\/@cloudflare\/workerd-[^/]+\/bin\/workerd$/u.test(path),
-        )
-        .map(({ path }) => path),
       ...Object.values(personalManifest.harnesses),
     ]),
   ].map((program) => join(personalRoot, ...program.split("/")));
