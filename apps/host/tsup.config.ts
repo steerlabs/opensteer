@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "tsup";
 import { nodeApp } from "../../scripts/tsup-node-app.js";
 import { hostProcessEntries } from "./src/process-entries.js";
@@ -29,6 +30,16 @@ export default defineConfig(
       {
         name: "plugin-runtime-imports",
         setup(build) {
+          // Codemode's compiler loads on first use; see codemode-transpile.ts.
+          build.onResolve({ filter: /^#transpile$/ }, (args) =>
+            args.importer.includes("@opencode-ai/codemode")
+              ? {
+                  path: fileURLToPath(
+                    new URL("./src/plugins/codemode-transpile.ts", import.meta.url),
+                  ),
+                }
+              : undefined,
+          );
           build.onResolve({ filter: /^typescript$/ }, () => ({
             path: "typescript-5",
             external: true,

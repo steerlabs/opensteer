@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { stopProcessGroup } from "@opensteer/shared/processGroup";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { engineDemand } from "./engine-demand.js";
 import {
   EngineMessageSchema,
   HostMessageSchema,
@@ -43,6 +44,8 @@ export interface PluginServiceOptions {
   readonly npmRegistry?: string;
   readonly selfOrigin?: { origin: string; address: string };
   readonly limits?: Partial<EngineInit["limits"]>;
+  /** Quiet time after which an engine with nothing to do is stopped. Default five minutes. */
+  readonly idleMs?: number;
   readonly authorize?: (
     input: PluginAuthorization,
     signal: AbortSignal,
@@ -61,12 +64,23 @@ export interface PluginServiceOptions {
   readonly onState?: (state: PluginServiceState) => void;
 }
 export type PluginServiceState = {
-  status: "stopped" | "starting" | "ready" | "restarting" | "unavailable";
+  /** `idle`: not running; the next request or due background work starts it. */
+  status: "stopped" | "idle" | "starting" | "ready" | "restarting" | "unavailable";
   generation: number;
   pid?: number;
   startupMs?: number;
   reason?: string;
 };
+const idleCheckMs = 60_000;
+/** Saved background work due sooner than this keeps the engine running. */
+const keepForMs = 120_000;
+/** A stopped engine starts this long before its next saved background work is due. */
+const wakeLeadMs = 15_000;
+const liveExecution = new Set(["running", "waiting", "answered"]);
+// Agent programs run in the engine process. An explicit heap bound stops a runaway one at 1 GiB
+// instead of V8's machine-sized default; the supervisor then restarts the lost process.
+const engineFlags = ["--max-old-space-size=1024", "--max-semi-space-size=16"];
+
 interface Pending {
   resolve(value: unknown): void;
   reject(error: Error): void;
@@ -99,8 +113,18 @@ export class PluginService {
   #failures = 0;
   #healthySince: number | undefined;
   #cleaning: Promise<void> = Promise.resolve();
+  #changed = Promise.withResolvers<void>();
+  #idleCheck: ReturnType<typeof setInterval> | undefined;
+  #wakeTimer: ReturnType<typeof setTimeout> | undefined;
+  #idleStop: { child: ChildProcess; dueInMs: number | null } | undefined;
+  #stopping: Promise<void> | undefined;
+  #streams = 0;
+  #activity = 0;
+  #lastActivity = Date.now();
+  readonly #idleMs: number;
   constructor(options: PluginServiceOptions) {
     this.#options = options;
+    this.#idleMs = options.idleMs ?? 300_000;
     const source = import.meta.url.endsWith(".ts");
     this.#config = {
       databaseUrl: options.databaseUrl,
@@ -137,7 +161,18 @@ export class PluginService {
   #set(state: PluginServiceState) {
     this.#state = state;
     this.#options.onState?.(this.state());
+    const changed = this.#changed;
+    this.#changed = Promise.withResolvers<void>();
+    changed.resolve();
   }
+  #touch() {
+    this.#activity += 1;
+    this.#lastActivity = Date.now();
+  }
+  /**
+   * Begin supervising. The engine process runs only while there is work: a request starts it,
+   * saved background work starts it when due, and it stops after `idleMs` with nothing to do.
+   */
   async start(): Promise<void> {
     if (this.#closed) throw new PluginServiceError("unavailable", "Plugin service is closed");
     if (this.#options.deployment === "team") {
@@ -148,16 +183,126 @@ export class PluginService {
       });
       return;
     }
-    if (this.#state.status === "ready") return;
-    if (this.#starting) return this.#starting;
-    this.#starting = this.#launch().finally(() => {
+    this.#idleCheck ??= setInterval(() => {
+      if (this.#state.status === "ready") void this.stopIfIdle().catch(() => {});
+    }, idleCheckMs).unref();
+    await this.#wake();
+  }
+  #launchOnce(): Promise<void> {
+    if (this.#state.status === "ready" && this.#child) return Promise.resolve();
+    this.#starting ??= this.#launch().finally(() => {
       this.#starting = undefined;
     });
     return this.#starting;
   }
+  async #wake() {
+    const stopped = () =>
+      !this.#closed &&
+      !this.#starting &&
+      (this.#state.status === "stopped" || this.#state.status === "idle");
+    if (!stopped()) return;
+    // Unreadable engine tables start the engine, which owns and migrates them.
+    const demand = await engineDemand(this.#options.databaseUrl).catch(() => ({
+      busy: true,
+      dueInMs: null,
+    }));
+    if (!stopped()) return;
+    if (demand.busy || (demand.dueInMs !== null && demand.dueInMs < keepForMs))
+      return this.#launchOnce();
+    if (this.#state.status === "stopped")
+      this.#set({ status: "idle", generation: this.#state.generation });
+    this.#armWake(demand.dueInMs);
+  }
+  #armWake(dueInMs: number | null) {
+    if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
+    this.#wakeTimer =
+      dueInMs === null
+        ? undefined
+        : setTimeout(
+            () => void this.#wake().catch(() => {}),
+            Math.min(Math.max(dueInMs - wakeLeadMs, 0), 3_600_000),
+          ).unref();
+  }
+  #quiet() {
+    if (this.#pending.size > 0 || this.#callbacks.size > 0 || this.#streams > 0) return false;
+    for (const execution of this.#executions.values())
+      if (liveExecution.has(execution.state)) return false;
+    return Date.now() - this.#lastActivity >= this.#idleMs;
+  }
+  /**
+   * Stop the engine process when nothing needs it: no request, callback or page stream in flight,
+   * no execution running or waiting on the person (paused programs live only in the process), no
+   * open workflow or claimed scheduled run, and no saved background work due within two minutes.
+   * Resolves true when the engine is not running afterwards.
+   */
+  async stopIfIdle(): Promise<boolean> {
+    const child = this.#child;
+    if (this.#state.status === "idle" || this.#state.status === "stopped") return true;
+    if (!child || this.#state.status !== "ready" || this.#stopping || !this.#quiet()) return false;
+    const activity = this.#activity;
+    const demand = await engineDemand(this.#options.databaseUrl).catch(() => undefined);
+    if (!demand || demand.busy || (demand.dueInMs !== null && demand.dueInMs < keepForMs))
+      return false;
+    if (
+      activity !== this.#activity ||
+      child !== this.#child ||
+      this.#stopping ||
+      this.#closed ||
+      !this.#quiet()
+    )
+      return false;
+    this.#idleStop = { child, dueInMs: demand.dueInMs };
+    const stopping = this.#stopChild(child)
+      .then(() => this.#cleaning)
+      .finally(() => {
+        this.#stopping = undefined;
+      });
+    this.#stopping = stopping;
+    await stopping;
+    return true;
+  }
+  async #stopChild(child: ChildProcess) {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    this.#send(child, { type: "stop" });
+    try {
+      await withTimeout(exited, 10_000, {
+        timeoutError: () => new Error("Plugin engine did not stop gracefully"),
+      });
+    } catch {
+      if (child.pid) await this.#cleanupTree(child.pid);
+      await exited;
+    }
+  }
+  /** The ready engine for a request, starting it first when it is idle. */
+  async #ready(signal?: AbortSignal): Promise<ChildProcess> {
+    while (true) {
+      signal?.throwIfAborted();
+      if (this.#stopping) {
+        await this.#stopping;
+        continue;
+      }
+      const child = this.#child;
+      if (this.#state.status === "ready" && child) return child;
+      if (this.#closed) throw new PluginServiceError("unavailable", "Plugin service is closed");
+      if (this.#options.deployment === "team" || this.#state.status === "unavailable")
+        throw new PluginServiceError(
+          "unavailable",
+          this.#state.reason ?? "Plugin engine is unavailable",
+        );
+      const waiting =
+        this.#state.status === "restarting" ? this.#changed.promise : this.#launchOnce();
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => reject(signal?.reason);
+        signal?.addEventListener("abort", abort, { once: true });
+        waiting.then(resolve, reject).finally(() => signal?.removeEventListener("abort", abort));
+      });
+    }
+  }
   async #launch() {
     await this.#cleaning;
     if (this.#closed) return;
+    if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
     const generation = this.#state.generation + 1;
     this.#set({ status: "starting", generation });
     const source = import.meta.url.endsWith(".ts");
@@ -165,7 +310,7 @@ export class PluginService {
       this.#options.processEntry ??
       new URL(source ? "./plugin-engine.ts" : "./plugin-engine.js", import.meta.url);
     const child = fork(entry, [], {
-      execArgv: entry.pathname.endsWith(".ts") ? ["--import", "tsx"] : [],
+      execArgv: [...engineFlags, ...(entry.pathname.endsWith(".ts") ? ["--import", "tsx"] : [])],
       detached: process.platform !== "win32",
       stdio: ["ignore", "ignore", "ignore", "ipc"],
       serialization: "json",
@@ -191,6 +336,7 @@ export class PluginService {
       } else if (message.type === "ready") {
         ready = true;
         this.#healthySince = Date.now();
+        this.#touch();
         this.#set({ status: "ready", generation, pid: message.pid, startupMs: message.startupMs });
         resolveReady();
       } else if (message.type === "fatal") {
@@ -245,10 +391,17 @@ export class PluginService {
       const pid = child.pid;
       this.#cleaning = pid === undefined ? Promise.resolve() : this.#cleanupTree(pid);
       if (this.#closed) return;
-      this.#failures =
-        ready && this.#healthySince !== undefined && Date.now() - this.#healthySince >= 60_000
-          ? 1
-          : this.#failures + 1;
+      const healthy =
+        ready && this.#healthySince !== undefined && Date.now() - this.#healthySince >= 60_000;
+      if (this.#idleStop?.child === child) {
+        const { dueInMs } = this.#idleStop;
+        this.#idleStop = undefined;
+        if (healthy) this.#failures = 0;
+        this.#set({ status: "idle", generation });
+        this.#armWake(dueInMs);
+        return;
+      }
+      this.#failures = healthy ? 1 : this.#failures + 1;
       if (this.#failures >= 3) {
         this.#set({
           status: "unavailable",
@@ -265,7 +418,7 @@ export class PluginService {
       this.#restart = setTimeout(
         () => {
           this.#restart = undefined;
-          void this.start().catch(() => {});
+          void this.#launchOnce().catch(() => {});
         },
         250 * 2 ** (this.#failures - 1),
       );
@@ -305,6 +458,7 @@ export class PluginService {
   ) {
     const controller = new AbortController();
     this.#callbacks.set(message.id, controller);
+    this.#touch();
     try {
       let result: unknown;
       if (message.operation === "authorize")
@@ -359,6 +513,7 @@ export class PluginService {
       });
     } finally {
       this.#callbacks.delete(message.id);
+      this.#touch();
     }
   }
   async request<K extends PluginOperation>(
@@ -368,12 +523,8 @@ export class PluginService {
     signal?: AbortSignal,
   ): Promise<PluginOutput<K>> {
     signal?.throwIfAborted();
-    const child = this.#child;
-    if (!child || this.#state.status !== "ready")
-      throw new PluginServiceError(
-        "unavailable",
-        this.#state.reason ?? "Plugin engine is not ready",
-      );
+    this.#touch();
+    const child = await this.#ready(signal);
     const id = randomUUID();
     const result = await new Promise<unknown>((resolve, reject) => {
       const abort = () => {
@@ -405,7 +556,7 @@ export class PluginService {
         signal?.removeEventListener("abort", abort);
         reject(error);
       }
-    });
+    }).finally(() => this.#touch());
     return operations[operation].output.parse(result) as PluginOutput<K>;
   }
   async *readStream(id: string, signal?: AbortSignal): AsyncIterable<Uint8Array> {
@@ -419,9 +570,11 @@ export class PluginService {
       this.#pulls.delete(id);
     };
     signal?.addEventListener("abort", abort, { once: true });
+    this.#streams += 1;
     try {
       while (true) {
         signal?.throwIfAborted();
+        this.#touch();
         const chunk = await new Promise<{
           done: boolean;
           chunk?: string | undefined;
@@ -435,6 +588,8 @@ export class PluginService {
         if (chunk.chunk) yield Buffer.from(chunk.chunk, "base64");
       }
     } finally {
+      this.#streams -= 1;
+      this.#touch();
       signal?.removeEventListener("abort", abort);
       this.#send(child, { type: "cancel", id });
       this.#pulls.delete(id);
@@ -483,19 +638,11 @@ export class PluginService {
     if (this.#closed) return;
     this.#closed = true;
     if (this.#restart) clearTimeout(this.#restart);
+    if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
+    if (this.#idleCheck) clearInterval(this.#idleCheck);
     const child = this.#child;
-    if (child) {
-      const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
-      this.#send(child, { type: "stop" });
-      try {
-        await withTimeout(exited, 10_000, {
-          timeoutError: () => new Error("Plugin engine did not stop gracefully"),
-        });
-      } catch {
-        if (child.pid) await this.#cleanupTree(child.pid);
-        await exited;
-      }
-    }
+    if (child) await this.#stopChild(child);
+    await this.#stopping;
     await this.#cleaning;
     this.#config.secret = "0".repeat(64);
     this.#set({ status: "stopped", generation: this.#state.generation });
