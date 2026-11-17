@@ -125,7 +125,7 @@ export function openWorkspaceWebLink(
     lastChoice: lastBrowsingChoice(scope),
   });
   rememberBrowsingChoice(scope, choice);
-  const show = nav.beginPlaceOperation();
+  const show = nav.beginPlaceOperation({ address: url });
   const target = pageOpenTarget(
     replyLinkTarget(snapshot, choice, hereId, url),
     url,
@@ -136,7 +136,7 @@ export function openWorkspaceWebLink(
     // The start page explains a refusal and offers its way through (a computer, a profile);
     // an outcome it cannot know is never repeated, only kept for the person to send again.
     (error: unknown) =>
-      nav.showLauncher({ address: url, open: error instanceof HostClientRequestError }),
+      show.launcher({ address: url, open: error instanceof HostClientRequestError }),
   );
 }
 

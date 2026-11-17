@@ -7,12 +7,12 @@ import {
 } from "@opensteer/client/host";
 import { classifyHref, PageOpenUrlSchema } from "@opensteer/core";
 import { markdownLink } from "@opensteer/shared/markdownLinks";
-import { StackActions, useNavigation } from "@react-navigation/native";
+import { useNavigation } from "@react-navigation/native";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import { useMemo, type ReactNode } from "react";
 import { Alert, Linking, Platform, StyleSheet } from "react-native";
-import { tabRoute } from "../browser/surface-route.js";
+import { openMobileTab } from "../browser/open-tab.js";
 import { systemBrowserLabel } from "../browser/system-browser.js";
 import { useHereDeviceId } from "../computers/here-device.js";
 import { useReferenceNavigation } from "../markdown/reference-context.js";
@@ -55,8 +55,7 @@ export function ConversationLinksProvider(props: {
       });
     };
     /**
-     * A reply link opens as a new tab where the person chose, and shows once
-     * the Host has it, over this conversation; anything it can't open goes to
+     * A reply link shows its opening screen over this conversation; anything it can't open goes to
      * the system's browser instead.
      */
     const openOn = (url: string, place: LinkPlace): void => {
@@ -65,15 +64,15 @@ export function ConversationLinksProvider(props: {
         openOutside(url);
         return;
       }
-      hostClient.openTab(pageOpenTarget(place.target, url, hostClient.getSnapshot().machines)).then(
-        (tab) => {
-          if (navigation.isFocused())
-            navigation.dispatch(
-              StackActions.push("WorkspaceBrowser", tabRoute(deploymentId, tab.tabId, threadId)),
-            );
-        },
-        () => openOutside(url),
-      );
+      void openMobileTab({
+        navigation,
+        hostClient,
+        deploymentId,
+        threadId,
+        target: pageOpenTarget(place.target, url, hostClient.getSnapshot().machines),
+        address: url,
+        failed: () => openOutside(url),
+      });
     };
     return {
       Hold: ReadingHold,

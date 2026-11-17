@@ -25,7 +25,10 @@ when its last tab or session ends, and deleted at the next startup. Guest browsi
 Incomplete catalog snapshots never imply closure. Only committed explicit removal closes a tab;
 browser teardown and late updates cannot recreate or delete durable records.
 
-The Host's open budget sits inside the client's deadline, including first paint. An uncertain open
+The Host's open budget sits inside the client's deadline, including first paint. Desktop clients
+attach as soon as the Host serves, before its own Runner connects, so an open or restore bound for the
+hosting computer, or for a computer still reconciling its profile inventory, waits for that browser's
+admission within that budget instead of refusing; any other absent computer still refuses at once. An uncertain open
 retries with its original key and replays the recorded outcome, so it never starts a second browser. Tickets, native creation and navigation are never blindly replayed. Tab
 groups grant no access, and agent reads reveal nothing of a group they only partly reach. Links
 opened with Opensteer as the macOS default browser start no agent.
