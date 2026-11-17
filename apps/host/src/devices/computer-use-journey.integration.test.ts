@@ -2322,6 +2322,13 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     // 2. Search with computerId: installed apps, each with its own next step.
     const installed = json(await a.call("computer_apps", { computerId: world.macId }));
     expect(installed).toMatchObject({ total: 4, nextCursor: null });
+    expect(JSON.stringify(installed)).not.toContain("teamId");
+    expect(JSON.stringify(installed)).not.toContain("iconPng");
+    const page = json(
+      await a.call("computer_apps", { computerId: world.macId, limit: 2, cursor: "1" }),
+    );
+    expect(page).toMatchObject({ total: 4, nextCursor: "3", apps: expect.any(Array) });
+    expect(page.apps).toHaveLength(2);
     expect(installed.apps).toContainEqual({
       name: "Notes",
       bundleId: "com.apple.Notes",

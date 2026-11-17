@@ -1,7 +1,7 @@
-import { createDeviceRpcHandlers } from "./device-routes.js";
+import { createDeviceRpcHandlers, handleDeviceCommand } from "./device-routes.js";
 import { DeviceIdSchema, createId } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { testHostApiContext } from "../server/test-host-api-context.js";
 describe("device routes", () => {
   it("includes screen Device approvals while preserving the existing self connection shape", async () => {
@@ -96,5 +96,54 @@ describe("device routes", () => {
     if (!result.ok) throw new Error("Approval inventory was refused");
     expect(result.data.requests).toEqual([request]);
     expect(result.data.requests[0]).not.toHaveProperty("runnerId");
+  });
+  it("routes computer app changes with the owner's session", async () => {
+    const userId = createId("user");
+    const runnerId = createId("runner");
+    const connection = {
+      id: createIntegrationId("connection"),
+      computer: {
+        deviceId: DeviceIdSchema.parse(runnerId),
+        access: "read",
+        app: null,
+        blockedAt: null,
+        policyRevision: null,
+      },
+    };
+    const setComputerConnection = vi.fn(async () => connection);
+    const options = {
+      devices: {
+        store: {
+          connections: { assertOwner: vi.fn(async () => {}) },
+          getDeviceSelfRunnerId: vi.fn(async () => runnerId),
+        },
+        computerAppApprovals: { setComputerConnection },
+      },
+    } as never;
+    const command = {
+      idempotencyKey: "computer-app-set",
+      input: {
+        kind: "app" as const,
+        app: null,
+        access: "read" as const,
+        definitionId: "apple-messages",
+        runnerId,
+      },
+      type: "integration.computer.setup.set" as const,
+    };
+    const context = testHostApiContext(userId);
+    await expect(handleDeviceCommand(options, command, context)).resolves.toEqual({
+      connection: {
+        ...connection,
+        computer: { runnerId, access: "read", app: null, blockedAt: null, policyRevision: null },
+      },
+      type: command.type,
+    });
+    expect(setComputerConnection).toHaveBeenCalledWith({
+      ...command.input,
+      actorUserId: userId,
+      requestId: "test-request",
+      settlementSessionId: context.session?.id,
+    });
   });
 });
