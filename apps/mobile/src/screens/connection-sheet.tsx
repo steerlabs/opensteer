@@ -34,7 +34,7 @@ export function ConnectionSheetScreen(props: ConnectionSheetScreenProps): ReactN
     sessions.find(({ key }) => key === props.route.params.session) ?? sessions[0] ?? null;
   useShellGate(true);
   useEffect(() => {
-    if (session === null && navigation.canGoBack()) navigation.goBack();
+    if (session === null && navigation.isFocused()) navigation.goBack();
   }, [navigation, session]);
   if (session === null) return null;
   return (
@@ -59,7 +59,7 @@ function SessionDetails(props: {
   const recovered = issue === null;
   // Recovery closes the sheet: there is no "Connected" screen to read.
   useEffect(() => {
-    if (recovered && navigation.canGoBack()) navigation.goBack();
+    if (recovered && navigation.isFocused()) navigation.goBack();
   }, [navigation, recovered]);
 
   const others = useOtherTrouble(props.sessions, session.key, props.onSwitch);
