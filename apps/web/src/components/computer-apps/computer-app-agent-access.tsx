@@ -5,7 +5,7 @@ import type {
 } from "@opensteer/integration-core";
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { act, failureWords } from "../use-action.js";
+import { act, failureWords, runRead } from "../use-action.js";
 import { Icon } from "../icon.js";
 
 type AgentAccessLevel = "off" | IntegrationAccess;
@@ -71,23 +71,28 @@ export function ComputerAppAgentAccess({
         grants: sameScope(previous, scope) ? previous.grants : null,
         loading: true,
       }));
-      try {
-        const { grants } = await act(hostClient, { label: "load agent access" }, async () =>
-          unwrapRpcResult(await hostClient.rpc["integration.grants.list"]({})),
-        );
+      const read = await runRead(hostClient, {
+        resource: "agent access",
+        read: async () => unwrapRpcResult(await hostClient.rpc["integration.grants.list"]({})),
+      });
+      if (read.ok) {
         if (generation !== loadGeneration.current) return;
-        setView({ ...scope, error: options.retainedError ?? null, grants, loading: false });
-      } catch (reason) {
-        if (generation === loadGeneration.current) {
-          setView((previous) => ({
-            ...scope,
-            error: options.retainedError ?? failureWords(reason),
-            grants: !options.clearOnFailure && sameScope(previous, scope) ? previous.grants : null,
-            loading: false,
-          }));
-        }
-        throw reason;
+        setView({
+          ...scope,
+          error: options.retainedError ?? null,
+          grants: read.value.grants,
+          loading: false,
+        });
+        return;
       }
+      if (generation === loadGeneration.current)
+        setView((previous) => ({
+          ...scope,
+          error: options.retainedError ?? read.words,
+          grants: !options.clearOnFailure && sameScope(previous, scope) ? previous.grants : null,
+          loading: false,
+        }));
+      throw new Error("Agent access could not be loaded.");
     },
     [connectionId, hostClient, installationId],
   );

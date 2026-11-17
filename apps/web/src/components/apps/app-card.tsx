@@ -156,7 +156,7 @@ function LiveApp({
             className="btn btn--ghost btn--small"
             onClick={() => {
               const show = workspace.nav.beginPlaceOperation();
-              void act(client, { label: "open this app", done: "opened" }, () =>
+              void act(client, { label: "open", thing: "this app", done: "opened" }, () =>
                 client.openTab({ kind: "app", appId: AppIdSchema.parse(entry.appId) }),
               )
                 .then((tab) => {

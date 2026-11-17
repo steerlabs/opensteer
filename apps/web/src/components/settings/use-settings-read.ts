@@ -1,5 +1,6 @@
 import { presentClientIssue } from "@opensteer/client/feedback";
-import { useEffect, useMemo, useRef } from "react";
+import { useMemo, useRef } from "react";
+import { useDisposedWithView } from "../use-action.js";
 import { createClientRead } from "@opensteer/client/reads";
 import { useClientRead } from "@opensteer/client/react";
 import { useShell } from "../app-shell.js";
@@ -23,7 +24,7 @@ export function useSettingsRead<T>(read: () => Promise<T>, key: string, remember
       }),
     [hostClient, key, remember],
   );
-  useEffect(() => () => resource.dispose(), [resource]);
+  useDisposedWithView(resource);
   const state = useClientRead(resource);
   return {
     ...state,

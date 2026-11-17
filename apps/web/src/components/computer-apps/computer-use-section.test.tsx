@@ -10,6 +10,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ComputerUseBlock, type ComputerUseLocalActions } from "./computer-use-section.js";
+import { localSession } from "../use-action.js";
 
 const mac = "rnr_11111111-1111-4111-8111-111111111111";
 const setupRequestId = "00000000-0000-4000-8000-000000000007";
@@ -97,7 +98,7 @@ describe("ComputerUseBlock", () => {
     });
     await click(button(container, "Set up on this Mac"));
     expect(container.querySelector("[role=alert]")?.textContent).toBe(
-      "The Computer use permissions panel could not load the bundled application.",
+      "Couldn't confirm this change.",
     );
   });
 
@@ -363,8 +364,8 @@ describe("ComputerUseBlock", () => {
     if (!candidate) throw new Error("missing app");
     await click(button(candidate, "Can see"));
     expect(candidate.getAttribute("aria-busy")).toBe("true");
-    await act(async () => review.reject(new Error("Can't verify this app right now.")));
-    expect(candidate.textContent).toContain("Can't verify this app right now.");
+    await act(async () => review.reject(new Error("Couldn't confirm this change.")));
+    expect(candidate.textContent).toContain("Couldn't confirm this change.");
     expect(button(candidate, "Can see")?.disabled).toBe(false);
   });
 
@@ -436,8 +437,10 @@ describe("ComputerUseBlock", () => {
       }),
     );
     expect(button(container, "Decline Preview")?.textContent).toBe("Declining…");
-    await act(async () => answer.reject(new Error("Studio did not answer.")));
-    expect(pendingRow?.querySelector('[role="alert"]')?.textContent).toBe("Studio did not answer.");
+    await act(async () => answer.reject(new Error("Couldn't confirm this change.")));
+    expect(pendingRow?.querySelector('[role="alert"]')?.textContent).toBe(
+      "Couldn't confirm this change.",
+    );
     expect(container.querySelector(".notice--error")).toBeNull();
   });
 
@@ -478,8 +481,10 @@ describe("ComputerUseBlock", () => {
     });
     expect(stop).toHaveBeenCalledTimes(1);
 
-    await act(async () => answer.reject(new Error("Studio is offline.")));
-    expect(sessionRow?.querySelector('[role="alert"]')?.textContent).toBe("Studio is offline.");
+    await act(async () => answer.reject(new Error("Couldn't confirm this change.")));
+    expect(sessionRow?.querySelector('[role="alert"]')?.textContent).toBe(
+      "Couldn't confirm this change.",
+    );
     expect(sessionRow?.querySelector("button")?.textContent).toBe("Stop");
     expect(container.querySelector(".notice--error")).toBeNull();
   });
@@ -500,6 +505,7 @@ async function mount(input: MountInput) {
   const root = createRoot(container);
   mountedRoots.push(root);
   const hostClient = {
+    connection: localSession.connection,
     dispatch: input.dispatch ?? (async (command: { type: string }) => ({ type: command.type })),
     // Stop outcomes are kept per signed-in person on one deployment.
     getSnapshot: () => ({

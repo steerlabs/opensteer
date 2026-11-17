@@ -90,7 +90,7 @@ export function useAction<I = void, O = unknown>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [owner, key],
   );
-  useEffect(() => () => action.dispose(), [action]);
+  useDisposedWithView(action);
   const state = useClientAction(action);
   const notSent = state.outcome?.kind === "not-sent" && state.issue !== null;
   useEffect(() => {
@@ -275,4 +275,27 @@ export function toastError(
     const issue = clientIssue(reason, { operation: "action", label });
     if (issue) toast.error(presentClientIssue(issue).title);
   };
+}
+
+const pendingDisposals = new WeakMap<object, ReturnType<typeof setTimeout>>();
+
+/**
+ * Disposes a memoized owner when its view really leaves. React's development
+ * double mount runs the cleanup and mounts again at once, so disposal waits a
+ * task and a remount in between keeps the owner alive.
+ */
+export function useDisposedWithView(owner: { dispose(): void }): void {
+  useEffect(() => {
+    clearTimeout(pendingDisposals.get(owner));
+    pendingDisposals.delete(owner);
+    return () => {
+      pendingDisposals.set(
+        owner,
+        setTimeout(() => {
+          pendingDisposals.delete(owner);
+          owner.dispose();
+        }, 0),
+      );
+    };
+  }, [owner]);
 }

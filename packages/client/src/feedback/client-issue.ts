@@ -67,6 +67,7 @@ const rejectionReasons: Readonly<Record<string, string>> = {
   "thread-closed": "This task is closed.",
   "browser-session-closed": "This tab is closed.",
   "resource-exhausted": "Too many messages waiting.",
+  "personal-remote-access-off": "Turn on Use from anywhere first.",
 };
 
 export function clientDisplayName(
