@@ -3,6 +3,7 @@ package phone
 import (
 	"bytes"
 	"context"
+	"path"
 	"sort"
 	"strings"
 
@@ -14,8 +15,9 @@ import (
 )
 
 type InstalledApp struct {
-	AppID string `json:"appId"`
-	Label string `json:"label"`
+	executable string
+	AppID      string `json:"appId"`
+	Label      string `json:"label"`
 }
 type InstalledApps struct {
 	Apps   []InstalledApp `json:"apps"`
@@ -61,7 +63,7 @@ func readInstalledApps(ctx context.Context, transport ServiceDialer) ([]Installe
 }
 func browseInstalledApps(conn ios.DeviceConnectionInterface) ([]InstalledApp, error) {
 	codec := ios.NewPlistCodec()
-	request := map[string]interface{}{"Command": "Browse", "ClientOptions": map[string]interface{}{"ShowLaunchProhibitedApps": false, "ReturnAttributes": []interface{}{"CFBundleIdentifier", "CFBundleDisplayName", "CFBundleName", "ApplicationType", "SBAppTags", "LSBackgroundOnly", "LSUIElement", "UIDeviceFamily", "CFBundleSupportedPlatforms", "IsAppClip", "IsLaunchProhibited"}}}
+	request := map[string]interface{}{"Command": "Browse", "ClientOptions": map[string]interface{}{"ShowLaunchProhibitedApps": false, "ReturnAttributes": []interface{}{"Path", "CFBundleExecutable", "CFBundleIdentifier", "CFBundleDisplayName", "CFBundleName", "ApplicationType", "SBAppTags", "LSBackgroundOnly", "LSUIElement", "UIDeviceFamily", "CFBundleSupportedPlatforms", "IsAppClip", "IsLaunchProhibited"}}}
 	encoded, err := codec.Encode(request)
 	if err != nil {
 		return nil, wire.Fail(wire.NativeServiceFailed)
@@ -167,7 +169,13 @@ func eligibleApp(raw map[string]interface{}) (InstalledApp, bool) {
 	if label == "" {
 		return InstalledApp{}, false
 	}
-	return InstalledApp{AppID: id, Label: label}, true
+	app := InstalledApp{AppID: id, Label: label}
+	root, _ := raw["Path"].(string)
+	executable, _ := raw["CFBundleExecutable"].(string)
+	if strings.HasPrefix(root, "/") && executable != "" && !strings.Contains(executable, "/") {
+		app.executable = path.Join(root, executable)
+	}
+	return app, true
 }
 func pageApps(apps []InstalledApp, p *wire.AppsParams) InstalledApps {
 	filter := ""

@@ -3,20 +3,33 @@ package ios
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	plist "howett.net/plist"
 )
 
-// Pair tries to pair with a device. The first time usually
-// fails because the user has to accept a trust pop up on the iOS device.
-// What you have to do to pair is:
-// 1. run the Pair() function
-// 2. accept the trust pop up on the device
-// 3. run the Pair() function a second time
-func Pair(device DeviceEntry) error {
+// PairingAttempt retains the private identity while the same Trust request is pending.
+// The caller owns its lifetime; it must never be logged or persisted outside usbmux.
+type PairingAttempt struct {
+	mu     sync.Mutex
+	record *pendingPairRecord
+}
+type pendingPairRecord struct {
+	publicKey      []byte
+	buid           string
+	wifiMac        string
+	data           FullPairRecordData
+	rootPrivateKey []byte
+	hostPrivateKey []byte
+}
+
+func Pair(device DeviceEntry) error { return (&PairingAttempt{}).Pair(device) }
+func (attempt *PairingAttempt) Pair(device DeviceEntry) error {
+	attempt.mu.Lock()
+	defer attempt.mu.Unlock()
+
 	usbmuxConn, err := NewUsbMuxConnectionContext(device.ContextOrBackground())
 	if err != nil {
 		return err
@@ -40,18 +53,18 @@ func Pair(device DeviceEntry) error {
 	}
 	publicKeyBytes, ok := publicKey.([]byte)
 	if !ok {
-		return fmt.Errorf("could not convert DevicePublicKey response to byte array: %+v", publicKey)
+		return errors.New("invalid device public key response")
 	}
 	wifiMacString, ok := wifiMac.(string)
 	if !ok {
-		return fmt.Errorf("could not convert WiFiAddress response to string: %+v", wifiMac)
-	}
-	rootCert, hostCert, deviceCert, rootPrivateKey, hostPrivateKey, err := createRootCertificate(publicKeyBytes)
-	if err != nil {
-		return fmt.Errorf("Failed creating pair record with error: %v", err)
+		return errors.New("invalid device Wi-Fi address response")
 	}
 
-	pairRecordData := newFullPairRecordData(buid, hostCert, rootCert, deviceCert)
+	pending, err := attempt.identity(publicKeyBytes, buid, wifiMacString)
+	if err != nil {
+		return err
+	}
+	pairRecordData := pending.data
 	request := newLockDownPairRequest(pairRecordData)
 
 	err = lockdown.Send(request)
@@ -77,11 +90,27 @@ func Pair(device DeviceEntry) error {
 		return err
 	}
 	defer usbmuxConn.Close()
-	success, err := usbmuxConn.savePair(device.Properties.SerialNumber, deviceCert, hostPrivateKey, hostCert, rootPrivateKey, rootCert, response.EscrowBag, wifiMacString, pairRecordData.HostID, buid)
+	success, err := usbmuxConn.savePair(device.Properties.SerialNumber, pairRecordData.DeviceCertificate, pending.hostPrivateKey, pairRecordData.HostCertificate, pending.rootPrivateKey, pairRecordData.RootCertificate, response.EscrowBag, pending.wifiMac, pairRecordData.HostID, buid)
 	if !success || err != nil {
 		return errors.New("Saving the PairRecord to usbmux failed")
 	}
+	attempt.record = nil
 	return nil
+}
+
+func (attempt *PairingAttempt) identity(publicKey []byte, buid, wifiMac string) (*pendingPairRecord, error) {
+	if attempt.record != nil {
+		if !bytes.Equal(attempt.record.publicKey, publicKey) || attempt.record.buid != buid || attempt.record.wifiMac != wifiMac {
+			return nil, errors.New("pairing device identity changed")
+		}
+		return attempt.record, nil
+	}
+	rootCert, hostCert, deviceCert, rootKey, hostKey, err := createRootCertificate(publicKey)
+	if err != nil {
+		return nil, errors.New("could not create pairing identity")
+	}
+	attempt.record = &pendingPairRecord{publicKey: bytes.Clone(publicKey), buid: buid, wifiMac: wifiMac, data: newFullPairRecordData(buid, hostCert, rootCert, deviceCert), rootPrivateKey: rootKey, hostPrivateKey: hostKey}
+	return attempt.record, nil
 }
 
 type FullPairRecordData struct {

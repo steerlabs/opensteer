@@ -52,7 +52,7 @@ export class FakeIphoneNative implements IphoneNativeTransport {
   };
   probeReady = true;
   control = false;
-  foreground: { appId: string; label: string } | null = null;
+  foreground: { appId: string; label: string } | null = { appId: "example.app", label: "Example" };
   readonly listeners = new Set<(event: Extract<IphoneNativeMessage, { kind: "event" }>) => void>();
   readonly lost = new Set<() => void>();
   roster: z.infer<typeof iphoneNativeRosterSchema> = {
@@ -172,7 +172,7 @@ export class FakeIphoneNative implements IphoneNativeTransport {
         reason: null,
         capabilities: {
           observe: null,
-          act: control ? null : "input-media-session-required",
+          act: control ? null : "qualification-required",
           launch: null,
           installedApps: null,
           text: "unsupported-text",

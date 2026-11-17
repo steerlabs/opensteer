@@ -68,17 +68,24 @@ transport and each capability probe, never identifiers.
    Developer Mode switch with its restart. Setup must continue itself after each phone action,
    through preparation and first observe, stopping for Wi-Fi and naming. Verify an existing
    Device's Fix setup without detaching, cancellation during preparation, and recovery after a
-   dispatched attach. Nothing asks for a developer team or passcode.
+   dispatched attach. Lose the Host during Add and retry: the same command must complete. Lose
+   the Runner, close setup, reconnect and begin a fresh attempt. A cold chooser identifies
+   trusted phones; an unsupported phone shows its reason and fix. Update Xcode during a blocked
+   preparation and retry with its compatible image. Nothing asks for a developer team or passcode.
 2. **USB control.** Observe, tap, long press, swipe, drag, scroll, Home and other advertised
    buttons, installed apps and launch, on at least two iPhone models and both Mac architectures
    where available. Count accepted but unapplied inputs separately.
-3. **Input gate.** Show input lands only while the media session is active, holds for over ten
-   minutes without a viewer, and leaves no held contact after losing media, Stop, close or
-   quitting desktop mid-gesture. Nothing is replayed.
+3. **Input authority.** Show input works without a video stream or viewer for over ten minutes
+   while control is authorized. Stop, close, disconnect and quitting desktop mid-gesture leave
+   no held contact. Nothing is replayed.
 4. **Geometry.** Portrait and landscape, Display Zoom, larger text, keyboard up, sheets and
    alerts, edges and corners: screenshot pixels land where they point.
 5. **Lock and sleep.** Screen off, locked, unknown lock state, reboot, Mac sleep, Developer Mode
    off and an iOS update. Hidden content never leaks; control returns only after a fresh observe.
+   With AX unavailable, verify Instruments returns an explicit `foregroundRunning` process and
+   its executable resolves to the installed app. Check Home Screen, an ordinary app and Opensteer;
+   unknown foreground stays protected and cannot pass setup. The flag's availability on iOS 27+
+   needs hardware qualification; a running process list alone does not establish foreground.
 6. **Wi‑Fi.** After USB setup, unplug and drive the phone over the same Wi‑Fi for over ten
    minutes. Cover Local Network permission denied then granted, Wi‑Fi off and on, an access point
    change, two phones with the same name and Mac sleep.

@@ -35,7 +35,7 @@ func (m buildManifest) findIdentity(identifiers personalizationIdentifiers) (bui
 			return i, nil
 		}
 	}
-	return buildIdentity{}, fmt.Errorf("findIdentity: failed to find identity for ApBoardId 0x%x and ApChipId 0x%x", identifiers.BoardId, identifiers.ChipID)
+	return buildIdentity{}, ErrImageIncompatible
 }
 
 type manifestEntry struct {

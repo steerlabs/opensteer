@@ -191,10 +191,9 @@ a phone on a Mac, so two supervised Deployments cannot both drive it.
   closing setup releases temporary ownership. A dispatched attach stays durable so reopening
   setup can recover the same operation after a crash. Existing Devices can be set up again
   without removing them.
-- iOS drops HID input without an active screen media session, so control holds one while it is
-  authorized even though no video is published.
-- Opensteer never enters a passcode. A locked, unknown-lock or Opensteer-foreground screen hides its
-  content, and the person unlocks on the phone.
+- Opensteer never enters a passcode. A locked screen, unknown lock or foreground app, or an
+  Opensteer-foreground screen hides its content. Setup applies the same gate as runtime; the
+  person unlocks on the phone.
 - Typing, clearing, element-index targets, double tap, wake, person input and live video stay
   unavailable until qualified on hardware; agents target screenshot pixels.
 

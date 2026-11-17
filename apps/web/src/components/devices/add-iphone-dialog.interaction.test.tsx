@@ -249,3 +249,22 @@ it("opens Local Network settings through the Mac's offered help action", async (
     action: "open-local-network",
   });
 });
+
+it("retries a failed Host attach with the original command and finishes", async () => {
+  const dispatch = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce({
+    type: "iphone.screen.attach",
+    deviceId: mockIphoneScreenDeviceId,
+    generation: 1,
+  });
+  const port = setupPort("name", dispatch);
+  await render(port);
+  await click("Add iPhone");
+  expect(text()).toContain("Couldn’t reach Home");
+  await click("Try again");
+  expect(dispatch).toHaveBeenCalledTimes(2);
+  expect(dispatch.mock.calls[1]![0]).toEqual(dispatch.mock.calls[0]![0]);
+  expect(port.current).toMatchObject({
+    reason: "assignment-pending",
+    deviceId: mockIphoneScreenDeviceId,
+  });
+});

@@ -203,6 +203,9 @@ func MountDeveloperImage(ctx context.Context, session *Session, d ios.DeviceEntr
 		return wire.Fail(wire.PhoneInUse)
 	}
 	if err := m.MountImage(path); err != nil {
+		if imagemounter.IsImageIncompatible(err) {
+			return wire.Fail(wire.ImageIncompatible)
+		}
 		var personalization *imagemounter.PersonalizationError
 		if errors.As(err, &personalization) {
 			if personalization.Network {

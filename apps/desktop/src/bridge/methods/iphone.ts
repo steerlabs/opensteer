@@ -50,16 +50,19 @@ export function iphoneHandlers(context: DesktopBridgeContext): {
   >();
   let beginTail: Promise<unknown> = Promise.resolve();
   const port = context.options.iphone;
-  const cancel = (id: string) => {
+  const forget = (id: string) => {
     const owner = owners.get(id);
     if (!owner) return;
     owners.delete(id);
     owner.unsubscribe?.();
     owner.sender.removeListener("destroyed", owner.cancel);
     owner.sender.removeListener("did-start-navigation", owner.cancel);
+  };
+  const cancel = (id: string) => {
+    forget(id);
     void port?.setup.cancel(id).catch(() => undefined);
   };
-  const owned = (id: string, frame: WebFrameMain | null): Owner => {
+  const owned = (id: string, frame: WebFrameMain | null, live = true): Owner => {
     const owner = owners.get(id);
     if (
       !owner ||
@@ -67,10 +70,15 @@ export function iphoneHandlers(context: DesktopBridgeContext): {
       context.options.access.snapshot().selectedDeploymentId !== owner.deploymentId
     )
       throw new IphoneServiceError("cancelled");
-    const current = port?.service.ownerForSlot(owner.deploymentId);
-    if (!current) throw new IphoneServiceError("runner-not-enrolled");
+    if (live) port?.service.ownerForSlot(owner.deploymentId);
     return owner;
   };
+  const unsubscribeSetup = port?.setup.onCancelled(forget);
+  const unsubscribeSlot = port?.service.onSlotInvalidated((deploymentId) => {
+    for (const [sender, marker] of pending)
+      if (marker.deploymentId === deploymentId) pending.delete(sender);
+    for (const [id, owner] of owners) if (owner.deploymentId === deploymentId) cancel(id);
+  });
   const unsubscribeAccess = context.options.access.subscribe((snapshot) => {
     for (const [id, owner] of owners)
       if (snapshot.selectedDeploymentId !== owner.deploymentId) cancel(id);
@@ -194,7 +202,13 @@ export function iphoneHandlers(context: DesktopBridgeContext): {
               owner.deploymentId === deploymentId &&
               owner.targetKey === targetKey
             )
-              return port!.setup.status(id);
+              try {
+                return await port!.setup.status(id);
+              } catch (error) {
+                if (!(error instanceof IphoneServiceError) || error.code !== "cancelled")
+                  throw error;
+                forget(id);
+              }
           for (const [id, owner] of owners) if (owner.sender === event.sender) cancel(id);
           const frame = event.senderFrame!;
           const onNavigate = () => {
@@ -302,7 +316,8 @@ export function iphoneHandlers(context: DesktopBridgeContext): {
         desktopBridgeChannels.iphoneSetupCancel,
         handler(async (event, envelope) => {
           const input = DesktopIphoneSetupIdSchema.parse(envelope.input);
-          owned(input.setupId, event.senderFrame);
+          if (!owners.has(input.setupId)) return;
+          owned(input.setupId, event.senderFrame, false);
           cancel(input.setupId);
           await port!.setup.cancel(input.setupId);
         }),
@@ -339,6 +354,8 @@ export function iphoneHandlers(context: DesktopBridgeContext): {
     ],
     dispose: () => {
       unsubscribeAccess();
+      unsubscribeSetup?.();
+      unsubscribeSlot?.();
       pending.clear();
       for (const id of Array.from(owners.keys())) cancel(id);
     },

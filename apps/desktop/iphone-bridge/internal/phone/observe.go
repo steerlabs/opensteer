@@ -14,6 +14,7 @@ import (
 type screenBackend interface {
 	State(context.Context) (DeviceState, error)
 	Capture(context.Context, string) ([]byte, error)
+	Foreground(context.Context) (*Foreground, error)
 	AX(context.Context) (AXSnapshot, error)
 	HID(context.Context) (xpcChannel, error)
 	Launch(context.Context, string, func() error) error
@@ -41,6 +42,9 @@ func (n nativeScreen) Capture(ctx context.Context, display string) ([]byte, erro
 		return nil, wire.Fail(wire.NativeLimit)
 	}
 	return data, nil
+}
+func (n nativeScreen) Foreground(ctx context.Context) (*Foreground, error) {
+	return readForeground(ctx, n.dial)
 }
 func (n nativeScreen) AX(ctx context.Context) (AXSnapshot, error) {
 	return collectRemoteAX(ctx, n.dial)
@@ -142,6 +146,7 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 	if err = before.safe(); err != nil {
 		return nil, err
 	}
+	foreground, _ := s.backend.Foreground(ctx)
 	png, err := s.backend.Capture(ctx, before.uniqueID)
 	if err != nil {
 		return nil, err
@@ -162,6 +167,18 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 	if axErr != nil {
 		ax = AXSnapshot{Nodes: []AXNode{}, Coverage: AXCoverage{CoordinateSpace: "unqualified", Status: "unavailable", Reason: "accessibility-unavailable"}}
 	}
+	current, _ := s.backend.Foreground(ctx)
+	if foreground != nil && current != nil && foreground.AppID != current.AppID {
+		return nil, wire.Fail(wire.StaleObservation)
+	}
+	if foreground == nil || current == nil {
+		foreground = nil
+	}
+	if foreground == nil {
+		foreground = ax.Foreground
+	} else if ax.Foreground != nil && ax.Foreground.AppID != foreground.AppID {
+		return nil, wire.Fail(wire.StaleObservation)
+	}
 	after, err := s.backend.State(ctx)
 	if err != nil {
 		return nil, err
@@ -178,7 +195,7 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 		return nil, wire.Fail(wire.NoSession)
 	}
 	s.revision++
-	o := &Observation{ObservationToken: uuid.New().String(), NativeEpoch: p.NativeEpoch, GeometryRevision: s.revision, Geometry: g, State: before, Nodes: ax.Nodes, Coverage: ax.Coverage, Foreground: ax.Foreground, Buttons: []string{"home", "lock", "volumeUp", "volumeDown"}, TextReason: wire.UnsupportedText, ClearReason: wire.UnsupportedClear}
+	o := &Observation{ObservationToken: uuid.New().String(), NativeEpoch: p.NativeEpoch, GeometryRevision: s.revision, Geometry: g, State: before, Nodes: ax.Nodes, Coverage: ax.Coverage, Foreground: foreground, Buttons: []string{"home", "lock", "volumeUp", "volumeDown"}, TextReason: wire.UnsupportedText, ClearReason: wire.UnsupportedClear}
 	if *p.IncludeScreenshot {
 		o.Screenshot = &Screenshot{MimeType: "image/jpeg", Base64: base64.StdEncoding.EncodeToString(jpeg), Width: g.Width, Height: g.Height}
 	}

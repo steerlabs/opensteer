@@ -511,3 +511,66 @@ it("does not release a replacement binding when an old setup's cancellation fini
     await cancelled;
   }
 });
+
+it("qualifies first observe with runtime's content protection", async () => {
+  const f = await fixture();
+  cleanups.push(f.cleanup);
+  const record = await f.service.reserve(ownerA, "candidate", crypto.randomUUID());
+  for (const foreground of [null, { appId: "com.opensteer.opensteer", label: "Opensteer" }]) {
+    f.native.foreground = foreground;
+    await expect(
+      f.service.firstObserve(record, new AbortController().signal),
+    ).rejects.toMatchObject({ code: "screenshot-failed" });
+  }
+  f.native.foreground = { appId: "example.app", label: "Example" };
+  await expect(
+    f.service.firstObserve(record, new AbortController().signal),
+  ).resolves.toBeUndefined();
+});
+
+it("tries the next image only after a known compatibility refusal", async () => {
+  const f = await fixture();
+  cleanups.push(f.cleanup);
+  const record = await f.service.reserve(ownerA, "candidate", crypto.randomUUID());
+  f.native.images = [
+    { handle: "old", build: "old" },
+    { handle: "compatible", build: "new" },
+  ];
+  const signal = new AbortController().signal;
+  await f.service.refreshImages(["/synthetic/images"], signal);
+  const request = f.native.request.bind(f.native);
+  vi.spyOn(f.native, "request").mockImplementation(async (method, params, schema) => {
+    if (
+      method === "setup.prepareDeveloperServices" &&
+      (params as { imageHandle: string }).imageHandle === "old"
+    )
+      throw new IphoneServiceError("developer-image-incompatible");
+    return request(method, params, schema);
+  });
+  await expect(f.service.prepare(record, signal)).resolves.toBeUndefined();
+  f.native.failures.set("setup.prepareDeveloperServices", new IphoneServiceError("phone-in-use"));
+  await expect(f.service.prepare(record, signal)).rejects.toMatchObject({ code: "phone-in-use" });
+});
+
+it("refuses first observations with stale epochs or unusable geometry", async () => {
+  const f = await fixture();
+  cleanups.push(f.cleanup);
+  const record = await f.service.reserve(ownerA, "candidate", crypto.randomUUID());
+  const request = f.native.request.bind(f.native);
+  let stale = true;
+  vi.spyOn(f.native, "request").mockImplementation(async (method, params, schema) => {
+    const result = await request(method, params, schema);
+    if (method !== "phone.observe") return result;
+    const observation = result as { nativeEpoch: number; geometry: { rotation: number | null } };
+    if (stale) observation.nativeEpoch++;
+    else observation.geometry.rotation = null;
+    return result;
+  });
+  await expect(f.service.firstObserve(record, new AbortController().signal)).rejects.toMatchObject({
+    code: "stale-native-epoch",
+  });
+  stale = false;
+  await expect(f.service.firstObserve(record, new AbortController().signal)).rejects.toMatchObject({
+    code: "geometry-unknown",
+  });
+});

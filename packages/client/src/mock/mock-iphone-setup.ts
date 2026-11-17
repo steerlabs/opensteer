@@ -3,8 +3,11 @@ import {
   IphoneScreenAttachResultSchema,
   type IphoneScreenAttachCommand,
 } from "@opensteer/protocol";
-import type { DesktopIphoneSetupStatus } from "@opensteer/protocol/desktop";
-import type { IphoneSetupPort } from "../host/iphone-setup.js";
+import type {
+  DesktopIphoneSetupStatus,
+  DesktopIphoneSetupBridge,
+} from "@opensteer/protocol/desktop";
+import { createIphoneSetupPort, type IphoneSetupPort } from "../host/iphone-setup.js";
 
 type Status = DesktopIphoneSetupStatus;
 type Candidate = Status["candidates"][number];
@@ -198,6 +201,7 @@ export function createMockIphoneSetupPort(
   function show(scene: MockIphoneSetupScene): Status {
     const base = current ?? blank(crypto.randomUUID(), null);
     const shape: Partial<Status> = mockIphoneSetupScenes[scene];
+    const pending = base.attachCommand;
     const plugged = shape.stage !== "mac" && shape.stage !== "connect";
     current = {
       ...blank(base.setupId, base.target),
@@ -206,6 +210,19 @@ export function createMockIphoneSetupPort(
       driverGeneration: base.driverGeneration,
       candidates: plugged ? [sam] : [],
       ...shape,
+      ...(scene === "add-failed"
+        ? {
+            attachCommand: pending ?? {
+              type: "iphone.screen.attach" as const,
+              idempotencyKey: `mock-iphone-setup:${base.setupId}`,
+              driverRunnerId,
+              target: base.target ?? {
+                kind: "new" as const,
+                name: shape.suggestedName ?? "iPhone",
+              },
+            },
+          }
+        : {}),
       wifiEnabled,
     };
     return push({});
@@ -239,10 +256,17 @@ export function createMockIphoneSetupPort(
 
   async function add(input: { setupId: string; name?: string }): Promise<Status> {
     const status = owned(input.setupId);
-    const target = status.target ?? {
-      kind: "new" as const,
-      name: input.name ?? status.suggestedName ?? "iPhone",
-    };
+    if (
+      status.attachCommand?.target.kind === "new" &&
+      input.name !== undefined &&
+      status.attachCommand.target.name !== input.name.trim()
+    )
+      return push({ state: "blocked", reason: "attach-conflict", action: "retry" });
+    const target = status.attachCommand?.target ??
+      status.target ?? {
+        kind: "new" as const,
+        name: input.name ?? status.suggestedName ?? "iPhone",
+      };
     show("adding");
     return push({
       attachCommand: {
@@ -254,12 +278,7 @@ export function createMockIphoneSetupPort(
     });
   }
 
-  const port: MockIphoneSetupPort = {
-    get current() {
-      return current;
-    },
-    push,
-    show,
+  const platform: DesktopIphoneSetupBridge = {
     begin: async ({ target }) => {
       current = blank(crypto.randomUUID(), target ?? null);
       return show(options.start ?? "mac-checking");
@@ -293,6 +312,7 @@ export function createMockIphoneSetupPort(
     },
     retry: async ({ setupId }) => {
       const status = owned(setupId);
+      if (status.stage === "add" && !status.deviceId) return add({ setupId });
       if (status.state !== "blocked") return status;
       return show(
         status.stage === "add" ? "name" : status.stage === "prepare" ? "preparing" : "mac-checking",
@@ -313,28 +333,6 @@ export function createMockIphoneSetupPort(
       owned(setupId);
       return push({ state: "blocked", reason, action: "retry" });
     },
-    attach: async ({ setupId, name }) => {
-      const prepared = await add({ setupId, ...(name === undefined ? {} : { name }) });
-      const command = prepared.attachCommand!;
-      if (!options.dispatch)
-        return port.complete({
-          setupId,
-          result: IphoneScreenAttachResultSchema.parse({
-            type: "iphone.screen.attach",
-            deviceId:
-              command.target.kind === "existing"
-                ? command.target.deviceId
-                : "dev_66666666-6666-4666-8666-666666666666",
-            generation: 1,
-          }),
-        });
-      try {
-        const result = IphoneScreenAttachResultSchema.parse(await options.dispatch(command));
-        return port.complete({ setupId, result });
-      } catch {
-        return port.failed({ setupId, reason: "host-offline" });
-      }
-    },
     wifiStatus: async () => ({ enabled: wifiEnabled, transport: "usb", reason: null }),
     configureWifi: async ({ action }) => {
       wifiEnabled = action !== "disable";
@@ -345,7 +343,26 @@ export function createMockIphoneSetupPort(
     },
     completeDetach: async () => undefined,
     pendingDetaches: async () => [],
+  };
+  const orchestrated = createIphoneSetupPort(platform, async (command) => {
+    if (command.type !== "iphone.screen.attach") throw new Error("Unexpected detach");
+    if (options.dispatch) return options.dispatch(command);
+    return IphoneScreenAttachResultSchema.parse({
+      type: "iphone.screen.attach",
+      deviceId:
+        command.target.kind === "existing"
+          ? command.target.deviceId
+          : "dev_66666666-6666-4666-8666-666666666666",
+      generation: 1,
+    });
+  });
+  return {
+    ...orchestrated,
+    get current() {
+      return current;
+    },
+    push,
+    show,
     remove: async () => ({ pending: false }),
   };
-  return port;
 }

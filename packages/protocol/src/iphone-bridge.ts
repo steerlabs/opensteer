@@ -769,3 +769,19 @@ export interface IphoneRunnerConnection {
 export interface IphoneRunnerPort {
   connect(emit: (event: IphoneRunnerEvent) => void): IphoneRunnerConnection;
 }
+
+/** Setup and runtime must apply the same privacy gate before accepting screen pixels. */
+export function iphoneScreenshotHiddenReason(observation: {
+  state: { display: string; lock: string };
+  foreground: { appId: string } | null;
+}): "screen-off" | "locked" | "protected" | "opensteer-app" | null {
+  if (observation.state.display === "off") return "screen-off";
+  if (observation.state.lock === "locked") return "locked";
+  if (
+    observation.state.lock === "unknown" ||
+    observation.state.display === "unknown" ||
+    !observation.foreground
+  )
+    return "protected";
+  return observation.foreground.appId === "com.opensteer.opensteer" ? "opensteer-app" : null;
+}

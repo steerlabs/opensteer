@@ -3,6 +3,7 @@ package phone
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,7 +45,9 @@ func (f *fakeUSB) List(context.Context) ([]ios.DeviceEntry, error) {
 	}
 	return f.list, nil
 }
-func (f *fakeUSB) Pair(context.Context, ios.DeviceEntry) error { panic("unexpected pairing") }
+func (f *fakeUSB) Pair(context.Context, ios.DeviceEntry, *ios.PairingAttempt) error {
+	panic("unexpected pairing")
+}
 func (f *fakeUSB) Inspect(context.Context, ios.DeviceEntry) (Inspection, error) {
 	panic("unexpected inspect")
 }
@@ -103,5 +106,104 @@ func TestDiscoveryUsesOpaquePersistentIdentityAndDetachMuxID(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("reattach not published")
+	}
+}
+
+type passiveUSB struct{ fakeUSB }
+
+func (f *passiveUSB) PassiveInspect(ctx context.Context, d ios.DeviceEntry) (Inspection, error) {
+	if d.DeviceID == 3 {
+		return Inspection{}, wire.Fail(wire.TrustRequired)
+	}
+	return Inspection{Pairing: "paired", Name: "Known phone", Model: "iPhoneTest", OSVersion: "27.1"}, nil
+}
+func TestColdRosterPassivelyIdentifiesTrustedPhones(t *testing.T) {
+	m := newTestManager(t)
+	m.usb = &passiveUSB{}
+	devices := []ios.DeviceEntry{}
+	for id := 1; id <= 3; id++ {
+		devices = append(devices, ios.DeviceEntry{DeviceID: id, Properties: ios.DeviceProperties{SerialNumber: fmt.Sprint(id), ConnectionType: "USB"}})
+	}
+	m.inventory.Replace(devices)
+	if err := m.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	r := m.roster()
+	trusted := 0
+	for _, c := range r.Candidates {
+		if c.Trusted {
+			trusted++
+			if c.Name != "Known phone" || c.Model != "iPhoneTest" || c.OSVersion != "27.1" {
+				t.Fatal("trusted candidate missing identity")
+			}
+		} else if c.Name != "iPhone" || c.Model != "" {
+			t.Fatal("untrusted phone was identified")
+		}
+	}
+	if trusted != 2 {
+		t.Fatalf("cold discovery identified %d trusted phones", trusted)
+	}
+	devices[0].DeviceID = 4
+	m.inventory.Replace(devices)
+	if err := m.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	trusted = 0
+	for _, c := range m.roster().Candidates {
+		if c.Trusted {
+			trusted++
+		}
+	}
+	if trusted != 2 {
+		t.Fatal("route replacement erased trusted identity")
+	}
+}
+
+type pendingPairUSB struct {
+	fakeUSB
+	attempts []*ios.PairingAttempt
+}
+
+func (f *pendingPairUSB) Pair(_ context.Context, _ ios.DeviceEntry, attempt *ios.PairingAttempt) error {
+	f.attempts = append(f.attempts, attempt)
+	if len(f.attempts) == 3 {
+		return nil
+	}
+	return wire.Fail(wire.TrustPending)
+}
+func TestPendingPairIdentityLivesUntilAcceptanceOrRelease(t *testing.T) {
+	m := newTestManager(t)
+	usb := &pendingPairUSB{}
+	m.usb = usb
+	d := ios.DeviceEntry{DeviceID: 1, Properties: ios.DeviceProperties{SerialNumber: "pair-fixture", ConnectionType: "USB"}}
+	m.inventory.Replace([]ios.DeviceEntry{d})
+	if err := m.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	p := m.phones[m.identities["pair-fixture"]]
+	pair := func() {
+		t.Helper()
+		params, _ := json.Marshal(wire.PhoneRef{LocalPhoneID: p.id, NativeEpoch: p.epoch})
+		_, _ = m.Call(context.Background(), wire.Request{Method: "setup.pair", Params: params})
+	}
+	pair()
+	pair()
+	pair()
+	if len(usb.attempts) != 3 || usb.attempts[0] != usb.attempts[1] || usb.attempts[0] != usb.attempts[2] {
+		t.Fatal("Trust retries replaced pending identity")
+	}
+	if p.pairing != nil {
+		t.Fatal("accepted attempt retained private identity")
+	}
+	pair()
+	if p.pairing == nil || p.pairing == usb.attempts[0] {
+		t.Fatal("later setup reused accepted identity")
+	}
+	p.binding = "pending-binding"
+	if err := m.release(p.binding, true); err != nil {
+		t.Fatal(err)
+	}
+	if p.pairing != nil {
+		t.Fatal("cancelled setup retained private identity")
 	}
 }
