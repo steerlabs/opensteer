@@ -3,12 +3,21 @@ import { sql, type Kysely } from "kysely";
 import { expect, test } from "vitest";
 import { createDatabase } from "./connection.js";
 import { ensureDeployment } from "./deployment-store.js";
+import {
+  migrateToLatest,
+  migrationProvider,
+  personalCurrentStateMigrationName,
+} from "./migrations.js";
 import { applyPersonalStateSchema, type PersonalStateSchema } from "./personal-state-schema.js";
 import { finishPersonalStateUpgrade } from "./personal-state-upgrade.js";
 import type { DatabaseSchema } from "./schema.js";
 import { createStoreFixture, pendingEvent } from "./store.integration.test-support.js";
 import { cloneTestDatabase } from "./test-database.test-support.js";
-import { outputImagePathHash } from "./transcript-store.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { completePersonalToolCall } from "./personal-tool-calls.js";
+import { resolvePersonalToolImages } from "./personal-tool-images.js";
+import { liveRequest } from "./store.integration.test-support.js";
+import { requestInsert } from "./request-persistence.js";
 
 function legacyState(database: Kysely<DatabaseSchema>) {
   return sql<{ legacy: boolean; cursor: boolean }>`
@@ -32,11 +41,11 @@ test.each(["empty", "personal", "team"] as const)(
           hostInstanceId: createId("hostInstance"),
           deploymentShape: { kind },
         });
-      await database.transaction().execute(applyPersonalStateSchema);
-      await Promise.all([
-        finishPersonalStateUpgrade(database),
-        finishPersonalStateUpgrade(database),
-      ]);
+      const lineage = migrationProvider({ personalCurrentState: true });
+      await Promise.all([migrateToLatest(database, lineage), migrateToLatest(database, lineage)]);
+      const applied = await sql<{ name: string }>`select name from kysely_migration
+        where name = ${personalCurrentStateMigrationName}`.execute(database);
+      expect(applied.rows).toEqual([{ name: personalCurrentStateMigrationName }]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const state =
         await sql`select ready,sequence,pruned_through_sequence from client_sync_state limit 1`.execute(
@@ -51,6 +60,33 @@ test.each(["empty", "personal", "team"] as const)(
         kind === "personal" ? [{ ready: true, sequence: "0", prunedThroughSequence: "0" }] : [],
       );
       expect(settings).toEqual([]);
+      if (kind === "empty") {
+        const fresh = await ensureDeployment(database, {
+          canonicalOrigin: "https://fresh-fixture.example.invalid",
+          hostInstanceId: createId("hostInstance"),
+          deploymentShape: { kind: "personal" },
+          personalCurrentState: true,
+        });
+        const sync = await sql`select deployment_id, epoch, ready, sequence,
+          pruned_through_sequence, retained_change_count, pending_request_count, needs_you_count,
+          unread_task_count, last_commit_at from client_sync_state where deployment_id = ${fresh.id}`.execute(
+          database,
+        );
+        expect(sync.rows).toEqual([
+          {
+            deploymentId: fresh.id,
+            epoch: expect.stringMatching(/^[a-f0-9-]{36}$/u),
+            ready: true,
+            sequence: "0",
+            prunedThroughSequence: "0",
+            retainedChangeCount: 0,
+            pendingRequestCount: 0,
+            needsYouCount: 0,
+            unreadTaskCount: 0,
+            lastCommitAt: expect.any(Date),
+          },
+        ]);
+      }
     } finally {
       await database.destroy();
       await fixture.drop();
@@ -253,88 +289,210 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
       .executeTakeFirstOrThrow();
     expect(BigInt(tools[1]!.completionOrder!) - BigInt(card.position!)).toBe(890n);
 
-    const newer = await sql<{ nextTranscriptPosition: string }>`update threads
-      set next_transcript_position=next_transcript_position+1 where id=${active.threadId}
-      returning next_transcript_position`.execute(database);
-    const order = newer.rows[0]!.nextTranscriptPosition;
     const original = await target
       .selectFrom("toolOutputImages")
       .selectAll()
       .executeTakeFirstOrThrow();
-    expect(BigInt(order)).toBeGreaterThan(BigInt(original.completionOrder));
-    const newerTool = {
-      ...tools[2]!,
-      id: "new-image-tool",
-      callId: "new-image",
-      completionOrder: order,
-    };
-    await target.insertInto("toolCalls").values(newerTool).execute();
-    await target
-      .insertInto("toolOutputImages")
-      .values({
-        ...original,
-        id: "newer-image",
-        toolCallId: newerTool.id,
-        completionOrder: order,
-      })
-      .execute();
-    const latest = await target
-      .selectFrom("toolOutputImages")
-      .select("id")
-      .where("threadId", "=", active.threadId)
-      .where("pathHash", "=", outputImagePathHash(imagePath))
-      .where("path", "=", imagePath)
-      .orderBy("completionOrder", "desc")
-      .orderBy("imageIndex", "desc")
-      .limit(1)
-      .executeTakeFirstOrThrow();
-    expect(latest.id).toBe("newer-image");
+    const current = createDatabase<PersonalStateSchema>({ connectionString: fixture.databaseUrl });
+    try {
+      const newRunId = createId("run");
+      const newAttemptId = createId("runAttempt");
+      await sql`insert into runs
+        select (jsonb_populate_record(null::runs, to_jsonb(source) || jsonb_build_object(
+          'id',${newRunId}::text,'status','running','run_ordinal',source.run_ordinal+1,
+          'terminal_reply_message_id',null,'completed_at',null,'next_runner_ordinal',0
+        ))).* from runs source where source.id=${active.runId}`.execute(current);
+      await sql`insert into run_attempts
+        select (jsonb_populate_record(null::run_attempts, to_jsonb(source) || jsonb_build_object(
+          'id',${newAttemptId}::text,'run_id',${newRunId}::text,'ended_at',null,'outcome',null
+        ))).* from run_attempts source where source.run_id=${active.runId} and source.status='current'`.execute(
+        current,
+      );
+      const fresh = await commitPersonalMutation(current, (tx, mutation) =>
+        completePersonalToolCall(tx, mutation, {
+          runId: newRunId,
+          threadId: active.threadId,
+          attemptId: newAttemptId,
+          bindingGeneration: active.bindingGeneration,
+          origin: "runner",
+          nodeId: null,
+          callId: "new-image",
+          output: { text: "new output", images: [{ path: imagePath, mediaType: "image/png" }] },
+          isError: false,
+        }),
+      );
+      expect(BigInt(fresh.call.completionOrder!)).toBeGreaterThan(BigInt(original.completionOrder));
+      const latest = await resolvePersonalToolImages(current, {
+        viewerId: active.userId,
+        threadId: active.threadId,
+        paths: [imagePath],
+      });
+      expect(latest.map(({ id }) => id)).toEqual([`${fresh.call.id}:0`]);
+    } finally {
+      await current.destroy();
+    }
   } finally {
     await fixture.close();
   }
 });
 
-test("a parity failure keeps the source ledger and the unready cursor", async () => {
-  const fixture = await createStoreFixture();
-  const { database } = fixture;
-  try {
-    const { threadId } = await fixture.startRunFixture("migration-parity");
-    await database.transaction().execute(applyPersonalStateSchema);
+test.each(["missing card", "invalid preview"] as const)(
+  "a parity failure (%s) keeps the source ledger and the unready cursor",
+  async (fault) => {
+    const fixture = await createStoreFixture();
+    const { database } = fixture;
+    try {
+      const { threadId } = await fixture.startRunFixture("migration-parity");
+      await database.transaction().execute(applyPersonalStateSchema);
 
-    const stopBeforeVerify = new Error("Stop before verification");
-    await expect(
-      finishPersonalStateUpgrade(database, {
-        afterBatch(stage) {
-          if (stage === "attention-links") throw stopBeforeVerify;
-        },
-      }),
-    ).rejects.toBe(stopBeforeVerify);
+      const stopBeforeVerify = new Error("Stop before verification");
+      await expect(
+        finishPersonalStateUpgrade(database, {
+          afterBatch(stage) {
+            if (stage === "attention-links") throw stopBeforeVerify;
+          },
+        }),
+      ).rejects.toBe(stopBeforeVerify);
 
-    const {
-      rows: [removed],
-    } = await sql<{ id: string }>`
-      delete from transcript_items where id = (
-        select id from transcript_items where thread_id = ${threadId} and kind = 'message'
-        order by id limit 1
-      ) returning id
-    `.execute(database);
-    expect(removed).toBeDefined();
+      const card = sql`(select id from transcript_items where thread_id = ${threadId} and kind='message' order by id limit 1)`;
+      const injected =
+        fault === "missing card"
+          ? await sql`delete from transcript_items where id = ${card} returning id`.execute(
+              database,
+            )
+          : await sql`update transcript_items set view=jsonb_build_object('title', ${"a".repeat(193)}::text)
+          where id = ${card} returning id`.execute(database);
+      expect(injected.rows).toHaveLength(1);
 
-    const readSource = () =>
-      sql<{ count: string; ready: boolean; stage: string }>`
+      const readSource = () =>
+        sql<{ count: string; ready: boolean; stage: string }>`
       select (select count(*) from deployment_events)::text as count,
         ready, upgrade_cursor->>'stage' as stage from client_sync_state
     `
-        .execute(database)
-        .then(({ rows }) => rows[0]);
-    const source = await readSource();
-    expect(source).toMatchObject({ ready: false, stage: "verify" });
-    expect(Number(source?.count)).toBeGreaterThan(0);
+          .execute(database)
+          .then(({ rows }) => rows[0]);
+      const source = await readSource();
+      expect(source).toMatchObject({ ready: false, stage: "verify" });
+      expect(Number(source?.count)).toBeGreaterThan(0);
 
-    await expect(finishPersonalStateUpgrade(database)).rejects.toThrow("parity check failed");
-    expect(await legacyState(database)).toEqual({ legacy: true, cursor: true });
-    expect(await readSource()).toEqual(source);
+      await expect(finishPersonalStateUpgrade(database)).rejects.toThrow("parity check failed");
+      expect(await legacyState(database)).toEqual({ legacy: true, cursor: true });
+      expect(await readSource()).toEqual(source);
+    } finally {
+      await fixture.close();
+    }
+  },
+);
+
+test("conversion rebuilds pending Requests without moving an idle task into Active", async () => {
+  const fixture = await createStoreFixture();
+  const { database } = fixture;
+  try {
+    const run = await fixture.startRunFixture("migration-durable-request");
+    const request = liveRequest({
+      harnessInstanceId: run.harnessInstance.id,
+      id: createId("request"),
+      requestedBy: run.userId,
+      runId: run.runId,
+      threadId: run.threadId,
+      presentation: {
+        kind: "choice",
+        title: "Decide later",
+        options: [{ id: "allow", label: "Allow", hint: "allow-once" }],
+      },
+    });
+    await database
+      .insertInto("requests")
+      .values({
+        ...requestInsert(request),
+        mode: "durable",
+        kind: "browser.sign-in",
+        payload: {
+          kind: "browser.sign-in",
+          sessionId: "fixture",
+          reason: "Decide later",
+          site: "https://fixture.example.invalid",
+        },
+      })
+      .execute();
+    await database.transaction().execute(applyPersonalStateSchema);
+    await finishPersonalStateUpgrade(database);
+    expect(
+      await database
+        .selectFrom("threads")
+        .select(["status", "pendingRequestCount"])
+        .where("id", "=", run.threadId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "idle", pendingRequestCount: 1 });
+    expect(
+      await database
+        .selectFrom("requests")
+        .select("status")
+        .where("id", "=", request.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "pending" });
   } finally {
     await fixture.close();
+  }
+});
+
+test("resumes offline settlement of a Run with a large live node set", async () => {
+  const fixture = await createStoreFixture();
+  const { database } = fixture;
+  try {
+    const run = await fixture.startRunFixture("offline-node-batches");
+    await sql`insert into execution_nodes(id,run_id,attempt_id,kind,title,native_ref,status,started_at)
+      select 'nod_90000000-0000-4000-8000-'||lpad(n::text,12,'0'), run_id, id,
+        'subagent', ${"🌱".repeat(110)}, 'fixture:'||n, 'running', clock_timestamp()
+      from run_attempts cross join generate_series(1,140) n where run_id=${run.runId} and status='current'`.execute(
+      database,
+    );
+    await database.transaction().execute(applyPersonalStateSchema);
+    const stopped = new Error("Stop after the first node batch");
+    await expect(
+      finishPersonalStateUpgrade(database, {
+        afterBatch(stage) {
+          if (stage === "settle") throw stopped;
+        },
+      }),
+    ).rejects.toBe(stopped);
+    const active = () =>
+      database
+        .selectFrom("executionNodes")
+        .select(({ fn }) => fn.countAll<string>().as("count"))
+        .where("runId", "=", run.runId)
+        .where("status", "=", "running")
+        .executeTakeFirstOrThrow();
+    expect(await active()).toEqual({ count: "12" });
+    await finishPersonalStateUpgrade(database);
+    expect(await active()).toEqual({ count: "0" });
+    const cards = await sql<{ count: string; maxBytes: number }>`select
+      count(*)::text as count, max(octet_length(view->>'title')) as max_bytes
+      from transcript_items where run_id=${run.runId} and kind='node'`.execute(database);
+    expect(cards.rows).toEqual([{ count: "140", maxBytes: 192 }]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("the current-state lineage refuses a team database with a private legacy fence", async () => {
+  const fixture = await cloneTestDatabase("host");
+  const database = createDatabase({ connectionString: fixture.url });
+  try {
+    const team = await ensureDeployment(database, {
+      canonicalOrigin: "https://team-fixture.example.invalid",
+      hostInstanceId: createId("hostInstance"),
+      deploymentShape: { kind: "team" },
+    });
+    await sql`insert into deployment_event_state (deployment_id) values (${team.id})`.execute(
+      database,
+    );
+    await expect(
+      migrateToLatest(database, migrationProvider({ personalCurrentState: true })),
+    ).rejects.toThrow(/team.*personal/i);
+    expect(await legacyState(database)).toEqual({ legacy: true, cursor: true });
+  } finally {
+    await database.destroy();
+    await fixture.drop();
   }
 });

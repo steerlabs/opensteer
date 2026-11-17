@@ -16,6 +16,12 @@ import { migrateTeamPrincipals } from "./team-principals-migration.js";
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
 import { TEAM_COPIES_SQL, teamCopiesMigrationName } from "./team-copies-migration.js";
 import { TEAM_KNOWLEDGE_NOTES_SQL } from "./team-knowledge-schema.js";
+import { applyPersonalStateSchema } from "./personal-state-schema.js";
+import {
+  completePersonalStateConversion,
+  personalCurrentStateMigrationName,
+  withPersonalStateStartupLock,
+} from "./personal-state-upgrade.js";
 import type { DatabaseSchema } from "./schema.js";
 
 /**
@@ -83,10 +89,13 @@ export const teamPrincipalsMigrationName = "0015_team_principals";
 export const teamPartnerLinksMigrationName = "0016_team_partner_links";
 export const agentHomeSettingsMigrationName = "0023_agent_home_settings";
 const messageOriginMigrationName = "0027_message_origin";
+export { personalCurrentStateMigrationName } from "./personal-state-upgrade.js";
 const MESSAGE_ORIGIN_SQL = `
 alter table messages add column origin jsonb;
 `;
-export function migrationProvider(): MigrationProvider {
+export function migrationProvider(options?: {
+  readonly personalCurrentState?: true;
+}): MigrationProvider {
   return {
     async getMigrations() {
       return {
@@ -316,6 +325,11 @@ export function migrationProvider(): MigrationProvider {
             await sql.raw(DEVICE_DRIVERS_SQL).execute(database);
           },
         },
+        ...(options?.personalCurrentState
+          ? {
+              [personalCurrentStateMigrationName]: { up: applyPersonalStateSchema },
+            }
+          : {}),
       };
     },
   };
@@ -335,12 +349,29 @@ export async function migrateToLatest(
   database: Kysely<DatabaseSchema>,
   provider: MigrationProvider = migrationProvider(),
 ): Promise<MigrationResultSet> {
+  const migrations = await provider.getMigrations();
+  const resolved: MigrationProvider = { getMigrations: async () => migrations };
+  if (!Object.hasOwn(migrations, personalCurrentStateMigrationName))
+    return migrateRegisteredLineage(database, resolved, Object.keys(migrations));
+  return withPersonalStateStartupLock(database, async (signal) => {
+    const result = await migrateRegisteredLineage(database, resolved, Object.keys(migrations));
+    signal.throwIfAborted();
+    await completePersonalStateConversion(database, signal);
+    return result;
+  });
+}
+
+async function migrateRegisteredLineage(
+  database: Kysely<DatabaseSchema>,
+  provider: MigrationProvider,
+  migrationNames: readonly string[],
+): Promise<MigrationResultSet> {
   const ledger = await sql<{
     exists: boolean;
   }>`select to_regclass('public.kysely_migration') is not null as exists`.execute(database);
   let hasAppliedMigrations = false;
   if (ledger.rows[0]?.exists) {
-    const known = new Set(Object.keys(await provider.getMigrations()));
+    const known = new Set(migrationNames);
     const applied = await sql<{
       name: string;
     }>`select name from public.kysely_migration order by name`.execute(database);

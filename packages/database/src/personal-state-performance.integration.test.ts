@@ -8,8 +8,12 @@ import { withLockOrderMode } from "./lock-order-checker.test-support.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { applyPersonalStateSchema, type PersonalStateSchema } from "./personal-state-schema.js";
 import { finishPersonalStateUpgrade } from "./personal-state-upgrade.js";
-import { readTranscriptPage, withPersonalSyncRead } from "./personal-sync-store.js";
-import { readInitialTaskWindows } from "./personal-task-store.js";
+import { authorizedSyncState, withPersonalSyncRead } from "./personal-sync-store.js";
+import {
+  buildPersonalShellSnapshot,
+  buildPersonalDetailSnapshot,
+} from "./personal-snapshot-store.js";
+import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
 import { createStoreFixture, pendingEvent } from "./store.integration.test-support.js";
 import { ownTestDatabaseProducer } from "./test-database.test-support.js";
 
@@ -82,21 +86,36 @@ async function measure(events: number) {
     });
     await database.transaction().execute(applyPersonalStateSchema);
     const start = performance.now();
-    const heap = process.memoryUsage().heapUsed;
-    let observedHeap = heap;
+    globalThis.gc?.();
+    const startMemory = process.memoryUsage();
+    let observedHeap = startMemory.heapUsed;
+    let observedRss = startMemory.rss;
+    const peakByStage: Record<string, number> = {};
     let previousBatch = start;
     const batches: number[] = [];
     await finishPersonalStateUpgrade(database, {
-      afterBatch() {
-        observedHeap = Math.max(observedHeap, process.memoryUsage().heapUsed);
+      afterBatch(stage) {
+        const memory = process.memoryUsage();
+        observedHeap = Math.max(observedHeap, memory.heapUsed);
+        observedRss = Math.max(observedRss, memory.rss);
+        peakByStage[stage] = Math.max(peakByStage[stage] ?? 0, memory.heapUsed);
+
         const now = performance.now();
         batches.push(now - previousBatch);
         previousBatch = now;
       },
     });
+    const conversionMs = performance.now() - start;
+    globalThis.gc?.();
     const conversion = {
-      ms: performance.now() - start,
-      observedHeapGrowthBytes: observedHeap - heap,
+      ms: conversionMs,
+      observedHeapGrowthBytes: observedHeap - startMemory.heapUsed,
+      observedRssGrowthBytes: observedRss - startMemory.rss,
+      postGcHeapGrowthBytes: globalThis.gc
+        ? process.memoryUsage().heapUsed - startMemory.heapUsed
+        : null,
+      peakByStage,
+
       batchMs: distribution(batches),
     };
     const { target } = await ownTestDatabaseProducer(fixture.databaseUrl, async () => {
@@ -110,18 +129,32 @@ async function measure(events: number) {
     ).rows[0]!;
     expect(Number(counts.items)).toBeGreaterThanOrEqual(messageCount + tools);
     expect(Number(counts.tools)).toBe(tools);
+    const shellScope = { kind: "shell" as const };
+    const detailScope = { kind: "thread" as const, threadId: run.threadId };
     const detail = () =>
-      readTranscriptPage(target, {
-        viewerId: run.userId,
-        scope: { kind: "thread", threadId: run.threadId },
-        limit: 50,
-        maxBytes: 64 * 1024,
-        maxTurns: 10,
+      withPersonalSyncRead(target, async (tx) => {
+        const state = await authorizedSyncState(tx, run.userId);
+        return ScopedHostMessageSchema.parse({
+          type: "host.snapshot",
+          scope: detailScope,
+          subscriptionId: "detail:0",
+          generation: 1,
+          throughSequence: state.sequence,
+          snapshot: await buildPersonalDetailSnapshot(tx, state, run.userId, detailScope),
+        });
       });
     const shell = () =>
-      withPersonalSyncRead(target, (tx) =>
-        readInitialTaskWindows(tx, { viewerId: run.userId, selectedThreadId: run.threadId }),
-      );
+      withPersonalSyncRead(target, async (tx) => {
+        const state = await authorizedSyncState(tx, run.userId);
+        return ScopedHostMessageSchema.parse({
+          type: "host.snapshot",
+          scope: shellScope,
+          subscriptionId: "shell",
+          generation: 1,
+          throughSequence: state.sequence,
+          snapshot: await buildPersonalShellSnapshot(tx, state, run.userId, run.threadId),
+        });
+      });
     const windowMs: number[] = [],
       detailMs: number[] = [],
       settingsMs: number[] = [];

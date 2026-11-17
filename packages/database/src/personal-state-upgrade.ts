@@ -1,3 +1,6 @@
+import { TranscriptItemPreviewSchema } from "@opensteer/protocol/transcript";
+import { itemView } from "./personal-sync-store.js";
+import type { PersonalStateSchema } from "./personal-state-schema.js";
 import { sql, type Kysely, type Transaction } from "kysely";
 import {
   type DeploymentId,
@@ -22,6 +25,9 @@ import {
 export const personalCurrentStateMigrationName = "0029_personal_current_state";
 
 const batchSize = 500;
+const settlementBatchSize = 128;
+const messageWhitespace =
+  "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff";
 const canonicalKinds = [
   "message",
   "run",
@@ -90,6 +96,98 @@ async function countCanonical(tx: Tx) {
   return result.rows[0]!.count;
 }
 
+async function retireOfflineChildren(tx: Tx, runId: RunId, cutAt: Date) {
+  // The regular finalizer settles the same live Request set with its response commands.
+  const requests = await tx
+    .selectFrom("requests")
+    .select(["id", "responseCommandId"])
+    .where("originatingRunId", "=", runId)
+    .where(sql<boolean>`status='pending' and (mode='live' or kind='integration.input')`)
+    .orderBy("id")
+    .limit(settlementBatchSize)
+    .forNoKeyUpdate()
+    .execute();
+  if (requests.length) {
+    const ids = requests.map(({ id }) => id);
+    const commands = requests.flatMap(({ responseCommandId }) =>
+      responseCommandId ? [responseCommandId] : [],
+    );
+    if (commands.length) {
+      await tx
+        .selectFrom("commands")
+        .select("id")
+        .where("id", "in", commands)
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
+      await tx
+        .updateTable("commands")
+        .set({
+          lastError: { message: "The Request was cancelled before its response completed" },
+          status: "failed",
+          updatedAt: cutAt,
+        })
+        .where("id", "in", commands)
+        .where("type", "=", "request.respond")
+        .where("status", "in", ["pending", "dispatched", "unknown"])
+        .execute();
+    }
+    await tx
+      .updateTable("requests")
+      .set({
+        cancellationReason: "run-ended",
+        resolvedAt: cutAt,
+        resolvedBy: null,
+        responseCommandId: null,
+        status: "cancelled",
+      })
+      .where("id", "in", ids)
+      .execute();
+    return true;
+  }
+  const nodes = await tx
+    .selectFrom("executionNodes")
+    .select("id")
+    .where("runId", "=", runId)
+    .where(sql<boolean>`status='running'`)
+    .orderBy("id")
+    .limit(settlementBatchSize)
+    .forNoKeyUpdate()
+    .execute();
+  if (nodes.length) {
+    await tx
+      .updateTable("executionNodes")
+      .set({ endedAt: cutAt, status: "interrupted" })
+      .where(
+        "id",
+        "in",
+        nodes.map(({ id }) => id),
+      )
+      .execute();
+    return true;
+  }
+  const grants = await tx
+    .selectFrom("grants")
+    .select("id")
+    .where("runId", "=", runId)
+    .where(sql<boolean>`status='active'`)
+    .orderBy("id")
+    .limit(settlementBatchSize)
+    .forNoKeyUpdate()
+    .execute();
+  if (!grants.length) return false;
+  await tx
+    .updateTable("grants")
+    .set({ status: "revoked", revokedReason: "superseded", revokedAt: cutAt })
+    .where(
+      "id",
+      "in",
+      grants.map(({ id }) => id),
+    )
+    .execute();
+  return true;
+}
+
 async function settleNextRun(tx: Tx, source: Source, cursor: UpgradeCursor) {
   const run = await tx
     .selectFrom("runs")
@@ -112,6 +210,7 @@ async function settleNextRun(tx: Tx, source: Source, cursor: UpgradeCursor) {
     where m.id = ${run.seedInputId} and i.state in ('pending','claimed')
     on conflict (id) do nothing
   `.execute(tx);
+  if (await retireOfflineChildren(tx, run.id, source.cutAt)) return cursor;
   await runOfflineSettlement(tx, () =>
     finalizeRunTransaction(tx, {
       completedAt: source.cutAt,
@@ -162,12 +261,12 @@ async function deriveMessages(tx: Tx, cursor: UpgradeCursor): Promise<UpgradeCur
         exists (
           select 1 from jsonb_array_elements(m.content) part
           where part->>'type' in ('artifact','browser-page','computer-app','phone')
-            or (part->>'type' = 'text' and part->>'text' ~ '[^[:space:]]')
+            or (part->>'type' = 'text' and btrim(part->>'text',${messageWhitespace}) <> '')
           limit 1
         ) as has_content,
         coalesce((
           select left(part->>'text',200) from jsonb_array_elements(m.content) part
-          where part->>'type' = 'text' and part->>'text' ~ '[^[:space:]]' limit 1
+          where part->>'type' = 'text' and btrim(part->>'text',${messageWhitespace}) <> '' limit 1
         ),'') as preview
       from messages m left join thread_inputs input on input.message_id=m.id
       left join transcript_items marker on marker.id=m.id
@@ -245,7 +344,10 @@ async function deriveCards(tx: Tx, cursor: UpgradeCursor, kind: Exclude<Canonica
         case when ${kind}='node' then source_id end,
         case when ${kind} in ('assignment','delegation') then source_id end,
         case when ${kind}='app' then source_id end,
-        jsonb_strip_nulls(jsonb_build_object('status',status,'title',title))
+        jsonb_strip_nulls(jsonb_build_object('status',status,'title',
+          case when octet_length(title)<=192 then title
+          else (select left(title,n) from generate_series(48,192) n
+            where octet_length(left(title,n))<=192 order by n desc limit 1) end))
         from (${canonicalSource(kind, cursor.key)}) source order by source_id returning id
   `.execute(tx);
   const ids = page.rows.map((row) => row.id.slice(kind.length + 1));
@@ -320,21 +422,32 @@ async function deriveThreadSummaries(tx: Tx, source: Source, cursor: UpgradeCurs
       last_reply_message_id=summary.reply_id,
       last_reply_preview=summary.reply,
       failure_preview=summary.failure,
-      status=case when t.status='archived' then t.status when summary.pending > 0 then 'waiting'
-        when summary.status='failed' then 'failed' else 'idle' end
+      status=case when t.status='archived' then t.status
+        when summary.active_status='waiting' then 'waiting'
+        when summary.active_status is not null and not (t.input_queue_paused and summary.active_status='queued') then 'running'
+        when summary.latest_failed then 'failed' else 'idle' end
     from (
       select source_thread.id,
         (select count(*) from requests where originating_thread_id=source_thread.id and status='pending')
           + (select count(*) from thread_inputs where thread_id=source_thread.id and state='awaiting-approval') as pending,
         case when latest.status in ('completed','failed','interrupted') then latest.completed_at end as completed_at,
-        latest.status,
-        case when latest.status='failed' then left(latest.failure->>'message',280) end as failure,
+        current_run.status as active_status,
+        last_run.status='failed' and last_run.maintenance is null as latest_failed,
+        case when last_run.status='failed' and last_run.maintenance is null then left(last_run.failure->>'message',280) end as failure,
         reply.id as reply_id,left(reply.view->>'preview',280) as reply
       from threads source_thread
       left join lateral (
         select status,completed_at,failure from runs where thread_id=source_thread.id and maintenance is null
         order by run_ordinal desc limit 1
       ) latest on true
+      left join lateral (
+        select status,maintenance,failure from runs where thread_id=source_thread.id
+        order by run_ordinal desc limit 1
+      ) last_run on true
+      left join lateral (
+        select status from runs where thread_id=source_thread.id and maintenance is null
+          and status in ('queued','starting','running','waiting') order by run_ordinal limit 1
+      ) current_run on true
       left join lateral (
         select m.id,i.view from messages m join transcript_items i on i.message_id=m.id
         where m.thread_id=source_thread.id and m.published and m.kind='assistant' and i.visible
@@ -358,7 +471,7 @@ async function deriveAttentionRequests(tx: Tx, cursor: UpgradeCursor) {
     : stage(cursor, "attention-asks");
 }
 
-async function deriveAttentionAsks(tx: Tx, source: Source, cursor: UpgradeCursor) {
+async function deriveAttentionAsks(tx: Tx, cursor: UpgradeCursor) {
   const key = cursor.key
     ? z.tuple([z.string(), z.string()]).parse(JSON.parse(cursor.key))
     : ["", ""];
@@ -371,7 +484,7 @@ async function deriveAttentionAsks(tx: Tx, source: Source, cursor: UpgradeCursor
     from personal_team_requests where kind='ask'
       and (team_deployment_id,request_id)>(${key[0]},${key[1]})
       and ((remote_state='awaiting_approval' and local_decision is null and terminal_state is null
-        and consent_expires_at > ${source.cutAt})
+        and consent_expires_at > clock_timestamp())
         or (terminal_state='failed' and released_at is null and blocked_reason is not null))
     order by team_deployment_id,request_id limit ${batchSize}
     returning team_deployment_id,team_request_id
@@ -406,6 +519,45 @@ async function deriveAttentionLinks(tx: Tx, source: Source, cursor: UpgradeCurso
 }
 
 async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
+  const cards = await tx
+    .withTables<Pick<PersonalStateSchema, "transcriptItems">>()
+    .selectFrom("transcriptItems")
+    .select([
+      "id",
+      "threadId",
+      "kind",
+      "revision",
+      "position",
+      "runId",
+      "attemptId",
+      "nodeId",
+      "isTurnStart",
+      "createdAt",
+      "view",
+      "messageId",
+      "toolCallId",
+      "requestId",
+      "executionNodeId",
+      "delegationId",
+      "appId",
+      "blockId",
+      "bindingGeneration",
+      "visible",
+    ])
+    .where("id", ">", cursor.key)
+    .orderBy("id")
+    .limit(batchSize)
+    .execute();
+  for (const card of cards) {
+    try {
+      if (card.visible) itemView(card);
+      else TranscriptItemPreviewSchema.parse(card.view);
+    } catch {
+      throw new Error(`Personal conversion parity check failed at card ${card.id}`);
+    }
+  }
+  const last = cards.at(-1);
+  if (last) return { ...cursor, key: last.id };
   const parity = (
     await sql<{
       canonical: string;
@@ -433,6 +585,14 @@ async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
           and not exists(select 1 from transcript_items where id='delegation:'||d.id limit 1) limit 1)
         or exists(select 1 from apps a where thread_id is not null and latest_version>0 and not deleting
           and not exists(select 1 from transcript_items where id='app:'||a.id limit 1) limit 1)
+        or exists(select 1 from transcript_items i join messages m on m.id=i.message_id
+          where i.thread_id<>m.thread_id limit 1)
+        or exists(select 1 from transcript_items i join requests r on r.id=i.request_id
+          where (i.thread_id,i.run_id,i.node_id) is distinct from (r.originating_thread_id,r.originating_run_id,r.originating_node_id) limit 1)
+        or exists(select 1 from transcript_items i join tool_calls c on c.id=i.tool_call_id
+          where (i.thread_id,i.run_id,i.node_id,i.attempt_id) is distinct from (c.thread_id,c.run_id,c.node_id,c.attempt_id) limit 1)
+        or exists(select 1 from tool_output_images i join tool_calls c on c.id=i.tool_call_id
+          where (i.thread_id,i.node_id) is distinct from (c.thread_id,c.node_id) limit 1)
         or exists(select 1 from runner_event_receipts limit 1)) as invalid
   `.execute(tx)
   ).rows[0]!;
@@ -535,7 +695,7 @@ async function convertBatch(
       next = await deriveAttentionRequests(tx, cursor);
       break;
     case "attention-asks":
-      next = await deriveAttentionAsks(tx, source, cursor);
+      next = await deriveAttentionAsks(tx, cursor);
       break;
     case "attention-links":
       next = await deriveAttentionLinks(tx, source, cursor);

@@ -1,5 +1,5 @@
 import {
-  AgentEventSchema,
+  eventDataSchemas,
   type AgentEvent,
   type DeploymentId,
   type ExecutionNodeId,
@@ -56,46 +56,50 @@ export async function readLegacyActivityBatch(
   through: string,
 ): Promise<readonly LegacyActivity[]> {
   const page = await sql<LegacyActivity>`
-    with picked as materialized (
-      select sequence,event_id,run_id,thread_id,runner_ordinal,runner_binding_generation,
-        environment_id,type,created_at,
-        case type
-          when 'message.created' then jsonb_build_object('id',data#>>'{message,id}')
-          when 'message.placed' then jsonb_build_object('id',data#>>'{message,id}')
-          when 'assistant.message' then jsonb_build_object('id',data->>'messageId')
-          when 'request.opened' then jsonb_build_object('id',data#>>'{request,id}')
-          when 'request.resolved' then jsonb_build_object('id',data#>>'{request,id}')
-          when 'request.cancelled' then jsonb_build_object('id',data->>'requestId')
-          when 'node.started' then jsonb_build_object('id',data->>'nodeId')
-          when 'app.published' then jsonb_build_object('id',data->>'appId')
-          when 'assignment.created' then jsonb_build_object('id',data#>>'{assignment,id}')
-          when 'assignment.updated' then jsonb_build_object('id',data#>>'{assignment,id}')
-          when 'delegation.settled' then jsonb_build_object('id',data->>'delegationId')
-          when 'run.completed' then jsonb_build_object('replyId',data->>'replyMessageId')
-          when 'tool.started' then data
-          when 'tool.completed' then data
-          when 'reasoning.completed' then data
-          when 'node.message' then data
-          else null
-        end as data
+    with sized as materialized (
+      select sequence,
+        case when type in ('tool.started','tool.completed','reasoning.completed','node.message')
+          then octet_length(data::text) else 256 end as bytes
       from deployment_events
       where deployment_id=${deploymentId} and sequence>${after}::bigint and sequence<=${through}::bigint
       order by sequence limit ${maxLegacyBatchRows}
-    ), sized as materialized (
-      select *,coalesce(octet_length(data::text),0) as bytes,row_number() over(order by sequence) as row_no
-      from picked
-    ), bounded as materialized (
-      select *,sum(bytes) over(order by sequence) as batch_bytes from sized
+    ), bounded as (
+      select sequence,bytes,sum(bytes) over(order by sequence) as batch_bytes,
+        row_number() over(order by sequence) as row_no from sized
+    ), selected as materialized (
+      select e.sequence,e.event_id,e.run_id,e.thread_id,e.runner_ordinal,e.runner_binding_generation,
+        e.environment_id,e.type,e.created_at,
+        case when b.bytes > ${maxLegacyBatchBytes} then
+          case when e.type in ('reasoning.completed','node.message') then jsonb_strip_nulls(jsonb_build_object(
+            'blockId',left(e.data->>'blockId',255),'nodeId',left(e.data->>'nodeId',255),
+            'text',left(e.data->>'text',75000))) else null end
+        else case e.type
+          when 'message.created' then jsonb_build_object('id',e.data#>>'{message,id}')
+          when 'message.placed' then jsonb_build_object('id',e.data#>>'{message,id}')
+          when 'assistant.message' then jsonb_build_object('id',e.data->>'messageId')
+          when 'request.opened' then jsonb_build_object('id',e.data#>>'{request,id}')
+          when 'request.resolved' then jsonb_build_object('id',e.data#>>'{request,id}')
+          when 'request.cancelled' then jsonb_build_object('id',e.data->>'requestId')
+          when 'node.started' then jsonb_build_object('id',e.data->>'nodeId')
+          when 'app.published' then jsonb_build_object('id',e.data->>'appId')
+          when 'assignment.created' then jsonb_build_object('id',e.data#>>'{assignment,id}')
+          when 'assignment.updated' then jsonb_build_object('id',e.data#>>'{assignment,id}')
+          when 'delegation.settled' then jsonb_build_object('id',e.data->>'delegationId')
+          when 'run.completed' then jsonb_build_object('replyId',e.data->>'replyMessageId')
+          when 'tool.started' then e.data
+          when 'tool.completed' then e.data
+          when 'reasoning.completed' then e.data
+          when 'node.message' then e.data
+          else null
+        end end as data
+      from bounded b
+      join deployment_events e on e.deployment_id=${deploymentId} and e.sequence=b.sequence
+      where b.batch_bytes <= ${maxLegacyBatchBytes} or b.row_no=1
     )
     select b.sequence,b.event_id,b.run_id,b.thread_id,b.runner_ordinal,b.runner_binding_generation,
-      b.environment_id,b.type,b.created_at,
-      case when b.bytes<=${maxLegacyBatchBytes} then b.data
-        when b.type in ('reasoning.completed','node.message') then jsonb_strip_nulls(jsonb_build_object(
-          'blockId',left(b.data->>'blockId',255),'nodeId',left(b.data->>'nodeId',255),
-          'text',left(b.data->>'text',75000)))
-        else null end as data,
+      b.environment_id,b.type,b.created_at,b.data,
       node.id as node_id,coalesce(node.attempt_id,attempt.id) as attempt_id
-    from bounded b
+    from selected b
     left join execution_nodes node on node.id=b.data->>'nodeId' and node.run_id=b.run_id
       and b.type in ('tool.started','tool.completed','reasoning.completed','node.message')
     left join lateral (
@@ -104,18 +108,15 @@ export async function readLegacyActivityBatch(
         and b.type in ('tool.started','tool.completed','reasoning.completed','node.message')
       order by a.id limit 1
     ) attempt on node.id is null
-    where b.batch_bytes <= ${maxLegacyBatchBytes} or b.row_no=1
     order by b.sequence
   `.execute(tx);
   return page.rows;
 }
 
-type DisplayEvent = Extract<
-  AgentEvent,
-  {
-    type: "tool.started" | "tool.completed" | "reasoning.completed" | "node.message";
-  }
->;
+type DisplayKind = "tool.started" | "tool.completed" | "reasoning.completed" | "node.message";
+type DisplayEvent = {
+  [Kind in DisplayKind]: Pick<Extract<AgentEvent, { type: Kind }>, "type" | "data">;
+}[DisplayKind];
 type ToolEvent = Extract<DisplayEvent, { type: "tool.started" | "tool.completed" }>;
 type ToolSource = { row: LegacyActivity; event: ToolEvent; call: Selectable<ToolCallTable> };
 
@@ -158,24 +159,32 @@ function canonicalCard(row: LegacyActivity): { id: string; move: boolean } | nul
 }
 
 function classifyDisplay(row: LegacyActivity): DisplayEvent | null {
-  const parsed = AgentEventSchema.safeParse({
-    ...row,
-    createdAt: row.createdAt.toISOString(),
-  });
-  if (!parsed.success) return null;
-  const event = parsed.data;
-  if (
-    event.type !== "tool.started" &&
-    event.type !== "tool.completed" &&
-    event.type !== "reasoning.completed" &&
-    event.type !== "node.message"
-  )
-    return null;
-  if (!row.runId || !row.threadId || (event.data.nodeId && row.nodeId !== event.data.nodeId))
-    return null;
+  if (!row.runId || !row.threadId) return null;
   if (row.runnerOrdinal !== null && (!row.attemptId || row.runnerBindingGeneration === null))
     return null;
-  return event;
+  const type = row.type;
+  const node = eventDataId(row.data, "nodeId");
+  if (node !== null && row.nodeId !== node) return null;
+  switch (type) {
+    case "tool.started": {
+      const result = eventDataSchemas[type].safeParse(row.data);
+      return result.success ? { type, data: result.data } : null;
+    }
+    case "tool.completed": {
+      const result = eventDataSchemas[type].safeParse(row.data);
+      return result.success ? { type, data: result.data } : null;
+    }
+    case "reasoning.completed": {
+      const result = eventDataSchemas[type].safeParse(row.data);
+      return result.success ? { type, data: result.data } : null;
+    }
+    case "node.message": {
+      const result = eventDataSchemas[type].safeParse(row.data);
+      return result.success ? { type, data: result.data } : null;
+    }
+    default:
+      return null;
+  }
 }
 
 function makeToolCandidate(row: LegacyActivity, event: ToolEvent): ToolSource | null {
@@ -341,7 +350,6 @@ async function importToolBatch(
       view: transcriptPreview({
         title: tool?.name,
         status,
-        preview: event.type === "tool.completed" ? event.data.output.text : undefined,
       }),
     });
     if (event.type === "tool.completed")
