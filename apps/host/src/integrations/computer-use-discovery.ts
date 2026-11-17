@@ -2,7 +2,7 @@ import type { CallableIntegrationTool } from "@opensteer/database";
 import type { IntegrationAccess, IntegrationConnectionId } from "@opensteer/integration-core";
 import type { Blocked } from "@opensteer/core";
 
-export function toolReference(callable: CallableIntegrationTool): string {
+function toolReference(callable: CallableIntegrationTool): string {
   return `${callable.grant.id}.${callable.tool.id}.${callable.tool.schemaDigest}`;
 }
 
@@ -53,9 +53,9 @@ export function unknownComputerUseMac(computerId: string): string {
   return `No Mac set up for computer use has computerId ${computerId}. Search "Computer use" with integration_search to list your Macs and their computerIds.`;
 }
 
-export type ComputerAccess =
+type ComputerAccess =
   { access: IntegrationAccess; blocked?: never } | { blocked: Blocked; access?: never };
-export function blocked(code: string, message: string, next: string): { blocked: Blocked } {
+function blocked(code: string, message: string, next: string): { blocked: Blocked } {
   return { blocked: { code, message, next } };
 }
 export function computerMachineProblem(machine: {
@@ -72,12 +72,6 @@ export function computerMachineProblem(machine: {
       "update_required",
       `${machine.name} needs an Opensteer update.`,
       "The person can update Opensteer on the task's computer and the target computer.",
-    );
-  if (machine.state === "update-required")
-    return blocked(
-      "update_required",
-      `${machine.name} needs an Opensteer update for computer use.`,
-      "The person can update Opensteer on this task’s Host and the target computer.",
     );
   if (machine.state === "offline")
     return blocked(
@@ -99,16 +93,6 @@ export function computerMachineProblem(machine: {
     );
   return null;
 }
-export function computerUseNextAction(machine: {
-  name: string;
-  state: string;
-  appApproval: "ask" | "automatic";
-}): string {
-  return (
-    computerMachineProblem(machine)?.blocked.next ??
-    `Search with computerId to list installed apps on ${machine.name}.`
-  );
-}
 export function pendingOnComputerNextAction(machine: string): string {
   return `The owner can answer the pending request for ${machine} from any Opensteer app. A pending request grants nothing yet; you'll be told when they answer.`;
 }
@@ -120,7 +104,7 @@ interface CommonFacts {
   readonly pendingPersonalGrant: boolean;
   readonly heldByAnotherRun: { readonly threadTitle: string | null } | null;
 }
-export interface ComputerAppDiscoveryFacts extends CommonFacts {
+interface ComputerAppDiscoveryFacts extends CommonFacts {
   readonly app: string;
   readonly computerId: string;
   readonly machine: {
@@ -144,16 +128,16 @@ export function computerAppDiscovery(facts: ComputerAppDiscoveryFacts): Computer
       `${name} is blocked by its owner.`,
       "The owner can unblock it from any Opensteer app.",
     );
+  const problem = computerMachineProblem(facts.machine);
+  if (problem) return problem;
+  if (facts.heldByAnotherRun) return busy(name, facts.heldByAnotherRun);
+  if (facts.callable) return { access: facts.canAct ? "read-write" : "read" };
   if (facts.pendingOnMac || facts.pendingPersonalGrant)
     return blocked(
       "access_pending",
       `Access to ${name} is pending.`,
       pendingOnComputerNextAction(name),
     );
-  const problem = computerMachineProblem(facts.machine);
-  if (problem) return problem;
-  if (facts.heldByAnotherRun) return busy(name, facts.heldByAnotherRun);
-  if (facts.callable) return { access: facts.canAct ? "read-write" : "read" };
   return blocked(
     "access_required",
     `${name} needs access for this task.`,
@@ -186,16 +170,16 @@ export function phoneDiscovery(facts: PhoneDiscoveryFacts): ComputerAccess {
       `${name} is blocked by its owner.`,
       "The owner can unblock it from any Opensteer app.",
     );
+  const problem = computerMachineProblem(facts.phone);
+  if (problem) return problem;
+  if (facts.heldByAnotherRun) return busy(name, facts.heldByAnotherRun);
+  if (facts.callable) return { access: facts.canAct ? "read-write" : "read" };
   if (facts.pendingPhoneAccess || facts.pendingPersonalGrant)
     return blocked(
       "access_pending",
       `Access to ${name} is pending.`,
       pendingOnComputerNextAction(name),
     );
-  const problem = computerMachineProblem(facts.phone);
-  if (problem) return problem;
-  if (facts.heldByAnotherRun) return busy(name, facts.heldByAnotherRun);
-  if (facts.callable) return { access: facts.canAct ? "read-write" : "read" };
   return blocked(
     "access_required",
     `${name} needs access for this task.`,

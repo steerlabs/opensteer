@@ -63,6 +63,44 @@ describe("computer access", () => {
       message: expect.stringContaining("Calendar"),
     });
   });
+  it("lists pending Mac apps without a bindable connection id and keeps version facts explicit", async () => {
+    let version: number | undefined = 2;
+    const platform = {
+      computerAppApprovals: {
+        computerUseInventory: async () => ({
+          machines: [
+            { runnerId: "rnr_mac", name: "Mac", state: "ready", appApproval: "ask", apps: [] },
+          ],
+          phones: [],
+        }),
+        computerAppHolders: () => new Map(),
+      },
+      store: {
+        listComputerAppSetupRequests: async () => [
+          {
+            kind: "app",
+            definitionId: "macos-app",
+            runnerId: "rnr_mac",
+            app: { displayName: "Notes", bundleId: "com.apple.Notes" },
+            access: "read",
+          },
+        ],
+        requests: { listPendingIntegrationAccessRequests: async () => [] },
+      },
+      listCallableTools: async () => [],
+      computerUseVersion: () => version,
+    } as unknown as IntegrationPlatformService;
+    const input = { ownerUserId: "user" } as Parameters<
+      IntegrationPlatformService["computerAccess"]
+    >[0];
+    const access = await gatherComputerAccess(platform, input);
+    expect(access.appEntries(access.machines[0]!)).toMatchObject([
+      { id: null, name: "Notes", blocked: { code: "access_pending" } },
+    ]);
+    version = undefined;
+    const outdated = await gatherComputerAccess(platform, input);
+    expect(outdated.machine(outdated.machines[0]!)?.blocked.code).toBe("update_required");
+  });
   it("requires a personal grant even when the phone connection exists", () => {
     expect(phoneDiscovery(phone)).toEqual({
       blocked: {
@@ -73,23 +111,25 @@ describe("computer access", () => {
     });
   });
   it.each([
-    [{ pendingPhoneAccess: true, phone: { ...phone.phone, state: "offline" } }, "access_pending"],
+    [{ pendingPhoneAccess: true, phone: { ...phone.phone, state: "offline" } }, "computer_offline"],
     [
       { phone: { ...phone.phone, state: "offline" }, heldByAnotherRun: { threadTitle: "Other" } },
       "computer_offline",
     ],
     [{ callable: true, heldByAnotherRun: { threadTitle: "Other" } }, "in_use"],
-    [{ phone: { ...phone.phone, state: "update-required" } }, "update_required"],
+    [{ phone: { ...phone.phone, computerToolEnabled: false } }, "update_required"],
   ])("uses the most specific phone blocker", (overrides, code) => {
     expect(phoneDiscovery({ ...phone, ...overrides }).blocked?.code).toBe(code);
   });
   it("reports usable read access when the task cannot act", () => {
-    expect(phoneDiscovery({ ...phone, callable: true })).toEqual({ access: "read" });
+    expect(phoneDiscovery({ ...phone, callable: true, pendingPersonalGrant: true })).toEqual({
+      access: "read",
+    });
     expect(phoneDiscovery({ ...phone, callable: true, canAct: true })).toEqual({
       access: "read-write",
     });
   });
-  it("prioritizes the owner block, pending access, machine availability and holder for apps", () => {
+  it("prioritizes owner blocks and device problems before usable and pending access", () => {
     const facts = {
       app: "Notes",
       computerId: "rnr_mac",
@@ -101,9 +141,21 @@ describe("computer access", () => {
       heldByAnotherRun: { threadTitle: "Other" },
     };
     expect(computerAppDiscovery(facts).blocked?.code).toBe("blocked_by_owner");
-    expect(computerAppDiscovery({ ...facts, approval: null }).blocked?.code).toBe("access_pending");
+    expect(computerAppDiscovery({ ...facts, approval: null }).blocked?.code).toBe(
+      "computer_offline",
+    );
     expect(
       computerAppDiscovery({ ...facts, approval: null, pendingOnMac: false }).blocked?.code,
     ).toBe("computer_offline");
+    const ready = {
+      ...facts,
+      approval: null,
+      machine: { ...facts.machine, state: "ready" },
+      heldByAnotherRun: null,
+    };
+    expect(computerAppDiscovery(ready)).toEqual({ access: "read" });
+    expect(computerAppDiscovery({ ...ready, callable: false }).blocked?.code).toBe(
+      "access_pending",
+    );
   });
 });

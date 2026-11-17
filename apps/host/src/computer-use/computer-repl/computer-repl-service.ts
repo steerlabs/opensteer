@@ -1,5 +1,5 @@
 import { DeviceAccessRefusal } from "../../administration/device-access.js";
-import { utf8Prefix, type Blocked } from "@opensteer/core";
+import { utf8Prefix, OpensteerError } from "@opensteer/core";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { delay } from "@opensteer/shared/delay";
 import { Worker } from "node:worker_threads";
@@ -29,7 +29,7 @@ export interface ComputerReplInvocation extends ReplRequest {
 export type ComputerReplResult = {
   content: ReplContent[];
   isError?: true;
-  structuredContent?: { error: ReplFailure | Blocked };
+  structuredContent?: { error: ReplFailure };
 };
 interface Call {
   readonly id: string;
@@ -251,9 +251,11 @@ export class ComputerReplService {
         code:
           error instanceof DeviceAccessRefusal
             ? error.reason
-            : "code" in record && typeof record.code === "string"
-              ? record.code
-              : "failed",
+            : error instanceof OpensteerError && error.reason
+              ? error.reason
+              : "code" in record && typeof record.code === "string"
+                ? record.code
+                : "failed",
         ...(error instanceof DeviceAccessRefusal
           ? { machineId: error.machineId, capability: error.capability }
           : {}),
@@ -348,10 +350,7 @@ export class ComputerReplService {
         ? {
             isError: true as const,
             structuredContent: {
-              error:
-                failure.next && failure.performed.length === 0
-                  ? { code: failure.code, message: failure.message, next: failure.next }
-                  : failure,
+              error: failure,
             },
           }
         : {}),

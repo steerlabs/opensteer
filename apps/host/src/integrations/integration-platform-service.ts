@@ -2879,22 +2879,10 @@ export class IntegrationPlatformService {
         : ["windows", "bind", "observe"].includes(operation)
           ? "observe"
           : "act";
-    const access =
-      facts ??
-      (await this.computerAccess({ ownerUserId: run.requestedBy, threadId: caller.threadId }, run));
-    const phone = access.phones.find((entry) => entry.connection?.connectionId === target);
-    const machine = access.machines.find((entry) =>
-      entry.apps.some((app) => app.connectionId === target),
-    );
-    const app = machine?.apps.find((entry) => entry.connectionId === target);
-    const state = phone
-      ? access.phone(phone)
-      : machine && app
-        ? access.app(machine, { displayName: app.name, bundleId: app.bundleId })
-        : undefined;
-    if (operation !== "release" && state?.blocked)
-      throw Object.assign(new Error(state.blocked.message), state.blocked);
-    const callable = access.tools.find(
+    const tools =
+      facts?.tools ??
+      (await this.listCallableTools({ ownerUserId: run.requestedBy, threadId: caller.threadId }));
+    const callable = tools.find(
       (candidate) =>
         candidate.grant.connectionId === target &&
         candidate.tool.name === row &&
@@ -2903,6 +2891,31 @@ export class IntegrationPlatformService {
           candidate.server.transport.definitionId === androidPhoneDefinitionId),
     );
     if (!callable) {
+      const access =
+        facts ??
+        (await this.computerAccess(
+          { ownerUserId: run.requestedBy, threadId: caller.threadId },
+          run,
+          tools,
+        ));
+      const phone = access.phones.find((entry) => entry.connection?.connectionId === target);
+      const machine = access.machines.find((entry) =>
+        entry.apps.some((app) => app.connectionId === target),
+      );
+      const app = machine?.apps.find((entry) => entry.connectionId === target);
+      const state = phone
+        ? access.phone(phone)
+        : machine && app
+          ? access.app(machine, { displayName: app.name, bundleId: app.bundleId })
+          : undefined;
+      if (operation !== "release" && state?.blocked)
+        throw new OpensteerError({
+          code: "forbidden",
+          reason: state.blocked.code,
+          message: state.blocked.message,
+          next: state.blocked.next,
+        });
+
       const connection =
         row === "act"
           ? await this.#store.getComputerConnectionForCall({
@@ -3222,8 +3235,12 @@ export class IntegrationPlatformService {
     }
   }
 
-  async computerAccess(input: IntegrationRequester, run?: RunCapabilityClaims<string>) {
-    return gatherComputerAccess(this, input, run);
+  async computerAccess(
+    input: IntegrationRequester,
+    run?: RunCapabilityClaims<string>,
+    tools?: readonly CallableIntegrationTool[],
+  ) {
+    return gatherComputerAccess(this, input, run, tools);
   }
 
   async #invokeComputerRepl(
@@ -3281,7 +3298,7 @@ export class IntegrationPlatformService {
       const usable =
         request.operation === "phones"
           ? access.phones.map((phone) => ({
-              id: phone.connection?.connectionId ?? phone.runnerId,
+              id: phone.connection?.connectionId ?? null,
               name: phone.name,
               computer: phone.name,
               computerId: phone.runnerId,
@@ -3296,7 +3313,7 @@ export class IntegrationPlatformService {
             );
       const key = `${request.context.runId}:${request.context.generation}`;
       const targets = this.#replTargets.get(key) ?? new Set<string>();
-      for (const entry of usable) targets.add(entry.id);
+      for (const entry of usable) if (entry.id && entry.access) targets.add(entry.id);
       this.#replTargets.set(key, targets);
       return { value: usable };
     }

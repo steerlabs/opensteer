@@ -1,4 +1,4 @@
-import type { IntegrationRequester } from "@opensteer/database";
+import type { CallableIntegrationTool, IntegrationRequester } from "@opensteer/database";
 import type { RunnerId } from "@opensteer/core";
 import { computerAppIdentityKey } from "@opensteer/integration-core";
 import { androidPhoneDefinitionId } from "@opensteer/protocol";
@@ -10,7 +10,10 @@ import {
   computerToolRefs,
   computerMachineProblem,
 } from "./computer-use-discovery.js";
-const computerUseDefinitionId = "macos-app";
+import {
+  computerUseDefinitionId,
+  computerUseHolderKey,
+} from "../computer-use/computer-use-service.js";
 export async function gatherComputerAccess(
   platform: Pick<
     IntegrationPlatformService,
@@ -22,10 +25,11 @@ export async function gatherComputerAccess(
   >,
   input: IntegrationRequester,
   run?: RunCapabilityClaims<string>,
+  callableTools?: readonly CallableIntegrationTool[],
 ) {
   const [inventory, tools, setupRequests, accessRequests, enabled] = await Promise.all([
     platform.computerAppApprovals.computerUseInventory(input.ownerUserId),
-    platform.listCallableTools(input),
+    callableTools ?? platform.listCallableTools(input),
     platform.store.listComputerAppSetupRequests(input.ownerUserId),
     platform.store.requests.listPendingIntegrationAccessRequests(input.ownerUserId),
     run ? platform.computerToolEnabled(run) : true,
@@ -57,7 +61,7 @@ export async function gatherComputerAccess(
   const machineFacts = (machine: (typeof inventory.machines)[number]) => ({
     ...machine,
     computerToolEnabled: enabled,
-    state: !enabled || versions.get(machine.runnerId) !== 2 ? "update-required" : machine.state,
+    computerUseVersion: versions.get(machine.runnerId) ?? null,
   });
   const app = (
     machine: (typeof inventory.machines)[number],
@@ -87,7 +91,7 @@ export async function gatherComputerAccess(
       phone: {
         ...entry,
         computerId: entry.runnerId,
-        state: enabled ? entry.state : "update-required",
+        computerToolEnabled: enabled,
       },
       connection: entry.connection,
       blockedByOwner: entry.blockedByOwner,
@@ -100,7 +104,10 @@ export async function gatherComputerAccess(
           request.runnerId === entry.runnerId,
       ),
       pendingPersonalGrant: !!entry.connection && grants.has(entry.connection.connectionId),
-      heldByAnotherRun: held(entry.runnerId, "display:android-phone"),
+      heldByAnotherRun: held(
+        entry.runnerId,
+        computerUseHolderKey({ kind: "display", definitionId: androidPhoneDefinitionId }),
+      ),
     });
   };
   return {
@@ -122,7 +129,7 @@ export async function gatherComputerAccess(
             ),
         )
         .map((request) => ({
-          id: `${machine.runnerId}:${request.app.bundleId}`,
+          id: null,
           name: request.app.displayName,
           bundleId: request.app.bundleId,
           ...app(machine, request.app),

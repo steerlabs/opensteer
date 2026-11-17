@@ -4297,6 +4297,42 @@ describe("IntegrationPlatformService computer use gateway", () => {
 
   const context = { runId: createId("run"), threadId: createId("thread") };
 
+  it("explains a missing callable with the listing blocker and reuses its tool lookup", async () => {
+    const f = guiFixture({ operation: "observe" });
+    const who = runCaller(context);
+    const tools = vi.spyOn(f.service, "listCallableTools").mockResolvedValue([]);
+    try {
+      const access = await f.service.computerAccess(
+        { ownerUserId: who.run!.requestedBy, threadId: who.threadId },
+        who.run,
+      );
+      const state = access.appEntries(access.machines[0]!)[0]!;
+      tools.mockClear();
+      await expect(operate(f.service, f.callable, {}, who)).rejects.toMatchObject({
+        code: "forbidden",
+        reason: state.blocked!.code,
+        message: state.blocked!.message,
+        next: state.blocked!.next,
+      });
+      expect(tools).toHaveBeenCalledOnce();
+    } finally {
+      await f.service.close();
+    }
+  });
+
+  it("authorizes callable operations without gathering discovery facts", async () => {
+    const f = guiFixture({ operation: "observe" });
+    const access = vi
+      .spyOn(f.service, "computerAccess")
+      .mockRejectedValue(new Error("Unexpected discovery"));
+    try {
+      await operate(f.service, f.callable, {}, runCaller(context));
+      expect(access).not.toHaveBeenCalled();
+    } finally {
+      await f.service.close();
+    }
+  });
+
   it.each([false, true])(
     "revokes during a slow saved-login seal without dispatch (phone=%s)",
     async (phone) => {

@@ -62,7 +62,11 @@ describe("native tab binding", () => {
       blocked: async () => blocked,
       bind: vi.fn(),
     };
-    await expect(bindNativeTab(options, claims, tabId)).rejects.toMatchObject(blocked);
+    await expect(bindNativeTab(options, claims, tabId)).rejects.toMatchObject({
+      ...blocked,
+      code: "forbidden",
+      reason: blocked.code,
+    });
     options.tabs.authorizeShow = async () => {
       throw new Error("concealed");
     };

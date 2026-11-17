@@ -1,4 +1,4 @@
-import { refused, type Blocked, type TabId, type UserId } from "@opensteer/core";
+import { refused, OpensteerError, type Blocked, type TabId, type UserId } from "@opensteer/core";
 import { ComputerUseTabBindingSchema } from "@opensteer/protocol";
 import {
   computerAppIdentitiesEqual,
@@ -62,7 +62,13 @@ export async function bindNativeTab(
         : entry.computer.app && computerAppIdentitiesEqual(entry.computer.app, target.app)),
   );
   const blocked = await options.blocked?.(target);
-  if (blocked) throw Object.assign(new Error(blocked.message), blocked);
+  if (blocked)
+    throw new OpensteerError({
+      code: "forbidden",
+      reason: blocked.code,
+      message: blocked.message,
+      next: blocked.next,
+    });
   if (!connection) throw refused("not_found", "This tab is unavailable.");
   await authorize();
   const reply = await options.bind(connection, target, authorize);
