@@ -19,7 +19,7 @@ cannot create accounts, enter credentials or grant access.
 
 Read only the reference needed for the work:
 
-- [Discovery](references/discovery.md) when finding operations or interpreting readiness and paging.
+- [Discovery](references/discovery.md) when finding operations or interpreting blockers and paging.
 - [Operations](references/operations.md) when an operation needs more detail than search shows, or repairing a schema or account error.
 - [Requests](references/requests.md) when connecting, installing or requesting access.
 - [Proposals](references/proposals.md) when the catalog has no fitting integration.

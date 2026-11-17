@@ -1704,6 +1704,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
   ): Promise<
     readonly {
       readonly accounts: readonly {
+        readonly readiness?: IntegrationReadiness | undefined;
         readonly access: IntegrationAccess | null;
         readonly account: string;
         readonly connectionId: IntegrationConnectionId;
@@ -1769,8 +1770,8 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
             this.listTools(row.id, input.ownerUserId),
           ]);
           const serverById = new Map(servers.map((server) => [server.id, server]));
-          const installationConnections = connections.filter((connection) =>
-            servers.some((server) => {
+          const serversForConnection = (connection: (typeof connections)[number]) =>
+            servers.filter((server) => {
               const requirement = server.connectionRequirement;
               if (requirement.kind === "provider") {
                 return (
@@ -1791,7 +1792,9 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
                 connection.connectionKind === "mcp-oauth" &&
                 connection.integrationServerId === server.id
               );
-            }),
+            });
+          const installationConnections = connections.filter(
+            (connection) => serversForConnection(connection).length > 0,
           );
           const hasInstallationAccess = (
             connectionId: IntegrationConnectionId | null,
@@ -1846,8 +1849,27 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
                   candidate.installationId === installation.id &&
                   candidate.connectionId === connection.id,
               );
+              const server = serversForConnection(connection)[0];
               return {
                 access: grant ? effectiveIntegrationAccess(grant.access, connection) : null,
+                readiness: server
+                  ? resolveIntegrationReadiness({
+                      connectionRequirement: server.connectionRequirement,
+                      connections,
+                      hasAccess: hasInstallationAccess,
+                      installationStatus: installation.status,
+                      providerAuthorization:
+                        server.connectionRequirement.kind === "provider"
+                          ? (input.providerAuthorizations[server.connectionRequirement.provider] ??
+                            null)
+                          : null,
+                      requiredAccess: input.target?.access ?? "read",
+                      requiredConnectionId: connection.id,
+                      serverId: server.id,
+                      serverStatus: server.status,
+                      statusDetail: server.statusDetail,
+                    })
+                  : undefined,
                 account: integrationAccountLabel(connection),
                 connectionId: connection.id,
                 isDefault: grant?.isDefault ?? false,

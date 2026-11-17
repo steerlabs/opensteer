@@ -389,8 +389,8 @@ describe("Opensteer MCP spine", () => {
         Object.assign(request, { status: "declined" });
         const result = await call;
         expect(result).toMatchObject({
-          structuredContent: { status: "declined" },
-          content: [expect.anything(), { type: "text", text: "Answered declined" }],
+          structuredContent: { status: "declined", next: "Answered declined" },
+          content: [expect.objectContaining({ type: "text" })],
         });
         expect(f.markToolDelivered).toHaveBeenCalledOnce();
         expect(wait.mock.calls[0]?.[0].limitMs).toBe(requestHoldLimitMs);

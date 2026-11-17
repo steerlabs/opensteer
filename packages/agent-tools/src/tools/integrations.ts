@@ -247,7 +247,7 @@ export const integration_request = defineAgentTool({
   opensRequest: true,
   title: "Request integration access",
   description:
-    "Ask the person to set up, reconnect or grant access to a service. For an installed integration pass integration, access and reason; for a catalog item pass catalog instead, omitting access only to install it alone. Access is personal and pending grants none; programs receive no continuation. Never repeat a pending or declined ask; credentials belong in the Request. Mac apps and phones use app_access_request; a service missing from the catalog uses custom_integration_request.",
+    "Ask the person to set up, reconnect or grant access to a service. For an installed integration pass integration, access and reason; for a catalog item pass catalog instead, omitting access only to install it alone. Access is personal and pending grants none; programs receive no continuation. Read next for the request outcome and recommended action; credentials belong in the Request. Mac apps and phones use app_access_request; a service missing from the catalog uses custom_integration_request.",
   input: RequestInputSchema,
   output: IntegrationRequestOutputSchema,
   access: "write",
@@ -258,7 +258,7 @@ export const app_access_request = defineAgentTool({
   opensRequest: true,
   title: "Request a Mac app or phone",
   description:
-    "Ask the person to let this task use one Mac app, or a whole Agent Phone, through computer_use. For a Mac app pass app and, unless it is on the Mac this task runs on, its computerId; for a phone pass only its computerId. read observes and read-write also acts. Pending grants no access; never repeat a pending or declined ask.",
+    "Ask the person to let this task use one Mac app, or a whole Agent Phone, through computer_use. For a Mac app pass app and, unless it is on the Mac this task runs on, its computerId; for a phone pass only its computerId. read observes and read-write also acts. Pending grants no access; next explains the result and recommended action.",
   input: AppAccessRequestInputSchema,
   output: IntegrationRequestOutputSchema,
   access: "write",

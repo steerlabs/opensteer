@@ -1,3 +1,4 @@
+import { integrationBlocked } from "../integrations/integration-blocked.js";
 import type { BrowserSignInRequestResponse } from "@opensteer/protocol/browser-sources";
 import { createBrowserSessionId } from "@opensteer/protocol";
 import { createHash } from "node:crypto";
@@ -588,9 +589,7 @@ describe("continuationMessage", () => {
           }),
         ),
       ),
-    ).toBe(
-      `Request ${request.id} was fulfilled. Gmail is installed and its account connection works, but your Opensteer holds no access grant yet. Call integration_search now, then call integration_request with this integration and the access class the task needs.`,
-    );
+    ).toBe(`Request ${request.id} was fulfilled. ${blockedText("ACCESS_GRANT_REQUIRED")}`);
   });
   it("reports a missing personal grant after fulfillment", async () => {
     const request = fulfilledRequest("integration.access");
@@ -605,7 +604,7 @@ describe("continuationMessage", () => {
         ),
       ),
     ).toBe(
-      `Request ${request.id} was fulfilled. Gmail read access was granted for connectionless operations. Your Opensteer still holds no access grant (No personal grant).`,
+      `Request ${request.id} was fulfilled. Gmail read access was granted for connectionless operations. ${blockedText("ACCESS_GRANT_REQUIRED")}`,
     );
   });
   it("sends the agent to integration_request when the installation has no account", async () => {
@@ -620,9 +619,7 @@ describe("continuationMessage", () => {
           }),
         ),
       ),
-    ).toBe(
-      `Request ${request.id} was fulfilled. Gmail is installed but has no connected account (No Google account). Call integration_request now for the account connection, then continue the task.`,
-    );
+    ).toBe(`Request ${request.id} was fulfilled. ${blockedText("USER_AUTHORIZATION_REQUIRED")}`);
   });
   it("reports the statusDetail of an installation that landed unusable", async () => {
     const request = fulfilledRequest("integration.install");
@@ -638,7 +635,7 @@ describe("continuationMessage", () => {
         ),
       ),
     ).toBe(
-      `Request ${request.id} was fulfilled, but Gmail installed in an unusable state: The OpenAPI document could not be compiled. Requesting it again will not help. Continue without it and tell the user what that detail says.`,
+      `Request ${request.id} was fulfilled. ${blockedText("INTEGRATION_UNAVAILABLE", "The OpenAPI document could not be compiled")}`,
     );
   });
   it("directs a misconfigured provider through the agent-owned setup request", async () => {
@@ -653,9 +650,7 @@ describe("continuationMessage", () => {
           }),
         ),
       ),
-    ).toBe(
-      `Request ${request.id} was fulfilled, but Gmail installed in an unusable state: No Google application. Request access through integration_request; the connection UI offers supported personal-app setup and identifies any administrator prerequisite.`,
-    );
+    ).toBe(`Request ${request.id} was fulfilled. ${blockedText("ADMIN_CONFIGURATION_REQUIRED")}`);
   });
   it("never claims an installation that the inventory does not hold", async () => {
     const request = fulfilledRequest("integration.install");
@@ -709,7 +704,7 @@ describe("continuationMessage", () => {
         ),
       ),
     ).toBe(
-      `Request ${request.id} was fulfilled, but Gmail installed in an unusable state: the installation exposes no servers. An administrator must repair the installation. Continue without it and tell the user.`,
+      `Request ${request.id} was fulfilled. google-gmail exposes no servers. An administrator must repair the installation. Continue without it and tell the user.`,
     );
   });
   it("names the connected account once the access grant is verified", async () => {
@@ -744,7 +739,7 @@ describe("continuationMessage", () => {
         ),
       ),
     ).toBe(
-      `Request ${request.id} was fulfilled. Gmail read access was granted for connectionless operations. The fulfilled target is not usable (Missing gmail.modify).`,
+      `Request ${request.id} was fulfilled. Gmail read access was granted for connectionless operations. ${blockedText("REAUTHORIZATION_REQUIRED")}`,
     );
   });
   it("never claims access to an installation that has left the inventory", async () => {
@@ -1129,4 +1124,10 @@ function payloadFor(
         reason: "Read Mail",
       };
   }
+}
+
+function blockedText(code: IntegrationReadiness["code"], detail?: string) {
+  const current = entry({ code, ...(detail === undefined ? {} : { detail }) });
+  const blocked = integrationBlocked(current.readiness.servers[0], current.installation.name)!;
+  return `${blocked.message} ${blocked.next}`;
 }

@@ -1,13 +1,7 @@
+import { BlockedSchema, RequestStatusSchema } from "@opensteer/core";
 import { z } from "zod";
 import { AgentLinkSchema } from "./agent-links.js";
 
-const ReadinessSchema = z.object({
-  code: z.string(),
-  connectionId: z.string().optional(),
-  requiredAccess: z.string().optional(),
-  detail: z.string().optional(),
-  serverId: z.string().optional(),
-});
 const AppSchema = z.object({
   name: z.string().optional(),
   bundleId: z.string().optional(),
@@ -52,7 +46,6 @@ export const IntegrationSearchOutputSchema = z.object({
   guidance: z
     .object({
       catalog: z.string().optional(),
-      readiness: z.string().optional(),
       computers: z.string().optional(),
       phones: z.string().optional(),
     })
@@ -99,7 +92,7 @@ export const IntegrationSearchOutputSchema = z.object({
             status: z.string().optional(),
             // null: the owner holds no grant to the account.
             access: z.string().nullable().optional(),
-            readiness: ReadinessSchema.optional(),
+            blocked: BlockedSchema.optional(),
           }),
         ),
         integration: z.string(),
@@ -107,7 +100,8 @@ export const IntegrationSearchOutputSchema = z.object({
         installationId: z.string(),
         servers: z.array(
           z.object({
-            readiness: ReadinessSchema.optional(),
+            blocked: BlockedSchema.optional(),
+            connectionId: z.string().optional(),
             server: z.string(),
             serverId: z.string(),
           }),
@@ -116,9 +110,11 @@ export const IntegrationSearchOutputSchema = z.object({
         tools: z
           .array(
             z.object({
+              connectionId: z.string().optional(),
+              serverId: z.string().optional(),
               effect: z.string(),
               name: z.string(),
-              readiness: ReadinessSchema.optional(),
+              blocked: BlockedSchema.optional(),
               title: z.string().optional(),
             }),
           )
@@ -156,13 +152,11 @@ export const IntegrationCallOutputSchema = z.object({
 });
 export const IntegrationRequestOutputSchema = z.object({
   link: AgentLinkSchema.optional(),
-  status: z.string(),
-  kind: z.string().optional(),
+  status: RequestStatusSchema,
+  kind: z.string(),
   replayed: z.boolean().optional(),
-  requestId: z.string().nullable().optional(),
-  alreadyGranted: z.boolean().optional(),
-  nextAction: z.string().optional(),
-  guidance: z.string().optional(),
+  requestId: z.string().nullable(),
+  next: z.string().min(1),
   authNote: z.string().optional(),
   selectedAuth: z.enum(["api-key", "mcp-oauth", "none"]).optional(),
   reason: z.string().optional(),

@@ -225,7 +225,7 @@ describe("Opensteer MCP integration access classes", () => {
     expect(request?.description).toContain("pass catalog instead");
     const describe = listed.tools.find(({ name }) => name === "integration_describe");
     expect(describe?.description).toContain("full input and output schemas");
-    expect(request?.description).toContain("Never repeat a pending or declined ask");
+    expect(request?.description).toContain("Read next for the request outcome");
     expect(request?.description).not.toContain("requestSelection");
     // One object for every request shape: Claude Code drops tools whose input
     // root is a union. The Host still enforces each shape when called.
@@ -254,7 +254,7 @@ describe("Opensteer MCP integration access classes", () => {
     });
   });
 
-  it("returns access, effect, readiness and accounts, with no address tokens", async () => {
+  it("returns usable accounts and servers without blockers", async () => {
     const entry = inventoryEntry();
     const callable = callableTool({
       entry,
@@ -312,6 +312,8 @@ describe("Opensteer MCP integration access classes", () => {
     expect((searched.operations as Record<string, unknown>[])[0]).not.toHaveProperty("accounts");
     const serialized = JSON.stringify(searched);
     for (const removed of [
+      "blocked",
+      "readiness",
       "requestSelection",
       "connectionSelections",
       "readOnly",
@@ -528,7 +530,6 @@ describe("Opensteer MCP integration access classes", () => {
       ),
     );
     expect(searched).toMatchObject({
-      guidance: { readiness: expect.stringContaining("ACCESS_GRANT_REQUIRED") },
       operations: [],
       results: [
         {
@@ -536,7 +537,10 @@ describe("Opensteer MCP integration access classes", () => {
             {
               effect: "write",
               name: "issues.create",
-              readiness: { code: "ACCESS_GRANT_REQUIRED", requiredAccess: "read-write" },
+              blocked: {
+                code: "access_required",
+                next: expect.stringContaining('"access":"read-write"'),
+              },
             },
           ],
         },
@@ -664,13 +668,12 @@ describe("Opensteer MCP integration access classes", () => {
           ]),
         });
         expect(full).toMatchObject({
-          guidance: { readiness: expect.stringContaining("REAUTHORIZATION_REQUIRED") },
           results: expect.arrayContaining([
             expect.objectContaining({
               name: "attention",
               servers: [
                 expect.objectContaining({
-                  readiness: expect.objectContaining({ code: "REAUTHORIZATION_REQUIRED" }),
+                  blocked: expect.objectContaining({ code: "reauthorization_required" }),
                 }),
               ],
             }),
@@ -851,22 +854,23 @@ describe("Opensteer MCP integration access classes", () => {
       ),
     );
     expect(searched).toMatchObject({
-      guidance: { readiness: expect.stringContaining("do not repeat access requests") },
       operations: [{ name: expect.stringContaining(`${callable.tool.name}@`) }],
       results: [
         {
           accounts: [{ account: "Studio Mac", connectionId: callable.grant.connectionId }],
           servers: [
             {
-              readiness: {
-                code: "INTEGRATION_UNAVAILABLE",
-                detail: "Studio Mac is offline. Messages will work again when it is back.",
+              blocked: {
+                code: "unavailable",
+                message: expect.stringContaining(
+                  "Studio Mac is offline. Messages will work again when it is back.",
+                ),
               },
             },
           ],
           tools: [
             {
-              readiness: { code: "INTEGRATION_UNAVAILABLE" },
+              blocked: { code: "unavailable" },
             },
           ],
         },
@@ -903,14 +907,13 @@ describe("Opensteer MCP integration access classes", () => {
     );
 
     expect(searched).toMatchObject({
-      guidance: { readiness: expect.stringContaining("relay the recorded detail to the user") },
       results: [
         {
           servers: [
             {
-              readiness: {
-                code: "INTEGRATION_UNAVAILABLE",
-                detail: "The OpenAPI document could not be compiled.",
+              blocked: {
+                code: "unavailable",
+                message: expect.stringContaining("The OpenAPI document could not be compiled."),
               },
             },
           ],
@@ -951,22 +954,25 @@ describe("Opensteer MCP integration access classes", () => {
     );
 
     expect(searched).toMatchObject({
-      guidance: { readiness: expect.stringContaining("relay the recorded detail to the user") },
       results: [
         {
           servers: [
             {
-              readiness: {
-                code: "INTEGRATION_UNAVAILABLE",
-                detail: "The installed computer app definition is invalid.",
+              blocked: {
+                code: "unavailable",
+                message: expect.stringContaining(
+                  "The installed computer app definition is invalid.",
+                ),
               },
             },
           ],
           tools: [
             {
-              readiness: {
-                code: "INTEGRATION_UNAVAILABLE",
-                detail: "The installed computer app definition is invalid.",
+              blocked: {
+                code: "unavailable",
+                message: expect.stringContaining(
+                  "The installed computer app definition is invalid.",
+                ),
               },
             },
           ],
@@ -1366,7 +1372,7 @@ describe("Opensteer MCP integration access classes", () => {
       callExtra("already-granted"),
     );
     expect(errorText(response)).toContain(
-      "The owner already has read-write access to Linear as Work. Use integration_search for current access and available operations; do not request it again.",
+      "Linear as Work is usable now with read-write access. Call integration_search for available operations.",
     );
     expect(requests.createIntegrationAccessRequest).not.toHaveBeenCalled();
   });

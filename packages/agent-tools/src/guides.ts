@@ -13,10 +13,7 @@ Authority:
 - A webhook result may supply its address and secret for the requested setup; never commit it, put it in memory or send it elsewhere.
 
 Needs you:
-- Request tools wait for the person and return the outcome. If the hold expires, Opensteer stops the Run; a later answer resumes this task.
-- A private steer may release the call while the Request stays open; the message never answers it.
-- Voice and background Runs get pending immediately. Pending is not permission: do not use the requested access, poll, repeat or route around the Request (including Guest or another account).
-- \`opensteer_request_read\` shows status, not the answer. Do not poll it. Answer questions about a Request from its current kind and title, never memory.`;
+- \`opensteer_request_read\` shows status, not the answer. Answer questions about a Request from its current kind and title, never memory.`;
 
 const routingGuide = `Routing:
 - Services: read opensteer:integrations; discover with \`integration_search\`, then call.

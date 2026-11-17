@@ -1,3 +1,4 @@
+import { requestResult } from "./request-result.js";
 import { productToolOutput } from "./tool-output.js";
 import { IntegrationCallOutputSchema } from "@opensteer/agent-tools/outputs";
 import { z } from "zod";
@@ -461,7 +462,11 @@ export class OpensteerMcpService {
               ? requestHoldLimitMs
               : shortRequestHoldMs,
         });
-        if (held) return agentToolRecordResult(held.record, held.text ?? requestStillOpenGuidance);
+        if (held)
+          return agentToolRecordResult({
+            ...held.record,
+            next: held.text ?? held.record.next ?? requestStillOpenGuidance,
+          });
       }
       let pendingRequest = false;
       if (
@@ -476,7 +481,9 @@ export class OpensteerMcpService {
           request.status === "pending" &&
           request.originatingRunId === currentCaller.claims.runId;
       }
-      return agentToolRecordResult(result, pendingRequest ? requestPendingGuidance : undefined);
+      return agentToolRecordResult(
+        pendingRequest ? { ...result, next: requestPendingGuidance } : result,
+      );
     } catch (error) {
       const parsed = tool?.input.safeParse(args);
       const access =
@@ -547,7 +554,14 @@ export class OpensteerMcpService {
         call: ToolCall<typeof tool.name>,
       ) => Promise<unknown>;
       identity.signal?.throwIfAborted();
-      const raw = await handler(call);
+      const handled = await handler(call);
+      const raw =
+        requestTools.has(tool.name) &&
+        handled &&
+        typeof handled === "object" &&
+        !Array.isArray(handled)
+          ? requestResult(tool.name, handled as Record<string, unknown>)
+          : handled;
       identity.signal?.throwIfAborted();
       const output = tool.output.safeParse(
         /^(opensteer_(task|delegation|subagent|request|automation|app)_|person_)/.test(tool.name)
