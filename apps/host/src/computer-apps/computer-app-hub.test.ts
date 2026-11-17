@@ -1222,6 +1222,43 @@ describe("screen driver assignment fencing", () => {
           { deviceId: second, generation: 1 },
         ],
       });
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const admission = drivers.withAdmission(first, () => held);
+      const frameHandled = hub.handleMessage(peer, stream, {
+        ...stream.fence,
+        type: "runner.integrations.device-status",
+        module: "integrations",
+        deviceId: first,
+        driverGeneration: 1,
+        definitionId: "iphone-screen",
+        operations: [],
+        availability: { state: "ready", reason: null },
+        navigationButtons: [],
+        actions: [],
+        wake: false,
+        lock: null,
+        displayVersion: null,
+        ownerViewVersion: null,
+        inputVersion: null,
+        powerVersion: null,
+      });
+      try {
+        await vi.waitFor(
+          () =>
+            expect(
+              hub.deviceStatus(first)?.driverGeneration,
+              "status frame must bypass a held Device admission",
+            ).toBe(1),
+          { timeout: 500 },
+        );
+      } finally {
+        release();
+        await admission;
+        await frameHandled;
+      }
       const old = await hub.captureRoute(first, "iphone-screen");
       const beforeCrossDevice = peer.sent.length;
       const wrongTarget = await hub.sendComputerUse({
@@ -1412,6 +1449,53 @@ it("retains the self Device route for Android media without changing its control
     expect(frame).not.toHaveProperty("driverGeneration");
     hub.close();
     await sent.outcome;
+  } finally {
+    hub.close();
+    drivers.close();
+  }
+});
+
+it("isolates a synchronous assignment send failure from other Runners", async () => {
+  const { DeviceDriverResolver } = await import("../computer-use/device-drivers.js");
+  const drivers = new DeviceDriverResolver({
+    store: { getDevice: async () => null, listDeviceDrivers: async () => [] },
+  });
+  const hub = new ComputerAppHub({
+    drivers,
+    knownDefinitionIds: () => new Set(),
+    onChanged: () => undefined,
+  });
+  const bad = controlPeer();
+  const good = controlPeer();
+  const stream = (runnerId: RunnerId) => {
+    const base = integrationsStream({ runnerId });
+    return {
+      ...base,
+      identity: {
+        ...base.identity,
+        modules: {
+          integrations: {
+            platform: "darwin",
+            protocolVersion: runnerIntegrationsProtocolVersion,
+            screenDrivers: 1,
+          },
+        },
+      },
+    } as RunnerAuxiliaryStream;
+  };
+  const first = stream(createId("runner"));
+  const second = stream(createId("runner"));
+  try {
+    hub.attach(bad, first);
+    await hub.refreshDeviceDrivers();
+    bad.send = () => {
+      throw new Error("socket closed synchronously");
+    };
+    hub.attach(good, second);
+    await hub.refreshDeviceDrivers();
+    expect(hub.status(first.identity.runnerId)).toBeNull();
+    expect(good.closes).toEqual([]);
+    expect(good.sent.some((frame) => frame.type === "host.integrations.device-drivers")).toBe(true);
   } finally {
     hub.close();
     drivers.close();
