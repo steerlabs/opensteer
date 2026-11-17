@@ -3,6 +3,7 @@ import {
   OpensteerError,
   type DeploymentId,
   type ExecutionNodeId,
+  type PlaceView,
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
@@ -242,7 +243,10 @@ const itemColumns = [
   "bindingGeneration",
   "view",
 ] as const;
-type Item = Pick<Selectable<TranscriptItemTable>, (typeof itemColumns)[number]>;
+type Item = Pick<Selectable<TranscriptItemTable>, (typeof itemColumns)[number]> & {
+  readonly place?: PlaceView | null;
+  readonly body?: Selectable<TranscriptItemTable>["body"];
+};
 
 export function itemView(row: Item) {
   const {
@@ -303,6 +307,11 @@ export function itemView(row: Item) {
       });
     case "app":
       return TranscriptItemSchema.parse({ ...base, appId: row.appId, version });
+    case "place":
+      return TranscriptItemSchema.parse({
+        ...base,
+        place: row.place ?? (typeof row.body === "object" ? (row.body ?? undefined) : undefined),
+      });
     case "reasoning":
       return TranscriptItemSchema.parse({
         ...base,
@@ -329,6 +338,7 @@ export function drawableItems(tx: Read, scope: DetailScope) {
   const query = tx
     .selectFrom("transcriptItems")
     .select(itemColumns)
+    .select(sql<PlaceView | null>`case when kind = 'place' then body end`.as("place"))
     .where("visible", "=", true)
     .where("threadId", "=", scope.threadId);
   return scope.kind === "node"
