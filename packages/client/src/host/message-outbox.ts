@@ -655,7 +655,9 @@ export function projectMessageOutbox(
     ),
   );
   const projected = entries.map((entry) =>
-    entry.kind === "message" && state.acknowledged.has(entry.id)
+    entry.kind === "message" &&
+    state.acknowledged.has(entry.id) &&
+    entry.clientSendKey !== state.acknowledged.get(entry.id)
       ? { ...entry, clientSendKey: state.acknowledged.get(entry.id)! }
       : entry,
   );

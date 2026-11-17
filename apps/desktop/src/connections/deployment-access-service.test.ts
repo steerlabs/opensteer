@@ -134,10 +134,7 @@ describe("DeploymentAccessService", () => {
         deploymentId: target.id,
         outcome: "ready",
       });
-    const scheduled: Array<() => void> = [];
-    const service = new DeploymentAccessService(fixture.ports, {
-      schedule: (callback) => scheduled.push(callback),
-    });
+    const service = new DeploymentAccessService(fixture.ports);
     await service.initialize();
     await service.select(target.id);
 
@@ -146,7 +143,6 @@ describe("DeploymentAccessService", () => {
       failure: { retryable: true },
       status: "offline",
     });
-    expect(scheduled).toHaveLength(0);
     await service.retry();
     await settle();
     expect(fixture.establish).toHaveBeenCalledTimes(2);
@@ -537,7 +533,7 @@ describe("DeploymentAccessService", () => {
     const target = deployment();
     const fixture = fakePorts({ deployments: [target] });
     fixture.establish.mockRejectedValueOnce(new Error("This connection was refused."));
-    const service = new DeploymentAccessService(fixture.ports, { schedule: () => undefined });
+    const service = new DeploymentAccessService(fixture.ports);
     await service.initialize();
     await service.select(target.id);
     await settle();
@@ -734,18 +730,13 @@ describe("DeploymentAccessService", () => {
     const second = deployment({ name: "B" });
     const fixture = fakePorts({ deployments: [first, second] });
     fixture.establish.mockRejectedValueOnce(new HostTransportError("unreachable"));
-    const scheduled: Array<() => void> = [];
-    const service = new DeploymentAccessService(fixture.ports, {
-      schedule: (callback) => scheduled.push(callback),
-    });
+    const service = new DeploymentAccessService(fixture.ports);
     await service.initialize();
     await service.select(first.id);
     await settle();
     expect(service.snapshot().deployments[0]?.failure).toMatchObject({ retryable: true });
 
     await service.select(second.id);
-    await settle();
-    scheduled.forEach((run) => run());
     await settle();
 
     expect(service.snapshot().deployments[0]).toMatchObject({

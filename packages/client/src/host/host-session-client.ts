@@ -892,7 +892,7 @@ export class HttpHostClient {
   #hostUnreachable = false;
   readonly #livenessIdleMs: number;
   readonly #livenessDeadlineMs: number;
-  #livenessTimer: Timer | null = null;
+  #handshakeTimer: Timer | null = null;
   readonly #reportRealtimeFrame: ((record: RealtimeFrameDiagnostic) => void) | undefined;
   #lostFrameRereadAt = Number.NEGATIVE_INFINITY;
   #lostFrameRereadTimer: Timer | null = null;
@@ -2235,7 +2235,7 @@ export class HttpHostClient {
         attempt.acceptScope(scope);
         if (admitted || this.#snapshot.connection !== "connected") return;
         admitted = true;
-        this.#stopLiveness();
+        this.#stopHandshake();
         const lease: ConnectionLease = {
           closed,
           lastProgressAt: () =>
@@ -3315,7 +3315,7 @@ export class HttpHostClient {
     this.#heldLive.clear();
     for (const release of this.#lifecycleDisposers) release();
     this.#lifecycleDisposers.length = 0;
-    this.#stopLiveness();
+    this.#stopHandshake();
     for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
     this.#channels.clear();
     this.#assignmentReads.clear();
@@ -3965,30 +3965,21 @@ export class HttpHostClient {
     channel.probeNonce = null;
   }
 
-  /**
-   * No transport reports every way a socket can die: a route can stall with
-   * the socket still open, and a close can be lost on its way to the reader.
-   * So a channel whose subscription has gone quiet is asked whether it is
-   * there, and one that cannot be asked — still connecting, never
-   * synchronized, or no longer open — is given the same time before it is
-   * replaced. The answer proves the socket carries frames both ways; that an
-   * open socket's subscription is still delivering is the Host's to keep, by
-   * closing any socket it stops delivering to.
-   */
-  #watchLiveness(): void {
-    if (this.#livenessTimer || this.#disposed) return;
-    this.#livenessTimer = globalThis.setInterval(
-      () => this.#checkLiveness(),
+  /** An open socket has a deadline to deliver its required initial subscriptions. */
+  #watchHandshake(): void {
+    if (this.#handshakeTimer || this.#disposed) return;
+    this.#handshakeTimer = globalThis.setInterval(
+      () => this.#checkHandshake(),
       Math.max(1, Math.floor(this.#livenessDeadlineMs / 2)),
     );
   }
 
-  #stopLiveness(): void {
-    if (this.#livenessTimer) globalThis.clearInterval(this.#livenessTimer);
-    this.#livenessTimer = null;
+  #stopHandshake(): void {
+    if (this.#handshakeTimer) globalThis.clearInterval(this.#handshakeTimer);
+    this.#handshakeTimer = null;
   }
 
-  #checkLiveness(): void {
+  #checkHandshake(): void {
     // Nothing is judged while the client is not reading: a suspended channel
     // is replaced on the way back, by the foreground and network signals.
     if (
@@ -3996,23 +3987,23 @@ export class HttpHostClient {
       this.#snapshot.session !== "authenticated" ||
       this.#deploymentReconnectSuspended()
     ) {
-      this.#stopLiveness();
+      this.#stopHandshake();
       return;
     }
     const now = Date.now();
     let watched = false;
     for (const channel of this.#channels.values()) {
       const socket = channel.socket;
-      if (!socket) continue;
+      if (!socket || channel.synchronized) continue;
       watched = true;
       const silentMs = now - channel.progressAt;
       if (silentMs < this.#livenessIdleMs) continue;
-      if (!channel.synchronized && silentMs >= this.#livenessIdleMs + this.#livenessDeadlineMs) {
+      if (silentMs >= this.#livenessIdleMs + this.#livenessDeadlineMs) {
         this.#closeChannel(channel, true, 1000, "Realtime channel silent");
         this.#recomputeConnection();
       }
     }
-    if (!watched) this.#stopLiveness();
+    if (!watched) this.#stopHandshake();
   }
 
   /** Apps pages reread on this; nothing else is read again. */
@@ -4095,7 +4086,7 @@ export class HttpHostClient {
     channel.synchronized = false;
     this.#clearProbe(channel);
     this.#recomputeConnection();
-    this.#watchLiveness();
+    this.#watchHandshake();
     const viewer: SocketViewer = {
       deploymentId: this.#snapshot.deploymentId,
       userId: this.#snapshot.user?.id ?? null,

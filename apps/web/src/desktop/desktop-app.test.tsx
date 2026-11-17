@@ -425,7 +425,7 @@ describe("Desktop snapshot presentation", () => {
 });
 
 /**
- * Only states the real ConnectionSupervisor can publish. A row waiting to sign
+ * Only states the real attachment observer can publish. A row waiting to sign
  * in always carries the retryable failure the supervisor attaches to it, and a
  * row this Desktop is not attached to is `idle` with nothing wrong.
  */

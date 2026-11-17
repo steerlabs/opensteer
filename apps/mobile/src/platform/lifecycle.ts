@@ -30,10 +30,9 @@ export interface MobileLifecycle extends ClientLifecycle {
 /**
  * What the phone knows about this app that the Host client cannot see.
  *
- * Two facts, from two places. Foreground comes from `AppState`, where only
- * `active` is the foreground: `inactive` is the app under the multitasking
- * switcher or a system prompt, and treating it as backgrounded would drop
- * sockets every time a notification slides down.
+ * Two facts, from two places. Only actual background evidence suspends
+ * connections. iOS `inactive` preserves the prior visibility through a system
+ * prompt or multitasking switcher.
  *
  * Network comes from `expo-network`'s listener, which stops being told anything
  * while the process is suspended — the radio can change, or the phone can move
