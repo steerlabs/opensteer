@@ -418,36 +418,51 @@ function pendingEventVariant<T extends keyof typeof runnerEventDataSchemas>(type
 
 export const pendingAgentEventMaxSerializedBytes = 480 * 1_024;
 
+const pendingEventVariants = [
+  pendingEventVariant("request.cancelled"),
+  pendingEventVariant("request.opened"),
+  pendingEventVariant("assistant.message"),
+  pendingEventVariant("voice.heard"),
+  pendingEventVariant("message.injected"),
+  pendingEventVariant("reasoning.completed"),
+  pendingEventVariant("run.completed"),
+  pendingEventVariant("run.failed"),
+  pendingEventVariant("run.interrupted"),
+  pendingEventVariant("run.started"),
+  pendingEventVariant("run.status"),
+  pendingEventVariant("run.context-measured"),
+  pendingEventVariant("run.compaction"),
+  pendingEventVariant("run.usage"),
+  pendingEventVariant("run.phase"),
+  pendingEventVariant("node.started"),
+  pendingEventVariant("node.updated"),
+  pendingEventVariant("node.completed"),
+  pendingEventVariant("node.message"),
+  pendingEventVariant("tool.completed"),
+] as const;
+
+const currentToolStart = pendingEventVariant("tool.started");
+function pendingEventFits(event: unknown) {
+  return utf8ByteLength(JSON.stringify(event)) <= pendingAgentEventMaxSerializedBytes;
+}
+const pendingEventLimit = `Pending agent event must not exceed ${pendingAgentEventMaxSerializedBytes} serialized bytes`;
+
 export const PendingAgentEventSchema = z
+  .discriminatedUnion("type", [...pendingEventVariants, currentToolStart])
+  .refine(pendingEventFits, pendingEventLimit);
+
+export const runEventsVersion = 2;
+export const runEventsCapability = "run-events-v2";
+export const PendingAgentEventV2Schema = z
   .discriminatedUnion("type", [
-    pendingEventVariant("request.cancelled"),
-    pendingEventVariant("request.opened"),
-    pendingEventVariant("assistant.message"),
-    pendingEventVariant("voice.heard"),
-    pendingEventVariant("message.injected"),
-    pendingEventVariant("reasoning.completed"),
-    pendingEventVariant("run.completed"),
-    pendingEventVariant("run.failed"),
-    pendingEventVariant("run.interrupted"),
-    pendingEventVariant("run.started"),
-    pendingEventVariant("run.status"),
-    pendingEventVariant("run.context-measured"),
-    pendingEventVariant("run.compaction"),
-    pendingEventVariant("run.usage"),
-    pendingEventVariant("run.phase"),
-    pendingEventVariant("node.started"),
-    pendingEventVariant("node.updated"),
-    pendingEventVariant("node.completed"),
-    pendingEventVariant("node.message"),
-    pendingEventVariant("tool.completed"),
-    pendingEventVariant("tool.started"),
+    ...pendingEventVariants,
+    currentToolStart.extend({
+      data: currentToolStart.shape.data.extend({ provisional: z.literal(true).optional() }),
+    }),
   ])
-  .refine(
-    (event) =>
-      new TextEncoder().encode(JSON.stringify(event)).byteLength <=
-      pendingAgentEventMaxSerializedBytes,
-    `Pending agent event must not exceed ${pendingAgentEventMaxSerializedBytes} serialized bytes`,
-  );
+  .refine(pendingEventFits, pendingEventLimit);
+export type PendingAgentEventV2 = z.infer<typeof PendingAgentEventV2Schema>;
+
 export type PendingAgentEvent = z.infer<typeof PendingAgentEventSchema>;
 
 /**

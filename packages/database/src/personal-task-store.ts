@@ -26,7 +26,7 @@ const taskFields = [
   "latestRunCompletedAt",
 ] as const;
 
-function currentTasks(tx: PersonalMutationTransaction, viewerId: UserId) {
+export function currentTasks(tx: PersonalMutationTransaction, viewerId: UserId) {
   return tx
     .selectFrom("threads")
     .select(taskFields)

@@ -5,6 +5,7 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
+import { TranscriptItemSchema } from "@opensteer/protocol/transcript";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type {
   ClientChangesTable,
@@ -220,6 +221,44 @@ const itemColumns = [
 ] as const;
 type Item = Pick<Selectable<TranscriptItemTable>, (typeof itemColumns)[number]>;
 
+export function itemView(row: Item) {
+  const base = {
+    id: row.id,
+    kind: row.kind,
+    revision: row.revision,
+    position: row.position,
+    runId: row.runId,
+    attemptId: row.attemptId,
+    nodeId: row.nodeId,
+    isTurnStart: row.isTurnStart,
+    createdAt: row.createdAt.toISOString(),
+    view: row.view,
+  };
+  switch (row.kind) {
+    case "message":
+      return TranscriptItemSchema.parse({ ...base, messageId: row.messageId });
+    case "tool":
+      return TranscriptItemSchema.parse({ ...base, toolCallId: row.toolCallId });
+    case "request":
+      return TranscriptItemSchema.parse({ ...base, requestId: row.requestId });
+    case "node":
+      return TranscriptItemSchema.parse({ ...base, executionNodeId: row.executionNodeId });
+    case "assignment":
+    case "delegation":
+      return TranscriptItemSchema.parse({ ...base, delegationId: row.delegationId });
+    case "app":
+      return TranscriptItemSchema.parse({ ...base, appId: row.appId });
+    case "reasoning":
+      return TranscriptItemSchema.parse({
+        ...base,
+        blockId: row.blockId,
+        bindingGeneration: row.bindingGeneration,
+      });
+    default:
+      return TranscriptItemSchema.parse(base);
+  }
+}
+
 export interface TranscriptCursor {
   readonly deploymentId: DeploymentId;
   readonly epoch: string;
@@ -231,7 +270,7 @@ export interface TranscriptCursor {
   readonly beforeId: string;
 }
 
-function drawableItems(tx: Read, scope: DetailScope) {
+export function drawableItems(tx: Read, scope: DetailScope) {
   const query = tx
     .selectFrom("transcriptItems")
     .select(itemColumns)
@@ -355,7 +394,7 @@ export function readTranscriptPage(
       kind: "page" as const,
       orderRevision: revision,
       revision: state.sequence,
-      items: [...rows.reverse(), ...newerSelected],
+      items: [...rows.reverse(), ...newerSelected].map(itemView),
       hasMore,
       nextBefore,
     };
@@ -426,7 +465,7 @@ export function readTranscriptItem(
           .executeTakeFirstOrThrow()
       ).body;
     }
-    const response = { kind: "item" as const, item, body, truncated: false };
+    const response = { kind: "item" as const, item: itemView(item), body, truncated: false };
     return Buffer.byteLength(JSON.stringify(response)) <= 1024 * 1024
       ? response
       : { ...response, body: null, truncated: true };

@@ -7,6 +7,7 @@ import {
   nonTerminalRunStatuses,
 } from "@opensteer/core";
 import { z } from "zod";
+import { checkoutSession } from "./connection.js";
 import { publishedMessagePredicate } from "./message-visibility.js";
 import { runOfflineSettlement } from "./personal-transaction.js";
 import { finalizeRunTransaction } from "./run-finalization.js";
@@ -558,15 +559,64 @@ async function convertBatch(
   return { stage: cursor.stage, done: false };
 }
 
-/** Called while the startup session holds the migration advisory lock. */
-export async function finishPersonalStateUpgrade(
+export async function withPersonalStateStartupLock<Result>(
   database: Kysely<DatabaseSchema>,
+  run: (signal: AbortSignal) => Promise<Result>,
+) {
+  const session = await checkoutSession(database);
+  const controller = new AbortController();
+  let acquired = false;
+  const lost = (error?: Error) =>
+    controller.abort(error ?? new Error("The migration lock session ended"));
+  const end = () => lost();
+  session.on("error", lost);
+  session.on("end", end);
+  try {
+    await session.query("select pg_advisory_lock(hashtextextended('opensteer-host-migration',0))");
+    acquired = true;
+    controller.signal.throwIfAborted();
+    const result = await run(controller.signal);
+    controller.signal.throwIfAborted();
+    return result;
+  } finally {
+    try {
+      if (acquired && !controller.signal.aborted)
+        await session.query(
+          "select pg_advisory_unlock(hashtextextended('opensteer-host-migration',0))",
+        );
+    } finally {
+      session.off("error", lost);
+      session.off("end", end);
+      session.release(
+        controller.signal.aborted ? new Error("Migration lock session ended") : undefined,
+      );
+    }
+  }
+}
+
+export async function completePersonalStateConversion(
+  database: Kysely<DatabaseSchema>,
+  signal: AbortSignal,
   options?: { readonly afterBatch?: (stage: UpgradeCursor["stage"]) => void },
 ): Promise<void> {
   for (;;) {
-    const batch = await database.transaction().execute(convertBatch);
+    signal.throwIfAborted();
+    const batch = await database.transaction().execute(async (tx) => {
+      const result = await convertBatch(tx);
+      signal.throwIfAborted();
+      return result;
+    });
     if (!batch) return;
     options?.afterBatch?.(batch.stage);
     if (batch.done) break;
   }
+}
+
+export function finishPersonalStateUpgrade(
+  database: Kysely<DatabaseSchema>,
+  options?: Parameters<typeof completePersonalStateConversion>[2],
+) {
+  return withPersonalStateStartupLock(database, (signal) =>
+    completePersonalStateConversion(database, signal, options),
+  );
 }

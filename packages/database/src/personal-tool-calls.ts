@@ -329,3 +329,46 @@ export async function completePersonalToolCall(
   if (images.length) await tx.insertInto("toolOutputImages").values(images).execute();
   return { call: completed, completed: true };
 }
+
+export async function interruptPersonalToolCalls(
+  tx: Transaction,
+  mutation: PersonalMutation,
+  runId: ToolKey["runId"],
+  ids: readonly string[],
+) {
+  if (!ids.length) return;
+  if (ids.length > 128) throw new Error("A tool interruption batch exceeded the Run fence");
+  const current = await tx
+    .selectFrom("toolCalls")
+    .select("id")
+    .where("id", "in", [...ids])
+    .where("runId", "=", runId)
+    .where("status", "=", "open")
+    .orderBy("id")
+    .forNoKeyUpdate()
+    .execute();
+  if (!current.length) return;
+  const calls = await tx
+    .updateTable("toolCalls")
+    .set({ status: "interrupted", completedAt: mutation.state.now })
+    .where(
+      "id",
+      "in",
+      current.map(({ id }) => id),
+    )
+    .returningAll()
+    .execute();
+  const cards = await tx
+    .selectFrom("transcriptItems")
+    .select(["id", "toolCallId", "position"])
+    .where(
+      "id",
+      "in",
+      calls.map(({ id }) => `tool:${id}`),
+    )
+    .orderBy("id")
+    .forNoKeyUpdate()
+    .execute();
+  const position = new Map(cards.map((row) => [row.toolCallId, row.position]));
+  for (const call of calls) await storeToolCard(tx, mutation, call, position.get(call.id)!);
+}

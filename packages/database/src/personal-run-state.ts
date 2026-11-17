@@ -204,3 +204,59 @@ export async function beginPersonalRunFinish(
   );
   return input.intent;
 }
+
+export async function advancePersonalRunFinish(
+  tx: Tx,
+  mutation: PersonalMutation,
+  runId: RunId,
+  actions: {
+    readonly settle: (
+      children: Awaited<ReturnType<typeof readFinishChildren>>,
+      intent: FinishIntent,
+    ) => Promise<void>;
+    readonly finalize: (intent: FinishIntent) => Promise<void>;
+  },
+) {
+  const run = await tx
+    .selectFrom("runs")
+    .select(["finishIntent", "threadId"])
+    .where("id", "=", runId)
+    .forNoKeyUpdate()
+    .executeTakeFirst();
+  if (!run?.finishIntent) return "settled" as const;
+  await tx
+    .selectFrom("threads")
+    .select("id")
+    .where("id", "=", run.threadId)
+    .forNoKeyUpdate()
+    .executeTakeFirstOrThrow();
+  const children = await readFinishChildren(tx, runId);
+  await actions.settle(children, run.finishIntent);
+  if (children.hasMore) return "more" as const;
+  const remaining = await readFinishChildren(tx, runId);
+  if (
+    remaining.requests.length ||
+    remaining.commands.length ||
+    remaining.steers.length ||
+    remaining.nodes.length ||
+    remaining.grants.length ||
+    remaining.tools.length
+  )
+    throw new Error("The finishing Run still has unsettled children");
+  await actions.finalize(run.finishIntent);
+  await tx
+    .updateTable("runs")
+    .set({ finishIntent: null, revision: mutation.sequence })
+    .where("id", "=", runId)
+    .execute();
+  mutation.change(
+    {
+      scopeKey: `thread:${run.threadId}`,
+      entityKind: "collection",
+      entityId: "run-queue",
+      operation: "invalidate",
+    },
+    () => ({ revision: mutation.sequence }),
+  );
+  return "settled" as const;
+}

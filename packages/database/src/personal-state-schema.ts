@@ -16,29 +16,14 @@ import type {
   ToolOutput,
   ToolOutputImageMediaType,
 } from "@opensteer/core";
+import {
+  personalResourceKinds,
+  type PersonalResourceRevisions,
+} from "@opensteer/protocol/resources";
+export type { PersonalResourceKind } from "@opensteer/protocol/resources";
 import { sql, type Generated, type Transaction } from "kysely";
 import type { DatabaseSchema, Timestamp } from "./schema.js";
 
-export const personalResourceKinds = [
-  "settings",
-  "identity",
-  "owner-profile",
-  "environment",
-  "machine",
-  "harness",
-  "harness-catalog",
-  "harness-auth",
-  "agent-home-settings",
-  "tab",
-  "tab-layout",
-  "browser-profile",
-  "browser-placement",
-  "browser-home",
-  "browser-availability",
-] as const;
-
-export type PersonalResourceKind = (typeof personalResourceKinds)[number];
-export type PersonalResourceRevisions = Record<PersonalResourceKind, string>;
 export type PersonalScopeKey = "shell" | `thread:${string}` | `node:${string}`;
 export type ClientChangeOperation = "upsert" | "remove" | "invalidate";
 export type ClientEntityKind =
@@ -375,6 +360,7 @@ const retainedStateDdl = `
   );
   create index tool_calls_open_origin on tool_calls(origin,run_id,id) where status = 'open';
   create index tool_calls_open_binding on tool_calls(run_id,binding_generation,id) where status = 'open';
+  create index tool_calls_open_run on tool_calls(run_id,id) where status = 'open';
   create index tool_calls_open_scope on tool_calls(thread_id,node_id,id) where status = 'open';
   create index tool_calls_open on tool_calls(id) where status = 'open';
   create index tool_calls_attempt on tool_calls(attempt_id);
@@ -524,6 +510,8 @@ const currentStateIndexes = `
   create index commands_current_run on commands(run_id,id) where run_id is not null and status in ('pending','dispatched');
   create index commands_task_adoption on commands(thread_id,id) where type in ('thread.rename','thread.done.set','thread.archive');
   create index requests_current_run on requests(originating_run_id,id) where status = 'pending';
+  create index requests_current_run_end on requests(originating_run_id,id)
+    where status = 'pending' and (mode = 'live' or kind = 'integration.input');
   create index requests_current_thread on requests(originating_thread_id,id) where status = 'pending' and originating_node_id is null;
   create index requests_current_node on requests(originating_node_id,id) where status = 'pending' and originating_node_id is not null;
   create index run_attempts_binding on run_attempts(run_id,binding_generation,id);

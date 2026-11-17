@@ -159,6 +159,7 @@ export async function refreshTeamAskAttention(
       (eligibleLink(link.state) ? bucketDelta : 0),
   );
   if (failed || ordinary || previous) {
+    const visible = failed || previous?.kind === "failed-ask" || eligibleLink(link.state);
     await writeAttention(
       tx,
       id,
@@ -172,12 +173,11 @@ export async function refreshTeamAskAttention(
             threadId: source.localTaskId,
             sortAt: source.createdAt,
             expiresAt: ordinary ? source.consentExpiresAt : null,
-            revision: mutation.sequence,
+            revision: visible ? mutation.sequence : mutation.state.sequence,
           }
         : null,
     );
-    if (failed || previous?.kind === "failed-ask" || eligibleLink(link.state))
-      needsYouChanged(mutation);
+    if (visible) needsYouChanged(mutation);
   }
 }
 

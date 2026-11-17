@@ -33,8 +33,10 @@ test.each(["empty", "personal", "team"] as const)(
           deploymentShape: { kind },
         });
       await database.transaction().execute(applyPersonalStateSchema);
-      await finishPersonalStateUpgrade(database);
-      await finishPersonalStateUpgrade(database);
+      await Promise.all([
+        finishPersonalStateUpgrade(database),
+        finishPersonalStateUpgrade(database),
+      ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const state =
         await sql`select ready,sequence,pruned_through_sequence from client_sync_state limit 1`.execute(
