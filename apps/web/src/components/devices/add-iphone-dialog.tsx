@@ -669,7 +669,7 @@ const accessChoices: readonly {
   {
     value: "read-write",
     title: "View and control",
-    detail: "Your agent can see the screen, and tap, swipe and type.",
+    detail: "Your agent can see the screen, tap, swipe, press buttons and open apps.",
   },
   {
     value: "read",
