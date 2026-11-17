@@ -1,17 +1,9 @@
-import {
-  describeHostConnection,
-  type HostClient,
-  type HostConnectionLine,
-  type HostSnapshot,
-} from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import { AccessibilityInfo, Pressable, StyleSheet } from "react-native";
 import Animated, { useAnimatedStyle } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { controlFontScaleLimit, material, radius, space } from "../theme.js";
-import { headerBottom } from "./header-clearance.js";
-import { useSelectedHostClient } from "./mobile-client-context.js";
+import { pillHeight, pillPlacement } from "./header-clearance.js";
 import { appear, descend, exit, move } from "./motion.js";
 import { AppText, StatusDot } from "./primitives.js";
 
@@ -54,14 +46,13 @@ export const ConnectionPillView = memo(function ConnectionPillView(props: {
   );
   const fallbackTop = useSafeAreaInsets().top + navigationBarClearance;
   const override = props.top;
-  const anchor = useAnimatedStyle(() => ({
-    top:
-      override !== undefined
-        ? override
-        : headerBottom.value > 0
-          ? headerBottom.value + space[8]
-          : fallbackTop,
-  }));
+  const anchor = useAnimatedStyle(() => {
+    const placement = pillPlacement.value;
+    return {
+      paddingHorizontal: override !== undefined ? space[24] : placement.inset,
+      top: override !== undefined ? override : placement.top > 0 ? placement.top : fallbackTop,
+    };
+  });
   const [pressed, setPressed] = useState(false);
   return (
     <Animated.View pointerEvents="box-none" style={[styles.anchor, anchor]}>
@@ -146,61 +137,12 @@ function useConnectionAnnouncements(
   }, [key, recoveredLabel]);
 }
 
-/** Today's Host connection line, until the shell's connection presenter replaces it. */
-export function ConnectionPill(): ReactNode {
-  const hostClient = useSelectedHostClient();
-  return hostClient === null ? null : <HostConnectionPill hostClient={hostClient} />;
-}
-
-type HostNotice = HostConnectionLine & { readonly trying: boolean };
-
-const selectNotice = (snapshot: HostSnapshot): HostNotice | null =>
-  snapshot.connectionInterrupted
-    ? { ...describeHostConnection(snapshot), trying: snapshot.connection === "connecting" }
-    : null;
-
-const sameNotice = (left: HostNotice | null, right: HostNotice | null): boolean =>
-  left?.label === right?.label && left?.trying === right?.trying;
-
-function HostConnectionPill(props: { readonly hostClient: HostClient }): ReactNode {
-  const { hostClient } = props;
-  const line = useHostSelector(hostClient, selectNotice, sameNotice);
-  const notice = useMemo<ConnectionPillNotice | null>(
-    () =>
-      line === null
-        ? null
-        : {
-            action:
-              line.action === "retry"
-                ? {
-                    accessibilityLabel: "Try connecting now",
-                    label: "Retry",
-                    onPress: () =>
-                      void hostClient.refresh({ retryConnection: true }).catch(() => undefined),
-                  }
-                : null,
-            key: line.label,
-            label: line.label,
-            tone: line.tone === "amber" ? "amber" : "muted",
-            trying: line.trying,
-          },
-    [hostClient, line],
-  );
-  return <ConnectionPillView notice={notice} />;
-}
-
 // Clear of a navigation bar on any platform, where no header said where it ends.
 const navigationBarClearance = 60;
 
 const styles = StyleSheet.create({
-  action: { justifyContent: "center", minHeight: 36, paddingRight: space[16] },
-  anchor: {
-    alignItems: "center",
-    left: 0,
-    paddingHorizontal: space[24],
-    position: "absolute",
-    right: 0,
-  },
+  action: { justifyContent: "center", minHeight: pillHeight, paddingRight: space[16] },
+  anchor: { alignItems: "center", left: 0, position: "absolute", right: 0 },
   label: { flexShrink: 1 },
   // An opaque capsule, like the jump pill: its words read over any transcript.
   pill: {
@@ -210,7 +152,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: space[8],
     maxWidth: "100%",
-    minHeight: 36,
+    minHeight: pillHeight,
   },
   pillPressed: material.floatPressed,
   words: {
@@ -218,7 +160,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexShrink: 1,
     gap: space[8],
-    minHeight: 36,
+    minHeight: pillHeight,
     paddingLeft: space[16],
   },
   wordsAlone: { paddingRight: space[16] },

@@ -22,6 +22,7 @@ export const screenPresentations = {
   RunningNow: "formSheet",
   MessageHistory: "formSheet",
   QuietlyMoved: "formSheet",
+  ConnectionDetails: "formSheet",
   NotificationsIntro: "formSheet",
   Settings: "modal",
   Chrome: "modal",
