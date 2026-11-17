@@ -136,6 +136,7 @@ import {
 } from "./thread-inbox.js";
 import {
   projectThreadState,
+  publishRunQueue,
   invalidateThreadCollection,
   publishThreadSummary,
   threadMutationHead,
@@ -1614,6 +1615,7 @@ export async function resumeThreadInputQueue(
         ...thread,
         inputQueuePaused: false,
       });
+      await publishRunQueue(transaction, thread.id);
       await projectThreadState(transaction, thread.id, new Date(), true);
       const current = await transaction
         .selectFrom("threads")

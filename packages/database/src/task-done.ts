@@ -44,7 +44,12 @@ import {
   threadProviderSessionSelection,
 } from "./thread-row-mappers.js";
 import { lockThreadChannelAuthorities } from "./channel-execution.js";
-import { projectThreadState, publishThreadSummary, threadMutationHead } from "./thread-status.js";
+import {
+  projectThreadState,
+  publishRunQueue,
+  publishThreadSummary,
+  threadMutationHead,
+} from "./thread-status.js";
 import { admitRunToolCallInTransaction, type RunToolAdmissionInput } from "./run-tool-admission.js";
 import { threadIsQuiet } from "./quiet-tasks.js";
 export interface ThreadWriteActor {
@@ -390,8 +395,11 @@ export async function setThreadDone(
           }
           if (input.done) {
             for (const trigger of triggers) await pauseTriggerInTransaction(transaction, trigger);
-            for (const row of threads)
-              if (row.inputQueuePaused) await refreshInputQueue(transaction, row.id);
+            for (const row of threads) {
+              if (!row.inputQueuePaused) continue;
+              await refreshInputQueue(transaction, row.id);
+              await publishRunQueue(transaction, row.id);
+            }
             const cancelledAssignments = await cancelAssignmentRowsInTransaction(
               transaction,
               scope.assignments.map(({ id }) => id),

@@ -1706,6 +1706,7 @@ export async function settlePausedConversation(
     .where("id", "=", threadId)
     .execute();
   await refreshInputQueue(transaction, threadId);
+  await publishRunQueue(transaction, threadId);
   await projectThreadState(transaction, threadId, now);
 }
 
