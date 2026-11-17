@@ -134,6 +134,7 @@ interface RunnerBrowserRuntimeRouterOptions {
  * Host has already given up on.
  */
 export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver {
+  readonly #admissionWaiters = new Set<() => void>();
   readonly #channels = new Map<BrowserChannelId, RoutedChannel>();
   readonly #generationByPlacement = new Map<string, number>();
   readonly #leaseByPlacement = new Map<string, PlacementCapabilityLease>();
@@ -160,6 +161,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     this.#registry = options.registry;
     this.#requestTimeoutMs = options.requestTimeoutMs ?? requestTimeoutMs;
     const hooks: RunnerBrowserHooks = {
+      onAttached: () => this.#notifyAdmission(),
       onFrame: (stream, frame) => this.#handleFrame(stream, frame.header, frame.frame),
       onLost: (stream) => this.#handleDisconnect(stream),
       onMessage: (stream, message) => this.#handleMessage(stream, message),
@@ -186,6 +188,49 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         },
       ];
     });
+  }
+
+  pendingAdmission(runnerId: RunnerId): boolean {
+    const stream = this.#registry.stream(runnerId);
+    return Boolean(
+      stream &&
+      !browserRuntimeCompatibilityReason(stream.identity.modules.browser?.wireVersion) &&
+      stream.identity.modules.browser?.localProfileStorage &&
+      this.#localProfiles &&
+      !(
+        this.#inventory.get(runnerId)?.failed &&
+        sameRunnerAuxiliaryFence(this.#inventory.get(runnerId)!.fence, stream.fence)
+      ) &&
+      this.#admissionReason(stream),
+    );
+  }
+
+  waitForTarget(runnerId: RunnerId, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const finish = (error?: unknown) => {
+        this.#admissionWaiters.delete(check);
+        signal.removeEventListener("abort", abort);
+        if (error !== undefined) reject(error);
+        else resolve();
+      };
+      const abort = () => finish(signal.reason);
+      const check = () => {
+        if (signal.aborted) return abort();
+        if (this.#closed) return finish(relayError("The browser relay router is closed."));
+        const stream = this.#registry.stream(runnerId);
+        if (!stream) return;
+        const reason = this.#admissionReason(stream);
+        if (!reason) finish();
+        else if (!this.pendingAdmission(runnerId)) finish(relayError(reason));
+      };
+      this.#admissionWaiters.add(check);
+      signal.addEventListener("abort", abort, { once: true });
+      check();
+    });
+  }
+
+  #notifyAdmission(): void {
+    for (const check of this.#admissionWaiters) check();
   }
 
   resolve(placement: BrowserPlacementSelector): BrowserRuntimeTarget | undefined {
@@ -241,6 +286,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#notifyAdmission();
     this.#unsubscribe();
     const error = new Error("The browser relay router is closed.");
     for (const pending of this.#pending.values()) {
@@ -563,16 +609,19 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         message.profiles.some((claim) => inventory.profiles.has(claim.binding.profileId))
       ) {
         inventory.failed = true;
+        this.#notifyAdmission();
         throw relayError("Browser profile inventory is duplicated or already complete.");
       }
       try {
         await this.#localProfiles.reconcileInventory(stream, message);
       } catch (error) {
         inventory.failed = true;
+        this.#notifyAdmission();
         throw error;
       }
       for (const claim of message.profiles) inventory.profiles.add(claim.binding.profileId);
       inventory.complete = message.complete;
+      this.#notifyAdmission();
       if (message.complete)
         void this.resumeDeletions(stream.identity.runnerId).catch(() => undefined);
       return;

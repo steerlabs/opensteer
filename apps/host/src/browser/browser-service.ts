@@ -1,3 +1,4 @@
+import { databaseOperation } from "@opensteer/database";
 import { authorizeTabTarget } from "../tabs/tab-authority.js";
 import type { PageTabsPort } from "../tabs/tab-service.js";
 import type { TabActor } from "../tabs/ports.js";
@@ -499,6 +500,8 @@ export interface BrowserRuntimeTarget {
 export type BrowserRuntimePlacement = BrowserPlacement & { readonly agents?: boolean };
 
 export interface BrowserRuntimeTargetResolver {
+  pendingAdmission?(runnerId: RunnerId): boolean;
+  waitForTarget?(runnerId: RunnerId, signal: AbortSignal): Promise<void>;
   placements(): readonly BrowserRuntimePlacement[];
   resolve(placement: BrowserPlacementSelector): BrowserRuntimeTarget | undefined;
 }
@@ -834,6 +837,7 @@ export class BrowserService {
   readonly #sessionProfiles = new Map<BrowserSessionId, BrowserProfileId>();
   readonly #signer: BrowserAttachTicketSigner;
   readonly #targetResolver: BrowserRuntimeTargetResolver | undefined;
+  readonly #closing = new AbortController();
   #closed = false;
   #closePromise: Promise<void> | null = null;
   #operationTail = Promise.resolve();
@@ -1320,7 +1324,14 @@ export class BrowserService {
       identity: NonNullable<BrowserTabOpenCommand["identity"]>;
       placement?: BrowserTabOpenCommand["placement"];
     },
-  ) {
+  ): Promise<{
+    profileId: BrowserProfileId | null;
+    placement: BrowserPlacementSelector;
+    identityKey: string;
+    holder: BrowserSessionRecord | null;
+    storage: Awaited<ReturnType<BrowserLocalProfiles["storage"]>>;
+    target: BrowserRuntimeTarget;
+  }> {
     const profileId = command.identity.kind === "profile" ? command.identity.profileId : null;
     const identityKey = profileId ?? "guest";
     const profile = profileId ? await this.#repository.getBrowserProfile(profileId, ownerId) : null;
@@ -1353,6 +1364,17 @@ export class BrowserService {
         ? await this.#repository.rememberedBrowserPlacement(ownerId, identityKey)
         : null;
     const homes = await this.#repository.listEligibleBrowserRunners(ownerId);
+    if (
+      await this.#waitForBrowser(
+        homes,
+        boundRunnerId ??
+          command.placement?.runnerId ??
+          holder?.runnerId ??
+          remembered ??
+          (this.#personal ? homes.find((home) => home.kind === "main")?.id : undefined),
+      )
+    )
+      return this.#resolveIdentityOpen(ownerId, command);
     if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
     const eligible = this.#eligiblePlacements(homes).filter((candidate) => candidate.available);
     if (
@@ -4307,6 +4329,7 @@ export class BrowserService {
   close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
+    this.#closing.abort(unavailable("The Host browser service is shutting down."));
     this.#onTabsChanged();
     this.#authorityGeneration++;
     for (const actor of this.#actors.values()) this.#clearActor(actor);
@@ -4420,6 +4443,16 @@ export class BrowserService {
     const boundRunnerId =
       profile?.homeRunnerId ?? (storage?.kind === "local" ? storage.binding.runnerId : undefined);
     const homes = await this.#repository.listEligibleBrowserRunners(input.ownerId);
+    if (
+      await this.#waitForBrowser(
+        homes,
+        boundRunnerId ??
+          input.placement?.runnerId ??
+          (this.#personal ? homes.find((home) => home.kind === "main")?.id : undefined),
+        input.operationBudget?.signal,
+      )
+    )
+      return this.#admitStart(input, onInitialPage, personNavigation);
     if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
     const placementHolder =
       boundRunnerId || input.placement || !profile
@@ -5104,6 +5137,35 @@ export class BrowserService {
     return transitioned.session;
   }
 
+  async #waitForBrowser(
+    homes: Awaited<ReturnType<OpensteerStore["listEligibleBrowserRunners"]>>,
+    runnerId: RunnerId | undefined,
+    operationSignal?: AbortSignal,
+  ): Promise<boolean> {
+    if (this.#closed) throw unavailable("The Host browser service is shutting down.");
+    const resolver = this.#targetResolver;
+    if (!runnerId || !resolver?.waitForTarget || !homes.some((home) => home.id === runnerId))
+      return false;
+    if (
+      resolver
+        .placements()
+        .some((placement) => placement.runnerId === runnerId && placement.available)
+    )
+      return false;
+    if (
+      !homes.some((home) => home.id === runnerId && home.kind === "main") &&
+      !resolver.pendingAdmission?.(runnerId)
+    )
+      return false;
+    const signal = AbortSignal.any([
+      this.#closing.signal,
+      operationSignal ?? databaseOperation()?.signal ?? AbortSignal.timeout(18_000),
+    ]);
+    await resolver.waitForTarget(runnerId, signal);
+    signal.throwIfAborted();
+    return true;
+  }
+
   #defaultPlacement(
     input: {
       readonly chosenRunnerId?: RunnerId;
@@ -5121,6 +5183,11 @@ export class BrowserService {
     }
     const { chosenRunnerId, environmentId } = input;
     if (chosenRunnerId) {
+      if (
+        homes.some((home) => home.id === chosenRunnerId && home.kind === "main") ||
+        this.#targetResolver?.pendingAdmission?.(chosenRunnerId)
+      )
+        return { kind: "runner", runnerId: chosenRunnerId };
       const chosen = connected.filter((placement) => placement.runnerId === chosenRunnerId);
       if (chosen.length === 1 && chosen[0]) return placementSelector(chosen[0]);
       if (chosen.length > 1) throw runnerPlacementConflict(chosen);
@@ -5138,6 +5205,7 @@ export class BrowserService {
       const main = homes.find((home) => home.kind === "main");
       const hostingBrowser = connected.find((placement) => placement.runnerId === main?.id);
       if (hostingBrowser) return placementSelector(hostingBrowser);
+      if (main && this.#targetResolver?.waitForTarget) return { kind: "runner", runnerId: main.id };
     }
     if (environmentId) {
       const colocated = connected.filter((placement) =>
