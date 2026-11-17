@@ -633,19 +633,19 @@ export function chooserNotice(
   readonly signIn: boolean;
   readonly title: string;
 } | null {
-  if (!place) return null;
   const { account } = snapshot;
+  if (account.status === "authorizing") {
+    return {
+      // A browser tab can be closed without a word reaching this window, so
+      // the wait always has a way out.
+      action: { label: "Cancel", quiet: true, run: () => bridge.cancel() },
+      body: "Finish signing in in your browser. This window continues by itself.",
+      signIn: true,
+      title: place?.source === "account" ? `Signing in to open ${place.name}` : "Signing in",
+    };
+  }
+  if (!place) return null;
   if (place.source === "account" && account.status !== "signed-in") {
-    if (account.status === "authorizing") {
-      return {
-        // A browser tab can be closed without a word reaching this window, so
-        // the wait always has a way out.
-        action: { label: "Cancel", quiet: true, run: () => bridge.cancel() },
-        body: "Finish signing in in your browser. This window continues by itself.",
-        signIn: true,
-        title: `Signing in to open ${place.name}`,
-      };
-    }
     // Selecting first is what lets the sign-in reopen this place by itself.
     const signIn = async () => {
       if (snapshot.selectedDeploymentId !== place.id)

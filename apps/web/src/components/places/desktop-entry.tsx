@@ -341,10 +341,19 @@ export function DesktopChooser({
   );
   const rows = placeRows(snapshot, { thisComputer: thisComputerLabel(), facts });
   const thisMac = thisComputerLabel().replace(/^This /u, "this ");
-  // Opensteers elsewhere that this person could mean instead of a new one here.
-  const others = snapshot.deployments
-    .filter((row) => deploymentPolicy({ kind: row.kind }).services.personal && !row.onThisComputer)
-    .map(({ name }) => name);
+  // Opensteers elsewhere this person could mean instead of a new one here. An
+  // Account listing that can't be opened right now still counts: its kind is
+  // unknown, and it may well be their Opensteer.
+  const others = [
+    ...snapshot.deployments
+      .filter(
+        (row) => deploymentPolicy({ kind: row.kind }).services.personal && !row.onThisComputer,
+      )
+      .map(({ name }) => name),
+    ...snapshot.unavailable.map(({ name }) => name),
+  ];
+  // A list that couldn't be read may hold one too, so Start waits for it.
+  const startHere = snapshot.directoryFailure === null ? onSetUpHere : null;
   const run = (operation: () => Promise<void>) => {
     setPending(true);
     setActionError(null);
@@ -434,12 +443,12 @@ export function DesktopChooser({
         ) : null}
         <PlaceAccountFooter account={account} onSignOut={() => setSigningOut(true)} />
       </div>
-      {onSetUpHere ? (
+      {startHere ? (
         <p className="desktop-entry__links">
           <button
             className="link-btn"
             disabled={pending}
-            onClick={() => (others.length > 0 ? setConfirmingStart(true) : onSetUpHere())}
+            onClick={() => (others.length > 0 ? setConfirmingStart(true) : startHere())}
             type="button"
           >
             {others.length > 0
@@ -449,12 +458,12 @@ export function DesktopChooser({
         </p>
       ) : null}
       <SecondaryPaths onConnect={onConnect} />
-      {confirmingStart && onSetUpHere ? (
+      {confirmingStart && startHere ? (
         <StartSeparateDialog
           onClose={() => setConfirmingStart(false)}
           onStart={() => {
             setConfirmingStart(false);
-            onSetUpHere();
+            startHere();
           }}
           others={others}
         />
@@ -569,8 +578,9 @@ export function DesktopConnect({
   );
 }
 
-/** "Home", "Home or Studio", "Home, Studio or Lab". */
+/** "Home", "Home or Studio", "Home, Studio or Lab"; past three, "your other Opensteers". */
 function namesInWords(names: readonly string[]): string {
+  if (names.length > 3) return "your other Opensteers";
   if (names.length <= 1) return names[0] ?? "";
   return `${names.slice(0, -1).join(", ")} or ${names.at(-1)!}`;
 }

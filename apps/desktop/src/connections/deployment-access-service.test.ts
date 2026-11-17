@@ -1068,6 +1068,41 @@ describe("DeploymentAccessService", () => {
       service.dispose();
     });
 
+    it("never lets startup's read of what this Mac joined undo a newer one", async () => {
+      const mac = otherMac({ livenessExpiresAt: liveLease });
+      const fixture = fakePorts({ deployments: [mac] });
+      const catalog = deferred<CatalogProjection>();
+      vi.mocked(fixture.ports.catalog.read).mockReturnValueOnce(catalog.promise);
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      const initialized = service.initialize();
+      await settle();
+      fixture.emitJoined([mac.id]);
+      await settle();
+      catalog.resolve({ deployments: [mac], revision: 1, selectedDeploymentId: null });
+      await initialized;
+
+      expect(service.snapshot().deployments.map(({ name }) => name)).toEqual(["Studio Mac"]);
+      service.dispose();
+    });
+
+    it("won't offer to start an Opensteer until it can read what this Mac joined", async () => {
+      const fixture = fakePorts();
+      vi.spyOn(fixture.ports.devices, "joinedDeploymentIds").mockRejectedValueOnce(
+        new Error("This Mac's device membership file is incompatible or corrupt."),
+      );
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+      expect(service.snapshot().personalSetup).toMatchObject({
+        canStart: false,
+        state: "repair-required",
+      });
+
+      fixture.emitJoined([]);
+      await settle();
+      expect(service.snapshot().personalSetup).toMatchObject({ canStart: true, state: "stopped" });
+      service.dispose();
+    });
+
     it("refuses to open an Account place it is not showing", async () => {
       const server = deployment({ name: "Team server", source: "account" });
       const fixture = fakePorts({ deployments: [server] });

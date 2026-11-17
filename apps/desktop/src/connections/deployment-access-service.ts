@@ -157,6 +157,9 @@ export class DeploymentAccessService {
   #catalogFailure: string | null = null;
   #directoryCheck: Promise<void> | null = null;
   #joined: ReadonlySet<string> = new Set();
+  /** Why this computer's memberships are unknown; null once any read has succeeded. */
+  #joinedFailure: string | null = null;
+  #joinedKnown = false;
   #joinedRead = 0;
   #directoryFailure: DeploymentAccessFailure | null = null;
   /** When the Account's list was last read successfully, or null if never. */
@@ -241,7 +244,7 @@ export class DeploymentAccessService {
 
   async initialize(): Promise<void> {
     this.#assertActive();
-    const [account, catalogResult, personalLink, joined] = await Promise.all([
+    const [account, catalogResult, personalLink] = await Promise.all([
       this.#ports.account.currentState().catch((error: unknown): DesktopAccountAuthState => ({
         account: {
           available: this.#ports.account.available,
@@ -263,14 +266,13 @@ export class DeploymentAccessService {
         }),
       ),
       this.#ports.personalAccount.status().catch(() => unavailablePersonalAccountLink()),
-      this.#readJoined(),
+      this.#reloadJoined(),
     ]);
     this.#account = accountState(account);
     this.#catalog = catalogResult.catalog;
     this.#catalogFailure = catalogResult.failure?.detail ?? null;
     this.#personal = this.#ports.personal.status;
     this.#personalLink = personalLink;
-    this.#joined = joined ?? this.#joined;
     this.#initialized = true;
     this.#reconcileSupervisor();
     this.#publish();
@@ -861,8 +863,14 @@ export class DeploymentAccessService {
    * fix — and it is derived, so a later good read clears it on its own.
    */
   #personalSetup(): DesktopPersonalDeploymentStatus | null {
-    if (this.#personal === null || this.#catalogFailure === null) return this.#personal;
-    return bootstrapFailurePersonalStatus(this.#personal, this.#catalogFailure);
+    if (this.#personal === null) return null;
+    if (this.#catalogFailure !== null)
+      return bootstrapFailurePersonalStatus(this.#personal, this.#catalogFailure);
+    // Only a computer that hosts nothing yet could start one; a running Host is
+    // not this file's to stop.
+    if (this.#joinedFailure !== null && this.#personal.deploymentId === null)
+      return bootstrapFailurePersonalStatus(this.#personal, this.#joinedFailure);
+    return this.#personal;
   }
 
   /**
@@ -877,17 +885,32 @@ export class DeploymentAccessService {
     deployment.id === this.#catalog.selectedDeploymentId ||
     this.#joined.has(deployment.id);
 
-  /** The latest read wins; a failed read keeps what was known, or null when nothing newer. */
-  async #readJoined(): Promise<ReadonlySet<string> | null> {
-    const read = ++this.#joinedRead;
-    const joined = await this.#ports.devices.joinedDeploymentIds().catch(() => null);
-    return read === this.#joinedRead ? joined : null;
-  }
-
+  /**
+   * The one writer of this computer's memberships; the latest read wins. A
+   * failed read keeps the last good answer, and with none yet it is reported,
+   * because a computer that can't tell what it joined must not offer to start
+   * an Opensteer as if it had joined nothing.
+   */
   async #reloadJoined(): Promise<void> {
-    const joined = await this.#readJoined();
-    if (this.#disposed || !joined || sameIds(joined, this.#joined)) return;
-    this.#joined = joined;
+    const read = ++this.#joinedRead;
+    let joined: ReadonlySet<string> | null = null;
+    let failure: string | null = null;
+    try {
+      joined = await this.#ports.devices.joinedDeploymentIds();
+    } catch (error) {
+      failure = classifyPortFailure("devices", error).detail;
+    }
+    if (this.#disposed || read !== this.#joinedRead) return;
+    if (joined) {
+      if (this.#joinedKnown && sameIds(joined, this.#joined)) return;
+      this.#joined = joined;
+      this.#joinedKnown = true;
+      this.#joinedFailure = null;
+    } else if (this.#joinedKnown || failure === this.#joinedFailure) {
+      return;
+    } else {
+      this.#joinedFailure = failure;
+    }
     this.#publish();
   }
 
@@ -1073,7 +1096,7 @@ function freezeSnapshot(snapshot: DeploymentAccessSnapshot): DeploymentAccessSna
   return Object.freeze(snapshot);
 }
 
-export type DeploymentAccessPort = "catalog" | "directory";
+export type DeploymentAccessPort = "catalog" | "devices" | "directory";
 
 export function classifyPortFailure(
   port: DeploymentAccessPort,
