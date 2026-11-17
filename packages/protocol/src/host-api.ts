@@ -1688,6 +1688,16 @@ const hostApiGroup3 = defineRpc({
     pluginReads["plugins.installed.list"].input,
     pluginReads["plugins.installed.list"].output,
   ),
+  "plugins.installed.page": declaration(
+    "GET",
+    pluginReads["plugins.installed.page"].input,
+    pluginReads["plugins.installed.page"].output,
+  ),
+  "plugins.local.get": declaration(
+    "GET",
+    pluginReads["plugins.local.get"].input,
+    pluginReads["plugins.local.get"].output,
+  ),
   "plugins.page.view": declaration(
     "GET",
     pluginReads["plugins.page.view"].input,
@@ -1697,6 +1707,21 @@ const hostApiGroup3 = defineRpc({
     "GET",
     pluginReads["plugins.get"].input,
     pluginReads["plugins.get"].output,
+  ),
+  "plugins.tools.list": declaration(
+    "GET",
+    pluginReads["plugins.tools.list"].input,
+    pluginReads["plugins.tools.list"].output,
+  ),
+  "plugins.skills.list": declaration(
+    "GET",
+    pluginReads["plugins.skills.list"].input,
+    pluginReads["plugins.skills.list"].output,
+  ),
+  "plugins.versions.list": declaration(
+    "GET",
+    pluginReads["plugins.versions.list"].input,
+    pluginReads["plugins.versions.list"].output,
   ),
   "plugins.catalog.list": declaration(
     "GET",

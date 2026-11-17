@@ -243,14 +243,25 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
           computer: expect.objectContaining({ id: computer.runnerId }),
           unavailable: null,
           access: "all",
-          tools: expect.arrayContaining([
-            { name: "list_events", readOnly: true },
-            { name: "create_event", readOnly: false },
-          ]),
+          toolCount: expect.any(Number),
         }),
         expect.objectContaining({ id: reminderPlugin, name: reminderNamespace }),
       ]),
     );
+    // The list counts a local tool's tools; its own page reads them.
+    const calendarTool = await testRpcData(
+      host.origin,
+      "plugins.local.get",
+      { id: `app_device_${calendar.connection.id}` },
+      { headers: host.ownerHeaders },
+    );
+    expect(calendarTool.tools).toEqual(
+      expect.arrayContaining([
+        { name: "list_events", readOnly: true },
+        { name: "create_event", readOnly: false },
+      ]),
+    );
+    expect(calendarTool.toolCount).toBe(calendarTool.tools.length);
     const setAccess = (access: "all" | "read-only") =>
       testRpcData(
         host.origin,

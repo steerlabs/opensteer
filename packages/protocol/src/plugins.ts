@@ -4,13 +4,18 @@ import { IsoDateTimeSchema } from "@opensteer/core";
 /**
  * The person's side of plugins on a personal Host. Every read and command here
  * is answered by the Host for its owner; a team server exposes none of it.
- * Reads page or are bounded, and the catalog is never part of attach.
+ * A read sends what its first screen shows and pages the rest by cursor, so a
+ * phone on a weak link never waits for a whole list; the catalog is never part
+ * of attach.
  */
-export const pluginsInstalledMax = 200;
+export const pluginsInstalledPageMax = 50;
 export const pluginCatalogPageMax = 50;
 export const pluginToolsMax = 500;
-export const pluginVersionsMax = 50;
 export const pluginRunsMax = 50;
+/** One page of a plugin's tools, skills or versions after the detail's first few. */
+export const pluginDetailPageMax = 50;
+/** How many tools, skills and versions the detail carries; the rest page. */
+export const pluginDetailPreview = { tools: 8, skills: 5, versions: 5 } as const;
 /** Icons larger than this are left out of views; a plugin then shows its initial. */
 export const pluginIconMaxLength = 8_192;
 
@@ -77,30 +82,43 @@ export type PluginSummaryView = z.infer<typeof PluginSummaryViewSchema>;
 
 export const pluginLocalToolsMax = 100;
 /**
- * A device data app or local server agents reach as `tools.<name>` beside plugins. Its approvals,
- * launch review and secrets stay on the device screens; only agent access is set here.
+ * A device data app or local server agents reach as `tools.<name>` beside plugins, as the
+ * installed list shows it: its tools counted, not listed. Its approvals, launch review and
+ * secrets stay on the device screens; only agent access is set here.
  */
-export const PluginLocalToolViewSchema = z.object({
+export const PluginLocalToolSummaryViewSchema = z.object({
   /** `app_device_…` or `app_server_…`; the key `plugins.access.set` takes. */
   id: PluginIdSchema,
   kind: z.enum(["device-app", "local-server"]),
-  /** What agents type after `tools.`. */
+  /** What agents type after `tools.`: the Host's collision-safe name, never derived here. */
   name,
   title: name,
   /** Where it runs; null while a local server has no computer. */
   computer: z.object({ id: name, name }).nullable(),
   /** The Host's sentence when agents can't reach it now. */
   unavailable: text(1_000).nullable(),
-  tools: z.array(z.object({ name, readOnly: z.boolean() })).max(pluginToolsMax),
+  toolCount: z.number().int().nonnegative(),
+  readOnlyToolCount: z.number().int().nonnegative(),
   access: PluginAccessSchema,
+});
+export type PluginLocalToolSummaryView = z.infer<typeof PluginLocalToolSummaryViewSchema>;
+/** One local tool with its tools, for its own page. */
+export const PluginLocalToolViewSchema = PluginLocalToolSummaryViewSchema.extend({
+  tools: z.array(z.object({ name, readOnly: z.boolean() })).max(pluginToolsMax),
 });
 export type PluginLocalToolView = z.infer<typeof PluginLocalToolViewSchema>;
 
+const pageCursor = z.string().min(1).max(2_048);
 export const PluginsInstalledViewSchema = z.object({
   engine: PluginEngineStateViewSchema,
-  /** Null while the plugin engine is unavailable; local tools do not need it. */
-  plugins: z.array(PluginSummaryViewSchema).max(pluginsInstalledMax).nullable(),
-  local: z.array(PluginLocalToolViewSchema).max(pluginLocalToolsMax),
+  /**
+   * The first page, those needing the person first. Null until the engine is ready: local tools
+   * never wait for it, and `host.plugins-changed` says when to read again.
+   */
+  plugins: z.array(PluginSummaryViewSchema).max(pluginsInstalledPageMax).nullable(),
+  /** `plugins.installed.page` continues from here; null on the last page. */
+  cursor: pageCursor.nullable(),
+  local: z.array(PluginLocalToolSummaryViewSchema).max(pluginLocalToolsMax),
 });
 export type PluginsInstalledView = z.infer<typeof PluginsInstalledViewSchema>;
 
@@ -125,6 +143,12 @@ export const ConnectedAccountViewSchema = z.object({
   label: text(240),
 });
 export type ConnectedAccountView = z.infer<typeof ConnectedAccountViewSchema>;
+/** A saved account as Connected accounts lists it: whose it is and every plugin it serves. */
+export const PluginAccountViewSchema = ConnectedAccountViewSchema.extend({
+  providerName: name,
+  links: z.array(z.object({ pluginId: PluginIdSchema, pluginName: name })).max(50),
+});
+export type PluginAccountView = z.infer<typeof PluginAccountViewSchema>;
 
 export const PluginRequirementViewSchema = z.object({
   name,
@@ -151,6 +175,9 @@ export const PluginToolViewSchema = z.object({
   description: text(2_000),
   readOnly: z.boolean(),
 });
+export type PluginToolView = z.infer<typeof PluginToolViewSchema>;
+export const PluginSkillViewSchema = z.object({ name, description: text(2_000) });
+export type PluginSkillView = z.infer<typeof PluginSkillViewSchema>;
 export const PluginVersionViewSchema = z.object({
   id: name,
   createdAt: IsoDateTimeSchema.nullable(),
@@ -175,6 +202,7 @@ export const PluginScheduleViewSchema = z.object({
       approvalMode: z.enum(["automatic", "browser"]),
       nextAt: IsoDateTimeSchema.nullable(),
       running: z.boolean(),
+      /** The requirement it needs an account for; runs are skipped until one is linked. */
       accountRequired: text(240).nullable(),
     })
     .nullable(),
@@ -202,24 +230,29 @@ export type PluginWebhookView = z.infer<typeof PluginWebhookViewSchema>;
 export const InstalledPluginViewSchema = z.object({
   plugin: PluginSummaryViewSchema,
   requirements: z.array(PluginRequirementViewSchema).max(50),
-  /** Null until every required account is linked: a plugin lists its tools with its accounts. */
-  tools: z.array(PluginToolViewSchema).max(pluginToolsMax).nullable(),
+  /**
+   * The first tools by name, null until every required account is linked: a plugin lists its
+   * tools with its accounts. `plugins.tools.list` pages all of them.
+   */
+  tools: z.array(PluginToolViewSchema).max(pluginDetailPreview.tools).nullable(),
   toolCount: z.number().int().nonnegative(),
-  skills: z
-    .array(z.object({ name, description: text(2_000) }))
-    .max(100)
-    .nullable(),
-  versions: z.array(PluginVersionViewSchema).max(pluginVersionsMax),
+  /** The first skills by name; `plugins.skills.list` pages all of them. */
+  skills: z.array(PluginSkillViewSchema).max(pluginDetailPreview.skills).nullable(),
+  skillCount: z.number().int().nonnegative(),
+  /** The newest versions; `plugins.versions.list` pages every kept one. */
+  versions: z.array(PluginVersionViewSchema).max(pluginDetailPreview.versions),
+  versionCount: z.number().int().nonnegative(),
   schedules: z.array(PluginScheduleViewSchema).max(50),
   workflows: z.array(PluginWorkflowViewSchema).max(50).nullable(),
   webhooks: z.array(PluginWebhookViewSchema).max(50),
-  webhookUnavailable: text(500).nullable().optional(),
-  backgroundUnavailable: text(500).nullable().optional(),
-  /** The plugin's own page; null when it has none. */
+  /** Why its webhooks can't receive events here, such as no public address. */
+  webhookUnavailable: text(500).nullable(),
+  /** Why its schedules, webhooks and workflows can't run now. */
+  backgroundUnavailable: text(500).nullable(),
+  /** The plugin's own page, opened through `plugins.page.view`; null when it has none. */
   page: z
     .object({
-      url: z.string().max(2048).nullable(),
-      reference: z.object({ kind: z.literal("plugin"), pluginId: PluginIdSchema }).optional(),
+      reference: z.object({ kind: z.literal("plugin"), pluginId: PluginIdSchema }),
       /** Why the page cannot be opened from here yet. */
       unavailable: text(500).nullable(),
     })
@@ -231,7 +264,6 @@ export const PluginCatalogEntryViewSchema = z.object({
   id: name,
   name,
   description: text(1_000),
-  category: text(80).nullable(),
   icon: PluginIconSchema.nullable(),
   /** How an account is connected: an API key or a sign-in. */
   auth: z
@@ -311,7 +343,6 @@ export const PluginScheduledRunViewSchema = z.object({
     "interrupted",
   ]),
   scheduledAt: IsoDateTimeSchema.nullable(),
-  finishedAt: IsoDateTimeSchema.nullable(),
   expiresAt: IsoDateTimeSchema.nullable(),
   failure: text(1_000).nullable(),
   /** The exact call waiting for approval. */
@@ -338,7 +369,8 @@ export const PluginWorkflowRunViewSchema = z.object({
 export type PluginWorkflowRunView = z.infer<typeof PluginWorkflowRunViewSchema>;
 
 export const PluginWebhookSetupViewSchema = z.object({
-  unavailable: text(500).nullable().optional(),
+  /** Why it can't receive events here, such as no public address. */
+  unavailable: text(500).nullable(),
   step: z.enum(["configure", "remove", "done"]),
   webhook: PluginWebhookViewSchema,
   callbackUrl: z.string().max(2_048),
@@ -356,9 +388,41 @@ export const pluginReads = {
     output: z.object({ path: z.string().min(1).max(4096), entryUrl: z.url().max(4096).optional() }),
   },
   "plugins.installed.list": { input: z.strictObject({}), output: PluginsInstalledViewSchema },
+  "plugins.installed.page": {
+    input: z.strictObject({ cursor: pageCursor }),
+    output: z.object({
+      plugins: z.array(PluginSummaryViewSchema).max(pluginsInstalledPageMax),
+      cursor: pageCursor.nullable(),
+    }),
+  },
+  "plugins.local.get": {
+    input: z.strictObject({ id: PluginIdSchema }),
+    output: PluginLocalToolViewSchema,
+  },
   "plugins.get": {
     input: z.strictObject({ pluginId: PluginIdSchema }),
     output: InstalledPluginViewSchema,
+  },
+  "plugins.tools.list": {
+    input: z.strictObject({ pluginId: PluginIdSchema, cursor: pageCursor.optional() }),
+    output: z.object({
+      tools: z.array(PluginToolViewSchema).max(pluginDetailPageMax),
+      cursor: pageCursor.nullable(),
+    }),
+  },
+  "plugins.skills.list": {
+    input: z.strictObject({ pluginId: PluginIdSchema, cursor: pageCursor.optional() }),
+    output: z.object({
+      skills: z.array(PluginSkillViewSchema).max(pluginDetailPageMax),
+      cursor: pageCursor.nullable(),
+    }),
+  },
+  "plugins.versions.list": {
+    input: z.strictObject({ pluginId: PluginIdSchema, cursor: pageCursor.optional() }),
+    output: z.object({
+      versions: z.array(PluginVersionViewSchema).max(pluginDetailPageMax),
+      cursor: pageCursor.nullable(),
+    }),
   },
   "plugins.catalog.list": {
     input: PluginCatalogPageInputSchema,
@@ -370,7 +434,7 @@ export const pluginReads = {
   },
   "plugins.accounts.list": {
     input: z.strictObject({}),
-    output: z.object({ accounts: z.array(ConnectedAccountViewSchema).max(500) }),
+    output: z.object({ accounts: z.array(PluginAccountViewSchema).max(500) }),
   },
   "plugins.account.review": {
     input: PluginTargetInputSchema,

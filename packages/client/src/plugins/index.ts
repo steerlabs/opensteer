@@ -1,7 +1,6 @@
 import cronstrue from "cronstrue";
 import type { Request, RequestResponse } from "@opensteer/core";
 import type {
-  ConnectedAccountView,
   InstalledPluginView,
   PluginAccess,
   PluginAccountFieldView,
@@ -12,11 +11,15 @@ import type {
   PluginCommandResult,
   PluginConsentView,
   PluginEngineStateView,
+  PluginLocalToolSummaryView,
   PluginLocalToolView,
   PluginRequirementTarget,
   PluginScheduleView,
   PluginScheduledRunView,
+  PluginSkillView,
   PluginSummaryView,
+  PluginToolView,
+  PluginVersionView,
   PluginWorkflowRunView,
 } from "@opensteer/protocol";
 import type { HostClient } from "../host/client.js";
@@ -41,17 +44,59 @@ export * from "./sign-in.js";
 
 /* ---- Reads ---- */
 
+/** The first screen of Plugins: a page of plugins, and the local tools beside them. */
 export function readInstalledPlugins(client: PluginsHost) {
   return client.rpc["plugins.installed.list"]({}).then(unwrapRpcResult);
+}
+/**
+ * The installed plugins after the first page, for a paged list: `null` reads
+ * from `after`, the cursor the first page ended with.
+ */
+export function pluginInstalledReader(
+  client: PluginsHost,
+  after: string,
+): (cursor: string | null) => Promise<KeysetPage<PluginSummaryView>> {
+  return async (cursor) => {
+    const page = await client.rpc["plugins.installed.page"]({ cursor: cursor ?? after }).then(
+      unwrapRpcResult,
+    );
+    return { items: page.plugins, nextCursor: page.cursor };
+  };
+}
+/** One local tool with its tools, for its own page. */
+export function readPluginLocalTool(client: PluginsHost, id: string) {
+  return client.rpc["plugins.local.get"]({ id }).then(unwrapRpcResult);
 }
 export function readPlugin(client: PluginsHost, pluginId: string) {
   return client.rpc["plugins.get"]({ pluginId }).then(unwrapRpcResult);
 }
-export function readPluginPageView(client: PluginsHost, pluginId: string, theme: "light" | "dark") {
-  return client.rpc["plugins.page.view"]({ pluginId, theme }).then(unwrapRpcResult);
+/** All of a plugin's tools, skills or versions, a page at a time, past the detail's first few. */
+export function pluginToolsReader(client: PluginsHost, pluginId: string) {
+  return async (cursor: string | null): Promise<KeysetPage<PluginToolView>> => {
+    const page = await client.rpc["plugins.tools.list"]({
+      pluginId,
+      ...(cursor ? { cursor } : {}),
+    }).then(unwrapRpcResult);
+    return { items: page.tools, nextCursor: page.cursor };
+  };
 }
-export function readConnectedAccounts(client: PluginsHost) {
-  return client.rpc["plugins.accounts.list"]({}).then(unwrapRpcResult);
+export function pluginSkillsReader(client: PluginsHost, pluginId: string) {
+  return async (cursor: string | null): Promise<KeysetPage<PluginSkillView>> => {
+    const page = await client.rpc["plugins.skills.list"]({
+      pluginId,
+      ...(cursor ? { cursor } : {}),
+    }).then(unwrapRpcResult);
+    return { items: page.skills, nextCursor: page.cursor };
+  };
+}
+export function pluginVersionsReader(client: PluginsHost, pluginId: string) {
+  return async (cursor: string | null): Promise<KeysetPage<PluginVersionView>> => {
+    const page = await client.rpc["plugins.versions.list"]({
+      pluginId,
+      ...(cursor ? { cursor } : {}),
+    }).then(unwrapRpcResult);
+    return { items: page.versions, nextCursor: page.cursor };
+  };
 }
 export function readPluginAccountReview(client: PluginsHost, target: PluginRequirementTarget) {
   return client.rpc["plugins.account.review"](target).then(unwrapRpcResult);
@@ -220,27 +265,21 @@ export function pluginEngineNotice(engine: PluginEngineStateView | null): {
   if (engine.status === "unavailable")
     return {
       tone: "error",
-      text: pluginUnavailableText(engine.reason),
+      text: pluginUnavailableText(engine.unavailable),
       detail: engine.reason ?? null,
     };
   return null;
 }
 
-/**
- * The Host reports why the plugin sandbox can't start in its own terms; a
- * person needs to know what to do about it.
- */
-function pluginUnavailableText(reason: string | undefined) {
-  const sandbox = reason?.match(/workerd (has no binary|cannot run|runtime) .*?(\w+)\/(\w+)/u);
-  if (sandbox) {
-    const [, problem, platform] = sandbox;
-    if (problem === "runtime")
-      return "Plugins aren't installed correctly on this computer. Reinstalling Opensteer should fix it.";
-    if (problem === "cannot run" && platform === "darwin")
-      return "Plugins need a newer version of macOS. Update macOS on this computer to use them.";
-    return "Plugins aren't supported on this computer.";
-  }
-  return "Plugins are unavailable right now. Opensteer tries again the next time you open them.";
+/** What a person can do about why the Host says the plugin sandbox can't run. */
+function pluginUnavailableText(unavailable: PluginEngineStateView["unavailable"]) {
+  if (unavailable?.code === "missing-runtime")
+    return "Plugins aren't installed correctly on this computer. Reinstalling Opensteer should fix it.";
+  if (unavailable?.code === "unsupported-system")
+    return unavailable.minimumMacOS
+      ? `Plugins need macOS ${unavailable.minimumMacOS} or later. Update macOS on this computer to use them.`
+      : "Plugins aren't supported on this computer.";
+  return "Plugins aren't working on this computer right now.";
 }
 
 /** A refused read that means the engine is unavailable, as the state to show instead of an error. */
@@ -474,6 +513,24 @@ export function pluginScheduleText(timing: PluginScheduleView["timing"]) {
   return `Every ${minutes} minutes`;
 }
 
+/** Why an enabled schedule's runs are being skipped, from what the Host reports; null when not. */
+export function pluginScheduleSkipped(
+  schedule: PluginScheduleView,
+  requirements: InstalledPluginView["requirements"],
+): string | null {
+  const needed = schedule.settings?.enabled ? schedule.settings.accountRequired : null;
+  if (!needed) return null;
+  const provider = requirements.find(({ name }) => name === needed)?.providerName ?? needed;
+  return `Skipped until you connect a ${provider} account`;
+}
+
+/** Whether to say why background work can't run: only for a plugin that has some. */
+export function pluginBackgroundNotice(data: InstalledPluginView): string | null {
+  const background =
+    data.schedules.length > 0 || data.webhooks.length > 0 || (data.workflows?.length ?? 0) > 0;
+  return background ? data.backgroundUnavailable : null;
+}
+
 export function pluginScheduledRunLabel(run: PluginScheduledRunView) {
   switch (run.status) {
     case "awaiting-approval":
@@ -543,16 +600,12 @@ export function pluginRequirementIssue(
   return null;
 }
 
-export function pluginAccountLabel(account: ConnectedAccountView) {
-  return account.label || account.id;
-}
-
 /* ---- Device data apps and local servers beside plugins ---- */
 
-export type { PluginLocalToolView } from "@opensteer/protocol";
+export type { PluginLocalToolSummaryView, PluginLocalToolView } from "@opensteer/protocol";
 
 /** A local tool's state as a short label: why agents can't reach it first. */
-export function pluginLocalToolStatus(tool: PluginLocalToolView): {
+export function pluginLocalToolStatus(tool: PluginLocalToolSummaryView): {
   readonly label: string;
   readonly tone: PluginTone;
 } {
@@ -563,11 +616,13 @@ export function pluginLocalToolStatus(tool: PluginLocalToolView): {
 }
 
 /** What a local tool offers, counted the way access reads them. */
-export function pluginLocalToolSummary(tool: Pick<PluginLocalToolView, "tools">) {
-  const reads = tool.tools.filter(({ readOnly }) => readOnly).length;
-  const writes = tool.tools.length - reads;
-  if (!tool.tools.length) return "No tools right now";
-  return `${tool.tools.length} ${tool.tools.length === 1 ? "tool" : "tools"}: ${reads} ${
+export function pluginLocalToolSummary(
+  tool: Pick<PluginLocalToolSummaryView, "toolCount" | "readOnlyToolCount">,
+) {
+  const reads = tool.readOnlyToolCount;
+  const writes = tool.toolCount - reads;
+  if (!tool.toolCount) return "No tools right now";
+  return `${tool.toolCount} ${tool.toolCount === 1 ? "tool" : "tools"}: ${reads} ${
     reads === 1 ? "reads" : "read"
   }, ${writes} ${writes === 1 ? "writes" : "write"}`;
 }
@@ -576,7 +631,7 @@ export function pluginLocalToolSummary(tool: Pick<PluginLocalToolView, "tools">)
  * What a local tool row says under its title, in a person's words. A device
  * app's title already names its computer; a local server's says where it runs.
  */
-export function pluginLocalToolDetail(tool: PluginLocalToolView): string {
+export function pluginLocalToolDetail(tool: PluginLocalToolSummaryView): string {
   return [pluginLocalToolStatus(tool).label, pluginLocalToolWhere(tool)]
     .filter(Boolean)
     .join(" · ");
@@ -606,14 +661,6 @@ export function pluginLocalToolSource(
   if (tool.id.startsWith("app_server_"))
     return { kind: "local-server", serverId: tool.id.slice("app_server_".length) };
   return null;
-}
-
-/** The local tool agents reach for one local server, when there is one. */
-export function pluginLocalToolForServer(
-  tools: readonly PluginLocalToolView[],
-  serverId: string,
-): PluginLocalToolView | null {
-  return tools.find((tool) => tool.id === `app_server_${serverId}`) ?? null;
 }
 
 /** How agents address it in a program; for a line about exactly that, not for choosing access. */

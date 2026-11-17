@@ -73,7 +73,7 @@ async function host() {
   client = new MockHostClient({ latencyMs: 0 });
   await client.load();
   // The mock engine takes a moment to start on its first read, as the real one does.
-  await client.rpc["plugins.installed.list"]({});
+  await client.rpc["plugins.accounts.list"]({});
   state.host = client;
   return client;
 }
@@ -169,14 +169,8 @@ it("finishes a manual webhook setup that asks for nothing with Done", async () =
 
 it("removes a saved account after every plugin is gone, from Plugins", async () => {
   const client = await host();
-  const installed = await client.rpc["plugins.installed.list"]({});
-  if (!installed.ok) throw new Error("installed read failed");
-  for (const plugin of installed.data.plugins ?? [])
-    await client.dispatch({
-      type: "plugins.remove",
-      idempotencyKey: `remove:${plugin.id}`,
-      pluginId: plugin.id,
-    });
+  // As on the Host, live runs and webhooks are cleaned up before a plugin can go.
+  await client.enginePlugins.removeEverything();
   await render(<PluginsScreen route={{ params: { deploymentId: "dep_fixture" } } as never} />);
   await until(() => has(undefined, "No plugins yet"), "the empty Plugins list loaded");
   await press(undefined, "Connected accounts");

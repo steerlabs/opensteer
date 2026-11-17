@@ -4,9 +4,11 @@ import {
   configurePluginSchedule,
   pluginAccessChoices,
   pluginAuthorText,
+  pluginBackgroundNotice,
   pluginInputContent,
   pluginInputForm,
   pluginRequirementIssue,
+  pluginScheduleSkipped,
   pluginScheduleText,
   pluginScheduledRunLabel,
   pluginStatusView,
@@ -15,6 +17,9 @@ import {
   pluginWebhookStatusText,
   pluginWorkflowRunLabel,
   pluginWorkflowRunLive,
+  pluginSkillsReader,
+  pluginToolsReader,
+  pluginVersionsReader,
   readPlugin,
   readPluginScheduleRuns,
   readPluginWebhookSetup,
@@ -29,7 +34,7 @@ import {
   type InstalledPluginView,
   type PluginAccess,
 } from "@opensteer/client/plugins";
-import { usePluginEngine, usePluginWorkflowRuns } from "@opensteer/client/react";
+import { usePluginEngine, usePluginSection, usePluginWorkflowRuns } from "@opensteer/client/react";
 import type { HostClient } from "@opensteer/client/host";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import * as Clipboard from "expo-clipboard";
@@ -76,7 +81,6 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
   const [starting, setStarting] = useState<Workflow | null>(null);
   const [pageOpen, setPageOpen] = useState(false);
   const [webhook, setWebhook] = useState<string | null>(null);
-  const [all, setAll] = useState<ReadonlySet<string>>(new Set());
   const hasSchedules = (detail.data?.schedules.length ?? 0) > 0;
   // Scheduled runs load only for a plugin with schedules. Workflow runs load
   // beside the detail, since they outlive the declarations it reports.
@@ -86,25 +90,27 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
     `${pluginId}:${hasSchedules}`,
   );
   const workflowRuns = usePluginWorkflowRuns(host, pluginId);
-  const preview = <T,>(key: string, items: readonly T[], limit: number) =>
-    all.has(key) ? items : items.slice(0, limit);
-  const showAll = (key: string, items: readonly unknown[], limit: number, noun: string) =>
-    items.length > limit
-      ? [
-          {
-            key: `${key}:all`,
-            kind: "button" as const,
-            label: all.has(key) ? "Show fewer" : `Show all ${items.length} ${noun}`,
-            onPress: () =>
-              setAll((shown) => {
-                const next = new Set(shown);
-                if (!next.delete(key)) next.add(key);
-                return next;
-              }),
-          },
-        ]
-      : [];
   const data = detail.data;
+  // The detail sends the first few of each; the rest page from the Host once asked for.
+  const version = data?.plugin.activeVersion;
+  const tools = usePluginSection(
+    data?.tools ?? [],
+    data?.toolCount ?? 0,
+    pluginToolsReader(host, pluginId),
+    `tools:${pluginId}:${version}`,
+  );
+  const skills = usePluginSection(
+    data?.skills ?? [],
+    data?.skillCount ?? 0,
+    pluginSkillsReader(host, pluginId),
+    `skills:${pluginId}:${version}`,
+  );
+  const versions = usePluginSection(
+    data?.versions ?? [],
+    data?.versionCount ?? 0,
+    pluginVersionsReader(host, pluginId),
+    `versions:${pluginId}:${version}`,
+  );
   if (!data) {
     const notice = engineSection(engine);
     return (
@@ -158,6 +164,16 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
             .filter(Boolean)
             .join(" · "),
         },
+        ...(pluginBackgroundNotice(data)
+          ? [
+              {
+                key: "background",
+                kind: "status" as const,
+                tone: "attention" as const,
+                label: pluginBackgroundNotice(data)!,
+              },
+            ]
+          : []),
         ...(data.page
           ? [
               {
@@ -165,7 +181,7 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
                 kind: "button" as const,
                 label: "Open page",
                 ...(data.page.unavailable ? { detail: data.page.unavailable } : {}),
-                disabled: Boolean(data.page.unavailable) || !data.page.reference,
+                disabled: Boolean(data.page.unavailable),
                 opens: true,
                 onPress: () => setPageOpen(true),
               },
@@ -263,13 +279,13 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
         : data.tools.length === 0
           ? [{ key: "none", kind: "text", label: "This plugin has no tools." }]
           : [
-              ...preview("tools", data.tools, 8).map((tool) => ({
+              ...tools.items.map((tool) => ({
                 key: tool.name,
                 kind: "text" as const,
                 label: `${tool.name} · ${tool.readOnly ? "Reads" : "Writes"}`,
                 ...(tool.description ? { detail: tool.description } : {}),
               })),
-              ...showAll("tools", data.tools, 8, "tools"),
+              ...sectionRows("tools", tools, `Show all ${data.toolCount} tools`),
             ],
   });
   if (data.skills?.length)
@@ -277,13 +293,13 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
       key: "skills",
       title: "Skills",
       rows: [
-        ...preview("skills", data.skills, 5).map((skill) => ({
+        ...skills.items.map((skill) => ({
           key: skill.name,
           kind: "text" as const,
           label: skill.name,
           ...(skill.description ? { detail: skill.description } : {}),
         })),
-        ...showAll("skills", data.skills, 5, "skills"),
+        ...sectionRows("skills", skills, `Show all ${data.skillCount} skills`),
       ],
     });
   if (hasSchedules) {
@@ -306,6 +322,7 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
                 pluginScheduleText(schedule.timing),
                 enabled && settings?.nextAt ? `next ${when(settings.nextAt)}` : null,
                 settings?.running ? "running now" : null,
+                pluginScheduleSkipped(schedule, data.requirements),
               ]
                 .filter(Boolean)
                 .join(" · "),
@@ -480,7 +497,7 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
       key: "versions",
       title: "Versions",
       rows: [
-        ...preview("versions", data.versions, 5).map((version): NativeSettingsRow => ({
+        ...versions.items.map((version): NativeSettingsRow => ({
           key: version.id,
           kind: "button" as const,
           label: version.createdAt ? when(version.createdAt) : version.id,
@@ -504,7 +521,7 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
               ],
             ),
         })),
-        ...showAll("versions", data.versions, 5, "versions"),
+        ...sectionRows("versions", versions, `Show all ${data.versionCount} versions`),
       ],
       footer: { text: "Switching versions changes the plugin's code, not the data it has stored." },
     });
@@ -550,7 +567,7 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
           workflow={starting}
         />
       ) : null}
-      {pageOpen && data.page?.reference && !data.page.unavailable ? (
+      {pageOpen && data.page && !data.page.unavailable ? (
         <Sheet open title={plugin.name} onClose={() => setPageOpen(false)}>
           <AppFrame client={host} appId={data.page.reference.pluginId} kind="plugin" />
         </Sheet>
@@ -620,6 +637,53 @@ function StartWorkflow(props: {
       ]}
     />
   );
+}
+
+/** "Show all" for a section the detail sends the first few of, with the Host's further pages. */
+function sectionRows(
+  key: string,
+  section: ReturnType<typeof usePluginSection<unknown>>,
+  label: string,
+): NativeSettingsRow[] {
+  if (!section.expandable) return [];
+  const more = section.more;
+  return [
+    ...(section.error
+      ? [
+          {
+            key: `${key}:failed`,
+            kind: "status" as const,
+            tone: "bad" as const,
+            label: `Couldn't read all of its ${key}.`,
+            ...(section.error instanceof Error ? { detail: section.error.message } : {}),
+          },
+          {
+            key: `${key}:retry`,
+            kind: "button" as const,
+            label: "Try again",
+            onPress: section.retry,
+          },
+        ]
+      : []),
+    ...(more
+      ? [
+          {
+            key: `${key}:more`,
+            kind: "button" as const,
+            label: section.loadingMore ? "Loading…" : `Show more ${key}`,
+            disabled: section.loadingMore,
+            onPress: more,
+          },
+        ]
+      : []),
+    {
+      key: `${key}:all`,
+      kind: "button",
+      label: section.loading ? "Loading…" : section.all ? "Show fewer" : label,
+      disabled: section.loading,
+      onPress: section.toggle,
+    },
+  ];
 }
 
 /** A run read's state as rows: loading, or a failure with a retry, never an empty list. */

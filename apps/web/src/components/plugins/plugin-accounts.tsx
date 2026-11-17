@@ -5,7 +5,7 @@ import {
   pluginEngineRefusal,
   readPluginAccounts,
   removePluginAccount,
-  type PluginAccountRow,
+  type PluginAccountView,
 } from "@opensteer/client/plugins";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { useShell } from "../app-shell.js";
@@ -26,7 +26,7 @@ export function PluginAccounts() {
   const accounts = useSettingsRead(() => readPluginAccounts(hostClient), "plugin-accounts");
   const refused = accounts.data ? null : pluginEngineRefusal(accounts.error);
   const engine = usePluginEngine(refused);
-  const [removing, setRemoving] = useState<PluginAccountRow | null>(null);
+  const [removing, setRemoving] = useState<PluginAccountView | null>(null);
   return (
     <div className="plugins-area">
       <Link className="plugins-back" to={pluginsPath}>
@@ -49,10 +49,10 @@ export function PluginAccounts() {
         ) : (
           <div className="card" role="list">
             {accounts.data.map((row) => (
-              <div className="card__row plugin-account" key={row.account.id} role="listitem">
-                <IntegrationIcon id={row.account.provider} name={row.providerName} />
+              <div className="card__row plugin-account" key={row.id} role="listitem">
+                <IntegrationIcon id={row.provider} name={row.providerName} />
                 <span className="card__row-body">
-                  <span className="card__row-title">{row.account.label || row.account.id}</span>
+                  <span className="card__row-title">{row.label || row.id}</span>
                   <span className="card__row-detail">
                     {row.providerName} ·{" "}
                     {row.links.length ? (
@@ -71,7 +71,7 @@ export function PluginAccounts() {
                   </span>
                 </span>
                 <button
-                  aria-label={`Remove ${row.account.label || row.account.id}`}
+                  aria-label={`Remove ${row.label || row.id}`}
                   className="btn btn--small btn--ghost"
                   onClick={() => setRemoving(row)}
                   type="button"
@@ -110,7 +110,7 @@ function RemoveAccount({
 }: {
   readonly onClose: () => void;
   readonly onRemoved: () => void;
-  readonly row: PluginAccountRow;
+  readonly row: PluginAccountView;
 }) {
   const { hostClient } = useShell();
   const [pending, setPending] = useState(false);
@@ -134,7 +134,7 @@ function RemoveAccount({
             onClick={() => {
               setPending(true);
               setError(null);
-              void removePluginAccount(hostClient, row.account.id)
+              void removePluginAccount(hostClient, row.id)
                 .then(onRemoved)
                 .catch((reason: unknown) => setError(actionErrorMessage(reason)))
                 .finally(() => setPending(false));

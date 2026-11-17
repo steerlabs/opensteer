@@ -10,7 +10,9 @@ tool's query label; it cannot prove what that plugin's code does.
 
 The Host supervises a private child that starts on demand and stops when idle. Programs run away
 from the event loop serving clients; workerd belongs to that child's lifetime. Saved schedules can
-wake it again ([demand](../apps/host/src/plugins/engine-storage.ts)).
+wake it again ([demand](../apps/host/src/plugins/engine-storage.ts)). Opening Plugins never waits
+for a start: the installed list goes out with local tools and no plugins, and a
+`host.plugins-changed` notice follows once the engine can answer, so every client must re-read on it.
 
 Paused programs live in memory. After a Host restart or child loss, unfinished executions become
 interrupted and their Requests are cancelled. Earlier calls may already have taken effect. Never

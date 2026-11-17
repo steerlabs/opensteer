@@ -1,6 +1,12 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, test } from "vitest";
-import { layoutRoute, presentedFrom, routesAbove, routeShown } from "./navigation-presentations.js";
+import {
+  layoutRoute,
+  presentedFrom,
+  pushedInPresentation,
+  routesAbove,
+  routeShown,
+} from "./navigation-presentations.js";
 
 const stack = (...names: string[]) => ({
   index: names.length - 1,
@@ -57,4 +63,18 @@ describe("the presented flow", () => {
     );
     expect(layoutRoute(stack("Home", "Thread", "ThreadAround"))?.name).toBe("Thread");
   });
+});
+
+test("a page pushed inside a sheet needs its own way back; the sheet and a page beneath it do not", () => {
+  const settings = stack("Home", "Settings", "SettingsPlugins", "PluginDetail");
+  expect(pushedInPresentation(settings, "Home-0")).toBe(false);
+  expect(pushedInPresentation(settings, "Settings-1")).toBe(false);
+  expect(pushedInPresentation(settings, "SettingsPlugins-2")).toBe(true);
+  expect(pushedInPresentation(settings, "PluginDetail-3")).toBe(true);
+  // A sheet of its own over that page has its own control.
+  expect(
+    pushedInPresentation(stack("Settings", "PluginDetail", "PluginConnect"), "PluginConnect-2"),
+  ).toBe(false);
+  expect(pushedInPresentation(stack("Home", "SettingsDevices"), "SettingsDevices-1")).toBe(false);
+  expect(pushedInPresentation(settings, "Gone")).toBe(false);
 });

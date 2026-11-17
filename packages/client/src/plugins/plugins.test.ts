@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { RequestSchema } from "@opensteer/core";
 import { MockPlugins, mockPluginRequests } from "../mock/mock-plugins.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
+import { unwrapRpcResult } from "../host/host-session-client.js";
 import {
-  readPluginPageView,
   readPluginWebhookSetup,
   removePluginWebhook,
   confirmPluginWebhookRemoval,
@@ -16,7 +16,7 @@ import {
   pluginRequestView,
   completePluginWebhookSetup,
   pluginAccountRemoval,
-  pluginAccountRows,
+  readPluginAccounts,
   pluginConsentLines,
   pluginEngineNotice,
   pluginWebhookSetupCompletion,
@@ -275,12 +275,13 @@ describe("plugin page and webhook clients", () => {
       rpc: mock.reads() as PluginsHost["rpc"],
       dispatch: (input) => mock.command(input as Parameters<MockPlugins["command"]>[0]),
     };
-    const page = await readPluginPageView(host, "plg_linear", "dark");
-    expect(page.entryUrl).toMatch(/^data:text\/html,/);
+    const view = () =>
+      host.rpc["plugins.page.view"]({ pluginId: "plg_linear", theme: "dark" }).then(
+        unwrapRpcResult,
+      );
+    expect((await view()).entryUrl).toMatch(/^data:text\/html,/);
     await setPluginAccess(host, "plg_linear", "off");
-    await expect(readPluginPageView(host, "plg_linear", "dark")).rejects.toThrow(
-      "Turn on this plugin",
-    );
+    await expect(view()).rejects.toThrow("Plugin page is unavailable");
     await setPluginAccess(host, "plg_linear", "all");
     await expect(
       confirmPluginWebhookRemoval(host, "plg_linear", "whk_linear_issues"),
@@ -370,43 +371,49 @@ describe("workflow runs", () => {
     failure: null,
   });
 
-  it("shows every live run first, pages the rest by cursor, and rereads loaded pages", async () => {
+  it("always shows the Host's live runs, pages the rest by cursor, and rereads loaded pages", async () => {
     let finished = false;
-    // Page order follows run ids: the first page is neither the newest nor the live runs.
+    // The Host's order: live first, then newest.
     const read = vi.fn(async (cursor: string | null) =>
       cursor === "2"
-        ? {
-            runs: [
-              run("live_late", finished ? "complete" : "running", 3),
-              run("old_8", "complete", 8),
-            ],
-            cursor: null,
-          }
+        ? { runs: [run("done_2", "complete", 2), run("done_1", "complete", 1)], cursor: null }
         : {
-            runs: [1, 2, 3, 4, 5, 6, 7].map((day) => run(`old_${day}`, "complete", day)),
+            runs: [
+              ...(finished ? [] : [run("live_1", "running", 3)]),
+              run("live_2", "waiting", 4),
+              ...[9, 8, 7, 6, 5, 4, 3].map((day) => run(`done_${day}`, "complete", day)),
+              ...(finished ? [run("live_1", "complete", 3)] : []),
+            ],
             cursor: "2",
           },
     );
     const runs = new PluginWorkflowRuns(read);
     await runs.refresh();
     expect(runs.getState().visible.map(({ id }) => id)).toEqual([
-      "old_7",
-      "old_6",
-      "old_5",
-      "old_4",
-      "old_3",
+      "live_1",
+      "live_2",
+      "done_9",
+      "done_8",
+      "done_7",
+      "done_6",
+      "done_5",
     ]);
     expect(runs.getState().more).toBe(true);
     await runs.showMore();
-    // The live run on the next page comes first, before newer finished ones.
-    expect(runs.getState().visible[0]).toMatchObject({ id: "live_late", status: "running" });
-    expect(runs.getState().visible).toHaveLength(9);
+    expect(
+      runs
+        .getState()
+        .visible.map(({ id }) => id)
+        .slice(-2),
+    ).toEqual(["done_2", "done_1"]);
+    expect(runs.getState().visible).toHaveLength(11);
     expect(runs.getState().more).toBe(false);
     finished = true;
     read.mockClear();
     await runs.refresh();
     expect(read.mock.calls).toEqual([[null], ["2"]]);
-    expect(runs.getState().visible.find(({ id }) => id === "live_late")?.status).toBe("complete");
+    expect(runs.getState().visible.find(({ id }) => id === "live_1")?.status).toBe("complete");
+    expect(runs.getState().visible[0]?.id).toBe("live_2");
   });
 
   it("keeps a failed read a failure, not an empty list", async () => {
@@ -418,19 +425,16 @@ describe("workflow runs", () => {
 });
 
 describe("saved accounts", () => {
-  it("names the plugins removing an account breaks, and none for an orphan", () => {
+  it("names the plugins removing an account breaks, and none for an orphan", async () => {
     const mock = new MockPlugins({ changed: () => {}, accountLinked: () => {} });
-    const rows = pluginAccountRows(
-      mock.accounts,
-      mock.plugins.map((plugin) => mock.detail(plugin)),
-    );
-    const linear = rows.find(({ account }) => account.id === "acc_linear_work")!;
+    const accounts = await readPluginAccounts({ rpc: mock.reads() as PluginsHost["rpc"] });
+    const linear = accounts.find(({ id }) => id === "acc_linear_work")!;
     expect(linear).toMatchObject({
       providerName: "Linear",
       links: [{ pluginId: "plg_linear", pluginName: "Linear" }],
     });
     expect(pluginAccountRemoval(linear).message).toContain("Linear loses this account");
-    const orphan = rows.find(({ account }) => account.id === "acc_github_old")!;
+    const orphan = accounts.find(({ id }) => id === "acc_github_old")!;
     expect(orphan.links).toEqual([]);
     expect(pluginAccountRemoval(orphan).message).toMatch(/^No plugin uses it\. .*even if/u);
   });
@@ -466,18 +470,29 @@ describe("words a person reads", () => {
     expect(lines("sealed").join(" ")).not.toMatch(/sealed handle|Resend's code/u);
   });
 
-  it("says what to do when the sandbox can't run here, keeping the Host's reason", () => {
+  it("says what to do when the sandbox can't run here from the Host's code, keeping its reason", () => {
     const reason = "Plugins are unavailable: workerd cannot run on this darwin/arm64 system";
-    expect(pluginEngineNotice({ status: "unavailable", reason })).toEqual({
+    expect(
+      pluginEngineNotice({
+        status: "unavailable",
+        reason,
+        unavailable: { code: "unsupported-system", minimumMacOS: "13.5" },
+      }),
+    ).toEqual({
       tone: "error",
-      text: "Plugins need a newer version of macOS. Update macOS on this computer to use them.",
+      text: "Plugins need macOS 13.5 or later. Update macOS on this computer to use them.",
       detail: reason,
     });
     expect(
       pluginEngineNotice({
         status: "unavailable",
         reason: "Plugins are unavailable: workerd has no binary for win32/arm64",
+        unavailable: { code: "unsupported-system" },
       })?.text,
     ).toBe("Plugins aren't supported on this computer.");
+    // The reason's wording is detail only; without a code nothing is read into it.
+    expect(pluginEngineNotice({ status: "unavailable", reason })?.text).toBe(
+      "Plugins aren't working on this computer right now.",
+    );
   });
 });

@@ -15,7 +15,8 @@ import { PluginsArea } from "./plugins-area.js";
  * - a manual webhook setup shows its instructions but has nothing to finish
  *   it with, or a setup that asks for nothing has no "Done";
  * - a saved account outlives every plugin that used it with nowhere to remove it;
- * - a live workflow run that isn't among the first rows has no Stop.
+ * - a live workflow run that isn't among the first rows has no Stop;
+ * - background work the Host publishes leaves an open plugin showing what was.
  */
 
 const harness = vi.hoisted(() => ({ client: null as unknown as HostClient }));
@@ -40,7 +41,7 @@ async function host() {
   client = new MockHostClient({ latencyMs: 0 });
   await client.load();
   // The mock engine takes a moment to start on its first read, as the real one does.
-  await client.rpc["plugins.installed.list"]({});
+  await client.rpc["plugins.accounts.list"]({});
   harness.client = client;
   return client;
 }
@@ -138,14 +139,8 @@ it("finishes a manual webhook setup that asks for nothing with Done", async () =
 
 it("removes a saved account after every plugin is gone, from the Plugins area", async () => {
   const client = await host();
-  const installed = await client.rpc["plugins.installed.list"]({});
-  if (!installed.ok) throw new Error("installed read failed");
-  for (const plugin of installed.data.plugins ?? [])
-    await client.dispatch({
-      type: "plugins.remove",
-      idempotencyKey: `remove:${plugin.id}`,
-      pluginId: plugin.id,
-    });
+  // As on the Host, live runs and webhooks are cleaned up before a plugin can go.
+  await client.enginePlugins.removeEverything();
   await mount("/settings/plugins", client);
   await until(() => text().includes("No plugins yet"), "the empty Plugins list loaded");
   await press("Connected accounts");
@@ -160,7 +155,7 @@ it("removes a saved account after every plugin is gone, from the Plugins area", 
   expect(accounts.data.accounts.some(({ id }) => id === "acc_stripe_live")).toBe(false);
 });
 
-it("stops a live workflow run the Host lists past the first six", async () => {
+it("stops a live workflow run among finished ones", async () => {
   const { client } = await mount("/settings/plugins/installed/plg_linear");
   await until(() => text().includes("Import backlog"), "the workflow runs loaded");
   const stop = [...document.querySelectorAll<HTMLButtonElement>("button")].filter((candidate) =>
@@ -175,4 +170,31 @@ it("stops a live workflow run the Host lists past the first six", async () => {
   const runs = await client.rpc["plugins.workflow.runs"]({ pluginId: "plg_linear" });
   if (!runs.ok) throw new Error("runs read failed");
   expect(runs.data.runs.find(({ id }) => id === "wfr_6a8")?.status).toBe("terminated");
+});
+
+it("shows background work the Host publishes on the open plugin, without navigating", async () => {
+  const { client } = await mount("/settings/plugins/installed/plg_linear");
+  const finish = () =>
+    document.querySelector('button[aria-label="Finish setting up Project updates"]');
+  await until(() => finish() !== null, "the Linear plugin loaded");
+  client.enginePlugins.confirmWebhookInBackground("plg_linear", "whk_linear_projects");
+  await until(() => finish() === null, "the page reread after the Host's change notice");
+  expect(text()).toContain("Project updates");
+});
+
+it("reaches every installed plugin past the first page", async () => {
+  window.history.replaceState(null, "", "/?mock-plugins=many");
+  try {
+    await mount("/settings/plugins");
+    await until(() => text().includes("Helper 001"), "the first page loaded");
+    expect(text()).not.toContain("Helper 120");
+    while (!text().includes("Helper 120")) {
+      await press("Show more plugins");
+      await until(() => !text().includes("Loading…"), "the next page loaded");
+    }
+    expect(document.querySelectorAll('[role="listitem"][href*="plg_helper_"]')).toHaveLength(120);
+    expect(text()).not.toContain("Show more plugins");
+  } finally {
+    window.history.replaceState(null, "", "/");
+  }
 });

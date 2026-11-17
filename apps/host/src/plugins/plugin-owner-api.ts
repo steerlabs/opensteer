@@ -11,12 +11,13 @@ import {
 import { OpensteerError, type UserId } from "@opensteer/core";
 import {
   PluginIconSchema,
+  pluginDetailPageMax,
+  pluginDetailPreview,
   pluginLocalToolsMax,
   pluginReads,
   pluginRunsMax,
   pluginToolsMax,
-  pluginVersionsMax,
-  pluginsInstalledMax,
+  pluginsInstalledPageMax,
   rpcSuccess,
   type HostApiHandlers,
   type HostApiServerContext,
@@ -27,6 +28,8 @@ import {
   type InstalledPluginView,
   type PluginRequirementView,
   type PluginSummaryView,
+  type PluginToolView,
+  type PluginVersionView,
 } from "@opensteer/protocol";
 import type { PluginAgentStore } from "@opensteer/database";
 import { requireSession } from "../server/rpc-context.js";
@@ -38,13 +41,14 @@ import {
   type PluginJson,
 } from "./engine-protocol.js";
 import type { PluginService, PluginServiceState } from "./plugin-service.js";
+import { keysetPage } from "./keyset-page.js";
 
 /**
  * The person's own authority over their plugins. Every call acts as the
  * personal owner; no caller context ever comes from a client.
  */
 const owner: PluginCaller = { caller: "personal", mode: "automatic" };
-type LocalTool = Omit<PluginLocalToolView, "access">;
+type LocalTool = Omit<PluginLocalToolView, "access" | "toolCount" | "readOnlyToolCount">;
 
 type Service = Pick<
   PluginService,
@@ -197,6 +201,18 @@ const iso = (value: unknown) => {
 const clip = (value: unknown, max: number) =>
   typeof value === "string" ? value.slice(0, max) : "";
 
+/** Plugins that need the person come first, as the list groups them. */
+const installedKey = (plugin: PluginSummaryView) =>
+  `${plugin.status === "ready" ? 1 : 0}\u0000${plugin.name.toLocaleLowerCase()}\u0000${plugin.id}`;
+const nameKey = (item: { name: string }) => item.name;
+const versionKey = (version: PluginVersionView) => `${version.createdAt ?? ""}\u0000${version.id}`;
+
+/** A provider no installed plugin names any more still reads as a word, not an identifier. */
+function providerTitle(provider: string) {
+  const words = provider.replace(/[-_]+/gu, " ").trim();
+  return words ? `${words[0]!.toLocaleUpperCase()}${words.slice(1)}` : provider;
+}
+
 const webhookView = (w: z.infer<typeof EngineWebhookSchema>) => ({
   id: w.id,
   name: w.name.slice(0, 240),
@@ -236,6 +252,43 @@ function hostError(error: unknown): never {
   throw error;
 }
 
+type EngineDetail = Awaited<ReturnType<Service["detail"]>>;
+/** A plugin's tools, skills and versions whole, in the shapes the detail and its pages send. */
+function sections(detail: EngineDetail, row: Settings | undefined) {
+  const tools: PluginToolView[] | null = detail.tools
+    ? each(
+        detail.tools.items,
+        z.object({
+          name: z.string().min(1),
+          description: z.string().optional(),
+          readOnly: z.boolean().optional(),
+        }),
+        pluginToolsMax,
+      ).map((tool) => ({
+        name: tool.name.slice(0, 240),
+        description: (tool.description ?? "").slice(0, 2_000),
+        readOnly: tool.readOnly === true,
+      }))
+    : null;
+  const skills =
+    detail.skills === null
+      ? null
+      : detail.skills.skills.map((skill) => ({
+          name: skill.name.slice(0, 240),
+          description: (skill.description ?? "").slice(0, 2_000),
+        }));
+  const versions: PluginVersionView[] = z
+    .array(z.object({ id: z.string().min(1), createdAt: z.iso.datetime() }))
+    .parse(detail.versions)
+    .map((version) => ({
+      id: version.id,
+      createdAt: iso(version.createdAt),
+      active: version.id === detail.plugin.activeVersion,
+      author: authorOf(row, version.id),
+    }));
+  return { tools, skills, versions };
+}
+
 export class PluginOwnerApi {
   readonly #options: PluginOwnerApiOptions;
   readonly pages: PluginOwnerApiOptions["pages"];
@@ -246,6 +299,8 @@ export class PluginOwnerApi {
   }
   /** Retried commands from a weak connection resolve to the first attempt's result. */
   readonly #recent = new Map<string, Promise<PluginCommandResult>>();
+  /** A start begun for a list that went out without plugins; it tells the owner when it ends. */
+  #warming: Promise<void> | undefined;
   constructor(options: PluginOwnerApiOptions) {
     this.#options = options;
     this.pages = options.pages;
@@ -258,11 +313,7 @@ export class PluginOwnerApi {
     return session;
   }
   async #settings(userId: UserId) {
-    return each(
-      await this.#options.settings.settings(userId),
-      settingsRow,
-      pluginsInstalledMax * 4,
-    );
+    return z.array(settingsRow).parse(await this.#options.settings.settings(userId));
   }
   #call<T>(promise: Promise<T>): Promise<T> {
     return promise.catch(hostError);
@@ -277,39 +328,72 @@ export class PluginOwnerApi {
       : null;
   }
 
+  /**
+   * The first screen of Plugins. Local tools never wait for the engine: while it is not ready the
+   * list goes out without plugins, the engine starts, and a change notice follows once it can say.
+   */
   async installed(userId: UserId, signal?: AbortSignal) {
-    const [rows, settings, local] = await Promise.all([
-      // Local tools remain visible when the sandbox is unavailable.
+    const service = this.#options.service;
+    const ready = service.state().status === "ready";
+    const [plugins, settings, local] = await Promise.all([
+      ready ? this.#summaries(userId, signal) : null,
+      this.#settings(userId),
+      this.#options.localTools?.(userId) ?? [],
+    ]);
+    if (!ready || plugins === null) this.#warm(userId);
+    const engine = pluginEngineStateView(service.state());
+    const access = (id: string) => settings.find((row) => row.pluginId === id)?.access ?? "all";
+    const page = plugins
+      ? keysetPage(plugins, installedKey, { scope: "installed", max: pluginsInstalledPageMax })
+      : null;
+    return {
+      engine: this.#warming && engine.status === "idle" ? { status: "starting" as const } : engine,
+      plugins: page?.items ?? null,
+      cursor: page?.cursor ?? null,
+      local: local
+        .slice(0, pluginLocalToolsMax)
+        .map(({ tools, ...tool }) => ({
+          ...tool,
+          toolCount: tools.length,
+          readOnlyToolCount: tools.filter(({ readOnly }) => readOnly).length,
+          access: access(tool.id),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    };
+  }
+
+  /** Every installed plugin as the list shows it; null while the engine is unavailable. */
+  async #summaries(userId: UserId, signal?: AbortSignal): Promise<PluginSummaryView[] | null> {
+    const [rows, settings] = await Promise.all([
       this.#options.service.installed({}, owner, signal).catch((error: unknown) => {
         if (error instanceof PluginServiceError && error.code === "unavailable") return null;
         return hostError(error);
       }),
       this.#settings(userId),
-      this.#options.localTools?.(userId) ?? [],
     ]);
-    const access = (id: string) => settings.find((row) => row.pluginId === id)?.access ?? "all";
-    return {
-      engine: pluginEngineStateView(this.#options.service.state()),
-      plugins:
-        rows
-          ?.slice(0, pluginsInstalledMax)
-          .map(({ plugin, links }) =>
-            summary(
-              plugin,
-              links,
-              settings.find((row) => row.pluginId === plugin.id),
-            ),
-          )
-          .sort((a, b) => a.name.localeCompare(b.name)) ?? null,
-      local: local
-        .slice(0, pluginLocalToolsMax)
-        .map((tool) => ({
-          ...tool,
-          tools: tool.tools.slice(0, pluginToolsMax),
-          access: access(tool.id),
-        }))
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    };
+    return (
+      rows?.map(({ plugin, links }) =>
+        summary(
+          plugin,
+          links,
+          settings.find((row) => row.pluginId === plugin.id),
+        ),
+      ) ?? null
+    );
+  }
+
+  #warm(userId: UserId) {
+    if (this.#warming || this.#options.service.state().status === "unavailable") return;
+    this.#warming = this.#options.service
+      .installed({}, owner)
+      .then(
+        () => undefined,
+        () => undefined,
+      )
+      .then(() => {
+        this.#warming = undefined;
+        this.#options.changed(userId);
+      });
   }
 
   async detail(userId: UserId, pluginId: string, signal?: AbortSignal) {
@@ -368,45 +452,22 @@ export class PluginOwnerApi {
           };
         }),
     );
-    const tools = detail.tools
-      ? each(
-          detail.tools.items,
-          z.object({
-            name: z.string().min(1),
-            description: z.string().optional(),
-            readOnly: z.boolean().optional(),
-          }),
-          pluginToolsMax,
-        ).map((tool) => ({
-          name: tool.name.slice(0, 240),
-          description: (tool.description ?? "").slice(0, 2_000),
-          readOnly: tool.readOnly === true,
-        }))
-      : null;
-    const skills =
-      detail.skills === null
-        ? null
-        : detail.skills.skills.slice(0, 100).map((skill) => ({
-            name: skill.name.slice(0, 240),
-            description: (skill.description ?? "").slice(0, 2_000),
-          }));
+    const { tools, skills, versions } = sections(detail, row);
     const view: InstalledPluginView = {
       plugin: summary(plugin, links, row),
       requirements: requirementViews,
-      tools,
-      toolCount: detail.tools?.items.length ?? 0,
-      skills,
-      versions: z
-        .array(z.object({ id: z.string().min(1), createdAt: z.iso.datetime() }))
-        .parse(detail.versions)
-        .sort((a, b) => (iso(b.createdAt) ?? "").localeCompare(iso(a.createdAt) ?? ""))
-        .slice(0, pluginVersionsMax)
-        .map((version) => ({
-          id: version.id,
-          createdAt: iso(version.createdAt),
-          active: version.id === plugin.activeVersion,
-          author: authorOf(row, version.id),
-        })),
+      tools:
+        tools && keysetPage(tools, nameKey, { scope: "", max: pluginDetailPreview.tools }).items,
+      toolCount: tools?.length ?? 0,
+      skills:
+        skills && keysetPage(skills, nameKey, { scope: "", max: pluginDetailPreview.skills }).items,
+      skillCount: skills?.length ?? 0,
+      versions: keysetPage(versions, versionKey, {
+        scope: "",
+        max: pluginDetailPreview.versions,
+        descending: true,
+      }).items,
+      versionCount: versions.length,
       schedules: detail.schedules.slice(0, 50).map((schedule) => ({
         name: schedule.name.slice(0, 240),
         tool: schedule.tool.slice(0, 240),
@@ -449,7 +510,6 @@ export class PluginOwnerApi {
       ),
       page: detail.hasPage
         ? {
-            url: null,
             reference: { kind: "plugin", pluginId },
             unavailable:
               row?.access === "off"
@@ -602,9 +662,82 @@ export class PluginOwnerApi {
         const session = await this.#owner(context);
         return rpcSuccess(await this.installed(session.user.id));
       },
+      "plugins.installed.page": async (input, context) => {
+        const session = await this.#owner(context);
+        const plugins = await this.#summaries(session.user.id);
+        if (plugins === null)
+          throw new OpensteerError({
+            code: "conflict",
+            reason: "plugin-engine-unavailable",
+            message: this.#options.service.state().reason ?? "The plugin engine is unavailable.",
+          });
+        const page = keysetPage(plugins, installedKey, {
+          scope: "installed",
+          cursor: input.cursor,
+          max: pluginsInstalledPageMax,
+        });
+        return rpcSuccess({ plugins: page.items, cursor: page.cursor });
+      },
+      "plugins.local.get": async (input, context) => {
+        const session = await this.#owner(context);
+        const [local, settings] = await Promise.all([
+          this.#options.localTools?.(session.user.id) ?? [],
+          this.#settings(session.user.id),
+        ]);
+        const tool = local.find((entry) => entry.id === input.id);
+        if (!tool)
+          throw new OpensteerError({
+            code: "not_found",
+            message:
+              "This isn't available to agents anymore. It may have been removed on its device.",
+          });
+        const tools = tool.tools.slice(0, pluginToolsMax);
+        return rpcSuccess({
+          ...tool,
+          tools,
+          toolCount: tool.tools.length,
+          readOnlyToolCount: tool.tools.filter(({ readOnly }) => readOnly).length,
+          access: settings.find((row) => row.pluginId === tool.id)?.access ?? "all",
+        });
+      },
       "plugins.get": async (input, context) => {
         const session = await this.#owner(context);
         return rpcSuccess(await this.detail(session.user.id, input.pluginId));
+      },
+      "plugins.tools.list": async (input, context) => {
+        await this.#owner(context);
+        const detail = await this.#call(service.detail({ plugin: input.pluginId }, owner));
+        const page = keysetPage(sections(detail, undefined).tools ?? [], nameKey, {
+          scope: `tools\u0000${input.pluginId}\u0000${detail.plugin.activeVersion}`,
+          cursor: input.cursor,
+          max: pluginDetailPageMax,
+        });
+        return rpcSuccess({ tools: page.items, cursor: page.cursor });
+      },
+      "plugins.skills.list": async (input, context) => {
+        await this.#owner(context);
+        const detail = await this.#call(service.detail({ plugin: input.pluginId }, owner));
+        const page = keysetPage(sections(detail, undefined).skills ?? [], nameKey, {
+          scope: `skills\u0000${input.pluginId}\u0000${detail.plugin.activeVersion}`,
+          cursor: input.cursor,
+          max: pluginDetailPageMax,
+        });
+        return rpcSuccess({ skills: page.items, cursor: page.cursor });
+      },
+      "plugins.versions.list": async (input, context) => {
+        const session = await this.#owner(context);
+        const [detail, settings] = await Promise.all([
+          this.#call(service.detail({ plugin: input.pluginId }, owner)),
+          this.#settings(session.user.id),
+        ]);
+        const row = settings.find((entry) => entry.pluginId === input.pluginId);
+        const page = keysetPage(sections(detail, row).versions, versionKey, {
+          scope: `versions\u0000${input.pluginId}`,
+          cursor: input.cursor,
+          max: pluginDetailPageMax,
+          descending: true,
+        });
+        return rpcSuccess({ versions: page.items, cursor: page.cursor });
       },
       "plugins.catalog.list": async (input, context) => {
         await this.#owner(context);
@@ -631,13 +764,40 @@ export class PluginOwnerApi {
       },
       "plugins.accounts.list": async (_input, context) => {
         await this.#owner(context);
-        const accounts = await this.#call(service.accounts({}, owner));
+        const [accounts, installed] = await Promise.all([
+          this.#call(service.accounts({}, owner)),
+          this.#call(service.installed({}, owner)),
+        ]);
+        const providerNames = new Map<string, string>();
+        const linked = new Map<string, Map<string, string>>();
+        for (const { plugin, links } of installed) {
+          for (const [, requirement] of requirements(plugin))
+            providerNames.set(requirement.provider, requirement.definition.name);
+          for (const { account } of links)
+            linked.set(
+              account,
+              (linked.get(account) ?? new Map()).set(plugin.id, plugin.name.slice(0, 240)),
+            );
+        }
         return rpcSuccess({
-          accounts: accounts.slice(0, 500).map((account) => ({
-            id: account.id,
-            provider: account.provider,
-            label: account.label.slice(0, 240),
-          })),
+          accounts: accounts
+            .slice(0, 500)
+            .map((account) => ({
+              id: account.id,
+              provider: account.provider,
+              providerName: (
+                providerNames.get(account.provider) ?? providerTitle(account.provider)
+              ).slice(0, 240),
+              label: account.label.slice(0, 240),
+              links: [...(linked.get(account.id) ?? [])]
+                .map(([pluginId, pluginName]) => ({ pluginId, pluginName }))
+                .sort((a, b) => a.pluginName.localeCompare(b.pluginName))
+                .slice(0, 50),
+            }))
+            .sort(
+              (a, b) =>
+                a.providerName.localeCompare(b.providerName) || a.label.localeCompare(b.label),
+            ),
         });
       },
       "plugins.account.review": async (input, context) => {
@@ -680,7 +840,6 @@ export class PluginOwnerApi {
                 schedule: run.name.slice(0, 240) || run.id,
                 status: run.status,
                 scheduledAt: iso(run.scheduledAt),
-                finishedAt: iso(run.finishedAt),
                 expiresAt: iso(run.expiresAt),
                 failure: run.failure?.slice(0, 1_000) ?? null,
                 approval,
@@ -979,7 +1138,6 @@ function catalogEntry(entry: {
     id: entry.id.slice(0, 240),
     name: entry.name.slice(0, 240),
     description: clip(entry.description, 1_000),
-    category: entry.category?.slice(0, 80) || null,
     icon: pickIcon(entry.icons),
     auth: each(
       entry.auth,

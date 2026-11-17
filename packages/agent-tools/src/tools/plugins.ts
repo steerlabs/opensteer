@@ -97,8 +97,11 @@ export const opensteer_plugin_list = defineAgentTool({
   access: "read",
   callers: ["run", "connection"],
   description:
-    "List installed plugins, active versions, connected account links, agent access and status, and the person's local tools (device data apps and local servers) that share the tools.<slug> namespace. Use plugin_search for callable tools.",
-  input: z.strictObject({}),
+    "List installed plugins, newest versions, connected account links, agent access and status, and the person's local tools (device data apps and local servers) that share the tools.<slug> namespace, with tool counts. Plugins page: pass cursor to continue; null ends it, and local tools come with the first page. Pass pluginId for that plugin with every kept version. Use plugin_search for callable tools.",
+  input: z.strictObject({
+    pluginId: id.optional(),
+    cursor: z.string().min(1).max(2048).optional(),
+  }),
   output: z.object({
     local: z.array(
       z.object({
@@ -108,7 +111,8 @@ export const opensteer_plugin_list = defineAgentTool({
         access: z.enum(["all", "read-only"]),
         status: z.enum(["active", "unavailable"]),
         unavailable: z.string().optional(),
-        tools: z.array(z.object({ name: z.string(), readOnly: z.boolean() })),
+        toolCount: z.number().int().nonnegative(),
+        readOnlyToolCount: z.number().int().nonnegative(),
       }),
     ),
     plugins: z.array(
@@ -118,15 +122,19 @@ export const opensteer_plugin_list = defineAgentTool({
         slug: z.string(),
         activeVersion: z.string().nullable(),
         versions: z.array(z.object({ id, active: z.boolean() })),
+        versionCount: z.number().int().nonnegative(),
         requirements: z.record(
           z.string(),
           z.object({ scope: z.enum(["app", "user"]), provider: z.string() }),
         ),
         access: z.enum(["all", "read-only"]),
-        links: z.array(object),
+        links: z.array(
+          z.object({ requirement: z.string(), scope: z.string(), account: z.string() }),
+        ),
         status: z.string(),
       }),
     ),
+    cursor: z.string().nullable(),
   }),
 });
 export const opensteer_plugin_install = defineAgentTool({

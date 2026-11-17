@@ -374,6 +374,12 @@ test("owner reads and commands match real catalog, accounts, schedule approvals,
   expect(detail.requirements[0]?.links).toMatchObject([
     { current: true, account: { id: fixture.account } },
   ]);
+  // Connected accounts is one read: the provider's name and the plugins each account serves.
+  const saved = await api.reads()["plugins.accounts.list"]({}, context);
+  expect(saved.ok && saved.data.accounts.find(({ id }) => id === fixture.account)).toMatchObject({
+    providerName: detail.requirements[0]!.providerName,
+    links: [{ pluginId: fixture.plugin, pluginName: detail.plugin.name }],
+  });
   await api.command(
     {
       type: "plugins.schedule.configure",
