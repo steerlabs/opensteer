@@ -2,8 +2,6 @@
 
 The native panels cross a consent boundary. Schemas live in `packages/protocol/src/desktop.ts`,
 handlers in `apps/desktop/src/bridge/methods/computer-use.ts`, and pages in `apps/web/src/desktop/`.
-[Computer use](../../../../docs/computer-use.md) owns helper trust, Mac grants and
-[owner-view authority](../../../../docs/computer-use.md#owner-view-wire).
 
 The browser's page-glass child is click-through, non-focusable and has no Desktop bridge. Main
 enables it only on macOS and Windows: transparent children render black on X11 without a compositor,
@@ -49,8 +47,7 @@ Renderers consume the selected Host display socket, even for a same-Mac round tr
 local capture or JPEG fallback. Opening never focuses the typing target, and blur, hide, F6 and
 leaving reset input and composition. A valid static picture survives transient same-source
 recovery; a replacement socket retires earlier decoder output and refuses input until it draws.
-Terminal generations need an explicit reopen. Owner input, video lifetime and the window group are
-owned by [Computer use](../../../../docs/computer-use.md#negotiated-mac-owner-input).
+Terminal generations need an explicit reopen.
 
 ## The setup panel
 
@@ -58,5 +55,4 @@ Main owns setup state; the renderer draws it. Begin and close carry the displaye
 a stale poll cannot act on the next app. `unknown` is not completion, and questions outlasting RPC
 deadlines stay pending. A settings step reopens only on explicit action; a grant question joins the
 existing macOS question. Honor reduced motion with completed static states. See
-`apps/desktop/src/computer-app-setup-guide.ts` and
-[Setting an app up on this Mac](../../../../docs/computer-use.md#setting-an-app-up-on-this-mac).
+`apps/desktop/src/computer-app-setup-guide.ts`.

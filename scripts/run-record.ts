@@ -3,7 +3,7 @@
  * attempt directory: the reporter (`reporter.json`), the global teardown
  * (`teardown.json`) and the launcher (`envelope.json`, after its child exits).
  * Proof and every same-SHA decision read only a complete record; logs are
- * diagnostics. See docs/testing.md#same-sha-reruns.
+ * diagnostics.
  */
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";

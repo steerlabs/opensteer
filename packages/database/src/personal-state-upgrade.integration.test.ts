@@ -31,7 +31,7 @@ function legacyState(database: Kysely<DatabaseSchema>) {
 }
 
 test.each(["empty", "personal", "team"] as const)(
-  "finalizes the %s 0028 database before owner setup",
+  "finalizes the %s pre-conversion database before owner setup",
   async (kind) => {
     const fixture = await cloneTestDatabase("host");
     const database = createDatabase({ connectionString: fixture.url });

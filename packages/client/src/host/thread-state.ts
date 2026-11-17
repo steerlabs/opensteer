@@ -3,13 +3,26 @@ import type { ThreadSummary } from "./client.js";
 
 const unloadedThreadLimit = 128;
 
-export type ThreadName = Pick<ThreadSummary, "title" | "icon"> &
-  Partial<Pick<ThreadSummary, "doneAt" | "doneReason" | "latestRunCompletedAt" | "lastVisitedAt">>;
+export type ThreadView = Pick<ThreadSummary, "title" | "icon"> &
+  Partial<
+    Pick<
+      ThreadSummary,
+      | "doneAt"
+      | "doneReason"
+      | "latestRunCompletedAt"
+      | "lastVisitedAt"
+      | "status"
+      | "inputQueuePaused"
+      | "returnHint"
+    >
+  >;
 
 type ThreadState = { returnHint?: ThreadSummary["returnHint"] } & Pick<
   ThreadSummary,
-  "status" | "inputQueuePaused" | "pendingRequests" | "updatedAt"
+  "status" | "pendingRequests" | "updatedAt"
 > & {
+    readonly inputQueuePaused?: boolean | undefined;
+    readonly compact?: boolean | undefined;
     readonly doneAt?: ThreadSummary["doneAt"] | undefined;
     readonly doneReason?: ThreadSummary["doneReason"] | undefined;
     readonly title?: string | undefined;
@@ -26,8 +39,22 @@ export class ThreadStateProjection {
     summary: ThreadSummary,
     asOfSequence: Sequence,
     current?: ThreadSummary,
+    compact?: { readonly inputQueuePaused?: boolean | undefined },
   ): ThreadSummary {
-    const accepted = this.#accept(summary.id, { ...summary, stateSequence: asOfSequence }, true);
+    const accepted = this.#accept(
+      summary.id,
+      {
+        ...summary,
+        ...(compact && {
+          icon: undefined,
+          inputQueuePaused: compact.inputQueuePaused,
+          returnHint: undefined,
+        }),
+        compact: !!compact,
+        stateSequence: asOfSequence,
+      },
+      true,
+    );
     const state = {
       ...accepted,
       doneAt: accepted.doneAt === undefined ? summary.doneAt : accepted.doneAt,
@@ -53,13 +80,14 @@ export class ThreadStateProjection {
           ? summary.latestRunCompletedAt
           : state.latestRunCompletedAt,
       status: state.status,
-      inputQueuePaused: state.inputQueuePaused,
+      inputQueuePaused: state.inputQueuePaused ?? summary.inputQueuePaused,
       pendingRequests: state.pendingRequests,
       updatedAt,
     };
   }
 
-  name(thread: ThreadSummary): ThreadName {
+  /** The newest accepted state, for every held copy of the thread: page entries carry it too. */
+  view(thread: ThreadSummary): ThreadView {
     const state = this.#loaded.get(thread.id) ?? this.#unloaded.get(thread.id);
     return {
       doneAt: state?.doneAt === undefined ? thread.doneAt : state.doneAt,
@@ -70,6 +98,12 @@ export class ThreadStateProjection {
           : state.latestRunCompletedAt,
       title: state?.title ?? thread.title,
       icon: state?.icon === undefined ? thread.icon : state.icon,
+      // A page counts only the Requests its reader may see, so the count stays the page's.
+      ...(state && {
+        status: state.status,
+        inputQueuePaused: state.inputQueuePaused ?? thread.inputQueuePaused,
+        returnHint: state.returnHint === undefined ? thread.returnHint : state.returnHint,
+      }),
     };
   }
 
@@ -93,8 +127,10 @@ export class ThreadStateProjection {
 
   #accept(id: string, incoming: ThreadState, loaded = false): ThreadState {
     const previous = this.#loaded.get(id) ?? this.#unloaded.get(id);
-    if (previous && compareSequence(incoming.stateSequence, previous.stateSequence) <= 0)
-      return previous;
+    if (previous) {
+      const order = compareSequence(incoming.stateSequence, previous.stateSequence);
+      if (order < 0 || (order === 0 && !(previous.compact && !incoming.compact))) return previous;
+    }
     const state = {
       doneAt: incoming.doneAt === undefined ? previous?.doneAt : incoming.doneAt,
       // Events that predate reasons carry Done alone, which then reads as a person's.
@@ -108,7 +144,8 @@ export class ThreadStateProjection {
           : incoming.latestRunCompletedAt,
       returnHint: incoming.returnHint === undefined ? previous?.returnHint : incoming.returnHint,
       status: incoming.status,
-      inputQueuePaused: incoming.inputQueuePaused,
+      inputQueuePaused: incoming.inputQueuePaused ?? previous?.inputQueuePaused,
+      compact: incoming.compact,
       pendingRequests: incoming.pendingRequests,
       stateSequence: incoming.stateSequence,
       updatedAt:

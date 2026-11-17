@@ -12,6 +12,7 @@ import { enqueueNodeStop } from "./node-control.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
 import { readAgentHomeSettings } from "./agent-home-settings-store.js";
 import * as voiceStore from "./voice-store.js";
+import { messageTeamSources } from "./message-team-sources.js";
 
 import {
   replayAdministrationCommand,
@@ -1119,6 +1120,7 @@ export class OpensteerStore {
     readonly scope: AgentThreadListScope;
     readonly scopeId: string;
     readonly parentThreadId?: ThreadId;
+    readonly changedSince?: Date;
   }): Promise<AgentThreadListPage> {
     return threadStore.agentThreadPageForOwner(this.#database, input);
   }
@@ -1652,6 +1654,9 @@ export class OpensteerStore {
   }
   async threadMessagePageForOwner(input: ThreadHistoryQuery): Promise<ThreadMessagePage | null> {
     return readThreadHistory(this.#database, input);
+  }
+  messageTeamSources(threadId: ThreadId, messageIds: readonly MessageId[]) {
+    return messageTeamSources(this.#database, threadId, messageIds);
   }
 }
 export { machineIsManagedBy, type MachineOwnershipRecord } from "./machine-ownership.js";

@@ -380,13 +380,13 @@ export class ScopedPersonalStream {
       this.#subscribe(detail, false, true);
   }
 
-  repairShell() {
+  repairShell(resetHistory = false) {
     if (!this.#send) return;
     this.#shellReady = false;
     this.#early.length = 0;
     this.#earlyBytes = 0;
     const generation = ++this.#generation;
-    this.shell.begin(generation, true);
+    this.shell.begin(generation, !resetHistory, resetHistory);
     this.resources.begin(generation);
     this.#send({
       type: "client.subscribe",
@@ -408,6 +408,15 @@ export class ScopedPersonalStream {
     }
     if (frame.type === "host.live" || frame.type === "host.removed") return;
     if (frame.scope.kind !== "shell") return;
+    const cursorAhead =
+      previous.through !== null &&
+      (frame.type === "host.snapshot-required" || frame.type === "host.snapshot") &&
+      BigInt(frame.throughSequence) < BigInt(previous.through);
+    if (cursorAhead) {
+      this.#discardViewerCheckpoints();
+      this.repairShell(true);
+      return;
+    }
     if (frame.type === "host.snapshot" && "tasks" in frame.snapshot) {
       const { deploymentId, viewerId, epoch, resourceRevisions } = frame.snapshot;
       const old = this.#identity;
@@ -419,17 +428,8 @@ export class ScopedPersonalStream {
           old.epoch !== epoch ||
           (this.#sessionId !== undefined && sessionId !== this.#sessionId))
       ) {
-        this.#authority++;
-        this.#purge(old);
-        this.#cacheKeys.clear();
-        this.#early.length = 0;
-        this.#earlyBytes = 0;
-        this.resources.clear();
-        for (const detail of this.#details.values()) {
-          detail.transcript.begin(++this.#generation, false);
-          detail.text.clear();
-          if (detail.slot) this.#subscribe(detail, false, true);
-        }
+        this.#discardViewerCheckpoints();
+        for (const detail of this.#slots.values()) this.#subscribe(detail, false, true);
       }
       this.#identity = { deploymentId, viewerId, epoch };
       this.#sessionId = sessionId;
@@ -463,6 +463,19 @@ export class ScopedPersonalStream {
       const early = this.#early.splice(0);
       this.#earlyBytes = 0;
       for (const pending of early) this.#receiveDetail(pending);
+    }
+  }
+
+  #discardViewerCheckpoints() {
+    this.#authority++;
+    this.#purge(this.#identity);
+    this.#cacheKeys.clear();
+    this.#early.length = 0;
+    this.#earlyBytes = 0;
+    this.resources.clear();
+    for (const detail of this.#details.values()) {
+      detail.transcript.begin(++this.#generation, false);
+      detail.text.clear();
     }
   }
 

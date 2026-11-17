@@ -33,7 +33,7 @@ export async function createPersonalStateFixture(suffix: string) {
 }
 
 // Runtime setup writes canonical rows using the current schema. Reset its
-// projections to the state immediately after migration 0029's schema step.
+// projections to the state immediately after the current-state migration's schema step.
 export async function preparePersonalConversion(
   database: import("kysely").Kysely<DatabaseSchema>,
   sourceSequence = 0,

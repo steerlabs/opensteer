@@ -224,6 +224,7 @@ export function safeError(error: unknown): Readonly<Record<string, unknown>> {
 type DurableCursorKind =
   | "request"
   | "agent-thread"
+  | "agent-thread-changed"
   | "assignment"
   | "message"
   | "owner-thread"

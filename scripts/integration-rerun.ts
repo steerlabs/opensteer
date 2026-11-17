@@ -3,8 +3,7 @@
  * files of a complete, unfiltered integration run on the same SHA, in a clean
  * pinned worktree under the same lock-order mode, and prints whether the
  * failures reproduced as JSON. It writes no receipt and decides nothing for a
- * merge or release; it always exits 1 so no driver reads it as a pass. See
- * docs/testing.md#same-sha-reruns.
+ * merge or release; it always exits 1 so no driver reads it as a pass.
  */
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";

@@ -1,5 +1,4 @@
 import { RequestDeadlines } from "../agents/request-deadlines.js";
-import { DeviceIdSchema } from "@opensteer/core";
 import { gate } from "@opensteer/shared/test-support/observation";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createBrowserSessionId } from "@opensteer/protocol/browser";
@@ -554,9 +553,11 @@ describe("human Passwords settlement", () => {
           typeof ContinuationService
         >[0]["commands"],
         integrations: {
-          selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
           listDiscoveryInventory: async () => [],
           listCallableTools: async () => [],
+          computerAccess: async () => {
+            throw new Error("No computer access fixture");
+          },
           computerUseMachines: async () => [],
           computerUsePhones: async () => [],
         },
@@ -632,9 +633,11 @@ describe("human Passwords settlement", () => {
       const continuations = new ContinuationService({
         commands: { enqueueThreadInput: vi.fn() },
         integrations: {
-          selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
           listDiscoveryInventory: async () => [],
           listCallableTools: async () => [],
+          computerAccess: async () => {
+            throw new Error("No computer access fixture");
+          },
           computerUseMachines: async () => [],
           computerUsePhones: async () => [],
         },
@@ -703,12 +706,17 @@ describe("human Passwords settlement", () => {
         const result = await call;
         if (committed) {
           expect(result).toMatchObject({
-            record: { status: "ready", loginRef: h.loginRef(), account: expect.any(String) },
+            record: {
+              status: "fulfilled",
+              loginStatus: "ready",
+              loginRef: h.loginRef(),
+              account: expect.any(String),
+            },
           });
           expect(result?.text).toContain(h.loginRef());
         } else {
           expect(result).toMatchObject({
-            record: { status: "unavailable", reason: "interrupted" },
+            record: { status: "fulfilled", loginStatus: "unavailable", reason: "interrupted" },
             text: expect.stringContaining("stopped"),
           });
           expect(JSON.stringify(result)).not.toContain(h.loginRef());

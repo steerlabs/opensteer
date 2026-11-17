@@ -184,7 +184,10 @@ integration("proposal credential guidance", () => {
       });
       facts.push({ refusal });
       expect(refusal.structuredContent).toMatchObject({
-        status: "unsupported",
+        requestId: null,
+        kind: "integration.install",
+        status: "blocked",
+        proposalStatus: "unsupported",
         catalogAlternatives: [],
       });
       expect(toolText(refusal)).toContain(

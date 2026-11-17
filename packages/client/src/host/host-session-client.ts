@@ -2,7 +2,7 @@ import type { TranscriptItem } from "@opensteer/protocol/transcript";
 import { MessageIdSchema, utf8ByteLength } from "@opensteer/core";
 import type { PersonalStreamCache } from "./personal-stream-cache.js";
 import { needsYouEntryKey, settleTeamAsk } from "./needs-you.js";
-import { withThreadNames } from "./optimistic-command-patches.js";
+import { withThreadState } from "./optimistic-command-patches.js";
 import { ScopedThreadReader, TranscriptBodies, transcriptBodyKey } from "./scoped-thread-reader.js";
 import { nodeTranscriptCard, transcriptCard } from "./transcript-item-view.js";
 import { displayedItemIds } from "./thread-transcript-store.js";
@@ -123,6 +123,7 @@ import type { ExecutionChoice, ExecutionSelection } from "./execution-preference
 import { createHttpHostApiClient } from "./host-api-client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
 import { RunPlaceStore } from "./run-place.js";
+import { heldThread } from "./task-list.js";
 import {
   type ClientLifecycle,
   type ClientNetworkPath,
@@ -1230,6 +1231,8 @@ export class HttpHostClient {
             ? toThreadSummary(row.thread, this.#snapshot.environments, this.#snapshot.harnesses)
             : compactThread(row),
           SequenceSchema.parse(row.revision),
+          undefined,
+          row.thread ? undefined : row,
         );
         const threads = upsertThread(this.#snapshot.threads, thread);
         if (threads !== this.#snapshot.threads) this.#update({ ...this.#snapshot, threads });
@@ -1265,9 +1268,10 @@ export class HttpHostClient {
       }
 
       if (detailGeneration !== state.generation) {
+        const reattached = detailGeneration !== 0;
         detailGeneration = state.generation;
         this.#ensureAssignments(threadId);
-        this.#ensureAutomations(threadId);
+        this.#ensureAutomations(threadId, reattached);
         this.#ensureBrowserUsage(threadId, "missing");
       }
     });
@@ -1319,6 +1323,9 @@ export class HttpHostClient {
     this.#browserUsageRunSources.clear();
     this.#browserUses.clear();
     this.#deniedAssignments.clear();
+    this.#doneTasksStale = false;
+    this.#doneTaskRefresh = undefined;
+    this.#taskPageLoads.clear();
   }
 
   watchNode(threadId: string, nodeId: string): NodeDetailSubscription {
@@ -1492,19 +1499,24 @@ export class HttpHostClient {
     this.#publishedShell = state;
     const shellAuthority = state.snapshot;
     if (
-      shellAuthority &&
-      this.#snapshot.user &&
-      (this.#snapshot.user.id !== shellAuthority.viewerId ||
-        this.#snapshot.deploymentId !== shellAuthority.deploymentId ||
-        old?.snapshot?.epoch !== shellAuthority.epoch ||
-        (shellAuthority.session && this.#snapshot.sessionId !== shellAuthority.session.sessionId))
+      (old !== undefined && old.history !== state.history) ||
+      (shellAuthority &&
+        this.#snapshot.user &&
+        (this.#snapshot.user.id !== shellAuthority.viewerId ||
+          this.#snapshot.deploymentId !== shellAuthority.deploymentId ||
+          old?.snapshot?.epoch !== shellAuthority.epoch ||
+          (shellAuthority.session &&
+            this.#snapshot.sessionId !== shellAuthority.session.sessionId)))
     ) {
       this.#viewerGeneration++;
       this.#threadState.clear();
+      this.#threadRenames.clear();
+      this.#threadIcons.clear();
       this.#resourceRevisions.clear();
       this.#returnHintRevisions.clear();
-      for (const kind of returnHintResources)
-        this.#returnHintRevisions.set(kind, shellAuthority.resourceRevisions[kind]);
+      if (shellAuthority)
+        for (const kind of returnHintResources)
+          this.#returnHintRevisions.set(kind, shellAuthority.resourceRevisions[kind]);
       this.#environmentCatalogs.clear();
       this.#environmentAuth.clear();
       this.#bodies.clear();
@@ -1531,6 +1543,40 @@ export class HttpHostClient {
       old.snapshot?.activeTaskIds !== shell.activeTaskIds ||
       old.snapshot?.nextBefore !== shell.nextBefore;
     const visitsChanged = old?.visits !== state.visits;
+    const taskChanges = state.taskChanges.length > 0 && old?.taskChanges !== state.taskChanges;
+    if (taskChanges) {
+      for (const row of state.taskChanges) {
+        const held = heldThread(this.#snapshot, row.id);
+        if ("removed" in row) {
+          if (held?.doneAt) this.#doneTasksStale = true;
+          continue;
+        }
+        if (this.#snapshot.doneTasks[mainDoneTasks] && (held?.doneAt ?? null) !== row.doneAt)
+          this.#doneTasksStale = true;
+        if (held)
+          this.#threadState.reconcile(
+            {
+              ...held,
+              title: row.title,
+              status: row.status,
+              doneAt: row.doneAt,
+              doneReason: row.doneAt === held.doneAt ? held.doneReason : null,
+              latestRunCompletedAt: row.latestRunCompletedAt,
+            },
+            SequenceSchema.parse(row.revision),
+            undefined,
+            row,
+          );
+      }
+    }
+    if (
+      this.#snapshot.doneTasks[mainDoneTasks] &&
+      old?.snapshot &&
+      !state.synchronized &&
+      state.tasks !== old.tasks &&
+      !taskChanges
+    )
+      this.#doneTasksStale = true;
     if (
       session &&
       (this.#snapshot.user?.id !== session.user.id ||
@@ -1553,6 +1599,7 @@ export class HttpHostClient {
       old.snapshot?.counts.needsYouCount !== shell.counts.needsYouCount;
     if (
       tasksChanged ||
+      taskChanges ||
       visitsChanged ||
       attentionChanged ||
       connection !== this.#snapshot.connection
@@ -1564,11 +1611,12 @@ export class HttpHostClient {
           if (!row) return [];
           const cached = this.#shellEntries.get(row);
           if (cached) return [cached];
-          const thread = this.#threadState.reconcile(
+          const thread = this.#reconcilePageThread(
             row.thread
               ? toThreadSummary(row.thread, this.#snapshot.environments, this.#snapshot.harnesses)
               : compactThread(row),
             SequenceSchema.parse(row.revision),
+            row.thread ? undefined : row,
           );
           const entry = { thread, lastReply: row.lastReplyPreview, failure: row.failurePreview };
           this.#shellEntries.set(row, entry);
@@ -1598,26 +1646,29 @@ export class HttpHostClient {
         };
       }
       if (state.synchronized) this.#savedViewReadiness = { tasksReady: true };
-      this.#update({
-        ...this.#snapshot,
-        connection,
-        connectionInterrupted: state.synchronized ? false : this.#snapshot.connectionInterrupted,
-        ...taskLists,
-        ...(attentionChanged
-          ? {
-              attentionSummaries: [...state.attention.values()],
-              pendingRequestCount: shell.counts.pendingRequestCount,
-              needsYouCount: shell.counts.needsYouCount,
-            }
-          : {}),
-        ...(visitsChanged
-          ? {
-              threadVisits: Object.fromEntries(
-                [...state.visits].map(([id, visit]) => [id, visit.lastVisitedAt]),
-              ),
-            }
-          : {}),
-      });
+      this.#update(
+        {
+          ...this.#snapshot,
+          connection,
+          connectionInterrupted: state.synchronized ? false : this.#snapshot.connectionInterrupted,
+          ...taskLists,
+          ...(attentionChanged
+            ? {
+                attentionSummaries: [...state.attention.values()],
+                pendingRequestCount: shell.counts.pendingRequestCount,
+                needsYouCount: shell.counts.needsYouCount,
+              }
+            : {}),
+          ...(visitsChanged
+            ? {
+                threadVisits: Object.fromEntries(
+                  [...state.visits].map(([id, visit]) => [id, visit.lastVisitedAt]),
+                ),
+              }
+            : {}),
+        },
+        taskChanges,
+      );
     }
     if (state.synchronized && !old?.synchronized) {
       this.#attempt = 0;
@@ -1628,6 +1679,7 @@ export class HttpHostClient {
       const { interests } = this.#stream.resources.getInterests();
       for (const kind of interests) this.#readResource(kind);
     }
+    if (state.synchronized) this.#refreshStaleDoneTasks();
     if (
       state.synchronized &&
       (shell.counts.needsYouCount || this.#snapshot.needsYou) &&
@@ -2665,8 +2717,8 @@ export class HttpHostClient {
         if (!this.#disposed)
           this.#update(
             thread
-              ? withThreadNames(this.#snapshot, (current) =>
-                  current.id === threadId ? this.#threadState.name(thread) : current,
+              ? withThreadState(this.#snapshot, (current) =>
+                  current.id === threadId ? this.#threadState.view(thread) : current,
                 )
               : this.#snapshot,
           );
@@ -3219,14 +3271,31 @@ export class HttpHostClient {
       this.#update({ ...this.#snapshot, quietTaskDays: result.quietTaskDays });
   }
 
-  /**
-   * One list's loaded prefix, one refresh at a time. A change told during a read
-   * earns exactly one more, so the last read never started before the change;
-   * a screen asking during a read joins it. Every caller is answered when the
-   * last read lands.
-   */
-  #readFirstTaskPage(scope: string | null) {
-    return this.#readTaskPage(scope, null);
+  #doneTasksStale = false;
+  #doneTaskRefresh: Promise<void> | undefined;
+
+  #refreshStaleDoneTasks() {
+    if (!this.#doneTasksStale || this.#doneTaskRefresh || this.#visibility === "background") return;
+    const viewer = this.#viewerGeneration;
+    this.#doneTasksStale = false;
+    const refresh = this.#readTaskPage("done:*", null)
+      .then(
+        (applied) => {
+          if (!applied && viewer === this.#viewerGeneration) this.#doneTasksStale = true;
+        },
+        () => {
+          if (viewer === this.#viewerGeneration) this.#doneTasksStale = true;
+        },
+      )
+      .finally(() => {
+        if (this.#doneTaskRefresh === refresh) this.#doneTaskRefresh = undefined;
+      });
+    this.#doneTaskRefresh = refresh;
+  }
+
+  async #readFirstTaskPage(scope: string | null): Promise<void> {
+    if (scope && this.#doneTaskRefresh) return this.#doneTaskRefresh;
+    await this.#readTaskPage(scope, null);
   }
 
   loadEarlierTasks(): Promise<void> {
@@ -3256,12 +3325,21 @@ export class HttpHostClient {
   #heldTasks(scope: string | null): TaskListState | null {
     return scope === null
       ? this.#snapshot.tasks
-      : scope === "active"
-        ? null
-        : (this.#snapshot.doneTasks[mainDoneTasks] ?? null);
+      : (this.#snapshot.doneTasks[mainDoneTasks] ?? null);
   }
 
-  async #readTaskPage(scope: string | null, before: string | null): Promise<void> {
+  #reconcilePageThread(
+    thread: ThreadSummary,
+    sequence: Sequence,
+    compact?: { readonly inputQueuePaused?: boolean | undefined },
+  ) {
+    const reconciled = this.#threadState.reconcile(thread, sequence, undefined, compact);
+    return reconciled.pendingRequests === thread.pendingRequests
+      ? reconciled
+      : { ...reconciled, pendingRequests: thread.pendingRequests };
+  }
+
+  async #readTaskPage(scope: string | null, before: string | null): Promise<boolean> {
     const cut = this.#stream.shell.getSnapshot();
     const held = this.#heldTasks(scope);
     const viewer = this.#viewerGeneration;
@@ -3280,11 +3358,11 @@ export class HttpHostClient {
       BigInt(page.asOfSequence) < BigInt(current.through) ||
       this.#heldTasks(scope) !== held
     )
-      return;
+      return false;
     const merged = mergeTasks(before ? held : null, {
       entries: page.tasks.map((entry) => ({
         ...entry,
-        thread: this.#threadState.reconcile(
+        thread: this.#reconcilePageThread(
           toThreadSummary(entry.thread, this.#snapshot.environments, this.#snapshot.harnesses),
           page.asOfSequence,
         ),
@@ -3297,6 +3375,7 @@ export class HttpHostClient {
         ? { ...this.#snapshot, doneTasks: { [mainDoneTasks]: bounded } }
         : { ...this.#snapshot, tasks: bounded },
     );
+    return true;
   }
 
   async setTaskDone(threadId: string, done: boolean): Promise<void> {
@@ -3307,6 +3386,7 @@ export class HttpHostClient {
         status: 404,
       });
     }
+    const generation = this.#viewerGeneration;
     const result = await this.dispatch({
       done,
       idempotencyKey: mutationIdempotencyKey(`done:${threadId}`),
@@ -3314,6 +3394,7 @@ export class HttpHostClient {
       type: "thread.done.set",
     });
     if (result.type !== "thread.done.set") throw new Error("Done command mismatch.");
+    if (generation !== this.#viewerGeneration) return;
     this.#mergeVisits([result.thread]);
     const thread = this.#threadState.reconcile(
       toThreadSummary(result.thread, this.#snapshot.environments, this.#snapshot.harnesses),
@@ -3832,7 +3913,7 @@ export class HttpHostClient {
     }
   }
 
-  #update(snapshot: HostSnapshot): void {
+  #update(snapshot: HostSnapshot, projectThreadState = false): void {
     if (this.#disposed) return;
 
     if (snapshot.session !== "authenticated") this.#savedViewReadiness = emptySavedViewReadiness();
@@ -3919,6 +4000,7 @@ export class HttpHostClient {
       }
     }
     if (
+      projectThreadState ||
       snapshot.threads !== this.#snapshot.threads ||
       snapshot.tasks !== this.#snapshot.tasks ||
       snapshot.activeTasks !== this.#snapshot.activeTasks ||
@@ -3972,9 +4054,9 @@ export class HttpHostClient {
             ? visits
             : Object.fromEntries(keptVisits),
       };
-      this.#threadState.retainLoaded(snapshot.threads);
-      snapshot = withThreadNames(snapshot, (thread) => ({
-        ...this.#threadState.name(thread),
+      this.#threadState.retainLoaded(incoming);
+      snapshot = withThreadState(snapshot, (thread) => ({
+        ...this.#threadState.view(thread),
         lastVisitedAt: snapshot.threadVisits[thread.id] ?? thread.lastVisitedAt,
         ...(this.#threadRenames.has(thread.id)
           ? { title: this.#threadRenames.get(thread.id)!.title }
@@ -4163,7 +4245,7 @@ function compactThread(
     pendingRequests: row.pendingRequestCount,
     listed: true,
     unread: false,
-    inputQueuePaused: false,
+    inputQueuePaused: row.inputQueuePaused ?? false,
     accessMode: "approval-required",
     continuationIdentity: null,
     providerSessionId: null,

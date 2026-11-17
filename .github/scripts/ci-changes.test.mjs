@@ -389,7 +389,7 @@ test("real Windows and Android selection follow their own sources on PRs", () =>
     assert.equal(windows(file, "pull_request"), false, file);
     assert.equal(windows(file, "push"), true, file);
   }
-  assert.equal(windows("docs/testing.md", "push"), false);
+  assert.equal(windows("docs/releases.md", "push"), false);
   const android = (file, event) => real([file], event).lanes.android;
   for (const file of [
     "apps/agent-phone/app/src/main/Phone.kt",
@@ -402,6 +402,19 @@ test("real Windows and Android selection follow their own sources on PRs", () =>
   assert.equal(android("packages/core/src/index.ts", "push"), true);
   // Shared fixtures keep their package's unit tests too.
   assert.ok(real(["packages/core/src/fixtures/notification-preview-v1.json"]).lanes.tests);
+});
+test("extension changes run the Host browser source journey without selecting the Host suite", () => {
+  const journey = "apps/host/src/browser/browser-source-journey.integration.test.ts";
+  for (const [file, event] of [
+    ["apps/browser-extension/src/worker.ts", "pull_request"],
+    ["apps/browser-extension/scripts/build.mjs", "push"],
+  ]) {
+    const plan = real([file], event);
+    assert.equal(plan.lanes["browser-journeys"], true, file);
+    assert.equal(plan.lanes.integration, true, file);
+    assert.ok(plan.files.integration.includes(journey), file);
+    assert.ok(!plan.affected.includes("@opensteer/host"), file);
+  }
 });
 test("real browser journeys run for their owners, their dependencies and their runner", () => {
   for (const file of [

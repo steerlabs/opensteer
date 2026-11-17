@@ -129,6 +129,7 @@ const task = z.strictObject({
   title: z.string().max(240),
   revision: PersonalRevisionSchema,
   status: ThreadStatusSchema,
+  inputQueuePaused: z.boolean().optional(),
   purpose: TaskPurposeSchema,
   askedAt: z.iso.datetime(),
   doneAt: z.iso.datetime().nullable(),

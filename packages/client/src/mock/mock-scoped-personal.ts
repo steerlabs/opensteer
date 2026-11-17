@@ -57,6 +57,7 @@ export function mockScopedTask(
     revision,
     thread,
     status: thread.status,
+    inputQueuePaused: thread.inputQueuePaused,
     purpose: thread.purpose,
     askedAt: thread.askedAt,
     doneAt: thread.doneAt,

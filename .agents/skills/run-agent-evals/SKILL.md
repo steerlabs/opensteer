@@ -5,8 +5,7 @@ description: Use when running agent tool-use behavioral evaluations (`pnpm eval:
 
 # Run agent evals
 
-Real-engine evals spend local subscription capacity and run by hand. Read
-[the safety boundaries](../../../docs/testing.md#agent-tool-use-evaluations) first.
+Real-engine evals spend local subscription capacity and run by hand.
 
 ## Safety rules
 

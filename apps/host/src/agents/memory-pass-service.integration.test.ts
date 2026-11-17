@@ -1154,6 +1154,8 @@ describeStore("managed memory passes", (it) => {
     const next = await tick(f, base, light);
     const second = await wake(f, light, next.occurrence.id, "activity-2");
     const text = wakeText(second).join("\n");
+    // The pass takes its connected-source positions from the Run that completed.
+    expect(text).toContain(`Run ${first.run!.id}`);
     expect(text).toContain(`"Voice": taskId ${voice.id}, 1 new messages`);
     expect(text).toContain(`taskId ${base.thread.id}, 1 new messages`);
     expect(text).toContain(shared.id);
@@ -1224,6 +1226,20 @@ describeStore("managed memory passes", (it) => {
     expect(wakeText(after).join("\n")).toContain(
       `"Reported": taskId ${reported.id}, 1 new messages`,
     );
+  });
+  it("keeps a first pass's window across a retry", async ({ storeFixture: f }) => {
+    const base = await fixture(f, "first-window");
+    await service(f).instance.ensureForPersonal();
+    const light = (await role(f, base.userId)).trigger;
+    const since = (admitted: Awaited<ReturnType<typeof wake>>) =>
+      Date.parse(/(\S+Z), as this is your first pass/.exec(wakeText(admitted).join("\n"))![1]!);
+    const first = await wake(f, light, (await tick(f, base, light)).occurrence.id, "first-1");
+    await finish(f, first.run!, "failed");
+    // The retry comes hours later; its window still starts where the first wake's did.
+    await sql`update messages set created_at = created_at - interval '3 hours'
+      where thread_id = ${light.anchorThreadId}`.execute(f.database);
+    const retry = await wake(f, light, (await tick(f, base, light)).occurrence.id, "first-2");
+    expect(since(retry)).toBeLessThanOrEqual(since(first) - 3 * 60 * 60 * 1000 + 1_000);
   });
   it("replays an accepted pass's wake without choosing its model again", async ({
     storeFixture: f,

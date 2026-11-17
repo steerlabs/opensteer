@@ -20,6 +20,7 @@ const taskFields = [
   "askedAt",
   "doneAt",
   "status",
+  "inputQueuePaused",
   "revision",
   "pendingRequestCount",
   "lastReplyPreview",

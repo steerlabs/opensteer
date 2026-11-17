@@ -1191,7 +1191,6 @@
     "tests/window-journey-evidence.test.ts": 1573
   },
   "integration": {
-    "apps/browser-extension/e2e/browser-source-journey.integration.test.ts": 52143,
     "apps/control-plane/src/account/connect-lifecycle.integration.test.ts": 6140,
     "apps/control-plane/src/account/personal-remote-account.integration.test.ts": 8433,
     "apps/control-plane/src/account/team-identity-grants.integration.test.ts": 3328,
@@ -1242,6 +1241,7 @@
     "apps/host/src/browser/browser-route.integration.test.ts": 18425,
     "apps/host/src/browser/browser-shutdown.integration.test.ts": 4091,
     "apps/host/src/browser/browser-sign-in-tool.integration.test.ts": 89834,
+    "apps/host/src/browser/browser-source-journey.integration.test.ts": 52143,
     "apps/host/src/browser/browser-source-service.integration.test.ts": 94818,
     "apps/host/src/browser/durable-favicon.integration.test.ts": 12359,
     "apps/host/src/browser/personal-tab-reopen.integration.test.ts": 6784,

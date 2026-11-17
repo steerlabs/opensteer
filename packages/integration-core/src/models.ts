@@ -605,6 +605,7 @@ export const IntegrationReadinessCodeSchema = z.enum([
   "USER_AUTHORIZATION_REQUIRED",
   "REAUTHORIZATION_REQUIRED",
   "ACCESS_GRANT_REQUIRED",
+  "READ_ONLY_TASK",
   "INTEGRATION_UNAVAILABLE",
 ]);
 
@@ -771,7 +772,7 @@ const localMcpLaunchShapes = {
  * An MCP server one computer runs: a program it starts, or a server already
  * listening on its own loopback. Only that computer can reach either, so the
  * Host never does; the computer runs exactly this, as its owner approved it
- * there (`docs/computers.md`, "MCP servers on a computer").
+ * there.
  */
 export const LocalMcpLaunchSchema = z.discriminatedUnion("type", [
   z.strictObject(localMcpLaunchShapes.stdio),

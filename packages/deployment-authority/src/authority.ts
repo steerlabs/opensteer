@@ -41,14 +41,12 @@ export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
 
 /**
  * The personal Host API this tree speaks, and the oldest it still serves. Peers
- * speak the lower of their two current versions. See "API compatibility" in
- * docs/connections.md before changing either.
+ * speak the lower of their two current versions.
  */
 export const hostApiVersion = 62;
 export const minimumHostApiVersion = 62;
 /**
- * The team API this tree speaks, and the oldest peer it still serves. See
- * "API compatibility" in docs/connections.md before changing either; the wire
+ * The team API this tree speaks, and the oldest peer it still serves. The wire
  * snapshot test refuses a breaking schema change without a bump.
  */
 // Shared work requires version 6; unshared teams still serve explicit-kind version 5 peers.

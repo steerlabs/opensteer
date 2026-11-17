@@ -35,7 +35,7 @@ actor AppleRecognizer: Recognizer {
     return nil
   }
   private func installed(_ locale: Locale) async -> Bool {
-    // Not AssetInventory status: see the macOS 26 trap in docs/dictation.md.
+    // Not AssetInventory status: on macOS 26 it can report empty while installed models keep working.
     await SpeechTranscriber.installedLocales.contains {
       localeIdentity($0) == localeIdentity(locale)
     }

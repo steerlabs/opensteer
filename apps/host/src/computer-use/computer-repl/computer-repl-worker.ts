@@ -261,6 +261,10 @@ async function pump(key: string, context: Context) {
             if (deviceContext.success) Object.assign(call.failure, deviceContext.data);
             const code = context.vm.getProp(state.error, "code");
             const performed = context.vm.getProp(state.error, "performed");
+            const next = context.vm.getProp(state.error, "next");
+            const nextValue: unknown = context.vm.dump(next);
+            if (typeof nextValue === "string") call.failure.next = nextValue;
+            next.dispose();
             if (context.vm.typeof(code) === "string")
               call.failure.code = context.vm.getString(code);
             const receipts: unknown = context.vm.dump(performed);

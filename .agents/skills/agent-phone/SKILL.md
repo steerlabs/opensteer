@@ -5,8 +5,7 @@ description: Use when building Agent Phone APKs or checking their Android build 
 
 # Agent Phone
 
-Procedures for `apps/agent-phone`. [Agent Phone](../../../docs/agent-phone.md) holds its constraints
-and what each kind of test cannot prove.
+Procedures for `apps/agent-phone`.
 
 ## Safety rules
 

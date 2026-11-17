@@ -63,13 +63,10 @@ export function agentToolFailureResult(failure: AgentToolFailure) {
   };
 }
 
-export function agentToolRecordResult(result: Record<string, unknown>, guidance?: string) {
+export function agentToolRecordResult(result: Record<string, unknown>) {
   return {
-    content: [
-      { type: "text" as const, text: JSON.stringify(result) },
-      ...(guidance ? [{ type: "text" as const, text: guidance }] : []),
-    ],
-    structuredContent: guidance ? { ...result, guidance } : result,
+    content: [{ type: "text" as const, text: JSON.stringify(result) }],
+    structuredContent: result,
     ...(result.isError === true ? { isError: true } : {}),
   };
 }

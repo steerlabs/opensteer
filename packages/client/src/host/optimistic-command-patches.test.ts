@@ -13,7 +13,7 @@ import type {
   MessageEntry,
   ThreadSummary,
 } from "./client.js";
-import { applyOptimisticCommandPatch, withThreadNames } from "./optimistic-command-patches.js";
+import { applyOptimisticCommandPatch, withThreadState } from "./optimistic-command-patches.js";
 
 const now = "2026-08-09T20:00:00.000Z";
 const threadId = createId("thread");
@@ -70,7 +70,7 @@ describe("browser profile patches", () => {
 });
 
 describe("task mark patches", () => {
-  it("keeps names in every task copy and completed assignment worker without changing page state", () => {
+  it("carries thread state into every task copy and names into a completed assignment worker", () => {
     const mock = new MockHostClient({ latencyMs: 0 });
     try {
       const base = mock.getSnapshot();
@@ -86,20 +86,27 @@ describe("task mark patches", () => {
         threads: [thread],
         tasks: page,
         activeTasks: [entry],
-
+        doneTasks: { main: page },
         assignments: { completed: assignment },
       };
-      const result = withThreadNames(snapshot, (name) =>
-        name.id === thread.id ? { title: name.title, icon: "plane" } : name,
+      const result = withThreadState(snapshot, (name) =>
+        name.id === thread.id
+          ? { title: name.title, icon: "plane", status: "idle", inputQueuePaused: true }
+          : name,
       );
       expect(result.threads[0]?.icon).toBe("plane");
-      expect(result.tasks?.entries[0]?.thread).toMatchObject({
-        icon: "plane",
-        color: "blue",
-        status: thread.status,
-        updatedAt: thread.updatedAt,
-      });
-      expect(result.activeTasks[0]?.thread.icon).toBe("plane");
+      for (const copy of [
+        result.tasks?.entries[0]?.thread,
+        result.activeTasks[0]?.thread,
+        result.doneTasks.main?.entries[0]?.thread,
+      ])
+        expect(copy).toMatchObject({
+          icon: "plane",
+          color: "blue",
+          status: "idle",
+          inputQueuePaused: true,
+          updatedAt: thread.updatedAt,
+        });
 
       expect(result.assignments.completed?.workerThread.icon).toBe("plane");
       expect(result.tasks?.window).toBe(page.window);

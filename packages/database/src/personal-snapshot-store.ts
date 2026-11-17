@@ -26,6 +26,7 @@ export function taskView(task: Task) {
     title: task.title,
     revision: task.revision,
     status: task.status,
+    inputQueuePaused: task.inputQueuePaused,
     purpose: task.purpose,
     askedAt: task.askedAt.toISOString(),
     doneAt: task.doneAt?.toISOString() ?? null,

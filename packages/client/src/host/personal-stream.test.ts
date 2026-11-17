@@ -1,4 +1,4 @@
-import { AppIdSchema, createId, TabSchema } from "@opensteer/core";
+import { AppIdSchema, createId, SequenceSchema, TabSchema } from "@opensteer/core";
 import { afterEach, expect, test, vi } from "vitest";
 import {
   personalAuthorityChangedReason,
@@ -9,8 +9,10 @@ import {
   PersonalResourceRevisionsSchema,
 } from "@opensteer/protocol/resources";
 import type { TranscriptItem, TranscriptOrderCursor } from "@opensteer/protocol/transcript";
-import { MockPersonalSocket } from "../mock/mock-personal-host.js";
+import { MockPersonalHost, MockPersonalSocket } from "../mock/mock-personal-host.js";
+import { MockHostClient } from "../mock/mock-host-client.js";
 import { HttpHostClient } from "./host-session-client.js";
+import type { ClientLifecycle } from "./lifecycle.js";
 import {
   createPersonalStreamCache,
   personalCacheFormat,
@@ -579,6 +581,185 @@ test("bounds explicitly loaded bodies and inactive resource rows", () => {
   expect(
     Object.values(f.stream.resources.checkpoint()).flatMap(({ view }) => view.entries),
   ).toHaveLength(256);
+});
+
+test("carries a scoped task update into held rows and drops old task pages after a cursor reset", async () => {
+  const mock = new MockHostClient({ latencyMs: 0 });
+  const done = mock
+    .getSnapshot()
+    .threads.find(({ status, listed }) => listed && status === "idle")!;
+  await mock.setTaskDone(done.id, true);
+  const page = await mock.rpc["tasks.page"]({ done: true, limit: 50 });
+  if (!page.ok) throw new Error("The Done task fixture is missing.");
+  page.data.asOfSequence = SequenceSchema.parse("900");
+  const row = page.data.tasks.find(({ thread }) => thread.id === done.id)!;
+  row.thread.pendingRequests = 0;
+  const late = Promise.withResolvers<Response>();
+  let reads = 0;
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+    if (!new URL(String(input)).pathname.endsWith("/tasks.page"))
+      return new Response(null, { status: 404 });
+    if (reads++ === 0) return Response.json(page);
+    return late.promise;
+  });
+  let socket: MockPersonalSocket;
+  let address = { subscriptionId: "shell" as const, scope: shellScope, generation: 0 };
+  let head = "900";
+  let status: "running" | "idle" = "running";
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch,
+    capabilities: [],
+    webSocketFactory: () =>
+      (socket = new MockPersonalSocket((raw) => {
+        const frame = JSON.parse(raw) as ScopedClientMessage;
+        if (frame.type !== "client.attach" && frame.type !== "client.subscribe") return;
+        if (frame.type === "client.subscribe" && frame.scope.kind !== "shell") return;
+        address = { ...address, generation: frame.generation };
+        socket.deliver({
+          ...address,
+          type: "host.snapshot",
+          throughSequence: head,
+          snapshot: {
+            deploymentId,
+            viewerId,
+            epoch,
+            session,
+            tasks: [{ ...task, status, revision: head }],
+            visits: [],
+            attention: [],
+            counts,
+            resourceRevisions: revisions("0"),
+          },
+        });
+        socket.deliver({ ...address, type: "host.synchronized", throughSequence: head });
+      })),
+  });
+  try {
+    await client.load();
+    await client.loadDoneTasks();
+    const doneRow = () =>
+      Object.values(client.getSnapshot().doneTasks)
+        .flatMap(({ entries }) => entries)
+        .find(({ thread }) => thread.id === done.id)?.thread;
+    expect(doneRow()?.status).toBe("idle");
+    head = "901";
+    socket!.deliver({
+      ...address,
+      type: "host.changes",
+      fromSequence: "900",
+      throughSequence: head,
+      changes: [
+        {
+          entityKind: "task",
+          entityId: done.id,
+          ordinal: 0,
+          sequence: head,
+          operation: "upsert",
+          value: {
+            ...task,
+            id: row.thread.id,
+            title: row.thread.title,
+            revision: head,
+            status: "failed",
+            inputQueuePaused: true,
+            doneAt: row.thread.doneAt,
+            pendingRequestCount: 1,
+          },
+        },
+      ],
+    });
+    expect(doneRow()).toMatchObject({
+      status: "failed",
+      inputQueuePaused: true,
+      pendingRequests: 0,
+    });
+
+    const request = client.loadDoneTasks();
+    await vi.waitFor(() => expect(reads, "The old task page never started").toBe(2));
+    head = "2";
+    status = "idle";
+    socket!.deliver({
+      ...address,
+      type: "host.snapshot-required",
+      reason: "cursor-unavailable",
+      throughSequence: head,
+    });
+    expect(client.getSnapshot().tasks?.entries[0]?.thread.status).toBe("idle");
+    late.resolve(Response.json(page));
+    await request;
+    expect(doneRow()).toBeUndefined();
+    expect(client.getSnapshot().connection).toBe("connected");
+  } finally {
+    late.resolve(Response.json(page));
+    client.dispose();
+    mock.dispose();
+  }
+});
+
+test("refreshes a loaded Done window after a hidden shell replacement, once on replay", async () => {
+  const mock = new MockHostClient({ latencyMs: 0 });
+  const host = new MockPersonalHost(mock);
+  let foreground = () => {};
+  let background = () => {};
+  const lifecycle: ClientLifecycle = {
+    getSnapshot: () => ({ network: "online", visibility: "foreground" }),
+    onForeground: (listener) => {
+      foreground = listener;
+      return () => {};
+    },
+    onBackground: (listener) => {
+      background = listener;
+      return () => {};
+    },
+    onNetworkChange: () => () => {},
+  };
+  let reads = 0;
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    capabilities: [],
+    lifecycle,
+    fetch: (input, init) => {
+      if (new URL(String(input)).pathname.endsWith("/tasks.page")) reads++;
+      return host.fetch(input, init);
+    },
+    webSocketFactory: host.connect,
+  });
+  try {
+    await client.load();
+    await client.loadDoneTasks();
+    expect(reads).toBe(1);
+    const [socket] = host.sockets;
+    const attach = JSON.parse(socket!.sent[0]!) as Extract<
+      ScopedClientMessage,
+      { type: "client.attach" }
+    >;
+    background();
+    socket!.deliver({
+      type: "host.snapshot-required",
+      reason: "scope-invalidated",
+      subscriptionId: "shell",
+      scope: shellScope,
+      generation: attach.generation,
+      throughSequence: String(mock.getSnapshot().revision),
+    });
+    await vi.waitFor(() => expect(client.getSnapshot().connection).toBe("connected"));
+    expect(reads).toBe(1);
+
+    foreground();
+    await client.load();
+    await vi.waitFor(() => expect(reads).toBe(2));
+    const [resumed] = host.sockets;
+    expect(JSON.parse(resumed!.sent[0]!).cursor).toBeDefined();
+
+    background();
+    foreground();
+    await client.load();
+    expect(reads).toBe(2);
+  } finally {
+    client.dispose();
+    host.dispose();
+  }
 });
 
 test("attaches without a cursor when a warm-cache preflight is retryable", async () => {

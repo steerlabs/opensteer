@@ -1,4 +1,11 @@
 import { RunnerIdSchema, utf8Prefix } from "@opensteer/core";
+import { requestResult } from "../request-result.js";
+import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
+import {
+  savedLoginAgentResult,
+  cardAgentResult,
+  chromeCookiesAgentResult,
+} from "../../browser/agent-request-results.js";
 import type { TabServicePort } from "../../tabs/ports.js";
 import { PersonShowTargetSchema } from "@opensteer/core";
 type DelegationCall = ToolCall<"opensteer_task_delegate"> & {
@@ -11,7 +18,6 @@ import {
   readAgentThreadRecent,
   readAgentThreadActivity,
   encodeThreadHistoryCursor,
-  readThreadHistory,
   readAssignmentResult,
   beginAssignmentResultWait,
   endAssignmentResultWait,
@@ -367,13 +373,11 @@ export class ProductToolHandlers {
       requiredActor: "requester",
     });
     return requestResult(
-      {
-        kind: "person.question" as const,
-        replayed: created.replayed,
-        requestId: created.request.id,
-        status: created.request.status,
-      },
-      "Question",
+      created.request,
+      created.request.status === "pending"
+        ? requestPendingGuidance
+        : "The question is closed; continue using the delivered answer.",
+      created.replayed,
     );
   }
 
@@ -459,6 +463,7 @@ export class ProductToolHandlers {
       maxItems: input.limit,
       ownerId: claims.requestedBy,
       ...(input.query ? { query: input.query } : {}),
+      ...(input.changedSince ? { changedSince: new Date(input.changedSince) } : {}),
       scope,
       scopeId: caller.kind === "connection" ? caller.key : callerThread(caller).id,
     });
@@ -476,6 +481,9 @@ export class ProductToolHandlers {
         doneAt: summary.doneAt,
         title: summary.title,
         updatedAt: summary.updatedAt,
+        ...(summary.newMessages === undefined
+          ? {}
+          : { newMessages: summary.newMessages, firstNewAt: summary.firstNewAt }),
       })),
       hasMore: page.window.hasMore,
       nextBefore: page.window.nextBefore,
@@ -527,7 +535,7 @@ export class ProductToolHandlers {
       return { ...context, ...(await this.#activity(caller, thread.id, input)) };
     let page;
     try {
-      page = await readThreadHistory(this.#store.database, {
+      page = await this.#store.threadMessagePageForOwner({
         threadId: thread.id,
         ownerId: caller.userId,
         maxItems: input.itemId ? 1 : input.limit,
@@ -547,8 +555,14 @@ export class ProductToolHandlers {
     const messages = [...(await this.#readableMessages(caller, page.messages))].sort((a, b) =>
       compareSequence(b.sequence, a.sequence),
     );
+    const teamSources = await this.#store.messageTeamSources(
+      thread.id,
+      messages.map((m) => m.id),
+    );
     const items = boundedThreadItems(
-      messages.map((m) => messageItem(m, input.maxCharsPerItem, input.textOffset)),
+      messages.map((m) =>
+        messageItem(m, input.maxCharsPerItem, input.textOffset, teamSources.get(m.id)),
+      ),
     );
     if (input.itemId && !items.length) throw forbidden("Item is unavailable in this task");
     const hasMore = items.length < messages.length || page.window.hasMore;
@@ -623,21 +637,30 @@ export class ProductToolHandlers {
     ]);
     const readablePlaces = new Set(places.map((place) => place.id));
     const readableMessages = new Map(messages.map((message) => [message.id, message]));
+    const teamSources = await this.#store.messageTeamSources(
+      threadId,
+      messages.map((message) => message.id),
+    );
     const mapped = page.items.flatMap<{
       item: (typeof page.items)[number];
       view: ReturnType<typeof activityItem>;
     }>((item) => {
-      if (item.type === "message")
-        return [
-          {
-            item,
-            view: messageItem(
-              readableMessages.get(item.message.id)!,
-              input.maxCharsPerItem,
-              input.textOffset,
-            ),
-          },
-        ];
+      if (item.type === "message") {
+        const message = readableMessages.get(item.message.id);
+        return message
+          ? [
+              {
+                item,
+                view: messageItem(
+                  message,
+                  input.maxCharsPerItem,
+                  input.textOffset,
+                  teamSources.get(message.id),
+                ),
+              },
+            ]
+          : [];
+      }
       const machineId = machineOf(item);
       if (machineId && owners.get(machineId)?.effectiveOwner !== caller.userId) return [];
       if (item.type === "place.entered" && !readablePlaces.has(item.id)) return [];
@@ -1302,7 +1325,14 @@ export class ProductToolHandlers {
       site: input.site,
       threadId: claims.threadId,
     });
-    return result.status === "pending" ? requestResult(result, "Card access") : result;
+    const request =
+      "requestId" in result && result.requestId
+        ? await this.#store.requests.get(result.requestId)
+        : await this.#store.requests.findByCallIdentity({
+            callId: operationId(caller, operationKey, "card_request"),
+            originatingRunId: claims.runId,
+          });
+    return cardAgentResult(result, request);
   }
 
   async saved_login_request({ caller, input, operationKey }: ToolCall<"saved_login_request">) {
@@ -1318,9 +1348,14 @@ export class ProductToolHandlers {
       site: input.site,
       threadId: claims.threadId,
     });
-    return result.status === "pending" || result.status === "declined"
-      ? requestResult(result, "Saved login")
-      : result;
+    const request =
+      "requestId" in result && result.requestId
+        ? await this.#store.requests.get(result.requestId)
+        : await this.#store.requests.findByCallIdentity({
+            callId: operationId(caller, operationKey, "saved_login_request"),
+            originatingRunId: claims.runId,
+          });
+    return savedLoginAgentResult(result, request);
   }
 
   async chrome_cookies_request({
@@ -1339,9 +1374,14 @@ export class ProductToolHandlers {
       site: input.site,
       threadId: claims.threadId,
     });
-    return result.status === "pending" || result.status === "declined"
-      ? requestResult(result, "Browser sign-in")
-      : result;
+    const request =
+      "requestId" in result && result.requestId
+        ? await this.#store.requests.get(result.requestId)
+        : await this.#store.requests.findByCallIdentity({
+            callId: operationId(caller, operationKey, "chrome_cookies_request"),
+            originatingRunId: claims.runId,
+          });
+    return chromeCookiesAgentResult(result, request);
   }
 
   async computer_access_request({
@@ -1358,7 +1398,18 @@ export class ProductToolHandlers {
         reason: input.reason,
         claims,
       });
-      return requestResult(result, "Full Disk Access");
+      return {
+        ...result,
+        link: result.requestId
+          ? formatReferenceLink(result.requestId, "Full Disk Access")
+          : undefined,
+        next:
+          result.status === "pending"
+            ? requestPendingGuidance
+            : result.status === "fulfilled"
+              ? "Check computer access and continue the task."
+              : "The request is closed. Continue without this access.",
+      };
     }
     await this.#store.admitRunToolCall(
       runAdmission(caller, "computer_access_request", input, callId),
@@ -1370,7 +1421,16 @@ export class ProductToolHandlers {
       reason: input.reason,
       claims,
     });
-    return requestResult(result, "Computer access");
+    return {
+      ...result,
+      link: result.requestId ? formatReferenceLink(result.requestId, "Computer access") : undefined,
+      next:
+        result.status === "pending"
+          ? requestPendingGuidance
+          : result.status === "fulfilled"
+            ? "Check computer access and continue the task."
+            : "The request is closed. Continue without this access.",
+    };
   }
 
   async browser_profile_request({
@@ -1389,7 +1449,16 @@ export class ProductToolHandlers {
       suggestion: input.suggestion,
       threadId: claims.threadId,
     });
-    return requestResult(result, "Browser profile");
+    return {
+      ...result,
+      link: result.requestId ? formatReferenceLink(result.requestId, "Browser profile") : undefined,
+      next:
+        result.status === "pending"
+          ? requestPendingGuidance
+          : result.status === "fulfilled"
+            ? "Use tab_open with the approved profile."
+            : "The request is closed. Continue without this profile.",
+    };
   }
 
   async opensteer_task_send({ caller, input, operationKey }: ToolCall<"opensteer_task_send">) {
@@ -1905,9 +1974,4 @@ function agentRequest(request: Request) {
         )
       : request.settlementProvenance,
   };
-}
-
-function requestResult<T extends { readonly requestId: string | null }>(result: T, title: string) {
-  const id = RequestIdSchema.safeParse(result.requestId);
-  return id.success ? { ...result, link: formatReferenceLink(id.data, title) } : result;
 }

@@ -14,9 +14,9 @@ fixtures or a VM.
 Self-hosted team servers update through the [deploy/team recipe](../deploy/team/README.md), with hourly
 scheduler-driven pull-before-replace updates. A failed pull leaves the running stack in place;
 there is no desktop team supervisor. Stable and Beta select the corresponding published tags,
-and each tag's version names the images it runs. The personal and team API windows advance
-independently ([API compatibility](connections.md#api-compatibility)).
-Hosted teams use the [hosted release policy](hosted-teams.md#releases) instead.
+and each tag's version names the images it runs. The Personal Host, apps and agent-enabled
+Runners update together at personal API version 62. Team keeps its own API compatibility window.
+Hosted teams use the hosted release policy instead.
 
 ## Build inputs and local proof
 
@@ -170,7 +170,7 @@ runs the bytes Beta ran. GHCR tags are mutable, so [team-images.sh](../.github/s
 writes a version once and refuses one that records another source. There are no moving channel
 tags: the release tags are the channel feed. The `team-images` job outputs `host_image` and
 `gateway_image` as digest references; hosted teams take a Host digest only through
-[promotion](hosted-teams.md#releases), and only self-hosted teams use the gateway. Tim makes both
+promotion, and only self-hosted teams use the gateway. Tim makes both
 packages public once, after their first push.
 
 ## Account service

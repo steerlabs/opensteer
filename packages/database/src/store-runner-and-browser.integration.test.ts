@@ -11,7 +11,8 @@ import {
   type RunnerDescriptor,
   type RunnerModuleName,
 } from "@opensteer/protocol";
-import { sql } from "kysely";
+import { sql, type Transaction } from "kysely";
+import type { DatabaseSchema } from "./schema.js";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { describe, expect, vi } from "vitest";
 import { configuredBootstrapEnrollmentLifetimeMs, OpensteerStore } from "./index.js";
@@ -1372,6 +1373,169 @@ describeStore("PostgreSQL store", (it) => {
     const outsider = await f.store.createUser("Other person");
     await expect(
       f.store.agentThreadPageForOwner({ ownerId: outsider, scopeId: root.threadId, scope }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("lists only tasks with messages a reader sees after changedSince, dated by delivery, most recent first, from where history shows them", async ({
+    storeFixture: f,
+  }) => {
+    const root = await f.createRunFixture("changed-since");
+    // Everything the fixture wrote is before this.
+    const since = new Date(Math.floor(Date.now() / 1_000) * 1_000 + 86_400_000);
+    const at = (minutes: number) => new Date(since.getTime() + minutes * 60_000);
+    const make = async (key: string, title: string, parentThreadId?: ThreadId) =>
+      (
+        await f.store.createThread({
+          createdBy: root.userId,
+          environmentId: root.environmentId,
+          harnessInstanceId: root.harnessInstance.id,
+          idempotencyKey: `changed-${key}`,
+          modelSelection: testModelSelection,
+          title,
+          ...(parentThreadId ? { parentThreadId } : {}),
+        })
+      ).thread;
+    const replica = (write: (tx: Transaction<DatabaseSchema>) => Promise<unknown>) =>
+      f.database.transaction().execute(async (tx) => {
+        await sql`set local session_replication_role = replica`.execute(tx);
+        await write(tx);
+      });
+    /** A person's message, created at one time and, unless still waiting, delivered at another. */
+    const say = async (
+      threadId: ThreadId,
+      key: string,
+      created: number,
+      input: { readonly at: number; readonly state: "delivered" | "pending" },
+      policy: "queue" | "report" = "queue",
+    ) => {
+      const { message } = await f.store.enqueueThreadInput({
+        requestedBy: root.userId,
+        threadId,
+        idempotencyKey: `changed-${key}`,
+        policy,
+        source: { kind: "human" },
+        content: [{ type: "text", text: key }],
+      });
+      // thread_inputs ranks before messages in the lock order.
+      await replica(async (tx) => {
+        await tx
+          .updateTable("threadInputs")
+          .set({
+            state: input.state,
+            updatedAt: at(input.at),
+            deliveredAt: input.state === "delivered" ? at(input.at) : null,
+          })
+          .where("messageId", "=", message.id)
+          .execute();
+        await tx
+          .updateTable("messages")
+          .set({
+            createdAt: at(created),
+            published: input.state === "delivered" || policy === "report",
+          })
+          .where("id", "=", message.id)
+          .execute();
+      });
+      return message.id;
+    };
+    /** A message with no input behind it, dated by its creation. */
+    const write = (source: string, kind: "assistant" | "continuation", created: number) =>
+      replica((tx) =>
+        sql`insert into messages (id, thread_id, run_id, sequence, kind, author, actor_principal_id, content, created_at, published)
+          select ${createId("message")}, thread_id, run_id, sequence + 1000, ${kind}, author,
+            actor_principal_id, content, ${at(created)}, true from messages where id = ${source}`.execute(
+          tx,
+        ),
+      );
+    const quiet = await make("quiet", "Quiet review");
+    await write(
+      await say(quiet.id, "quiet", -60, { at: -59, state: "delivered" }),
+      "assistant",
+      -30,
+    );
+    const chat = await make("chat", "Chat review");
+    // Queued before the boundary and delivered after it.
+    await write(await say(chat.id, "chat", -10, { at: 1, state: "delivered" }), "assistant", 2);
+    const child = await make("child", "Child review", root.threadId);
+    await say(child.id, "child", 3, { at: 3, state: "delivered" });
+    const reported = await make("reported", "Reported");
+    await say(reported.id, "reported", 4, { at: 4, state: "pending" }, "report");
+    const waiting = await make("waiting", "Waiting review");
+    await say(waiting.id, "waiting", 5, { at: 5, state: "pending" });
+    const resumed = await make("resumed", "Resumed review");
+    await write(
+      await say(resumed.id, "resumed", -60, { at: -60, state: "delivered" }),
+      "continuation",
+      6,
+    );
+
+    const read = (
+      input: {
+        before?: string;
+        changedSince?: Date;
+        maxItems?: number;
+        parentThreadId?: ThreadId;
+        query?: string;
+      } = {},
+    ) =>
+      f.store.agentThreadPageForOwner({
+        ownerId: root.userId,
+        scopeId: root.threadId,
+        scope: { kind: "personal" },
+        changedSince: since,
+        ...input,
+      });
+    const all = await read();
+    expect(
+      all.threads.map(({ id, newMessages, firstNewAt }) => ({ id, newMessages, firstNewAt })),
+    ).toEqual([
+      { id: reported.id, newMessages: 1, firstNewAt: at(4).toISOString() },
+      { id: child.id, newMessages: 1, firstNewAt: at(3).toISOString() },
+      // Listed by its delivery, but firstNewAt is where task history shows it, so a pass reads back to it.
+      { id: chat.id, newMessages: 2, firstNewAt: at(-10).toISOString() },
+    ]);
+    expect(all.window.totalItems).toBe(3);
+    const paged: ThreadId[] = [];
+    let before: string | undefined;
+    for (let i = 0; i < 4; i++) {
+      const page = await read({ maxItems: 1, ...(before ? { before } : {}) });
+      paged.push(...page.threads.map((thread) => thread.id));
+      if (!page.window.nextBefore) break;
+      before = page.window.nextBefore;
+    }
+    expect(paged).toEqual(all.threads.map((thread) => thread.id));
+    expect((await read({ query: "review" })).threads.map((thread) => thread.id)).toEqual([
+      child.id,
+      chat.id,
+    ]);
+    expect(
+      (await read({ parentThreadId: root.threadId })).threads.map((thread) => thread.id),
+    ).toEqual([child.id]);
+    expect((await read({ changedSince: at(2) })).threads.map((thread) => thread.id)).toEqual([
+      reported.id,
+      child.id,
+    ]);
+    // A cursor belongs to one order and one boundary.
+    const first = await read({ maxItems: 1 });
+    await expect(
+      f.store.agentThreadPageForOwner({
+        ownerId: root.userId,
+        scopeId: root.threadId,
+        scope: { kind: "personal" },
+        before: first.window.nextBefore!,
+      }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    await expect(
+      read({ changedSince: at(-1), before: first.window.nextBefore! }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    const outsider = await f.store.createUser("Other person");
+    await expect(
+      f.store.agentThreadPageForOwner({
+        ownerId: outsider,
+        scopeId: root.threadId,
+        scope: { kind: "personal" },
+        changedSince: since,
+      }),
     ).rejects.toMatchObject({ code: "forbidden" });
   });
 

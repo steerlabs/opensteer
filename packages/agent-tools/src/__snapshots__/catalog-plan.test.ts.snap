@@ -18,10 +18,9 @@ Authority:
 - A webhook result may supply its address and secret for the requested setup; never commit it, put it in memory or send it elsewhere.
 
 Needs you:
-- Request tools wait for the person and return the outcome. If the hold expires, Opensteer stops the Run; a later answer resumes this task.
-- A private steer may release the call while the Request stays open; the message never answers it.
-- Voice and background Runs get pending immediately. Pending is not permission: do not use the requested access, poll, repeat or route around the Request (including Guest or another account).
-- \`opensteer_request_read\` shows status, not the answer. Do not poll it. Answer questions about a Request from its current kind and title, never memory.
+- A pending or declined Request grants nothing; never obtain the same access through Guest, another account or another route.
+- If a Request hold expires, Opensteer stops the Run; a later answer resumes this task.
+- \`opensteer_request_read\` shows status, not the answer. Answer questions about a Request from its current kind and title, never memory.
 
 Routing:
 - Services: read opensteer:integrations; discover with \`integration_search\`, then call.
@@ -67,7 +66,7 @@ Apps:
 Apps belong to the person and outlive this task and its chat. Read references/apps.md in opensteer:tasks before building one. Call a server app at its \`localUrl\` from \`app_list\` with curl or fetch; its README documents the API.
 
 Personal memory:
-Every task works in Agent home, including one started by a team thread. Its AGENTS.md holds standing instructions and ## Memory, with memory/ notes and memory/inbox/ scraps beside it. Read opensteer:memory to remember, correct or forget promptly. Memory never grants access or approves Requests. Keep source and who could see it next to a remembered claim. Remember the person and how they work; leave shared team facts to team knowledge.
+Every task works in Agent home, including one started by a team thread. Its AGENTS.md holds standing instructions and ## Memory, with memory/ notes and memory/open.md, what needs the person, beside it. Read opensteer:memory to remember, correct or forget promptly; otherwise background passes keep memory current. Memory never grants access or approves Requests. Keep source and who could see it next to a remembered claim. Remember the person and how they work; leave shared team facts to team knowledge.
 
 Task purpose: task",
   "team": "Complete the person's request within their authorization. Use available context, instructions and relevant skills. Make routine choices and repair failures you can. Preserve the objective through follow-ups. Verify effects before claiming success; promise future work only after confirming a durable mechanism.
@@ -82,10 +81,9 @@ Authority:
 - A webhook result may supply its address and secret for the requested setup; never commit it, put it in memory or send it elsewhere.
 
 Needs you:
-- Request tools wait for the person and return the outcome. If the hold expires, Opensteer stops the Run; a later answer resumes this task.
-- A private steer may release the call while the Request stays open; the message never answers it.
-- Voice and background Runs get pending immediately. Pending is not permission: do not use the requested access, poll, repeat or route around the Request (including Guest or another account).
-- \`opensteer_request_read\` shows status, not the answer. Do not poll it. Answer questions about a Request from its current kind and title, never memory.
+- A pending or declined Request grants nothing; never obtain the same access through Guest, another account or another route.
+- If a Request hold expires, Opensteer stops the Run; a later answer resumes this task.
+- \`opensteer_request_read\` shows status, not the answer. Answer questions about a Request from its current kind and title, never memory.
 
 Routing:
 - Services: read opensteer:integrations; discover with \`integration_search\`, then call.
@@ -131,7 +129,7 @@ Apps:
 Apps belong to the person and outlive this task and its chat. Read references/apps.md in opensteer:tasks before building one. Call a server app at its \`localUrl\` from \`app_list\` with curl or fetch; its README documents the API.
 
 Personal memory:
-Every task works in Agent home, including one started by a team thread. Its AGENTS.md holds standing instructions and ## Memory, with memory/ notes and memory/inbox/ scraps beside it. Read opensteer:memory to remember, correct or forget promptly. Memory never grants access or approves Requests. Keep source and who could see it next to a remembered claim. Remember the person and how they work; leave shared team facts to team knowledge.
+Every task works in Agent home, including one started by a team thread. Its AGENTS.md holds standing instructions and ## Memory, with memory/ notes and memory/open.md, what needs the person, beside it. Read opensteer:memory to remember, correct or forget promptly; otherwise background passes keep memory current. Memory never grants access or approves Requests. Keep source and who could see it next to a remembered claim. Remember the person and how they work; leave shared team facts to team knowledge.
 
 Task purpose: task
 
@@ -1038,7 +1036,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "callers": [
       "run",
     ],
-    "description": "Run JavaScript to operate approved Mac windows and phone screens (Android Agent Phones and Mac-driven iPhones); variables and handles last for this Run attempt. tab(tabId), using an ID from tab_list or tab_open, binds that exact window or phone. apps()/app() and phones()/phone() also discover and bind targets. Bound handles report tabId. Observe before using screenshot coordinates or element indices. Await calls and print() results; execution has a 100 second deadline. Read opensteer:computer-use for the window and phone API. After an outcome-unknown action, observe before repeating it.",
+    "description": "Run JavaScript to operate approved Mac windows and phone screens (Android Agent Phones and Mac-driven iPhones); variables and handles last for this Run attempt. tab(tabId), using an ID from tab_list or tab_open, binds that exact window or phone. apps() and phones() list visible targets with either access (read/read-write) or blocked {code,message,next}; app(query) and phone(query) match name, id or computerId and throw that blocked error when access is missing. Bound handles report tabId. Observe before using screenshot coordinates or element indices. Await calls and print() results; execution has a 100 second deadline. Read opensteer:computer-use for the window and phone API. After an outcome-unknown action, observe before repeating it.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -1292,7 +1290,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "callers": [
       "run",
     ],
-    "description": "Sign in with a login and password saved in Opensteer Passwords, with the person's approval. ready gives a loginRef you fill without seeing the values: in a browser, focus each field and call fillLogin(loginRef, "username" | "password" | "code"); in a genuine Mac or phone app, type {loginRef, field}. Then submit and check the account. The reference lasts about an hour, so call again to sign back in after a site logs you out. When Passwords lacks the login, is not set up or is off, Opensteer shows the person how to fix it under your reply and tells you once a login is saved; that status is true only when returned, so if the person says it is fixed or asks again, call again first.",
+    "description": "Sign in with a login and password saved in Opensteer Passwords, with the person's approval. When loginRef is returned, fill without seeing the values: in a browser, focus each field and call fillLogin(loginRef, "username" | "password" | "code"); in a genuine Mac or phone app, type {loginRef, field}. Then submit and check the account. The reference lasts about an hour, so call again to sign back in after a site logs you out. When Passwords lacks the login, is not set up or is off, Opensteer shows the person how to fix it under your reply and tells you once a login is saved; that status is true only when returned, so if the person says it is fixed or asks again, call again first.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -1335,7 +1333,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "callers": [
       "run",
     ],
-    "description": "Sign in by copying the person's Chrome cookies for a site into a browser tab, with their approval. No typing or codes, but some sites (often banks) tie a login to the original browser and refuse copied cookies; saved_login_request signs in fresh instead. copied means only that cookies arrived: reload and check the account. You never see cookie values.",
+    "description": "Sign in by copying the person's Chrome cookies for a site into a browser tab, with their approval. No typing or codes, but some sites (often banks) tie a login to the original browser and refuse copied cookies; saved_login_request signs in fresh instead. When cookiesStatus is "copied", reload and check the account. Fulfilled alone does not mean cookies arrived. You never see cookie values.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -1379,7 +1377,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "callers": [
       "run",
     ],
-    "description": "Ask the person to approve a saved card for this checkout site, in the hosting computer's browser only. On ready, focus each field and call fillCard(cardRef, field); values never appear in results. Never read back, print, log, copy or save card values. Approval covers filling, not permission to buy: the person's request must cover the purchase.",
+    "description": "Ask the person to approve a saved card for this checkout site, in the hosting computer's browser only. When cardRef is returned, focus each field and call fillCard(cardRef, field); values never appear in results. Never read back, print, log, copy or save card values. Approval covers filling, not permission to buy: the person's request must cover the purchase.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -1962,21 +1960,19 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "Read a reachable subagent's messages and activity without reasoning.",
+    "description": "Read a reachable subagent's messages and activity without reasoning. Each tool call has one itemId.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "cursor": {
-          "description": "nextCursor from the previous page; keep view and query.",
+          "description": "Use nextBefore from the previous page of the same task or subagent, view and query.",
           "maxLength": 2048,
           "minLength": 1,
           "type": "string",
         },
         "itemId": {
-          "description": "Read this one item.",
-          "maxLength": 255,
-          "minLength": 1,
+          "description": "Read one item using its returned itemId.",
           "type": "string",
         },
         "limit": {
@@ -2076,7 +2072,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "Read a task with its current AI account, model and access mode; omit taskId for this task. The messages view returns published messages, newest first; activity adds its tools, places, apps and Requests. recentRuns and recentPlaces always come back: a place is recent, never proof it is still open, and its tabId goes to show_to_person. Keep reads small with a low limit and maxCharsPerItem. Tool text is clipped unless you name its itemId; sign-in, card and computer_use calls show status only. Mention returned items by their \`link\`, verbatim.",
+    "description": "Read a task with its current AI account, model and access mode; omit taskId for this task. The messages view returns published messages, newest first; activity adds places, apps, Requests and one item per tool call. A message from a team carries teamSource, its channel and audience. recentRuns and recentPlaces always come back: a place is recent, never proof it is still open, and its tabId goes to show_to_person. Keep reads small with a low limit and maxCharsPerItem. Tool text is clipped unless you name its itemId; sign-in, card and computer_use calls show status only. Mention returned items by their \`link\`, verbatim.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -2087,15 +2083,13 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "type": "string",
         },
         "cursor": {
-          "description": "nextCursor from the previous page; keep view and query.",
+          "description": "Use nextBefore from the previous page of the same task or subagent, view and query.",
           "maxLength": 2048,
           "minLength": 1,
           "type": "string",
         },
         "itemId": {
-          "description": "Read this one item.",
-          "maxLength": 255,
-          "minLength": 1,
+          "description": "Read one item using its returned itemId.",
           "type": "string",
         },
         "limit": {
@@ -2155,11 +2149,16 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "List reachable tasks, newest updated first, up to 50 per page; page with cursor. parentTaskId lists the tasks that task delegated (for this task's own, take its ID from opensteer_task_read), and each row carries its delegationId and taskStatus. Mention returned items by their \`link\`, verbatim.",
+    "description": "List reachable tasks, newest updated first, up to 50 per page; page with cursor. parentTaskId lists the tasks that task delegated (for this task's own, take its ID from opensteer_task_read), and each row carries its delegationId and taskStatus. changedSince lists only tasks with messages after that time, most recent first, with newMessages and firstNewAt; read them with opensteer_task_read. Mention returned items by their \`link\`, verbatim.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "changedSince": {
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+          "type": "string",
+        },
         "cursor": {
           "maxLength": 2048,
           "minLength": 1,
@@ -3288,6 +3287,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
         },
         "limit": {
           "default": 10,
+          "description": "At most 20; page with cursor.",
           "maximum": 20,
           "minimum": 1,
           "type": "integer",
@@ -3459,7 +3459,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "run",
       "program",
     ],
-    "description": "Ask the person to set up, reconnect or grant access to a service. For an installed integration pass integration, access and reason; for a catalog item pass catalog instead, omitting access only to install it alone. Access is personal and pending grants none; programs receive no continuation. Never repeat a pending or declined ask; credentials belong in the Request. Mac apps and phones use app_access_request; a service missing from the catalog uses custom_integration_request.",
+    "description": "Ask the person to set up, reconnect or grant access to a service. For an installed integration pass integration, access and reason; for a catalog item pass catalog instead, omitting access only to install it alone. Access is personal and pending grants none; programs receive no continuation. Read next for the request outcome and recommended action; credentials belong in the Request. Mac apps and phones use app_access_request; a service missing from the catalog uses custom_integration_request.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -3514,7 +3514,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "callers": [
       "run",
     ],
-    "description": "Ask the person to let this task use one Mac app, or a whole phone screen, through computer_use. For a Mac app pass app and, unless it is on the Mac this task runs on, its computerId; for a phone pass only the phone's own computerId. A Mac-driven iPhone is approved separately from its Mac, and from the Opensteer iPhone app's data. read observes and read-write also acts. Pending grants no access; never repeat a pending or declined ask.",
+    "description": "Ask the person to let this task use one Mac app, or a whole phone display (Android Agent Phone or Mac-driven iPhone), through computer_use. For a Mac app pass app and, unless it is on the Mac this task runs on, its computerId; for a phone pass only its own computerId. A Mac-driven iPhone has separate approval from its Mac and from the Opensteer iPhone app’s data. read observes and read-write also acts. Pending grants no access; next explains the result and recommended action.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,

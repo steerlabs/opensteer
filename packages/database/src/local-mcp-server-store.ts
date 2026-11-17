@@ -55,7 +55,7 @@ const removedSentence =
 
 /**
  * The MCP servers a computer runs for its Deployment, and the approval each
- * waits on (`docs/computers.md`, "MCP servers on a computer").
+ * waits on.
  *
  * A server runs only once its computer's owner approved its exact launch on
  * that computer: the owner answers the same exact setup requests every

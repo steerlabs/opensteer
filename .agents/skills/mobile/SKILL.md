@@ -5,8 +5,7 @@ description: Use when building or running the Opensteer Expo app on a simulator 
 
 # Mobile
 
-Procedures for the Expo client in `apps/mobile`. Constraints live in
-[Opensteer on a phone](../../../docs/mobile.md) and [Dictation](../../../docs/dictation.md).
+Procedures for the Expo client in `apps/mobile`.
 
 ## Safety rules
 

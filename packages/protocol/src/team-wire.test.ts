@@ -197,7 +197,7 @@ describe("team wire compatibility", () => {
     if (committed.teamApiVersion === teamApiVersion)
       expect(
         wireBreaks(committed, current),
-        "This breaks peers on the same teamApiVersion. Make it additive, or bump teamApiVersion and decide minimumTeamApiVersion (docs/connections.md#api-compatibility).",
+        "This breaks peers on the same teamApiVersion. Make it additive, or bump teamApiVersion and decide minimumTeamApiVersion.",
       ).toEqual([]);
     if (process.env[updateVariable] === "1")
       writeFileSync(snapshotPath, `${JSON.stringify(current, null, 2)}\n`);
@@ -215,7 +215,7 @@ describe("team wire compatibility", () => {
     if (committed.teamPartnerProtocolVersion === teamPartnerProtocolVersion)
       expect(
         wireBreaks(committed, current),
-        "This breaks partner teams on the same protocol version. Make it additive, or bump teamPartnerProtocolVersion (docs/teams.md#partner-teams).",
+        "This breaks partner teams on the same protocol version. Make it additive, or bump teamPartnerProtocolVersion.",
       ).toEqual([]);
     if (process.env[updateVariable] === "1")
       writeFileSync(partnerSnapshotPath, `${JSON.stringify(current, null, 2)}\n`);

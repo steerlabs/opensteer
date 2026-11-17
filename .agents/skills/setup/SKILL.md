@@ -6,8 +6,7 @@ description: Use when enrolling a computer in an Opensteer Deployment or resolvi
 # Setup
 
 Lending a computer, connecting integrations and wiring messaging.
-[Computers](../../../docs/computers.md), [Integration OAuth](../../../docs/integration-oauth.md) and
-[Messaging](../../../docs/messaging.md) hold the authority rules.
+[Integration OAuth](../../../docs/integration-oauth.md) holds the integration authority rules.
 
 ## Safety rules
 

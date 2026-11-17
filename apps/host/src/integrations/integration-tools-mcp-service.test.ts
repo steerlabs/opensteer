@@ -1,3 +1,9 @@
+import { integrationBlocked } from "./integration-blocked.js";
+import {
+  IntegrationAuthorizationRequiredError,
+  type IntegrationPlatformService,
+} from "./integration-platform-service.js";
+import { gatherComputerAccess } from "./computer-access.js";
 import { ToolFailureSchema } from "@opensteer/core";
 import { createIntegrationMcpFixture } from "../mcp/integration-fixture.test-support.js";
 import { agentTools } from "@opensteer/agent-tools";
@@ -225,7 +231,7 @@ describe("Opensteer MCP integration access classes", () => {
     expect(request?.description).toContain("pass catalog instead");
     const describe = listed.tools.find(({ name }) => name === "integration_describe");
     expect(describe?.description).toContain("full input and output schemas");
-    expect(request?.description).toContain("Never repeat a pending or declined ask");
+    expect(request?.description).toContain("Read next for the request outcome");
     expect(request?.description).not.toContain("requestSelection");
     // One object for every request shape: Claude Code drops tools whose input
     // root is a union. The Host still enforces each shape when called.
@@ -254,7 +260,7 @@ describe("Opensteer MCP integration access classes", () => {
     });
   });
 
-  it("returns access, effect, readiness and accounts, with no address tokens", async () => {
+  it("returns usable accounts and servers without blockers", async () => {
     const entry = inventoryEntry();
     const callable = callableTool({
       entry,
@@ -312,6 +318,8 @@ describe("Opensteer MCP integration access classes", () => {
     expect((searched.operations as Record<string, unknown>[])[0]).not.toHaveProperty("accounts");
     const serialized = JSON.stringify(searched);
     for (const removed of [
+      "blocked",
+      "readiness",
       "requestSelection",
       "connectionSelections",
       "readOnly",
@@ -528,7 +536,6 @@ describe("Opensteer MCP integration access classes", () => {
       ),
     );
     expect(searched).toMatchObject({
-      guidance: { readiness: expect.stringContaining("ACCESS_GRANT_REQUIRED") },
       operations: [],
       results: [
         {
@@ -536,7 +543,10 @@ describe("Opensteer MCP integration access classes", () => {
             {
               effect: "write",
               name: "issues.create",
-              readiness: { code: "ACCESS_GRANT_REQUIRED", requiredAccess: "read-write" },
+              blocked: {
+                code: "access_required",
+                next: expect.stringContaining('"access":"read-write"'),
+              },
             },
           ],
         },
@@ -654,9 +664,6 @@ describe("Opensteer MCP integration access classes", () => {
             ),
           ),
         ).toMatchObject({
-          guidance: {
-            computers: expect.stringContaining("do not poll, repeat or route around the Request"),
-          },
           catalog: expect.arrayContaining([
             expect.objectContaining({
               computers: [expect.objectContaining({ name: "Studio Mac" })],
@@ -664,13 +671,12 @@ describe("Opensteer MCP integration access classes", () => {
           ]),
         });
         expect(full).toMatchObject({
-          guidance: { readiness: expect.stringContaining("REAUTHORIZATION_REQUIRED") },
           results: expect.arrayContaining([
             expect.objectContaining({
               name: "attention",
               servers: [
                 expect.objectContaining({
-                  readiness: expect.objectContaining({ code: "REAUTHORIZATION_REQUIRED" }),
+                  blocked: expect.objectContaining({ code: "reauthorization_required" }),
                 }),
               ],
             }),
@@ -689,6 +695,181 @@ describe("Opensteer MCP integration access classes", () => {
     expect(JSON.stringify(captures)).not.toContain('"nextAction"');
     expect(Buffer.byteLength(JSON.stringify(captures["all-uninstalled"]))).toBeLessThan(6000);
     expect(Buffer.byteLength(JSON.stringify(captures.populated))).toBeLessThan(8000);
+  });
+
+  it.each([
+    "READY",
+    "REAUTHORIZATION_REQUIRED",
+    "ACCESS_GRANT_REQUIRED",
+    "INTEGRATION_UNAVAILABLE",
+  ] as const)(
+    "rechecks execution failures against discovery readiness: %s",
+    async (readinessCode) => {
+      const entry = inventoryEntry({ readinessCode });
+      const callable = callableTool({
+        entry,
+        effect: "read",
+        name: "issues.get",
+        title: "Get issue",
+      });
+      const { handler, store } = await createHarness({
+        inventory: [{ ...entry, readiness: { ...entry.readiness, tools: [] } }],
+        callableTools: [callable],
+        callTool: vi.fn(async () => {
+          throw new IntegrationAuthorizationRequiredError(callable);
+        }),
+      });
+      const response = result(
+        await handler(
+          {
+            params: {
+              name: "integration_call",
+              arguments: {
+                operation: "issues.get",
+                account: callable.grant.connectionId,
+                arguments: {},
+              },
+            },
+          },
+          callExtra("execution-access"),
+        ),
+      );
+      expect(store.listDiscoveryInventory).toHaveBeenCalledWith(
+        expect.objectContaining({
+          target: { connectionId: callable.grant.connectionId, access: "read" },
+        }),
+      );
+      expect(response).toMatchObject({
+        error: integrationBlocked(entry.readiness.tools[0]!.readiness, entry.installation.name) ?? {
+          code: "conflict",
+          message: expect.stringContaining("authorization is required"),
+          next: null,
+        },
+      });
+    },
+  );
+
+  it("preserves an uncertain write and adds current access remediation", async () => {
+    const entry = inventoryEntry({ readinessCode: "REAUTHORIZATION_REQUIRED" });
+    const callable = callableTool({
+      entry,
+      effect: "write",
+      name: "issues.create",
+      title: "Create issue",
+    });
+    const { handler } = await createHarness({
+      inventory: [entry],
+      callableTools: [callable],
+      callTool: vi.fn(async () => {
+        throw new OpensteerError({
+          code: "harness_error",
+          message: "Outcome unknown. Check whether it happened before trying again.",
+          next: "Check the issue list before retrying.",
+          retryable: false,
+        });
+      }),
+    });
+    expect(
+      result(
+        await handler(
+          {
+            params: {
+              name: "integration_call",
+              arguments: {
+                operation: "issues.create",
+                account: callable.grant.connectionId,
+                arguments: {},
+              },
+            },
+          },
+          callExtra("uncertain-write"),
+        ),
+      ),
+    ).toMatchObject({
+      error: {
+        code: "harness_error",
+        message: expect.stringContaining("Check whether it happened"),
+        next: expect.stringMatching(/Check the issue list.*integration_request/s),
+      },
+    });
+  });
+
+  it("keeps the original failure when its readiness recheck fails", async () => {
+    const entry = inventoryEntry({ readinessCode: "REAUTHORIZATION_REQUIRED" });
+    const callable = callableTool({
+      entry,
+      effect: "write",
+      name: "issues.create",
+      title: "Create issue",
+    });
+    const { handler, store } = await createHarness({
+      inventory: [entry],
+      callableTools: [callable],
+      callTool: vi.fn(async () => {
+        throw new OpensteerError({
+          code: "harness_error",
+          message: "Outcome unknown. Check whether it happened before trying again.",
+          next: "Check the issue list before retrying.",
+          retryable: false,
+        });
+      }),
+    });
+    vi.mocked(store.listDiscoveryInventory).mockRejectedValueOnce(new Error("inventory down"));
+    expect(
+      result(
+        await handler(
+          {
+            params: {
+              name: "integration_call",
+              arguments: {
+                operation: "issues.create",
+                account: callable.grant.connectionId,
+                arguments: {},
+              },
+            },
+          },
+          callExtra("uncertain-write-recheck-failed"),
+        ),
+      ),
+    ).toMatchObject({
+      error: {
+        code: "harness_error",
+        message: expect.stringContaining("Check whether it happened"),
+        next: "Check the issue list before retrying.",
+      },
+    });
+  });
+
+  it("blocks computer targets for callers without a Run", async () => {
+    const { handler } = await createHarness({
+      inventory: [],
+      triggerScope,
+      definitions: integrationDefinitions,
+      computerUseMacs: [
+        {
+          name: "Studio Mac",
+          ready: true,
+          runnerId: createId("runner"),
+          apps: [
+            {
+              name: "Notes",
+              bundleId: "com.apple.Notes",
+              access: "read-write",
+              status: "approved",
+              connectionId: createIntegrationId("connection"),
+            },
+          ],
+        },
+      ],
+    });
+    const response = result(
+      await handler(
+        { params: { name: "integration_search", arguments: { query: "Computer use" } } },
+        callExtra("runless"),
+      ),
+    );
+    expect(JSON.stringify(response)).toContain("Only a task's Run");
+    expect(JSON.stringify(response)).not.toContain("app_access_request");
   });
 
   it("describes and calls an operation by its name and account", async () => {
@@ -803,9 +984,14 @@ describe("Opensteer MCP integration access classes", () => {
     expect(callTool).toHaveBeenCalledTimes(1);
   });
 
-  it("names the read-write fix when a write operation is blocked by a read grant", async () => {
+  it.each([
+    "ACCESS_GRANT_REQUIRED",
+    "USER_AUTHORIZATION_REQUIRED",
+    "REAUTHORIZATION_REQUIRED",
+    "READ_ONLY_TASK",
+  ] as const)("returns the search blocker for a known operation with %s", async (readinessCode) => {
     const entry = inventoryEntry({
-      readinessCode: "ACCESS_GRANT_REQUIRED",
+      readinessCode,
       toolEffect: "write",
     });
     const grant = effectiveGrant({
@@ -814,7 +1000,10 @@ describe("Opensteer MCP integration access classes", () => {
       installationId: entry.installation.id,
     });
     const writeTool = entry.tools[0]!;
-    const { handler } = await createHarness({ grants: [grant], inventory: [entry] });
+    const { handler } = await createHarness({
+      grants: readinessCode === "ACCESS_GRANT_REQUIRED" ? [grant] : [],
+      inventory: [entry],
+    });
     const response = (await handler(
       {
         params: {
@@ -826,12 +1015,7 @@ describe("Opensteer MCP integration access classes", () => {
     )) as { content: readonly { text: string }[]; isError: boolean };
     expect(response).toMatchObject({
       structuredContent: {
-        error: {
-          code: "access_denied",
-          next: null,
-          message:
-            'Linear operation Create issue makes changes, and the owner has read access as Work. Call integration_request with integration "linear" and access "read-write"; do not retry this call until it is fulfilled.',
-        },
+        error: integrationBlocked(entry.readiness.tools[0]!.readiness, entry.installation.name),
       },
       isError: true,
     });
@@ -851,22 +1035,23 @@ describe("Opensteer MCP integration access classes", () => {
       ),
     );
     expect(searched).toMatchObject({
-      guidance: { readiness: expect.stringContaining("do not repeat access requests") },
       operations: [{ name: expect.stringContaining(`${callable.tool.name}@`) }],
       results: [
         {
           accounts: [{ account: "Studio Mac", connectionId: callable.grant.connectionId }],
           servers: [
             {
-              readiness: {
-                code: "INTEGRATION_UNAVAILABLE",
-                detail: "Studio Mac is offline. Messages will work again when it is back.",
+              blocked: {
+                code: "unavailable",
+                message: expect.stringContaining(
+                  "Studio Mac is offline. Messages will work again when it is back.",
+                ),
               },
             },
           ],
           tools: [
             {
-              readiness: { code: "INTEGRATION_UNAVAILABLE" },
+              blocked: { code: "unavailable" },
             },
           ],
         },
@@ -894,7 +1079,26 @@ describe("Opensteer MCP integration access classes", () => {
         })),
       },
     };
-    const { handler } = await createHarness({ inventory: [unavailable] as never });
+    const secondServer = {
+      ...entry.servers[0]!,
+      id: createIntegrationId("server"),
+      name: "secondary",
+    };
+    const { handler } = await createHarness({
+      inventory: [
+        {
+          ...unavailable,
+          servers: [...entry.servers, secondServer],
+          readiness: {
+            ...unavailable.readiness,
+            servers: [
+              ...unavailable.readiness.servers,
+              { ...entry.readiness.servers[0]!, serverId: secondServer.id },
+            ],
+          },
+        },
+      ] as never,
+    });
     const searched = result(
       await handler(
         { params: { arguments: { query: "Linear" }, name: "integration_search" } },
@@ -902,17 +1106,22 @@ describe("Opensteer MCP integration access classes", () => {
       ),
     );
 
+    const accounts = (searched.results as { accounts: Record<string, unknown>[] }[])[0]!.accounts;
+    expect(accounts).toEqual(entry.accounts);
+    expect(accounts[0]).not.toHaveProperty("blocked");
+    const servers = (searched.results as { servers: Record<string, unknown>[] }[])[0]!.servers;
+    expect(servers[1]).not.toHaveProperty("blocked");
     expect(searched).toMatchObject({
-      guidance: { readiness: expect.stringContaining("relay the recorded detail to the user") },
       results: [
         {
           servers: [
             {
-              readiness: {
-                code: "INTEGRATION_UNAVAILABLE",
-                detail: "The OpenAPI document could not be compiled.",
+              blocked: {
+                code: "unavailable",
+                message: expect.stringContaining("The OpenAPI document could not be compiled."),
               },
             },
+            { serverId: secondServer.id },
           ],
         },
       ],
@@ -951,22 +1160,25 @@ describe("Opensteer MCP integration access classes", () => {
     );
 
     expect(searched).toMatchObject({
-      guidance: { readiness: expect.stringContaining("relay the recorded detail to the user") },
       results: [
         {
           servers: [
             {
-              readiness: {
-                code: "INTEGRATION_UNAVAILABLE",
-                detail: "The installed computer app definition is invalid.",
+              blocked: {
+                code: "unavailable",
+                message: expect.stringContaining(
+                  "The installed computer app definition is invalid.",
+                ),
               },
             },
           ],
           tools: [
             {
-              readiness: {
-                code: "INTEGRATION_UNAVAILABLE",
-                detail: "The installed computer app definition is invalid.",
+              blocked: {
+                code: "unavailable",
+                message: expect.stringContaining(
+                  "The installed computer app definition is invalid.",
+                ),
               },
             },
           ],
@@ -1366,7 +1578,7 @@ describe("Opensteer MCP integration access classes", () => {
       callExtra("already-granted"),
     );
     expect(errorText(response)).toContain(
-      "The owner already has read-write access to Linear as Work. Use integration_search for current access and available operations; do not request it again.",
+      "Linear as Work has a personal read-write grant. This task’s access mode still limits execution. Call integration_search for operations this task can use.",
     );
     expect(requests.createIntegrationAccessRequest).not.toHaveBeenCalled();
   });
@@ -1562,7 +1774,7 @@ async function createHarness(input: {
     listPendingIntegrationAccessRequests: vi.fn(async () => input.pendingAccessRequests ?? []),
   };
   const store = {
-    getComputerConnectionForCall: vi.fn(async () =>
+    getDeviceComputerConnectionForCall: vi.fn(async () =>
       input.computerConnection
         ? {
             ...input.computerConnection,
@@ -1604,8 +1816,6 @@ async function createHarness(input: {
         if (request.callId) requestByCallId.set(request.callId, existing);
         return {
           status: "pending",
-          nextAction:
-            "Approval is pending on Alex's Mac. Pending permits only independent work; do not poll, repeat or route around the Request.",
           replayed: true,
           request: existing,
           setupRequest: { id: "setup" },
@@ -1615,8 +1825,6 @@ async function createHarness(input: {
       accessByKey.set(key, created.request);
       return {
         status: "pending",
-        nextAction:
-          "Approval is pending on Alex's Mac. Pending permits only independent work; do not poll, repeat or route around the Request.",
         replayed: false,
         request: created.request,
         setupRequest: { id: "setup" },
@@ -1627,6 +1835,10 @@ async function createHarness(input: {
     definitions: input.definitions ?? [definition],
     onEvent: vi.fn(),
     platform: {
+      computerAccess: (
+        input: Parameters<IntegrationPlatformService["computerAccess"]>[0],
+        run?: Parameters<IntegrationPlatformService["computerAccess"]>[1],
+      ) => gatherComputerAccess(handlerOptions.platform, input, run),
       computerToolEnabled: async () => true,
       computerUseVersion: () => 2,
       callTool: input.callTool ?? vi.fn(),
@@ -1794,7 +2006,13 @@ const linearToolSchemas = {
 
 function inventoryEntry(
   input: {
-    readonly readinessCode?: "ACCESS_GRANT_REQUIRED" | "READY" | "REAUTHORIZATION_REQUIRED";
+    readonly readinessCode?:
+      | "ACCESS_GRANT_REQUIRED"
+      | "READY"
+      | "INTEGRATION_UNAVAILABLE"
+      | "REAUTHORIZATION_REQUIRED"
+      | "USER_AUTHORIZATION_REQUIRED"
+      | "READ_ONLY_TASK";
     readonly withoutTools?: boolean;
     readonly toolEffect?: "read" | "write";
   } = {},
@@ -1824,6 +2042,7 @@ function inventoryEntry(
     connectionId: null,
     description: toolEffect === "read" ? "List issues" : "Create issue",
     id: toolId,
+    serverId,
     name: toolEffect === "read" ? "issues.list" : "issues.create",
     schemaDigest: integrationSchemaDigest(linearToolSchemas),
     status: "active" as const,
@@ -2028,28 +2247,28 @@ describe("computer use discovery", () => {
       expect.any(Array),
     );
     expect(answer).toMatchObject({
-      guidance: {
-        computers: expect.stringContaining(
-          "blocked: only the computer owner can unblock it from any Opensteer app",
-        ),
+      computer: {
+        computerId: mac.runnerId,
+        apps: [
+          {
+            name: "Notes",
+            bundleId: "com.apple.Notes",
+            blocked: { code: "blocked_by_owner" },
+          },
+          {
+            name: "Notepad",
+            bundleId: "example.Notepad",
+            blocked: {
+              code: "access_required",
+              next: expect.stringContaining("app_access_request"),
+            },
+          },
+        ],
       },
-      computer: { computerId: mac.runnerId, state: "ready", appApproval: "ask" },
       total: 20,
       nextCursor: "6",
-      apps: [
-        {
-          name: "Notes",
-          bundleId: "com.apple.Notes",
-          status: "blocked",
-        },
-        {
-          name: "Notepad",
-          bundleId: "example.Notepad",
-          status: "not-approved",
-          // The row is already the listing, so it asks rather than searching again.
-        },
-      ],
     });
+    expect(answer).not.toHaveProperty("apps");
     expect(JSON.stringify(answer)).not.toContain("teamId");
     expect(JSON.stringify(answer)).not.toContain("iconPng");
   });

@@ -1,8 +1,7 @@
 # Client connection checks
 
-Choose the affected group; [Client connections](../../../../docs/connections.md) holds the
-constraints. In order: shared attachment, discovery and routes; Personal recovery and log ownership
-(build the process helper first); signed-out and unreachable places.
+Choose the affected group. In order: shared attachment, discovery and routes; Personal recovery and
+log ownership (build the process helper first); signed-out and unreachable places.
 
 ```sh
 pnpm exec vitest run packages/client/src/connections

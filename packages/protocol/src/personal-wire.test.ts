@@ -148,7 +148,7 @@ describe("personal wire compatibility", () => {
     ).toBe(minimumHostApiVersion);
     expect(
       windowBreaks(baseline, current),
-      "This breaks apps the Host still serves. Make it additive, send it only to callers that ask for it, or advance the Personal version (docs/connections.md#api-compatibility).",
+      "This breaks apps the Host still serves. Make it additive, send it only to callers that ask for it, or advance hostApiVersion and minimumHostApiVersion in packages/deployment-authority/src/authority.ts.",
     ).toEqual([]);
   });
 

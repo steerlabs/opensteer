@@ -9,15 +9,18 @@ type ShellSnapshot = Extract<
   { tasks: unknown }
 >;
 type Task = ShellSnapshot["tasks"][number];
+type TaskChange = Task | { readonly id: string; readonly removed: true };
 type Visit = ShellSnapshot["visits"][number];
 type Attention = ShellSnapshot["attention"][number];
 
 interface ShellState {
+  readonly history: number;
   readonly generation: number;
   readonly through: string | null;
   readonly synchronized: boolean;
   readonly snapshot: ShellSnapshot | null;
   readonly tasks: ReadonlyMap<string, Task>;
+  readonly taskChanges: readonly TaskChange[];
   readonly visits: ReadonlyMap<string, Visit>;
   readonly attention: ReadonlyMap<string, Attention>;
   readonly taskIds: readonly string[];
@@ -25,11 +28,13 @@ interface ShellState {
 }
 
 const emptyShell: ShellState = {
+  history: 0,
   generation: 0,
   through: null,
   synchronized: false,
   snapshot: null,
   tasks: new Map(),
+  taskChanges: [],
   visits: new Map(),
   attention: new Map(),
   taskIds: [],
@@ -49,9 +54,15 @@ export class PersonalShellStore {
     };
   };
 
-  begin(generation: number, retain: boolean) {
+  begin(generation: number, retain: boolean, resetHistory = false) {
     if (generation <= this.#state.generation) return;
-    this.#replace({ ...(retain ? this.#state : emptyShell), generation, synchronized: false });
+    this.#replace({
+      ...(retain ? this.#state : emptyShell),
+      taskChanges: emptyShell.taskChanges,
+      generation,
+      history: this.#state.history + Number(resetHistory),
+      synchronized: false,
+    });
   }
 
   apply(frame: Frame) {
@@ -95,6 +106,7 @@ export class PersonalShellStore {
           through: frame.throughSequence,
           snapshot,
           tasks,
+          taskChanges: emptyShell.taskChanges,
           synchronized: false,
           visits: new Map(snapshot.visits.map((visit) => [visit.threadId, visit])),
           attention: new Map(snapshot.attention.map((item) => [item.id, item])),
@@ -114,6 +126,7 @@ export class PersonalShellStore {
         )
           return false;
         let tasks: Map<string, Task> | undefined;
+        const taskChanges: TaskChange[] = [];
         let visits: Map<string, Visit> | undefined;
         let attention: Map<string, Attention> | undefined;
         let invalidated: Set<string> | undefined;
@@ -131,17 +144,20 @@ export class PersonalShellStore {
             case "task": {
               const prior = (tasks ?? old.tasks).get(id);
               if (change.operation === "remove") {
+                taskChanges.push({ id, removed: true });
                 if (!prior) break;
                 (tasks ??= new Map(old.tasks)).delete(id);
                 ids = ids.filter((taskId) => taskId !== id);
                 invalidate("tasks");
               } else if (!prior || BigInt(prior.revision) < BigInt(change.value.revision)) {
+                taskChanges.push(change.value);
                 if (prior) (tasks ??= new Map(old.tasks)).set(id, change.value);
                 if (
-                  !prior ||
-                  prior.askedAt !== change.value.askedAt ||
-                  prior.doneAt !== change.value.doneAt ||
-                  prior.status !== change.value.status
+                  prior
+                    ? prior.askedAt !== change.value.askedAt ||
+                      prior.doneAt !== change.value.doneAt ||
+                      prior.status !== change.value.status
+                    : change.value.doneAt === null
                 )
                   invalidate("tasks");
               }
@@ -178,6 +194,7 @@ export class PersonalShellStore {
               ? { ...old.snapshot, ...frame.shellProgress }
               : old.snapshot,
           tasks: tasks ?? old.tasks,
+          taskChanges: taskChanges.length ? taskChanges : emptyShell.taskChanges,
           visits: visits ?? old.visits,
           attention: attention ?? old.attention,
           invalidated: invalidated ?? old.invalidated,
