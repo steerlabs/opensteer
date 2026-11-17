@@ -73,6 +73,16 @@ export function iphoneSetupWords(
         waiting: "Waiting for Xcode to install…",
         yours: true,
       };
+    case "xcode-installing":
+      return {
+        cue: "On this Mac",
+        detail:
+          "Let the App Store finish downloading and installing Xcode. Setup carries on by itself once it’s installed.",
+        recovery: "check",
+        title: "Waiting for Xcode to install",
+        waiting: "Waiting for Xcode to install…",
+        yours: true,
+      };
     case "xcode-setup-required":
     case "developer-image-missing":
       return {

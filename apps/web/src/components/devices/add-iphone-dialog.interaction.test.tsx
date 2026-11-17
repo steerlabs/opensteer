@@ -211,3 +211,41 @@ it("adds a new iPhone under its name, then sets what the agent may do through th
   );
   expect(text()).toContain("Open the iPhone’s page");
 });
+
+it("keeps the highest revision across pushed updates and call replies", async () => {
+  const port = setupPort("xcode-missing");
+  await render(port);
+  const stale = port.current!;
+  const reply = Promise.withResolvers<DesktopIphoneSetupStatus>();
+  vi.mocked(port.help).mockReturnValueOnce(reply.promise);
+  await click("Get Xcode");
+  await push(port, "wifi-local-network");
+  await act(async () => reply.resolve(stale));
+  expect(button("Open Local Network settings")).toBeDefined();
+
+  const newerReply = Promise.withResolvers<DesktopIphoneSetupStatus>();
+  vi.mocked(port.help).mockReturnValueOnce(newerReply.promise);
+  await click("Open Local Network settings");
+  await push(port, "xcode-missing");
+  await act(async () =>
+    newerReply.resolve({
+      ...port.current!,
+      revision: port.current!.revision + 10,
+      action: "open-xcode",
+      reason: "xcode-setup-required",
+    }),
+  );
+  expect(button("Open Xcode")).toBeDefined();
+  await push(port, "xcode-missing");
+  expect(button("Open Xcode")).toBeDefined();
+});
+
+it("opens Local Network settings through the Mac's offered help action", async () => {
+  const port = setupPort("wifi-local-network");
+  await render(port);
+  await click("Open Local Network settings");
+  expect(port.help).toHaveBeenCalledExactlyOnceWith({
+    setupId: port.current!.setupId,
+    action: "open-local-network",
+  });
+});

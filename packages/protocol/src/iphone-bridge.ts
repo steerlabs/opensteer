@@ -588,6 +588,7 @@ export const iphoneNativeRosterSchema = z
             osVersion: z.string().max(160),
             build: z.string().max(160),
             transport: z.enum(["usb", "wifi"]),
+            trusted: z.boolean(),
             reason: iphoneNativeReasonSchema.nullable(),
             capabilities: iphoneNativeCapabilitiesSchema.optional(),
           })

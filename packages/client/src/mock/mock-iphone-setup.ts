@@ -13,6 +13,7 @@ const deploymentId = DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-00000
 
 export const mockIphoneSetupCandidates = {
   sam: {
+    trusted: true,
     candidateId: "33333333-3333-4333-8333-333333333333",
     name: "Sam’s iPhone",
     model: "iPhone 17 Pro",
@@ -21,6 +22,7 @@ export const mockIphoneSetupCandidates = {
   },
   // A phone that hasn't trusted this Mac yet tells it nothing but that it's an iPhone.
   untrusted: {
+    trusted: false,
     candidateId: "44444444-4444-4444-8444-444444444444",
     name: "iPhone",
     model: "",
@@ -28,6 +30,7 @@ export const mockIphoneSetupCandidates = {
     reason: null,
   },
   old: {
+    trusted: true,
     candidateId: "55555555-5555-4555-8555-555555555555",
     name: "Kitchen iPhone",
     model: "iPhone 12",
@@ -43,6 +46,7 @@ const phone = { name: sam.name, model: sam.model, osVersion: sam.osVersion };
 export const mockIphoneSetupScenes = {
   "mac-checking": { stage: "mac", state: "working" },
   "xcode-missing": { stage: "mac", state: "waiting", reason: "xcode-missing", action: "get-xcode" },
+  "xcode-installing": { stage: "mac", state: "waiting", reason: "xcode-installing" },
   "xcode-setup": {
     stage: "mac",
     state: "waiting",
@@ -79,6 +83,7 @@ export const mockIphoneSetupScenes = {
     stage: "wifi",
     state: "waiting",
     reason: "local-network-permission-required",
+    action: "open-local-network",
     phone,
   },
   name: {
@@ -117,7 +122,7 @@ export type MockIphoneSetupScene = keyof typeof mockIphoneSetupScenes;
 /** Where a setup moves next when nobody stands in its way, and how long it takes to get there. */
 const journey: readonly (readonly [MockIphoneSetupScene, MockIphoneSetupScene, number])[] = [
   ["mac-checking", "plug-in", 900],
-  ["xcode-missing", "xcode-setup", 4000],
+  ["xcode-installing", "xcode-setup", 4000],
   ["xcode-setup", "plug-in", 3000],
   ["plug-in", "choose", 2200],
   ["connecting", "trust", 900],
@@ -164,6 +169,7 @@ export function createMockIphoneSetupPort(
   function blank(setupId: string, target: Status["target"]): Status {
     return {
       setupId,
+      revision: 1,
       deploymentId,
       stage: "mac",
       state: "working",
@@ -182,7 +188,7 @@ export function createMockIphoneSetupPort(
 
   function push(patch: Partial<Status>): Status {
     if (!current) throw new Error("No iPhone setup is running.");
-    current = { ...current, ...patch };
+    current = { ...current, ...patch, revision: current.revision + 1 };
     const shown = current;
     for (const listener of listeners.get(shown.setupId) ?? []) listener(shown);
     schedule();
@@ -195,6 +201,7 @@ export function createMockIphoneSetupPort(
     const plugged = shape.stage !== "mac" && shape.stage !== "connect";
     current = {
       ...blank(base.setupId, base.target),
+      revision: base.revision,
       deviceId: base.deviceId,
       driverGeneration: base.driverGeneration,
       candidates: plugged ? [sam] : [],
@@ -280,7 +287,10 @@ export function createMockIphoneSetupPort(
         phone: { name: chosen.name, model: chosen.model, osVersion: chosen.osVersion },
       });
     },
-    help: async ({ setupId }) => owned(setupId),
+    help: async ({ setupId, action }) => {
+      const status = owned(setupId);
+      return action === "get-xcode" ? show("xcode-installing") : status;
+    },
     retry: async ({ setupId }) => {
       const status = owned(setupId);
       if (status.state !== "blocked") return status;

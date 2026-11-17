@@ -15,6 +15,7 @@ export const DesktopIphoneSetupReasonSchema = z.enum([
   "unsupported-mac",
   /** Xcode isn't installed on this Mac. */
   "xcode-missing",
+  "xcode-installing",
   /** Xcode is installed but hasn't installed its iPhone support yet (open it once). */
   "xcode-setup-required",
   "no-phone",
@@ -77,12 +78,19 @@ export type DesktopIphoneSetupStage = z.infer<typeof DesktopIphoneSetupStageSche
  * - blocked: the stage failed in a way checking again won't fix by itself; `action` says how out.
  * - done: the iPhone was added and this Mac took it on.
  */
-export const DesktopIphoneSetupStateSchema = z.enum(["working", "waiting", "decide", "blocked", "done"]);
+export const DesktopIphoneSetupStateSchema = z.enum([
+  "working",
+  "waiting",
+  "decide",
+  "blocked",
+  "done",
+]);
 export const DesktopIphoneSetupActionSchema = z.enum([
   /** Open Xcode's page in the Mac App Store. */
   "get-xcode",
   /** Open Xcode so it finishes installing its iPhone support. */
   "open-xcode",
+  "open-local-network",
   "choose-phone",
   "choose-wifi",
   "name-phone",
@@ -101,9 +109,9 @@ export const DesktopIphoneSetupIdSchema = z.strictObject({ setupId: z.uuid() });
 export const DesktopIphoneSetupChooseSchema = DesktopIphoneSetupIdSchema.extend({
   candidateId: z.uuid(),
 });
-/** Runs one of the Mac-side helper actions the status offers (`get-xcode`, `open-xcode`). */
+/** Runs one of the Mac-side helper actions the status offers (`get-xcode`, `open-xcode`, `open-local-network`). */
 export const DesktopIphoneSetupHelpSchema = DesktopIphoneSetupIdSchema.extend({
-  action: z.enum(["get-xcode", "open-xcode"]),
+  action: z.enum(["get-xcode", "open-xcode", "open-local-network"]),
 });
 /** Prepares the Host command that adds the iPhone under `name` (ignored when setting up an existing one). */
 export const DesktopIphoneSetupAddSchema = DesktopIphoneSetupIdSchema.extend({
@@ -138,6 +146,7 @@ export const DesktopIphoneSetupPhoneSchema = z.strictObject({
 });
 export const DesktopIphoneSetupStatusSchema = z.strictObject({
   setupId: z.uuid(),
+  revision: z.number().int().positive(),
   deploymentId: DeploymentIdSchema,
   stage: DesktopIphoneSetupStageSchema,
   state: DesktopIphoneSetupStateSchema,
@@ -150,6 +159,7 @@ export const DesktopIphoneSetupStatusSchema = z.strictObject({
     .array(
       DesktopIphoneSetupPhoneSchema.extend({
         candidateId: z.uuid(),
+        trusted: z.boolean(),
         reason: DesktopIphoneSetupReasonSchema.nullable(),
       }),
     )

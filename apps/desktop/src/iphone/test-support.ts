@@ -66,6 +66,7 @@ export class FakeIphoneNative implements IphoneNativeTransport {
         osVersion: "27.0",
         build: "test",
         transport: "usb" as const,
+        trusted: true,
         reason: null,
       },
     ],
@@ -291,10 +292,15 @@ export async function fixture() {
 export class FakeIphoneMacSupport implements IphoneMacSupport {
   xcodeApps = ["/Applications/Xcode.app"];
   imageRoots = ["/synthetic/images"];
+  xcodeInstalling = false;
   readonly listeners = new Set<() => void>();
   readonly helps: string[] = [];
   async inspect() {
-    return { xcodeApps: this.xcodeApps, imageRoots: this.imageRoots };
+    return {
+      xcodeApps: this.xcodeApps,
+      imageRoots: this.imageRoots,
+      xcodeInstalling: this.xcodeInstalling,
+    };
   }
   watch(listener: () => void) {
     this.listeners.add(listener);
