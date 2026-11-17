@@ -15,7 +15,9 @@ Done.
 Your wake lists every task with new messages since your last completed pass, or the last four
 weeks on your first. Read your own recent history with `opensteer_task_read` (no `taskId`): the
 final reply of the Run your wake names is your last handoff, with where you read each connected
-source through. For any source it gives no position for, start four weeks back. A handoff from before the
+source through. For any source it gives no position for, take it from `memory/passes/nightly.md`
+if an older version left it, even when that is more than four weeks back; otherwise start four
+weeks back. A handoff from before the
 `Memory: on again from` time in `## Memory` doesn't count.
 
 Then read everything since, in full, investigating however you judge useful. Read each task the
