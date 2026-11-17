@@ -79,9 +79,7 @@ of you, say so plainly and get sign-off before breaking it.
 2. **Killing by pattern.** Many agents and dev stacks share this Mac. Never
    `pkill -f`, `killall` or kill a PID found by matching a name or path. Stop
    only processes you started, by the PID you captured.
-3. **Driving the real screen.** Anything that drives the screen, keyboard,
-   windows or Electron runs in a disposable VM (`pnpm test:vm`), never on the
-   host. Emulators and USB phones have one owner at a time.
+3. **Sharing devices.** Emulators and USB phones have one owner at a time.
 4. **Handling key material.** Signing certificates, notarization keys and
    release credentials are Tim's. Agents never read, export or rotate them.
 5. **Leaving things running.** Stop every server, database, emulator, `adb`
