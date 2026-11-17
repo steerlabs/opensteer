@@ -124,6 +124,7 @@ describe("computer access", () => {
     [{ pendingPhoneAccess: true, phone: { ...phone.phone, state: "offline" } }, "computer_offline"],
     [{ phone: { ...phone.phone, state: "offline" }, heldByAnotherRun: true }, "computer_offline"],
     [{ callable: true, heldByAnotherRun: true }, "in_use"],
+    [{ heldByAnotherRun: true, pendingPhoneAccess: true }, "access_pending"],
     [{ phone: { ...phone.phone, computerToolEnabled: false } }, "update_required"],
   ])("uses the most specific phone blocker", (overrides, code) => {
     expect(phoneDiscovery({ ...phone, ...overrides }).blocked?.code).toBe(code);
@@ -164,5 +165,8 @@ describe("computer access", () => {
     expect(computerAppDiscovery({ ...ready, callable: false }).blocked?.code).toBe(
       "access_pending",
     );
+    expect(
+      computerAppDiscovery({ ...ready, callable: false, heldByAnotherRun: true }).blocked?.code,
+    ).toBe("access_pending");
   });
 });

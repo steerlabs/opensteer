@@ -130,14 +130,15 @@ export function computerAppDiscovery(facts: ComputerAppDiscoveryFacts): Computer
     );
   const problem = computerMachineProblem(facts.machine);
   if (problem) return problem;
-  if (facts.heldByAnotherRun) return busy(name);
-  if (facts.callable) return { access: facts.canAct ? "read-write" : "read" };
+  if (facts.callable && !facts.heldByAnotherRun)
+    return { access: facts.canAct ? "read-write" : "read" };
   if (facts.pendingOnMac || facts.pendingPersonalGrant)
     return blocked(
       "access_pending",
       `Access to ${name} is pending.`,
       pendingOnComputerNextAction(name),
     );
+  if (facts.heldByAnotherRun) return busy(name);
   return blocked(
     "access_required",
     `${name} needs access for this task.`,
@@ -175,14 +176,15 @@ export function phoneDiscovery(facts: PhoneDiscoveryFacts): ComputerAccess {
     );
   const problem = phoneProblem(facts.phone);
   if (problem) return problem;
-  if (facts.heldByAnotherRun) return busy(name);
-  if (facts.callable) return { access: facts.canAct ? "read-write" : "read" };
+  if (facts.callable && !facts.heldByAnotherRun)
+    return { access: facts.canAct ? "read-write" : "read" };
   if (facts.pendingPhoneAccess || facts.pendingPersonalGrant)
     return blocked(
       "access_pending",
       `Access to ${name} is pending.`,
       pendingOnComputerNextAction(name),
     );
+  if (facts.heldByAnotherRun) return busy(name);
   return blocked(
     "access_required",
     `${name} needs access for this task.`,
