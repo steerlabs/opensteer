@@ -147,6 +147,25 @@ class RetainedClientRead<T> implements ClientRead<T> {
   refresh = (): Promise<void> => {
     this.#explicit = true;
     this.#attempt = 2;
+    const connection = this.#session.connection.getSnapshot();
+    if (
+      connection.phase !== "ready" ||
+      connection.network === "offline" ||
+      connection.visibility !== "foreground" ||
+      !connection.scope
+    ) {
+      this.#dirty = true;
+      const issue: ClientIssue =
+        connection.phase === "blocked" && connection.issue
+          ? connection.issue
+          : { code: this.#accepted ? "refresh-failed" : "read-failed", resource: this.#spec.label };
+      this.#publish(
+        this.#accepted
+          ? { status: "ready", data: this.#value!, refreshing: false, stale: true, issue }
+          : { status: "failed", data: null, issue },
+      );
+      return Promise.resolve();
+    }
     if (this.#listeners.size === 0) {
       const release = this.subscribe(() => {});
       return this.#settled().finally(release);
@@ -228,7 +247,13 @@ class RetainedClientRead<T> implements ClientRead<T> {
       this.#cancel();
       this.#publish(
         this.#accepted
-          ? { status: "ready", data: this.#value!, refreshing: false, stale: true, issue: null }
+          ? {
+              status: "ready",
+              data: this.#value!,
+              refreshing: false,
+              stale: true,
+              issue: this.#explicit ? this.#state.issue : null,
+            }
           : waiting,
       );
     }

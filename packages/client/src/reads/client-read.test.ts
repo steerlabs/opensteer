@@ -62,6 +62,38 @@ describe("retained client reads", () => {
     expect(read.getSnapshot()).toMatchObject({ status: "ready", data: "recovered", issue: null });
     read.dispose();
   });
+  it("shows an explicit unavailable refresh immediately while retaining data", async () => {
+    vi.useFakeTimers();
+    const session = controlledClientSession();
+    const read = createClientRead(session, {
+      key: "items",
+      label: "items",
+      read: async () => "accepted",
+    });
+    read.subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    session.change({ phase: "recovering", epoch: 2, showInterruption: false });
+    expect(read.getSnapshot()).toMatchObject({ data: "accepted", issue: null });
+    await read.refresh();
+    expect(read.getSnapshot()).toMatchObject({
+      status: "ready",
+      data: "accepted",
+      stale: true,
+      issue: { code: "refresh-failed" },
+    });
+    expect(session.connection.getSnapshot().showInterruption).toBe(false);
+    session.change({ epoch: 3 });
+    expect(read.getSnapshot().issue?.code).toBe("refresh-failed");
+    session.change({ phase: "ready", readyRevision: 2 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read.getSnapshot()).toMatchObject({
+      status: "ready",
+      data: "accepted",
+      stale: false,
+      issue: null,
+    });
+    read.dispose();
+  });
   it("coalesces a burst during an active read into exactly one trailing read", async () => {
     vi.useFakeTimers();
     const session = controlledClientSession();
