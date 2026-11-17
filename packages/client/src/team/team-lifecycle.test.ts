@@ -336,8 +336,9 @@ describe("team session lifecycle", () => {
       await vi.waitFor(() => expect(f.client.getSnapshot().pending).toHaveLength(1), {
         timeout: 1000,
       });
-      expect(f.client.getSnapshot().pending[0]).toMatchObject({ failure: "Posting revoked" });
-      expect((await f.persistence.load(scope))?.pending[0]?.failure).toBe("Posting revoked");
+      const failure = "You don't have access.";
+      expect(f.client.getSnapshot().pending[0]).toMatchObject({ failure });
+      expect((await f.persistence.load(scope))?.pending[0]?.failure).toBe(failure);
       expect([...f.host.messages.values()].map((row) => row.bodyMarkdown)).toEqual(["Allowed"]);
       await f.client.editPending(refusedId, "Revised");
       expect(f.client.getSnapshot().pending).toEqual([]);

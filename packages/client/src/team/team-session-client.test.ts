@@ -232,11 +232,19 @@ describe("team synchronization", () => {
         timeout: 1000,
       });
       f.client.selectThread(mockTeamChannelId, TeamMessageIdSchema.parse("404"));
-      await vi.waitFor(() => expect(f.client.getSnapshot().error).toBe("Unknown message."), {
-        timeout: 1000,
-      });
+      await vi.waitFor(
+        () =>
+          expect(f.client.getSnapshot().error).toBe(
+            "Couldn't load this thread. It may have been deleted, or you don't have access.",
+          ),
+        { timeout: 1000 },
+      );
       const root = f.host.post({ channelId: mockTeamChannelId, bodyMarkdown: "root" });
       f.client.selectThread(mockTeamChannelId, root.id);
+      expect(f.client.getSnapshot().error).toBeNull();
+      await vi.waitFor(() => expect(f.client.getSnapshot().thread?.messages[0]?.id).toBe(root.id), {
+        timeout: 1000,
+      });
       expect(f.client.getSnapshot().error).toBeNull();
     } finally {
       f.client.dispose();

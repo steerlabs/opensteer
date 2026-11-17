@@ -60,14 +60,20 @@ export function clientIssue(
 }
 
 const rejectionReasons: Readonly<Record<string, string>> = {
+  forbidden: "You don't have access.",
   "permission-denied": "You don't have access.",
   "access-denied": "You don't have access.",
   not_found: "It may have been deleted, or you don't have access.",
   "thread-not-found": "This task is no longer available.",
   "thread-closed": "This task is closed.",
   "browser-session-closed": "This tab is closed.",
+  "personal-remote-access-off": "Turn on Use from anywhere to add a computer.",
   "resource-exhausted": "Too many messages waiting.",
 };
+
+function rejectionDetail(reason: string | undefined): string | undefined {
+  return reason && Object.hasOwn(rejectionReasons, reason) ? rejectionReasons[reason] : undefined;
+}
 
 export function clientDisplayName(
   name: string | null | undefined,
@@ -118,7 +124,11 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
             "It may have been deleted, or you don't have access.",
           );
     case "read-failed":
-      return result(`Couldn't load ${issue.resource ?? "this"}.`, "retry");
+      return result(
+        `Couldn't load ${issue.resource ?? "this"}.`,
+        "retry",
+        issue.reason === "not_found" ? (rejectionDetail(issue.reason) ?? null) : null,
+      );
     case "refresh-failed":
       return result(`Couldn't refresh ${issue.resource ?? "this"}.`, "retry");
     case "not-sent":
@@ -133,7 +143,7 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
         "check",
       );
     case "rejected": {
-      const reason = rejectionReasons[issue.reason ?? ""];
+      const reason = rejectionDetail(issue.reason);
       return result(
         reason
           ? `Not ${issue.done ?? "changed"}. ${reason}`
@@ -156,12 +166,26 @@ export function presentMessageDelivery(
   if (issue?.code === "unconfirmed") return presentClientIssue(issue).title;
   if (phase === "sending") return "Sending…";
   if (phase === "waiting") return "Waiting to send";
-  return `Not sent. ${rejectionReasons[issue?.reason ?? ""] ?? `${clientDisplayName(issue?.name)} didn't accept it.`}`;
+  return `Not sent. ${presentMessageRejection(issue)}`;
+}
+
+export function presentMessageRejection(issue?: ClientIssue): string {
+  return (
+    rejectionDetail(issue?.reason) ??
+    `${clientDisplayName(issue?.name, issue?.target)} didn't accept it.`
+  );
 }
 
 export function presentActionFailure(error: unknown, _context?: string): string {
   const issue = clientIssue(error, { operation: "action", label: "complete this action" });
   return issue ? presentClientIssue(issue).title : "";
+}
+
+export function presentReadFailure(error: unknown, resource: string): string {
+  const issue = clientIssue(error, { operation: "read", label: resource });
+  if (!issue) return "";
+  const { title, detail } = presentClientIssue(issue);
+  return detail ? `${title} ${detail}` : title;
 }
 export function presentDeliveryActions(): {
   readonly edit: string;
