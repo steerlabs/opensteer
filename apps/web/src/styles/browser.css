@@ -439,6 +439,14 @@
   inset: 0;
 }
 
+.browser-pending-address {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .browser-canvas {
   position: relative;
   display: grid;

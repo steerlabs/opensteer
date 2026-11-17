@@ -274,7 +274,7 @@ function SelectedPlace({
         <div className="browser-view">
           <div className="browser-toolbar surface-row">
             {leading}
-            <span>{nav.pendingPlace}</span>
+            <span className="browser-pending-address">{nav.pendingPlace}</span>
             {trailing}
           </div>
           <div className="browser-stage">
