@@ -52,6 +52,7 @@ export class PersonalTeamRequests {
   readonly #work = new Map<DeploymentId, Promise<void>>();
   readonly #lastStatus = new Map<string, number>();
   readonly #decisions = new Map<string, Promise<void>>();
+  readonly #decisionResumptions = new Set<Promise<void>>();
   readonly #decisionRetries = new Map<DeploymentId, ReturnType<typeof setTimeout>>();
   readonly #decisionAttempts = new Map<DeploymentId, number>();
   #stopped = false;
@@ -286,7 +287,7 @@ export class PersonalTeamRequests {
     for (const timer of this.#decisionRetries.values()) clearTimeout(timer);
     this.#decisionRetries.clear();
     this.#decisionAttempts.clear();
-    await Promise.allSettled(this.#decisions.values());
+    await Promise.allSettled([...this.#decisions.values(), ...this.#decisionResumptions]);
   }
 
   #retryDecisions(teamId: DeploymentId): void {
@@ -296,7 +297,9 @@ export class PersonalTeamRequests {
     const timer = setTimeout(
       () => {
         this.#decisionRetries.delete(teamId);
-        void this.#resumeDecisions(teamId).catch(() => this.#retryDecisions(teamId));
+        const work = this.#resumeDecisions(teamId).catch(() => this.#retryDecisions(teamId));
+        this.#decisionResumptions.add(work);
+        void work.finally(() => this.#decisionResumptions.delete(work));
       },
       Math.min(30_000, 500 * 2 ** Math.min(attempt, 6)),
     );
