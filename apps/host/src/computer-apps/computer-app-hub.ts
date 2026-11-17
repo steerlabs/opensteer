@@ -146,6 +146,7 @@ export type ComputerAppInvokeOutcome =
     };
 
 export interface ComputerAppInvokeInput {
+  readonly authorize?: () => Promise<(() => void) | void>;
   /** The lesser of the connection's ceiling and the calling grant's access. */
   readonly access: HostIntegrationsInvoke["access"];
   readonly arguments: HostIntegrationsInvoke["arguments"];
@@ -1290,21 +1291,32 @@ export class ComputerAppHub {
     // visible to the next caller, and a result that arrives while the send is
     // still completing has to find its request.
     entry.pending.set(requestId, { effect: input.effect, kind: "invoke", settle: finish });
-    const submission = await this.#submit(entry, {
-      // The fence names the exact stream; the module is restated because
-      // only an `integrations` stream ever reaches this hub.
-      ...entry.stream.fence,
-      module: "integrations",
-      access: input.access,
-      arguments: input.arguments,
-      contract: input.contract,
-      definitionId: input.definitionId,
-      ...(input.files ? { files: input.files } : {}),
-      operation: input.operation,
-      requestId,
-      timeoutMs,
-      type: "host.integrations.invoke",
+    const submit = () =>
+      this.#submit(entry, {
+        // The fence names the exact stream; the module is restated because
+        // only an `integrations` stream ever reaches this hub.
+        ...entry.stream.fence,
+        module: "integrations",
+        access: input.access,
+        arguments: input.arguments,
+        contract: input.contract,
+        definitionId: input.definitionId,
+        ...(input.files ? { files: input.files } : {}),
+        operation: input.operation,
+        requestId,
+        timeoutMs,
+        type: "host.integrations.invoke",
+      });
+    const release = await input.authorize?.().catch((error: unknown) => {
+      entry.pending.delete(requestId);
+      throw error;
     });
+    let submission: Awaited<ReturnType<typeof submit>>;
+    try {
+      submission = await submit();
+    } finally {
+      release?.();
+    }
     if (submission === "failed") {
       // `peer.send` has already handed the frame to the WebSocket when its
       // completion callback rejects. That callback cannot prove whether the

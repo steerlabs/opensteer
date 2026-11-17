@@ -77,28 +77,23 @@ export const lockEngineApp = (sql: SqlClient.SqlClient, app: string) =>
 export const readEngineLinks = (sql: SqlClient.SqlClient, app: string) =>
   sql`select requirement, scope, account, consent from opensteer_account_links where app = ${app} order by created_at, account`;
 
-/** Only resource state enters the signature; workflow progress and leases do not. */
+/** Coalesce committed metadata without waiting for background activity to become quiet. */
 export function backgroundResourceChanges(
   database: { readonly reactivity: ReactiveStore },
-  sql: SqlClient.SqlClient,
+  _sql: SqlClient.SqlClient,
   notify: () => void,
 ) {
-  const tables = ["scheduledRuns", "workflowRuns", "webhooks", "webhookSources", "schedules"];
-  const snapshot = database.reactivity.read(
-    tables,
-    sql<{ signature: string }>`select md5(jsonb_build_array(
-    (select jsonb_agg(row(id, status, failure) order by id) from plugin_engine_scheduled_runs),
-    (select jsonb_agg(row(id, status, failure) order by id) from plugin_engine_workflow_runs),
-    (select jsonb_agg(row(id, status, revision, failure) order by id) from plugin_engine_webhooks),
-    (select jsonb_agg(row(id, status, failure, reconciled_deployment) order by id) from plugin_engine_webhook_sources),
-    (select jsonb_agg(row(id, enabled, approval_mode, next_at) order by id) from plugin_engine_schedules)
-  )::text) as signature`,
-  );
-  return database.reactivity.subscribe(snapshot).pipe(
-    Stream.map(({ value }) => value[0]?.signature),
-    Stream.changes,
+  const tables = new Set([
+    "scheduledRuns",
+    "workflowRuns",
+    "webhooks",
+    "webhookSources",
+    "schedules",
+  ]);
+  return database.reactivity.changes.pipe(
     Stream.drop(1),
-    Stream.debounce("100 millis"),
+    Stream.filter((change) => change.tables.some((table) => tables.has(table))),
+    Stream.groupedWithin(100, "100 millis"),
     Stream.runForEach(() => Effect.sync(notify)),
   );
 }

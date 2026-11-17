@@ -45,7 +45,14 @@ export class PluginExecutions {
     this.#changes.setMaxListeners(0);
   }
   report(execution: PluginExecution) {
-    this.#reports = this.#reports.then(() => this.#record(execution)).catch(this.options.onError);
+    this.options.authority.execution(execution.id, execution.caller, true);
+    this.#reports = this.#reports
+      .then(() => this.#record(execution))
+      .catch(this.options.onError)
+      .finally(() => {
+        if (terminal.has(execution.state))
+          this.options.authority.execution(execution.id, execution.caller, false);
+      });
   }
   settled(): Promise<void> {
     return this.#reports;

@@ -168,6 +168,45 @@ integration("device data apps as plugin tools", () => {
     }
   });
 
+  it("refuses a write when task mode narrows during the final Runner send lookup", async () => {
+    const { host, helper, gateway, run } = await start();
+    const path = await pluginPath(gateway, "create_reminder", "create_reminder");
+    const entered = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    const original = ComputerAppHub.prototype.send;
+    const send = vi.spyOn(ComputerAppHub.prototype, "send").mockImplementationOnce(async function (
+      this: ComputerAppHub,
+      input,
+    ) {
+      entered.resolve();
+      await withTimeout(released.promise, 10000, {
+        timeoutError: () => new Error("Runner lookup was not released"),
+      });
+      return original.call(this, input);
+    });
+    const before = helper.invocations.length;
+    const pending = gateway.call("plugin_call", {
+      calls: { path, input: { title: "Must not be sent" } },
+    });
+    try {
+      await withTimeout(entered.promise, 10000, {
+        timeoutError: () => new Error("Call did not reach Runner lookup"),
+      });
+      await host.store.updateThreadAccessMode({
+        threadId: run.threadId,
+        requestedBy: host.ownerId,
+        accessMode: "approval-required",
+      });
+      released.resolve();
+      expect(JSON.stringify(await pending)).toMatch(/authority|unavailable/iu);
+      expect(helper.invocations).toHaveLength(before);
+    } finally {
+      released.resolve();
+      send.mockRestore();
+      await pending;
+    }
+  });
+
   it("finds, describes and calls device tools, mixes them with a cloud plugin, and refuses what approvals do not allow", async () => {
     const { host, helper, computer, gateway, calendar, reminders } = await start();
     const owner = { caller: "personal", mode: "automatic" as const };

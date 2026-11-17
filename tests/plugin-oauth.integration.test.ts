@@ -475,6 +475,7 @@ beforeAll(async () => {
     return true;
   });
   service = new PluginService({
+    idleMs: 0,
     databaseUrl: clone.url,
     dataDirectory: directory,
     owner: "personal",
@@ -485,7 +486,7 @@ beforeAll(async () => {
     processEntry: new URL("../apps/host/dist/plugin-engine.js", import.meta.url),
     bridge: new URL("../apps/host/dist/plugin-engine-bridge.json", import.meta.url).pathname,
     onDiagnostic: (phase) => console.log("OAuth engine phase", phase),
-    authorize: (input) => authority.authorize(input),
+    authorize: (input, signal) => authority.authorize(input, signal),
     oauthConfiguration: (linked) => oauth.configuration(linked),
     oauthBroker: async (operation, input) => {
       const result = await oauth.broker(operation, input);
@@ -860,14 +861,31 @@ test("forwarding a web launch cannot give another Deployment the consenting acco
 
 test("custom apps and discovered MCP clients exchange on the Host after Account relay proof, with the exact registered callbacks", async () => {
   const target = await install("custom");
-  const app = await service.saveOAuthApp(
-    {
-      issuer: providerOrigin + "/custom/token",
-      clientId: "custom-client",
-      clientSecret: "custom-secret",
-    },
-    ownerContext,
-  );
+  const save = {
+    issuer: providerOrigin + "/custom/token",
+    clientId: "custom-client",
+    clientSecret: "custom-secret",
+  };
+  const { handlePluginOAuthCommand } =
+    await import("../apps/host/src/plugins/plugin-oauth-routes.js");
+  const command = {
+    type: "plugin.oauthApp.save" as const,
+    input: save,
+    idempotencyKey: randomUUID(),
+  };
+  const session = {
+    session: { user: { id: personal.userId } },
+  } as unknown as import("../packages/protocol/src/index.js").HostApiServerContext;
+  const saved = await handlePluginOAuthCommand(oauth, command, session);
+  expect(await service.stopIfIdle()).toBe(true);
+  expect(await handlePluginOAuthCommand(oauth, command, session)).toEqual(saved);
+  if (saved.type !== "plugin.oauthApp.save") throw new Error("No saved client");
+  const app = saved.client;
+  const receipts =
+    await sql`select result from plugin_engine.opensteer_resource_creations where kind = 'oauth-client'`.execute(
+      database,
+    );
+  expect(JSON.stringify(receipts.rows)).not.toContain("custom-secret");
   const started = await start(target, "app", { id: z.string().parse(app.id) });
   expect(started.prepared.redirectUri).toBe(issuer + "/v1/oauth-broker/callback/plugin");
   const launched = await launch(started);

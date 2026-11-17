@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import Fastify from "fastify";
 import { createId, OpensteerError, type AuthenticatedSession, type UserId } from "@opensteer/core";
@@ -152,7 +153,24 @@ function setup(
       webhooks: [],
       workflows: [],
       hasPage: true,
+      toolCount: options.tools ?? 2,
+      skillCount: 1,
+      versionCount: options.versions ?? 2,
     })),
+    detailSection: vi.fn(
+      async (input: {
+        plugin: string;
+        section: "tools" | "skills" | "versions";
+        cursor?: string;
+      }) => {
+        const { detailSection } = await import("./engine-detail.js");
+        return detailSection(
+          await service.detail({ plugin: input.plugin }),
+          input.section,
+          input.cursor,
+        );
+      },
+    ),
     catalogList: vi.fn(async () => ({
       items: [
         {
@@ -426,17 +444,17 @@ describe("the person's plugin API", () => {
   });
 
   it("sends a detail's first tools, skills and versions and pages the rest to the end", async () => {
-    const { api } = setup({ tools: 120, versions: 75 });
+    const { api } = setup({ tools: 600, versions: 75 });
     const reads = api.reads();
     const result = await reads["plugins.get"]({ pluginId: "p0" }, context(ownerId));
     if (!result.ok) throw new Error("refused");
     const view = hostApi["plugins.get"].success.parse(result.data);
     expect(view.tools?.map(({ name }) => name)).toEqual(
-      Array.from({ length: 120 }, (_, index) => `tool_${index}`)
+      Array.from({ length: 600 }, (_, index) => `tool_${index}`)
         .sort()
         .slice(0, 8),
     );
-    expect(view).toMatchObject({ toolCount: 120, skillCount: 1, versionCount: 75 });
+    expect(view).toMatchObject({ toolCount: 600, skillCount: 1, versionCount: 75 });
     expect(view.versions.map(({ id, active }) => [id, active])).toEqual([
       ["p0-v75", false],
       ["p0-v74", false],
@@ -466,8 +484,8 @@ describe("the person's plugin API", () => {
       const data = hostApi["plugins.tools.list"].success.parse(page.data);
       return { ids: data.tools.map(({ name }) => name), cursor: data.cursor };
     });
-    expect(tools).toHaveLength(120);
-    expect(new Set(tools).size).toBe(120);
+    expect(tools).toHaveLength(600);
+    expect(new Set(tools).size).toBe(600);
     const versions = await all(async (cursor) => {
       const page = await reads["plugins.versions.list"](target(cursor), context(ownerId));
       if (!page.ok) throw new Error("refused");
@@ -722,7 +740,9 @@ describe("the person's plugin API", () => {
             app: "p0",
             workflow: "w",
             input: { a: 1 },
-            key: JSON.stringify([ownerId, "plugins.workflow.start", "wk"]),
+            key: createHash("sha256")
+              .update(JSON.stringify([ownerId, "plugins.workflow.start", "wk"]))
+              .digest("hex"),
           },
         },
         owner,

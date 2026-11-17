@@ -1050,7 +1050,7 @@ export async function createHostRuntime(
       databaseUrl: config.databaseUrl,
       dataDirectory,
       owner: "personal",
-      authorize: (input) => pluginAuthority.authorize(input),
+      authorize: (input, signal) => pluginAuthority.authorize(input, signal),
       oauthConfiguration: (linked) =>
         pluginOAuth ? pluginOAuth.configuration(linked) : Promise.resolve({ clients: [] }),
       oauthBroker: (operation, input) => {
@@ -2524,6 +2524,13 @@ export async function createHostRuntime(
       ),
       execution.canExecute,
     );
+    const pluginPages = new PluginPages({
+      service: pluginService,
+      assertOwner: (userId) => requirePersonalOwner(database, userId),
+      access: async (userId, plugin) =>
+        (await pluginAgentStore.settings(userId)).find((row) => row.pluginId === plugin)?.access ??
+        "all",
+    });
     const pluginTools = new PluginToolHandlers({
       service: pluginService,
       localProviders: providerNames,
@@ -2533,6 +2540,7 @@ export async function createHostRuntime(
       settings: pluginAgentStore,
       publish: publishDeploymentEvent,
       notify: () => continuations.notify(),
+      removed: (plugin) => pluginPages.forget(plugin),
       changed: (owner) => realtime.sendToUsers([owner], { type: "host.plugins-changed" }),
       folder: async (caller, directory) => {
         requirePluginRun(caller);
@@ -2550,13 +2558,7 @@ export async function createHostRuntime(
     });
     const pluginOwnerApi = new PluginOwnerApi({
       service: pluginService,
-      pages: new PluginPages({
-        service: pluginService,
-        assertOwner: (userId) => requirePersonalOwner(database, userId),
-        access: async (userId, plugin) =>
-          (await pluginAgentStore.settings(userId)).find((row) => row.pluginId === plugin)
-            ?.access ?? "all",
-      }),
+      pages: pluginPages,
       webhooks: { service: pluginService, origin: () => pluginService!.webhookOrigin() },
       settings: pluginAgentStore,
       accountLinked: (input) => pluginTools.accountLinked(input),

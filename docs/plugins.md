@@ -4,7 +4,10 @@ Opensteer decides authority; the plugin engine executes the work. The personal H
 settings, account consent and Requests. Team servers never run the engine or receive private
 credentials. Discovery grants no authority: calls, resumes and background work check current access
 again ([authority](../apps/host/src/plugins/plugin-authority.ts)). A read-only setting trusts each
-tool's query label; it cannot prove what that plugin's code does.
+tool's query label; it cannot prove what that plugin's code does. Schedules, workflows and
+webhook handlers have no read-only contract and require standing `all` access, including at each
+background execution. Read-only or off access still permits reading resource state and stopping,
+disabling or removing background work; starting or enabling it through agent tools requires `all`.
 
 ## Process and storage
 
