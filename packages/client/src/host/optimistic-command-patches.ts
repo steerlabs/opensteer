@@ -20,7 +20,7 @@ import type {
 import { settleTeamAsk } from "./needs-you.js";
 import { isTerminalRunEntryStatus, upsertEntry, withEditedMessage } from "./transcript.js";
 
-import type { ThreadName } from "./thread-state.js";
+import type { ThreadView } from "./thread-state.js";
 
 type CommandType = HostApiCommandInput["type"];
 type ThreadInputQueueItem = ThreadInputQueue["items"][number];
@@ -398,25 +398,22 @@ function upsertBrowserProfile(
   };
 }
 
-/** Names, symbols and shared Done follow every held copy without replacing activity or reply previews. */
-export function withThreadNames(
+/** A thread's state follows every held copy of it without replacing activity or reply previews. */
+export function withThreadState(
   snapshot: HostSnapshot,
-  nameOf: (thread: ThreadSummary) => ThreadName,
+  viewOf: (thread: ThreadSummary) => ThreadView,
 ): HostSnapshot {
-  const threadName = <T extends ThreadSummary>(thread: T): T => {
-    const name = nameOf(thread);
-    return name.title === thread.title &&
-      name.icon === thread.icon &&
-      (name.lastVisitedAt === undefined || name.lastVisitedAt === thread.lastVisitedAt) &&
-      (name.latestRunCompletedAt === undefined ||
-        name.latestRunCompletedAt === thread.latestRunCompletedAt) &&
-      (name.doneAt === undefined || name.doneAt === thread.doneAt)
+  const threadState = <T extends ThreadSummary>(thread: T): T => {
+    const view = viewOf(thread);
+    return (Object.keys(view) as (keyof ThreadView)[]).every(
+      (key) => view[key] === undefined || view[key] === thread[key],
+    )
       ? thread
-      : { ...thread, ...name };
+      : { ...thread, ...view };
   };
   const entries = (held: readonly TaskEntry[]): readonly TaskEntry[] => {
     const updated = held.map((entry) => {
-      const thread = threadName(entry.thread);
+      const thread = threadState(entry.thread);
       return thread === entry.thread ? entry : { ...entry, thread };
     });
     return updated.every((entry, index) => entry === held[index]) ? held : updated;
@@ -425,9 +422,12 @@ export function withThreadNames(
     const updated = entries(held.entries);
     return updated === held.entries ? held : { ...held, entries: updated };
   };
-  const threads = snapshot.threads.map(threadName);
+  const threads = snapshot.threads.map(threadState);
   const tasks = snapshot.tasks ? taskList(snapshot.tasks) : null;
   const activeTasks = entries(snapshot.activeTasks);
+  const doneTasks = Object.fromEntries(
+    Object.entries(snapshot.doneTasks).map(([key, held]) => [key, taskList(held)]),
+  );
   const assignments = Object.fromEntries(
     Object.entries(snapshot.assignments).map(([id, assignment]) => {
       const held = threads.find(({ id }) => id === assignment.workerThread.id);
@@ -454,6 +454,9 @@ export function withThreadNames(
       : assignments,
     tasks,
     activeTasks,
+    doneTasks: Object.entries(doneTasks).every(([key, held]) => held === snapshot.doneTasks[key])
+      ? snapshot.doneTasks
+      : doneTasks,
   };
 }
 
