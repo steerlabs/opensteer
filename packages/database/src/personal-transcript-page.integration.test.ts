@@ -2,7 +2,7 @@ import { createId } from "@opensteer/core";
 import { expect, test } from "vitest";
 import { createPersonalStateFixture } from "./personal-state.test-support.js";
 import { jsonValue } from "./store-primitives.js";
-import { readTranscriptPage } from "./personal-sync-store.js";
+import { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
 
 test("an anchored read reserves its turn and can continue paging older turns", async () => {
   const fixture = await createPersonalStateFixture("anchored-page");
@@ -62,6 +62,17 @@ test("an anchored read reserves its turn and can continue paging older turns", a
     expect(page.nextBefore?.beforeId).toBe(anchorItemId);
     const older = await readTranscriptPage(database, { ...query, cursor: page.nextBefore! });
     expect(older).toMatchObject({ kind: "page", items: [{ id: ids[0] }], hasMore: false });
+    await database
+      .updateTable("messages")
+      .set({ content: jsonValue([{ type: "text", text: "x".repeat(1_100_000) }] as const) })
+      .where("id", "=", anchorItemId)
+      .execute();
+    expect(await readTranscriptItem(database, { ...query, itemId: anchorItemId })).toMatchObject({
+      kind: "item",
+      body: null,
+      truncated: true,
+      item: { id: anchorItemId },
+    });
   } finally {
     await fixture.close();
   }

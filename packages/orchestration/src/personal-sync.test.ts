@@ -1,6 +1,7 @@
 import { createId } from "@opensteer/core";
 import {
   type PersonalResumeCursor,
+  type ScopedHostMessage,
   ScopedHostMessageSchema,
 } from "@opensteer/protocol/personal-sync";
 import {
@@ -327,6 +328,58 @@ test("shell repair keeps resource interests for the replacement generation", asy
     await deadline(repair.promise, "Expired shell did not ask for repair");
     socket.subscribe(subscription(2));
     await deadline(updated.promise, "Replacement shell lost its settings watch");
+  } finally {
+    socket.close("test finished");
+  }
+});
+
+test("oversized encoded commits dispatch a bounded repair", async () => {
+  const delivered = Promise.withResolvers<ScopedHostMessage>();
+  const changes = Array.from({ length: 12 }, (_, ordinal) => {
+    const id = createId("thread");
+    return {
+      sequence: "2",
+      ordinal,
+      entityId: id,
+      entityKind: "task" as const,
+      operation: "upsert" as const,
+      value: {
+        id,
+        title: "Task",
+        revision: "2",
+        status: "idle" as const,
+        purpose: "task" as const,
+        askedAt: "2026-01-01T00:00:00.000Z",
+        doneAt: null,
+        pendingRequestCount: 0,
+        lastReplyPreview: "\u0001".repeat(1050),
+        failurePreview: null,
+        latestRunCompletedAt: null,
+      },
+    };
+  });
+  const socket = new PersonalSyncSocket({
+    read: async () => ({
+      throughSequence: "2",
+      cursor: { ...cursor, afterSequence: "2" },
+      frames: [{ type: "host.changes", scope, fromSequence: "1", throughSequence: "2", changes }],
+    }),
+    async send(raw, guard) {
+      if (!guard()) return false;
+      delivered.resolve(ScopedHostMessageSchema.parse(JSON.parse(raw)));
+      return true;
+    },
+    close() {},
+  });
+  try {
+    socket.subscribe({ ...subscription(1), cursor });
+    expect(
+      await deadline(delivered.promise, "Oversized commit did not request repair"),
+    ).toMatchObject({
+      type: "host.snapshot-required",
+      reason: "replay-overflow",
+      throughSequence: "2",
+    });
   } finally {
     socket.close("test finished");
   }

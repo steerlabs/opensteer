@@ -212,6 +212,13 @@ test.each(["feed", "receipt"] as const)(
       const viewerId = run.userId;
       const threadId = run.threadId;
       const paths = ["/fixture/output.png"];
+      expect(
+        await resolvePersonalToolImages(database, {
+          viewerId,
+          threadId,
+          paths: ["/fixture/nested/../output.png", "/fixture/output.png\u0001"],
+        }),
+      ).toEqual([]);
       const [image] = await resolvePersonalToolImages(database, { viewerId, threadId, paths });
       expect(image).toMatchObject({ path: paths[0], mediaType: "image/png" });
       const otherThreadId = createId("thread");
@@ -425,11 +432,12 @@ test("settles Host effects only through their admitted handle and live attempt a
           arguments: { exact: true },
         }),
       );
-    const nested = await start(nodeId, "harness:nested");
-    const root = await start(null, "harness:root");
+    const nested = await start(nodeId, "harness:scope");
+    const root = await start(null, "harness:scope");
+    expect(nested.call.id).not.toBe(root.call.id);
     expect(nested.handle).toBeDefined();
     expect(root.handle).toBeDefined();
-    expect(await start(null, "harness:root")).toMatchObject({
+    expect(await start(null, "harness:scope")).toMatchObject({
       started: false,
       outcome: "outcome-unknown",
     });

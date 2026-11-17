@@ -33,7 +33,7 @@ test("a finishing Run resumes its bounded work and only acknowledges an exact te
   try {
     await sql`insert into tool_calls(id,thread_id,run_id,call_id,origin,tool,arguments,status,started_at)
       select 'fixture-call-'||n,${run.threadId},${run.runId},'harness:fixture-'||n,'host-harness',
-        '{"name":"read","namespace":"harness"}','{}','open',clock_timestamp()
+        '{"name":"read","namespace":"harness"}',jsonb_build_object('payload',repeat('x',478*1024)),'open',clock_timestamp()
       from generate_series(1,145) n
     `.execute(database);
     await sql`insert into transcript_items(id,thread_id,run_id,kind,position,visible,is_turn_start,created_at,tool_call_id,view)
