@@ -88,7 +88,6 @@ function sameReads(left: BrowserReads, right: BrowserReads): boolean {
 export function PlaceBrowserView({
   activationError,
   awaitingBinding = false,
-  connected,
   lastingReason,
   onRetry,
   chromeSignIn,
@@ -658,14 +657,6 @@ export function PlaceBrowserView({
   const prePaint =
     !ended &&
     (dormant || !(mode.mode !== "streamed" ? placement : paintedTab === `${sessionId}:${tabId}`));
-  const [waitingTab, setWaitingTab] = useState<string | null>(null);
-  useEffect(() => {
-    setWaitingTab(null);
-    if (!prePaint || !visible) return;
-    const timer = window.setTimeout(() => setWaitingTab(tabId), 1000);
-    return () => window.clearTimeout(timer);
-  }, [prePaint, tabId, visible]);
-  const waiting = prePaint && waitingTab === tabId;
 
   const fitLabel = placement
     ? `Fit page to view: ${tab?.sizedByAgent ? "an agent set" : "page is"} ${placement.viewport.width} × ${placement.viewport.height}`
@@ -899,11 +890,9 @@ export function PlaceBrowserView({
               />
             </>
           )}
-          {waiting ? (
-            <div className="browser-status" role="status">
-              {connected && (dormant || session?.state === "starting")
-                ? "Starting browser…"
-                : `Waiting for ${place?.device?.name ?? "computer"}…`}
+          {prePaint ? (
+            <div className="place-state" role="status">
+              <BrowserOpening address={url} />
             </div>
           ) : null}
           {!native && compact && keyboardOffered && pageReachable && !blocked ? (
@@ -978,4 +967,13 @@ function placeEnded(
     return { detail: null, title: "This tab was closed" };
   if (viewerError) return { detail: viewerError, title: "This tab can’t be shown" };
   return null;
+}
+
+export function BrowserOpening({ address }: { readonly address: string }) {
+  return (
+    <>
+      <span aria-label={`Opening ${address}`} className="spinner" />
+      <p className="place-state__title">Opening…</p>
+    </>
+  );
 }

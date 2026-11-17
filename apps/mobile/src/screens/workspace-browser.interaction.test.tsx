@@ -72,7 +72,7 @@ const state = vi.hoisted(() => ({
   safeArea: { bottom: 0, left: 0, right: 0, top: 0 },
   setOptions: vi.fn(),
   setParams: vi.fn(),
-  routes: [] as { name: string; params?: object }[],
+  routes: [] as { key?: string; name: string; params?: object }[],
   /** The pair's own measured surface, as its reserved-regions provider reports it. */
   pair: { height: 760, width: 390 },
   /** What every laid-out view measures, once a test lays the screen out. */
@@ -141,7 +141,8 @@ vi.mock("@react-navigation/native", async () => {
     useNavigation: () => ({
       canGoBack: () => true,
       dispatch: state.dispatch,
-      getState: () => ({ index: state.routes.length - 1, routes: state.routes }),
+      getState: () => ({ key: "stack", index: state.routes.length - 1, routes: state.routes }),
+      addListener: () => () => undefined,
       goBack: state.goBack,
       isFocused: () => state.navigationFocused,
       setOptions: state.setOptions,
@@ -1394,6 +1395,10 @@ describe("mobile pages", () => {
     const openTab = vi.fn(async () => ({ tabId: "new-page" }));
     state.hostClient = { openTab };
     await setup({ sessionId: "chosen" }, { snapshot: twoPages() });
+    state.dispatch.mockImplementation((action: { type: string; name: string; params: object }) => {
+      if (action.type === "PUSH")
+        state.routes.push({ key: "opening", name: action.name, params: action.params });
+    });
     await pressAsync(menu(), "New tab");
     expect(openTab).toHaveBeenCalledExactlyOnceWith({
       computerId: "rnr_00000000-0000-4000-8000-00000000000a",
@@ -1402,7 +1407,9 @@ describe("mobile pages", () => {
       url: "about:blank",
     });
     expect(state.dispatch).toHaveBeenLastCalledWith({
-      type: "PUSH",
+      type: "REPLACE",
+      source: "opening",
+      target: "stack",
       name: "WorkspaceBrowser",
       params: { deploymentId: "deployment-a", tabId: "new-page", threadId: "thread-parent" },
     });

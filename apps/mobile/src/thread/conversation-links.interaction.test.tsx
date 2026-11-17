@@ -11,6 +11,7 @@ import { MockHostClient, mockIphoneRunnerId } from "@opensteer/client/mock";
 const linking = vi.hoisted(() => ({ openURL: vi.fn(async () => undefined) }));
 const navigation = vi.hoisted(() => ({
   dispatch: vi.fn(),
+  listeners: new Set<() => void>(),
   routes: [] as { key: string; name: string; params: Record<string, unknown> }[],
 }));
 
@@ -41,6 +42,10 @@ vi.mock("@react-navigation/native", () => ({
   },
   useNavigation: () => ({
     dispatch: navigation.dispatch,
+    addListener: (_event: string, listener: () => void) => {
+      navigation.listeners.add(listener);
+      return () => navigation.listeners.delete(listener);
+    },
     getState: () => ({ index: navigation.routes.length - 1, routes: navigation.routes }),
     isFocused: () => true,
   }),
@@ -72,6 +77,7 @@ afterEach(() => {
   linking.openURL.mockClear();
   navigation.dispatch.mockReset();
   navigation.routes = [];
+  navigation.listeners.clear();
 });
 
 /** This phone, enrolled in the Deployment as the mock world's iPhone, or nowhere. */
@@ -131,6 +137,13 @@ function conversation(input: { readonly enrolled: boolean }) {
           params: action.params!,
         });
       if (action.type === "POP") navigation.routes.pop();
+      if (action.type === "REPLACE")
+        navigation.routes.splice(-1, 1, {
+          key: `replacement`,
+          name: action.name!,
+          params: action.params!,
+        });
+      for (const listener of navigation.listeners) listener();
     },
   );
   return { deploymentId, host, tap, threadId };
@@ -148,8 +161,13 @@ describe("a conversation's links on a phone that lends a browser", () => {
       profileId: "bpr_00000000-0000-4000-8000-000000000003",
       url: "https://unsplash.com/photos/tiger",
     });
+    expect(navigation.routes[0]).toMatchObject({
+      name: "OpeningTab",
+      params: { address: "https://unsplash.com/photos/tiger" },
+    });
     await vi.waitFor(() => {
-      if (navigation.routes.length !== 1) throw new Error("The new tab was never shown.");
+      if (navigation.routes[0]?.name !== "WorkspaceBrowser")
+        throw new Error("The new tab was never shown.");
     });
     const tab = await open.mock.results[0]!.value;
     expect(navigation.routes[0]).toMatchObject({
@@ -161,6 +179,43 @@ describe("a conversation's links on a phone that lends a browser", () => {
       url: "https://unsplash.com/photos/tiger",
     });
     expect(linking.openURL).not.toHaveBeenCalled();
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not open the system browser after a late failure following Back", async () => {
+    const { host, tap } = conversation({ enrolled: true });
+    let reject!: (error: Error) => void;
+    const open = opens(host).mockImplementationOnce(
+      () =>
+        new Promise((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    tap("the photo");
+    expect(navigation.routes[0]?.name).toBe("OpeningTab");
+    navigation.dispatch({ type: "POP" });
+    await act(async () => reject(new Error("not available")));
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(navigation.routes).toEqual([]);
+    expect(linking.openURL).not.toHaveBeenCalled();
+  });
+
+  it("does not show a late success after Back", async () => {
+    const { host, tap } = conversation({ enrolled: true });
+    const tab = [...host.getSnapshot().tabs.rows.values()][0]!;
+    let resolve!: (value: typeof tab) => void;
+    const open = opens(host).mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    tap("the photo");
+    navigation.dispatch({ type: "POP" });
+    await act(async () => resolve(tab));
+    expect(navigation.routes).toEqual([]);
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(navigation.listeners.size).toBe(0);
   });
 
   it("opens the computer's own address on the conversation's computer", () => {

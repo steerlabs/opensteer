@@ -434,6 +434,11 @@
   --browser-region-radius: 0px;
 }
 
+.browser-stage > .place-state {
+  position: absolute;
+  inset: 0;
+}
+
 .browser-canvas {
   position: relative;
   display: grid;
