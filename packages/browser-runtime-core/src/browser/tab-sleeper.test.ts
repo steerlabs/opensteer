@@ -74,6 +74,143 @@ describe("TabSleeper", () => {
       await f.close();
     }
   });
+  it("resamples idle renderer memory and sleeps agent leftovers that clear protection first", async () => {
+    const budget = 100 * 1024 ** 2;
+    let usage = { processes: 1, bytes: budget / 2 };
+    const onPass = vi.fn();
+    const f = await fixture({
+      memoryBudgetBytes: budget,
+      rendererUsage: () => usage,
+      onPass,
+    });
+    try {
+      f.page.keepAwake = () => "media";
+      const leftover = await f.ledger.openSurface({ origin: "agent", activate: false });
+      const person = await f.ledger.openSurface();
+      const pinned = await f.ledger.openSurface();
+      f.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: [],
+        viewed: [],
+        pinned: [pinned.id],
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(f.record.live).not.toBeNull();
+      expect(f.ledger.stateOf(person.id)).toBe("live");
+      const sleep = f.ledger.sleep.bind(f.ledger);
+      vi.spyOn(f.ledger, "sleep").mockImplementation(async (id, blocked) => {
+        const committed = await sleep(id, blocked);
+        if (committed) usage = { processes: 1, bytes: budget / 2 };
+        return committed;
+      });
+      usage = { processes: 6, bytes: budget * 2 };
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(f.record.live).not.toBeNull();
+      expect(f.ledger.stateOf(leftover.id)).toBe("suspended");
+      expect(f.ledger.stateOf(person.id)).toBe("live");
+      expect(f.ledger.stateOf(pinned.id)).toBe("live");
+      expect(f.ledger.sleep).toHaveBeenCalledTimes(2);
+      expect(f.ledger.sleep).toHaveBeenNthCalledWith(1, f.record.id, expect.any(Function));
+      expect(f.ledger.sleep).toHaveBeenNthCalledWith(2, leftover.id, expect.any(Function));
+      expect(onPass).toHaveBeenLastCalledWith({
+        livePages: 4,
+        rendererProcesses: 6,
+        rendererResidentBytes: budget * 2,
+        unassignedRendererProcesses: 0,
+        underPressure: 1,
+        attempted: 2,
+        slept: 1,
+      });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(f.ledger.stateOf(person.id)).toBe("live");
+    } finally {
+      await f.close();
+    }
+  });
+  it("uses the page estimate when the renderer memory sample is unavailable", async () => {
+    const f = await fixture({
+      memoryBudgetBytes: 100 * 1024 ** 2,
+      rendererUsage: () => ({ processes: 2, bytes: null }),
+    });
+    try {
+      const pinned = await f.ledger.openSurface();
+      f.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: [],
+        viewed: [],
+        pinned: [pinned.id],
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(f.record.live).toBeNull();
+      expect(f.ledger.stateOf(pinned.id)).toBe("live");
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("continues a capped pressure scan past a full rotation of media-protected tabs", async () => {
+    const f = await fixture({
+      memoryBudgetBytes: 100 * 1024 ** 2,
+      rendererUsage: () => ({ processes: 82, bytes: 9 * 1024 ** 3 }),
+    });
+    const protectedPage = { keepAwake: () => "media" };
+    try {
+      Object.assign(f.page, protectedPage);
+      for (let index = 1; index < 80; index++) {
+        const { id } = await f.ledger.openSurface({ origin: "agent", activate: false });
+        Object.assign(f.ledger.binding(id)!.page, protectedPage);
+      }
+      await vi.advanceTimersByTimeAsync(1);
+      const { id } = await f.ledger.openSurface({ origin: "agent", activate: false });
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(f.ledger.stateOf(id)).toBe("suspended");
+      expect(f.record.live).not.toBeNull();
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("backs off pressure shedding when successful sleeps leave renderer use unchanged", async () => {
+    const f = await fixture({
+      memoryBudgetBytes: 100 * 1024 ** 2,
+      rendererUsage: () => ({ processes: 6, bytes: 200 * 1024 ** 2 }),
+    });
+    try {
+      const personUsed = [f.record.id];
+      for (let index = 0; index < 5; index++) personUsed.push((await f.ledger.openSurface()).id);
+      f.sleeper.setSessionState("session", { runs: 0, personUsed, viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(59_000);
+      expect(personUsed.filter((id) => f.ledger.stateOf(id) === "suspended")).toHaveLength(3);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("only reports meaningful census changes or actual suspensions", async () => {
+    let usage = { processes: 1, bytes: 128 * 1024 ** 2 };
+    const onPass = vi.fn();
+    const f = await fixture({ rendererUsage: () => usage, onPass });
+    try {
+      f.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: [],
+        viewed: [],
+        pinned: [f.record.id],
+      });
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(onPass).toHaveBeenCalledOnce();
+      usage = { ...usage, bytes: usage.bytes + 1_024 };
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(onPass).toHaveBeenCalledOnce();
+      usage = { ...usage, processes: 2 };
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(onPass).toHaveBeenCalledTimes(2);
+    } finally {
+      await f.close();
+    }
+  });
+
   it.each([
     "unknown",
     "keepAwake",

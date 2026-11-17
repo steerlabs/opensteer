@@ -9,13 +9,16 @@ import { AsyncMutex } from "../async.js";
 import { BrowserRuntimeError } from "../errors.js";
 import type { LatestFrameStream } from "../stream/latest-frame-stream.js";
 import { rasterShowsSize, readImageDimensions } from "../stream/frame.js";
-import type { CdpSession, PageCapture } from "./backend.js";
+import { BrowserPaintTimeoutError, type CdpSession, type PageCapture } from "./backend.js";
 import type {
   PageSize,
   SurfaceBinding,
   SurfaceLedger,
   SurfaceLedgerEvent,
 } from "./surface-ledger.js";
+
+const paintRetryInitialMs = 1_000;
+const paintRetryMaxMs = 16_000;
 
 interface CdpScreencastFrame {
   data: string;
@@ -28,6 +31,8 @@ interface CdpScreencastFrame {
 interface ActiveCast {
   capture: PageCapture | null;
   castAbort: AbortController | null;
+  paintRetry: ReturnType<typeof setTimeout> | null;
+  paintRetryDelay: number;
   castId: number;
   unsubscribeCapture: (() => void) | null;
   restartQueued: boolean;
@@ -151,10 +156,17 @@ export class ScreencastController {
   setStreaming(streaming: boolean, captureRegions = this.captureRegions): Promise<void> {
     this.captureRegions = captureRegions;
     if (this.closed) throw new BrowserRuntimeError("conflict", "The browser stream is closed.");
-    if (this.streaming === streaming) return Promise.resolve();
+    if (
+      this.streaming === streaming &&
+      (!streaming || !this.active || this.active.casting || this.active.castAbort)
+    )
+      return Promise.resolve();
     const previous = this.streaming;
     this.streaming = streaming;
-    if (!streaming) this.active?.castAbort?.abort();
+    if (!streaming && this.active) {
+      this.cancelPendingCast(this.active);
+      this.active.paintRetryDelay = paintRetryInitialMs;
+    }
     return this.mutex.run(async () => {
       const active = this.active;
       if (this.closed || !active) return;
@@ -228,11 +240,11 @@ export class ScreencastController {
     if (this.closed) throw new BrowserRuntimeError("conflict", "The browser stream is closed.");
     if (this.rasterDemand === density) return Promise.resolve();
     this.rasterDemand = density;
-    this.active?.castAbort?.abort();
+    this.cancelPendingCast(this.active);
     return this.mutex.run(async () => {
       const active = this.active;
       if (this.closed || !active || !this.streaming) return;
-      active.castAbort?.abort();
+      this.cancelPendingCast(active);
       if (active.casting) {
         active.casting = false;
         void this.ledger
@@ -249,7 +261,8 @@ export class ScreencastController {
    */
   viewportChanged(surfaceId: BrowserSurfaceId): Promise<void> {
     const queued = this.active;
-    if (!queued || queued.restartQueued) return Promise.resolve();
+    if (!queued || queued.surfaceId !== surfaceId || queued.restartQueued) return Promise.resolve();
+    this.clearPaintRetry(queued);
     queued.restartQueued = true;
     return this.mutex.run(async () => {
       queued.restartQueued = false;
@@ -286,7 +299,7 @@ export class ScreencastController {
     if (this.closed) return;
     this.closed = true;
     this.lifecycle.abort();
-    this.active?.castAbort?.abort();
+    this.cancelPendingCast(this.active);
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.frames.close();
@@ -320,7 +333,7 @@ export class ScreencastController {
       return;
     const binding = this.surfaceId ? this.ledger.binding(this.surfaceId) : this.ledger.active();
     if (this.active && this.active.surfaceId !== binding?.surface.id)
-      this.active.castAbort?.abort();
+      this.cancelPendingCast(this.active);
     if (event.type === "resized") {
       void this.viewportChanged(event.surfaceId).catch(() => undefined);
       return;
@@ -402,6 +415,8 @@ export class ScreencastController {
       geometryRevision: -1,
       capture: null,
       castAbort: null,
+      paintRetry: null,
+      paintRetryDelay: paintRetryInitialMs,
       castId: 0,
       unsubscribeCapture: null,
       restartQueued: false,
@@ -429,7 +444,7 @@ export class ScreencastController {
     active.unsubscribeCapture =
       binding.page.capture?.subscribe(() => {
         if (this.active !== active) return;
-        active.castAbort?.abort();
+        this.cancelPendingCast(active);
         void this.viewportChanged(active.surfaceId).catch((error: unknown) => {
           if (this.closed || !this.streaming || this.active !== active) return;
           const failure =
@@ -471,7 +486,7 @@ export class ScreencastController {
     const active = this.active;
     this.active = null;
     if (!active) return null;
-    active.castAbort?.abort();
+    this.cancelPendingCast(active);
     active.unsubscribeCapture?.();
     active.releaseRendering?.();
     active.releaseRendering = null;
@@ -634,6 +649,43 @@ export class ScreencastController {
     this.onDialogChanged(dialog);
   }
 
+  private clearPaintRetry(active: ActiveCast): void {
+    if (!active.paintRetry) return;
+    clearTimeout(active.paintRetry);
+    active.paintRetry = null;
+  }
+
+  private cancelPendingCast(active: ActiveCast | null): void {
+    if (!active) return;
+    this.clearPaintRetry(active);
+    active.castAbort?.abort();
+  }
+
+  private schedulePaintRetry(active: ActiveCast): void {
+    if (this.closed || !this.streaming || this.active !== active || active.paintRetry) return;
+    const timer = setTimeout(() => {
+      void this.mutex
+        .run(async () => {
+          if (active.paintRetry !== timer) return;
+          active.paintRetry = null;
+          await this.castActive(active, "paint-retry");
+        })
+        .catch((cause: unknown) => {
+          if (this.closed || !this.streaming || this.active !== active) return;
+          this.onError?.(
+            cause instanceof BrowserRuntimeError
+              ? cause
+              : new BrowserRuntimeError("internal", "The browser capture could not be restarted.", {
+                  cause,
+                }),
+          );
+        });
+    }, active.paintRetryDelay);
+    timer.unref();
+    active.paintRetry = timer;
+    active.paintRetryDelay = Math.min(active.paintRetryDelay * 2, paintRetryMaxMs);
+  }
+
   /**
    * Starts picturing the bound page while the person streams it. A page under
    * a JavaScript dialog answers no command until the dialog closes, so its
@@ -642,6 +694,7 @@ export class ScreencastController {
   private castActive(active: ActiveCast, reason: string): Promise<void> {
     if (this.closed || this.active !== active || !this.streaming || active.casting)
       return Promise.resolve();
+    this.clearPaintRetry(active);
     return this.ledger.use(active.surfaceId, () => this.castLive(active, reason));
   }
 
@@ -653,6 +706,7 @@ export class ScreencastController {
     }
     const page = this.ledger.binding(active.surfaceId)?.page;
     if (page?.capture && !page.capture.read()) return;
+    active.releaseRendering ??= active.cdp.retainRendering?.() ?? null;
     active.awaitingNavigation = false;
     const castAbort = new AbortController();
     active.castAbort = castAbort;
@@ -663,7 +717,13 @@ export class ScreencastController {
         if (page?.settleRendering) await page.settleRendering(canceled);
       } catch (error) {
         if (canceled.aborted) return;
-        throw error;
+        if (!(error instanceof BrowserPaintTimeoutError)) throw error;
+        active.releaseRendering?.();
+        active.releaseRendering = null;
+        active.awaitingNavigation = this.ledger.binding(active.surfaceId)?.surface.loading === true;
+        this.showRetainedPicture(active);
+        this.schedulePaintRetry(active);
+        return;
       }
       if (this.closed || this.active !== active || !this.streaming || canceled.aborted) return;
       const start = async () => {
@@ -720,6 +780,7 @@ export class ScreencastController {
           });
           active.casting = !page?.capture || page.capture.read()?.revision === capture?.revision;
           active.awaitingNavigation = false;
+          if (active.casting) active.paintRetryDelay = paintRetryInitialMs;
         } catch (error) {
           active.casting = false;
           const surface = this.ledger.binding(active.surfaceId)?.surface;
@@ -748,6 +809,10 @@ export class ScreencastController {
       throw error;
     } finally {
       if (active.castAbort === castAbort) active.castAbort = null;
+      if (!active.casting && (canceled.aborted || !active.awaitingNavigation)) {
+        active.releaseRendering?.();
+        active.releaseRendering = null;
+      }
     }
   }
 

@@ -64,6 +64,7 @@ export async function startLocalBrowserRuntime(
     downloads: options.downloads,
     localProfileRoot: profileRoot,
     pagePolicyPreloadPath: options.pagePolicyPreloadPath,
+    onPageCleanupFailure: () => diagnostics.append('{"event":"browser.page.cdp-cleanup.failed"}\n'),
     onLocalProfileDiagnostic: (diagnostic) => diagnostics.append(`${JSON.stringify(diagnostic)}\n`),
   });
   const preparation = launcher.prepare();
@@ -79,6 +80,8 @@ export async function startLocalBrowserRuntime(
     : {};
   const runtime = new BrowserRuntime({
     memoryBudgetBytes: browserMemoryBudgetBytes(process.env.OPENSTEER_BROWSER_MEMORY_BUDGET_MB),
+    onSleepPass: (counts) =>
+      diagnostics.append(`${JSON.stringify({ event: "browser.sleep.pass", ...counts })}\n`),
     onOpenTiming: (timing) =>
       diagnostics.append(
         `${JSON.stringify({ event: "browser.session.open.timing", ...timing })}\n`,
