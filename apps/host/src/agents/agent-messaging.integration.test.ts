@@ -10,7 +10,6 @@ import {
   HarnessIdSchema,
   ModelSelectionSchema,
   provisionalThreadTitle,
-  type AgentEvent,
   type Message,
   type Run,
   type Thread,
@@ -636,7 +635,7 @@ integration("agent-to-agent messaging round trip", () => {
       });
       expect(reused.assignment.status).toBe("open");
       const head = await database
-        .selectFrom("deploymentEventState")
+        .selectFrom("clientSyncState")
         .select("sequence")
         .where("deploymentId", "=", fixture.deploymentId)
         .executeTakeFirstOrThrow();
@@ -647,12 +646,11 @@ integration("agent-to-agent messaging round trip", () => {
             ? "Contract research"
             : worker.title;
       const icon = mode === "icon" || mode === "generated-icon" ? "plane" : null;
-      const events: AgentEvent[] = [];
       if (mode === "rename" || mode === "icon") {
         const changed = new CommandService({
           admission,
           onExecutionQueued: () => undefined,
-          onDeploymentEvent: (event) => events.push(event),
+          onDeploymentEvent: () => undefined,
           store,
         });
         await (mode === "icon"
@@ -669,7 +667,7 @@ integration("agent-to-agent messaging round trip", () => {
               title,
             }));
       } else {
-        const result = await store.applyGeneratedThreadName({
+        await store.applyGeneratedThreadName({
           threadId: worker.id,
           ...(mode === "generated-icon"
             ? {
@@ -679,50 +677,44 @@ integration("agent-to-agent messaging round trip", () => {
                 title,
               }),
         });
-        if (result) events.push(...result.events);
       }
       const updates = await database
-        .selectFrom("deploymentEvents")
+        .selectFrom("clientChanges")
         .selectAll()
         .where("sequence", ">", head.sequence)
-        .where("type", "=", "assignment.updated")
+        .where("scopeKey", "in", [`thread:${worker.id}`, `thread:${fixture.threadA.id}`])
+        .where("entityId", "in", [`assignment:${reused.assignment.id}`, "assignments"])
         .execute();
-      expect(updates).toHaveLength(2);
-      for (const assignment of [before, reused.assignment]) {
-        expect(updates).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              threadId: worker.id,
-              data: {
-                assignment: expect.objectContaining({
-                  id: assignment.id,
-                  parentThreadId: fixture.threadA.id,
-                  revision: Number(assignment.revision) + 1,
-                  status: assignment.status,
-                  workerThread: expect.objectContaining({
-                    title,
-                    icon,
-                    color: worker.color,
-                  }),
-                }),
-              },
-            }),
-          ]),
-        );
-      }
-      expect(events).toEqual(
+      expect(updates).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            threadId: worker.id,
-            type: "assignment.updated",
+            scopeKey: `thread:${worker.id}`,
+            operation: "upsert",
+            payload: expect.objectContaining({
+              id: `assignment:${reused.assignment.id}`,
+              view: expect.objectContaining({ title }),
+            }),
+          }),
+          expect.objectContaining({
+            scopeKey: `thread:${fixture.threadA.id}`,
+            entityId: "assignments",
+            operation: "invalidate",
           }),
         ]),
       );
-      await titleEvidence(`completed-${mode}`, {
-        before,
-        updates,
-        events,
+      const page = await store.listThreadAssignmentsForOwner({
+        ownerId: fixture.userId,
+        threadId: fixture.threadA.id,
       });
+      for (const assignment of [before, reused.assignment]) {
+        expect(page?.assignments.find(({ id }) => id === assignment.id)).toMatchObject({
+          id: assignment.id,
+          parentThreadId: fixture.threadA.id,
+          status: assignment.status,
+          workerThread: { title, icon, color: worker.color },
+        });
+      }
+      await titleEvidence(`completed-${mode}`, { before, updates });
     },
   );
   async function titleEvidence(name: string, result: unknown) {

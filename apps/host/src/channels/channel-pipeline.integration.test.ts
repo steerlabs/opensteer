@@ -142,7 +142,7 @@ integration("messaging pipeline", () => {
     const seed = await database
       .selectFrom("messages")
       .innerJoin("runs", "runs.seedInputId", "messages.id")
-      .select(["messages.author", "runs.createdAt"])
+      .select(["messages.author", "messages.id"])
       .where("runs.id", "=", run.id)
       .executeTakeFirstOrThrow();
     const binding = await beginRun(run);
@@ -180,22 +180,23 @@ integration("messaging pipeline", () => {
     await emit(binding, run, 4, "run.completed", { status: "completed" });
     await expect(sentFor(narrationId)).resolves.toEqual([]);
     await expect(sentFor(blankId)).resolves.toEqual([]);
-    // The Host names the reply where every client reads how the Run ended.
-    await expect(
-      database
-        .selectFrom("deploymentEvents")
-        .select("data")
-        .where("runId", "=", run.id)
-        .where("type", "=", "run.completed")
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({
-      data: {
-        replyMessageId,
-        startedBy: seed.author,
-        startedAt: seed.createdAt.toISOString(),
-        personWaiting: seed.author.kind === "human",
-        status: "completed",
-      },
+    const completed = await database
+      .selectFrom("runs")
+      .select([
+        "turnReplyMessageId",
+        "terminalReplyMessageId",
+        "seedInputId",
+        "personWaited",
+        "status",
+      ])
+      .where("id", "=", run.id)
+      .executeTakeFirstOrThrow();
+    expect(completed).toEqual({
+      turnReplyMessageId: null,
+      terminalReplyMessageId: replyMessageId,
+      seedInputId: seed.id,
+      personWaited: seed.author.kind === "human",
+      status: "completed",
     });
     const parts = await database
       .selectFrom("channelDeliveries")
@@ -1228,7 +1229,6 @@ integration("messaging pipeline", () => {
       channels,
       credentials,
       onExecutionQueued: (id) => queued.push(id),
-      onDeploymentEvent: () => undefined,
       relay: hub,
       runners: {
         canRunHarness: (candidate) => candidate === onlineEnvironmentId,

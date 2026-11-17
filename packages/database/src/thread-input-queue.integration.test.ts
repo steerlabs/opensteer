@@ -344,6 +344,72 @@ integration.sequential("thread input queue promotion", () => {
     },
   });
 
+  it("places the admitted seed while keeping a waiting message hidden and its preview bounded", async ({
+    storeFixture: f,
+  }) => {
+    const { database, store, fixture } = f;
+    const existing = await fixture("seed-fixture");
+    const { thread } = await store.createThread({
+      createdBy: existing.userId,
+      environmentId: existing.environmentId,
+      harnessInstanceId: existing.harness.id,
+      idempotencyKey: "visible-seed-thread",
+      modelSelection,
+      title: "Visible seed",
+    });
+    const enqueue = (key: string, text: string) =>
+      store.enqueueThreadInput({
+        threadId: thread.id,
+        requestedBy: existing.userId,
+        source: { kind: "human" },
+        policy: "queue",
+        idempotencyKey: key,
+        content: [{ type: "text", text }],
+      });
+    const seed = await enqueue("visible-seed-first", "First message");
+    const waiting = await enqueue("visible-seed-second", '"q"'.repeat(1_000));
+    const storedSeed = await database
+      .selectFrom("runs")
+      .select("seedInputId")
+      .where("id", "=", seed.run!.id)
+      .executeTakeFirstOrThrow();
+    expect(storedSeed.seedInputId).toBe(seed.message.id);
+    expect(waiting.run).toBeNull();
+    const items = await database
+      .selectFrom("transcriptItems")
+      .select(["id", "visible", "position", "view"])
+      .where("threadId", "=", thread.id)
+      .execute();
+    expect(items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: seed.message.id,
+          visible: true,
+          position: expect.any(String),
+          view: expect.objectContaining({ published: false }),
+        }),
+        expect.objectContaining({
+          id: waiting.message.id,
+          visible: false,
+          position: null,
+          view: expect.objectContaining({ published: false }),
+        }),
+      ]),
+    );
+    const queue = await store.getThreadInputQueue({
+      requestedBy: existing.userId,
+      threadId: thread.id,
+    });
+    expect(queue.items.map(({ message }) => message.id)).toEqual([waiting.message.id]);
+    expect(queue.items[0]?.message.truncated).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(queue.items[0]))).toBeLessThanOrEqual(900);
+    const head = await database
+      .selectFrom("clientSyncState")
+      .select("sequence")
+      .executeTakeFirstOrThrow();
+    expect(queue.revision).toBe(head.sequence);
+  });
+
   /** A call that has reached its Runner, so it can take input. */
   async function startedCall(
     { fixture, store, database }: StoreFixture,

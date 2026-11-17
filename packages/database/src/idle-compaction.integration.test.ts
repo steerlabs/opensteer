@@ -4,7 +4,7 @@ import {
   compactionReturnHint,
   compactionReturnHints,
 } from "./compaction-eligibility.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { finalizeRunTransaction } from "./run-finalization.js";
 import { threadPathLinks, jsonValue } from "./store-primitives.js";
 import { admitIdleCompaction } from "./idle-compaction-store.js";
@@ -292,13 +292,15 @@ describeStore("Claude compaction persistence", (it) => {
       ).contextSnapshot,
     ).toBeNull();
     expect((await store.getThreadForOwner(thread.id, userId))?.returnHint).toBeNull();
-    const events: import("@opensteer/core").AgentEvent[] = [];
-    await store.drainPendingThreadStates((batch) => {
-      events.push(...batch);
-    });
-    expect(events.find((event) => event.type === "thread.state-changed")?.data).toMatchObject({
-      returnHint: null,
-    });
+    expect(
+      await database
+        .selectFrom("clientChanges")
+        .select("entityId")
+        .where("scopeKey", "=", `thread:${thread.id}`)
+        .where("entityId", "=", "return-hint")
+        .where("operation", "=", "invalidate")
+        .executeTakeFirst(),
+    ).toEqual({ entityId: "return-hint" });
   });
   it("rechecks source selections at execution binding even with retained evidence", async ({
     storeFixture,
@@ -368,10 +370,9 @@ describeStore("Claude compaction persistence", (it) => {
       .select("updatedAt")
       .where("id", "=", thread.id)
       .executeTakeFirstOrThrow();
-    const events = await withPersonalTransaction(database, (tx) =>
+    await commitPersonalMutation(database, (tx) =>
       projectThreadState(tx, thread.id, new Date(now + 60_000), true),
     );
-    expect(events[0]?.data).toMatchObject({ updatedAt: before.updatedAt.toISOString() });
     expect(
       (
         await database
@@ -458,7 +459,7 @@ describeStore("Claude compaction persistence", (it) => {
         maintenance.id,
       ),
     ).toBe(true);
-    await withPersonalTransaction(database, (tx) =>
+    await commitPersonalMutation(database, (tx) =>
       finalizeRunTransaction(tx, {
         links: threadPathLinks,
         runId: maintenance.id,
@@ -514,7 +515,7 @@ describeStore("Claude compaction persistence", (it) => {
       })
       .where("id", "=", sessionId)
       .execute();
-    await withPersonalTransaction(database, (tx) => projectThreadState(tx, thread.id));
+    await commitPersonalMutation(database, (tx) => projectThreadState(tx, thread.id));
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const eligibleAt = now + 70 * 60_000;
@@ -535,16 +536,18 @@ describeStore("Claude compaction persistence", (it) => {
         .select("updatedAt")
         .where("id", "=", thread.id)
         .executeTakeFirstOrThrow();
+      const before = await database
+        .selectFrom("clientSyncState")
+        .select("resourceRevisions")
+        .executeTakeFirstOrThrow();
       await store.notificationState.setIdleCompactionPolicy({ userId, policy: { mode: "off" } });
-      const events: import("@opensteer/core").AgentEvent[] = [];
-      await store.drainPendingThreadStates((batch) => {
-        events.push(...batch);
-      });
-      expect(
-        events.find(
-          (event) => event.type === "thread.state-changed" && event.threadId === thread.id,
-        )?.data,
-      ).toMatchObject({ returnHint: { ...hint, eligible: false } });
+      const after = await database
+        .selectFrom("clientSyncState")
+        .select("resourceRevisions")
+        .executeTakeFirstOrThrow();
+      expect(BigInt(after.resourceRevisions.settings)).toBeGreaterThan(
+        BigInt(before.resourceRevisions.settings),
+      );
       expect((await store.getThreadForOwner(thread.id, userId))?.returnHint?.eligible).toBe(false);
       expect(
         (

@@ -1255,7 +1255,7 @@ describeStore("PostgreSQL store", (it) => {
   it("defaults access to full, inherits it for children, and snapshots it per Run", async ({
     storeFixture,
   }) => {
-    const { createRunFixture, enqueueHumanTrigger, store } = storeFixture;
+    const { createRunFixture, enqueueHumanTrigger, store, database } = storeFixture;
     const fixture = await createRunFixture("access-mode");
     expect(fixture.thread.accessMode).toBe("full-access");
     const beforeUpdate = await enqueueHumanTrigger({
@@ -1276,13 +1276,15 @@ describeStore("PostgreSQL store", (it) => {
       threadId: fixture.thread.id,
     });
     expect(updated.thread.accessMode).toBe("auto");
-    expect(updated.event).toMatchObject({
-      data: {
-        accessMode: "auto",
-      },
-      threadId: fixture.thread.id,
-      type: "thread.access-mode-updated",
-    });
+    expect(
+      await database
+        .selectFrom("clientChanges")
+        .select(["entityId", "operation"])
+        .where("scopeKey", "=", `thread:${fixture.thread.id}`)
+        .where("sequence", "=", updated.asOfSequence)
+        .where("entityId", "=", "thread-details")
+        .execute(),
+    ).toEqual([{ entityId: "thread-details", operation: "invalidate" }]);
     await store.claimCommand(beforeUpdate.command.id, "access-mode-dispatcher");
     await store.failCommand(beforeUpdate.command.id, "Complete the original access snapshot");
     const afterUpdate = await enqueueHumanTrigger({
@@ -1308,12 +1310,13 @@ describeStore("PostgreSQL store", (it) => {
       title: "Inherited access",
     });
     expect(child.thread.accessMode).toBe("auto");
+    const beforeNoChange = await store.deploymentHead();
     const noChange = await store.updateThreadAccessMode({
       accessMode: "auto",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
     });
-    expect(noChange.event).toBeUndefined();
+    expect(noChange.asOfSequence).toBe(beforeNoChange);
   });
   it("creates one stable Deployment identity and rejects incidental authority changes", async ({
     storeFixture,

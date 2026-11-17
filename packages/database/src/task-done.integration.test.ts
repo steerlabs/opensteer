@@ -1,3 +1,4 @@
+import type { ThreadId } from "@opensteer/core";
 import {
   createStoreFixture,
   testModelSelection,
@@ -49,6 +50,15 @@ integration.sequential("Shared task Done", () => {
     await writeFile(artifact, `${JSON.stringify(matrix, null, 2)}\n`);
     console.info(`Database fault matrix: ${artifact}`);
   });
+  const taskChange = (threadId: ThreadId, sequence: string) =>
+    database
+      .selectFrom("clientChanges")
+      .select("payload")
+      .where("scopeKey", "=", "shell")
+      .where("entityKind", "=", "task")
+      .where("entityId", "=", threadId)
+      .where("sequence", "=", sequence)
+      .execute();
   it.each(["queued", "starting", "running"] as const)(
     "stops %s work, freezes inputs and reopens before interrupt acknowledgement",
     async (status) => {
@@ -156,7 +166,7 @@ integration.sequential("Shared task Done", () => {
       matrix[status] = {
         threadId: f.thread.id,
         runId: run.id,
-        events: done.events,
+        changes: await taskChange(f.thread.id, done.asOfSequence),
         rows: await database
           .selectFrom("threadInputs")
           .selectAll()
@@ -321,7 +331,7 @@ integration.sequential("Shared task Done", () => {
       [parentRun.id, child.run.id].sort(),
     );
     matrix.cascade = {
-      events: done.events,
+      changes: await taskChange(f.thread.id, done.asOfSequence),
       childThreadId: child.thread.id,
       assignmentId: child.assignment.id,
       triggerId: trigger.trigger.id,
@@ -563,14 +573,9 @@ integration.sequential("Shared task Done", () => {
     await expect(store.getThreadForOwner(f.thread.id, member)).rejects.toMatchObject({
       code: "forbidden",
     });
-    expect(done.events).toContainEqual(
-      expect.objectContaining({
-        type: "thread.state-changed",
-        data: expect.objectContaining({
-          doneAt: done.thread.doneAt,
-        }),
-      }),
-    );
+    expect(await taskChange(f.thread.id, done.asOfSequence)).toMatchObject([
+      { payload: { doneAt: done.thread.doneAt } },
+    ]);
     matrix.members = {
       threadId: f.thread.id,
       member,
@@ -773,12 +778,15 @@ integration.sequential("Shared task Done", () => {
 
     // Touched between the scan and its turn: nothing changes and nothing is recorded.
     await touched(f, 0);
+    const beforeQuiet = (
+      await database.selectFrom("clientSyncState").select("sequence").executeTakeFirstOrThrow()
+    ).sequence;
     const skipped = await moveQuietly(f, candidate!.updatedAt);
     expect(skipped.thread).toMatchObject({
       doneAt: null,
       doneReason: null,
     });
-    expect(skipped.events).toEqual([]);
+    expect(skipped.asOfSequence).toBe(beforeQuiet);
     expect(await quietCommands(f)).toEqual([]);
     await touched(f, 4);
     const moved = await moveQuietly(f, candidate!.updatedAt);
@@ -786,14 +794,9 @@ integration.sequential("Shared task Done", () => {
       doneReason: "quiet",
       doneAt: expect.any(String),
     });
-    expect(moved.events).toContainEqual(
-      expect.objectContaining({
-        type: "thread.state-changed",
-        data: expect.objectContaining({
-          doneReason: "quiet",
-        }),
-      }),
-    );
+    expect(await taskChange(f.thread.id, moved.asOfSequence)).toMatchObject([
+      { payload: { doneAt: moved.thread.doneAt } },
+    ]);
     expect(await quietCommands(f)).toEqual([
       {
         authoritySource: {
@@ -884,17 +887,9 @@ integration.sequential("Shared task Done", () => {
     await setDone(f, true, "write-reopens-done");
     const sent = await send(f, "write-reopens-message");
     expect(sent.input.state).toBe("pending");
-    expect(sent.events).toContainEqual(
-      expect.objectContaining({
-        type: "thread.state-changed",
-        data: expect.objectContaining({
-          doneAt: null,
-          doneReason: null,
-        }),
-      }),
-    );
     expect(await store.getThreadForOwner(f.thread.id, f.userId)).toMatchObject({
       doneAt: null,
+      doneReason: null,
     });
     const { thread: theirs } = await store.createThread({
       createdBy: f.userId,

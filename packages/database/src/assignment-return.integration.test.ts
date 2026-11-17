@@ -1,4 +1,4 @@
-import { lockDeploymentEvents } from "./deployment-events.js";
+import { lockPersonalSyncState } from "./personal-transaction.js";
 import { createId, type AssignmentId } from "@opensteer/core";
 
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -150,7 +150,7 @@ async function deliveryFixture(storeFixture: StoreFixture, suffix: string) {
     const held = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const blocker = database.transaction().execute(async (tx) => {
-      await lockDeploymentEvents(tx);
+      await lockPersonalSyncState(tx);
       held.resolve();
       await byDeadline(
         release.promise,
