@@ -33,7 +33,7 @@ import * as SecureStore from "expo-secure-store";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import * as WebBrowser from "expo-web-browser";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppState, Dimensions, Platform, StyleSheet, View } from "react-native";
 import { NavigationContainerRefContext, type InitialState } from "@react-navigation/native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -461,7 +461,10 @@ export function App(): ReactNode {
           setLinkFailure(null);
           if (broker.accept(url)) return "callback";
           // Connect intent must exist before initialization's singleton-computer shortcut.
-          return routeComputerLink(url, (id) => client.openComputer(id));
+          return routeComputerLink(url, (id) => {
+            reconciledSelection.current = undefined;
+            client.openComputer(id);
+          });
         },
         resolve: async (url, current, release) => {
           if (parseNativeIntegrationAuthorizationCallback(url) !== null) {
@@ -509,6 +512,7 @@ export function App(): ReactNode {
               client.select(id).catch((error: unknown) => {
                 if (!current()) return;
                 destinations.selectionFailed();
+                reconciledSelection.current = undefined;
                 setLinkFailure(
                   operationDetail(
                     error,
@@ -561,10 +565,13 @@ export function App(): ReactNode {
     [destinations],
   );
 
+  // Reconcile once per published selection: a list the person opened on purpose stays open.
+  const reconciledSelection = useRef<string | null | undefined>(undefined);
   const observeRootSelection = useCallback((): void => {
     const { selection } = client.getSnapshot();
     if (
       selection.status !== "ready" ||
+      selection.deploymentId === reconciledSelection.current ||
       !navigationRef.isReady() ||
       !destinations.mayReconcileSelection(selection.deploymentId)
     )
@@ -579,7 +586,9 @@ export function App(): ReactNode {
       baseRouteName: base?.name ?? null,
       deploymentId: selection.deploymentId,
     });
-    if (transition !== null && transition !== "defer") navigationRef.resetRoot(transition);
+    if (transition === "defer") return;
+    reconciledSelection.current = selection.deploymentId;
+    if (transition !== null) navigationRef.resetRoot(transition);
   }, [client, destinations]);
 
   const recordNavigation = (): void => {
