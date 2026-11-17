@@ -50,7 +50,7 @@ export class PersonalRunnerObservations {
     });
   }
 
-  read(environmentId: EnvironmentId, revision: string) {
+  read(environmentId: EnvironmentId, revision: string, connectionGeneration: string) {
     const current = this.#byEnvironment.get(environmentId);
     if (current && BigInt(current.revision) > BigInt(revision))
       throw new OpensteerError({
@@ -58,6 +58,9 @@ export class PersonalRunnerObservations {
         message: "Runner state advanced during this read.",
         retryable: true,
       });
-    return current?.identity;
+    return current?.identity &&
+      String(current.identity.connectionGeneration) === connectionGeneration
+      ? current.identity
+      : undefined;
   }
 }

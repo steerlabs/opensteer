@@ -167,17 +167,19 @@ export class PersonalResources {
           .selectFrom("executionEnvironments as env")
           .innerJoin("personalSettings as settings", "settings.agentHomeComputerId", "env.runnerId")
           .innerJoin("runners", "runners.id", "env.runnerId")
-          .select(["env.id", "env.name"])
+          .select(["env.id", "env.name", "runners.connectionGeneration"])
           .where("settings.ownerId", "=", ownerId)
           .where("runners.revokedAt", "is", null)
           .orderBy("env.id")
           .limit(33)
           .execute();
         return summary(
-          rows.map(({ id, name }) => ({
+          rows.map(({ id, name, connectionGeneration }) => ({
             id,
             label: name,
-            status: this.#runnerAt(id, revision) ? "connected" : "disconnected",
+            status: this.#runnerAt(id, revision, connectionGeneration)
+              ? "connected"
+              : "disconnected",
           })),
         );
       }
@@ -218,11 +220,17 @@ export class PersonalResources {
     }
   }
 
-  #runnerAt(id: import("@opensteer/core").EnvironmentId, revision: string) {
+  #runnerAt(
+    id: import("@opensteer/core").EnvironmentId,
+    revision: string,
+    connectionGeneration: string | undefined,
+  ) {
     const { runnerObservations, runners } = this.#dependencies;
-    return runnerObservations
-      ? runnerObservations.read(id, revision)
-      : runners.identityForEnvironment(id);
+    if (runnerObservations)
+      return connectionGeneration === undefined
+        ? undefined
+        : runnerObservations.read(id, revision, connectionGeneration);
+    return runners.identityForEnvironment(id);
   }
 
   #keysetDetail(
@@ -350,11 +358,26 @@ export class PersonalResources {
         ...(after ? { afterId: EnvironmentIdSchema.parse(after) } : {}),
         ...(input.id ? { id: EnvironmentIdSchema.parse(input.id) } : {}),
       });
-      const catalogs =
-        kind === "harness-catalog" ? await store.listHarnessCatalogs(rows.map(({ id }) => id)) : [];
+      const runnerIds = [...new Set(rows.flatMap(({ runnerId }) => (runnerId ? [runnerId] : [])))];
+      const [catalogs, runners] = await Promise.all([
+        kind === "harness-catalog" ? store.listHarnessCatalogs(rows.map(({ id }) => id)) : [],
+        runnerIds.length
+          ? tx
+              .selectFrom("runners")
+              .select(["id", "connectionGeneration"])
+              .where("id", "in", runnerIds)
+              .execute()
+          : [],
+      ]);
+      const generations = new Map(
+        runners.map(({ id, connectionGeneration }) => [id, connectionGeneration]),
+      );
       return page(
         rows.map((environment) => {
-          const runner = this.#runnerAt(environment.id, revision);
+          const generation = environment.runnerId
+            ? generations.get(environment.runnerId)
+            : undefined;
+          const runner = this.#runnerAt(environment.id, revision, generation);
           return {
             ...environment,
             capabilities: [...environment.capabilities],
