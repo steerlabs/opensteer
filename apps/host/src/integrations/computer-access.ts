@@ -1,5 +1,5 @@
 import type { CallableIntegrationTool, IntegrationRequester } from "@opensteer/database";
-import type { RunId, RunnerId } from "@opensteer/core";
+import type { Blocked, RunId, RunnerId } from "@opensteer/core";
 import { computerAppIdentityKey } from "@opensteer/integration-core";
 import { androidPhoneDefinitionId } from "@opensteer/protocol";
 import type { RunCapabilityClaims } from "../agents/run-capability.js";
@@ -27,13 +27,21 @@ export async function gatherComputerAccess(
   run?: RunCapabilityClaims<string>,
   callableTools?: readonly CallableIntegrationTool[],
 ) {
+  const hasRun = !!(run || input.runId);
   const [inventory, tools, setupRequests, accessRequests, enabled] = await Promise.all([
     platform.computerAppApprovals.computerUseInventory(input.ownerUserId),
     callableTools ?? platform.listCallableTools(input),
     platform.store.listComputerAppSetupRequests(input.ownerUserId),
     platform.store.requests.listPendingIntegrationAccessRequests(input.ownerUserId),
-    run ? platform.computerToolEnabled(run) : true,
+    run ? platform.computerToolEnabled(run) : hasRun,
   ]);
+  const runRequired: { blocked: Blocked; access?: never } = {
+    blocked: {
+      code: "unavailable",
+      message: "Only a task's Run can operate phones and Mac apps.",
+      next: 'Use opensteer_task_send with delivery "queue" to ask a task to do this work.',
+    },
+  };
   const grants = new Set(accessRequests.map((request) => request.requestedConnectionId));
   const onMacRequests = setupRequests.flatMap(({ kind, definitionId, runnerId, app, access }) =>
     kind === "app" && definitionId === computerUseDefinitionId && app
@@ -70,6 +78,7 @@ export async function gatherComputerAccess(
     const key = identity.bundleId.toLowerCase();
     const approved = machine.apps.find((entry) => entry.bundleId.toLowerCase() === key);
     const refs = approved ? computerToolRefs(tools, approved.connectionId) : {};
+    if (!hasRun) return runRequired;
     return computerAppDiscovery({
       app: identity.displayName,
       computerId: machine.runnerId,
@@ -87,6 +96,7 @@ export async function gatherComputerAccess(
   };
   const phone = (entry: (typeof inventory.phones)[number]) => {
     const refs = entry.connection ? computerToolRefs(tools, entry.connection.connectionId) : {};
+    if (!hasRun) return runRequired;
     return phoneDiscovery({
       phone: {
         ...entry,
@@ -138,6 +148,6 @@ export async function gatherComputerAccess(
     app,
     phone,
     machine: (machine: (typeof inventory.machines)[number]) =>
-      computerMachineProblem(machineFacts(machine)),
+      hasRun ? computerMachineProblem(machineFacts(machine)) : runRequired,
   };
 }

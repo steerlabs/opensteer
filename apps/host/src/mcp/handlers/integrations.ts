@@ -49,6 +49,7 @@ import type { RunCapabilityClaims } from "../../agents/run-capability.js";
 import type { TriggerCapabilityClaims } from "../../triggers/trigger-control-service.js";
 import type { WatchCapabilityClaims } from "../../triggers/watch-capability.js";
 import {
+  IntegrationAuthorizationRequiredError,
   type IntegrationPlatformService,
   type IntegrationProposalRefusal,
   type IntegrationProposalSelectedAuth,
@@ -248,15 +249,35 @@ export class IntegrationToolHandlers {
         signal,
       );
     } catch (error) {
-      const inventory = await this.#platform.listDiscoveryInventory(discoveryRequester(scope));
+      const inventory = await this.#platform.listDiscoveryInventory({
+        ...discoveryRequester(scope),
+        target: {
+          connectionId: callable.grant.connectionId,
+          access:
+            integrationToolEffect(callable.tool.annotations) === "read" ? "read" : "read-write",
+        },
+      });
       const entry = inventory.find(
         ({ installation }) => installation.id === callable.installation.id,
       );
-      const readiness = entry?.readiness.tools.find(
-        ({ toolId }) => toolId === callable.tool.id,
-      )?.readiness;
+      const readiness = entry?.readiness.servers.find(
+        ({ serverId }) => serverId === callable.server.id,
+      );
       const blocked = integrationBlocked(readiness, callable.installation.name);
-      if (blocked) throw new ToolBlockedError(blocked);
+      if (blocked) {
+        if (error instanceof IntegrationAuthorizationRequiredError)
+          throw new ToolBlockedError(blocked);
+        if (error instanceof OpensteerError)
+          throw new OpensteerError({
+            code: error.code,
+            message: error.message,
+            next: [error.next, blocked.next].filter(Boolean).join(" ").slice(0, 2000),
+            ...(error.reason === undefined ? {} : { reason: error.reason }),
+            ...(error.details === undefined ? {} : { details: error.details }),
+            retryable: error.retryable,
+            cause: error,
+          });
+      }
       throw error;
     }
   }

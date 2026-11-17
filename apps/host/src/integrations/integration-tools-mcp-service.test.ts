@@ -712,13 +712,11 @@ describe("Opensteer MCP integration access classes", () => {
         name: "issues.get",
         title: "Get issue",
       });
-      const { handler } = await createHarness({
-        inventory: [entry],
+      const { handler, store } = await createHarness({
+        inventory: [{ ...entry, readiness: { ...entry.readiness, tools: [] } }],
         callableTools: [callable],
         callTool: vi.fn(async () => {
-          if (readinessCode === "REAUTHORIZATION_REQUIRED")
-            throw new IntegrationAuthorizationRequiredError(callable);
-          throw new OpensteerError({ code: "conflict", message: "Access changed" });
+          throw new IntegrationAuthorizationRequiredError(callable);
         }),
       });
       const response = result(
@@ -736,15 +734,97 @@ describe("Opensteer MCP integration access classes", () => {
           callExtra("execution-access"),
         ),
       );
+      expect(store.listDiscoveryInventory).toHaveBeenCalledWith(
+        expect.objectContaining({
+          target: { connectionId: callable.grant.connectionId, access: "read" },
+        }),
+      );
       expect(response).toMatchObject({
         error: integrationBlocked(entry.readiness.tools[0]!.readiness, entry.installation.name) ?? {
           code: "conflict",
-          message: "Access changed",
+          message: expect.stringContaining("authorization is required"),
           next: null,
         },
       });
     },
   );
+
+  it("preserves an uncertain write and adds current access remediation", async () => {
+    const entry = inventoryEntry({ readinessCode: "REAUTHORIZATION_REQUIRED" });
+    const callable = callableTool({
+      entry,
+      effect: "write",
+      name: "issues.create",
+      title: "Create issue",
+    });
+    const { handler } = await createHarness({
+      inventory: [entry],
+      callableTools: [callable],
+      callTool: vi.fn(async () => {
+        throw new OpensteerError({
+          code: "harness_error",
+          message: "Outcome unknown. Check whether it happened before trying again.",
+          next: "Check the issue list before retrying.",
+          retryable: false,
+        });
+      }),
+    });
+    expect(
+      result(
+        await handler(
+          {
+            params: {
+              name: "integration_call",
+              arguments: {
+                operation: "issues.create",
+                account: callable.grant.connectionId,
+                arguments: {},
+              },
+            },
+          },
+          callExtra("uncertain-write"),
+        ),
+      ),
+    ).toMatchObject({
+      error: {
+        code: "harness_error",
+        message: expect.stringContaining("Check whether it happened"),
+        next: expect.stringMatching(/Check the issue list.*integration_request/s),
+      },
+    });
+  });
+
+  it("blocks computer targets for callers without a Run", async () => {
+    const { handler } = await createHarness({
+      inventory: [],
+      triggerScope,
+      definitions: integrationDefinitions,
+      computerUseMacs: [
+        {
+          name: "Studio Mac",
+          ready: true,
+          runnerId: createId("runner"),
+          apps: [
+            {
+              name: "Notes",
+              bundleId: "com.apple.Notes",
+              access: "read-write",
+              status: "approved",
+              connectionId: createIntegrationId("connection"),
+            },
+          ],
+        },
+      ],
+    });
+    const response = result(
+      await handler(
+        { params: { name: "integration_search", arguments: { query: "Computer use" } } },
+        callExtra("runless"),
+      ),
+    );
+    expect(JSON.stringify(response)).toContain("Only a task's Run");
+    expect(JSON.stringify(response)).not.toContain("app_access_request");
+  });
 
   it("describes and calls an operation by its name and account", async () => {
     const entry = inventoryEntry();

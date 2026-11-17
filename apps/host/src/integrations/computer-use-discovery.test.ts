@@ -54,6 +54,13 @@ describe("computer access", () => {
     const input = { ownerUserId: "user" } as Parameters<
       IntegrationPlatformService["computerAccess"]
     >[0];
+    const runless = await gatherComputerAccess(platform, input);
+    expect(runless.phone(runless.phones[0]!)).toEqual({
+      blocked: expect.objectContaining({
+        code: "unavailable",
+        next: expect.stringContaining("opensteer_task_send"),
+      }),
+    });
     const own = await gatherComputerAccess(platform, input, run);
     expect(own.phone(own.phones[0]!)).toEqual({ access: "read" });
     holdingRun = "run_other";
@@ -89,7 +96,7 @@ describe("computer access", () => {
       listCallableTools: async () => [],
       computerUseVersion: () => version,
     } as unknown as IntegrationPlatformService;
-    const input = { ownerUserId: "user" } as Parameters<
+    const input = { ownerUserId: "user", runId: "run_this" } as Parameters<
       IntegrationPlatformService["computerAccess"]
     >[0];
     const access = await gatherComputerAccess(platform, input);
