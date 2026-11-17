@@ -382,15 +382,32 @@ class SessionMessageOutbox implements MessageOutbox {
       generation = this.#generation,
       entry = this.#state.messages.find((value) => value.localId === localId);
     if (!scope || !entry) return;
-    if (entry.attempted && (entry.phase !== "rejected" || entry.rejection?.code === "unconfirmed"))
-      throw new ClientOperationError("Delivery is unconfirmed.", "blocked", {
+    const allowed = (value: StoredMessage) =>
+      !value.attempted || (value.phase === "rejected" && value.rejection?.code !== "unconfirmed");
+    const unconfirmed = () =>
+      new ClientOperationError("Delivery is unconfirmed.", "blocked", {
         kind: "local",
         reason: "message-unconfirmed",
         retryable: false,
       });
+    if (!allowed(entry)) throw unconfirmed();
     this.#cancelled.add(entry.localId);
-    await this.#remove(scope, generation, entry.localId);
-    this.#housekeeping(this.#options.onDiscarded, scope, entry);
+    const remove = async () => {
+      if (this.#options.storage.delivery) {
+        const held = (await this.#options.storage.load(scope)).find(
+          (value) => value.localId === localId,
+        );
+        if (!this.#current(scope, generation)) return;
+        if (!held || !allowed(held)) {
+          this.#cancelled.delete(localId);
+          await this.#reload();
+          throw unconfirmed();
+        }
+      }
+      await this.#remove(scope, generation, entry.localId);
+      this.#housekeeping(this.#options.onDiscarded, scope, entry);
+    };
+    await (this.#options.storage.delivery?.(scope, entry.command.threadId, remove) ?? remove());
   };
   async #remove(scope: ClientScope, generation: number, localId: string): Promise<void> {
     await this.#write(() => this.#options.storage.remove(scope, localId));
@@ -458,7 +475,13 @@ class SessionMessageOutbox implements MessageOutbox {
     const sending: StoredMessage = { ...entry, phase: "sending", attempted: true };
     try {
       await this.#write(() => this.#options.storage.put(scope, sending));
-      if (!this.#current(scope, generation) || this.#cancelled.has(entry.localId)) return;
+      if (!this.#current(scope, generation)) return;
+      if (this.#cancelled.has(entry.localId)) {
+        if (this.#options.storage.delivery)
+          await this.#write(() => this.#options.storage.put(scope, entry));
+        return;
+      }
+      if (!this.#state.messages.some((value) => value.localId === entry.localId)) return;
       this.#publish({
         messages: this.#state.messages.map((value) =>
           value.localId === entry.localId ? sending : value,

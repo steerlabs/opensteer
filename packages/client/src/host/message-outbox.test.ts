@@ -1,3 +1,4 @@
+import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { groupTranscriptEntries } from "./agent-activity-model.js";
 import { visibleTranscript } from "./transcript.js";
 import type { TranscriptEntry } from "./client.js";
@@ -361,6 +362,48 @@ describe("app lifetime message delivery", () => {
     expect(sent).toBe(0);
     expect(outbox.getSnapshot().messages).toEqual([]);
     outbox.dispose();
+  });
+  it("does not discard a send claimed by another window", async () => {
+    vi.useFakeTimers();
+    const first = controlledClientSession(),
+      second = controlledClientSession(),
+      store = storage(),
+      lock = new MutationQueue();
+    first.change({ phase: "recovering" });
+    second.change({ phase: "recovering" });
+    store.port.delivery = (_scope, _thread, work) => lock.run(work);
+    let lose!: () => void;
+    const sender = createMessageOutbox({
+      session: first,
+      storage: store.port,
+      drafts: { restore: async () => "restored" },
+      dispatch: () =>
+        new Promise((_resolve, reject) => {
+          lose = () => reject(new HostTransportError("unreachable"));
+        }),
+    });
+    await sender.enqueue(command("shared-window"));
+    const observer = createMessageOutbox({
+      session: second,
+      storage: store.port,
+      drafts: { restore: async () => "restored" },
+      dispatch: async () => {
+        throw new Error("The offline window must not dispatch");
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(observer.getSnapshot().messages[0]?.attempted).toBe(false);
+    first.change({ phase: "ready", readyRevision: 2 });
+    await vi.advanceTimersByTimeAsync(0);
+    const discard = observer.discard("shared-window").catch((error) => error);
+    lose();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await discard).toMatchObject({ failure: { reason: "message-unconfirmed" } });
+    expect(await store.port.load(first.connection.getSnapshot().scope!)).toMatchObject([
+      { localId: "shared-window", attempted: true },
+    ]);
+    sender.dispose();
+    observer.dispose();
   });
   it.each([true, false])(
     "reconciles event before ack (sender key available: %s)",
