@@ -64,7 +64,12 @@ class ReadScheduler {
   }
 }
 const schedulers = new WeakMap<ClientConnection, ReadScheduler>();
-const remembered = new WeakMap<ClientConnection, Set<() => void>>();
+interface RememberedRead {
+  readonly scope: string;
+  readonly value: unknown;
+  forget(): void;
+}
+const remembered = new WeakMap<ClientConnection, Map<string, RememberedRead>>();
 export function createClientRead<T>(
   session: ClientSession,
   spec: ClientReadSpec<T>,
@@ -107,6 +112,18 @@ class RetainedClientRead<T> implements ClientRead<T> {
     this.#scope = clientScopeKey(connection.scope);
     this.#epoch = connection.epoch;
     this.#revision = connection.readyRevision;
+    const held = spec.remember ? remembered.get(session.connection)?.get(spec.key) : undefined;
+    if (held && held.scope === this.#scope) {
+      this.#accepted = true;
+      this.#value = held.value as T;
+      this.#state = {
+        status: "ready",
+        data: this.#value,
+        refreshing: false,
+        stale: true,
+        issue: null,
+      };
+    }
   }
   getSnapshot = (): ClientReadState<T> => {
     if (clientScopeKey(this.#session.connection.getSnapshot().scope) !== this.#scope)
@@ -119,7 +136,7 @@ class RetainedClientRead<T> implements ClientRead<T> {
     if (this.#listeners.size === 1) {
       if (this.#retention) clearTimeout(this.#retention);
       this.#retention = null;
-      remembered.get(this.#session.connection)?.delete(this.#forget);
+      this.#releaseRemembered();
       this.#unsubscribe ??= this.#session.connection.subscribe(() => this.#connectionChanged());
       this.#invalidation = this.#spec.subscribeInvalidation?.(this.invalidate) ?? null;
       this.#dirty = true;
@@ -131,14 +148,15 @@ class RetainedClientRead<T> implements ClientRead<T> {
       this.#cancel();
       this.#invalidation?.();
       this.#invalidation = null;
-      if (this.#spec.remember && this.#accepted) {
+      if (this.#spec.remember && this.#accepted && this.#scope !== null) {
         let cache = remembered.get(this.#session.connection);
         if (!cache) {
-          cache = new Set();
+          cache = new Map();
           remembered.set(this.#session.connection, cache);
         }
-        cache.add(this.#forget);
-        if (cache.size > 32) cache.values().next().value?.();
+        cache.get(this.#spec.key)?.forget();
+        cache.set(this.#spec.key, { scope: this.#scope, value: this.#value, forget: this.#forget });
+        if (cache.size > 32) cache.values().next().value?.forget();
         this.#retention = setTimeout(this.#forget, 300_000);
         unrefTimer(this.#retention);
       } else this.#forget();
@@ -185,6 +203,8 @@ class RetainedClientRead<T> implements ClientRead<T> {
   };
   evict = (): void => {
     this.#cancel();
+    const held = remembered.get(this.#session.connection)?.get(this.#spec.key);
+    if (held?.scope === this.#scope) held.forget();
     this.#accepted = false;
     this.#value = undefined;
     this.#publish({ status: "failed", data: null, issue: { code: "access-lost" } });
@@ -205,8 +225,12 @@ class RetainedClientRead<T> implements ClientRead<T> {
     this.#invalidation = null;
     if (this.#retention) clearTimeout(this.#retention);
     this.#retention = null;
-    remembered.get(this.#session.connection)?.delete(this.#forget);
+    this.#releaseRemembered();
   };
+  #releaseRemembered(): void {
+    const cache = remembered.get(this.#session.connection);
+    if (cache?.get(this.#spec.key)?.forget === this.#forget) cache.delete(this.#spec.key);
+  }
   #publish(state: ClientReadState<T>): void {
     this.#state = state;
     this.#listeners.forEach((listener) => listener());
@@ -238,6 +262,10 @@ class RetainedClientRead<T> implements ClientRead<T> {
     this.#epoch = connection.epoch;
     this.#revision = connection.readyRevision;
     if (newScope) {
+      if (this.#listeners.size === 0) {
+        this.#forget();
+        return;
+      }
       this.#cancel();
       this.#accepted = false;
       this.#value = undefined;
@@ -304,6 +332,8 @@ class RetainedClientRead<T> implements ClientRead<T> {
             failure.provenance === "host" &&
             ["forbidden", "not_found", "unauthorized"].includes(failure.code);
           if (denied) {
+            const held = remembered.get(this.#session.connection)?.get(this.#spec.key);
+            if (held?.scope === scope) held.forget();
             this.#accepted = false;
             this.#value = undefined;
           }
