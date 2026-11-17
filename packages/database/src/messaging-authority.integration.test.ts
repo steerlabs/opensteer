@@ -78,6 +78,9 @@ it("fences Messaging binding edits, idempotent ingress and queued replies to cur
       conversationId,
       access: { kind: "binding-owner", mode: "approved", grantRevision: 1 },
     };
+    await sql`update messages set content = ${JSON.stringify(event.content)}::jsonb where id = ${p.messageId}`.execute(
+      database,
+    );
     await sql`insert into thread_inputs(actor_principal_id,authority_source,causal_chain_id,idempotency_key,message_id,policy,queue_rank,request_fingerprint,requested_by,state,thread_id,run_id) values(${principalId},${JSON.stringify(source)}::jsonb,${p.causalChainId},'channel',${p.messageId},'queue',1,'test',${p.userId},'pending',${p.threadId},${p.runId})`.execute(
       database,
     );

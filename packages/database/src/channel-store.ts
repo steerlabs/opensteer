@@ -2456,7 +2456,7 @@ export async function drainRevokedChannelInputs(
         .where(sql<boolean>`thread_inputs.authority_source->>'kind' = 'channel-ingress'`)
         .$if(bindingId !== undefined, (query) => query.where("channelBindings.id", "=", bindingId!))
         .where(
-          sql<boolean>`
+          sql<boolean>`(
           channel_bindings.status = 'revoked'
           or coalesce((thread_inputs.authority_source->>'bindingRevision')::integer, 0) < channel_bindings.revision
           or (
@@ -2471,7 +2471,7 @@ export async function drainRevokedChannelInputs(
                 and (thread_inputs.authority_source->'access'->>'grantRevision')::integer < grant_row.revision
             )
           )
-        `,
+        )`,
         )
         .orderBy("channelBindings.id")
         .orderBy("threadInputs.messageId")
