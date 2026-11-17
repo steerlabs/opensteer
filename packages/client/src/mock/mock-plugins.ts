@@ -1,6 +1,8 @@
 import {
   hostApi,
-  pluginsInstalledMax,
+  pluginDetailPageMax,
+  pluginDetailPreview,
+  pluginsInstalledPageMax,
   pluginRunsMax,
   rpcSuccess,
   type ConnectedAccountView,
@@ -14,6 +16,7 @@ import {
   type PluginCommandResult,
   type PluginConsentView,
   type PluginEngineStateView,
+  type PluginLocalToolSummaryView,
   type PluginLocalToolView,
   type PluginRequirementTarget,
   type PluginScheduledRunView,
@@ -43,16 +46,18 @@ export function isMockSignInCommand(command: HostApiCommand): command is MockSig
  * paging and search, installed plugins in every state a person can meet, and
  * schedules, versions, workflows and webhooks to act on. `?mock-plugins=` picks
  * `empty`, `unavailable`, `unsupported` (the sandbox can't run on this
- * computer), `error` or `local-only` (no public address for webhooks).
+ * computer's macOS), `error`, `local-only` (no public address for webhooks) or
+ * `many` (more installed plugins than one page).
  */
 export type MockPluginScenario =
-  "default" | "empty" | "unavailable" | "unsupported" | "error" | "local-only";
+  "default" | "empty" | "unavailable" | "unsupported" | "error" | "local-only" | "many";
 const mockPluginScenarios: readonly MockPluginScenario[] = [
   "empty",
   "unavailable",
   "unsupported",
   "error",
   "local-only",
+  "many",
 ];
 
 const digest = (seed: string) =>
@@ -316,7 +321,58 @@ const linearTools = [
   ["comment_on_issue", "Add a comment to an issue.", false],
   ["list_projects", "List projects and their progress.", true],
   ["list_cycles", "List a team's cycles.", true],
+  ["list_labels", "List the labels a team uses.", true],
+  ["create_label", "Add a label to a team.", false],
+  ["list_users", "List people in the workspace.", true],
+  ["archive_issue", "Archive an issue.", false],
+  ["link_pull_request", "Attach a pull request to an issue.", false],
+  ["list_comments", "Read an issue's comments.", true],
 ] as const;
+
+/** Agent-written helpers, enough that the installed list pages. */
+function manyPlugins(): MockPlugin[] {
+  return Array.from({ length: 120 }, (_, index) => {
+    const n = String(index + 1).padStart(3, "0");
+    return {
+      id: `plg_helper_${n}`,
+      name: `Helper ${n}`,
+      author: "agent",
+      access: "all",
+      activeVersion: `ver_helper_${n}`,
+      versions: [{ id: `ver_helper_${n}`, createdAt: "2026-11-01T08:00:00.000Z", author: "agent" }],
+      requirements: [],
+      links: [],
+      tools: [{ name: "run", description: "Run the helper.", readOnly: false }],
+      skills: [],
+      schedules: [],
+      workflows: [],
+      webhooks: [],
+      hasPage: false,
+    };
+  });
+}
+
+/** Mock cursors are offsets, refused for any other listing as the Host refuses them. */
+function mockPage<T>(items: readonly T[], scope: string, cursor: string | undefined, max: number) {
+  let offset = 0;
+  if (cursor) {
+    const [from, at] = cursor.split("@");
+    offset = Number(at);
+    if (from !== scope || !Number.isInteger(offset) || offset < 0)
+      throw refusal("bad_request", "This list changed. Open it again.", "plugin-cursor-stale");
+  }
+  const page = items.slice(offset, offset + max);
+  const next = offset + page.length;
+  return { items: page, cursor: next < items.length ? `${scope}@${next}` : null };
+}
+const byName = <T extends { readonly name: string }>(items: readonly T[]) =>
+  [...items].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+const newestFirst = <T extends { readonly createdAt: string | null; readonly id: string }>(
+  items: readonly T[],
+) =>
+  [...items].sort(
+    (a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? "") || b.id.localeCompare(a.id),
+  );
 
 function seedPlugins(): MockPlugin[] {
   const linearReq: MockRequirement = {
@@ -476,11 +532,13 @@ function seedPlugins(): MockPlugin[] {
       name: "Weather notes",
       author: "agent",
       access: "off",
-      activeVersion: "ver_weather_2",
-      versions: [
-        { id: "ver_weather_2", createdAt: "2026-11-15T19:00:00.000Z", author: "agent" },
-        { id: "ver_weather_1", createdAt: "2026-11-15T18:40:00.000Z", author: "agent" },
-      ],
+      activeVersion: "ver_weather_64",
+      // An agent iterating on its own plugin: more versions than one page.
+      versions: Array.from({ length: 64 }, (_, index) => ({
+        id: `ver_weather_${64 - index}`,
+        createdAt: new Date(Date.UTC(2026, 10, 15, 19) - index * 20 * 60_000).toISOString(),
+        author: "agent" as const,
+      })),
       requirements: [],
       links: [],
       tools: [{ name: "forecast", description: "Today's forecast for a city.", readOnly: true }],
@@ -580,12 +638,15 @@ const seedWebhookSetups: Record<
 };
 
 const studio = { id: "rnr_33333333-3333-4333-8333-333333333333", name: "Alex's MacBook Pro" };
-/** Device data apps and a local server, as the Host lists them beside plugins. */
-const seedLocalTools: Omit<PluginLocalToolView, "access">[] = [
+/**
+ * Device data apps and a local server, as the Host lists them beside plugins,
+ * with the collision-safe names the Host gives agents.
+ */
+const seedLocalTools: Omit<PluginLocalToolView, "access" | "toolCount" | "readOnlyToolCount">[] = [
   {
     id: "app_device_con_calendar",
     kind: "device-app",
-    name: "calendar-alex-s-macbook-pro",
+    name: "local-calendar-alex-s-macbook-8c41d7e2f09a4b3c95d1e6a7b2f40c18",
     title: "Apple Calendar on Alex's MacBook Pro",
     computer: studio,
     unavailable: null,
@@ -599,7 +660,7 @@ const seedLocalTools: Omit<PluginLocalToolView, "access">[] = [
   {
     id: "app_device_con_reminders",
     kind: "device-app",
-    name: "reminders-alex-s-macbook-pro",
+    name: "local-reminders-alex-s-macboo-1f6e93a0c2d84b57a9e0d3c6b8f21e4a",
     title: "Apple Reminders on Alex's MacBook Pro",
     computer: studio,
     unavailable: null,
@@ -612,7 +673,7 @@ const seedLocalTools: Omit<PluginLocalToolView, "access">[] = [
   {
     id: "app_device_con_photos",
     kind: "device-app",
-    name: "photos-alex-s-iphone",
+    name: "local-photos-alex-s-iphone-5a2c8e1f7b9d40e6a3c5f8b2d1e09c7a",
     title: "Photos on Alex's iPhone",
     computer: { id: "rnr_44444444-4444-4444-8444-444444444444", name: "Alex's iPhone" },
     unavailable: "Alex's iPhone is offline. Open Opensteer on it to share its apps again.",
@@ -621,7 +682,7 @@ const seedLocalTools: Omit<PluginLocalToolView, "access">[] = [
   {
     id: `app_server_${mockNotesServer.serverId}`,
     kind: "local-server",
-    name: "notes-search",
+    name: "local-notes-search-d93b0f6a1e2c4875b4a9c0e3f7d16b52",
     title: "Notes search",
     computer: { id: "rnr_11111111-1111-4111-8111-111111111111", name: "Home Mac" },
     unavailable: null,
@@ -734,9 +795,8 @@ export class MockPlugins {
     },
   ];
   /**
-   * Runs in the Host's page order, which follows run ids, not age: the live
-   * Linear import is seventh, past what an older screen showed. GitHub's run
-   * outlived the account link its current declarations need.
+   * Runs as they were started; the Host lists them live first, then newest.
+   * GitHub's run outlived the account link its current declarations need.
    */
   #workflowRuns: Record<string, PluginWorkflowRunView[]> = {
     plg_linear: [
@@ -783,7 +843,12 @@ export class MockPlugins {
       options.scenario ??
       mockPluginScenarios.find((scenario) => scenario === fromAddress) ??
       "default";
-    this.plugins = this.scenario === "empty" ? [] : seedPlugins();
+    this.plugins =
+      this.scenario === "empty"
+        ? []
+        : this.scenario === "many"
+          ? [...seedPlugins(), ...manyPlugins()]
+          : seedPlugins();
     this.accounts = this.scenario === "empty" ? [] : [...seedAccounts];
     this.engine =
       this.scenario === "unavailable"
@@ -792,6 +857,7 @@ export class MockPlugins {
           ? {
               status: "unavailable",
               reason: "Plugins are unavailable: workerd cannot run on this darwin/arm64 system",
+              unavailable: { code: "unsupported-system", minimumMacOS: "13.5" },
             }
           : { status: "idle" };
   }
@@ -877,15 +943,18 @@ export class MockPlugins {
             current: !link.stale,
           })),
       })),
-      tools: ready && plugin.activeVersion ? plugin.tools : null,
-      toolCount: plugin.tools.length,
-      skills: ready && plugin.activeVersion ? plugin.skills : null,
-      versions: plugin.versions.map((version) => ({
-        id: version.id,
-        createdAt: version.createdAt,
-        active: version.id === plugin.activeVersion,
-        author: version.author,
-      })),
+      tools:
+        ready && plugin.activeVersion
+          ? byName(plugin.tools).slice(0, pluginDetailPreview.tools)
+          : null,
+      toolCount: ready && plugin.activeVersion ? plugin.tools.length : 0,
+      skills:
+        ready && plugin.activeVersion
+          ? byName(plugin.skills).slice(0, pluginDetailPreview.skills)
+          : null,
+      skillCount: ready && plugin.activeVersion ? plugin.skills.length : 0,
+      versions: this.versions(plugin).slice(0, pluginDetailPreview.versions),
+      versionCount: plugin.versions.length,
       schedules: plugin.schedules,
       workflows: ready ? plugin.workflows : null,
       webhooks: plugin.webhooks,
@@ -904,6 +973,26 @@ export class MockPlugins {
           }
         : null,
     };
+  }
+
+  versions(plugin: MockPlugin) {
+    return newestFirst(plugin.versions).map((version) => ({
+      id: version.id,
+      createdAt: version.createdAt,
+      active: version.id === plugin.activeVersion,
+      author: version.author,
+    }));
+  }
+
+  /** The order the Host lists installed plugins in: those needing the person first. */
+  installedOrder() {
+    return this.plugins
+      .map((plugin) => this.summary(plugin))
+      .sort(
+        (a, b) =>
+          Number(a.status === "ready") - Number(b.status === "ready") ||
+          a.name.localeCompare(b.name),
+      );
   }
 
   review(target: PluginRequirementTarget): PluginAccountReviewView {
@@ -1188,8 +1277,13 @@ export class MockPlugins {
       .filter((tool) => !this.#removedLocal.has(tool.id))
       .map((tool) => ({
         ...tool,
+        toolCount: tool.tools.length,
+        readOnlyToolCount: tool.tools.filter(({ readOnly }) => readOnly).length,
         access: this.#localAccess.get(tool.id) ?? "all",
       }));
+  }
+  localSummaries(): PluginLocalToolSummaryView[] {
+    return this.local().map(({ tools: _tools, ...tool }) => tool);
   }
 
   #link(target: PluginRequirementTarget, accountId: string) {
@@ -1222,25 +1316,83 @@ export class MockPlugins {
         });
       },
       "plugins.installed.list": async () => {
-        const local = this.scenario === "empty" ? [] : this.local();
-        // Local tools never wait on the engine, so they still list while it is unavailable.
-        if (this.engine.status === "unavailable")
-          return rpcSuccess({ engine: this.engine, plugins: null, local });
+        const local = this.scenario === "empty" ? [] : this.localSummaries();
+        // Local tools never wait on the engine: until it is ready the list goes without
+        // plugins, and a change notice follows once it can say.
+        if (this.engine.status !== "ready") {
+          if (this.scenario === "error") await this.#ready();
+          if (this.engine.status !== "unavailable")
+            void this.#ready().then(this.#changed, this.#changed);
+          return rpcSuccess({
+            engine: this.engine.status === "idle" ? { status: "starting" } : this.engine,
+            plugins: null,
+            cursor: null,
+            local,
+          });
+        }
+        const page = mockPage(
+          this.installedOrder(),
+          "installed",
+          undefined,
+          pluginsInstalledPageMax,
+        );
+        return rpcSuccess({ engine: this.engine, plugins: page.items, cursor: page.cursor, local });
+      },
+      "plugins.installed.page": async ({ cursor }) => {
         await this.#ready();
-        return rpcSuccess({
-          engine: this.engine,
-          plugins: this.plugins
-            .slice(0, pluginsInstalledMax)
-            .map((plugin) => this.summary(plugin))
-            .sort((a, b) => a.name.localeCompare(b.name)),
-          local,
-        });
+        const page = mockPage(this.installedOrder(), "installed", cursor, pluginsInstalledPageMax);
+        return rpcSuccess({ plugins: page.items, cursor: page.cursor });
+      },
+      "plugins.local.get": async ({ id }) => {
+        const tool =
+          this.scenario === "empty" ? undefined : this.local().find((entry) => entry.id === id);
+        if (!tool)
+          throw refusal(
+            "not_found",
+            "This isn't available to agents anymore. It may have been removed on its device.",
+          );
+        return rpcSuccess(tool);
       },
       "plugins.get": async ({ pluginId }) => {
         await this.#ready();
         return rpcSuccess(
           hostApi["plugins.get"].success.parse(this.detail(this.#plugin(pluginId))),
         );
+      },
+      "plugins.tools.list": async ({ pluginId, cursor }) => {
+        await this.#ready();
+        const plugin = this.#plugin(pluginId);
+        const tools = this.detail(plugin).tools === null ? [] : byName(plugin.tools);
+        const page = mockPage(
+          tools,
+          `tools:${pluginId}:${plugin.activeVersion}`,
+          cursor,
+          pluginDetailPageMax,
+        );
+        return rpcSuccess({ tools: page.items, cursor: page.cursor });
+      },
+      "plugins.skills.list": async ({ pluginId, cursor }) => {
+        await this.#ready();
+        const plugin = this.#plugin(pluginId);
+        const skills = this.detail(plugin).skills === null ? [] : byName(plugin.skills);
+        const page = mockPage(
+          skills,
+          `skills:${pluginId}:${plugin.activeVersion}`,
+          cursor,
+          pluginDetailPageMax,
+        );
+        return rpcSuccess({ skills: page.items, cursor: page.cursor });
+      },
+      "plugins.versions.list": async ({ pluginId, cursor }) => {
+        await this.#ready();
+        const plugin = this.#plugin(pluginId);
+        const page = mockPage(
+          this.versions(plugin),
+          `versions:${pluginId}`,
+          cursor,
+          pluginDetailPageMax,
+        );
+        return rpcSuccess({ versions: page.items, cursor: page.cursor });
       },
       "plugins.catalog.list": async ({ search, cursor, limit }) => {
         await this.#ready();
@@ -1266,7 +1418,24 @@ export class MockPlugins {
       },
       "plugins.accounts.list": async () => {
         await this.#ready();
-        return rpcSuccess({ accounts: this.accounts });
+        const requirements = this.plugins.flatMap((plugin) => plugin.requirements);
+        return rpcSuccess({
+          accounts: this.accounts
+            .map((account) => ({
+              ...account,
+              providerName:
+                requirements.find((r) => r.provider === account.provider)?.providerName ??
+                `${account.provider[0]!.toLocaleUpperCase()}${account.provider.slice(1).replace(/[-_]+/gu, " ")}`,
+              links: this.plugins
+                .filter((plugin) => plugin.links.some((link) => link.account === account.id))
+                .map((plugin) => ({ pluginId: plugin.id, pluginName: plugin.name }))
+                .sort((a, b) => a.pluginName.localeCompare(b.pluginName)),
+            }))
+            .sort(
+              (a, b) =>
+                a.providerName.localeCompare(b.providerName) || a.label.localeCompare(b.label),
+            ),
+        });
       },
       "plugins.account.review": async (target) => {
         await this.#ready();
@@ -1276,14 +1445,20 @@ export class MockPlugins {
         this.#plugin(pluginId);
         return rpcSuccess({ runs: pluginId === "plg_linear" ? this.#runs : [] });
       },
-      "plugins.workflow.runs": async ({ pluginId, cursor }) => {
+      "plugins.workflow.runs": async ({ pluginId, workflow, cursor }) => {
         await this.#ready();
         this.#plugin(pluginId);
-        const runs = this.#workflowRuns[pluginId] ?? [];
-        const offset = cursor ? Number(cursor) : 0;
-        const page = runs.slice(offset, offset + pluginRunsMax);
-        const next = offset + page.length;
-        return rpcSuccess({ runs: page, cursor: next < runs.length ? String(next) : null });
+        const live = (run: PluginWorkflowRunView) => ["queued", "running"].includes(run.status);
+        const runs = (this.#workflowRuns[pluginId] ?? [])
+          .filter((run) => workflow === undefined || run.workflow === workflow)
+          .sort(
+            (a, b) =>
+              Number(live(b)) - Number(live(a)) ||
+              b.createdAt.localeCompare(a.createdAt) ||
+              b.id.localeCompare(a.id),
+          );
+        const page = mockPage(runs, `runs:${pluginId}:${workflow ?? ""}`, cursor, pluginRunsMax);
+        return rpcSuccess({ runs: page.items, cursor: page.cursor });
       },
       "plugins.webhook.setup.get": async ({ pluginId, webhookId }) => {
         const webhook = this.#plugin(pluginId).webhooks.find((entry) => entry.id === webhookId);

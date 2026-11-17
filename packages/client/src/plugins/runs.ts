@@ -22,10 +22,9 @@ export interface PluginWorkflowRunsState {
 type Page = { readonly runs: readonly PluginWorkflowRunView[]; readonly cursor: string | null };
 
 /**
- * One plugin's workflow runs, paged by the Host's cursor. The Host's page
- * order says nothing about age or liveness, so every loaded run is sorted
- * here, live first. A refresh reads again every page loaded so far, so a run
- * on a later page never keeps a stale state.
+ * One plugin's workflow runs, paged by the Host's cursor in the Host's order:
+ * live first, then newest. A refresh reads again every page loaded so far, so
+ * a run on a later page never keeps a stale state.
  */
 export class PluginWorkflowRuns {
   readonly #read: (cursor: string | null) => Promise<Page>;
@@ -127,13 +126,8 @@ export class PluginWorkflowRuns {
   }
 
   #publish(patch: Partial<PluginWorkflowRunsState>) {
-    const ordered = [...this.#runs].sort(
-      (a, b) =>
-        Number(pluginWorkflowRunLive(b)) - Number(pluginWorkflowRunLive(a)) ||
-        (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0),
-    );
-    const live = ordered.filter(pluginWorkflowRunLive);
-    const finished = ordered.filter((run) => !pluginWorkflowRunLive(run));
+    const live = this.#runs.filter(pluginWorkflowRunLive);
+    const finished = this.#runs.filter((run) => !pluginWorkflowRunLive(run));
     this.#state = {
       ...this.#state,
       ...patch,

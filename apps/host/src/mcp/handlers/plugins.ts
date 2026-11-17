@@ -9,6 +9,7 @@ import type { PluginAuthority } from "../../plugins/plugin-authority.js";
 import type { PluginExecutions } from "../../plugins/plugin-executions.js";
 import type { LocalProviders } from "../../plugins/local-providers.js";
 import { operations, type PluginConsent, type PluginInput } from "../../plugins/engine-protocol.js";
+import { keysetPage } from "../../plugins/keyset-page.js";
 
 export class PluginToolHandlers {
   readonly options: {
@@ -36,14 +37,27 @@ export class PluginToolHandlers {
   constructor(options: PluginToolHandlers["options"]) {
     this.options = options;
   }
+  /**
+   * What an agent sees of its plugins, small enough for its context with many installed: local
+   * tools counted (plugin_search finds their tools), plugins a page at a time with their newest
+   * versions, and one plugin with every kept version when it asks by id.
+   */
   async list(c: ToolCall<"opensteer_plugin_list">) {
     const context = this.options.authority.admit(c.caller);
+    const first = !c.input.cursor && !c.input.pluginId;
     const settings = await this.options.settings.settings(c.caller.userId);
     const [plugins, local] = await Promise.all([
       this.options.service.list({}, context, c.signal),
-      this.options.localProviders?.providers(context) ?? [],
+      first ? (this.options.localProviders?.providers(context) ?? []) : [],
     ]);
     const access = (id: string) => settings.find((s) => s.pluginId === id)?.access ?? "all";
+    const page = c.input.pluginId
+      ? { items: plugins.filter(({ id }) => id === c.input.pluginId), cursor: null }
+      : keysetPage(plugins, (plugin) => `${plugin.slug}\u0000${plugin.id}`, {
+          scope: "agent-plugins",
+          cursor: c.input.cursor,
+          max: 25,
+        });
     return {
       // An agent sees one list: local tools are addressed as tools.<slug> like plugins.
       local: local
@@ -56,43 +70,45 @@ export class PluginToolHandlers {
           access: access(provider.id) as "all" | "read-only",
           status: provider.unavailable ? "unavailable" : "active",
           ...(provider.unavailable ? { unavailable: provider.unavailable } : {}),
-          tools: provider.tools
-            .slice(0, 200)
-            .map(({ name, readOnly }) => ({ name, readOnly: readOnly === true })),
+          toolCount: provider.tools.length,
+          readOnlyToolCount: provider.tools.filter(({ readOnly }) => readOnly === true).length,
         })),
       plugins: await Promise.all(
-        plugins.slice(0, 100).map(async (plugin) => {
+        page.items.map(async (plugin) => {
           const detail = await this.options.service.detail(
             { plugin: plugin.id },
             { caller: "personal", mode: "automatic" },
             c.signal,
           );
+          const versions = z
+            .array(z.object({ id: z.string().min(1), createdAt: z.string() }).passthrough())
+            .catch([])
+            .parse(detail.versions)
+            .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
           return {
-            ...plugin,
-            versions: Array.isArray(detail.versions)
-              ? detail.versions
-                  .slice(0, 50)
-                  .flatMap((version) =>
-                    version &&
-                    typeof version === "object" &&
-                    !Array.isArray(version) &&
-                    typeof version.id === "string"
-                      ? [{ id: version.id, active: version.id === plugin.activeVersion }]
-                      : [],
-                  )
-              : [],
+            id: plugin.id,
+            name: plugin.name,
+            slug: plugin.slug,
+            activeVersion: plugin.activeVersion,
+            versions: versions
+              .slice(0, c.input.pluginId ? 200 : 10)
+              .map((version) => ({ id: version.id, active: version.id === plugin.activeVersion })),
+            versionCount: versions.length,
             requirements: Object.fromEntries(
               Object.entries(detail.plugin.requirements.accounts).map(([name, r]) => [
                 name,
                 { scope: r.scope, provider: r.provider },
               ]),
             ),
-            access: settings.find((s) => s.pluginId === plugin.id)?.access ?? "all",
-            links: detail.links.slice(0, 100),
+            access: access(plugin.id) as "all" | "read-only",
+            links: detail.links
+              .slice(0, 100)
+              .map(({ requirement, scope, account }) => ({ requirement, scope, account })),
             status: plugin.activeVersion ? "active" : "unavailable",
           };
         }),
       ),
+      cursor: page.cursor,
     };
   }
   async install(c: ToolCall<"opensteer_plugin_install">) {

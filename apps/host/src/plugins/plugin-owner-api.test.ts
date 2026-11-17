@@ -81,8 +81,17 @@ function plugin(id: string, overrides: Record<string, unknown> = {}) {
 }
 
 function setup(
-  options: { plugins?: number; tools?: number; local?: number; engineDown?: boolean } = {},
+  options: {
+    plugins?: number;
+    tools?: number;
+    versions?: number;
+    local?: number;
+    engineDown?: boolean;
+    /** Not started yet: a read starts it and the list waits on this. */
+    starting?: Promise<void>;
+  } = {},
 ) {
+  let engineStatus: "idle" | "ready" = options.starting ? "idle" : "ready";
   const settings = new Map<
     string,
     {
@@ -93,8 +102,12 @@ function setup(
     }
   >();
   const service = {
-    state: vi.fn(() => ({ status: "ready" as const, generation: 1 })),
-    installed: vi.fn(async () => {
+    state: vi.fn(() => ({ status: engineStatus, generation: 1 })),
+    installed: vi.fn(async (_input?: unknown, _context?: unknown) => {
+      if (options.starting) {
+        await options.starting;
+        engineStatus = "ready";
+      }
       if (options.engineDown) throw new PluginServiceError("unavailable", "Engine stopped");
       return Array.from({ length: options.plugins ?? 3 }, (_, index) => ({
         plugin: plugin(
@@ -105,7 +118,7 @@ function setup(
               ? { requirements: { accounts: {} } }
               : {},
         ),
-        links: [],
+        links: index === 0 ? [{ requirement: "linear", scope: "app", account: "acc1" }] : [],
       }));
     }),
     detail: vi.fn(async ({ plugin: id }: { plugin: string }) => ({
@@ -131,10 +144,10 @@ function setup(
         version: `${id}-v2`,
         skills: [{ name: "triage", description: "How to triage" }],
       },
-      versions: [
-        { id: `${id}-v1`, createdAt: "2026-11-01T00:00:00.000Z" },
-        { id: `${id}-v2`, createdAt: "2026-11-02T00:00:00.000Z" },
-      ],
+      versions: Array.from({ length: options.versions ?? 2 }, (_, index) => ({
+        id: `${id}-v${index + 1}`,
+        createdAt: new Date(Date.UTC(2026, 9, 1) + index * 3_600_000).toISOString(),
+      })),
       schedules: [],
       webhooks: [],
       workflows: [],
@@ -162,7 +175,10 @@ function setup(
     })),
     activate: vi.fn(async () => null),
     remove: vi.fn(async () => null),
-    accounts: vi.fn(async () => [{ id: "acc1", provider: "linear", label: "Work" }]),
+    accounts: vi.fn(async () => [
+      { id: "acc1", provider: "linear", label: "Work" },
+      { id: "acc9", provider: "old_crm", label: "Orphan" },
+    ]),
     createApiKeyAccount: vi.fn(async () => ({ id: "acc2", provider: "linear", label: "New" })),
     removeAccount: vi.fn(async () => null),
     reviewAccountLink: vi.fn(async () => consent),
@@ -325,53 +341,149 @@ describe("the person's plugin API", () => {
     }
   });
 
-  it("bounds the installed list and derives each plugin's state from the Host's records", async () => {
-    const { api } = setup({ plugins: 250 });
-    const result = await api.reads()["plugins.installed.list"]({}, context(ownerId));
-    if (!result.ok) throw new Error("refused");
-    const view = hostApi["plugins.installed.list"].success.parse(result.data);
-    expect(view.plugins).toHaveLength(200);
+  it("pages the installed list so every plugin is reachable, those needing the person first", async () => {
+    const { api } = setup({ plugins: 130 });
+    const reads = api.reads();
+    const first = await reads["plugins.installed.list"]({}, context(ownerId));
+    if (!first.ok) throw new Error("refused");
+    const view = hostApi["plugins.installed.list"].success.parse(first.data);
     expect(view.engine).toEqual({ status: "ready" });
-    const byId = new Map(view.plugins!.map((entry) => [entry.id, entry]));
+    expect(view.plugins).toHaveLength(50);
+    expect(view.plugins!.slice(0, 2).map(({ status }) => status)).not.toContain("ready");
+    const seen = [...view.plugins!];
+    let cursor = view.cursor;
+    while (cursor) {
+      const page = await reads["plugins.installed.page"]({ cursor }, context(ownerId));
+      if (!page.ok) throw new Error("refused");
+      seen.push(...hostApi["plugins.installed.page"].success.parse(page.data).plugins);
+      cursor = page.data.cursor;
+    }
+    expect(new Set(seen.map(({ id }) => id)).size).toBe(130);
+    expect(seen).toHaveLength(130);
+    // Everything that needs the person comes before anything ready.
+    expect(seen.findIndex(({ status }) => status === "ready")).toBe(128);
+    const byId = new Map(seen.map((entry) => [entry.id, entry]));
     expect(byId.get("p0")).toMatchObject({
-      status: "needs-account",
-      accounts: { required: 1, linked: 0 },
+      status: "ready",
+      accounts: { required: 1, linked: 1 },
     });
     expect(byId.get("p1")).toMatchObject({ status: "not-built" });
-    expect(byId.get("p2")).toMatchObject({ status: "ready", access: "all", author: "agent" });
+    await expect(
+      reads["plugins.installed.page"]({ cursor: "bm90LWEtY3Vyc29y" }, context(ownerId)),
+    ).rejects.toMatchObject({ code: "bad_request", reason: "plugin-cursor-stale" });
   });
 
-  it("lists bounded local tools with their access, even while the engine is down", async () => {
-    const { api } = setup({ engineDown: true, local: 120 });
+  it("lists local tools as counted summaries without waiting for the engine to start", async () => {
+    const started = Promise.withResolvers<void>();
+    const { api, service, changed } = setup({ starting: started.promise, local: 120 });
     await run(api, { type: "plugins.access.set", pluginId: "app_device_con0", access: "off" });
+    changed.mockClear();
     const result = await api.reads()["plugins.installed.list"]({}, context(ownerId));
     if (!result.ok) throw new Error("refused");
     const view = hostApi["plugins.installed.list"].success.parse(result.data);
-    expect(view.plugins).toBeNull();
+    expect(view).toMatchObject({ engine: { status: "starting" }, plugins: null, cursor: null });
     expect(view.local).toHaveLength(100);
-    expect(view.local[0]).toMatchObject({
+    expect(view.local[0]).toEqual({
       id: "app_device_con0",
-      access: "off",
+      kind: "device-app",
+      name: "calendar-mac-000",
+      title: "Calendar on Mac",
+      computer: { id: "run_1", name: "Mac" },
       unavailable: null,
+      toolCount: 600,
+      readOnlyToolCount: 300,
+      access: "off",
     });
-    expect(view.local[0]!.tools).toHaveLength(500);
-    expect(view.local[1]).toMatchObject({ access: "all", unavailable: "Mac is offline." });
-    await expect(api.reads()["plugins.installed.list"]({}, context(strangerId))).rejects.toThrow(
-      "Owner only",
-    );
+    // A second open while it starts does not start it again.
+    await api.reads()["plugins.installed.list"]({}, context(ownerId));
+    expect(service.installed).toHaveBeenCalledTimes(1);
+    expect(changed).not.toHaveBeenCalled();
+    started.resolve();
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledWith(ownerId), { timeout: 1_000 });
+    const ready = await api.reads()["plugins.installed.list"]({}, context(ownerId));
+    expect(ready.ok && ready.data.plugins).toHaveLength(3);
+
+    const one = await api.reads()["plugins.local.get"]({ id: "app_device_con1" }, context(ownerId));
+    if (!one.ok) throw new Error("refused");
+    expect(hostApi["plugins.local.get"].success.parse(one.data)).toMatchObject({
+      access: "all",
+      unavailable: "Mac is offline.",
+      toolCount: 600,
+    });
+    expect(one.data.tools).toHaveLength(500);
+    await expect(
+      api.reads()["plugins.local.get"]({ id: "app_device_gone" }, context(ownerId)),
+    ).rejects.toMatchObject({ code: "not_found" });
   });
 
-  it("bounds plugin detail and marks a link reviewed against an older declaration", async () => {
-    const { api } = setup({ tools: 600 });
-    const result = await api.reads()["plugins.get"]({ pluginId: "p0" }, context(ownerId));
+  it("keeps local tools listed while the engine is down", async () => {
+    const { api } = setup({ engineDown: true });
+    const result = await api.reads()["plugins.installed.list"]({}, context(ownerId));
+    expect(result.ok && result.data).toMatchObject({
+      plugins: null,
+      local: [{ id: "app_device_con0" }],
+    });
+  });
+
+  it("sends a detail's first tools, skills and versions and pages the rest to the end", async () => {
+    const { api } = setup({ tools: 120, versions: 75 });
+    const reads = api.reads();
+    const result = await reads["plugins.get"]({ pluginId: "p0" }, context(ownerId));
     if (!result.ok) throw new Error("refused");
-    const view = result.data;
-    expect(view.tools).toHaveLength(500);
-    expect(view.toolCount).toBe(600);
+    const view = hostApi["plugins.get"].success.parse(result.data);
+    expect(view.tools?.map(({ name }) => name)).toEqual(
+      Array.from({ length: 120 }, (_, index) => `tool_${index}`)
+        .sort()
+        .slice(0, 8),
+    );
+    expect(view).toMatchObject({ toolCount: 120, skillCount: 1, versionCount: 75 });
     expect(view.versions.map(({ id, active }) => [id, active])).toEqual([
-      ["p0-v2", true],
-      ["p0-v1", false],
+      ["p0-v75", false],
+      ["p0-v74", false],
+      ["p0-v73", false],
+      ["p0-v72", false],
+      ["p0-v71", false],
     ]);
+    const all = async (
+      read: (cursor: string | undefined) => Promise<{ ids: string[]; cursor: string | null }>,
+    ) => {
+      const items: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await read(cursor);
+        items.push(...page.ids);
+        cursor = page.cursor ?? undefined;
+      } while (cursor);
+      return items;
+    };
+    const target = (cursor: string | undefined) => ({
+      pluginId: "p0",
+      ...(cursor ? { cursor } : {}),
+    });
+    const tools = await all(async (cursor) => {
+      const page = await reads["plugins.tools.list"](target(cursor), context(ownerId));
+      if (!page.ok) throw new Error("refused");
+      const data = hostApi["plugins.tools.list"].success.parse(page.data);
+      return { ids: data.tools.map(({ name }) => name), cursor: data.cursor };
+    });
+    expect(tools).toHaveLength(120);
+    expect(new Set(tools).size).toBe(120);
+    const versions = await all(async (cursor) => {
+      const page = await reads["plugins.versions.list"](target(cursor), context(ownerId));
+      if (!page.ok) throw new Error("refused");
+      const data = hostApi["plugins.versions.list"].success.parse(page.data);
+      return { ids: data.versions.map(({ id }) => id), cursor: data.cursor };
+    });
+    expect(versions).toHaveLength(75);
+    expect(versions[74]).toBe("p0-v1");
+    // A cursor from one plugin's list never reads as another's.
+    const page = await reads["plugins.tools.list"]({ pluginId: "p0" }, context(ownerId));
+    await expect(
+      reads["plugins.tools.list"](
+        { pluginId: "p3", cursor: page.ok ? page.data.cursor! : "x" },
+        context(ownerId),
+      ),
+    ).rejects.toMatchObject({ reason: "plugin-cursor-stale" });
     expect(view.requirements[0]).toMatchObject({
       providerName: "Linear",
       consent,
@@ -382,6 +494,23 @@ describe("the person's plugin API", () => {
       reference: { kind: "plugin", pluginId: "p0" },
       unavailable: expect.any(String),
     });
+  });
+
+  it("lists saved accounts with their provider's name and the plugins they serve, in one read", async () => {
+    const { api, service } = setup();
+    const result = await api.reads()["plugins.accounts.list"]({}, context(ownerId));
+    if (!result.ok) throw new Error("refused");
+    expect(hostApi["plugins.accounts.list"].success.parse(result.data).accounts).toEqual([
+      {
+        id: "acc1",
+        provider: "linear",
+        providerName: "Linear",
+        label: "Work",
+        links: [{ pluginId: "p0", pluginName: "Plugin p0" }],
+      },
+      { id: "acc9", provider: "old_crm", providerName: "Old crm", label: "Orphan", links: [] },
+    ]);
+    expect(service.detail).not.toHaveBeenCalled();
   });
 
   it("pages the catalog through the engine with the Host's cursor", async () => {

@@ -525,7 +525,11 @@ test("read-only hides and refuses writes; off hides the plugin from discovery an
   });
   await records.setAccess(personal.userId, plugin, "off");
   expect(await call(caller, "plugin_search", {})).toMatchObject({ items: [] });
-  expect(await call(caller, "opensteer_plugin_list", {})).toEqual({ plugins: [], local: [] });
+  expect(await call(caller, "opensteer_plugin_list", {})).toEqual({
+    plugins: [],
+    local: [],
+    cursor: null,
+  });
 });
 
 test("an ask-mode held write returns the actual result after the person approves", async () => {

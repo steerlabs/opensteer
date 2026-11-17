@@ -26,9 +26,10 @@ describe("settings tools", () => {
       slug: "plugin",
       activeVersion: "v1",
       versions: [{ id: "v1", active: true }],
+      versionCount: 1,
       requirements: { api: { scope: "user" as const, provider: "Example" } },
       access: "all" as const,
-      links: [],
+      links: [{ requirement: "api", scope: "user", account: "acc" }],
       status: "ready",
     };
     expect(
@@ -39,11 +40,13 @@ describe("settings tools", () => {
             config: { token: "secret" },
             versions: [{ id: "v1", active: true, env: { SECRET: "secret" } }],
             requirements: { api: { ...plugin.requirements.api, fields: { token: "secret" } } },
+            links: [{ ...plugin.links[0], consent: { digest: "d" } }],
           },
         ],
         local: [],
+        cursor: null,
         token: "secret",
       }),
-    ).toEqual({ plugins: [plugin], local: [] });
+    ).toEqual({ plugins: [plugin], local: [], cursor: null });
   });
 });
