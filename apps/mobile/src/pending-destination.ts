@@ -65,7 +65,8 @@ export class PendingDestination {
     this.#pending?.finish();
     const generation = ++this.#generation;
     this.#selection = undefined;
-    this.#reconciled = undefined;
+    // A Connect code selects its computer itself; that selection applies even if it is unchanged.
+    if (consumed) this.#reconciled = undefined;
     let finish!: () => void;
     let reject!: (error: unknown) => void;
     const done = new Promise<void>((resolve, fail) => {

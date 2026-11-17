@@ -596,11 +596,21 @@ describe("pending external destinations", () => {
     f.pending.ready();
     f.pending.reconciled("shown");
     await f.pending.submit("tap-for-shown-computer");
-    expect(f.pending.selectionToReconcile("shown")).toBe(true);
-    f.pending.reconciled("shown");
     expect(f.pending.selectionToReconcile("shown")).toBe(false);
     // The computer is later removed from the directory.
     expect(f.pending.selectionToReconcile(null)).toBe(true);
+  });
+
+  it("keeps a list the person opened when a link ends without a stack, but a Connect code re-applies", async () => {
+    const f = fixture(async () => null);
+    f.pending.hydrated();
+    f.pending.ready();
+    f.pending.reconciled("shown");
+    await f.pending.submit("unknown-deployment");
+    expect(f.settled).toHaveBeenCalled();
+    expect(f.pending.selectionToReconcile("shown")).toBe(false);
+    await f.pending.submit("connect");
+    expect(f.pending.selectionToReconcile("shown")).toBe(true);
   });
 
   it("supersedes a link-opened sheet by its own intent, even when it mounts after a newer link", async () => {
