@@ -68,12 +68,25 @@ export async function authorizedSyncState(tx: Read, viewerId: UserId) {
   const state = await tx
     .selectFrom("clientSyncState as sync")
     .innerJoin("deployments as deployment", "deployment.id", "sync.deploymentId")
-    .innerJoin("personalSettings as settings", (join) =>
+    .leftJoin("personalSettings as settings", (join) =>
       join.on("settings.singletonKey", "=", "personal"),
     )
-    .innerJoin("users as owner", "owner.id", "settings.ownerId")
+    .innerJoin("users as owner", (join) => join.on("owner.id", "=", viewerId))
     .selectAll("sync")
-    .where("owner.id", "=", viewerId)
+    .where((eb) =>
+      eb.or([
+        eb("settings.ownerId", "=", viewerId),
+        eb.and([
+          eb("settings.ownerId", "is", null),
+          eb(
+            "owner.id",
+            "=",
+            eb.selectFrom("users").select("id").orderBy("createdAt", "asc").limit(1),
+          ),
+        ]),
+      ]),
+    )
+    .where(sql<boolean>`deployment.deployment_shape->>'kind' = 'personal'`)
     .where("owner.disabledAt", "is", null)
     .where("deployment.lifecycle", "=", "active")
     .where("sync.ready", "=", true)

@@ -1507,11 +1507,14 @@ integration("Host vertical slice", () => {
     stopCatalogResponder();
     runnerSocket.terminate();
     await waitForCondition(async () => {
-      const read = await testResourceData(`http://127.0.0.1:${hostPort}`, "environment", {
-        headers: authorization(accessToken),
-      });
-      return read.environments.some(
-        (environment) => environment.id === environmentId && !environment.connected,
+      const read = await testRpcData(
+        `http://127.0.0.1:${hostPort}`,
+        "resources.get",
+        { kind: "environment" },
+        { headers: authorization(accessToken) },
+      );
+      return read.view.entries.some(
+        ({ id, status }) => id === environmentId && status === "disconnected",
       );
     });
     const runStatus = async () =>

@@ -9,6 +9,7 @@ import { Client as PgClient } from "pg";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import {
   advanceExecutionClock,
+  executionConnected,
   executionDisconnected,
   executionLeaseExpiresAt,
 } from "./execution-clock.test-support.js";
@@ -857,12 +858,9 @@ integration("Runs that outlive their connection", () => {
       .map((part) => part.text)
       .join("\n");
     expect(notice).toContain("Opensteer restarted while you were working");
-    const bootstrap = {
-      ok: true as const,
-      data: await readTestResource(active.api, "environment"),
-    };
+    const { environments } = await readTestResource(active.api, "harness-catalog");
     expect(
-      bootstrap.data.environments
+      environments
         .find((environment) => environment.id === active.environmentId)
         ?.harnessCatalogs.find((catalog) => catalog.harnessInstanceId === active.harnessInstanceId)
         ?.status,
@@ -980,21 +978,7 @@ integration("Runs that outlive their connection", () => {
       await waitFor(gate.isEntered, 5_000, "prompt dispatch after preparation settled");
       readyDispatchDelayMs = Date.now() - preparationReleasedAt;
       active.network.block();
-      await waitFor(
-        async () => {
-          const state = {
-            ok: true as const,
-            data: await readTestResource(active.api, "environment"),
-          };
-          return (
-            state.ok &&
-            state.data.environments.find((environment) => environment.id === active.environmentId)
-              ?.connected === false
-          );
-        },
-        30_000,
-        "runner disconnected",
-      );
+      await waitFor(() => executionConnected(active, false), 30_000, "runner disconnected");
     } finally {
       gate.release();
     }
@@ -1037,21 +1021,7 @@ integration("Runs that outlive their connection", () => {
     ]);
     expect(offlineRetry.runAttempts).toHaveLength(2);
     active.network.unblock();
-    await waitFor(
-      async () => {
-        const state = {
-          ok: true as const,
-          data: await readTestResource(active.api, "environment"),
-        };
-        return (
-          state.ok &&
-          state.data.environments.find((environment) => environment.id === active.environmentId)
-            ?.connected === true
-        );
-      },
-      30_000,
-      "runner reconnected",
-    );
+    await waitFor(() => executionConnected(active, true), 30_000, "runner reconnected");
     const reconnectedAt = Date.now();
     await waitFor(
       async () => (await liveAssistant(active, childThread.id)) === heldText,

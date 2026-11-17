@@ -1,4 +1,3 @@
-import { readTestResource } from "../server/test-host-api-request.js";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
@@ -1479,17 +1478,7 @@ integration.sequential("Run recovery acceptance", () => {
     const { runId } = await queue(current, "Ask before running tests.");
     const pending = await pendingApproval(current.active, runId);
     current.active.network.block();
-    await waitFor(async () => {
-      const result = {
-        ok: true as const,
-        data: await readTestResource(current.active.api, "environment"),
-      };
-      return (
-        result.ok &&
-        result.data.environments.find((entry) => entry.id === current.active.environmentId)
-          ?.connected === false
-      );
-    }, "Runner down");
+    await waitFor(() => executionDisconnected(current.active), "Runner down");
     const selectedDecision = await answer(current.active, pending);
     const answered = await requestRow(current.active, pending.id);
     expect(answered.responseCommandId).not.toBeNull();

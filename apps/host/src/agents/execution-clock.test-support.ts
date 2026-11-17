@@ -1,4 +1,3 @@
-import { readTestResource } from "../server/test-host-api-request.js";
 import type { ManualClock } from "@opensteer/shared/test-support/clock";
 import type { PersonalHostRuntime } from "../runtime/runtime.js";
 import type { VerticalStack } from "./vertical-stack.test-support.js";
@@ -18,16 +17,22 @@ export async function executionLeaseExpiresAt(
   return binding.leaseExpiresAt;
 }
 
-export async function executionDisconnected(
+export async function executionConnected(
   stack: Pick<VerticalStack, "api" | "environmentId">,
+  connected: boolean,
 ): Promise<boolean> {
-  const read = { ok: true as const, data: await readTestResource(stack.api, "environment") };
-  return (
-    read.ok &&
-    read.data.environments.some(
-      (environment) => environment.id === stack.environmentId && !environment.connected,
-    )
+  const response = await stack.api["resources.get"]({ kind: "environment" });
+  if (!response.ok) {
+    if (response.error.code === "conflict") return false;
+    throw new Error(response.error.message);
+  }
+  return response.data.view.entries.some(
+    ({ id, status }) =>
+      id === stack.environmentId && status === (connected ? "connected" : "disconnected"),
   );
+}
+export function executionDisconnected(stack: Pick<VerticalStack, "api" | "environmentId">) {
+  return executionConnected(stack, false);
 }
 
 /** Advance a bounded interval, waiting for each async sweep before its next tick. */

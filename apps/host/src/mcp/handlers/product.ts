@@ -1,4 +1,4 @@
-import { RunnerIdSchema } from "@opensteer/core";
+import { RunnerIdSchema, utf8Prefix } from "@opensteer/core";
 import type { TabServicePort } from "../../tabs/ports.js";
 import { PersonShowTargetSchema } from "@opensteer/core";
 type DelegationCall = ToolCall<"opensteer_task_delegate"> & {
@@ -1624,16 +1624,20 @@ export class ProductToolHandlers {
     return {
       link: formatReferenceLink(thread.id, thread.title),
       paused: queue.paused,
-      items: queue.items.map(({ message, canCancel, canMove, canSteer }) => ({
-        messageId: message.id,
-        link: formatReferenceLink(message.id, `Message · ${thread.title}`),
-        author: message.author,
-        preview: stripRefs(message.preview),
-        truncated: message.truncated,
-        canCancel,
-        canMove,
-        canSteer,
-      })),
+      items: queue.items.map(({ message, canCancel, canMove, canSteer }) => {
+        const plain = stripRefs(message.preview);
+        const preview = utf8Prefix(plain, 500);
+        return {
+          messageId: message.id,
+          link: formatReferenceLink(message.id, `Message · ${thread.title}`),
+          author: message.author,
+          preview,
+          truncated: message.truncated || preview !== plain,
+          canCancel,
+          canMove,
+          canSteer,
+        };
+      }),
     };
   }
   async opensteer_task_wait(
