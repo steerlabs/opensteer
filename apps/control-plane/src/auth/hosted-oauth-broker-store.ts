@@ -22,19 +22,19 @@ export interface HostedOAuthAttemptDurableInput {
   readonly hostPublicKey: string;
   readonly launchTicketHash: string;
   readonly provider: string;
-  readonly providerApplicationRevision: number;
+  readonly registryRevision: number;
   readonly requestedScopeDigest: string;
   readonly stateHash: string;
 }
 
 export interface HostedOAuthRefreshDurableInput {
-  readonly requestBindingDigest?: string;
+  readonly requestBindingDigest: string;
   readonly accountSubject: ControlPlaneAccountId;
   readonly deploymentId: DeploymentId;
   readonly expiresAt: Date;
   readonly hostPublicKey: string;
   readonly provider: string;
-  readonly providerApplicationRevision: number;
+  readonly registryRevision: number;
   readonly transactionId: HostedOAuthRefreshTransactionId;
 }
 
@@ -49,6 +49,9 @@ export class HostedOAuthBrokerStore {
     assertHostedOAuthBrokerDurableRecord(input);
     await this.purgeExpired(now);
     return this.#database.transaction().execute(async (transaction) => {
+      await sql`select pg_advisory_xact_lock(hashtextextended(${`hosted-oauth-attempt-id:${input.attemptId}`}, 0))`.execute(
+        transaction,
+      );
       const deployment = await transaction
         .selectFrom("deployments")
         .select("id")
@@ -66,7 +69,7 @@ export class HostedOAuthBrokerStore {
           existing.deploymentId !== input.deploymentId ||
           existing.provider !== input.provider ||
           existing.requestedScopeDigest !== input.requestedScopeDigest ||
-          existing.providerApplicationRevision !== input.providerApplicationRevision ||
+          existing.registryRevision !== input.registryRevision ||
           existing.hostPublicKey !== input.hostPublicKey ||
           existing.expiresAt.getTime() !== input.expiresAt.getTime()
         ) {
@@ -74,6 +77,12 @@ export class HostedOAuthBrokerStore {
         }
         return existing;
       }
+      await sql`select pg_advisory_xact_lock(hashtextextended(${`hosted-oauth-attempt-account:${input.accountSubject}`}, 0))`.execute(
+        transaction,
+      );
+      await sql`select pg_advisory_xact_lock(hashtextextended(${`hosted-oauth-attempt-deployment:${input.deploymentId}`}, 0))`.execute(
+        transaction,
+      );
       const windowStart = new Date(now.getTime() - 60_000);
       const [deploymentCount, accountCount] = await Promise.all([
         transaction
@@ -109,7 +118,7 @@ export class HostedOAuthBrokerStore {
           hostPublicKey: input.hostPublicKey,
           launchTicketHash: input.launchTicketHash,
           provider: input.provider,
-          providerApplicationRevision: input.providerApplicationRevision,
+          registryRevision: input.registryRevision,
           requestedScopeDigest: input.requestedScopeDigest,
           sealedCiphertext: null,
           stateHash: input.stateHash,
@@ -221,7 +230,7 @@ export class HostedOAuthBrokerStore {
           "attempt.expiresAt as expiresAt",
           "attempt.hostPublicKey as hostPublicKey",
           "attempt.provider as provider",
-          "attempt.providerApplicationRevision as providerApplicationRevision",
+          "attempt.registryRevision as registryRevision",
           "attempt.requestedScopeDigest as requestedScopeDigest",
           "attempt.stateHash as stateHash",
         ])
@@ -285,7 +294,7 @@ export class HostedOAuthBrokerStore {
       expiresAt: now,
       hostPublicKey: "derived",
       provider: "derived",
-      providerApplicationRevision: 1,
+      registryRevision: 1,
       requestedScopeDigest: "derived",
       sealedCiphertext,
     });
@@ -409,6 +418,9 @@ export class HostedOAuthBrokerStore {
       await sql`select pg_advisory_xact_lock(hashtextextended(${`hosted-oauth-refresh-account:${input.accountSubject}`}, 0))`.execute(
         transaction,
       );
+      await sql`select pg_advisory_xact_lock(hashtextextended(${`hosted-oauth-refresh-deployment:${input.deploymentId}`}, 0))`.execute(
+        transaction,
+      );
       const windowStart = new Date(now.getTime() - 60_000);
       const [deploymentCount, accountCount] = await Promise.all([
         transaction
@@ -434,7 +446,7 @@ export class HostedOAuthBrokerStore {
         .insertInto("hostedOAuthBrokerRefreshes")
         .values({
           ...input,
-          requestBindingDigest: input.requestBindingDigest ?? null,
+          requestBindingDigest: input.requestBindingDigest,
           createdAt: now,
           failureCode: null,
           providerError: null,
@@ -587,24 +599,24 @@ export class HostedOAuthBrokerStore {
 
 function assertSameRefreshClaim(
   existing: {
-    readonly requestBindingDigest: string | null;
+    readonly requestBindingDigest: string;
     readonly accountSubject: ControlPlaneAccountId;
     readonly deploymentId: DeploymentId;
     readonly expiresAt: Date;
     readonly hostPublicKey: string;
     readonly provider: string;
-    readonly providerApplicationRevision: number;
+    readonly registryRevision: number;
   },
   input: HostedOAuthRefreshDurableInput,
 ): void {
   if (
-    existing.requestBindingDigest !== (input.requestBindingDigest ?? null) ||
+    existing.requestBindingDigest !== input.requestBindingDigest ||
     existing.accountSubject !== input.accountSubject ||
     existing.deploymentId !== input.deploymentId ||
     existing.expiresAt.getTime() !== input.expiresAt.getTime() ||
     existing.hostPublicKey !== input.hostPublicKey ||
     existing.provider !== input.provider ||
-    existing.providerApplicationRevision !== input.providerApplicationRevision
+    existing.registryRevision !== input.registryRevision
   ) {
     throw new ControlPlaneError("conflict", "Hosted OAuth refresh ID was already used");
   }
@@ -622,7 +634,7 @@ export function assertHostedOAuthBrokerDurableRecord(value: object): void {
     "hostPublicKey",
     "launchTicketHash",
     "provider",
-    "providerApplicationRevision",
+    "registryRevision",
     "requestedScopeDigest",
     "requestBindingDigest",
     "sealedCiphertext",

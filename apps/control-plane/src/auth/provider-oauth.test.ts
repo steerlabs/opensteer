@@ -1,4 +1,4 @@
-import { OAuthMethodConfigSchema } from "@opensteer/integration-core/auth-method";
+import { OAuthMethodConfigSchema } from "./provider-oauth-config.js";
 import { describe, expect, it, vi } from "vitest";
 import {
   assertSupportedOAuthEndpointUrl,
@@ -652,10 +652,6 @@ describe("OAuth primitives", () => {
       providerError: null,
     });
   });
-});
-
-describe("OAuth discovery", () => {
-
 });
 
 describe("declarative OAuth flow", () => {

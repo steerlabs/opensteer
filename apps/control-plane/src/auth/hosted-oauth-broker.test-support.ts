@@ -202,7 +202,7 @@ const providers: Readonly<
     },
     allowedScopes: ["identify", "email", "guilds"],
   },
-} as never;
+};
 
 export function brokerProviderFixture(
   provider: string,

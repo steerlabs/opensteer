@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { OAuthMethodConfigSchema, type OAuthMethodConfig } from "@opensteer/integration-core";
+import { OAuthMethodConfigSchema, type OAuthMethodConfig } from "./provider-oauth-config.js";
 import {
   OAuthBrokerProviderSchema,
   OAuthBrokerManagedPlacementSchema,
@@ -25,7 +25,7 @@ const ProviderFieldsSchema = z.strictObject({
 });
 
 function validateProvider(
-  application: z.infer<typeof ProviderFieldsSchema> & { readonly clientId?: string },
+  application: z.infer<typeof ProviderFieldsSchema>,
   context: z.RefinementCtx,
 ) {
   const config = application.oauth;
@@ -69,7 +69,6 @@ function validateProvider(
   }
   if (
     application.provider === "github" &&
-    application.clientId !== undefined &&
     (!application.installationUrl ||
       !/^https:\/\/github\.com\/apps\/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\/installations\/new$/u.test(
         application.installationUrl,
@@ -110,16 +109,10 @@ export const HostedOAuthProviderApplicationSchema = ProviderFieldsSchema.extend(
   clientId: z.string().min(1).max(2_048),
   clientSecret: z.string().min(1).max(131_072),
 }).superRefine(validateProvider);
-const HostedOAuthRelayProviderSchema = ProviderFieldsSchema.extend({
-  relayOnly: z.literal(true),
-}).superRefine(validateProvider);
-export type HostedOAuthProvider =
-  | z.infer<typeof HostedOAuthProviderApplicationSchema>
-  | z.infer<typeof HostedOAuthRelayProviderSchema>;
 export type HostedOAuthProviderApplication = z.infer<typeof HostedOAuthProviderApplicationSchema>;
 
 export const HostedOAuthProviderRegistrySchema = z
-  .array(z.union([HostedOAuthProviderApplicationSchema, HostedOAuthRelayProviderSchema]))
+  .array(HostedOAuthProviderApplicationSchema)
   .max(32)
   .superRefine((entries, context) => {
     if (new Set(entries.map((entry) => entry.provider)).size !== entries.length) {

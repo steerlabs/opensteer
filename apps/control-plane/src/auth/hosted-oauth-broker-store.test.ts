@@ -29,7 +29,7 @@ describe("HostedOAuthBrokerStore durable boundary", () => {
         hostPublicKey: "a".repeat(43),
         launchTicketHash: "f".repeat(43),
         provider: "google",
-        providerApplicationRevision: 1,
+        registryRevision: 1,
         requestedScopeDigest: "b".repeat(43),
         sealedCiphertext: {
           ciphertext: "opaque",

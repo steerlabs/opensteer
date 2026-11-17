@@ -6,13 +6,10 @@ import {
   AcknowledgeHostedOAuthRefreshRequestSchema,
   AcknowledgeHostedOAuthResultRequestSchema,
   AcknowledgeHostedOAuthResultResponseSchema,
-  CreateHostedOAuthAttemptRequestSchema,
-  CreateOAuthCallbackRelayRequestSchema,
-  CreateHostedOAuthRevocationRequestSchema,
-  CreateHostedOAuthRefreshRequestSchema,
   HostedOAuthAttemptIdSchema,
   HostedOAuthRefreshTransactionIdSchema,
   OAuthBrokerProviderSchema,
+  oauthBrokerMetadataVersion,
   ReturnHostedOAuthAttemptRequestSchema,
 } from "@opensteer/control-plane-protocol";
 import { randomBytes } from "node:crypto";
@@ -39,7 +36,7 @@ const LaunchQuerySchema = z.strictObject({
   ticket: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
 });
 const CallbackParamsSchema = z.strictObject({ provider: OAuthBrokerProviderSchema });
-const MetadataQuerySchema = z.strictObject({ version: z.literal("2").optional() });
+const MetadataQuerySchema = z.strictObject({ version: z.literal(oauthBrokerMetadataVersion) });
 
 export function registerHostedOAuthBrokerRoutes(
   app: FastifyInstance,
@@ -53,10 +50,10 @@ export function registerHostedOAuthBrokerRoutes(
   },
 ): void {
   app.get("/v1/oauth-broker/metadata", async (request, reply) => {
-    const { version } = MetadataQuerySchema.parse(request.query);
+    parsePluginRequest(MetadataQuerySchema, request.query);
     return reply
       .header("cache-control", "public, max-age=300")
-      .send(dependencies.broker.metadata(version === "2"));
+      .send(dependencies.broker.metadata());
   });
 
   app.get("/v1/oauth-broker/mcp/client-metadata.json", async (_request, reply) =>
@@ -71,9 +68,7 @@ export function registerHostedOAuthBrokerRoutes(
     );
     const result = await dependencies.broker.createAuthorizationAttempt(
       authority,
-      z
-        .union([CreatePluginOAuthAttemptRequestSchema, CreateHostedOAuthAttemptRequestSchema])
-        .parse(request.body),
+      parsePluginRequest(CreatePluginOAuthAttemptRequestSchema, request.body),
     );
     return reply.header("cache-control", "no-store").send(result);
   });
@@ -84,9 +79,7 @@ export function registerHostedOAuthBrokerRoutes(
     );
     const result = await dependencies.broker.createCallbackRelay(
       authority,
-      z
-        .union([CreatePluginOAuthCallbackRelayRequestSchema, CreateOAuthCallbackRelayRequestSchema])
-        .parse(request.body),
+      parsePluginRequest(CreatePluginOAuthCallbackRelayRequestSchema, request.body),
     );
     return reply.header("cache-control", "no-store").send(result);
   });
@@ -429,9 +422,7 @@ export function registerHostedOAuthBrokerRoutes(
       .send(
         await dependencies.broker.refresh(
           authority,
-          z
-            .union([CreatePluginOAuthRefreshRequestSchema, CreateHostedOAuthRefreshRequestSchema])
-            .parse(request.body),
+          parsePluginRequest(CreatePluginOAuthRefreshRequestSchema, request.body),
         ),
       );
   });
@@ -445,12 +436,7 @@ export function registerHostedOAuthBrokerRoutes(
       .send(
         await dependencies.broker.revoke(
           authority,
-          z
-            .union([
-              CreatePluginOAuthRevocationRequestSchema,
-              CreateHostedOAuthRevocationRequestSchema,
-            ])
-            .parse(request.body),
+          parsePluginRequest(CreatePluginOAuthRevocationRequestSchema, request.body),
         ),
       );
   });
@@ -592,4 +578,14 @@ function launchFailurePage(
       detail: "Start Connect again in Opensteer.",
     }),
   });
+}
+
+function parsePluginRequest<T>(schema: z.ZodType<T>, body: unknown): T {
+  const parsed = schema.safeParse(body);
+  if (!parsed.success)
+    throw new ControlPlaneError(
+      "bad_request",
+      "This Account broker accepts plugin sign-in requests only. Update Opensteer and start sign-in again.",
+    );
+  return parsed.data;
 }

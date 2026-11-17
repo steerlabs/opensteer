@@ -17,15 +17,12 @@ const attemptId = HostedOAuthAttemptIdSchema.parse("hoa_00000000-0000-4000-8000-
 const launchTicket = "T".repeat(43);
 const launchPath = `/v1/oauth-broker/launch/${attemptId}?ticket=${launchTicket}`;
 
-describe("hosted OAuth metadata compatibility", () => {
-  it("only emits installation metadata to a version 2 caller", async () => {
-    const metadata = vi.fn((includeInstallationUrls: boolean) => ({
-      ...(includeInstallationUrls
-        ? { installationUrls: { github: "https://github.com/apps/opensteer/installations/new" } }
-        : {}),
+describe("hosted OAuth metadata", () => {
+  it("publishes managed metadata through the current plugin protocol", async () => {
+    const metadata = vi.fn(() => ({
+      installationUrls: { github: "https://github.com/apps/opensteer/installations/new" },
       encryptionPublicKey: "A".repeat(43),
       issuer: publicOrigin.toString(),
-      providerRevisions: { github: 1 },
     }));
     const server = Fastify();
     registerHostedOAuthBrokerRoutes(server, {
@@ -33,19 +30,116 @@ describe("hosted OAuth metadata compatibility", () => {
       broker: { metadata } as never,
       store: {} as never,
     });
-    const legacy = await server.inject({ method: "GET", url: "/v1/oauth-broker/metadata" });
     const current = await server.inject({
       method: "GET",
-      url: "/v1/oauth-broker/metadata?version=2",
+      url: "/v1/oauth-broker/metadata?version=3",
     });
     await server.close();
 
-    expect(legacy.json()).not.toHaveProperty("installationUrls");
     expect(current.json()).toHaveProperty(
       "installationUrls.github",
       "https://github.com/apps/opensteer/installations/new",
     );
-    expect(metadata.mock.calls).toEqual([[false], [true]]);
+    expect(metadata.mock.calls).toEqual([[]]);
+  });
+});
+
+describe("retired Host OAuth protocol", () => {
+  it.each([
+    "attempts",
+    "callback-relays",
+    "refreshes",
+    "revocations",
+    "metadata",
+    "metadata?version=2",
+  ])("refuses %s with an update instruction before invoking the broker", async (endpoint) => {
+    const createAuthorizationAttempt = vi.fn();
+    const createCallbackRelay = vi.fn();
+    const refresh = vi.fn();
+    const revoke = vi.fn();
+    const metadata = vi.fn();
+    const server = await createControlPlaneServer({
+      auth: {} as never,
+      authenticator: {} as never,
+      connectLifecycle: {} as never,
+      portalOrigin: new URL("https://portal.example.test"),
+      publicOrigin,
+      store: {
+        authenticateHostCredential: vi.fn(async () => ({ deploymentId: "dep_fixture" })),
+      } as never,
+      hostedOAuthBroker: {
+        createAuthorizationAttempt,
+        createCallbackRelay,
+        refresh,
+        revoke,
+        metadata,
+      } as never,
+    });
+    try {
+      const response = await server.inject({
+        method: endpoint.startsWith("metadata") ? "GET" : "POST",
+        url: endpoint.startsWith("metadata")
+          ? `/v1/oauth-broker/${endpoint}`
+          : `/v1/host/oauth-broker/${endpoint}`,
+        headers: { authorization: "Bearer osc_synthetic" },
+        ...(endpoint.startsWith("metadata")
+          ? {}
+          : {
+              payload: {
+                accountSubject: {
+                  issuer: publicOrigin.origin,
+                  subject: `acct_${crypto.randomUUID()}`,
+                },
+                attemptId,
+                authorizationDigest: "d".repeat(43),
+                definitionId: "google-gmail",
+                deploymentAuthorityDigest: "d".repeat(43),
+                expiresAt: "2030-01-01T00:00:00.000Z",
+                hostPublicKey: "h".repeat(43),
+                provider: "google",
+                providerApplicationRevision: 1,
+                ...(endpoint === "callback-relays"
+                  ? {
+                      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+                      clientId: "old-client",
+                      providerApplicationId: `ipa_${crypto.randomUUID()}`,
+                    }
+                  : {}),
+                ...(["refreshes", "revocations"].includes(endpoint)
+                  ? {
+                      transactionId: `${endpoint === "refreshes" ? "hor" : "hov"}_${crypto.randomUUID()}`,
+                      brokerSealedCredential: {
+                        ciphertext: "c2VhbGVk",
+                        ephemeralPublicKey: "k".repeat(43),
+                        nonce: "n".repeat(16),
+                        tag: "t".repeat(22),
+                        version: 1,
+                      },
+                      ...(endpoint === "refreshes" ? { grantedScopes: ["openid"] } : {}),
+                    }
+                  : {}),
+              },
+            }),
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        error: {
+          code: "bad_request",
+          message:
+            "This Account broker accepts plugin sign-in requests only. Update Opensteer and start sign-in again.",
+        },
+      });
+      for (const method of [
+        createAuthorizationAttempt,
+        createCallbackRelay,
+        refresh,
+        revoke,
+        metadata,
+      ])
+        expect(method).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
   });
 });
 

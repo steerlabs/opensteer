@@ -301,7 +301,7 @@ interface HostedOAuthBrokerAttemptTable {
     | "expired";
   retryGeneration: Generated<number>;
   failureCode: string | null;
-  providerApplicationRevision: number;
+  registryRevision: number;
   hostPublicKey: string;
   sealedCiphertext: JsonValue | null;
   createdAt: Timestamp;
@@ -309,7 +309,7 @@ interface HostedOAuthBrokerAttemptTable {
 }
 
 interface HostedOAuthBrokerRefreshTable {
-  requestBindingDigest: string | null;
+  requestBindingDigest: string;
   transactionId: HostedOAuthRefreshTransactionId;
   accountSubject: ControlPlaneAccountId;
   deploymentId: DeploymentId;
@@ -318,7 +318,7 @@ interface HostedOAuthBrokerRefreshTable {
   status: "pending" | "sealed" | "acknowledged" | "failed" | "expired";
   failureCode: string | null;
   providerError: string | null;
-  providerApplicationRevision: number;
+  registryRevision: number;
   hostPublicKey: string;
   sealedCiphertext: JsonValue | null;
   createdAt: Timestamp;

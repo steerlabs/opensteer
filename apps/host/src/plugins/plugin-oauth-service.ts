@@ -20,7 +20,7 @@ import {
   OAuthBrokerPluginRevocationContextSchema,
   OAuthBrokerPluginRelaySchema,
   OAuthBrokerTokenBundleSchema,
-  OAuthBrokerMcpAuthorizationResponseSchema,
+  OAuthBrokerAuthorizationResponseSchema,
 } from "@opensteer/control-plane-protocol";
 import {
   generateOAuthBrokerEphemeralKeyPair,
@@ -671,7 +671,7 @@ export class PluginOAuthService {
           throw invalid();
         const pulled = await this.options.broker!.client.pull(session.broker.id);
         if (!pulled.sealedResult) throw invalid();
-        const response = OAuthBrokerMcpAuthorizationResponseSchema.parse(
+        const response = OAuthBrokerAuthorizationResponseSchema.parse(
           openOAuthBrokerPayload(
             pulled.sealedResult,
             session.broker.privateKey,

@@ -15,7 +15,7 @@ const application = {
 };
 
 describe("broker provider registry", () => {
-  it("boots a provider absent from the catalog and derives relay availability from configuration", () => {
+  it("boots a provider without a compiled catalog and publishes only its public configuration", () => {
     const broker = new HostedOAuthBrokerService({
       applications: [{ ...application, placement: { hosts: ["api.example.test"] } }],
       issuer: new URL("https://accounts.example.test"),
@@ -23,8 +23,6 @@ describe("broker provider registry", () => {
       store: {} as never,
     });
     expect(broker.metadata()).toMatchObject({
-      callbackRelayProviders: [application.provider],
-      providerRevisions: { [application.provider]: 73 },
       pluginProviders: { [application.provider]: { placement: { hosts: ["api.example.test"] } } },
       pluginOAuth: 1,
       pluginCallbackRelay: 1,
@@ -35,19 +33,17 @@ describe("broker provider registry", () => {
     expect(() => registryOAuthConfig(application, ["outside-registry"])).toThrow("exceed");
   });
 
-  it("advertises relay-only providers without provisioning a managed client or secret", () => {
-    const { clientId: _client, clientSecret: _secret, ...provider } = application;
+  it("does not require a managed registration for plugin callback relay", () => {
     const broker = new HostedOAuthBrokerService({
-      applications: [{ ...provider, relayOnly: true }],
+      applications: [],
       issuer: new URL("https://accounts.example.test"),
       attemptContextEncryptionKey: Buffer.alloc(32, 4).toString("base64url"),
       store: {} as never,
     });
-    expect(broker.metadata()).toMatchObject({
-      callbackRelayProviders: [application.provider],
-      pluginProviders: {},
-      providerRevisions: {},
-    });
+    expect(broker.metadata()).toMatchObject({ pluginCallbackRelay: 1, pluginProviders: {} });
+    expect(
+      HostedOAuthProviderRegistrySchema.safeParse([{ ...application, relayOnly: true }]).success,
+    ).toBe(false);
     expect(JSON.stringify(broker.metadata())).not.toContain("fixture-secret");
   });
 
