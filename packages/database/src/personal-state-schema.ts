@@ -463,6 +463,7 @@ const retainedStateDdl = `
     unique (tool_call_id,image_index)
   );
   create index tool_output_images_path on tool_output_images(thread_id,path_hash,completion_order desc,image_index desc);
+  create index tool_output_images_scope_path on tool_output_images(thread_id,node_id,path_hash,completion_order desc,image_index desc);
   create index tool_output_images_node on tool_output_images(node_id) where node_id is not null;
 
   create table runner_event_receipts (
