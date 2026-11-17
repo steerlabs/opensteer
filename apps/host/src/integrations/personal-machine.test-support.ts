@@ -889,7 +889,7 @@ function eventAcknowledged(socket: WebSocket, runId: RunId, ordinal: number): Pr
     const receive = (frame: WebSocket.RawData) => {
       const message = JSON.parse(frame.toString()) as HostToRunnerMessage;
       const acknowledged =
-        message.type === "host.events.acked" &&
+        message.type === "host.executions.acked" &&
         message.acks.some((ack) => ack.runId === runId && ack.throughOrdinal >= ordinal);
       const revoked =
         message.type === "host.runs.revoked" &&

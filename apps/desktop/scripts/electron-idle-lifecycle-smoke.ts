@@ -1,7 +1,6 @@
-import { DeviceIdSchema } from "@opensteer/core";
-import { tabFixture } from "@opensteer/client/test-support";
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { personalResourceKinds } from "@opensteer/protocol/resources";
 import { createServer } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -9,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { app, BrowserWindow, ipcMain, powerMonitor, protocol, systemPreferences } from "electron";
 import { WebSocketServer } from "ws";
 import { z } from "zod";
-import { createId, emptyExecutionPreferences } from "@opensteer/core";
+import { createId } from "@opensteer/core";
 import { BrowserServerMessageSchema, hostApi, BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import type { CdpSession } from "@opensteer/browser-runtime-core";
 import { DesktopLocalVisibility } from "../src/app/local-visibility.js";
@@ -37,62 +36,32 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
     runnerId: createId("runner"),
     userId: createId("user"),
   };
-  const fixture = {
+  const shell = hostApi["personal.shell.get"].success.parse({
     deploymentId: selected.id,
-    sessionId: createId("authSession"),
-    personalSettings: {
-      ownerId: ids.userId,
-      agentHome: { computerId: ids.runnerId, path: path.join(directory, "agent-home") },
-      voiceThreadId: null,
-    },
-    can: { createTasks: true, useVoice: true, manageComputers: true, managePrivateResources: true },
-    tabs: {
-      tabs: [
-        tabFixture({
-          tabId: surfaceId,
-          computer: { computerId: DeviceIdSchema.parse(ids.runnerId), name: "Mac" },
-          title: "Idle smoke",
-          url: "about:blank",
-        }),
-      ],
-      layout: { revision: 1, items: [{ kind: "tab", tabId: surfaceId }] },
-      complete: true,
-    },
-    latestPlaces: [],
-    environments: [],
-    harnesses: [],
-    machines: [],
-    executionPreferences: emptyExecutionPreferences,
-    quietTaskDays: 7,
-    sessionSurface: "canonical",
-    identityConfig: {
-      deployment: { kind: "personal", name: selected.name },
-      emailDeliveryAvailable: false,
-      exposure: "loopback",
-      localPasswordEnabled: false,
-      machineOwner: true,
-      oidcProviders: [],
-      passkeysEnabled: false,
-      portalOrigin: null,
-      publicOrigin: selected.canonicalOrigin,
-      setupState: "complete",
-      signupPolicy: "closed",
-    },
-    user: {
-      id: ids.userId,
-      disabledAt: null,
-      displayName: "Idle smoke",
-      email: "idle@opensteer.invalid",
-      emailVerified: true,
-      image: null,
-    },
-  };
-  const bootstrap = hostApi["bootstrap.get"].success.parse({
-    ...fixture,
-    browser: {
-      available: true,
-      placements: [],
-      profiles: [],
+    epoch: crypto.randomUUID(),
+    viewerId: ids.userId,
+    tasks: [],
+    visits: [],
+    attention: [],
+    counts: { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 },
+    resourceRevisions: Object.fromEntries(personalResourceKinds.map((kind) => [kind, "0"])),
+    session: {
+      sessionId: createId("authSession"),
+      sessionSurface: "canonical",
+      can: {
+        createTasks: true,
+        useVoice: true,
+        manageComputers: true,
+        managePrivateResources: true,
+      },
+      user: {
+        id: ids.userId,
+        disabledAt: null,
+        displayName: "Idle smoke",
+        email: "idle@opensteer.invalid",
+        emailVerified: true,
+        image: null,
+      },
     },
   });
   const server = createServer((request, response) => {
@@ -110,8 +79,8 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
     response.setHeader("content-type", "application/json");
     response.end(
       JSON.stringify(
-        request.url?.includes("bootstrap.get")
-          ? { ok: true, data: bootstrap }
+        request.url?.includes("personal.shell.get")
+          ? { ok: true, data: shell }
           : { ok: false, error: { code: "not_found", message: "Outside smoke", retryable: false } },
       ),
     );

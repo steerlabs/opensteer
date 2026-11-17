@@ -60,7 +60,7 @@ integration("agent-to-agent messaging round trip", () => {
   const commands = new CommandService({
     admission,
     onExecutionQueued: vi.fn(),
-    onDeploymentEvent: vi.fn(),
+
     store,
   });
   const computerUse = {
@@ -650,7 +650,7 @@ integration("agent-to-agent messaging round trip", () => {
         const changed = new CommandService({
           admission,
           onExecutionQueued: () => undefined,
-          onDeploymentEvent: () => undefined,
+
           store,
         });
         await (mode === "icon"

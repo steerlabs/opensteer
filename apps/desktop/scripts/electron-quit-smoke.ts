@@ -122,7 +122,7 @@ async function run(): Promise<void> {
           const deploymentId = value.authority.document.deploymentId;
           const snapshot = await network.partitionFetch(
             deploymentId,
-            `${origin}/v1/rpc/bootstrap.get?input=%7B%7D`,
+            `${origin}/v1/rpc/tabs.state?input=%7B%7D`,
             { headers: { [hostApiVersionHeader]: String(hostApiVersion) } },
           );
           writeFileSync(

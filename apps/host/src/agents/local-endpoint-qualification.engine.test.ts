@@ -1,3 +1,4 @@
+import { readTestResource } from "../server/test-host-api-request.js";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, readdir, mkdir, rm, writeFile } from "node:fs/promises";
@@ -667,8 +668,10 @@ async function stagedPiModelsText(stack: VerticalStack): Promise<string> {
 
 /** The account's catalog as the next bootstrap reports it. */
 async function stackCatalog(stack: VerticalStack) {
-  const bootstrap = await stack.api["bootstrap.get"]({});
-  if (!bootstrap.ok) throw new Error(bootstrap.error.message);
+  const bootstrap = {
+    ok: true as const,
+    data: await readTestResource(stack.api, "harness-catalog"),
+  };
   const catalog = bootstrap.data.environments
     .find((environment) => environment.id === stack.environmentId)
     ?.harnessCatalogs.find((entry) => entry.harnessInstanceId === stack.harnessInstanceId);

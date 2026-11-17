@@ -337,9 +337,9 @@ integration("MCP OAuth reconnect", () => {
           authorizationSource: { providerAuthorizations: async () => ({}) },
           credentialMaterializer: {} as never,
           computerApps: {} as never,
-          onDeploymentEvent: () => {},
+
           onConnectionsChanged: () => {},
-          onRequestsChanged: () => {},
+
           isRunnerConnected: () => true,
         });
         const callable = {

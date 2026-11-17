@@ -54,7 +54,7 @@ function service(fixture: StoreFixture, options: { personal?: boolean; runnerId?
     }),
     profileRequestRunner: async () => options.runnerId ?? null,
     onSessionsChanged: () => undefined,
-    onDeploymentEvent: () => undefined,
+
     targetResolver: { placements: () => placements, resolve: () => undefined },
   });
   return { browser, placements };

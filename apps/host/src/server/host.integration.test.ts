@@ -1,3 +1,4 @@
+import { injectTestResource } from "./test-host-api-request.js";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
 import {
@@ -57,11 +58,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, afterEach, describe, expect, it, vi } from "vitest";
-import {
-  threadPlacementOptions,
-  type EnvironmentSummary,
-  type HarnessSummary,
-} from "@opensteer/client/host";
+import { threadPlacementOptions } from "@opensteer/client/host";
 import { HostAuthenticator } from "../identity/auth.js";
 import { LocalBootstrapService } from "../runtime/local-bootstrap.js";
 
@@ -3354,10 +3351,8 @@ describe("durable harness catalogs", () => {
     });
     const app = await server;
     try {
-      const bootstrap = await injectRpcRequest(app, "bootstrap.get", {});
-      expect(bootstrap.statusCode).toBe(200);
-      expect(rpcData(bootstrap)).toMatchObject({
-        quietTaskDays: 3,
+      expect(await injectTestResource(app, "settings")).toMatchObject({ quietTaskDays: 3 });
+      expect(await injectTestResource(app, "harness-catalog")).toMatchObject({
         environments: [
           {
             connected: false,
@@ -3399,11 +3394,9 @@ describe("durable harness catalogs", () => {
     });
     const app = await fixture.server;
     try {
-      const bootstrap = rpcData(await injectRpcRequest(app, "bootstrap.get", {})) as {
-        environments: EnvironmentSummary[];
-        harnesses: HarnessSummary[];
-      };
-      expect(bootstrap.environments[0]?.harnessDrivers).toEqual([
+      const { environments } = await injectTestResource(app, "harness-catalog");
+      const { harnesses } = await injectTestResource(app, "harness");
+      expect(environments[0]?.harnessDrivers).toEqual([
         {
           driverKind: "native",
           readiness: "unavailable",
@@ -3411,7 +3404,7 @@ describe("durable harness catalogs", () => {
         },
       ]);
       // The shared client's picker says so before anything is sent.
-      const [placement] = threadPlacementOptions(bootstrap.environments, bootstrap.harnesses);
+      const [placement] = threadPlacementOptions(environments, harnesses);
       expect(placement).toMatchObject({
         available: false,
         detail: "Update this computer to use Opensteer tools.",
@@ -3430,7 +3423,7 @@ describe("durable harness catalogs", () => {
       environmentKind: "main",
     }).server;
     try {
-      expect(rpcData(await injectRpcRequest(away, "bootstrap.get", {}))).toMatchObject({
+      expect(await injectTestResource(away, "environment")).toMatchObject({
         environments: [{ connected: false, status: "disconnected" }],
       });
     } finally {
@@ -3444,7 +3437,7 @@ describe("durable harness catalogs", () => {
       environmentKind: "main",
     }).server;
     try {
-      expect(rpcData(await injectRpcRequest(unmanaged, "bootstrap.get", {}))).toMatchObject({
+      expect(await injectTestResource(unmanaged, "environment")).toMatchObject({
         environments: [{ connected: false, status: "disconnected" }],
       });
     } finally {
@@ -3812,9 +3805,7 @@ describe("durable harness catalogs", () => {
 
       expect(created.statusCode).toBe(200);
       await vi.waitFor(() => expect(fixture.reconcileHarnesses).toHaveBeenCalledTimes(1));
-      const refreshed = await injectRpcRequest(app, "bootstrap.get", {});
-      expect(refreshed.statusCode).toBe(200);
-      expect(rpcData(refreshed)).toMatchObject({
+      expect(await injectTestResource(app, "harness")).toMatchObject({
         harnesses: [expect.objectContaining({ id: harnessInstanceId })],
       });
       coldCatalog.resolve([]);
@@ -4032,7 +4023,7 @@ describe("durable harness catalogs", () => {
       environmentKind: "main",
     }).server;
     try {
-      expect(rpcData(await injectRpcRequest(app, "bootstrap.get", {}))).toMatchObject({
+      expect(await injectTestResource(app, "environment")).toMatchObject({
         environments: [{ harnessAuthenticationAllowed: true }],
       });
     } finally {

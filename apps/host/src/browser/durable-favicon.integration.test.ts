@@ -1,3 +1,4 @@
+import { testResourceData } from "../server/test-host-api-request.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import { TabStore } from "@opensteer/database";
 import { TabIdSchema } from "@opensteer/core";
@@ -871,14 +872,9 @@ integration("Durable tab icons", () => {
     steps.push({ step: "navigation cleared then settled", revision: await revision() });
 
     const coldTabs = async (currentHost = host) => {
-      const bootstrap = await testRpcData(
-        host.origin,
-        "bootstrap.get",
-        {},
-        {
-          headers: host.ownerHeaders,
-        },
-      );
+      const bootstrap = await testResourceData(host.origin, "tab", {
+        headers: host.ownerHeaders,
+      });
       const group = bootstrap.tabs;
       const read = await browserRows(currentHost.runtime.browser, currentHost.ownerId, sessionId);
       expect(JSON.stringify(group)).not.toContain("data:image");

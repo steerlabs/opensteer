@@ -1,3 +1,4 @@
+import { readTestResource } from "../server/test-host-api-request.js";
 import type { ManualClock } from "@opensteer/shared/test-support/clock";
 import type { PersonalHostRuntime } from "../runtime/runtime.js";
 import type { VerticalStack } from "./vertical-stack.test-support.js";
@@ -20,7 +21,7 @@ export async function executionLeaseExpiresAt(
 export async function executionDisconnected(
   stack: Pick<VerticalStack, "api" | "environmentId">,
 ): Promise<boolean> {
-  const read = await stack.api["bootstrap.get"]({});
+  const read = { ok: true as const, data: await readTestResource(stack.api, "environment") };
   return (
     read.ok &&
     read.data.environments.some(

@@ -176,7 +176,10 @@ describeStore("durable Run place entries", (it) => {
     });
     const cut = await readPersonalDetailSnapshot(database, { viewerId: f.userId, scope });
     if (cut.kind !== "snapshot") throw new Error("Expected task detail");
-    expect(cut.snapshot).toMatchObject({ thread: { latestPlace: appPlace } });
+    expect(cut.snapshot.items).toContainEqual(
+      expect.objectContaining({ kind: "place", runId: f.run.id, place: appPlace }),
+    );
+    expect(await store.latestRunPlace(f.run.id)).toEqual(appPlace);
     expect(Buffer.byteLength(JSON.stringify(cut.snapshot))).toBeLessThanOrEqual(128 * 1024);
     const outsider = await store.createUser("Outsider");
     await expect(

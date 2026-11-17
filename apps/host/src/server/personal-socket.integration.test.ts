@@ -1,4 +1,8 @@
-import { expect, it } from "vitest";
+import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
+import { createDatabase } from "@opensteer/database";
+import { preparePersonalConversion } from "@opensteer/database/test-support/personal-state";
+import { createHostRuntime, type PersonalHostRuntime } from "../runtime/runtime.js";
+import { expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { apiVersionHeaders } from "@opensteer/deployment-authority";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
@@ -103,7 +107,7 @@ it("delivers an overlapping commit and replaces a held detail generation on a re
       ownerId: runtime.ownerId,
       suffix: "scoped-socket",
     });
-    const first = await connect(runtime.origin, runtime.ownerHeaders.cookie);
+    const first = await connect(runtime.origin, runtime.ownerHeaders.cookie!);
     sockets.push(first.socket);
     const selected = {
       subscriptionId: "detail:0",
@@ -184,3 +188,73 @@ it("delivers an overlapping commit and replaces a held detail generation on a re
   }
 });
 import { Writable } from "node:stream";
+
+it.each(["fresh", "converted"] as const)(
+  "synchronizes a task through the shared Node client on a %s Host",
+  async (lineage) => {
+    const database = await cloneTestDatabase("host");
+    let host: PrivateMachineHost | undefined;
+    let restarted: PersonalHostRuntime | undefined;
+    let client: HttpHostClient | undefined;
+    try {
+      host = await startPrivateMachineHost(database.url, { logger: false });
+      const task = await createPersonalRunFixturePort(host.store).createTask({
+        ownerId: host.ownerId,
+        suffix: `${lineage}-node-client`,
+      });
+      if (lineage === "converted") {
+        await host.runtime.close();
+        const source = createDatabase({ connectionString: database.url });
+        try {
+          await preparePersonalConversion(source);
+        } finally {
+          await source.destroy();
+        }
+        const runtime = await createHostRuntime(host.config, { logger: false });
+        if (runtime.kind !== "personal") {
+          await runtime.close();
+          throw new Error("Expected a personal Host");
+        }
+        restarted = runtime;
+        await restarted.listen();
+      }
+      const { origin, ownerHeaders } = host;
+      const nodeClient = new HttpHostClient({
+        baseUrl: origin,
+        fetch: (url, init) =>
+          fetch(url, {
+            ...init,
+            headers: { ...Object.fromEntries(new Headers(init?.headers)), ...ownerHeaders },
+          }),
+        webSocketFactory: (url) =>
+          new WebSocket(url, { headers: ownerHeaders }) as unknown as WebSocketClient,
+      });
+      client = nodeClient;
+      nodeClient.activateThread(task.threadId);
+      await nodeClient.load();
+      await vi.waitFor(
+        () => {
+          expect(
+            nodeClient.deploymentPosition(),
+            "The client did not install the shell cut",
+          ).not.toBeNull();
+          expect(nodeClient.getSnapshot().threads, "The task did not appear in the shell").toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ id: task.threadId, title: task.thread.title }),
+            ]),
+          );
+          expect(
+            nodeClient.getThreadTranscript(task.threadId)?.getSnapshot().synchronized,
+            "The client did not install the task detail cut",
+          ).toBe(true);
+        },
+        { timeout: 5_000 },
+      );
+    } finally {
+      client?.dispose();
+      await restarted?.close();
+      await host?.close();
+      await database.drop();
+    }
+  },
+);

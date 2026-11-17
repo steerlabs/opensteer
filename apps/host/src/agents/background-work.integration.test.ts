@@ -1,3 +1,4 @@
+import { readTestResource } from "../server/test-host-api-request.js";
 import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -572,8 +573,10 @@ integration("Background work", () => {
           stopped.mockRestore();
         }
         const environment = async () => {
-          const result = await active.api["bootstrap.get"]({});
-          if (!result.ok) throw new Error(result.error.message);
+          const result = {
+            ok: true as const,
+            data: await readTestResource(active.api, "harness-catalog"),
+          };
           return result.data.environments.find((entry) => entry.id === active.environmentId);
         };
         await within(

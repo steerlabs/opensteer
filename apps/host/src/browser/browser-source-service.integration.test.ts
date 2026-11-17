@@ -465,7 +465,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       onRequestResolved: () => {
         resolvedRequests += 1;
       },
-      onDeploymentEvent: () => {},
+
       requests: {
         hasActiveRunPasswordSignInAuthority:
           store.requests.hasActiveRunPasswordSignInAuthority.bind(store.requests),
@@ -2091,7 +2091,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         threadTitle: "Test thread",
       }),
       onRequestResolved: () => {},
-      onDeploymentEvent: () => {},
+
       requests: store.requests,
     });
     try {

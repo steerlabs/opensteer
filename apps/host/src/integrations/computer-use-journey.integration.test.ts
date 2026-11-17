@@ -1720,7 +1720,6 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           maxQueuedCommands: 64,
         }),
         onExecutionQueued: () => undefined,
-        onDeploymentEvent: () => undefined,
       });
       let capabilities = ["native-place-input-v1", "browser-page-input-v1"];
       const host = await createHostServer(
@@ -5244,13 +5243,13 @@ async function createWorld(
     ...(options.computerReplTime ? { computerReplTime: options.computerReplTime } : {}),
     mcpImageContent: async () => imageGate.on,
     mcpOauth: { providerFor: vi.fn() },
-    onDeploymentEvent: () => undefined,
+
     onConnectionsChanged: () => {
       void persistence
         .listComputerAppSetupRequests(owner.userId)
         .then((requests) => fakeMac.replaceApprovals(requests));
     },
-    onRequestsChanged: () => undefined,
+
     store: persistence,
   });
   fakeMac.respond = async (setupRequestId, answer) => {

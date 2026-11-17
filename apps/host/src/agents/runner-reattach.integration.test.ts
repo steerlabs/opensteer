@@ -1,3 +1,6 @@
+import type { MessageEntry } from "@opensteer/client/host";
+import { engineInspectionViewer } from "./engine-inspection.test-support.js";
+import { readTestResource } from "../server/test-host-api-request.js";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
 import { randomUUID } from "node:crypto";
@@ -274,14 +277,26 @@ integration("Runs that outlive their connection", () => {
       .executeTakeFirstOrThrow();
     return BigInt(row.connectionGeneration);
   }
+  const liveViewers = new Map<ThreadId, ReturnType<typeof engineInspectionViewer>>();
+  afterEach(() => {
+    for (const viewer of liveViewers.values()) viewer.dispose();
+    liveViewers.clear();
+  });
   async function liveAssistant(active: VerticalStack, threadId: ThreadId) {
-    const read = await active.api["thread.live.get"]({
-      threadId,
-    });
-    if (!read.ok) throw new Error(read.error.message);
-    return read.data.runs
-      .flatMap((entry) => entry.progress.items)
-      .find((item) => item.stream === "assistant")?.text;
+    let viewer = liveViewers.get(threadId);
+    if (!viewer) {
+      viewer = engineInspectionViewer(active);
+      liveViewers.set(threadId, viewer);
+      viewer.activateThread(threadId);
+      await viewer.load();
+    }
+    return viewer
+      .getThreadTranscript(threadId)
+      ?.getSnapshot()
+      .entries.find(
+        (entry): entry is MessageEntry =>
+          entry.kind === "message" && entry.messageKind === "assistant" && entry.streaming === true,
+      )?.body;
   }
   function assistantRows(active: VerticalStack, runId: RunId) {
     return active.host.store.database
@@ -842,8 +857,10 @@ integration("Runs that outlive their connection", () => {
       .map((part) => part.text)
       .join("\n");
     expect(notice).toContain("Opensteer restarted while you were working");
-    const bootstrap = await active.api["bootstrap.get"]({});
-    if (!bootstrap.ok) throw new Error(bootstrap.error.message);
+    const bootstrap = {
+      ok: true as const,
+      data: await readTestResource(active.api, "environment"),
+    };
     expect(
       bootstrap.data.environments
         .find((environment) => environment.id === active.environmentId)
@@ -965,7 +982,10 @@ integration("Runs that outlive their connection", () => {
       active.network.block();
       await waitFor(
         async () => {
-          const state = await active.api["bootstrap.get"]({});
+          const state = {
+            ok: true as const,
+            data: await readTestResource(active.api, "environment"),
+          };
           return (
             state.ok &&
             state.data.environments.find((environment) => environment.id === active.environmentId)
@@ -1019,7 +1039,10 @@ integration("Runs that outlive their connection", () => {
     active.network.unblock();
     await waitFor(
       async () => {
-        const state = await active.api["bootstrap.get"]({});
+        const state = {
+          ok: true as const,
+          data: await readTestResource(active.api, "environment"),
+        };
         return (
           state.ok &&
           state.data.environments.find((environment) => environment.id === active.environmentId)
@@ -1211,7 +1234,7 @@ integration("Runs that outlive their connection", () => {
     const request = await waitForValue(30_000, async () =>
       active.host.store.database
         .selectFrom("requests")
-        .select(["id", "presentation"])
+        .select(["id", "presentation", "revision"])
         .where("originatingRunId", "=", runId)
         .where("status", "=", "pending")
         .executeTakeFirst(),
@@ -1230,6 +1253,7 @@ integration("Runs that outlive their connection", () => {
       "commands.dispatch",
       {
         idempotencyKey: key,
+        expectedRevision: request.revision,
         requestId: request.id,
         response: {
           kind: "choice",
@@ -1283,7 +1307,7 @@ integration("Runs that outlive their connection", () => {
     const request = await waitForValue(30_000, async () =>
       active.host.store.database
         .selectFrom("requests")
-        .select(["id", "presentation"])
+        .select(["id", "presentation", "revision"])
         .where("originatingRunId", "=", askingRun)
         .where("status", "=", "pending")
         .executeTakeFirst(),
@@ -1389,6 +1413,7 @@ integration("Runs that outlive their connection", () => {
       "commands.dispatch",
       {
         idempotencyKey: key,
+        expectedRevision: request.revision,
         requestId: request.id,
         response: {
           kind: "choice",

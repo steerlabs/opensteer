@@ -1,3 +1,4 @@
+import { HttpHostClient, type MessageEntry, type WebSocketClient } from "@opensteer/client/host";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -58,32 +59,9 @@ const reasoningText = (message: number) =>
   ).join("");
 const liveDeltaCount =
   messages * (deltasPerMessage + reasoningDeltas + commandsPerMessage * commandDeltas);
-interface TranscriptEntryView {
-  readonly body?: string;
-  readonly id: string;
-  readonly kind: string;
-  readonly messageKind?: string;
-  readonly output?: {
-    readonly text: string;
-  };
-  readonly runId?: string | null;
-  readonly state?: string;
-  readonly status?: string;
-  readonly streamText?: string;
-  readonly streaming?: boolean;
-  readonly text?: string;
-}
-interface LiveClient {
-  activateThread(threadId: string): void;
-  dispose(): void;
-  getSnapshot(): {
-    readonly transcripts: Record<string, readonly TranscriptEntryView[]>;
-  };
-  load(): Promise<void>;
-}
 integration("live streaming across the deployment", () => {
   let stack: VerticalStack | undefined;
-  const clients: LiveClient[] = [];
+  const clients: HttpHostClient[] = [];
   const sockets: WebSocket[] = [];
   const temporary: string[] = [];
   afterEach(async () => {
@@ -128,19 +106,8 @@ integration("live streaming across the deployment", () => {
     });
     return stack;
   }
-  async function viewer(threadId: ThreadId): Promise<LiveClient> {
+  async function viewer(threadId: ThreadId) {
     const active = stack!;
-    const clientModulePath = "@opensteer/client/host";
-    const { HttpHostClient } = (await import(clientModulePath)) as {
-      HttpHostClient: new (options: {
-        readonly baseUrl: URL;
-        readonly fetch: typeof globalThis.fetch;
-        readonly reconnectBaseDelayMs: number;
-        readonly reconnectMaxDelayMs: number;
-        readonly refreshIntervalMs: number;
-        readonly webSocketFactory: (url: string) => unknown;
-      }) => LiveClient;
-    };
     const client = new HttpHostClient({
       baseUrl: active.hostOrigin,
       fetch: (input, init) => {
@@ -154,7 +121,6 @@ integration("live streaming across the deployment", () => {
       },
       reconnectBaseDelayMs: 20,
       reconnectMaxDelayMs: 100,
-      refreshIntervalMs: 0,
       webSocketFactory: (url) => {
         const socket = new WebSocket(url, {
           headers: {
@@ -163,7 +129,7 @@ integration("live streaming across the deployment", () => {
           },
         });
         sockets.push(socket);
-        return socket;
+        return socket as unknown as WebSocketClient;
       },
     });
     clients.push(client);
@@ -181,15 +147,14 @@ integration("live streaming across the deployment", () => {
       .where("id", "=", runId)
       .executeTakeFirstOrThrow();
   }
-  async function liveAssistant(threadId: ThreadId): Promise<string | undefined> {
-    const read = await stack!.api["thread.live.get"]({
-      threadId,
-    });
-    if (!read.ok) throw new Error(read.error.message);
-    const item = read.data.runs
-      .flatMap((run) => run.progress.items)
-      .find((candidate) => candidate.stream === "assistant");
-    return item?.text;
+  function entries(client: HttpHostClient, threadId: ThreadId) {
+    return client.getThreadTranscript(threadId)?.getSnapshot().entries ?? [];
+  }
+  function streamEntry(client: HttpHostClient, threadId: ThreadId) {
+    return entries(client, threadId).find(
+      (entry): entry is MessageEntry =>
+        entry.kind === "message" && entry.messageKind === "assistant" && entry.streaming === true,
+    );
   }
   it("streams a long turn live without storing deltas, to early, late and reconnecting readers alike", async () => {
     const outputDirectory =
@@ -213,21 +178,21 @@ integration("live streaming across the deployment", () => {
     });
     const runId = queued.runId!;
     const heldText = messageText(0, heldAfterDeltas);
-    const streamEntry = (client: LiveClient) =>
-      client.getSnapshot().transcripts[threadId]?.find((entry) => entry.id === `stream:${runId}`);
-
     // The turn is held mid-answer: the early reader has drawn exactly what was
     // streamed, and the Host serves the same text to a reader asking now.
-    await waitFor(() => streamEntry(early)?.body === heldText, 30_000, "early reader stream");
-    expect(streamEntry(early)).toMatchObject({
+    await waitFor(
+      () => streamEntry(early, threadId)?.body === heldText,
+      30_000,
+      "early reader stream",
+    );
+    expect(streamEntry(early, threadId)).toMatchObject({
       messageKind: "assistant",
       streaming: true,
     });
-    expect(await liveAssistant(threadId)).toBe(heldText);
-    const reasoning = (client: LiveClient) =>
-      client
-        .getSnapshot()
-        .transcripts[threadId]?.find((entry) => entry.id === `reasoning:${runId}:long-reasoning-0`);
+    const reasoning = (client: HttpHostClient) =>
+      entries(client, threadId).find(
+        (entry) => entry.kind === "reasoning" && entry.text === reasoningText(0),
+      );
     expect(reasoning(early)).toMatchObject({
       state: "done",
       text: reasoningText(0),
@@ -235,12 +200,20 @@ integration("live streaming across the deployment", () => {
 
     // A reader that arrives mid-stream draws the whole stream so far.
     const late = await viewer(threadId);
-    await waitFor(() => streamEntry(late)?.body === heldText, 30_000, "late reader stream");
+    await waitFor(
+      () => streamEntry(late, threadId)?.body === heldText,
+      30_000,
+      "late reader stream",
+    );
 
     // A reader whose connection drops mid-stream resumes on the same text.
     for (const socket of sockets) socket.terminate();
     await delay(200);
-    await waitFor(() => streamEntry(early)?.body === heldText, 30_000, "reconnected stream");
+    await waitFor(
+      () => streamEntry(early, threadId)?.body === heldText,
+      30_000,
+      "reconnected stream",
+    );
     await writeFile(releaseFile, "");
     await waitFor(async () => (await runStatus(runId)).status === "completed", 60_000, "run end");
 
@@ -254,32 +227,46 @@ integration("live streaming across the deployment", () => {
     for (const client of [early, late]) {
       await waitFor(
         () =>
-          (client.getSnapshot().transcripts[threadId] ?? []).some(
+          entries(client, threadId).some(
             (entry) => entry.kind === "run" && entry.status === "completed",
           ),
         30_000,
         "reader saw the run complete",
       );
-      const entries = (client.getSnapshot().transcripts[threadId] ?? []).filter(
-        (entry) => entry.runId === runId,
+      while (client.getThreadTranscript(threadId)?.getSnapshot().hasMore)
+        await client.loadEarlierTranscript(threadId);
+      const history = entries(client, threadId).filter(
+        (entry) => "runId" in entry && entry.runId === runId,
       );
-      expect(entries.filter((entry) => entry.streaming === true)).toEqual([]);
       expect(
-        entries
-          .filter((entry) => entry.kind === "message" && entry.messageKind === "assistant")
-          .map((entry) => entry.body),
-      ).toEqual(expectedMessages);
-      expect(
-        entries.filter((entry) => entry.kind === "reasoning").map((entry) => entry.text),
-      ).toEqual(
-        Array.from(
-          {
-            length: messages,
-          },
-          (_value, index) => reasoningText(index),
-        ),
+        history.filter((entry) => entry.kind === "message" && entry.streaming === true),
+      ).toEqual([]);
+      const answers = history.filter(
+        (entry): entry is MessageEntry =>
+          entry.kind === "message" && entry.messageKind === "assistant",
       );
-      const tools = entries.filter((entry) => entry.kind === "tool");
+      const fullAnswers = await Promise.all(
+        answers.map(async (entry) => {
+          const body = (await client.readTranscriptItem(threadId, entry.itemId!))?.body;
+          return body?.kind === "message"
+            ? body.message.content
+                .flatMap((part) => (part.type === "text" ? [part.text] : []))
+                .join("")
+            : entry.body;
+        }),
+      );
+      expect(fullAnswers).toEqual(expectedMessages);
+      const thoughts = history.filter((entry) => entry.kind === "reasoning");
+      const fullThoughts = await Promise.all(
+        thoughts.map(async (entry) => {
+          const body = (await client.readTranscriptItem(threadId, entry.itemId!))?.body;
+          return body?.kind === "text" ? body.text : entry.text;
+        }),
+      );
+      expect(fullThoughts).toEqual(
+        Array.from({ length: messages }, (_, index) => reasoningText(index)),
+      );
+      const tools = history.filter((entry) => entry.kind === "tool");
       expect(tools).toHaveLength(messages * commandsPerMessage);
       expect(tools.every((tool) => tool.state === "done")).toBe(true);
     }
@@ -343,7 +330,8 @@ integration("live streaming across the deployment", () => {
     });
     const runId = queued.runId!;
     const heldText = messageText(0, heldAfterDeltas);
-    await waitFor(async () => (await liveAssistant(threadId)) === heldText, 30_000, "held stream");
+    const early = await viewer(threadId);
+    await waitFor(() => streamEntry(early, threadId)?.body === heldText, 30_000, "held stream");
     await active.interruptRun(threadId, runId);
     await waitFor(async () => (await runStatus(runId)).status === "interrupted", 30_000, "stop");
 
@@ -351,7 +339,7 @@ integration("live streaming across the deployment", () => {
     const reader = await viewer(threadId);
     await waitFor(
       () =>
-        (reader.getSnapshot().transcripts[threadId] ?? []).some(
+        entries(reader, threadId).some(
           (entry) => entry.kind === "message" && entry.body === heldText.trim(),
         ),
       30_000,
@@ -374,7 +362,7 @@ integration("live streaming across the deployment", () => {
         .executeTakeFirstOrThrow(),
     ]);
     expect(BigInt(partial.revision)).toBeLessThan(BigInt(interrupted.revision));
-    expect(await liveAssistant(threadId)).toBeUndefined();
+    expect(streamEntry(reader, threadId)).toBeUndefined();
   }, 120_000);
   it("fails only the Run whose event the Host refuses, keeping the Runner and its other Runs", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "opensteer-live-"));
@@ -402,10 +390,12 @@ integration("live streaming across the deployment", () => {
       })
     ).runId!;
     const heldText = messageText(0, heldAfterDeltas);
+    const refusingViewer = await viewer(refusedThread);
+    const healthyViewer = await viewer(healthyThread);
     await waitFor(
-      async () =>
-        (await liveAssistant(refusedThread)) === heldText &&
-        (await liveAssistant(healthyThread)) === heldText,
+      () =>
+        streamEntry(refusingViewer, refusedThread)?.body === heldText &&
+        streamEntry(healthyViewer, healthyThread)?.body === heldText,
       30_000,
       "both runs held",
     );

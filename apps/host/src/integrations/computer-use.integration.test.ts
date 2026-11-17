@@ -167,9 +167,8 @@ integration.sequential("Host computer-use approval transactions", () => {
       definitions: [definition],
       isRunnerConnected: () => true,
       mcpOauth: { providerFor: vi.fn() },
-      onDeploymentEvent: vi.fn(),
       onConnectionsChanged: vi.fn(),
-      onRequestsChanged: vi.fn(),
+
       store: persistence,
     });
     await service.installCatalogDefinition({
@@ -379,7 +378,7 @@ integration.sequential("Host computer-use approval transactions", () => {
       ordinal: number,
       address: { readonly account: string | null; readonly operation: string },
       of: Pick<typeof task, "bindingGeneration" | "environmentId" | "runId" | "threadId"> = task,
-    ): PendingAgentEvent => ({
+    ): Extract<PendingAgentEvent, { type: "tool.started" }> => ({
       bindingGeneration: of.bindingGeneration,
       data: {
         arguments: { ...address, arguments: {} },
@@ -418,12 +417,20 @@ integration.sequential("Host computer-use approval transactions", () => {
         runnerId: task.runnerId,
       });
     const committed = await commit(integration);
-    // What the Host publishes is the event it committed.
-    expect(committed.wasDuplicate).toBe(false);
-    expect(committed.event.data).toMatchObject({ integration });
+    expect(committed.replayed).toBe(false);
+    const read = () =>
+      database
+        .selectFrom("toolCalls")
+        .select(["id", "integration"])
+        .where("runId", "=", task.runId)
+        .where("callId", "=", event.data.callId)
+        .execute();
+    const original = await read();
+    expect(original).toEqual([{ id: expect.any(String), integration }]);
     const replayed = await commit(undefined);
-    expect(replayed.wasDuplicate).toBe(true);
-    expect(replayed.event).toEqual(committed.event);
+    expect(replayed.replayed).toBe(true);
+    expect(replayed.throughOrdinal).toBe(committed.throughOrdinal);
+    expect(await read()).toEqual(original);
 
     // An address whose schema changed, and one for a removed grant, name nothing.
     await expect(

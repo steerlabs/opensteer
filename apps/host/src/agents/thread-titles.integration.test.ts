@@ -73,7 +73,7 @@ integration.sequential("Thread title lifecycle", () => {
       maxQueuedCommands: 64,
     }),
     onExecutionQueued: () => undefined,
-    onDeploymentEvent: () => undefined,
+
     store,
   });
   beforeAll(async () => {

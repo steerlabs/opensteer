@@ -1,3 +1,4 @@
+import { readTestResource } from "../server/test-host-api-request.js";
 import { randomInt, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1434,8 +1435,10 @@ describe("live Home handoff between native engines", () => {
     });
     const claudeHarnessId = stack.additionalHarnessInstanceIds[0];
     if (!claudeHarnessId) throw new Error("Claude account did not connect");
-    const bootstrap = await stack.api["bootstrap.get"]({});
-    if (!bootstrap.ok) throw new Error(bootstrap.error.message);
+    const bootstrap = {
+      ok: true as const,
+      data: await readTestResource(stack.api, "harness-catalog"),
+    };
     const environment = bootstrap.data.environments.find(
       (candidate) => candidate.id === stack!.environmentId,
     );

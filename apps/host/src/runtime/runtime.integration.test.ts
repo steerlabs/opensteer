@@ -1,3 +1,5 @@
+import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
+import { testResourceData } from "../server/test-host-api-request.js";
 import {
   connectCallerMachine,
   type CallerMachine,
@@ -21,8 +23,8 @@ import {
   HarnessIdSchema,
   ModelSelectionSchema,
   createId,
-  zeroSequence,
   type EnvironmentId,
+  type ThreadId,
 } from "@opensteer/core";
 import { AccountDirectoryStore, OpensteerStore, createDatabase } from "@opensteer/database";
 import { HostDescriptorSchema, hostApiVersion } from "@opensteer/deployment-authority";
@@ -174,7 +176,7 @@ integration("Host vertical slice", () => {
     const origin = config.runtimeOrigin.origin;
     await initializeOwnerSession(origin);
 
-    const unauthorized = await testRpcRequest(origin, "bootstrap.get", {});
+    const unauthorized = await testRpcRequest(origin, "personal.shell.get", {});
     expect(unauthorized.status).toBe(401);
 
     const runnerId = createId("runner");
@@ -229,30 +231,28 @@ integration("Host vertical slice", () => {
     );
     const bootstrap = await testRpcData(
       origin,
-      "bootstrap.get",
+      "personal.shell.get",
       {},
       {
         headers: authorization(accessToken),
       },
     );
-    expect(bootstrap.user.displayName).toBe("You");
+    expect(bootstrap.session.user.displayName).toBe("You");
     // This Host names no apex portal, so the config every client reads on boot
     // reports none and the web UI renders no way "up" out of a self-hosted
     // Deployment.
-    expect(bootstrap.identityConfig).toMatchObject({
+    const identity = await testResourceData(origin, "identity", {
+      headers: authorization(accessToken),
+    });
+    expect(identity.identity).toMatchObject({
       deployment: { kind: "personal", name: null },
       portalOrigin: null,
     });
     let harnessInstanceId = "";
     await waitForCondition(async () => {
-      const connectedBootstrap = await testRpcData(
-        origin,
-        "bootstrap.get",
-        {},
-        {
-          headers: authorization(accessToken),
-        },
-      );
+      const connectedBootstrap = await testResourceData(origin, "harness", {
+        headers: authorization(accessToken),
+      });
       harnessInstanceId =
         (connectedBootstrap.harnesses.find(
           (harness: { driverKind: string }) => harness.driverKind === "codex",
@@ -274,7 +274,7 @@ integration("Host vertical slice", () => {
       { headers: authorization(accessToken) },
     );
     if (threadResult.type !== "thread.create") throw new Error("Thread command mismatch.");
-    const threadId = threadResult.thread.id as string;
+    const threadId = threadResult.thread.id;
     expect(threadResult.thread.accessMode).toBe("full-access");
     const accessModeUpdate = await testRpcData(
       origin,
@@ -292,61 +292,8 @@ integration("Host vertical slice", () => {
     expect(accessModeUpdate.thread.accessMode).toBe("auto");
 
     realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
-    realtimeSocket.send(
-      JSON.stringify({
-        apiVersion: hostApiVersion,
-        threadId: null,
-        type: "client.subscribe",
-        cursor: {
-          deploymentId: runtime.deployment.id,
-          apiVersion: hostApiVersion,
-          afterSequence: zeroSequence,
-        },
-      }),
-    );
-    await waitForMessage(realtimeSocket, (message) => message.type === "host.synchronized");
-
-    const terminalEvents = new Promise<unknown[]>((resolve, reject) => {
-      const collected: unknown[] = [];
-      const timeout = setTimeout(
-        () =>
-          reject(
-            new Error(
-              `timed out waiting for terminal event; received ${JSON.stringify(collected)}`,
-            ),
-          ),
-        10_000,
-      );
-      realtimeSocket?.on("message", (frame) => {
-        const message = JSON.parse(frame.toString()) as {
-          type: string;
-          events?: Array<{
-            sequence: string;
-            type: string;
-            data?: { status?: string };
-          }>;
-        };
-        if (message.type !== "host.events" || !message.events) return;
-        collected.push(...message.events);
-        const latest = message.events.at(-1);
-        if (latest) {
-          realtimeSocket?.send(
-            JSON.stringify({
-              sequence: latest.sequence,
-              type: "client.ack",
-            }),
-          );
-        }
-        if (
-          message.events.some(
-            (event) => event.type === "thread.state-changed" && event.data?.status === "idle",
-          )
-        ) {
-          clearTimeout(timeout);
-          resolve(collected);
-        }
-      });
-    });
+    await attachThreadSocket(realtimeSocket, threadId);
+    const terminal = waitForRunItem(realtimeSocket, "completed");
 
     let resolveRunnerCommand!: () => void;
     let rejectRunnerCommand!: (error: unknown) => void;
@@ -437,27 +384,27 @@ integration("Host vertical slice", () => {
         timeout.unref();
       }),
     ]);
-    const events = (await terminalEvents) as Array<{ type: string }>;
-    expect(events.map((event) => event.type)).toEqual([
-      "message.created",
-      "message.placed",
-      "run.queued",
-      "thread.state-changed",
-      "thread-input.updated",
-      "run.status",
-      "thread.continuation-established",
-      "run.started",
-      "thread-input.updated",
-      "assistant.message",
-      "message.created",
-      "run.completed",
-      "thread.state-changed",
-    ]);
-    const snapshot = await runtime.store.deploymentSnapshot();
-    expect(snapshot.messages.at(-1)?.content).toEqual([
+    const completed = await terminal;
+    expect(completed).toMatchObject({ runId: turn.run.id, view: { status: "completed" } });
+    const history = await testRpcData(
+      origin,
+      "thread.messages.list",
+      { threadId },
+      { headers: authorization(accessToken) },
+    );
+    expect(history.messages.at(-1)?.content).toEqual([
       { text: "Finished through the Runner.", type: "text" },
     ]);
-    expect(snapshot.threads[0]?.status).toBe("idle");
+    expect(
+      (await runtime.store.getThreadForOwner(threadId, bootstrap.session.user.id))?.status,
+    ).toBe("idle");
+    const receipts = await runtime.store.database
+      .selectFrom("runnerEventReceipts")
+      .select("ordinal")
+      .where("runId", "=", turn.run.id)
+      .orderBy("ordinal")
+      .execute();
+    expect(receipts.map(({ ordinal }) => ordinal)).toEqual([0, 1, 2]);
     const inventory = await testRpcData(
       origin,
       "machines.list",
@@ -504,28 +451,20 @@ integration("Host vertical slice", () => {
 
     const bootstrap = await testRpcData(
       `http://127.0.0.1:${hostPort}`,
-      "bootstrap.get",
+      "personal.shell.get",
       {},
       {
         headers: authorization(accessToken),
       },
     );
-    expect(bootstrap.tabs).toEqual({
-      tabs: [],
-      layout: { revision: 0, items: [] },
-      complete: true,
-    });
-    expect(
-      await testRpcData(
-        `http://127.0.0.1:${hostPort}`,
-        "tabs.state",
-        {},
-        { headers: authorization(accessToken) },
-      ),
-    ).toEqual(bootstrap.tabs);
-    expect(bootstrap.environments).toEqual([]);
-    expect(bootstrap.personalSettings).toBeNull();
-    expect(bootstrap.can).toMatchObject({ createTasks: false, useVoice: false });
+    const noHome = { headers: authorization(accessToken) };
+    const origin = `http://127.0.0.1:${hostPort}`;
+    const { tabs } = await testResourceData(origin, "tab", noHome);
+    expect(tabs).toEqual({ tabs: [], layout: { revision: 0, items: [] }, complete: true });
+    expect(await testRpcData(origin, "tabs.state", {}, noHome)).toEqual(tabs);
+    expect((await testResourceData(origin, "environment", noHome)).environments).toEqual([]);
+    expect((await testResourceData(origin, "settings", noHome)).settings).toBeNull();
+    expect(bootstrap.session.can).toMatchObject({ createTasks: false, useVoice: false });
   });
 
   it("restarts Host and local Runner identity without the enrollment token", async () => {
@@ -942,14 +881,9 @@ integration("Host vertical slice", () => {
     });
 
     await waitForCondition(async () => {
-      const candidate = await testRpcData(
-        origin,
-        "bootstrap.get",
-        {},
-        {
-          headers: authorization(accessToken),
-        },
-      );
+      const candidate = await testResourceData(origin, "harness-catalog", {
+        headers: authorization(accessToken),
+      });
       // Only the seeded Claude account is ever inspected: the Codex driver is
       // unavailable, so its account has no catalog to wait for.
       return candidate.environments.some(
@@ -957,14 +891,9 @@ integration("Host vertical slice", () => {
           environment.id === environmentId && environment.harnessCatalogs.length === 1,
       );
     });
-    const bootstrap = await testRpcData(
-      origin,
-      "bootstrap.get",
-      {},
-      {
-        headers: authorization(accessToken),
-      },
-    );
+    const bootstrap = await testResourceData(origin, "harness-catalog", {
+      headers: authorization(accessToken),
+    });
     expect(bootstrap.environments).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1121,14 +1050,9 @@ integration("Host vertical slice", () => {
 
     runnerSocket.close();
     await waitForCondition(async () => {
-      const refreshed = await testRpcData(
-        origin,
-        "bootstrap.get",
-        {},
-        {
-          headers: authorization(accessToken),
-        },
-      );
+      const refreshed = await testResourceData(origin, "environment", {
+        headers: authorization(accessToken),
+      });
       return refreshed.environments.some(
         (environment: { connected: boolean; id: string }) =>
           environment.id === environmentId && !environment.connected,
@@ -1386,20 +1310,8 @@ integration("Host vertical slice", () => {
       });
 
       realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
-      realtimeSocket.send(
-        JSON.stringify({
-          apiVersion: hostApiVersion,
-          threadId: thread.id,
-          type: "client.subscribe",
-          cursor: {
-            deploymentId: runtime.deployment.id,
-            apiVersion: hostApiVersion,
-            afterSequence: zeroSequence,
-          },
-        }),
-      );
-      await waitForMessage(realtimeSocket, (message) => message.type === "host.synchronized");
-      const terminalEvent = waitForDeploymentEvent(realtimeSocket, "run.failed");
+      await attachThreadSocket(realtimeSocket, thread.id);
+      const terminalItem = waitForRunItem(realtimeSocket, "failed");
       const commandPromise = waitForRunnerExecution(runnerSocket);
       const turn = await runtime.store.enqueueThreadInput({
         content: [{ text: "This must fail durably", type: "text" }],
@@ -1429,15 +1341,9 @@ integration("Host vertical slice", () => {
         }),
       );
 
-      await expect(terminalEvent).resolves.toMatchObject({
-        data: {
-          code: "dispatch_failed",
-          message: "The AI engine could not be started.",
-          retryable: false,
-          status: "failed",
-        },
+      await expect(terminalItem).resolves.toMatchObject({
         runId: admittedRun.id,
-        type: "run.failed",
+        view: { status: "failed" },
       });
       await waitForCondition(async () => {
         const row = await runtime?.store.database
@@ -1469,7 +1375,16 @@ integration("Host vertical slice", () => {
         .select(["status", "failure", "runnerSafetyTerminal"])
         .where("id", "=", admittedRun.id)
         .executeTakeFirstOrThrow();
-      expect(persisted).toMatchObject({ status: "failed", runnerSafetyTerminal: false });
+      expect(persisted).toMatchObject({
+        status: "failed",
+        runnerSafetyTerminal: false,
+        failure: {
+          code: "dispatch_failed",
+          message: "The AI engine could not be started.",
+          retryable: false,
+          status: "failed",
+        },
+      });
       expect(JSON.stringify(persisted)).not.toContain(privateProviderError);
     } finally {
       publication.abort();
@@ -1592,12 +1507,9 @@ integration("Host vertical slice", () => {
     stopCatalogResponder();
     runnerSocket.terminate();
     await waitForCondition(async () => {
-      const read = await testRpcData(
-        `http://127.0.0.1:${hostPort}`,
-        "bootstrap.get",
-        {},
-        { headers: authorization(accessToken) },
-      );
+      const read = await testResourceData(`http://127.0.0.1:${hostPort}`, "environment", {
+        headers: authorization(accessToken),
+      });
       return read.environments.some(
         (environment) => environment.id === environmentId && !environment.connected,
       );
@@ -1740,14 +1652,10 @@ integration("Host vertical slice", () => {
       publicKeyFingerprint: runnerPublicKeyFingerprint(seedKeys.publicKey),
       publicKeyPem: canonicalRunnerPublicKeyPem(seedKeys.publicKey),
     });
-    await initializePersonalState(
-      seedStore.database,
-      {
-        environmentId,
-        agentHome: join(dataDirectory, "home"),
-      },
-      { sendToUsers: () => undefined },
-    );
+    await initializePersonalState(seedStore.database, {
+      environmentId,
+      agentHome: join(dataDirectory, "home"),
+    });
     const harness = await seedStore.createHarnessInstance({
       config: { model: "test" },
       driverKind: HarnessIdSchema.parse("native"),
@@ -2188,11 +2096,17 @@ integration("Host vertical slice", () => {
       cookie: responseCookies(claimed).join("; "),
       origin,
     };
-    const bootstrap = await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
-    expect(bootstrap.user.displayName).toBe("You");
-    expect(bootstrap.sessionSurface).toBe("canonical");
-    expect(bootstrap.sessionId).toMatch(/^ses_/u);
-    expect(bootstrap.personalSettings?.agentHome).toEqual({
+    const bootstrap = await testRpcData(
+      origin,
+      "personal.shell.get",
+      {},
+      { headers: sessionHeaders },
+    );
+    expect(bootstrap.session.user.displayName).toBe("You");
+    expect(bootstrap.session.sessionSurface).toBe("canonical");
+    expect(bootstrap.session.sessionId).toMatch(/^ses_/u);
+    const settings = await testResourceData(origin, "settings", { headers: sessionHeaders });
+    expect(settings.settings?.agentHome).toEqual({
       computerId: mainRunner.fence.runnerId,
       path: await realpath(join(dataDirectory, "home")),
     });
@@ -2233,7 +2147,7 @@ integration("Host vertical slice", () => {
     expect((await restored.json()) as object).toMatchObject({
       data: {
         session: expect.objectContaining({
-          user: expect.objectContaining({ id: bootstrap.user.id }),
+          user: expect.objectContaining({ id: bootstrap.session.user.id }),
         }),
       },
       ok: true,
@@ -2354,13 +2268,13 @@ integration("Host vertical slice", () => {
     };
     const remoteBootstrap = await testRpcData(
       origin,
-      "bootstrap.get",
+      "personal.shell.get",
       {},
       { headers: remoteHeaders },
     );
-    expect(remoteBootstrap).toMatchObject({
+    expect(remoteBootstrap.session).toMatchObject({
       sessionSurface: "personal-remote",
-      user: expect.objectContaining({ id: bootstrap.user.id }),
+      user: expect.objectContaining({ id: bootstrap.session.user.id }),
     });
     const remoteMinted = await fetch(`${origin}/v1/personal-remote-access/pairing-codes`, {
       body: "{}",
@@ -2406,10 +2320,12 @@ integration("Host vertical slice", () => {
       authorization: `PersonalRemote ${nativeSession.credential.token}`,
     };
     await expect(
-      testRpcData(origin, "bootstrap.get", {}, { headers: nativeHeaders }),
+      testRpcData(origin, "personal.shell.get", {}, { headers: nativeHeaders }).then(
+        ({ session }) => session,
+      ),
     ).resolves.toMatchObject({
       sessionSurface: "personal-remote",
-      user: expect.objectContaining({ id: bootstrap.user.id }),
+      user: expect.objectContaining({ id: bootstrap.session.user.id }),
     });
 
     const nativeMinted = await fetch(`${origin}/v1/personal-remote-access/pairing-codes`, {
@@ -2461,7 +2377,7 @@ integration("Host vertical slice", () => {
     // authorization header the Host cannot read never reaches the cookie arm.
     const wrongFamily = await testRpcRequest(
       origin,
-      "bootstrap.get",
+      "personal.shell.get",
       {},
       {
         headers: {
@@ -2474,7 +2390,7 @@ integration("Host vertical slice", () => {
     const remoteCredential = decodeURIComponent(remoteCookies[0]?.split("=", 2)[1] ?? "");
     const cookieAsHeader = await testRpcRequest(
       origin,
-      "bootstrap.get",
+      "personal.shell.get",
       {},
       { headers: { authorization: `PersonalRemote ${remoteCredential}` } },
     );
@@ -2494,7 +2410,7 @@ integration("Host vertical slice", () => {
     ] as const) {
       const renamed = await testRpcRequest(
         origin,
-        "bootstrap.get",
+        "personal.shell.get",
         {},
         { headers: { cookie, origin } },
       );
@@ -2503,7 +2419,7 @@ integration("Host vertical slice", () => {
     for (const authorization of ["Foo x", "PersonalRemote"]) {
       const unreadable = await testRpcRequest(
         origin,
-        "bootstrap.get",
+        "personal.shell.get",
         {},
         { headers: { ...sessionHeaders, authorization } },
       );
@@ -2530,7 +2446,7 @@ integration("Host vertical slice", () => {
     });
     const revokedBootstrap = await testRpcRequest(
       origin,
-      "bootstrap.get",
+      "personal.shell.get",
       {},
       {
         headers: remoteHeaders,
@@ -2540,7 +2456,7 @@ integration("Host vertical slice", () => {
     // Rotation is delivery-blind: the phone's credential dies with the cookie.
     const revokedNative = await testRpcRequest(
       origin,
-      "bootstrap.get",
+      "personal.shell.get",
       {},
       { headers: nativeHeaders },
     );
@@ -2953,7 +2869,7 @@ integration("Host vertical slice", () => {
     expect(connectCookieHeader).toBeDefined();
     const revokedConnect = await testRpcRequest(
       origin,
-      "bootstrap.get",
+      "personal.shell.get",
       {},
       {
         headers: { cookie: connectCookieHeader!, origin: connectOrigin },
@@ -2981,7 +2897,7 @@ integration("Host vertical slice", () => {
         refreshTokenExpiresAt: null,
         scope: "openid",
         updatedAt: new Date(),
-        userId: bootstrap.user.id,
+        userId: bootstrap.session.user.id,
       })
       .executeTakeFirstOrThrow();
     await runtime.store.database
@@ -3495,29 +3411,54 @@ function waitForRunnerExecution(socket: WebSocket): Promise<
   });
 }
 
-function waitForDeploymentEvent(
-  socket: WebSocket,
-  eventType: string,
-): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(
-      () => reject(new Error(`timed out waiting for deployment event ${eventType}`)),
-      10_000,
+async function attachThreadSocket(socket: WebSocket, threadId: ThreadId) {
+  const ready = waitForMessage(socket, (raw) => {
+    const frame = ScopedHostMessageSchema.safeParse(raw);
+    return (
+      frame.success &&
+      frame.data.type === "host.synchronized" &&
+      frame.data.subscriptionId === "detail:0"
     );
-    const receive = (frame: WebSocket.RawData) => {
-      const message = JSON.parse(frame.toString()) as {
-        events?: Array<Record<string, unknown> & { type?: string }>;
-        type: string;
-      };
-      if (message.type !== "host.events") return;
-      const event = message.events?.find((candidate) => candidate.type === eventType);
-      if (!event) return;
-      clearTimeout(timeout);
-      socket.off("message", receive);
-      resolve(event);
-    };
-    socket.on("message", receive);
   });
+  socket.send(
+    JSON.stringify({
+      type: "client.attach",
+      apiVersion: hostApiVersion,
+      generation: 1,
+      interests: [],
+      installed: {},
+      selected: { subscriptionId: "detail:0", generation: 1, scope: { kind: "thread", threadId } },
+    }),
+  );
+  await ready;
+}
+
+async function waitForRunItem(socket: WebSocket, status: "failed" | "completed") {
+  const frame = ScopedHostMessageSchema.parse(
+    await waitForMessage(socket, (raw) => {
+      const frame = ScopedHostMessageSchema.safeParse(raw);
+      return (
+        frame.success &&
+        frame.data.type === "host.changes" &&
+        frame.data.changes.some(
+          (change) =>
+            change.entityKind === "item" &&
+            change.operation === "upsert" &&
+            change.value.kind === "run" &&
+            change.value.view.status === status,
+        )
+      );
+    }),
+  );
+  if (frame.type !== "host.changes") throw new Error("Expected changed Run");
+  return frame.changes.flatMap((change) =>
+    change.entityKind === "item" &&
+    change.operation === "upsert" &&
+    change.value.kind === "run" &&
+    change.value.view.status === status
+      ? [change.value]
+      : [],
+  )[0];
 }
 
 async function waitForCondition(
@@ -3609,6 +3550,7 @@ function agentsRunnerDescriptor(input: {
         "requester-time-zone-v1",
         "agent-tools-plan-v1",
         "execution-plane-v2",
+        "run-events-v2",
       ]),
     ],
     ...(input.device === undefined ? {} : { device: input.device }),

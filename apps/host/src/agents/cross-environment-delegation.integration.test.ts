@@ -82,7 +82,7 @@ integration("personal task delegation lifecycle", () => {
       maxQueuedCommands: 64,
     }),
     onExecutionQueued: vi.fn(),
-    onDeploymentEvent: vi.fn(),
+
     store,
   });
   const assertDelegatedPlaces = vi.fn(async () => undefined);
@@ -2978,7 +2978,7 @@ integration("personal task delegation lifecycle", () => {
       pluginsTokens: {
         issue,
       } as never,
-      onDeploymentEvent: vi.fn(),
+
       publicUrl: new URL("https://delegation.opensteer.test"),
       requestResponseVault: {} as never,
       runners: {

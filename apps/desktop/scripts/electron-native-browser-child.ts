@@ -877,7 +877,7 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
       throw new Error("Personal owner authentication rejected");
     },
   });
-  const bootstrap = await api["bootstrap.get"]({});
+  const bootstrap = await api["personal.shell.get"]({});
   assert(bootstrap.ok, JSON.stringify(bootstrap));
   const opened = await api["commands.dispatch"]({
     type: "browser.session.start",
@@ -1105,9 +1105,9 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
     },
   };
   kit.setContext(context);
-  const initialBootstrap = await api["bootstrap.get"]({});
+  const initialBootstrap = await api["tabs.state"]({});
   assert(initialBootstrap.ok);
-  const initialTabs = initialBootstrap.data.tabs;
+  const initialTabs = initialBootstrap.data;
   assert(initialTabs.complete && initialTabs.tabs[0]);
   const nativeMountReady = () =>
     Promise.resolve(

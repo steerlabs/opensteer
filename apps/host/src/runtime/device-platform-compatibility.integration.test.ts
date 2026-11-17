@@ -27,7 +27,7 @@ import {
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const methods = [
-  "bootstrap.get",
+  "personal.shell.get",
   "machines.list",
   "integrations.get",
   "integration.platform.get",

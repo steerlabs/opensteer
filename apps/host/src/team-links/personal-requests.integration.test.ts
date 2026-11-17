@@ -11,7 +11,11 @@ import {
   type TeamSource,
 } from "@opensteer/core";
 import { TeamRunRequestSchema } from "@opensteer/protocol";
-import { describeStore, type StoreFixture } from "@opensteer/database/test-support/store";
+import {
+  describeStore,
+  pendingEvent,
+  type StoreFixture,
+} from "@opensteer/database/test-support/store";
 import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
 import { admitTeamTaskRequest } from "@opensteer/database/task-admission-store";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
@@ -76,6 +80,40 @@ async function consentFixture(base: StoreFixture) {
         execution,
       }),
     start: (runId: RunId) => startPersonalQueuedRunFixture(base.store, runId),
+    finish: async (runId: RunId, text: string) => {
+      const { run, bindingGeneration, runnerBootId } = await startPersonalQueuedRunFixture(
+        base.store,
+        runId,
+      );
+      const messageId = createId("message");
+      const wire = { environmentId: run.environmentId, runnerId: personal.runnerId, runnerBootId };
+      const scope = {
+        runId,
+        threadId: run.threadId,
+        bindingGeneration,
+        environmentId: run.environmentId,
+      };
+      await base.store.commitRunnerEvent({
+        ...wire,
+        event: pendingEvent({
+          ...scope,
+          ordinal: 1,
+          type: "assistant.message",
+          data: { messageId, content: [{ type: "text", text }] },
+        }),
+      });
+      await base.store.commitRunnerEvent({
+        ...wire,
+        event: pendingEvent({
+          ...scope,
+          ordinal: 2,
+          type: "run.completed",
+          data: { status: "completed" },
+        }),
+      });
+      await base.store.drainRunFinish(runId);
+      return messageId;
+    },
   };
   await f.database
     .updateTable("personalTeamLinks")
@@ -286,18 +324,8 @@ describeStore("personal team consent and returns", (it) => {
           },
         );
       } else {
-        const publisher = new PersonalTeamRequests({
-          ...f.publisher.options,
-          rpc,
-          runs: {
-            outcome: async () => ({
-              state: "done",
-              runId: asking.receipt.runId!,
-              finalMessage: original,
-              answerMessageId: null,
-            }),
-          },
-        });
+        await f.finish(asking.receipt.runId!, original);
+        const publisher = new PersonalTeamRequests({ ...f.publisher.options, rpc });
         await publisher.reconcileOne(request);
       }
       expect(posted).toBe(true);
@@ -316,24 +344,18 @@ describeStore("personal team consent and returns", (it) => {
         const asking = await f.ask();
         const request = (await f.store.forRun(asking.receipt.runId!))!;
         const payload = { bodyMarkdown: "[old](/private/secret.txt)", attachmentIds: [] };
+        const answerMessageId =
+          via === "final" ? await f.finish(asking.receipt.runId!, "New answer") : null;
         await f.store.freeze(f.origin.teamId, request.requestId, {
           runId: asking.receipt.runId!,
           via,
           clientMessageId: teamOperationId("tool", asking.receipt.runId!, "old-operation"),
-          answerMessageId: null,
+          answerMessageId,
           payload,
         });
         const calls: TeamLinkCallInput[] = [];
         const publisher = new PersonalTeamRequests({
           ...f.publisher.options,
-          runs: {
-            outcome: async () => ({
-              state: "done",
-              runId: asking.receipt.runId!,
-              finalMessage: "New answer",
-              answerMessageId: null,
-            }),
-          },
           rpc: () => ({
             call: async (input): Promise<TeamLinkResult> => {
               calls.push(input);
@@ -1823,6 +1845,7 @@ describeStore("personal team consent and returns", (it) => {
       .where("teamDeploymentId", "=", f.origin.teamId)
       .where("requestId", "=", f.frame.request.id)
       .execute();
+    await f.publisher.expireUndecidedAsks();
     expect((await needsYouPage(f.database, { userId: f.userId })).count).toBe(0);
     await expect(
       f.publisher.decide(f.userId, f.origin.teamId, f.frame.request.id, "approve", 0),

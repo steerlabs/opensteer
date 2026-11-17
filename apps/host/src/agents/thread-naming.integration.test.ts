@@ -1,3 +1,4 @@
+import { readTestResource } from "../server/test-host-api-request.js";
 import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -448,16 +449,14 @@ integration("Task naming through the Runner", () => {
       },
     });
     const warmed = await f.watchSettings();
-    const before = await f.active.api["bootstrap.get"]({});
-    if (!before.ok) throw new Error(before.error.message);
+    const before = { ok: true as const, data: await readTestResource(f.active.api, "harness") };
     const account = before.data.harnesses[0]!.id;
     await f.writeSettings(
       JSON.stringify({ backgroundModels: { excludedAccounts: [account] } }),
       (view) => view.excludedAccounts.includes(account as HarnessInstanceId),
     );
     expect((await f.preview()).naming).toBeNull();
-    const bootstrap = await f.active.api["bootstrap.get"]({});
-    if (!bootstrap.ok) throw new Error(bootstrap.error.message);
+    const bootstrap = { ok: true as const, data: await readTestResource(f.active.api, "harness") };
     expect(bootstrap.data.harnesses).toMatchObject([
       {
         automaticEligible: false,

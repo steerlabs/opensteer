@@ -1,3 +1,4 @@
+import { testResourceData } from "../server/test-host-api-request.js";
 import type { AgentPhoneUpdateRelease } from "./update-release.js";
 /**
  * The parts the Agent Phone end-to-end suites drive: a real Android device or
@@ -1771,12 +1772,9 @@ export async function connectAgentComputer(
     const harnessInstanceId = await eventually(
       `${name}'s engine to be ready`,
       async () => {
-        const bootstrap = await testRpcData(
-          host.origin,
-          "bootstrap.get",
-          {},
-          { headers: host.ownerHeaders },
-        );
+        const bootstrap = await testResourceData(host.origin, "harness-catalog", {
+          headers: host.ownerHeaders,
+        });
         const environment = bootstrap.environments.find(({ id }) => id === caller.environmentId);
         return environment?.connected
           ? environment.harnessCatalogs.find(({ status }) => status === "ready")?.harnessInstanceId

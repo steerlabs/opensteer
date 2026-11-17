@@ -131,7 +131,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       maxQueuedCommands: 64,
     }),
     onExecutionQueued: vi.fn(),
-    onDeploymentEvent: vi.fn(),
+
     store,
   });
   const tokens = {
@@ -1288,7 +1288,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         maxQueuedCommands: 64,
       }),
       onExecutionQueued: vi.fn(),
-      onDeploymentEvent: vi.fn(),
+
       store: peer,
     });
     const peerPrograms = new TriggerToolsTestClient({
@@ -1728,7 +1728,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         runners: runnerRegistry,
         executionLeaseMs: 90_000,
         publicUrl: new URL("https://host.test"),
-        onDeploymentEvent: vi.fn(),
+
         requestResponseVault: {} as never,
         runToolTokens: {} as never,
         attachmentRunTokens: {} as never,
@@ -1913,7 +1913,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       } as unknown as RunnerRegistry,
       executionLeaseMs: 90_000,
       publicUrl: new URL("https://host.test"),
-      onDeploymentEvent: vi.fn(),
+
       requestResponseVault: {} as never,
       runToolTokens: {} as never,
       attachmentRunTokens: {} as never,

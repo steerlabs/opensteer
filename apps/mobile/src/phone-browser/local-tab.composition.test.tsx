@@ -94,13 +94,15 @@ test.each([false, true])(
     }
     const admission = f.manager.localPresentation(f.deploymentId, f.surfaceId)!;
     const seed = new MockHostClient({ latencyMs: 0 });
-    const bootstrap = await seed.rpc["bootstrap.get"]({});
-    if (!bootstrap.ok) throw new Error("The seed Host did not provide bootstrap metadata");
-    const base = bootstrap.data;
+    const shell = await seed.rpc["personal.shell.get"]({});
+    if (!shell.ok) throw new Error("The seed Host did not provide shell metadata");
+    const base = shell.data;
     const sessionId = BrowserSessionIdSchema.parse(admission.sessionId);
     const tabId = TabIdSchema.parse(f.surfaceId);
     const browser = (): HostedBrowserBootstrap => ({
-      ...base.browser,
+      available: true,
+      profiles: [],
+      profileHomes: [],
       placements: [
         {
           kind: "runner",
@@ -169,13 +171,31 @@ test.each([false, true])(
       fetch: async (input, init) => {
         const url = new URL(input instanceof Request ? input.url : String(input));
         const name = url.pathname.slice("/v1/rpc/".length) as keyof typeof hostApi;
-        if (name === "bootstrap.get")
-          return Response.json({
-            ok: true,
-            data: { ...base, deploymentId: f.deploymentId, browser: browser(), tabs: tabs() },
-          });
+        if (name === "personal.shell.get")
+          return Response.json({ ok: true, data: { ...base, deploymentId: f.deploymentId } });
         const raw = url.searchParams.get("input") ?? init?.body;
         const payload = hostApi[name].payload.parse(typeof raw === "string" ? JSON.parse(raw) : {});
+        if (name === "resources.detail.get") {
+          const detail = hostApi[name].payload.parse(payload);
+          if (detail.kind === "browser-placement")
+            return Response.json({
+              ok: true,
+              data: {
+                revision: detail.expectedRevision,
+                next: null,
+                data: { kind: detail.kind, placements: browser().placements },
+              },
+            });
+          if (detail.kind === "tab" || detail.kind === "tab-layout")
+            return Response.json({
+              ok: true,
+              data: {
+                revision: detail.expectedRevision,
+                next: null,
+                data: { kind: detail.kind, tabs: tabs() },
+              },
+            });
+        }
         if (
           name === "commands.dispatch" &&
           "type" in payload &&

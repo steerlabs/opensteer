@@ -1,3 +1,4 @@
+import { readTestResource } from "../server/test-host-api-request.js";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
@@ -222,7 +223,7 @@ integration.sequential("Run recovery acceptance", () => {
               "host.error",
               "runner.executions.attach",
               "host.executions.attached",
-              "host.events.acked",
+              "host.executions.acked",
               "host.runs.revoked",
               "host.executions.renewed",
               "runner.heartbeat",
@@ -1479,7 +1480,10 @@ integration.sequential("Run recovery acceptance", () => {
     const pending = await pendingApproval(current.active, runId);
     current.active.network.block();
     await waitFor(async () => {
-      const result = await current.active.api["bootstrap.get"]({});
+      const result = {
+        ok: true as const,
+        data: await readTestResource(current.active.api, "environment"),
+      };
       return (
         result.ok &&
         result.data.environments.find((entry) => entry.id === current.active.environmentId)
@@ -2051,7 +2055,9 @@ integration.sequential("Run recovery acceptance", () => {
         after,
         responses: wire.frames
           .slice(replayStart)
-          .filter(({ frame }) => ["host.runs.revoked", "host.events.acked"].includes(frame.type)),
+          .filter(({ frame }) =>
+            ["host.runs.revoked", "host.executions.acked"].includes(frame.type),
+          ),
       });
     } finally {
       withholdLease = false;
@@ -2245,6 +2251,7 @@ async function answer(active: VerticalStack, request: Awaited<ReturnType<typeof 
     type: "request.respond",
     idempotencyKey: randomUUID(),
     requestId: request.id,
+    expectedRevision: request.revision,
     response: {
       kind: "choice",
       optionId: option.id,

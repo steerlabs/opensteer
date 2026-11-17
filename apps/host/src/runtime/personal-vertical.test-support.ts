@@ -125,20 +125,20 @@ export async function startPersonalVertical(options: VerticalStackOptions): Prom
       { headers: { cookie: current.sessionCookie, origin: current.hostOrigin.origin } },
     );
     socket.on("message", (data) => {
-      const frame = HostToClientMessageSchema.parse(JSON.parse(data.toString()));
-      if (frame.type === "host.notification") notifications.push(frame.notification);
+      const frame = HostToClientMessageSchema.safeParse(JSON.parse(data.toString()));
+      if (frame.success && frame.data.type === "host.notification")
+        notifications.push(frame.data.notification);
     });
     await withTimeout(once(socket, "open"), options.catalogTimeoutMs, {
       timeoutError: () => new Error("Notification socket never opened"),
     });
-    const deploymentId = current.host.deployment.id;
     socket.send(
       JSON.stringify({
-        type: "client.subscribe",
-        cursor: { deploymentId, apiVersion: hostApiVersion, afterSequence: "0" },
-        threadId: null,
+        type: "client.attach",
         apiVersion: hostApiVersion,
-        snapshotMessages: "omit",
+        generation: 1,
+        interests: [],
+        installed: {},
       }),
     );
     const basic = createPersonalVerticalStack(agentHome, current);

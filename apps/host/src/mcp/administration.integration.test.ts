@@ -406,7 +406,7 @@ describeStore("MCP administration", (it) => {
       repository: personalBrowserRepository(f.store),
       signer: {} as never,
       onSessionsChanged: vi.fn(),
-      onDeploymentEvent: vi.fn(),
+
       onProfilesChanged: vi.fn(),
     });
     const sources = new BrowserSourceStore(f.database);
@@ -565,7 +565,7 @@ describeStore("MCP administration", (it) => {
       repository: personalBrowserRepository(f.store),
       signer: {} as never,
       onSessionsChanged: () => undefined,
-      onDeploymentEvent: () => undefined,
+
       onProfilesChanged: (ownerId) =>
         rt.hub.publishBrowserSessionsChanged([ownerId], "browser.profiles"),
     });
@@ -645,7 +645,7 @@ describeStore("MCP administration", (it) => {
       relay: { connectedRunnerIds: () => [], supports: () => true } as never,
       runners: {} as never,
       onExecutionQueued: () => {},
-      onDeploymentEvent: () => {},
+
       onChanged: changed,
     });
     const agent = mcp(
@@ -790,9 +790,8 @@ describeStore("MCP administration", (it) => {
       mcpOauth: {},
       secretVault: {},
       isRunnerConnected: () => false,
-      onDeploymentEvent: vi.fn(),
+
       onConnectionsChanged: vi.fn(),
-      onRequestsChanged: vi.fn(),
     } as unknown as ConstructorParameters<typeof IntegrationPlatformService>[0]);
     const agent = mcp(
       {
@@ -1044,9 +1043,8 @@ describeStore("MCP administration", (it) => {
       mcpOauth: {},
       secretVault: {},
       isRunnerConnected: () => false,
-      onDeploymentEvent: vi.fn(),
+
       onConnectionsChanged: vi.fn(),
-      onRequestsChanged: vi.fn(),
     } as unknown as ConstructorParameters<typeof IntegrationPlatformService>[0]);
     const agent = mcp(
       {
