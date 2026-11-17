@@ -1,3 +1,7 @@
+// Memory of the plugin engine in each state a person reaches. Builds the Host, then measures:
+//   OPENSTEER_TEST_DATABASE_URL=<private throwaway PostgreSQL> pnpm measure:plugin-engine
+// Prints resident memory (RSS) per process and, on macOS, physical footprint, in MiB.
+import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +13,6 @@ if (!databaseUrl) throw new Error("A private throwaway PostgreSQL URL is require
 const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-measure-"));
 const registry = await pluginFixtureRegistry(directory);
 const caller = { caller: "owner:measurement", mode: "automatic" as const };
-const before = performance.now();
 const options = {
   deployment: "personal",
   owner: "owner",
@@ -22,91 +25,91 @@ const options = {
   processEntry: new URL("../../apps/host/dist/plugin-engine.js", import.meta.url),
   bridge: new URL("../../apps/host/dist/plugin-engine-bridge.json", import.meta.url).pathname,
 } as const;
+const mib = (kib: number) => Math.round(kib / 1024);
+const footprint = (pid: number) => {
+  if (process.platform !== "darwin") return undefined;
+  const output = execFileSync("footprint", ["-p", String(pid)], { encoding: "utf8" });
+  const [, amount, unit] = /Footprint:\s*([\d.]+)\s*(KB|MB|GB)/u.exec(output) ?? [];
+  if (!amount) return undefined;
+  return Math.round(Number(amount) * (unit === "GB" ? 1024 : unit === "KB" ? 1 / 1024 : 1));
+};
+const rows: Record<string, string | number | undefined>[] = [];
+const sample = (state: string, service: PluginService) => {
+  const pid = service.state().status === "ready" ? service.state().pid : undefined;
+  const processes = pid === undefined ? [] : pluginFixtureProcesses(pid);
+  const of = (name: string) => processes.find((row) => row.command.endsWith(name));
+  const engine = processes.find((row) => row.pid === pid);
+  const workerd = of("workerd");
+  rows.push({
+    state,
+    engineRss: engine && mib(engine.rss),
+    engineFootprint: engine && footprint(engine.pid),
+    workerdRss: workerd && mib(workerd.rss),
+    workerdFootprint: workerd && footprint(workerd.pid),
+    totalRss: mib(processes.reduce((sum, row) => sum + row.rss, 0)),
+  });
+};
+const call = async (service: PluginService, count: number) => {
+  const result = await service.call(
+    { calls: { path: `tools["fixture-${count}"].read`, input: { amount: 0 } } },
+    caller,
+  );
+  const value = result.result?.execution?.value;
+  if (value === null || typeof value !== "object" || Array.isArray(value) || value.value !== count)
+    throw new Error(JSON.stringify(result));
+};
 let service = new PluginService(options);
-const ready = service.start();
-const synchronousStartupMs = performance.now() - before;
+const owned = new Set<number>();
+const track = () => {
+  const pid = service.state().pid;
+  if (pid !== undefined) for (const row of pluginFixtureProcesses(pid)) owned.add(row.pid);
+};
 try {
-  await ready;
-  const health = await service.health({}, caller);
-  const samples = [{ plugins: 0, processes: pluginFixtureProcesses(health.pid) }];
-  const readyMs = performance.now() - before;
+  await service.start();
+  sample("Host started, no plugins", service);
+  const before = performance.now();
+  await service.health({}, caller);
+  const firstCallMs = Math.round(performance.now() - before);
+  track();
+  sample("engine running, no plugins", service);
   for (let count = 1; count <= 10; count += 1) {
-    const name = `Fixture ${count}`;
     const installed = await service.install(
-      { kind: "files", name, files: pluginFixtureFiles(count) },
+      { kind: "files", name: `Fixture ${count}`, files: pluginFixtureFiles(count) },
       caller,
     );
     if (installed.status !== "installed") throw new Error(JSON.stringify(installed));
-    const result = await service.call(
-      { calls: { path: `tools["fixture-${count}"].read`, input: { amount: 0 } } },
-      caller,
-    );
-    const value = result.result?.execution?.value;
-    if (
-      value === null ||
-      typeof value !== "object" ||
-      Array.isArray(value) ||
-      value.ok !== true ||
-      value.value !== count
-    )
-      throw new Error(JSON.stringify(result));
-    if (count === 1 || count === 3 || count === 10)
-      samples.push({ plugins: count, processes: pluginFixtureProcesses(health.pid) });
+    await call(service, count);
+    if (count === 1 || count === 10) sample(`${count} built and called`, service);
   }
+  track();
   await service.close();
   service = new PluginService(options);
   await service.start();
-  const restoredHealth = await service.health({}, caller);
-  const restored = [{ plugins: 0, processes: pluginFixtureProcesses(restoredHealth.pid) }];
-  for (let count = 1; count <= 10; count += 1) {
-    const result = await service.call(
-      { calls: { path: `tools["fixture-${count}"].read`, input: { amount: 0 } } },
-      caller,
-    );
-    const value = result.result?.execution?.value;
-    if (
-      value === null ||
-      typeof value !== "object" ||
-      Array.isArray(value) ||
-      value.ok !== true ||
-      value.value !== count
-    )
-      throw new Error(JSON.stringify(result));
-    if (count === 1 || count === 3 || count === 10)
-      restored.push({ plugins: count, processes: pluginFixtureProcesses(restoredHealth.pid) });
-  }
-  console.log(
-    JSON.stringify(
-      {
-        runtimeLimits: {
-          workers: process.env.PLUGIN_ENGINE_APP_WORKERS ?? "64",
-          idleSeconds: process.env.PLUGIN_ENGINE_APP_WORKER_IDLE_SECONDS ?? "300",
-        },
-        synchronousStartupMs,
-        readyMs,
-        engineStartupMs: health.startupMs,
-        samples,
-        restored,
-      },
-      null,
-      2,
-    ),
-  );
+  sample("Host started, 10 plugins installed", service);
+  await call(service, 1);
+  track();
+  sample("1 plugin in use (retained build)", service);
+  for (let count = 2; count <= 10; count += 1) await call(service, count);
+  sample("10 plugins in use (retained builds)", service);
+  await service.execute({ code: `return await tools["fixture-1"].read({ amount: 1 });` }, caller);
+  sample("10 plugins in use, after one program", service);
+  track();
+  console.log(`First call from idle, including engine start: ${firstCallMs} ms`);
+  console.table(rows);
 } finally {
-  const owned =
-    service.state().pid === undefined ? [] : pluginFixtureProcesses(service.state().pid!);
   await service.close();
-  assertStopped(owned);
   await registry.close();
   await rm(directory, { recursive: true, force: true });
-}
-function assertStopped(owned: ReturnType<typeof pluginFixtureProcesses>) {
-  for (const row of owned) {
+  const survivors = [...owned].filter((pid) => {
     try {
-      process.kill(row.pid, 0);
-      throw new Error(`Process ${row.pid} survived service shutdown`);
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
     }
+  });
+  if (survivors.length > 0) {
+    console.error(`Processes survived shutdown: ${survivors.join(", ")}`);
+    process.exitCode = 1;
   }
 }

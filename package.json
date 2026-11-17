@@ -53,6 +53,7 @@
     "dev:team": "tsx scripts/dev.ts team",
     "verify:team-deployment": "node scripts/verify-team-deployment.mjs",
     "import:plugin-engine": "node scripts/plugin-engine/import.mjs",
+    "measure:plugin-engine": "pnpm --filter @opensteer/host build && tsx scripts/plugin-engine/measure-service.ts",
     "check:plugin-engine-names": "node scripts/plugin-engine/names.mjs"
   },
   "devDependencies": {

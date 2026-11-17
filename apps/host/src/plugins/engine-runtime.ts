@@ -162,6 +162,10 @@ export async function startEngine(
           client: yield* safeHttpClient(defaultUrlPolicy),
         };
         const blobs = filesystemBlobStore({ directory: join(config.directory, "builds") });
+        // A personal computer keeps fewer idle plugin isolates than the engine's server defaults
+        // (64 loaded, five idle minutes); each holds its own heap in workerd.
+        process.env.PLUGIN_ENGINE_APP_WORKERS ??= "16";
+        process.env.PLUGIN_ENGINE_APP_WORKER_IDLE_SECONDS ??= "120";
         const local = yield* workerdApps({
           directory: join(config.directory, "workerd"),
           blobs,
