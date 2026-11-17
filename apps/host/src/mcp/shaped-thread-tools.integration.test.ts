@@ -1557,33 +1557,28 @@ describeStore("shaped agent task tools", (it) => {
       mode: "wait",
       timeoutMs: 2_000,
     });
+    const created =
+      Promise.withResolvers<Awaited<ReturnType<CommandService["delegateAdmittedThread"]>>>();
+    const delegate = s.commands.delegateAdmittedThread.bind(s.commands);
+    vi.spyOn(s.commands, "delegateAdmittedThread").mockImplementationOnce((request) => {
+      const result = delegate(request);
+      void result.then(created.resolve, created.reject);
+      return result;
+    });
     const pending = s.product.opensteer_task_delegate({
       caller: s.caller,
       input,
       operationKey: randomUUID(),
     });
-    let assignmentId: typeof s.assignmentId | undefined;
-    await vi.waitFor(
-      async () => {
-        const row = await storeFixture.database
-          .selectFrom("delegations")
-          .selectAll()
-          .where("parentRunId", "=", s.f.run.id)
-          .where("id", "!=", s.assignmentId)
-          .executeTakeFirst();
-        expect(row, "wait-mode delegation never created its delegation").toBeDefined();
-        assignmentId = row!.id;
-      },
-      { timeout: 1000 },
-    );
-    const row = await storeFixture.database
-      .selectFrom("delegations")
-      .select(["childRunId", "childThreadId"])
-      .where("id", "=", assignmentId!)
-      .executeTakeFirstOrThrow();
+    void pending.catch(created.reject);
+    const delegated = await withTimeout(created.promise, 1000, {
+      timeoutError: () => new Error("wait-mode delegation never committed its delegation"),
+    });
+    const assignmentId = delegated.assignment.id;
+    expect(assignmentId).not.toBe(s.assignmentId);
     const { terminal } = await storeFixture.runDelegatedTurn(
       s.f,
-      { id: row.childRunId, threadId: row.childThreadId },
+      { id: delegated.run.id, threadId: delegated.thread.id },
       {
         replies: ["84"],
         end: "completed",
@@ -1596,7 +1591,7 @@ describeStore("shaped agent task tools", (it) => {
       status: "completed",
       wait: { status: "settled" },
     });
-    expect(await storeFixture.store.drainAssignmentReturn(assignmentId!)).toEqual([]);
+    expect(await storeFixture.store.drainAssignmentReturn(assignmentId)).toEqual([]);
   });
 
   it("returns a task's Request promptly and reads it without exposing its payload", async ({

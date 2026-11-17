@@ -4,6 +4,7 @@ import {
   DeviceCapabilityReasonSchema,
   normalizeDeviceCapabilityReason,
   PhoneDisplayViewSchema,
+  PhoneDisplayNavigationButtonsSchema,
 } from "./devices.js";
 import { hostApi } from "./host-api.js";
 import { DeviceMachineSummarySchema, MachineSummarySchema } from "./machines.js";
@@ -46,6 +47,11 @@ describe("Device projection and commands", () => {
         control: { state: "future", reason: { kind: "future" } },
       }).control,
     ).toEqual({ state: "unavailable", reason: { kind: "runtime-failed" } });
+    const buttons = [{ id: "home", label: "Home", futureField: true }];
+    expect(
+      PhoneDisplayViewSchema.parse({ ...phone, navigationButtons: buttons }).navigationButtons,
+    ).toEqual(phone.navigationButtons);
+    expect(PhoneDisplayNavigationButtonsSchema.safeParse(buttons).success).toBe(false);
     expect(DeviceCapabilityReasonSchema.safeParse({ kind: "future" }).success).toBe(false);
     expect(normalizeDeviceCapabilityReason({ kind: "future" })).toEqual({ kind: "runtime-failed" });
   });

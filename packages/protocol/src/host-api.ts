@@ -1222,13 +1222,11 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
 
 const commandInputSchema = z.union([
   DeviceMachineAccessUpdateCommandSchema,
-  z.discriminatedUnion("type", [
-    ...TabCommandSchema.options,
-    ...AppCommandSchema.options,
-    ...TeamCommandSchema.options,
-    SettingsPluginEnableCommandSchema,
-    ...otherCommandInputSchema.options,
-  ]),
+  ...TabCommandSchema.options,
+  ...AppCommandSchema.options,
+  ...TeamCommandSchema.options,
+  SettingsPluginEnableCommandSchema,
+  ...otherCommandInputSchema.options,
 ]);
 
 const commandOutputSchema = z.discriminatedUnion("type", [

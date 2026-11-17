@@ -145,6 +145,9 @@ export const PhoneDisplayNavigationButtonSchema = z.strictObject({
   label: z.string().trim().min(1).max(120),
 });
 export type PhoneDisplayNavigationButton = z.infer<typeof PhoneDisplayNavigationButtonSchema>;
+export const PhoneDisplayNavigationButtonViewSchema = z.object(
+  PhoneDisplayNavigationButtonSchema.shape,
+);
 export const PhoneDisplayNavigationButtonsSchema = z
   .array(PhoneDisplayNavigationButtonSchema)
   .max(32)
@@ -167,7 +170,13 @@ export const PhoneDisplayViewSchema = z.object({
   control: DeviceAvailabilityViewSchema,
   view: DeviceAvailabilityViewSchema,
   input: DeviceAvailabilityViewSchema,
-  navigationButtons: PhoneDisplayNavigationButtonsSchema,
+  navigationButtons: z
+    .array(PhoneDisplayNavigationButtonViewSchema)
+    .max(32)
+    .refine(
+      (buttons) => new Set(buttons.map(({ id }) => id)).size === buttons.length,
+      "Navigation IDs must be unique",
+    ),
   actions: z.array(PhoneDisplayActionTypeSchema).max(11),
   wake: z.boolean(),
   lock: z.boolean().nullable(),

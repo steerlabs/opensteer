@@ -2,7 +2,7 @@ import { ToolFailureSchema } from "@opensteer/core";
 import { createIntegrationMcpFixture } from "../mcp/integration-fixture.test-support.js";
 import { agentTools } from "@opensteer/agent-tools";
 
-import { createId, OpensteerError, requestReasonMaxLength } from "@opensteer/core";
+import { DeviceIdSchema, createId, OpensteerError, requestReasonMaxLength } from "@opensteer/core";
 import {
   IntegrationDefinitionSchema,
   createIntegrationId,
@@ -1577,7 +1577,13 @@ async function createHarness(input: {
       ownerUserId === input.connectionAccount?.ownerUserId ? input.connectionAccount : null,
     ),
     getToolSchemas: vi.fn(async () => input.toolSchemas ?? null),
-    listComputerAppSetupRequests: vi.fn(async () => input.computerSetupRequests ?? []),
+    listDeviceComputerAppSetupRequests: vi.fn(async () =>
+      (input.computerSetupRequests ?? []).map(({ runnerId, ...request }) => ({
+        ...request,
+        deviceId: DeviceIdSchema.parse(runnerId),
+      })),
+    ),
+    requireSelfDeviceId: vi.fn(async (runnerId: string) => DeviceIdSchema.parse(runnerId)),
     listDiscoveryInventory: vi.fn(async () => input.inventory),
     listGrantedSkills: vi.fn(async () => []),
     listGrants: vi.fn(async () => input.grants ?? []),
@@ -1631,6 +1637,7 @@ async function createHarness(input: {
             appApproval: "ask",
             apps: [],
             ...mac,
+            deviceId: DeviceIdSchema.parse(mac.runnerId),
           })),
         ),
         computerUseInventory: vi.fn(async () => ({
@@ -1639,6 +1646,7 @@ async function createHarness(input: {
             appApproval: "ask",
             apps: [],
             ...mac,
+            deviceId: DeviceIdSchema.parse(mac.runnerId),
           })),
           phones: [],
         })),
@@ -2011,7 +2019,7 @@ describe("computer use discovery", () => {
     expect(installedComputerApps).toHaveBeenCalledWith(
       {
         actorUserId: scope.requestedBy,
-        runnerId: mac.runnerId,
+        deviceId: DeviceIdSchema.parse(mac.runnerId),
         query: "note",
         limit: 2,
         offset: 4,
