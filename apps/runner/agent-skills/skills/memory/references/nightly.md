@@ -15,8 +15,7 @@ Done.
 Your wake lists every task with new messages since your last completed pass, or the last four
 weeks on your first. Read your own recent history with `opensteer_task_read` (no `taskId`): the
 final reply of the Run your wake names is your last handoff, with where you read each connected
-source through. For any source it gives no position for, take it from `memory/passes/nightly.md`
-if an older version left it, or else start four weeks back. A handoff from before the
+source through. For any source it gives no position for, start four weeks back. A handoff from before the
 `Memory: on again from` time in `## Memory` doesn't count.
 
 Then read everything since, in full, investigating however you judge useful. Read each task the
@@ -51,9 +50,9 @@ handoff stopped. Then read all of `memory/`.
 - **Forgetting.** Each line in `memory/forgotten.md` is something the person asked to forget: never
   relearn it from old transcripts. At the end of every run, reread it and remove anything it covers
   from the summary, notes and open list; a write that crossed a forget can bring something back.
-- **Older layouts.** If `memory/inbox/` exists, fold anything still useful into notes or the open
-  list, then delete it. Delete `memory/passes/nightly.md` once the handoff your wake named carried
-  it forward. Leave `memory/passes/light.md` and `skills/light-pass/` to the light pass.
+- **Older layouts.** If `memory/inbox/` or `memory/passes/nightly.md` exists, fold anything still
+  useful into notes or the open list, then delete them. Leave `memory/passes/light.md` and
+  `skills/light-pass/` to the light pass.
 
 Reread every file right before you edit it, and never write back an earlier read: the person and
 other tasks may change memory while you work. Never store credentials or approvals, never turn
