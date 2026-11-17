@@ -252,9 +252,10 @@ export async function memoryPassWakeContext(
     .where("triggerOccurrences.triggerId", "=", trigger.id)
     .executeTakeFirstOrThrow();
   const now = Date.now();
-  const since = wakes.completed
-    ? new Date(wakes.completed.getTime() - commitOverlap)
-    : new Date((wakes.first?.getTime() ?? now) - firstPassWindow[role]);
+  const since = new Date(
+    (wakes.completed?.getTime() ?? (wakes.first?.getTime() ?? now) - firstPassWindow[role]) -
+      commitOverlap,
+  );
   const workers = transaction
     .selectFrom("triggers")
     .select("anchorThreadId")

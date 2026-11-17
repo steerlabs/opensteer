@@ -323,8 +323,8 @@ const firstPassWindow = { Light: 24 * 60 * 60 * 1000, Nightly: 28 * 24 * 60 * 60
 
 /**
  * Appends the Host's list to each memory wake, rendered from the case's tasks as the Host
- * would: since the self task's last completed handoff less the commit overlap, or the first
- * pass's window, skipping managed workers.
+ * would: since the self task's last completed handoff, or the first pass's window, less the
+ * commit overlap, skipping managed workers.
  */
 export function withHostMemoryWakes(testCase: EvalCase): EvalCase {
   const published = (items: EvalCase["tasks"][number]["items"]) =>
@@ -338,9 +338,10 @@ export function withHostMemoryWakes(testCase: EvalCase): EvalCase {
     const [, label, at] = turn.text.match(memoryWake) ?? [];
     if (!label || !at || turn.text.includes("\n\n")) return turn;
     const since = new Date(
-      handoff
-        ? Date.parse(handoff.createdAt) - 10 * 60 * 1000
-        : Date.parse(at) - firstPassWindow[label as keyof typeof firstPassWindow],
+      (handoff
+        ? Date.parse(handoff.createdAt)
+        : Date.parse(at) - firstPassWindow[label as keyof typeof firstPassWindow]) -
+        10 * 60 * 1000,
     );
     const changes = testCase.tasks.flatMap(({ task, items, self }) => {
       if (self || task.purpose === "background-job") return [];

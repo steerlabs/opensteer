@@ -2202,10 +2202,18 @@ describeStore("shaped agent task tools", (it) => {
         )
         .tasks.find((task) => task.id === f.thread.id);
     const all = (await changedSince("2000-01-01T00:00:00Z"))!;
-    expect(all.newMessages).toBeGreaterThan(0);
-    // The bound is exclusive: from the first new message's own time, that message is no longer new.
-    const after = await changedSince(all.firstNewAt!);
-    expect(after?.newMessages ?? 0).toBeLessThan(all.newMessages!);
+    const history = opensteer_task_read.output.parse(
+      productToolOutput(
+        await s.product.opensteer_task_read({
+          caller: s.caller,
+          input: opensteer_task_read.input.parse({ taskId: f.thread.id, limit: 100 }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    ).items;
+    // A pass reads back to firstNewAt, so it must be where task history shows the oldest one.
+    expect(all.newMessages).toBe(history.length);
+    expect(all.firstNewAt).toBe(history.map((item) => item.createdAt).toSorted()[0]);
     expect(await changedSince(new Date(Date.now() + 60_000).toISOString())).toBeUndefined();
     await storeFixture.store.cancelAssignment({
       assignmentId: delegated.assignmentId!,

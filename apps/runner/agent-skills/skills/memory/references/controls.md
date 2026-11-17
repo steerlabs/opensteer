@@ -83,6 +83,7 @@ follow-up until creation succeeds.
 
 ## Turn back on
 
-Finish any pending deletion first. Clear only the contents under `## Memory`, preserving
-everything outside it byte-for-byte; reopen each worker marked Done with `opensteer_task_update`
+Finish any pending deletion first. Replace only the contents under `## Memory` with
+`Memory: on again from <the current ISO-8601 instant>.`, preserving everything outside it
+byte-for-byte, so the passes start fresh rather than from their handoffs before erasure; reopen each worker marked Done with `opensteer_task_update`
 and `done: false`, then resume both automations. Preserve both worker and automation identities.

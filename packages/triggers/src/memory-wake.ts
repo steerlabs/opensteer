@@ -27,7 +27,7 @@ export function memoryPassWakeText(input: {
     ),
     ...(input.more
       ? [
-          `There are more: list them with opensteer_task_list changedSince ${input.since.toISOString()} and page to the end.`,
+          `There are more: list them with opensteer_task_list changedSince ${input.since.toISOString()}, page to the end, and read each the same way.`,
         ]
       : []),
   ].join("\n");

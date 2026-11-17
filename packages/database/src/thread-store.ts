@@ -995,7 +995,8 @@ function changedThreads(transaction: Transaction<DatabaseSchema>, since: Date) {
     .select(({ fn }) => [
       "messages.threadId",
       fn.countAll<string>().as("newMessages"),
-      sql<Date>`min(${dated})`.as("firstNewAt"),
+      // The oldest new message's own time, where opensteer_task_read's history shows it.
+      sql<Date>`min(messages.created_at)`.as("firstNewAt"),
       sql<Date>`max(${dated})`.as("lastNewAt"),
     ])
     .where(
