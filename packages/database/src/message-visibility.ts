@@ -1,4 +1,3 @@
-import { isDeepStrictEqual } from "node:util";
 import {
   MessageContentSchema,
   nonTerminalRunStatuses,
@@ -14,7 +13,7 @@ import {
 } from "./personal-mutation.js";
 import { isOfflineSettlement } from "./personal-transaction.js";
 import { itemView } from "./personal-sync-store.js";
-import { publishThreadSummary } from "./thread-status.js";
+import { invalidateThreadCollection, publishThreadSummary } from "./thread-status.js";
 import { describeTranscriptMessage } from "./transcript-store.js";
 import type { TranscriptItemTable } from "./personal-state-schema.js";
 import { sql, type Insertable, type RawBuilder } from "kysely";
@@ -98,16 +97,6 @@ export async function syncTranscriptMessage(
       await tx.updateTable("messages").set({ published }).where("id", "=", messageId).execute();
 
     const move = Boolean(visible && prior?.visible && placement?.move);
-    if (
-      prior &&
-      prior.visible === visible &&
-      prior.runId === runId &&
-      (!visible || prior.isTurnStart === isTurnStart) &&
-      !move &&
-      isDeepStrictEqual(prior.view, view)
-    )
-      return;
-
     const position = visible
       ? !prior?.visible || move
         ? await allocateTranscriptPosition(tx, message.threadId)
@@ -145,6 +134,7 @@ export async function syncTranscriptMessage(
       );
     else if (prior?.visible)
       mutation.change({ scopeKey, entityKind: "item", entityId: messageId, operation: "remove" });
+    else await invalidateThreadCollection(tx, message.threadId, "messages");
     if (orderChanged) {
       await tx
         .updateTable("threads")

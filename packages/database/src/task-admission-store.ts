@@ -79,7 +79,7 @@ export function admitTeamTaskRequest(
   database: Kysely<DatabaseSchema>,
   input: TeamAdmissionInput & { readonly ownerId: UserId; readonly execution: ExecutionSelection },
 ) {
-  return commitPersonalMutation(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     await requirePersonalOwner(transaction, input.ownerId);
     for (const key of [
       `team-task:${input.origin.teamId}:${input.origin.channelId}:${input.origin.threadRootId}`,

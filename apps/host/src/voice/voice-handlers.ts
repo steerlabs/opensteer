@@ -199,7 +199,7 @@ export function createVoiceHandlers(dependencies: {
     "voice.open": async (input, context) => {
       const ownerId = owner(context);
       const catalog = await requireAccount(ownerId, input);
-      const { events: _events, ...opened } = await dependencies.store.openVoiceThread({
+      const opened = await dependencies.store.openVoiceThread({
         ownerId,
         environmentId: input.environmentId,
         harnessInstanceId: input.harnessInstanceId,

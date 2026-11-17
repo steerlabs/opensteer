@@ -235,7 +235,13 @@ export class OpensteerStore {
     return voiceStore.resolveVoiceCall(this.#database, ownerId, sessionId);
   }
   openVoiceThread(input: Parameters<typeof voiceStore.openVoiceThread>[1]) {
-    return commitPersonalMutation(this.#database, (tx) => voiceStore.openVoiceThread(tx, input));
+    return commitPersonalMutation(this.#database, async (tx) => {
+      const { threadId, environmentId, harnessInstanceId } = await voiceStore.openVoiceThread(
+        tx,
+        input,
+      );
+      return { threadId, environmentId, harnessInstanceId };
+    });
   }
   latestRunStoppedByPerson(threadId: ThreadId) {
     return latestRunStoppedByPerson(this.#database, threadId);

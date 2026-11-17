@@ -8,6 +8,7 @@ import {
 } from "@opensteer/core";
 import { durableWindowCursorMaxCharacters } from "@opensteer/protocol";
 import { sql, type ExpressionBuilder, type Kysely, type Transaction } from "kysely";
+import { refreshExecuteClaimProof } from "./personal-run-state.js";
 import { assignmentActivityEventsForRun } from "./assignment-store.js";
 import { lockThreadChannelAuthorities } from "./channel-execution.js";
 import {
@@ -170,10 +171,10 @@ export async function returnRunToQueue(
       message: "The Run could not return to queued atomically",
     });
   }
+  await refreshExecuteClaimProof(transaction, input.run.id);
   await publishRunQueue(transaction, input.run.threadId, input.run.id);
   await projectThreadState(transaction, input.run.threadId);
   await assignmentActivityEventsForRun(transaction, input.run.id);
-  return;
 }
 export async function findCommandByIdempotency(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,

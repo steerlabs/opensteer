@@ -1966,6 +1966,7 @@ export async function updateThreadAccessMode(
   return commitPersonalMutation(database, async (transaction) => {
     const observed = await transaction
       .selectFrom("threads")
+      .select("id")
       .where("id", "=", input.threadId)
       .where("removedAt", "is", null)
       .executeTakeFirst();
