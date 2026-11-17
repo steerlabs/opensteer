@@ -68,7 +68,7 @@ export const MessageDelivery = memo(function MessageDelivery(props: {
     >
       {props.children}
       {status === null ? null : (
-        <div className="delivery__status" key={status}>
+        <div className="delivery__status" key={status} role="status">
           {status === "rejected" ? (
             <span className="delivery__reason">{props.rejection ?? null}</span>
           ) : (

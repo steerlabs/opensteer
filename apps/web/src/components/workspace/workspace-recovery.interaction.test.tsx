@@ -37,27 +37,34 @@ import {
 } from "./workspace.interaction.test-support.js";
 import { composerText } from "../composer-editor.test-support.js";
 describe("the review's findings", () => {
-  it("F4 connection Retry explicitly retries the refused realtime channel", async () => {
+  it("F4 the pill's Retry, not the task, asks the connection to recover", async () => {
     await mount((source) => {
-      const getSnapshot = source.getSnapshot.bind(source);
-      const thread = getSnapshot().threads.find(
-        (entry) => entry.listed && entry.purpose === "task",
-      )!;
-      const cache = new WeakMap<HostSnapshot, HostSnapshot>();
-      vi.spyOn(source, "getSnapshot").mockImplementation(() => {
-        const snapshot = getSnapshot();
-        let offline = cache.get(snapshot);
-        if (!offline) {
-          offline = { ...snapshot, connection: "offline", connectionInterrupted: true };
-          cache.set(snapshot, offline);
+      const thread = source
+        .getSnapshot()
+        .threads.find((entry) => entry.listed && entry.purpose === "task")!;
+      const getConnection = source.connection.getSnapshot.bind(source.connection);
+      const unreachable = new WeakMap<object, ReturnType<typeof getConnection>>();
+      vi.spyOn(source.connection, "getSnapshot").mockImplementation(() => {
+        const real = getConnection();
+        let shown = unreachable.get(real);
+        if (!shown) {
+          shown = {
+            ...real,
+            phase: "recovering",
+            showInterruption: true,
+            trying: false,
+            issue: { code: "connection", reason: "unreachable" },
+          };
+          unreachable.set(real, shown);
         }
-        return offline;
+        return shown;
       });
       return `/tasks/${thread.id}`;
     });
     const retry = vi.spyOn(client.connection, "retry");
-    expect(element(".thread__connection-label").textContent).toBe("Can't reach your computer");
-    await click(element(".thread__connection button"));
+    expect(element(".connection-pill__label").textContent).toMatch(/^Can't reach /u);
+    expect(document.querySelector(".thread__connection")).toBeNull();
+    await click(element(".connection-pill__action"));
     expect(retry).toHaveBeenCalledExactlyOnceWith();
   });
   it("1 · a send's late answer never resets, refollows or overwrites the next draft's places", async () => {

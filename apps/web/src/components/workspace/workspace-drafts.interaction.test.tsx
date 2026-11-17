@@ -295,7 +295,7 @@ describe("the draft's places", () => {
         });
         await click(element(".composer__send"));
         await settle(100);
-        await click(element(".msg--user-row [role=status] button"));
+        await click(element(".delivery [role=status] button"));
         await settle(100);
         dispatch.mockRestore();
         expect(titles()).toEqual([place.title, other.title]);
@@ -376,7 +376,7 @@ describe("the draft's places", () => {
     ).toEqual([other.title, place.title]);
     await act(async () => refusal.resolve());
     await settle(100);
-    const rejected = element(".msg--user-row [role=status]").closest(".msg--user-row")!;
+    const rejected = element(".delivery [role=status]").closest(".delivery")!;
     expect(rejected.textContent).toContain("First message");
     expect(rejected.textContent).toContain(place.title);
     expect(rejected.textContent).toContain("Not sent. You don't have access.");
@@ -640,7 +640,7 @@ describe("the draft's places", () => {
         reference(keynote),
       ]);
       expect(
-        element(".msg--user-row [role=status]").closest(".msg--user-row")!.textContent,
+        element(".delivery [role=status]").closest(".delivery")!.textContent,
       ).toContain(keynote.title);
       act(() => root?.unmount());
       setRoot(null);
@@ -690,7 +690,7 @@ describe("unconfirmed sends keep every place exactly", () => {
     ]);
     expect(first.content[1]?.auto).toBe(true);
     expect(
-      element(".msg--user-row [role=status]").closest(".msg--user-row")!.textContent,
+      element(".delivery [role=status]").closest(".delivery")!.textContent,
     ).toContain(app.title);
     // The page reloads: the kept message is sent again as exactly what was sent.
     act(() => root?.unmount());
