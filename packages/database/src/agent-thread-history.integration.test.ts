@@ -1,14 +1,13 @@
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { latestRunPlace, recordRunTabPlace } from "./browser-session-store.js";
 import { createId } from "@opensteer/core";
 import { expect } from "vitest";
 import { describeStore } from "./store.integration.test-support.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
 import "./connection.js";
 import { readAgentThreadActivity, readAgentThreadRecent } from "./agent-thread-history.js";
 import { readThreadWaitSnapshot } from "./thread-wait.js";
 describeStore("agent Thread history", (it) => {
-  it("orders messages by their newest published event marker and never event content", async ({
+  it("orders published messages by their retained item and reads the canonical body", async ({
     storeFixture,
   }) => {
     const { store, database, startRunFixture } = storeFixture;
@@ -28,39 +27,6 @@ describeStore("agent Thread history", (it) => {
       },
       idempotencyKey: "waiting-work",
     });
-    const originalMarker = await database
-      .selectFrom("deploymentEvents")
-      .selectAll()
-      .where("type", "=", "message.created")
-      .where("threadId", "=", f.thread.id)
-      .orderBy("sequence", "desc")
-      .executeTakeFirstOrThrow();
-    const append = async () => {
-      const sequence = String(BigInt(originalMarker.sequence) + 100n);
-      await database
-        .insertInto("deploymentEvents")
-        .values({
-          ...originalMarker,
-          type: "message.placed",
-          sequence,
-          eventId: createId("event"),
-          data: {
-            message: {
-              id: queued.message.id,
-              content: [
-                {
-                  type: "text",
-                  text: "Forged event content",
-                },
-              ],
-            },
-          },
-        })
-        .execute();
-      return {
-        sequence,
-      };
-    };
     const hidden = await readAgentThreadActivity(database, {
       ownerId: f.userId,
       threadId: f.thread.id,
@@ -80,7 +46,30 @@ describeStore("agent Thread history", (it) => {
       })
       .where("messageId", "=", queued.message.id)
       .execute();
-    const last = await append();
+    await database
+      .updateTable("messages")
+      .set({ published: true })
+      .where("id", "=", queued.message.id)
+      .execute();
+    const position = "1000";
+    await database
+      .insertInto("transcriptItems")
+      .values({
+        id: queued.message.id,
+        threadId: f.thread.id,
+        runId: f.run.id,
+        attemptId: null,
+        nodeId: null,
+        kind: "message",
+        position,
+        messageId: queued.message.id,
+        visible: true,
+        isTurnStart: false,
+        createdAt: new Date(),
+        view: { preview: "Forged preview" },
+      })
+      .onConflict((conflict) => conflict.column("id").doUpdateSet({ position, visible: true }))
+      .execute();
     const visible = await readAgentThreadActivity(database, {
       ownerId: f.userId,
       threadId: f.thread.id,
@@ -89,7 +78,7 @@ describeStore("agent Thread history", (it) => {
     const messages = visible!.items.flatMap((item) => (item.type === "message" ? [item] : []));
     expect(messages.filter((item) => item.message.id === queued.message.id)).toHaveLength(1);
     expect(messages[0]).toMatchObject({
-      sequence: last.sequence,
+      position,
       message: {
         id: queued.message.id,
         content: [
@@ -100,9 +89,9 @@ describeStore("agent Thread history", (it) => {
         ],
       },
     });
-    expect(visible!.items.map((item) => BigInt(item.sequence))).toEqual(
+    expect(visible!.items.map((item) => BigInt(item.position))).toEqual(
       visible!.items
-        .map((item) => BigInt(item.sequence))
+        .map((item) => BigInt(item.position))
         .sort((a, b) => (a > b ? -1 : a < b ? 1 : 0)),
     );
     expect(
@@ -127,35 +116,51 @@ describeStore("agent Thread history", (it) => {
     const { database, startRunFixture } = storeFixture;
     const f = await startRunFixture("agent-recent");
     for (let i = 0; i < 12; i++)
-      await withPersonalTransaction(database, (tx) =>
-        appendHostDeploymentEvent(tx, {
-          threadId: f.thread.id,
+      expect(
+        await recordRunTabPlace(database, {
           runId: f.run.id,
-          environmentId: f.environmentId,
-          type: "place.entered",
+          bindingGeneration: f.bindingGeneration,
           data: {
             tabId: BrowserSurfaceIdSchema.parse("native-tab-" + i),
             title: String(i),
             site: null,
           },
         }),
-      );
+      ).toBe(true);
+    expect(
+      await recordRunTabPlace(database, {
+        runId: f.run.id,
+        bindingGeneration: f.bindingGeneration,
+        data: {
+          tabId: BrowserSurfaceIdSchema.parse("native-tab-11"),
+          title: "Repeated",
+          site: null,
+        },
+      }),
+    ).toBe(false);
+    await expect(
+      recordRunTabPlace(database, {
+        runId: f.run.id,
+        bindingGeneration: f.bindingGeneration + 1,
+        data: { tabId: BrowserSurfaceIdSchema.parse("stale-tab"), title: "Stale", site: null },
+      }),
+    ).resolves.toBe(false);
+    const place = { tabId: "native-tab-11", title: "11", site: null };
+    await expect(latestRunPlace(database, f.run.id)).resolves.toEqual(place);
+    await expect(
+      database
+        .selectFrom("threads")
+        .select("latestPlace")
+        .where("id", "=", f.thread.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ latestPlace: place });
     const recent = await readAgentThreadRecent(database, {
       ownerId: f.userId,
       threadId: f.thread.id,
       runLimit: 1,
     });
     expect(recent?.runs).toHaveLength(1);
-    expect(recent?.places.map((e) => e.data.title)).toEqual([
-      "11",
-      "10",
-      "9",
-      "8",
-      "7",
-      "6",
-      "5",
-      "4",
-    ]);
+    expect(recent?.places.map((e) => e.title)).toEqual(["11", "10", "9", "8", "7", "6", "5", "4"]);
     await expect(
       readAgentThreadRecent(database, {
         ownerId: createId("user"),

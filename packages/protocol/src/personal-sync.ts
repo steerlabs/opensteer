@@ -23,6 +23,7 @@ import {
   TranscriptItemIdSchema,
   TranscriptItemSchema,
   TranscriptOrderCursorSchema,
+  TranscriptPlaceSchema,
 } from "./transcript.js";
 
 export const scopedPersonalApiVersion = 62;
@@ -130,6 +131,7 @@ const task = z.strictObject({
   failurePreview: z.string().max(1120).nullable(),
   latestRunCompletedAt: z.iso.datetime().nullable(),
 });
+const detailThread = task.extend({ latestPlace: TranscriptPlaceSchema.nullable().optional() });
 const visit = z.strictObject({
   threadId: ThreadIdSchema,
   lastVisitedAt: z.iso.datetime(),
@@ -160,13 +162,23 @@ const queue = z.strictObject({
         revision: PersonalRevisionSchema,
         status: z.string().max(80),
         finishing: z.boolean(),
+        latestPlace: TranscriptPlaceSchema.nullable().optional(),
+        createdAt: z.iso.datetime().optional(),
+        runOrdinal: z.int().nonnegative().optional(),
       }),
     )
     .max(2),
   paused: z.boolean(),
 });
 export const PersonalDetailSnapshotSchema = z.strictObject({
-  thread: task,
+  thread: detailThread,
+  node: z
+    .strictObject({
+      id: ExecutionNodeIdSchema,
+      title: z.string().max(240),
+      status: z.string().max(80),
+    })
+    .optional(),
   orderRevision: PersonalRevisionSchema,
   inputQueueRevision: PersonalRevisionSchema,
   queue: queue.optional(),
@@ -174,6 +186,15 @@ export const PersonalDetailSnapshotSchema = z.strictObject({
   pendingRequests: z.array(request).max(20),
   activeItems: z.array(TranscriptItemSchema).max(20),
   nextBefore: TranscriptOrderCursorSchema.nullable(),
+  nextAfter: TranscriptOrderCursorSchema.nullable().optional(),
+  anchorItemId: TranscriptItemIdSchema.nullable().optional(),
+  overlayCursors: z
+    .strictObject({
+      requests: z.string().max(4096).optional(),
+      tools: z.string().max(4096).optional(),
+      nodes: z.string().max(4096).optional(),
+    })
+    .optional(),
 });
 const counts = z.strictObject({
   pendingRequestCount: z.int().nonnegative(),
@@ -189,6 +210,19 @@ export const PersonalShellSnapshotSchema = z.strictObject({
   attention: z.array(attention).max(20),
   counts,
   resourceRevisions: PersonalResourceRevisionsSchema,
+  nextBefore: z.string().max(4096).nullable().optional(),
+  recentTaskIds: z.array(ThreadIdSchema).max(25).optional(),
+  activeTaskIds: z.array(ThreadIdSchema).max(10).optional(),
+  resources: z
+    .array(
+      z.strictObject({
+        kind: PersonalResourceKindSchema,
+        revision: PersonalRevisionSchema,
+        view: PersonalResourceViewSchema,
+      }),
+    )
+    .max(15)
+    .optional(),
 });
 
 const change = {
@@ -230,7 +264,7 @@ export const PersonalChangeSchema = z
     upsert("task", task),
     upsert("visit", visit),
     upsert("attention", attention),
-    upsert("thread", task),
+    upsert("thread", detailThread),
     upsert("run-queue", queue),
     upsert("request", request),
     upsert("item", TranscriptItemSchema),

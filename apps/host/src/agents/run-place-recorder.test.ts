@@ -1,10 +1,4 @@
-import {
-  createId,
-  BrowserSurfaceIdSchema,
-  type AgentEvent,
-  type EventData,
-  type RunId,
-} from "@opensteer/core";
+import { createId, BrowserSurfaceIdSchema, type EventData, type RunId } from "@opensteer/core";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { describe, expect, it, vi } from "vitest";
@@ -32,17 +26,15 @@ function fixture() {
       runId: RunId;
       bindingGeneration: number;
       data: EventData<"place.entered">;
-    }): Promise<AgentEvent | undefined> => undefined,
+    }): Promise<boolean> => false,
   );
-  const publish = vi.fn();
   const onError = vi.fn();
   const clock = new ManualClock(0);
-  const recorder = new RunPlaceRecorder({ write, publish, onError, clock });
+  const recorder = new RunPlaceRecorder({ write, onError, clock });
   return {
     recorder,
     clock,
     write,
-    publish,
     onError,
     drain: () =>
       withTimeout(recorder.drain(runId), 1000, {
@@ -54,7 +46,7 @@ function fixture() {
 describe("per-Run place recording", () => {
   it("coalesces A,B,C,A,B,C to serialized leading A and trailing C, then leads after quiet", async () => {
     const f = fixture();
-    const first = Promise.withResolvers<AgentEvent | undefined>();
+    const first = Promise.withResolvers<boolean>();
     f.write.mockReturnValueOnce(first.promise);
     try {
       for (const data of [browser, app, phone, browser, app, phone])
@@ -64,7 +56,7 @@ describe("per-Run place recording", () => {
       expect(f.write.mock.calls.map(([input]) => input.data)).toEqual([browser]);
       f.clock.advanceBy(1);
       expect(f.write).toHaveBeenCalledTimes(1);
-      first.resolve(undefined);
+      first.resolve(false);
       await f.drain();
       expect(f.write.mock.calls.map(([input]) => input.data)).toEqual([browser, phone]);
       f.clock.advanceBy(1000);
@@ -72,14 +64,14 @@ describe("per-Run place recording", () => {
       await f.drain();
       expect(f.write.mock.calls.map(([input]) => input.data)).toEqual([browser, phone, app]);
     } finally {
-      first.resolve(undefined);
+      first.resolve(false);
       await f.drain();
     }
   });
 
   it("writes a coalesced return to a place whose leading write failed", async () => {
     const f = fixture();
-    const failed = Promise.withResolvers<AgentEvent | undefined>();
+    const failed = Promise.withResolvers<boolean>();
     f.write.mockReturnValueOnce(failed.promise);
     try {
       for (const data of [browser, app, browser]) f.recorder.enter(runId, 1, data);
@@ -88,14 +80,14 @@ describe("per-Run place recording", () => {
       await f.drain();
       expect(f.write.mock.calls.map(([input]) => input.data)).toEqual([browser, browser]);
     } finally {
-      failed.resolve(undefined);
+      failed.resolve(false);
       await f.drain();
     }
   });
 
   it("settles each landed place through its own entry's callback", async () => {
     const f = fixture();
-    f.write.mockImplementation(async (input) => input as unknown as AgentEvent);
+    f.write.mockResolvedValue(true);
     const settled = vi.fn(async (_at: number, _coalesced: boolean) => undefined);
     const superseded = vi.fn(async (_at: number, _coalesced: boolean) => undefined);
     f.recorder.enter(runId, 1, browser, settled);
@@ -122,7 +114,7 @@ describe("per-Run place recording", () => {
     const f = fixture();
     f.recorder.enter(runId, 1, browser);
     await f.drain();
-    const pending = Promise.withResolvers<AgentEvent | undefined>();
+    const pending = Promise.withResolvers<boolean>();
     f.write.mockReturnValueOnce(pending.promise);
     f.recorder.enter(runId, 1, phone);
     await Promise.resolve();
@@ -134,14 +126,14 @@ describe("per-Run place recording", () => {
     try {
       await vi.waitFor(() => expect(f.write).toHaveBeenCalledTimes(2), { timeout: 1000 });
       expect(drained).toBe(false);
-      pending.resolve(undefined);
+      pending.resolve(false);
       await drain;
       expect(f.write.mock.calls.at(-1)?.[0].data).toEqual(phone);
       f.clock.advanceBy(1000);
       await f.drain();
       expect(f.write).toHaveBeenCalledTimes(2);
     } finally {
-      pending.resolve(undefined);
+      pending.resolve(false);
       await drain;
     }
   });
@@ -246,7 +238,7 @@ describe("per-Run place recording", () => {
 
   it("drains accepted writes on shutdown and refuses later native completions", async () => {
     const f = fixture();
-    const pending = Promise.withResolvers<AgentEvent | undefined>();
+    const pending = Promise.withResolvers<boolean>();
     f.write.mockReturnValueOnce(pending.promise);
     f.recorder.enter(runId, 1, browser);
     const late = f.recorder.begin(runId, 1);
@@ -256,38 +248,36 @@ describe("per-Run place recording", () => {
     try {
       late(app);
       f.recorder.enter(runId, 1, phone);
-      pending.resolve(undefined);
+      pending.resolve(false);
       await closed;
       expect(f.write.mock.calls.map(([input]) => input.data)).toEqual([browser]);
     } finally {
-      pending.resolve(undefined);
+      pending.resolve(false);
       await closed;
     }
   });
 
-  it("publishes only writes accepted by the database's Run fence", async () => {
+  it("settles only writes accepted by the database's Run fence", async () => {
     const f = fixture();
-    const accepted = { type: "place.entered", runId, data: app } as AgentEvent;
+    const settled = vi.fn(async () => {});
     let active = true;
-    f.write.mockImplementation(async (input) =>
-      active && input.bindingGeneration === 2 ? accepted : undefined,
-    );
-    f.recorder.enter(runId, 1, app);
+    f.write.mockImplementation(async (input) => active && input.bindingGeneration === 2);
+    f.recorder.enter(runId, 1, app, settled);
     await f.drain();
-    expect(f.publish).not.toHaveBeenCalled();
-    f.recorder.enter(runId, 2, app);
+    expect(settled).not.toHaveBeenCalled();
+    f.recorder.enter(runId, 2, app, settled);
     await f.drain();
-    expect(f.publish).toHaveBeenCalledExactlyOnceWith(accepted);
+    expect(settled).toHaveBeenCalledTimes(1);
     active = false;
-    f.recorder.enter(runId, 2, phone);
+    f.recorder.enter(runId, 2, phone, settled);
     await f.drain();
-    expect(f.publish).toHaveBeenCalledTimes(1);
+    expect(settled).toHaveBeenCalledTimes(1);
     expect(f.write).toHaveBeenCalledTimes(3);
   });
 
   it("retries a failed transition without invalidating a newer queued place", async () => {
     const f = fixture();
-    const failed = Promise.withResolvers<AgentEvent | undefined>();
+    const failed = Promise.withResolvers<boolean>();
     const error = new Error("place write failed");
     f.write.mockReturnValueOnce(failed.promise);
     f.recorder.enter(runId, 1, browser);
@@ -318,9 +308,8 @@ describe("tab places", () => {
       clock: new ManualClock(0),
       write: async (input) => {
         writes.push(input.data);
-        return undefined;
+        return false;
       },
-      publish: () => {},
       onError: (error) => {
         throw error;
       },

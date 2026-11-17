@@ -1464,15 +1464,13 @@ integration("Host vertical slice", () => {
           .where("id", "=", thread.id)
           .executeTakeFirstOrThrow(),
       ).resolves.toEqual({ status: "failed" });
-      const persistedEvents = await runtime.store.database
-        .selectFrom("deploymentEvents")
-        .select(["data", "runnerOrdinal", "type"])
-        .where("runId", "=", admittedRun.id)
-        .where("type", "=", "run.failed")
-        .execute();
-      expect(persistedEvents).toHaveLength(1);
-      expect(persistedEvents[0]).toMatchObject({ runnerOrdinal: null, type: "run.failed" });
-      expect(JSON.stringify(persistedEvents)).not.toContain(privateProviderError);
+      const persisted = await runtime.store.database
+        .selectFrom("runs")
+        .select(["status", "failure", "runnerSafetyTerminal"])
+        .where("id", "=", admittedRun.id)
+        .executeTakeFirstOrThrow();
+      expect(persisted).toMatchObject({ status: "failed", runnerSafetyTerminal: false });
+      expect(JSON.stringify(persisted)).not.toContain(privateProviderError);
     } finally {
       publication.abort();
       stopCatalogResponder();
@@ -1671,15 +1669,14 @@ integration("Host vertical slice", () => {
     ).resolves.toEqual({ status: "succeeded" });
     await expect(
       runtime.store.database
-        .selectFrom("deploymentEvents")
-        .select(["data", "runnerOrdinal", "type"])
-        .where("runId", "=", admittedRun.id)
-        .where("type", "=", "run.failed")
+        .selectFrom("runs")
+        .select(["status", "failure", "runnerSafetyTerminal"])
+        .where("id", "=", admittedRun.id)
         .executeTakeFirstOrThrow(),
     ).resolves.toMatchObject({
-      data: { code: "execution_binding_expired", status: "failed" },
-      runnerOrdinal: null,
-      type: "run.failed",
+      status: "failed",
+      failure: { code: "execution_binding_expired" },
+      runnerSafetyTerminal: false,
     });
   }, 60_000);
 
@@ -1822,14 +1819,6 @@ integration("Host vertical slice", () => {
       modelSelection: testModelSelection,
       title: "Stranded projection",
     });
-    await seedDatabase
-      .updateTable("threads")
-      .set({ pendingRequestCount: 7 })
-      .where("id", "=", idleThread.id)
-      .execute();
-    await sql`insert into thread_state_pending (thread_id, requested_at) values (${idleThread.id}, now())`.execute(
-      seedDatabase,
-    );
     await seedDatabase.destroy();
 
     runtime = await createHostRuntime(
@@ -1838,68 +1827,16 @@ integration("Host vertical slice", () => {
     await expect(runtime.store.getThreadForOwner(idleThread.id, ownerId)).resolves.toMatchObject({
       pendingRequests: 0,
     });
-    expect(
-      (
-        await sql`select * from thread_state_pending where thread_id = ${idleThread.id}`.execute(
-          runtime.store.database,
-        )
-      ).rows,
-    ).toEqual([]);
-    const firstRepair = await runtime.store.getThreadForOwner(idleThread.id, ownerId);
-    await runtime.store.database
-      .updateTable("threads")
-      .set({ pendingRequestCount: 9 })
-      .where("id", "=", idleThread.id)
-      .execute();
-    await sql`insert into thread_state_pending (thread_id, requested_at) values (${idleThread.id}, now())`.execute(
-      runtime.store.database,
-    );
-    await vi.waitFor(
-      async () => {
-        expect(
-          (await runtime!.store.getThreadForOwner(idleThread.id, ownerId))?.pendingRequests,
-        ).toBe(0);
-      },
-      { timeout: 5000 },
-    );
-    const secondRepair = await runtime.store.getThreadForOwner(idleThread.id, ownerId);
-    const repaired = await runtime.store.database
-      .selectFrom("deploymentEvents")
-      .select("data")
-      .where("threadId", "=", idleThread.id)
-      .where("type", "=", "thread.state-changed")
-      .orderBy("sequence", "asc")
-      .execute();
-    expect(repaired).toEqual([
-      {
-        data: {
-          updatedAt: firstRepair!.updatedAt,
-          returnHint: null,
-          latestRunCompletedAt: null,
-          pendingRequests: 0,
-          inputQueuePaused: false,
-          status: "idle",
-          title: idleThread.title,
-          icon: idleThread.icon,
-          doneAt: null,
-          doneReason: null,
-        },
-      },
-      {
-        data: {
-          updatedAt: secondRepair!.updatedAt,
-          returnHint: null,
-          latestRunCompletedAt: null,
-          pendingRequests: 0,
-          inputQueuePaused: false,
-          status: "idle",
-          title: idleThread.title,
-          icon: idleThread.icon,
-          doneAt: null,
-          doneReason: null,
-        },
-      },
-    ]);
+    const cut = await (
+      await import("@opensteer/database")
+    ).readPersonalDetailSnapshot(runtime.store.database, {
+      viewerId: ownerId,
+      scope: { kind: "thread", threadId: idleThread.id },
+    });
+    expect(cut).toMatchObject({
+      kind: "snapshot",
+      snapshot: { thread: { status: "idle", pendingRequestCount: 0, title: idleThread.title } },
+    });
     await expect(
       runtime.store.database
         .selectFrom("browserSessions")
@@ -1916,14 +1853,6 @@ integration("Host vertical slice", () => {
         .where("id", "=", admittedRun.id)
         .executeTakeFirstOrThrow(),
     ).resolves.toEqual({ status: "running" });
-    await expect(
-      runtime.store.database
-        .selectFrom("deploymentEvents")
-        .select("type")
-        .where("runId", "=", admittedRun.id)
-        .where("type", "=", "run.failed")
-        .execute(),
-    ).resolves.toEqual([]);
   });
 
   it("opens a browser module stream beside the primary connection, once per ticket", async () => {

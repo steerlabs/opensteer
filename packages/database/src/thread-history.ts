@@ -1,6 +1,5 @@
 import { withPersonalReadTransaction } from "./personal-transaction.js";
 import "./connection.js";
-import { publishedMessagePredicate } from "./message-visibility.js";
 import {
   MessageIdSchema,
   OpensteerError,
@@ -14,6 +13,7 @@ import { sql, type Kysely } from "kysely";
 import { z } from "zod";
 import type { DatabaseSchema } from "./schema.js";
 import { messageViewFromRow } from "./thread-row-mappers.js";
+import { requirePersonalOwner } from "./personal-settings-store.js";
 import { boundedSerializedPrefix, serializedArrayBytes } from "./message-window.js";
 const historyCursorSchema = z.strictObject({
   threadId: z.string(),
@@ -80,24 +80,24 @@ export async function readThreadHistory(
   return withPersonalReadTransaction(
     database,
     async (transaction) => {
+      await requirePersonalOwner(transaction, input.ownerId);
       const thread = await transaction
         .selectFrom("threads")
         .select("threads.id")
         .where("threads.id", "=", input.threadId)
+        .where("threads.removedAt", "is", null)
+        .where("threads.createdBy", "=", input.ownerId)
         .executeTakeFirst();
       if (!thread) return null;
       let visible = transaction
         .selectFrom("messages")
         .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
         .where("messages.threadId", "=", input.threadId)
-        .where(publishedMessagePredicate("threadInputs"));
+        .where(sql<boolean>`messages.published`);
       if (search)
         visible = visible.where(
           sql<boolean>`jsonb_to_tsvector('simple', jsonb_path_query_array(messages.content, '$[*] ? (@.type == "text").text'), '["string"]') @@ plainto_tsquery('simple', ${search})`,
         );
-      const total = await visible
-        .select(({ fn }) => fn.countAll<string>().as("count"))
-        .executeTakeFirstOrThrow();
       const listed = visible.selectAll("messages").select("threadInputs.policy");
       let rows;
       if (input.aroundMessageId) {
@@ -124,7 +124,10 @@ export async function readThreadHistory(
         rows = [target, ...earlier, ...later];
       } else {
         const page = anchor ? listed.where("messages.sequence", "<", anchor.sequence) : listed;
-        rows = await page.orderBy("messages.sequence", "desc").limit(limit).execute();
+        rows = await page
+          .orderBy("messages.sequence", "desc")
+          .limit(limit + 1)
+          .execute();
       }
       const window = boundedSerializedPrefix(
         rows.map(({ policy, ...row }) => ({
@@ -150,13 +153,15 @@ export async function readThreadHistory(
         });
       const messages = [...window.items].sort((a, b) => compareSequence(a.sequence, b.sequence));
       const oldest = messages[0];
-      const earlier = oldest
-        ? await visible
-            .select("messages.id")
-            .where("messages.sequence", "<", oldest.sequence)
-            .limit(1)
-            .executeTakeFirst()
-        : undefined;
+      const earlier =
+        input.aroundMessageId && oldest
+          ? await visible
+              .select("messages.id")
+              .where("messages.sequence", "<", oldest.sequence)
+              .limit(1)
+              .executeTakeFirst()
+          : undefined;
+      const hasMore = input.aroundMessageId ? Boolean(earlier) : rows.length > messages.length;
       return {
         messages,
         threadId: input.threadId,
@@ -164,10 +169,9 @@ export async function readThreadHistory(
           threadId: input.threadId,
           byteCount: serializedArrayBytes(messages),
           itemCount: messages.length,
-          totalItems: Number(total.count),
-          hasMore: Boolean(earlier),
+          hasMore,
           nextBefore:
-            oldest && earlier
+            oldest && hasMore
               ? encodeThreadHistoryCursor(input.threadId, oldest.sequence, search ?? undefined)
               : null,
         },

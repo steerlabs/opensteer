@@ -59,7 +59,7 @@ export * from "./administration-command.js";
 export * from "./personal-desktop-update-store.js";
 
 export * from "./agent-thread-history.js";
-export { encodeThreadHistoryCursor } from "./thread-history.js";
+export { encodeThreadHistoryCursor, readThreadHistory } from "./thread-history.js";
 export { assignmentSummaryInTransaction } from "./assignment-store.js";
 export { personalDeploymentOwner } from "./machine-store.js";
 export * from "./team-knowledge-store.js";
@@ -99,7 +99,9 @@ export * from "./personal-transaction.js";
 export * from "./task-admission-store.js";
 export * from "./needs-you-store.js";
 export * from "./run-personal-context.js";
-export type { PersonalSnapshotResourcesReader } from "./snapshot-store.js";
+export { readPersonalDetailSnapshot, readPersonalShellSnapshot } from "./snapshot-store.js";
+export { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
+export { readTranscriptOverlays } from "./personal-overlay-store.js";
 
 export { personalTeamRunOutcome, type PersonalTeamRunOutcome } from "./personal-team-run-store.js";
 

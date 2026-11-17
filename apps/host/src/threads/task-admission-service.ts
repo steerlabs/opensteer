@@ -1,9 +1,4 @@
-import {
-  OpensteerError,
-  TeamSourceSchema,
-  type AgentEvent,
-  type ExecutionSelection,
-} from "@opensteer/core";
+import { OpensteerError, TeamSourceSchema, type ExecutionSelection } from "@opensteer/core";
 import {
   admitTeamTaskRequest,
   releaseTeamAsk,
@@ -27,7 +22,6 @@ export class TaskAdmissionService implements TaskAdmissionPort {
   readonly options: {
     readonly database: Kysely<DatabaseSchema>;
     readonly execution: () => Promise<ExecutionSelection>;
-    readonly publish: (events: readonly AgentEvent[]) => void;
     readonly revokeGrants: (grants: readonly RevokedRunGrant[]) => void;
   };
   constructor(options: TaskAdmissionService["options"]) {
@@ -56,22 +50,19 @@ export class TaskAdmissionService implements TaskAdmissionPort {
       ownerId: settings.ownerId,
       execution: await this.options.execution(),
     });
-    this.options.publish(admitted.events);
     return admitted.receipt;
   }
 
   async releaseTeamAsk(input: Parameters<TaskAdmissionPort["releaseTeamAsk"]>[0]): Promise<void> {
     const result = await releaseTeamAsk(this.options.database, input);
     this.options.revokeGrants(result.revokedGrants);
-    this.options.publish(result.events);
   }
   async admitTeamReturn(input: Parameters<TaskAdmissionPort["admitTeamReturn"]>[0]): Promise<void> {
     const settings = await personalSettings(this.options.database);
-    const result = await admitTeamReturn(this.options.database, {
+    await admitTeamReturn(this.options.database, {
       ...input,
       ownerId: settings.ownerId,
     });
-    this.options.publish(result.events);
   }
 
   async cancelTeamRequest(
@@ -79,6 +70,5 @@ export class TaskAdmissionService implements TaskAdmissionPort {
   ): Promise<void> {
     const cancelled = await cancelTeamTaskRequest(this.options.database, input);
     this.options.revokeGrants(cancelled.revokedGrants);
-    this.options.publish(cancelled.events);
   }
 }

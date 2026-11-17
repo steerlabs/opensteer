@@ -1,5 +1,5 @@
 import { systemClock, type Clock } from "@opensteer/shared/clock";
-import { type AgentEvent, type EventData, type RunId } from "@opensteer/core";
+import { type EventData, type RunId } from "@opensteer/core";
 
 type RunPlaceData = EventData<"place.entered">;
 
@@ -22,8 +22,7 @@ const runPlaceIntervalMs = 1000;
 
 /** One lane for browser and native activity; the database owns the Run fence and dedup. */
 export class RunPlaceRecorder {
-  readonly #write: (input: RunPlaceWrite) => Promise<AgentEvent | undefined>;
-  readonly #publish: (event: AgentEvent) => void;
+  readonly #write: (input: RunPlaceWrite) => Promise<boolean>;
   readonly #onError: (error: unknown) => void;
   readonly #clock: Clock;
   readonly #pending = new Map<string, RunPlaceEntry & { readonly cancel: () => void }>();
@@ -39,13 +38,11 @@ export class RunPlaceRecorder {
   >();
 
   constructor(options: {
-    readonly write: (input: RunPlaceWrite) => Promise<AgentEvent | undefined>;
-    readonly publish: (event: AgentEvent) => void;
+    readonly write: (input: RunPlaceWrite) => Promise<boolean>;
     readonly onError: (error: unknown) => void;
     readonly clock?: Clock;
   }) {
     this.#write = options.write;
-    this.#publish = options.publish;
     this.#onError = options.onError;
     this.#clock = options.clock ?? systemClock;
   }
@@ -115,11 +112,7 @@ export class RunPlaceRecorder {
           return;
         }
         if (unchanged) this.#last.set(runId, last);
-        const event = await this.#write(input);
-        if (event) {
-          this.#publish(event);
-          await settled?.(last.at, coalesced);
-        }
+        if (await this.#write(input)) await settled?.(last.at, coalesced);
       })
       .catch((error: unknown) => {
         if (this.#last.get(runId) === last) this.#last.delete(runId);

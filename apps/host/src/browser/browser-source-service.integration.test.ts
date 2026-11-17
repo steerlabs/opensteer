@@ -402,11 +402,10 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       deploymentId,
       connectTimeoutMs: 2_000,
       onSessionsChanged: () => {},
-      onDeploymentEvent: () => {},
       hostOrigin: new URL(sourceOrigin),
       repository: store,
       tabs: new TabStore(database),
-      tabPlaces: { write: async () => undefined, publish: () => {}, notice: () => {} },
+      tabPlaces: { write: async () => false, notice: () => {} },
       signer: new BrowserAttachTicketSigner({ keyId: "host-test", privateKey: hostKey.privateKey }),
       targetResolver: {
         placements: () =>
@@ -499,10 +498,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       store: sourceStore,
       requests: store.requests,
       onError: (error) => serviceErrors.push(error),
-      onRequestResolved: () => {
-        resolvedRequests += 1;
-      },
-      onDeploymentEvent: () => {},
       sign: (bytes) => sign(null, bytes, hostKey.privateKey).toString("base64url"),
     });
     logins = new SavedLoginService({

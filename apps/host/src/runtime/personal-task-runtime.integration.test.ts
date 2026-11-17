@@ -53,10 +53,7 @@ it("executes a private task through the real Host and Runner with a fake Codex e
     if (!sent.ok || sent.data.type !== "thread.sendMessage")
       throw new Error("Task input was not admitted");
     const turn = await runtime.waitForInput(sent.data.message.id, AbortSignal.timeout(15000));
-    expect(
-      turn.events.some((event) => event.type === "run.completed"),
-      JSON.stringify(turn.events),
-    ).toBe(true);
+    expect(turn.status).toBe("completed");
     expect(turn.assistantText).toContain("Done.");
     const memory = new MemoryPassService({
       store: runtime.host.store,
@@ -100,10 +97,7 @@ it("executes a private task through the real Host and Runner with a fake Codex e
       followup.data.message.id,
       AbortSignal.timeout(15000),
     );
-    expect(
-      continued.events.some((event) => event.type === "run.completed"),
-      JSON.stringify(continued.events),
-    ).toBe(true);
+    expect(continued.status).toBe("completed");
   } finally {
     await runtime?.close();
     await database.drop();

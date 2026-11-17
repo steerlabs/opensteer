@@ -209,7 +209,7 @@ export type TaskPage = z.infer<typeof TaskPageSchema>;
 export const ThreadMessagePageSchema = z.object({
   messages: z.array(MessageViewSchema).max(messagePageMaxItems),
   threadId: ThreadIdSchema,
-  window: ThreadMessageWindowSchema,
+  window: ThreadMessageWindowSchema.omit({ totalItems: true }),
 });
 export type ThreadMessagePage = z.infer<typeof ThreadMessagePageSchema>;
 

@@ -1,13 +1,13 @@
-import { withPersonalTransaction } from "./personal-transaction.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
-import { readEmptyPersonalResources } from "./store.integration.test-support.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 
 import { finalizeRunTransaction } from "./run-finalization.js";
-import { messageFromRow, threadInputFromRow } from "./thread-row-mappers.js";
 
-import { createId, AgentEventSchema, ModelSelectionSchema } from "@opensteer/core";
+import { createId, ModelSelectionSchema } from "@opensteer/core";
 import { expect } from "vitest";
-import { OpensteerStore } from "./store.js";
+import { readPersonalDetailSnapshot, readPersonalShellSnapshot } from "./snapshot-store.js";
+import { readTranscriptPage } from "./personal-sync-store.js";
+import { readPersonalTaskPage } from "./personal-task-store.js";
+import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
 import {
   describeStore,
   testModelSelection,
@@ -100,7 +100,7 @@ describeStore("Deployment snapshot history", (it) => {
       })
       .where("id", "=", f.thread.id)
       .execute();
-    await withPersonalTransaction(database, (tx) =>
+    await commitPersonalMutation(database, (tx) =>
       finalizeRunTransaction(tx, {
         completedAt: new Date(),
         links: {
@@ -133,7 +133,7 @@ describeStore("Deployment snapshot history", (it) => {
   });
 
   it("keeps a human-seeded Run stopped before claim", async ({ storeFixture }) => {
-    const { database, store, createRunFixture, enqueueHumanTrigger } = storeFixture;
+    const { database, createRunFixture, enqueueHumanTrigger } = storeFixture;
     const f = await createRunFixture("human-stop-before-claim");
     const admitted = await enqueueHumanTrigger({
       content: [
@@ -146,7 +146,7 @@ describeStore("Deployment snapshot history", (it) => {
       idempotencyKey: "human-stop",
       threadId: f.thread.id,
     });
-    await withPersonalTransaction(database, (tx) =>
+    await commitPersonalMutation(database, (tx) =>
       finalizeRunTransaction(tx, {
         completedAt: new Date(),
         links: {
@@ -168,9 +168,9 @@ describeStore("Deployment snapshot history", (it) => {
       personWaited: true,
     });
     expect(
-      await store.threadEventPageForOwner({
-        ownerId: f.userId,
-        threadId: f.thread.id,
+      await readTranscriptPage(database, {
+        viewerId: f.userId,
+        scope: { kind: "thread", threadId: f.thread.id },
         maxTurns: 10,
       }),
     ).not.toBeNull();
@@ -186,107 +186,39 @@ describeStore("Deployment snapshot history", (it) => {
       .where("id", "=", f.thread.id)
       .execute();
     const seed = await database
-      .selectFrom("messages")
+      .selectFrom("transcriptItems")
       .selectAll()
-      .where("id", "=", f.run.seedInputId)
+      .where("messageId", "=", f.run.seedInputId)
       .executeTakeFirstOrThrow();
-    const input = threadInputFromRow(
-      await database
-        .selectFrom("threadInputs")
-        .selectAll()
-        .where("messageId", "=", f.run.seedInputId)
-        .executeTakeFirstOrThrow(),
-    );
-    const message = {
-      ...messageFromRow(seed),
-      author: {
-        kind: "watch",
-        displayName: "Watcher",
-        activationId: createId("triggerWatchActivation"),
-        revisionId: createId("triggerRevision"),
-        triggerId: createId("trigger"),
-      },
-    };
-    const starts: string[] = [];
-    for (const [type, data] of [
-      [
-        "message.placed",
-        {
-          message,
-        },
-      ],
-      [
-        "message.created",
-        {
-          message: {
-            ...message,
-            id: createId("message"),
-          },
-          input: {
-            ...input,
-            policy: "steer",
-          },
-        },
-      ],
-      [
-        "message.placed",
-        {
-          message: {
-            ...message,
-            id: createId("message"),
-          },
-        },
-      ],
-      [
-        "message.created",
-        {
-          message: {
-            ...message,
-            id: createId("message"),
-            runId: null,
-          },
-          input: {
-            ...input,
-            policy: "report",
-          },
-        },
-      ],
-      [
-        "run.completed",
-        {
-          status: "completed",
-          replyMessageId: null,
-          startedBy: message.author,
-          personWaiting: false,
-          startedAt: seed.createdAt.toISOString(),
-        },
-      ],
-    ] as const) {
-      const event = await withPersonalTransaction(database, (transaction) =>
-        appendHostDeploymentEvent(
-          transaction,
-          AgentEventSchema.parse({
-            type,
-            data,
-            threadId: f.thread.id,
-            runId: f.run.id,
-            environmentId: f.environmentId,
-            eventId: createId("event"),
-            sequence: "0",
-            createdAt: new Date().toISOString(),
-          }),
-        ),
-      );
-      starts.push(event.sequence);
+    for (const [index, policy] of (["report", "steer"] as const).entries()) {
+      const report = await store.enqueueThreadInput({
+        threadId: f.thread.id,
+        requestedBy: f.userId,
+        policy,
+        content: [{ type: "text", text: "Automatic update" }],
+        source: { kind: "agent", runId: f.run.id },
+        idempotencyKey: `automatic-update-${index}`,
+      });
+      const item = await database
+        .selectFrom("transcriptItems")
+        .select("isTurnStart")
+        .where("messageId", "=", report.message.id)
+        .executeTakeFirst();
+      expect(item?.isTurnStart ?? false).toBe(false);
     }
-    const page = await store.threadEventPageForOwner({
-      ownerId: f.userId,
-      threadId: f.thread.id,
+    const page = await readTranscriptPage(database, {
+      viewerId: f.userId,
+      scope: { kind: "thread", threadId: f.thread.id },
       maxTurns: 1,
     });
-    expect(page!.events.map(({ sequence }) => sequence)).toEqual(starts);
-    expect(page!.window.nextBefore).toBe(starts[0]);
-    expect(page!.window.totalItems).toBeGreaterThanOrEqual(5);
+    expect(page).toMatchObject({
+      kind: "page",
+      items: expect.arrayContaining([expect.objectContaining({ id: seed.id })]),
+    });
+    if (page.kind !== "page") throw new Error("The transcript must be available");
+    expect(page.items.filter(({ isTurnStart }) => isTurnStart).map(({ id }) => id)).toEqual([
+      seed.id,
+    ]);
   });
   it("moves tasks only for admitted human work, including steering a running turn", async ({
     storeFixture,
@@ -329,13 +261,11 @@ describeStore("Deployment snapshot history", (it) => {
       .where("id", "=", other.thread.id)
       .execute();
     const page = () =>
-      store.taskPageForUser({
-        userId: f.userId,
+      readPersonalTaskPage(database, {
+        viewerId: f.userId,
+        window: "recent",
       });
-    expect((await page()).tasks.map(({ thread }) => thread.id)).toEqual([
-      other.thread.id,
-      f.thread.id,
-    ]);
+    expect((await page()).tasks.map(({ id }) => id)).toEqual([other.thread.id, f.thread.id]);
     const steer = await store.enqueueThreadInput({
       content: [
         {
@@ -352,13 +282,13 @@ describeStore("Deployment snapshot history", (it) => {
       threadId: f.thread.id,
     });
     expect(steer.disposition).toBe("steering");
-    const asked = (await page()).tasks[0]!.thread;
+    const asked = (await page()).tasks[0]!;
     expect(asked.id).toBe(f.thread.id);
-    expect(Date.parse(asked.askedAt!)).toBeGreaterThan(Date.parse("2021-01-01"));
+    expect(asked.askedAt.getTime()).toBeGreaterThan(Date.parse("2021-01-01"));
     const unchanged = async () =>
-      expect(
-        (await page()).tasks.find(({ thread }) => thread.id === f.thread.id)!.thread.askedAt,
-      ).toBe(asked.askedAt);
+      expect((await page()).tasks.find(({ id }) => id === f.thread.id)!.askedAt).toEqual(
+        asked.askedAt,
+      );
     await store.enqueueThreadInput({
       content: [
         {
@@ -499,77 +429,59 @@ describeStore("Deployment snapshot history", (it) => {
       },
       threadId: other.thread.id,
     });
-    expect((await page()).tasks[0]!.thread.id).toBe(other.thread.id);
+    expect((await page()).tasks[0]!.id).toBe(other.thread.id);
   });
-  it("omits history without reading message rows or counts and retains metadata", async ({
+  it("builds addressed shell and detail cuts within their budgets without reading message bodies", async ({
     storeFixture,
   }) => {
-    const { database, store, startRunFixture, openLiveRequest } = storeFixture;
-    const f = await startRunFixture("snapshot-omitted-history");
+    const { database, startRunFixture, openLiveRequest } = storeFixture;
+    const f = await startRunFixture("bounded-scoped-snapshots");
     const requestId = createId("request");
     await openLiveRequest(f, requestId);
     let messageQueries = 0;
-    const observed = new OpensteerStore(
-      database.withPlugin({
-        transformQuery({ node }) {
-          if (JSON.stringify(node).includes('"name":"messages"')) messageQueries += 1;
-          return node;
-        },
-        async transformResult({ result }) {
-          return result;
-        },
-      }),
-      { readPersonalResources: readEmptyPersonalResources },
-    );
-    const full = await observed.deploymentSnapshot();
-    expect(full.messages.length).toBeGreaterThan(0);
-    expect(full.messageWindows).toContainEqual(
-      expect.objectContaining({
-        threadId: f.thread.id,
-        totalItems: 1,
-      }),
-    );
-    expect(full).not.toHaveProperty("messagesOmitted");
-    expect(messageQueries).toBe(2);
-    messageQueries = 0;
-    const omitted = await observed.deploymentSnapshot({
-      omitMessages: true,
+    const observed = database.withPlugin({
+      transformQuery({ node }) {
+        if (JSON.stringify(node).includes('"name":"messages"')) messageQueries += 1;
+        return node;
+      },
+      async transformResult({ result }) {
+        return result;
+      },
     });
-    expect.soft(omitted.messages).toEqual([]);
-    expect.soft(omitted.messageWindows).toEqual([]);
-    expect.soft(omitted).toHaveProperty("messagesOmitted", true);
+    const shell = await readPersonalShellSnapshot(observed, {
+      viewerId: f.userId,
+      selectedThreadId: f.thread.id,
+    });
+    const scope = { kind: "thread" as const, threadId: f.thread.id };
+    const detail = await readPersonalDetailSnapshot(observed, { viewerId: f.userId, scope });
+    expect(shell.kind).toBe("snapshot");
+    expect(detail.kind).toBe("snapshot");
+    if (shell.kind !== "snapshot" || detail.kind !== "snapshot")
+      throw new Error("Expected both cuts");
+    expect(shell.snapshot.tasks).toContainEqual(expect.objectContaining({ id: f.thread.id }));
+    expect(detail.snapshot.queue?.runs).toContainEqual(expect.objectContaining({ id: f.run.id }));
+    expect(detail.snapshot.pendingRequests).toContainEqual(
+      expect.objectContaining({ id: requestId }),
+    );
+    expect(detail.snapshot.items).toContainEqual(
+      expect.objectContaining({ id: f.run.seedInputId }),
+    );
+    for (const [cut, frameScope, subscriptionId] of [
+      [shell, { kind: "shell" }, "shell"],
+      [detail, scope, "detail:0"],
+    ] as const) {
+      expect(
+        ScopedHostMessageSchema.safeParse({
+          type: "host.snapshot",
+          scope: frameScope,
+          subscriptionId,
+          generation: 1,
+          throughSequence: cut.state.sequence,
+          snapshot: cut.snapshot,
+        }).success,
+      ).toBe(true);
+    }
     expect(messageQueries).toBe(0);
-    expect(omitted.serializedBytes).toBe(Buffer.byteLength(JSON.stringify(omitted), "utf8"));
-    const metadata = ({
-      messages: _messages,
-      messageWindows: _windows,
-      serializedBytes: _bytes,
-      messagesOmitted: _omitted,
-      ...rest
-    }: typeof omitted) => rest;
-    expect(metadata(omitted)).toEqual(metadata(full));
-    // Viewer state still reads the latest published sequence, never history bodies.
-    const withViewer = await store.deploymentSnapshot({
-      viewerId: f.userId,
-    });
-    const omittedWithViewer = await store.deploymentSnapshot({
-      viewerId: f.userId,
-      omitMessages: true,
-    });
-    expect(omittedWithViewer.threads[0]).toMatchObject({
-      lastVisitedAt: null,
-      latestRunCompletedAt: null,
-    });
-    expect(metadata(omittedWithViewer)).toEqual(metadata(withViewer));
-    expect(omittedWithViewer.pendingRequests).toContainEqual(
-      expect.objectContaining({
-        id: requestId,
-      }),
-    );
-    expect(omittedWithViewer.runQueue).toContainEqual(
-      expect.objectContaining({
-        id: f.run.id,
-      }),
-    );
+    expect(shell.state.sequence).toBe(detail.state.sequence);
   });
 });

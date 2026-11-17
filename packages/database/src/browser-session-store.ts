@@ -1,4 +1,8 @@
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { currentTasks } from "./personal-task-store.js";
+import { taskView } from "./personal-snapshot-store.js";
+import { itemView } from "./personal-sync-store.js";
+import { transcriptIdentity, transcriptPreview } from "./transcript-store.js";
 import { lockBrowserHomeRunner } from "./browser-home-store.js";
 import {
   administrationCommand,
@@ -6,10 +10,8 @@ import {
 } from "./administration-command.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
 import { eventDataSchemas, type EventData } from "@opensteer/core";
-import { storableText } from "./runner-event-store.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
+import { storableText } from "./storable-json.js";
 import {
-  type AgentEvent,
   type BrowserProfileId,
   BrowserProfileIdSchema,
   type ContentPart,
@@ -21,6 +23,7 @@ import {
   type UserId,
   createId,
   nonTerminalRunStatuses,
+  utf8Prefix,
 } from "@opensteer/core";
 import type { LocalProfileBinding } from "@opensteer/protocol";
 import {
@@ -31,7 +34,6 @@ import {
   type BrowserTabOpenBinding,
   BrowserTabOpenBindingSchema,
   type HostedBrowserSessionState,
-  type ThreadPlaceReference,
   browserPageSite,
   browserSessionMaxAttachedRuns,
   browserSessionMaxThreads,
@@ -58,7 +60,6 @@ import {
   findCommandByIdempotency,
   idempotencyConflict,
   jsonValue,
-  eventFromRow,
   lockCommandIdempotency,
   principalIdForUser,
 } from "./store-primitives.js";
@@ -150,17 +151,20 @@ export async function insertBrowserProfileOnLockedHome(
   if (existing.length >= 128) {
     throw new OpensteerError({ code: "conflict", message: "Browser profile limit reached" });
   }
-  return await transaction
-    .insertInto("browserProfiles")
-    .values({
-      archivedAt: null,
-      id: createId("browserProfile"),
-      name: input.name,
-      ownerId: input.ownerId,
-      homeRunnerId: input.homeRunnerId,
-    })
-    .returning(["id", "name", "ownerId", "homeRunnerId"])
-    .executeTakeFirstOrThrow(databaseOperationOptions());
+  return commitPersonalMutation(transaction, async (tx, mutation) => {
+    mutation.bumpResource("browser-profile");
+    return tx
+      .insertInto("browserProfiles")
+      .values({
+        archivedAt: null,
+        id: createId("browserProfile"),
+        name: input.name,
+        ownerId: input.ownerId,
+        homeRunnerId: input.homeRunnerId,
+      })
+      .returning(["id", "name", "ownerId", "homeRunnerId"])
+      .executeTakeFirstOrThrow(databaseOperationOptions());
+  });
 }
 
 export async function createBrowserProfile(
@@ -172,7 +176,7 @@ export async function createBrowserProfile(
     readonly ownerId: UserId;
   },
 ): Promise<BrowserProfileRecord> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     await lockCommandIdempotency(transaction, input.ownerId, input.idempotencyKey);
     const command = await findCommandByIdempotency(
       transaction,
@@ -281,7 +285,7 @@ export async function renameBrowserProfile(
     readonly profileId: BrowserProfileId;
   },
 ): Promise<BrowserProfileRecord> {
-  return withPersonalTransaction(database, (transaction) =>
+  return commitPersonalMutation(database, (transaction, mutation) =>
     administrationCommand(transaction, input.administration, async () => {
       await assertPersonalOwner(transaction, input.ownerId);
       const row = await transaction
@@ -294,6 +298,7 @@ export async function renameBrowserProfile(
         .executeTakeFirst(databaseOperationOptions());
       if (!row)
         throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
+      mutation.bumpResource("browser-profile");
       return row;
     }),
   );
@@ -308,7 +313,7 @@ export async function deleteBrowserProfile(
     readonly profileId: BrowserProfileId;
   },
 ) {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     // The profile lock ranks before the administration ledger's.
     await lockBrowserProfile(transaction, input.profileId);
     return administrationCommand(transaction, input.administration, () =>
@@ -373,7 +378,14 @@ export async function deleteBrowserProfileInTransaction(
         await recordBrowserProfileDeletion(transaction, binding, input.deletionId),
       )
     : undefined;
-  return { sessionIds: live.map((session) => session.id), ...(deletion ? { deletion } : {}) };
+  return commitPersonalMutation(transaction, async (_tx, mutation) => {
+    if (!owned.archivedAt || deletion) {
+      mutation.bumpResource("browser-profile");
+      mutation.bumpResource("browser-placement");
+      mutation.bumpResource("browser-availability");
+    }
+    return { sessionIds: live.map((session) => session.id), ...(deletion ? { deletion } : {}) };
+  });
 }
 
 export async function createBrowserSession(
@@ -391,7 +403,7 @@ export async function createBrowserSession(
   },
 ): Promise<BrowserSessionRecord> {
   const profileId = input.profileId;
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     await assertPersonalOwner(transaction, input.ownerId);
     if (profileId !== null) await lockBrowserProfile(transaction, profileId);
     const runner = await transaction
@@ -442,6 +454,7 @@ export async function createBrowserSession(
         });
       }
     }
+    mutation.bumpResource("browser-placement");
     return transaction
       .insertInto("browserSessions")
       .values({
@@ -587,40 +600,9 @@ export async function authorizedPlaceThreadIds(
     .select("threads.id")
     .where("threads.id", "in", threadIds)
     .where("threads.createdBy", "=", ownerId)
+    .where("threads.removedAt", "is", null)
     .execute(databaseOperationOptions());
   return rows.map(({ id }) => id);
-}
-
-/** Recover the latest durable tab entry for each task. */
-export async function latestNativePlaces(
-  database: Kysely<DatabaseSchema>,
-  ownerId: UserId,
-): Promise<readonly ThreadPlaceReference[]> {
-  const rows = await database
-    .selectFrom("deploymentEvents as e")
-    .innerJoin("threads as t", "t.id", "e.threadId")
-    .selectAll("e")
-    .where("e.type", "=", "place.entered")
-    .where("t.createdBy", "=", ownerId)
-    .orderBy("e.sequence", "desc")
-    .limit(4096)
-    .execute();
-  const seen = new Set<ThreadId>();
-  return rows.flatMap((row) => {
-    const event = eventFromRow(row);
-    if (event.type !== "place.entered" || seen.has(event.threadId)) return [];
-    seen.add(event.threadId);
-    return [
-      {
-        taskId: event.threadId,
-        runId: event.runId,
-        ...event.data,
-        iconRef: null,
-        order: Number(event.sequence),
-        at: event.createdAt,
-      },
-    ];
-  });
 }
 
 export async function resolvePlaceActors(
@@ -708,7 +690,7 @@ export async function attachBrowserSession(
     readonly sessionId: BrowserSessionId;
   },
 ): Promise<boolean> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     if (input.agentBindingId.startsWith("run:")) {
       const runId = bindingRunId(input.agentBindingId);
       const run = runId
@@ -741,6 +723,7 @@ export async function attachBrowserSession(
       // An inserted row has no deleting transaction; an updated one does.
       .returning(sql<boolean>`(xmax = 0)`.as("created"))
       .executeTakeFirstOrThrow(databaseOperationOptions());
+    if (row.created) mutation.bumpResource("browser-placement");
     return row.created;
   });
 }
@@ -791,7 +774,7 @@ export async function recordAgentBrowserUse(
 ): Promise<readonly BrowserUsageCredit[]> {
   const runId = bindingRunId(input.agentBindingId);
   if (!runId) return [];
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     const run = await transaction
       .selectFrom("runs")
       .select(["id", "threadId", "assignmentId"])
@@ -1030,7 +1013,7 @@ export async function recordBrowserSessionUse(
     readonly page?: BrowserUsePage | null;
   },
 ): Promise<readonly BrowserUsageCredit[]> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     const threadId = await personBrowserThread(transaction, input);
     if (
       !threadId ||
@@ -1132,12 +1115,15 @@ export async function detachBrowserSessionAttachments(
   database: Kysely<DatabaseSchema>,
   agentBindingId: string,
 ): Promise<readonly BrowserSessionId[]> {
-  const detached = await database
-    .deleteFrom("browserSessionAttachments")
-    .where("agentBindingId", "=", agentBindingId)
-    .returning("sessionId")
-    .execute(databaseOperationOptions());
-  return detached.map((row) => row.sessionId);
+  return commitPersonalMutation(database, async (tx, mutation) => {
+    const detached = await tx
+      .deleteFrom("browserSessionAttachments")
+      .where("agentBindingId", "=", agentBindingId)
+      .returning("sessionId")
+      .execute(databaseOperationOptions());
+    if (detached.length) mutation.bumpResource("browser-placement");
+    return detached.map((row) => row.sessionId);
+  });
 }
 
 export async function findBrowserSessionHoldingProfilePlacement(
@@ -1433,7 +1419,6 @@ export async function failActiveBrowserSessions(
   database: Kysely<DatabaseSchema>,
   placementKey?: string,
 ): Promise<{
-  readonly events: readonly AgentEvent[];
   readonly failed: number;
 }> {
   const now = new Date();
@@ -1441,7 +1426,7 @@ export async function failActiveBrowserSessions(
     await interruptPendingBrowserTabOpens(database);
   }
   let sessionIds: BrowserSessionId[] = [];
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     sessionIds = (
       await transaction
         .selectFrom("browserSessions")
@@ -1452,7 +1437,7 @@ export async function failActiveBrowserSessions(
         .forNoKeyUpdate()
         .execute(databaseOperationOptions())
     ).map(({ id }) => id);
-    if (sessionIds.length === 0) return { events: [], failed: 0 };
+    if (sessionIds.length === 0) return { failed: 0 };
     let transactionalUpdate = transaction
       .updateTable("browserSessions")
       .set({
@@ -1476,10 +1461,12 @@ export async function failActiveBrowserSessions(
         )
         .execute(databaseOperationOptions());
     }
-    return {
-      events: [],
-      failed: failed.length,
-    };
+    if (failed.length) {
+      mutation.bumpResource("browser-placement");
+      mutation.bumpResource("browser-availability");
+      mutation.bumpResource("tab");
+    }
+    return { failed: failed.length };
   });
 }
 
@@ -1491,10 +1478,9 @@ export async function transitionBrowserSession(
     readonly state: HostedBrowserSessionState;
   },
 ): Promise<{
-  readonly events: readonly AgentEvent[];
   readonly session: BrowserSessionRecord;
 }> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     await transaction
       .selectFrom("browserSessions")
       .select("id")
@@ -1511,7 +1497,8 @@ export async function transitionBrowserSession(
         updatedAt: now,
       })
       .where("id", "=", input.sessionId)
-      .where("state", "not in", ["closed", "failed"]);
+      .where("state", "not in", ["closed", "failed"])
+      .where("state", "!=", input.state);
     if (input.from) update = update.where("state", "in", [...input.from]);
     const row = await update
       .returning([
@@ -1543,10 +1530,10 @@ export async function transitionBrowserSession(
           .where("sessionId", "=", input.sessionId)
           .execute(databaseOperationOptions());
       }
-      return {
-        events: [],
-        session: row,
-      };
+      mutation.bumpResource("browser-placement");
+      mutation.bumpResource("browser-availability");
+      mutation.bumpResource("tab");
+      return { session: row };
     }
     const existing = await transaction
       .selectFrom("browserSessions")
@@ -1568,13 +1555,10 @@ export async function transitionBrowserSession(
       throw new OpensteerError({ code: "not_found", message: "Browser session not found" });
     }
     if (existing.state === "closed" || existing.state === "failed") {
-      return { events: [], session: existing };
+      return { session: existing };
     }
     if (existing.state === input.state) {
-      return {
-        events: [],
-        session: existing,
-      };
+      return { session: existing };
     }
     throw new OpensteerError({
       code: "conflict",
@@ -1696,67 +1680,119 @@ export async function interruptPendingBrowserTabOpens(
 }
 
 export async function latestRunPlace(database: Kysely<DatabaseSchema>, runId: RunId) {
-  const row = await database
-    .selectFrom("deploymentEvents")
-    .selectAll()
-    .where("runId", "=", runId)
-    .where("type", "=", "place.entered")
-    .orderBy("sequence", "desc")
-    .limit(1)
+  const run = await database
+    .selectFrom("runs")
+    .select("latestPlace")
+    .where("id", "=", runId)
     .executeTakeFirst();
-  if (!row) return null;
-  const event = eventFromRow(row);
-  return event.type === "place.entered" ? event : null;
+  return run?.latestPlace ?? null;
 }
 
-/** The personal event allocator precedes Run locks, including on delegated Runs. */
-export async function recordRunTabPlace(
+export function recordRunTabPlace(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly runId: RunId;
     readonly bindingGeneration: number;
     readonly data: EventData<"place.entered">;
   },
-): Promise<Extract<AgentEvent, { type: "place.entered" }> | undefined> {
-  return withPersonalTransaction(database, async (transaction) => {
-    await transaction
+): Promise<boolean> {
+  const place = eventDataSchemas["place.entered"].parse({
+    ...input.data,
+    title: utf8Prefix(storableText(input.data.title), 1024),
+  });
+  return commitPersonalMutation(database, async (tx, mutation) => {
+    const owner = await tx
+      .selectFrom("personalSettings")
+      .innerJoin("users", "users.id", "personalSettings.ownerId")
+      .select("personalSettings.ownerId")
+      .where("users.disabledAt", "is", null)
+      .limit(1)
+      .executeTakeFirst();
+    if (!owner) return false;
+    const run = await tx
       .selectFrom("runs")
-      .select("id")
+      .select(["threadId", "bindingGeneration", "latestPlace", "finishIntent", "status"])
       .where("id", "=", input.runId)
       .forNoKeyUpdate()
-      .execute();
-    const run = await transaction
-      .selectFrom("runs")
-      .innerJoin("threads", "threads.id", "runs.threadId")
-      .selectAll("runs")
-      .where("runs.id", "=", input.runId)
       .executeTakeFirst();
     if (
       !run ||
+      run.finishIntent ||
       run.bindingGeneration !== input.bindingGeneration ||
-      !(nonTerminalRunStatuses as readonly string[]).includes(run.status)
+      !(nonTerminalRunStatuses as readonly string[]).includes(run.status) ||
+      run.latestPlace?.tabId === place.tabId
     )
-      return undefined;
-    const last = await transaction
-      .selectFrom("deploymentEvents")
-      .select("data")
+      return false;
+    const thread = await tx
+      .selectFrom("threads")
+      .select("id")
+      .where("id", "=", run.threadId)
+      .where("createdBy", "=", owner.ownerId)
+      .where("removedAt", "is", null)
+      .forNoKeyUpdate()
+      .executeTakeFirst();
+    if (!thread) return false;
+    const attempt = await tx
+      .selectFrom("runAttempts")
+      .select("id")
       .where("runId", "=", input.runId)
-      .where("type", "=", "place.entered")
-      .orderBy("sequence", "desc")
+      .where("bindingGeneration", "=", input.bindingGeneration)
+      .where("status", "=", "current")
       .limit(1)
       .executeTakeFirst();
-    if (last) {
-      const previous = eventDataSchemas["place.entered"].parse(last.data);
-      if (previous.tabId === input.data.tabId) return undefined;
-    }
-    const event = await appendHostDeploymentEvent(transaction, {
-      type: "place.entered",
-      runId: input.runId,
-      threadId: run.threadId,
-      environmentId: run.environmentId,
-      // A title cut to its bound can end on half a surrogate pair, which jsonb refuses.
-      data: { ...input.data, title: storableText(input.data.title) },
-    });
-    return event.type === "place.entered" ? event : undefined;
+    const { nextTranscriptPosition: position } = await tx
+      .updateTable("threads")
+      .set({
+        latestPlace: place,
+        revision: mutation.sequence,
+        nextTranscriptPosition: sql<string>`next_transcript_position + 1`,
+      })
+      .where("id", "=", thread.id)
+      .returning("nextTranscriptPosition")
+      .executeTakeFirstOrThrow();
+    await tx
+      .updateTable("runs")
+      .set({ latestPlace: place, revision: mutation.sequence })
+      .where("id", "=", input.runId)
+      .execute();
+    const item = await tx
+      .insertInto("transcriptItems")
+      .values({
+        id: transcriptIdentity("place", input.runId, position),
+        threadId: thread.id,
+        runId: input.runId,
+        attemptId: attempt?.id ?? null,
+        bindingGeneration: input.bindingGeneration,
+        nodeId: null,
+        kind: "place",
+        position,
+        revision: mutation.sequence,
+        visible: true,
+        isTurnStart: false,
+        createdAt: mutation.state.now,
+        body: place,
+        view: transcriptPreview({ title: place.title, preview: place.site ?? undefined }),
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    const current = await currentTasks(tx, owner.ownerId)
+      .where("id", "=", thread.id)
+      .executeTakeFirstOrThrow();
+    const scopeKey = `thread:${thread.id}` as const;
+    mutation.change({ scopeKey, entityKind: "item", entityId: item.id, operation: "upsert" }, () =>
+      itemView(item),
+    );
+    mutation.change(
+      { scopeKey, entityKind: "thread", entityId: thread.id, operation: "upsert" },
+      () => ({
+        ...taskView(current),
+        latestPlace: place,
+      }),
+    );
+    mutation.change(
+      { scopeKey, entityKind: "collection", entityId: "run-queue", operation: "invalidate" },
+      () => ({ revision: mutation.sequence }),
+    );
+    return true;
   });
 }

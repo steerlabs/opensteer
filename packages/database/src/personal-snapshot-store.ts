@@ -4,14 +4,13 @@ import {
   PersonalDetailSnapshotSchema,
   PersonalShellSnapshotSchema,
 } from "@opensteer/protocol/personal-sync";
-import { sql } from "kysely";
+import type { PersonalResourceKind, PersonalResourceView } from "@opensteer/protocol/resources";
+import { activeRunQueue, encodeOverlayCursor, overlayPage } from "./personal-overlay-store.js";
 import { boundedSerializedPrefix } from "./message-window.js";
 import type { PersonalMutationTransaction } from "./personal-mutation.js";
 import { readAttentionKeys, requireFreshPersonalAttention } from "./personal-attention-store.js";
 import {
   type authorizedSyncState,
-  drawableItems,
-  itemView,
   type PersonalReadScope,
   readTranscriptPage,
 } from "./personal-sync-store.js";
@@ -21,7 +20,7 @@ type Tx = PersonalMutationTransaction;
 type SyncState = Awaited<ReturnType<typeof authorizedSyncState>>;
 type Task = Awaited<ReturnType<ReturnType<typeof currentTasks>["executeTakeFirstOrThrow"]>>;
 
-function taskView(task: Task) {
+export function taskView(task: Task) {
   return {
     id: task.id,
     title: task.title,
@@ -37,11 +36,17 @@ function taskView(task: Task) {
   };
 }
 
+export type InitialPersonalResourcesReader = (
+  tx: Tx,
+  viewerId: UserId,
+) => Promise<readonly { kind: PersonalResourceKind; view: PersonalResourceView }[]>;
+
 export async function buildPersonalShellSnapshot(
   tx: Tx,
   state: SyncState,
   viewerId: UserId,
   selectedThreadId?: ThreadId,
+  readResources?: InitialPersonalResourcesReader,
 ) {
   const window = await readInitialTaskWindows(tx, {
     viewerId,
@@ -57,11 +62,26 @@ export async function buildPersonalShellSnapshot(
     ...(entry.blockedReason ? { preview: utf8Prefix(entry.blockedReason, 500) } : {}),
   }));
   const { pendingRequestCount, needsYouCount, unreadTaskCount } = state;
+  const resources: { kind: PersonalResourceKind; revision: string; view: PersonalResourceView }[] =
+    [];
+  let resourceBytes = 2;
+  for (const { kind, view } of await (readResources?.(tx, viewerId) ?? [])) {
+    const entry = { kind, revision: state.resourceRevisions[kind], view };
+    const size = Buffer.byteLength(JSON.stringify(entry)) + 1;
+    if (resourceBytes + size > 24 * 1024) continue;
+    resourceBytes += size;
+    resources.push(entry);
+  }
   return PersonalShellSnapshotSchema.parse({
     deploymentId: state.deploymentId,
     viewerId,
     epoch: state.epoch,
     tasks: window.tasks.map(taskView),
+    recentTaskIds: window.recent,
+    activeTaskIds: window.active,
+    nextBefore: window.recentNextBefore
+      ? Buffer.from(JSON.stringify(window.recentNextBefore)).toString("base64url")
+      : null,
     visits: window.visits.map((visit) => ({
       ...visit,
       lastVisitedAt: visit.lastVisitedAt.toISOString(),
@@ -70,6 +90,7 @@ export async function buildPersonalShellSnapshot(
     attention: boundedSerializedPrefix(attention, 20, 16 * 1024).items,
     counts: { pendingRequestCount, needsYouCount, unreadTaskCount },
     resourceRevisions: state.resourceRevisions,
+    ...(readResources ? { resources } : {}),
   });
 }
 
@@ -82,7 +103,7 @@ export async function buildPersonalDetailSnapshot(
 ) {
   const thread = await currentTasks(tx, viewerId)
     .where("id", "=", scope.threadId)
-    .select(["inputQueueRevision", "inputQueuePaused"])
+    .select(["inputQueueRevision", "inputQueuePaused", "latestPlace"])
     .executeTakeFirstOrThrow();
   const page = await readTranscriptPage(tx, {
     viewerId,
@@ -94,84 +115,44 @@ export async function buildPersonalDetailSnapshot(
   });
   if (page.kind !== "page") throw new Error("The selected transcript changed in its read cut");
   const root = scope.kind === "thread";
-  const pending = tx
-    .selectFrom("requests")
-    .select(["id", "kind", "status", "revision", "originatingThreadId as threadId"])
-    .select(sql<string>`left(presentation->>'title',192)`.as("title"))
-    .where("originatingThreadId", "=", thread.id)
-    .where(sql<boolean>`status='pending'`)
-    .orderBy("id")
-    .limit(20);
-  const requests = await (
-    root
-      ? pending.where("originatingNodeId", "is", null)
-      : pending.where("originatingNodeId", "=", scope.nodeId)
-  ).execute();
-  const open = tx
-    .selectFrom("toolCalls")
-    .select("id")
-    .where("threadId", "=", thread.id)
-    .where(sql<boolean>`status='open'`)
-    .orderBy("id")
-    .limit(20);
-  const running = tx
-    .selectFrom("executionNodes")
-    .select("id")
-    .where(sql<boolean>`status='running'`)
-    .orderBy("id")
-    .limit(20);
-  const activeTools = await (
-    root ? open.where("nodeId", "is", null) : open.where("nodeId", "=", scope.nodeId)
-  ).execute();
-  const queue = root
-    ? await tx
-        .selectFrom("runs")
-        .select(["id", "status", "revision"])
-        .select(sql<boolean>`finish_intent is not null`.as("finishing"))
-        .where("threadId", "=", thread.id)
-        .where(sql<boolean>`status in ('queued','starting','running','waiting')`)
-        .orderBy("runOrdinal")
-        .limit(2)
-        .execute()
-    : [];
-  const activeNodes = root
-    ? queue.length
-      ? await running
-          .where(
-            "runId",
-            "in",
-            queue.map(({ id }) => id),
-          )
-          .where("parentNodeId", "is", null)
-          .execute()
-      : []
-    : await running.where("parentNodeId", "=", scope.nodeId).execute();
-  const itemIds = [
-    ...activeTools.map(({ id }) => `tool:${id}`),
-    ...activeNodes.map(({ id }) => `node:${id}`),
-  ];
-  const overlays = itemIds.length
-    ? await drawableItems(tx, scope)
-        .where("id", "in", itemIds)
-        .orderBy("position", "desc")
-        .orderBy("id", "desc")
-        .limit(20)
-        .execute()
-    : [];
+  const address = {
+    deploymentId: state.deploymentId,
+    epoch: state.epoch,
+    viewerId,
+    threadId: thread.id,
+    nodeId: scope.kind === "node" ? scope.nodeId : null,
+    revision: thread.revision,
+  };
+  const requests = await overlayPage(tx, scope, address, "requests");
+  const tools = await overlayPage(tx, scope, address, "tools", 10, 8 * 1024);
+  const nodes = await overlayPage(tx, scope, address, "nodes", 10, 8 * 1024);
+  const queue = root ? await activeRunQueue(tx, thread.id) : [];
+  const node =
+    scope.kind === "node"
+      ? await tx
+          .selectFrom("executionNodes")
+          .select(["id", "title", "status"])
+          .where("id", "=", scope.nodeId)
+          .executeTakeFirstOrThrow()
+      : null;
   return PersonalDetailSnapshotSchema.parse({
-    thread: taskView(thread),
+    thread: { ...taskView(thread), latestPlace: thread.latestPlace },
+    ...(node ? { node: { ...node, title: utf8Prefix(node.title, 240) } } : {}),
     orderRevision: page.orderRevision,
     inputQueueRevision: thread.inputQueueRevision,
     ...(root
       ? { queue: { revision: state.sequence, runs: queue, paused: thread.inputQueuePaused } }
       : {}),
     items: page.items,
-    pendingRequests: boundedSerializedPrefix(
-      requests.map((row) => ({ ...row, title: utf8Prefix(row.title || "Request", 240) })),
-      20,
-      16 * 1024,
-    ).items,
-    activeItems: boundedSerializedPrefix(overlays.map(itemView), 20, 16 * 1024).items,
+    pendingRequests: requests.items,
+    activeItems: [...tools.items, ...nodes.items],
+    overlayCursors: {
+      ...(requests.nextBefore ? { requests: encodeOverlayCursor(requests.nextBefore) } : {}),
+      ...(tools.nextBefore ? { tools: encodeOverlayCursor(tools.nextBefore) } : {}),
+      ...(nodes.nextBefore ? { nodes: encodeOverlayCursor(nodes.nextBefore) } : {}),
+    },
     nextBefore: page.nextBefore,
+    nextAfter: page.nextAfter,
+    anchorItemId: "anchorItemId" in page ? page.anchorItemId : null,
   });
 }

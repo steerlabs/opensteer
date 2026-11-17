@@ -18,7 +18,6 @@ import type { PersonalHostRuntime as HostRuntime } from "../runtime/runtime.js";
 import type { NetworkPartition } from "./network-partition.test-support.js";
 import type { RunnerWire, RunnerWireOptions } from "./runner-wire.test-support.js";
 import type {
-  AgentEvent,
   ArtifactContentPart,
   Attachment,
   MessageId,
@@ -34,7 +33,8 @@ import type { RawData, WebSocket } from "ws";
 
 export interface VerticalTurn {
   readonly assistantText: string;
-  readonly events: readonly AgentEvent[];
+  readonly status: "completed" | "failed" | "interrupted";
+  readonly items: readonly { id: string; kind: string; position: string | null }[];
   readonly runId: RunId;
 }
 export interface VerticalStack {
