@@ -2132,13 +2132,17 @@ export class ComputerAppHub {
       timer = setTimeout(() => resolve("timed-out"), computerAppSubmitTimeoutMs);
       timer.unref();
     });
-    const sent = Promise.resolve()
-      .then(() => entry.peer.send(message))
-      .then(
-        () => "sent" as const,
-        (error: unknown) =>
-          error instanceof ComputerAppSubmissionNotStartedError ? error : ("failed" as const),
-      );
+    let sending: Promise<void>;
+    try {
+      sending = entry.peer.send(message);
+    } catch (error) {
+      sending = Promise.reject(error);
+    }
+    const sent = sending.then(
+      () => "sent" as const,
+      (error: unknown) =>
+        error instanceof ComputerAppSubmissionNotStartedError ? error : ("failed" as const),
+    );
     const result = await Promise.race([sent, timedOut]);
     if (timer) clearTimeout(timer);
     return result;
