@@ -6,6 +6,7 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
+import { messageViewFromRow } from "./thread-row-mappers.js";
 import { TranscriptItemSchema } from "@opensteer/protocol/transcript";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type {
@@ -91,7 +92,7 @@ type DetailScope = Exclude<PersonalReadScope, { kind: "shell" }>;
 export async function authorizedDetail(tx: Read, viewerId: UserId, scope: DetailScope) {
   const thread = await tx
     .selectFrom("threads")
-    .select(["id", "transcriptOrderRevision"])
+    .select(["id", "revision", "transcriptOrderRevision"])
     .where("id", "=", scope.threadId)
     .where("removedAt", "is", null)
     .where("createdBy", "=", viewerId)
@@ -290,19 +291,27 @@ export function drawableItems(tx: Read, scope: DetailScope) {
     : query.where("nodeId", "is", null);
 }
 
+function itemBytes(row: Item) {
+  return Buffer.byteLength(JSON.stringify(itemView(row))) + 1;
+}
+
 function itemWindow(items: readonly Item[], limit: number, maxBytes: number, maxTurns: number) {
-  const result: Item[] = [];
-  let bytes = 1024;
+  const selected: Item[] = [];
+  let bytes = 0;
   let turns = 0;
   for (const row of items) {
-    const size = Buffer.byteLength(JSON.stringify(row)) + 1;
-    if (result.length >= limit || bytes + size > maxBytes || (row.isTurnStart && turns >= maxTurns))
+    const size = itemBytes(row);
+    if (
+      selected.length >= limit ||
+      bytes + size > maxBytes ||
+      (row.isTurnStart && turns >= maxTurns)
+    )
       break;
     bytes += size;
     if (row.isTurnStart) turns++;
-    result.push(row);
+    selected.push(row);
   }
-  return result;
+  return { selected, bytes, turns };
 }
 
 export function readTranscriptPage(
@@ -311,6 +320,7 @@ export function readTranscriptPage(
     readonly viewerId: UserId;
     readonly scope: DetailScope;
     readonly cursor?: TranscriptCursor;
+    readonly after?: TranscriptCursor;
     readonly anchorItemId?: string;
     readonly limit?: number;
     readonly maxBytes?: number;
@@ -318,12 +328,17 @@ export function readTranscriptPage(
   },
 ) {
   return withPersonalSyncRead(database, async (tx) => {
+    if ((input.cursor && input.after) || (input.anchorItemId && (input.cursor || input.after)))
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Choose one transcript page boundary",
+      });
     const state = await authorizedSyncState(tx, input.viewerId);
     const thread = await authorizedDetail(tx, input.viewerId, input.scope);
     if (!thread) return { kind: "unavailable" as const };
     const scope = input.scope;
     const nodeId = scope.kind === "node" ? scope.nodeId : null;
-    const cursor = input.cursor;
+    const cursor = input.cursor ?? input.after;
     const revision = thread.transcriptOrderRevision;
     if (
       cursor &&
@@ -342,52 +357,19 @@ export function readTranscriptPage(
     const maxBytes = Math.max(8192, Math.min(input.maxBytes ?? 128 * 1024, 128 * 1024));
     const from = drawableItems(tx, scope);
     const anchor = input.anchorItemId
-      ? await from.where("id", "=", input.anchorItemId).executeTakeFirst()
+      ? ((await from.where("id", "=", input.anchorItemId).executeTakeFirst()) ??
+        (await from.where(sql<boolean>`message_id = ${input.anchorItemId}`).executeTakeFirst()))
       : undefined;
-    const newer =
-      anchor && limit > 2
-        ? await from
-            .where(sql<boolean>`(position,id) > (${anchor.position}::bigint,${anchor.id})`)
-            .orderBy("position")
-            .orderBy("id")
-            .limit(Math.floor((limit - 1) / 2))
-            .execute()
-        : [];
+    const budget = maxBytes - 1024;
     const maxTurns = Math.max(1, input.maxTurns ?? Number.MAX_SAFE_INTEGER);
-    const newerSelected = itemWindow(
-      newer,
-      newer.length,
-      Math.floor(maxBytes / 2),
-      maxTurns - Number(anchor?.isTurnStart ?? false),
-    );
-    const newerBytes = newerSelected.reduce(
-      (size, row) => size + Buffer.byteLength(JSON.stringify(row)) + 1,
-      0,
-    );
     const query = from.orderBy("position", "desc").orderBy("id", "desc");
-    const candidates = anchor
-      ? await query
-          .where(sql<boolean>`(position,id) <= (${anchor.position}::bigint,${anchor.id})`)
-          .limit(limit - newerSelected.length + 1)
-          .execute()
-      : await query
-          .$if(cursor !== undefined, (part) =>
-            part.where(
-              sql<boolean>`(position,id) < (${cursor!.beforePosition}::bigint,${cursor!.beforeId})`,
-            ),
-          )
-          .limit(limit + 1)
-          .execute();
-    const rows = itemWindow(
-      candidates,
-      limit - newerSelected.length,
-      maxBytes - newerBytes,
-      maxTurns - newerSelected.filter((row) => row.isTurnStart).length,
-    );
-    const oldest = rows.at(-1);
-    const hasMore = candidates.length > rows.length;
-    const nextBefore: TranscriptCursor | null =
-      hasMore && oldest?.position
+    let olderQuery = query;
+    if (cursor)
+      olderQuery = query.where(
+        sql<boolean>`(position,id) < (${cursor.beforePosition}::bigint,${cursor.beforeId})`,
+      );
+    const makeCursor = (boundary: Item | undefined): TranscriptCursor | null =>
+      boundary?.position
         ? {
             deploymentId: state.deploymentId,
             epoch: state.epoch,
@@ -395,17 +377,97 @@ export function readTranscriptPage(
             threadId: thread.id,
             nodeId,
             orderRevision: revision,
-            beforePosition: oldest.position,
-            beforeId: oldest.id,
+            beforePosition: boundary.position,
+            beforeId: boundary.id,
           }
         : null;
+    if (input.after) {
+      const candidates = await from
+        .where(
+          sql<boolean>`(position,id) > (${input.after.beforePosition}::bigint,${input.after.beforeId})`,
+        )
+        .orderBy("position")
+        .orderBy("id")
+        .limit(limit + 1)
+        .execute();
+      const { selected } = itemWindow(candidates, limit, budget, maxTurns);
+      const hasMore = candidates.length > selected.length;
+      return {
+        kind: "page" as const,
+        orderRevision: revision,
+        revision: state.sequence,
+        items: selected.map(itemView),
+        hasMore,
+        nextBefore: null,
+        nextAfter: hasMore ? makeCursor(selected.at(-1)) : null,
+      };
+    }
+    let rows: Item[];
+    let newer: Item[] = [];
+    let hasMore: boolean;
+    let nextAfter: TranscriptCursor | null = null;
+    if (anchor?.position) {
+      const newerLimit = Math.floor((limit - 1) / 2);
+      const olderLimit = limit - 1 - newerLimit;
+      const anchorBytes = itemBytes(anchor);
+      const anchorTurns = Number(anchor.isTurnStart);
+      const newerCandidates = newerLimit
+        ? await from
+            .where(sql<boolean>`(position,id) > (${anchor.position}::bigint,${anchor.id})`)
+            .orderBy("position")
+            .orderBy("id")
+            .limit(newerLimit)
+            .execute()
+        : [];
+      const selectedNewer = itemWindow(
+        newerCandidates,
+        newerLimit,
+        Math.floor((budget - anchorBytes) / 2),
+        maxTurns - anchorTurns,
+      );
+      const olderCandidates = await query
+        .where(sql<boolean>`(position,id) < (${anchor.position}::bigint,${anchor.id})`)
+        .limit(olderLimit + 1)
+        .execute();
+      const selectedOlder = itemWindow(
+        olderCandidates,
+        olderLimit,
+        budget - anchorBytes - selectedNewer.bytes,
+        maxTurns - anchorTurns - selectedNewer.turns,
+      );
+      rows = [anchor, ...selectedOlder.selected];
+      newer = selectedNewer.selected;
+      const newest = newer.at(-1) ?? anchor;
+      const remainingNewer =
+        newer.length < newerCandidates.length ||
+        Boolean(
+          await from
+            .clearSelect()
+            .select("id")
+            .where(sql<boolean>`(position,id) > (${newest.position}::bigint,${newest.id})`)
+            .orderBy("position")
+            .orderBy("id")
+            .limit(1)
+            .executeTakeFirst(),
+        );
+      if (remainingNewer) nextAfter = makeCursor(newest);
+      hasMore = olderCandidates.length > selectedOlder.selected.length;
+    } else {
+      const candidates = await olderQuery.limit(limit + 1).execute();
+      rows = itemWindow(candidates, limit, budget, maxTurns).selected;
+      hasMore = candidates.length > rows.length;
+    }
+    const oldest = rows.at(-1);
+    const nextBefore = hasMore ? makeCursor(oldest) : null;
     return {
       kind: "page" as const,
       orderRevision: revision,
       revision: state.sequence,
-      items: [...rows.reverse(), ...newerSelected].map(itemView),
+      items: [...rows.reverse(), ...newer].map(itemView),
       hasMore,
       nextBefore,
+      nextAfter,
+      anchorItemId: anchor?.id ?? null,
     };
   });
 }
@@ -449,12 +511,13 @@ export function readTranscriptItem(
         .executeTakeFirst();
       if (!fits) return { kind: "unavailable" as const };
       if (!fits.fits) return tooLarge();
-      body = await tx
+      const message = await tx
         .selectFrom("messages")
-        .select(["author", "content", "quote", "revision", "editedAt", "origin", "kind"])
+        .selectAll()
         .where("id", "=", item.messageId)
         .where("threadId", "=", item.threadId)
         .executeTakeFirstOrThrow();
+      body = { kind: "message", message: messageViewFromRow(message) };
     } else if (item.toolCallId) {
       const toolScope = tx
         .selectFrom("toolCalls")
@@ -472,19 +535,8 @@ export function readTranscriptItem(
         .executeTakeFirst();
       if (!fits) return { kind: "unavailable" as const };
       if (!fits.fits) return tooLarge();
-      const tool = await toolScope
-        .select([
-          "tool",
-          "integration",
-          "arguments",
-          "output",
-          "status",
-          "isError",
-          "startedAt",
-          "completedAt",
-        ])
-        .executeTakeFirstOrThrow();
-      const { output, ...facts } = tool;
+      const tool = await toolScope.select(["arguments", "output"]).executeTakeFirstOrThrow();
+      const { output } = tool;
       const images = await tx
         .selectFrom("toolOutputImages")
         .select(["id", "mediaType", "generated"])
@@ -495,19 +547,37 @@ export function readTranscriptItem(
         .limit(8)
         .execute();
       body = {
-        ...facts,
-        output: output ? { text: output.text, truncation: output.truncation, images } : null,
+        kind: "tool",
+        arguments: tool.arguments,
+        ...(output ? { output: { text: output.text, truncation: output.truncation } } : {}),
+        ...(images.length
+          ? {
+              images: images.map(({ generated, ...image }) => ({
+                ...image,
+                ...(generated ? { generated: true } : {}),
+              })),
+            }
+          : {}),
       };
     } else if (item.kind === "reasoning" || item.kind === "node-message" || item.kind === "place") {
-      body = (
-        await tx
-          .selectFrom("transcriptItems")
-          .select("body")
-          .where("id", "=", item.id)
-          .executeTakeFirstOrThrow()
-      ).body;
+      const owned = await tx
+        .selectFrom("transcriptItems")
+        .select(
+          sql<
+            string | Record<string, unknown> | null
+          >`case when octet_length(body::text) <= 1000000 then body end`.as("body"),
+        )
+        .where("id", "=", item.id)
+        .executeTakeFirstOrThrow();
+      if (owned.body === null) return tooLarge();
+      body =
+        typeof owned.body === "string"
+          ? { kind: "text", text: owned.body }
+          : { kind: "place", place: owned.body };
     }
     const response = { kind: "item" as const, item: itemView(item), body, truncated: false };
-    return Buffer.byteLength(JSON.stringify(response)) <= 1024 * 1024 ? response : tooLarge();
+    return Buffer.byteLength(JSON.stringify(response)) <= 1024 * 1024 - 1024
+      ? response
+      : tooLarge();
   });
 }

@@ -28,6 +28,14 @@ export const TranscriptOrderCursorSchema = z.strictObject({
   beforeId: TranscriptItemIdSchema,
 });
 
+export const TranscriptOverlayKindSchema = z.enum(["requests", "tools", "nodes"]);
+export const TranscriptOverlayCursorSchema = TranscriptOrderCursorSchema.omit({
+  beforePosition: true,
+  orderRevision: true,
+}).extend({ kind: TranscriptOverlayKindSchema, revision: PersonalRevisionSchema });
+export type TranscriptOverlayCursor = z.infer<typeof TranscriptOverlayCursorSchema>;
+export type TranscriptOverlayKind = z.infer<typeof TranscriptOverlayKindSchema>;
+
 export const TranscriptItemPreviewSchema = z
   .strictObject({
     title: z.string().max(192).optional(),
@@ -85,6 +93,8 @@ export const TranscriptPageSchema = z.strictObject({
   items: z.array(TranscriptItemSchema).max(100),
   hasMore: z.boolean(),
   nextBefore: TranscriptOrderCursorSchema.nullable(),
+  nextAfter: TranscriptOrderCursorSchema.nullable().optional(),
+  anchorItemId: TranscriptItemIdSchema.nullable().optional(),
 });
 
 export type TranscriptItem = z.infer<typeof TranscriptItemSchema>;
