@@ -42,8 +42,9 @@ function projectionInputs(transaction: Transaction<DatabaseSchema>, input: Proje
 export function lockThreadProviderSession(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
-  sessionId?: ProviderSessionId,
+  sessionId?: ProviderSessionId | null,
 ) {
+  if (sessionId === null) return Promise.resolve(undefined);
   return transaction
     .selectFrom("providerSessions")
     .selectAll()
