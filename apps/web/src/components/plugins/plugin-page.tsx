@@ -52,12 +52,7 @@ import { useSettingsRead } from "../settings/use-settings-read.js";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { PluginConnectDialog } from "./plugin-connect.js";
 import { PluginFormFields } from "./plugin-form-fields.js";
-import {
-  EngineNotice,
-  pluginAccountsPath,
-  pluginsPath,
-  usePluginEngine,
-} from "./plugins-area.js";
+import { EngineNotice, pluginAccountsPath, pluginsPath, usePluginEngine } from "./plugins-area.js";
 
 /** Runs a person's action once at a time, with its failure shown where they acted. */
 function useAction() {
@@ -495,7 +490,11 @@ function SchedulesSection({ data }: { readonly data: InstalledPluginView }) {
       </div>
       <SettingsError message={action.error} />
       {runs.error ? (
-        <RunsReadFailure error={runs.error} retry={runs.reload} what="this plugin's scheduled runs" />
+        <RunsReadFailure
+          error={runs.error}
+          retry={runs.reload}
+          what="this plugin's scheduled runs"
+        />
       ) : !runs.data ? (
         <LoadingRows label="Loading scheduled runs" rows={1} />
       ) : null}
@@ -842,9 +841,7 @@ function WebhookSetup({
   const [removing, setRemoving] = useState(false);
   const data = setup.data;
   const form = data ? pluginWebhookSetupForm(data) : null;
-  const completion = data
-    ? pluginWebhookSetupCompletion(pluginId, data, answers, secret)
-    : null;
+  const completion = data ? pluginWebhookSetupCompletion(pluginId, data, answers, secret) : null;
   const remove = () =>
     action.run("remove", () =>
       removePluginWebhook(hostClient, pluginId, webhookId).then(async () => {
@@ -923,7 +920,9 @@ function WebhookSetup({
       footer={footer}
       title={
         <span id={titleId}>
-          {data?.step === "remove" ? "Remove the webhook" : `Set up ${data?.webhook.name ?? "the webhook"}`}
+          {data?.step === "remove"
+            ? "Remove the webhook"
+            : `Set up ${data?.webhook.name ?? "the webhook"}`}
         </span>
       }
     >
@@ -964,9 +963,7 @@ function WebhookSetup({
               <PluginFormFields answers={answers} form={form.fields} onChange={setAnswers} />
             ) : null}
             {data.step === "configure" && form.secret?.kind === "generated" ? (
-              <p className="settings-footnote">
-                The secret is shown only until setup is done.
-              </p>
+              <p className="settings-footnote">The secret is shown only until setup is done.</p>
             ) : null}
             {removing ? (
               <p className="settings-footnote">

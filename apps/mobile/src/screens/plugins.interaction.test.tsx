@@ -4,10 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import type { HostClient } from "@opensteer/client/host";
-import type {
-  NativeSettingsPageProps,
-  NativeSettingsRow,
-} from "./native-settings-page.types.js";
+import type { NativeSettingsPageProps, NativeSettingsRow } from "./native-settings-page.types.js";
 
 /*
  * The phone's Plugins screens reach the background controls a person needs,
@@ -114,8 +111,7 @@ const has = (sheet: string | undefined, label: string) => {
 };
 async function press(sheet: string | undefined, label: string) {
   const found = row(page(sheet), (candidate) => candidate.label === label);
-  if (found?.kind !== "button" && found?.kind !== "primary")
-    throw new Error(`No button ${label}`);
+  if (found?.kind !== "button" && found?.kind !== "primary") throw new Error(`No button ${label}`);
   if (found.disabled) throw new Error(`${label} is disabled`);
   await act(async () => found.onPress());
 }

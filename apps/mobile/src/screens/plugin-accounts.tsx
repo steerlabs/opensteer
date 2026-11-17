@@ -41,7 +41,12 @@ function PluginAccounts({ host }: { host: HostClient }) {
     ? accounts.error
       ? [
           { key: "error", kind: "status", tone: "bad", label: accounts.error },
-          { key: "retry", kind: "button", label: "Try again", onPress: () => void accounts.reload() },
+          {
+            key: "retry",
+            kind: "button",
+            label: "Try again",
+            onPress: () => void accounts.reload(),
+          },
         ]
       : [{ key: "loading", kind: "text", label: "Loading accounts…" }]
     : accounts.data.length === 0

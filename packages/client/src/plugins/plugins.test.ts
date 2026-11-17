@@ -376,10 +376,16 @@ describe("workflow runs", () => {
     const read = vi.fn(async (cursor: string | null) =>
       cursor === "2"
         ? {
-            runs: [run("live_late", finished ? "complete" : "running", 3), run("old_8", "complete", 8)],
+            runs: [
+              run("live_late", finished ? "complete" : "running", 3),
+              run("old_8", "complete", 8),
+            ],
             cursor: null,
           }
-        : { runs: [1, 2, 3, 4, 5, 6, 7].map((day) => run(`old_${day}`, "complete", day)), cursor: "2" },
+        : {
+            runs: [1, 2, 3, 4, 5, 6, 7].map((day) => run(`old_${day}`, "complete", day)),
+            cursor: "2",
+          },
     );
     const runs = new PluginWorkflowRuns(read);
     await runs.refresh();

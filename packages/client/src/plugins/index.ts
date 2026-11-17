@@ -218,7 +218,11 @@ export function pluginEngineNotice(engine: PluginEngineStateView | null): {
       detail: null,
     };
   if (engine.status === "unavailable")
-    return { tone: "error", text: pluginUnavailableText(engine.reason), detail: engine.reason ?? null };
+    return {
+      tone: "error",
+      text: pluginUnavailableText(engine.reason),
+      detail: engine.reason ?? null,
+    };
   return null;
 }
 

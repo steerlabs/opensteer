@@ -1,8 +1,4 @@
-import type {
-  PluginCommand,
-  PluginWebhookSetupView,
-  PluginWebhookView,
-} from "@opensteer/protocol";
+import type { PluginCommand, PluginWebhookSetupView, PluginWebhookView } from "@opensteer/protocol";
 import { pluginInputContent, pluginInputForm, type PluginInputForm } from "./input-form.js";
 
 /** A webhook's state as a short line. */
@@ -32,14 +28,11 @@ export function pluginWebhookStatusText(webhook: PluginWebhookView): string {
 export interface PluginWebhookSetupForm {
   readonly fields: PluginInputForm;
   readonly secret:
-    | { readonly kind: "generated"; readonly value: string }
-    | { readonly kind: "provider" }
-    | null;
+    { readonly kind: "generated"; readonly value: string } | { readonly kind: "provider" } | null;
 }
 
 export function pluginWebhookSetupForm(setup: PluginWebhookSetupView): PluginWebhookSetupForm {
-  if (setup.step !== "configure")
-    return { fields: { fields: [], unsupported: [] }, secret: null };
+  if (setup.step !== "configure") return { fields: { fields: [], unsupported: [] }, secret: null };
   return {
     fields: pluginInputForm(setup.stateSchema ?? {}),
     secret: setup.signingSecret

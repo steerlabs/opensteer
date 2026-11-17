@@ -10,11 +10,17 @@ import { PluginWorkflowRuns } from "../plugins/runs.js";
  * current version declares no workflows, since runs outlive declarations.
  */
 export function usePluginWorkflowRuns(
-  client: Pick<HostClient, "rpc" | "dispatch" | "subscribe" | "getSnapshot" | "subscribePluginsChanged">,
+  client: Pick<
+    HostClient,
+    "rpc" | "dispatch" | "subscribe" | "getSnapshot" | "subscribePluginsChanged"
+  >,
   pluginId: string,
 ) {
   const runs = useMemo(
-    () => new PluginWorkflowRuns((cursor) => readPluginWorkflowRuns(client, pluginId, cursor ?? undefined)),
+    () =>
+      new PluginWorkflowRuns((cursor) =>
+        readPluginWorkflowRuns(client, pluginId, cursor ?? undefined),
+      ),
     [client, pluginId],
   );
   useEffect(() => {

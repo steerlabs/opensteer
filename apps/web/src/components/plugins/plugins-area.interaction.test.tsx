@@ -93,8 +93,8 @@ async function type(field: HTMLInputElement, value: string) {
   });
 }
 function field(label: string): HTMLInputElement {
-  const prompt = [...document.querySelectorAll("label > span, .action-form__prompt")].find(
-    (node) => node.textContent?.startsWith(label),
+  const prompt = [...document.querySelectorAll("label > span, .action-form__prompt")].find((node) =>
+    node.textContent?.startsWith(label),
   );
   const input =
     prompt?.closest("label")?.querySelector("input") ??

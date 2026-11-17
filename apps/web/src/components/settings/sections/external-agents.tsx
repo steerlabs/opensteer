@@ -204,7 +204,8 @@ function ExternalAgentSetup({
             <li>
               Copy this address.
               {address ? (
-                <CopyBlock className="external-agent-setup__address"
+                <CopyBlock
+                  className="external-agent-setup__address"
                   label={
                     !thisComputer
                       ? "Address"
@@ -216,7 +217,11 @@ function ExternalAgentSetup({
                 />
               ) : null}
               {thisComputer ? (
-                <CopyBlock className="external-agent-setup__address" label="From an app on this computer" value={thisComputer} />
+                <CopyBlock
+                  className="external-agent-setup__address"
+                  label="From an app on this computer"
+                  value={thisComputer}
+                />
               ) : null}
             </li>
             <li>{guide.step}</li>
@@ -236,4 +241,3 @@ function ExternalAgentSetup({
     </Dialog>
   );
 }
-

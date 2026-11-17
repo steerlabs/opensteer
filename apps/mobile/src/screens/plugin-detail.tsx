@@ -475,27 +475,29 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
       title: "Versions",
       rows: [
         ...preview("versions", data.versions, 5).map((version): NativeSettingsRow => ({
-        key: version.id,
-        kind: "button" as const,
-        label: version.createdAt ? when(version.createdAt) : version.id,
-        detail: version.active
-          ? `In use · ${pluginAuthorText(version.author)}`
-          : pluginAuthorText(version.author),
-        disabled: version.active || action.pending !== null,
-        onPress: () =>
-          Alert.alert(
-            "Use this version?",
-            `${plugin.name} will run this version's code from now on. Anything it has stored stays as it is: switching back changes code, not data.`,
-            [
-              { style: "cancel", text: "Cancel" },
-              {
-                text: "Use this version",
-                onPress: () =>
-                  action.run("activate", () => activatePluginVersion(host, plugin.id, version.id)),
-              },
-            ],
-          ),
-      })),
+          key: version.id,
+          kind: "button" as const,
+          label: version.createdAt ? when(version.createdAt) : version.id,
+          detail: version.active
+            ? `In use · ${pluginAuthorText(version.author)}`
+            : pluginAuthorText(version.author),
+          disabled: version.active || action.pending !== null,
+          onPress: () =>
+            Alert.alert(
+              "Use this version?",
+              `${plugin.name} will run this version's code from now on. Anything it has stored stays as it is: switching back changes code, not data.`,
+              [
+                { style: "cancel", text: "Cancel" },
+                {
+                  text: "Use this version",
+                  onPress: () =>
+                    action.run("activate", () =>
+                      activatePluginVersion(host, plugin.id, version.id),
+                    ),
+                },
+              ],
+            ),
+        })),
         ...showAll("versions", data.versions, 5, "versions"),
       ],
       footer: { text: "Switching versions changes the plugin's code, not the data it has stored." },
@@ -740,7 +742,9 @@ function WebhookSetup(props: {
                 key: "secret",
                 kind: "button" as const,
                 label:
-                  copied === "secret" ? "Secret copied" : "Copy the signing secret to give the service",
+                  copied === "secret"
+                    ? "Secret copied"
+                    : "Copy the signing secret to give the service",
                 detail: form.secret.value,
                 onPress: () => copy("secret", (form.secret as { value: string }).value),
               },
@@ -768,8 +772,7 @@ function WebhookSetup(props: {
         : []),
       ...pluginFormRows(form.fields, answers, setAnswers),
     ];
-    if (rows.length)
-      sections.push({ key: "fields", title: "What the service gave you", rows });
+    if (rows.length) sections.push({ key: "fields", title: "What the service gave you", rows });
   }
   sections.push({
     key: "actions",
@@ -807,11 +810,9 @@ function WebhookSetup(props: {
                 disabled: action.pending !== null,
                 onPress: () =>
                   action.run("confirm", () =>
-                    confirmPluginWebhookRemoval(
-                      props.host,
-                      props.pluginId,
-                      props.webhookId,
-                    ).then(props.onClose),
+                    confirmPluginWebhookRemoval(props.host, props.pluginId, props.webhookId).then(
+                      props.onClose,
+                    ),
                   ),
               },
             ]

@@ -546,7 +546,9 @@ function LocalToolPage({
           {
             key: "tools",
             title: "Tools",
-            footer: { text: `In a program, agents reach these as ${pluginLocalToolAddress(tool)}.` },
+            footer: {
+              text: `In a program, agents reach these as ${pluginLocalToolAddress(tool)}.`,
+            },
             rows: tool.tools.length
               ? tool.tools.map((entry) => ({
                   key: entry.name,

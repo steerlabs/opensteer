@@ -46,12 +46,7 @@ export function isMockSignInCommand(command: HostApiCommand): command is MockSig
  * computer), `error` or `local-only` (no public address for webhooks).
  */
 export type MockPluginScenario =
-  | "default"
-  | "empty"
-  | "unavailable"
-  | "unsupported"
-  | "error"
-  | "local-only";
+  "default" | "empty" | "unavailable" | "unsupported" | "error" | "local-only";
 const mockPluginScenarios: readonly MockPluginScenario[] = [
   "empty",
   "unavailable",
