@@ -94,6 +94,7 @@ export function ownerViewComputerReadiness(
   machine: MachineSummary | null | undefined,
   phone: boolean,
 ): ComputerNotReady | null {
+  if (phone && machine?.phoneDisplay?.view.reason?.kind === "paused") return null;
   return computerReadiness({
     machine,
     phone,
@@ -118,7 +119,8 @@ export function newOwnerViewReadiness(
   phone: boolean,
 ): ComputerNotReady | null {
   const readiness = ownerViewComputerReadiness(machine, phone);
-  if (machine?.phoneDisplay) return readiness;
+  if (machine?.phoneDisplay)
+    return machine.phoneDisplay.view.reason?.kind === "paused" ? "paused" : readiness;
   const state = machine?.computerUse?.state;
   if (readiness !== null || !phone || state === undefined || state === "ready") return readiness;
   // Pausing is the one thing a phone reports itself as not ready for.

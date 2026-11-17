@@ -29,6 +29,7 @@ import type {
 } from "@opensteer/core";
 import type { HostApiClient } from "@opensteer/protocol";
 import { HostToClientMessageSchema, type HostToClientMessage } from "@opensteer/protocol";
+import { ScopedHostMessageSchema, type ScopedHostMessage } from "@opensteer/protocol/personal-sync";
 import type { RawData, WebSocket } from "ws";
 
 export interface VerticalTurn {
@@ -217,8 +218,8 @@ export function attachmentReference(attachment: Attachment): ArtifactContentPart
 }
 export function waitForRealtimeMessage(
   socket: WebSocket,
-  predicate: (message: HostToClientMessage) => boolean,
-): Promise<HostToClientMessage> {
+  predicate: (message: HostToClientMessage | ScopedHostMessage) => boolean,
+): Promise<HostToClientMessage | ScopedHostMessage> {
   return new Promise((resolve, reject) => {
     const finish = (effect: () => void) => {
       clearTimeout(timer);
@@ -229,7 +230,9 @@ export function waitForRealtimeMessage(
     const receive = (frame: RawData, isBinary: boolean) => {
       try {
         if (isBinary) throw new Error("Realtime sent a binary frame");
-        const message = HostToClientMessageSchema.parse(JSON.parse(frame.toString()));
+        const raw: unknown = JSON.parse(frame.toString());
+        const scoped = ScopedHostMessageSchema.safeParse(raw);
+        const message = scoped.success ? scoped.data : HostToClientMessageSchema.parse(raw);
         if (predicate(message)) finish(() => resolve(message));
       } catch (error) {
         finish(() => reject(error));

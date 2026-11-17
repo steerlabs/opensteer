@@ -600,6 +600,10 @@ export class ProductToolHandlers {
     });
     if (!page)
       throw forbidden(nodeId ? "Subagent is unavailable" : "task is unavailable to this user");
+    if (input.itemId && !page.items.some(({ id }) => id === input.itemId))
+      throw forbidden(
+        nodeId ? "Item is unavailable in this subagent" : "Item is unavailable in this task",
+      );
     const machineOf = (item: (typeof page.items)[number]) =>
       item.type === "tool.started" || item.type === "tool.completed"
         ? (item.integration?.computerApp?.runnerId ?? item.integration?.phone?.runnerId)

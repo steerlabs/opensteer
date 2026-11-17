@@ -111,14 +111,16 @@ describeStore("waiting input edits", (it) => {
     await expect(
       f.store.editThreadInput({ ...edit, content: [{ type: "text", text: "Different" }] }),
     ).rejects.toMatchObject({ code: "conflict" });
-    const history = await f.store.listMessageRevisions(identity);
-    expect(await f.store.listMessageRevisions({ ...identity, before: 1 })).toMatchObject({
-      hasMore: false,
-      revisions: [{ revision: 0 }],
+    await expect(f.store.listMessageRevisions(identity)).rejects.toMatchObject({
+      code: "not_found",
     });
-    expect(
-      history.revisions.map((item) => [item.revision, item.content, item.deviceLabel]),
-    ).toEqual([
+    const revisions = await f.database
+      .selectFrom("messageRevisions")
+      .select(["revision", "content", "deviceLabel"])
+      .where("messageId", "=", sent.message.id)
+      .orderBy("revision", "desc")
+      .execute();
+    expect(revisions.map((item) => [item.revision, item.content, item.deviceLabel])).toEqual([
       [1, [{ type: "text", text: "Edited" }], "Phone"],
       [0, [{ type: "text", text: "Original" }], null],
     ]);

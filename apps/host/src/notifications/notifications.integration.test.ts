@@ -209,9 +209,9 @@ integration("Notifications", () => {
       .execute();
     socket = await openSocket(stack);
     socket.on("message", (data) => {
-      const message = HostToClientMessageSchema.parse(JSON.parse(String(data)));
-      if (message.type === "host.notification") {
-        received.push(NotificationViewSchema.parse(message.notification));
+      const message = HostToClientMessageSchema.safeParse(JSON.parse(String(data)));
+      if (message.success && message.data.type === "host.notification") {
+        received.push(NotificationViewSchema.parse(message.data.notification));
       }
     });
     rootTask = await stack.createThread({

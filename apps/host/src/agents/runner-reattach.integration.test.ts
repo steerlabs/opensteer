@@ -319,7 +319,7 @@ integration("Runs that outlive their connection", () => {
   }
   async function expectCompletedExactlyOnce(active: VerticalStack, runId: RunId): Promise<void> {
     const stored = await storedRunnerReceipts(active, runId);
-    expect(stored.map((row) => row.ordinal)).toEqual(stored.map((_row, index) => index));
+    expect(stored.map((row) => Number(row.ordinal))).toEqual(stored.map((_row, index) => index));
     expect(await run(active, runId)).toEqual({ failure: null, status: "completed" });
     expect(await assistantRows(active, runId)).toHaveLength(messages);
   }
