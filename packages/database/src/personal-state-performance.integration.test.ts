@@ -233,6 +233,8 @@ test.skipIf(!enabled)(
         results.push(await measure(rows));
         await writeFile(out, JSON.stringify(results, null, 2) + "\n");
       }
+      for (const result of results)
+        expect(result.conversion.observedHeapGrowthBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
       expect(results[1]!.queryMs.shell.p95).toBeLessThan(500);
       expect(results[1]!.queryMs.detail.p95).toBeLessThan(500);
     });
