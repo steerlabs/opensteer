@@ -23,15 +23,9 @@ import { sideMemory } from "../side-memory.js";
 import { space } from "../theme.js";
 import type { NativeMenuOption } from "../thread/composer-menu.js";
 import type { ActionLineValue } from "../ui/action-line.js";
-import { readLine, useScreenRead } from "../ui/client-feedback.js";
+import { readLine, useScreenRead, actOnce, outcomeLine } from "../ui/client-feedback.js";
 import { AppText, RowGroup, SecondaryButton } from "../ui/primitives.js";
-import {
-  TeamOutcomeLine,
-  TeamWaiting,
-  teamOutcome,
-  teamOutcomeLine,
-  useTeamOutcomes,
-} from "./team-feedback.js";
+import { TeamOutcomeLine, TeamWaiting, useTeamOutcomes } from "./team-feedback.js";
 import { Screen } from "../ui/screen.js";
 import {
   ChannelDetailsBody,
@@ -483,7 +477,7 @@ export function TeamInstructionsScreen(props: ChannelParams): ReactNode {
         lastChanged={null}
         onSave={async (text) => {
           setFailure(null);
-          const outcome = await teamOutcome(
+          const outcome = await actOnce(
             session,
             { label: "save these instructions", done: "saved" },
             () =>
@@ -495,7 +489,7 @@ export function TeamInstructionsScreen(props: ChannelParams): ReactNode {
               }),
           );
           if (outcome.kind === "confirmed") return read.reload();
-          setFailure(teamOutcomeLine(outcome)?.text ?? null);
+          setFailure(outcomeLine(outcome)?.text ?? null);
           throw new Error("Not saved");
         }}
       />

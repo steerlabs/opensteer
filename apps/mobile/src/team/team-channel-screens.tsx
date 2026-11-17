@@ -58,7 +58,8 @@ import {
   ThreadTitle,
 } from "./channel-screen.js";
 import { sendFromComposer } from "./composer-send.js";
-import { teamOutcome, teamOutcomeLine, TeamWaiting } from "./team-feedback.js";
+import { TeamWaiting } from "./team-feedback.js";
+import { actOnce, outcomeLine } from "../ui/client-feedback.js";
 import { messageActions, type MessageActionId } from "./message-row.js";
 import type { MobileTeam } from "./mobile-teams.js";
 import { useTeamMembers, useTeamPreviews, useTeamSession } from "./team-context.js";
@@ -560,8 +561,8 @@ function Place(props: {
     spec: { readonly label: string; readonly done: string; readonly happened?: string },
     work: () => Promise<unknown>,
   ): Promise<boolean> =>
-    teamOutcome(on, spec, work).then((outcome) => {
-      setFailure(teamOutcomeLine(outcome));
+    actOnce(on, spec, work).then((outcome) => {
+      setFailure(outcomeLine(outcome));
       return outcome.kind === "confirmed";
     });
   // Pasted images are this screen's own temporary copies: each goes once its
@@ -706,7 +707,7 @@ function Place(props: {
       if (words === "" || savingEdit) return;
       const saving = editing;
       setSavingEdit(true);
-      const outcome = await teamOutcome(session, { label: "save this edit", done: "saved" }, () =>
+      const outcome = await actOnce(session, { label: "save this edit", done: "saved" }, () =>
         command(session, {
           type: "team.message.edit",
           channelId,
@@ -720,7 +721,7 @@ function Place(props: {
       if (outcome.kind === "confirmed") {
         replaceText(saving.draft);
         setEditing(null);
-      } else setFailure(teamOutcomeLine(outcome));
+      } else setFailure(outcomeLine(outcome));
       return;
     }
     const files = staged.filter((row) => row.fileId !== null).map((row) => row.fileId!);

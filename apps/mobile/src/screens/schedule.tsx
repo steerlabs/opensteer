@@ -267,10 +267,7 @@ function ScheduleBody(props: {
         if (!anchor) return null;
         const stillStopped = kind === "reopen" ? anchor.doneAt !== null : anchor.inputQueuePaused;
         return stillStopped
-          ? notDone({
-              label: "restart the worker",
-              done: kind === "reopen" ? "reopened" : "resumed",
-            })
+          ? notDone(kind === "reopen" ? "reopened" : "resumed")
           : { kind: "confirmed", value: undefined };
       },
       retry: () => void recovery.run(worker?.doneAt ? "reopen" : "resume"),

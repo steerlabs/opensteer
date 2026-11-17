@@ -58,7 +58,7 @@ export function ExternalAgentsSettingsController(): ReactNode {
     reconcile: async (connectionId) => {
       const { connections } = unwrapRpcResult(await host!.rpc["connections.list"]({}));
       return connections.some((row) => row.id === connectionId)
-        ? notDone({ label: "remove", done: "removed" })
+        ? notDone("removed")
         : { kind: "confirmed", value: undefined };
     },
   });

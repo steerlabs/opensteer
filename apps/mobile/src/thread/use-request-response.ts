@@ -108,7 +108,7 @@ export function useRequestResponse(input: {
     void integrationRequestStillPending(hostClient, request.originatingThreadId, request.id).then(
       (pending) => {
         const again = last.current;
-        const untaken = notDone(answerSpec);
+        const untaken = notDone(answerSpec.done);
         updateRequestSession(session, {
           failure: pending
             ? actionLine(

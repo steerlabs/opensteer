@@ -70,7 +70,7 @@ export function DevicesSettingsController(): ReactNode {
       if (host === null) return null;
       const listed = unwrapRpcResult(await host.rpc["sessions.list"]({})).sessions;
       return listed.some((row) => row.id === session.id)
-        ? notDone({ label: "sign out", done: "signed out" })
+        ? notDone("signed out")
         : { kind: "confirmed", value: undefined };
     },
   });

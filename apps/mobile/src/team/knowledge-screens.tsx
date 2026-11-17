@@ -42,7 +42,7 @@ import { clientIssue, clientIssueActions, presentClientIssue } from "@opensteer/
 import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
 import { PlaceholderRows } from "../ui/placeholder.js";
 import { AppText, Notice, SecondaryButton, SectionLabel } from "../ui/primitives.js";
-import { teamOutcome, teamOutcomeLine } from "./team-feedback.js";
+
 import { Screen } from "../ui/screen.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { SearchField } from "./channel-details.js";
@@ -58,7 +58,7 @@ import {
 } from "./knowledge-parts.js";
 import { useTeamSession } from "./team-context.js";
 import { Avatar } from "./team-marks.js";
-import { failureWords } from "../ui/client-feedback.js";
+import { failureWords, actOnce, outcomeLine } from "../ui/client-feedback.js";
 
 type Navigation = NativeStackNavigationProp<RootParamList>;
 
@@ -329,7 +329,7 @@ function TopicBar(props: {
   const setArchived = (archive: boolean): void => {
     if (!topic) return;
     setLine(null);
-    void teamOutcome(
+    void actOnce(
       props.session,
       archive
         ? { label: "archive this topic", done: "archived" }
@@ -341,7 +341,7 @@ function TopicBar(props: {
         }),
     ).then((outcome) => {
       if (outcome.kind === "confirmed") props.onChanged();
-      else setLine(teamOutcomeLine(outcome));
+      else setLine(outcomeLine(outcome));
     });
   };
   const facts = props.query

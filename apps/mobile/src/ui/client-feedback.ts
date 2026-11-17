@@ -93,6 +93,36 @@ export function actionLine(
   return outcome.kind === "rejected" ? { ...line, haptic: "error", tone: "danger" } : line;
 }
 
+/**
+ * One tap's work, run once with an honest outcome: not sent when known out
+ * of reach before anything went out, refused with its reason, or couldn't
+ * confirm when the answer was lost.
+ */
+export async function actOnce<T>(
+  session: ClientSession,
+  words: ActionWords,
+  work: () => Promise<T>,
+): Promise<ActionOutcome<T>> {
+  const action = createClientAction<undefined, T>(session, {
+    key: `once:${words.label}`,
+    ...words,
+    execute: () => work(),
+  });
+  try {
+    return await action.run(undefined);
+  } finally {
+    action.dispose();
+  }
+}
+
+/** An outcome as the line beside the control that asked; null once it worked. */
+export function outcomeLine(outcome: ActionOutcome<unknown>): ActionLineValue | null {
+  if (outcome.kind === "confirmed") return null;
+  const line = actionLine({ outcome, issue: outcome.issue }, {});
+  // Each outcome is said once, even when it repeats the last one's words.
+  return line && { ...line, key: `${line.key}:${++serial}` };
+}
+
 /** The same line as a native settings section's footer. */
 export function settingsFooter(line: ActionLineValue | null): NativeSettingsFooter | undefined {
   if (line === null) return undefined;
@@ -119,15 +149,9 @@ export function unreadyIssue(session: ClientSession, done: string): ClientIssue 
   };
 }
 
-/** A reconcile's answer when a check found the action was not done. */
-export function notDone(spec: {
-  readonly label: string;
-  readonly done?: string;
-}): ActionOutcome<never> {
-  return {
-    kind: "not-sent",
-    issue: { code: "not-sent", action: spec.label, ...(spec.done ? { done: spec.done } : {}) },
-  };
+/** A reconcile's answer when a check found the action was not done: "Not {done}." */
+export function notDone(done?: string): ActionOutcome<never> {
+  return { kind: "not-sent", issue: { code: "not-sent", ...(done ? { done } : {}) } };
 }
 
 /** A refusal an answer carried inside a success, such as one tab of several not closing. */

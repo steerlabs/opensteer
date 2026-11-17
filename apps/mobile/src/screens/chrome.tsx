@@ -273,7 +273,7 @@ function SourceRow(props: {
     },
     reconcile: async (name) => {
       const found = (await readSources(hostClient)).sources.find(({ id }) => id === source.id);
-      return found?.name === name ? { kind: "confirmed", value: undefined } : notDone(renameSpec);
+      return found?.name === name ? { kind: "confirmed", value: undefined } : notDone(renameSpec.done);
     },
     retry: () => rename(),
   });
@@ -294,7 +294,7 @@ function SourceRow(props: {
     },
     reconcile: async () =>
       (await readSources(hostClient)).sources.some(({ id }) => id === source.id)
-        ? notDone(revokeSpec)
+        ? notDone(revokeSpec.done)
         : { kind: "confirmed", value: undefined },
     retry: () => void revoking.run(),
   });
@@ -425,7 +425,7 @@ function SiteRow(props: {
     },
     reconcile: async () =>
       (await readSources(hostClient)).sites.some(({ site }) => site === grant.site)
-        ? notDone(removeSpec)
+        ? notDone(removeSpec.done)
         : { kind: "confirmed", value: undefined },
     retry: () => void removal.run(),
   });

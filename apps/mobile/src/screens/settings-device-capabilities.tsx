@@ -45,7 +45,7 @@ export function SettingsDeviceCapabilities({
       if (revision === undefined) return null;
       return revision > input.revision
         ? { kind: "confirmed", value: undefined }
-        : notDone({ label: "change", done: "changed" });
+        : notDone("changed");
     },
   });
   const removal = useScreenAction(host, `machine-revoke:${machine.id}`, {
@@ -62,7 +62,7 @@ export function SettingsDeviceCapabilities({
     reconcile: async () =>
       machineNow() === undefined
         ? { kind: "confirmed", value: undefined }
-        : notDone({ label: "remove", done: "removed" }),
+        : notDone("removed"),
   });
   const pending = access.running || removal.running;
   const line = access.line ?? removal.line;

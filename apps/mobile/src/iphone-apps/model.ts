@@ -203,7 +203,12 @@ export function addIphoneFailureText(
     case "remote-access-off":
       return `Turn on remote access on ${opensteer} first, then try again.`;
     case "host-unreachable":
-      return `This ${noun} can't reach ${opensteer}. Check your connection and try again.`;
+      return presentClientIssue({
+        code: "not-sent",
+        done: "added",
+        name: opensteer,
+        reason: "unreachable",
+      }).title;
     case "host-mismatch":
       return `That address now belongs to a different Opensteer, so this ${noun} didn't connect. Try again later.`;
     case "too-long":
@@ -216,8 +221,13 @@ export function addIphoneFailureText(
       return addIphoneNeedsUpdate(opensteer, noun);
     case "enrolled-elsewhere":
       return `This ${noun} is already added to another Opensteer. Remove it there first.`;
-    case "host-said":
-      return failure.message;
+    case "host-refused":
+      return presentClientIssue({
+        code: "rejected",
+        action: `add this ${noun}`,
+        done: "added",
+        reason: failure.reason,
+      }).title;
     case "failed":
       return `This ${noun} wasn't added. Try again.`;
   }

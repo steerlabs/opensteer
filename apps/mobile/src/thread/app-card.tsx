@@ -60,7 +60,7 @@ function Card(props: { readonly client: HostClient; readonly entry: AppEntry }):
     reconcile: async () => {
       const opened = readTab();
       return opened === null
-        ? notDone({ label: "open", done: "opened" })
+        ? notDone("opened")
         : { kind: "confirmed", value: opened };
     },
     retry: () => open(),

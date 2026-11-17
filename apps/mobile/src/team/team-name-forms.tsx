@@ -10,11 +10,11 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootParamList } from "../navigation.js";
 import { space } from "../theme.js";
 import { ActionLineSlot, type ActionLineValue } from "../ui/action-line.js";
-import { readLine, useScreenRead } from "../ui/client-feedback.js";
+import { readLine, useScreenRead, actOnce, outcomeLine } from "../ui/client-feedback.js";
 import { Field, PrimaryButton } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 import { useTeamSession } from "./team-context.js";
-import { TeamWaiting, teamOutcome, teamOutcomeLine } from "./team-feedback.js";
+import { TeamWaiting } from "./team-feedback.js";
 
 type Navigation = NativeStackNavigationProp<RootParamList>;
 
@@ -46,7 +46,7 @@ export function TeamRenameChannelScreen(
       label="Channel name"
       lowercase
       onSubmit={async (name) => {
-        const outcome = await teamOutcome(
+        const outcome = await actOnce(
           session,
           { label: "rename this channel", done: "renamed" },
           async () =>
@@ -60,7 +60,7 @@ export function TeamRenameChannelScreen(
             ),
         );
         if (outcome.kind === "confirmed") navigation.goBack();
-        return teamOutcomeLine(outcome);
+        return outcomeLine(outcome);
       }}
       placeholder="support"
       submitLabel="Rename"
@@ -82,7 +82,7 @@ export function TeamNewGroupScreen(
       onSubmit={async (name) => {
         if (session === null) return null;
         const id = createId("teamGroup");
-        const outcome = await teamOutcome(
+        const outcome = await actOnce(
           session,
           { label: "make this group", done: "made" },
           async () =>
@@ -91,7 +91,7 @@ export function TeamNewGroupScreen(
             ),
         );
         if (outcome.kind === "confirmed") navigation.replace("TeamGroup", { teamId, groupId: id });
-        return teamOutcomeLine(outcome);
+        return outcomeLine(outcome);
       }}
       placeholder="Support leads"
       submitLabel="Create group"

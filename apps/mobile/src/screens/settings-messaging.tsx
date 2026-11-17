@@ -72,7 +72,7 @@ function Messaging({ host }: { readonly host: HostClient }) {
         ? null
         : settled
           ? { kind: "confirmed", value: undefined }
-          : notDone({ label: "save", done: "saved" });
+          : notDone("saved");
     },
   });
   const check = useScreenAction(host, "channel-check", {
