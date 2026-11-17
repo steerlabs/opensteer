@@ -1103,14 +1103,6 @@ export class HttpHostClient {
           this.#rereadPending = null;
           this.#reread(pending);
         }
-        // A replaced socket answers what is owed once it synchronizes, so it is not read twice.
-        if (
-          visibilityChanged &&
-          state.visibility === "foreground" &&
-          this.#tasksStale &&
-          [...this.#channels.values()].every(({ synchronized }) => synchronized)
-        )
-          this.#rereadTasks();
         if (networkChanged) {
           this.#targetedControl.reconnect();
           this.#targetedWatch.reconnect();
@@ -2251,10 +2243,14 @@ export class HttpHostClient {
           closed,
           lastProgressAt: () =>
             Math.min(...[...this.#channels.values()].map((channel) => channel.progressAt)),
+          // A socket proven alive answers task notices owed from the background; a
+          // replaced one answers them through its replay, so they are not read twice.
           probe: (signal) =>
             Promise.all(
               [...this.#channels.values()].map((channel) => this.#probeChannel(channel, signal)),
-            ).then(() => undefined),
+            ).then(() => {
+              if (this.#tasksStale) this.#rereadTasks();
+            }),
           close: () => {
             release();
             for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
