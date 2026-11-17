@@ -5,6 +5,7 @@ import {
   integrationAuthorizationError,
   waitForIntegrationAuthorization,
 } from "@opensteer/client/integrations";
+import { pluginSignInEnd, waitForPluginAuthorization } from "@opensteer/client/plugins";
 import { actionErrorMessage } from "../ui-utils.js";
 import { ErrorNotice, OnboardingCard } from "./onboarding-card.js";
 
@@ -27,9 +28,12 @@ type CompletionState =
 export function IntegrationAuthorizationCompletion({
   client,
   integrationAttempt,
+  kind = "integration",
 }: {
   readonly client: Pick<HostClient, "rpc">;
   readonly integrationAttempt: string | null;
+  /** A plugin sign-in reads its own attempt; on the web that read also finishes it. */
+  readonly kind?: "integration" | "plugin";
 }) {
   const parsedAttempt = IntegrationAuthorizationAttemptIdSchema.safeParse(integrationAttempt);
   const attemptId = parsedAttempt.success ? parsedAttempt.data : null;
@@ -54,10 +58,20 @@ export function IntegrationAuthorizationCompletion({
     }
     const controller = new AbortController();
     setState({ kind: "checking" });
-    void waitForIntegrationAuthorization({ attemptId, client, signal: controller.signal })
-      .then((status) => {
+    void (
+      kind === "plugin"
+        ? waitForPluginAuthorization({ attemptId, client, signal: controller.signal }).then(
+            (status) => {
+              const end = pluginSignInEnd(status);
+              return end.kind === "completed" ? null : end.message;
+            },
+          )
+        : waitForIntegrationAuthorization({ attemptId, client, signal: controller.signal }).then(
+            (status) => integrationAuthorizationError(status.status, status.failureCode),
+          )
+    )
+      .then((error) => {
         if (controller.signal.aborted) return;
-        const error = integrationAuthorizationError(status.status, status.failureCode);
         setState(error ? { kind: "terminal-error", message: error } : { kind: "completed" });
       })
       .catch((reason: unknown) => {
@@ -66,7 +80,7 @@ export function IntegrationAuthorizationCompletion({
         }
       });
     return () => controller.abort();
-  }, [attemptId, client, integrationAttempt, retry]);
+  }, [attemptId, client, integrationAttempt, kind, retry]);
 
   if (state.kind === "opening") {
     return (
@@ -105,7 +119,11 @@ export function IntegrationAuthorizationCompletion({
   if (state.kind === "completed") {
     return (
       <OnboardingCard
-        description="Return to your original Opensteer tab to finish setting up this connection."
+        description={
+          kind === "plugin"
+            ? "The account is linked. Return to your original Opensteer tab."
+            : "Return to your original Opensteer tab to finish setting up this connection."
+        }
         eyebrow="Authorization"
         footnote="You can close this tab."
         title="Account authorization complete"

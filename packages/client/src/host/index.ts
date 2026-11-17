@@ -113,3 +113,4 @@ export * from "./composer-references.js";
 export * from "./transcript-files.js";
 
 export * from "./tabs-contract.js";
+export * from "./authorization-attempt.js";

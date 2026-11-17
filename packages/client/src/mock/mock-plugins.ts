@@ -3,6 +3,8 @@ import {
   pluginsInstalledMax,
   rpcSuccess,
   type ConnectedAccountView,
+  type HostApiCommand,
+  type HostApiCommandOutput,
   type HostApiHandlers,
   type InstalledPluginView,
   type PluginAccountReviewView,
@@ -11,14 +13,27 @@ import {
   type PluginCommandResult,
   type PluginConsentView,
   type PluginEngineStateView,
+  type PluginLocalToolView,
   type PluginRequirementTarget,
   type PluginScheduledRunView,
   type PluginSummaryView,
   type PluginWorkflowRunView,
   type pluginReads,
 } from "@opensteer/protocol";
+import { IntegrationAuthorizationAttemptIdSchema } from "@opensteer/integration-core";
 import { HostClientRequestError } from "../host/client.js";
-import type { PluginSignIn, PluginSignInMethod } from "../plugins/index.js";
+import type { PluginOAuthMethods, PluginOAuthStatus } from "../plugins/sign-in.js";
+
+export type MockSignInCommand = Extract<
+  HostApiCommand,
+  { type: `plugin.authorization.${string}` | `plugin.oauthApp.${string}` }
+>;
+type MockSignInResult = Extract<HostApiCommandOutput, { type: MockSignInCommand["type"] }>;
+export function isMockSignInCommand(command: HostApiCommand): command is MockSignInCommand {
+  return (
+    command.type.startsWith("plugin.authorization.") || command.type.startsWith("plugin.oauthApp.")
+  );
+}
 
 /**
  * The plugin side of the mock Host: a catalog of a few hundred entries for
@@ -502,6 +517,59 @@ const seedAccounts: ConnectedAccountView[] = [
   { id: "acc_github_old", provider: "github", label: "Personal token" },
 ];
 
+const studio = { id: "rnr_33333333-3333-4333-8333-333333333333", name: "Alex's MacBook Pro" };
+/** Device data apps and a local server, as the Host lists them beside plugins. */
+const seedLocalTools: Omit<PluginLocalToolView, "access">[] = [
+  {
+    id: "app_device_con_calendar",
+    kind: "device-app",
+    name: "calendar-alex-s-macbook-pro",
+    title: "Apple Calendar on Alex's MacBook Pro",
+    computer: studio,
+    unavailable: null,
+    tools: [
+      { name: "list_events", readOnly: true },
+      { name: "create_event", readOnly: false },
+      { name: "update_event", readOnly: false },
+      { name: "delete_event", readOnly: false },
+    ],
+  },
+  {
+    id: "app_device_con_reminders",
+    kind: "device-app",
+    name: "reminders-alex-s-macbook-pro",
+    title: "Apple Reminders on Alex's MacBook Pro",
+    computer: studio,
+    unavailable: null,
+    tools: [
+      { name: "list_reminders", readOnly: true },
+      { name: "create_reminder", readOnly: false },
+      { name: "update_reminder", readOnly: false },
+    ],
+  },
+  {
+    id: "app_device_con_photos",
+    kind: "device-app",
+    name: "photos-alex-s-iphone",
+    title: "Photos on Alex's iPhone",
+    computer: { id: "rnr_44444444-4444-4444-8444-444444444444", name: "Alex's iPhone" },
+    unavailable: "Alex's iPhone is offline. Open Opensteer on it to share its apps again.",
+    tools: [],
+  },
+  {
+    id: "app_server_srv_notes",
+    kind: "local-server",
+    name: "notes-search",
+    title: "Notes search",
+    computer: { id: "rnr_11111111-1111-4111-8111-111111111111", name: "Home Mac" },
+    unavailable: null,
+    tools: [
+      { name: "search_notes", readOnly: true },
+      { name: "append_note", readOnly: false },
+    ],
+  },
+];
+
 export const mockPluginRequests = {
   account: { pluginId: "plg_github", pluginName: "GitHub", requirement: "github" },
   approval: {
@@ -760,6 +828,7 @@ export class MockPlugins {
         cardinality: requirement.cardinality,
       },
       consent: consentOf(plugin, requirement),
+      signIn: requirement.provider !== "resend",
       methods: [
         {
           method: "apiKey",
@@ -797,45 +866,216 @@ export class MockPlugins {
     };
   }
 
-  /** Sign-in methods until the Host offers its own; the mock signs in at once. */
-  readonly signIn: PluginSignIn = {
-    methods: async (target) => {
-      const plugin = this.plugins.find((entry) => entry.id === target.pluginId);
-      const requirement = plugin?.requirements.find((r) => r.name === target.requirement);
-      if (!requirement) return [];
-      const methods: PluginSignInMethod[] = [
+  /* ---- Sign-in ---- */
+
+  readonly #connections = new Map<string, PluginRequirementTarget>();
+  readonly #attempts = new Map<
+    string,
+    {
+      readonly target: PluginRequirementTarget;
+      readonly connection: string;
+      readonly startedAt: number;
+      readonly expiresAt: string;
+      status: PluginOAuthStatus["status"];
+      account: string | null;
+    }
+  >();
+  /** OAuth apps the person saved, by issuer. */
+  readonly #apps: { id: string; issuer: string; clientId: string; hasSecret: boolean }[] = [];
+
+  #issuer(target: PluginRequirementTarget) {
+    return `https://${this.review(target).requirement.provider}.example/oauth`;
+  }
+  /** What a connection offers now; its review digest changes whenever that does. */
+  #methods(connection: string): Omit<PluginOAuthMethods, "type"> {
+    const target = this.#connections.get(connection);
+    if (!target) throw refusal("not_found", "Plugin sign-in is unavailable or expired");
+    const review = this.review(target);
+    const provider = review.requirement.provider;
+    const issuer = this.#issuer(target);
+    const clients = this.#apps
+      .filter((app) => app.issuer === issuer)
+      .map((app) => ({
+        id: app.id,
+        issuer,
+        clientId: app.clientId,
+        source: "manual",
+        hasSecret: app.hasSecret,
+        createdAt: "2026-11-16T12:00:00.000Z",
+      }));
+    const setup = {
+      kind: "oauth2",
+      grant: "authorization_code",
+      mode: provider === "linear" ? "automatic" : "client-required",
+      scopes: provider === "github" ? ["repo", "read:user"] : ["read", "write"],
+      resource: { value: null, source: "none" },
+      issuer,
+      clients,
+      // Stripe has no one-click app here: it signs in only with an app of the person's own.
+      ...(provider === "stripe" ? {} : { firstParty: { label: "Opensteer" } }),
+    };
+    return {
+      connection,
+      consent: review.consent,
+      redirectUri: "https://accounts.opensteer.com/v1/oauth-broker/callback/plugin",
+      methods: [
         {
-          id: "one-click",
-          kind: "one-click",
-          label: `Sign in with ${requirement.providerName}`,
-          detail:
-            "Opensteer's sign-in service handles the exchange; the account stays on this computer.",
-          unavailable:
-            requirement.provider === "resend"
-              ? `${requirement.providerName} doesn't offer one-click sign-in.`
-              : null,
+          method: "oauth",
+          oneClick: provider !== "stripe",
+          review: digest(`${connection}:${JSON.stringify(clients)}`)
+            .slice(0, 43)
+            .replace(/[^A-Za-z0-9_-]/gu, "A"),
+          setup,
         },
-        {
-          id: "own-app",
-          kind: "own-app",
-          label: "Use your own OAuth app",
-          detail: "Enter a client ID and secret you registered yourself.",
-          unavailable: null,
-        },
-      ];
-      return methods;
-    },
-    begin: async (target) => {
-      const account: ConnectedAccountView = {
-        id: this.#id("acc"),
-        provider: this.review(target).requirement.provider,
-        label: "Signed in just now",
-      };
-      this.accounts.push(account);
-      this.#link(target, account.id);
-      return { url: "about:blank" };
-    },
-  };
+      ],
+    };
+  }
+  /** `?mock-plugin-signin=` ends sign-ins as `denied`, `failed`, `expired` or `slow`, or refuses them. */
+  #signInScenario() {
+    return typeof globalThis.location?.search === "string"
+      ? new URLSearchParams(globalThis.location.search).get("mock-plugin-signin")
+      : null;
+  }
+  #attemptStatus(id: string, returned = false): PluginOAuthStatus {
+    const attempt = this.#attempts.get(id);
+    if (!attempt) throw refusal("not_found", "Plugin sign-in is unavailable or expired");
+    const scenario = this.#signInScenario();
+    const due = returned || Date.now() - attempt.startedAt >= (scenario === "slow" ? 60_000 : 2_500);
+    if (attempt.status === "launched" && due) {
+      if (scenario === "denied") attempt.status = "denied";
+      else if (scenario === "failed") attempt.status = "failed";
+      else if (scenario === "expired") attempt.status = "expired";
+      else {
+        const account: ConnectedAccountView = {
+          id: this.#id("acc"),
+          provider: this.review(attempt.target).requirement.provider,
+          label: "Signed in just now",
+        };
+        this.accounts.push(account);
+        this.#link(attempt.target, account.id);
+        attempt.status = "completed";
+        attempt.account = account.id;
+      }
+    }
+    return {
+      attemptId: IntegrationAuthorizationAttemptIdSchema.parse(id),
+      connection: attempt.connection,
+      account: attempt.account,
+      expiresAt: attempt.expiresAt,
+      status: attempt.status,
+      failureCode: attempt.status === "failed" ? "scope-escalation" : null,
+    };
+  }
+
+  signInReads(): Pick<HostApiHandlers, "plugin.authorization.get" | "plugin.authorization.methods"> {
+    return {
+      "plugin.authorization.get": async ({ attemptId }) =>
+        rpcSuccess(this.#attemptStatus(attemptId)),
+      "plugin.authorization.methods": async ({ connection }) =>
+        rpcSuccess(this.#methods(connection)),
+    };
+  }
+
+  async signInCommand(command: MockSignInCommand): Promise<MockSignInResult> {
+    await this.#ready();
+    switch (command.type) {
+      case "plugin.authorization.prepare": {
+        const target = {
+          pluginId: command.input.plugin,
+          requirement: command.input.requirement,
+          scope: command.input.scope,
+        };
+        this.review(target);
+        const connection = `con_${crypto.randomUUID()}`;
+        this.#connections.set(connection, target);
+        return { type: command.type, ...this.#methods(connection) };
+      }
+      case "plugin.authorization.begin": {
+        const input = command.input;
+        const offered = this.#methods(input.connection);
+        const method = offered.methods.find((entry) => entry.method === input.method);
+        if (this.#signInScenario() === "account-link")
+          throw refusal(
+            "conflict",
+            "Link this Host to Opensteer Account before starting sign-in remotely",
+            "plugin-account-link-required",
+          );
+        if (
+          !method ||
+          method.review !== input.review ||
+          offered.consent.digest !== input.consent.digest ||
+          this.#signInScenario() === "changed"
+        )
+          throw refusal(
+            "conflict",
+            "Sign-in scopes or client configuration changed. Review them again.",
+            "plugin-consent-changed",
+          );
+        const target = this.#connections.get(input.connection)!;
+        this.#connections.delete(input.connection);
+        const client = input.client;
+        if (client && "clientId" in client && client.save)
+          this.#apps.push({
+            id: this.#id("oac"),
+            issuer: this.#issuer(target),
+            clientId: client.clientId,
+            hasSecret: client.clientSecret !== undefined,
+          });
+        const attemptId = IntegrationAuthorizationAttemptIdSchema.parse(
+          `ioa_${crypto.randomUUID()}`,
+        );
+        const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+        this.#attempts.set(attemptId, {
+          target,
+          connection: input.connection,
+          startedAt: Date.now(),
+          expiresAt,
+          status: "launched",
+          account: null,
+        });
+        return {
+          type: command.type,
+          attemptId,
+          connection: input.connection,
+          expiresAt,
+          launchTicket: "t".repeat(43),
+        };
+      }
+      case "plugin.authorization.return":
+        return { type: command.type, ...this.#attemptStatus(command.attemptId, true) };
+      case "plugin.authorization.cancel": {
+        const attempt = this.#attempts.get(command.attemptId);
+        if (attempt?.status === "launched") attempt.status = "cancelled";
+        return { type: command.type, ...this.#attemptStatus(command.attemptId) };
+      }
+      case "plugin.oauthApp.save": {
+        const app = {
+          id: this.#id("oac"),
+          issuer: command.input.issuer,
+          clientId: command.input.clientId,
+          hasSecret: command.input.clientSecret !== undefined,
+        };
+        this.#apps.push(app);
+        return {
+          type: command.type,
+          client: { id: app.id, issuer: app.issuer, clientId: app.clientId, hasSecret: app.hasSecret },
+        };
+      }
+      case "plugin.oauthApp.remove": {
+        const index = this.#apps.findIndex((app) => app.id === command.client);
+        if (index >= 0) this.#apps.splice(index, 1);
+        return { type: command.type };
+      }
+    }
+  }
+
+  readonly #localAccess = new Map<string, PluginLocalToolView["access"]>();
+  local(): PluginLocalToolView[] {
+    return seedLocalTools.map((tool) => ({
+      ...tool,
+      access: this.#localAccess.get(tool.id) ?? "all",
+    }));
+  }
 
   #link(target: PluginRequirementTarget, accountId: string) {
     const plugin = this.#plugin(target.pluginId);
@@ -855,6 +1095,10 @@ export class MockPlugins {
   reads(): Pick<HostApiHandlers, keyof typeof pluginReads> {
     return {
       "plugins.installed.list": async () => {
+        const local = this.scenario === "empty" ? [] : this.local();
+        // Local tools never wait on the engine, so they still list while it is unavailable.
+        if (this.scenario === "unavailable")
+          return rpcSuccess({ engine: this.engine, plugins: null, local });
         await this.#ready();
         return rpcSuccess({
           engine: this.engine,
@@ -862,6 +1106,7 @@ export class MockPlugins {
             .slice(0, pluginsInstalledMax)
             .map((plugin) => this.summary(plugin))
             .sort((a, b) => a.name.localeCompare(b.name)),
+          local,
         });
       },
       "plugins.get": async ({ pluginId }) => {
@@ -925,6 +1170,15 @@ export class MockPlugins {
   }
 
   async command(command: PluginCommand): Promise<PluginCommandResult> {
+    // A local tool's access is a Host setting; it never waits on the engine.
+    if (
+      command.type === "plugins.access.set" &&
+      seedLocalTools.some(({ id }) => id === command.pluginId)
+    ) {
+      this.#localAccess.set(command.pluginId, command.access);
+      this.#changed();
+      return { type: command.type, access: command.access };
+    }
     await this.#ready();
     switch (command.type) {
       case "plugins.install": {

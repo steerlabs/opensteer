@@ -1,17 +1,20 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { Link } from "react-router";
 import {
   createPluginAccount,
+  forgetPluginOAuthApp,
   linkPluginAccount,
   pluginAccountComplete,
   pluginAccountValues,
   pluginConsentLines,
   pluginLinkableAccounts,
-  pluginSignInMethods,
+  pluginSignInRetryable,
   readPluginAccountReview,
   type PluginAccountReviewView,
   type PluginRequirementTarget,
-  type PluginSignInMethod,
 } from "@opensteer/client/plugins";
+import { usePluginSignIn } from "@opensteer/client/react";
+import { pluginSignInSurface } from "../../integrations/plugin-sign-in-surface.js";
 import { useShell } from "../app-shell.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
@@ -34,21 +37,16 @@ export function PluginConnectDialog({
 }) {
   const { hostClient } = useShell();
   const [review, setReview] = useState<PluginAccountReviewView | null>(null);
-  const [methods, setMethods] = useState<readonly PluginSignInMethod[]>([]);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [generation, setGeneration] = useState(0);
   const titleId = useId();
   useEffect(() => {
     let alive = true;
     setLoadError(null);
-    // One round trip for the review; sign-in methods arrive beside it.
+    // One round trip for the review; a sign-in is prepared only when it offers one.
     void readPluginAccountReview(hostClient, target).then(
       (value) => alive && setReview(value),
       (error: unknown) => alive && setLoadError(error),
-    );
-    void pluginSignInMethods(hostClient, target).then(
-      (value) => alive && setMethods(value),
-      () => alive && setMethods([]),
     );
     return () => {
       alive = false;
@@ -68,7 +66,6 @@ export function PluginConnectDialog({
         <SettingsError message={loadError ? actionErrorMessage(loadError) : null} />
         {review ? (
           <ConnectBody
-            methods={methods}
             onChanged={() => {
               setReview(null);
               setGeneration((value) => value + 1);
@@ -86,13 +83,11 @@ export function PluginConnectDialog({
 }
 
 function ConnectBody({
-  methods,
   onChanged,
   onLinked,
   review,
   target,
 }: {
-  readonly methods: readonly PluginSignInMethod[];
   readonly onChanged: () => void;
   readonly onLinked: () => void;
   readonly review: PluginAccountReviewView;
@@ -106,14 +101,12 @@ function ConnectBody({
   const [label, setLabel] = useState("");
   const saved = pluginLinkableAccounts(review);
   const fields = review.methods.find((entry) => entry.method === method)?.fields ?? [];
-  const [waiting, setWaiting] = useState(false);
-  /** An action that resolves `false` started something that finishes elsewhere. */
   const run = (key: string, action: () => Promise<unknown>) => {
     if (pending) return;
     setPending(key);
     setError(null);
     void action()
-      .then((value) => (value === false ? setWaiting(true) : onLinked()))
+      .then(onLinked)
       .catch((reason: unknown) =>
         setError({
           message: actionErrorMessage(reason),
@@ -164,48 +157,8 @@ function ConnectBody({
           ) : null}
         </div>
       ) : null}
-      {waiting ? (
-        <p className="notice" role="status">
-          Finish signing in in the window that opened. This page updates when the account is linked.
-        </p>
-      ) : null}
-      {methods.length ? (
-        <section className="plugin-connect__part">
-          <h3>Sign in</h3>
-          <div className="plugin-connect__methods">
-            {methods.map((entry) => (
-              <button
-                className={`btn${entry.kind === "one-click" ? " btn--primary" : ""}`}
-                disabled={entry.unavailable !== null || pending !== null}
-                key={entry.id}
-                onClick={() =>
-                  run(`sign-in:${entry.id}`, async () => {
-                    const started = await hostClient.pluginSignIn!.begin({
-                      ...target,
-                      method: entry.id,
-                      consent: review.consent,
-                    });
-                    // The sign-in finishes in its own window; the link lands as a plugin change.
-                    if (started.url === "about:blank") return true;
-                    window.open(started.url, "_blank", "noopener");
-                    return false;
-                  })
-                }
-                title={entry.unavailable ?? entry.detail ?? undefined}
-                type="button"
-              >
-                {entry.label}
-              </button>
-            ))}
-          </div>
-          {methods.map((entry) =>
-            entry.unavailable ? (
-              <p className="settings-footnote" key={entry.id}>
-                {entry.unavailable}
-              </p>
-            ) : null,
-          )}
-        </section>
+      {review.signIn ? (
+        <SignInPart onLinked={onLinked} providerName={review.requirement.providerName} target={target} />
       ) : null}
       {saved.length ? (
         <section className="plugin-connect__part">
@@ -244,7 +197,7 @@ function ConnectBody({
       ) : null}
       {review.methods.length ? (
         <section className="plugin-connect__part">
-          <h3>{saved.length || methods.length ? "Or add an API key" : "Add an API key"}</h3>
+          <h3>{saved.length || review.signIn ? "Or add an API key" : "Add an API key"}</h3>
           {review.methods.length > 1 ? (
             <div aria-label="How to connect" className="settings-segmented" role="group">
               {review.methods.map((entry) => (
@@ -340,12 +293,237 @@ function ConnectBody({
           </form>
         </section>
       ) : null}
-      {!review.methods.length && !saved.length && !methods.length ? (
+      {!review.methods.length && !saved.length && !review.signIn ? (
         <p className="settings-footnote">
-          {review.requirement.providerName} accounts are connected by signing in, which this
-          Opensteer doesn't offer yet.
+          {review.requirement.providerName} accounts can't be connected from here.
         </p>
       ) : null}
     </>
+  );
+}
+
+/**
+ * Signing in at the provider: the ways the Host prepared, then the browser,
+ * then how it ended. Closing the dialog leaves an open sign-in running; only
+ * Cancel ends it.
+ */
+function SignInPart({
+  onLinked,
+  providerName,
+  target,
+}: {
+  readonly onLinked: () => void;
+  readonly providerName: string;
+  readonly target: PluginRequirementTarget;
+}) {
+  const { desktopBridge, hostClient } = useShell();
+  const surface = useMemo(
+    () => pluginSignInSurface(desktopBridge, hostClient),
+    [desktopBridge, hostClient],
+  );
+  const { flow, state } = usePluginSignIn({ client: hostClient, surface, target, providerName });
+  const [ownApp, setOwnApp] = useState(false);
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [remember, setRemember] = useState(true);
+  const [forgetting, setForgetting] = useState<string | null>(null);
+  const linked = state.step === "ended" && state.end.kind === "completed";
+  const reported = useRef(false);
+  useEffect(() => {
+    if (!linked || reported.current) return;
+    reported.current = true;
+    onLinked();
+  }, [linked, onLinked]);
+  if (state.step === "preparing")
+    return (
+      <section className="plugin-connect__part" aria-busy="true">
+        <h3>Sign in</h3>
+        <p className="settings-footnote">Getting sign-in ready…</p>
+      </section>
+    );
+  if (state.step === "ended") {
+    if (state.end.kind === "completed") return null;
+    const { end } = state;
+    return (
+      <section className="plugin-connect__part">
+        <h3>Sign in</h3>
+        <p
+          className={`notice${end.kind === "cancelled" ? "" : " notice--error"}`}
+          role="status"
+        >
+          {end.message}
+        </p>
+        <div className="action-buttons">
+          {end.kind === "account-link-required" ? (
+            <Link className="btn btn--small" to="/settings/account">
+              Link to an Account
+            </Link>
+          ) : null}
+          {pluginSignInRetryable(end) ? (
+            <button className="btn btn--small" onClick={() => void flow.prepare()} type="button">
+              {end.kind === "review-changed" ? "Review again" : "Try again"}
+            </button>
+          ) : null}
+        </div>
+      </section>
+    );
+  }
+  const { choices } = state;
+  if (!choices.options.length && !choices.ownApp) return null;
+  if (state.step === "waiting")
+    return (
+      <section className="plugin-connect__part">
+        <h3>Sign in</h3>
+        <p className="notice notice--accent plugin-engine-notice" role="status">
+          <span aria-hidden className="plugin-engine-notice__dot" />
+          {desktopBridge
+            ? "Finish signing in in your browser. If it offers to open Opensteer, choose it. This updates by itself."
+            : "Finish signing in in the tab that opened. This updates by itself."}
+        </p>
+        <div className="action-buttons">
+          <button
+            className="btn btn--small btn--ghost"
+            disabled={state.cancelling}
+            onClick={() => void flow.cancel()}
+            type="button"
+          >
+            {state.cancelling ? "Cancelling…" : "Cancel sign-in"}
+          </button>
+        </div>
+      </section>
+    );
+  const busy = state.step === "starting";
+  const form = choices.ownApp;
+  const ready =
+    clientId.trim() !== "" && (form?.secret !== "required" || clientSecret.trim() !== "");
+  return (
+    <section className="plugin-connect__part">
+      <h3>Sign in</h3>
+      <div className="plugin-connect__methods">
+        {choices.options.map((option) => (
+          <span className="plugin-connect__method" key={option.key}>
+            <button
+              className={`btn${option.kind === "one-click" ? " btn--primary" : ""}`}
+              disabled={busy || forgetting !== null}
+              onClick={() => flow.start({ option })}
+              title={option.detail ?? undefined}
+              type="button"
+            >
+              {busy && state.key === option.key ? "Opening…" : option.label}
+            </button>
+            {option.savedApp ? (
+              <button
+                aria-label={`Forget ${option.label}`}
+                className="btn btn--small btn--ghost"
+                disabled={busy || forgetting !== null}
+                onClick={() => {
+                  const app = option.savedApp!;
+                  setForgetting(app);
+                  void forgetPluginOAuthApp(hostClient, app)
+                    .then(() => flow.prepare())
+                    .finally(() => setForgetting(null));
+                }}
+                type="button"
+              >
+                {forgetting === option.savedApp ? "Forgetting…" : "Forget"}
+              </button>
+            ) : null}
+          </span>
+        ))}
+        {form && !ownApp ? (
+          <button
+            className="btn"
+            disabled={busy}
+            onClick={() => setOwnApp(true)}
+            type="button"
+          >
+            Use your own OAuth app
+          </button>
+        ) : null}
+      </div>
+      {choices.options[0]?.kind === "one-click" && choices.options[0].detail ? (
+        <p className="settings-footnote">{choices.options[0].detail}</p>
+      ) : null}
+      {form && ownApp ? (
+        <form
+          className="plugins-form plugin-own-app"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!ready || busy) return;
+            flow.start({
+              ownApp: {
+                clientId,
+                ...(form.secret === "none" ? {} : { clientSecret }),
+                save: remember,
+              },
+            });
+          }}
+        >
+          <label className="plugins-field">
+            <span>Address to register as the redirect URL</span>
+            <input
+              className="text-input"
+              onFocus={(event) => event.currentTarget.select()}
+              readOnly
+              value={form.redirectUri}
+            />
+          </label>
+          {form.scopes.length ? (
+            <p className="settings-footnote">
+              It asks for: <code>{form.scopes.join(" ")}</code>
+            </p>
+          ) : null}
+          <label className="plugins-field">
+            <span>Client ID</span>
+            <input
+              autoComplete="off"
+              className="text-input"
+              onChange={(event) => setClientId(event.currentTarget.value)}
+              spellCheck={false}
+              value={clientId}
+            />
+          </label>
+          {form.secret === "none" ? null : (
+            <label className="plugins-field">
+              <span>
+                Client secret
+                {form.secret === "optional" ? (
+                  <span className="plugin-form__optional"> (optional)</span>
+                ) : null}
+              </span>
+              <input
+                autoComplete="off"
+                className="text-input"
+                onChange={(event) => setClientSecret(event.currentTarget.value)}
+                spellCheck={false}
+                type="password"
+                value={clientSecret}
+              />
+            </label>
+          )}
+          <label className="plugin-own-app__remember">
+            <input
+              checked={remember}
+              onChange={(event) => setRemember(event.currentTarget.checked)}
+              type="checkbox"
+            />
+            Remember this app for the next sign-in
+          </label>
+          <div className="action-buttons">
+            <button
+              className="btn btn--ghost"
+              disabled={busy}
+              onClick={() => setOwnApp(false)}
+              type="button"
+            >
+              Back
+            </button>
+            <button className="btn btn--primary" disabled={!ready || busy} type="submit">
+              {busy && state.key === "own-app" ? "Opening…" : "Sign in with this app"}
+            </button>
+          </div>
+        </form>
+      ) : null}
+    </section>
   );
 }

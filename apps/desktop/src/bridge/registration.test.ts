@@ -208,6 +208,7 @@ describe("desktop bridge", () => {
     const envelope = { bridgeToken: "b".repeat(43) };
 
     const started = {
+      kind: "plugin" as const,
       deploymentId: createId("deployment"),
       userId: createId("user"),
       attemptId: createIntegrationId("oauthAttempt"),
@@ -234,7 +235,7 @@ describe("desktop bridge", () => {
     await integrationAuthorizations.settled();
     expect(event.sender.send).toHaveBeenCalledWith(
       desktopBridgeChannels.integrationAuthorizationReturn,
-      callback,
+      { ...callback, kind: "plugin" },
     );
     const fire = (name: string) => {
       const once = event.sender.once as unknown as Mock<
@@ -252,7 +253,10 @@ describe("desktop bridge", () => {
       };
       integrationAuthorizations.accept(buildIntegrationAuthorizationAppReturn("desktop", next));
       await integrationAuthorizations.settled();
-      return [desktopBridgeChannels.integrationAuthorizationReturn, next] as const;
+      return [
+        desktopBridgeChannels.integrationAuthorizationReturn,
+        { ...next, kind: "plugin" },
+      ] as const;
     };
     // Electron reports a route change as a load; only a new document ends the subscription.
     fire("did-start-loading");

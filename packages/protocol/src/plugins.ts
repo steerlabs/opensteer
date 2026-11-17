@@ -69,9 +69,34 @@ export const PluginSummaryViewSchema = z.object({
 });
 export type PluginSummaryView = z.infer<typeof PluginSummaryViewSchema>;
 
+export const pluginLocalToolsMax = 100;
+/**
+ * A device data app or local server agents reach as `tools.<name>` beside plugins. Its approvals,
+ * launch review and secrets stay on the device screens; only agent access is set here.
+ */
+export const PluginLocalToolViewSchema = z.object({
+  /** `app_device_…` or `app_server_…`; the key `plugins.access.set` takes. */
+  id: PluginIdSchema,
+  kind: z.enum(["device-app", "local-server"]),
+  /** What agents type after `tools.`. */
+  name,
+  title: name,
+  /** Where it runs; null while a local server has no computer. */
+  computer: z.object({ id: name, name }).nullable(),
+  /** The Host's sentence when agents can't reach it now. */
+  unavailable: text(1_000).nullable(),
+  tools: z
+    .array(z.object({ name, readOnly: z.boolean() }))
+    .max(pluginToolsMax),
+  access: PluginAccessSchema,
+});
+export type PluginLocalToolView = z.infer<typeof PluginLocalToolViewSchema>;
+
 export const PluginsInstalledViewSchema = z.object({
   engine: PluginEngineStateViewSchema,
-  plugins: z.array(PluginSummaryViewSchema).max(pluginsInstalledMax),
+  /** Null while the plugin engine is unavailable; local tools do not need it. */
+  plugins: z.array(PluginSummaryViewSchema).max(pluginsInstalledMax).nullable(),
+  local: z.array(PluginLocalToolViewSchema).max(pluginLocalToolsMax),
 });
 export type PluginsInstalledView = z.infer<typeof PluginsInstalledViewSchema>;
 
@@ -256,6 +281,8 @@ export const PluginAccountReviewViewSchema = z.object({
       }),
     )
     .max(8),
+  /** Whether it can also be connected by signing in at the provider. */
+  signIn: z.boolean(),
   /** Saved accounts of this provider the person can link instead. */
   accounts: z.array(ConnectedAccountViewSchema).max(100),
   linked: z.array(name).max(50),

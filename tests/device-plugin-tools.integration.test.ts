@@ -8,6 +8,7 @@ import { TriggerStore } from "../packages/database/src/index.js";
 import type { AgentCaller } from "../apps/host/src/mcp/agent-caller.js";
 import type { ThreadId } from "../packages/core/src/index.js";
 import { pluginFixtureFiles, pluginFixtureRegistry } from "../scripts/plugin-engine/fixture.js";
+import { testRpcData } from "../apps/host/src/server/test-host-api-request.js";
 import {
   connectComputerAppMachine,
   contractOf,
@@ -167,14 +168,68 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
     expect(readOnly.failure).toContain(`account \\"${calendar.connection.id}\\"`);
     expect(helper.invocations).toHaveLength(sent);
 
-    // The person sets Reminders to read-only for agents: its write is refused, its read is not.
+    // The person sees both apps in Plugins with what agents type, and sets Reminders to
+    // read-only there: its write is refused, its read is not, and agents' list says so.
     const reminderPlugin = `app_device_${reminders.connection.id}`;
-    await host.runtime.pluginAgentSettings!.setAccess(host.ownerId, reminderPlugin, "read-only");
+    const owned = await testRpcData(
+      host.origin,
+      "plugins.installed.list",
+      {},
+      { headers: host.ownerHeaders },
+    );
+    expect(owned.local).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: `app_device_${calendar.connection.id}`,
+          kind: "device-app",
+          name: "calendar-studio-mac",
+          computer: expect.objectContaining({ id: computer.runnerId }),
+          unavailable: null,
+          access: "all",
+          tools: expect.arrayContaining([
+            { name: "list_events", readOnly: true },
+            { name: "create_event", readOnly: false },
+          ]),
+        }),
+        expect.objectContaining({ id: reminderPlugin, name: "reminders-studio-mac" }),
+      ]),
+    );
+    const setAccess = (access: "all" | "read-only") =>
+      testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "plugins.access.set",
+          idempotencyKey: randomUUID(),
+          pluginId: reminderPlugin,
+          access,
+        },
+        { headers: host.ownerHeaders },
+      );
+    await setAccess("read-only");
+    const reread = await testRpcData(
+      host.origin,
+      "plugins.installed.list",
+      {},
+      { headers: host.ownerHeaders },
+    );
+    expect(reread.local.find(({ id }) => id === reminderPlugin)?.access).toBe("read-only");
+    const agentList = await gateway.call("opensteer_plugin_list", {});
+    expect(agentList.local).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: reminderPlugin,
+          slug: "reminders-studio-mac",
+          access: "read-only",
+          status: "active",
+        }),
+      ]),
+    );
     const create = 'tools["reminders-studio-mac"].create_reminder';
     const refused = await pluginCall(gateway, create, { title: "Renew passport" });
     expect(refused.failure).toBeDefined();
     expect(helper.invocations).toHaveLength(sent);
-    await host.runtime.pluginAgentSettings!.setAccess(host.ownerId, reminderPlugin, "all");
+    await setAccess("all");
 
     // A change whose answer is lost is an unknown outcome, sent once and never again.
     helper.answer = () => {

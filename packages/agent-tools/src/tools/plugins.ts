@@ -97,9 +97,20 @@ export const opensteer_plugin_list = defineAgentTool({
   access: "read",
   callers: ["run", "connection"],
   description:
-    "List installed plugins, active versions, connected account links, agent access and status. Use plugin_search for callable tools.",
+    "List installed plugins, active versions, connected account links, agent access and status, and the person's local tools (device data apps and local servers) that share the tools.<slug> namespace. Use plugin_search for callable tools.",
   input: z.strictObject({}),
   output: z.object({
+    local: z.array(
+      z.object({
+        id,
+        name: z.string(),
+        slug: z.string(),
+        access: z.enum(["all", "read-only"]),
+        status: z.enum(["active", "unavailable"]),
+        unavailable: z.string().optional(),
+        tools: z.array(z.object({ name: z.string(), readOnly: z.boolean() })),
+      }),
+    ),
     plugins: z.array(
       z.object({
         id,

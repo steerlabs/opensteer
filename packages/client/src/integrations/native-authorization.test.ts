@@ -76,6 +76,7 @@ describe("native integration authorization", () => {
 
 describe("app-started authorization attempts", () => {
   const entry = () => ({
+    kind: "integration" as const,
     deploymentId: createId("deployment"),
     attemptId: createIntegrationId("oauthAttempt"),
     userId: createId("user"),

@@ -29,6 +29,8 @@ import type { PluginElicit } from "./plugin-service.js";
  * nothing is cached, and a call goes only to the computer its provider names.
  */
 type Located = PluginHostProvider & {
+  readonly kind: "device-app" | "local-server";
+  readonly computer: { readonly id: string; readonly name: string } | null;
   readonly installationId: string;
   readonly installationName: string;
   readonly serverId: string;
@@ -55,6 +57,8 @@ export class LocalProviders {
     if (!caller) return [];
     return (await this.#list(caller)).providers.map(
       ({
+        kind: _k,
+        computer: _m,
         installationId: _i,
         installationName: _n,
         serverId: _s,
@@ -136,15 +140,33 @@ export class LocalProviders {
     }
   }
 
-  async #list(caller: Exclude<AgentCaller, never>) {
+  /**
+   * Every local provider of the personal owner as Settings shows it: what agents type, where it
+   * runs, why it is unavailable, and its tools. No task's ceiling applies.
+   */
+  async owned(owner: UserId) {
+    return (await this.#list({ kind: "owner", userId: owner })).providers.map((entry) => ({
+      id: entry.id,
+      kind: entry.kind,
+      name: entry.slug,
+      title: entry.name,
+      computer: entry.computer,
+      unavailable: entry.unavailable?.slice(0, 1000) ?? null,
+      tools: entry.tools.map(({ name, readOnly }) => ({ name, readOnly: readOnly === true })),
+    }));
+  }
+
+  async #list(caller: AgentCaller | { readonly kind: "owner"; readonly userId: UserId }) {
     const store = this.#options.store;
     const requester: IntegrationRequester =
-      caller.kind === "connection"
-        ? { ownerUserId: caller.userId, connectionId: caller.connectionId }
-        : {
-            ownerUserId: caller.userId,
-            threadId: caller.kind === "run" ? caller.thread.id : caller.anchor.id,
-          };
+      caller.kind === "owner"
+        ? { ownerUserId: caller.userId }
+        : caller.kind === "connection"
+          ? { ownerUserId: caller.userId, connectionId: caller.connectionId }
+          : {
+              ownerUserId: caller.userId,
+              threadId: caller.kind === "run" ? caller.thread.id : caller.anchor.id,
+            };
     const [inventory, callables] = await Promise.all([
       store
         .listDiscoveryInventory({ ...requester, providerAuthorizations: {} })
@@ -188,8 +210,9 @@ export class LocalProviders {
             located.push(
               provider({
                 id: `app_device_${account.connectionId}`,
+                kind: "device-app",
                 base: definition.id.replace(/^(?:apple|iphone)-/u, ""),
-                computer: connection.runnerName,
+                computer: { id: connection.runnerId, name: connection.runnerName },
                 name: `${entry.installation.title} on ${connection.runnerName}`,
                 installationId: entry.installation.id,
                 installationName: entry.installation.name,
@@ -232,8 +255,12 @@ export class LocalProviders {
           located.push(
             provider({
               id: `app_server_${server.id}`,
+              kind: "local-server",
               base: serverName(entry.installation),
-              computer: null,
+              computer: runnerId
+                ? { id: runnerId, name: (await store.localMcp.computerName(runnerId)) ?? runnerId }
+                : null,
+              named: false,
               name: entry.installation.title,
               installationId: entry.installation.id,
               installationName: entry.installation.name,
@@ -280,8 +307,11 @@ export class LocalProviders {
 
 function provider(input: {
   id: string;
+  kind: Located["kind"];
   base: string;
-  computer: string | null;
+  computer: Located["computer"];
+  /** Whether the address carries the computer's name, as a device app's does. */
+  named?: boolean;
   name: string;
   installationId: string;
   installationName: string;
@@ -294,7 +324,13 @@ function provider(input: {
   return {
     id: input.id,
     name: input.name.slice(0, 240),
-    slug: slugify(input.computer === null ? input.base : `${input.base}-${input.computer}`),
+    slug: slugify(
+      input.computer === null || input.named === false
+        ? input.base
+        : `${input.base}-${input.computer.name}`,
+    ),
+    kind: input.kind,
+    computer: input.computer,
     version: "dpl_pending",
     tools: input.tools,
     installationId: input.installationId,

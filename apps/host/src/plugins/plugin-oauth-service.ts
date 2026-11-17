@@ -236,6 +236,7 @@ export class PluginOAuthService {
     if (!same(consent, session.consent))
       throw new OpensteerError({
         code: "conflict",
+        reason: "plugin-consent-changed",
         message: "Plugin declaration changed. Review it again.",
       });
     const configuration = await this.configuration(session.account !== null);
@@ -279,6 +280,7 @@ export class PluginOAuthService {
     if (!method || method.review !== input.review)
       throw new OpensteerError({
         code: "conflict",
+        reason: "plugin-consent-changed",
         message: "Sign-in scopes or client configuration changed. Review them again.",
       });
     const session = await this.#session(input.connection, owner);
@@ -291,11 +293,13 @@ export class PluginOAuthService {
     if (!session.account && surface === "personal-remote")
       throw new OpensteerError({
         code: "conflict",
+        reason: "plugin-account-link-required",
         message: "Link this Host to Opensteer Account before starting sign-in remotely",
       });
     if (!same(session.consent, input.consent))
       throw new OpensteerError({
         code: "conflict",
+        reason: "plugin-consent-changed",
         message: "Review this plugin's sites and credential access before signing in",
       });
     if (session.account) {
@@ -400,11 +404,17 @@ export class PluginOAuthService {
         );
       throw error instanceof OpensteerError
         ? error
-        : new OpensteerError({
-            code: "conflict",
-            message:
-              "Plugin sign-in could not start. Review the sign-in method and callback, then try again.",
-          });
+        : error instanceof PluginServiceError && error.code === "consent-changed"
+          ? new OpensteerError({
+              code: "conflict",
+              reason: "plugin-consent-changed",
+              message: "Sign-in scopes or client configuration changed. Review them again.",
+            })
+          : new OpensteerError({
+              code: "conflict",
+              message:
+                "Plugin sign-in could not start. Review the sign-in method and callback, then try again.",
+            });
     }
   }
   async #startAttempt(

@@ -147,12 +147,16 @@ export interface IntegrationToolSchemas {
   readonly status: "active" | "disabled";
 }
 
-/** Integration authority names an owned task or a live approved connection. */
+/**
+ * Integration authority names an owned task or a live approved connection. Naming neither is the
+ * personal owner looking in Settings, under no task's or connection's ceiling.
+ */
 export type IntegrationRequester = {
   readonly ownerUserId: UserId;
 } & (
   | { readonly threadId: ThreadId; readonly connectionId?: never }
   | { readonly connectionId: string; readonly threadId?: undefined }
+  | { readonly threadId?: never; readonly connectionId?: never }
 );
 
 /** Scope readiness to the account and access a resolved Request actually granted. */

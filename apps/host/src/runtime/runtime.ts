@@ -2668,6 +2668,7 @@ export async function createHostRuntime(
     );
     const pluginTools = new PluginToolHandlers({
       service: pluginService,
+      localProviders: providerNames,
       authority: pluginAuthority,
       executions: pluginExecutions,
       store,
@@ -2694,6 +2695,7 @@ export async function createHostRuntime(
       settings: pluginAgentStore,
       accountLinked: (input) => pluginTools.accountLinked(input),
       assertOwner: (userId) => requirePersonalOwner(database, userId),
+      localTools: (owner) => providerNames.owned(owner),
       changed: (owner) => realtime.sendToUsers([owner], { type: "host.plugins-changed" }),
     });
     pluginOAuth = new PluginOAuthService({

@@ -66,7 +66,7 @@ call `opensteer_task_delegate` with a message naming the skill. When the work ne
 model, such as a fast one for simple steps, choose `model` and `aiAccountId` from
 `opensteer_ai_account_list`. Continue the task with `taskId` to keep its context.
 
-`opensteer_plugin_list` lists deployed service plugins. Full-access Runs can install, export,
+`opensteer_plugin_list` lists deployed service plugins and local tools. Full-access Runs can install, export,
 activate an earlier code version or remove one. Only the person changes agent access and links
 accounts. Use opensteer:plugins for those tools and their approval behavior.
 

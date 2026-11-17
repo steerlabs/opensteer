@@ -45,6 +45,7 @@ export const handleOpenIntegrationAuthorization =
     if (!authorizations) throw new Error("Integration authorization returns are unavailable.");
     await authorizations.register(
       {
+        kind: input.kind,
         deploymentId: input.deploymentId,
         attemptId: input.attemptId,
         expiresAt: input.expiresAt,

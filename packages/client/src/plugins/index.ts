@@ -12,6 +12,7 @@ import type {
   PluginCommandResult,
   PluginConsentView,
   PluginEngineStateView,
+  PluginLocalToolView,
   PluginRequirementTarget,
   PluginScheduleView,
   PluginScheduledRunView,
@@ -35,37 +36,7 @@ export type {
 
 export type PluginsHost = Pick<HostClient, "rpc" | "dispatch">;
 
-/* ---- Sign-in: the one-click and own-app paths plug in here ---- */
-
-/**
- * A way to sign in to an account for one plugin requirement, as the Host
- * offers it. API keys and saved accounts need none of this; OAuth does.
- */
-export interface PluginSignInMethod {
-  readonly id: string;
-  readonly kind: "one-click" | "own-app";
-  readonly label: string;
-  readonly detail: string | null;
-  /** Null when it can be used now; otherwise why not, in the person's words. */
-  readonly unavailable: string | null;
-}
-export interface PluginSignIn {
-  methods(target: PluginRequirementTarget): Promise<readonly PluginSignInMethod[]>;
-  /** Starts a sign-in; the caller opens the returned address. */
-  begin(
-    target: PluginRequirementTarget & {
-      readonly method: string;
-      readonly consent: PluginConsentView;
-    },
-  ): Promise<{ readonly url: string }>;
-}
-/** Sign-in methods for a requirement; none until the Host offers sign-in. */
-export function pluginSignInMethods(
-  client: { readonly pluginSignIn?: PluginSignIn | undefined },
-  target: PluginRequirementTarget,
-): Promise<readonly PluginSignInMethod[]> {
-  return client.pluginSignIn ? client.pluginSignIn.methods(target) : Promise.resolve([]);
-}
+export * from "./sign-in.js";
 
 /* ---- Reads ---- */
 
@@ -667,4 +638,52 @@ export function pluginRequirementIssue(
 
 export function pluginAccountLabel(account: ConnectedAccountView) {
   return account.label || account.id;
+}
+
+/* ---- Device data apps and local servers beside plugins ---- */
+
+export type { PluginLocalToolView } from "@opensteer/protocol";
+
+/** A local tool's state as a short label: why agents can't reach it first. */
+export function pluginLocalToolStatus(tool: PluginLocalToolView): {
+  readonly label: string;
+  readonly tone: PluginTone;
+} {
+  if (tool.access === "off") return { label: "Off for agents", tone: "muted" };
+  if (tool.unavailable) return { label: "Unavailable", tone: "attention" };
+  if (tool.access === "read-only") return { label: "Read-only", tone: "ok" };
+  return { label: "On", tone: "ok" };
+}
+
+/** What a local tool offers, counted the way access reads them. */
+export function pluginLocalToolSummary(tool: Pick<PluginLocalToolView, "tools">) {
+  const reads = tool.tools.filter(({ readOnly }) => readOnly).length;
+  const writes = tool.tools.length - reads;
+  if (!tool.tools.length) return "No tools right now";
+  return `${tool.tools.length} ${tool.tools.length === 1 ? "tool" : "tools"}: ${reads} ${
+    reads === 1 ? "reads" : "read"
+  }, ${writes} ${writes === 1 ? "writes" : "write"}`;
+}
+
+/**
+ * Where approvals, launch review and secrets for a local tool live: the device
+ * screen of the computer it runs on, or the local servers screen.
+ */
+export function pluginLocalToolManage(
+  tool: Pick<PluginLocalToolView, "kind" | "computer">,
+):
+  | { readonly kind: "device"; readonly runnerId: string; readonly label: string }
+  | { readonly kind: "local-servers"; readonly label: string } {
+  if (tool.kind === "device-app" && tool.computer)
+    return {
+      kind: "device",
+      runnerId: tool.computer.id,
+      label: `Approvals on ${tool.computer.name}`,
+    };
+  return { kind: "local-servers", label: "Launch review and secrets" };
+}
+
+/** Which way it reaches agents, as they type it. */
+export function pluginLocalToolAddress(tool: Pick<PluginLocalToolView, "name">) {
+  return /^[a-z_$][a-z0-9_$]*$/iu.test(tool.name) ? `tools.${tool.name}` : `tools["${tool.name}"]`;
 }
