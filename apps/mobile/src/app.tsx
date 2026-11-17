@@ -16,6 +16,7 @@ import {
   integrationAuthorizationError,
   parseNativeIntegrationAuthorizationCallback,
 } from "@opensteer/client/integrations";
+import { pluginSignInEnd } from "@opensteer/client/plugins";
 import { AccountNotificationDevicesClient } from "@opensteer/client/connections";
 import {
   opensteerMobileAccountOAuthCallback,
@@ -58,6 +59,7 @@ import { MobileClient, operationDetail } from "./client/mobile-client.js";
 import { forgetDraftFiles } from "./thread/draft-attachments.js";
 import {
   mockDeploymentConnections,
+  mockIntegrationAuthorizationBrowser,
   mockDeploymentId,
   mockSignedOutDeploymentId,
   mockTeamId,
@@ -370,7 +372,9 @@ function mobileClient(): MobileRoot {
       browser: WebBrowser,
       oauth: oauthIdentity,
     }),
-    openIntegrationAuthorization: createIntegrationAuthorizationBrowser({ browser: WebBrowser }),
+    openIntegrationAuthorization: configuration.mock
+      ? mockIntegrationAuthorizationBrowser()
+      : createIntegrationAuthorizationBrowser({ browser: WebBrowser }),
     privateFiles,
     randomBytes: (size) => getRandomValues(new Uint8Array(size)),
     records: createSecureRecordStore({
@@ -631,7 +635,16 @@ export function App(): ReactNode {
         setIntegrationNotice(null);
         const result = await client.handleIntegrationAuthorizationCallback(url);
         if (result === null) return;
-        if (result.status === "completed") {
+        if ("account" in result) {
+          // A plugin sign-in: its screen, if still open, shows the same outcome.
+          const end = pluginSignInEnd(result);
+          await client.getSnapshot().selection.hostClient?.refresh();
+          setIntegrationNotice(
+            end.kind === "completed"
+              ? { detail: "The plugin can use it now.", title: "Account connected" }
+              : { detail: end.message, title: "Account wasn't connected" },
+          );
+        } else if (result.status === "completed") {
           await client.getSnapshot().selection.hostClient?.refresh();
           setIntegrationNotice({
             detail: "The provider account is ready to use.",

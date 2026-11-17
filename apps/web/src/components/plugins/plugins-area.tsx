@@ -28,8 +28,7 @@ import { PluginPage } from "./plugin-page.js";
 export const pluginsPath = "/settings/plugins";
 export const pluginPath = (pluginId: string) =>
   `${pluginsPath}/installed/${encodeURIComponent(pluginId)}`;
-export const localToolPath = (id: string) =>
-  `${pluginsPath}/on-device/${encodeURIComponent(id)}`;
+export const localToolPath = (id: string) => `${pluginsPath}/on-device/${encodeURIComponent(id)}`;
 
 /** The plugin engine's state for this Host. */
 export function usePluginEngine(initial: PluginEngineStateView | null) {

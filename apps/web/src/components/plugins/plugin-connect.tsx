@@ -158,7 +158,11 @@ function ConnectBody({
         </div>
       ) : null}
       {review.signIn ? (
-        <SignInPart onLinked={onLinked} providerName={review.requirement.providerName} target={target} />
+        <SignInPart
+          onLinked={onLinked}
+          providerName={review.requirement.providerName}
+          target={target}
+        />
       ) : null}
       {saved.length ? (
         <section className="plugin-connect__part">
@@ -347,10 +351,7 @@ function SignInPart({
     return (
       <section className="plugin-connect__part">
         <h3>Sign in</h3>
-        <p
-          className={`notice${end.kind === "cancelled" ? "" : " notice--error"}`}
-          role="status"
-        >
+        <p className={`notice${end.kind === "cancelled" ? "" : " notice--error"}`} role="status">
           {end.message}
         </p>
         <div className="action-buttons">
@@ -431,12 +432,7 @@ function SignInPart({
           </span>
         ))}
         {form && !ownApp ? (
-          <button
-            className="btn"
-            disabled={busy}
-            onClick={() => setOwnApp(true)}
-            type="button"
-          >
+          <button className="btn" disabled={busy} onClick={() => setOwnApp(true)} type="button">
             Use your own OAuth app
           </button>
         ) : null}

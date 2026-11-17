@@ -1,4 +1,5 @@
 import type { HostSnapshot } from "@opensteer/client/host";
+import { isPluginRequest } from "@opensteer/client/plugins";
 import { requestOptionDeclines, type Request, type RequestOption } from "@opensteer/core";
 import { Alert } from "react-native";
 import type { NativeMenuOption } from "./composer-menu.js";
@@ -46,6 +47,9 @@ export interface CardChoice {
 export function requestCardAnswers(request: Request, denied: boolean): RequestCardAnswers {
   const { presentation, payload } = request;
   if (denied || request.status !== "pending") return { kind: "none" };
+  // A plugin's exact arguments, form or account consent need the whole sheet to read.
+  if (isPluginRequest(request))
+    return { kind: "sheet", label: request.kind === "plugin.input" ? "Answer" : "Review" };
   if (presentation.kind === "external") {
     return externalAnswerable(request) ? { kind: "sheet", label: "Review" } : { kind: "none" };
   }

@@ -28,6 +28,7 @@ export const screenPresentations = {
   BrowserProfiles: "modal",
   ConnectedApps: "modal",
   Plugins: "modal",
+  PluginConnect: "modal",
   Computer: "modal",
   DeploymentSwitcher: "modal",
   AgentAuthorization: "modal",

@@ -216,9 +216,7 @@ export function waitForPluginAuthorization(input: {
     ...rest,
     client,
     read: async () =>
-      unwrapRpcResult(
-        await client.rpc["plugin.authorization.get"]({ attemptId: input.attemptId }),
-      ),
+      unwrapRpcResult(await client.rpc["plugin.authorization.get"]({ attemptId: input.attemptId })),
     expired: (status) => ({ ...status, status: "expired", failureCode: null }),
   });
 }

@@ -940,7 +940,8 @@ export class MockPlugins {
     const attempt = this.#attempts.get(id);
     if (!attempt) throw refusal("not_found", "Plugin sign-in is unavailable or expired");
     const scenario = this.#signInScenario();
-    const due = returned || Date.now() - attempt.startedAt >= (scenario === "slow" ? 60_000 : 2_500);
+    const due =
+      returned || Date.now() - attempt.startedAt >= (scenario === "slow" ? 60_000 : 2_500);
     if (attempt.status === "launched" && due) {
       if (scenario === "denied") attempt.status = "denied";
       else if (scenario === "failed") attempt.status = "failed";
@@ -967,7 +968,10 @@ export class MockPlugins {
     };
   }
 
-  signInReads(): Pick<HostApiHandlers, "plugin.authorization.get" | "plugin.authorization.methods"> {
+  signInReads(): Pick<
+    HostApiHandlers,
+    "plugin.authorization.get" | "plugin.authorization.methods"
+  > {
     return {
       "plugin.authorization.get": async ({ attemptId }) =>
         rpcSuccess(this.#attemptStatus(attemptId)),
@@ -1058,7 +1062,12 @@ export class MockPlugins {
         this.#apps.push(app);
         return {
           type: command.type,
-          client: { id: app.id, issuer: app.issuer, clientId: app.clientId, hasSecret: app.hasSecret },
+          client: {
+            id: app.id,
+            issuer: app.issuer,
+            clientId: app.clientId,
+            hasSecret: app.hasSecret,
+          },
         };
       }
       case "plugin.oauthApp.remove": {

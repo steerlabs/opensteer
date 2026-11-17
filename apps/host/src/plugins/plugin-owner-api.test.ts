@@ -318,12 +318,16 @@ describe("the person's plugin API", () => {
     const view = hostApi["plugins.installed.list"].success.parse(result.data);
     expect(view.plugins).toBeNull();
     expect(view.local).toHaveLength(100);
-    expect(view.local[0]).toMatchObject({ id: "app_device_con0", access: "off", unavailable: null });
+    expect(view.local[0]).toMatchObject({
+      id: "app_device_con0",
+      access: "off",
+      unavailable: null,
+    });
     expect(view.local[0]!.tools).toHaveLength(500);
     expect(view.local[1]).toMatchObject({ access: "all", unavailable: "Mac is offline." });
-    await expect(
-      api.reads()["plugins.installed.list"]({}, context(strangerId)),
-    ).rejects.toThrow("Owner only");
+    await expect(api.reads()["plugins.installed.list"]({}, context(strangerId))).rejects.toThrow(
+      "Owner only",
+    );
   });
 
   it("bounds plugin detail and marks a link reviewed against an older declaration", async () => {

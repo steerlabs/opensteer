@@ -31,6 +31,8 @@ import {
   type SurfaceModel,
 } from "@opensteer/client/host";
 import { computerAppAccessApproval, computerUseAccessLabel } from "@opensteer/client/integrations";
+import { isPluginRequest } from "@opensteer/client/plugins";
+import { PluginRequestBody } from "./plugin-request-body.js";
 import { useHostSelector, useHostSnapshot } from "@opensteer/client/react";
 import {
   requestAgentProposedDetail,
@@ -554,7 +556,16 @@ export function RequestSheetContent(props: {
             />
           </>
         ) : (
-          (computerApproval.content ?? (
+          (computerApproval.content ??
+          (isPluginRequest(request) && surface.denied === null ? (
+            <PluginRequestBody
+              canRespond={props.canRespond}
+              hostClient={props.hostClient}
+              reason={blocked}
+              request={request}
+              responder={responder}
+            />
+          ) : (
             <RequestBody
               answers={answers}
               canRespond={props.canRespond}
@@ -565,7 +576,7 @@ export function RequestSheetContent(props: {
               responder={responder}
               surface={surface}
             />
-          ))
+          )))
         )}
       </View>
     </ScrollView>

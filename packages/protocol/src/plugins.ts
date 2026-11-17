@@ -85,9 +85,7 @@ export const PluginLocalToolViewSchema = z.object({
   computer: z.object({ id: name, name }).nullable(),
   /** The Host's sentence when agents can't reach it now. */
   unavailable: text(1_000).nullable(),
-  tools: z
-    .array(z.object({ name, readOnly: z.boolean() }))
-    .max(pluginToolsMax),
+  tools: z.array(z.object({ name, readOnly: z.boolean() })).max(pluginToolsMax),
   access: PluginAccessSchema,
 });
 export type PluginLocalToolView = z.infer<typeof PluginLocalToolViewSchema>;
