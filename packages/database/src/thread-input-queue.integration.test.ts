@@ -344,6 +344,25 @@ integration.sequential("thread input queue promotion", () => {
     },
   });
 
+  it("exposes stored personal send keys only to the person who sent them", async ({
+    storeFixture: { fixture, queued, store, database },
+  }) => {
+    const first = await fixture("send-key-owner");
+    const otherUserId = createId("user");
+    const sent = await queued(first, "visible-key");
+    const ids = [sent.message.id];
+    expect(await store.personalMessageSendKeys(first.userId, ids)).toEqual(
+      new Map([[sent.message.id, "send-visible-key"]]),
+    );
+    expect(await store.personalMessageSendKeys(otherUserId, ids)).toEqual(new Map());
+    await database
+      .updateTable("messages")
+      .set({ author: jsonValue({ ...sent.message.author, userId: otherUserId }) })
+      .where("id", "=", sent.message.id)
+      .execute();
+    expect(await store.personalMessageSendKeys(first.userId, ids)).toEqual(new Map());
+  });
+
   /** A call that has reached its Runner, so it can take input. */
   async function startedCall(
     { fixture, store, database }: StoreFixture,

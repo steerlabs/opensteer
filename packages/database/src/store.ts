@@ -1699,6 +1699,39 @@ export class OpensteerStore {
   publishPersonMessage(input: PersonMessageInput): Promise<PersonMessageResult> {
     return publishPersonMessage(this.#database, input);
   }
+  async personalMessageSendKeys(
+    ownerId: UserId,
+    messageIds: readonly MessageId[],
+  ): Promise<ReadonlyMap<string, string>> {
+    if (messageIds.length === 0) return new Map();
+    const rows = await this.#database
+      .selectFrom("threadInputs")
+      .innerJoin("messages", "messages.id", "threadInputs.messageId")
+      .innerJoin("threads", "threads.id", "threadInputs.threadId")
+      .select([
+        "threadInputs.messageId",
+        "threadInputs.idempotencyKey",
+        "threadInputs.authoritySource",
+        "messages.author",
+      ])
+      .where("threadInputs.messageId", "in", [...messageIds])
+      .where("threadInputs.requestedBy", "=", ownerId)
+      .where("threads.createdBy", "=", ownerId)
+      .where("threads.teamId", "is", null)
+      .execute();
+    return new Map(
+      rows
+        .filter(
+          (row) =>
+            row.author.kind === "human" &&
+            row.author.userId === ownerId &&
+            row.authoritySource.kind === "user-session" &&
+            row.authoritySource.userId === ownerId,
+        )
+        .map((row) => [row.messageId, row.idempotencyKey]),
+    );
+  }
+
   async threadMessagePageForOwner(input: ThreadHistoryQuery): Promise<ThreadMessagePage | null> {
     return snapshotStore.threadMessagePageForOwner(this.#database, input);
   }

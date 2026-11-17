@@ -1,3 +1,4 @@
+import { withClientSendKeys, withEventClientSendKeys } from "./threads/client-send-keys.js";
 import { RequestIdSchema, TabIdSchema, RunnerIdSchema } from "@opensteer/core";
 import {
   IntegrationConnectionIdSchema,
@@ -1491,7 +1492,9 @@ export async function createHostServer(
           ),
       };
       projected.events = projectAgentEvents(
-        projected.events,
+        await withEventClientSendKeys(projected.events, (ids) =>
+          dependencies.store.personalMessageSendKeys(requireRpcSession(context).user.id, ids),
+        ),
         servedHostApiVersion(context.headers),
       );
       return rpcSuccess(
@@ -1541,7 +1544,12 @@ export async function createHostServer(
         maxItems: input.limit ?? 100,
       });
       if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-      return rpcSuccess(page);
+      return rpcSuccess({
+        ...page,
+        messages: await withClientSendKeys(page.messages, (ids) =>
+          dependencies.store.personalMessageSendKeys(requireRpcSession(context).user.id, ids),
+        ),
+      });
     },
     "browser.searchSuggestions.get": async (input) =>
       rpcSuccess(await searchSuggestions(input.query, dependencies.fetch ?? globalThis.fetch)),
@@ -1878,8 +1886,13 @@ export async function createHostServer(
           wasDuplicate: result.wasDuplicate,
         };
       }
-      case "thread.sendMessage":
-        return threadService.sendMessage({ kind: "person", userId }, command);
+      case "thread.sendMessage": {
+        const sent = await threadService.sendMessage({ kind: "person", userId }, command);
+        const [message] = await withClientSendKeys([sent.message], (ids) =>
+          dependencies.store.personalMessageSendKeys(userId, ids),
+        );
+        return { ...sent, message: message! };
+      }
 
       case "thread.inputQueue.resume":
         return {
@@ -3075,6 +3088,7 @@ export async function createHostServer(
         session,
         request.log,
         (id) => dependencies.computerUse?.deviceForSession?.(id) ?? null,
+        (ids) => dependencies.store.personalMessageSendKeys(session.user.id, ids),
       );
     },
   );
@@ -4039,6 +4053,9 @@ function attachRealtimeSocket(
   session: AuthenticatedSession,
   log: FastifyInstance["log"],
   sessionDevice: (id: import("@opensteer/protocol").ComputerUseSessionId) => string | null,
+  sendKeys: (
+    ids: readonly import("@opensteer/core").MessageId[],
+  ) => Promise<ReadonlyMap<string, string>>,
 ): void {
   const openedAt = Date.now();
   installWebSocketLiveness(socket);
@@ -4046,6 +4063,16 @@ function attachRealtimeSocket(
   const sink = {
     ...peer,
     send: async (message: HostToClientMessage) => {
+      if (message.type === "host.events")
+        message = { ...message, events: await withEventClientSendKeys(message.events, sendKeys) };
+      else if (message.type === "host.snapshot")
+        message = {
+          ...message,
+          snapshot: {
+            ...message.snapshot,
+            messages: await withClientSendKeys(message.snapshot.messages, sendKeys),
+          },
+        };
       const projected = HostToClientMessageSchema.safeParse(
         // Tells the reader which version the state it just received was read at.
         message.type === "host.synchronized"

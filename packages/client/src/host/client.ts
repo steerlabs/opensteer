@@ -275,6 +275,7 @@ export interface RunQueueEntry {
 }
 
 export interface MessageEntry {
+  readonly clientSendKey?: string;
   teamSource?: TeamSource | null;
   addressedToUserId?: string;
   /** False for work drawn for its sender before the Run has received it. */
