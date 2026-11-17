@@ -129,6 +129,10 @@ it("registers no personal file, media or reference routes on a team Host", async
       "tabs.state",
       "apps.list",
       "apps.get",
+      "plugins.installed.list",
+      "plugins.get",
+      "plugins.catalog.list",
+      "plugins.account.review",
     ])
       expect(
         (await app.inject({ method: "POST", url: `/v1/rpc/${method}`, payload: {} })).statusCode,
