@@ -40,6 +40,10 @@ export class PersonalResourceStore {
   get(kind: PersonalResourceKind) {
     return this.#views.get(kind);
   }
+  isObserved(kind: PersonalResourceKind) {
+    return this.#interested.has(kind);
+  }
+
   getKnownRevision(kind: PersonalResourceKind) {
     return this.#known?.[kind];
   }

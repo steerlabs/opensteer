@@ -1,3 +1,4 @@
+import { requestDecisionRevision } from "@opensteer/client/host";
 import { computerTargetId } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import {
@@ -428,6 +429,7 @@ export function IntegrationConnectCard(props: {
       if (!payload || !loaded || !card?.primary) return;
       await props.hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${props.request.id}:install`),
+        ...requestDecisionRevision(props.request),
         requestId: props.request.id,
         response: { kind: "choice", optionId: "installed" },
         type: "request.respond",
@@ -553,6 +555,7 @@ export function IntegrationConnectCard(props: {
     run(async (generation) => {
       await props.hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${props.request.id}:server:${serverId}`),
+        ...requestDecisionRevision(props.request),
         requestId: props.request.id,
         response: { kind: "choice", optionId: `server:${serverId}` },
         type: "request.respond",
@@ -565,6 +568,7 @@ export function IntegrationConnectCard(props: {
     run(async (generation) => {
       await props.hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${props.request.id}`),
+        ...requestDecisionRevision(props.request),
         requestId: props.request.id,
         response: { kind: "external", value: { decision: "declined" } },
         type: "request.respond",

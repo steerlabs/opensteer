@@ -22,6 +22,12 @@ export interface ThreadViewState {
   readonly runQueue: readonly RunQueueEntry[];
   readonly inputQueue: ThreadInputQueue | null;
   readonly synchronized: boolean;
+  readonly generation?: number;
+  readonly pendingRequestIds?: readonly string[];
+  readonly requestsRefreshing?: boolean;
+  readonly inputQueueError?: unknown;
+  readonly moreTools?: boolean;
+  readonly moreNodes?: boolean;
   readonly hasMore: boolean;
   readonly hasNewer: boolean;
   readonly moreRequests: boolean;
@@ -93,6 +99,7 @@ export class ScopedThreadReader implements ThreadViewSource {
   readonly #cards = new WeakMap<TranscriptItem, TranscriptEntry | undefined>();
   readonly #overlayReads = new Map<Overlay, number>();
   #queue: { generation: number; promise: Promise<ThreadInputQueue> } | undefined;
+  #queueFailure: { generation: number; revision: string; error: unknown } | undefined;
   #requestCut: RequestSummaries | undefined;
   readonly #reviewedRevisions = new Map<string, string>();
   #historyRead = 0;
@@ -144,7 +151,8 @@ export class ScopedThreadReader implements ThreadViewSource {
         return this.#cards.get(item) ?? [];
       });
     }
-    const queue = state.snapshot?.queue;
+    const queue =
+      state.synchronized && !state.stale.has("run-queue") ? state.snapshot?.queue : undefined;
     let runQueue = this.#view.runQueue;
     if (queue !== this.#queueRows) {
       this.#queueRows = queue;
@@ -171,8 +179,29 @@ export class ScopedThreadReader implements ThreadViewSource {
     const inputQueue = state.synchronized ? state.inputQueue : null;
     const hasMore = state.snapshot?.nextBefore != null;
     const hasNewer = state.snapshot?.nextAfter != null;
-    const moreRequests = state.snapshot?.overlayCursors?.requests != null;
-    const pending = state.snapshot?.pendingRequests;
+    const moreRequests =
+      state.synchronized &&
+      !state.stale.has("requests") &&
+      state.snapshot?.overlayCursors?.requests != null;
+    const moreTools =
+      state.synchronized &&
+      !state.stale.has("tools") &&
+      state.snapshot?.overlayCursors?.tools != null;
+    const moreNodes =
+      state.synchronized &&
+      !state.stale.has("nodes") &&
+      state.snapshot?.overlayCursors?.nodes != null;
+    const pending = state.stale.has("requests") ? undefined : state.snapshot?.pendingRequests;
+    const inputQueueError =
+      this.#queueFailure?.generation === state.generation &&
+      this.#queueFailure.revision === state.inputQueueRevision
+        ? this.#queueFailure.error
+        : undefined;
+    if (state.synchronized) {
+      for (const kind of ["requests", "tools", "nodes"] as const)
+        if (state.stale.has(kind) && !this.#overlayReads.has(kind))
+          void this.#readOverlays(kind, true).catch(() => undefined);
+    }
     const requestChanged =
       pending !== this.#requestCut ||
       (state.synchronized && this.#requestGeneration !== state.generation);
@@ -189,6 +218,7 @@ export class ScopedThreadReader implements ThreadViewSource {
       this.#detail.scope.kind === "thread" &&
       this.#detail.controller &&
       !state.inputQueue &&
+      inputQueueError === undefined &&
       this.#queue?.generation !== state.generation
     )
       void this.queue().catch(() => undefined);
@@ -209,6 +239,12 @@ export class ScopedThreadReader implements ThreadViewSource {
       hasMore !== this.#view.hasMore ||
       hasNewer !== this.#view.hasNewer ||
       moreRequests !== this.#view.moreRequests ||
+      moreTools !== this.#view.moreTools ||
+      moreNodes !== this.#view.moreNodes ||
+      requestChanged ||
+      state.stale.has("requests") !== this.#view.requestsRefreshing ||
+      state.generation !== this.#view.generation ||
+      inputQueueError !== this.#view.inputQueueError ||
       inputQueue !== this.#view.inputQueue ||
       state.synchronized !== this.#view.synchronized
     ) {
@@ -220,6 +256,15 @@ export class ScopedThreadReader implements ThreadViewSource {
         hasMore,
         hasNewer,
         moreRequests,
+        moreTools,
+        moreNodes,
+        pendingRequestIds:
+          requestChanged || !state.synchronized
+            ? (pending?.map(({ id }) => id) ?? [])
+            : (this.#view.pendingRequestIds ?? []),
+        requestsRefreshing: state.stale.has("requests"),
+        generation: state.generation,
+        inputQueueError,
         synchronized: state.synchronized,
       });
     }
@@ -249,24 +294,33 @@ export class ScopedThreadReader implements ThreadViewSource {
     if (
       signal.aborted ||
       state.generation !== generation ||
+      state.stale.has("requests") ||
       state.snapshot?.pendingRequests !== pending
     )
       return;
-    const requests = new Map(this.#view.requests.map((request) => [request.id, request]));
+    const requests = new Map<string, Request & { reviewedRevision?: string | undefined }>(
+      this.#view.requests.map((request) => [request.id, request]),
+    );
     for (const { review, result } of results) {
-      if (!result.ok) continue;
+      if (!result.ok || result.data.threadId !== threadId) continue;
       for (const request of result.data.requests)
         if (
           request.status === "pending" &&
           request.originatingThreadId === threadId &&
-          review.some(({ id }) => id === request.id)
+          review.some(
+            ({ id, revision }) =>
+              id === request.id && result.data.reviewedRevisions?.[id] === revision,
+          )
         )
-          requests.set(request.id, request);
+          requests.set(request.id, {
+            ...request,
+            reviewedRevision: result.data.reviewedRevisions?.[request.id],
+          });
     }
     this.#reviewedRevisions.clear();
     const reviewed = pending.flatMap(({ id, revision }) => {
       const request = requests.get(id);
-      if (!request) return [];
+      if (request?.reviewedRevision !== revision) return [];
       this.#reviewedRevisions.set(id, revision);
       return [request];
     });
@@ -284,42 +338,45 @@ export class ScopedThreadReader implements ThreadViewSource {
     if (!signal || !state.synchronized)
       return Promise.reject(new Error("This conversation is syncing."));
     const promise = this.#readQueue(state.generation, signal).finally(() => {
-      if (this.#queue?.promise === promise) this.#queue = undefined;
+      if (this.#queue?.promise === promise) {
+        this.#queue = undefined;
+        this.#update();
+      }
     });
     this.#queue = { generation: state.generation, promise };
     return promise;
   }
 
   async #readQueue(generation: number, signal: AbortSignal): Promise<VersionedInputQueue> {
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (;;) {
       const expectedRevision = this.#detail.transcript.getSnapshot().inputQueueRevision;
-      const result = await this.#rpc["thread.inputQueue.get"](
-        { threadId: this.#detail.scope.threadId, expectedRevision },
-        { signal },
-      );
-      if (
-        !result.ok &&
-        result.error.code === "conflict" &&
-        !signal.aborted &&
-        BigInt(this.#detail.transcript.getSnapshot().inputQueueRevision) > BigInt(expectedRevision)
-      )
-        continue;
-      const queue = unwrapRpcResult(result);
-      const current = this.#detail.transcript.getSnapshot();
-      if (
-        signal.aborted ||
-        current.generation !== generation ||
-        queue.threadId !== this.#detail.scope.threadId
-      )
-        throw new Error("The conversation changed while reading its queue.");
-      if (queue.revision === undefined)
-        throw new Error("The Host omitted the input queue revision.");
-      const versioned = { ...queue, revision: queue.revision };
-      if (this.#detail.transcript.installQueue(versioned, generation)) return versioned;
-      if (current.inputQueue) return current.inputQueue;
-      if (current.inputQueueRevision === expectedRevision) break;
+      try {
+        const result = await this.#rpc["thread.inputQueue.get"](
+          { threadId: this.#detail.scope.threadId, expectedRevision },
+          { signal },
+        );
+        const current = this.#detail.transcript.getSnapshot();
+        if (signal.aborted || current.generation !== generation)
+          throw new Error("The conversation changed while reading its queue.");
+        if (current.inputQueueRevision !== expectedRevision) continue;
+        const queue = unwrapRpcResult(result);
+        if (
+          queue.threadId !== this.#detail.scope.threadId ||
+          queue.revision === undefined ||
+          BigInt(queue.revision) < BigInt(expectedRevision)
+        )
+          throw new Error("The Host returned a stale or misaddressed input queue.");
+        const versioned = { ...queue, revision: queue.revision };
+        this.#queueFailure = undefined;
+        if (this.#detail.transcript.installQueue(versioned, generation)) return versioned;
+        if (current.inputQueue) return current.inputQueue;
+        throw new Error("The input queue changed while it was loading.");
+      } catch (error) {
+        if (!signal.aborted && this.#detail.transcript.getSnapshot().generation === generation)
+          this.#queueFailure = { generation, revision: expectedRevision, error };
+        throw error;
+      }
     }
-    throw new Error("The input queue changed while it was loading.");
   }
 
   setAnchor(itemId: string | undefined) {
@@ -352,14 +409,24 @@ export class ScopedThreadReader implements ThreadViewSource {
       return;
     }
     const anchor = this.#detail.anchor ?? before?.beforeId ?? after?.beforeId;
-    const reset = await this.#page(signal, null, aroundMessageId, anchor);
-    if (anchor && reset.kind === "page" && !reset.items.some(({ id }) => id === anchor))
-      throw new Error("The history anchor is unavailable.");
+    let reset = await this.#page(signal, null, aroundMessageId, anchor);
+    if (!current()) return;
+    if (anchor && (reset.kind !== "page" || !reset.items.some(({ id }) => id === anchor))) {
+      if (
+        !(reset.kind === "history-reset" && reset.anchorUnavailable) &&
+        this.#detail.transcript.getSnapshot().items.has(anchor)
+      )
+        throw new Error("The history anchor is unavailable.");
+      delete this.#detail.anchor;
+      reset = await this.#page(signal, null, aroundMessageId);
+    }
     if (current() && reset.kind === "page")
       this.#detail.transcript.installPage(
         reset,
         generation,
-        anchor || aroundMessageId ? "around" : "latest",
+        aroundMessageId || (anchor && reset.items.some(({ id }) => id === anchor))
+          ? "around"
+          : "latest",
       );
   }
 
@@ -382,38 +449,138 @@ export class ScopedThreadReader implements ThreadViewSource {
       scope.kind === "node"
         ? await this.#rpc["node.items.page"]({ ...query, nodeId: scope.nodeId }, { signal })
         : await this.#rpc["thread.items.page"](query, { signal });
-    return unwrapRpcResult(result);
+    const page = unwrapRpcResult(result);
+    if (page.kind === "page") {
+      const nodeId = scope.kind === "node" ? scope.nodeId : null;
+      const expected =
+        before ??
+        after ??
+        this.#detail.transcript.getSnapshot().snapshot?.nextBefore ??
+        this.#detail.transcript.getSnapshot().snapshot?.nextAfter;
+      const boundaries = [
+        [page.nextBefore, page.items[0]],
+        [page.nextAfter, page.items.at(-1)],
+      ] as const;
+      if (
+        page.threadId !== scope.threadId ||
+        page.nodeId !== nodeId ||
+        BigInt(page.orderRevision) > BigInt(page.revision) ||
+        page.items.some((item, i) => {
+          const prior = page.items[i - 1];
+          return (
+            item.nodeId !== nodeId ||
+            BigInt(item.revision) > BigInt(page.revision) ||
+            (prior &&
+              (BigInt(prior.position) > BigInt(item.position) ||
+                (prior.position === item.position && prior.id >= item.id)))
+          );
+        }) ||
+        new Set(page.items.map(({ id }) => id)).size !== page.items.length ||
+        boundaries.some(
+          ([cursor, item]) =>
+            cursor &&
+            (!item ||
+              cursor.threadId !== scope.threadId ||
+              cursor.nodeId !== nodeId ||
+              cursor.orderRevision !== page.orderRevision ||
+              cursor.beforeId !== item.id ||
+              cursor.beforePosition !== item.position ||
+              (expected &&
+                (cursor.viewerId !== expected.viewerId ||
+                  cursor.epoch !== expected.epoch ||
+                  cursor.deploymentId !== expected.deploymentId))),
+        )
+      )
+        throw new Error("The Host returned a history page for the wrong scope or cut.");
+    }
+    return page;
   }
 
-  async loadMoreOverlays(kind: Overlay): Promise<OverlayPage | undefined> {
+  loadMoreOverlays(kind: Overlay): Promise<OverlayPage | undefined> {
+    return this.#readOverlays(kind, false);
+  }
+
+  async #readOverlays(kind: Overlay, refresh: boolean): Promise<OverlayPage | undefined> {
     const { scope, controller } = this.#detail;
     const state = this.#detail.transcript.getSnapshot();
-    const cursor = state.snapshot?.overlayCursors?.[kind];
-    if (!controller || !state.synchronized || !cursor) return;
-    const read = (this.#overlayReads.get(kind) ?? 0) + 1;
-    this.#overlayReads.set(kind, read);
-    const page = unwrapRpcResult(
-      await this.#rpc["thread.overlays.page"](
-        {
-          threadId: scope.threadId,
-          ...(scope.kind === "node" ? { nodeId: scope.nodeId } : {}),
-          kind,
-          ...(cursor ? { cursor } : {}),
-        },
-        { signal: controller.signal },
-      ),
-    );
-    const current = this.#detail.transcript.getSnapshot();
+    let cursor = refresh ? undefined : state.snapshot?.overlayCursors?.[kind];
     if (
-      controller.signal.aborted ||
-      read !== this.#overlayReads.get(kind) ||
-      current.generation !== state.generation ||
-      current.through === null ||
-      BigInt(page.revision) < BigInt(current.through)
+      !controller ||
+      !state.synchronized ||
+      (!refresh && (!cursor || state.stale.has(kind))) ||
+      this.#overlayReads.has(kind)
     )
       return;
-    this.#detail.transcript.installOverlays(kind, page, state.generation);
-    return page;
+    const expectedRevision = state.overlayRevisions.get(kind);
+    this.#overlayReads.set(kind, state.generation);
+    const nodeId = scope.kind === "node" ? scope.nodeId : null;
+    const entries: OverlayPage["entries"] = [];
+    const desired = refresh
+      ? Math.max(
+          20,
+          kind === "requests"
+            ? (state.snapshot?.pendingRequests.length ?? 0)
+            : [...state.activeIds].filter(
+                (id) => state.items.get(id)?.kind === (kind === "nodes" ? "node" : "tool"),
+              ).length,
+        )
+      : 20;
+    let page: OverlayPage | undefined;
+    try {
+      do {
+        const result = await this.#rpc["thread.overlays.page"](
+          {
+            threadId: scope.threadId,
+            ...(nodeId ? { nodeId } : {}),
+            kind,
+            ...(cursor ? { cursor } : {}),
+            ...(expectedRevision ? { expectedRevision } : {}),
+          },
+          { signal: controller.signal },
+        );
+        const current = this.#detail.transcript.getSnapshot();
+        if (
+          controller.signal.aborted ||
+          current.generation !== state.generation ||
+          current.overlayRevisions.get(kind) !== expectedRevision
+        )
+          return;
+        const next = unwrapRpcResult(result);
+        if (
+          next.threadId !== scope.threadId ||
+          next.nodeId !== nodeId ||
+          next.kind !== kind ||
+          (page && next.revision !== page.revision) ||
+          (expectedRevision && BigInt(next.revision) < BigInt(expectedRevision)) ||
+          next.entries.some(
+            (entry) =>
+              BigInt(entry.revision) > BigInt(next.revision) ||
+              (kind === "requests"
+                ? "position" in entry ||
+                  entry.threadId !== scope.threadId ||
+                  entry.status !== "pending"
+                : !("position" in entry) ||
+                  entry.nodeId !== nodeId ||
+                  entry.kind !== (kind === "tools" ? "tool" : "node")),
+          ) ||
+          (next.next !== null && (next.next === cursor || next.entries.length === 0))
+        )
+          throw new Error("The Host returned an overlay page for the wrong scope or cut.");
+        entries.push(...next.entries);
+        page = next;
+        cursor = page.next ?? undefined;
+      } while (cursor && entries.length < desired && refresh);
+      const combined = { ...page, entries };
+      return this.#detail.transcript.installOverlays(kind, combined, state.generation, refresh)
+        ? combined
+        : undefined;
+    } finally {
+      if (this.#overlayReads.get(kind) === state.generation) {
+        this.#overlayReads.delete(kind);
+        const current = this.#detail.transcript.getSnapshot();
+        if (current.overlayRevisions.get(kind) !== expectedRevision) this.#update();
+      }
+    }
   }
 
   #bodyKey(itemId: string) {
@@ -445,11 +612,40 @@ export class ScopedThreadReader implements ThreadViewSource {
       controller.signal.aborted ||
       state.generation !== current.generation ||
       current.items.get(itemId) !== item ||
+      value.threadId !== scope.threadId ||
+      value.nodeId !== item.nodeId ||
       value.item.id !== itemId ||
-      value.item.revision !== item.revision
+      value.item.revision !== item.revision ||
+      value.item.kind !== item.kind ||
+      value.item.nodeId !== item.nodeId ||
+      value.item.runId !== item.runId ||
+      value.item.attemptId !== item.attemptId ||
+      !matchesBody(item, value.body) ||
+      (value.body.kind === "message" && value.body.message.threadId !== scope.threadId)
     )
       return;
     this.#bodies.put(key, value);
     return value;
+  }
+}
+
+function matchesBody(item: TranscriptItem, body: TranscriptItemResult["body"]) {
+  switch (item.kind) {
+    case "message":
+      return body.kind === "message" && body.message.id === item.messageId;
+    case "node-message":
+    case "reasoning":
+      return body.kind === "text";
+    case "node":
+      return body.kind === "node" && body.node.id === item.executionNodeId;
+    case "tool":
+      return body.kind === "tool";
+    case "run":
+      return body.kind === "run" && body.run.id === item.runId;
+    case "assignment":
+    case "delegation":
+      return body.kind === "assignment" && body.assignment.id === item.delegationId;
+    default:
+      return false;
   }
 }

@@ -113,6 +113,7 @@ it("edits a waiting message in place under this device's lease, renewing it only
   });
   expect(client.ownsEditLease(editor.leaseId)).toBe(false);
   // Needs you approves the version the task now holds.
+  await client.loadEarlierNeedsYou();
   expect(
     client
       .getSnapshot()
@@ -184,6 +185,7 @@ it("reloads a revised lease only for the observed queue and purges the removed s
     () => expect(waiting()?.lease).toMatchObject({ kind: "other", deviceLabel: "Alex's iPhone" }),
     { timeout: 1000 },
   );
+  await client.loadEarlierNeedsYou();
   const review = client
     .getSnapshot()
     .needsYou?.entries.find((row) => row.kind === "team-ask" && row.task?.threadId === threadId);

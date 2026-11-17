@@ -818,6 +818,9 @@ function Steps(props: {
             active={!props.settled}
             agentScope={props.agentScope}
             entries={detail.entries}
+            threadId={detail.card.opens?.threadId}
+            nodeId={detail.card.nodeId ?? undefined}
+            generation={detail.generation}
             live={props.live}
             onOpenStep={props.onOpenStep}
           />

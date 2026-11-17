@@ -3,6 +3,17 @@ import { utf8Tail } from "@opensteer/core";
 
 type LiveFrame = Extract<ScopedHostMessage, { type: "host.live" }>;
 
+export function liveFrameKey(frame: LiveFrame) {
+  return JSON.stringify([
+    frame.liveBootId,
+    frame.runId,
+    frame.attemptId,
+    frame.bindingGeneration,
+    frame.streamId,
+    frame.itemId,
+  ]);
+}
+
 export interface ItemText {
   readonly streamId: string;
   readonly text: string;
@@ -19,8 +30,12 @@ export class ItemTextStore {
   readonly #gaps = new Map<string, number>();
   readonly #closed = new Map<string, string>();
   readonly #retiredBoots = new Set<string>();
-  readonly #identities = new Map<string, { key: string; binding: number; attempt: string }>();
+  readonly #identities = new Map<
+    string,
+    { key: string; binding: number; attempt: string; barrier: bigint }
+  >();
   #generation = 0;
+  #retiredThrough: bigint = -1n;
   #boot: string | undefined;
 
   get(itemId: string) {
@@ -50,6 +65,7 @@ export class ItemTextStore {
     this.#items.clear();
     this.#gaps.clear();
     this.#closed.clear();
+    this.#retiredThrough = -1n;
     this.#identities.clear();
     for (const id of ids) this.#notify(id);
   }
@@ -64,21 +80,25 @@ export class ItemTextStore {
       this.clear();
     }
     this.#boot = frame.liveBootId;
-    const key = JSON.stringify([
-      frame.runId,
-      frame.attemptId,
-      frame.bindingGeneration,
-      frame.streamId,
-    ]);
+    const key = liveFrameKey(frame);
     const identity = this.#identities.get(frame.itemId);
-    if (this.#closed.has(key) || (identity && frame.bindingGeneration < identity.binding))
-      return "ignored";
+    const barrier = BigInt(frame.afterSequence);
     const prior = this.#items.get(frame.itemId);
     const { update } = frame;
+    if (
+      this.#closed.has(key) ||
+      (identity?.key !== key && barrier <= this.#retiredThrough) ||
+      (identity &&
+        (frame.bindingGeneration < identity.binding ||
+          (frame.bindingGeneration === identity.binding &&
+            frame.attemptId !== identity.attempt &&
+            barrier <= identity.barrier)))
+    )
+      return "ignored";
     if (update.operation === "close") {
-      rememberBounded(this.#closed, key, frame.afterSequence, 256);
-      this.#gaps.delete(key);
-      if (identity?.key === key) this.#delete(frame.itemId);
+      this.#close(key, frame.afterSequence);
+      if (identity?.key !== key || !prior) return "ignored";
+      this.#delete(frame.itemId);
       return "applied";
     }
     const matches = prior && identity?.key === key;
@@ -98,10 +118,11 @@ export class ItemTextStore {
     const piece = update.operation === "append" && matches ? prior.text + update.text : update.text;
     const text = utf8Tail(piece, maxTailBytes);
     this.#gaps.delete(key);
+    if (identity && identity.key !== key) this.#close(identity.key, identity.barrier.toString());
     rememberBounded(
       this.#identities,
       frame.itemId,
-      { key, binding: frame.bindingGeneration, attempt: frame.attemptId },
+      { key, binding: frame.bindingGeneration, attempt: frame.attemptId, barrier },
       256,
     );
     const offset = update.totalLength - text.length;
@@ -115,6 +136,16 @@ export class ItemTextStore {
         (update.operation === "replace" ? update.incomplete : !!(matches && prior.incomplete)),
     });
     return "applied";
+  }
+
+  #close(key: string, through: string) {
+    this.#closed.set(key, through);
+    this.#gaps.delete(key);
+    if (this.#closed.size <= 256) return;
+    const oldest = this.#closed.entries().next().value!;
+    this.#closed.delete(oldest[0]);
+    const retired = BigInt(oldest[1]);
+    if (retired > this.#retiredThrough) this.#retiredThrough = retired;
   }
 
   #replace(id: string, item: ItemText) {

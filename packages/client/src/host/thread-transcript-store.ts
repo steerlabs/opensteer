@@ -1,6 +1,10 @@
 import type { ScopedHostMessage } from "@opensteer/protocol/personal-sync";
 import type { ThreadInputQueue } from "@opensteer/core";
-import type { TranscriptPageSchema, TranscriptItem } from "@opensteer/protocol/transcript";
+import type {
+  TranscriptPageSchema,
+  TranscriptItem,
+  TranscriptOrderCursor,
+} from "@opensteer/protocol/transcript";
 
 type Frame = Extract<
   ScopedHostMessage,
@@ -27,9 +31,13 @@ export interface TranscriptState {
   readonly synchronized: boolean;
   readonly items: ReadonlyMap<string, TranscriptItem>;
   readonly ids: readonly string[];
+  readonly historyIds: readonly string[];
+  readonly activeIds: ReadonlySet<string>;
+  readonly readRevision: string;
   readonly liveItems: ReadonlyMap<string, TranscriptItem>;
   readonly removed: boolean;
   readonly stale: ReadonlySet<string>;
+  readonly overlayRevisions: ReadonlyMap<string, string>;
   readonly snapshot: DetailSnapshot | null;
   readonly inputQueue: VersionedInputQueue | null;
   readonly inputQueueRevision: string;
@@ -43,9 +51,13 @@ const emptyState: TranscriptState = {
   synchronized: false,
   items: new Map(),
   ids: [],
+  historyIds: [],
+  activeIds: new Set(),
+  readRevision: "0",
   liveItems: new Map(),
   removed: false,
   stale: new Set(),
+  overlayRevisions: new Map(),
   snapshot: null,
   inputQueue: null,
   inputQueueRevision: "0",
@@ -97,12 +109,14 @@ export class ThreadTranscriptStore {
         return true;
       case "host.snapshot": {
         if ("tasks" in frame.snapshot || state.synchronized) return false;
-        const items = new Map(
-          [...frame.snapshot.items, ...frame.snapshot.activeItems].map((item) => [
-            item.id,
-            state.items.get(item.id)?.revision === item.revision ? state.items.get(item.id)! : item,
-          ]),
-        );
+        const items = new Map<string, TranscriptItem>();
+        for (const item of [...frame.snapshot.activeItems, ...frame.snapshot.items]) {
+          const previous = items.get(item.id);
+          if (previous && BigInt(previous.revision) >= BigInt(item.revision)) continue;
+          const held = state.items.get(item.id);
+          items.set(item.id, held?.revision === item.revision ? held : item);
+        }
+        const historyIds = frame.snapshot.items.map(({ id }) => id);
         this.#set({
           ...state,
           through: frame.throughSequence,
@@ -111,18 +125,19 @@ export class ThreadTranscriptStore {
           removed: false,
           liveItems: emptyState.liveItems,
           items,
-          ids: stableIds(
-            state.ids,
-            [...items.values()].sort(comparePosition).map(({ id }) => id),
-          ),
+          historyIds,
+          activeIds: new Set(frame.snapshot.activeItems.map(({ id }) => id)),
+          ids: sortedIds(items),
+          readRevision: "0",
           orderRevision: frame.snapshot.orderRevision,
           inputQueueRevision: frame.snapshot.inputQueueRevision,
           inputQueue:
             state.inputQueue?.revision === frame.snapshot.inputQueueRevision
               ? state.inputQueue
               : null,
-          newest: true,
+          newest: frame.snapshot.anchorItemId == null && frame.snapshot.nextAfter == null,
           stale: new Set(),
+          overlayRevisions: new Map(),
         });
         return true;
       }
@@ -134,7 +149,10 @@ export class ThreadTranscriptStore {
           return false;
         let items: Map<string, TranscriptItem> | undefined;
         let stale: Set<string> | undefined;
-        let orderChanged = false;
+        let overlayRevisions: Map<string, string> | undefined;
+        let ids: string[] | undefined;
+        let historyIds: string[] | undefined;
+        let activeIds: Set<string> | undefined;
         let liveItems: Map<string, TranscriptItem> | undefined;
         let snapshot = state.snapshot;
         let orderRevision = state.orderRevision;
@@ -152,6 +170,10 @@ export class ThreadTranscriptStore {
             }
             if (change.entityId === "history-order")
               orderRevision = change.value.revision ?? change.sequence;
+            if (["requests", "tools", "nodes"].includes(change.entityId)) {
+              overlayRevisions ??= new Map(state.overlayRevisions);
+              overlayRevisions.set(change.entityId, change.value.revision ?? change.sequence);
+            }
             stale.add(change.entityId);
             continue;
           }
@@ -182,38 +204,63 @@ export class ThreadTranscriptStore {
             );
             if (change.operation === "upsert" && change.value.status === "pending")
               requests.push(change.value);
-            snapshot = { ...snapshot, pendingRequests: requests.slice(-20) };
+            snapshot = { ...snapshot, pendingRequests: requests };
           }
           if (change.entityKind !== "item") continue;
           if ((liveItems ?? state.liveItems).has(change.entityId)) {
             liveItems ??= new Map(state.liveItems);
             liveItems.delete(change.entityId);
           }
-          const previous = (items ?? state.items).get(change.entityId);
+          const id = change.entityId;
+          const previous = (items ?? state.items).get(id);
           if (change.operation === "remove") {
-            if (!previous) continue;
+            if (!previous || BigInt(previous.revision) > BigInt(change.sequence)) continue;
             items ??= new Map(state.items);
-            items.delete(change.entityId);
-            orderChanged = true;
+            items.delete(id);
+            ids ??= [...state.ids];
+            removeId(ids, id);
+            historyIds ??= [...state.historyIds];
+            removeId(historyIds, id);
+            if ((activeIds ?? state.activeIds).has(id)) {
+              activeIds ??= new Set(state.activeIds);
+              activeIds.delete(id);
+            }
             orderRevision = change.sequence;
           } else {
-            if (previous && BigInt(previous.revision) >= BigInt(change.value.revision)) continue;
+            const next = change.value;
+            if (previous && BigInt(previous.revision) >= BigInt(next.revision)) continue;
+            const history = historyIds ?? state.historyIds;
+            const first = (items ?? state.items).get(history[0] ?? "");
+            const last = (items ?? state.items).get(history.at(-1) ?? "");
+            const inHistory =
+              (!snapshot?.nextBefore || !first || comparePosition(next, first) >= 0) &&
+              (state.newest || !last || comparePosition(next, last) <= 0);
+            const active = (activeIds ?? state.activeIds).has(id);
+            if (!previous && !inHistory && !active) continue;
             items ??= new Map(state.items);
-            items.set(change.entityId, change.value);
-            orderChanged ||= previous?.position !== change.value.position;
-            if (previous && previous.position !== change.value.position)
-              orderRevision = change.sequence;
+            items.set(id, next);
+            if (previous?.position !== next.position) {
+              ids ??= [...state.ids];
+              insertId(ids, next, items);
+              historyIds ??= [...state.historyIds];
+              if (inHistory) insertId(historyIds, next, items);
+              else removeId(historyIds, id);
+              if (previous) orderRevision = change.sequence;
+            }
           }
         }
-        if (items && items.size > 250)
-          retainItems(items, snapshot, state.newest ? "latest" : "earlier");
-        const ids =
-          orderChanged && items
-            ? stableIds(
-                state.ids,
-                [...items.values()].sort(comparePosition).map(({ id }) => id),
-              )
-            : state.ids;
+        if (items && historyIds && historyIds.length > 250) {
+          ids ??= [...state.ids];
+          snapshot = trimWindow(
+            historyIds,
+            items,
+            activeIds ?? state.activeIds,
+            snapshot,
+            orderRevision,
+            state.newest ? "latest" : "earlier",
+          );
+          ids = ids.filter((id) => items!.has(id));
+        }
         this.#set({
           ...state,
           through: frame.throughSequence,
@@ -223,8 +270,11 @@ export class ThreadTranscriptStore {
           inputQueueRevision,
           inputQueue,
           items: items ?? state.items,
-          ids,
+          ids: ids ?? state.ids,
+          historyIds: historyIds ?? state.historyIds,
+          activeIds: activeIds ?? state.activeIds,
           stale: stale ?? state.stale,
+          overlayRevisions: overlayRevisions ?? state.overlayRevisions,
         });
         return true;
       }
@@ -276,38 +326,44 @@ export class ThreadTranscriptStore {
       BigInt(page.orderRevision) < BigInt(state.orderRevision)
     )
       return false;
-    const items =
-      mode === "earlier" || mode === "newer"
-        ? new Map(state.items)
-        : new Map<string, TranscriptItem>();
-    for (const item of [...state.snapshot.activeItems, ...page.items]) {
+    const merge = mode === "earlier" || mode === "newer";
+    const items = new Map([...state.items].filter(([id]) => merge || state.activeIds.has(id)));
+    for (const item of page.items) {
       const previous = state.items.get(item.id);
       items.set(
         item.id,
         previous && BigInt(previous.revision) >= BigInt(item.revision) ? previous : item,
       );
     }
-    retainItems(items, state.snapshot, mode === "earlier" ? "earlier" : "latest");
+    const historyIds = [
+      ...new Set([...(merge ? state.historyIds : []), ...page.items.map(({ id }) => id)]),
+    ].sort((a, b) => comparePosition(items.get(a)!, items.get(b)!));
+    const snapshot = trimWindow(
+      historyIds,
+      items,
+      state.activeIds,
+      {
+        ...state.snapshot,
+        nextBefore: mode === "newer" ? state.snapshot.nextBefore : page.nextBefore,
+        nextAfter:
+          mode === "earlier" ? (state.snapshot.nextAfter ?? null) : (page.nextAfter ?? null),
+      },
+      page.orderRevision,
+      mode === "earlier" ? "earlier" : "latest",
+      state.snapshot.nextBefore ?? state.snapshot.nextAfter,
+    );
     const stale = new Set(state.stale);
     stale.delete("history-order");
     this.#set({
       ...state,
-      snapshot: {
-        ...state.snapshot,
-        nextBefore: mode === "newer" ? state.snapshot.nextBefore : page.nextBefore,
-        ...(mode !== "earlier" && page.nextAfter !== undefined
-          ? { nextAfter: page.nextAfter }
-          : {}),
-        items: page.items.slice(-50),
-      },
-      ids: stableIds(
-        state.ids,
-        [...items.values()].sort(comparePosition).map(({ id }) => id),
-      ),
+      snapshot,
+      historyIds,
+      ids: stableIds(state.ids, sortedIds(items)),
       items,
       stale,
+      readRevision: maxRevision(state.readRevision, page.revision),
       orderRevision: page.orderRevision,
-      newest: mode === "latest" || (mode === "newer" && !page.nextAfter),
+      newest: mode !== "around" && snapshot?.nextAfter == null,
     });
     return true;
   }
@@ -320,6 +376,7 @@ export class ThreadTranscriptStore {
       next: string | null;
     },
     generation: number,
+    replace = false,
   ) {
     const state = this.#state;
     if (
@@ -336,8 +393,11 @@ export class ThreadTranscriptStore {
     else overlayCursors[kind] = page.next;
     snapshot.overlayCursors = overlayCursors;
     const items = new Map(state.items);
+    const activeIds = new Set(state.activeIds);
     if (kind === "requests") {
-      const requests = new Map(snapshot.pendingRequests.map((request) => [request.id, request]));
+      const requests = new Map(
+        (replace ? [] : snapshot.pendingRequests).map((request) => [request.id, request]),
+      );
       for (const entry of page.entries) {
         if ("position" in entry) continue;
         const previous = requests.get(entry.id);
@@ -346,38 +406,55 @@ export class ThreadTranscriptStore {
       }
       snapshot.pendingRequests = [...requests.values()].slice(-100);
     } else {
+      if (replace) {
+        const history = new Set(state.historyIds);
+        for (const id of activeIds) {
+          if (items.get(id)?.kind !== (kind === "tools" ? "tool" : "node")) continue;
+          activeIds.delete(id);
+          if (!history.has(id)) items.delete(id);
+        }
+      }
       for (const entry of page.entries) {
         if (!("position" in entry)) continue;
+        activeIds.add(entry.id);
         const held = items.get(entry.id);
         if (!held || BigInt(entry.revision) > BigInt(held.revision)) items.set(entry.id, entry);
       }
-      retainItems(items, snapshot, "latest");
     }
+    const stale = new Set(state.stale);
+    stale.delete(kind);
     this.#set({
       ...state,
       snapshot,
       items,
-      ids: stableIds(
-        state.ids,
-        [...items.values()].sort(comparePosition).map(({ id }) => id),
-      ),
+      activeIds,
+      stale,
+      readRevision: maxRevision(state.readRevision, page.revision),
+      ids: stableIds(state.ids, sortedIds(items)),
     });
     return true;
   }
 
-  checkpoint(): DetailSnapshot | undefined {
-    const { snapshot, items, orderRevision, inputQueueRevision, stale, newest } = this.#state;
-    if (
-      !snapshot ||
-      stale.size ||
-      !newest ||
-      items.size > 50 ||
-      snapshot.pendingRequests.length > 20
-    )
-      return;
+  canCheckpoint(state = this.#state) {
+    return (
+      state.snapshot !== null &&
+      state.through !== null &&
+      state.stale.size === 0 &&
+      state.newest &&
+      BigInt(state.through) >= BigInt(state.readRevision) &&
+      state.historyIds.length <= 50 &&
+      state.activeIds.size <= 20 &&
+      state.snapshot.pendingRequests.length <= 20
+    );
+  }
+
+  checkpoint(state = this.#state): DetailSnapshot | undefined {
+    const { snapshot, items, orderRevision, inputQueueRevision } = state;
+    if (!snapshot || !this.canCheckpoint(state)) return;
     return {
       ...snapshot,
-      items: [...items.values()].sort(comparePosition),
+      items: state.historyIds.map((id) => items.get(id)!),
+      activeItems: [...state.activeIds].map((id) => items.get(id)!),
       orderRevision,
       inputQueueRevision,
     };
@@ -395,13 +472,54 @@ function stableIds(previous: readonly string[], next: string[]) {
     : next;
 }
 
-function retainItems(
+function sortedIds(items: ReadonlyMap<string, TranscriptItem>) {
+  return [...items.values()].sort(comparePosition).map(({ id }) => id);
+}
+
+function maxRevision(a: string, b: string) {
+  return BigInt(a) >= BigInt(b) ? a : b;
+}
+
+function removeId(ids: string[], id: string) {
+  const index = ids.indexOf(id);
+  if (index !== -1) ids.splice(index, 1);
+}
+
+function insertId(ids: string[], item: TranscriptItem, items: ReadonlyMap<string, TranscriptItem>) {
+  removeId(ids, item.id);
+  let first = 0;
+  let end = ids.length;
+  while (first < end) {
+    const mid = Math.floor((first + end) / 2);
+    if (comparePosition(items.get(ids[mid]!)!, item) < 0) first = mid + 1;
+    else end = mid;
+  }
+  ids.splice(first, 0, item.id);
+}
+
+function trimWindow(
+  historyIds: string[],
   items: Map<string, TranscriptItem>,
+  activeIds: ReadonlySet<string>,
   snapshot: DetailSnapshot | null,
+  orderRevision: string,
   edge: "earlier" | "latest",
+  fallback?: TranscriptOrderCursor | null,
 ) {
-  const pinned = new Set(snapshot?.activeItems.map(({ id }) => id));
-  const ordered = [...items.values()].sort(comparePosition);
-  if (edge === "latest") ordered.reverse();
-  for (const item of ordered.slice(250)) if (!pinned.has(item.id)) items.delete(item.id);
+  const extra = historyIds.length - 250;
+  if (!snapshot || extra <= 0) return snapshot;
+  const removed = historyIds.splice(edge === "earlier" ? 250 : 0, extra);
+  for (const id of removed) if (!activeIds.has(id)) items.delete(id);
+  const template = snapshot.nextBefore ?? snapshot.nextAfter ?? fallback;
+  if (!template) return snapshot;
+  const boundary = items.get((edge === "earlier" ? historyIds.at(-1) : historyIds[0])!)!;
+  const cursor = {
+    ...template,
+    orderRevision,
+    beforeId: boundary.id,
+    beforePosition: boundary.position,
+  };
+  return edge === "earlier"
+    ? { ...snapshot, nextAfter: cursor }
+    : { ...snapshot, nextBefore: cursor };
 }

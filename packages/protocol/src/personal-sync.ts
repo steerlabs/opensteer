@@ -174,6 +174,7 @@ export const PersonalDetailSnapshotSchema = z.strictObject({
   thread: task,
   orderRevision: PersonalRevisionSchema,
   inputQueueRevision: PersonalRevisionSchema,
+  nodeSubject: TranscriptItemSchema.optional(),
   queue: queue.optional(),
   items: z.array(TranscriptItemSchema).max(50),
   pendingRequests: z.array(PersonalRequestSummarySchema).max(20),
@@ -403,7 +404,13 @@ export const ScopedHostMessageSchema = z
           snapshot.orderRevision,
           snapshot.inputQueueRevision,
           snapshot.queue?.revision ?? "0",
+          ...(snapshot.queue?.runs.map(({ revision }) => revision) ?? []),
         ].every((revision) => withinCut(revision, frame.throughSequence)) &&
+        (!snapshot.nodeSubject ||
+          (scope.kind === "node" &&
+            snapshot.nodeSubject.kind === "node" &&
+            snapshot.nodeSubject.executionNodeId === scope.nodeId &&
+            withinCut(snapshot.nodeSubject.revision, frame.throughSequence))) &&
         [...snapshot.items, ...snapshot.activeItems].every(
           (item) =>
             item.nodeId === (scope.kind === "node" ? scope.nodeId : null) &&
@@ -439,7 +446,11 @@ export const ScopedHostMessageSchema = z
       if (shellEntity !== isShell) return false;
       if (row.operation !== "upsert") return true;
       if (!withinCut(row.value.revision, frame.throughSequence)) return false;
-      if (row.entityKind === "run-queue") return row.entityId === "run-queue";
+      if (row.entityKind === "run-queue")
+        return (
+          row.entityId === "run-queue" &&
+          row.value.runs.every(({ revision }) => withinCut(revision, row.value.revision))
+        );
       if (row.entityKind === "visit") return row.entityId === row.value.threadId;
       if (row.entityId !== row.value.id) return false;
       if (row.entityKind === "thread")

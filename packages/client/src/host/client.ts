@@ -193,6 +193,13 @@ export interface HarnessSummary {
   automaticEligible?: boolean | undefined;
 }
 
+export function requestDecisionRevision(request: Pick<Request, "id">): {
+  expectedRevision?: string;
+} {
+  const revision = "reviewedRevision" in request ? request.reviewedRevision : undefined;
+  return typeof revision === "string" ? { expectedRevision: revision } : {};
+}
+
 export interface ThreadSummary {
   returnHint?: import("@opensteer/core").CompactionReturnHint | null | undefined;
   lastVisitedAt: string | null;
@@ -358,6 +365,8 @@ export interface AssignmentReturnEntry {
 
 export interface ReasoningEntry {
   readonly itemId?: string;
+  readonly itemRevision?: string;
+  readonly previewTruncated?: boolean;
   completedAt?: string | null | undefined;
   createdAt: string;
   id: string;
@@ -840,6 +849,17 @@ export interface HostSnapshot {
     readonly managePrivateResources: boolean;
   } | null;
   needsYou: import("@opensteer/protocol").NeedsYouPage | null;
+  attentionSummaries?: readonly import("zod").infer<
+    typeof import("@opensteer/protocol/personal-sync").PersonalShellSnapshotSchema
+  >["attention"][number][];
+  resourceSummaries?: Partial<
+    Record<
+      import("@opensteer/protocol/resources").PersonalResourceKind,
+      import("@opensteer/protocol/resources").PersonalResourceView
+    >
+  >;
+  pendingRequestCount?: number;
+  needsYouCount?: number;
   environments: EnvironmentSummary[];
   /**
    * What this person chose last, as the Host remembers it for them in this

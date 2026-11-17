@@ -5,6 +5,7 @@ import { useThreadTranscript } from "./use-thread-transcript.js";
 export function useThreadInputQueue(
   hostClient: HostClient,
   threadId: string | null | undefined,
+  observed = true,
 ): ThreadInputQueue | null {
-  return useThreadTranscript(hostClient, threadId).inputQueue;
+  return useThreadTranscript(hostClient, threadId, observed).inputQueue;
 }

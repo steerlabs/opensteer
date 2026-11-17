@@ -1,3 +1,4 @@
+import { utf8ByteLength } from "@opensteer/core";
 import type { PersonalResumeCursor, ScopedHostMessage } from "@opensteer/protocol/personal-sync";
 import type { PersonalResourceKind, PersonalResourceView } from "@opensteer/protocol/resources";
 import type { TranscriptState } from "./thread-transcript-store.js";
@@ -36,6 +37,7 @@ export type PersonalStreamCheckpoint = {
 
 export interface PersonalStreamCache {
   hasCheckpoints?(): Promise<boolean>;
+  clear?(): Promise<void>;
   removeViewer?(identity: Pick<PersonalCacheScope, "deploymentId" | "viewerId">): Promise<void>;
   load(scope: PersonalCacheScope): Promise<PersonalStreamCheckpoint | null>;
   commit(checkpoint: PersonalStreamCheckpoint, isCurrent: () => boolean): Promise<void>;
@@ -59,7 +61,7 @@ export function createPersonalStreamCache(storage: CheckpointStorage): PersonalS
     (held ??= storage
       .read()
       .then((serialized) => {
-        if (!serialized || serialized.length > limit) return new Map();
+        if (!serialized || utf8ByteLength(serialized) > limit) return new Map();
         const input: unknown = JSON.parse(serialized);
         if (!Array.isArray(input) || input.length > 6) return new Map();
         const entries = input.filter(
@@ -80,14 +82,16 @@ export function createPersonalStreamCache(storage: CheckpointStorage): PersonalS
   const replace = async (
     entries: Map<string, PersonalStreamCheckpoint>,
     isCurrent = () => true,
+    serialized = JSON.stringify([...entries]),
   ) => {
     if (!isCurrent()) return;
-    if (entries.size) await storage.write(JSON.stringify([...entries]), isCurrent);
+    if (entries.size) await storage.write(serialized, isCurrent);
     else await storage.remove();
     if (isCurrent()) held = Promise.resolve(entries);
   };
   return {
     hasCheckpoints: () => storage.exists(),
+    clear: () => update(() => replace(new Map())),
     load: async (scope) => {
       await tail;
       return (await load()).get(key(scope)) ?? null;
@@ -99,11 +103,13 @@ export function createPersonalStreamCache(storage: CheckpointStorage): PersonalS
         const id = key(checkpoint.scope);
         entries.delete(id);
         entries.set(id, checkpoint);
+        let serialized = JSON.stringify([...entries]);
         for (const oldest of entries.keys()) {
-          if (entries.size <= 6 && bytes(entries) <= limit) break;
+          if (entries.size <= 6 && utf8ByteLength(serialized) <= limit) break;
           entries.delete(oldest);
+          serialized = JSON.stringify([...entries]);
         }
-        await replace(entries, isCurrent);
+        await replace(entries, isCurrent, serialized);
       }),
     remove: (scope) =>
       update(async () => {
@@ -122,8 +128,4 @@ export function createPersonalStreamCache(storage: CheckpointStorage): PersonalS
         await replace(entries);
       }),
   };
-}
-
-function bytes(entries: ReadonlyMap<string, PersonalStreamCheckpoint>) {
-  return new TextEncoder().encode(JSON.stringify([...entries])).length;
 }

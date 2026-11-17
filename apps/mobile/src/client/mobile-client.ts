@@ -1809,6 +1809,8 @@ export class MobileClient {
       else {
         if (options.revoke) await this.#revokePersonalSession(connection, options.removed);
         await this.sessions.clear(id);
+        if (this.#attachedDeploymentId === id) this.#disposeHostClient();
+        await this.#host.clearPersonalStreamCache?.(id);
       }
     } catch (error) {
       await this.#republish();
@@ -1835,6 +1837,8 @@ export class MobileClient {
       else {
         if (options.revoke) await this.#revokePersonalSession(connection, options.removed);
         await this.sessions.clear(id);
+        if (this.#attachedDeploymentId === id) this.#disposeHostClient();
+        await this.#host.clearPersonalStreamCache?.(id);
       }
     } catch (error) {
       await this.#republish();

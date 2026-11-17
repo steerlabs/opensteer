@@ -186,8 +186,26 @@ export class PersonalShellStore {
     }
   }
 
-  checkpoint(): ShellSnapshot | undefined {
-    const { snapshot, tasks, taskIds, visits, attention, invalidated } = this.#state;
+  removeTask(threadId: string) {
+    const old = this.#state;
+    const attention = new Map([...old.attention].filter(([, row]) => row.threadId !== threadId));
+    if (!old.tasks.has(threadId) && attention.size === old.attention.size) return;
+    const tasks = new Map(old.tasks);
+    const visits = new Map(old.visits);
+    tasks.delete(threadId);
+    visits.delete(threadId);
+    this.#replace({
+      ...old,
+      tasks,
+      visits,
+      attention,
+      taskIds: old.taskIds.filter((id) => id !== threadId),
+      invalidated: new Set([...old.invalidated, "tasks"]),
+    });
+  }
+
+  checkpoint(state = this.#state): ShellSnapshot | undefined {
+    const { snapshot, tasks, taskIds, visits, attention, invalidated } = state;
     if (!snapshot || invalidated.size) return;
     return {
       ...snapshot,

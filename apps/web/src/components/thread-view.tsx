@@ -181,6 +181,8 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
       canLoadEarlier={transcript.hasMore}
       canLoadNewer={transcript.hasNewer}
       moreRequests={transcript.moreRequests}
+      moreTools={transcript.moreTools ?? false}
+      moreNodes={transcript.moreNodes ?? false}
       entries={transcript.entries}
       environmentStatus={
         snapshot.environments.find((item) => item.id === thread.environmentId)?.status ??
@@ -199,7 +201,13 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
   );
 }
 
-const threadResourceKinds = ["harness-catalog", "harness-auth", "agent-home-settings"] as const;
+const threadResourceKinds = [
+  "environment",
+  "harness",
+  "harness-catalog",
+  "harness-auth",
+  "settings",
+] as const;
 const noRuns: readonly import("@opensteer/client/host").RunQueueEntry[] = [];
 
 interface ThreadViewProps {
@@ -207,6 +215,8 @@ interface ThreadViewProps {
   canLoadEarlier: boolean;
   canLoadNewer?: boolean;
   moreRequests?: boolean;
+  moreTools?: boolean;
+  moreNodes?: boolean;
   entries: readonly TranscriptEntry[];
   detailCurrent?: boolean;
   runQueue?: readonly import("@opensteer/client/host").RunQueueEntry[];
@@ -229,6 +239,8 @@ function ThreadView({
   canLoadEarlier,
   canLoadNewer = false,
   moreRequests = false,
+  moreTools = false,
+  moreNodes = false,
   entries,
   environmentStatus,
   executionPlacements,
@@ -662,7 +674,25 @@ function ThreadView({
       : undefined;
     const anchor = anchorMessage ?? anchorRow;
     const item = entries.find(({ id }) => id === anchorMessage?.dataset.messageId);
-    if (item?.kind === "message") hostClient.setTranscriptAnchor(thread.id, item.itemId ?? item.id);
+    if (item)
+      hostClient.setTranscriptAnchor(
+        thread.id,
+        "itemId" in item ? (item.itemId ?? item.id) : item.id,
+      );
+    else if (anchorRow?.dataset.transcriptRow) {
+      const group = groupTranscriptEntries(conversation).find(
+        ({ key }) => key === anchorRow.dataset.transcriptRow,
+      );
+      const first =
+        group?.kind === "turn"
+          ? (group.turn.work[0] ?? group.turn.reply ?? group.turn.run)
+          : group?.entry;
+      if (first)
+        hostClient.setTranscriptAnchor(
+          thread.id,
+          "itemId" in first ? (first.itemId ?? first.id) : first.id,
+        );
+    }
     const button = scroller?.querySelector<HTMLElement>(".transcript__load-earlier") ?? null;
     earlierMotion.current?.cancel();
     if (scroller)
@@ -1301,7 +1331,7 @@ function ThreadView({
                   {/* An anchored search leaves the reader in an older window, and the only
           way back is to load the live one — so the offer stands whether or not
           anything new has arrived since. */}
-                  {historical && canLoadNewer ? (
+                  {canLoadNewer ? (
                     <button
                       className="transcript__jump"
                       type="button"
@@ -1373,6 +1403,21 @@ function ThreadView({
                   openId={openRequestId}
                   threadId={thread.id}
                 />
+                {(["tools", "nodes"] as const).map((kind) =>
+                  (kind === "tools" ? moreTools : moreNodes) ? (
+                    <button
+                      key={kind}
+                      className="btn"
+                      type="button"
+                      disabled={!canRespond}
+                      onClick={() =>
+                        void hostClient.loadMoreOverlays(thread.id, kind).catch(reportActionError)
+                      }
+                    >
+                      {kind === "tools" ? "Show more tools" : "Show more subagents"}
+                    </button>
+                  ) : null,
+                )}
                 {moreRequests ? (
                   <button
                     className="btn"

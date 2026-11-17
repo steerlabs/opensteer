@@ -1,5 +1,3 @@
-import { clientRpcSuccessSchema } from "./device-readers.js";
-import { clientCommandSchema } from "./device-commands.js";
 import {
   HostApiErrorSchema,
   TranscriptFileContentSchema,
@@ -40,7 +38,7 @@ const responseEnvelopes = new Map(
   Object.entries(hostApi).map(([name, declaration]) => [
     name,
     z.discriminatedUnion("ok", [
-      z.object({ data: clientRpcSuccessSchema(name as keyof typeof hostApi), ok: z.literal(true) }),
+      z.object({ data: declaration.success, ok: z.literal(true) }),
       z.object({ error: declaration.error, ok: z.literal(false) }),
     ]),
   ]),
@@ -91,21 +89,6 @@ type Invoke = <Name extends keyof typeof hostApi>(
   input: unknown,
   call: RpcCallOptions | undefined,
 ) => Promise<RpcOutput<(typeof hostApi)[Name]>>;
-const deviceDispatchers = new WeakMap<
-  HostApiClient,
-  (
-    command: z.input<typeof clientCommandSchema>,
-  ) => Promise<RpcOutput<(typeof hostApi)["commands.dispatch"]>>
->();
-export function dispatchDeviceCommand(
-  rpc: HostApiClient,
-  command: z.input<typeof clientCommandSchema>,
-) {
-  const dispatch = deviceDispatchers.get(rpc);
-  if (!dispatch) throw new Error("Update this Opensteer to use Device access commands.");
-  return dispatch(command);
-}
-
 /** The declaration record is the member list, so a property the API does not
  * declare stays undefined rather than becoming a callable that 404s. */
 function hostApiClientProxy(invoke: Invoke): HostApiClient {
@@ -121,7 +104,6 @@ function hostApiClientProxy(invoke: Invoke): HostApiClient {
       },
     },
   ) as HostApiClient;
-  deviceDispatchers.set(client, (command) => invoke("commands.dispatch", command, undefined));
   return client;
 }
 
@@ -148,9 +130,7 @@ async function dispatchInMemory<Name extends keyof typeof hostApi>(
   const declaration = hostApi[name];
   try {
     const handler = handlers[name] as HostApiHandler<Name>;
-    const payload = (
-      name === "commands.dispatch" ? clientCommandSchema : declaration.payload
-    ).parse(input) as z.output<(typeof hostApi)[Name]["payload"]>;
+    const payload = declaration.payload.parse(input) as z.output<(typeof hostApi)[Name]["payload"]>;
     const binaryBody = call?.body === undefined ? undefined : binaryChunks(call.body);
     const output = await handler(payload, {
       ...context,
@@ -159,7 +139,7 @@ async function dispatchInMemory<Name extends keyof typeof hostApi>(
     });
     if (!output.ok) return output as RpcOutput<(typeof hostApi)[Name]>;
     return {
-      data: clientRpcSuccessSchema(name).parse(output.data),
+      data: declaration.success.parse(output.data),
       ok: true,
     } as RpcOutput<(typeof hostApi)[Name]>;
   } catch (error) {
@@ -191,9 +171,7 @@ async function request<Name extends keyof typeof hostApi>(
   call: RpcCallOptions | undefined,
 ): Promise<RpcOutput<(typeof hostApi)[Name]>> {
   const declaration = hostApi[name];
-  const parsedPayload = (
-    name === "commands.dispatch" ? clientCommandSchema : declaration.payload
-  ).safeParse(input);
+  const parsedPayload = declaration.payload.safeParse(input);
   if (!parsedPayload.success)
     return rpcError("invalid-payload", `Invalid input for ${name}.`, false);
   const payload = parsedPayload.data;

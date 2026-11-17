@@ -172,6 +172,8 @@ async function scene(name: MockSubagentScene) {
   harness.hostClient = {
     ...client,
     getSnapshot: () => current,
+    getThreadTranscript: (threadId: string) => client.getThreadTranscript(threadId),
+    observeThread: (threadId: string) => client.observeThread(threadId),
     subscribe: () => () => undefined,
   } as unknown as HostClient;
   const node = (title: string) =>

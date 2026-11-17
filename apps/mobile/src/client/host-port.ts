@@ -62,6 +62,7 @@ export type HostEpochAgreement =
  */
 export interface MobileHostPort {
   readonly credentials: DeploymentCredentials;
+  clearPersonalStreamCache?(deploymentId: DeploymentId): Promise<void>;
   attach(input: {
     readonly assetRoute?: import("@opensteer/client/host").AssetRoute;
     readonly authorization: HostAuthorization;
@@ -99,8 +100,18 @@ export function createNetworkHostPort(options: {
   ) => WebSocketClient;
 }): MobileHostPortFactory {
   const maintenanceNetwork = createMaintenanceNetwork(options);
+  const caches = new Map<DeploymentId, PersonalStreamCache>();
+  const streamCache = (id: DeploymentId) => {
+    const cache = caches.get(id) ?? options.streamCache?.(id);
+    if (cache) caches.set(id, cache);
+    return cache;
+  };
   return ({ oauth, sessions, sessionExchange }) => ({
     credentials: createDeploymentCredentials({ now: options.now, oauth, sessions }),
+    clearPersonalStreamCache: async (deploymentId) => {
+      await streamCache(deploymentId)?.clear?.();
+      caches.delete(deploymentId);
+    },
 
     desktopUpdates: ({ catalog, deploymentId }) => {
       const credentials = createDeploymentCredentials({ now: options.now, oauth, sessions });
@@ -143,11 +154,10 @@ export function createNetworkHostPort(options: {
         origin,
         openWebSocket: options.openWebSocket,
       });
+      const cache = streamCache(connection.authority.document.deploymentId);
       const client = new HttpHostClient({
         ...(assetRoute ? { assetRoute } : {}),
-        ...(options.streamCache
-          ? { streamCache: options.streamCache(connection.authority.document.deploymentId) }
-          : {}),
+        ...(cache ? { streamCache: cache } : {}),
 
         baseUrl: origin,
         ...(options.browserPreferencesStorage

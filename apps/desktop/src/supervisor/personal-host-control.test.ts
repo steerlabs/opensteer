@@ -1,6 +1,8 @@
-import { createId, type EnvironmentId, type RunnerId } from "@opensteer/core";
+import { personalResourceKinds } from "@opensteer/protocol/resources";
+import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
+import { createId } from "@opensteer/core";
 import { hostApi } from "@opensteer/protocol";
-import { hostKeyFingerprint, statesApiVersion } from "@opensteer/deployment-authority";
+import { hostKeyFingerprint, hostApiVersionHeader } from "@opensteer/deployment-authority";
 import {
   AccountLinkGenerationSchema,
   PersonalHostAccountLinkChallengeIdSchema,
@@ -17,8 +19,8 @@ import { testPersonalHostRuntime } from "./personal-host-runtime-test-support.js
 
 const hostOrigin = "http://127.0.0.1:4310";
 /** The typed client's GET spelling: the member is the route, the empty payload the query. */
-const bootstrapUrl = `${hostOrigin}/v1/rpc/bootstrap.get?input=${encodeURIComponent(
-  JSON.stringify(hostApi["bootstrap.get"].payload.parse({})),
+const shellUrl = `${hostOrigin}/v1/rpc/personal.shell.get?input=${encodeURIComponent(
+  JSON.stringify(hostApi["personal.shell.get"].payload.parse({})),
 )}`;
 
 describe("NativePersonalHostControl bootstrap", () => {
@@ -66,7 +68,7 @@ describe("NativePersonalHostControl bootstrap", () => {
     expect(requests[0]?.credentials).toBe("omit");
     expect(requests.slice(1).every(({ credentials }) => credentials === "include")).toBe(true);
     for (const { request } of requests)
-      expect(statesApiVersion(Object.fromEntries(request.headers), "personal")).toBe(true);
+      expect(request.headers.get(hostApiVersionHeader)).toBe(String(scopedPersonalApiVersion));
   });
 
   it("re-establishes the desktop's owner session on restart", async () => {
@@ -116,14 +118,14 @@ describe("NativePersonalHostControl bootstrap", () => {
     const control = new NativePersonalHostControl({
       fetch: async (_deploymentId, input, init) => {
         requests.push(new Request(input, init));
-        return rpcData(hostBootstrap());
+        return shellData();
       },
     });
 
     await expect(
       control.ensureAgentHome(hostOrigin, deployment.deploymentId, new AbortController().signal),
     ).resolves.toBeUndefined();
-    expect(requests.map(({ url }) => url)).toEqual([bootstrapUrl]);
+    expect(requests.map(({ url }) => url)).toEqual([shellUrl]);
   });
 
   it("recovers a cleared owner session with one typed claim request", async () => {
@@ -182,11 +184,7 @@ describe("NativePersonalHostControl bootstrap", () => {
         if (requests === 1) {
           return rpcError({ code: "internal", message: "Host is starting" }, 500);
         }
-        return rpcData(
-          hostBootstrap({
-            environments: [environment(deployment.environmentId, deployment.runnerId)],
-          }),
-        );
+        return readiness(true);
       },
       pollIntervalMs: 1,
       requestTimeoutMs: 1_000,
@@ -272,17 +270,18 @@ describe("NativePersonalHostControl bootstrap", () => {
     const control = new NativePersonalHostControl({
       fetch: async (_deploymentId, input) => {
         requests += 1;
-        expect(new Request(input).url).toBe(bootstrapUrl);
-        return rpcData(
-          hostBootstrap({
-            environments: [
-              environment(
-                deployment.environmentId,
-                requests === 1 ? createId("runner") : deployment.runnerId,
-              ),
-            ],
-          }),
+        const url = new URL(new Request(input).url);
+        expect(url.pathname).toBe("/v1/rpc/personal.readiness.get");
+        const query = hostApi["personal.readiness.get"].payload.parse(
+          JSON.parse(url.searchParams.get("input")!),
         );
+        expect(query).toEqual({
+          kind: "runner",
+          environmentId: deployment.environmentId,
+          runnerId: deployment.runnerId,
+        });
+        const attached = requests === 1 ? createId("runner") : deployment.runnerId;
+        return readiness(query.kind === "runner" && query.runnerId === attached);
       },
       pollIntervalMs: 1,
       requestTimeoutMs: 1_000,
@@ -304,20 +303,20 @@ describe("NativePersonalHostControl bootstrap", () => {
     let requests = 0;
     const deployment = manifest();
     const control = new NativePersonalHostControl({
-      fetch: async () => {
+      fetch: async (_deploymentId, input) => {
         requests += 1;
-        return rpcData(
-          hostBootstrap({
-            placements: [
-              // Another computer with the same runtime id but no binding to
-              // this deployment's work location must never satisfy readiness.
-              runnerPlacement("desktop-browser", []),
-              ...(requests > 1
-                ? [runnerPlacement("desktop-browser", [deployment.environmentId])]
-                : []),
-            ],
-          }),
+        const url = new URL(new Request(input).url);
+        expect(url.pathname).toBe("/v1/rpc/personal.readiness.get");
+        const query = hostApi["personal.readiness.get"].payload.parse(
+          JSON.parse(url.searchParams.get("input")!),
         );
+        expect(query).toEqual({
+          kind: "browser-placement",
+          environmentId: deployment.environmentId,
+          runtimeId: "desktop-browser",
+        });
+        const attached = requests === 1 ? createId("environment") : deployment.environmentId;
+        return readiness(query.environmentId === attached);
       },
       pollIntervalMs: 1,
       requestTimeoutMs: 1_000,
@@ -342,7 +341,7 @@ describe("NativePersonalHostControl bootstrap", () => {
       fetch: async () => {
         requests += 1;
         abort.abort(new Error("Personal setup cancelled"));
-        return rpcData(hostBootstrap());
+        return shellData();
       },
       pollIntervalMs: 1,
     });
@@ -486,7 +485,7 @@ describe("NativePersonalRemoteHostControl Account-link failures", () => {
     for (const request of requests) {
       expect(request.headers.get("authorization")).toBe(capability);
       expect(request.credentials).toBe("omit");
-      expect(statesApiVersion(Object.fromEntries(request.headers), "personal")).toBe(true);
+      expect(request.headers.get(hostApiVersionHeader)).toBe(String(scopedPersonalApiVersion));
     }
   });
 
@@ -529,9 +528,36 @@ function json(value: unknown, status = 200): Response {
   return Response.json(value, { headers: { "content-type": "application/json" }, status });
 }
 
-/** Success envelope exactly as the Host's rpc registration writes it. */
-function rpcData(data: unknown): Response {
-  return json({ data: hostApi["bootstrap.get"].success.parse(data), ok: true });
+function readiness(ready: boolean): Response {
+  return json({ data: hostApi["personal.readiness.get"].success.parse({ ready }), ok: true });
+}
+
+function shellData(): Response {
+  const session = authenticatedSession();
+  return json({
+    ok: true,
+    data: hostApi["personal.shell.get"].success.parse({
+      deploymentId: createId("deployment"),
+      viewerId: session.user.id,
+      epoch: crypto.randomUUID(),
+      session: {
+        sessionId: session.id,
+        user: session.user,
+        sessionSurface: "canonical",
+        can: {
+          createTasks: true,
+          useVoice: true,
+          manageComputers: true,
+          managePrivateResources: true,
+        },
+      },
+      tasks: [],
+      visits: [],
+      attention: [],
+      counts: { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 },
+      resourceRevisions: Object.fromEntries(personalResourceKinds.map((kind) => [kind, "0"])),
+    }),
+  });
 }
 
 function ownerClaimRpcData(): Response {
@@ -543,86 +569,6 @@ function ownerClaimRpcData(): Response {
 
 function rpcError(error: { readonly code: string; readonly message: string }, status: number) {
   return json({ error: { ...error, retryable: status >= 500 }, ok: false }, status);
-}
-
-/**
- * A complete bootstrap, parsed by the declaration the Desktop reads it with, so
- * a fixture can never drift into describing a Host that could not exist.
- */
-function hostBootstrap(
-  overrides: {
-    readonly environments?: readonly unknown[];
-    readonly placements?: readonly unknown[];
-  } = {},
-) {
-  return {
-    deploymentId: createId("deployment"),
-    sessionId: createId("authSession"),
-    personalSettings: {
-      ownerId: createId("user"),
-      agentHome: { computerId: createId("runner"), path: "/Users/test/Opensteer" },
-      voiceThreadId: null,
-    },
-    can: { createTasks: true, useVoice: true, manageComputers: true, managePrivateResources: true },
-    tabs: { tabs: [], layout: { revision: 0, items: [], groups: [] }, complete: true },
-    browser: {
-      available: true,
-      placements: overrides.placements ?? [],
-      profileGrants: [],
-      profiles: [],
-      groups: { rows: [], complete: true },
-      tabs: [],
-    },
-    environments: overrides.environments ?? [],
-    executionPreferences: { accessMode: "full-access", history: [] },
-    quietTaskDays: 7,
-    harnesses: [],
-    latestPlaces: [],
-    sessionSurface: "canonical",
-    identityConfig: {
-      deployment: { kind: "personal" as const, name: "This computer" },
-      emailDeliveryAvailable: false,
-      exposure: "loopback",
-      localPasswordEnabled: false,
-      machineOwner: true,
-      oidcProviders: [],
-      passkeysEnabled: false,
-      portalOrigin: null,
-      publicOrigin: hostOrigin,
-      setupState: "complete",
-      signupPolicy: "closed",
-    },
-    machines: [],
-    user: authenticatedSession().user,
-  };
-}
-
-function environment(id: EnvironmentId, runnerId: RunnerId) {
-  return {
-    capabilities: [],
-    connected: true,
-    harnessAuthenticationAllowed: true,
-    harnessCatalogs: [],
-    harnessDrivers: [],
-    id,
-    kind: "main",
-    name: "This computer",
-    providerStateModes: [],
-    runnerId,
-    status: "connected",
-    can: { executeTasks: true },
-  };
-}
-
-function runnerPlacement(runtimeId: string, environmentIds: readonly EnvironmentId[]) {
-  return {
-    available: true,
-    environmentIds: [...environmentIds],
-    kind: "runner",
-    label: "This computer",
-    runnerId: createId("runner"),
-    runtimeId,
-  };
 }
 
 function authenticatedSession() {

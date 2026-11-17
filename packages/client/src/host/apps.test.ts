@@ -1,48 +1,30 @@
-import {
-  createId,
-  AgentEventViewSchema,
-  AppIdSchema,
-  SequenceSchema,
-  type App,
-} from "@opensteer/core";
+import { createId, AppIdSchema, type App } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { AppsList, appNoticeTitle } from "./apps.js";
-import { foldTranscriptEvent } from "./transcript.js";
+import { transcriptCard } from "./transcript-item-view.js";
 import { conversationRows, groupTranscriptEntries } from "./agent-activity-model.js";
-it("restores one app at its latest publication point, idempotently, including conversation mode", () => {
-  const event = AgentEventViewSchema.parse({
-    type: "app.published",
-    eventId: createId("event"),
-    sequence: "1",
-
-    threadId: createId("thread"),
-    environmentId: createId("environment"),
-    runId: createId("run"),
-    createdAt: new Date().toISOString(),
-    data: { appId: "app_11111111-1111-4111-8111-111111111111", version: 1, title: "Budget" },
-  });
-  if (event.type !== "app.published") throw new Error("Expected app publication");
-  const first = foldTranscriptEvent([], event);
-  expect(foldTranscriptEvent(first, event)).toEqual(first);
-  expect(first[0]).toMatchObject({
+it("renders the scoped app publication in conversation mode", () => {
+  const runId = createId("run");
+  const appId = AppIdSchema.parse("app_11111111-1111-4111-8111-111111111111");
+  const row = transcriptCard({
     kind: "app",
-    appId: event.data.appId,
-    version: 1,
-    title: "Budget",
-    runId: event.runId,
+    id: appId,
+    appId,
+    revision: "2",
+    position: "1",
+    nodeId: null,
+    attemptId: null,
+    isTurnStart: false,
+    runId,
+    createdAt: "2026-11-15T12:00:00.000Z",
+    view: { title: "Budget" },
   });
-  const next = foldTranscriptEvent(first, {
-    ...event,
-    eventId: createId("event"),
-    sequence: SequenceSchema.parse("2"),
-    data: { ...event.data, version: 2 },
-  });
-  const rows = conversationRows(groupTranscriptEntries(next), {
+  expect(row).toMatchObject({ kind: "app", appId, title: "Budget", runId });
+  const rows = conversationRows(groupTranscriptEntries(row ? [row] : []), {
     live: true,
     atComputer: () => false,
   });
-  expect(rows.map((row) => row.group.kind)).toEqual(["app"]);
-  expect(rows.map((row) => row.key)).toEqual(next.map((entry) => entry.id));
+  expect(rows.map((row) => [row.group.kind, row.key])).toEqual([["app", appId]]);
 });
 
 describe("AppsList", () => {

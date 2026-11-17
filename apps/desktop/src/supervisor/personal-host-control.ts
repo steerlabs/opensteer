@@ -1,3 +1,4 @@
+import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import { throwIfAborted } from "@opensteer/shared/throwIfAborted";
 import { delay } from "@opensteer/shared/delay";
@@ -37,7 +38,7 @@ import {
   type RunnerId,
 } from "@opensteer/core";
 import {
-  apiVersionHeaders,
+  hostApiVersionHeader,
   hostKeyFingerprint,
   isPersonalHost,
 } from "@opensteer/deployment-authority";
@@ -122,7 +123,7 @@ export class PersonalHostBootstrapRefusedError extends Error {
   }
 }
 
-const personalVersionHeaders = apiVersionHeaders("personal");
+const personalVersionHeaders = { [hostApiVersionHeader]: String(scopedPersonalApiVersion) };
 
 export class NativePersonalHostControl implements PersonalHostControlPort {
   readonly #fetch: PersonalHostFetch;
@@ -302,15 +303,12 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
     const environmentId = EnvironmentIdSchema.parse(environmentIdInput);
     const runnerId = RunnerIdSchema.parse(runnerIdInput);
-    while (true) {
-      const resource = await this.#pollResource(deploymentId, origin, "environment", signal);
-      const environment =
-        resource?.kind === "environment"
-          ? resource.environments.find((candidate) => candidate.id === environmentId)
-          : undefined;
-      if (environment?.connected && environment.runnerId === runnerId) return;
-      await delay(this.#pollIntervalMs, signal);
-    }
+    await this.#waitForReadiness(
+      deploymentId,
+      origin,
+      { kind: "runner", environmentId, runnerId },
+      signal,
+    );
   }
 
   async waitForBrowserPlacement(
@@ -323,58 +321,34 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
     const environmentId = EnvironmentIdSchema.parse(environmentIdInput);
     const runtimeId = RuntimeIdSchema.parse(runtimeIdInput);
-    while (true) {
-      const resource = await this.#pollResource(deploymentId, origin, "browser-placement", signal);
-      // The environment binding is enrolled, not claimed, so readiness can
-      // never be satisfied by some other connected computer that happens to
-      // advertise the same runtime id.
-      if (
-        resource?.kind === "browser-placement" &&
-        resource.placements.some(
-          (placement) =>
-            placement.runtimeId === runtimeId &&
-            placement.environmentIds.includes(environmentId) &&
-            placement.available,
-        )
-      ) {
-        return;
-      }
-      await delay(this.#pollIntervalMs, signal);
-    }
+    await this.#waitForReadiness(
+      deploymentId,
+      origin,
+      { kind: "browser-placement", environmentId, runtimeId },
+      signal,
+    );
   }
 
-  /**
-   * One readiness poll. A Host that has not answered yet is the ordinary case
-   * while it starts, so that yields null and the caller waits; a Host that
-   * refused has already settled the question, and the refusal propagates
-   * rather than becoming a wait that only the caller's abort can end.
-   */
-  async #pollResource(
+  async #waitForReadiness(
     deploymentId: string,
     origin: string,
-    kind: "environment" | "browser-placement",
+    target: Parameters<HostApiClient["personal.readiness.get"]>[0],
     signal: AbortSignal,
   ) {
-    throwIfAborted(signal, "Personal setup was cancelled.");
-    try {
-      return await this.#withDeadline(signal, async (deadline) => {
-        const rpc = this.#hostApi(deploymentId, origin);
-        const summary = await rpc["resources.get"]({ kind }, { signal: deadline });
-        if (!summary.ok) throw bootstrapRefusal(summary.error);
-        const detail = await rpc["resources.detail.get"](
-          { kind, expectedRevision: summary.data.revision },
-          { signal: deadline },
-        );
-        if (!detail.ok) {
-          if (detail.error.code === "conflict") return null;
-          throw bootstrapRefusal(detail.error);
-        }
-        return detail.data.data;
-      });
-    } catch (error) {
+    const read = this.#hostApi(deploymentId, origin)["personal.readiness.get"];
+    for (;;) {
       throwIfAborted(signal, "Personal setup was cancelled.");
-      if (error instanceof PersonalHostBootstrapRefusedError) throw error;
-      return null;
+      try {
+        const result = await this.#withDeadline(signal, (deadline) =>
+          read(target, { signal: deadline }),
+        );
+        if (!result.ok) throw bootstrapRefusal(result.error);
+        if (result.data.ready) return;
+      } catch (error) {
+        throwIfAborted(signal, "Personal setup was cancelled.");
+        if (error instanceof PersonalHostBootstrapRefusedError) throw error;
+      }
+      await delay(this.#pollIntervalMs, signal);
     }
   }
 

@@ -1,3 +1,4 @@
+import { AnswerPill } from "./answer-pill.js";
 import { useThreadTranscript, usePersonalResources } from "@opensteer/client/react";
 import { TranscriptImageContext } from "@opensteer/client/react";
 import { readTail, type TailReading } from "@opensteer/shared/tailFollow";
@@ -43,7 +44,7 @@ import {
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
 import type { BrowserPageContentPart } from "@opensteer/core";
 import { useTeamsSnapshot } from "../team/team-context.js";
-import { useHostSnapshot, useThreadInputQueue, useWaitingInputs } from "@opensteer/client/react";
+import { useHostSnapshot, useWaitingInputs } from "@opensteer/client/react";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { conversationActions } from "./conversation-actions.js";
 import {
@@ -297,7 +298,13 @@ function sameThreadPaneSelection(left: ThreadPaneSelection, right: ThreadPaneSel
   });
 }
 
-const threadResourceKinds = ["harness-catalog", "harness-auth", "agent-home-settings"] as const;
+const threadResourceKinds = [
+  "environment",
+  "harness",
+  "harness-catalog",
+  "harness-auth",
+  "settings",
+] as const;
 
 export function ThreadPane(props: ThreadPaneProps): ReactNode {
   const threadId = props.threadId;
@@ -427,8 +434,11 @@ function ThreadPaneForUser(
   const deploymentId = props.deploymentId;
   const { hostClient, onHeader, threadId } = props;
   const inView = usePaneInView();
-  const threadDetail = useThreadTranscript(hostClient, threadId, inView);
-  usePersonalResources(hostClient, threadResourceKinds);
+  const navigationFocused = useIsFocused();
+  const appForeground = useAppForeground();
+  const showing = inView && navigationFocused && appForeground;
+  const threadDetail = useThreadTranscript(hostClient, threadId, showing);
+  usePersonalResources(showing ? hostClient : null, threadResourceKinds);
   useFocusEffect(
     useCallback(() => {
       // The Host holds one active Thread. A task stays mounted under the one
@@ -450,9 +460,7 @@ function ThreadPaneForUser(
   // render it first mounts on. The sidebar covers the screen without blurring
   // the route under it, so it counts as looking away too.
   const sidebarVisible = useSidebarVisible();
-  const navigationFocused = useIsFocused();
   const focused = navigationFocused && !sidebarVisible && inView;
-  const appForeground = useAppForeground();
   // What an arriving alert has to know before it interrupts: an alert about
   // the conversation in front of the reader, at its latest activity, is telling
   // them what they are already watching.
@@ -463,8 +471,8 @@ function ThreadPaneForUser(
     );
   }, [atTail, deploymentId, focused, historical, notifications, props.threadId]);
 
-  const inputQueue = useThreadInputQueue(hostClient, threadId);
-  const waiting = useWaitingInputs(hostClient, threadId);
+  const inputQueue = threadDetail.inputQueue;
+  const waiting = useWaitingInputs(hostClient, threadId, false);
   // A waiting message is held for editing only while its task is in front of
   // the reader: under another screen, out of view or in the background, it goes on.
   const editing = useWaitingEdit(
@@ -721,9 +729,24 @@ function ThreadPaneForUser(
     shownHead.current = { key: head.key, runId: head.turn.runId };
   }
 
+  const visibleItem = useRef<string | undefined>(undefined);
+  const onVisibleItems = useRef(
+    ({ viewableItems }: { viewableItems: readonly { item: TranscriptItem }[] }) => {
+      const row = viewableItems[0]?.item;
+      if (row?.kind !== "group") return;
+      const group = row.group;
+      const entry =
+        group.kind === "turn"
+          ? (group.turn.work[0] ?? group.turn.reply ?? group.turn.run)
+          : group.entry;
+      visibleItem.current =
+        (entry && ("itemId" in entry ? (entry.itemId ?? entry.id) : entry.id)) || undefined;
+    },
+  ).current;
   const loadEarlier = useCallback(() => {
     if (paging.current || !canLoadEarlier) return;
     paging.current = true;
+    if (visibleItem.current) hostClient.setTranscriptAnchor(threadId, visibleItem.current);
     setFailure(null);
     setLoadingEarlier(true);
     void hostClient
@@ -1136,7 +1159,14 @@ function ThreadPaneForUser(
       ? null
       : (waiting?.find((item) => item.messageId === editing.edit?.messageId) ?? null);
   const passwordsOffer = useMemo(() => passwordsSetupOffer(groups), [groups]);
-  const listFooter =
+  const loadMoreActivity = (kind: "tools" | "nodes") => {
+    void hostClient
+      .loadMoreOverlays(threadId, kind)
+      .catch((error: unknown) =>
+        setFailure(operationDetail(error, "More activity could not be loaded.")),
+      );
+  };
+  const conversationFooter =
     passwordsOffer !== null && viewerUserId !== null && !(voiceThread && onCall) ? (
       <>
         <PasswordsSuggestion
@@ -1151,6 +1181,39 @@ function ThreadPaneForUser(
     ) : (
       (queueFooter ?? undefined)
     );
+
+  const listFooter = (
+    <>
+      {conversationFooter}
+      {threadDetail.hasNewer ? (
+        <AnswerPill
+          tone="secondary"
+          label="Load newer"
+          onPress={() => {
+            void hostClient
+              .loadNewerTranscript(threadId)
+              .catch((error: unknown) =>
+                setFailure(operationDetail(error, "Newer activity could not be loaded.")),
+              );
+          }}
+        />
+      ) : null}
+      {threadDetail.moreTools ? (
+        <AnswerPill
+          tone="secondary"
+          label="Show more tools"
+          onPress={() => loadMoreActivity("tools")}
+        />
+      ) : null}
+      {threadDetail.moreNodes ? (
+        <AnswerPill
+          tone="secondary"
+          label="Show more subagents"
+          onPress={() => loadMoreActivity("nodes")}
+        />
+      ) : null}
+    </>
+  );
 
   // Never under a finger: the list moves only where the reader puts it.
   const keepPinned = (): void => {
@@ -1327,6 +1390,7 @@ function ThreadPaneForUser(
           flinging.current = false;
         }}
         onScroll={handleScroll}
+        onViewableItemsChanged={onVisibleItems}
         onScrollBeginDrag={() => {
           dragging.current = true;
         }}

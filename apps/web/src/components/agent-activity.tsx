@@ -3,7 +3,7 @@ import { TranscriptImageContext } from "@opensteer/client/react";
 import { AssetImage } from "./asset-image.js";
 import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
 import { TeamInputSource } from "../team/task-source-chip.js";
-import { useToolOutput, useTranscriptMessage, useItemText } from "@opensteer/client/react";
+import { useToolOutput, useTranscriptMessage, useTranscriptText } from "@opensteer/client/react";
 import { copyText } from "@opensteer/shared/clipboard";
 import { voiceCallSeed } from "@opensteer/core";
 import { AppCard } from "./apps/app-card.js";
@@ -1676,11 +1676,13 @@ export function SubagentSteps({
   active,
   entries,
   live,
+  scope,
 }: {
   /** It is still at work, so a thought arriving opens as it does in a live turn. */
   active: boolean;
   entries: readonly SubagentDetailEntry[];
   live: boolean;
+  scope?: TranscriptTextScope | undefined;
 }) {
   const parts = useMemo(() => {
     const drawn: SubagentPart[] = [];
@@ -1726,23 +1728,9 @@ export function SubagentSteps({
                   ))}
                 </Fragment>
               ) : part.entry.kind === "message" ? (
-                <div
-                  className="msg--assistant__body"
-                  data-message-id={part.entry.id}
-                  key={part.entry.id}
-                >
-                  <Suspense
-                    fallback={
-                      <p className="md-prose md-prose--plain">
-                        {readableMarkdown(part.entry.text)}
-                      </p>
-                    }
-                  >
-                    <Markdown text={part.entry.text} />
-                  </Suspense>
-                </div>
+                <SubagentMessage key={part.entry.id} entry={part.entry} scope={scope} />
               ) : part.entry.kind === "reasoning" ? (
-                <Reasoning active={active} entry={part.entry} key={part.entry.id} />
+                <Reasoning active={active} entry={part.entry} key={part.entry.id} scope={scope} />
               ) : (
                 <AgentRow card={part.entry.card} key={part.entry.card.key} noun />
               ),
@@ -1810,24 +1798,73 @@ function StepsRow({ row, turn }: { row: Extract<WorkRow, { kind: "steps" }>; tur
   );
 }
 
-function Reasoning({ entry, active }: { entry: ReasoningEntry; active: boolean }) {
-  // Completed blocks arriving in a live snapshot deserve the same visibility
-  // as streamed blocks. Completion and later activity never undo a reader's choice.
+export type TranscriptTextScope = {
+  client: HostClient;
+  threadId: string;
+  nodeId: string;
+  generation?: number | undefined;
+};
+
+function SubagentMessage({
+  entry,
+  scope,
+}: {
+  entry: Extract<SubagentDetailEntry, { kind: "message" }>;
+  scope?: TranscriptTextScope | undefined;
+}) {
+  const [expanded, expand] = useState(false);
+  const text = useTranscriptText({
+    ...scope,
+    itemId: entry.id,
+    revision: entry.itemRevision,
+    expanded: expanded && entry.previewTruncated === true,
+    preview: entry.text,
+  });
+  return (
+    <div className="msg--assistant__body" data-message-id={entry.id}>
+      <Suspense
+        fallback={<p className="md-prose md-prose--plain">{readableMarkdown(text.text)}</p>}
+      >
+        <Markdown streaming={text.streaming} text={text.text} />
+      </Suspense>
+      {entry.previewTruncated && !expanded ? (
+        <button type="button" className="btn btn--small" onClick={() => expand(true)}>
+          Show full message
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function Reasoning({
+  entry,
+  active,
+  scope,
+}: {
+  entry: ReasoningEntry;
+  active: boolean;
+  scope?: TranscriptTextScope | undefined;
+}) {
   const [open, setOpen] = useState(active || entry.state === "streaming");
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
-  const liveText = useItemText(
-    threadId && entry.itemId ? client?.getThreadItemText(threadId) : undefined,
-    entry.itemId,
-  );
-  const text = liveText?.text ?? entry.text;
+  const content = useTranscriptText({
+    client,
+    threadId,
+    ...scope,
+    itemId: entry.itemId,
+    revision: entry.itemRevision,
+    expanded: open && entry.previewTruncated === true,
+    preview: entry.text,
+  });
+  const text = content.text;
   return (
     <div className="trace-thought">
       <StepHead head={activityStepHead(entry)} onToggle={() => setOpen(!open)} open={open} />
       {open ? (
         <div className="trace-step__thought">
           <Suspense fallback={<p className="md-prose md-prose--plain">{readableMarkdown(text)}</p>}>
-            <Markdown streaming={liveText !== undefined} text={text} />
+            <Markdown streaming={content.streaming} text={text} />
           </Suspense>
         </div>
       ) : null}

@@ -1,3 +1,4 @@
+import { requestDecisionRevision } from "@opensteer/client/host";
 import { browserNoticeDismissals } from "./usage-notice.js";
 import { useCompactionOffer } from "@opensteer/client/react";
 import { cardUseTitle } from "@opensteer/client/host";
@@ -702,6 +703,7 @@ function ActionBody({
     void hostClient
       .dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
+        ...requestDecisionRevision(request),
         requestId: request.id,
         response,
         type: "request.respond",

@@ -266,16 +266,16 @@ it("uses Host Device capabilities even when a screen Device has no modules", () 
   ).toEqual([]);
 });
 
-it("keeps self access editable on v60 and refuses screen Device commands there", () => {
+it("addresses self and attached screen access by their Device ids", () => {
   const phone = mockIphoneScreenDevice();
   const input = {
     deviceId: "rnr_11111111-1111-4111-8111-111111111111",
     expectedRevision: 1,
     policy: phone.access!.policy,
   };
-  expect(deviceAccessCommand(input, "legacy", false)).toHaveProperty("runnerId", input.deviceId);
-  expect(deviceAccessCommand(input, "current", true)).toHaveProperty("deviceId", input.deviceId);
-  expect(() =>
-    deviceAccessCommand({ ...input, deviceId: phone.id }, "older-screen", false),
-  ).toThrow(/Update/);
+  expect(deviceAccessCommand(input, "self")).toHaveProperty("deviceId", input.deviceId);
+  expect(deviceAccessCommand({ ...input, deviceId: phone.id }, "screen")).toHaveProperty(
+    "deviceId",
+    phone.id,
+  );
 });

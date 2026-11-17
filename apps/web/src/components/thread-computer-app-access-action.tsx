@@ -1,3 +1,4 @@
+import { requestDecisionRevision } from "@opensteer/client/host";
 import { requestSettlementLabel, deviceMachine } from "@opensteer/client/host";
 import { ActionNote } from "./action-rows.js";
 import { useComputerAppApproval } from "./computer-apps/computer-app-approval.js";
@@ -68,6 +69,7 @@ export function ThreadComputerAppAccessAction({
     try {
       await hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
+        ...requestDecisionRevision(request),
         requestId: request.id,
         response: { kind: "external", value: { decision: "declined" } },
         type: "request.respond",

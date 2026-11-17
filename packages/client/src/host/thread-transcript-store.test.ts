@@ -181,3 +181,87 @@ test("preserves incompleteness and fences late replies after closure and boot re
   expect(store.apply({ ...newBoot, bindingGeneration: 1 }, "3")).toBe("ignored");
   expect(store.get(item.id)?.text).toBe("🦊");
 });
+
+test("an older stream's close leaves the replacement text installed", () => {
+  const store = new ItemTextStore();
+  store.generation(1);
+  const frame = {
+    type: "host.live" as const,
+    generation: 1,
+    scope,
+    subscriptionId,
+    runId,
+    attemptId,
+    bindingGeneration: 1,
+    streamId: "old",
+    afterSequence: "1",
+    itemId: item.id,
+    liveBootId: crypto.randomUUID(),
+    update: { operation: "append" as const, offset: 0, totalLength: 1, text: "a" },
+  };
+  expect(store.apply(frame, "1")).toBe("applied");
+  expect(store.apply({ ...frame, streamId: "new" }, "1")).toBe("applied");
+  expect(store.apply({ ...frame, update: { operation: "close" } }, "1")).toBe("ignored");
+  expect(store.get(item.id)?.streamId).toBe("new");
+  expect(
+    store.apply(
+      { ...frame, streamId: "older-than-replacement", update: { operation: "close" } },
+      "1",
+    ),
+  ).toBe("ignored");
+});
+
+test("sliding a history window retains a cursor immediately beside either evicted edge", () => {
+  const store = new ThreadTranscriptStore();
+  store.begin(1, false);
+  const address = { subscriptionId, generation: 1, scope };
+  const all = Array.from({ length: 300 }, (_, index) => {
+    const id = createId("message");
+    return { ...item, id, messageId: id, position: String(index + 1) };
+  });
+  const cursor = (boundary: typeof item) => ({
+    deploymentId: createId("deployment"),
+    viewerId: createId("user"),
+    epoch: crypto.randomUUID(),
+    threadId: scope.threadId,
+    nodeId: null,
+    orderRevision: "1",
+    beforeId: boundary.id,
+    beforePosition: boundary.position,
+  });
+  const latest = all.slice(-50);
+  store.apply({
+    ...address,
+    type: "host.snapshot",
+    throughSequence: "1",
+    snapshot: {
+      thread,
+      orderRevision: "1",
+      inputQueueRevision: "1",
+      items: latest,
+      activeItems: [],
+      pendingRequests: [],
+      nextBefore: cursor(latest[0]!),
+    },
+  });
+  store.apply({ ...address, type: "host.synchronized", throughSequence: "1" });
+  const page = (from: number, end: number) => ({
+    kind: "page" as const,
+    threadId: scope.threadId,
+    nodeId: null,
+    revision: "1",
+    orderRevision: "1",
+    items: all.slice(from, end),
+    hasMore: from > 0,
+    nextBefore: from ? cursor(all[from]!) : null,
+    nextAfter: end < all.length ? cursor(all[end - 1]!) : null,
+  });
+  store.installPage(page(150, 250), 1, "earlier");
+  store.installPage(page(50, 150), 1, "earlier");
+  store.installPage(page(0, 50), 1, "earlier");
+  expect(store.getSnapshot().ids).toEqual(all.slice(0, 250).map(({ id }) => id));
+  expect(store.getSnapshot().snapshot?.nextAfter?.beforeId).toBe(all[249]!.id);
+  store.installPage(page(250, 300), 1, "newer");
+  expect(store.getSnapshot().ids).toEqual(all.slice(50).map(({ id }) => id));
+  expect(store.getSnapshot().snapshot?.nextBefore?.beforeId).toBe(all[50]!.id);
+});

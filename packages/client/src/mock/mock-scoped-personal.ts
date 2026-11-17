@@ -1,5 +1,9 @@
 import {
   MessageIdSchema,
+  ExecutionNodeViewSchema,
+  RunAttemptIdSchema,
+  type AgentEventView,
+  type ContentPart,
   RunIdSchema,
   RequestIdSchema,
   ExecutionNodeIdSchema,
@@ -119,11 +123,13 @@ export function mockScopedItems(
   threadId: string,
   nodeId?: string,
   revision = String(snapshot.revision),
+  nodeEvents: readonly AgentEventView[] = [],
 ) {
-  return (snapshot.transcripts[threadId] ?? []).flatMap((entry, index) => {
+  const rows = (snapshot.transcripts[threadId] ?? []).flatMap((entry, index) => {
     const item = mockScopedItem(entry, String(index + 1), revision);
     return item && item.nodeId === (nodeId ?? null) ? [item] : [];
   });
+  return nodeId ? [...rows, ...mockScopedNodeItems(threadId, nodeId, nodeEvents, revision)] : rows;
 }
 
 function mockScopedItem(
@@ -152,7 +158,10 @@ function mockScopedItem(
         view: {
           preview: entry.body.slice(0, 400),
           truncated:
-            entry.body.length > 400 || !!entry.attachments?.length || !!entry.pages?.length,
+            entry.body.length > 400 ||
+            !!entry.attachments?.length ||
+            !!entry.pages?.length ||
+            !!entry.places?.length,
           published: entry.published ?? true,
         },
       });
@@ -189,12 +198,39 @@ function mockScopedItem(
         ...value,
         kind: entry.kind,
         view: { status: entry.status },
+        replyMessageId: entry.replyMessageId,
+        endedAt: entry.endedAt,
       });
     case "node":
       return TranscriptItemSchema.parse({
         ...value,
         kind: entry.kind,
         executionNodeId: ExecutionNodeIdSchema.parse(entry.nodeId),
+        nodeId: entry.parentNodeId,
+        ...(entry.runId
+          ? {
+              node: ExecutionNodeViewSchema.parse({
+                id: entry.nodeId,
+                attemptId: RunAttemptIdSchema.parse(entry.runId?.replace(/^run_/, "rat_")),
+                kind: entry.nodeKind,
+                runId: entry.runId,
+                parentNodeId: entry.parentNodeId,
+                startedAt: entry.createdAt,
+                endedAt: entry.completedAt,
+                status: entry.status,
+                title: entry.title,
+                phaseIndex: entry.phaseIndex,
+                phases: entry.phases,
+                model: entry.model,
+                effort: entry.effort,
+                usage: entry.usage ?? null,
+                prompt: entry.prompt,
+                result: entry.result,
+                stopSupported: entry.stopSupported,
+                stopping: entry.stopping,
+              }),
+            }
+          : {}),
         view: {
           title: entry.title.slice(0, 192),
           status: entry.status,
@@ -209,6 +245,7 @@ function mockScopedItem(
         delegationId: DelegationIdSchema.parse(
           entry.kind === "delegation" ? entry.delegationId : entry.assignment.id,
         ),
+        ...(entry.kind === "assignment" ? { assignment: entry.assignment } : {}),
         view: {},
       });
     case "app":
@@ -258,10 +295,18 @@ export function mockScopedDetail(
   nodeId?: string,
   anchor?: string,
   revision = String(snapshot.revision),
+  nodeEvents: readonly AgentEventView[] = [],
 ) {
   const thread = snapshot.threads.find(({ id }) => id === threadId);
   if (!thread) return;
-  const all = mockScopedItems(snapshot, threadId, nodeId, revision);
+  const node = nodeId
+    ? snapshot.transcripts[threadId]?.find(
+        (entry) => entry.kind === "node" && entry.nodeId === nodeId,
+      )
+    : undefined;
+  if (nodeId && !node) return;
+  const all = mockScopedItems(snapshot, threadId, nodeId, revision, nodeEvents);
+  const requests = (snapshot.requests[threadId] ?? []).filter(({ status }) => status === "pending");
   const anchorIndex = anchor ? all.findIndex(({ id }) => id === anchor) : -1;
   const end = anchorIndex < 0 ? all.length : Math.min(all.length, anchorIndex + 25);
   const start = Math.max(0, end - 50);
@@ -273,11 +318,16 @@ export function mockScopedDetail(
     inputQueueRevision: revision,
     items,
     activeItems: [],
-    pendingRequests: (snapshot.requests[threadId] ?? [])
-      .filter(({ status }) => status === "pending")
+    ...(node ? { nodeSubject: mockScopedItem(node, "1", revision) } : {}),
+    pendingRequests: requests
       .slice(0, 20)
       .map(({ id, kind, status }) => ({ id, kind, status, title: kind, revision, threadId })),
     nextBefore: start ? mockScopedCursor(snapshot, threadId, nodeId, revision, items[0]) : null,
+    nextAfter:
+      end < all.length
+        ? mockScopedCursor(snapshot, threadId, nodeId, revision, items.at(-1))
+        : null,
+    ...(requests.length > 20 ? { overlayCursors: { requests: `${revision}:20` } } : {}),
     queue: {
       revision,
       paused: thread.inputQueuePaused,
@@ -294,6 +344,97 @@ export function mockScopedDetail(
         })),
     },
   });
+}
+
+function mockScopedNodeItems(
+  threadId: string,
+  nodeId: string,
+  events: readonly AgentEventView[],
+  revision: string,
+) {
+  const items: TranscriptItem[] = [];
+  for (const event of events) {
+    if (event.threadId !== threadId || !("nodeId" in event.data) || event.data.nodeId !== nodeId)
+      continue;
+    const base = {
+      id: event.eventId,
+      revision,
+      position: event.sequence,
+      runId: event.runId,
+      attemptId: null,
+      nodeId,
+      isTurnStart: false,
+      createdAt: event.createdAt,
+    };
+    switch (event.type) {
+      case "node.message":
+        items.push(
+          TranscriptItemSchema.parse({
+            ...base,
+            kind: "node-message",
+            view: {
+              preview: event.data.text.slice(0, 400),
+              truncated: event.data.text.length > 400,
+            },
+          }),
+        );
+        break;
+      case "reasoning.completed":
+        items.push(
+          TranscriptItemSchema.parse({
+            ...base,
+            kind: "reasoning",
+            blockId: event.data.blockId,
+            bindingGeneration: null,
+            view: {
+              preview: event.data.text.slice(0, 400),
+              truncated: event.data.text.length > 400,
+            },
+          }),
+        );
+        break;
+      case "tool.started": {
+        const callId = event.data.callId;
+        const complete = events.find(
+          (candidate) =>
+            candidate.type === "tool.completed" &&
+            candidate.runId === event.runId &&
+            candidate.data.nodeId === nodeId &&
+            candidate.data.callId === callId,
+        );
+        items.push(
+          TranscriptItemSchema.parse({
+            ...base,
+            kind: "tool",
+            toolCallId: event.data.callId,
+            tool: event.data.tool,
+            view: {
+              status:
+                complete?.type === "tool.completed"
+                  ? complete.data.isError
+                    ? "failed"
+                    : "done"
+                  : "running",
+              truncated: true,
+            },
+          }),
+        );
+        break;
+      }
+    }
+  }
+  return items;
+}
+
+export function mockMessageContent(
+  entry: Extract<TranscriptEntry, { kind: "message" }>,
+): ContentPart[] {
+  return [
+    ...(entry.body ? [{ type: "text" as const, text: entry.body }] : []),
+    ...(entry.attachments ?? []),
+    ...(entry.pages ?? []),
+    ...(entry.places ?? []),
+  ];
 }
 
 export function mockScopedResource(
@@ -340,14 +481,12 @@ export function mockScopedResource(
   }
 }
 
-export function boundedMockPage(items: TranscriptItem[]) {
+export function boundedMockPage(items: TranscriptItem[], ascending = false) {
+  const ordered = ascending ? items : items.slice().reverse();
   let size = 0;
-  return items
-    .slice()
-    .reverse()
-    .filter((item) => {
-      size += utf8ByteLength(JSON.stringify(item));
-      return size <= 64 * 1024;
-    })
-    .reverse();
+  const bounded = ordered.filter((item) => {
+    size += utf8ByteLength(JSON.stringify(item));
+    return size <= 64 * 1024;
+  });
+  return ascending ? bounded : bounded.reverse();
 }

@@ -566,7 +566,7 @@ describe("task titles", () => {
   });
 });
 
-it("opens a task with a whole-turn page in one read", async () => {
+it("draws the initial conversation cut from one scoped subscription", async () => {
   let fixture!: ReturnType<typeof conversationHistoryHost>;
   await mount((source) => `/tasks/${source.getSnapshot().threads[0]!.id}`, {
     hostClient: (source) => {
@@ -583,8 +583,8 @@ it("opens a task with a whole-turn page in one read", async () => {
     },
     { timeout: 1000 },
   );
-  expect(fixture.requests).toHaveLength(1);
-  expect(fixture.requests[0]).toMatchObject({ turns: 10 });
+  expect(fixture.detailRequests).toEqual([client.getSnapshot().threads[0]!.id]);
+  expect(fixture.reads).not.toContain("/v1/rpc/thread.items.page");
 });
 
 describe("a conversation's page above it at phone width", () => {

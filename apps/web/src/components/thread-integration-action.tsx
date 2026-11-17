@@ -1,3 +1,4 @@
+import { requestDecisionRevision } from "@opensteer/client/host";
 import { useIntegrationAuthorizationTracking } from "../integrations/use-integration-authorization-tracking.js";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -346,6 +347,7 @@ export function ThreadIntegrationAction({
       hostClient
         .dispatch({
           idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
+          ...requestDecisionRevision(request),
           requestId: request.id,
           response: { kind: "external", value: { decision: "declined" } },
           type: "request.respond",
@@ -540,6 +542,7 @@ export function ThreadIntegrationAction({
       const prepare = async () => {
         await hostClient.dispatch({
           idempotencyKey: mutationIdempotencyKey(`request:${request.id}:install`),
+          ...requestDecisionRevision(request),
           requestId: request.id,
           response: { kind: "choice", optionId: "installed" },
           type: "request.respond",
@@ -635,6 +638,7 @@ export function ThreadIntegrationAction({
     void run(async () => {
       await hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${request.id}:server:${serverId}`),
+        ...requestDecisionRevision(request),
         requestId: request.id,
         response: { kind: "choice", optionId: `server:${serverId}` },
         type: "request.respond",

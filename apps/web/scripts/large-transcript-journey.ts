@@ -23,7 +23,6 @@ import type { TranscriptFixtureSnapshot, TranscriptEntry } from "@opensteer/clie
 import type { MockHostClient } from "@opensteer/client/mock";
 import type { ThreadId } from "@opensteer/core";
 import type { BrowserContext, Page } from "playwright-core";
-import { largeTranscriptFixture } from "./large-transcript-fixture.js";
 import { expectThat, finishJourney, journeyChecks, openMockWeb } from "./mock-web-journey.js";
 
 const directory = path.resolve(
@@ -32,7 +31,99 @@ const directory = path.resolve(
 );
 const threadA = "thr_00000000-0000-4000-8000-000000000002";
 const threadB = "thr_00000000-0000-4000-8000-000000000003";
-const fixture = largeTranscriptFixture();
+const fixture = (() => {
+  const entries: TranscriptEntry[] = [];
+  let messages = 0;
+  let tools = 0;
+  const id = (prefix: string, number: number) =>
+    `${prefix}_00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
+  const at = () => new Date(Date.UTC(2026, 9, 25) + entries.length * 5_000).toISOString();
+  for (let run = 1; run <= 188; run++) {
+    const runId = id("run", run);
+    const began = at();
+    const messageCount = 5 + Number(run <= 144);
+    const toolCount = 5 + Number(run <= 138);
+    for (let step = 0; step < 18 + Number(run <= 4); step++) {
+      entries.push({
+        kind: "reasoning",
+        id: `reasoning-${run}-${step}`,
+        runId,
+        createdAt: at(),
+        state: "done",
+        text: `Inspecting synthetic step ${step} of run ${run}.\n`.repeat(8),
+      });
+      if (step < toolCount) {
+        const callId = `call-${++tools}`;
+        entries.push({
+          kind: "tool",
+          id: `tool:${runId}:${callId}`,
+          callId,
+          runId,
+          createdAt: at(),
+          tool: { namespace: "functions", name: "exec_command" },
+          arguments: { cmd: "read synthetic output" },
+          output: {
+            text: `Synthetic output for tool ${tools}: a repeatable line of diagnostic text.\n`.repeat(
+              40,
+            ),
+          },
+          state: "done",
+          streamText: "",
+          isError: false,
+          integration: null,
+        });
+      }
+      if (step < messageCount) {
+        const messageId = id("msg", ++messages);
+        if (messages === 1084) continue;
+        entries.push({
+          kind: "message",
+          messageKind: "assistant",
+          id: messageId,
+          runId,
+          createdAt: at(),
+          author: { kind: "platform", cause: "synthetic fixture" },
+          body:
+            `## Run ${run}, update ${step + 1}\n\n` +
+            "This synthetic update records the work completed so far. The next step checks the same task without relying on private data.\n\n".repeat(
+              8,
+            ),
+        });
+      }
+    }
+    if (run === 188)
+      entries.push({
+        kind: "message",
+        messageKind: "assistant",
+        id: id("msg", messages),
+        runId,
+        createdAt: at(),
+        author: { kind: "platform", cause: "synthetic fixture" },
+        body: "Overnight transcript complete. This is the newest reply.",
+      });
+    entries.push({
+      kind: "run",
+      id: `run:${runId}`,
+      runId,
+      createdAt: began,
+      endedAt: at(),
+      status: "completed",
+      replyMessageId: id("msg", messages),
+      error: null,
+    });
+  }
+  return {
+    entries,
+    newestMessageId: id("msg", messages),
+    counts: {
+      runs: 188,
+      messages,
+      tools,
+      bytes: Buffer.byteLength(JSON.stringify(entries)),
+      entries: entries.length,
+    },
+  };
+})();
 const { checks, check, abort } = journeyChecks();
 await mkdir(directory, { recursive: true });
 const web = await openMockWeb("opensteer-large-transcript");
@@ -378,7 +469,7 @@ try {
     const observed = fixture.counts;
     expectThat(
       observed,
-      observed.events === 7004 &&
+      observed.entries === 5738 &&
         observed.messages === 1084 &&
         observed.tools === 1078 &&
         observed.runs === 188,

@@ -8,12 +8,29 @@ import {
 import type { TranscriptItem, TranscriptOrderCursor } from "@opensteer/protocol/transcript";
 import { MockPersonalSocket } from "../mock/mock-personal-host.js";
 import { HttpHostClient } from "./host-session-client.js";
-import type { PersonalStreamCache, PersonalStreamCheckpoint } from "./personal-stream-cache.js";
+import {
+  createPersonalStreamCache,
+  type PersonalStreamCache,
+  type PersonalStreamCheckpoint,
+} from "./personal-stream-cache.js";
 import { ScopedPersonalStream } from "./scoped-personal-stream.js";
 import { ScopedThreadReader, TranscriptBodies } from "./scoped-thread-reader.js";
 
 const deploymentId = createId("deployment");
 const viewerId = createId("user");
+const session = {
+  sessionId: createId("authSession"),
+  sessionSurface: "canonical" as const,
+  user: {
+    id: viewerId,
+    displayName: "Owner",
+    email: "owner@example.test",
+    image: null,
+    emailVerified: true,
+    disabledAt: null,
+  },
+  can: { createTasks: true, useVoice: true, manageComputers: true, managePrivateResources: true },
+};
 const epoch = crypto.randomUUID();
 const threadId = createId("thread");
 const runId = createId("run");
@@ -445,9 +462,11 @@ test("reviews the exact pending Request revision and drops the reviewed card whe
         },
       ],
     });
-  const result = (callId: string) => ({
+  const result = (callId: string, revision: string) => ({
     ok: true,
     data: {
+      threadId,
+      reviewedRevisions: { [requestId]: revision },
       requests: [{ id: requestId, originatingThreadId: threadId, status: "pending", callId }],
     },
   });
@@ -457,7 +476,7 @@ test("reviews the exact pending Request revision and drops the reviewed card whe
     { threadId, review: [{ id: requestId, revision: "2" }] },
     expect.anything(),
   );
-  earlier.resolve(result("first"));
+  earlier.resolve(result("first", "2"));
   await vi.waitFor(() => expect(reader.getSnapshot().requests[0]?.callId).toBe("first"));
 
   expect(change("2", "3")).toBe(true);
@@ -467,7 +486,7 @@ test("reviews the exact pending Request revision and drops the reviewed card whe
     { threadId, review: [{ id: requestId, revision: "3" }] },
     expect.anything(),
   );
-  later.resolve(result("updated"));
+  later.resolve(result("updated", "3"));
   await vi.waitFor(() => expect(reader.getSnapshot().requests[0]?.callId).toBe("updated"));
   reader.dispose();
 });
@@ -495,6 +514,8 @@ test("retains the moved item's anchor across a history reset and refuses a respo
   });
   const page = {
     kind: "page",
+    threadId,
+    nodeId: null,
     revision: "2",
     orderRevision: "2",
     hasMore: false,
@@ -527,6 +548,8 @@ test("bounds explicitly loaded bodies and inactive resource rows", () => {
   const bodies = new TranscriptBodies();
   const big = {
     item,
+    threadId,
+    nodeId: null,
     body: { kind: "text" as const, text: "🦊".repeat(200_000) },
     truncated: false,
   };
@@ -553,6 +576,78 @@ test("bounds explicitly loaded bodies and inactive resource rows", () => {
   ).toHaveLength(256);
 });
 
+test("attaches without a cursor when a warm-cache preflight is retryable", async () => {
+  const fetch = vi
+    .fn<typeof globalThis.fetch>()
+    .mockResolvedValue(
+      Response.json(
+        { ok: false, error: { code: "internal", message: "Starting", retryable: true } },
+        { status: 503 },
+      ),
+    );
+  const cache: PersonalStreamCache = {
+    hasCheckpoints: async () => true,
+    load: async () => null,
+    commit: async () => {},
+    remove: async () => {},
+  };
+  let socket: MockPersonalSocket;
+  const connect = vi.fn(
+    () =>
+      (socket = new MockPersonalSocket((raw) => {
+        const message = JSON.parse(raw) as ScopedClientMessage;
+        if (message.type !== "client.attach") return;
+        const address = {
+          subscriptionId: "shell" as const,
+          scope: shellScope,
+          generation: message.generation,
+        };
+        socket.deliver({
+          ...address,
+          type: "host.snapshot",
+          throughSequence: "1",
+          snapshot: {
+            deploymentId,
+            viewerId,
+            epoch,
+            session,
+            tasks: [task],
+            visits: [],
+            attention: [],
+            counts,
+            recentTaskIds: [threadId],
+            activeTaskIds: [],
+            resourceRevisions: revisions("0"),
+          },
+        });
+        socket.deliver({ ...address, type: "host.synchronized", throughSequence: "1" });
+      })),
+  );
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    streamCache: cache,
+    fetch,
+    webSocketFactory: connect,
+    capabilities: [],
+  });
+  try {
+    client.activateThread(threadId);
+    await client.load();
+    expect(connect).toHaveBeenCalledTimes(1);
+    const attach = JSON.parse(socket!.sent[0]!) as Extract<
+      ScopedClientMessage,
+      { type: "client.attach" }
+    >;
+    expect(attach.cursor).toBeUndefined();
+    expect(attach.selected?.scope).toEqual(threadScope);
+    expect(client.getSnapshot().connection).toBe("connected");
+    expect(client.getSnapshot().tasks?.entries.map(({ thread }) => thread.id)).toEqual([threadId]);
+    expect(client.getSnapshot().activeTasks).toEqual([]);
+  } finally {
+    client.dispose();
+  }
+});
+
 test("uses no timers or network reads when an attached personal client is idle", async () => {
   vi.useFakeTimers();
   const fetch = vi
@@ -576,6 +671,7 @@ test("uses no timers or network reads when an attached personal client is idle",
           deploymentId,
           viewerId,
           epoch,
+          session,
           tasks: [],
           visits: [],
           attention: [],
@@ -785,4 +881,247 @@ test("reconnects from unaffected complete cuts when an authority close names a r
   expect(replaced).toMatchObject({ type: "client.subscribe", scope: other });
   expect(replaced && "cursor" in replaced).toBe(false);
   release();
+});
+
+test("replays a full saved history window with updated and removed active overlays", async () => {
+  let serialized: string | null = null;
+  const storage = {
+    exists: async () => serialized !== null,
+    read: async () => serialized,
+    write: async (value: string, current: () => boolean) => {
+      if (current()) serialized = value;
+    },
+    remove: async () => {
+      serialized = null;
+    },
+  };
+  const cache = createPersonalStreamCache(storage);
+  const f = fixture(cache);
+  const history = Array.from({ length: 50 }, (_, i) => {
+    const id = createId("message");
+    return { ...item, id, messageId: id, position: String(i + 3) };
+  });
+  const tool = {
+    ...item,
+    kind: "tool",
+    id: "tool-a",
+    toolCallId: "call-a",
+    view: { status: "running" },
+  } satisfies TranscriptItem;
+  const { messageId: _unused, ...active } = tool;
+  const other = { ...active, id: "tool-b", toolCallId: "call-b", position: "2" };
+  f.syncShell();
+  const frame = f.detailSnapshot(history);
+  f.stream.receive({
+    ...frame,
+    snapshot: {
+      ...frame.snapshot,
+      nextBefore: null,
+      activeItems: [active, other],
+    },
+  });
+  f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
+  f.stream.receive({
+    ...f.address,
+    type: "host.changes",
+    fromSequence: "1",
+    throughSequence: "2",
+    changes: [
+      {
+        sequence: "2",
+        ordinal: 0,
+        entityKind: "item",
+        entityId: active.id,
+        operation: "upsert",
+        value: { ...active, revision: "2", view: { status: "running", title: "Updated" } },
+      },
+      { sequence: "2", ordinal: 1, entityKind: "item", entityId: other.id, operation: "remove" },
+    ],
+  });
+  await vi.waitFor(() => expect(serialized).toContain('"afterSequence":"2"'));
+  const fresh = new ScopedPersonalStream(createPersonalStreamCache(storage));
+  fresh.select(threadScope);
+  await fresh.restore({ deploymentId, viewerId, epoch });
+  const sent: ScopedClientMessage[] = [];
+  fresh.attach((message) => sent.push(message));
+  const attach = sent[0] as Extract<ScopedClientMessage, { type: "client.attach" }>;
+  expect(attach.selected?.cursor?.afterSequence).toBe("2");
+  expect(fresh.detail(threadScope).transcript.getSnapshot().items.size).toBe(51);
+  expect(fresh.detail(threadScope).transcript.getSnapshot().items.get(active.id)?.revision).toBe(
+    "2",
+  );
+  expect(fresh.detail(threadScope).transcript.getSnapshot().items.has(other.id)).toBe(false);
+});
+
+test("refreshes a quiet input queue after two in-flight reads are overtaken", async () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  type QueueRead = Awaited<
+    ReturnType<import("@opensteer/protocol").HostApiClient["thread.inputQueue.get"]>
+  >;
+  const first = Promise.withResolvers<QueueRead>();
+  const second = Promise.withResolvers<QueueRead>();
+  const answer = (revision: string): QueueRead => ({
+    ok: true,
+    data: { threadId, revision, paused: false, steerRunId: null, items: [] },
+  });
+  const queue = vi
+    .fn<import("@opensteer/protocol").HostApiClient["thread.inputQueue.get"]>()
+    .mockReturnValueOnce(first.promise)
+    .mockReturnValueOnce(second.promise)
+    .mockResolvedValue(answer("3"));
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.inputQueue.get": queue } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+  );
+  const invalidate = (fromSequence: string, throughSequence: string) =>
+    f.stream.receive({
+      ...f.address,
+      type: "host.changes",
+      fromSequence,
+      throughSequence,
+      changes: [
+        {
+          operation: "invalidate",
+          entityKind: "collection",
+          entityId: "input-queue",
+          sequence: throughSequence,
+          ordinal: 0,
+          value: { revision: throughSequence },
+        },
+      ],
+    });
+  try {
+    invalidate("1", "2");
+    first.resolve(answer("1"));
+    await vi.waitFor(() => expect(queue).toHaveBeenCalledTimes(2));
+    invalidate("2", "3");
+    second.resolve(answer("2"));
+    await vi.waitFor(() =>
+      expect(f.detail.transcript.getSnapshot().inputQueue?.revision).toBe("3"),
+    );
+  } finally {
+    reader.dispose();
+  }
+});
+
+test("does not install a history page that contains another node's item", async () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const wrong = { ...item, nodeId, revision: "2", view: { preview: "Wrong scope" } };
+  const read = vi.fn().mockResolvedValue({
+    ok: true,
+    data: {
+      kind: "page",
+      threadId,
+      nodeId: null,
+      items: [wrong],
+      orderRevision: "1",
+      revision: "2",
+      nextBefore: null,
+      hasMore: false,
+    },
+  });
+  const reader = new ScopedThreadReader(
+    f.detail,
+    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+    new TranscriptBodies(),
+    false,
+  );
+  try {
+    await expect(reader.history("latest")).rejects.toThrow("scope");
+    expect(f.detail.transcript.getSnapshot().items.get(item.id)?.view.preview).toBe("A");
+  } finally {
+    reader.dispose();
+  }
+});
+
+test("hides an invalidated Request prefix until its current membership has been read", async () => {
+  const f = fixture();
+  f.syncShell();
+  const frame = f.detailSnapshot();
+  const summary = {
+    id: requestId,
+    status: "pending",
+    kind: "person.question",
+    title: "Review",
+    revision: "1",
+    threadId,
+  };
+  f.stream.receive({
+    ...frame,
+    snapshot: {
+      ...frame.snapshot,
+      pendingRequests: [summary],
+      overlayCursors: { requests: "old" },
+    },
+  });
+  f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
+  type Rpc = import("@opensteer/protocol").HostApiClient;
+  const next = Promise.withResolvers<Awaited<ReturnType<Rpc["thread.overlays.page"]>>>();
+  const overlays = vi.fn<Rpc["thread.overlays.page"]>().mockReturnValue(next.promise);
+  const reader = new ScopedThreadReader(
+    f.detail,
+    {
+      "thread.inputQueue.get": async () => ({
+        ok: true,
+        data: {
+          threadId,
+          revision: "1",
+          paused: false,
+          steerRunId: null,
+          items: [],
+        },
+      }),
+      "thread.requests.list": async () => ({
+        ok: true,
+        data: {
+          threadId,
+          requests: [{ id: requestId, originatingThreadId: threadId, status: "pending" }],
+          reviewedRevisions: { [requestId]: "1" },
+        },
+      }),
+      "thread.overlays.page": overlays,
+    } as unknown as Rpc,
+    new TranscriptBodies(),
+  );
+  try {
+    await vi.waitFor(() => expect(reader.getSnapshot().requests).toHaveLength(1));
+    f.stream.receive({
+      ...f.address,
+      type: "host.changes",
+      fromSequence: "1",
+      throughSequence: "2",
+      changes: [
+        {
+          sequence: "2",
+          ordinal: 0,
+          operation: "invalidate",
+          entityKind: "collection",
+          entityId: "requests",
+          value: { revision: "2" },
+        },
+      ],
+    });
+    expect(reader.getSnapshot()).toMatchObject({
+      requests: [],
+      moreRequests: false,
+      requestsRefreshing: true,
+    });
+    expect(overlays).toHaveBeenCalledWith(
+      { threadId, kind: "requests", expectedRevision: "2" },
+      expect.anything(),
+    );
+    next.resolve({
+      ok: true,
+      data: { threadId, nodeId: null, kind: "requests", revision: "2", entries: [], next: null },
+    });
+    await vi.waitFor(() => expect(reader.getSnapshot().requestsRefreshing).toBe(false));
+    expect(reader.getSnapshot().requests).toEqual([]);
+  } finally {
+    reader.dispose();
+  }
 });

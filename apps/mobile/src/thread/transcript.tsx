@@ -1,4 +1,6 @@
-import { useTranscriptMessage, useItemText } from "@opensteer/client/react";
+import type { HostClient } from "@opensteer/client/host";
+import { AnswerPill } from "./answer-pill.js";
+import { useTranscriptMessage, useTranscriptText } from "@opensteer/client/react";
 import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
 import { useNavigation } from "@react-navigation/native";
 import { sideMemory } from "../side-memory.js";
@@ -928,6 +930,9 @@ export function SubagentSteps(props: {
   readonly active: boolean;
   readonly agentScope: AgentScope;
   readonly live: boolean;
+  readonly threadId?: string | undefined;
+  readonly nodeId?: string | undefined;
+  readonly generation?: number | undefined;
   readonly entries: readonly SubagentDetailEntry[];
   readonly onOpenStep: (entryId: string) => void;
 }): ReactNode {
@@ -971,23 +976,25 @@ export function SubagentSteps(props: {
           switch (entry.kind) {
             case "message":
               return (
-                <View key={entry.id} style={styles.assistant}>
-                  <Markdown text={entry.text} />
-                </View>
+                <NodeMessage
+                  key={entry.id}
+                  entry={entry}
+                  client={props.agentScope.hostClient}
+                  threadId={props.threadId}
+                  nodeId={props.nodeId}
+                  generation={props.generation}
+                />
               );
             case "reasoning":
               return (
                 <ReasoningRow
                   active={false}
                   key={entry.id}
-                  reasoning={{
-                    createdAt: "",
-                    id: entry.id,
-                    kind: "reasoning",
-                    runId: null,
-                    state: "done",
-                    text: entry.text,
-                  }}
+                  reasoning={entry}
+                  client={props.agentScope.hostClient}
+                  threadId={props.threadId}
+                  nodeId={props.nodeId}
+                  generation={props.generation}
                 />
               );
             case "agent":
@@ -1117,17 +1124,57 @@ function StepsRow(props: {
  * than in a sheet that would cover it. A thought first seen in an active turn stays
  * open when it completes; historical thoughts remain one-line disclosures.
  */
+function NodeMessage(props: {
+  entry: Extract<SubagentDetailEntry, { kind: "message" }>;
+  client?: HostClient | undefined;
+  threadId?: string | undefined;
+  nodeId?: string | undefined;
+  generation?: number | undefined;
+}) {
+  const { entry, client, threadId, nodeId, generation } = props;
+  const [expanded, expand] = useState(false);
+  const text = useTranscriptText({
+    client,
+    threadId,
+    nodeId,
+    generation,
+    itemId: entry.id,
+    revision: entry.itemRevision,
+    expanded: expanded && entry.previewTruncated === true,
+    preview: entry.text,
+  });
+  return (
+    <View style={styles.assistant}>
+      <Markdown text={text.text} />
+      {entry.previewTruncated && !expanded ? (
+        <AnswerPill tone="secondary" label="Show full message" onPress={() => expand(true)} />
+      ) : null}
+    </View>
+  );
+}
+
 function ReasoningRow(props: {
   readonly active: boolean;
   readonly reasoning: ReasoningEntry;
+  readonly client?: HostClient | undefined;
+  readonly threadId?: string | undefined;
+  readonly nodeId?: string | undefined;
+  readonly generation?: number | undefined;
 }): ReactNode {
   const [open, setOpen] = useState(props.active || props.reasoning.state === "streaming");
   const scope = useContext(TaskScopeContext);
-  const itemId = props.reasoning.itemId;
-  const liveText = useItemText(
-    scope && itemId ? scope.hostClient.getThreadItemText(scope.threadId) : undefined,
-    itemId,
-  );
+  const client = props.client ?? scope?.hostClient;
+  const threadId = props.threadId ?? scope?.threadId;
+  const text = useTranscriptText({
+    client,
+    threadId,
+    nodeId: props.nodeId,
+    generation: props.generation,
+    itemId: props.reasoning.itemId,
+    revision: props.reasoning.itemRevision,
+    expanded: open && props.reasoning.previewTruncated === true,
+    preview: props.reasoning.text,
+  });
   return (
     <View>
       <StepHead
@@ -1139,7 +1186,7 @@ function ReasoningRow(props: {
       {open ? (
         <Animated.View entering={appear} exiting={exit} style={styles.thought}>
           <AppText selectable role="secondary" tone="muted">
-            {liveText?.text ?? props.reasoning.text}
+            {text.text}
           </AppText>
         </Animated.View>
       ) : null}

@@ -122,6 +122,8 @@ export const TranscriptItemSchema = z.discriminatedUnion("kind", [
 
 export const TranscriptPageSchema = z.strictObject({
   kind: z.literal("page"),
+  threadId: ThreadIdSchema,
+  nodeId: ExecutionNodeIdSchema.nullable(),
   orderRevision: PersonalRevisionSchema,
   revision: PersonalRevisionSchema,
   items: z.array(TranscriptItemSchema).max(100),
@@ -135,7 +137,11 @@ export type TranscriptOrderCursor = z.infer<typeof TranscriptOrderCursorSchema>;
 
 export const TranscriptPageResultSchema = z.discriminatedUnion("kind", [
   TranscriptPageSchema,
-  z.strictObject({ kind: z.literal("history-reset"), orderRevision: PersonalRevisionSchema }),
+  z.strictObject({
+    kind: z.literal("history-reset"),
+    orderRevision: PersonalRevisionSchema,
+    anchorUnavailable: z.literal(true).optional(),
+  }),
 ]);
 
 export const TranscriptItemBodySchema = z.discriminatedUnion("kind", [
@@ -154,6 +160,8 @@ export const TranscriptItemBodySchema = z.discriminatedUnion("kind", [
 
 export const TranscriptItemResultSchema = z
   .strictObject({
+    threadId: ThreadIdSchema,
+    nodeId: ExecutionNodeIdSchema.nullable(),
     item: TranscriptItemSchema,
     body: TranscriptItemBodySchema,
     truncated: z.boolean(),

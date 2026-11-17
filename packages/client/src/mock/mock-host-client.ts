@@ -1,4 +1,6 @@
+import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import {
+  mockMessageContent,
   mockScopedShell,
   mockScopedDetail,
   mockScopedItems,
@@ -16,11 +18,9 @@ import {
   DeviceIntegrationConnectionSummarySchema,
   type DeviceIntegrationConnectionSummary,
 } from "@opensteer/integration-core";
-import { clientRpcSuccessSchema } from "../host/device-readers.js";
 import {
   clientCommandSchema,
   deviceAccessCommand,
-  deviceDriversApiVersion,
   type MachineAccessUpdateInput,
 } from "../host/device-commands.js";
 import { deviceMachine, deviceDriverKey } from "../host/device-projection.js";
@@ -45,7 +45,6 @@ import { AssetUrlStore } from "../host/asset-urls.js";
 import { ReferenceStore } from "../references/store.js";
 import { TranscriptFileController } from "../host/transcript-files.js";
 import { openWaitingMessageEditor } from "../host/waiting-message-editor.js";
-import { isDeviceAccessRequestEvent } from "@opensteer/protocol";
 import { deviceAccess } from "@opensteer/protocol";
 import { hostsDeployment } from "../computers/computers.js";
 import { heldThread, listedRowThreadId } from "../host/task-list.js";
@@ -62,7 +61,7 @@ import type {
   MockBrowserSource as HostSnapshot,
   MockBrowserSession as BrowserSessionSummary,
 } from "./mock-browser-source.js";
-import { BrowserSessionIdSchema, previewToolOutput } from "@opensteer/core";
+import { BrowserSessionIdSchema } from "@opensteer/core";
 import type { PersonalTabLineage } from "../host/client.js";
 import { MockTabCatalog, seedMockApps } from "./mock-tabs.js";
 import { placeList as tabPlaceList } from "../host/places.js";
@@ -70,7 +69,6 @@ import type { WindowId } from "@opensteer/core";
 import { createTabsClient, type TabsClientPort } from "../host/tabs-client.js";
 import { TabViewers } from "../host/tab-viewers.js";
 import type { TabsClient } from "../host/tabs-contract.js";
-import { AgentEventViewSchema } from "@opensteer/core";
 import { TabIdSchema, type App, type TabId, type TabTarget } from "@opensteer/core";
 import type {
   AppCommand,
@@ -80,7 +78,8 @@ import type {
 } from "@opensteer/protocol";
 import { seedMockSubagents } from "./mock-subagents.js";
 import { seedMockSubagentScene, type MockSubagentScene } from "./mock-subagent-scenes.js";
-import { NodeDetailStore, type NodeDetailSubscription } from "../host/node-detail.js";
+import type { NodeDetailSnapshot, NodeDetailSubscription } from "../host/node-detail.js";
+import { nodeTranscriptCard } from "../host/transcript-item-view.js";
 
 import {
   CreateBrowserProfileBodySchema,
@@ -101,6 +100,7 @@ import {
 } from "@opensteer/core";
 import {
   EnvironmentIdSchema,
+  ExecutionNodeIdSchema,
   HarnessIdSchema,
   HarnessInstanceIdSchema,
   ModelIdSchema,
@@ -184,9 +184,6 @@ import {
   sameProviderContinuationIdentity,
   type AgentEvent,
   AgentEventSchema,
-  nodeDetailEventNodeId,
-  ExecutionNodeIdSchema,
-  compareSequence,
   type AssignmentSummary,
   type AssignmentView,
   type Attachment,
@@ -315,7 +312,7 @@ import type {
 import { HostClientRequestError, mainDoneTasks } from "../host/client.js";
 import { computerViewMethods } from "../host/computer-views.js";
 import type { ExecutionChoice, ExecutionSelection } from "../host/execution-preferences.js";
-import { dispatchDeviceCommand, createInMemoryHostApiClient } from "../host/host-api-client.js";
+import { createInMemoryHostApiClient } from "../host/host-api-client.js";
 import {
   rpcErrorStatus,
   unwrapRpcResult,
@@ -334,9 +331,7 @@ import { withPublishedReplies } from "../host/thread-visits.js";
 import { ThreadStateProjection } from "../host/thread-state.js";
 import {
   assignmentReturnId,
-  drawnLiveStream,
   finishRunEntries,
-  foldTranscriptEvent,
   isTerminalRunEntryStatus,
   requestReceipt,
   threadInputDelivery,
@@ -1993,30 +1988,58 @@ function mockItemsPage(
   const snapshot = client.getSnapshot();
   const revision = String(snapshot.revision);
   const { threadId, nodeId } = input;
-  if (input.before && input.before.orderRevision !== revision)
+  const boundary = input.before ?? input.after;
+  if (
+    boundary &&
+    (boundary.orderRevision !== revision ||
+      boundary.threadId !== threadId ||
+      boundary.nodeId !== (nodeId ?? null) ||
+      boundary.viewerId !== snapshot.user?.id ||
+      boundary.deploymentId !== snapshot.deploymentId)
+  )
     return rpcSuccess({ kind: "history-reset" as const, orderRevision: revision });
-  const all = mockScopedItems(snapshot, threadId, nodeId);
+  const all = mockScopedItems(snapshot, threadId, nodeId, revision, client.nodeEvents);
   const anchor = input.anchorItemId ?? input.aroundMessageId;
   const index = anchor
     ? all.findIndex(
         (row) => row.id === anchor || (row.kind === "message" && row.messageId === anchor),
       )
     : -1;
-  if (anchor && index < 0) return rpcNotFound("Item unavailable.");
+  if (anchor && index < 0)
+    return input.anchorItemId
+      ? rpcSuccess({
+          kind: "history-reset" as const,
+          orderRevision: revision,
+          anchorUnavailable: true as const,
+        })
+      : rpcNotFound("Item unavailable.");
+  const indexAtCursor = boundary ? all.findIndex(({ id }) => id === boundary.beforeId) : -1;
+  if (boundary && indexAtCursor < 0)
+    return rpcSuccess({ kind: "history-reset" as const, orderRevision: revision });
+  const limit = input.limit ?? 50;
   const end = input.before
-    ? all.findIndex(({ id }) => id === input.before?.beforeId)
-    : index >= 0
-      ? Math.min(all.length, index + 25)
-      : all.length;
-  const items = boundedMockPage(all.slice(Math.max(0, end - (input.limit ?? 50)), end));
+    ? indexAtCursor
+    : input.after
+      ? Math.min(all.length, indexAtCursor + limit + 1)
+      : index >= 0
+        ? Math.min(all.length, index + Math.ceil(limit / 2))
+        : all.length;
+  const start = input.after ? indexAtCursor + 1 : Math.max(0, end - limit);
+  const items = boundedMockPage(all.slice(start, end), input.after !== undefined);
   const hasMore = items.length > 0 && items[0] !== all[0];
   return rpcSuccess({
     kind: "page" as const,
+    threadId,
+    nodeId: nodeId ? ExecutionNodeIdSchema.parse(nodeId) : null,
     items,
     orderRevision: revision,
     revision,
     hasMore,
     nextBefore: hasMore ? mockScopedCursor(snapshot, threadId, nodeId, revision, items[0]) : null,
+    nextAfter:
+      items.length && items.at(-1) !== all.at(-1)
+        ? mockScopedCursor(snapshot, threadId, nodeId, revision, items.at(-1))
+        : null,
   });
 }
 
@@ -2304,20 +2327,108 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "personal.shell.get": async ({ selectedThreadId }) =>
       rpcSuccess(mockScopedShell(client.getSnapshot(), mockThread, selectedThreadId)),
     "thread.snapshot.get": async ({ threadId, nodeId }) => {
-      const detail = mockScopedDetail(client.getSnapshot(), mockThread, threadId, nodeId);
+      const detail = mockScopedDetail(
+        client.getSnapshot(),
+        mockThread,
+        threadId,
+        nodeId,
+        undefined,
+        undefined,
+        client.nodeEvents,
+      );
       return detail ? rpcSuccess(detail) : rpcNotFound("Conversation unavailable.");
     },
     "thread.items.page": async (input) => mockItemsPage(client, input),
     "node.items.page": async (input) => mockItemsPage(client, input),
-    "thread.overlays.page": async () =>
-      rpcSuccess({ revision: String(client.getSnapshot().revision), entries: [], next: null }),
-    "transcript.item.get": async ({ threadId, nodeId, itemId }) => {
+    "thread.overlays.page": async ({ threadId, nodeId, kind, cursor, expectedRevision }) => {
       const snapshot = client.getSnapshot();
-      const item = mockScopedItems(snapshot, threadId, nodeId).find(({ id }) => id === itemId);
+      const revision = String(snapshot.revision);
+      const [at, rawOffset] = cursor?.split(":") ?? [revision, "0"];
+      const offset = Number(rawOffset);
+      if (
+        at !== revision ||
+        (expectedRevision && expectedRevision !== revision) ||
+        !Number.isSafeInteger(offset) ||
+        offset < 0
+      )
+        return {
+          ok: false,
+          error: { code: "conflict", message: "Overlay changed", retryable: false },
+        };
+      const all =
+        kind === "requests"
+          ? (snapshot.requests[threadId] ?? [])
+              .filter(({ status }) => status === "pending")
+              .map(({ id, kind, status }) => ({
+                id,
+                kind,
+                status,
+                revision,
+                threadId,
+                title: kind,
+              }))
+          : [];
+      const nextOffset = offset + 20;
+      return rpcSuccess({
+        threadId,
+        nodeId: nodeId ?? null,
+        kind,
+        revision,
+        entries: all.slice(offset, nextOffset),
+        next: nextOffset < all.length ? `${revision}:${nextOffset}` : null,
+      });
+    },
+    "transcript.item.get": async ({ threadId, nodeId, itemId, expectedRevision }) => {
+      const snapshot = client.getSnapshot();
+      const item = mockScopedItems(
+        snapshot,
+        threadId,
+        nodeId,
+        String(snapshot.revision),
+        client.nodeEvents,
+      ).find(({ id }) => id === itemId);
+      if (item && expectedRevision !== undefined && expectedRevision !== item.revision)
+        return {
+          ok: false,
+          error: { code: "conflict", message: "Item changed", retryable: false },
+        };
+      const address = { threadId, nodeId: nodeId ?? null };
+      if (item && nodeId) {
+        const event = client.nodeEvents.find((row) => row.eventId === itemId);
+        if (event?.type === "node.message" || event?.type === "reasoning.completed")
+          return rpcSuccess({
+            ...address,
+            item,
+            body: { kind: "text", text: event.data.text },
+            truncated: false,
+          });
+        if (event?.type === "tool.started") {
+          const callId = event.data.callId;
+          const completion = client.nodeEvents.find(
+            (row) =>
+              row.type === "tool.completed" &&
+              row.runId === event.runId &&
+              row.data.nodeId === nodeId &&
+              row.data.callId === callId,
+          );
+          const output = completion?.type === "tool.completed" ? completion.data.output : undefined;
+          return rpcSuccess({
+            ...address,
+            item,
+            truncated: false,
+            body: {
+              kind: "tool",
+              arguments: event.data.arguments,
+              ...(output ? { output: { text: output.text, truncation: output.truncation } } : {}),
+            },
+          });
+        }
+      }
       const row = snapshot.transcripts[threadId]?.find(({ id }) => id === itemId);
       if (!item || !row) return rpcNotFound("Item unavailable.");
       if (row.kind === "tool")
         return rpcSuccess({
+          ...address,
           item,
           body: {
             kind: "tool",
@@ -2327,15 +2438,43 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
           truncated: false,
         });
       if (row.kind === "reasoning")
-        return rpcSuccess({ item, body: { kind: "text", text: row.text }, truncated: false });
+        return rpcSuccess({
+          ...address,
+          item,
+          body: { kind: "text", text: row.text },
+          truncated: false,
+        });
       if (row.kind === "assignment")
         return rpcSuccess({
+          ...address,
           item,
           body: { kind: "assignment", assignment: row.assignment },
           truncated: false,
         });
       if (row.kind === "message")
-        return rpcSuccess({ item, body: { kind: "text", text: row.body }, truncated: false });
+        return rpcSuccess(
+          hostApi["transcript.item.get"].success.parse({
+            ...address,
+            item,
+            truncated: false,
+            body: {
+              kind: "message",
+              message: {
+                id: row.id,
+                threadId,
+                runId: row.runId,
+                author: row.author,
+                createdAt: row.createdAt,
+                kind: row.messageKind,
+                content: mockMessageContent(row),
+                published: row.published ?? true,
+                edit: row.edit,
+                quote: row.quote,
+                policy: row.policy,
+              },
+            },
+          }),
+        );
       return rpcNotFound("Item has no body.");
     },
     "resources.get": async () =>
@@ -2550,7 +2689,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       client.checkRepositoryAccess(input.connectionId).then(rpcSuccess).catch(mockRefusal),
     "integrations.get": async () =>
       rpcSuccess(
-        clientRpcSuccessSchema("integrations.get").parse(
+        hostApi["integrations.get"].success.parse(
           await client.loadIntegrations(),
         ) as RpcData<"integrations.get">,
       ),
@@ -2684,115 +2823,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
         return mockRefusal(error);
       }
     },
-    // The preview projects transcripts directly; it keeps no durable event log
-    // to page back through. Turn paging needs no additional projection here.
-    "tool.output.get": async ({ threadId, runId, callId, nodeId }) => {
-      const entry = (client.getSnapshot().transcripts[threadId] ?? []).find(
-        (entry) =>
-          entry.kind === "tool" &&
-          entry.runId === runId &&
-          entry.callId === callId &&
-          entry.nodeId === nodeId,
-      );
-      const event = client.nodeEvents.find(
-        (event) =>
-          event.type === "tool.completed" &&
-          event.threadId === threadId &&
-          event.runId === runId &&
-          event.data.callId === callId &&
-          event.data.nodeId === nodeId,
-      );
-      const output =
-        entry?.kind === "tool"
-          ? entry.output
-          : event?.type === "tool.completed"
-            ? event.data.output
-            : undefined;
-      if (!output) throw new Error("Tool output not found");
-      return rpcSuccess({ output });
-    },
-    "thread.events.list": async ({ threadId, deviceAccessRequests }) => {
-      const thread = client.getSnapshot().threads.find((item) => item.id === threadId);
-      if (!thread) throw new Error("Thread not found.");
-      return rpcSuccess(
-        hostApi["thread.events.list"].success.parse({
-          asOfSequence: SequenceSchema.parse(String(client.getSnapshot().revision)),
-          thread: mockThread(mockReaderThread(client.getSnapshot(), thread, deviceAccessRequests)),
-          events: [],
-          threadId,
-          window: { ...mockWindow(0), threadId },
-        }),
-      );
-    },
-    "node.events.list": async ({
-      threadId,
-      nodeId,
-      through,
-      before,
-      toolOutputs,
-      deviceAccessRequests,
-      limit = 100,
-    }) => {
-      const own = (client.getSnapshot().transcripts[threadId] ?? []).find(
-        (entry) => entry.kind === "node" && entry.nodeId === nodeId,
-      );
-      if (own?.kind !== "node" || !own.runId)
-        return mockRefusal(
-          new HostClientRequestError({
-            code: "not_found",
-            message: "Subagent not found",
-            status: 404,
-          }),
-        );
-      const all = client.nodeEvents.filter(
-        (event) =>
-          event.threadId === threadId &&
-          event.type !== "place.entered" &&
-          nodeDetailEventNodeId(event) === nodeId &&
-          (deviceAccessRequests === "include" || !isDeviceAccessRequestEvent(event)) &&
-          (!through || compareSequence(event.sequence, through) <= 0) &&
-          (!before || compareSequence(event.sequence, SequenceSchema.parse(before)) < 0),
-      );
-      // The history page schema still names places by their old identity; tab places stay out.
-      const events = all
-        .slice(-limit)
-        .flatMap((event) =>
-          event.type === "place.entered"
-            ? []
-            : [toolOutputs === "preview" ? previewToolOutput(event) : event],
-        );
-      const hasMore = all.length > events.length;
-      return rpcSuccess(
-        hostApi["node.events.list"].success.parse({
-          threadId,
-          nodeId,
-          node: {
-            attemptId: createId("runAttempt"),
-            effort: own.effort,
-            endedAt: own.completedAt,
-            id: own.nodeId,
-            kind: own.nodeKind,
-            model: own.model,
-            parentNodeId: own.parentNodeId,
-            phaseIndex: own.phaseIndex,
-            phases: own.phases,
-            prompt: own.prompt,
-            result: own.result,
-            runId: own.runId,
-            startedAt: own.createdAt,
-            status: own.status,
-            title: own.title,
-            usage: own.usage ?? null,
-          },
-          events,
-          window: {
-            ...mockWindow(events.length),
-            hasMore,
-            nextBefore: hasMore ? events[0]?.sequence : null,
-          },
-        }),
-      );
-    },
     "thread.assignments.list": async ({ open, threadId, deviceAccessRequests }) => {
       const assignments = client
         .listThreadAssignments(threadId)
@@ -2889,7 +2919,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
         hasMore: false,
       });
     },
-    "thread.live.get": async (input) => rpcSuccess(client.liveStreams(input.threadId)),
     "thread.requests.list": async (input) => {
       const snapshot = client.getSnapshot();
       if (!heldThread(snapshot, input.threadId))
@@ -2900,6 +2929,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
             status: 404,
           }),
         );
+      const revision = String(snapshot.revision);
       const target = input.requestId ? client.referenceRequest(input.requestId) : undefined;
       const requests = (
         input.requestId
@@ -2910,15 +2940,24 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       ).filter(
         (request) =>
           request.originatingThreadId === input.threadId &&
-          (!input.review || input.review.some(({ id }) => id === request.id)) &&
+          (!input.review ||
+            input.review.some(
+              ({ id, revision: expected }) => id === request.id && expected === revision,
+            )) &&
           (input.requestId !== undefined || request.status === "pending") &&
-          (input.deviceAccessRequests === "include" || request.kind !== "device.access"),
+          (input.review !== undefined ||
+            input.requestId !== undefined ||
+            input.deviceAccessRequests === "include" ||
+            request.kind !== "device.access"),
       );
       return rpcSuccess(
         hostApi["thread.requests.list"].success.parse({
           requests,
           threadId: input.threadId,
           window: mockWindow(requests.length),
+          ...(input.review || input.requestId
+            ? { reviewedRevisions: Object.fromEntries(requests.map(({ id }) => [id, revision])) }
+            : {}),
         }),
       );
     },
@@ -3898,7 +3937,7 @@ function mockBootstrap(
   sourceConfigs: ReadonlyMap<string, Readonly<Record<string, string>>>,
 ) {
   return {
-    apiVersion: deviceDriversApiVersion,
+    apiVersion: scopedPersonalApiVersion,
     deploymentId: snapshot.deploymentId,
     personalSettings: snapshot.personalSettings,
     can: snapshot.can,
@@ -4067,7 +4106,6 @@ export class MockHostClient implements HostClient {
   get searchSuggestionRequests() {
     return this.#state.searchSuggestionRequests;
   }
-  readonly #nodeDetails: NodeDetailStore;
   readonly #state: MockHostState;
   readonly #places: MockPlaceWorld;
   readonly #worldSubscription: () => void;
@@ -4210,29 +4248,6 @@ export class MockHostClient implements HostClient {
         }),
     });
     this.#state.onReferenceEvent = (event) => this.references.accept(event);
-    this.#nodeDetails = new NodeDetailStore({
-      available: () => true,
-      nodes: (threadId) =>
-        (this.getSnapshot().transcripts[threadId] ?? []).filter((entry) => entry.kind === "node"),
-      read: async (input) => {
-        const page = unwrapRpcResult(
-          await this.rpc["node.events.list"]({
-            ...input,
-            nodeId: ExecutionNodeIdSchema.parse(input.nodeId),
-            deviceAccessRequests: "include",
-          }),
-        );
-        return {
-          ...page,
-          events: page.events.map((event) => AgentEventViewSchema.parse(event)),
-        };
-      },
-      sendWatch: (deploymentId, nodeId) => {
-        const sequence = this.#state.nodeEvents.at(-1)?.sequence ?? SequenceSchema.parse("0");
-        queueMicrotask(() => this.#nodeDetails.watched(deploymentId, nodeId, sequence));
-        return true;
-      },
-    });
     const views = computerViewMethods(
       this.rpc,
       () => undefined,
@@ -4624,7 +4639,68 @@ export class MockHostClient implements HostClient {
   watchNode(threadId: string, nodeId: string): NodeDetailSubscription {
     const thread = this.getSnapshot().threads.find((entry) => entry.id === threadId);
     if (!thread) throw new Error("Conversation not found.");
-    return this.#nodeDetails.open(threadId, nodeId, this.getSnapshot().deploymentId!);
+    let releasePage: (() => void) | undefined;
+    let rows: NodeDetailSnapshot["entries"] = [];
+    let before: import("@opensteer/protocol/transcript").TranscriptOrderCursor | null = null;
+    let offset = 0;
+    const sources = new Set<() => void>();
+    const onChange = () => {
+      for (const listener of sources) listener();
+    };
+    const read = (): NodeDetailSnapshot => {
+      const node = (this.getSnapshot().transcripts[threadId] ?? []).find(
+        (entry) => entry.kind === "node" && entry.nodeId === nodeId,
+      );
+      return {
+        threadId,
+        nodeId,
+        node: node?.kind === "node" ? node : null,
+        entries: rows,
+        status: node ? "ready" : "missing",
+        hasMore: before !== null,
+        loadingOlder: false,
+        error: null,
+      };
+    };
+    const load = async (reset: boolean) => {
+      if (!reset && !before) return;
+      const current = ++offset;
+      const page = unwrapRpcResult(
+        await this.rpc["node.items.page"]({
+          threadId,
+          nodeId,
+          ...(!reset && before ? { before } : {}),
+        }),
+      );
+      if (current !== offset || page.kind !== "page") return;
+      const entries = page.items.flatMap((item) => nodeTranscriptCard(item) ?? []);
+      rows = reset ? entries : [...entries, ...rows];
+      before = page.nextBefore;
+      view = read();
+      onChange();
+    };
+    let view = read();
+    void load(true).catch(() => undefined);
+    releasePage = this.subscribe(() => {
+      view = read();
+      onChange();
+    });
+    return {
+      getSnapshot: () => view,
+      subscribe: (listener) => {
+        sources.add(listener);
+        return () => sources.delete(listener);
+      },
+      loadOlder: () => load(false),
+      retry: () => {
+        void load(true).catch(() => undefined);
+      },
+      release: () => {
+        ++offset;
+        releasePage?.();
+        sources.clear();
+      },
+    };
   }
 
   scopedShell(selected?: string, revision?: string) {
@@ -4632,7 +4708,15 @@ export class MockHostClient implements HostClient {
   }
 
   scopedDetail(threadId: string, nodeId?: string, anchor?: string, revision?: string) {
-    return mockScopedDetail(this.getSnapshot(), mockThread, threadId, nodeId, anchor, revision);
+    return mockScopedDetail(
+      this.getSnapshot(),
+      mockThread,
+      threadId,
+      nodeId,
+      anchor,
+      revision,
+      this.#state.nodeEvents,
+    );
   }
 
   readonly #transcriptSources = new Map<string, ThreadViewSource>();
@@ -5069,11 +5153,7 @@ export class MockHostClient implements HostClient {
     const parsed = clientCommandSchema.parse(
       browserProfileHomeCommand(command, this.#state.getSnapshot().browserProfileHomes),
     );
-    const result =
-      (parsed.type === "machine.access.update" && "deviceId" in parsed) ||
-      (parsed.type === "integration.computer.setup.set" && "deviceId" in parsed.input)
-        ? await dispatchDeviceCommand(this.rpc, parsed)
-        : await this.rpc["commands.dispatch"](hostApi["commands.dispatch"].payload.parse(parsed));
+    const result = await this.rpc["commands.dispatch"](parsed);
     if (result.ok) return result.data;
     // The same typed refusal the real client raises, so a surface branches on
     // the code here exactly as it would against a Host.
@@ -5091,7 +5171,6 @@ export class MockHostClient implements HostClient {
     this.references.dispose();
     this.transcriptFiles.dispose();
     this.assetUrls.dispose();
-    this.#nodeDetails.clear();
     this.#personShowListeners.clear();
     this.browserHistory.dispose();
     this.#computerViews.clear();
@@ -5184,11 +5263,8 @@ export class MockHostClient implements HostClient {
   }
 
   async updateMachineAccess(input: MachineAccessUpdateInput): Promise<MachineAccessUpdateOutcome> {
-    const command = deviceAccessCommand(input, `mock-machine-access:${crypto.randomUUID()}`, true);
-    const result =
-      command.type === "machine.access.update" && "deviceId" in command
-        ? unwrapRpcResult(await dispatchDeviceCommand(this.rpc, command))
-        : await this.dispatch(command);
+    const command = deviceAccessCommand(input, `mock-machine-access:${crypto.randomUUID()}`);
+    const result = await this.dispatch(command);
     if (result.type !== "machine.access.update") {
       throw new Error("Access settings command mismatch.");
     }
@@ -11423,7 +11499,16 @@ class MockHostState {
       ...this.snapshot,
       transcripts: {
         ...this.snapshot.transcripts,
-        [threadId]: foldTranscriptEvent(transcript, event),
+        [threadId]: [
+          ...transcript,
+          {
+            kind: "place",
+            id: event.eventId,
+            runId,
+            createdAt: event.createdAt,
+            ...event.data,
+          },
+        ],
       },
     });
   }
@@ -11627,47 +11712,22 @@ class MockHostState {
   }
 
   private publishThreadExecution(thread: ThreadSummary): void {
-    // The Host records the switch as an event, and its marker is what that
-    // event folds into, live or reloaded.
-    const recorded = AgentEventSchema.parse({
-      createdAt: thread.updatedAt,
-      data: { thread: mockThread(thread) },
-      environmentId: thread.environmentId,
-      eventId: createId("event"),
+    const marker: TranscriptEntry = {
+      kind: "selection",
+      id: createId("event"),
       runId: null,
-      sequence: String(++this.sequence),
-      threadId: thread.id,
-      type: "thread.execution-updated",
-    });
+      createdAt: thread.updatedAt,
+      harnessInstanceId: thread.harnessInstanceId,
+      modelSelection: thread.modelSelection,
+      providerSessionId: thread.providerSessionId,
+    };
     this.update({
       ...this.snapshot,
       threads: this.snapshot.threads.map((item) => (item.id === thread.id ? thread : item)),
       transcripts: {
         ...this.snapshot.transcripts,
-        [thread.id]: foldTranscriptEvent(this.snapshot.transcripts[thread.id] ?? [], recorded),
+        [thread.id]: [...(this.snapshot.transcripts[thread.id] ?? []), marker],
       },
-    });
-  }
-
-  /** The streams a reply is still writing, as the Host's live read reports them. */
-  liveStreams(threadId: string) {
-    const thread = this.snapshot.threads.find(({ id }) => id === threadId);
-    if (!thread) throw new Error("Thread not found.");
-    const runs = new Map<string, unknown[]>();
-    for (const entry of this.snapshot.transcripts[threadId] ?? []) {
-      const drawn = drawnLiveStream(entry);
-      if (!drawn) continue;
-      runs.set(drawn.runId, [
-        ...(runs.get(drawn.runId) ?? []),
-        { ...drawn.key, length: drawn.text.length, op: "replace", text: drawn.text },
-      ]);
-    }
-    return hostApi["thread.live.get"].success.parse({
-      runs: [...runs].map(([runId, items]) => ({
-        afterSequence: String(this.sequence),
-        progress: { items, runId, threadId },
-      })),
-      threadId,
     });
   }
 

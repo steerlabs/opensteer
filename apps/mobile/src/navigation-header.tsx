@@ -66,7 +66,7 @@ export function headerActions(props: {
 }
 
 const selectAttention = (snapshot: HostSnapshot): number =>
-  attentionCount(snapshot.waitingRequests);
+  snapshot.pendingRequestCount ?? attentionCount(snapshot.waitingRequests);
 
 /** Whether this screen is top-level: the Menu leads its bar and its edge swipe opens the sidebar. */
 export function useIsTopLevel(): boolean {

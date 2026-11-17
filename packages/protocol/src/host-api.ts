@@ -458,6 +458,9 @@ export const DeviceMachineAccessUpdateCommandSchema = z.strictObject({
   deviceId: DeviceIdSchema,
   expectedRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   policy: MachineAccessPolicySchema,
+  requestReview: z
+    .strictObject({ requestId: RequestIdSchema, revision: PersonalRevisionSchema })
+    .optional(),
 });
 export type DeviceMachineAccessUpdateCommand = z.infer<
   typeof DeviceMachineAccessUpdateCommandSchema
@@ -714,6 +717,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     requestId: RequestIdSchema,
     response: RequestResponseSchema,
+    expectedRevision: PersonalRevisionSchema.optional(),
     type: z.literal("request.respond"),
   }),
   z.strictObject({
@@ -1167,6 +1171,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     decision: BrowserSignInDecisionSchema,
     idempotencyKey: idempotencyKeySchema,
     requestId: RequestIdSchema,
+    expectedRevision: PersonalRevisionSchema.optional(),
     type: z.literal("browser.sign-in.respond"),
   }),
   /**
@@ -1176,6 +1181,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     requestId: RequestIdSchema,
+    expectedRevision: PersonalRevisionSchema.optional(),
     type: z.literal("browser.password-sign-in.respond"),
     decision: z.union([
       z.strictObject({ kind: z.literal("decline") }),
@@ -2304,6 +2310,7 @@ const hostApiGroup4 = defineRpc({
       messageId: MessageIdSchema,
       before: z.number().int().positive().optional(),
       expectedRevision: z.int().nonnegative().optional(),
+      leaseId: z.string().min(1).max(64).optional(),
     }),
     z.object({
       revisions: z.array(MessageRevisionViewSchema).max(messageRevisionsPageSize),
@@ -2372,6 +2379,7 @@ const hostApiGroup4 = defineRpc({
       requests: readableRequestList(RequestViewSchema, 100),
       threadId: ThreadIdSchema,
       window: DurableWindowSchema,
+      reviewedRevisions: z.record(RequestIdSchema, PersonalRevisionSchema).optional(),
     }),
   ),
   "triggers.get": declaration(
@@ -2427,6 +2435,22 @@ const workspaceHostApi = defineRpc({
     z.strictObject({ selectedThreadId: ThreadIdSchema.optional() }),
     PersonalShellSnapshotSchema,
   ),
+  "personal.readiness.get": declaration(
+    "GET",
+    z.discriminatedUnion("kind", [
+      z.strictObject({
+        kind: z.literal("runner"),
+        environmentId: EnvironmentIdSchema,
+        runnerId: RunnerIdSchema,
+      }),
+      z.strictObject({
+        kind: z.literal("browser-placement"),
+        environmentId: EnvironmentIdSchema,
+        runtimeId: z.string().trim().min(1).max(255),
+      }),
+    ]),
+    z.strictObject({ ready: z.boolean() }),
+  ),
   "thread.snapshot.get": declaration(
     "GET",
     z.strictObject(transcriptScopeInput),
@@ -2460,9 +2484,13 @@ const workspaceHostApi = defineRpc({
     z.strictObject({
       ...transcriptScopeInput,
       kind: z.enum(["requests", "tools", "nodes"]),
+      expectedRevision: PersonalRevisionSchema.optional(),
       cursor: z.string().max(4096).optional(),
     }),
     z.strictObject({
+      threadId: ThreadIdSchema,
+      nodeId: ExecutionNodeIdSchema.nullable(),
+      kind: z.enum(["requests", "tools", "nodes"]),
       revision: PersonalRevisionSchema,
       entries: z.array(z.union([PersonalRequestSummarySchema, TranscriptItemSchema])).max(20),
       next: z.string().max(4096).nullable(),

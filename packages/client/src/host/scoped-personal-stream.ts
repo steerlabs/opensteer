@@ -17,7 +17,7 @@ import {
   PersonalRevisionSchema,
   type PersonalResourceKind,
 } from "@opensteer/protocol/resources";
-import { ItemTextStore } from "./item-text-store.js";
+import { ItemTextStore, liveFrameKey } from "./item-text-store.js";
 import { PersonalResourceStore } from "./personal-resource-store.js";
 import { PersonalShellStore } from "./personal-shell-store.js";
 import {
@@ -70,6 +70,7 @@ export class ScopedPersonalStream {
   readonly #writes = new Map<string, () => Promise<void>>();
   #writing: Promise<void> | undefined;
   #identity: ScopedPersonalIdentity | undefined;
+  #sessionId: string | undefined;
   #generation = 0;
   #authority = 0;
   #send: ((frame: ScopedClientMessage) => void) | undefined;
@@ -86,6 +87,10 @@ export class ScopedPersonalStream {
   constructor(cache?: PersonalStreamCache, onResource?: (kind: PersonalResourceKind) => void) {
     this.cache = cache;
     this.onResource = onResource;
+  }
+
+  peekDetail(scope: DetailScope) {
+    return this.#details.get(scopeKey(scope));
   }
 
   detail(scope: DetailScope) {
@@ -108,7 +113,11 @@ export class ScopedPersonalStream {
     const key = scope && scopeKey(scope);
     if (key === this.#selected) return;
     this.#selected = key;
-    if (scope) this.detail(scope);
+    if (scope && key) {
+      const detail = this.detail(scope);
+      this.#details.delete(key);
+      this.#details.set(key, detail);
+    }
     this.#reconcile();
   }
 
@@ -147,6 +156,7 @@ export class ScopedPersonalStream {
       viewerId: identity.viewerId,
       epoch: identity.epoch,
     };
+    this.#sessionId = identity.session?.sessionId;
     const authority = this.#authority;
     const scopes = [
       shellScope,
@@ -269,19 +279,37 @@ export class ScopedPersonalStream {
   }
 
   revokeDetails(affected: readonly PersonalSubscriptionId[]) {
-    for (const id of affected) {
-      if (id === "shell") continue;
-      const detail = this.#slots.get(id);
-      if (!detail) continue;
+    const scopes = affected.flatMap((id) =>
+      id === "shell" ? [] : (this.#slots.get(id)?.scope ?? []),
+    );
+    const roots = new Set(
+      scopes.filter(({ kind }) => kind === "thread").map(({ threadId }) => threadId),
+    );
+    for (const detail of this.#details.values()) {
+      if (!scopes.includes(detail.scope) && !roots.has(detail.scope.threadId)) continue;
+      const generation = detail.transcript.getSnapshot().generation;
       detail.transcript.apply({
         type: "host.removed",
         scope: detail.scope,
-        subscriptionId: id,
-        generation: detail.transcript.getSnapshot().generation,
+        subscriptionId: detail.slot ?? "detail:0",
+        generation,
         reason: "unavailable",
       });
       this.#deactivate(detail);
       this.#removeCheckpoint(detail.scope);
+    }
+    for (const threadId of roots) this.shell.removeTask(threadId);
+    return scopes;
+  }
+
+  #purge(identity: ScopedPersonalIdentity | undefined) {
+    if (identity && this.cache?.removeViewer) {
+      this.#enqueue(JSON.stringify([identity.deploymentId, identity.viewerId]), () =>
+        this.cache!.removeViewer!(identity),
+      );
+    } else if (this.cache) {
+      for (const scope of this.#cacheKeys.values())
+        this.#enqueue(JSON.stringify(scope), () => this.cache!.remove(scope));
     }
   }
 
@@ -296,32 +324,40 @@ export class ScopedPersonalStream {
     this.#authority++;
     const identity = this.#identity;
     this.#identity = undefined;
+    this.#sessionId = undefined;
     this.shell.begin(++this.#generation, false);
     this.resources.clear();
     for (const detail of this.#details.values()) {
       detail.transcript.begin(++this.#generation, false);
       detail.text.clear();
     }
-    if (removeCheckpoints && identity && this.cache?.removeViewer)
-      this.#enqueue("viewer", () => this.cache!.removeViewer!(identity));
-    else if (removeCheckpoints) {
-      for (const scope of this.#cacheKeys.values())
-        this.#enqueue(scope.scopeKey, () => this.cache!.remove(scope));
-    }
+    if (removeCheckpoints) this.#purge(identity);
     this.#cacheKeys.clear();
     this.#evict();
   }
 
-  receive(input: unknown) {
+  receive(input: unknown, wireBytes?: number) {
     const parsed = ScopedHostMessageSchema.safeParse(input);
     if (!parsed.success) return false;
     const frame = parsed.data;
     if (!this.#send) return true;
+    if (
+      wireBytes !== undefined &&
+      wireBytes >
+        (frame.type === "host.live"
+          ? 16 * 1024
+          : frame.type === "host.resource"
+            ? 32 * 1024
+            : frame.subscriptionId === "shell"
+              ? 96 * 1024
+              : 128 * 1024)
+    )
+      throw new Error("Personal scope frame exceeds its encoded limit.");
     if (frame.subscriptionId === "shell") this.#receiveShell(frame);
     else if (this.#shellReady) this.#receiveDetail(frame);
     else {
-      if (frame.type === "host.live") return true;
-      const size = bytes(frame);
+      if (frame.type === "host.live" || !this.#currentDetail(frame)) return true;
+      const size = wireBytes ?? bytes(frame);
       if (this.#earlyBytes + size > 256 * 1024 || this.#early.length >= 128)
         throw new Error("Detail arrived before its shell cut.");
       this.#earlyBytes += size;
@@ -330,9 +366,17 @@ export class ScopedPersonalStream {
     return true;
   }
 
+  repairDetail(scope: DetailScope) {
+    const detail = this.peekDetail(scope);
+    if (detail?.slot && detail.transcript.getSnapshot().synchronized)
+      this.#subscribe(detail, false, true);
+  }
+
   repairShell() {
     if (!this.#send) return;
     this.#shellReady = false;
+    this.#early.length = 0;
+    this.#earlyBytes = 0;
     const generation = ++this.#generation;
     this.shell.begin(generation, true);
     this.resources.begin(generation);
@@ -342,6 +386,8 @@ export class ScopedPersonalStream {
       scope: shellScope,
       generation,
     });
+    for (const detail of this.#slots.values())
+      if (!detail.transcript.getSnapshot().synchronized) this.#subscribe(detail, false, true);
     this.#watchResources();
   }
 
@@ -360,11 +406,19 @@ export class ScopedPersonalStream {
     if (frame.type === "host.snapshot" && "tasks" in frame.snapshot) {
       const { deploymentId, viewerId, epoch, resourceRevisions } = frame.snapshot;
       const old = this.#identity;
+      const sessionId = frame.snapshot.session?.sessionId;
       if (
         old &&
-        (old.deploymentId !== deploymentId || old.viewerId !== viewerId || old.epoch !== epoch)
+        (old.deploymentId !== deploymentId ||
+          old.viewerId !== viewerId ||
+          old.epoch !== epoch ||
+          (this.#sessionId !== undefined && sessionId !== this.#sessionId))
       ) {
         this.#authority++;
+        this.#purge(old);
+        this.#cacheKeys.clear();
+        this.#early.length = 0;
+        this.#earlyBytes = 0;
         this.resources.clear();
         for (const detail of this.#details.values()) {
           detail.transcript.begin(++this.#generation, false);
@@ -373,6 +427,7 @@ export class ScopedPersonalStream {
         }
       }
       this.#identity = { deploymentId, viewerId, epoch };
+      this.#sessionId = sessionId;
       this.resources.updateRevisions(frame.generation, resourceRevisions);
     }
     if (frame.type === "host.snapshot-required" || !this.shell.apply(frame)) {
@@ -410,18 +465,24 @@ export class ScopedPersonalStream {
     }
   }
 
-  #receiveDetail(frame: ScopedHostMessage) {
+  #currentDetail(frame: ScopedHostMessage): ObservedDetail | undefined {
     if (frame.subscriptionId === "shell") return;
     const detail = this.#slots.get(frame.subscriptionId);
     if (
-      !detail ||
-      scopeKey(frame.scope) !== scopeKey(detail.scope) ||
-      frame.scope.kind === "shell" ||
-      frame.scope.threadId !== detail.scope.threadId
+      detail &&
+      frame.scope.kind !== "shell" &&
+      frame.scope.threadId === detail.scope.threadId &&
+      scopeKey(frame.scope) === scopeKey(detail.scope) &&
+      frame.generation === detail.transcript.getSnapshot().generation
     )
-      return;
-    const state = detail.transcript.getSnapshot();
-    if (frame.generation !== state.generation) return;
+      return detail;
+    return undefined;
+  }
+
+  #receiveDetail(frame: ScopedHostMessage) {
+    if (frame.subscriptionId === "shell") return;
+    const detail = this.#currentDetail(frame);
+    if (!detail) return;
     if (frame.type === "host.live") {
       this.#live(detail, frame);
       return;
@@ -447,6 +508,11 @@ export class ScopedPersonalStream {
       return;
     }
     this.#ack(frame);
+    const stale = detail.transcript.getSnapshot().stale;
+    if (stale.has("run-queue") || stale.has("node-subject")) {
+      this.#subscribe(detail, false, true);
+      return;
+    }
     if (detail.held) {
       for (const [key, live] of detail.held) {
         if (BigInt(frame.throughSequence) < BigInt(live.afterSequence)) continue;
@@ -462,12 +528,16 @@ export class ScopedPersonalStream {
     const { synchronized, through } = detail.transcript.getSnapshot();
     if (!synchronized || through === null) return;
     const result = detail.text.apply(frame, through);
-    if (result === "applied")
+    if (result === "applied") {
+      for (const id of detail.transcript.getSnapshot().liveItems.keys())
+        if (id !== frame.itemId && !detail.text.get(id))
+          detail.transcript.liveItem(undefined, id, true);
       detail.transcript.liveItem(frame.item, frame.itemId, frame.update.operation === "close");
+    }
     if (result === "repair") this.#resync(frame);
     if (result === "barrier") {
       const held = (detail.held ??= new Map());
-      const key = frame.streamId;
+      const key = liveFrameKey(frame);
       const previous = held.get(key);
       if (previous) detail.heldBytes -= bytes(previous);
       if (previous && frame.update.operation === "append") {
@@ -577,7 +647,7 @@ export class ScopedPersonalStream {
     detail.transcript.begin(generation, true);
     detail.text.generation(generation);
     const cursor =
-      !repair && detail.transcript.checkpoint()
+      !repair && detail.transcript.canCheckpoint()
         ? this.#cursor(detail.scope, detail.transcript.getSnapshot().through)
         : undefined;
     const subscription = {
@@ -603,17 +673,25 @@ export class ScopedPersonalStream {
     detail.transcript.begin(++this.#generation, true);
   }
 
+  readonly #retainedBytes = new WeakMap<ReadonlyMap<string, unknown>, number>();
+
   #evict() {
     let count = 0;
     let size = 0;
     const inactive = [...this.#details.entries()].reverse();
     for (const [key, detail] of inactive) {
-      if (this.#observed(detail)) continue;
+      if (detail.slot || key === this.#selected) continue;
       const state = detail.transcript.getSnapshot();
       count += state.items.size;
-      size += bytes([...state.items.values()]);
+      let weight = this.#retainedBytes.get(state.items);
+      if (weight === undefined) {
+        weight = bytes([...state.items.values()]);
+        this.#retainedBytes.set(state.items, weight);
+      }
+      size += weight;
       if (count <= 1000 && size <= 2 * 1024 * 1024 && state.items.size > 0) continue;
-      this.#details.delete(key);
+      if (detail.observers > 0) detail.transcript.begin(++this.#generation, false);
+      else this.#details.delete(key);
     }
   }
 
@@ -633,24 +711,8 @@ export class ScopedPersonalStream {
     const cursor = this.#cursor(scope, state.through);
     const key = this.#key(scope);
     if (!cursor || !key || !state.synchronized) return;
-    const checkpoint: PersonalStreamCheckpoint | undefined = detail
-      ? (() => {
-          const snapshot = detail.transcript.checkpoint();
-          return snapshot && { scope: key, cursor, kind: "detail", state: snapshot };
-        })()
-      : (() => {
-          const snapshot = this.shell.checkpoint();
-          return (
-            snapshot && {
-              scope: key,
-              cursor,
-              kind: "shell",
-              state: withoutSession(snapshot),
-              resources: this.resources.checkpoint(),
-            }
-          );
-        })();
-    if (!checkpoint) return;
+    if (detail ? !detail.transcript.canCheckpoint() : this.shell.getSnapshot().invalidated.size > 0)
+      return;
     const authority = this.#authority;
     const current = () =>
       authority === this.#authority &&
@@ -666,9 +728,34 @@ export class ScopedPersonalStream {
         this.#enqueue(oldest, () => this.cache!.remove(oldKey));
       }
     }
-    this.#enqueue(key.scopeKey, () =>
-      current() ? this.cache!.commit(checkpoint, current) : Promise.resolve(),
-    );
+    this.#enqueue(key.scopeKey, async () => {
+      if (!current()) return;
+      const checkpoint: PersonalStreamCheckpoint | undefined = detail
+        ? (() => {
+            const snapshot = detail.transcript.checkpoint();
+            const detailCut = detail.transcript.getSnapshot();
+            const nextCursor = this.#cursor(scope, detailCut.through);
+            return (
+              snapshot &&
+              nextCursor && { scope: key, cursor: nextCursor, kind: "detail", state: snapshot }
+            );
+          })()
+        : (() => {
+            const snapshot = this.shell.checkpoint();
+            const nextCursor = this.#cursor(scope, this.shell.getSnapshot().through);
+            return (
+              snapshot &&
+              nextCursor && {
+                scope: key,
+                cursor: nextCursor,
+                kind: "shell",
+                state: withoutSession(snapshot),
+                resources: this.resources.checkpoint(),
+              }
+            );
+          })();
+      if (checkpoint) await this.cache!.commit(checkpoint, current);
+    });
   }
 
   #removeCheckpoint(scope: PersonalScope) {

@@ -15,7 +15,7 @@ export function transcriptCard(
   switch (item.kind) {
     case "message": {
       const full = body?.kind === "message" ? toMessageEntry(body.message) : undefined;
-      if (full) return { ...full, itemId: id };
+      if (full) return { ...full, itemId: id, itemRevision: item.revision };
       const messageKind =
         item.messageKind ??
         (view.author === "assistant" || !item.isTurnStart ? "assistant" : "input");
@@ -60,6 +60,8 @@ export function transcriptCard(
         ...base,
         kind: "reasoning",
         itemId: id,
+        itemRevision: item.revision,
+        previewTruncated: view.truncated === true,
         state: "done",
         text: body?.kind === "text" ? body.text : preview,
       };
@@ -125,6 +127,7 @@ export function transcriptCard(
       return runId
         ? { ...base, runId, kind: "app", appId: item.appId, title: view.title ?? "App", version: 0 }
         : undefined;
+    case "delegation":
     case "assignment": {
       const assignment = body?.kind === "assignment" ? body.assignment : item.assignment;
       return assignment ? { ...base, kind: "assignment", assignment } : undefined;
@@ -141,6 +144,8 @@ export function nodeTranscriptCard(item: TranscriptItem): NodeDetailEntry | unde
       id: item.id,
       createdAt: item.createdAt,
       text: item.view.preview ?? "",
+      itemRevision: item.revision,
+      previewTruncated: item.view.truncated === true,
     };
   const card = transcriptCard(item);
   if (card?.kind === "tool" || card?.kind === "reasoning" || card?.kind === "node") return card;

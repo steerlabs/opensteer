@@ -14,8 +14,9 @@ const selectNeedsYou = (snapshot: HostSnapshot) => snapshot.needsYou;
 export function useWaitingInputs(
   hostClient: HostClient,
   threadId: string | null | undefined,
+  observed = true,
 ): readonly WaitingInput[] | null {
-  const queue = useThreadInputQueue(hostClient, threadId);
+  const queue = useThreadInputQueue(hostClient, threadId, observed);
   const needsYou = useHostSelector(hostClient, selectNeedsYou);
   return useMemo(
     () =>

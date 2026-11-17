@@ -1,24 +1,25 @@
+import type { TranscriptItem } from "@opensteer/protocol/transcript";
 import { MessageIdSchema, utf8ByteLength } from "@opensteer/core";
 import type { PersonalStreamCache } from "./personal-stream-cache.js";
-import { needsYouEntryKey, refreshNeedsYou, settleTeamAsk } from "./needs-you.js";
+import { needsYouEntryKey, settleTeamAsk } from "./needs-you.js";
 import { withThreadNames } from "./optimistic-command-patches.js";
 import { ScopedThreadReader, TranscriptBodies } from "./scoped-thread-reader.js";
-import { nodeTranscriptCard } from "./transcript-item-view.js";
+import { nodeTranscriptCard, transcriptCard } from "./transcript-item-view.js";
 import {
   scopedPersonalApiVersion,
+  PersonalShellSnapshotSchema,
   affectedPersonalSubscriptions,
 } from "@opensteer/protocol/personal-sync";
 import type { PersonalResourceKind } from "@opensteer/protocol/resources";
+import type { PersonalShellStore } from "./personal-shell-store.js";
 import { ScopedPersonalStream } from "./scoped-personal-stream.js";
 import type { ClientCommandInput } from "./device-commands.js";
 import type { HostClient } from "./client.js";
 import {
   clientCommandSchema,
   deviceAccessCommand,
-  deviceDriversCapability,
   type MachineAccessUpdateInput,
 } from "./device-commands.js";
-import { visibleDeviceMachines } from "./device-projection.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import { createIphoneSetupPort, type IphoneSetupPort } from "./iphone-setup.js";
 import { clearRunPageViews } from "./run-page-memory.js";
@@ -54,6 +55,7 @@ import { OwnerViewRecords } from "./owner-view-records.js";
 import { ViewerScope, viewerScopeOf } from "./viewer-scope.js";
 import {
   DeploymentIdSchema,
+  ModelSelectionSchema,
   ExecutionNodeIdSchema,
   TeamAgentRequestIdSchema,
   RequestIdSchema,
@@ -88,7 +90,6 @@ import {
   HostToClientMessageSchema,
   browserUsageRunBatchSize,
   type BrowserSessionUsageProjection,
-  hostApi,
   type HostApiClient,
   type HostApiCommand,
   type HostApiCommandInput,
@@ -117,7 +118,7 @@ import type {
 import { HostClientRequestError, mainDoneTasks } from "./client.js";
 import { browserProfileHomeCommand } from "./browser-access.js";
 import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
-import { dispatchDeviceCommand, createHttpHostApiClient } from "./host-api-client.js";
+import { createHttpHostApiClient } from "./host-api-client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
 import { RunPlaceStore } from "./run-place.js";
 import {
@@ -134,7 +135,7 @@ import { threadStopTarget } from "./thread-activity.js";
 import { isThreadUnread } from "./thread-unread.js";
 import { ThreadStateProjection } from "./thread-state.js";
 
-type HostCapability = AuthorityHostCapability | "node-detail-v1" | "device-drivers-v1";
+type HostCapability = AuthorityHostCapability;
 
 const defaultReconnectBaseDelayMs = 300;
 const defaultReconnectMaxDelayMs = 12_000;
@@ -371,11 +372,7 @@ export class HttpHostClient {
       this.#webSocketUrl(`/v1/browser-sessions/${encodeURIComponent(sessionId)}/connect`),
     );
     if (mode === "watch") url.searchParams.set("mode", mode);
-    const passkeys = this.browserPasskeys.optIn(
-      this.#capabilities?.filter(
-        (capability) => capability !== "node-detail-v1" && capability !== "device-drivers-v1",
-      ),
-    );
+    const passkeys = this.browserPasskeys.optIn(this.#capabilities ?? undefined);
     if (mode === "control" && passkeys) url.searchParams.set("passkeys", passkeys);
     if (mode === "control") {
       url.searchParams.set("popups", "1");
@@ -610,7 +607,7 @@ export class HttpHostClient {
     this.#prepareSocket = options.prepareSocket;
     this.#reportRealtimeFrame = options.reportRealtimeFrame;
     this.#stream = new ScopedPersonalStream(options.streamCache, (kind) =>
-      this.#readResource(kind),
+      this.#resourceChanged(kind),
     );
     this.browserPasskeys = new BrowserPasskeys(options.passkeys);
     this.iphoneSetup = options.iphoneSetup
@@ -755,21 +752,6 @@ export class HttpHostClient {
     this.#visibility = lifecycle?.visibility ?? "foreground";
     this.#stream.setBackground(this.#visibility === "background");
     this.#stream.shell.subscribe(() => this.#publishShell());
-    for (const kind of [
-      "settings",
-      "identity",
-      "owner-profile",
-      "environment",
-      "machine",
-      "harness",
-      "tab",
-      "tab-layout",
-      "browser-profile",
-      "browser-placement",
-      "browser-home",
-      "browser-availability",
-    ] as const)
-      this.#stream.watchResource(kind, () => {});
     this.#targetedControl.suspend(this.#reconnectSuspended(), this.#network !== "offline");
     this.#targetedWatch.suspend(this.#reconnectSuspended());
     if (options.lifecycle) this.#observeLifecycle(options.lifecycle);
@@ -852,16 +834,6 @@ export class HttpHostClient {
     const parsedCommand = clientCommandSchema.parse(
       this.#withOrigin(browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes)),
     );
-    const screenCommand =
-      parsedCommand.type === "iphone.screen.attach" ||
-      parsedCommand.type === "iphone.screen.detach" ||
-      (parsedCommand.type === "machine.access.update" && "deviceId" in parsedCommand) ||
-      (parsedCommand.type === "integration.computer.setup.set" &&
-        "deviceId" in parsedCommand.input) ||
-      ((parsedCommand.type === "machine.rename" || parsedCommand.type === "machine.revoke") &&
-        parsedCommand.machineId.startsWith("dev_"));
-    if (screenCommand && !this.#snapshot.deviceDriversAvailable)
-      throw new Error("Update this Opensteer to manage screen device drivers.");
     const needsDevices =
       parsedCommand.type === "machine.session.bind" ||
       (parsedCommand.type === "machine.access.update" &&
@@ -876,14 +848,7 @@ export class HttpHostClient {
         throw new Error("This Host does not support task marks.");
       return this.#setThreadIcon(parsedCommand);
     }
-    if (parsedCommand.type === "machine.access.update" && "deviceId" in parsedCommand)
-      return unwrapRpcResult(await dispatchDeviceCommand(this.rpc, parsedCommand));
-    if (
-      parsedCommand.type === "integration.computer.setup.set" &&
-      "deviceId" in parsedCommand.input
-    )
-      return unwrapRpcResult(await dispatchDeviceCommand(this.rpc, parsedCommand));
-    return this.#dispatchCommand(hostApi["commands.dispatch"].payload.parse(parsedCommand));
+    return this.#dispatchCommand(parsedCommand);
   }
 
   /** The zone is read at send time: a phone that crossed zones says so on its next message. */
@@ -1102,7 +1067,7 @@ export class HttpHostClient {
 
   getThreadItemText(threadId: string, nodeId?: string) {
     const scope = this.#detailScope(threadId, nodeId);
-    return scope && this.#stream.detail(scope).text;
+    return scope && this.#stream.peekDetail(scope)?.text;
   }
 
   async readTranscriptItem(threadId: string, itemId: string, nodeId?: string) {
@@ -1164,24 +1129,23 @@ export class HttpHostClient {
   #reader(threadId: string) {
     const scope = this.#detailScope(threadId);
     if (!scope) return;
-    let reader = this.#scopeReaders.get(threadId);
-    if (!reader) {
-      reader = new ScopedThreadReader(this.#stream.detail(scope), this.rpc, this.#bodies);
-      this.#scopeReaders.set(threadId, reader);
-    }
-    return reader;
+    return this.#scopeReaders.get(threadId);
   }
 
   #watchDetail(threadId: string) {
     const scope = this.#detailScope(threadId);
     if (!scope || this.#threadReaders.has(threadId)) return;
     const detail = this.#stream.detail(scope);
-    this.#reader(threadId);
+    this.#scopeReaders.set(threadId, new ScopedThreadReader(detail, this.rpc, this.#bodies));
     let placeItems: ReturnType<typeof detail.transcript.getSnapshot>["items"] | undefined;
     let placeQueue: NonNullable<
       ReturnType<typeof detail.transcript.getSnapshot>["snapshot"]
     >["queue"];
     let placedRuns = new Set<RunId>();
+    let previousThread:
+      | NonNullable<ReturnType<typeof detail.transcript.getSnapshot>["snapshot"]>["thread"]
+      | undefined;
+    let detailGeneration = 0;
     const clearPlaces = () => {
       for (const runId of placedRuns) this.#runPlaces.forget(runId);
       placedRuns.clear();
@@ -1201,11 +1165,14 @@ export class HttpHostClient {
         });
         return;
       }
-      const raw = state.snapshot?.thread.thread;
-      if (raw) {
+      const row = state.snapshot?.thread;
+      if (row && row !== previousThread) {
+        previousThread = row;
         const thread = this.#threadState.reconcile(
-          toThreadSummary(raw, this.#snapshot.environments, this.#snapshot.harnesses),
-          SequenceSchema.parse(state.snapshot?.thread.revision ?? "0"),
+          row.thread
+            ? toThreadSummary(row.thread, this.#snapshot.environments, this.#snapshot.harnesses)
+            : compactThread(row),
+          SequenceSchema.parse(row.revision),
         );
         const threads = upsertThread(this.#snapshot.threads, thread);
         if (threads !== this.#snapshot.threads) this.#update({ ...this.#snapshot, threads });
@@ -1240,9 +1207,12 @@ export class HttpHostClient {
         this.#runPlaces.flush();
       }
 
-      this.#ensureAssignments(threadId);
-      this.#ensureAutomations(threadId);
-      this.#ensureBrowserUsage(threadId, "missing");
+      if (detailGeneration !== state.generation) {
+        detailGeneration = state.generation;
+        this.#ensureAssignments(threadId);
+        this.#ensureAutomations(threadId);
+        this.#ensureBrowserUsage(threadId, "missing");
+      }
     });
     this.#threadReaders.set(threadId, () => {
       release();
@@ -1265,6 +1235,7 @@ export class HttpHostClient {
     const reader = new ScopedThreadReader(detail, this.rpc, this.#bodies);
     const release = this.#stream.observe(scope);
     let previous: ReturnType<typeof detail.transcript.getSnapshot> | undefined;
+    const cards = new WeakMap<TranscriptItem, ReturnType<typeof nodeTranscriptCard>>();
     let view: NodeDetailSnapshot = {
       threadId,
       nodeId,
@@ -1279,19 +1250,40 @@ export class HttpHostClient {
       getSnapshot: () => {
         const state = detail.transcript.getSnapshot();
         if (previous === state) return view;
+        const structureChanged =
+          previous?.items !== state.items || previous.liveItems !== state.liveItems;
+        const subject = state.snapshot?.nodeSubject;
+        const node =
+          subject === previous?.snapshot?.nodeSubject
+            ? view.node
+            : subject
+              ? transcriptCard(subject)
+              : null;
+        const status = state.removed ? "missing" : state.synchronized ? "ready" : "loading";
+        const hasMore = state.snapshot?.nextBefore != null;
         previous = state;
-        const node = this.#reader(threadId)
-          ?.getSnapshot()
-          .entries.find((entry) => entry.kind === "node" && entry.nodeId === nodeId);
+        if (
+          !structureChanged &&
+          node === view.node &&
+          status === view.status &&
+          hasMore === view.hasMore
+        )
+          return view;
+        const entries = !structureChanged
+          ? view.entries
+          : [...state.ids, ...state.liveItems.keys()].flatMap((id) => {
+              const item = state.items.get(id) ?? state.liveItems.get(id);
+              if (!item) return [];
+              if (!cards.has(item)) cards.set(item, nodeTranscriptCard(item));
+              return cards.get(item) ?? [];
+            });
         view = {
           ...view,
+          entries,
+          status,
+          hasMore,
+          generation: state.generation,
           node: node?.kind === "node" ? node : null,
-          status: state.removed ? "missing" : state.synchronized ? "ready" : "loading",
-          entries: state.ids.flatMap((id) => {
-            const item = state.items.get(id);
-            return item ? (nodeTranscriptCard(item) ?? []) : [];
-          }),
-          hasMore: state.snapshot?.nextBefore != null,
         };
         return view;
       },
@@ -1307,8 +1299,20 @@ export class HttpHostClient {
     };
   }
 
-  readonly watchPersonalResource = (kind: PersonalResourceKind, listener: () => void) =>
-    this.#stream.watchResource(kind, listener);
+  readonly watchPersonalResource = (kind: PersonalResourceKind, listener: () => void) => {
+    const release = this.#stream.watchResource(kind, () => {
+      this.#resourceChanged(kind);
+      listener();
+    });
+    this.#readResource(kind);
+    return () => {
+      release();
+      if (!this.#stream.resources.isObserved(kind)) {
+        this.#resourceReads.get(kind)?.abort();
+        this.#resourceReads.delete(kind);
+      }
+    };
+  };
 
   #publishShell() {
     const state = this.#stream.shell.getSnapshot();
@@ -1319,19 +1323,37 @@ export class HttpHostClient {
       shellAuthority &&
       this.#snapshot.user &&
       (this.#snapshot.user.id !== shellAuthority.viewerId ||
-        old?.snapshot?.epoch !== shellAuthority.epoch)
+        this.#snapshot.deploymentId !== shellAuthority.deploymentId ||
+        old?.snapshot?.epoch !== shellAuthority.epoch ||
+        (shellAuthority.session && this.#snapshot.sessionId !== shellAuthority.session.sessionId))
     ) {
       this.#viewerGeneration++;
       this.#threadState.clear();
       this.#resourceRevisions.clear();
       this.#bodies.clear();
+      this.#clearAttachmentReads();
+      this.#threadDeployment.clear();
+      this.#assignmentReads.clear();
+      this.#automationReads.clear();
+      this.#invalidateAttention();
+      for (const read of this.#resourceReads.values()) read.abort();
+      this.#resourceReads.clear();
       this.#update(emptySnapshot(this.#tabs));
     }
     const shell = state.snapshot;
     if (!shell || this.#disposed) return;
-    const connection = state.synchronized ? "connected" : this.#snapshot.connection;
+    const connection = state.synchronized
+      ? "connected"
+      : this.#snapshot.connection === "connected"
+        ? "connecting"
+        : this.#snapshot.connection;
     const session = shell.session;
-    const tasksChanged = old?.tasks !== state.tasks || old.taskIds !== state.taskIds;
+    const tasksChanged =
+      old?.tasks !== state.tasks ||
+      old.taskIds !== state.taskIds ||
+      old.snapshot?.recentTaskIds !== shell.recentTaskIds ||
+      old.snapshot?.activeTaskIds !== shell.activeTaskIds ||
+      old.snapshot?.nextBefore !== shell.nextBefore;
     const visitsChanged = old?.visits !== state.visits;
     if (
       session &&
@@ -1349,23 +1371,39 @@ export class HttpHostClient {
         sessionSurface: session.sessionSurface,
       });
     }
-    if (tasksChanged || visitsChanged || connection !== this.#snapshot.connection) {
+    const attentionChanged =
+      old?.attention !== state.attention ||
+      old.snapshot?.counts.pendingRequestCount !== shell.counts.pendingRequestCount ||
+      old.snapshot?.counts.needsYouCount !== shell.counts.needsYouCount;
+    if (
+      tasksChanged ||
+      visitsChanged ||
+      attentionChanged ||
+      connection !== this.#snapshot.connection
+    ) {
       const entries = tasksChanged
         ? state.taskIds.flatMap((id) => {
             const row = state.tasks.get(id);
-            if (!row?.thread) return [];
+            if (!row) return [];
             const thread = this.#threadState.reconcile(
-              toThreadSummary(row.thread, this.#snapshot.environments, this.#snapshot.harnesses),
+              row.thread
+                ? toThreadSummary(row.thread, this.#snapshot.environments, this.#snapshot.harnesses)
+                : compactThread(row),
               SequenceSchema.parse(row.revision),
             );
             return [{ thread, lastReply: row.lastReplyPreview, failure: row.failurePreview }];
           })
         : (this.#snapshot.tasks?.entries ?? []);
+      const byId = new Map(entries.map((entry) => [entry.thread.id, entry]));
+      const members = (ids: readonly string[]) => ids.flatMap((id) => byId.get(id) ?? []);
       const recent = shell.recentTaskIds
-        ? entries.filter(({ thread }) =>
-            shell.recentTaskIds?.includes(ThreadIdSchema.parse(thread.id)),
-          )
+        ? members(shell.recentTaskIds)
         : entries.filter(({ thread }) => thread.doneAt === null);
+      const active = shell.activeTaskIds
+        ? members(shell.activeTaskIds)
+        : entries.filter(
+            ({ thread }) => thread.status === "running" || thread.status === "waiting",
+          );
       if (state.synchronized) this.#savedViewReadiness = { tasksReady: true };
       this.#update({
         ...this.#snapshot,
@@ -1383,9 +1421,14 @@ export class HttpHostClient {
                   itemCount: recent.length,
                 },
               },
-              activeTasks: entries.filter(
-                ({ thread }) => thread.status === "running" || thread.status === "waiting",
-              ),
+              activeTasks: active,
+            }
+          : {}),
+        ...(attentionChanged
+          ? {
+              attentionSummaries: [...state.attention.values()],
+              pendingRequestCount: shell.counts.pendingRequestCount,
+              needsYouCount: shell.counts.needsYouCount,
             }
           : {}),
         ...(visitsChanged
@@ -1409,76 +1452,159 @@ export class HttpHostClient {
     if (
       state.synchronized &&
       (shell.counts.needsYouCount || this.#snapshot.needsYou) &&
-      (!old?.synchronized ||
-        old.attention !== state.attention ||
-        old.snapshot?.counts !== shell.counts)
+      (!old?.synchronized || attentionChanged)
     )
-      this.#refreshAttention();
+      this.#invalidateAttention();
   }
 
-  #refreshAttention() {
-    if (this.#visibility !== "foreground") return;
-    const cut = this.#stream.shell.getSnapshot();
-    const current = () =>
-      this.#stream.shell.getSnapshot().attention === cut.attention &&
-      this.#stream.shell.getSnapshot().generation === cut.generation;
-    const held = this.#snapshot.needsYou;
-    let pages = 0;
-    void refreshNeedsYou(held, async (before) => {
-      const result = unwrapRpcResult(
-        await this.rpc["needsYou.get"]({ limit: 50, ...(before ? { before } : {}) }),
-      );
-      if (++pages === 3) return { ...result, window: { ...result.window, hasMore: false } };
-      return result;
-    })
-      .then((needsYou) => {
-        if (current() && this.#snapshot.needsYou === held)
-          this.#update({ ...this.#snapshot, needsYou });
-      })
-      .catch(() => undefined);
-    void this.rpc["requests.list"]({ limit: 20 })
-      .then((result) => {
-        if (result.ok && current())
-          this.#update({ ...this.#snapshot, waitingRequests: result.data.requests });
-      })
-      .catch(() => undefined);
+  #attentionRead: { controller: AbortController; promise: Promise<void> } | undefined;
+
+  #invalidateAttention() {
+    this.#attentionRead?.controller.abort();
+    this.#attentionRead = undefined;
+    if (this.#snapshot.needsYou) this.#update({ ...this.#snapshot, needsYou: null });
+  }
+
+  #resourceChanged(kind: PersonalResourceKind) {
+    const installed = this.#stream.resources.get(kind);
+    const revision = this.#stream.resources.getKnownRevision(kind);
+    const summary =
+      installed && BigInt(installed.revision) >= BigInt(revision ?? "0")
+        ? installed.view
+        : undefined;
+    if (this.#snapshot.resourceSummaries?.[kind] !== summary) {
+      const summaries = { ...this.#snapshot.resourceSummaries };
+      if (summary) summaries[kind] = summary;
+      else delete summaries[kind];
+      this.#update({ ...this.#snapshot, resourceSummaries: summaries });
+    }
+    const details = this.#resourceRevisions.get(kind);
+    if (
+      details &&
+      (BigInt(details) < BigInt(revision ?? "0") ||
+        BigInt(details) < BigInt(installed?.revision ?? "0"))
+    ) {
+      this.#resourceRevisions.delete(kind);
+      this.#clearResource(kind);
+      if (
+        ["settings", "environment", "harness", "harness-catalog"].includes(kind) &&
+        this.#activeThreadId &&
+        this.#snapshot.threads.some(
+          ({ id, returnHint }) => id === this.#activeThreadId && returnHint != null,
+        )
+      ) {
+        const id = this.#activeThreadId;
+        this.#update({
+          ...this.#snapshot,
+          threads: this.#snapshot.threads.map((row) =>
+            row.id === id ? { ...row, returnHint: null } : row,
+          ),
+        });
+        const scope = this.#detailScope(id);
+        if (scope) this.#stream.repairDetail(scope);
+      }
+    }
+    this.#readResource(kind);
+  }
+
+  #clearResource(kind: PersonalResourceKind) {
+    const snapshot = this.#snapshot;
+    switch (kind) {
+      case "machine":
+        this.#update({ ...snapshot, machines: [], machineRevision: snapshot.machineRevision + 1 });
+        break;
+      case "environment":
+        this.#update({ ...snapshot, environments: [] });
+        break;
+      case "harness":
+        this.#update({ ...snapshot, harnesses: [] });
+        break;
+      case "harness-catalog":
+        this.#update({
+          ...snapshot,
+          environments: snapshot.environments.map((row) => ({ ...row, harnessCatalogs: [] })),
+        });
+        break;
+      case "harness-auth":
+        this.#update({
+          ...snapshot,
+          environments: snapshot.environments.map((row) => ({
+            ...row,
+            harnessAuthenticationAllowed: false,
+          })),
+        });
+        break;
+      case "browser-placement":
+        this.#update({ ...snapshot, browserPlacements: [] });
+        break;
+      case "browser-profile":
+        this.#update({ ...snapshot, browserProfiles: [], browserProfileDeletions: [] });
+        break;
+      case "browser-home":
+        this.#update({ ...snapshot, browserProfileHomes: [] });
+        break;
+      case "browser-availability":
+        this.#update({ ...snapshot, browserAvailable: false });
+        break;
+      case "owner-profile":
+        this.#update({ ...snapshot, ownerProfile: null });
+        break;
+      case "settings":
+        this.#update({ ...snapshot, personalSettings: null, voiceThreadId: null });
+        break;
+    }
   }
 
   #readResource(kind: PersonalResourceKind) {
     const installed = this.#stream.resources.get(kind);
     if (
       !installed ||
+      !this.#stream.resources.isObserved(kind) ||
+      !this.#stream.shell.getSnapshot().synchronized ||
       BigInt(installed.revision) < BigInt(this.#stream.resources.getKnownRevision(kind) ?? "0") ||
       this.#visibility === "background" ||
+      this.#resourceReads.has(kind) ||
       this.#resourceRevisions.get(kind) === installed.revision
     )
       return;
-    this.#resourceReads.get(kind)?.abort();
     const controller = new AbortController();
     this.#resourceReads.set(kind, controller);
     const scope = this.#stream.shell.getSnapshot().generation;
-    void this.rpc["resources.detail.get"](
-      { kind, expectedRevision: installed.revision },
-      { signal: controller.signal },
-    )
-      .then((result) => {
+    const current = () =>
+      !controller.signal.aborted &&
+      this.#resourceReads.get(kind) === controller &&
+      this.#stream.shell.getSnapshot().generation === scope &&
+      this.#stream.resources.get(kind)?.revision === installed.revision &&
+      BigInt(installed.revision) >= BigInt(this.#stream.resources.getKnownRevision(kind) ?? "0");
+    const read = async () => {
+      let cursor: string | undefined;
+      for (let pages = 0; pages < 4; pages++) {
+        const result = await this.rpc["resources.detail.get"](
+          { kind, expectedRevision: installed.revision, ...(cursor ? { cursor } : {}) },
+          { signal: controller.signal },
+        );
         if (
           !result.ok ||
-          controller.signal.aborted ||
-          this.#resourceReads.get(kind) !== controller ||
-          this.#stream.shell.getSnapshot().generation !== scope ||
+          !current() ||
           result.data.data.kind !== kind ||
-          result.data.revision !== this.#stream.resources.get(kind)?.revision ||
-          BigInt(result.data.revision) <
-            BigInt(this.#stream.resources.getKnownRevision(kind) ?? "0")
+          result.data.revision !== installed.revision ||
+          (cursor && result.data.next === cursor)
         )
           return;
         this.#resourceRevisions.set(kind, result.data.revision);
-        this.#applyResource(result.data.data);
-      })
+        this.#applyResource(result.data.data, cursor !== undefined);
+        cursor = result.data.next ?? undefined;
+        if (!cursor) return;
+      }
+    };
+    void read()
       .catch(() => undefined)
       .finally(() => {
-        if (this.#resourceReads.get(kind) === controller) this.#resourceReads.delete(kind);
+        if (this.#resourceReads.get(kind) === controller) {
+          this.#resourceReads.delete(kind);
+          if (this.#stream.resources.get(kind)?.revision !== installed.revision)
+            this.#readResource(kind);
+        }
       });
   }
 
@@ -1486,6 +1612,7 @@ export class HttpHostClient {
     data: import("zod").infer<
       typeof import("@opensteer/protocol/resources").PersonalResourceDataSchema
     >,
+    append: boolean,
   ) {
     const snapshot = this.#snapshot;
     switch (data.kind) {
@@ -1505,14 +1632,43 @@ export class HttpHostClient {
         this.#update({ ...snapshot, ownerProfile: data.ownerProfile });
         break;
       case "environment":
-      case "harness-catalog":
-      case "harness-auth":
-        this.#update({ ...snapshot, environments: data.environments });
+        this.#update({
+          ...snapshot,
+          environments: mergeResourceRows(
+            append ? snapshot.environments : [],
+            data.environments,
+            (row) => row.id,
+          ),
+        });
+        // These revisions may have arrived before the environments they enrich.
+        for (const kind of ["harness-catalog", "harness-auth"] as const) {
+          this.#resourceRevisions.delete(kind);
+          this.#readResource(kind);
+        }
         break;
+      case "harness-catalog":
+      case "harness-auth": {
+        const byId = new Map(data.environments.map((row) => [row.id, row]));
+        this.#update({
+          ...snapshot,
+          environments: snapshot.environments.map((row) => {
+            const fields = byId.get(row.id);
+            if (!fields) return row;
+            return data.kind === "harness-catalog"
+              ? { ...row, harnessCatalogs: fields.harnessCatalogs }
+              : { ...row, harnessAuthenticationAllowed: fields.harnessAuthenticationAllowed };
+          }),
+        });
+        break;
+      }
       case "machine":
         this.#update({
           ...snapshot,
-          machines: visibleDeviceMachines(data.machines),
+          machines: mergeResourceRows(
+            append ? snapshot.machines : [],
+            data.machines,
+            (row) => row.id,
+          ),
           machineRevision: snapshot.machineRevision + 1,
         });
         break;
@@ -1527,12 +1683,29 @@ export class HttpHostClient {
         break;
       case "tab":
       case "tab-layout":
-        this.#tabs.replaceCurrent(data.tabs);
+        this.#tabs.replaceCurrent({
+          tabs:
+            data.kind === "tab-layout"
+              ? [...this.#tabs.rows.values()]
+              : data.tabs.complete && !append
+                ? data.tabs.tabs
+                : mergeResourceRows(
+                    [...this.#tabs.rows.values()],
+                    data.tabs.tabs,
+                    (tab) => tab.tabId,
+                  ),
+          layout: data.kind === "tab-layout" ? data.tabs.layout : this.#tabs.layout,
+          complete: data.kind === "tab" ? data.tabs.complete : this.#tabs.complete,
+        });
         break;
       case "browser-profile":
         this.#update({
           ...snapshot,
-          browserProfiles: data.profiles,
+          browserProfiles: mergeResourceRows(
+            append ? snapshot.browserProfiles : [],
+            data.profiles,
+            (row) => row.id,
+          ),
           browserProfileDeletions: data.deletions,
         });
         break;
@@ -1546,7 +1719,6 @@ export class HttpHostClient {
         this.#update({ ...snapshot, browserAvailable: data.available });
         break;
       case "agent-home-settings":
-        this.#update({ ...snapshot, personalSettings: data.settings });
         break;
     }
   }
@@ -1966,13 +2138,6 @@ export class HttpHostClient {
     if (changed) this.#update({ ...this.#snapshot, machines });
   }
 
-  /**
-   * Reads a Thread's Requests when the Host counts more pending than it holds.
-   * The count is projected after the Requests it counts, so it can lag the
-   * list in either direction; a read is asked once per count, never per event
-   * batch, and a new count, a refresh or a resync is what asks again. A failed
-   * read waits for the same, since there is no one to hand the failure to.
-   */
   async load(): Promise<void> {
     if (this.#disposed) throw new Error("The Host client is closed.");
     if (
@@ -2453,9 +2618,10 @@ export class HttpHostClient {
   readonly #waitingMessageEditorPort: WaitingMessageEditorPort = {
     dispatch: (command) => this.dispatch(command),
     leases: this.#editLeases,
-    readRevision: async (threadId, messageId, expectedRevision) => {
+    readRevision: async (threadId, messageId, expectedRevision, leaseId) => {
       const scope = this.#detailScope(threadId);
-      const signal = scope && this.#stream.detail(scope).controller?.signal;
+      const detail = scope && this.#stream.detail(scope);
+      const signal = detail?.controller?.signal;
       if (!signal) throw new Error("This conversation is unavailable.");
       const page = unwrapRpcResult(
         await this.rpc["thread.message.revisions.list"](
@@ -2463,13 +2629,23 @@ export class HttpHostClient {
             threadId,
             messageId: MessageIdSchema.parse(messageId),
             expectedRevision,
+            leaseId,
           },
           { signal },
         ),
       );
       signal.throwIfAborted();
+      const queue = await this.#reader(threadId)?.queue();
+      signal.throwIfAborted();
+      const held = queue?.items.find(({ message }) => message.id === messageId);
       const current = page.revisions[0];
-      if (!current || current.revision !== expectedRevision)
+      if (
+        !current ||
+        current.revision !== expectedRevision ||
+        held?.lease?.leaseId !== leaseId ||
+        Date.parse(held.lease.expiresAt) <= Date.now() ||
+        (held.message.edit?.revision ?? 0) !== expectedRevision
+      )
         throw new HostClientRequestError({
           code: "conflict",
           message: "This waiting message changed.",
@@ -2567,15 +2743,8 @@ export class HttpHostClient {
   }
 
   async updateMachineAccess(input: MachineAccessUpdateInput): Promise<MachineAccessUpdateOutcome> {
-    const command = deviceAccessCommand(
-      input,
-      mutationIdempotencyKey("machine-access"),
-      this.#snapshot.deviceDriversAvailable === true,
-    );
-    const result =
-      "deviceId" in command && command.type === "machine.access.update"
-        ? unwrapRpcResult(await dispatchDeviceCommand(this.rpc, command))
-        : await this.dispatch(command);
+    const command = deviceAccessCommand(input, mutationIdempotencyKey("machine-access"));
+    const result = await this.dispatch(command);
     if (result.type !== "machine.access.update") {
       throw new Error("Access settings command mismatch.");
     }
@@ -2629,6 +2798,7 @@ export class HttpHostClient {
     for (const release of this.#threadReaders.values()) release();
     this.#threadReaders.clear();
     for (const reader of this.#scopeReaders.values()) reader.dispose();
+    this.#scopeReaders.clear();
     for (const release of this.#lifecycleDisposers) release();
     clearRunPageViews(this);
     clearRunPlacePictures(this);
@@ -2646,39 +2816,72 @@ export class HttpHostClient {
     this.#listeners.clear();
   }
 
-  async loadEarlierNeedsYou(): Promise<void> {
-    const held = this.#snapshot.needsYou,
-      generation = this.#viewerGeneration;
-    if (!held?.window.hasMore || !held.window.nextBefore) return;
-    const page = unwrapRpcResult(
-      await this.rpc["needsYou.get"]({
-        before: held.window.nextBefore,
-        limit: 50,
-      }),
-    );
-    if (generation !== this.#viewerGeneration || this.#disposed || this.#snapshot.needsYou !== held)
-      return;
-    const ids = new Set(held.entries.map(needsYouEntryKey));
-    this.#update({
-      ...this.#snapshot,
-      needsYou: {
-        ...page,
-        entries: [
-          ...held.entries,
-          ...page.entries.filter((entry) => !ids.has(needsYouEntryKey(entry))),
-        ],
-      },
-    });
+  loadEarlierNeedsYou(): Promise<void> {
+    if (this.#attentionRead) return this.#attentionRead.promise;
+    const held = this.#snapshot.needsYou;
+    const state = this.#stream.shell.getSnapshot();
+    if (
+      !state.synchronized ||
+      this.#visibility === "background" ||
+      (held && (!held.window.hasMore || !held.window.nextBefore))
+    )
+      return Promise.resolve();
+    const controller = new AbortController();
+    const before = held?.window.nextBefore;
+    const promise = this.rpc["needsYou.get"](
+      { ...(before ? { before } : {}), limit: 50 },
+      { signal: controller.signal },
+    )
+      .then((result) => {
+        if (controller.signal.aborted) return;
+        const page = unwrapRpcResult(result);
+        const current = this.#stream.shell.getSnapshot();
+        if (
+          current.generation !== state.generation ||
+          current.attention !== state.attention ||
+          current.snapshot?.counts.needsYouCount !== state.snapshot?.counts.needsYouCount ||
+          current.snapshot?.counts.pendingRequestCount !==
+            state.snapshot?.counts.pendingRequestCount ||
+          this.#snapshot.needsYou !== held
+        )
+          return;
+        const ids = new Set(held?.entries.map(needsYouEntryKey));
+        this.#update({
+          ...this.#snapshot,
+          needsYou: {
+            ...page,
+            entries: [
+              ...(held?.entries ?? []),
+              ...page.entries.filter((entry) => !ids.has(needsYouEntryKey(entry))),
+            ].slice(-150),
+          },
+        });
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) throw error;
+      })
+      .finally(() => {
+        if (this.#attentionRead?.controller === controller) this.#attentionRead = undefined;
+      });
+    this.#attentionRead = { controller, promise };
+    return promise;
   }
 
   async readRequest(threadId: string, requestId: string): Promise<Request | null> {
-    const { requests } = unwrapRpcResult(
+    const generation = this.#viewerGeneration;
+    const { requests, reviewedRevisions } = unwrapRpcResult(
       await this.rpc["thread.requests.list"]({
         requestId: RequestIdSchema.parse(requestId),
         threadId: ThreadIdSchema.parse(threadId),
       }),
     );
-    return requests.find(({ id }) => id === requestId) ?? null;
+    if (generation !== this.#viewerGeneration || this.#disposed) return null;
+    const request = requests.find(
+      ({ id, originatingThreadId }) => id === requestId && originatingThreadId === threadId,
+    );
+    if (!request) return null;
+    const reviewed = { ...request, reviewedRevision: reviewedRevisions?.[request.id] };
+    return reviewed;
   }
 
   loadDoneTasks(): Promise<void> {
@@ -2874,7 +3077,7 @@ export class HttpHostClient {
       searchSuggestionsAvailable: capabilities.includes("browser-search-suggestions-v1"),
       iphoneAppsAvailable: capabilities.includes("iphone-apps-v1"),
       devicesAvailable: capabilities.includes("devices-v1"),
-      deviceDriversAvailable: capabilities.includes(deviceDriversCapability),
+      deviceDriversAvailable: true,
       voiceAvailable: capabilities.includes("voice-run-v1"),
       ownerViewWindowsAvailable: capabilities.includes("ownerViewWindows"),
     });
@@ -2895,7 +3098,9 @@ export class HttpHostClient {
   #enterBackground() {
     if (this.#disposed || this.#visibility === "background") return;
     this.#visibility = "background";
+    this.#finishLoad();
     this.#stream.setBackground(true);
+    this.#invalidateAttention();
     this.#clearProbe();
     for (const read of this.#resourceReads.values()) read.abort();
     this.#resourceReads.clear();
@@ -2971,16 +3176,25 @@ export class HttpHostClient {
     await this.#prepareSocket?.();
     if (socketGeneration !== this.#socketGeneration) return;
     const cache = this.#stream.cache;
-    const cacheCandidate = cache && ((await cache.hasCheckpoints?.().catch(() => false)) ?? true);
+    const cacheCandidate = await cache?.hasCheckpoints?.().catch(() => false);
     if (socketGeneration !== this.#socketGeneration) return;
     if (cacheCandidate && this.#snapshot.session === "checking") {
-      const result = await this.rpc["personal.shell.get"]({});
+      const selected = ThreadIdSchema.safeParse(this.#activeThreadId);
+      const result = await this.rpc["personal.shell.get"](
+        selected.success ? { selectedThreadId: selected.data } : {},
+      );
       if (socketGeneration !== this.#socketGeneration) return;
-      if (!result.ok || generation !== this.#viewerGeneration || this.#disposed) {
+      if (result.ok && validNetworkShell(result.data)) await this.#stream.restore(result.data);
+      else if (
+        !result.ok &&
+        ["unsupported-version", "api-version-mismatch", "unknown-method"].includes(
+          result.error.reason ?? "",
+        )
+      ) {
+        this.#refused = true;
         this.#finishLoad();
         return;
       }
-      await this.#stream.restore(result.data);
     }
     if (socketGeneration !== this.#socketGeneration) return;
     if (generation !== this.#viewerGeneration || this.#disposed || this.#reconnectSuspended()) {
@@ -3008,8 +3222,9 @@ export class HttpHostClient {
     });
     socket.addEventListener("message", ({ data }) => {
       if (this.#socket !== socket || typeof data !== "string") return;
-      if (data.length > 128 * 1024) {
-        this.#frameRejected("frame", utf8ByteLength(data));
+      const wireBytes = utf8ByteLength(data);
+      if (wireBytes > 128 * 1024) {
+        this.#frameRejected("frame", wireBytes);
         this.#socketFailed();
         return;
       }
@@ -3017,7 +3232,20 @@ export class HttpHostClient {
       try {
         const message: unknown = JSON.parse(data);
         parsed = true;
-        if (this.#stream.receive(message)) return;
+        if (
+          message &&
+          typeof message === "object" &&
+          "type" in message &&
+          message.type === "host.snapshot" &&
+          "subscriptionId" in message &&
+          message.subscriptionId === "shell" &&
+          "snapshot" in message
+        ) {
+          const shell = PersonalShellSnapshotSchema.safeParse(message.snapshot);
+          if (!shell.success || !validNetworkShell(shell.data))
+            throw new Error("The Host omitted its authenticated shell identity.");
+        }
+        if (this.#stream.receive(message, wireBytes)) return;
         if (
           message &&
           typeof message === "object" &&
@@ -3029,7 +3257,7 @@ export class HttpHostClient {
         const notice = HostToClientMessageSchema.safeParse(message);
         if (notice.success) this.#applyNotice(notice.data);
       } catch {
-        this.#frameRejected(parsed ? "schema" : "json", utf8ByteLength(data));
+        this.#frameRejected(parsed ? "schema" : "json", wireBytes);
         this.#socketFailed();
       }
     });
@@ -3050,7 +3278,13 @@ export class HttpHostClient {
             this.#resourceRevisions.clear();
             this.#update({ ...emptySnapshot(this.#tabs), connection: "connecting" });
           } else {
-            this.#stream.revokeDetails(affected);
+            for (const scope of this.#stream.revokeDetails(affected)) {
+              if (scope.kind !== "thread") continue;
+              const id = scope.threadId;
+              this.#threadDeployment.delete(id);
+              this.#assignmentReads.delete(id);
+              this.#automationReads.delete(id);
+            }
           }
           this.#bodies.clear();
           this.#clearAttachmentReads();
@@ -3076,8 +3310,6 @@ export class HttpHostClient {
 
   #socketFailed() {
     this.#closeSocket();
-    if (this.#snapshot.session === "checking" && this.#attempt === 0 && !this.#refused)
-      void this.rpc["personal.shell.get"]({}).catch(() => undefined);
     this.#update({
       ...this.#snapshot,
       connection: "offline",
@@ -3103,6 +3335,7 @@ export class HttpHostClient {
     const socket = this.#socket;
     this.#socket = null;
     this.#stream.disconnect();
+    this.#invalidateAttention();
     if (this.#reconnect) clearTimeout(this.#reconnect);
     this.#reconnect = undefined;
     for (const read of this.#resourceReads.values()) read.abort();
@@ -3385,52 +3618,79 @@ export class HttpHostClient {
         };
       }
     }
-    for (const thread of snapshot.threads)
-      this.#threadDeployment.set(thread.id, snapshot.deploymentId!);
-    for (const { thread } of snapshot.activeTasks)
-      this.#threadDeployment.set(thread.id, snapshot.deploymentId!);
-    for (const list of [snapshot.tasks, ...Object.values(snapshot.doneTasks)])
-      for (const { thread } of list?.entries ?? [])
+    if (
+      snapshot.threads !== this.#snapshot.threads ||
+      snapshot.tasks !== this.#snapshot.tasks ||
+      snapshot.activeTasks !== this.#snapshot.activeTasks ||
+      snapshot.doneTasks !== this.#snapshot.doneTasks ||
+      snapshot.threadVisits !== this.#snapshot.threadVisits ||
+      snapshot.deploymentId !== this.#snapshot.deploymentId ||
+      this.#threadRenames.size !== 0 ||
+      this.#threadIcons.size !== 0
+    ) {
+      this.#threadDeployment.clear();
+      for (const thread of snapshot.threads)
         this.#threadDeployment.set(thread.id, snapshot.deploymentId!);
-    const hiddenAssignments = new Set(this.#deniedAssignments);
-    if (hiddenAssignments.size > 0) snapshot = withoutAssignments(snapshot, hiddenAssignments);
-    const incoming = [
-      ...snapshot.threads,
-      ...(snapshot.tasks?.entries ?? []).map((entry) => entry.thread),
-      ...snapshot.activeTasks.map((entry) => entry.thread),
-      ...Object.values(snapshot.doneTasks).flatMap((list) =>
-        list.entries.map((entry) => entry.thread),
-      ),
-    ];
-    const previousVisits =
-      viewerScopeOf(snapshot) === viewerScopeOf(this.#snapshot)
-        ? this.#snapshot.threadVisits
-        : snapshot.threadVisits;
-    let visits = previousVisits;
-    for (const [id, at] of [
-      ...Object.entries(snapshot.threadVisits),
-      ...incoming.flatMap((row) =>
-        row.lastVisitedAt ? [[row.id, row.lastVisitedAt] as const] : [],
-      ),
-    ]) {
-      if (at <= (visits[id] ?? "")) continue;
-      if (visits === previousVisits) visits = { ...visits };
-      visits[id] = at;
+      for (const { thread } of snapshot.activeTasks)
+        this.#threadDeployment.set(thread.id, snapshot.deploymentId!);
+      for (const list of [snapshot.tasks, ...Object.values(snapshot.doneTasks)])
+        for (const { thread } of list?.entries ?? [])
+          this.#threadDeployment.set(thread.id, snapshot.deploymentId!);
+      const hiddenAssignments = new Set(this.#deniedAssignments);
+      if (hiddenAssignments.size > 0) snapshot = withoutAssignments(snapshot, hiddenAssignments);
+      const incoming = [
+        ...snapshot.threads,
+        ...(snapshot.tasks?.entries ?? []).map((entry) => entry.thread),
+        ...snapshot.activeTasks.map((entry) => entry.thread),
+        ...Object.values(snapshot.doneTasks).flatMap((list) =>
+          list.entries.map((entry) => entry.thread),
+        ),
+      ];
+      const previousVisits =
+        viewerScopeOf(snapshot) === viewerScopeOf(this.#snapshot)
+          ? this.#snapshot.threadVisits
+          : snapshot.threadVisits;
+      let visits = previousVisits;
+      for (const [id, at] of [
+        ...Object.entries(snapshot.threadVisits),
+        ...incoming.flatMap((row) =>
+          row.lastVisitedAt ? [[row.id, row.lastVisitedAt] as const] : [],
+        ),
+      ]) {
+        if (at <= (visits[id] ?? "")) continue;
+        if (visits === previousVisits) visits = { ...visits };
+        visits[id] = at;
+      }
+      const keptVisits = Object.entries(visits).filter(
+        ([id]) => this.#threadDeployment.has(id) || this.#showsThread(id),
+      );
+      snapshot = {
+        ...snapshot,
+        threadVisits:
+          keptVisits.length === Object.keys(visits).length
+            ? visits
+            : Object.fromEntries(keptVisits),
+      };
+      this.#threadState.retainLoaded(snapshot.threads);
+      snapshot = withThreadNames(snapshot, (thread) => ({
+        ...this.#threadState.name(thread),
+        lastVisitedAt: snapshot.threadVisits[thread.id] ?? thread.lastVisitedAt,
+        ...(this.#threadRenames.has(thread.id)
+          ? { title: this.#threadRenames.get(thread.id)!.title }
+          : {}),
+        ...(this.#threadIcons.has(thread.id)
+          ? { icon: this.#threadIcons.get(thread.id)!.icon }
+          : {}),
+      }));
+      let changed = false;
+      const threads = snapshot.threads.map((thread) => {
+        const unread = isThreadUnread(thread);
+        if (thread.unread === unread) return thread;
+        changed = true;
+        return { ...thread, unread };
+      });
+      if (changed) snapshot = { ...snapshot, threads };
     }
-    snapshot = { ...snapshot, threadVisits: visits };
-    this.#threadState.retainLoaded(snapshot.threads);
-    snapshot = withThreadNames(snapshot, (thread) => ({
-      ...this.#threadState.name(thread),
-      lastVisitedAt: snapshot.threadVisits[thread.id] ?? thread.lastVisitedAt,
-      ...(this.#threadRenames.has(thread.id)
-        ? { title: this.#threadRenames.get(thread.id)!.title }
-        : {}),
-      ...(this.#threadIcons.has(thread.id) ? { icon: this.#threadIcons.get(thread.id)!.icon } : {}),
-    }));
-    const threads = snapshot.threads.map((thread) => {
-      const unread = isThreadUnread(thread);
-      return thread.unread === unread ? thread : { ...thread, unread };
-    });
     this.#snapshot = {
       ...snapshot,
       savedViewReadiness: this.#savedViewReadiness,
@@ -3453,11 +3713,6 @@ export class HttpHostClient {
       devicesAvailable: this.#capabilities?.includes("devices-v1") === true,
       voiceAvailable: this.#capabilities?.includes("voice-run-v1") === true,
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
-      threads:
-        threads.length === this.#snapshot.threads.length &&
-        threads.every((thread, index) => thread === this.#snapshot.threads[index])
-          ? this.#snapshot.threads
-          : threads,
       network: this.#network,
       revision: this.#snapshot.revision + 1,
     };
@@ -3571,6 +3826,57 @@ function browserUseKey(
 
 function sameKeys(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((key, index) => key === right[index]);
+}
+
+function validNetworkShell(snapshot: import("zod").infer<typeof PersonalShellSnapshotSchema>) {
+  return snapshot.session?.user.id === snapshot.viewerId;
+}
+
+const unknownModelSelection = ModelSelectionSchema.parse({
+  providerId: "unknown",
+  modelId: "unknown",
+  options: {},
+});
+
+function mergeResourceRows<T>(held: readonly T[], page: readonly T[], id: (row: T) => string): T[] {
+  const rows = new Map(held.map((row) => [id(row), row]));
+  for (const row of page) rows.set(id(row), row);
+  return [...rows.values()];
+}
+
+function compactThread(
+  row: NonNullable<ReturnType<PersonalShellStore["getSnapshot"]>["snapshot"]>["tasks"][number],
+): ThreadSummary {
+  return {
+    id: row.id,
+    title: row.title,
+    askedAt: row.askedAt,
+    createdAt: row.askedAt,
+    updatedAt: row.askedAt,
+    doneAt: row.doneAt,
+    doneReason: null,
+    latestRunCompletedAt: row.latestRunCompletedAt,
+    lastVisitedAt: null,
+    status: row.status,
+    purpose: row.purpose,
+    pendingRequests: row.pendingRequestCount,
+    listed: true,
+    unread: false,
+    inputQueuePaused: false,
+    accessMode: "approval-required",
+    continuationIdentity: null,
+    providerSessionId: null,
+    environmentId: "",
+    harnessInstanceId: "",
+    modelSelection: unknownModelSelection,
+    harnessLabel: "",
+    modelLabel: "",
+    runnerLabel: "",
+    parentThreadId: null,
+    teamOrigin: null,
+    icon: null,
+    color: null,
+  };
 }
 
 function toThreadSummary(

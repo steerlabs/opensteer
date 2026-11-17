@@ -28,7 +28,14 @@ export function useHostRead<T>(read: (() => Promise<T>) | null, key: string): Ho
   const enabled = read !== null;
   useEffect(() => {
     const current = readRef.current;
-    if (!current) return;
+    if (!current) {
+      setState((previous) =>
+        previous.data === null && previous.error === null
+          ? previous
+          : { key, data: null, error: null, loading: false },
+      );
+      return;
+    }
     let alive = true;
     setState((previous) =>
       previous.key === key
@@ -50,8 +57,8 @@ export function useHostRead<T>(read: (() => Promise<T>) | null, key: string): Ho
   const reload = useCallback(() => setGeneration((value) => value + 1), []);
   const own = state.key === key;
   return {
-    data: own ? state.data : null,
-    error: own ? state.error : null,
+    data: enabled && own ? state.data : null,
+    error: enabled && own ? state.error : null,
     loading: enabled && (!own || state.loading),
     reload,
   };

@@ -1,3 +1,4 @@
+import { requestDecisionRevision } from "@opensteer/client/host";
 import type { CardChoice } from "@opensteer/protocol";
 import {
   browserSiteLabel,
@@ -103,7 +104,8 @@ export function useRequestResponse(input: {
   ) => {
     if (session.responding || !answerable || !canRespond || !canStartResponse()) return;
     if (options.shareWithAi && !(await authorizeAiSharing(aiSharing, hostClient))) return;
-    if (!mounted.current || session.responding || !canStartResponse()) return;
+    if (!mounted.current || session.responding || !stillAnswerable.current || !canStartResponse())
+      return;
     const claim = gate.acquire("request");
     if (claim === null) return;
     updateRequestSession(session, { failure: null, pendingId: busyId, responding: true });
@@ -133,6 +135,7 @@ export function useRequestResponse(input: {
       session.held = submission;
       await hostClient.dispatch({
         idempotencyKey: submission.idempotencyKey,
+        ...requestDecisionRevision(request),
         requestId: request.id,
         response: submission.response,
         type: "request.respond",
@@ -160,6 +163,7 @@ export function useRequestResponse(input: {
       const result = await hostClient.dispatch({
         decision,
         idempotencyKey: held.key,
+        ...requestDecisionRevision(request),
         requestId: request.id,
         type: "browser.sign-in.respond",
       });
@@ -225,6 +229,7 @@ export function useRequestResponse(input: {
         if (!mounted.current || !stillAnswerable.current) return;
         const result = await hostClient.dispatch({
           idempotencyKey: session.heldPasswordKey,
+          ...requestDecisionRevision(request),
           requestId: request.id,
           type: "browser.password-sign-in.respond",
           decision: approval

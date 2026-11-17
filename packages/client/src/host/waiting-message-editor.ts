@@ -39,6 +39,7 @@ export interface WaitingMessageEditorPort {
     threadId: string,
     messageId: string,
     revision: number,
+    leaseId: string,
   ): Promise<readonly ContentPart[] | undefined>;
   now(): number;
 }
@@ -71,7 +72,7 @@ export async function openWaitingMessageEditor(
     if (taken.type !== "thread.input.lease.take") throw new Error("Edit lease command mismatch.");
     revision = taken.revision;
     leaseTaken = true;
-    content = await port.readRevision(threadId, messageId, revision);
+    content = await port.readRevision(threadId, messageId, revision, leaseId);
   } catch (error) {
     // A take that may have landed must not hold the queue for an editor that never opened.
     if (leaseTaken || !isSettledInputMutationError(error))

@@ -1,3 +1,4 @@
+import { requestDecisionRevision } from "@opensteer/client/host";
 import { deviceMachine } from "@opensteer/client/host";
 import { useState } from "react";
 import type { Request } from "@opensteer/core";
@@ -64,6 +65,7 @@ export function ThreadFullDiskAccessAction({
     try {
       await hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
+        ...requestDecisionRevision(request),
         requestId: request.id,
         response: { kind: "external", value: { decision: "declined" } },
         type: "request.respond",
