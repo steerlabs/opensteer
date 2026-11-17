@@ -136,6 +136,33 @@ integration("local servers as plugin tools", () => {
     await dispatch(host, {
       type: "integration.grant.create",
       input: {
+        access: "read",
+        alias: "TV",
+        connectionId: null,
+        installationId: installation.installationId,
+        isDefault: true,
+      },
+    });
+    const readable = await gateway.call("plugin_search", {
+      namespace: /"([^"]+)"/u.exec(pair)?.[1],
+    });
+    expect(
+      (readable.items as { path: string; blocked?: unknown }[]).find((item) => item.path === pair),
+    ).toMatchObject({
+      blocked: { code: "access_required", next: expect.stringContaining('"server":"tv"') },
+    });
+    expect(
+      (readable.items as { path: string; blocked?: unknown }[]).find((item) =>
+        item.path.endsWith(".status"),
+      ),
+    ).not.toHaveProperty("blocked");
+    expect(
+      JSON.stringify(await gateway.call("plugin_call", { calls: { path: pair, input: {} } })),
+    ).toContain("app_access_request");
+    await expect(readFile(join(work, "calls"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await dispatch(host, {
+      type: "integration.grant.create",
+      input: {
         access: "read-write",
         alias: "TV",
         connectionId: null,
@@ -349,7 +376,7 @@ const { Server } = require(${sdk("server/index.js")});
 const { StdioServerTransport } = require(${sdk("server/stdio.js")});
 const { CallToolRequestSchema, ListToolsRequestSchema } = require(${sdk("types.js")});
 const server = new Server({ name: "tv", version: "1" }, { capabilities: { tools: {} } });
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "pair", description: "Pair with the TV", inputSchema: { type: "object" } }] }));
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "pair", description: "Pair with the TV", inputSchema: { type: "object" } },{ name:"status",description:"Read the TV status",inputSchema:{type:"object"},annotations:{readOnlyHint:true} }] }));
 let acceptedCode;
 server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
   require("node:fs").appendFileSync(${JSON.stringify(join(work, "calls"))}, "call\\n");

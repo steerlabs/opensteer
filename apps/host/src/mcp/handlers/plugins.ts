@@ -154,32 +154,45 @@ export class PluginToolHandlers {
           .optional(),
       })
       .parse(result);
-    if (!unavailable?.length) return result;
     const local = (await this.options.localProviders?.blockers(context)) ?? [];
     return {
       ...result,
-      unavailableApps: await Promise.all(
-        unavailable.map(async (entry) => {
-          const known = local.find((target) => target.id === entry.app)?.blocked;
-          if (known) return { ...entry, blocked: known };
-          const detail = await this.options.service
-            .detail({ plugin: entry.app }, { caller: "personal", mode: "automatic" })
-            .catch(() => null);
-          return {
-            ...entry,
-            blocked: pluginTargetBlocked({
-              id: entry.app,
-              name: entry.name,
-              reason: entry.reason,
-              canRequestAccount: this.options.authority.caller(context.caller)?.kind === "run",
-              requirements: detail?.plugin.requirements.accounts ?? {},
-              links: z
-                .array(z.object({ requirement: z.string(), scope: z.enum(["app", "user"]) }))
-                .parse(detail?.links ?? []),
-            }),
-          };
+      items: z
+        .array(z.object({ path: z.string() }).passthrough())
+        .parse(z.object({ items: z.unknown() }).parse(result).items)
+        .map((item) => {
+          const blocked = local.find((target) => target.path === item.path)?.blocked;
+          return blocked ? { ...item, blocked } : item;
         }),
-      ),
+      ...(unavailable?.length
+        ? {
+            unavailableApps: await Promise.all(
+              unavailable.map(async (entry) => {
+                const known = local.find(
+                  (target) => target.id === entry.app && !target.path,
+                )?.blocked;
+                if (known) return { ...entry, blocked: known };
+                const detail = await this.options.service
+                  .detail({ plugin: entry.app }, { caller: "personal", mode: "automatic" })
+                  .catch(() => null);
+                return {
+                  ...entry,
+                  blocked: pluginTargetBlocked({
+                    id: entry.app,
+                    name: entry.name,
+                    reason: entry.reason,
+                    canRequestAccount:
+                      this.options.authority.caller(context.caller)?.kind === "run",
+                    requirements: detail?.plugin.requirements.accounts ?? {},
+                    links: z
+                      .array(z.object({ requirement: z.string(), scope: z.enum(["app", "user"]) }))
+                      .parse(detail?.links ?? []),
+                  }),
+                };
+              }),
+            ),
+          }
+        : {}),
     };
   }
   async install(c: ToolCall<"opensteer_plugin_install">) {

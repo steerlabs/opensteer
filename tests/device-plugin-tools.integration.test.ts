@@ -222,6 +222,29 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
 
     // The Mac approved Calendar for reading only: a change is refused before it reaches the Mac.
     const createEvent = await pluginPath(gateway, "create_event", "create_event");
+    const discovery = await gateway.call("plugin_search", {
+      namespace: localNamespace("calendar-studio-mac", `app_device_${calendar.connection.id}`),
+    });
+    expect(
+      (discovery.items as { path: string; blocked?: unknown }[]).find(
+        (item) => item.path === listEvents,
+      ),
+    ).not.toHaveProperty("blocked");
+    expect(
+      (discovery.items as { path: string; blocked?: unknown }[]).find(
+        (item) => item.path === createEvent,
+      ),
+    ).toMatchObject({
+      blocked: {
+        code: "access_required",
+        message: expect.stringContaining("allows reading only"),
+        next: expect.stringContaining("app_access_request"),
+      },
+    });
+    const blockedDescription = await gateway.call("plugin_describe", { paths: [createEvent] });
+    expect((blockedDescription.items as { blocked?: unknown }[])[0]).toMatchObject({
+      blocked: { code: "access_required", next: expect.stringContaining('dataApp "calendar"') },
+    });
     let sent = helper.invocations.length;
     const readOnly = await pluginCall(gateway, createEvent, {
       start: "2026-10-01T09:00",
