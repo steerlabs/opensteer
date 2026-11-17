@@ -1,4 +1,4 @@
-import { app, autoUpdater as nativeUpdater } from "electron";
+import { app, autoUpdater as nativeUpdater, powerMonitor } from "electron";
 import { autoUpdater } from "electron-updater";
 import {
   DesktopUpdateChannelSchema,
@@ -18,7 +18,7 @@ export interface DesktopUpdateAction {
 }
 
 export const desktopUpdateFirstCheckMs = 15_000;
-export const desktopUpdateCheckIntervalMs = 4 * 60_000;
+export const desktopUpdateCheckIntervalMs = 4 * 60 * 60_000;
 
 const NativeUpdateErrorSchema = z.object({
   domain: z.string().optional(),
@@ -53,6 +53,7 @@ export class DesktopUpdater {
   #state: DesktopUpdateState;
   #operation: Promise<void> | null = null;
   #stopped = false;
+  #lastCheckAt: number | null = null;
   #reservation: { owner: "local" | "remote"; done: Promise<void>; release(): void } | null = null;
   #readiness: Promise<void> | null = null;
   #staged = false;
@@ -131,18 +132,28 @@ export class DesktopUpdater {
   /** Background checks omit `checking`, and a failed one keeps the last state. */
   start(signal: AbortSignal): void {
     if (!this.#enabled || signal.aborted) return;
+    const untilStale = () =>
+      this.#lastCheckAt === null
+        ? 0
+        : desktopUpdateCheckIntervalMs - (Date.now() - this.#lastCheckAt);
     const tick = () => {
-      if (this.#reservation || this.#operation || !this.#checkable()) return;
-      void this.#check(false);
+      clearTimeout(timer);
+      const remaining = untilStale();
+      timer = setTimeout(tick, remaining > 0 ? remaining : desktopUpdateCheckIntervalMs);
+      if (remaining <= 0 && !this.#reservation && !this.#operation && this.#checkable())
+        void this.#check(false);
     };
-    const first = setTimeout(tick, desktopUpdateFirstCheckMs);
-    const interval = setInterval(tick, desktopUpdateCheckIntervalMs);
+    let timer = setTimeout(tick, desktopUpdateFirstCheckMs);
+    const resume = () => {
+      if (untilStale() <= 0) tick();
+    };
+    powerMonitor.on("resume", resume);
     signal.addEventListener(
       "abort",
       () => {
         this.#stopped = true;
-        clearTimeout(first);
-        clearInterval(interval);
+        clearTimeout(timer);
+        powerMonitor.off("resume", resume);
       },
       { once: true },
     );
@@ -349,6 +360,7 @@ export class DesktopUpdater {
   }
 
   async #performCheck(manual: boolean): Promise<void> {
+    this.#lastCheckAt = Date.now();
     if (manual)
       this.#set({ status: "checking", availableVersion: null, latestVersion: null, failed: null });
     this.#log("desktop.update.checking", {});
