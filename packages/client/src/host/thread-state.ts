@@ -3,8 +3,19 @@ import type { ThreadSummary } from "./client.js";
 
 const unloadedThreadLimit = 4096;
 
-export type ThreadName = Pick<ThreadSummary, "title" | "icon"> &
-  Partial<Pick<ThreadSummary, "doneAt" | "doneReason" | "latestRunCompletedAt" | "lastVisitedAt">>;
+export type ThreadView = Pick<ThreadSummary, "title" | "icon"> &
+  Partial<
+    Pick<
+      ThreadSummary,
+      | "doneAt"
+      | "doneReason"
+      | "latestRunCompletedAt"
+      | "lastVisitedAt"
+      | "status"
+      | "inputQueuePaused"
+      | "returnHint"
+    >
+  >;
 
 type ThreadState = { returnHint?: ThreadSummary["returnHint"] } & Pick<
   ThreadSummary,
@@ -92,7 +103,8 @@ export class ThreadStateProjection {
     };
   }
 
-  name(thread: ThreadSummary): ThreadName {
+  /** The newest accepted state, for every held copy of the thread: page entries carry it too. */
+  view(thread: ThreadSummary): ThreadView {
     const state = this.#loaded.get(thread.id) ?? this.#unloaded.get(thread.id);
     return {
       doneAt: state?.doneAt === undefined ? thread.doneAt : state.doneAt,
@@ -103,6 +115,12 @@ export class ThreadStateProjection {
           : state.latestRunCompletedAt,
       title: state?.title ?? thread.title,
       icon: state?.icon === undefined ? thread.icon : state.icon,
+      // A page counts only the Requests its reader may see, so the count stays the page's.
+      ...(state && {
+        status: state.status,
+        inputQueuePaused: state.inputQueuePaused,
+        returnHint: state.returnHint === undefined ? thread.returnHint : state.returnHint,
+      }),
     };
   }
 
