@@ -205,8 +205,8 @@ async function request<Name extends keyof typeof hostApi>(
           )
         : hostResponseHeadersTimeoutMs;
   const stallTimeoutMs = hostResponseStallTimeoutMs;
-  // Only a failure before any response arrived says the Host is out of reach;
-  // a response that then can't be read is a broken answer, not a lost connection.
+  // Losing the connection before the whole body arrives says the Host is out of
+  // reach; a complete body that can't be understood is a broken answer.
   let answered = false;
   try {
     call?.signal?.throwIfAborted();
@@ -242,7 +242,6 @@ async function request<Name extends keyof typeof hostApi>(
       }),
     );
     deadline.controller.signal.throwIfAborted();
-    answered = true;
     // The refusal is known from its status; a body that then stalls must not
     // turn a sign-in prompt into a transport error.
     if (response.status === 401) options.onAuthenticationRequired();
@@ -255,6 +254,7 @@ async function request<Name extends keyof typeof hostApi>(
         sizeError: () => new HostTransportError("response-too-large"),
       }),
     );
+    answered = true;
     options.assertResponseCurrent?.(response);
     call?.signal?.throwIfAborted();
     if (declaration.stream && response.ok) {

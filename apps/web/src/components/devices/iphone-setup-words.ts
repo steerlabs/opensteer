@@ -447,6 +447,13 @@ export function iphoneSetupWords(
         title: `Couldn’t reach ${context.deploymentName}`,
         yours: false,
       };
+    case "attach-failed":
+      return {
+        detail: "Try again. It won’t be added twice.",
+        recovery: "check",
+        title: `Couldn’t add the iPhone to ${context.deploymentName}`,
+        yours: false,
+      };
     case "host-version-unsupported":
       return {
         detail: `Update Opensteer where ${context.deploymentName} runs, then try again.`,

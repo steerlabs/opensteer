@@ -4,6 +4,7 @@ import type {
   DesktopIphoneSetupBridge,
   DesktopIphoneSetupStatus,
 } from "@opensteer/protocol/desktop";
+import { HostClientRequestError } from "./client.js";
 import { createIphoneSetupPort } from "./iphone-setup.js";
 
 function fixture() {
@@ -41,11 +42,13 @@ function fixture() {
       state: "waiting" as const,
       reason: "assignment-pending" as const,
     })),
-    failed: vi.fn(async () => ({
-      ...status,
-      state: "blocked" as const,
-      reason: "host-offline" as const,
-    })),
+    failed: vi.fn(
+      async ({ reason }: { setupId: string; reason: DesktopIphoneSetupStatus["reason"] }) => ({
+        ...status,
+        state: "blocked" as const,
+        reason,
+      }),
+    ),
     status: vi.fn(async () => status),
     cancel: vi.fn(async () => {}),
     subscribe: vi.fn(() => () => {}),
@@ -86,7 +89,15 @@ it("reports dispatch failures and allows an idempotent retry", async () => {
   const f = fixture();
   const dispatch = vi
     .fn()
-    .mockRejectedValueOnce(new Error("offline"))
+    .mockRejectedValueOnce(
+      new HostClientRequestError({
+        code: "internal",
+        message: "No answer.",
+        reason: "transport-unreachable",
+        retryable: true,
+        status: 0,
+      }),
+    )
     .mockResolvedValueOnce(f.result);
   const port = createIphoneSetupPort(f.platform, dispatch);
   expect(await port.attach({ setupId: f.status.setupId })).toMatchObject({
@@ -103,6 +114,13 @@ it("reports dispatch failures and allows an idempotent retry", async () => {
     f.status.attachCommand,
   ]);
   expect(f.platform.complete).toHaveBeenCalledOnce();
+});
+it("calls a dispatch that failed for another reason a failed add, not an offline Host", async () => {
+  const f = fixture();
+  const port = createIphoneSetupPort(f.platform, vi.fn().mockRejectedValueOnce(new TypeError("x")));
+  expect(await port.attach({ setupId: f.status.setupId })).toMatchObject({
+    reason: "attach-failed",
+  });
 });
 it("keeps a blocked add local without dispatching", async () => {
   const f = fixture();

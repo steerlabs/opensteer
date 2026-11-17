@@ -98,21 +98,27 @@ describe("HTTP Host rpc response parsing", () => {
     }
   });
 
-  it("calls an answer that arrived but can't be read a broken answer, not a lost connection", async () => {
+  it("tells a connection lost mid-answer apart from a complete answer it can't read", async () => {
     const answering = (response: () => Response) =>
       createHttpHostApiClient({
         baseUrl: new URL("https://opensteer.example"),
         fetch: async () => response(),
         onAuthenticationRequired: vi.fn(),
       })["auth.config"]({});
-    const unreadable = () =>
+    const cut = () =>
       new Response(
         new ReadableStream({
-          pull: (controller) => controller.error(new TypeError("The body could not be decoded.")),
+          start: (controller) => controller.enqueue(new TextEncoder().encode('{"ok":')),
+          pull: (controller) => controller.error(new TypeError("network error")),
         }),
       );
+    await expect(answering(cut)).resolves.toMatchObject({
+      ok: false,
+      error: { reason: "transport-unreachable", retryable: true },
+    });
     const misshapen = () => Response.json({ data: { unexpected: true }, ok: true });
-    for (const response of [unreadable, misshapen])
+    const notJson = () => new Response("<html>sign in</html>", { status: 200 });
+    for (const response of [misshapen, notJson])
       await expect(answering(response)).resolves.toMatchObject({
         ok: false,
         error: { code: "internal", reason: "invalid-response", retryable: false },
