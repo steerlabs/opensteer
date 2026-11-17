@@ -41,8 +41,9 @@ describe("settings tools", () => {
             requirements: { api: { ...plugin.requirements.api, fields: { token: "secret" } } },
           },
         ],
+        local: [],
         token: "secret",
       }),
-    ).toEqual({ plugins: [plugin] });
+    ).toEqual({ plugins: [plugin], local: [] });
   });
 });
