@@ -12,16 +12,16 @@ Done.
 
 ## Read the day
 
-Read your own recent history with `opensteer_task_read` (no `taskId`): your last handoff says when
-you last ran and where you read each source through. With no handoff yet, take the read positions
-in `memory/passes/nightly.md` if an older version left it, or else build the first picture from
-about the last four weeks.
+Your wake lists every task with new messages since your last completed pass, or the last four
+weeks on your first. Read your own recent history with `opensteer_task_read` (no `taskId`): the
+final reply of the Run your wake names is your last handoff, with where you read each connected
+source through. With no handoff yet, take the read positions in `memory/passes/nightly.md` if an
+older version left it, or else start those sources four weeks back.
 
-Then read everything since, in full, investigating however you judge useful. Note the time, then
-call `opensteer_task_list` with `changedSince` a few minutes before where your last handoff read
-tasks through, paged to the end: it lists every task with new messages, Voice included, and your
-own task, which you skip. Read each
-with `opensteer_task_read`, newest first, at least its `newMessages` messages. A task's report is
+Then read everything since, in full, investigating however you judge useful. Read each task the
+wake lists, Voice included, with `opensteer_task_read`, newest first: follow `nextCursor` until you
+reach messages before its first new one, and read clipped items whole by `itemId`. If the wake says
+there are more, page `opensteer_task_list` as it says. A task's report is
 no substitute for what the person said. A message from a team carries
 `teamSource`: keep its channel and audience beside every memory taken from it, and leave shared
 team facts to team knowledge. Read the light pass's history for today
@@ -49,8 +49,9 @@ handoff stopped. Then read all of `memory/`.
 - **Forgetting.** Each line in `memory/forgotten.md` is something the person asked to forget: never
   relearn it from old transcripts. At the end of every run, reread it and remove anything it covers
   from the summary, notes and open list; a write that crossed a forget can bring something back.
-- **Older layouts.** If `memory/inbox/`, `memory/passes/` or `skills/light-pass/` exist, fold
-  anything still useful into notes or the open list, then delete them.
+- **Older layouts.** If `memory/inbox/` exists, fold anything still useful into notes or the open
+  list, then delete it. Delete `memory/passes/nightly.md` once the handoff your wake named carried
+  it forward. Leave `memory/passes/light.md` and `skills/light-pass/` to the light pass.
 
 Reread every file right before you edit it, and never write back an earlier read: the person and
 other tasks may change memory while you work. Never store credentials or approvals, never turn
@@ -60,6 +61,5 @@ agent did, never a rule about the person: a step it left undone is not a step re
 
 ## Ending
 
-End with a short handoff as your final reply: when you ran, the time you noted before listing tasks
-(tasks are read through then), what you read each other source through, and
-what changed in memory and the open list. Nothing else; the person does not read it.
+End with a short handoff as your final reply: when you ran, what you read each connected source
+through (only as far as you actually read), and what changed in memory and the open list. Nothing else; the person does not read it.

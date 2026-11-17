@@ -2189,18 +2189,24 @@ describeStore("shaped agent task tools", (it) => {
         taskStatus: "open",
       }),
     );
-    const changed = await s.product.opensteer_task_list({
-      caller: s.caller,
-      input: opensteer_task_list.input.parse({ changedSince: "2000-01-01T00:00:00Z" }),
-      operationKey: randomUUID(),
-    });
-    expect(opensteer_task_list.output.parse(productToolOutput(changed)).tasks).toContainEqual(
-      expect.objectContaining({
-        id: f.thread.id,
-        newMessages: expect.any(Number),
-        firstNewAt: expect.any(String),
-      }),
-    );
+    const changedSince = async (since: string) =>
+      opensteer_task_list.output
+        .parse(
+          productToolOutput(
+            await s.product.opensteer_task_list({
+              caller: s.caller,
+              input: opensteer_task_list.input.parse({ changedSince: since }),
+              operationKey: randomUUID(),
+            }),
+          ),
+        )
+        .tasks.find((task) => task.id === f.thread.id);
+    const all = (await changedSince("2000-01-01T00:00:00Z"))!;
+    expect(all.newMessages).toBeGreaterThan(0);
+    // The bound is exclusive: from the first new message's own time, that message is no longer new.
+    const after = await changedSince(all.firstNewAt!);
+    expect(after?.newMessages ?? 0).toBeLessThan(all.newMessages!);
+    expect(await changedSince(new Date(Date.now() + 60_000).toISOString())).toBeUndefined();
     await storeFixture.store.cancelAssignment({
       assignmentId: delegated.assignmentId!,
       requestedBy: f.userId,

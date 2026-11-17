@@ -102,8 +102,12 @@ it("uses production worker wakes and requires a brief outcome for task wakes", a
       if (turn.text === "Finish deleting memory") continue;
       const [, label, timestamp] = turn.text.match(/^(Light|Nightly) pass due \(([^)]+)\)/u) ?? [];
       expect(label, `${c.id} wakes like a managed memory pass`).toBeDefined();
-      expect(turn.text).toBe(
+      const [wake, activity] = turn.text.split("\n\n");
+      expect(wake).toBe(
         `${label} pass due (${timestamp}). Load opensteer:memory and follow its ${label === "Light" ? "light-pass" : "nightly"} reference.`,
+      );
+      expect(activity, `${c.id} carries the Host's list`).toMatch(
+        /^(?:No new tasks since |New since )/u,
       );
       wakes += 1;
     }
@@ -119,12 +123,11 @@ it("uses production worker wakes and requires a brief outcome for task wakes", a
 it("keeps a meeting ongoing at the actual Run time rather than a stale wake time", async () => {
   const c = (await memoryCases()).find((c) => c.id === "memory-light-meeting-now")!;
   const shifted = caseAtTime(c, Date.parse("2026-11-16T20:00:00Z"));
-  expect(inputForCaseTurn(shifted.turns[0]!).content).toEqual([
-    {
-      type: "text",
-      text: "Light pass due (2026-11-16T20:00:00.000Z). Load opensteer:memory and follow its light-pass reference.",
-    },
-  ]);
+  const [wake] = inputForCaseTurn(shifted.turns[0]!).content;
+  expect(wake).toMatchObject({ type: "text" });
+  expect((wake as { text: string }).text).toMatch(
+    /^Light pass due \(2026-11-16T20:00:00\.000Z\)\. Load opensteer:memory and follow its light-pass reference\.\n\n/u,
+  );
   expect(JSON.stringify(shifted.mocks.integration_call)).toContain("2026-11-16T19:35:00.000Z");
   expect(JSON.stringify(shifted.mocks.integration_call)).toContain("2026-11-16T21:00:00.000Z");
   expect(shifted.tasks.find((task) => task.self)!.items[0]!.createdAt).toBe(
@@ -136,11 +139,6 @@ it("requires item tasks, forbids direct notifications and rejects duplicate rais
   const cases = await memoryCases();
   const quiet = cases.find((c) => c.id === "memory-nothing-new")!.expect;
   const reads = quiet.calls.map((call) => ({ ...call, valid: true }));
-  reads.push({
-    tool: "opensteer_task_list",
-    args: { changedSince: "2026-11-03T12:00:00Z" },
-    valid: true,
-  });
   expect(
     grade(quiet, reads, "Ran 16:00; Gmail through mail-200, no new items.").every((c) => c.pass),
   ).toBe(true);
@@ -152,11 +150,6 @@ it("requires item tasks, forbids direct notifications and rejects duplicate rais
     message:
       "Acme checkout down, Gmail msg-X. Refresh source first; drop if handled. Draft and ask_person Send this? Act only on the answer; mark Done when settled or dismissed.",
   };
-  calls.push({
-    tool: "opensteer_task_list",
-    args: { changedSince: "2026-11-16T15:27:00Z" },
-    valid: true,
-  });
   const handoff =
     "Ran 16:00, Gmail through msg-X; raised thr_00000000-0000-4000-8000-000000000041.";
   expect(grade(important, calls, handoff).every((c) => c.pass)).toBe(true);
@@ -192,11 +185,6 @@ it("distinguishes an unreadable inbox from a clear Messages source", async () =>
   calls.find((call) => call.tool === "opensteer_task_create")!.args = {
     message: "Reconnect Gmail: authorization expired.",
   };
-  calls.push({
-    tool: "opensteer_task_list",
-    args: { changedSince: "2026-11-16T15:25:00Z" },
-    valid: true,
-  });
   expect(
     grade(e, calls, "Gmail authorization expired. Messages: no new messages.").every((c) => c.pass),
   ).toBe(true);

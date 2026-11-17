@@ -1313,6 +1313,9 @@ importers:
       '@opensteer/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@opensteer/triggers':
+        specifier: workspace:*
+        version: link:../../packages/triggers
       zod:
         specifier: 'catalog:'
         version: 4.6.7

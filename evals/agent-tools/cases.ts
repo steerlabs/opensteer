@@ -8,6 +8,7 @@ import {
   TeamTurnContextSchema,
 } from "@opensteer/core";
 import { HarnessInputSchema } from "@opensteer/protocol";
+import { memoryPassWakeText } from "@opensteer/triggers";
 import {
   ThreadDetailSchema,
   ThreadItemSchema,
@@ -317,12 +318,72 @@ export function caseAtTime(testCase: EvalCase, now: number): EvalCase {
   );
 }
 
+const memoryWake = /^(Light|Nightly) pass due \(([^)]+)\)/u;
+const firstPassWindow = { Light: 24 * 60 * 60 * 1000, Nightly: 28 * 24 * 60 * 60 * 1000 };
+
+/**
+ * Appends the Host's list to each memory wake, rendered from the case's tasks as the Host
+ * would: since the self task's last completed handoff less the commit overlap, or the first
+ * pass's window, skipping managed workers.
+ */
+export function withHostMemoryWakes(testCase: EvalCase): EvalCase {
+  const published = (items: EvalCase["tasks"][number]["items"]) =>
+    items.filter((item) => item.type === "message" && item.status === "published");
+  const handoff = published(testCase.tasks.find(({ self }) => self)?.items ?? [])
+    .filter((item) => item.runId)
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    .at(-1);
+  const turns = testCase.turns.map((turn) => {
+    if (typeof turn === "string" || turn.author.kind !== "trigger" || !turn.text) return turn;
+    const [, label, at] = turn.text.match(memoryWake) ?? [];
+    if (!label || !at || turn.text.includes("\n\n")) return turn;
+    const since = new Date(
+      handoff
+        ? Date.parse(handoff.createdAt) - 10 * 60 * 1000
+        : Date.parse(at) - firstPassWindow[label as keyof typeof firstPassWindow],
+    );
+    const changes = testCase.tasks.flatMap(({ task, items, self }) => {
+      if (self || task.purpose === "background-job") return [];
+      const fresh = published(items).filter((item) => Date.parse(item.createdAt) > since.getTime());
+      if (!fresh.length) return [];
+      const dates = fresh.map((item) => Date.parse(item.createdAt));
+      return [
+        {
+          id: task.id,
+          title: task.title ?? "",
+          count: fresh.length,
+          first: new Date(Math.min(...dates)),
+          newest: Math.max(...dates),
+          sources: [
+            ...new Map(
+              fresh.flatMap((item) =>
+                item.teamSource
+                  ? [[JSON.stringify(item.teamSource), item.teamSource] as const]
+                  : [],
+              ),
+            ).values(),
+          ],
+        },
+      ];
+    });
+    changes.sort((a, b) => b.newest - a.newest);
+    const list = memoryPassWakeText({
+      since,
+      completedRunId: handoff?.runId ?? null,
+      changes,
+      more: false,
+    });
+    return { ...turn, text: `${turn.text}\n\n${list}` };
+  });
+  return { ...testCase, turns };
+}
+
 export function parseCases(text: string): EvalCase[] {
   const ids = new Set<string>();
   const cases = text.split(/\r?\n/u).flatMap((line, i) => {
     if (!line.trim()) return [];
     try {
-      const value = CaseSchema.parse(JSON.parse(line));
+      const value = withHostMemoryWakes(CaseSchema.parse(JSON.parse(line)));
       if (ids.has(value.id)) throw new Error(`Duplicate case ${value.id}`);
       ids.add(value.id);
       return [value];

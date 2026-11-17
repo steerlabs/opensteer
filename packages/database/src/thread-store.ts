@@ -986,7 +986,9 @@ export async function agentThreadPageForOwner(
  * by its creation, or a queued input by its delivery. The union lets both indexes bound the read.
  */
 function changedThreads(transaction: Transaction<DatabaseSchema>, since: Date) {
-  const dated = sql<Date>`date_trunc('milliseconds', coalesce(thread_inputs.updated_at, messages.created_at))`;
+  const changedAt = sql<Date>`coalesce(thread_inputs.updated_at, messages.created_at)`;
+  // Milliseconds, as cursors carry; the bound itself compares at full precision.
+  const dated = sql<Date>`date_trunc('milliseconds', ${changedAt})`;
   return transaction
     .selectFrom("messages")
     .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
@@ -1012,7 +1014,7 @@ function changedThreads(transaction: Transaction<DatabaseSchema>, since: Date) {
     )
     .where("messages.kind", "!=", "continuation")
     .where(publishedMessagePredicate("threadInputs"))
-    .where(dated, ">", since)
+    .where(changedAt, ">", since)
     .groupBy("messages.threadId");
 }
 export async function getThreadForOwner(
