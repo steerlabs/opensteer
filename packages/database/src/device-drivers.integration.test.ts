@@ -449,3 +449,20 @@ it("rolls back an in-flight attach when its person session is revoked", async ()
       .execute(),
   ).toEqual([]);
 });
+
+it("revokes Runner-bound sessions even when the Runner has no Device", async () => {
+  const driver = await mac();
+  await db.deleteFrom("deviceDrivers").where("runnerId", "=", driver.runnerId).execute();
+  await db.deleteFrom("devices").where("id", "=", DeviceIdSchema.parse(driver.runnerId)).execute();
+  await db
+    .updateTable("authSessions")
+    .set({ deviceId: DeviceIdSchema.parse(driver.runnerId) })
+    .where("id", "=", sessionId)
+    .execute();
+  const effects = await store.revokeRunner(driver.runnerId, fixture.userId);
+  expect(effects.removedDeviceIds).toEqual([]);
+  expect(effects.endedSessionIds).toEqual([sessionId]);
+  expect(
+    await db.selectFrom("authSessions").select("id").where("id", "=", sessionId).execute(),
+  ).toEqual([]);
+});

@@ -98,7 +98,18 @@ export function projectDeviceWire(
         continue;
       }
       const projected = opaque.has(field) ? entry : visit(entry, field);
-      if (projected === undefined) return undefined;
+      if (projected === undefined) {
+        if (
+          field === "payload" ||
+          (field === "request" && (row.kind === "request" || key === "data")) ||
+          (field === "data" && typeof row.type === "string") ||
+          (field === "target" && row.type === "host.show") ||
+          (field === "computer" && typeof row.tabId === "string")
+        )
+          return undefined;
+        result[field] = null;
+        continue;
+      }
       result[field === "deviceId" ? "runnerId" : field] = projected;
     }
     if (

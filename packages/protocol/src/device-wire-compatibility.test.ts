@@ -3,6 +3,7 @@ import * as fixture from "./device-wire-compatibility.test-support.js";
 import { describe, expect, it } from "vitest";
 import {
   assertDeviceWireInput,
+  deviceWireRpcNames,
   projectDeviceWire,
   projectDeviceTabs,
 } from "./device-wire-compatibility.js";
@@ -215,4 +216,69 @@ it("retains an integration call's frozen headline and result while dropping the 
       { data: { integration: { account: "My iPhone", operation: { title: "Read iPhone" } } } },
     ],
   });
+});
+
+it("degrades a hidden singleton field without discarding its RPC envelope", () => {
+  expect(projectDeviceWire({ request: fixture.screenSetup, revision: 2 }, 60)).toEqual({
+    request: null,
+    revision: 2,
+  });
+  expect(projectDeviceWire({ items: [{ id: "keep", metadata: { deviceId: phone } }] }, 60)).toEqual(
+    { items: [{ id: "keep", metadata: null }] },
+  );
+});
+
+it("preserves envelopes across every Device-projected v60 RPC", () => {
+  const message = {
+    content: fixture.content,
+    integration: { account: "Phone", phone: { runnerId: fixture.screenId } },
+  };
+  const requests = [fixture.request, fixture.screenRequest];
+  const events = [
+    { type: "request.opened", data: { request: fixture.screenRequest } },
+    { type: "message.created", data: { message } },
+  ];
+  const integration = { connections: [fixture.connection, fixture.screenConnection] };
+  const outputs: Record<string, object> = {
+    "bootstrap.get": {
+      machines: [fixture.machine, fixture.screen],
+      tabs: fixture.tabs,
+      ...integration,
+    },
+    "machines.list": { machines: [fixture.machine, fixture.screen] },
+    "devices.overview.get": { devices: [fixture.machine, fixture.screen] },
+    "integrations.get": integration,
+    "integration.platform.get": integration,
+    "plugins.directory.get": { plugins: [{ id: "phone", connections: integration.connections }] },
+    "plugins.overview.get": { plugins: [{ id: "phone", connections: integration.connections }] },
+    "plugins.detail.get": { plugin: { id: "phone" }, ...integration },
+    "plugin.list": { plugins: [{ id: "phone", connections: integration.connections }] },
+    "integration.computer.setup.list": { requests: [fixture.setup, fixture.screenSetup] },
+    "integration.computer.setup.review": { request: fixture.screenSetup, app: null },
+    "integration.computer.apps.approved": {
+      apps: [{ machineId: fixture.screenId }, { machineId: fixture.selfId }],
+    },
+    "needsYou.get": { entries: requests.map((request) => ({ kind: "request", request })) },
+    "requests.list": { requests },
+    "thread.requests.list": { requests },
+    "thread.events.list": { events },
+    "node.events.list": { events },
+    "thread.messages.list": { messages: [message] },
+    "thread.message.revisions.list": { revisions: [message] },
+    "thread.inputQueue.get": { items: [{ message }] },
+    "thread.live.get": { events, requests },
+    "tabs.get": { ...fixture.tabs, computer: { computerId: fixture.screenId } },
+    "tabs.state": fixture.tabs,
+    "commands.dispatch": { type: "thread.input.enqueue", message },
+  };
+  expect(Object.keys(outputs).sort()).toEqual([...deviceWireRpcNames].sort());
+  for (const [name, output] of Object.entries(outputs)) {
+    const projected = projectDeviceWire(output, 60);
+    expect(projected, name).toBeDefined();
+    expect(JSON.stringify(projected), name).not.toContain(fixture.screenId);
+  }
+  const request = projectDeviceWire({ request: fixture.setup, app: null }, 60);
+  expect(
+    frozenPersonalReader("rpc integration.computer.setup.review").safeParse(request).success,
+  ).toBe(true);
 });

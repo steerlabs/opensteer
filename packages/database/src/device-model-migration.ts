@@ -49,21 +49,12 @@ where d.singleton_key='primary' and d.deployment_shape->>'kind'='personal'
   and not(r.owner_kind='deployment' and not(r.allowed_modules ? 'agents'));
 insert into device_drivers(device_id,role,runner_id,generation,detached_at,created_at,updated_at)
 select id,'self',id,1,removed_at,created_at,updated_at from devices;
-do $$
-declare invalid_count bigint;
-begin
-  select count(*) into invalid_count from (
-    select runner_id as id from integration_connections where connection_kind='computer'
-    union all select runner_id from computer_use_policies
-    union all select runner_id from computer_use_stops
-    union all select runner_id from computer_app_setup_requests
-    union all select computer_id from personal_tabs
-    union all select device_id from auth_sessions where device_id is not null
-  ) targets left join devices d on d.id=targets.id where d.id is null;
-  if invalid_count > 0 then raise exception 'Device migration: % unresolved retained control targets',invalid_count; end if;
-end $$;
+delete from computer_use_stops s where not exists(select 1 from runs r where r.id=s.run_id) or not exists(select 1 from devices d where d.id=s.runner_id);
+delete from computer_use_policies p where not exists(select 1 from deployments d where d.id=p.deployment_id) or not exists(select 1 from users u where u.id=p.owner_user_id) or not exists(select 1 from devices d where d.id=p.runner_id);
+delete from computer_app_setup_requests r where not exists(select 1 from deployments d where d.id=r.deployment_id) or not exists(select 1 from users u where u.id=r.owner_user_id) or not exists(select 1 from devices d where d.id=r.runner_id);
+delete from personal_tabs t where not exists(select 1 from devices d where d.id=t.computer_id);
 alter table integration_connections add column device_id text references devices(id) on delete restrict;
-update integration_connections set device_id=runner_id where connection_kind='computer';
+update integration_connections set device_id=runner_id where connection_kind='computer' and exists(select 1 from devices d where d.id=runner_id);
 alter table integration_connections add constraint integration_connections_device_target check(
  (connection_kind='computer' and (device_id is not null or runner_id is not null) and
    (device_id is null or runner_id is null or device_id=runner_id)) or

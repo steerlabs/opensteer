@@ -562,32 +562,35 @@ export class ComputerAppHub {
     const drivers = this.#options.drivers;
     if (!drivers) return;
     await drivers.refresh();
-    for (const entry of this.#byRunner.values()) {
-      if (entry.stream.identity.modules.integrations?.screenDrivers !== 1) continue;
-      const assignments = drivers
-        .bindings()
-        .filter(
-          (binding) =>
-            binding.role === "screen" && binding.runnerId === entry.stream.identity.runnerId,
-        );
-      entry.assignments.clear();
-      for (const binding of assignments)
-        entry.assignments.set(binding.deviceId, binding.generation);
-      for (const [id, status] of entry.deviceStatuses)
-        if (entry.assignments.get(id) !== status.driverGeneration) entry.deviceStatuses.delete(id);
-      await this.#sendControl(entry, {
-        ...entry.stream.fence,
-        module: "integrations",
-        type: "host.integrations.device-drivers",
-        retainedDeviceIds: drivers.retainedScreenDeviceIds(entry.stream.identity.runnerId),
-        drivers: assignments.map((binding) => ({
-          deviceId: binding.deviceId,
-          role: "screen",
-          definitionId: iphoneScreenDefinitionId,
-          generation: binding.generation,
-        })),
-      });
-    }
+    await Promise.all(
+      [...this.#byRunner.values()].map(async (entry) => {
+        if (entry.stream.identity.modules.integrations?.screenDrivers !== 1) return;
+        const assignments = drivers
+          .bindings()
+          .filter(
+            (binding) =>
+              binding.role === "screen" && binding.runnerId === entry.stream.identity.runnerId,
+          );
+        entry.assignments.clear();
+        for (const binding of assignments)
+          entry.assignments.set(binding.deviceId, binding.generation);
+        for (const [id, status] of entry.deviceStatuses)
+          if (entry.assignments.get(id) !== status.driverGeneration)
+            entry.deviceStatuses.delete(id);
+        await this.#sendControl(entry, {
+          ...entry.stream.fence,
+          module: "integrations",
+          type: "host.integrations.device-drivers",
+          retainedDeviceIds: drivers.retainedScreenDeviceIds(entry.stream.identity.runnerId),
+          drivers: assignments.map((binding) => ({
+            deviceId: binding.deviceId,
+            role: "screen",
+            definitionId: iphoneScreenDefinitionId,
+            generation: binding.generation,
+          })),
+        });
+      }),
+    );
   }
 
   invalidateDevice(binding: DeviceDriverIdentity, preserveStatus = false): void {
@@ -649,9 +652,7 @@ export class ComputerAppHub {
     this.#byRunner.set(runnerId, entry);
     this.#reportPhoneDisplayCapability(entry, "attached");
     this.#options.onChanged(runnerId);
-    void this.refreshDeviceDrivers().catch(() =>
-      this.detachRunner(runnerId, "transport-disconnected"),
-    );
+    void this.refreshDeviceDrivers().catch(() => undefined);
     this.#options.onRunnerAttached?.(runnerId);
   }
 
@@ -683,24 +684,6 @@ export class ComputerAppHub {
    * waiting for it, both synchronously.
    */
   async handleMessage(
-    peer: ComputerAppControlPeer,
-    stream: RunnerAuxiliaryStream,
-    message: IntegrationsModuleEvent,
-  ): Promise<void> {
-    const target = "deviceId" in message ? message.deviceId : undefined;
-    if (target && this.#options.drivers) {
-      const entry = this.#byPeer.get(peer.id);
-      if (
-        entry?.assignments.get(target) !==
-        ("driverGeneration" in message ? message.driverGeneration : undefined)
-      )
-        return;
-      return this.withDeviceAdmission(target, () => this.#handleMessage(peer, stream, message));
-    }
-    return this.#handleMessage(peer, stream, message);
-  }
-
-  async #handleMessage(
     peer: ComputerAppControlPeer,
     stream: RunnerAuxiliaryStream,
     message: IntegrationsModuleEvent,
@@ -2149,11 +2132,13 @@ export class ComputerAppHub {
       timer = setTimeout(() => resolve("timed-out"), computerAppSubmitTimeoutMs);
       timer.unref();
     });
-    const sent = entry.peer.send(message).then(
-      () => "sent" as const,
-      (error: unknown) =>
-        error instanceof ComputerAppSubmissionNotStartedError ? error : ("failed" as const),
-    );
+    const sent = Promise.resolve()
+      .then(() => entry.peer.send(message))
+      .then(
+        () => "sent" as const,
+        (error: unknown) =>
+          error instanceof ComputerAppSubmissionNotStartedError ? error : ("failed" as const),
+      );
     const result = await Promise.race([sent, timedOut]);
     if (timer) clearTimeout(timer);
     return result;
