@@ -15,6 +15,11 @@ import {
   callbackOperations,
   PluginServiceError,
   PluginBrokerError,
+  checkPluginOutputSize,
+  parseIpcMessage,
+  jsonBytes,
+  interactionBytes,
+  pluginResultTooLarge,
   type PluginBrokerOperation,
   type PluginBrokerInput,
   type PluginBrokerOutput,
@@ -496,11 +501,12 @@ export class PluginService {
     }
   }
   #report(execution: PluginExecution) {
-    this.#executions.set(execution.id, execution);
+    if (liveExecution.has(execution.state)) this.#executions.set(execution.id, execution);
+    else this.#executions.delete(execution.id);
     this.#options.onExecution?.(execution);
   }
   #send(child: ChildProcess, value: unknown) {
-    if (child.connected) child.send(HostMessageSchema.parse(value), () => {});
+    if (child.connected) child.send(parseIpcMessage(HostMessageSchema, value), () => {});
   }
   #elicit(
     child: ChildProcess,
@@ -508,6 +514,8 @@ export class PluginService {
     request: Record<string, PluginJson>,
     signal: AbortSignal,
   ): Promise<PluginAnswer> {
+    if (jsonBytes(request) > interactionBytes)
+      return Promise.reject(new PluginServiceError("invalid", pluginResultTooLarge));
     return new Promise((resolve, reject) => {
       const id = randomUUID();
       const abort = () => {
@@ -527,7 +535,15 @@ export class PluginService {
       });
       signal.addEventListener("abort", abort, { once: true });
       if (signal.aborted) abort();
-      else this.#send(child, { type: "elicit", id, callback, request });
+      else {
+        try {
+          this.#send(child, { type: "elicit", id, callback, request });
+        } catch (error) {
+          this.#elicits.delete(id);
+          signal.removeEventListener("abort", abort);
+          reject(error);
+        }
+      }
     });
   }
   async #callback(
@@ -631,6 +647,7 @@ export class PluginService {
     signal?.throwIfAborted();
     this.#touch();
     const child = await this.#ready(signal);
+    signal?.throwIfAborted();
     const id = randomUUID();
     const result = await new Promise<unknown>((resolve, reject) => {
       const abort = () => {
@@ -663,6 +680,7 @@ export class PluginService {
         reject(error);
       }
     }).finally(() => this.#touch());
+    checkPluginOutputSize(operation, result);
     const parsed = operations[operation].output.parse(result) as PluginOutput<K>;
     if (operation === "list") {
       const plugins = await Promise.all(

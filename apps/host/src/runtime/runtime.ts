@@ -2557,6 +2557,7 @@ export async function createHostRuntime(
       accountLinked: (input) => pluginTools.accountLinked(input),
       assertOwner: (userId) => requirePersonalOwner(database, userId),
       localTools: (owner) => providerNames.owned(owner),
+      accessAdmission: (owner, plugin, work) => providerNames.withAdmission(owner, plugin, work),
       changed: (owner) => realtime.sendToUsers([owner], { type: "host.plugins-changed" }),
     });
     pluginOAuth = new PluginOAuthService({

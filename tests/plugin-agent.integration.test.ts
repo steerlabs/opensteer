@@ -96,15 +96,21 @@ async function run(mode: ThreadAccessMode = "approval-required"): Promise<RunCal
   return caller;
 }
 const record = z.record(z.string(), z.unknown());
-async function call(caller: AgentCaller, name: string, input: unknown, held = false) {
+async function call(
+  caller: AgentCaller,
+  name: string,
+  input: unknown,
+  held = false,
+  operationKey = randomUUID(),
+) {
   current = caller;
   const result = held
     ? await mcp.callToolResult("token", name, input, {
-        operationKey: randomUUID(),
+        operationKey,
         caller,
         longRequestHold: false,
       })
-    : await mcp.callTool("token", name, input, { operationKey: randomUUID(), caller });
+    : await mcp.callTool("token", name, input, { operationKey, caller });
   return record.parse(held ? record.parse(result).structuredContent : result);
 }
 async function pendingRequest(caller: RunCaller) {
@@ -252,8 +258,11 @@ afterAll(async () => {
   if (directory) await rm(directory, { recursive: true, force: true });
 });
 
-async function program(kind: "trigger" | "watch"): Promise<AgentCaller> {
-  const owner = await run("approval-required");
+async function program(
+  kind: "trigger" | "watch",
+  mode: ThreadAccessMode = "approval-required",
+): Promise<AgentCaller> {
+  const owner = await run(mode);
   const triggers = new TriggerStore(database);
   const created = await triggers.create({
     actorThreadId: null,
@@ -704,6 +713,90 @@ test("input always goes to the person, and its answer reaches only that executio
   );
 });
 
+test.each(["approval-required", "auto-accept-edits"] as const)(
+  "downgrading an automatic program to %s interrupts it at answer delivery and resume",
+  async (mode) => {
+    for (const stage of ["answer", "resume"] as const) {
+      const caller = await run("full-access");
+      const pending = await call(caller, "plugin_execute", {
+        code: 'await tools.fixture.input({label:"before write"}); return await tools.fixture.reviewed({amount:2});',
+      });
+      const requestId = z.custom<RequestId>().parse(pending.requestId);
+      if (stage === "resume") await answer(requestId, true, { name: "answer" });
+      await database
+        .updateTable("threads")
+        .set({ accessMode: mode })
+        .where("id", "=", caller.thread.id)
+        .execute();
+      if (stage === "answer")
+        await expect(answer(requestId, true, { name: "answer" })).rejects.toThrow(
+          /authority changed/iu,
+        );
+      const ended = await executions.resume(caller, String(pending.executionId));
+      expect(ended).toMatchObject({
+        status: "interrupted",
+        reason: expect.stringMatching(/authority changed/iu),
+        next: expect.stringContaining("never rerun blindly"),
+      });
+      expect((await store.requests.get(requestId))?.cancellationReason).toBe("plugin-interrupted");
+    }
+  },
+);
+
+test.each(["trigger", "watch", "voice", "background"] as const)(
+  "%s work loses captured automatic approval when its task is downgraded",
+  async (kind) => {
+    const caller =
+      kind === "trigger" || kind === "watch"
+        ? await program(kind, "full-access")
+        : await run("full-access");
+    if (caller.kind === "connection") throw new Error("Invalid program fixture");
+    if (caller.kind === "run")
+      await database
+        .updateTable("runs")
+        .set(kind === "voice" ? { voiceSessionId: randomUUID() } : { phase: "background" })
+        .where("id", "=", caller.claims.runId)
+        .execute();
+    const pending = await call(caller, "plugin_execute", {
+      code: 'await tools.fixture.input({label:"before write"}); return await tools.fixture.reviewed({amount:2});',
+    });
+    await database
+      .updateTable("threads")
+      .set({ accessMode: "approval-required" })
+      .where("id", "=", caller.kind === "run" ? caller.thread.id : caller.anchor.id)
+      .execute();
+    await expect(
+      answer(z.custom<RequestId>().parse(pending.requestId), true, { name: "answer" }),
+    ).rejects.toThrow(/authority changed/iu);
+    expect(await executions.resume(caller, String(pending.executionId))).toMatchObject({
+      status: "interrupted",
+    });
+  },
+);
+
+test("raising a task to automatic never answers its existing approval Request", async () => {
+  const caller = await run();
+  const pending = await call(caller, "plugin_call", {
+    calls: { path: "tools.fixture.reviewed", input: { amount: 1 } },
+  });
+  await database
+    .updateTable("threads")
+    .set({ accessMode: "full-access" })
+    .where("id", "=", caller.thread.id)
+    .execute();
+  const automatic = { ...caller, accessMode: "full-access" as const };
+  expect(await executions.resume(automatic, String(pending.executionId))).toMatchObject({
+    status: "pending",
+  });
+  expect((await store.requests.get(z.custom<RequestId>().parse(pending.requestId)))?.status).toBe(
+    "pending",
+  );
+  await answer(z.custom<RequestId>().parse(pending.requestId));
+  expect(await executions.resume(automatic, String(pending.executionId))).toMatchObject({
+    status: "completed",
+  });
+});
+
 test("turning access off refuses both answer delivery and later resume", async () => {
   const caller = await run();
   const result = await call(caller, "plugin_call", {
@@ -757,6 +850,8 @@ test("account Request pins disclosure and a person-reviewed link fulfils it", as
   );
   if (installed.status !== "installed") throw new Error("Account fixture did not install");
   const target = { plugin: installed.plugin.id, requirement: "service", scope: "user" as const };
+  await records.recordInstall(personal.userId, installed.plugin.id, installed.version.id, "agent");
+  await records.recordInstall(personal.userId, installed.plugin.id, "older-version", "catalog");
   const result = await call(caller, "plugin_account_request", {
     pluginId: target.plugin,
     requirement: target.requirement,
@@ -769,6 +864,7 @@ test("account Request pins disclosure and a person-reviewed link fulfils it", as
     mode: "durable",
     presentation: {
       plugin: {
+        plugin: { author: "agent" },
         decision: {
           kind: "account",
           consent: { sites: ["api.fixture.invalid"], credential: "sealed" },
@@ -806,11 +902,22 @@ test("folder build errors are data; a fixed draft deploys a version and can roll
   await writeFile(join(directory, folder, "ui", "public", "page-asset.bin"), binary);
   const source = pluginFixtureFiles(1).find((f) => f.path === "index.ts")!;
   await writeFile(join(directory, folder, "index.ts"), source.content);
-  const first = await call(caller, "opensteer_plugin_install", {
-    source: "folder",
-    directory: folder,
-    name: "Draft",
-  });
+  const installKey = randomUUID();
+  const installInput = { source: "folder", directory: folder, name: "Draft" };
+  const first = await call(
+    caller,
+    "opensteer_plugin_install",
+    {
+      source: "folder",
+      directory: folder,
+      name: "Draft",
+    },
+    false,
+    installKey,
+  );
+  expect(await call(caller, "opensteer_plugin_install", installInput, false, installKey)).toEqual(
+    first,
+  );
   const deployed = record.parse(first.plugin);
   const version = record.parse(first.version);
   await writeFile(

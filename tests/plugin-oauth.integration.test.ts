@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import { z } from "zod";
+import { sql } from "kysely";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "../packages/access/src/index.js";
 import { type RequestId } from "../packages/core/src/index.js";
 import {
@@ -581,6 +582,40 @@ afterAll(async () => {
   else process.env.NODE_EXTRA_CA_CERTS = oldCa;
   if (directory) await rm(directory, { recursive: true, force: true });
   expect(errors).toEqual([]);
+});
+
+test("retried sign-in preparation keeps one durable connection and session", async () => {
+  const target = await install("managed");
+  const key = randomUUID();
+  const first = await oauth.prepare(target, personal.userId, key);
+  expect(await oauth.prepare(target, personal.userId, key)).toEqual(first);
+  const rows = await database
+    .selectFrom("pluginOauthRecords")
+    .select("id")
+    .where("id", "=", first.connection)
+    .execute();
+  expect(rows).toHaveLength(1);
+  const connections = await sql<{
+    count: number;
+  }>`select count(*)::int as count from plugin_engine.opensteer_oauth_connections where app = ${target.plugin}`.execute(
+    database,
+  );
+  expect(connections.rows[0]?.count).toBe(1);
+  expect(await oauth.options.store.claimBegin(first.connection, personal.userId)).toBe(true);
+  const before = await database
+    .selectFrom("pluginOauthRecords")
+    .select("encryptedPayload")
+    .where("id", "=", first.connection)
+    .executeTakeFirstOrThrow();
+  await expect(oauth.prepare(target, personal.userId, key)).rejects.toThrow(
+    /already has a sign-in/u,
+  );
+  const after = await database
+    .selectFrom("pluginOauthRecords")
+    .select("encryptedPayload")
+    .where("id", "=", first.connection)
+    .executeTakeFirstOrThrow();
+  expect(after.encryptedPayload).toEqual(before.encryptedPayload);
 });
 
 test("one-click completion commits a reviewed managed link, fulfils its Request and continues the task; a lost rotating refresh resumes its durable transaction", async () => {

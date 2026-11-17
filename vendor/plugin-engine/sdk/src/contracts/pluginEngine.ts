@@ -189,6 +189,8 @@ export interface ResourceLifecycle {
   ) => Effect.Effect<void, StorageError | AccountConnectionRefused>;
   /** Called once after inserting a new configured app, before its transaction commits. */
   readonly appCreated: (app: App) => Effect.Effect<void, StorageError>;
+  /** Runs in the version commit transaction, including deployments to an existing app. */
+  readonly appDeployed?: (app: App, version: import("./version.ts").VersionMetadata) => Effect.Effect<void, StorageError>;
   /** Called after active-work checks, before deleting the app in the same transaction. */
   readonly appRemoving: (app: AppId) => Effect.Effect<void, StorageError>;
   /**

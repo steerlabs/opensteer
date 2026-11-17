@@ -27,6 +27,7 @@ export class ComputerMcpTransport implements Transport {
   onmessage?: (message: JSONRPCMessage) => void;
   /** Why the computer ended the session, when it said. */
   closeError: ComputerMcpSessionError | null = null;
+  beforeToolCall: (() => Promise<void>) | undefined;
   readonly #hub: Pick<
     ComputerAppHub,
     "openMcpSession" | "withRunnerAdmission" | "requireAgentAccess"
@@ -106,6 +107,7 @@ export class ComputerMcpTransport implements Transport {
     // what the computer is sent is the JSON the message is.
     await this.#hub.withRunnerAdmission(this.#target.runnerId, async () => {
       await this.#hub.requireAgentAccess(this.#target.runnerId);
+      if ("method" in message && message.method === "tools/call") await this.beforeToolCall?.();
       await this.#session?.send(
         JSON.parse(JSON.stringify(message)) as HostIntegrationsMcpMessage["message"],
       );

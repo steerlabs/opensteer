@@ -99,8 +99,8 @@ export class PluginToolHandlers {
     const context = this.options.authority.admit(c.caller);
     await this.options.authority.assert(context, "install", c.input.pluginId);
     const i = c.input;
-    const input = operations.install.input.parse(
-      i.source === "folder"
+    const input = operations.install.input.parse({
+      ...(i.source === "folder"
         ? {
             ...(await this.options.folder(c.caller, z.string().min(1).parse(i.directory))),
             ...(i.pluginId ? { plugin: i.pluginId } : {}),
@@ -108,8 +108,14 @@ export class PluginToolHandlers {
           }
         : i.source === "catalog"
           ? { kind: "catalog", id: i.catalogId }
-          : { kind: i.source, url: i.url, name: i.name },
-    );
+          : { kind: i.source, url: i.url, name: i.name }),
+      key: JSON.stringify([
+        c.caller.userId,
+        c.caller.key,
+        "opensteer_plugin_install",
+        c.operationKey,
+      ]),
+    });
     await c.checkLive?.();
     const result = await this.options.service.install(input, context, c.signal);
     if (result.status === "installed")
@@ -156,10 +162,13 @@ export class PluginToolHandlers {
     const owner = { caller: "personal", mode: "automatic" as const };
     const consent = await this.options.service.reviewAccountLink(target, owner, c.signal);
     const detail = await this.options.service.detail({ plugin: target.plugin }, owner, c.signal);
+    const provenance = (await this.options.settings.settings(caller.userId)).find(
+      (s) => s.pluginId === target.plugin,
+    );
     const author =
-      (await this.options.settings.settings(caller.userId)).find(
-        (s) => s.pluginId === target.plugin,
-      )?.author ?? "agent";
+      (detail.plugin.activeVersion
+        ? provenance?.versionAuthors[detail.plugin.activeVersion]
+        : undefined) ?? "agent";
     const created = await this.options.store.requests.create({
       callId: `plugin-account:${c.operationKey}`,
       kind: "plugin.account",

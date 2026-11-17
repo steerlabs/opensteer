@@ -10,6 +10,8 @@ import {
   JsonSchema,
   PluginServiceError,
   PluginBrokerError,
+  checkPluginOutputSize,
+  parseIpcMessage,
   type PluginOperation,
   type PluginCallback,
 } from "./engine-protocol.js";
@@ -18,7 +20,7 @@ import type { z } from "zod";
 
 if (!process.send) throw new Error("Plugin engine must be started by its Host over IPC");
 const send = (value: unknown) => {
-  if (process.connected) process.send?.(EngineMessageSchema.parse(value), () => {});
+  if (process.connected) process.send?.(parseIpcMessage(EngineMessageSchema, value), () => {});
 };
 const callbacks = new Map<
   string,
@@ -80,12 +82,18 @@ const callback = <K extends PluginCallback>(
           },
           ...(elicitation ? { elicitation } : {}),
         });
-        send({
-          type: "callback",
-          id,
-          operation,
-          input: callbackOperations[operation].input.parse(input),
-        });
+        try {
+          send({
+            type: "callback",
+            id,
+            operation,
+            input: callbackOperations[operation].input.parse(input),
+          });
+        } catch (error) {
+          callbacks.delete(id);
+          signal.removeEventListener("abort", abort);
+          reject(error);
+        }
       }),
     catch: (error) => (error instanceof Error ? error : new Error("Host callback failed")),
   });
@@ -255,6 +263,7 @@ process.on("message", (raw: unknown) => {
         send({
           type: "result",
           id: message.id,
+          operation,
           result: {
             status: result.status,
             headers: Object.fromEntries(result.headers),
@@ -262,14 +271,17 @@ process.on("message", (raw: unknown) => {
             ...(result.body ? { stream: message.id } : {}),
           },
         });
-      } else
+      } else {
+        checkPluginOutputSize(operation, result);
         send({
           type: "result",
           id: message.id,
+          operation,
           result: operations[operation].output.parse(
             JsonSchema.parse(JSON.parse(JSON.stringify(result ?? null))),
           ),
         });
+      }
     } catch (error) {
       send({ type: "error", id: message.id, error: errorData(error) });
     } finally {

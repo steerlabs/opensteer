@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { Effect, Option, Schema } from "effect";
+import { Context, Effect, Option, Schema } from "effect";
 import type { SqlClient } from "effect/sql";
 import {
   AccountId,
@@ -20,9 +20,19 @@ import {
   type VersionId,
 } from "@opensteer/plugin-engine-sdk/core";
 import { appProtocol } from "@opensteer/plugin-engine-sdk/node";
-import { ConsentSchema, PluginServiceError, type PluginConsent } from "./engine-protocol.js";
+import {
+  ConsentSchema,
+  PluginServiceError,
+  operations,
+  type PluginConsent,
+} from "./engine-protocol.js";
 
 const table = ["opensteer_account_links"];
+type CreationKind = "plugin" | "account" | "connection";
+const Creation = Context.Reference<{ key: string; kind: CreationKind } | undefined>(
+  "opensteer/PluginCreation",
+  { defaultValue: () => undefined },
+);
 const rows = Schema.Array(
   Schema.Struct({
     requirement: Schema.String,
@@ -54,6 +64,11 @@ export const migrateEngineProduct = (sql: SqlClient.SqlClient) =>
     )
     .pipe(
       Effect.andThen(
+        sql.unsafe(
+          `CREATE TABLE IF NOT EXISTS opensteer_resource_creations (owner text NOT NULL, key text NOT NULL, kind text NOT NULL, result jsonb NOT NULL, PRIMARY KEY (owner, key, kind))`,
+        ),
+      ),
+      Effect.andThen(
         sql.unsafe(`
   CREATE TABLE IF NOT EXISTS opensteer_oauth_connections (
     connection text PRIMARY KEY, app text NOT NULL, requirement text NOT NULL,
@@ -70,6 +85,40 @@ export function engineAccounts(options: {
   authorizeBackground(plugin: string): Effect.Effect<void, Error>;
 }) {
   const { sql, engine, owner, blobs } = options;
+  const creationReceipt = (key: string, kind: CreationKind) =>
+    storage(
+      sql<{
+        result: unknown;
+      }>`select result from opensteer_resource_creations where owner = ${owner} and key = ${key} and kind = ${kind}`,
+    ).pipe(Effect.map((rows) => rows[0]));
+  const rememberCreation = (kind: CreationKind, result: unknown) =>
+    Effect.gen(function* () {
+      const creation = yield* Creation;
+      if (creation?.kind === kind)
+        yield* storage(
+          sql`insert into opensteer_resource_creations (owner, key, kind, result) values (${owner}, ${creation.key}, ${kind}, ${JSON.stringify(result)}::jsonb)`,
+        );
+    });
+  const once = <A, B, E extends Error, R>(
+    key: string | undefined,
+    kind: CreationKind,
+    work: Effect.Effect<A, E, R>,
+    recover: (receipt: { result: unknown }) => Effect.Effect<B, Error>,
+  ) => {
+    if (!key) return work;
+    return Effect.gen(function* () {
+      const receipt = yield* creationReceipt(key, kind);
+      return receipt
+        ? yield* recover(receipt)
+        : yield* work.pipe(Effect.provideService(Creation, { key, kind }));
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.flatMap(creationReceipt(key, kind), (receipt) =>
+          receipt ? recover(receipt) : Effect.fail(error),
+        ),
+      ),
+    );
+  };
   const read = (sdk: PluginEngine, app: AppId) =>
     sdk[StorageHost].read(
       table,
@@ -109,7 +158,30 @@ export function engineAccounts(options: {
     Effect.gen(function* () {
       const sealed = yield* disclosure(app);
       const sites = [...(required.definition.hosts ?? [])].sort();
-      const credential = sealed && sites.length > 0 ? ("sealed" as const) : ("value" as const);
+      // Review precedes account/method selection: disclose the widest runtime exposure.
+      const exposed = Object.values(required.definition.auth).some((method) => {
+        if ((method.raw?.length ?? 0) > 0 || (method.plain?.length ?? 0) > 0) return true;
+        if (method.type !== "secrets") return false;
+        const fields = method.fields.properties;
+        // The runtime replaces strings only; other credential values remain readable.
+        return (
+          !fields ||
+          typeof fields !== "object" ||
+          Array.isArray(fields) ||
+          Object.values(fields).some(
+            (field) =>
+              !field ||
+              typeof field !== "object" ||
+              Array.isArray(field) ||
+              !("type" in field) ||
+              field.type !== "string",
+          )
+        );
+      });
+      const credential =
+        sealed && required.definition.hosts !== undefined && !exposed
+          ? ("sealed" as const)
+          : ("value" as const);
       return {
         sites,
         credential,
@@ -380,33 +452,45 @@ export function engineAccounts(options: {
         rows[0] ? Effect.succeed(rows[0]) : Effect.fail(new StorageError()),
       ),
     );
-  const prepare = (input: { plugin: string; requirement: string; scope: "app" | "user" }) =>
+  const prepare = (input: {
+    plugin: string;
+    requirement: string;
+    scope: "app" | "user";
+    key?: string | undefined;
+  }) =>
     Effect.gen(function* () {
       const sdk = yield* engine;
-      return yield* sdk[StorageHost].transaction(
-        Effect.gen(function* () {
-          yield* lock(AppId.make(input.plugin));
-          const consent = yield* review(input);
-          const connection = yield* sdk.accountConnections.create({
-            owner,
-            target: {
-              app: AppId.make(input.plugin),
-              requirement: input.requirement,
-              scope: input.scope,
-            },
-          });
-          yield* sql`insert into opensteer_oauth_connections (connection, app, requirement, scope, consent)
+      return yield* once(
+        input.key,
+        "connection",
+        sdk[StorageHost].transaction(
+          Effect.gen(function* () {
+            yield* lock(AppId.make(input.plugin));
+            const consent = yield* review(input);
+            const connection = yield* sdk.accountConnections.create({
+              owner,
+              target: {
+                app: AppId.make(input.plugin),
+                requirement: input.requirement,
+                scope: input.scope,
+              },
+            });
+            yield* sql`insert into opensteer_oauth_connections (connection, app, requirement, scope, consent)
         values (${connection.id}, ${input.plugin}, ${input.requirement}, ${input.scope}, ${canonical(consent)})`;
-          return {
-            connection: connection.id,
-            consent,
-            callbackProvider: Object.values(connection.provider.definition.auth).some(
-              (method) => method.type === "oauth2" && "discover" in method,
-            )
-              ? ("mcp" as const)
-              : ("plugin" as const),
-          };
-        }),
+            const prepared = {
+              connection: connection.id,
+              consent,
+              callbackProvider: Object.values(connection.provider.definition.auth).some(
+                (method) => method.type === "oauth2" && "discover" in method,
+              )
+                ? ("mcp" as const)
+                : ("plugin" as const),
+            };
+            yield* rememberCreation("connection", prepared);
+            return prepared;
+          }),
+        ),
+        (receipt) => Effect.try(() => operations.prepareOAuth.output.parse(receipt.result)),
       );
     });
   const reviewedConnection = (connection: string, consent?: PluginConsent) =>
@@ -468,6 +552,8 @@ export function engineAccounts(options: {
       ),
     connectionCompleting: () => Effect.void,
     appCreated: (app) => (app.owner === owner ? Effect.void : Effect.fail(new StorageError())),
+    appDeployed: (app, version) =>
+      rememberCreation("plugin", { status: "installed", plugin: app, version }),
     appRemoving: () => Effect.void,
     appAccountConnected: (input) =>
       Effect.gen(function* () {
@@ -506,11 +592,14 @@ export function engineAccounts(options: {
         );
       }),
     accountCreated: (account) =>
-      account.owner === owner ? Effect.void : Effect.fail(new StorageError()),
+      account.owner === owner
+        ? rememberCreation("account", account)
+        : Effect.fail(new StorageError()),
     accountRemoving: () => Effect.void,
   };
   return {
     hooks,
+    once,
     standing: (app: AppId) =>
       options.authorizeBackground(app).pipe(Effect.andThen(accounts(app)), Effect.asVoid),
     validateBinding,

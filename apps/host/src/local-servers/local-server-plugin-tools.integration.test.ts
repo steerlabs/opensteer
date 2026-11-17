@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { LocalMcpServers } from "@opensteer/runner";
 import type { RequestId } from "@opensteer/core";
+import { ServerInput } from "./server-input.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   connectComputerAppMachine,
@@ -74,6 +75,18 @@ integration("local servers as plugin tools", () => {
     expect(added).toMatchObject({
       server: { name: "tv", path: "tools.tv", kind: "program", state: "waiting" },
     });
+    expect(
+      await gateway.call("local_server_add", {
+        name: "tv",
+        computerId: computer.runnerId,
+        launch: { command: "node", args: [server] },
+        device: { name: "Living room TV", kind: "tv" },
+      }),
+    ).toEqual(added);
+    expect(await host.store.database.selectFrom("plugins").select("id").execute()).toHaveLength(1);
+    expect(
+      await host.store.database.selectFrom("pluginVersions").select("id").execute(),
+    ).toHaveLength(1);
     const setup = await vi.waitFor(
       async () => {
         const row = await host.store.database
@@ -166,6 +179,53 @@ integration("local servers as plugin tools", () => {
       result: { execution: { value: { value: { digits: "34", ...redacted } } } },
     });
     expect(JSON.stringify([resultA, resultB])).not.toMatch(/AB89|CD34/u);
+    const beforeQueued = await readFile(join(work, "calls"), "utf8");
+    const entered = Promise.withResolvers<void>();
+    const releaseTurn = Promise.withResolvers<void>();
+    const originalTurn = ServerInput.prototype.turn;
+    const turn = vi.spyOn(ServerInput.prototype, "turn").mockImplementationOnce(async function (
+      this: ServerInput,
+      client,
+      signal,
+    ) {
+      const release = await originalTurn.call(this, client, signal);
+      entered.resolve();
+      await withTimeout(releaseTurn.promise, 10000, {
+        timeoutError: () => new Error("Queued admission was not released"),
+      });
+      return release;
+    });
+    try {
+      const queued = gateway.call("plugin_call", {
+        calls: { path: "tools.tv.pair", input: { mode: "queued" } },
+      });
+      await withTimeout(entered.promise, 10000, {
+        timeoutError: () => new Error("Call did not enter the session queue"),
+      });
+      const serverRow = await host.store.database
+        .selectFrom("integrationServers")
+        .select("id")
+        .executeTakeFirstOrThrow();
+      await dispatch(host, {
+        type: "plugins.access.set",
+        pluginId: `app_server_${serverRow.id}`,
+        access: "off",
+      });
+      releaseTurn.resolve();
+      const refused = await withTimeout(queued, 10000, {
+        timeoutError: () => new Error("Revoked queued call did not return"),
+      });
+      expect(JSON.stringify(refused)).toMatch(/unavailable|authority|access/iu);
+      expect(await readFile(join(work, "calls"), "utf8")).toBe(beforeQueued);
+      await dispatch(host, {
+        type: "plugins.access.set",
+        pluginId: `app_server_${serverRow.id}`,
+        access: "all",
+      });
+    } finally {
+      releaseTurn.resolve();
+      turn.mockRestore();
+    }
     const failed = await withTimeout(
       gateway.call("plugin_call", {
         calls: { path: "tools.tv.pair", input: { mode: "error" } },
@@ -270,6 +330,8 @@ const server = new Server({ name: "tv", version: "1" }, { capabilities: { tools:
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "pair", description: "Pair with the TV", inputSchema: { type: "object" } }] }));
 let acceptedCode;
 server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
+  require("node:fs").appendFileSync(${JSON.stringify(join(work, "calls"))}, "call\\n");
+  if (params.arguments?.mode === "queued") return { content: [{ type: "text", text: "queued write ran" }] };
   if (params.arguments?.mode === "error") throw new Error("Pairing failed with " + acceptedCode);
   const properties = { code: { type: "string", title: "Pairing code", minLength: 4, maxLength: 4 }, count: { type: "integer" }, enabled: { type: "boolean" }, ratio: { type: "number" }, room: { type: "string", enum: ["Living room", "Den"] } };
   const result = await server.elicitInput({ message: "Enter the code shown on your TV", requestedSchema: { type: "object", properties, required: Object.keys(properties) } }, { timeout: 180000, maxTotalTimeout: 180000 });

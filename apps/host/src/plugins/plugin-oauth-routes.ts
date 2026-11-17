@@ -55,7 +55,14 @@ export async function handlePluginOAuthCommand(
   await oauth.assertOwner(owner);
   switch (command.type) {
     case "plugin.authorization.prepare":
-      return { ...(await oauth.prepare(command.input, owner)), type: command.type };
+      return {
+        ...(await oauth.prepare(
+          command.input,
+          owner,
+          JSON.stringify([owner, command.type, command.idempotencyKey]),
+        )),
+        type: command.type,
+      };
     case "plugin.authorization.begin":
       return {
         ...(await oauth.begin(command.input, owner, requireSurface(context))),
