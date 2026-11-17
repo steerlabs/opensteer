@@ -464,6 +464,25 @@ vi.mock("../ui/screen.js", () => ({
 vi.mock("../voice/controls.js", () => ({ VoiceDock: () => null }));
 vi.mock("../voice/use-voice-value.js", () => ({ useVoiceValue: () => false }));
 vi.mock("../computers/here-device.js", () => ({ useHereDeviceId: () => state.hereId }));
+vi.mock(
+  "../ui/action-line.js",
+  async () => (await import("../../test-support/tab-screen-mocks.js")).actionLine,
+);
+vi.mock(
+  "../ui/connection-gate.js",
+  async () => (await import("../../test-support/tab-screen-mocks.js")).connectionGate,
+);
+vi.mock(
+  "../ui/route-gate.js",
+  async () => (await import("../../test-support/tab-screen-mocks.js")).routeGate,
+);
+vi.mock(
+  "../ui/placeholder.js",
+  async () => (await import("../../test-support/tab-screen-mocks.js")).placeholder,
+);
+vi.mock("./deployment-gate.js", () => ({
+  DeploymentGate: () => <p data-gate="deployment">Deployment gate</p>,
+}));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("../team/team-marks.js", async (load) => ({
   ...(await load<typeof import("../team/team-marks.js")>()),
@@ -1580,17 +1599,17 @@ describe("mobile pages", () => {
     expect(state.refresh).toHaveBeenCalledTimes(0);
   });
 
-  it("refuses another deployment and a signed-out viewer", async () => {
+  it("gates another deployment and a signed-out viewer, showing neither the page", async () => {
     const { container, render } = await setup({ sessionId: "chosen" });
     state.snapshot = snapshot([session("chosen")]);
     state.deploymentId = "deployment-b";
     await render();
-    expect(container.textContent).toContain("This deployment is no longer open");
+    expect(container.querySelector('[data-gate="deployment"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Viewing chosen");
     state.deploymentId = "deployment-a";
     state.snapshot = { ...state.snapshot, session: "authentication-required", user: null };
     await render();
-    expect(container.textContent).toContain("Sign in to view this page");
+    expect(container.querySelector('[data-gate="connection"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Viewing chosen");
   });
 });
@@ -1887,7 +1906,7 @@ describe("an app open as a tab", () => {
     const { container, closeTabs } = await openApp();
     closeTabs.mockRejectedValueOnce(new Error("The Host refused."));
     await pressAsync(appMenu(), "Close tab");
-    expect(container.textContent).toContain("Couldn't confirm this change.");
+    expect(container.textContent).toContain("Couldn't confirm this tab closed.");
     expect(webView()).not.toBeNull();
     await pressAsync(container, "Try again");
     expect(closeTabs).toHaveBeenCalledTimes(2);

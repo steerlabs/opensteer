@@ -1,44 +1,13 @@
-import { presentClientIssue, type ClientIssue } from "@opensteer/client/feedback";
 import * as Haptics from "expo-haptics";
 import { memo, useEffect, useRef, type ReactNode } from "react";
 import { AccessibilityInfo, Pressable, StyleSheet, View } from "react-native";
 import Animated from "react-native-reanimated";
 import { space, touchTarget } from "../theme.js";
 import { appear } from "./motion.js";
+import type { ActionLineValue } from "./action-line-value.js";
 import { AppText } from "./primitives.js";
 
-/** One action's outcome, said beside the control that asked for it. */
-export interface ActionLineValue {
-  /** Changes for each new outcome: it is said and felt once per key. */
-  readonly key: string;
-  readonly text: string;
-  readonly tone: "muted" | "danger";
-  readonly link?: {
-    readonly label: string;
-    readonly accessibilityLabel?: string;
-    readonly onPress: () => void;
-  } | null;
-  readonly haptic?: "warning" | "error" | null;
-}
-
-/**
- * An action's outcome as its line: muted and felt as a warning when it never
- * went out or can't be confirmed, danger and felt as an error when refused.
- */
-export function issueLine(
-  issue: ClientIssue,
-  key: string,
-  link?: ActionLineValue["link"],
-): ActionLineValue {
-  const refused = issue.code === "rejected" || issue.code === "storage-unavailable";
-  return {
-    haptic: refused ? "error" : "warning",
-    key,
-    link: link ?? null,
-    text: presentClientIssue(issue).title,
-    tone: refused ? "danger" : "muted",
-  };
-}
+export { issueLine, type ActionLineValue } from "./action-line-value.js";
 
 /**
  * The answer to a tap, in one short line next to where it happened: never a
