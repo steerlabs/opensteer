@@ -29,7 +29,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import { z } from "zod";
 import type { DatabaseSchema } from "./schema.js";
-import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { databaseOperationOptions } from "./operation-budget.js";
 
 export type TabRecord = Selectable<DatabaseSchema["personalTabs"]>;
@@ -342,7 +343,7 @@ export class TabStore {
     includeClosed: TabId[] | "latest" | TabWrite = [],
   ): Promise<TabMutation> {
     z.string().min(1).max(255).parse(key);
-    return withPersonalTransaction(this.database, async (tx) => {
+    return commitPersonalMutation(this.database, async (tx, mutation) => {
       let closed: TabId[] | "latest";
       if (Array.isArray(includeClosed) || includeClosed === "latest") closed = includeClosed;
       else {
@@ -369,6 +370,8 @@ export class TabStore {
       if (JSON.stringify(state.layout.items) !== before) {
         state.layout.revision++;
         await this.#save(tx, ownerId, state.layout);
+        mutation.bumpResource("tab-layout");
+        mutation.bumpResource("tab");
       }
       const result = { tabIds, layout: state.layout };
       const principal = await tx
@@ -772,7 +775,7 @@ export class TabStore {
     binding: PageBinding,
   ): Promise<boolean> {
     PageBindingSchema.parse(binding);
-    return withPersonalTransaction(this.database, async (tx) => {
+    return commitPersonalMutation(this.database, async (tx, mutation) => {
       await this.#lock(tx, ownerId, [], [tabId]);
       if (!(await this.#latest(tx, binding))) return false;
       const row = await this.get(ownerId, tabId, false, tx);
@@ -789,6 +792,7 @@ export class TabStore {
         .set({ pageBinding: sql`${JSON.stringify(binding)}::jsonb`, updatedAt: new Date() })
         .where("id", "=", tabId)
         .execute(databaseOperationOptions());
+      mutation.bumpResource("tab");
       return true;
     });
   }
@@ -803,7 +807,7 @@ export class TabStore {
     PageBindingSchema.parse(binding);
     restoreUrl.parse(descriptor.url);
     if (descriptor.favicon) BrowserFaviconSchema.parse(descriptor.favicon);
-    return withPersonalTransaction(this.database, async (tx) => {
+    return commitPersonalMutation(this.database, async (tx, mutation) => {
       await this.#lock(tx, ownerId, [], [tabId]);
       if (!(await this.#session(tx, binding, ownerId))) return false;
       const row = await this.get(ownerId, tabId, false, tx);
@@ -832,28 +836,35 @@ export class TabStore {
         })
         .where("id", "=", tabId)
         .execute(databaseOperationOptions());
+      mutation.bumpResource("tab");
       return true;
     });
   }
   /** AppService calls this inside its existing personal transaction, before removing the app. */
   async removeTabs(tx: TabTransaction, appId: AppId): Promise<TabId[]> {
-    const owned = await tx
-      .selectFrom("personalTabs")
-      .select(["id", "ownerId"])
-      .where("appId", "=", appId)
-      .execute(databaseOperationOptions());
-    for (const ownerId of [...new Set(owned.map((row) => row.ownerId))].sort()) {
-      const ids = owned.filter((row) => row.ownerId === ownerId).map((row) => row.id);
-      const { layout } = await this.#lock(tx, ownerId, ids);
-      removeIds(layout, new Set(ids));
-      await tx
-        .deleteFrom("personalTabs")
-        .where("ownerId", "=", ownerId)
-        .where("id", "in", ids)
+    return commitPersonalMutation(tx, async (tx, mutation) => {
+      const owned = await tx
+        .selectFrom("personalTabs")
+        .select(["id", "ownerId"])
+        .where("appId", "=", appId)
         .execute(databaseOperationOptions());
-      layout.revision++;
-      await this.#save(tx, ownerId, layout);
-    }
-    return owned.map((row) => row.id);
+      for (const ownerId of [...new Set(owned.map((row) => row.ownerId))].sort()) {
+        const ids = owned.filter((row) => row.ownerId === ownerId).map((row) => row.id);
+        const { layout } = await this.#lock(tx, ownerId, ids);
+        removeIds(layout, new Set(ids));
+        await tx
+          .deleteFrom("personalTabs")
+          .where("ownerId", "=", ownerId)
+          .where("id", "in", ids)
+          .execute(databaseOperationOptions());
+        layout.revision++;
+        await this.#save(tx, ownerId, layout);
+      }
+      if (owned.length) {
+        mutation.bumpResource("tab");
+        mutation.bumpResource("tab-layout");
+      }
+      return owned.map((row) => row.id);
+    });
   }
 }

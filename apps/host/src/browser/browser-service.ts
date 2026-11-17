@@ -4,7 +4,7 @@ import type { PageTabsPort } from "../tabs/tab-service.js";
 import type { TabActor } from "../tabs/ports.js";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import { TabStore, type TabRecord, type TabWrite } from "@opensteer/database";
-import type { PageBinding, TabOpenedBy, TabTarget, PlaceEnteredEvent } from "@opensteer/core";
+import type { PageBinding, TabOpenedBy, TabTarget } from "@opensteer/core";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import {
   keyedStreamHardCapBytes,
@@ -52,7 +52,6 @@ import {
   OpensteerError,
   RunnerIdSchema,
   RunIdSchema,
-  type AgentEvent,
   type AuthSessionId,
   type BrowserAccessSuggestion,
   type BrowserProfileId,
@@ -89,7 +88,6 @@ import {
   createBrowserSessionId,
   decodeBrowserFrameEnvelope,
   InitialPageReadySchema,
-  placeIdentityKey,
   previousReleaseEligibility,
   projectBrowserSessionOpener,
   staleBrowserTabInventoryReason,
@@ -250,7 +248,7 @@ export interface BrowserSessionRepository {
     readonly runId: RunId;
     readonly bindingGeneration: number;
     readonly data: EventData<"place.entered">;
-  }): Promise<AgentEvent | undefined>;
+  }): Promise<boolean>;
 
   getBrowserTabOpen(ownerId: UserId, key: string): Promise<BrowserTabOpenBinding | null>;
   bindBrowserTabOpen(input: {
@@ -264,9 +262,6 @@ export interface BrowserSessionRepository {
     agentBindingId: string,
     ownerId: UserId,
   ): Promise<BrowserSessionOpenerRecord | null>;
-  latestNativePlaces?(
-    ownerId: UserId,
-  ): Promise<readonly import("@opensteer/protocol").ThreadPlaceReference[]>;
   authorizedPlaceThreadIds?(
     ownerId: UserId,
     threadIds: readonly ThreadId[],
@@ -310,7 +305,6 @@ export interface BrowserSessionRepository {
       readonly requestedBy: UserId;
       readonly requiredActor: "requester";
     }): Promise<{
-      readonly events: readonly AgentEvent[];
       readonly replayed: boolean;
       readonly request: Request;
     }>;
@@ -325,7 +319,6 @@ export interface BrowserSessionRepository {
       readonly settlementSessionId?: string;
       readonly response: RequestResponse;
     }): Promise<{
-      readonly events: readonly AgentEvent[];
       readonly profile: BrowserProfileRecord | null;
       readonly request: Request;
     }>;
@@ -376,7 +369,6 @@ export interface BrowserSessionRepository {
   detachBrowserSessionAttachments(agentBindingId: string): Promise<readonly BrowserSessionId[]>;
 
   failActiveBrowserSessions(placementKey?: string): Promise<{
-    readonly events: readonly AgentEvent[];
     readonly failed: number;
   }>;
   findActiveBrowserSessionForPerson(ownerId: UserId): Promise<BrowserSessionRecord | null>;
@@ -430,7 +422,6 @@ export interface BrowserSessionRepository {
     readonly sessionId: BrowserSessionId;
     readonly state: HostedBrowserSessionState;
   }): Promise<{
-    readonly events: readonly AgentEvent[];
     readonly session: BrowserSessionRecord;
   }>;
 }
@@ -605,17 +596,11 @@ export interface TabPlaceHooks {
   write(input: {
     runId: RunId;
     bindingGeneration: number;
-    data: PlaceEnteredEvent["data"];
-  }): Promise<PlaceEnteredEvent | undefined>;
-  publish(event: PlaceEnteredEvent): void;
+    data: EventData<"place.entered">;
+  }): Promise<boolean>;
   notice(
     ownerId: UserId,
-    notice:
-      | z.infer<typeof import("@opensteer/protocol").TabPlaceActivityNoticeSchema>
-      | {
-          type: "host.thread-place-changed";
-          reference: import("@opensteer/protocol").ThreadPlaceReference;
-        },
+    notice: z.infer<typeof import("@opensteer/protocol").TabPlaceActivityNoticeSchema>,
   ): void;
 }
 
@@ -637,12 +622,7 @@ interface BrowserServiceOptions {
   readonly tabPlaces?: TabPlaceHooks;
   readonly onTabsChanged?: (ownerId?: UserId, tabIds?: readonly BrowserSurfaceId[]) => void;
   readonly onMissingActor?: (sessionId: BrowserSessionId, agentBindingId: string) => void;
-  readonly onPlaceNotice?: (
-    ownerId: UserId,
-    notice:
-      | BrowserPlaceActivityNotice
-      | { type: "host.thread-place-changed"; reference: ThreadPlaceReference },
-  ) => void;
+  readonly onPlaceNotice?: (ownerId: UserId, notice: BrowserPlaceActivityNotice) => void;
   readonly connectTimeoutMs?: number;
   readonly onSessionsChanged: (
     sessionIds: readonly BrowserSessionId[],
@@ -659,7 +639,6 @@ interface BrowserServiceOptions {
   readonly activityClock?: Clock;
   readonly actingWindowMs?: number;
   readonly actorMetadataTimeoutMs?: number;
-  readonly onDeploymentEvent: (event: AgentEvent) => void;
   readonly localProfiles?: BrowserLocalProfiles;
   readonly eraseLocalProfiles?: (runnerId: RunnerId) => Promise<void>;
   readonly repository: BrowserSessionRepository;
@@ -708,11 +687,6 @@ export class BrowserService {
     string,
     { actor: BrowserActor; activity: BrowserRuntimeActivity; order: number; at: number }
   >();
-  readonly #nativeTabReferences = new Map<
-    UserId,
-    Map<ThreadId, import("@opensteer/protocol").ThreadPlaceReference>
-  >();
-  readonly #latestPlaces = new Map<UserId, Map<ThreadId, ThreadPlaceReference>>();
   readonly #history: BrowserHistoryStore | undefined;
   readonly #historyTails = new Map<BrowserProfileId, Promise<unknown>>();
   readonly #onHistoryChanged: NonNullable<BrowserServiceOptions["onHistoryChanged"]>;
@@ -804,7 +778,6 @@ export class BrowserService {
   >();
   /** What each session's viewers were last told, so a repeat is not sent. */
   readonly #announcedPresence = new Map<BrowserSessionId, string>();
-  readonly #onDeploymentEvent: (event: AgentEvent) => void;
   readonly #agentAdmissions = new KeyedMutationQueue();
   readonly #requireAgentAccess: (runnerId: RunnerId) => Promise<void>;
   readonly #requireAgentVisibility: (runnerId: RunnerId) => Promise<void>;
@@ -872,19 +845,7 @@ export class BrowserService {
         options.onPlaceNotice?.(ownerId, notice);
         return;
       }
-      if (notice.type === "host.thread-place-changed") {
-        const { place, threadId, ...reference } = notice.reference;
-        if (place.kind !== "browser" || !reference.runId) return;
-        options.tabPlaces!.notice(ownerId, {
-          type: notice.type,
-          reference: {
-            ...reference,
-            runId: reference.runId,
-            taskId: threadId,
-            tabId: place.surfaceId,
-          },
-        });
-      } else if (notice.type === "host.place-activity") {
+      if (notice.type === "host.place-activity") {
         const { place, ...activity } = notice.activity;
         if (place.kind === "browser")
           options.tabPlaces!.notice(ownerId, {
@@ -913,19 +874,10 @@ export class BrowserService {
     this.#activityClock = options.activityClock ?? systemClock;
     this.#actingWindowMs = options.actingWindowMs ?? browserActingWindowMs;
     this.#actorMetadataTimeoutMs = options.actorMetadataTimeoutMs ?? browserActorMetadataTimeoutMs;
-    this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#runPlaces = new RunPlaceRecorder({
       clock: this.#activityClock,
-      write: async (input) => {
-        if (options.tabPlaces) return options.tabPlaces.write(input);
-        const event = await this.#repository.recordRunTabPlace(input);
-        return event?.type === "place.entered" ? event : undefined;
-      },
-      publish: (event) => {
-        if (event.type !== "place.entered") return;
-        if (options.tabPlaces) options.tabPlaces.publish(event);
-        else this.#onDeploymentEvent(event);
-      },
+      write: (input) =>
+        options.tabPlaces?.write(input) ?? this.#repository.recordRunTabPlace(input),
       onError: (error) => this.#onError(error),
     });
     this.#repository = options.repository;
@@ -938,9 +890,8 @@ export class BrowserService {
   }
 
   async initialize(): Promise<void> {
-    const failed = await this.#repository.failActiveBrowserSessions();
+    if (this.#personal) await this.#repository.failActiveBrowserSessions();
     await this.pruneHistory();
-    for (const event of failed.events) this.#onDeploymentEvent(event);
   }
 
   async workspaceBootstrap(
@@ -2032,36 +1983,6 @@ export class BrowserService {
   beginRunTabPlace(runId: RunId, generation: number) {
     return this.#runPlaces.begin(runId, generation);
   }
-  async latestTabPlaces(
-    ownerId: UserId,
-  ): Promise<import("@opensteer/protocol").ThreadPlaceReference[]> {
-    const latest = new Map(
-      ((await this.#repository.latestNativePlaces?.(ownerId)) ?? []).map((reference) => [
-        reference.taskId,
-        reference,
-      ]),
-    );
-    for (const reference of this.#nativeTabReferences.get(ownerId)?.values() ?? [])
-      if ((latest.get(reference.taskId)?.at ?? "") <= reference.at)
-        latest.set(reference.taskId, reference);
-    for (const reference of this.#latestPlaces.get(ownerId)?.values() ?? [])
-      if (
-        reference.place.kind === "browser" &&
-        reference.runId &&
-        (latest.get(reference.threadId)?.at ?? "") <= reference.at
-      )
-        latest.set(reference.threadId, {
-          taskId: reference.threadId,
-          runId: reference.runId,
-          tabId: reference.place.surfaceId,
-          title: reference.title,
-          site: reference.site,
-          iconRef: reference.iconRef,
-          order: reference.order,
-          at: reference.at,
-        });
-    return [...latest.values()];
-  }
   noteTabActivity(input: {
     ownerId: UserId;
     threadId: ThreadId;
@@ -2084,18 +2005,6 @@ export class BrowserService {
       return;
     }
     const order = ++this.#placeOrder;
-    const references = this.#nativeTabReferences.get(input.ownerId) ?? new Map();
-    references.set(input.threadId, {
-      taskId: input.threadId,
-      runId: input.runId,
-      tabId: input.tabId,
-      title: input.title,
-      site: null,
-      iconRef: null,
-      order,
-      at: new Date(input.at).toISOString(),
-    });
-    this.#nativeTabReferences.set(input.ownerId, references);
     this.#tabPlaceNotice(input.ownerId, {
       type: "host.place-activity",
       activity: {
@@ -2109,19 +2018,6 @@ export class BrowserService {
         expiresAt: input.at + this.#actingWindowMs,
         pointer: null,
         geometryRevision: 0,
-      },
-    });
-    this.#tabPlaceNotice(input.ownerId, {
-      type: "host.thread-place-changed",
-      reference: {
-        taskId: input.threadId,
-        runId: input.runId,
-        tabId: input.tabId,
-        title: input.title,
-        site: null,
-        iconRef: null,
-        order,
-        at: new Date(input.at).toISOString(),
       },
     });
   }
@@ -2617,39 +2513,6 @@ export class BrowserService {
             geometryRevision: pending.activity.geometryRevision,
           };
           this.#onPlaceNotice(ownerId, { type: "host.place-activity", activity: value });
-          const page = broker.pageOf(place.surfaceId);
-          if (!page) continue;
-          const reference: ThreadPlaceReference = {
-            threadId: identity.threadId,
-            runId: pending.actor.runId,
-            place,
-            order,
-            at: new Date(pending.at).toISOString(),
-            title: page.title,
-            site: page.site,
-            iconRef: null,
-          };
-          const latest =
-            this.#latestPlaces.get(ownerId) ?? new Map<ThreadId, ThreadPlaceReference>();
-          if ((latest.get(identity.threadId)?.order ?? -1) > order) continue;
-          const oldReference = latest.get(identity.threadId);
-          // Only a repeat of what clients already hold stays quiet: another Run
-          // in the same place is news, since its reply's picture depends on it.
-          if (
-            oldReference &&
-            oldReference.runId === reference.runId &&
-            placeIdentityKey(oldReference.place) === placeIdentityKey(place) &&
-            oldReference.title === reference.title &&
-            oldReference.site === reference.site
-          ) {
-            latest.set(identity.threadId, reference);
-            continue;
-          }
-          latest.delete(identity.threadId);
-          latest.set(identity.threadId, reference);
-          if (latest.size > 4096) latest.delete(latest.keys().next().value!);
-          this.#latestPlaces.set(ownerId, latest);
-          this.#onPlaceNotice(ownerId, { type: "host.thread-place-changed", reference });
         }
       }
       if (
@@ -3879,7 +3742,6 @@ export class BrowserService {
       requestedBy: input.ownerId,
       requiredActor: "requester",
     });
-    for (const event of created.events) this.#onDeploymentEvent(event);
     return {
       kind: "browser.access",
       replayed: created.replayed,
@@ -4174,7 +4036,6 @@ export class BrowserService {
       ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
       response: await this.#profileRequestResponse(input.response, pending),
     });
-    for (const event of resolved.events) this.#onDeploymentEvent(event);
     if (resolved.request.status === "fulfilled" && resolved.profile)
       this.#onProfilesChanged(input.resolvedBy);
     return {
@@ -5140,7 +5001,6 @@ export class BrowserService {
     readonly state: HostedBrowserSessionState;
   }): Promise<BrowserSessionRecord> {
     const transitioned = await this.#repository.transitionBrowserSession(input);
-    for (const event of transitioned.events) this.#onDeploymentEvent(event);
     this.#onSessionsChanged([transitioned.session.id], "browser.transition");
     return transitioned.session;
   }
@@ -8222,17 +8082,6 @@ interface BrowserLiveRows {
 type PageDescriptor = Pick<BrowserTabRecord, "id" | "title" | "url" | "order" | "openerId"> & {
   readonly favicon?: string | null;
 };
-
-interface ThreadPlaceReference {
-  threadId: ThreadId;
-  runId?: RunId;
-  place: import("@opensteer/core").PlaceIdentity;
-  title: string;
-  site: string | null;
-  iconRef: string | null;
-  order: number;
-  at: string;
-}
 
 function pageIconRef(lineageId: BrowserSessionId, favicon: string): string {
   return createHash("sha256").update(lineageId).update("\0").update(favicon).digest("base64url");

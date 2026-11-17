@@ -1,4 +1,4 @@
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,
@@ -11,7 +11,6 @@ import { randomUUID } from "node:crypto";
 import {
   OpensteerError,
   createId,
-  type AgentEvent,
   type BrowserSourceId,
   type RequestId,
   type UserId,
@@ -120,7 +119,7 @@ export class BrowserSourceStore {
     readonly remoteOrigin: string | null;
     readonly remoteGeneration: number | null;
   }): Promise<void> {
-    await withPersonalTransaction(this.#database, async (transaction) => {
+    await commitPersonalMutation(this.#database, async (transaction) => {
       await lockPairings(transaction, input.ownerId);
       const now = new Date();
       await transaction
@@ -171,7 +170,7 @@ export class BrowserSourceStore {
     readonly routeGeneration: number | null;
     readonly replaces: { readonly sourceId: BrowserSourceId; readonly tokenHash: string } | null;
   }): Promise<BrowserSourceRecord> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction, mutation) => {
       const now = new Date();
       const prospective = await transaction
         .selectFrom("browserSourcePairings")
@@ -200,15 +199,7 @@ export class BrowserSourceStore {
         .executeTakeFirst();
       if (!pairing) throw invalidPairing();
       if (pairing.ownerId !== prospective.ownerId) throw new Error("Pairing owner changed");
-      const owner = await transaction
-        .selectFrom("users")
-        .select("id")
-        .where("id", "=", pairing.ownerId)
-        .where("disabledAt", "is", null)
-        .executeTakeFirst();
-      if (!owner) {
-        throw new OpensteerError({ code: "forbidden", message: "The Chrome owner is unavailable" });
-      }
+      await assertPersonalOwner(transaction, pairing.ownerId);
       await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-sources-owner:${pairing.ownerId}`}, 0))`.execute(
         transaction,
       );
@@ -277,6 +268,7 @@ export class BrowserSourceStore {
             .execute();
         }
       }
+      mutation.bumpResource("browser-profile");
       return source;
     });
   }
@@ -355,14 +347,18 @@ export class BrowserSourceStore {
     readonly ownerId: UserId;
     readonly name: string;
   }): Promise<boolean> {
-    const result = await this.#database
-      .updateTable("browserSources")
-      .set({ name: input.name, updatedAt: new Date() })
-      .where("id", "=", input.sourceId)
-      .where("ownerId", "=", input.ownerId)
-      .where("revokedAt", "is", null)
-      .executeTakeFirst();
-    return result.numUpdatedRows === 1n;
+    return commitPersonalMutation(this.#database, async (tx, mutation) => {
+      await assertPersonalOwner(tx, input.ownerId);
+      const result = await tx
+        .updateTable("browserSources")
+        .set({ name: input.name, updatedAt: new Date() })
+        .where("id", "=", input.sourceId)
+        .where("ownerId", "=", input.ownerId)
+        .where("revokedAt", "is", null)
+        .executeTakeFirst();
+      if (result.numUpdatedRows) mutation.bumpResource("browser-profile");
+      return result.numUpdatedRows === 1n;
+    });
   }
 
   async markSeen(sourceId: BrowserSourceId): Promise<void> {
@@ -382,15 +378,19 @@ export class BrowserSourceStore {
     readonly sourceId: BrowserSourceId;
     readonly ownerId: UserId;
   }): Promise<boolean> {
-    const now = new Date();
-    const result = await this.#database
-      .updateTable("browserSources")
-      .set({ revokedAt: now, generation: sql<number>`generation + 1`, updatedAt: now })
-      .where("id", "=", input.sourceId)
-      .where("ownerId", "=", input.ownerId)
-      .where("revokedAt", "is", null)
-      .executeTakeFirst();
-    return result.numUpdatedRows === 1n;
+    return commitPersonalMutation(this.#database, async (tx, mutation) => {
+      await assertPersonalOwner(tx, input.ownerId);
+      const now = mutation.state.now;
+      const result = await tx
+        .updateTable("browserSources")
+        .set({ revokedAt: now, generation: sql<number>`generation + 1`, updatedAt: now })
+        .where("id", "=", input.sourceId)
+        .where("ownerId", "=", input.ownerId)
+        .where("revokedAt", "is", null)
+        .executeTakeFirst();
+      if (result.numUpdatedRows) mutation.bumpResource("browser-profile");
+      return result.numUpdatedRows === 1n;
+    });
   }
 
   async listGrants(ownerId: UserId): Promise<readonly BrowserSiteGrantRecord[]> {
@@ -429,9 +429,11 @@ export class BrowserSourceStore {
     readonly site: string;
     readonly preferredSourceId: BrowserSourceId;
   }): Promise<BrowserSiteGrantRecord> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction, mutation) => {
       await lockSiteGrants(transaction, input.ownerId);
-      return upsertGrantInTransaction(transaction, input, null);
+      const grant = await upsertGrantInTransaction(transaction, input, null);
+      mutation.bumpResource("browser-profile");
+      return grant;
     });
   }
 
@@ -441,7 +443,7 @@ export class BrowserSourceStore {
     readonly deploymentId: DeploymentId;
     readonly site: string;
   }): Promise<boolean> {
-    return withPersonalTransaction(this.#database, (transaction) =>
+    return commitPersonalMutation(this.#database, (transaction, mutation) =>
       administrationCommand(transaction, input.administration, async () => {
         const result = await transaction
           .updateTable("browserSiteGrants")
@@ -451,6 +453,7 @@ export class BrowserSourceStore {
           .where("site", "=", input.site)
           .where("revokedAt", "is", null)
           .executeTakeFirst();
+        if (result.numUpdatedRows) mutation.bumpResource("browser-profile");
         return result.numUpdatedRows === 1n;
       }),
     );
@@ -476,7 +479,7 @@ export class BrowserSourceStore {
     readonly requestId: RequestId | null;
     readonly settlementSessionId?: string;
   }): Promise<BrowserSignInFence | null> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const source = await transaction
         .selectFrom("browserSources")
         .innerJoin("users", "users.id", "browserSources.ownerId")
@@ -551,9 +554,8 @@ export class BrowserSourceStore {
   }): Promise<{
     readonly receipt: BrowserSignInReceipt;
     readonly replayed: boolean;
-    readonly events: readonly AgentEvent[];
   }> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction, mutation) => {
       await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-sign-in:${input.ownerId}:${input.invocationId}`}, 0))`.execute(
         transaction,
       );
@@ -565,7 +567,7 @@ export class BrowserSourceStore {
         .executeTakeFirst();
       if (replay) {
         assertSameSignIn(replay, input);
-        return { receipt: replay, replayed: true, events: [] };
+        return { receipt: replay, replayed: true };
       }
       await lockSiteGrants(transaction, input.ownerId);
       const request = input.requestId
@@ -620,7 +622,8 @@ export class BrowserSourceStore {
         .returning(receiptColumns)
         .executeTakeFirstOrThrow();
       await requestSettlementActor(transaction, input.ownerId, input.settlementSessionId);
-      return { receipt, replayed: false, events: request?.events ?? [] };
+      mutation.bumpResource("browser-profile");
+      return { receipt, replayed: false };
     });
   }
 }

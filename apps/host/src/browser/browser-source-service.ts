@@ -4,7 +4,6 @@ import WebSocket, { type RawData } from "ws";
 import {
   OpensteerError,
   browserSessionClosedReason,
-  type AgentEvent,
   type BrowserSourceId,
   type Request,
   type RequestId,
@@ -171,8 +170,6 @@ export class BrowserSourceService {
   readonly #canonicalOrigin: string;
   readonly #extensionDirectory: string | null;
   readonly #currentRoute: () => Promise<PersonalHostAccessRouteEnvelope | null>;
-  readonly #onDeploymentEvent: (event: AgentEvent) => void;
-  readonly #onRequestResolved: () => void;
   readonly #onError: (error: unknown) => void;
   readonly #now: () => number;
   readonly #connections = new Map<BrowserSourceId, SourceSocket>();
@@ -199,9 +196,6 @@ export class BrowserSourceService {
     /** The unpacked extension folder the desktop app keeps current, when there is one. */
     readonly extensionDirectory?: string | null;
     readonly currentRoute: () => Promise<PersonalHostAccessRouteEnvelope | null>;
-    readonly onDeploymentEvent: (event: AgentEvent) => void;
-    /** A sign-in Request was fulfilled or declined, so its continuation can be sent. */
-    readonly onRequestResolved: () => void;
     readonly onError?: (error: unknown) => void;
     readonly now?: () => number;
   }) {
@@ -213,8 +207,6 @@ export class BrowserSourceService {
     this.#canonicalOrigin = options.canonicalOrigin;
     this.#extensionDirectory = options.extensionDirectory ?? null;
     this.#currentRoute = options.currentRoute;
-    this.#onDeploymentEvent = options.onDeploymentEvent;
-    this.#onRequestResolved = options.onRequestResolved;
     this.#onError = options.onError ?? (() => {});
     this.#now = options.now ?? Date.now;
     this.#refusesSite = signInSiteRefusal({
@@ -686,15 +678,13 @@ export class BrowserSourceService {
     if (input.decision.decision === "decline") {
       // In the Request's turn, so a delivery already past its last check
       // finishes first and one that has not reached it sees the decline.
-      const declined = await this.#inTurn(`request\0${request.id}`, () =>
+      await this.#inTurn(`request\0${request.id}`, () =>
         this.#requests.declineBrowserSignInRequest({
           requestId: input.requestId,
           resolvedBy: input.ownerId,
           ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
         }),
       );
-      for (const event of declined.events) this.#onDeploymentEvent(event);
-      this.#onRequestResolved();
       return null;
     }
     if (request.status !== "pending") {
@@ -869,14 +859,11 @@ export class BrowserSourceService {
         deploymentId: this.#deploymentId,
       });
       if (grant) return;
-      const settled = await this.#requests.fulfilBrowserSignInRequest({
+      await this.#requests.fulfilBrowserSignInRequest({
         ownerId,
         requestId: request.id,
         response,
       });
-      if (!settled) return;
-      for (const event of settled.events) this.#onDeploymentEvent(event);
-      this.#onRequestResolved();
     });
   }
 
@@ -965,8 +952,6 @@ export class BrowserSourceService {
         response: { outcome: "session-closed" },
       });
       if (!settled) return { status: "request-closed" };
-      for (const event of settled.events) this.#onDeploymentEvent(event);
-      this.#onRequestResolved();
       return problem("session-closed", site, null);
     };
     if (!target?.live || target.deploymentId !== this.#deploymentId) return closed();
@@ -1038,7 +1023,6 @@ export class BrowserSourceService {
         throw error;
       });
     if (!created) return unavailable(input.site, "session-closed");
-    for (const event of created.events) this.#onDeploymentEvent(event);
     return this.#requestResult(
       created.request,
       input.target.sessionId,
@@ -1222,10 +1206,6 @@ export class BrowserSourceService {
       sourceName: source.name,
       deploymentId: target.deploymentId,
     });
-    if (committed.events.length > 0) {
-      for (const event of committed.events) this.#onDeploymentEvent(event);
-      this.#onRequestResolved();
-    }
     return appliedOutcome(committed.receipt);
   }
 
