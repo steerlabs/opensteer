@@ -65,7 +65,6 @@ export function hostServerTestDependencies(
     execution: inert(),
     teamLinks: inert(),
     harnessAuthenticationCoordinator: inert(),
-    liveRuns: { threadFrames: () => [] },
     integrations: {
       authAttempts: inert(),
       continuations: inert(),

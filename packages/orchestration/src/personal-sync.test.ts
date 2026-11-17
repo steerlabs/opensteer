@@ -268,7 +268,7 @@ test("a thread authority change fences a held node-only dispatch", async () => {
     fence.committed();
     release.resolve();
     expect(await deadline(finished.promise, "Node dispatch did not settle")).toBe(false);
-    expect(close).toHaveBeenCalledWith("Personal authority changed");
+    expect(close).toHaveBeenCalledWith("Personal authority changed: detail:1");
   } finally {
     release.resolve();
     socket.close("test finished");
@@ -382,5 +382,44 @@ test("oversized encoded commits dispatch a bounded repair", async () => {
     });
   } finally {
     socket.close("test finished");
+  }
+});
+
+test("a synchronized socket does no state or resource work during five idle minutes", async () => {
+  vi.useFakeTimers();
+  const read = vi.fn(async () => ({
+    throughSequence: "1",
+    cursor,
+    frames: [{ type: "host.snapshot" as const, scope, snapshot, throughSequence: "1" }],
+  }));
+  const readResources = vi.fn(async () => [
+    {
+      kind: "settings" as const,
+      revision: "0",
+      view: { entries: [], complete: true, hasMore: false },
+    },
+  ]);
+  const send = vi.fn(async (_raw: string, guard: () => boolean) => guard());
+  const socket = new PersonalSyncSocket({ read, readResources, send, close() {} });
+  try {
+    socket.attach({
+      type: "client.attach",
+      apiVersion: 62,
+      generation: 1,
+      interests: ["settings"],
+      installed: {},
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(readResources).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(3);
+    socket.ack({ subscriptionId: "shell", generation: 1, throughSequence: "1" });
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(readResources).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(3);
+  } finally {
+    socket.close("test finished");
+    vi.useRealTimers();
   }
 });

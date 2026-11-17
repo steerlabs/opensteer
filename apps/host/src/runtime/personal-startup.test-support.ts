@@ -19,7 +19,6 @@ import { join, resolve } from "node:path";
 import {
   createId,
   MessageContentSchema,
-  type AgentEvent,
   type MessageId,
   type ComputerFolder,
 } from "@opensteer/core";
@@ -87,6 +86,8 @@ export async function startPersonalRuntime(input: {
   readonly engineArguments?: readonly string[];
   readonly vertical?: VerticalStackOptions;
   readonly hostLog?: (line: string) => void;
+  readonly onPersonalScopeCut?: import("./runtime.js").HostRuntimeOptions["onPersonalScopeCut"];
+  readonly onPersonalReaction?: import("./runtime.js").HostRuntimeOptions["onPersonalReaction"];
   readonly runnerWire?: import("../agents/runner-wire.test-support.js").RunnerWireOptions;
   readonly maxConcurrentRuns?: number;
   readonly webDistribution?: NonNullable<ReturnType<typeof parseHostConfig>["webDistribution"]>;
@@ -145,7 +146,7 @@ export async function startPersonalRuntime(input: {
   let catalogState = "not received";
   let cookie = "",
     closed = false;
-  const events = new Set<(event: AgentEvent) => void>();
+  const events = new Set<() => void>();
   async function startHost() {
     const runtime = await createHostRuntime(
       { ...config, ...(vertical?.account ? { account: vertical.account } : {}) },
@@ -196,8 +197,10 @@ export async function startPersonalRuntime(input: {
           )
             catalogs.resolve();
         },
-        onDeploymentEvent: (event) => {
-          for (const listener of events) listener(event);
+        ...(input.onPersonalScopeCut ? { onPersonalScopeCut: input.onPersonalScopeCut } : {}),
+        onPersonalReaction: (reaction) => {
+          input.onPersonalReaction?.(reaction);
+          for (const listener of events) listener();
           for (const notify of changes) notify();
         },
       },
