@@ -2217,7 +2217,6 @@ export async function createHostServer(
           name: command.name,
           runnerKind: "local",
         });
-        await markMachine();
         return {
           enrollmentId: enrollment.enrollmentId,
           expiresAt: enrollment.expiresAt,
@@ -2239,7 +2238,6 @@ export async function createHostServer(
           name: command.name,
           ...(command.profile ? { profile: command.profile } : {}),
         });
-        await markMachine();
         return {
           enrollmentId: enrollment.enrollmentId,
           expiresAt: enrollment.expiresAt,
@@ -2255,8 +2253,6 @@ export async function createHostServer(
           enrollmentId: command.enrollmentId,
           ownerId: userId,
         });
-        // A retired enrollment leaves the pending computers.
-        if (state === "retired") await markMachine();
         return { state, type: command.type };
       }
       case "browser.session.start": {

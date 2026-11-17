@@ -1426,7 +1426,7 @@ export async function createRunnerEnrollment(
     readonly tokenHash: string;
   },
 ): Promise<RunnerEnrollmentIssuanceRecord> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     let preparedIdentity = input.preparedIdentity ?? null;
     if (preparedIdentity) {
       try {
@@ -1643,6 +1643,7 @@ export async function createRunnerEnrollment(
         tokenHash: input.tokenHash,
       })
       .executeTakeFirstOrThrow(databaseOperationOptions());
+    if (input.runnerKind === "local") mutation.bumpResource("machine");
     return {
       deviceProfile: input.deviceProfile ?? null,
       allowedModules,
@@ -1671,7 +1672,7 @@ export async function retireRunnerEnrollment(
     readonly ownerId: UserId;
   },
 ): Promise<"consumed" | "expired" | "retired"> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     const identity = await transaction
       .selectFrom("runnerEnrollments")
       .select(["ownerKind", "ownerUserId", "tokenHash"])
@@ -1704,6 +1705,7 @@ export async function retireRunnerEnrollment(
       })
       .where("id", "=", input.enrollmentId)
       .executeTakeFirstOrThrow(databaseOperationOptions());
+    mutation.bumpResource("machine");
     return "retired";
   });
 }
