@@ -21,7 +21,9 @@ import {
 } from "./store.integration.test-support.js";
 
 describeStore("Claude compaction persistence", (it) => {
-  it("batches return hints identically for a mixed task page", async ({ storeFixture }) => {
+  it("reads a mixed task page in one query and matches action admission", async ({
+    storeFixture,
+  }) => {
     const { database, thread, createRunFixture } = await compactionFixture(storeFixture);
     const { thread: other } = await createRunFixture("no-context");
     const original = await database
@@ -51,14 +53,25 @@ describeStore("Claude compaction persistence", (it) => {
         .set({ inputQueuePaused: paused })
         .where("id", "=", thread.id)
         .execute();
-      const expected = await Promise.all(
-        ids.map(async (id) => [id, await compactionReturnHint(database, id)] as const),
-      );
       const queries = vi.spyOn(database.getExecutor(), "executeQuery");
       const hints = await compactionReturnHints(database, ids);
       expect(queries.mock.calls.length).toBe(1);
       queries.mockRestore();
-      for (const [id, hint] of expected) expect(hints.get(id) ?? null).toEqual(hint);
+      const active = hints.get(thread.id)!;
+      const expected = await compactionIsEligible(
+        database,
+        thread.id,
+        {
+          kind: "claude-compaction",
+          reason: "before-send",
+          providerSessionId: session.id,
+          sourceRunId: active.sourceRunId,
+        },
+        active.eligibleAt,
+      );
+      expect(active.eligible).toBe(expected);
+      expect(hints.has(other.id)).toBe(false);
+      expect(hints.get(archivedId)?.eligible).toBe(false);
     }
   });
   it("persists the owner's policy and refuses another person", async ({ storeFixture }) => {
