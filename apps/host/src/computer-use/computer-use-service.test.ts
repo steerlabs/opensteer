@@ -1707,6 +1707,45 @@ describe("display sessions on an Android phone", () => {
     await test.service.shutdown();
   });
 
+  it("finishes recording a helper Stop before shutdown and ignores reports during shutdown", async () => {
+    vi.useFakeTimers();
+    const write = Promise.withResolvers<void>();
+    const stops = durableStops();
+    const ledger = stops.ledger();
+    const test = harness({
+      stops: {
+        ...ledger,
+        record: async (runId, deviceId) => {
+          await write.promise;
+          await ledger.record(runId, deviceId);
+        },
+      },
+    });
+    const report = {
+      event: "session.stopped",
+      params: { reason: "user", runId: context.runId, sessionId: mintComputerUseSessionId() },
+    } as const;
+
+    test.service.handleHelperEvent(phoneId, report);
+    const closing = test.service.shutdown();
+    let closed = false;
+    void closing.then(() => {
+      closed = true;
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(closed, "Shutdown returned with a Stop write in flight").toBe(false);
+      test.service.handleHelperEvent(runnerId, report);
+    } finally {
+      vi.useRealTimers();
+      write.resolve();
+      await withTimeout(closing, 1_000, {
+        timeoutError: () => new Error("Shutdown never drained the Stop write"),
+      });
+    }
+    expect([...stops.rows.values()]).toEqual([{ runId: context.runId, runnerId: phoneId }]);
+  });
+
   it("acknowledges a phone's Stop for a session it still holds once recorded, and again when re-sent", async () => {
     const stops = durableStops();
     const test = harness({ stops: stops.ledger() });

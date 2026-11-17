@@ -1777,8 +1777,8 @@ export class ComputerUseService {
     event: ComputerUseHelperEvent,
     route?: DeviceDriverRoute,
   ): void {
+    if (this.#closed || event.event !== "session.stopped") return;
     if (route && !this.#hub.routeCurrent?.(route)) return;
-    if (event.event !== "session.stopped") return;
     const named = this.#snapshot().find(
       (candidate) => candidate.sessionId === event.params.sessionId,
     );
@@ -1894,6 +1894,8 @@ export class ComputerUseService {
     const key = stopReportKey(stop);
     const inFlight = this.#stopWrites.get(key);
     if (inFlight) return inFlight;
+    if (this.#closed)
+      return Promise.reject(new ComputerUseError("failed", "Opensteer is shutting down.", true));
     const write = this.#stops
       .record(stop.runId, stop.deviceId)
       .then(() => {
@@ -2010,6 +2012,7 @@ export class ComputerUseService {
 
   /** The minute tick: sessions nobody is using, approvals nobody answered. */
   sweep(): void {
+    if (this.#closed) return;
     this.sweepIdle();
     for (const session of this.#undeliveredCloses) void this.#deliverClose(session);
     for (const stop of this.#unrecordedStops.values()) {
@@ -2031,7 +2034,10 @@ export class ComputerUseService {
     this.#closed = true;
     clearInterval(this.#sweep);
     const sessions = [...this.#sessions.values()];
-    await Promise.allSettled(sessions.map((session) => this.#closeSession(session)));
+    await Promise.allSettled([
+      ...this.#stopWrites.values(),
+      ...sessions.map((session) => this.#closeSession(session)),
+    ]);
   }
 
   // ---- projection ------------------------------------------------------
