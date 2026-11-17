@@ -2,6 +2,7 @@ import { expect } from "vitest";
 import { sql, type Kysely } from "kysely";
 import { createId, type RunnerId, type UserId } from "@opensteer/core";
 import type { DatabaseSchema } from "./schema.js";
+import { requireSelfDeviceId } from "./device-inventory-store.js";
 import {
   IntegrationDefinitionSchema,
   integrationDefinitionSummary,
@@ -16,7 +17,7 @@ async function calendarDevice(database: Kysely<DatabaseSchema>, runnerId: Runner
   const computer = await database
     .selectFrom("devices")
     .selectAll()
-    .where("id", "=", runnerId)
+    .where("id", "=", await requireSelfDeviceId(database, runnerId))
     .executeTakeFirstOrThrow();
   const id = createId("device");
   await database
