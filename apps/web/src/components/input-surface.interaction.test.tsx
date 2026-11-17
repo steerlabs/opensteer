@@ -248,7 +248,7 @@ describe("request surface connectivity", () => {
     ).toEqual(["Allow once", "Not now"]);
   });
 
-  it("disables all approval controls offline and restores them on reconnect", async () => {
+  it("keeps an approval enabled offline, says it wasn't sent, and sends once back online", async () => {
     const node = document.createElement("div");
     document.body.append(node);
     root = createRoot(node);
@@ -257,12 +257,13 @@ describe("request surface connectivity", () => {
       title: "Continue?",
       options: [{ id: "yes", label: "Continue", hint: "confirm" }],
     });
-    const render = (disabled: boolean) =>
+    Object.assign(noPlaces, { network: "offline" });
+    try {
       act(() =>
         root.render(
           <MemoryRouter>
             <InputSurface
-              disabled={disabled}
+              disabled={false}
               placeholder="Reply…"
               requests={[approval]}
               running={false}
@@ -271,15 +272,19 @@ describe("request surface connectivity", () => {
           </MemoryRouter>,
         ),
       );
-    render(true);
-    expect(node.querySelector("fieldset")?.disabled).toBe(true);
-    const button = node.querySelector<HTMLButtonElement>(".action-rows button")!;
-    await act(async () => button.click());
-    expect(shell.hostClient.dispatch).not.toHaveBeenCalled();
-    render(false);
-    expect(node.querySelector("fieldset")?.disabled).toBe(false);
-    await act(async () => button.click());
-    expect(shell.hostClient.dispatch).toHaveBeenCalledOnce();
+      expect(node.querySelector("fieldset")?.disabled).toBe(false);
+      const button = node.querySelector<HTMLButtonElement>(".action-rows button")!;
+      await act(async () => button.click());
+      // Known offline before dispatch: nothing goes out, and the line says so under the buttons.
+      expect(shell.hostClient.dispatch).not.toHaveBeenCalled();
+      expect(node.querySelector(".action-line")?.textContent).toBe("Not sent. You're offline.");
+      Object.assign(noPlaces, { network: "online" });
+      await act(async () => button.click());
+      expect(shell.hostClient.dispatch).toHaveBeenCalledOnce();
+      expect(node.querySelector(".action-line")).toBeNull();
+    } finally {
+      Object.assign(noPlaces, { network: "online" });
+    }
   });
 
   it("keeps a draft when a secret form docks and takes the field's place", () => {

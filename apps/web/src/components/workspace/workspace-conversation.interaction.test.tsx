@@ -537,7 +537,8 @@ describe("task titles", () => {
     await headerRename();
     await typeInto(element('input[aria-label="Task title"]'), "Denied title");
     await key(element('input[aria-label="Task title"]'), "Enter");
-    expect(document.body.textContent).toContain("Rename refused");
+    expect(document.body.textContent).toContain("Couldn't confirm this task renamed.");
+    expect(document.body.textContent).not.toContain("Rename refused");
   });
 
   it("hides rename on a Host without task titles", async () => {

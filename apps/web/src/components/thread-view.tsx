@@ -1292,9 +1292,10 @@ function ThreadView({
                   </div>
                 )}
                 <ThreadServerApprovals threadId={thread.id} />
+                {/* Requests stay enabled offline; an answer then says it wasn't sent. */}
                 <RequestStack
                   composer={!voiceThread}
-                  disabled={!canRespond}
+                  disabled={false}
                   folded={requestFolded && nowOpen && !historical}
                   items={dockItems}
                   onOpen={openRequest}
@@ -1353,7 +1354,7 @@ function ThreadView({
                     key={composerKey}
                     composerHidden={dock.composerHidden}
                     voiceHidden={phoneStage && !sheetOpen}
-                    disabled={!canRespond}
+                    disabled={false}
                     inputRef={composerInputRef}
                     onEscape={
                       dockedRequests.length > 0

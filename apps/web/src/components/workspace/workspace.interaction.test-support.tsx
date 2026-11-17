@@ -94,7 +94,18 @@ beforeAll(async () => {
 
 afterEach(cleanupWorkspace);
 
+/**
+ * Which test owns the page. A test that timed out keeps running in the
+ * background; its next wait here never returns, so it cannot drive the page
+ * the next test mounted into the same shared client and root.
+ */
+let generation = 0;
+async function stillCurrent(started: number): Promise<void> {
+  if (started !== generation) await new Promise<never>(() => undefined);
+}
+
 function cleanupWorkspace() {
+  generation += 1;
   act(() => root?.unmount());
   root = null;
   sessionClient?.dispose();
@@ -364,9 +375,11 @@ function stubLayout(width: number, touch = false) {
 }
 
 async function settle(ms = 30) {
+  const started = generation;
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, ms));
   });
+  await stillCurrent(started);
 }
 
 function element<T extends Element>(selector: string, scope: ParentNode = document): T {
@@ -376,9 +389,11 @@ function element<T extends Element>(selector: string, scope: ParentNode = docume
 }
 
 async function click(target: Element) {
+  const started = generation;
   await act(async () => {
     (target as HTMLElement).click();
   });
+  await stillCurrent(started);
   await settle();
 }
 

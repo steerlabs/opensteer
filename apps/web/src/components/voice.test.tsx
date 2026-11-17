@@ -9,7 +9,9 @@ import { VoiceIsland, type VoiceControls } from "./voice.js";
 
 vi.mock("./app-shell.js", () => ({
   useShell: () => ({
-    hostClient: {},
+    hostClient: {
+      connection: { getSnapshot: () => ({}), subscribe: () => () => undefined, retry() {} },
+    },
     snapshot: { threads: [], user: null, waitingRequests: [] },
     reportActionError: vi.fn(),
   }),
