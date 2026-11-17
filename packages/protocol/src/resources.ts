@@ -1,6 +1,24 @@
-import { utf8ByteLength } from "@opensteer/core";
+import {
+  ExecutionPreferencesViewSchema,
+  QuietTaskDaysSchema,
+  utf8ByteLength,
+} from "@opensteer/core";
 import { z } from "zod";
-import { HostBootstrapSchema } from "./bootstrap.js";
+import {
+  IdentityConfigViewSchema,
+  OwnerProfileViewSchema,
+  PersonalEnvironmentsViewSchema,
+  PersonalHarnessesViewSchema,
+  PersonalMachinesViewSchema,
+  PersonalSettingsViewSchema,
+} from "./bootstrap.js";
+import {
+  BrowserPlacementsViewSchema,
+  BrowserProfileDeletionsViewSchema,
+  BrowserProfileHomesViewSchema,
+  BrowserProfilesViewSchema,
+} from "./browser.js";
+import { TabBootstrapSchema } from "./tabs.js";
 
 export const personalResourceKinds = [
   "settings",
@@ -62,36 +80,38 @@ export type PersonalResourceKind = z.infer<typeof PersonalResourceKindSchema>;
 export type PersonalResourceRevisions = z.infer<typeof PersonalResourceRevisionsSchema>;
 export type PersonalResourceView = z.infer<typeof PersonalResourceViewSchema>;
 
-const bootstrap = HostBootstrapSchema.shape;
 export const PersonalResourceDataSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("settings"),
-    settings: bootstrap.personalSettings,
-    quietTaskDays: bootstrap.quietTaskDays,
-    executionPreferences: bootstrap.executionPreferences,
+    settings: PersonalSettingsViewSchema,
+    quietTaskDays: QuietTaskDaysSchema,
+    executionPreferences: ExecutionPreferencesViewSchema,
   }),
-  z.strictObject({ kind: z.literal("identity"), identity: bootstrap.identityConfig }),
+  z.strictObject({ kind: z.literal("identity"), identity: IdentityConfigViewSchema }),
   z.strictObject({
     kind: z.literal("owner-profile"),
-    ownerProfile: bootstrap.ownerProfile.unwrap().nullable(),
+    ownerProfile: OwnerProfileViewSchema.nullable(),
   }),
-  z.strictObject({ kind: z.literal("environment"), environments: bootstrap.environments }),
-  z.strictObject({ kind: z.literal("machine"), machines: bootstrap.machines }),
-  z.strictObject({ kind: z.literal("harness"), harnesses: bootstrap.harnesses }),
-  z.strictObject({ kind: z.literal("harness-catalog"), environments: bootstrap.environments }),
-  z.strictObject({ kind: z.literal("harness-auth"), environments: bootstrap.environments }),
-  z.strictObject({ kind: z.literal("agent-home-settings"), settings: bootstrap.personalSettings }),
-  z.strictObject({ kind: z.enum(["tab", "tab-layout"]), tabs: bootstrap.tabs }),
+  z.strictObject({ kind: z.literal("environment"), environments: PersonalEnvironmentsViewSchema }),
+  z.strictObject({ kind: z.literal("machine"), machines: PersonalMachinesViewSchema }),
+  z.strictObject({ kind: z.literal("harness"), harnesses: PersonalHarnessesViewSchema }),
+  z.strictObject({
+    kind: z.literal("harness-catalog"),
+    environments: PersonalEnvironmentsViewSchema,
+  }),
+  z.strictObject({ kind: z.literal("harness-auth"), environments: PersonalEnvironmentsViewSchema }),
+  z.strictObject({ kind: z.literal("agent-home-settings"), settings: PersonalSettingsViewSchema }),
+  z.strictObject({ kind: z.enum(["tab", "tab-layout"]), tabs: TabBootstrapSchema }),
   z.strictObject({
     kind: z.literal("browser-profile"),
-    profiles: bootstrap.browser.shape.profiles,
-    deletions: bootstrap.browser.shape.profileDeletions,
+    profiles: BrowserProfilesViewSchema,
+    deletions: BrowserProfileDeletionsViewSchema,
   }),
   z.strictObject({
     kind: z.literal("browser-placement"),
-    placements: bootstrap.browser.shape.placements,
+    placements: BrowserPlacementsViewSchema,
   }),
-  z.strictObject({ kind: z.literal("browser-home"), homes: bootstrap.browser.shape.profileHomes }),
+  z.strictObject({ kind: z.literal("browser-home"), homes: BrowserProfileHomesViewSchema }),
   z.strictObject({ kind: z.literal("browser-availability"), available: z.boolean() }),
 ]);
 

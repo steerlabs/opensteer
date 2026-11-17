@@ -1,18 +1,12 @@
-import { mockScopedResource } from "@opensteer/client/mock";
 import {
   ScopedClientMessageSchema,
   type ScopedHostMessage,
 } from "@opensteer/protocol/personal-sync";
-import {
-  personalResourceKinds,
-  PersonalResourceKindSchema,
-  PersonalResourceRevisionsSchema,
-} from "@opensteer/protocol/resources";
+import { PersonalResourceKindSchema } from "@opensteer/protocol/resources";
 import { assertDeviceSessionAllowed } from "@opensteer/client/computers";
-import type { HostApiClient, HostBootstrap, PasswordSignInCard } from "@opensteer/protocol";
+import type { HostApiClient, PasswordSignInCard } from "@opensteer/protocol";
 import type { PasswordSignInAccount } from "@opensteer/client/host";
 import { createId, DeploymentIdSchema, RunnerIdSchema } from "@opensteer/core";
-import { hostApi } from "@opensteer/protocol";
 import {
   DesktopDownloadSchema,
   DesktopDownloadTargetSchema,
@@ -49,7 +43,7 @@ import {
   type DesktopComputerAppSetup,
 } from "@opensteer/protocol/desktop";
 
-import { previewBootstrap, previewDate } from "./preview-bootstrap.js";
+import { previewPersonalHost, previewDate } from "./preview-personal-host.js";
 
 const previewParameter = "desktop-preview";
 const previewPersonalOrigin = "http://127.0.0.1:4310";
@@ -123,15 +117,14 @@ export function desktopPreviewBridge(
   const previewUserId = createId("user");
   const previewSessionId = createId("authSession");
   function previewHostData(selected: DesktopDeploymentSummary) {
-    return hostApi["bootstrap.get"].success.parse({
-      ...previewBootstrap(selected, {
-        environmentId: previewEnvironmentId,
-        runnerId: previewRunnerId,
-        userId: previewUserId,
-      }),
+    return previewPersonalHost(selected, {
+      environmentId: previewEnvironmentId,
+      runnerId: previewRunnerId,
+      userId: previewUserId,
       sessionId: previewSessionId,
     });
   }
+
   const signedInDeployments = new Set<string>();
   const socketPaths = new Map<string, string>();
   let socketOrdinal = 0;
@@ -528,12 +521,12 @@ export function desktopPreviewBridge(
       const payload = JSON.parse(url.searchParams.get("input") ?? "{}") as Record<string, unknown>;
       const data = previewHostData(selected);
       if (url.pathname === "/v1/rpc/personal.shell.get")
-        return jsonResponse(200, { ok: true, data: previewShell(data) });
+        return jsonResponse(200, { ok: true, data: data.shell });
       if (url.pathname === "/v1/rpc/resources.detail.get") {
         const kind = PersonalResourceKindSchema.parse(payload.kind);
         return jsonResponse(200, {
           ok: true,
-          data: { revision: "0", data: mockScopedResource(data, kind), next: null },
+          data: data.resource(kind),
         });
       }
       return jsonResponse(501, {
@@ -687,18 +680,19 @@ export function desktopPreviewBridge(
         emit({ type: "host.pong", nonce: message.nonce });
         return;
       }
-      if (
+      const writesShell =
         message.type === "client.attach" ||
-        (message.type === "client.subscribe" && message.scope.kind === "shell")
-      ) {
+        (message.type === "client.subscribe" && message.scope.kind === "shell");
+      if (!writesShell && message.type !== "client.resources.watch") return;
+      const data = previewHostData(selected);
+      if (writesShell) {
         const address = {
           subscriptionId: "shell" as const,
           generation: message.generation,
           scope: { kind: "shell" as const },
           throughSequence: "0",
         };
-        const data = previewHostData(selected);
-        emit({ ...address, type: "host.snapshot", snapshot: previewShell(data) });
+        emit({ ...address, type: "host.snapshot", snapshot: data.shell });
         emit({ ...address, type: "host.synchronized" });
       }
       if (message.type === "client.attach" || message.type === "client.resources.watch") {
@@ -707,9 +701,7 @@ export function desktopPreviewBridge(
             type: "host.resource",
             subscriptionId: "shell",
             generation: message.generation,
-            kind,
-            revision: "0",
-            view: { entries: [], complete: true, hasMore: false },
+            ...data.summary(kind),
           });
       }
     },
@@ -1335,27 +1327,6 @@ function jsonResponse(status: number, body: unknown) {
   return DesktopHostHttpResultSchema.parse({
     ok: true,
     data: { body: JSON.stringify(body), headers: { contentType: "application/json" }, status },
-  });
-}
-
-function previewShell(data: HostBootstrap) {
-  return hostApi["personal.shell.get"].success.parse({
-    deploymentId: data.deploymentId,
-    viewerId: data.user.id,
-    epoch: "f45d9148-ec73-4106-91f7-3e73bdb7941d",
-    session: {
-      sessionId: data.sessionId,
-      user: data.user,
-      sessionSurface: data.sessionSurface,
-      can: data.can,
-    },
-    tasks: [],
-    visits: [],
-    attention: [],
-    counts: { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 },
-    resourceRevisions: PersonalResourceRevisionsSchema.parse(
-      Object.fromEntries(personalResourceKinds.map((kind) => [kind, "0"])),
-    ),
   });
 }
 
