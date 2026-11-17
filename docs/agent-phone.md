@@ -66,7 +66,7 @@ erase a replacement identity. Bare close 4010 wipes identity and keys and stops 
 server time on a monotonic clock so wall-clock changes cannot move leases. See
 [runner](../apps/agent-phone/app/src/main/kotlin/com/opensteer/agentphone/runner).
 
-The phone grant enables exactly the Runner `integrations` device module; computer presets must not add shell or messaging. The
+The phone grant enables the Runner `browser` and `integrations` device modules; computer presets must not add shell or messaging. The
 Host refuses protocol-incompatible phones before registration or enrollment consumption. Bump the
 Android device protocol in [runner.ts](../packages/protocol/src/runner.ts) for new baseline
 operations, newly required observation fields, changed authority or unnegotiated frame changes;

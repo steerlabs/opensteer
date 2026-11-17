@@ -758,7 +758,7 @@ interface ToolCallSeen {
   /** For an Android phone's operation, the operation and the phone it addressed. */
   readonly operation: string | null;
   readonly phoneRunnerId: string | null;
-  /** The `runnerId` an `computer_apps` named, which lists that computer's apps. */
+  /** The target named by `computer_apps` when it lists that Device's apps. */
   readonly runnerId: string | null;
 }
 
