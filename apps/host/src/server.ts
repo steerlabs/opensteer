@@ -3963,6 +3963,8 @@ function personalResponseScopes(input: unknown, sessionId: string | undefined): 
   if (!input || typeof input !== "object") return scopes;
   if ("threadId" in input && typeof input.threadId === "string")
     scopes.push(`thread:${input.threadId}`);
+  if ("selectedThreadId" in input && typeof input.selectedThreadId === "string")
+    scopes.push(`thread:${input.selectedThreadId}`);
   if ("nodeId" in input && typeof input.nodeId === "string") scopes.push(`node:${input.nodeId}`);
   return scopes;
 }
