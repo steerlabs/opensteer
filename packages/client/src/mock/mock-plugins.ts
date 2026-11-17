@@ -1731,7 +1731,7 @@ export class MockPlugins {
    */
   async removeEverything() {
     const idempotencyKey = () => this.#id("key");
-    for (const plugin of [...this.plugins]) {
+    for (const plugin of this.plugins) {
       for (const live of (this.#workflowRuns[plugin.id] ?? []).filter((entry) =>
         ["queued", "running"].includes(entry.status),
       ))

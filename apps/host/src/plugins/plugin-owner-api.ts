@@ -792,7 +792,7 @@ export class PluginOwnerApi {
               links: [...(linked.get(account.id) ?? [])]
                 .map(([pluginId, pluginName]) => ({ pluginId, pluginName }))
                 .sort((a, b) => a.pluginName.localeCompare(b.pluginName))
-                .slice(0, 200),
+                .slice(0, 50),
             }))
             .sort(
               (a, b) =>

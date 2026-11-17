@@ -146,7 +146,7 @@ export type ConnectedAccountView = z.infer<typeof ConnectedAccountViewSchema>;
 /** A saved account as Connected accounts lists it: whose it is and every plugin it serves. */
 export const PluginAccountViewSchema = ConnectedAccountViewSchema.extend({
   providerName: name,
-  links: z.array(z.object({ pluginId: PluginIdSchema, pluginName: name })).max(200),
+  links: z.array(z.object({ pluginId: PluginIdSchema, pluginName: name })).max(50),
 });
 export type PluginAccountView = z.infer<typeof PluginAccountViewSchema>;
 

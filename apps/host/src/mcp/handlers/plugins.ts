@@ -295,11 +295,13 @@ export class PluginToolHandlers {
         return {
           items: page.items.map((entry) => ({
             id: entry.id,
-            name: entry.name,
+            name: entry.name.slice(0, 120),
             description: entry.description.split("\n")[0]!.slice(0, 300),
             accounts: entry.auth
               .slice(0, 8)
-              .map((method) => String(method.label ?? method.method ?? method.kind ?? "Account")),
+              .map((method) =>
+                String(method.label ?? method.method ?? method.kind ?? "Account").slice(0, 80),
+              ),
           })),
           cursor: page.cursor,
         };
