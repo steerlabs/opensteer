@@ -1,4 +1,10 @@
-import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  messageDeliveryActions,
+  type MessageDeliveryAction,
+  type MessageDeliveryPhase,
+} from "@opensteer/client/host";
+import { useQuietMoment } from "@opensteer/client/react";
+import { memo, useEffect, useMemo, type ReactNode } from "react";
 import {
   Pressable,
   StyleSheet,
@@ -10,39 +16,6 @@ import Animated, { useAnimatedStyle, useSharedValue, withTiming } from "react-na
 import { color, plateFill, space, touchTarget } from "../theme.js";
 import { appear, duration, exit } from "../ui/motion.js";
 import { AppText } from "../ui/primitives.js";
-
-/** Where a message this phone holds is on its way to the computer. */
-export type MessageDeliveryPhase = "waiting" | "sending" | "rejected" | "delivered";
-
-export type MessageDeliveryAction = "edit" | "delete" | "dont-send";
-
-/**
- * What a person may do to a message still on this phone. A refused message can
- * be edited or deleted. A waiting one can be taken back only if no attempt was
- * ever made: after one, it may already be on the computer, and the same key
- * is replayed until it is settled.
- */
-export function messageDeliveryActions(
-  phase: MessageDeliveryPhase,
-  attempted: boolean,
-): readonly MessageDeliveryAction[] {
-  if (phase === "rejected") return ["edit", "delete"];
-  if (phase === "waiting" && !attempted) return ["edit", "dont-send"];
-  return [];
-}
-
-/**
- * Of a run of messages, which carry the status line: a run of waiting messages
- * says it once, under the last, as a grouped receipt does.
- */
-export function messageDeliveryStatusShown(
-  phases: readonly MessageDeliveryPhase[],
-): readonly boolean[] {
-  return phases.map(
-    (phase, index) =>
-      phase !== "delivered" && !(phase === "waiting" && phases[index + 1] === "waiting"),
-  );
-}
 
 /** A refused message: the plate with a red edge, in the reading ink. */
 export const rejectedBubble = {
@@ -84,7 +57,7 @@ export const MessageDelivery = memo(function MessageDelivery(props: {
   readonly copy?: Partial<typeof defaultCopy>;
 }): ReactNode {
   const copy = { ...defaultCopy, ...props.copy };
-  const quiet = useQuietMoment(props.phase === "sending" ? props.since : null);
+  const quiet = useQuietMoment(props.phase === "sending" ? props.since : null, quietMs);
   const dimmed = props.phase === "waiting" || (props.phase === "sending" && !quiet);
   const opacity = useSharedValue(dimmed ? pendingOpacity : 1);
   useEffect(() => {
@@ -169,19 +142,6 @@ function actionLabel(name: MessageDeliveryAction, copy: typeof defaultCopy): str
   return name === "edit" ? copy.edit : name === "delete" ? copy.delete : copy.dontSend;
 }
 
-/** True until a second has passed since `since`; one timer, no ticking. */
-function useQuietMoment(since: number | null): boolean {
-  const ends = since === null ? null : since + quietMs;
-  const [passed, setPassed] = useState<number | null>(null);
-  useEffect(() => {
-    if (ends === null) return;
-    const left = ends - Date.now();
-    if (left <= 0) return;
-    const timer = setTimeout(() => setPassed(ends), left);
-    return () => clearTimeout(timer);
-  }, [ends]);
-  return ends !== null && passed !== ends && Date.now() < ends;
-}
 
 const styles = StyleSheet.create({
   link: { justifyContent: "center", minHeight: touchTarget / 2 },

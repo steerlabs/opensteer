@@ -1,0 +1,506 @@
+/* Connection trouble: the one voice (pill and its details), the gate while
+   nothing is loaded, still placeholders, lines beside actions, and messages
+   still on this device. Content itself never changes for an outage. */
+
+/* ---- The pill ----
+   Over the main column, clear of its title strip; a layout with a taller
+   strip sets --connection-pill-top. */
+.connection-pill {
+  position: absolute;
+  top: var(--connection-pill-top, 56px);
+  left: 50%;
+  z-index: var(--layer-pane);
+  display: inline-flex;
+  align-items: stretch;
+  max-width: calc(100% - var(--space-48));
+  height: 30px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  background: var(--surface-elevated);
+  box-shadow:
+    var(--edge-plate),
+    0 8px 24px rgb(0 0 0 / 50%);
+  font-size: var(--text-xl);
+  font-weight: 500;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  animation: connection-pill-in var(--duration-med) var(--ease-out) both;
+}
+
+.connection-pill--leaving {
+  animation: connection-pill-out 150ms var(--ease-out) both;
+  pointer-events: none;
+}
+
+@media (max-width: 1199px) {
+  .connection-pill {
+    top: calc(52px + env(safe-area-inset-top, 0px) + var(--space-8));
+  }
+}
+
+html.electron-shell .connection-pill {
+  app-region: no-drag;
+}
+
+.connection-pill__words {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+  padding: 0 var(--space-12);
+  border: 0;
+  border-radius: inherit;
+  background: none;
+  color: var(--text-soft);
+  font: inherit;
+  cursor: pointer;
+}
+
+.connection-pill__words:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.connection-pill__words:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.connection-pill__words:has(+ .connection-pill__action) {
+  padding-right: 0;
+}
+
+.connection-pill__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: fade-in var(--duration-med) var(--ease-out);
+}
+
+.connection-pill__dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.connection-pill__dot--amber {
+  background: var(--amber);
+}
+
+.connection-pill__dot--trying {
+  animation: connection-dot-breathe 1.8s ease-in-out infinite;
+}
+
+.connection-pill__action {
+  flex: none;
+  padding: 0 var(--space-12) 0 var(--space-8);
+  border: 0;
+  border-radius: inherit;
+  background: none;
+  color: var(--ember);
+  font: inherit;
+  font-weight: var(--weight-bold);
+  cursor: pointer;
+}
+
+.connection-pill__action:hover:not(:disabled) {
+  color: var(--ember-bright);
+}
+
+@keyframes connection-pill-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -4px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@keyframes connection-pill-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes connection-dot-breathe {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connection-pill {
+    animation-name: fade-in;
+  }
+
+  .connection-pill__dot--trying {
+    animation: none;
+  }
+}
+
+/* ---- Its details ---- */
+.connection-details {
+  padding: var(--space-14) var(--space-16);
+}
+
+.connection-details__body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.connection-details__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.connection-details__name {
+  overflow: hidden;
+  font-size: var(--display-xs);
+  font-weight: var(--weight-bold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-details__state {
+  margin: var(--space-4) 0 var(--space-8) 30px;
+  color: var(--text-soft);
+  font-size: var(--text-xl);
+}
+
+.connection-details__explanation {
+  margin: 0 0 var(--space-12);
+  color: var(--muted);
+  font-size: var(--text-lg);
+  line-height: 1.45;
+}
+
+.connection-details__meta {
+  margin: var(--space-10) 0 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.connection-details__others {
+  align-self: stretch;
+  margin: var(--space-12) 0 0;
+  padding: var(--space-4) 0 0;
+  border-top: 1px solid var(--line);
+  list-style: none;
+}
+
+.connection-details__other {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  width: 100%;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-xl);
+  text-align: left;
+  cursor: pointer;
+}
+
+.connection-details__other-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-details__other-state,
+.connection-details__other svg.icon {
+  color: var(--muted);
+}
+
+/* ---- The gate ----
+   It waits a moment before it is seen, so a quick connect never flashes it;
+   a change of state then cross-fades its words without waiting again. */
+.connection-gate {
+  animation: fade-in var(--duration-med) var(--ease-out) 400ms both;
+}
+
+.connection-gate--route {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  min-height: 100%;
+  padding: var(--space-24);
+}
+
+.connection-gate__inner {
+  gap: var(--space-8);
+  animation: fade-in var(--duration-med) var(--ease-out);
+}
+
+.connection-gate__inner .brand {
+  margin-bottom: var(--space-10);
+}
+
+.connection-gate__title {
+  margin: 0;
+  font-size: var(--display-xs);
+  font-weight: var(--weight-bold);
+}
+
+.connection-gate__inner .splash__detail {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.connection-gate__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-8);
+  margin-top: var(--space-8);
+}
+
+.connection-gate__actions .btn[aria-busy="true"] {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.gated {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.gated__leaving {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  background: var(--bg);
+  animation: connection-pill-out 150ms var(--ease-out) both;
+}
+
+.gated__leaving > * {
+  flex: 1;
+  animation: none;
+}
+
+/* ---- Never loaded ---- */
+.placeholder-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  min-height: 46px;
+  padding: var(--space-10) var(--space-2);
+}
+
+.placeholder-row + .placeholder-row {
+  border-top: 1px solid var(--line);
+}
+
+.placeholder-row__square {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-raised);
+}
+
+.placeholder-row__lines {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.placeholder-bar {
+  display: block;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--surface-raised);
+}
+
+.placeholder-value {
+  width: 56px;
+}
+
+.unknown-toggle {
+  display: inline-block;
+  flex: none;
+  width: 30px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  background: var(--surface-raised);
+  opacity: 0.4;
+}
+
+.unknown-value {
+  color: var(--muted);
+}
+
+/* ---- A line beside an action ---- */
+.action-line {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-6);
+  max-width: 100%;
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+  animation: fade-in var(--duration-med) var(--ease-out);
+}
+
+.action-line--danger {
+  color: var(--red-text);
+}
+
+.action-line__words {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.action-line--wrap .action-line__words {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+}
+
+.action-line__dismiss,
+.action-line__link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.action-line__link {
+  flex: none;
+  color: var(--ember);
+  font-weight: var(--weight-bold);
+}
+
+.action-line__link:hover {
+  color: var(--ember-bright);
+}
+
+.row-subtitle,
+.row-subtitle__line {
+  display: flex;
+  min-width: 0;
+}
+
+.row-subtitle__line:empty {
+  display: none;
+}
+
+/* One line, held whether or not it has words, so the buttons below never move. */
+.action-line-slot {
+  display: flex;
+  align-items: center;
+  min-height: calc(var(--text-sm) * 1.4);
+}
+
+/* ---- A message still on this device ---- */
+/* Full width, so the bubble's limit stays relative to the transcript. */
+.delivery {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.delivery .msg--user {
+  transition:
+    opacity var(--duration-med) var(--ease-out),
+    background-color var(--duration-med) var(--ease-out);
+}
+
+.delivery--pending .msg--user {
+  opacity: 0.6;
+}
+
+.delivery--rejected .msg--user {
+  border: 1px solid var(--red-line);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.delivery__status {
+  display: flex;
+  align-self: flex-end;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-6);
+  margin: calc(var(--space-6) * -1) var(--space-2) var(--space-8);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  text-align: right;
+  animation: fade-in var(--duration-med) var(--ease-out);
+}
+
+.delivery__reason {
+  color: var(--red-text);
+}
+
+.delivery__actions {
+  display: inline-flex;
+  gap: var(--space-6);
+}
+
+.delivery__action {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ember);
+  font: inherit;
+  font-weight: var(--weight-bold);
+  cursor: pointer;
+}
+
+.delivery__action + .delivery__action::before {
+  margin-right: var(--space-6);
+  color: var(--muted);
+  font-weight: var(--weight-normal);
+  content: "·";
+}
+
+.delivery__action:hover {
+  color: var(--ember-bright);
+}
+
+/* ---- A kept picture ---- */
+.last-picture {
+  position: absolute;
+  bottom: var(--space-10);
+  left: var(--space-10);
+  padding: var(--space-4) var(--space-10);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-full);
+  background: var(--surface-elevated);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  pointer-events: none;
+}
+
+.last-picture--pulse {
+  animation: last-picture-pulse 120ms var(--ease-out);
+}
+
+@keyframes last-picture-pulse {
+  from {
+    transform: scale(0.96);
+  }
+}

@@ -116,3 +116,4 @@ export * from "./tabs-contract.js";
 export * from "./device-projection.js";
 export type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";
 export * from "./iphone-setup.js";
+export * from "./message-delivery-view.js";
