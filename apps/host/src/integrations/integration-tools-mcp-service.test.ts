@@ -837,43 +837,6 @@ describe("Opensteer MCP integration access classes", () => {
     });
   });
 
-  it("keeps an offline computer operation discoverable with its computer account", async () => {
-    const { callable, entry } = computerInventory("INTEGRATION_UNAVAILABLE");
-    const { handler } = await createHarness({
-      callableTools: [callable] as never,
-      definitions: [computerDefinition],
-      inventory: [entry] as never,
-    });
-    const searched = result(
-      await handler(
-        { params: { arguments: { query: "Messages" }, name: "integration_search" } },
-        callExtra("offline-computer-search"),
-      ),
-    );
-    expect(searched).toMatchObject({
-      guidance: { readiness: expect.stringContaining("do not repeat access requests") },
-      operations: [{ name: expect.stringContaining(`${callable.tool.name}@`) }],
-      results: [
-        {
-          accounts: [{ account: "Studio Mac", connectionId: callable.grant.connectionId }],
-          servers: [
-            {
-              readiness: {
-                code: "INTEGRATION_UNAVAILABLE",
-                detail: "Studio Mac is offline. Messages will work again when it is back.",
-              },
-            },
-          ],
-          tools: [
-            {
-              readiness: { code: "INTEGRATION_UNAVAILABLE" },
-            },
-          ],
-        },
-      ],
-    });
-  });
-
   it("tells the agent to relay the recorded detail of an unusable installed service", async () => {
     const entry = inventoryEntry();
     const unavailable = {
@@ -911,62 +874,6 @@ describe("Opensteer MCP integration access classes", () => {
               readiness: {
                 code: "INTEGRATION_UNAVAILABLE",
                 detail: "The OpenAPI document could not be compiled.",
-              },
-            },
-          ],
-        },
-      ],
-    });
-  });
-
-  it("tells the agent to relay the recorded detail of a broken computer-app installation", async () => {
-    const { entry } = computerInventory("INTEGRATION_UNAVAILABLE");
-    const broken = {
-      ...entry,
-      readiness: {
-        servers: entry.readiness.servers.map((readiness) => ({
-          ...readiness,
-          connectionId: null,
-          detail: "The installed computer app definition is invalid.",
-        })),
-        tools: entry.readiness.tools.map(({ readiness, toolId }) => ({
-          readiness: {
-            ...readiness,
-            connectionId: null,
-            detail: "The installed computer app definition is invalid.",
-          },
-          toolId,
-        })),
-      },
-    };
-    const { handler } = await createHarness({
-      definitions: [computerDefinition],
-      inventory: [broken] as never,
-    });
-    const searched = result(
-      await handler(
-        { params: { arguments: { query: "Messages" }, name: "integration_search" } },
-        callExtra("broken-computer-installation-search"),
-      ),
-    );
-
-    expect(searched).toMatchObject({
-      guidance: { readiness: expect.stringContaining("relay the recorded detail to the user") },
-      results: [
-        {
-          servers: [
-            {
-              readiness: {
-                code: "INTEGRATION_UNAVAILABLE",
-                detail: "The installed computer app definition is invalid.",
-              },
-            },
-          ],
-          tools: [
-            {
-              readiness: {
-                code: "INTEGRATION_UNAVAILABLE",
-                detail: "The installed computer app definition is invalid.",
               },
             },
           ],

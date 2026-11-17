@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { expect, vi } from "vitest";
+import { computerAppIntegrations } from "@opensteer/integration-catalog/devices";
+import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
+import { computerAppOperationContract } from "@opensteer/integration-core/computer-app-tools";
 import { once } from "node:events";
 import WebSocket, { WebSocketServer } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -23,12 +27,16 @@ import {
   type RunnerIntegrationsModule,
   type RunnerModuleName,
   type RunnerDevice,
+  type ComputerUseDataGrants,
+  type ComputerUseDataInvokeParams,
 } from "@opensteer/protocol";
 import { createRunnerAuxiliarySignature } from "@opensteer/runner-auth";
 import {
   ComputerAppModuleHandler,
   type ComputerAppProvider,
   type ComputerAppModuleHandlerOptions,
+  type ComputerAppValue,
+  type HelperDataPort,
 } from "@opensteer/runner";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
@@ -668,3 +676,133 @@ export type ComputerAppApprovalAnswer = {
 export type ComputerAppApprovalOutcome =
   | { readonly kind: "allowed" | "declined" }
   | { readonly kind: "refused"; readonly message: string };
+
+/**
+ * The signed helper as the Runner reaches it: the grants its person allowed,
+ * and each call it was sent, answered by the step that is running.
+ */
+export function scriptedHelper() {
+  const grants: { -readonly [K in keyof ComputerUseDataGrants]: ComputerUseDataGrants[K] } = {
+    automation: "unknown",
+    calendars: "requestable",
+    contacts: "requestable",
+    "full-disk-access": "denied",
+    reminders: "requestable",
+  };
+  const invocations: ComputerUseDataInvokeParams[] = [];
+  const script: { answer: () => ComputerAppValue } = {
+    answer: () => {
+      throw new Error("No step expects a call to the helper now");
+    },
+  };
+  const port: HelperDataPort = {
+    dataGrants: async () => ({ ...grants }),
+    dataInvoke: async (params) => {
+      invocations.push(params);
+      return script.answer();
+    },
+  };
+  return {
+    grants,
+    invocations,
+    port,
+    /** How the helper answers the calls of the step that is running. */
+    set answer(answer: () => ComputerAppValue) {
+      script.answer = answer;
+    },
+  };
+}
+
+/** The agent asks for access, and the owner fulfils it with the Mac's connection. */
+export async function grantAccess(
+  host: MachineAccessHost,
+  gateway: Awaited<ReturnType<typeof integrationGateway>>,
+  input: {
+    readonly access: IntegrationAccess;
+    readonly connectionId: string;
+    readonly integration: string;
+  },
+) {
+  const held = gateway.call("integration_request", {
+    access: input.access,
+    integration: input.integration,
+    reason: `Use ${input.integration}`,
+  });
+  const request = await vi.waitFor(
+    async () => {
+      const pending = await host.store.integrationRequests.listPendingIntegrationAccessRequests(
+        host.ownerId,
+      );
+      const row = pending.at(-1);
+      expect(row, "The access Request was not created").toBeDefined();
+      return row!;
+    },
+    { timeout: 10_000 },
+  );
+  if (!request) throw new Error(`The ${input.integration} access Request was not created`);
+  await testRpcData(
+    host.origin,
+    "commands.dispatch",
+    {
+      idempotencyKey: `${input.integration}-access`,
+      requestId: request.request.id,
+      response: {
+        kind: "external",
+        value: {
+          access: input.access,
+          alias: `${input.integration} on Studio Mac`,
+          connectionId: input.connectionId,
+          decision: "fulfilled",
+          isDefault: true,
+        },
+      },
+      type: "request.respond",
+    },
+    { headers: host.ownerHeaders },
+  );
+  await expect(held).resolves.toMatchObject({ status: "fulfilled" });
+}
+
+export function contractOf(definitionId: string, name: string): string {
+  const definition = computerAppIntegrations.find(({ id }) => id === definitionId);
+  const found =
+    definition && isComputerAppDefinition(definition)
+      ? definition.config.operations.find((candidate) => candidate.name === name)
+      : undefined;
+  if (!found) throw new Error(`The catalog must define ${definitionId}.${name}`);
+  return computerAppOperationContract(found);
+}
+
+/** A plugin tool's exact path, found by searching as an agent does. */
+export async function pluginPath(
+  gateway: Awaited<ReturnType<typeof integrationGateway>>,
+  query: string,
+  tool: string,
+): Promise<string> {
+  const found = await gateway.call("plugin_search", { query });
+  const path = (found.items as readonly { readonly path: string }[]).find(({ path }) =>
+    path.endsWith(`.${tool}`),
+  )?.path;
+  if (!path) throw new Error(`plugin_search found no ${tool}: ${JSON.stringify(found)}`);
+  return path;
+}
+
+/** One plugin tool call as the agent reads it: the tool's value, or why it failed. */
+export async function pluginCall(
+  gateway: Awaited<ReturnType<typeof integrationGateway>>,
+  path: string,
+  input: Record<string, unknown>,
+): Promise<{ readonly value?: unknown; readonly failure?: string; readonly raw: unknown }> {
+  const raw = await gateway.call("plugin_call", { calls: { path, input } });
+  const execution = (raw.result as { execution?: { ok?: boolean; value?: unknown } })?.execution;
+  // One direct call answers { ok, path, value } or { ok: false, path, error }.
+  const call = execution?.value as { ok?: boolean; value?: unknown; error?: unknown } | undefined;
+  if (execution?.ok && call?.ok) return { value: call.value, raw };
+  const error = call?.error ?? raw;
+  return { failure: typeof error === "string" ? error : JSON.stringify(error), raw };
+}
+
+/** The explanation inside a failed call's one-line summary, as the agent reads it. */
+export function failureMessage(failure: string): string {
+  return /^\S+ \(HTTP \d+\): ([\s\S]*?) Recovery:/u.exec(failure)?.[1] ?? failure;
+}

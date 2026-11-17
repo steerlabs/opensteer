@@ -95,11 +95,12 @@ import {
   type PluginCallback,
 } from "./engine-protocol.js";
 import type { z } from "zod";
-import { ElicitationResponse } from "apps/contracts";
+import { ElicitationResponse, type ElicitationHandler } from "apps/contracts";
 
 type Callback = <K extends PluginCallback>(
   operation: K,
   input: z.infer<(typeof callbackOperations)[K]["input"]>,
+  elicitation?: ElicitationHandler,
 ) => Effect.Effect<z.infer<(typeof callbackOperations)[K]["output"]>, Error>;
 export async function startEngine(
   config: EngineInit,
@@ -434,12 +435,16 @@ export async function startEngine(
             ...(execution === undefined ? {} : { execution }),
           }),
         providers: () => callback("providers", context),
-        call: (input) =>
-          callback("providerCall", {
-            ...context,
-            ...input,
-            ...(execution === undefined ? {} : { execution }),
-          }),
+        call: (input, elicitation) =>
+          callback(
+            "providerCall",
+            {
+              ...context,
+              ...input,
+              ...(execution === undefined ? {} : { execution }),
+            },
+            elicitation,
+          ),
       });
     const update = (record: { view: PluginExecution }, value: Partial<PluginExecution>) => {
       record.view = { ...record.view, ...value };

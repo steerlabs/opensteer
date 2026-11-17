@@ -1,5 +1,6 @@
 import type { RunId, ThreadId } from "@opensteer/core";
 import type { RunCapabilityClaims } from "./run-capability.js";
+import type { PluginElicit } from "../plugins/plugin-service.js";
 
 /** The Run one tool call belongs to, for the operations that need one. */
 export interface RunToolContext {
@@ -16,4 +17,6 @@ export interface RunToolContext {
 export interface ToolCaller {
   readonly run: RunCapabilityClaims<string> | null;
   readonly threadId: ThreadId;
+  /** For a call through the plugin tools: asks the person through the calling execution. */
+  readonly elicit?: PluginElicit;
 }

@@ -15,7 +15,7 @@ import { testRpcData } from "../server/test-host-api-request.js";
 import {
   connectComputerAppMachine,
   integrationGateway,
-  operation,
+  pluginCall,
   requestComputerAppSetup,
   setComputerApp,
 } from "./computer-apps.test-support.js";
@@ -33,6 +33,8 @@ const integration = baseDatabaseUrl ? describe : describe.skip;
 let database: Awaited<ReturnType<typeof createMachineAccessDatabase>> | undefined;
 let databaseUrl = "postgres://unconfigured";
 const photo = Buffer.from("the exact bytes of a photo");
+const exportAttachment = 'tools["messages-studio-mac"].export_attachment';
+const sendMessage = 'tools["messages-studio-mac"].send_message';
 
 function messagesProvider(received: Buffer[]): ComputerAppProvider {
   return {
@@ -152,8 +154,7 @@ integration("files between a Run and an app on another computer", () => {
       { headers: host.ownerHeaders },
     );
     await expect(held.result).resolves.toMatchObject({ status: "fulfilled" });
-    const search = await gateway.call("integration_search", { query: "Messages" });
-    return { caller, gateway, root, search, sent, target: runFiles("target") };
+    return { caller, gateway, root, sent, target: runFiles("target") };
   }
 
   /** The Execution Runner's half, as host-connection answers it. */
@@ -183,17 +184,14 @@ integration("files between a Run and an app on another computer", () => {
   }
 
   it("hands a Run an attachment from another computer, at a path local to it", async () => {
-    const { caller, gateway, root, search, target } = await connected(true);
+    const { caller, gateway, root, target } = await connected(true);
     const signal = new AbortController().signal;
     answerRunFiles(caller.primary.socket, caller.primary.fence, async (request) => {
       if (request.type !== "host.run-file.receive") throw new Error("Expected a receive");
       const file = await target.download(request.transfers[0]!, signal);
       return { paths: [await target.install(file, join(root, "exports"), signal)] };
     });
-    const exported = await gateway.call("integration_call", {
-      arguments: { attachmentId: "at_1" },
-      ...operation(search, "export_attachment").address,
-    });
+    const exported = (await pluginCall(gateway, exportAttachment, { attachmentId: "at_1" })).value;
     expect(exported).toMatchObject({
       mediaType: "image/heic",
       name: "IMG_1.HEIC",
@@ -205,7 +203,7 @@ integration("files between a Run and an app on another computer", () => {
   });
 
   it("sends a file from a Run through an app on another computer", async () => {
-    const { caller, gateway, search, sent, target } = await connected(true);
+    const { caller, gateway, sent, target } = await connected(true);
     const signal = new AbortController().signal;
     answerRunFiles(caller.primary.socket, caller.primary.fence, async (request) => {
       if (request.type !== "host.run-file.send") throw new Error("Expected a send");
@@ -216,17 +214,19 @@ integration("files between a Run and an app on another computer", () => {
       );
       return { paths: [] };
     });
-    await expect(
-      gateway.call("integration_call", {
-        arguments: { files: ["chart.png"], to: { conversationId: "chat-1" } },
-        ...operation(search, "send_message").address,
-      }),
-    ).resolves.toEqual({ accepted: true });
+    expect(
+      (
+        await pluginCall(gateway, sendMessage, {
+          files: ["chart.png"],
+          to: { conversationId: "chat-1" },
+        })
+      ).value,
+    ).toEqual({ accepted: true });
     expect(sent).toEqual([photo]);
   });
 
   it("never lets a transfer error hide a send that may have happened", async () => {
-    const { caller, gateway, search, target } = await connected(true);
+    const { caller, gateway, target } = await connected(true);
     const signal = new AbortController().signal;
     answerRunFiles(caller.primary.socket, caller.primary.fence, async (request) => {
       if (request.type !== "host.run-file.send") throw new Error("Expected a send");
@@ -237,21 +237,20 @@ integration("files between a Run and an app on another computer", () => {
       );
       return { message: "The upload's answer was lost." };
     });
-    await expect(
-      gateway.call("integration_call", {
-        arguments: { files: ["chart.png"], to: { conversationId: "uncertain" } },
-        ...operation(search, "send_message").address,
-      }),
-    ).rejects.toThrow("Check whether it happened before trying again.");
+    expect(
+      (
+        await pluginCall(gateway, sendMessage, {
+          files: ["chart.png"],
+          to: { conversationId: "uncertain" },
+        })
+      ).failure,
+    ).toContain("Check whether it happened before trying again.");
   });
 
   it("tells the agent to update a computer that cannot move files", async () => {
-    const { gateway, search } = await connected(false);
-    await expect(
-      gateway.call("integration_call", {
-        arguments: { attachmentId: "at_1" },
-        ...operation(search, "export_attachment").address,
-      }),
-    ).rejects.toThrow("Update Opensteer on Studio Mac to use Export attachment.");
+    const { gateway } = await connected(false);
+    expect(
+      (await pluginCall(gateway, exportAttachment, { attachmentId: "at_1" })).failure,
+    ).toContain("Update Opensteer on Studio Mac to use Export attachment.");
   });
 });

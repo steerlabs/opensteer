@@ -8,6 +8,7 @@ import {
   opensteer_request_withdraw,
 } from "./requests.js";
 import { pluginTools } from "./plugins.js";
+import { localServerTools } from "./local-servers.js";
 import { messagingBridgeTools } from "./messaging-bridges.js";
 import {
   opensteer_team_file_download,
@@ -58,6 +59,7 @@ export const agentTools = [
   ...computerTools,
   ...browserTools,
   ...pluginTools,
+  ...localServerTools,
   ...messagingBridgeTools,
   opensteer_request_list,
   opensteer_request_read,

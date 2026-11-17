@@ -13,7 +13,6 @@ import { testRpcData } from "../server/test-host-api-request.js";
 import {
   connectComputerAppMachine,
   integrationGateway,
-  operation,
   toolText,
 } from "../computer-apps/computer-apps.test-support.js";
 import {
@@ -23,7 +22,7 @@ import {
   startPrivateMachineHost,
   type MachineAccessHost,
 } from "../runtime/private-machine-host.test-support.js";
-import { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
+import { LocalServerService } from "./local-server-service.js";
 import { createHostRuntime } from "../runtime/runtime.js";
 import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";
 
@@ -51,7 +50,7 @@ integration("input from a computer's MCP server", () => {
   it("delivers secret fields to the server, redacting rows, commands, events and the agent result", async () => {
     const s = await scenario();
     const answer = bounded(
-      s.gateway.callRaw("integration_call", { ...s.address, arguments: {} }),
+      s.platform.callTool(s.callable, {}, s.caller),
       "The MCP call did not return after input",
     );
     const request = await pendingInput(s.host);
@@ -299,20 +298,21 @@ integration("input from a computer's MCP server", () => {
     });
   }, 60_000);
 
-  it("declines ambiguous calls and unsupported schemas and modes", async () => {
+  it("lets calls on one session take turns and declines unsupported schemas and modes", async () => {
     const s = await scenario();
     const waiting = bounded(
       s.platform.callTool(s.callable, {}, s.caller),
       "The original call was stranded",
     );
     const request = await pendingInput(s.host);
-    const ambiguous = await bounded(
-      s.platform.callTool(s.callable, {}, s.caller),
-      "An ambiguous call did not decline",
-    );
-    expect(toolText(ambiguous)).toContain("single active call from a Run");
+    // A question names no call, so the second waits until the first has its answer.
+    const second = s.platform.callTool(s.callable, {}, s.caller);
     await respond(s.host, request, { kind: "choice", optionId: "decline" });
     await waiting;
+    const next = await pendingInput(s.host);
+    expect(next.id).not.toBe(request.id);
+    await respond(s.host, next, { kind: "choice", optionId: "decline" });
+    expect(toolText(await bounded(second, "The second call did not get its turn"))).toBe("decline");
     for (const mode of ["array", "large", "optional"]) {
       const result = await bounded(
         s.platform.callTool(s.callable, { mode }, s.caller),
@@ -442,33 +442,50 @@ async function scenario(longRequestHold = true) {
   });
   const gateway = await integrationGateway(run.integrationTools);
   closers.push(() => gateway.close());
-  const search = await gateway.call("integration_search", { query: "pairing" });
-  const captured = vi.spyOn(IntegrationPlatformService.prototype, "callTool");
-  await bounded(
-    gateway.callRaw("integration_call", { ...operation(search, "ping").address, arguments: {} }),
+  await vi.waitFor(
+    async () => {
+      const found = await gateway.call("plugin_search", { query: "ping" });
+      expect(JSON.stringify(found.items), "The server's tools were not listed").toContain("ping");
+    },
+    { timeout: 15_000 },
+  );
+  // The server's tools are reached through the plugin tools; these cases drive the call path
+  // beneath them directly, with the Run's own caller.
+  const captured = vi.spyOn(LocalServerService.prototype, "callTool");
+  const pinged = await bounded(
+    gateway.call("plugin_call", { calls: { path: 'tools["pairing-fixture"].ping', input: {} } }),
     "The fixture's ping did not return",
   );
-  const platform = captured.mock.contexts.at(-1);
-  if (!(platform instanceof IntegrationPlatformService))
-    throw new Error("The integration gateway did not reach the platform");
-  const toolCaller = captured.mock.calls.at(-1)![2];
+  const localServers = captured.mock.contexts.at(-1);
+  if (!(localServers instanceof LocalServerService))
+    throw new Error(
+      `The plugin call did not reach the local server service: ${JSON.stringify({
+        pinged,
+        found: await gateway.call("plugin_search", { query: "ping" }),
+      })}`,
+    );
+  const { run: toolRun, threadId } = captured.mock.calls.at(-1)![2];
+  captured.mockRestore();
   const callable = (
-    await platform.listCallableTools({
+    await new IntegrationPlatformStore(host.store.database).listCallableTools({
       ownerUserId: host.ownerId,
       threadId: run.threadId,
+      providerAuthorizations: {},
     })
   ).find((entry) => entry.tool.name === "pair")!;
   if (!callable) throw new Error("No pairing tool was discovered");
-  captured.mockRestore();
+  const platform = {
+    callTool: (...args: Parameters<LocalServerService["callTool"]>) =>
+      localServers.callTool(...args),
+  };
   return {
     host,
     run,
     gateway,
     platform,
-    caller: toolCaller,
+    caller: { run: toolRun, threadId },
     callable,
     computer,
-    address: operation(search, "pair").address,
   };
 }
 
