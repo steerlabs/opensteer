@@ -3416,9 +3416,22 @@ function waitForRunnerExecution(socket: WebSocket): Promise<
 
 async function attachThreadSocket(socket: WebSocket, threadId: ThreadId) {
   socket.on("message", (data) => {
-    const frame = ScopedHostMessageSchema.safeParse(JSON.parse(data.toString()));
-    if (!frame.success || !("throughSequence" in frame.data)) return;
-    const { subscriptionId, generation, throughSequence } = frame.data;
+    const parsed = ScopedHostMessageSchema.safeParse(JSON.parse(data.toString()));
+    if (!parsed.success) return;
+    const frame = parsed.data;
+    if (frame.type === "host.snapshot-required" && frame.subscriptionId === "detail:0") {
+      socket.send(
+        JSON.stringify({
+          type: "client.subscribe",
+          subscriptionId: frame.subscriptionId,
+          generation: frame.generation + 1,
+          scope: frame.scope,
+        }),
+      );
+      return;
+    }
+    if (!("throughSequence" in frame) || frame.type === "host.snapshot-required") return;
+    const { subscriptionId, generation, throughSequence } = frame;
     socket.send(
       JSON.stringify({ type: "client.ack", subscriptionId, generation, throughSequence }),
     );
@@ -3446,6 +3459,18 @@ async function attachThreadSocket(socket: WebSocket, threadId: ThreadId) {
 
 async function waitForRunItem(socket: WebSocket, status: "failed" | "completed") {
   const observed = new Set<string>();
+  const runIn = (frame: import("@opensteer/protocol/personal-sync").ScopedHostMessage) => {
+    if (frame.subscriptionId !== "detail:0") return;
+    const cards =
+      frame.type === "host.changes"
+        ? frame.changes.flatMap((change) =>
+            change.entityKind === "item" && change.operation === "upsert" ? [change.value] : [],
+          )
+        : frame.type === "host.snapshot" && "items" in frame.snapshot
+          ? frame.snapshot.items
+          : [];
+    return cards.find((item) => item.kind === "run" && item.view.status === status);
+  };
   const raw = await waitForMessage(socket, (raw) => {
     const parsed = ScopedHostMessageSchema.safeParse(raw);
     if (!parsed.success) {
@@ -3454,32 +3479,13 @@ async function waitForRunItem(socket: WebSocket, status: "failed" | "completed")
     }
     const frame = parsed.data;
     observed.add(`${frame.subscriptionId} ${frame.type}`);
-    if (frame.type !== "host.changes") return false;
-    return frame.changes.some((change) => {
-      if (
-        change.entityKind !== "item" ||
-        change.operation !== "upsert" ||
-        change.value.kind !== "run"
-      )
-        return false;
-      observed.add(`Run ${change.value.view.status}`);
-      return change.value.view.status === status;
-    });
+    return runIn(frame) !== undefined;
   }).catch((error: unknown) => {
     throw new Error(`No ${status} Run card arrived. Frames observed: ${[...observed].join(", ")}`, {
       cause: error,
     });
   });
-  const frame = ScopedHostMessageSchema.parse(raw);
-  if (frame.type !== "host.changes") throw new Error("Expected changed Run");
-  return frame.changes.flatMap((change) =>
-    change.entityKind === "item" &&
-    change.operation === "upsert" &&
-    change.value.kind === "run" &&
-    change.value.view.status === status
-      ? [change.value]
-      : [],
-  )[0];
+  return runIn(ScopedHostMessageSchema.parse(raw));
 }
 async function waitForCondition(
   predicate: () => Promise<boolean>,

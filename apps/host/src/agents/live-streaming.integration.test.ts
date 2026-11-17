@@ -283,7 +283,9 @@ integration("live streaming across the deployment", () => {
         .where("runId", "=", runId)
         .execute(),
     ]);
-    expect(receipts.map(({ ordinal }) => ordinal)).toEqual(receipts.map((_row, index) => index));
+    expect(receipts.map(({ ordinal }) => Number(ordinal))).toEqual(
+      receipts.map((_row, index) => index),
+    );
     expect(retained.filter(({ kind }) => kind === "reasoning")).toHaveLength(messages);
     expect(calls).toHaveLength(messages * commandsPerMessage);
     expect(calls.every((call) => call.startedAt && call.status === "completed")).toBe(true);
