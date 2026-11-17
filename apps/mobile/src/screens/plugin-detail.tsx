@@ -413,7 +413,13 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
             key: run.id,
             kind: "button",
             label: run.workflow,
-            detail: `${action.pending === `stop:${run.id}` ? "Stopping…" : pluginWorkflowRunLabel(run)} · ${when(run.createdAt)}`,
+            detail: [
+              action.pending === `stop:${run.id}` ? "Stopping…" : pluginWorkflowRunLabel(run),
+              when(run.createdAt),
+              live && action.pending !== `stop:${run.id}` ? "Tap to stop" : null,
+            ]
+              .filter(Boolean)
+              .join(" · "),
             disabled: !live || action.pending !== null,
             // A tap on a live run stops it after asking; the swipe action stops it at once.
             onPress: () =>
