@@ -46,9 +46,10 @@ async function measure(events: number) {
     const createdAt = new Date();
     const author = { kind: "agent", harnessInstanceId: run.harnessInstance.id };
     const content = [{ type: "text", text: "A retained assistant update" }];
-    await sql`insert into messages(id,thread_id,run_id,sequence,kind,actor_principal_id,author,content,created_at)
+    // These rows represent messages that predate the migration's fast default.
+    await sql`insert into messages(id,thread_id,run_id,sequence,kind,actor_principal_id,author,content,created_at,published)
       select 'msg_90000000-0000-4000-8000-'||lpad(n::text,12,'0'),${run.threadId},${run.runId},n+1,'assistant',${current.actorPrincipalId},
-        ${JSON.stringify(author)}::jsonb,${JSON.stringify(content)}::jsonb,${createdAt}
+        ${JSON.stringify(author)}::jsonb,${JSON.stringify(content)}::jsonb,${createdAt},true
       from generate_series(1,${messageCount}) n`.execute(database);
     await sql`insert into deployment_events(deployment_id,sequence,event_id,thread_id,run_id,environment_id,type,data,
       created_at,runner_ordinal,runner_id,runner_boot_id,runner_binding_generation)

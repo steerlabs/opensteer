@@ -172,9 +172,9 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
     const identity = { callId: "legacy-test", tool: { namespace: "native", name: "image" } };
     const output = { text: "result", images: [{ path: imagePath, mediaType: "image/png" }] };
     for (const event of [
-      { sequence: 10, type: "tool.started", data: { ...identity, arguments: {} }, ordinal: 3 },
+      { sequence: 850, type: "tool.started", data: { ...identity, arguments: {} }, ordinal: 3 },
       {
-        sequence: 11,
+        sequence: 851,
         type: "tool.started",
         data: { ...identity, arguments: { final: true } },
         ordinal: 4,
@@ -221,7 +221,8 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
     }
     await sql`insert into deployment_events(deployment_id,sequence,event_id,thread_id,run_id,environment_id,type,data)
       select ${active.deploymentId},seq,'evt_fixture_'||seq,${active.threadId},${active.runId},${active.environmentId},
-        'message.created',jsonb_build_object('message',jsonb_build_object('id',${prompt.id}::text))
+        case when seq in (508,510) then 'message.placed' else 'message.created' end,
+        jsonb_build_object('message',jsonb_build_object('id',${prompt.id}::text))
       from generate_series(12,525) seq`.execute(database);
     for (const boundary of ["settle", "message", "ledger", "verify", "finalize"] as const) {
       await expect(
@@ -290,7 +291,13 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
       .select("position")
       .where("toolCallId", "=", tools[1]!.id)
       .executeTakeFirstOrThrow();
-    expect(BigInt(tools[1]!.completionOrder!) - BigInt(card.position!)).toBe(890n);
+    expect(BigInt(tools[1]!.completionOrder!) - BigInt(card.position!)).toBe(50n);
+    const placed = await target
+      .selectFrom("transcriptItems")
+      .select("position")
+      .where("id", "=", prompt.id)
+      .executeTakeFirstOrThrow();
+    expect(BigInt(tools[1]!.completionOrder!) - BigInt(placed.position!)).toBe(390n);
 
     const original = await target
       .selectFrom("toolOutputImages")
@@ -339,7 +346,7 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
   }
 });
 
-test.each(["missing card", "invalid preview"] as const)(
+test.each(["missing card", "invalid preview", "invalid visible timestamp"] as const)(
   "a parity failure (%s) keeps the source ledger and the unready cursor",
   async (fault) => {
     const fixture = await createStoreFixture();
@@ -367,8 +374,11 @@ test.each(["missing card", "invalid preview"] as const)(
           ? await sql`delete from transcript_items where id = ${card} returning id`.execute(
               database,
             )
-          : await sql`update transcript_items set view=jsonb_build_object('title', ${"a".repeat(193)}::text)
-          where id = ${card} returning id`.execute(database);
+          : fault === "invalid preview"
+            ? await sql`update transcript_items set view=jsonb_build_object('title', ${"a".repeat(193)}::text)
+                where id = ${card} returning id`.execute(database)
+            : await sql`update transcript_items set created_at='infinity'
+                where id = ${card} and visible returning id`.execute(database);
       expect(injected.rows).toHaveLength(1);
 
       const readSource = () =>

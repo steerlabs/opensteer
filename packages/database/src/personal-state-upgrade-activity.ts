@@ -53,13 +53,14 @@ export interface LegacyImportCounts {
 const maxLegacyBatchBytes = 2 * 1024 * 1024;
 const maxLegacyBatchRows = 500;
 
-export async function readLegacyActivityBatch(
+export async function convertLegacyActivityBatch(
   tx: Tx,
   deploymentId: DeploymentId,
   after: string,
   through: string,
-): Promise<readonly LegacyActivity[]> {
-  const page = await sql<LegacyActivity>`
+  reservedPosition: string,
+): Promise<{ through: string | null; counts: LegacyImportCounts }> {
+  const page = await sql<LegacyActivity & { placedInSql: boolean }>`
     with sized as materialized (
       select sequence,
         case when type in ('tool.started','tool.completed','reasoning.completed','node.message')
@@ -99,10 +100,28 @@ export async function readLegacyActivityBatch(
       from bounded b
       join deployment_events e on e.deployment_id=${deploymentId} and e.sequence=b.sequence
       where b.batch_bytes <= ${maxLegacyBatchBytes} or b.row_no=1
+    ), batch as materialized (
+      select max(sequence) as last, coalesce(bool_and(
+        type in ('message.created','message.placed','assistant.message')
+      ),false) as message_only from selected
+    ), markers as (
+      select data->>'id' as id,thread_id,sequence,type='message.placed' as move
+      from selected where (select message_only from batch)
+        and thread_id is not null and data->>'id' is not null
+    ), placements as (
+      select distinct on (id) id,thread_id,sequence,move from markers
+      order by id,move desc,case when move then sequence end desc,sequence
+    ), locked as materialized (
+      select i.id,${reservedPosition}::bigint + p.sequence as position
+      from placements p join transcript_items i on i.id=p.id and i.thread_id=p.thread_id
+      where i.visible and (p.move or i.position <= ${reservedPosition}::bigint)
+      order by i.id for no key update of i
+    ), placed as (
+      update transcript_items i set position=locked.position from locked where i.id=locked.id
     )
     select b.sequence,b.event_id,b.run_id,b.thread_id,b.runner_ordinal,b.runner_binding_generation,
       b.environment_id,b.type,b.created_at,b.data,
-      node.id as node_id,coalesce(node.attempt_id,attempt.id) as attempt_id
+      node.id as node_id,coalesce(node.attempt_id,attempt.id) as attempt_id,false as placed_in_sql
     from selected b
     left join execution_nodes node on node.id=b.data->>'nodeId' and node.run_id=b.run_id
       and b.type in ('tool.started','tool.completed','reasoning.completed','node.message')
@@ -112,9 +131,17 @@ export async function readLegacyActivityBatch(
         and b.type in ('tool.started','tool.completed','reasoning.completed','node.message')
       order by a.id limit 1
     ) attempt on node.id is null
-    order by b.sequence
+    where not (select message_only from batch)
+    union all
+    select last,null,null,null,null,null,null,null,null,null,null,null,true
+    from batch where message_only
+    order by sequence
   `.execute(tx);
-  return page.rows;
+  const last = page.rows.at(-1);
+  return {
+    through: last?.sequence ?? null,
+    counts: await importLegacyActivity(tx, last?.placedInSql ? [] : page.rows, reservedPosition),
+  };
 }
 
 type DisplayKind = "tool.started" | "tool.completed" | "reasoning.completed" | "node.message";
@@ -273,13 +300,7 @@ async function importToolBatch(
   placementIds: readonly string[],
 ): Promise<Pick<LegacyImportCounts, "tools" | "images" | "skipped">> {
   const stats = { tools: 0, images: 0, skipped: 0 };
-  if (!candidates.length) {
-    if (placementIds.length)
-      await sql`select id from transcript_items where id=any(${placementIds}::text[]) order by id for no key update`.execute(
-        tx,
-      );
-    return stats;
-  }
+  if (!candidates.length) return stats;
   const ids = [...new Set(candidates.map(({ call }) => call.id))];
   const current = new Map(
     (
@@ -408,7 +429,7 @@ async function importToolBatch(
   return { ...stats, images: images.length };
 }
 
-export async function importLegacyActivity(
+async function importLegacyActivity(
   tx: Tx,
   page: readonly LegacyActivity[],
   reservedPosition: string,
@@ -492,11 +513,18 @@ export async function importLegacyActivity(
     where r.id=record.run and r.thread_id=record.thread and r.status='completed'`.execute(tx);
   const tools = await importToolBatch(tx, candidates, reserved, [...placements.keys()]);
   if (placements.size)
-    await sql`update transcript_items i set position=record.place
-    from jsonb_to_recordset(${JSON.stringify([...placements.values()])}::jsonb)
-      as record(id text,thread text,place bigint,move boolean)
-    where i.id=record.id and i.thread_id=record.thread and i.visible
-      and (record.move or i.position <= ${reservedPosition}::bigint)`.execute(tx);
+    await sql`with records as materialized (
+      select * from jsonb_to_recordset(${JSON.stringify([...placements.values()])}::jsonb)
+        as record(id text,thread text,place bigint,move boolean)
+    ), locked as materialized (
+      select i.id,record.place from records record
+      join transcript_items i on i.id=record.id and i.thread_id=record.thread
+      where i.visible and (record.move or i.position <= ${reservedPosition}::bigint)
+      order by i.id for no key update of i
+    )
+    update transcript_items i set position=locked.place from locked where i.id=locked.id`.execute(
+      tx,
+    );
   counts.tools = tools.tools;
   counts.images = tools.images;
   counts.skipped += tools.skipped;
