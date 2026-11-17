@@ -345,7 +345,7 @@ describeStore("PostgreSQL store", (it) => {
       })
       .where("id", "=", workerRunId)
       .execute();
-    const held = Promise.withResolvers<void>();
+    const held = Promise.withResolvers<number>();
     const finish = Promise.withResolvers<void>();
     const worker = database.transaction().execute(async (transaction) => {
       await transaction
@@ -354,7 +354,10 @@ describeStore("PostgreSQL store", (it) => {
         .where("id", "=", workerRunId)
         .forNoKeyUpdate()
         .execute();
-      held.resolve();
+      const backend = await transaction
+        .selectNoFrom(sql<number>`pg_backend_pid()`.as("pid"))
+        .executeTakeFirstOrThrow();
+      held.resolve(backend.pid);
       await finish.promise;
       await transaction
         .updateTable("runs")
@@ -368,7 +371,7 @@ describeStore("PostgreSQL store", (it) => {
     void worker.catch(() => undefined);
     let cancellation: ReturnType<OpensteerStore["cancelAssignment"]> | undefined;
     try {
-      await held.promise;
+      const workerBackend = await held.promise;
       cancellation = store.cancelAssignment({
         assignmentId: delegated.assignment.id,
         actorRunId: fixture.run.id,
@@ -377,14 +380,14 @@ describeStore("PostgreSQL store", (it) => {
       });
       void cancellation.catch(() => undefined);
       await expect
-        .poll(async () =>
-          (
-            await sql<{
-              query: string;
-            }>`select query from pg_stat_activity
-        where datname=current_database() and application_name='opensteer-integration-test' and wait_event_type='Lock'
-      `.execute(database)
-          ).rows.some(({ query }) => query.includes('from "runs"')),
+        .poll(
+          async () =>
+            (
+              await sql<{ blocked: boolean }>`select exists (
+              select 1 from pg_stat_activity where datname = current_database()
+              and ${workerBackend} = any(pg_blocking_pids(pid))
+            ) as blocked`.execute(database)
+            ).rows[0]?.blocked,
         )
         .toBe(true);
       expect(
