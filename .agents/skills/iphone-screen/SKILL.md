@@ -61,9 +61,14 @@ test accounts and disposable content, and a Mac with Xcode's developer image ins
 phone model and iOS build, Mac architecture and macOS build, bridge revision, Xcode build,
 transport and each capability probe, never identifiers.
 
-1. **Setup.** From an untrusted phone: choose it over USB, deny then accept Trust, try a locked
-   phone, Developer Mode off then on with its restart, missing then present developer image, first
-   observe, attach, and a retried attach. Nothing asks for a developer team or passcode.
+1. **Setup.** Begin before connecting a phone: missing Xcode offers its App Store page; installed
+   Xcode without iPhone support offers Open Xcode. Install support while setup stays open and
+   verify it continues without restarting Opensteer. Connect one phone (automatic selection), then
+   several (explicit choice). Deny then accept Trust, try a locked phone, and turn on the revealed
+   Developer Mode switch with its restart. Setup must continue itself after each phone action,
+   through preparation and first observe, stopping for Wi-Fi and naming. Verify an existing
+   Device's Fix setup without detaching, cancellation during preparation, and recovery after a
+   dispatched attach. Nothing asks for a developer team or passcode.
 2. **USB control.** Observe, tap, long press, swipe, drag, scroll, Home and other advertised
    buttons, installed apps and launch, on at least two iPhone models and both Mac architectures
    where available. Count accepted but unapplied inputs separately.

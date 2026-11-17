@@ -41,9 +41,8 @@ export function createIphoneSetupPort(
       const previous = inFlight.get(setupId);
       if (previous) return previous;
       const work = (async () => {
-        const status = await platform.advance({
+        const status = await platform.add({
           setupId,
-          step: "attach",
           ...(name === undefined ? {} : { name }),
         });
         if (status.reason || !status.attachCommand) return status;

@@ -12,6 +12,7 @@ import { openDesktopPrivateFilesystem } from "../secrets/desktop-private-files.j
 import type { IphoneNativeTransport } from "./bridge-client.js";
 import { IphoneStore } from "./iphone-store.js";
 import { IphoneService } from "./iphone-service.js";
+import type { IphoneMacSupport } from "./mac-support.js";
 
 const nativeFsTestBinary = path.resolve(
   import.meta.dirname,
@@ -32,7 +33,23 @@ export class FakeIphoneNative implements IphoneNativeTransport {
   closed = 0;
   readonly held = new Map<string, Promise<void>>();
   readonly failures = new Map<string, Error>();
+  readonly identities = new Map<string, string>();
   epoch = 1;
+  images = [{ handle: "image", build: "test" }];
+  inspection: z.infer<
+    typeof import("@opensteer/protocol/iphone-bridge").iphoneNativeInspectionSchema
+  > = {
+    pairing: "paired",
+    developerMode: "enabled",
+    name: "Test phone",
+    model: "iPhoneTest",
+    osVersion: "27.0",
+    build: "test",
+    image: "mounted",
+    tunnel: "ready",
+    lock: "unknown",
+    reason: "qualification-required",
+  };
   probeReady = true;
   control = false;
   foreground: { appId: string; label: string } | null = null;
@@ -49,7 +66,7 @@ export class FakeIphoneNative implements IphoneNativeTransport {
         osVersion: "27.0",
         build: "test",
         transport: "usb" as const,
-        reason: "not-initialized" as const,
+        reason: null,
       },
     ],
   };
@@ -60,13 +77,16 @@ export class FakeIphoneNative implements IphoneNativeTransport {
     if (failure) throw failure;
     let value: unknown = {};
     switch (method) {
+      case "images.refresh":
+        value = { images: this.images };
+        break;
       case "binding.release":
         this.roster = {
           revision: this.roster.revision + 1,
           candidates: this.roster.candidates.map(
             ({ capabilities: _capabilities, ...candidate }) => ({
               ...candidate,
-              reason: "not-initialized",
+              reason: null,
             }),
           ),
         };
@@ -80,7 +100,11 @@ export class FakeIphoneNative implements IphoneNativeTransport {
         value = this.roster;
         break;
       case "phone.identity":
-        value = { udid: "synthetic-private-phone" };
+        value = {
+          udid:
+            this.identities.get((params as { candidateId: string }).candidateId) ??
+            "synthetic-private-phone",
+        };
         break;
       case "binding.acquire":
         value = { bindingToken: "binding" };
@@ -96,18 +120,7 @@ export class FakeIphoneNative implements IphoneNativeTransport {
         break;
       case "setup.inspect":
       case "setup.prepareDeveloperServices":
-        value = {
-          pairing: "paired",
-          developerMode: "enabled",
-          name: "Test phone",
-          model: "iPhoneTest",
-          osVersion: "27.0",
-          build: "test",
-          image: "mounted",
-          tunnel: "ready",
-          lock: "unknown",
-          reason: "qualification-required",
-        };
+        value = this.inspection;
         break;
       case "phone.observe":
         this.ready(this.control);
@@ -273,4 +286,26 @@ export async function fixture() {
       await rm(root, { recursive: true, force: true });
     },
   };
+}
+
+export class FakeIphoneMacSupport implements IphoneMacSupport {
+  xcodeApps = ["/Applications/Xcode.app"];
+  imageRoots = ["/synthetic/images"];
+  readonly listeners = new Set<() => void>();
+  readonly helps: string[] = [];
+  async inspect() {
+    return { xcodeApps: this.xcodeApps, imageRoots: this.imageRoots };
+  }
+  watch(listener: () => void) {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+  async help(action: string) {
+    this.helps.push(action);
+  }
+  changed() {
+    for (const listener of this.listeners) listener();
+  }
 }
