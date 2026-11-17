@@ -22,7 +22,6 @@ import {
 } from "@opensteer/agent-tools";
 import {
   OpensteerError,
-  RequestIdSchema,
   ThreadIdSchema,
   type Thread,
   requestHoldLimitMs,
@@ -31,10 +30,6 @@ import {
 import type { OpensteerStore } from "@opensteer/database";
 import { advertisedToolInputSchema } from "../agents/agent-tools-plan.js";
 import { safeMessage } from "@opensteer/shared/safeMessage";
-import {
-  requestPendingGuidance,
-  requestStillOpenGuidance,
-} from "@opensteer/shared/requestGuidance";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -461,28 +456,9 @@ export class OpensteerMcpService {
               ? requestHoldLimitMs
               : shortRequestHoldMs,
         });
-        if (held)
-          return agentToolRecordResult({
-            ...held.record,
-            next: held.text ?? held.record.next ?? requestStillOpenGuidance,
-          });
+        if (held) return agentToolRecordResult(held.record);
       }
-      let pendingRequest = false;
-      if (
-        currentCaller.kind === "run" &&
-        result.status === "pending" &&
-        typeof result.requestId === "string"
-      ) {
-        const id = RequestIdSchema.safeParse(result.requestId);
-        const request = id.success ? await this.options.store.requests.get(id.data) : null;
-        pendingRequest =
-          request?.mode === "durable" &&
-          request.status === "pending" &&
-          request.originatingRunId === currentCaller.claims.runId;
-      }
-      return agentToolRecordResult(
-        pendingRequest ? { ...result, next: requestPendingGuidance } : result,
-      );
+      return agentToolRecordResult(result);
     } catch (error) {
       const parsed = tool?.input.safeParse(args);
       const access =

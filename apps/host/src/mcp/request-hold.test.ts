@@ -174,7 +174,10 @@ describe("Request hold", () => {
     f.snapshot.steered = true;
     for (const result of await Promise.all([f.hold.wait(f.input), f.hold.wait(f.input)]))
       expect(result).toMatchObject({
-        record: { status: "pending", next: f.input.result.next },
+        record: {
+          status: "pending",
+          next: expect.stringContaining("A private steer released this call"),
+        },
       });
     expect(f.markToolDelivered).not.toHaveBeenCalled();
   });

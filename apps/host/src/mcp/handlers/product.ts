@@ -1408,10 +1408,13 @@ export class ProductToolHandlers {
       site: input.site,
       threadId: claims.threadId,
     });
-    const request = await this.#store.requests.findByCallIdentity({
-      callId: operationId(caller, operationKey, "card_request"),
-      originatingRunId: claims.runId,
-    });
+    const request =
+      "requestId" in result && result.requestId
+        ? await this.#store.requests.get(result.requestId)
+        : await this.#store.requests.findByCallIdentity({
+            callId: operationId(caller, operationKey, "card_request"),
+            originatingRunId: claims.runId,
+          });
     return cardAgentResult(result, request);
   }
 
@@ -1428,10 +1431,13 @@ export class ProductToolHandlers {
       site: input.site,
       threadId: claims.threadId,
     });
-    const request = await this.#store.requests.findByCallIdentity({
-      callId: operationId(caller, operationKey, "saved_login_request"),
-      originatingRunId: claims.runId,
-    });
+    const request =
+      "requestId" in result && result.requestId
+        ? await this.#store.requests.get(result.requestId)
+        : await this.#store.requests.findByCallIdentity({
+            callId: operationId(caller, operationKey, "saved_login_request"),
+            originatingRunId: claims.runId,
+          });
     return savedLoginAgentResult(result, request);
   }
 
@@ -1451,10 +1457,13 @@ export class ProductToolHandlers {
       site: input.site,
       threadId: claims.threadId,
     });
-    const request = await this.#store.requests.findByCallIdentity({
-      callId: operationId(caller, operationKey, "chrome_cookies_request"),
-      originatingRunId: claims.runId,
-    });
+    const request =
+      "requestId" in result && result.requestId
+        ? await this.#store.requests.get(result.requestId)
+        : await this.#store.requests.findByCallIdentity({
+            callId: operationId(caller, operationKey, "chrome_cookies_request"),
+            originatingRunId: claims.runId,
+          });
     return chromeCookiesAgentResult(result, request);
   }
 

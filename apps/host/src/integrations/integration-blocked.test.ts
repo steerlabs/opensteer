@@ -56,3 +56,22 @@ it.each([
   const args = JSON.parse(blocked!.next.slice("Call integration_request ".length, -1));
   expect(args.access).toBe("<read|read-write>");
 });
+
+it("does not request consent to raise a read-only task ceiling", () => {
+  expect(
+    integrationBlocked(
+      {
+        code: "READ_ONLY_TASK",
+        serverId,
+        connectionId,
+        requiredAccess: null,
+        provider: null,
+        detail: null,
+      },
+      "gmail",
+    ),
+  ).toMatchObject({
+    code: "read_only_task",
+    next: expect.stringContaining("access mode"),
+  });
+});

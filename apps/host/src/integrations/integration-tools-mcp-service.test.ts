@@ -1,3 +1,4 @@
+import { integrationBlocked } from "./integration-blocked.js";
 import type { IntegrationPlatformService } from "./integration-platform-service.js";
 import { gatherComputerAccess } from "./computer-access.js";
 import { ToolFailureSchema } from "@opensteer/core";
@@ -805,9 +806,14 @@ describe("Opensteer MCP integration access classes", () => {
     expect(callTool).toHaveBeenCalledTimes(1);
   });
 
-  it("names the read-write fix when a write operation is blocked by a read grant", async () => {
+  it.each([
+    "ACCESS_GRANT_REQUIRED",
+    "USER_AUTHORIZATION_REQUIRED",
+    "REAUTHORIZATION_REQUIRED",
+    "READ_ONLY_TASK",
+  ] as const)("returns the search blocker for a known operation with %s", async (readinessCode) => {
     const entry = inventoryEntry({
-      readinessCode: "ACCESS_GRANT_REQUIRED",
+      readinessCode,
       toolEffect: "write",
     });
     const grant = effectiveGrant({
@@ -816,7 +822,10 @@ describe("Opensteer MCP integration access classes", () => {
       installationId: entry.installation.id,
     });
     const writeTool = entry.tools[0]!;
-    const { handler } = await createHarness({ grants: [grant], inventory: [entry] });
+    const { handler } = await createHarness({
+      grants: readinessCode === "ACCESS_GRANT_REQUIRED" ? [grant] : [],
+      inventory: [entry],
+    });
     const response = (await handler(
       {
         params: {
@@ -828,12 +837,7 @@ describe("Opensteer MCP integration access classes", () => {
     )) as { content: readonly { text: string }[]; isError: boolean };
     expect(response).toMatchObject({
       structuredContent: {
-        error: {
-          code: "access_denied",
-          next: null,
-          message:
-            'Linear operation Create issue makes changes, and the owner has read access as Work. Call integration_request with integration "linear" and access "read-write"; do not retry this call until it is fulfilled.',
-        },
+        error: integrationBlocked(entry.readiness.tools[0]!.readiness, entry.installation.name),
       },
       isError: true,
     });
@@ -1396,7 +1400,7 @@ describe("Opensteer MCP integration access classes", () => {
       callExtra("already-granted"),
     );
     expect(errorText(response)).toContain(
-      "Linear as Work is usable now with read-write access. Call integration_search for available operations.",
+      "Linear as Work has a personal read-write grant. This task’s access mode still limits execution. Call integration_search for operations this task can use.",
     );
     expect(requests.createIntegrationAccessRequest).not.toHaveBeenCalled();
   });
@@ -1820,7 +1824,12 @@ const linearToolSchemas = {
 
 function inventoryEntry(
   input: {
-    readonly readinessCode?: "ACCESS_GRANT_REQUIRED" | "READY" | "REAUTHORIZATION_REQUIRED";
+    readonly readinessCode?:
+      | "ACCESS_GRANT_REQUIRED"
+      | "READY"
+      | "REAUTHORIZATION_REQUIRED"
+      | "USER_AUTHORIZATION_REQUIRED"
+      | "READ_ONLY_TASK";
     readonly withoutTools?: boolean;
     readonly toolEffect?: "read" | "write";
   } = {},

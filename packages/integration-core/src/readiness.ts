@@ -31,6 +31,7 @@ export interface ResolveIntegrationReadinessInput {
   readonly installationStatus: "active" | "disabled" | "needs-attention";
   readonly providerAuthorization: IntegrationProviderAuthorization | null;
   readonly requiredAccess: IntegrationAccess;
+  readonly runAccess?: IntegrationAccess;
   readonly requiredConnectionId: string | null;
   readonly serverId: IntegrationServerId;
   readonly serverStatus: "active" | "disabled" | "needs-attention";
@@ -60,6 +61,16 @@ export function resolveIntegrationReadiness(
       ...base,
       code: "INTEGRATION_UNAVAILABLE",
       connectionId: null,
+      provider: providerFor(input.connectionRequirement),
+    };
+  }
+  if (input.runAccess === "read" && input.requiredAccess === "read-write") {
+    return {
+      ...base,
+      code: "READ_ONLY_TASK",
+      connectionId: input.requiredConnectionId
+        ? IntegrationConnectionIdSchema.parse(input.requiredConnectionId)
+        : null,
       provider: providerFor(input.connectionRequirement),
     };
   }

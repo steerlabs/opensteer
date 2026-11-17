@@ -337,6 +337,40 @@ describe("Product tool handlers", () => {
     },
   );
 
+  it("preserves a joined cookie Request even when this call identity did not create it", async () => {
+    const pending = pendingRequest();
+    const { service } = makeService({
+      browserSources: {
+        agentCopyChromeCookies: async () => ({
+          status: "pending",
+          site: "https://example.com",
+          requestId: pending.id,
+          replayed: true,
+        }),
+      },
+      commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+      messages: [],
+      requests: { get: async () => pending },
+      threads: [thread(currentThreadId, nativeHarnessId, "Worker")],
+    });
+    await expect(
+      service.service.callTool(
+        "run-token",
+        "chrome_cookies_request",
+        {
+          tabId: BrowserSurfaceIdSchema.parse("sign-in-tab"),
+          site: "https://example.com",
+          reason: "Read the account",
+        },
+        { operationKey: "joined-cookie" },
+      ),
+    ).resolves.toMatchObject({
+      requestId: pending.id,
+      status: "pending",
+      cookiesStatus: "pending",
+    });
+  });
+
   it("coordinates durable child and target turns through typed task history", async () => {
     const current = {
       ...thread(currentThreadId, nativeHarnessId, "Owner task"),
@@ -1001,6 +1035,7 @@ function makeService(options: {
   messages: readonly Message[];
   listHarnessInstances?: OpensteerStore["listHarnessInstances"];
   requests?: {
+    get?: OpensteerStore["requests"]["get"];
     visiblePage?: OpensteerStore["requests"]["visiblePage"];
     withdraw?: OpensteerStore["requests"]["withdraw"];
   };
@@ -1252,6 +1287,7 @@ function makeService(options: {
       };
     },
     requests: {
+      get: options.requests?.get ?? vi.fn(async () => null),
       findByCallIdentity: vi.fn(async () => null),
       visiblePage:
         options.requests?.visiblePage ??

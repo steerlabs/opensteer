@@ -17,6 +17,12 @@ export function integrationBlocked(
   };
   const next = `Call integration_request ${JSON.stringify(args)}.`;
   switch (readiness.code) {
+    case "READ_ONLY_TASK":
+      return {
+        code: "read_only_task",
+        message: "This task runs read-only.",
+        next: "Use read operations. The person can change this task's access mode to allow changes; another integration grant cannot raise this task's ceiling.",
+      };
     case "ACCESS_GRANT_REQUIRED":
       return { code: "access_required", message: `${integration} requires an access grant.`, next };
     case "USER_AUTHORIZATION_REQUIRED":
