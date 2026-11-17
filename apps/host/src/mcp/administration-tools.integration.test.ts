@@ -138,11 +138,7 @@ function fixture() {
   };
   const service = new AdministrationService(deps as unknown as AdministrationDependencies, vi.fn());
   const handlers = administrationToolHandlers(
-    new AdministrationToolHandlers(
-      service,
-      async () => [],
-      (id) => id === environmentId,
-    ),
+    new AdministrationToolHandlers(service, (id) => id === environmentId),
   );
   const mcp = new OpensteerMcpService({
     callers: { authenticate: async () => caller },

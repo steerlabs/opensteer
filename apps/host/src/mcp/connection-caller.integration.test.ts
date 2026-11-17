@@ -1,9 +1,8 @@
 import { z } from "zod";
-import { IntegrationToolHandlers } from "./handlers/integrations.js";
+import { DeviceToolHandlers } from "./handlers/devices.js";
 import {
   IntegrationPlatformStore,
   type IntegrationRequester,
-  type IntegrationDiscoveryRequester,
 } from "@opensteer/database";
 import { AppStore, TriggerStore } from "@opensteer/database";
 import { TriggerService } from "../triggers/trigger-service.js";
@@ -185,19 +184,18 @@ async function serveMcp(
   if (!address || typeof address === "string") throw new Error("MCP test did not listen");
   const url = new URL(`http://127.0.0.1:${address.port}${mcpResourcePath}`);
   const integrationStore = new IntegrationPlatformStore(store.database);
-  const integrations = new IntegrationToolHandlers({
-    definitions: [],
-    onEvent: (event: import("@opensteer/core").AgentEvent) => realtime.publish(event),
-    platform: {
-      store: integrationStore,
-      listDiscoveryInventory: (input: IntegrationDiscoveryRequester) =>
-        integrationStore.listDiscoveryInventory({ ...input, providerAuthorizations: {} }),
-      listCallableTools: (input: IntegrationRequester) =>
-        integrationStore.listCallableTools({ ...input, providerAuthorizations: {} }),
-    } as unknown as ConstructorParameters<typeof IntegrationToolHandlers>[0]["platform"],
+  const devices = new DeviceToolHandlers({
     devices: {
-      computerAppApprovals: { computerUseInventory: async () => ({ machines: [], phones: [] }) },
-    } as unknown as ConstructorParameters<typeof IntegrationToolHandlers>[0]["devices"],
+      store: integrationStore,
+      listCallableTools: (input: IntegrationRequester) => integrationStore.listCallableTools(input),
+      computerToolEnabled: () => false,
+      computerUseVersion: () => undefined,
+      computerAppApprovals: {
+        computerUseInventory: async () => ({ machines: [], phones: [] }),
+        computerAppHolders: () => new Map(),
+      },
+    } as unknown as ConstructorParameters<typeof DeviceToolHandlers>[0]["devices"],
+    access: {} as never,
   });
   service = new OpensteerMcpService({
     realtime,
@@ -224,7 +222,7 @@ async function serveMcp(
         },
       ) as never,
       product,
-      integrations,
+      devices,
       triggers: new TriggerToolHandlers(
         new TriggerService({
           store: new TriggerStore(store.database),
@@ -602,24 +600,11 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       "opensteer_request_list",
       "opensteer_automation_list",
       "app_list",
-      "integration_search",
+      "computer_apps",
     ]) {
-      const result = await agent.client.callTool({
-        name,
-        arguments:
-          name === "opensteer_automation_list"
-            ? {}
-            : name === "integration_search"
-              ? { query: "anything" }
-              : {},
-      });
+      const result = await agent.client.callTool({ name, arguments: {} });
       expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
     }
-    const described = await agent.client.callTool({
-      name: "integration_describe",
-      arguments: { operation: "missing.operation" },
-    });
-    expect(errorText(described)).toBe("Integration operation is no longer available; search again");
     for (const arguments_ of [{ title: "Renamed" }, { done: true }, { done: false }]) {
       const result = await agent.client.callTool({
         name: "opensteer_task_update",

@@ -376,6 +376,10 @@ export function runnerRegistrationHook<T>(
 
 export interface PersonalHostRuntime {
   readonly kind: "personal";
+  /** Device data apps on computers, with their approvals. */
+  readonly devices: DeviceService;
+  /** The local servers registered on computers, by name. */
+  readonly localServers: LocalServerRegistry;
   readonly plugins: PluginService;
   readonly pluginOAuth: PluginOAuthService;
   readonly pluginAgentSettings: PluginAgentStore;
@@ -3073,6 +3077,8 @@ export async function createHostRuntime(
 
     return {
       kind: "personal",
+      devices,
+      localServers: localServerRegistry,
       app,
       tabs: requiredService(tabs, "Tabs"),
       browser,

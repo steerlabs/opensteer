@@ -1,31 +1,24 @@
 import type { Thread } from "@opensteer/core";
 import type { RunCapabilityClaims } from "../agents/run-capability.js";
-import type { TriggerControlScope } from "../triggers/trigger-control-service.js";
+import type { DeviceServicesTestHarness } from "../devices/device-services.test-support.js";
+import type { TriggerCapabilityClaims, TriggerControlScope } from "../triggers/trigger-control-service.js";
 import type { AgentCaller, RunCaller } from "./agent-caller.js";
-import {
-  IntegrationToolHandlers,
-  type IntegrationToolsTriggerScope,
-} from "./handlers/integrations.js";
+import { DeviceToolHandlers } from "./handlers/devices.js";
 import { agentToolHandlers } from "./handlers/index.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 
-type IntegrationOptions = ConstructorParameters<typeof IntegrationToolHandlers>[0];
-export function createIntegrationMcpFixture(
-  options: Omit<IntegrationOptions, "devices"> & {
-    /** The platform's own device service when absent, or the platform fake itself. */
-    readonly devices?: IntegrationOptions["devices"];
-    readonly publicUrl: URL;
+type TriggerScope = TriggerCapabilityClaims<"opensteer-trigger-integration-tools">;
 
-    readonly runTokens: { authenticate(token: string): Promise<RunCapabilityClaims<string>> };
-    readonly triggerTokens: { authenticate(token: string): Promise<IntegrationToolsTriggerScope> };
-  },
-) {
-  const integration = new IntegrationToolHandlers({
-    ...options,
-    devices:
-      options.devices ??
-      (options.platform as { readonly devices?: IntegrationOptions["devices"] }).devices ??
-      (options.platform as unknown as IntegrationOptions["devices"]),
+/** The device tools over MCP, with the device services a test built behind them. */
+export function createIntegrationMcpFixture(options: {
+  readonly platform: Pick<DeviceServicesTestHarness, "access" | "devices">;
+  readonly publicUrl: URL;
+  readonly runTokens: { authenticate(token: string): Promise<RunCapabilityClaims<string>> };
+  readonly triggerTokens: { authenticate(token: string): Promise<TriggerScope> };
+}) {
+  const devices = new DeviceToolHandlers({
+    devices: options.platform.devices,
+    access: options.platform.access,
   });
   const unavailable = new Proxy(
     {},
@@ -45,7 +38,7 @@ export function createIntegrationMcpFixture(
         },
       },
     ) as never,
-    integrations: integration,
+    devices,
     product: unavailable as never,
     triggers: unavailable as never,
     apps: unavailable as never,
@@ -74,7 +67,7 @@ export function createIntegrationMcpFixture(
         const base = {
           key: run
             ? `run:${run.runId}`
-            : `trigger:${(claims as IntegrationToolsTriggerScope).occurrenceId}`,
+            : `trigger:${(claims as TriggerScope).occurrenceId}`,
           userId: claims.requestedBy,
           accessMode: thread.accessMode,
         };

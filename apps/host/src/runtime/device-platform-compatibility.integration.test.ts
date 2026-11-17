@@ -115,16 +115,12 @@ integration("device platform release compatibility", () => {
       );
       const calendar = catalog.catalog.find(({ definition }) => definition.id === "apple-calendar");
       expect(calendar).toBeDefined();
-      await testRpcData(
-        host.origin,
-        "commands.dispatch",
-        {
-          idempotencyKey: "compatibility-calendar-install",
-          input: { definitionId: "apple-calendar", digest: calendar!.digest },
-          type: "integration.catalog.install",
-        },
-        { headers: host.ownerHeaders },
-      );
+      await host.runtime.devices.installDefinition({
+        actorUserId: host.ownerId,
+        definitionId: "apple-calendar",
+        digest: calendar!.digest,
+        requestId: "compatibility-calendar-install",
+      });
       const request = await requestComputerAppSetup(
         host,
         runnerId,

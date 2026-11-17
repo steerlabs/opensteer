@@ -1,17 +1,16 @@
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
-import { createIntegrationPlatform } from "../integrations/integration-platform.test-support.js";
+import { createDeviceServices } from "../devices/device-services.test-support.js";
 import { createPersonalRunFixturePort } from "@opensteer/database/test-support/personal-run";
 
 import { createId } from "@opensteer/core";
 import {
   createDatabase,
   IntegrationPlatformStore,
-  IntegrationStore,
+  listIntegrationConnections,
   OpensteerStore,
 } from "@opensteer/database";
 import { computerAppIntegrations } from "@opensteer/integration-catalog/devices";
 
-import type { PendingAgentEvent } from "@opensteer/protocol";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import { sql } from "kysely";
 import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
@@ -21,8 +20,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMachineAccessDatabase } from "../runtime/private-machine-host.test-support.js";
-import { integrationCallSubject } from "../integrations/integration-call-subject.js";
-import { operationAddress } from "../integrations/integration-operation.js";
 
 import { type ComputerUseGateway } from "./device-service.js";
 
@@ -61,7 +58,10 @@ integration.sequential("Host computer-use approval transactions", () => {
   async function fixture() {
     const store = new OpensteerStore(database);
     const persistence = new IntegrationPlatformStore(database);
-    const connections = new IntegrationStore(database);
+    const connections = {
+      listConnections: (owner: Parameters<typeof listIntegrationConnections>[1]) =>
+        listIntegrationConnections(database, owner),
+    };
     const task = await createComputerUseTask(store, randomUUID(), dataDirectory);
     const runnerId = createId("runner");
     const keys = generateKeyPairSync("ed25519");
@@ -124,9 +124,7 @@ integration.sequential("Host computer-use approval transactions", () => {
       sendWindowOperation: vi.fn(),
       stop: vi.fn(),
     };
-    const service = createIntegrationPlatform({
-      adapters: [],
-      authorizationSource: { providerAuthorizations: async () => ({}) },
+    const service = createDeviceServices({
       listConnections: (owner) => connections.listConnections(owner),
       secretVault: new AesGcmSecretVault(
         new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
@@ -155,14 +153,9 @@ integration.sequential("Host computer-use approval transactions", () => {
         send: vi.fn(),
       },
       computerUse,
-      credentialMaterializer: {
-        materializeForAdapter: vi.fn(),
-        markAdapterAuthorizationRequired: vi.fn(),
-      },
       dataDirectory,
       definitions: [definition],
       isRunnerConnected: () => true,
-      mcpOauth: { providerFor: vi.fn() },
       onDeploymentEvent: vi.fn(),
       onConnectionsChanged: vi.fn(),
       onRequestsChanged: vi.fn(),
@@ -351,99 +344,6 @@ integration.sequential("Host computer-use approval transactions", () => {
       id: connection!.id,
       computer: { blockedAt: null, access: "read" },
     });
-  });
-
-  it("attributes historical integration_call computer events only to their own grant", async () => {
-    const test = await fixture();
-    await test.service.devices.computerAppApprovals.requestComputerAppAccess(test.input);
-    await test.approve("read-write");
-    // Old transcripts still resolve their saved references; agents now use computer.
-    const act = (
-      await test.service.listCallableTools({
-        ownerUserId: test.task.userId,
-
-        threadId: test.task.threadId,
-      })
-    ).find((row) => row.tool.name === "act");
-    if (!act) throw new Error("Missing internal act authority");
-    const actAddress = { account: act.grant.connectionId, operation: operationAddress(act) };
-    const onError = vi.fn();
-    const sources = {
-      listCallableTools: test.service.listCallableTools.bind(test.service),
-      getComputerConnectionForCall: test.persistence.getComputerConnectionForCall,
-      onError,
-      runRequester: test.store.runRequester.bind(test.store),
-    };
-    const { task } = test;
-    const toolStarted = (
-      ordinal: number,
-      address: { readonly account: string | null; readonly operation: string },
-      of: Pick<typeof task, "bindingGeneration" | "environmentId" | "runId" | "threadId"> = task,
-    ): PendingAgentEvent => ({
-      bindingGeneration: of.bindingGeneration,
-      data: {
-        arguments: { ...address, arguments: {} },
-        callId: `call-${ordinal}`,
-        tool: { name: "integration_call", namespace: "opensteer.integrations" },
-      },
-      emittedAt: new Date().toISOString(),
-      environmentId: of.environmentId,
-      ordinal,
-      runId: of.runId,
-      threadId: of.threadId,
-      type: "tool.started",
-    });
-    const event = toolStarted(1, actAddress);
-
-    const integration = await integrationCallSubject(sources, event);
-
-    expect(integration).toEqual({
-      account: "Notes",
-      computerApp: {
-        app: "Notes",
-        bundleId: "com.apple.Notes",
-        computer: "Alex's Mac",
-        runnerId: test.input.runnerId,
-      },
-      effect: "write",
-      integration: "Computer use",
-      operation: { name: "act", title: "Act" },
-    });
-    const commit = (subject: typeof integration) =>
-      test.store.commitRunnerEvent({
-        environmentId: task.environmentId,
-        event,
-        ...(subject ? { integration: subject } : {}),
-        runnerBootId: task.runnerBootId,
-        runnerId: task.runnerId,
-      });
-    const committed = await commit(integration);
-    // What the Host publishes is the event it committed.
-    expect(committed.wasDuplicate).toBe(false);
-    expect(committed.event.data).toMatchObject({ integration });
-    const replayed = await commit(undefined);
-    expect(replayed.wasDuplicate).toBe(true);
-    expect(replayed.event).toEqual(committed.event);
-
-    // An address whose schema changed, and one for a removed grant, name nothing.
-    await expect(
-      integrationCallSubject(
-        sources,
-        toolStarted(2, { ...actAddress, operation: `${act.tool.name}@zzzzzzzz` }),
-      ),
-    ).resolves.toBeUndefined();
-    const [grant] = await test.persistence.listGrants({
-      ownerUserId: task.userId,
-    });
-    await test.service.devices.revokeGrant({
-      grantId: grant!.id,
-      ownerUserId: task.userId,
-      requestId: "revoke-for-subject",
-    });
-    await expect(
-      integrationCallSubject(sources, toolStarted(2, actAddress)),
-    ).resolves.toBeUndefined();
-    expect(onError).not.toHaveBeenCalled();
   });
 
   it("never widens an existing connection automatically and routes grant-only requests through ordinary access", async () => {

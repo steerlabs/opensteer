@@ -532,16 +532,12 @@ integration.sequential("iPhone integrations Host contract", () => {
       { headers: admin },
     );
     const calendar = catalog.catalog.find(({ definition }) => definition.id === "apple-calendar")!;
-    await testRpcData(
-      host.origin,
-      "commands.dispatch",
-      {
-        type: "integration.catalog.install",
-        idempotencyKey: "install",
-        input: { definitionId: "apple-calendar", digest: calendar.digest },
-      },
-      { headers: admin },
-    );
+    await host.runtime.devices.installDefinition({
+      actorUserId: host.ownerId,
+      definitionId: "apple-calendar",
+      digest: calendar.digest!,
+      requestId: "install",
+    });
     const request = await requestComputerAppSetup(
       host,
       phone.runnerId,

@@ -554,7 +554,6 @@ describeStore("agents answering task questions", (it) => {
         requestedConnectionId: null,
         requestedServerId: null,
       },
-      "integration.install": { kind: "integration.install", reason, manifest: {} },
       "device.access": {
         kind: "device.access",
         reason,
@@ -576,11 +575,6 @@ describeStore("agents answering task questions", (it) => {
         definitionId: "android-phone",
         runnerId: s.f.runnerId,
         setupRequestId: randomUUID(),
-      },
-      "integration.input": {
-        kind: "integration.input",
-        installationId: "installation",
-        serverId: "server",
       },
       "plugin.account": {
         kind: "plugin.account",

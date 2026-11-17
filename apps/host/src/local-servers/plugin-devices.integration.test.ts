@@ -1,8 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import {
-  createIntegrationPlatform,
-  type IntegrationPlatformTestOptions,
-} from "./integration-platform.test-support.js";
+  createDeviceServices,
+  type DeviceServicesTestOptions,
+} from "../devices/device-services.test-support.js";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +15,7 @@ import {
   describeStore,
   reachOnlyModules,
 } from "@opensteer/database/test-support/store";
-import { executeIntegrationAdministration } from "./integration-administration.js";
+import { executeDeviceAdministration } from "../devices/device-administration.js";
 
 describeStore("plugin devices", (test) => {
   test("agent installs retain their nearest task, personal devices and refresh approval context", async ({
@@ -37,17 +37,13 @@ describeStore("plugin devices", (test) => {
     const platform = new IntegrationPlatformStore(f.database);
     const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-device-"));
     const changed = vi.fn();
-    const service = createIntegrationPlatform({
+    const service = createDeviceServices({
       store: platform,
       dataDirectory: directory,
-      adapters: [],
       definitions: [],
-      authorizationSource: { providerAuthorizations: async () => ({}) },
       listConnections: async () => [],
-      credentialMaterializer: {} as IntegrationPlatformTestOptions["credentialMaterializer"],
-      computerApps: {} as IntegrationPlatformTestOptions["computerApps"],
+      computerApps: {} as DeviceServicesTestOptions["computerApps"],
       isRunnerConnected: () => false,
-      mcpOauth: {} as IntegrationPlatformTestOptions["mcpOauth"],
       secretVault: new AesGcmSecretVault(
         new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
       ),
@@ -100,13 +96,10 @@ describeStore("plugin devices", (test) => {
       const pluginId = installed.installation.pluginId!;
       expect(installed.installation.title).toBe("Main Bedroom Apple TV");
       expect((await platform.plugins.list())[0]?.setupThreadId).toBe(run.thread.id);
-      const detail = await platform.settings.detail(run.userId, { kind: "plugin", pluginId });
-      expect(detail).toMatchObject({
-        setupThreadId: run.thread.id,
-        row: {
-          device: { name: "Main Bedroom Apple TV", kind: "tv" },
-          permissions: { canRemove: true },
-        },
+      const row = await platform.settings.row(run.userId, { kind: "plugin", pluginId });
+      expect(row).toMatchObject({
+        device: { name: "Main Bedroom Apple TV", kind: "tv" },
+        permissions: { canRemove: true },
       });
       const devices = await platform.settings.otherDevices(run.userId, [
         { id: pluginComputerId, name: "Computer", status: "offline" },
@@ -252,7 +245,6 @@ describeStore("plugin devices", (test) => {
       await writeFile(join(pluginDirectory, "server.cjs"), "// Person updated device server\n");
       await service.installAgentPlugin({
         actorUserId: personViewer,
-        pluginId: personId,
         directory: pluginDirectory,
         runnerId: moved.runnerId,
         requestId: randomUUID(),
@@ -260,10 +252,6 @@ describeStore("plugin devices", (test) => {
       expect((await platform.plugins.list()).find((p) => p.id === personId)?.setupThreadId).toBe(
         run.thread.id,
       );
-      expect(
-        (await platform.settings.detail(personViewer, { kind: "plugin", pluginId: personId }))
-          .setupThreadId,
-      ).toBe(run.thread.id);
       expect(
         (await platform.settings.otherDevices(personViewer, [])).find(
           (p) => p.pluginId === personId,
@@ -305,19 +293,15 @@ describeStore("plugin devices", (test) => {
     const foreign = createId("user");
     const directory = await mkdtemp(join(tmpdir(), "plugin-removal-authority-"));
     const removeRunnerData = vi.fn(async () => undefined);
-    const service = createIntegrationPlatform({
+    const service = createDeviceServices({
       store: platform,
       dataDirectory: directory,
-      adapters: [],
       definitions: [],
-      authorizationSource: { providerAuthorizations: async () => ({}) },
       listConnections: async () => [],
-      credentialMaterializer: {} as IntegrationPlatformTestOptions["credentialMaterializer"],
       computerApps: {
         removePluginData: removeRunnerData,
-      } as unknown as IntegrationPlatformTestOptions["computerApps"],
+      } as unknown as DeviceServicesTestOptions["computerApps"],
       isRunnerConnected: () => false,
-      mcpOauth: {} as IntegrationPlatformTestOptions["mcpOauth"],
       secretVault: new AesGcmSecretVault(
         new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
       ),
@@ -355,18 +339,18 @@ describeStore("plugin devices", (test) => {
         target = { kind: "plugin", pluginId } as const;
       const data = join(directory, "plugins", "data", pluginId, "pairing");
       await writeFile(data, "retained");
-      expect((await platform.settings.detail(run.userId, target)).row.permissions.canRemove).toBe(
+      expect((await platform.settings.row(run.userId, target)).permissions.canRemove).toBe(
         true,
       );
-      await expect(platform.settings.detail(foreign, target)).rejects.toMatchObject({
+      await expect(platform.settings.row(foreign, target)).rejects.toMatchObject({
         code: "forbidden",
       });
       await expect(
         platform.plugins.assertCanRemove(pluginId, { userId: foreign }),
       ).rejects.toMatchObject({ code: "forbidden" });
       await expect(
-        executeIntegrationAdministration(
-          { devices: service.devices, localServers: service.localServers, platform: service },
+        executeDeviceAdministration(
+          { devices: service.devices, localServers: service.registry },
           { userId: foreign },
           { type: "plugin.remove", pluginId, idempotencyKey: "denied" },
           "denied",
@@ -381,8 +365,8 @@ describeStore("plugin devices", (test) => {
         [],
       );
       expect(removeRunnerData).not.toHaveBeenCalled();
-      await executeIntegrationAdministration(
-        { devices: service.devices, localServers: service.localServers, platform: service },
+      await executeDeviceAdministration(
+        { devices: service.devices, localServers: service.registry },
         { userId: run.userId },
         { type: "plugin.remove", pluginId, idempotencyKey: "remove" },
         "remove",

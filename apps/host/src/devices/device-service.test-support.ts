@@ -1,27 +1,24 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import {
-  createIntegrationPlatform,
-  type IntegrationPlatformTestHarness,
-  type IntegrationPlatformTestOptions,
-} from "./integration-platform.test-support.js";
+  createDeviceServices,
+  type DeviceServicesTestHarness,
+  type DeviceServicesTestOptions,
+} from "./device-services.test-support.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
-import type {} from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   IntegrationDefinitionSchema,
   createIntegrationId,
   integrationDefinitionSummary,
   isComputerAppDefinition,
-  type IntegrationAdapter,
   type IntegrationConnectionSummary,
   type IntegrationTool,
   type IntegrationToolMaterial,
 } from "@opensteer/integration-core";
 import { computerAppTools } from "@opensteer/integration-core/computer-app-tools";
 import { computerAppIntegrations } from "@opensteer/integration-catalog";
-import { type IntegrationAdapterCredentialMaterializer } from "@opensteer/integration-core/ports";
 import {
   integrationDefinitionDigest,
   integrationSchemaDigest,
@@ -86,7 +83,7 @@ export function computerStatus(
 }
 
 let testDataDirectory: string;
-export const services: IntegrationPlatformTestHarness[] = [];
+export const services: DeviceServicesTestHarness[] = [];
 
 /** Gives each test its own data folder and closes every platform it built. */
 export function usePlatformFixtures(): void {
@@ -109,30 +106,24 @@ export function platform(input: {
   readonly listConnections?: (
     ownerUserId: ReturnType<typeof createId<"user">>,
   ) => Promise<readonly IntegrationConnectionSummary[]>;
-  readonly adapters: readonly IntegrationAdapter[];
   readonly computerApps?: Partial<Pick<ComputerAppHub, ApprovalHubMember>> &
     Pick<ComputerAppHub, "appStatus" | "attached" | "send" | "withRunnerAdmission">;
   readonly computerUse?: ComputerUseGateway;
-  readonly nativeTabs?: IntegrationPlatformTestOptions["nativeTabs"];
+  readonly nativeTabs?: DeviceServicesTestOptions["nativeTabs"];
   readonly definitions?: readonly ReturnType<typeof IntegrationDefinitionSchema.parse>[];
   readonly isRunnerConnected?: (runnerId: ReturnType<typeof createId<"runner">>) => boolean;
   readonly mcpImageContent?: () => Promise<boolean>;
-  readonly mcpOauth?: IntegrationPlatformTestOptions["mcpOauth"];
-  readonly markAdapterAuthorizationRequired?: () => Promise<void>;
-  readonly materializeForAdapter?: IntegrationAdapterCredentialMaterializer["materializeForAdapter"];
   readonly onDeploymentEvent?: (event: AgentEvent) => void;
   readonly onConnectionsChanged?: () => void;
-  readonly onSettingsChanged?: IntegrationPlatformTestOptions["onSettingsChanged"];
+  readonly onSettingsChanged?: DeviceServicesTestOptions["onSettingsChanged"];
   readonly onRequestsChanged?: () => void;
   readonly store?: Partial<IntegrationPlatformStore>;
-}): IntegrationPlatformTestHarness {
-  const service = createIntegrationPlatform({
+}): DeviceServicesTestHarness {
+  const service = createDeviceServices({
     listConnections: input.listConnections ?? (async () => []),
     secretVault: new AesGcmSecretVault(
       new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
     ),
-    adapters: input.adapters,
-    authorizationSource: { providerAuthorizations: vi.fn(async () => ({})) },
     computerApps: {
       requireAgentAccess: async () => {},
       removePluginData: async () => {},
@@ -155,12 +146,6 @@ export function platform(input: {
           withRunnerAdmission: vi.fn(async (_runnerId, task) => task()),
         } as Pick<ComputerAppHub, "appStatus" | "attached" | "send" | "withRunnerAdmission">)),
     },
-    credentialMaterializer: {
-      markAdapterAuthorizationRequired:
-        input.markAdapterAuthorizationRequired ?? vi.fn(async () => undefined),
-      materializeForAdapter:
-        input.materializeForAdapter ?? vi.fn(async () => Promise.reject(new Error("unused"))),
-    },
     ...(input.computerUse ? { computerUse: input.computerUse } : {}),
     ...(input.nativeTabs ? { nativeTabs: input.nativeTabs } : {}),
     computerToolEnabled: () => true,
@@ -169,9 +154,6 @@ export function platform(input: {
     dataDirectory: testDataDirectory,
     ...(input.definitions ? { definitions: input.definitions } : { definitions: [] }),
     isRunnerConnected: input.isRunnerConnected ?? vi.fn(() => true),
-    mcpOauth: input.mcpOauth ?? {
-      providerFor: vi.fn(async () => Promise.reject(new Error("unused"))),
-    },
     onDeploymentEvent: input.onDeploymentEvent ?? vi.fn(),
     onConnectionsChanged: input.onConnectionsChanged ?? vi.fn(),
     onSettingsChanged: input.onSettingsChanged ?? vi.fn(async () => undefined),
@@ -187,7 +169,6 @@ export function platform(input: {
         }
       : {
           connections: { assertOwner: vi.fn(async () => undefined) },
-          getToolInvocation: vi.fn(async () => mailInvocation),
           computerAppRunner: vi.fn(async () => null),
           install: vi.fn(),
           listInstallations: vi.fn(async () => []),
@@ -202,9 +183,6 @@ export function computerConnectionSummary(
 ): IntegrationConnectionSummary {
   return {
     accountIdentifier: null,
-    applicationSource: null,
-    authMethodId: "computer",
-    authorizationDigest: null,
     computer: {
       blockedAt: null,
       policyRevision: null,
@@ -218,10 +196,8 @@ export function computerConnectionSummary(
     displayName: "Studio Mac",
     externalIdentityId: null,
     externalTenantId: null,
-    grantedScopes: [],
     id: createIntegrationId("connection"),
     provider: computerDefinition.provider,
-    providerApplicationId: null,
     status: "connected",
     statusDetail: null,
     statusReason: null,
@@ -342,141 +318,8 @@ export function integrationRequest(
   } as Request;
 }
 
-export function adapterWithInvoke(
-  invokeTool: IntegrationAdapter["invokeTool"],
-): IntegrationAdapter {
-  return {
-    credentialDisclosure() {
-      return { destinations: ["https://api.example.com"], check: true };
-    },
-    async checkHealth() {
-      return { healthy: true };
-    },
-    invokeTool,
-    kind: "graphql",
-    parseConfig: (config) => config,
-    snapshotConfig: async (config) => configObject(config),
-    async resolveTools() {
-      return { definitions: {}, tools: [] };
-    },
-  };
-}
-
-export function configObject(config: unknown): Readonly<Record<string, unknown>> {
-  if (typeof config !== "object" || config === null || Array.isArray(config)) {
-    throw new TypeError("Test integration config must be an object");
-  }
-  return config as Readonly<Record<string, unknown>>;
-}
-
-/** What the store reads for one call of `callable()`'s tool. */
-export const mailInvocation = {
-  adapterSnapshot: { adapter: "graphql", config: {}, definitionId: "mail" },
-  installationRevision: 1,
-  schemaDigest: "a".repeat(43),
-  status: "active",
-  target: null,
-  toolGeneration: 1,
-} as const;
-
 /** A tool row as the platform lists it: its schemas only digested. */
 export function listedTool(material: IntegrationToolMaterial): Omit<IntegrationTool, "serverId"> {
   const { inputSchema, outputSchema, ...listed } = material;
   return { ...listed, schemaDigest: integrationSchemaDigest({ inputSchema, outputSchema }) };
-}
-
-export function callable(): CallableIntegrationTool {
-  const installationId = createIntegrationId("installation");
-  const serverId = createIntegrationId("server");
-  const connectionId = createIntegrationId("connection");
-  const definition = IntegrationDefinitionSchema.parse({
-    adapter: "graphql",
-    authMethods: [
-      {
-        id: "oauth",
-        kind: "oauth",
-        label: "OAuth",
-        oauth: {
-          authorizationUrl: "https://accounts.example.test/authorize",
-          clientAuth: "body",
-          identity: { identityPath: "id", source: "token-response" },
-          scopeSeparator: " ",
-          scopes: ["mail.send"],
-          tokenUrl: "https://accounts.example.test/token",
-          usesPkce: true,
-        },
-        placements: [
-          {
-            carrier: "header",
-            name: "Authorization",
-            prefix: "Bearer ",
-            variable: "accessToken",
-          },
-        ],
-      },
-    ],
-    config: {},
-    description: "Mail API",
-    id: "mail",
-    name: "Mail",
-    provider: "mail",
-    setupUrl: "https://example.test/setup",
-  });
-  if (definition.adapter === "computer") throw new Error("Test definition must use an adapter");
-  return {
-    grant: {
-      access: "read-write",
-      alias: "Work",
-      connectionId,
-      createdAt: now,
-      id: createIntegrationId("grant"),
-      installationId,
-      isDefault: true,
-      ownerUserId: createId("user"),
-      revokedAt: null,
-      status: "active",
-    },
-    installation: {
-      createdAt: now,
-      description: definition.description,
-      id: installationId,
-      manifest: { definition: integrationDefinitionSummary(definition) },
-      name: "mail",
-      provenance: {},
-      revision: 1,
-      sourceKind: "built-in",
-      status: "active",
-      title: "Mail",
-      trust: "built-in",
-      updatedAt: now,
-      version: "1",
-    },
-    server: {
-      connectionRequirement: {
-        definitionId: "mail",
-        kind: "provider",
-        provider: "mail",
-        providerApplicationRequired: true,
-      },
-      id: serverId,
-      installationId,
-      name: "default",
-      status: "active",
-      statusDetail: null,
-      toolGeneration: 1,
-      transport: { adapter: "graphql", definitionId: "mail", type: "adapter" },
-      updatedAt: now,
-    },
-    tool: {
-      annotations: {},
-      connectionId: null,
-      description: "Send mail",
-      id: createIntegrationId("tool"),
-      name: "send",
-      schemaDigest: mailInvocation.schemaDigest,
-      serverId,
-      status: "active",
-      title: "Send mail",
-    },
-  };
 }

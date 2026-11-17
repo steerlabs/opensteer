@@ -203,7 +203,7 @@ describe("ContinuationService", () => {
     const requests = [
       fulfilledRequest("browser.access"),
       fulfilledRequest("integration.access"),
-      fulfilledRequest("integration.install"),
+      fulfilledRequest("machine.full-disk-access"),
     ];
     const fixture = makeService(requests, {
       enqueueThreadInput: vi
@@ -326,8 +326,10 @@ describe("ContinuationService", () => {
     });
     expect(fixture.errors).toEqual([]);
   });
+});
+describe("continuationMessage", () => {
   it("marks a cancelled Thread input as undeliverable instead of queued", async () => {
-    const request = fulfilledRequest("integration.install");
+    const request = fulfilledRequest("machine.full-disk-access");
     const fixture = makeService([request], {
       enqueueThreadInput: vi.fn(async () => delivery("cancelled")),
     });
@@ -562,36 +564,6 @@ describe("continuationMessage", () => {
       continuationMessage(computerAppAccessRequest("fulfilled"), withMacs(false)),
     ).resolves.toContain("is no longer available to this task. Continue without it.");
   });
-  it("reports a ready installation and points the agent at integration_search", async () => {
-    const request = fulfilledRequest("integration.install");
-    expect(
-      await continuationMessage(
-        request,
-        inventory(
-          entry({
-            code: "READY",
-          }),
-        ),
-      ),
-    ).toBe(
-      `Request ${request.id} was fulfilled. Gmail is installed and ready. Call integration_search now to pick up its tools and continue the task.`,
-    );
-  });
-  it("says an installation with no personal grant is not yet usable", async () => {
-    const request = fulfilledRequest("integration.install");
-    expect(
-      await continuationMessage(
-        request,
-        inventory(
-          entry({
-            code: "ACCESS_GRANT_REQUIRED",
-          }),
-        ),
-      ),
-    ).toBe(
-      `Request ${request.id} was fulfilled. Gmail is installed and its account connection works, but your Opensteer holds no access grant yet. Call integration_search now, then call integration_request with this integration and the access class the task needs.`,
-    );
-  });
   it("reports a missing personal grant after fulfillment", async () => {
     const request = fulfilledRequest("integration.access");
     expect(
@@ -606,110 +578,6 @@ describe("continuationMessage", () => {
       ),
     ).toBe(
       `Request ${request.id} was fulfilled. Gmail read access was granted for connectionless operations. Your Opensteer still holds no access grant (No personal grant).`,
-    );
-  });
-  it("sends the agent to integration_request when the installation has no account", async () => {
-    const request = fulfilledRequest("integration.install");
-    expect(
-      await continuationMessage(
-        request,
-        inventory(
-          entry({
-            code: "USER_AUTHORIZATION_REQUIRED",
-            detail: "No Google account",
-          }),
-        ),
-      ),
-    ).toBe(
-      `Request ${request.id} was fulfilled. Gmail is installed but has no connected account (No Google account). Call integration_request now for the account connection, then continue the task.`,
-    );
-  });
-  it("reports the statusDetail of an installation that landed unusable", async () => {
-    const request = fulfilledRequest("integration.install");
-    expect(
-      await continuationMessage(
-        request,
-        inventory(
-          entry({
-            code: "INTEGRATION_UNAVAILABLE",
-            detail: "The OpenAPI document could not be compiled",
-            status: "needs-attention",
-          }),
-        ),
-      ),
-    ).toBe(
-      `Request ${request.id} was fulfilled, but Gmail installed in an unusable state: The OpenAPI document could not be compiled. Requesting it again will not help. Continue without it and tell the user what that detail says.`,
-    );
-  });
-  it("directs a misconfigured provider through the agent-owned setup request", async () => {
-    const request = fulfilledRequest("integration.install");
-    expect(
-      await continuationMessage(
-        request,
-        inventory(
-          entry({
-            code: "ADMIN_CONFIGURATION_REQUIRED",
-            detail: "No Google application",
-          }),
-        ),
-      ),
-    ).toBe(
-      `Request ${request.id} was fulfilled, but Gmail installed in an unusable state: No Google application. Request access through integration_request; the connection UI offers supported personal-app setup and identifies any administrator prerequisite.`,
-    );
-  });
-  it("never claims an installation that the inventory does not hold", async () => {
-    const request = fulfilledRequest("integration.install");
-    expect(
-      await continuationMessage(
-        request,
-        inventory(
-          entry({
-            code: "READY",
-            provenance: {
-              definitionId: "slack",
-            },
-          }),
-        ),
-      ),
-    ).toBe(
-      `Request ${request.id} was approved, but Gmail is not present in the current integration inventory. Call integration_search now to see what is actually installed and continue from there.`,
-    );
-  });
-  it("locates a proposal installation by the approved artifact digest", async () => {
-    const request = fulfilledRequest("integration.install", {
-      proposal: true,
-    });
-    expect(
-      await continuationMessage(
-        request,
-        inventory(
-          entry({
-            code: "READY",
-            provenance: {
-              artifactDigest: proposalDigest,
-            },
-            sourceKind: "proposed",
-            title: "Weather API",
-          }),
-        ),
-      ),
-    ).toBe(
-      `Request ${request.id} was fulfilled. Weather API is installed and ready. Call integration_search now to pick up its tools and continue the task.`,
-    );
-  });
-  it("reports an installation that exposes no servers as unusable", async () => {
-    const request = fulfilledRequest("integration.install");
-    expect(
-      await continuationMessage(
-        request,
-        inventory(
-          entry({
-            servers: [],
-          }),
-        ),
-      ),
-    ).toBe(
-      `Request ${request.id} was fulfilled, but Gmail installed in an unusable state: the installation exposes no servers. An administrator must repair the installation. Continue without it and tell the user.`,
     );
   });
   it("names the connected account once the access grant is verified", async () => {
@@ -885,7 +753,7 @@ function entry(
     readonly detail?: string;
     readonly provenance?: Readonly<Record<string, string>>;
     readonly servers?: readonly IntegrationReadiness[];
-    readonly sourceKind?: "built-in" | "proposed";
+    readonly sourceKind?: "built-in" | "plugin";
     readonly status?: "active" | "needs-attention";
     readonly title?: string;
   } = {},
@@ -915,7 +783,6 @@ function entry(
           code: input.code ?? "READY",
           connectionId: input.connectionId ?? null,
           detail: input.detail ?? null,
-          provider: null,
           requiredAccess: (input.code ?? "READY") === "ACCESS_GRANT_REQUIRED" ? "read" : null,
           serverId,
         },

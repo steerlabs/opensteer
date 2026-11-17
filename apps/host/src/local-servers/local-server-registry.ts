@@ -116,7 +116,7 @@ export class LocalServerRegistry {
     const install = async (directory: string) => {
       await writeFile(join(directory, "plugin.json"), JSON.stringify(manifest));
       await writeFile(join(directory, "mcp.json"), JSON.stringify(mcp));
-      return this.#install({
+      return this.installPackage({
         actorUserId: actor.userId,
         directory,
         threadId: actor.threadId,
@@ -217,7 +217,7 @@ export class LocalServerRegistry {
     await store.plugins.assertCanRemove(pluginId, actor);
     for (const installation of await store.listInstallations())
       if (installation.pluginId === pluginId)
-        await this.#uninstall({ installationId: installation.id, actorUserId: actor.userId, requestId });
+        await this.uninstall({ installationId: installation.id, actorUserId: actor.userId, requestId });
     await store.plugins.remove(pluginId, administration);
     await this.#options.localServers.removePluginData(pluginId);
   }
@@ -226,10 +226,10 @@ export class LocalServerRegistry {
    * Installs, or updates by name for the same person, the package a registration wrote: its
    * servers wait for that computer's approval of their exact launch.
    */
-  async #install(input: {
+  async installPackage(input: {
     readonly actorUserId: UserId;
     readonly directory: string;
-    readonly threadId: ThreadId;
+    readonly threadId?: ThreadId | undefined;
     readonly requestId: string;
     readonly runnerId: RunnerId | undefined;
   }): Promise<{ readonly installation: IntegrationInstallation; readonly issues: readonly unknown[] }> {
@@ -238,7 +238,9 @@ export class LocalServerRegistry {
     const currentPlugin = (await store.plugins.list()).find(
       (p) => p.name === name && p.installedBy === input.actorUserId,
     );
-    const setupThreadId = await store.plugins.setupThread(input.threadId);
+    const setupThreadId = input.threadId
+      ? await store.plugins.setupThread(input.threadId)
+      : undefined;
     const updating = currentPlugin !== undefined;
     const pluginId = currentPlugin?.id ?? createIntegrationId("installation");
     const previous = updating
@@ -352,7 +354,8 @@ export class LocalServerRegistry {
     return { installation, issues: plugin.issues };
   }
 
-  async #uninstall(input: {
+  /** Uninstalls one installation, ending its computers' sessions and dropping its MCP clients. */
+  async uninstall(input: {
     readonly actorUserId: UserId;
     readonly installationId: IntegrationInstallationId;
     readonly requestId: string;

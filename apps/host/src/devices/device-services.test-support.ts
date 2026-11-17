@@ -1,81 +1,105 @@
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { AesGcmSecretVault } from "@opensteer/access/host";
-import { integrationDefinitions } from "@opensteer/integration-catalog";
-import type { AgentEvent, RunnerId, UserId } from "@opensteer/core";
-import { DeviceService } from "../devices/device-service.js";
+import { deviceDefinitions } from "@opensteer/integration-catalog/devices";
+import type { RunnerId, UserId } from "@opensteer/core";
+import type { CallableIntegrationTool, IntegrationPlatformStore } from "@opensteer/database";
+import type { ToolCaller } from "../agents/tool-caller.js";
+import { LocalServerRegistry } from "../local-servers/local-server-registry.js";
 import { LocalServerService } from "../local-servers/local-server-service.js";
-import { IntegrationPlatformService } from "./integration-platform-service.js";
+import { AccessRequests } from "./access-requests.js";
+import { DeviceService } from "./device-service.js";
 
-type ServiceOptions = ConstructorParameters<typeof IntegrationPlatformService>[0];
 type DeviceOptions = ConstructorParameters<typeof DeviceService>[0];
 type LocalServerOptions = ConstructorParameters<typeof LocalServerService>[0];
 
-/** Everything the three services take, as a test builds them together. */
-export type IntegrationPlatformTestOptions = Omit<
-  ServiceOptions,
-  "devices" | "localServers" | "definitions"
+/** Everything the device and local-server services take, as a test builds them together. */
+export type DeviceServicesTestOptions = Omit<
+  DeviceOptions,
+  "computerApps" | "definitions" | "localServers" | "store"
 > &
-  Omit<
-    DeviceOptions,
-    "computerApps" | "definitions" | "localServers" | "providerAuthorizations" | "store"
-  > &
-  Pick<LocalServerOptions, "longRequestHold" | "personal"> & {
+  Pick<LocalServerOptions, "personal"> & {
     readonly computerApps: DeviceOptions["computerApps"] & LocalServerOptions["computerApps"];
-    readonly definitions?: ServiceOptions["definitions"];
+    readonly dataDirectory: string;
+    readonly definitions?: DeviceOptions["definitions"];
     readonly isRunnerConnected: (runnerId: RunnerId) => boolean;
     readonly secretVault: Pick<AesGcmSecretVault, "open" | "seal">;
+    readonly store: IntegrationPlatformStore;
   };
 
-/** Service integrations with the device and local-server services they reach, as the Host wires them. */
-export type IntegrationPlatformTestHarness = IntegrationPlatformService & {
+/** The device and local-server services as the Host wires them, with one call path for tests. */
+export interface DeviceServicesTestHarness {
+  readonly listDiscoveryInventory: DeviceService["listDiscoveryInventory"];
+  readonly listCallableTools: DeviceService["listCallableTools"];
+  readonly installCatalogDefinition: DeviceService["installDefinition"];
+  readonly uninstallIntegration: LocalServerRegistry["uninstall"];
+  readonly installAgentPlugin: LocalServerRegistry["installPackage"];
+  readonly access: AccessRequests;
   readonly devices: DeviceService;
   readonly localServers: LocalServerService;
+  readonly registry: LocalServerRegistry;
+  readonly store: IntegrationPlatformStore;
+  callTool(
+    callable: CallableIntegrationTool,
+    args: Readonly<Record<string, unknown>>,
+    caller: ToolCaller,
+    signal?: AbortSignal,
+  ): Promise<Awaited<ReturnType<Client["callTool"]>>>;
   close(): Promise<void>;
-};
+}
 
-export function createIntegrationPlatform(
-  options: IntegrationPlatformTestOptions,
-): IntegrationPlatformTestHarness {
-  const definitions = options.definitions ?? integrationDefinitions;
+export function createDeviceServices(options: DeviceServicesTestOptions): DeviceServicesTestHarness {
+  const definitions = options.definitions ?? deviceDefinitions;
   const onSettingsChanged =
     options.onSettingsChanged ??
     (async (_input: { installationId?: string; ownerUserId?: UserId }) => undefined);
-  const publishRequestEvents = (events: readonly AgentEvent[]) => {
-    for (const event of events) options.onDeploymentEvent(event);
-    if (events.length > 0) options.onRequestsChanged();
-  };
   const localServers = new LocalServerService({
     computerApps: options.computerApps,
     dataDirectory: options.dataDirectory,
     isRunnerConnected: options.isRunnerConnected,
-    ...(options.longRequestHold ? { longRequestHold: options.longRequestHold } : {}),
     onConnectionsChanged: options.onConnectionsChanged,
     onSettingsChanged,
     ...(options.personal === undefined ? {} : { personal: options.personal }),
-    publishRequestEvents,
     secretVault: options.secretVault,
     store: options.store,
   });
-  const devices = new DeviceService({
-    ...options,
-    definitions,
-    localServers,
-    onSettingsChanged,
-    providerAuthorizations: (ownerUserId) =>
-      options.authorizationSource.providerAuthorizations(ownerUserId),
-  });
-  const platform = new IntegrationPlatformService({
-    ...options,
+  const devices = new DeviceService({ ...options, definitions, localServers, onSettingsChanged });
+  const access = new AccessRequests({
     definitions,
     devices,
-    localServers,
-    onSettingsChanged,
+    onDeploymentEvent: options.onDeploymentEvent,
+    store: options.store,
   });
-  return Object.assign(platform, {
+  const registry = new LocalServerRegistry({
+    store: options.store,
+    dataDirectory: options.dataDirectory,
     devices,
     localServers,
+    files: async () => {
+      throw new Error("Agent home files are not part of this test");
+    },
+    onConnectionsChanged: options.onConnectionsChanged,
+    onDeploymentEvent: options.onDeploymentEvent,
+    onRequestsChanged: options.onRequestsChanged,
+    onSettingsChanged,
+  });
+  return {
+    access,
+    devices,
+    localServers,
+    registry,
+    store: options.store,
+    listDiscoveryInventory: (input) => devices.listDiscoveryInventory(input),
+    listCallableTools: (input) => devices.listCallableTools(input),
+    installCatalogDefinition: (input) => devices.installDefinition(input),
+    uninstallIntegration: (input) => registry.uninstall(input),
+    installAgentPlugin: (input) => registry.installPackage(input),
+    callTool: (callable, args, caller, signal) =>
+      callable.server.transport.type === "computer"
+        ? devices.callTool(callable, args, caller, signal)
+        : localServers.callTool(callable, args, caller, signal),
     close: async () => {
       await devices.close();
       await localServers.close();
     },
-  });
+  };
 }

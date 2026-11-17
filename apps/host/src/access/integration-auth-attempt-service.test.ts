@@ -62,9 +62,9 @@ describe("DefaultIntegrationAuthAttemptLifecycle", () => {
     const store = new MemoryAttemptStore();
     const lifecycle = lifecycleWith(store, now);
     const ownerUserId = createId("user");
-    const id = createIntegrationId("mcpOauthAttempt");
+    const id = createIntegrationId("oauthAttempt");
     const started = await lifecycle.begin({
-      flow: "mcp-oauth",
+      flow: "provider-oauth",
       id,
       ownerUserId,
       payload: async (state) => ({
@@ -76,19 +76,11 @@ describe("DefaultIntegrationAuthAttemptLifecycle", () => {
 
     await expect(lifecycle.launch({ id, launchTicket: "x".repeat(43) })).resolves.toBeNull();
     const launched = await lifecycle.launch({ id, launchTicket: started.launchTicket });
-    expect(launched).toMatchObject({ flow: "mcp-oauth", id, surface: "web" });
+    expect(launched).toMatchObject({ flow: "provider-oauth", id, surface: "web" });
     expect(launched?.authorizationUrl).toContain(`state=${started.state}`);
     await expect(
       lifecycle.claim({
         browserBinding: "x".repeat(43),
-        flow: "mcp-oauth",
-        id,
-        state: started.state,
-      }),
-    ).resolves.toBeNull();
-    await expect(
-      lifecycle.claim({
-        browserBinding: launched!.browserBinding,
         flow: "provider-oauth",
         id,
         state: started.state,
@@ -97,7 +89,7 @@ describe("DefaultIntegrationAuthAttemptLifecycle", () => {
     await expect(
       lifecycle.claim({
         browserBinding: launched!.browserBinding,
-        flow: "mcp-oauth",
+        flow: "provider-oauth",
         id,
         state: started.state,
       }),
@@ -110,7 +102,7 @@ describe("DefaultIntegrationAuthAttemptLifecycle", () => {
     await expect(
       lifecycle.claim({
         browserBinding: launched!.browserBinding,
-        flow: "mcp-oauth",
+        flow: "provider-oauth",
         id,
         state: started.state,
       }),

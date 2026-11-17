@@ -1,28 +1,19 @@
 import { createChannelId } from "@opensteer/channel-core";
 import {
-  createIntegrationPlatform,
-  type IntegrationPlatformTestOptions,
-} from "../integrations/integration-platform.test-support.js";
-import {
   enrollTestRunner,
   personalBrowserRepository,
 } from "@opensteer/database/test-support/store";
 import { createId, type UserId } from "@opensteer/core";
 import {
-  IntegrationPlatformStore,
   BrowserSourceStore,
-  IntegrationStore,
 } from "@opensteer/database";
 import { describeStore } from "@opensteer/database/test-support/store";
-import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { RealtimeHub } from "@opensteer/orchestration";
 import type { HostToClientMessage } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import type { HostApiCommand } from "@opensteer/protocol";
 import { expect, vi } from "vitest";
-import { sql } from "kysely";
 import { ShellSessionIdSchema } from "@opensteer/protocol";
-import { IntegrationService } from "../integrations/integration-service.js";
 import {
   AdministrationService,
   type AdministrationDependencies,
@@ -48,7 +39,6 @@ function mcp(dependencies: AdministrationDependencies, userId: UserId) {
   const handlers = administrationToolHandlers(
     new AdministrationToolHandlers(
       new AdministrationService(dependencies, vi.fn()),
-      async () => [],
       () => true,
     ),
   );
@@ -695,290 +685,5 @@ describeStore("MCP administration", (it) => {
       await channels.close();
     }
   });
-  it("replays a provider disconnection after the person reconnects the same account", async ({
-    storeFixture: f,
-  }) => {
-    const run = await f.createRunFixture("disconnect-retry");
-    const repository = new IntegrationStore(f.database);
-    let connectionId = createIntegrationId("connection");
-    const connect = (reconnect: boolean) =>
-      repository.connectApiKey({
-        ownerUserId: run.userId,
-        reconnect,
-        requestId: randomUUID(),
-        credentialProvider: "integration:github",
-        credential: { envelope: Buffer.from("fixture-encrypted"), keyVersion: 1 },
-        connection: {
-          id: connectionId,
-          accountIdentifier: "test",
-          applicationSource: { kind: "api-key" },
-          authMethodId: "token",
-          authorizationDigest: "a".repeat(43),
-          computer: null,
-          connectionMethod: "api-key",
-          definitionId: "github",
-          displayName: "Test",
-          externalIdentityId: "test",
-          externalTenantId: null,
-          grantedScopes: [],
-          provider: "github",
-          providerApplicationId: null,
-          status: "connected",
-          statusDetail: null,
-          statusReason: null,
-        },
-      });
-    await connect(false);
-    const integrations = new IntegrationService({
-      repository,
-      definitions: [],
-      attempts: {},
-      deploymentPosture: async () => ({ kind: "personal" }),
-      onConnectionConnected: vi.fn(),
-      publicUrl: new URL("http://127.0.0.1"),
-      vault: { seal: async () => ({ envelope: Buffer.from("fixture-revoked"), keyVersion: 1 }) },
-    } as unknown as ConstructorParameters<typeof IntegrationService>[0]);
-    const agent = mcp(
-      {
-        store: f.store,
-        integrations: {
-          service: integrations,
-          platform: { store: new IntegrationPlatformStore(f.database) },
-        },
-        realtime: { broadcast: vi.fn() },
-      } as unknown as AdministrationDependencies,
-      run.userId,
-    );
-    try {
-      await retryAfterPersonChange(
-        agent,
-        "integration_remove",
-        { target: "account", connectionId },
-        async () => {
-          connectionId = createIntegrationId("connection");
-          await connect(false);
-        },
-        () => repository.listConnections(run.userId),
-        { connectionId: createIntegrationId("connection") },
-      );
-    } finally {
-      await agent.service.close();
-    }
-  });
 
-  it("replays MCP account disconnection and integration uninstall after person changes", async ({
-    storeFixture: f,
-  }) => {
-    const run = await f.createRunFixture("integration-uninstall-retry");
-    const store = new IntegrationPlatformStore(f.database);
-    const installationId = createIntegrationId("installation");
-    const serverId = createIntegrationId("server");
-    const installation = {
-      id: installationId,
-      name: "retry-mcp",
-      description: "Test",
-      manifest: {},
-      provenance: {},
-      sourceKind: "remote-mcp",
-      status: "active",
-      title: "Test",
-      trust: "administrator-approved",
-      version: null,
-    } as const;
-    const install = () =>
-      store.install({
-        actorUserId: run.userId,
-        adapterSnapshot: null,
-        requestId: randomUUID(),
-        installation,
-        servers: [
-          {
-            id: serverId,
-            name: "default",
-            status: "active",
-            statusDetail: null,
-            connectionRequirement: { kind: "mcp-oauth" },
-            catalog: { definitions: {}, tools: [] },
-            transport: {
-              type: "streamable-http",
-              url: "https://mcp.example.test/mcp",
-              headers: {},
-            },
-          },
-        ],
-      });
-    await install();
-    const connectionId = createIntegrationId("connection");
-    await f.database
-      .insertInto("integrationConnections")
-      .values({
-        id: connectionId,
-        ownerUserId: run.userId,
-        connectionKind: "mcp-oauth",
-        connectionMethod: "managed-oauth",
-        integrationServerId: serverId,
-        displayName: "Test MCP",
-        provider: `mcp:${serverId}`,
-        accountIdentifier: null,
-        applicationSource: null,
-        authMethodId: null,
-        authorizationDigest: null,
-        capabilities: sql`'[]'::jsonb`,
-        credentialId: null,
-        externalIdentityId: null,
-        externalTenantId: null,
-        grantedScopes: sql`'[]'::jsonb`,
-        integrationDefinitionId: null,
-        providerApplicationId: null,
-        runnerId: null,
-        status: "connected",
-        statusDetail: null,
-        transportKind: null,
-      })
-      .execute();
-    const platform = createIntegrationPlatform({
-      store,
-      dataDirectory: "unused",
-      listConnections: async () => [],
-      definitions: [],
-      adapters: [],
-      computerApps: {},
-      credentialMaterializer: {},
-      authorizationSource: {},
-      mcpOauth: {},
-      secretVault: {},
-      isRunnerConnected: () => false,
-      onDeploymentEvent: vi.fn(),
-      onConnectionsChanged: vi.fn(),
-      onRequestsChanged: vi.fn(),
-    } as unknown as IntegrationPlatformTestOptions);
-    const agent = mcp(
-      {
-        store: f.store,
-        integrations: {
-          devices: platform.devices,
-          localServers: platform.localServers,
-          platform,
-        },
-        realtime: { broadcast: vi.fn() },
-      } as unknown as AdministrationDependencies,
-      run.userId,
-    );
-    try {
-      await retryAfterPersonChange(
-        agent,
-        "integration_remove",
-        { target: "account", connectionId },
-        () =>
-          f.database
-            .updateTable("integrationConnections")
-            .set({ status: "connected", displayName: "Person reconnected" })
-            .where("id", "=", connectionId)
-            .execute(),
-        () => store.listMcpOAuthConnections(run.userId),
-        { connectionId: createIntegrationId("connection") },
-      );
-      await retryAfterPersonChange(
-        agent,
-        "integration_remove",
-        { target: "integration", installationId },
-        install,
-        () => store.listInstallations(),
-        { installationId: createIntegrationId("installation") },
-      );
-    } finally {
-      await agent.service.close();
-      await platform.close();
-    }
-  });
-
-  it("revokes an existing integration grant without making another", async ({
-    storeFixture: f,
-  }) => {
-    const run = await f.createRunFixture("admin-integration");
-    const platform = new IntegrationPlatformStore(f.database);
-    const installationId = createIntegrationId("installation");
-    await platform.install({
-      actorUserId: run.userId,
-      adapterSnapshot: null,
-      installation: {
-        id: installationId,
-        description: "Fixture",
-        manifest: {},
-        name: "admin-integration",
-        provenance: {},
-        sourceKind: "built-in",
-        status: "active",
-        title: "Fixture",
-        trust: "administrator-approved",
-        version: null,
-      },
-      requestId: "fixture-install",
-      servers: [],
-    });
-    const grantId = createIntegrationId("grant");
-    await f.database
-      .insertInto("integrationGrants")
-      .values({
-        id: grantId,
-        ownerUserId: run.userId,
-        installationId,
-        connectionId: null,
-        alias: "Fixture",
-        access: "read",
-        isDefault: true,
-        createdBy: run.userId,
-        status: "active",
-      })
-      .execute();
-    const revokeGrant = vi.fn((input: Parameters<typeof platform.revokeGrant>[0]) =>
-      platform.revokeGrant(input),
-    );
-    const agent = mcp(
-      {
-        store: f.store,
-        integrations: { devices: { revokeGrant }, platform: { store: platform } },
-        realtime: { broadcast: vi.fn() },
-      } as unknown as AdministrationDependencies,
-      run.userId,
-    );
-    try {
-      await retryAfterPersonChange(
-        agent,
-        "integration_remove",
-        { target: "grant", grantId },
-        async () => {
-          await f.database
-            .insertInto("integrationGrants")
-            .values({
-              id: createIntegrationId("grant"),
-              ownerUserId: run.userId,
-              installationId,
-              connectionId: null,
-              alias: "Replacement",
-              access: "read",
-              isDefault: true,
-              createdBy: run.userId,
-              status: "active",
-            })
-            .execute();
-        },
-        () => platform.listGrants({ ownerUserId: run.userId }),
-        { grantId: createIntegrationId("grant") },
-      );
-      expect(await platform.listGrants({ ownerUserId: run.userId })).toHaveLength(1);
-      expect(
-        await f.database
-          .selectFrom("integrationGrants")
-          .select(["id", "status", "revokedAt"])
-          .where("id", "=", grantId)
-          .executeTakeFirstOrThrow(),
-      ).toMatchObject({ id: grantId, status: "revoked", revokedAt: expect.any(Date) });
-      expect(await f.database.selectFrom("integrationGrants").select("id").execute()).toHaveLength(
-        2,
-      );
-    } finally {
-      await agent.service.close();
-    }
-  });
 });
