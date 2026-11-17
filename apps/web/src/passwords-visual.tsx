@@ -1,5 +1,6 @@
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import type { PasswordSignInRequestClient } from "./components/thread-password-sign-in-action.js";
+import { localSession } from "./components/use-action.js";
 import "@fontsource-variable/inter/wght.css";
 import "@fontsource-variable/fraunces/wght.css";
 import "@fontsource-variable/fraunces/wght-italic.css";
@@ -198,6 +199,7 @@ function CardsView() {
 /** One sign-in on a Mac that answers as Electron main would and never changes by itself. */
 function cardClient(initial: PasswordSignInCard): PasswordSignInRequestClient {
   return {
+    connection: localSession.connection,
     dispatch: async (command) =>
       command.type === "browser.password-sign-in.respond"
         ? {

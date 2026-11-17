@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { formatBytes } from "../../app-model.js";
 import { formatRelativeTime } from "@opensteer/client/host";
 import type { HostClient } from "@opensteer/client/host";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
 import { Icon } from "../icon.js";
 import {
   machineAccessAuditLabel,
@@ -46,18 +46,20 @@ export function MachineAccessHistory({
       setBusy(true);
       setError(null);
       try {
-        const next = await client.loadMachineAccessHistory({
-          ...(before === undefined ? {} : { before }),
-          limit: historyPageSize,
-          runnerId: machineId,
-        });
+        const next = await act(client, { label: "load earlier sessions", done: "loaded" }, () =>
+          client.loadMachineAccessHistory({
+            ...(before === undefined ? {} : { before }),
+            limit: historyPageSize,
+            runnerId: machineId,
+          }),
+        );
         setPage((current) =>
           before !== undefined && current
             ? { nextCursor: next.nextCursor, sessions: [...current.sessions, ...next.sessions] }
             : { nextCursor: next.nextCursor, sessions: [...next.sessions] },
         );
       } catch (reason) {
-        setError(actionErrorMessage(reason));
+        setError(failureWords(reason));
       } finally {
         setBusy(false);
       }

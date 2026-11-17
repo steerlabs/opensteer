@@ -101,7 +101,7 @@ describe("what a person has written and not sent", () => {
     expect(savedDrafts()).toHaveLength(1);
   });
 
-  it("shows the Host's reason in the composer when it refuses a new task", async () => {
+  it("says beside the composer that a refused task did not start, and keeps the draft", async () => {
     await mount("/");
     await settle();
     vi.spyOn(client, "createThread").mockRejectedValue(
@@ -115,9 +115,8 @@ describe("what a person has written and not sent", () => {
     await click(element(".composer__send"));
     await settle(50);
 
-    expect(element(".composer__error").textContent).toContain(
-      "This folder is on another computer.",
-    );
+    expect(element(".home-start-line").textContent).toBe("Couldn't start this task.");
+    expect(document.body.textContent).not.toContain("This folder is on another computer.");
     expect(composerText(field())).toBe("Start over there");
   });
 
@@ -169,34 +168,7 @@ describe("what a person has written and not sent", () => {
     expect(composerText(field())).toBe("Maybe not");
   });
 
-  it("returns a task refused after leaving to its own draft, and says why there", async () => {
-    await mount("/");
-    await settle();
-    const refused = deferred<void>();
-    vi.spyOn(client, "createThread").mockImplementation(async () => {
-      await refused.promise;
-      throw new HostClientRequestError({
-        code: "forbidden",
-        message: "That is not allowed here.",
-        status: 403,
-      });
-    });
-    await write(field(), "Do the thing");
-    await click(element(".composer__send"));
-    await openTask(firstTaskId());
-    await settle();
-
-    await act(async () => {
-      refused.resolve();
-    });
-    await settle(50);
-
-    await back();
-    expect(composerText(field())).toBe("Do the thing");
-    expect(element(".composer__error").textContent).toContain("That is not allowed here.");
-  });
-
-  it("hands a refused task to the draft reopened before the answer came", async () => {
+  it("keeps a new task's draft in place while it starts, and after a refusal", async () => {
     await mount("/");
     await settle();
     const refused = deferred<void>();
@@ -209,19 +181,18 @@ describe("what a person has written and not sent", () => {
     await openTask(firstTaskId());
     await settle();
     await back();
-    await write(field(), "Written meanwhile");
+    expect(composerText(field())).toBe("Do the thing");
 
     await act(async () => {
       refused.resolve();
     });
     await settle(50);
-    expect(composerText(field())).toBe("Do the thing\nWritten meanwhile");
+    expect(composerText(field())).toBe("Do the thing");
 
-    await write(field(), "Do the thing\nWritten meanwhile, and more");
     const { path, search } = place();
     await remount(`${path}${search}`);
     await settle();
-    expect(composerText(field())).toBe("Do the thing\nWritten meanwhile, and more");
+    expect(composerText(field())).toBe("Do the thing");
   });
 
   it("finishes an upload after leaving, and the file is there on return", async () => {

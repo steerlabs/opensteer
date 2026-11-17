@@ -139,7 +139,7 @@ function NewTaskComposer({
 
   // Not started offline: the draft stays and this line says why, above it.
   const start = useAction(hostClient, {
-    label: "start this task",
+    label: "start",
     done: "started",
     thing: "this task",
     execute: (message: PendingSubmission) => createThreadAndSend(message, selection!, accessMode),

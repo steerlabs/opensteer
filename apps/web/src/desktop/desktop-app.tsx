@@ -45,6 +45,7 @@ import {
 } from "./desktop-deployment-selection.js";
 import { ToastProvider } from "../components/toast.js";
 import { createBrowserHostClient } from "../host/browser-host-client.js";
+import { disposeMessageOutbox } from "@opensteer/client/host";
 import { ConnectionGateView } from "../components/connection-shell.js";
 import { browserClientLifecycle } from "../host/browser-lifecycle.js";
 
@@ -280,7 +281,14 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     hostClient?.connection.getSnapshot ?? noConnectionSnapshot,
     hostClient?.connection.getSnapshot ?? noConnectionSnapshot,
   );
-  useEffect(() => () => hostClient?.dispose(), [hostClient]);
+  useEffect(
+    () => () => {
+      if (!hostClient) return;
+      disposeMessageOutbox(hostClient);
+      hostClient.dispose();
+    },
+    [hostClient],
+  );
 
   const facts = useMemo(
     () => new ComputerFactsStore((computer) => readComputerFacts(bridge, computer)),

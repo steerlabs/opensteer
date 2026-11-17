@@ -6,7 +6,8 @@ import {
   type HarnessSummary,
   type HostClient,
 } from "@opensteer/client/host";
-import { actionErrorMessage } from "../../../ui-utils.js";
+import { outcomeWords, runAction } from "../../use-action.js";
+import { useOptionalShell } from "../../app-shell.js";
 import { Dialog } from "../../dialog.js";
 
 /** The largest limit the Host accepts, so a typo is refused here rather than there. */
@@ -79,6 +80,7 @@ export function ModelSettingsDialog({
   readonly profile: HarnessSummary;
 }) {
   const [query, setQuery] = useState("");
+  const session = useOptionalShell()?.hostClient ?? null;
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   // A save re-reads the server, so the list is the last one it answered with
@@ -126,9 +128,14 @@ export function ModelSettingsDialog({
   const refresh = () => {
     setRefreshing(true);
     setRefreshError(null);
-    onRefresh()
-      .catch((error: unknown) => setRefreshError(actionErrorMessage(error)))
-      .finally(() => setRefreshing(false));
+    void runAction(session, {
+      label: "refresh models",
+      done: "refreshed",
+      execute: onRefresh,
+    }).then((outcome) => {
+      setRefreshError(outcomeWords(outcome));
+      setRefreshing(false);
+    });
   };
 
   return (
@@ -223,6 +230,7 @@ function ModelRow({
   readonly onSave: (settings: HarnessModelSettings | null) => Promise<unknown>;
   readonly override: HarnessModelSettings | undefined;
 }) {
+  const session = useOptionalShell()?.hostClient ?? null;
   const asking = needsContext(model) && override === undefined;
   const [draft, setDraft] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -240,10 +248,15 @@ function ModelRow({
   const commit = (settings: HarnessModelSettings | null) => {
     setSaving(true);
     setError(null);
-    onSave(settings)
-      .then(() => setDraft(null))
-      .catch((cause: unknown) => setError(actionErrorMessage(cause)))
-      .finally(() => setSaving(false));
+    void runAction(session, {
+      label: "save this",
+      done: "saved",
+      execute: () => onSave(settings),
+    }).then((outcome) => {
+      if (outcome.kind === "confirmed") setDraft(null);
+      else setError(outcomeWords(outcome));
+      setSaving(false);
+    });
   };
 
   const submit = (event: FormEvent<HTMLFormElement>) => {

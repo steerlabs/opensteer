@@ -2,7 +2,7 @@ import { useContext, useState, type ReactNode } from "react";
 import type { Request } from "@opensteer/core";
 import { turnOnDeviceAccess } from "@opensteer/client/computers";
 import { mutationIdempotencyKey } from "@opensteer/client/host";
-import { actionErrorMessage } from "../ui-utils.js";
+import { outcomeWords, runAction } from "./use-action.js";
 import { ActionNote } from "./action-rows.js";
 import { useShell } from "./app-shell.js";
 import { useHereId } from "./computers/here.js";
@@ -116,7 +116,7 @@ export function ThreadDeviceAccessAction({
   readonly disabled?: boolean;
   readonly request: Request;
 }) {
-  const { desktopBridge, hostClient, reportActionError, snapshot } = useShell();
+  const { desktopBridge, hostClient, snapshot } = useShell();
   const followUps = useContext(DeviceGrantFollowUpContext);
   const dockThreadId = useContext(DeviceGrantDock);
   const hereId = useHereId();
@@ -132,45 +132,52 @@ export function ThreadDeviceAccessAction({
     setPending("on");
     setError(null);
     let followUp = false;
-    try {
-      // Retained before the write: fulfilling resolves this Request and unmounts it.
-      followUp =
-        onThisMac && desktopBridge !== null
-          ? missingMacosGrant(await readMacosGrants(desktopBridge), access)
-          : false;
-      if (followUp)
-        followUps?.retain({
-          access,
-          deploymentId: snapshot.deploymentId,
-          machineId,
-          machineName,
-          nodeId: request.originatingNodeId ?? null,
-          requestId: request.id,
-          threadId: dockThreadId ?? request.originatingThreadId,
-        });
-      await turnOnDeviceAccess(hostClient, machineId, access);
-    } catch (reason) {
+    const outcome = await runAction(hostClient, {
+      label: "turn this on",
+      done: "turned on",
+      execute: async () => {
+        // Retained before the write: fulfilling resolves this Request and unmounts it.
+        followUp =
+          onThisMac && desktopBridge !== null
+            ? missingMacosGrant(await readMacosGrants(desktopBridge), access)
+            : false;
+        if (followUp)
+          followUps?.retain({
+            access,
+            deploymentId: snapshot.deploymentId,
+            machineId,
+            machineName,
+            nodeId: request.originatingNodeId ?? null,
+            requestId: request.id,
+            threadId: dockThreadId ?? request.originatingThreadId,
+          });
+        await turnOnDeviceAccess(hostClient, machineId, access);
+      },
+    });
+    if (outcome.kind !== "confirmed") {
       if (followUp) followUps?.release(request.id);
-      setError(actionErrorMessage(reason));
-    } finally {
-      setPending(null);
+      setError(outcomeWords(outcome));
     }
+    setPending(null);
   }
 
   async function decline() {
     if (pending || disabled) return;
     setPending("decline");
     setError(null);
-    try {
-      await hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
-        requestId: request.id,
-        response: { kind: "external", value: { decision: "declined" } },
-        type: "request.respond",
-      });
-    } catch (reason) {
-      setError(actionErrorMessage(reason));
-      reportActionError(reason);
+    const outcome = await runAction(hostClient, {
+      label: "answer this request",
+      done: "sent",
+      execute: () =>
+        hostClient.dispatch({
+          idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
+          requestId: request.id,
+          response: { kind: "external", value: { decision: "declined" } },
+          type: "request.respond",
+        }),
+    });
+    if (outcome.kind !== "confirmed") {
+      setError(outcomeWords(outcome));
       setPending(null);
     }
   }

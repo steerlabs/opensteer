@@ -55,7 +55,7 @@ import { setupPath } from "./components/workspace/navigation.js";
 import { SetupPage } from "./components/first-run/setup-page.js";
 import { ToastProvider } from "./components/toast.js";
 import { DesktopUpdateFeedback } from "./components/desktop-update-button.js";
-import { actionErrorMessage } from "./ui-utils.js";
+import { outcomeWords, runAction } from "./components/use-action.js";
 import { shouldAutoStartOidc } from "./account/auto-oidc.js";
 import { IntegrationAuthorizationCompletion } from "./components/integration-authorization-completion.js";
 import { DevicePage } from "./components/devices/device-page.js";
@@ -186,16 +186,20 @@ export function App({
     let cancelled = false;
     setSetupAdmission("exchanging");
     setSetupExchangeError(null);
-    void hostClient.rpc["auth.setup.exchange"]({ token: setupToken.trim() })
-      .then(unwrapRpcResult)
-      .then(() => {
-        if (!cancelled) setSetupAdmission("admitted");
-      })
-      .catch((error: unknown) => {
-        if (cancelled) return;
-        setSetupExchangeError(actionErrorMessage(error));
-        setSetupAdmission("rejected");
-      });
+    // Before sign-in there is no session to be unready: these go straight out.
+    void runAction(null, {
+      label: "check this setup link",
+      execute: async () =>
+        unwrapRpcResult(await hostClient.rpc["auth.setup.exchange"]({ token: setupToken.trim() })),
+    }).then((outcome) => {
+      if (cancelled) return;
+      if (outcome.kind === "confirmed") {
+        setSetupAdmission("admitted");
+        return;
+      }
+      setSetupExchangeError(outcomeWords(outcome));
+      setSetupAdmission("rejected");
+    });
     return () => {
       cancelled = true;
     };
@@ -220,44 +224,48 @@ export function App({
   async function signIn(input: PasswordSignInInput) {
     setOnboardingError(null);
     setOnboardingPending(true);
-    try {
-      const { redirectUrl } = unwrapRpcResult(
-        await hostClient.rpc["auth.password.signIn"]({
-          email: input.email.trim(),
-          ...(nativeOAuthQuery ? { oauthQuery: nativeOAuthQuery } : {}),
-          password: input.password,
-        }),
-      );
-      if (redirectUrl) window.location.assign(redirectUrl);
-      else await hostClient.refresh();
-    } catch (error) {
+    const outcome = await runAction(null, {
+      label: "sign in",
+      execute: async () => {
+        const { redirectUrl } = unwrapRpcResult(
+          await hostClient.rpc["auth.password.signIn"]({
+            email: input.email.trim(),
+            ...(nativeOAuthQuery ? { oauthQuery: nativeOAuthQuery } : {}),
+            password: input.password,
+          }),
+        );
+        if (redirectUrl) window.location.assign(redirectUrl);
+        else await hostClient.refresh();
+      },
+    });
+    setOnboardingPending(false);
+    const words = outcomeWords(outcome);
+    if (words)
       setOnboardingError(
         nativeOAuthQuery
-          ? `${actionErrorMessage(error)} You can close this browser and start sign-in again in the Opensteer app.`
-          : actionErrorMessage(error),
+          ? `${words} You can close this browser and start sign-in again in the Opensteer app.`
+          : words,
       );
-    } finally {
-      setOnboardingPending(false);
-    }
   }
 
   async function claimInitialOwner(input: InitialOwnerClaimInput) {
     setOnboardingError(null);
     setOnboardingPending(true);
-    try {
-      unwrapRpcResult(
-        await hostClient.rpc["auth.setup.claim"]({
-          email: input.email.trim(),
-          kind: "password",
-          password: input.password,
-        }),
-      );
-      await hostClient.refresh();
-    } catch (error) {
-      setOnboardingError(actionErrorMessage(error));
-    } finally {
-      setOnboardingPending(false);
-    }
+    const outcome = await runAction(null, {
+      label: "create this account",
+      execute: async () => {
+        unwrapRpcResult(
+          await hostClient.rpc["auth.setup.claim"]({
+            email: input.email.trim(),
+            kind: "password",
+            password: input.password,
+          }),
+        );
+        await hostClient.refresh();
+      },
+    });
+    setOnboardingPending(false);
+    setOnboardingError(outcomeWords(outcome));
   }
 
   async function admitInitialOwner(token: string) {
@@ -269,24 +277,28 @@ export function App({
   async function startOidc(providerId: string, automatic = false) {
     setOnboardingError(null);
     setOnboardingPending(true);
-    try {
-      const navigated = await startHostOidcSignIn({
-        desktopBridge,
-        deploymentId: desktopDeployment?.id ?? null,
-        hostClient,
-        navigate: (url) => window.location.assign(url),
-        oauthQuery: nativeOAuthQuery,
-        providerId,
-      });
-      if (!navigated) setOnboardingPending(false);
-    } catch (error) {
-      if (automatic) {
-        recordAutoOidcAttempt();
-        setAutoOidcSuppressed(true);
-      }
-      setOnboardingError(actionErrorMessage(error));
-      setOnboardingPending(false);
+    const outcome = await runAction(null, {
+      label: "sign in",
+      execute: () =>
+        startHostOidcSignIn({
+          desktopBridge,
+          deploymentId: desktopDeployment?.id ?? null,
+          hostClient,
+          navigate: (url) => window.location.assign(url),
+          oauthQuery: nativeOAuthQuery,
+          providerId,
+        }),
+    });
+    if (outcome.kind === "confirmed") {
+      if (!outcome.value) setOnboardingPending(false);
+      return;
     }
+    if (automatic) {
+      recordAutoOidcAttempt();
+      setAutoOidcSuppressed(true);
+    }
+    setOnboardingError(outcomeWords(outcome));
+    setOnboardingPending(false);
   }
 
   // An authorization that failed before anyone could act on it. It reports

@@ -6,7 +6,6 @@ import type {
 } from "@opensteer/client/host";
 import type { HarnessSetupMethod, HostApiCommandInput } from "@opensteer/protocol";
 import { copyText } from "@opensteer/shared/clipboard";
-import { actionErrorMessage } from "../ui-utils.js";
 import { Dialog } from "./dialog.js";
 import { ExternalLink } from "./external-link.js";
 import { Icon } from "./icon.js";
@@ -132,7 +131,7 @@ export function AccountSignInDialog({
         setOpened(true);
         setOpenError(null);
       }}
-      onOpenError={(reason) => setOpenError(actionErrorMessage(reason))}
+      onOpenError={() => setOpenError("Couldn’t open this page. Try again.")}
       {...(primary ? { ref: primaryRef } : {})}
     >
       {label}

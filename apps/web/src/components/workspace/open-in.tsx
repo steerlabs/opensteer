@@ -11,7 +11,7 @@ import {
   type StartPageProfileChoice,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, toastFailure } from "../use-action.js";
 import { DeviceLabel } from "../computers/device-label.js";
 import { useHereId } from "../computers/here.js";
 import { SurfaceSubmenuRow } from "../surface-submenu-row.js";
@@ -50,19 +50,20 @@ export function useOpenPageIn(hostClient: HostClient) {
         return;
       }
       const show = nav.beginPlaceOperation();
-      void hostClient
-        .openTab(
+      void act(hostClient, { label: "open this page", done: "opened" }, () =>
+        hostClient.openTab(
           pageOpenTarget(
             newTabTarget(hostClient.getSnapshot(), profile.identity, hereId),
             parsed.url,
             hostClient.getSnapshot().machines,
           ),
-        )
+        ),
+      )
         .then((tab) => {
           show({ kind: "tab", tabId: tab.tabId });
           toast.success(`Opened in ${profile.presentation.name} · the original stays`);
         })
-        .catch((error: unknown) => toast.error(actionErrorMessage(error)));
+        .catch((error: unknown) => toastFailure(toast)(error));
     },
     [hereId, hostClient, nav, toast],
   );

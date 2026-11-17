@@ -134,13 +134,7 @@ export function DevicesSection() {
           </ul>
         </section>
       ) : null}
-      <SettingsError
-        message={
-          error ??
-          (sessions.error ? actionErrorMessage(sessions.error) : null) ??
-          (overview.error ? actionErrorMessage(overview.error) : null)
-        }
-      />
+      <SettingsError message={error ?? sessions.error ?? overview.error} />
       {view.otherDevices.length > 0 ? <OtherDevices devices={view.otherDevices} /> : null}
       {adding ? <AddDeviceDialog homeName={homeName} onClose={() => setAdding(false)} /> : null}
     </>

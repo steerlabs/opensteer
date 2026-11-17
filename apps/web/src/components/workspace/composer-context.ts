@@ -19,7 +19,7 @@ import {
   placeContentLabel,
   type PlaceContentPart,
 } from "@opensteer/core";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
 import { composerDrafts } from "../composer-drafts.js";
 import { destinationPlaceKey } from "./navigation.js";
 import { placeEnded, samePlaceEndSource } from "./place-succession.js";
@@ -322,7 +322,9 @@ export function useComposerContext({
       const stillWaiting = () =>
         draft === generationRef.current &&
         (frozenRef.current?.some((chip) => chip.key === place.key && chip.pending) ?? false);
-      void placePart(hostClient, place).then(
+      void act(hostClient, { label: "add this", done: "added" }, () =>
+        placePart(hostClient, place),
+      ).then(
         async (part) => {
           if (!stillWaiting()) return;
           const chip = chipFor(place, part, null);
@@ -344,7 +346,7 @@ export function useComposerContext({
           hold(
             (frozenRef.current ?? []).filter((chip) => !(chip.key === place.key && chip.pending)),
           );
-          setError(actionErrorMessage(cause));
+          setError(failureWords(cause));
         },
       );
     },

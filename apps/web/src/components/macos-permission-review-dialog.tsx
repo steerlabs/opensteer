@@ -7,7 +7,7 @@ import {
 } from "@opensteer/client/host";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { useState } from "react";
-import { actionErrorMessage } from "../ui-utils.js";
+import { outcomeWords, runAction } from "./use-action.js";
 import { Dialog } from "./dialog.js";
 import { Icon } from "./icon.js";
 
@@ -26,7 +26,8 @@ export function MacOsPermissionReviewDialog({
   readonly bridge: Pick<OpensteerDesktopBridge, "requestFullDiskAccess">;
   readonly cancelLabel?: "Cancel" | typeof fullAccessDeclineLabel;
   readonly onClose: () => void;
-  readonly onError?: (error: unknown) => void;
+  /** Told what to say when System Settings could not be opened. */
+  readonly onError?: (words: string | null) => void;
 }) {
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -34,14 +35,18 @@ export function MacOsPermissionReviewDialog({
   async function openSettings() {
     setOpening(true);
     setError(null);
-    try {
-      await bridge.requestFullDiskAccess();
+    const outcome = await runAction(null, {
+      label: "open System Settings",
+      done: "opened",
+      execute: () => bridge.requestFullDiskAccess(),
+    });
+    if (outcome.kind === "confirmed") {
       onClose();
-    } catch (reason) {
-      setError(actionErrorMessage(reason));
-      onError?.(reason);
-      setOpening(false);
+      return;
     }
+    setError(outcomeWords(outcome));
+    onError?.(outcomeWords(outcome));
+    setOpening(false);
   }
 
   const context =

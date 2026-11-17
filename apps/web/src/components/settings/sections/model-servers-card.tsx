@@ -16,7 +16,7 @@ import {
   type HostClient,
   type ModelServerEngine,
 } from "@opensteer/client/host";
-import { actionErrorMessage } from "../../../ui-utils.js";
+import { outcomeWords, runAction, runRead } from "../../use-action.js";
 import { Dialog } from "../../dialog.js";
 import { Icon } from "../../icon.js";
 import { SegmentedControl } from "../../segmented-control.js";
@@ -76,18 +76,18 @@ export function ModelServersCard({
   const lookAgain = useCallback(() => {
     const current = ++generation.current;
     setDiscovery({ kind: "looking" });
-    void client.rpc["harness.modelServers.discover"]({ environmentId })
-      .then(unwrapRpcResult)
-      .then(
-        ({ servers }) => {
-          if (current === generation.current) setDiscovery({ kind: "found", servers });
-        },
-        (error: unknown) => {
-          if (current === generation.current) {
-            setDiscovery({ kind: "failed", message: actionErrorMessage(error) });
-          }
-        },
+    void runRead(client, {
+      resource: "model servers",
+      read: async () =>
+        unwrapRpcResult(await client.rpc["harness.modelServers.discover"]({ environmentId })),
+    }).then((result) => {
+      if (current !== generation.current) return;
+      setDiscovery(
+        result.ok
+          ? { kind: "found", servers: result.value.servers }
+          : { kind: "failed", message: result.words ?? "" },
       );
+    });
   }, [client, environmentId]);
 
   useEffect(() => {
@@ -287,23 +287,28 @@ function AddModelServerDialog({
     if (serverAddressProblem(address) !== null) return;
     setCheck({ address: baseUrl, kind: "checking" });
     setNamed("generic");
-    void client.rpc["harness.modelServers.discover"]({
-      address: baseUrl,
-      environmentId: environment.id,
-    })
-      .then(unwrapRpcResult)
-      .then(
-        ({ servers }) => {
-          const answer = servers[0];
-          setCheck(
-            answer
-              ? { address: baseUrl, kind: "found", server: answer }
-              : { address: baseUrl, kind: "failed", message: "The server did not answer." },
-          );
-        },
-        (error: unknown) =>
-          setCheck({ address: baseUrl, kind: "failed", message: actionErrorMessage(error) }),
+    void runAction(client, {
+      label: "check this server",
+      done: "checked",
+      execute: async () =>
+        unwrapRpcResult(
+          await client.rpc["harness.modelServers.discover"]({
+            address: baseUrl,
+            environmentId: environment.id,
+          }),
+        ),
+    }).then((outcome) => {
+      const answer = outcome.kind === "confirmed" ? outcome.value.servers[0] : undefined;
+      setCheck(
+        answer
+          ? { address: baseUrl, kind: "found", server: answer }
+          : {
+              address: baseUrl,
+              kind: "failed",
+              message: outcomeWords(outcome) ?? "The server did not answer.",
+            },
       );
+    });
   };
 
   return (

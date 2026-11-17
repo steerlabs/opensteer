@@ -1,3 +1,4 @@
+import { runAction, toastOutcome } from "./use-action.js";
 import { NeedsYouList } from "./needs-you-list.js";
 import { placeByKey } from "@opensteer/client/host";
 import type { TabGroupColor, TabId } from "@opensteer/core";
@@ -70,7 +71,7 @@ import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.
 import { Icon } from "./icon.js";
 import { Popover } from "./popover.js";
 import { createPortal } from "react-dom";
-import { actionErrorMessage, fromLivePage } from "../ui-utils.js";
+import { fromLivePage } from "../ui-utils.js";
 import { useToast } from "./toast.js";
 import { setAsideStagedFiles } from "./attachments/use-staged-attachments.js";
 import {
@@ -230,10 +231,13 @@ export function Sidebar({
     motion,
     move: (move) => {
       const input = organizeInput(move, layout);
+      // The drag is over by the answer, so only a toast is left to say it didn't move.
       if (input)
-        void hostClient
-          .organizeTabs(input)
-          .catch((error: unknown) => toast.error(actionErrorMessage(error)));
+        void runAction(hostClient, {
+          label: "move this tab",
+          done: "moved",
+          execute: () => hostClient.organizeTabs(input),
+        }).then(toastOutcome(toast));
     },
     announce: (words) => {
       if (announcer.current) announcer.current.textContent = words;

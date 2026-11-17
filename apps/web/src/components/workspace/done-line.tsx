@@ -10,7 +10,7 @@ import type { QuietTaskDays } from "@opensteer/core";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { useToast } from "../toast.js";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
 import { TaskMark } from "./task-mark.js";
 
 /** At most this many tasks move back at once, so a long list does not flood a slow link. */
@@ -186,7 +186,9 @@ function QuietMovedCard({
       Array.from({ length: Math.min(moveBackConcurrency, queue.length) }, async () => {
         for (let row = queue.shift(); row; row = queue.shift()) {
           try {
-            await hostClient.setTaskDone(row.threadId, false);
+            await act(hostClient, { label: "move this task back", done: "moved back" }, () =>
+              hostClient.setTaskDone(row.threadId, false),
+            );
             onMovedBack(row.threadId);
           } catch (error) {
             failure ??= error;
@@ -199,7 +201,8 @@ function QuietMovedCard({
       for (const { threadId } of targets) next.delete(threadId);
       return next;
     });
-    if (failure) toast.error(actionErrorMessage(failure));
+    const words = failureWords(failure);
+    if (words) toast.error(words);
   };
   return (
     <div className="quiet-moved">

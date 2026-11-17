@@ -9,7 +9,7 @@ import {
   type BrowserProfileSettingsRow,
   type ProfileHomeChoice,
 } from "@opensteer/client/host";
-import { actionErrorMessage } from "../../../ui-utils.js";
+import { act, failureWords } from "../../use-action.js";
 import { useShell } from "../../app-shell.js";
 import { DeviceLabel } from "../../computers/device-label.js";
 import { useHereId } from "../../computers/here.js";
@@ -107,15 +107,16 @@ function NewProfileForm({
     if (!trimmed || pending) return;
     setPending(true);
     setError(null);
-    void hostClient
-      .dispatch({
+    void act(hostClient, { label: "create this profile", done: "created" }, () =>
+      hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey("browser-profile"),
         input: { name: trimmed, ...(home ? { homeRunnerId: home } : {}) },
         type: "browser.profile.create",
-      })
+      }),
+    )
       .then(onDone)
       .catch((reason: unknown) => {
-        setError(actionErrorMessage(reason));
+        setError(failureWords(reason));
         setPending(false);
       });
   };
@@ -199,9 +200,9 @@ function BrowserProfileRow({ row }: { readonly row: BrowserProfileSettingsRow })
   const run = (key: string, action: () => Promise<unknown>, then?: () => void) => {
     setPending(key);
     setError(null);
-    void action()
+    void act(hostClient, { label: "change this profile", done: "changed" }, action)
       .then(then)
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+      .catch((reason: unknown) => setError(failureWords(reason)))
       .finally(() => setPending(null));
   };
   const choose = (next: typeof mode) => {

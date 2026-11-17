@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { DeploymentAccessSnapshot, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
-import { actionErrorMessage } from "../ui-utils.js";
+import { outcomeWords, runAction } from "./use-action.js";
 import { Icon } from "./icon.js";
 
 interface DeploymentOperationPresentation {
@@ -81,10 +81,13 @@ export function DeploymentOperationBanner({
     if (pending) return;
     setPending(kind);
     setError(null);
-    void run().catch((reason: unknown) => {
-      setError(actionErrorMessage(reason));
-      setPending(null);
-    });
+    void runAction(null, { label: kind === "cancel" ? "cancel this" : kind, execute: run }).then(
+      (outcome) => {
+        if (outcome.kind === "confirmed") return;
+        setError(outcomeWords(outcome));
+        setPending(null);
+      },
+    );
   };
 
   return (

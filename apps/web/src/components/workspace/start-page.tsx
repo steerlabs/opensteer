@@ -17,7 +17,6 @@ import { useNavigate } from "react-router";
 import { z } from "zod";
 import { DeviceIdSchema } from "@opensteer/core";
 import {
-  HostClientRequestError,
   approvedAppTarget,
   newTabTarget,
   pageOpenTarget,
@@ -45,7 +44,9 @@ import {
 import { useHostSelector, usePlaceList } from "@opensteer/client/react";
 import { computerGlyph, orderDevices } from "@opensteer/client/computers";
 import type { ApprovedComputerApp, OwnerWindowInfo } from "@opensteer/protocol";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { classifyClientFailure } from "@opensteer/client/connections";
+import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
+import { act, failureWords } from "../use-action.js";
 import { AppMark } from "../computer-apps/app-icons.js";
 import { computerIcon } from "../computers/device-art.js";
 import { DeviceLabel } from "../computers/device-label.js";
@@ -136,7 +137,7 @@ export function openWorkspaceWebLink(
     // The start page explains a refusal and offers its way through (a computer, a profile);
     // an outcome it cannot know is never repeated, only kept for the person to send again.
     (error: unknown) =>
-      show.launcher({ address: url, open: error instanceof HostClientRequestError }),
+      show.launcher({ address: url, open: classifyClientFailure(error).kind === "rejection" }),
   );
 }
 
@@ -358,7 +359,11 @@ export const StartPage = memo(function StartPage({
   const fail = (error: unknown, result: StartPageResult) => {
     // Closing the opening tab is the person's choice, not a refusal to explain.
     if (!mounted.current || (error instanceof Error && error.name === "AbortError")) return;
-    const reason = error instanceof HostClientRequestError ? error.reason : undefined;
+    // The start page words the Host's refusals itself; anything else is the shared presenter's.
+    const failure = classifyClientFailure(error);
+    const reason = failure.kind === "rejection" ? failure.reason : undefined;
+    const issue = clientIssue(error, { operation: "action", label: "open this" });
+    const words = issue ? presentClientIssue(issue).title : "";
     const name = selected.presentation.name;
     if (reason === "browser-placement-ambiguous")
       setRefusal({
@@ -369,7 +374,7 @@ export const StartPage = memo(function StartPage({
     else if (reason === "browser-profile-home-unavailable")
       setRefusal({
         kind: "message",
-        text: profileAwayWords(selected) ?? actionErrorMessage(error),
+        text: profileAwayWords(selected) ?? words,
         pick: true,
       });
     else if (reason === "browser-placement-unavailable")
@@ -399,7 +404,7 @@ export const StartPage = memo(function StartPage({
           target: result.title,
         }),
       });
-    else setRefusal({ kind: "message", text: actionErrorMessage(error) });
+    else setRefusal({ kind: "message", text: words });
   };
 
   const run = async (
@@ -796,9 +801,11 @@ export const StartPage = memo(function StartPage({
             <button
               className="picker__row"
               onClick={() => {
-                void hostClient.browserHistory.clear(profileId).catch((error: unknown) => {
+                void act(hostClient, { label: "clear recent sites", done: "cleared" }, () =>
+                  hostClient.browserHistory.clear(profileId),
+                ).catch((error: unknown) => {
                   if (mounted.current)
-                    setRefusal({ kind: "message", text: actionErrorMessage(error) });
+                    setRefusal({ kind: "message", text: failureWords(error) ?? "" });
                 });
                 setRecentMenu(null);
                 inputRef.current?.focus();

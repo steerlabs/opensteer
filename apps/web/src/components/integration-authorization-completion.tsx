@@ -5,7 +5,7 @@ import {
   integrationAuthorizationError,
   waitForIntegrationAuthorization,
 } from "@opensteer/client/integrations";
-import { actionErrorMessage } from "../ui-utils.js";
+import { outcomeWords, runAction } from "./use-action.js";
 import { ErrorNotice, OnboardingCard } from "./onboarding-card.js";
 
 type CompletionState =
@@ -54,17 +54,19 @@ export function IntegrationAuthorizationCompletion({
     }
     const controller = new AbortController();
     setState({ kind: "checking" });
-    void waitForIntegrationAuthorization({ attemptId, client, signal: controller.signal })
-      .then((status) => {
-        if (controller.signal.aborted) return;
-        const error = integrationAuthorizationError(status.status, status.failureCode);
-        setState(error ? { kind: "terminal-error", message: error } : { kind: "completed" });
-      })
-      .catch((reason: unknown) => {
-        if (!controller.signal.aborted) {
-          setState({ kind: "read-error", message: actionErrorMessage(reason) });
-        }
-      });
+    void runAction(null, {
+      label: "check this authorization",
+      execute: () =>
+        waitForIntegrationAuthorization({ attemptId, client, signal: controller.signal }),
+    }).then((outcome) => {
+      if (controller.signal.aborted) return;
+      if (outcome.kind !== "confirmed") {
+        setState({ kind: "read-error", message: outcomeWords(outcome) ?? "" });
+        return;
+      }
+      const error = integrationAuthorizationError(outcome.value.status, outcome.value.failureCode);
+      setState(error ? { kind: "terminal-error", message: error } : { kind: "completed" });
+    });
     return () => controller.abort();
   }, [attemptId, client, integrationAttempt, retry]);
 

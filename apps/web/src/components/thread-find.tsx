@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ThreadMessagePage } from "@opensteer/protocol";
 import { formatRelativeTime, messageAuthorName, type HostClient } from "@opensteer/client/host";
-import { actionErrorMessage } from "../ui-utils.js";
+import { outcomeWords, runAction } from "./use-action.js";
 import { messageText } from "./attachments/attachment-parts.js";
 import { Icon } from "./icon.js";
 
@@ -61,31 +61,36 @@ export function ThreadFind({ client, onClose, onJump, threadId }: ThreadFindProp
     }
     setSearching(true);
     setError(null);
-    try {
-      const page = await client.searchThreadMessages({
-        query: trimmed.slice(0, queryLimit),
-        threadId,
-        ...(before ? { before } : {}),
-      });
-      setResults((current) => (before && current ? [...current, ...page.messages] : page.messages));
-      setNextBefore(page.window.nextBefore ?? null);
-    } catch (searchError) {
-      setError(actionErrorMessage(searchError));
-    } finally {
-      setSearching(false);
+    const outcome = await runAction(client, {
+      label: "search this task",
+      done: "searched",
+      execute: () =>
+        client.searchThreadMessages({
+          query: trimmed.slice(0, queryLimit),
+          threadId,
+          ...(before ? { before } : {}),
+        }),
+    });
+    setSearching(false);
+    if (outcome.kind !== "confirmed") {
+      setError(outcomeWords(outcome));
+      return;
     }
+    const page = outcome.value;
+    setResults((current) => (before && current ? [...current, ...page.messages] : page.messages));
+    setNextBefore(page.window.nextBefore ?? null);
   };
 
   const jump = async (messageId: string) => {
     setJumpingId(messageId);
     setError(null);
-    try {
-      await onJump(messageId);
-    } catch (jumpError) {
-      setError(actionErrorMessage(jumpError));
-    } finally {
-      setJumpingId(null);
-    }
+    const outcome = await runAction(client, {
+      label: "open this message",
+      done: "opened",
+      execute: () => onJump(messageId),
+    });
+    setJumpingId(null);
+    setError(outcomeWords(outcome));
   };
 
   /** Up and down walk the results without leaving the query field. */

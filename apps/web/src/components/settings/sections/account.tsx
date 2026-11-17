@@ -4,7 +4,7 @@ import type {
   DesktopAccountAuthStatus,
 } from "@opensteer/protocol/desktop";
 import { accountPortalHref } from "../../../portal/account-portal.js";
-import { actionErrorMessage } from "../../../ui-utils.js";
+import { outcomeWords, runAction } from "../../use-action.js";
 import { useShell } from "../../app-shell.js";
 import { deploymentMutationsBlockedReason } from "../../deployment-operation.js";
 import { SignOutDialog } from "../../places/place-account.js";
@@ -82,10 +82,12 @@ function AccountSessionRow({
     }
     setPending(true);
     setError(null);
-    void desktopBridge
-      .signIn()
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
-      .finally(() => setPending(false));
+    void runAction(null, { label: "sign in", execute: () => desktopBridge.signIn() }).then(
+      (outcome) => {
+        setError(outcomeWords(outcome));
+        setPending(false);
+      },
+    );
   }
 
   const copy =

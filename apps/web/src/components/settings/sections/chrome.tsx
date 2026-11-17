@@ -11,7 +11,7 @@ import type {
   BrowserSourcesState,
   BrowserSourceSummary,
 } from "@opensteer/protocol/browser-sources";
-import { actionErrorMessage } from "../../../ui-utils.js";
+import { act, failureWords, runRead } from "../../use-action.js";
 import { useShell } from "../../app-shell.js";
 import { ConnectChrome } from "../../chrome/connect-chrome.js";
 import { useShellChromeEnvironment } from "../../chrome/use-shell-chrome-environment.js";
@@ -35,12 +35,12 @@ export function ChromeSection() {
   const toast = useToast();
 
   const load = useCallback(async () => {
-    try {
-      setState(unwrapRpcResult(await hostClient.rpc["browser.sources.get"]({})));
-      setError(null);
-    } catch (reason) {
-      setError(actionErrorMessage(reason));
-    }
+    const result = await runRead(hostClient, {
+      resource: "your Chromes",
+      read: async () => unwrapRpcResult(await hostClient.rpc["browser.sources.get"]({})),
+    });
+    if (result.ok) setState(result.value);
+    setError(result.ok ? null : result.words);
   }, [hostClient]);
 
   // Online and last seen change without anyone touching this page.
@@ -172,16 +172,17 @@ function ChromeProfileRow({
     }
     setPending(true);
     setError(null);
-    void hostClient
-      .dispatch({
+    void act(hostClient, { label: "rename this Chrome", done: "renamed" }, () =>
+      hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`browser-source-rename:${source.id}`),
         name,
         sourceId: source.id,
         type: "browser.source.rename",
-      })
+      }),
+    )
       .then(onChanged)
       .then(close)
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+      .catch((reason: unknown) => setError(failureWords(reason)))
       .finally(() => setPending(false));
   };
 
@@ -189,18 +190,19 @@ function ChromeProfileRow({
     if (pending) return;
     setPending(true);
     setError(null);
-    void hostClient
-      .dispatch({
+    void act(hostClient, { label: "disconnect this Chrome", done: "disconnected" }, () =>
+      hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`browser-source-revoke:${source.id}`),
         sourceId: source.id,
         type: "browser.source.revoke",
-      })
+      }),
+    )
       .then(() => {
         toast.success(`Disconnected ${source.name}.`);
         return onChanged();
       })
       .catch((reason: unknown) => {
-        setError(actionErrorMessage(reason));
+        setError(failureWords(reason));
         setPending(false);
       });
   };
@@ -336,17 +338,18 @@ function AllowedSites({
     if (pending) return;
     setPending(grant.site);
     setError(null);
-    void hostClient
-      .dispatch({
+    void act(hostClient, { label: "remove this site", done: "removed" }, () =>
+      hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`browser-site-remove:${grant.site}`),
         site: grant.site,
         type: "browser.site.remove",
-      })
+      }),
+    )
       .then(() => {
         toast.success(`${browserSiteLabel(grant.site)} removed.`);
         return onChanged();
       })
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+      .catch((reason: unknown) => setError(failureWords(reason)))
       .finally(() => setPending(null));
   };
 

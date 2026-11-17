@@ -10,7 +10,13 @@ import {
 } from "react-router";
 import { afterEach, beforeAll, vi } from "vitest";
 import { MockHostClient, type MockHostClientOptions } from "@opensteer/client/mock";
-import { type HostClient, placeList, type PlaceItem } from "@opensteer/client/host";
+import {
+  createMessageOutboxStorage,
+  initializeMessageOutbox,
+  placeList,
+  type HostClient,
+  type PlaceItem,
+} from "@opensteer/client/host";
 
 import { AppShell } from "../app-shell.js";
 import { AutomationDetailPage } from "../automations/automation-detail.js";
@@ -172,6 +178,19 @@ async function mount(
       ...(options.now ? { now: options.now } : {}),
     });
     await client.load();
+    const records = new Map<string, string>();
+    initializeMessageOutbox(client, {
+      storage: createMessageOutboxStorage({
+        read: async (key) => records.get(key) ?? null,
+        write: async (key, value) => {
+          records.set(key, value);
+        },
+        remove: async (key) => {
+          records.delete(key);
+        },
+      }),
+      drafts: { restore: async () => "restored" },
+    });
   }
   const entry = typeof path === "function" ? path(client) : path;
   sessionClient = options.hostClient?.(client) ?? null;
@@ -266,7 +285,7 @@ async function mount(
                     element={
                       <AppShell
                         hostClient={sessionClient ?? client}
-                       
+
                         {...options.shell}
                       />
                     }

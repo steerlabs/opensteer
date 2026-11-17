@@ -40,7 +40,7 @@ import {
   type HostClient,
   type ThreadPlacementOption,
 } from "@opensteer/client/host";
-import { actionErrorMessage } from "../../../ui-utils.js";
+import { outcomeWords, runAction } from "../../use-action.js";
 import type { AddHarnessAccount } from "../../account-sign-in-dialog.js";
 import { useShell } from "../../app-shell.js";
 import { Icon } from "../../icon.js";
@@ -316,10 +316,11 @@ export function AiEngineSettings({
   /** Runs one profile operation with shared pending/error handling. */
   const run = (key: string, operation: () => Promise<unknown>, onDone?: () => void) => {
     setPending(key);
-    void operation()
-      .then(() => onDone?.())
-      .catch((error: unknown) => onError(actionErrorMessage(error)))
-      .finally(() => setPending(null));
+    void runAction(client, { label: "change this account", execute: operation }).then((outcome) => {
+      if (outcome.kind === "confirmed") onDone?.();
+      else onError(outcomeWords(outcome) ?? "");
+      setPending(null);
+    });
   };
 
   const createRequest = (

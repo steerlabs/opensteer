@@ -1,9 +1,10 @@
+import { act, toastFailure } from "../use-action.js";
 import { useEffect, useRef } from "react";
 import type { DesktopPersonalTabCommand } from "@opensteer/protocol/desktop";
 import { desktopBridge } from "../../desktop/desktop-bridge.js";
 import { useLocation } from "react-router";
 import { tabAtShortcut, tabBeside, taskList, type HostClient } from "@opensteer/client/host";
-import { actionErrorMessage, fromLivePage } from "../../ui-utils.js";
+import { fromLivePage } from "../../ui-utils.js";
 import { Dialog } from "../dialog.js";
 import { destinationPlaceKey, taskAt } from "./navigation.js";
 import { useTabCloser } from "./tab-closer.js";
@@ -54,10 +55,9 @@ export function useWorkspaceShortcuts({
           return;
         case "reopen-closed-tab": {
           const show = nav.beginPlaceOperation();
-          void hostClient.reopenTab().then(
-            (tab) => show({ kind: "tab", tabId: tab.tabId }),
-            (error: unknown) => toast.error(actionErrorMessage(error)),
-          );
+          void act(hostClient, { label: "reopen the tab", done: "reopened" }, () =>
+            hostClient.reopenTab(),
+          ).then((tab) => show({ kind: "tab", tabId: tab.tabId }), toastFailure(toast));
           return;
         }
         case "close-tab": {

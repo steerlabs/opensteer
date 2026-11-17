@@ -171,11 +171,14 @@ describe("App automatic OIDC sign-in", () => {
 
     expect(renderApp(client)).toContain("Signing you in…");
     await runEffectsTwice();
+    await vi.waitFor(
+      () => expect(renderApp(client), "manual sign-in never came back").toContain("Welcome back"),
+      { timeout: 1_000 },
+    );
     const markup = renderApp(client);
 
     expect(beginOidcSignIn).toHaveBeenCalledTimes(1);
     expect(browser.assign).not.toHaveBeenCalled();
-    expect(markup).toContain("Welcome back");
     expect(markup).toContain("Couldn&#x27;t confirm this change.");
     expect(browser.values.get("opensteer.oidc.auto-attempt")).toBeDefined();
   });

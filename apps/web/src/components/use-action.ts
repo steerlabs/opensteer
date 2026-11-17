@@ -5,6 +5,7 @@ import {
 } from "@opensteer/client/actions";
 import type { ClientConnectionState, ClientSession } from "@opensteer/client/connections";
 import {
+  clientIssue,
   clientIssueActions,
   presentClientIssue,
   type ClientIssue,
@@ -138,4 +139,122 @@ export function actionLine(issue: ClientIssue, check: (() => void) | null): Acti
         ? { label: clientIssueActions.check, onPress: check }
         : null,
   };
+}
+
+/**
+ * Runs one action through the shared action owner, for a flow whose own
+ * state shows the result: known-unready is not sent at all, a refusal keeps
+ * the Host's reason, and a lost answer is never called a failure.
+ */
+export async function runAction<O>(
+  session: ClientSession | null,
+  spec: Omit<ActionSpec<void, O>, "execute" | "reconcile"> & {
+    readonly execute: (signal: AbortSignal) => Promise<O>;
+  },
+): Promise<ActionOutcome<O>> {
+  const action = createClientAction<void, O>(session ?? localSession, {
+    key: spec.label,
+    label: spec.label,
+    ...(spec.done ? { done: spec.done } : {}),
+    ...(spec.thing ? { thing: spec.thing } : {}),
+    execute: (_input, signal) => spec.execute(signal),
+  });
+  try {
+    return await action.run(undefined);
+  } finally {
+    action.dispose();
+  }
+}
+
+/** The words for an outcome that wasn't confirmed; null when it was, or there is nothing to say. */
+export function outcomeWords(outcome: ActionOutcome<unknown>): string | null {
+  return outcome.kind === "confirmed" || outcome.issue === null
+    ? null
+    : presentClientIssue(outcome.issue).title;
+}
+
+/** A read's own failure, in its own words: never the connection's. */
+export function readWords(issue: ClientIssue | null | undefined): string | null {
+  return issue ? presentClientIssue(issue).title : null;
+}
+
+/** For an action whose control is gone by the time it answers: only then a toast. */
+export function toastOutcome(toast: { readonly error: (message: string) => void }) {
+  return (outcome: ActionOutcome<unknown>): void => {
+    const words = outcomeWords(outcome);
+    if (words) toast.error(words);
+  };
+}
+
+/**
+ * One read a screen makes for itself. Its failure is said only when the
+ * connection is fine ("Couldn't load {resource}."); while the connection is
+ * the cause, the pill says so and the read says nothing.
+ */
+export async function runRead<T>(
+  session: ClientSession | null,
+  spec: { readonly resource: string; readonly read: () => Promise<T> },
+): Promise<
+  { readonly ok: true; readonly value: T } | { readonly ok: false; readonly words: string | null }
+> {
+  try {
+    return { ok: true, value: await spec.read() };
+  } catch (error) {
+    const state = session?.connection.getSnapshot();
+    if (state && (state.phase !== "ready" || state.network === "offline"))
+      return { ok: false, words: null };
+    const issue = clientIssue(error, { operation: "read", label: spec.resource });
+    return { ok: false, words: issue ? presentClientIssue(issue).title : null };
+  }
+}
+
+/** An action the shared owner did not confirm, carried through a promise chain. */
+export class ActionNotDone extends Error {
+  readonly outcome: ActionOutcome<unknown>;
+  constructor(outcome: ActionOutcome<unknown>) {
+    super("The action was not confirmed.");
+    this.name = "ActionNotDone";
+    this.outcome = outcome;
+  }
+}
+
+/**
+ * `runAction` for a promise chain: resolves with the confirmed value, or
+ * rejects with `ActionNotDone`, whose words `failureWords` gives.
+ */
+export async function act<O>(
+  session: ClientSession | null,
+  spec: Omit<ActionSpec<void, O>, "execute" | "reconcile">,
+  execute: (signal: AbortSignal) => Promise<O>,
+): Promise<O> {
+  const outcome = await runAction(session, { ...spec, execute });
+  if (outcome.kind === "confirmed") return outcome.value;
+  throw new ActionNotDone(outcome);
+}
+
+/**
+ * What to say for a rejection from `act`. Anything else, such as a refresh
+ * failing after the action was confirmed, says nothing: it never turns a
+ * confirmed action into a failure, and never shows an exception's text.
+ */
+export function failureWords(reason: unknown): string | null {
+  return reason instanceof ActionNotDone ? outcomeWords(reason.outcome) : null;
+}
+
+/** `failureWords` as a toast, for an action whose control is gone by its answer. */
+export function toastFailure(toast: { readonly error: (message: string) => void }) {
+  return (reason: unknown): void => {
+    const words = failureWords(reason);
+    if (words) toast.error(words);
+  };
+}
+
+/** The Host's own reason code for refusing an `act`, for a screen that words its refusals itself. */
+export function refusalReason(reason: unknown): string | null {
+  return reason instanceof ActionNotDone &&
+    reason.outcome.kind === "rejected" &&
+    reason.outcome.issue?.reason &&
+    reason.outcome.issue.reason !== "unexpected"
+    ? reason.outcome.issue.reason
+    : null;
 }
