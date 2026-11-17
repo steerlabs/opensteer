@@ -133,11 +133,14 @@ func ConnectToShimService(device DeviceEntry, service string) (DeviceConnectionI
 	if err != nil {
 		return nil, err
 	}
-	err = RsdCheckin(conn)
+	wrapped := NewDeviceConnectionWithConn(conn)
+	wrapped.BindContext(device.ContextOrBackground())
+	err = RsdCheckin(wrapped)
 	if err != nil {
+		_ = wrapped.Close()
 		return nil, err
 	}
-	return NewDeviceConnectionWithConn(conn), nil
+	return wrapped, nil
 }
 
 // ConnectToServiceTunnelIface connects to a service on an iOS17+ device using a XPC over HTTP2 connection

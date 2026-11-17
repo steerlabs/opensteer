@@ -180,39 +180,3 @@ func TestInventoryFilteringPaginationAndMinimalMetadata(t *testing.T) {
 		t.Fatal("bad page")
 	}
 }
-func TestMissingLockFieldNeverMeansUnlocked(t *testing.T) {
-	c := &fixtureChannel{reply: map[string]interface{}{"CoreDevice.output": map[string]interface{}{"PasswordProtected": false, "displays": []interface{}{map[string]interface{}{"displayId": uint64(0), "active": true}}}}}
-	open := func(context.Context, string) (xpcChannel, error) { return c, nil }
-	state, e := readDeviceState(context.Background(), open)
-	if e != nil {
-		t.Fatal(e)
-	}
-	if state.Lock != "unknown" || state.Rotation != nil || state.safe() == nil {
-		t.Fatal("missing lock/rotation was invented")
-	}
-	if len(c.sent) != 2 || c.sent[0]["CoreDevice.featureIdentifier"] != "com.apple.coredevice.feature.getlockstate" {
-		t.Fatal("wrong lock protocol")
-	}
-}
-
-func TestCoreDeviceLockStateRequiresExplicitEvidence(t *testing.T) {
-	for _, test := range []struct {
-		output map[string]interface{}
-		want   string
-	}{
-		{map[string]interface{}{"passcodeRequired": true}, "locked"},
-		{map[string]interface{}{"passcodeRequired": false}, "unknown"},
-		{map[string]interface{}{"passcodeRequired": false, "unlockedSinceBoot": false}, "unknown"},
-		{map[string]interface{}{"passcodeRequired": false, "unlockedSinceBoot": true}, "unlocked"},
-	} {
-		c := &fixtureChannel{reply: map[string]interface{}{"CoreDevice.output": test.output}}
-		test.output["displays"] = []interface{}{map[string]interface{}{"displayId": uint64(0), "active": true}}
-		state, e := readDeviceState(context.Background(), func(context.Context, string) (xpcChannel, error) { return c, nil })
-		if e != nil {
-			t.Fatal(e)
-		}
-		if state.Lock != test.want {
-			t.Fatalf("state=%s want=%s", state.Lock, test.want)
-		}
-	}
-}

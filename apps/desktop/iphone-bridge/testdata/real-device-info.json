@@ -51,9 +51,5 @@
       "currentDeviceOrientationLocked": false
     }
   },
-  "lockState": {
-    "passcodeRequired": true,
-    "unlockedSinceBoot": true
-  },
-  "note": "Captured 2026-11-17 via `xcrun devicectl device info displays|lockState` from an iPhone19,4 (two internal displays) on iOS 27.2 build 24B91020 with the screen off. devicectl surfaces CoreDevice's deviceinfo features getdisplayinfo/getlockstate; top-level keys match upstream go-ios e2e expectations (backlightState, displays, orientation)."
+  "note": "Captured via xcrun devicectl device info displays from iPhone19,4 on iOS 27.2 build 24B91020. This transformed two-internal-display fixture has active and uniqueId; its raw XPC shape is unverified. Lock state comes from lockdown PasswordProtected, not deviceinfo."
 }
