@@ -235,17 +235,30 @@ export class IntegrationToolHandlers {
     signal: AbortSignal,
   ) {
     const callable = await this.#resolveCallableTool(scope, address, true);
-    return this.#platform.callTool(
-      callable,
-      args,
-      {
-        // A Trigger occurrence and a watch program produce no Run, and the one
-        // transport that needs one refuses rather than inventing it.
-        run: "runId" in scope ? scope : null,
-        threadId: scope.threadId,
-      },
-      signal,
-    );
+    try {
+      return await this.#platform.callTool(
+        callable,
+        args,
+        {
+          // A Trigger occurrence and a watch program produce no Run, and the one
+          // transport that needs one refuses rather than inventing it.
+          run: "runId" in scope ? scope : null,
+          threadId: scope.threadId,
+        },
+        signal,
+      );
+    } catch (error) {
+      const inventory = await this.#platform.listDiscoveryInventory(discoveryRequester(scope));
+      const entry = inventory.find(
+        ({ installation }) => installation.id === callable.installation.id,
+      );
+      const readiness = entry?.readiness.tools.find(
+        ({ toolId }) => toolId === callable.tool.id,
+      )?.readiness;
+      const blocked = integrationBlocked(readiness, callable.installation.name);
+      if (blocked) throw new ToolBlockedError(blocked);
+      throw error;
+    }
   }
 
   async #resolveCallableTool(

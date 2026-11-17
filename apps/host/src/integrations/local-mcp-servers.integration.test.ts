@@ -19,7 +19,6 @@ import {
   operation,
   startFakeDesktop,
   toolText,
-  toolReadiness,
 } from "./computer-apps.test-support.js";
 import {
   connectCallerMachine,
@@ -244,7 +243,10 @@ integration("MCP servers on a computer", () => {
           ...operation(await search(), name).address,
         });
       await waitForCondition(
-        async () => toolReadiness(await search(), "echo").code === "READY",
+        async () =>
+          ((await search()).operations as { name: string }[]).some(
+            ({ name }) => name.split("@")[0] === "echo",
+          ),
         30_000,
       );
       expect(said(await call("echo", { text: "hello" }))).toBe("echo: hello");
@@ -306,12 +308,20 @@ integration("MCP servers on a computer", () => {
       if (running === null) throw new Error("The server is running");
       await computer.disconnectModule();
       await waitForCondition(async () => !alive(running), 15_000);
-      const offline = toolReadiness(await search(), "echo");
-      expect(offline.code).toBe("INTEGRATION_UNAVAILABLE");
-      expect(offline.detail).toContain("Studio Mac");
+      const offline = (await search()).results as {
+        tools?: { name: string; blocked: { code: string; message: string } }[];
+      }[];
+      const blocked = offline
+        .flatMap(({ tools }) => tools ?? [])
+        .find(({ name }) => name === "echo")?.blocked;
+      expect(blocked?.code).toBe("unavailable");
+      expect(blocked?.message).toContain("Studio Mac");
       await computer.reconnectModule();
       await waitForCondition(
-        async () => toolReadiness(await search(), "echo").code === "READY",
+        async () =>
+          ((await search()).operations as { name: string }[]).some(
+            ({ name }) => name.split("@")[0] === "echo",
+          ),
         30_000,
       );
       expect(said(await call("echo", { text: "back" }))).toBe("echo: back");
