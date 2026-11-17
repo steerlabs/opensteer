@@ -1,5 +1,7 @@
 import {
   eventDataSchemas,
+  RunIdSchema,
+  ThreadIdSchema,
   type AgentEvent,
   type DeploymentId,
   type ExecutionNodeId,
@@ -159,7 +161,8 @@ function canonicalCard(row: LegacyActivity): { id: string; move: boolean } | nul
 }
 
 function classifyDisplay(row: LegacyActivity): DisplayEvent | null {
-  if (!row.runId || !row.threadId) return null;
+  if (!RunIdSchema.safeParse(row.runId).success || !ThreadIdSchema.safeParse(row.threadId).success)
+    return null;
   if (row.runnerOrdinal !== null && (!row.attemptId || row.runnerBindingGeneration === null))
     return null;
   const type = row.type;

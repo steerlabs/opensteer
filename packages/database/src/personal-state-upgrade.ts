@@ -589,6 +589,12 @@ async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
           where i.thread_id<>m.thread_id limit 1)
         or exists(select 1 from transcript_items i join requests r on r.id=i.request_id
           where (i.thread_id,i.run_id,i.node_id) is distinct from (r.originating_thread_id,r.originating_run_id,r.originating_node_id) limit 1)
+        or exists(select 1 from transcript_items i join runs r on r.id=i.run_id
+          where i.kind='run' and i.thread_id<>r.thread_id limit 1)
+        or exists(select 1 from transcript_items i join execution_nodes n on n.id=i.execution_node_id
+          join runs r on r.id=n.run_id
+          where (i.thread_id,i.run_id,i.attempt_id,i.node_id)
+            is distinct from (r.thread_id,n.run_id,n.attempt_id,n.parent_node_id) limit 1)
         or exists(select 1 from transcript_items i join tool_calls c on c.id=i.tool_call_id
           where (i.thread_id,i.run_id,i.node_id,i.attempt_id) is distinct from (c.thread_id,c.run_id,c.node_id,c.attempt_id) limit 1)
         or exists(select 1 from tool_output_images i join tool_calls c on c.id=i.tool_call_id

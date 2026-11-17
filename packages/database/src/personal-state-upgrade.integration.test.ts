@@ -441,9 +441,9 @@ test("resumes offline settlement of a Run with a large live node set", async () 
   const { database } = fixture;
   try {
     const run = await fixture.startRunFixture("offline-node-batches");
-    await sql`insert into execution_nodes(id,run_id,attempt_id,kind,title,native_ref,status,started_at)
+    await sql`insert into execution_nodes(id,run_id,attempt_id,kind,title,native_ref,status,started_at,phases)
       select 'nod_90000000-0000-4000-8000-'||lpad(n::text,12,'0'), run_id, id,
-        'subagent', ${"🌱".repeat(110)}, 'fixture:'||n, 'running', clock_timestamp()
+        'subagent', ${"🌱".repeat(110)}, 'fixture:'||n, 'running', clock_timestamp(), '[]'::jsonb
       from run_attempts cross join generate_series(1,140) n where run_id=${run.runId} and status='current'`.execute(
       database,
     );
@@ -489,7 +489,7 @@ test("the current-state lineage refuses a team database with a private legacy fe
     );
     await expect(
       migrateToLatest(database, migrationProvider({ personalCurrentState: true })),
-    ).rejects.toThrow(/team.*personal/i);
+    ).rejects.toThrow("Unexpected personal event history outside a personal Deployment");
     expect(await legacyState(database)).toEqual({ legacy: true, cursor: true });
   } finally {
     await database.destroy();
