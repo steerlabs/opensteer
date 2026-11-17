@@ -1,7 +1,7 @@
 import { copyText } from "@opensteer/shared/clipboard";
 import { SurfaceMenu } from "./surface-menu.js";
 import { SectionHeader, SettingsSwitch } from "./settings/primitives.js";
-import { IntegrationIcon } from "./integrations/integration-icon.js";
+import { IntegrationIcon } from "./integration-icon.js";
 import { Link, useLocation } from "react-router";
 import { Fragment, useCallback, useEffect, useState, type FormEvent } from "react";
 import type {

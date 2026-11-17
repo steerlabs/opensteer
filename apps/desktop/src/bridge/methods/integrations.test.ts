@@ -1,5 +1,5 @@
 import type { HostClient } from "@opensteer/client/host";
-import { subscribeIntegrationAuthorizationReturns } from "../../../../web/src/integrations/integration-authorization.js";
+import { subscribePluginSignInReturns } from "../../../../web/src/integrations/plugin-sign-in-surface.js";
 import { createId } from "@opensteer/core";
 import {
   createIntegrationId,
@@ -18,7 +18,6 @@ const oauth = {
   hostCallback: "com.opensteer.opensteer:/oauth/host-callback",
 } as const;
 const entry = () => ({
-  kind: "integration" as const,
   deploymentId: createId("deployment"),
   attemptId: createIntegrationId("oauthAttempt"),
   userId: createId("user"),
@@ -46,7 +45,7 @@ it("drops unknown returns, queues registered returns before renderer subscriptio
   wrong();
   const detach = returns.attach(started, deliver);
   await returns.settled();
-  expect(deliver).toHaveBeenCalledWith({ ...callback, kind: "integration" });
+  expect(deliver).toHaveBeenCalledWith({ ...callback, kind: "plugin" });
   await returns.forget(started);
   expect(returns.accept(url)).toBe(false);
   detach();
@@ -77,11 +76,18 @@ it("registers before browser launch and refuses another attached Deployment", as
   } as unknown as IpcMainInvokeEvent;
   const open = (input: unknown) =>
     handleOpenIntegrationAuthorization(context)(event, { bridgeToken: "b".repeat(43), input });
-  await expect(open({ ...started, launchTicket: "t".repeat(43) })).resolves.toEqual({
-    opened: true,
-  });
+  await expect(open({ ...started, kind: "plugin", launchTicket: "t".repeat(43) })).resolves.toEqual(
+    {
+      opened: true,
+    },
+  );
   await expect(
-    open({ ...started, deploymentId: createId("deployment"), launchTicket: "t".repeat(43) }),
+    open({
+      ...started,
+      kind: "plugin",
+      deploymentId: createId("deployment"),
+      launchTicket: "t".repeat(43),
+    }),
   ).rejects.toThrow(/deployment/i);
   expect(openExternal).toHaveBeenCalledOnce();
 });
@@ -92,9 +98,11 @@ it("redelivers a retained proof after transient redemption failure without anoth
   const started = entry();
   await returns.register(started);
   const status = {
-    type: "integration.authorization.return",
+    type: "plugin.authorization.return",
+    attemptId: started.attemptId,
+    connection: "con_1",
+    account: "acc_1",
     status: "completed",
-    connectionId: null,
     failureCode: null,
     expiresAt: started.expiresAt,
   };
@@ -108,7 +116,7 @@ it("redelivers a retained proof after transient redemption failure without anoth
     onIntegrationAuthorizationReturn: returns.attach.bind(returns),
     finishIntegrationAuthorization: async () => returns.forget(started),
   };
-  const stop = subscribeIntegrationAuthorizationReturns(bridge, client);
+  const stop = subscribePluginSignInReturns(bridge, client);
   try {
     expect(
       returns.accept(

@@ -1,6 +1,6 @@
 import { computerUsesPhrase, type ComputerUse } from "@opensteer/client/computers";
 import { Icon } from "../icon.js";
-import { IntegrationIcon } from "../integrations/integration-icon.js";
+import { IntegrationIcon } from "../integration-icon.js";
 
 /** How many marks a row draws before it counts the rest. */
 const shownMarks = 4;

@@ -1,10 +1,6 @@
 import { useEffect, useState } from "react";
 import type { HostClient } from "@opensteer/client/host";
-import {
-  IntegrationAuthorizationAttemptIdSchema,
-  integrationAuthorizationError,
-  waitForIntegrationAuthorization,
-} from "@opensteer/client/integrations";
+import { IntegrationAuthorizationAttemptIdSchema } from "@opensteer/client/integrations";
 import { pluginSignInEnd, waitForPluginAuthorization } from "@opensteer/client/plugins";
 import { actionErrorMessage } from "../ui-utils.js";
 import { ErrorNotice, OnboardingCard } from "./onboarding-card.js";
@@ -19,21 +15,18 @@ type CompletionState =
   | { readonly kind: "invalid" };
 
 /**
- * The browser tab that hosts a provider authorization round trip.
+ * The browser tab that hosts a plugin sign-in's round trip.
  *
  * It begins life without an attempt id so the source tab can open it during a
  * user gesture. The provider return adds only the opaque id; this page then
  * asks the authenticated Host for the durable result.
  */
-export function IntegrationAuthorizationCompletion({
+export function PluginSignInCompletion({
   client,
   integrationAttempt,
-  kind = "integration",
 }: {
   readonly client: Pick<HostClient, "rpc">;
   readonly integrationAttempt: string | null;
-  /** A plugin sign-in reads its own attempt; on the web that read also finishes it. */
-  readonly kind?: "integration" | "plugin";
 }) {
   const parsedAttempt = IntegrationAuthorizationAttemptIdSchema.safeParse(integrationAttempt);
   const attemptId = parsedAttempt.success ? parsedAttempt.data : null;
@@ -58,18 +51,12 @@ export function IntegrationAuthorizationCompletion({
     }
     const controller = new AbortController();
     setState({ kind: "checking" });
-    void (
-      kind === "plugin"
-        ? waitForPluginAuthorization({ attemptId, client, signal: controller.signal }).then(
-            (status) => {
-              const end = pluginSignInEnd(status);
-              return end.kind === "completed" ? null : end.message;
-            },
-          )
-        : waitForIntegrationAuthorization({ attemptId, client, signal: controller.signal }).then(
-            (status) => integrationAuthorizationError(status.status, status.failureCode),
-          )
-    )
+    // On the web this read also finishes the sign-in.
+    void waitForPluginAuthorization({ attemptId, client, signal: controller.signal })
+      .then((status) => {
+        const end = pluginSignInEnd(status);
+        return end.kind === "completed" ? null : end.message;
+      })
       .then((error) => {
         if (controller.signal.aborted) return;
         setState(error ? { kind: "terminal-error", message: error } : { kind: "completed" });
@@ -80,12 +67,12 @@ export function IntegrationAuthorizationCompletion({
         }
       });
     return () => controller.abort();
-  }, [attemptId, client, integrationAttempt, kind, retry]);
+  }, [attemptId, client, integrationAttempt, retry]);
 
   if (state.kind === "opening") {
     return (
       <OnboardingCard
-        description="Waiting for Opensteer to start the provider authorization."
+        description="Waiting for Opensteer to start the sign-in."
         eyebrow="Authorization"
         title="Opening authorization…"
         titleId="integration-authorization-heading"
@@ -119,11 +106,7 @@ export function IntegrationAuthorizationCompletion({
   if (state.kind === "completed") {
     return (
       <OnboardingCard
-        description={
-          kind === "plugin"
-            ? "The account is linked. Return to your original Opensteer tab."
-            : "Return to your original Opensteer tab to finish setting up this connection."
-        }
+        description="The account is linked. Return to your original Opensteer tab."
         eyebrow="Authorization"
         footnote="You can close this tab."
         title="Account authorization complete"
@@ -135,7 +118,7 @@ export function IntegrationAuthorizationCompletion({
   if (state.kind === "invalid") {
     return (
       <OnboardingCard
-        description="Return to your original Opensteer tab and start the connection again."
+        description="Return to your original Opensteer tab and start the sign-in again."
         eyebrow="Authorization"
         title="This authorization link is invalid"
         titleId="integration-authorization-heading"

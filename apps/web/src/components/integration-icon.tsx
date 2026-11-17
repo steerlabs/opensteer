@@ -1,6 +1,5 @@
 import { integrationMark } from "@opensteer/client/integrations";
-import { bundledIntegrationArt } from "./bundled-icons.js";
-import { integrationHue } from "./helpers.js";
+import { bundledIntegrationArt } from "./integration-art.js";
 
 /** Local artwork and vector marks share the same tile treatment on every client. */
 export function IntegrationIcon({
@@ -66,4 +65,11 @@ export function IntegrationIcon({
       {name.slice(0, 2).toLocaleUpperCase()}
     </span>
   );
+}
+
+/** Deterministic hue per id so monograms are tinted, never random. */
+function integrationHue(id: string): number {
+  let hash = 0;
+  for (const char of id) hash = (hash * 31 + char.codePointAt(0)!) % 360;
+  return hash;
 }

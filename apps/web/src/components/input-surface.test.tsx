@@ -2,7 +2,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createId, type Request } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { ActionForm, DeniedRequestBody } from "./input-surface.js";
-import { IntegrationInstallReview } from "./integration-install-review.js";
 
 const requester = createId("user");
 
@@ -69,69 +68,10 @@ describe("ActionForm", () => {
 });
 
 describe("DeniedRequestBody", () => {
-  it("shows a non-administrator what the install request would install, without the actions", () => {
-    const request = pendingRequest({
-      kind: "integration.install",
-      mode: "durable",
-      payload: {
-        kind: "integration.install",
-        manifest: catalogManifest(),
-        reason: "Install Calendar",
-      },
-      presentation: {
-        kind: "choice",
-        options: [
-          { hint: "reject-once", id: "declined", label: "Not now" },
-          { hint: "confirm", id: "installed", label: "Install" },
-        ],
-        title: "Install Test Calendar?",
-      },
-      requiredActor: "owner",
-    });
-    const html = renderToStaticMarkup(
-      <DeniedRequestBody denied="administrator" request={request} />,
-    );
+  it("says who must answer, without the actions", () => {
+    const html = renderToStaticMarkup(<DeniedRequestBody denied="administrator" />);
 
-    expect(html).toContain("Test Calendar");
-    // A preset is described by its description, and says nothing of provenance:
-    // only an agent's proposal needs that said.
-    expect(html).toContain("Scheduling for the test suite.");
-    expect(html).not.toContain("catalog");
-    // One note: who must answer. What installing leads to is not this viewer's.
-    expect(html.match(/class="action-note/gu)).toHaveLength(1);
     expect(html).toContain("A Host administrator must complete this request.");
     expect(html).not.toContain("<button");
   });
 });
-
-describe("IntegrationInstallReview", () => {
-  it("refuses to describe a manifest it cannot read", () => {
-    const html = renderToStaticMarkup(<IntegrationInstallReview manifest={{ kind: "catalog" }} />);
-
-    expect(html).toContain("cannot read what this request would install");
-    expect(html).toContain('role="alert"');
-  });
-});
-
-function catalogManifest() {
-  return {
-    definition: {
-      adapter: "openapi",
-      authMethods: [
-        {
-          id: "api-key",
-          inputs: [{ label: "API key", secret: true, variable: "apiKey" }],
-          kind: "api-key",
-          label: "API key",
-          placements: [{ carrier: "header", name: "Authorization", variable: "apiKey" }],
-        },
-      ],
-      description: "Scheduling for the test suite.",
-      id: "google-calendar",
-      name: "Test Calendar",
-      provider: "google",
-    },
-    digest: "c".repeat(43),
-    kind: "catalog",
-  };
-}

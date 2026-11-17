@@ -8,6 +8,11 @@ export function deviceRoute(machineId: string): string {
   return `${devicesRoute}/${encodeURIComponent(machineId)}`;
 }
 
+/** A device reached through a local server, by the plugin record that registered it. */
+export function otherDeviceRoute(pluginId: string): string {
+  return `${devicesRoute}/other/${encodeURIComponent(pluginId)}`;
+}
+
 /**
  * The one route to one app on one device. The Apps settings link here by
  * device and definition rather than carrying a second copy of its editor.

@@ -5,8 +5,6 @@ import { z } from "zod";
 import { authorizationTerminalStatuses } from "../host/authorization-attempt.js";
 
 const EntrySchema = z.strictObject({
-  /** Which Host command finishes it: an old integration attempt or a plugin sign-in. */
-  kind: z.enum(["integration", "plugin"]),
   deploymentId: DeploymentIdSchema,
   attemptId: IntegrationAuthorizationAttemptIdSchema,
   userId: UserIdSchema.optional(),
@@ -23,7 +21,7 @@ export interface IntegrationAuthorizationAttemptStore {
 const maximumAttempts = 32;
 const keyOf = (attempt: Attempt) => `${attempt.deploymentId}:${attempt.attemptId}`;
 
-/** Local authority to finish only consents this app began with an authenticated Host. */
+/** Local authority to finish only plugin sign-ins this app began with an authenticated Host. */
 export class IntegrationAuthorizationAttempts {
   readonly #entries = new Map<string, IntegrationAuthorizationAttempt>();
   readonly #deliveries = new Map<
@@ -82,13 +80,12 @@ export class IntegrationAuthorizationAttempts {
   async register(entry: IntegrationAuthorizationAttempt): Promise<void> {
     const generation = this.#generation;
     await this.load();
-    if (generation !== this.#generation) throw new Error("Integration authorization was stopped.");
+    if (generation !== this.#generation) throw new Error("Sign-in was stopped.");
     this.#prune();
     const parsed = EntrySchema.parse(entry);
-    if (Date.parse(parsed.expiresAt) <= this.#now())
-      throw new Error("Integration authorization has expired.");
+    if (Date.parse(parsed.expiresAt) <= this.#now()) throw new Error("Sign-in has expired.");
     if (this.#entries.size >= maximumAttempts && !this.#entries.has(keyOf(parsed)))
-      throw new Error("Too many integration sign-ins are pending.");
+      throw new Error("Too many sign-ins are pending.");
     this.#entries.set(keyOf(parsed), parsed);
     try {
       await this.#persist();

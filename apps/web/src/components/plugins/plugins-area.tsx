@@ -17,11 +17,12 @@ import { usePagedList, usePluginEngine as usePluginEngineState } from "@openstee
 import { useShell } from "../app-shell.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
-import { IntegrationIcon } from "../integrations/integration-icon.js";
+import { IntegrationIcon } from "../integration-icon.js";
 import { LoadingRows } from "../loading-rows.js";
 import { SectionHeader, SettingsError, SettingsSegmented } from "../settings/primitives.js";
 import { useSettingsRead } from "../settings/use-settings-read.js";
 import { actionErrorMessage } from "../../ui-utils.js";
+import { AgentHomeSkills } from "./agent-home-skills.js";
 import { LocalTools, LocalToolPage } from "./local-tools.js";
 import { PluginPage } from "./plugin-page.js";
 
@@ -29,6 +30,7 @@ export const pluginsPath = "/settings/plugins";
 export const pluginPath = (pluginId: string) =>
   `${pluginsPath}/installed/${encodeURIComponent(pluginId)}`;
 export const localToolPath = (id: string) => `${pluginsPath}/on-device/${encodeURIComponent(id)}`;
+const skillsPath = `${pluginsPath}/skills`;
 
 /** The plugin engine's state for this Host. */
 export function usePluginEngine(initial: PluginEngineStateView | null) {
@@ -55,7 +57,7 @@ export function EngineNotice({ engine }: { readonly engine: PluginEngineStateVie
  * Settings → Plugins. Opening it is one read of the installed list; the
  * catalog loads only when opened, and a plugin's page only when chosen.
  */
-export function PluginsArea({ legacy }: { readonly legacy: React.ReactNode }) {
+export function PluginsArea() {
   const { pathname } = useLocation();
   const suffix = pathname.slice(pluginsPath.length).split("/").filter(Boolean);
   if (suffix[0] === "catalog" || suffix[0] === "add") return <PluginCatalog />;
@@ -63,7 +65,7 @@ export function PluginsArea({ legacy }: { readonly legacy: React.ReactNode }) {
     return <PluginPage key={suffix[1]} pluginId={decodeURIComponent(suffix[1])} />;
   if (suffix[0] === "on-device" && suffix[1])
     return <LocalToolPage key={suffix[1]} id={decodeURIComponent(suffix[1])} />;
-  if (suffix.length) return legacy;
+  if (suffix[0] === "skills") return <AgentHomeSkills />;
   return <InstalledPlugins />;
 }
 
@@ -134,6 +136,23 @@ function InstalledPlugins() {
       )}
       {installed.data?.local.length ? <LocalTools tools={installed.data.local} /> : null}
       <section className="settings-group">
+        <h2 className="settings-group__title">Your agent</h2>
+        <div className="card">
+          <Link className="card__row plugins-link-row" to={skillsPath}>
+            <span aria-hidden className="plugins-link-row__glyph">
+              <Icon name="code" />
+            </span>
+            <span className="card__row-body">
+              <span className="card__row-title">Skills in Agent home</span>
+              <span className="card__row-detail">
+                Turn the skills in your agent's folder on or off
+              </span>
+            </span>
+            <Icon name="chevron-right" />
+          </Link>
+        </div>
+      </section>
+      <section className="settings-group">
         <h2 className="settings-group__title">Add more</h2>
         <div className="card">
           <Link className="card__row plugins-link-row" to={`${pluginsPath}/catalog`}>
@@ -162,16 +181,6 @@ function InstalledPlugins() {
             </span>
             <Icon name="chevron-right" />
           </button>
-          <Link className="card__row plugins-link-row" to={`${pluginsPath}/local`}>
-            <span aria-hidden className="plugins-link-row__glyph">
-              <Icon name="laptop" />
-            </span>
-            <span className="card__row-body">
-              <span className="card__row-title">Device apps, local servers and skills</span>
-              <span className="card__row-detail">What runs on your computers and phones</span>
-            </span>
-            <Icon name="chevron-right" />
-          </Link>
         </div>
       </section>
       {installing ? <InstallFromAddress onClose={() => setInstalling(false)} /> : null}

@@ -32,7 +32,7 @@ export const handleOpenIntegrationAuthorization =
     const input = DesktopOpenIntegrationAuthorizationInputSchema.parse(envelope.input);
     const attached = await context.options.hostTransport.current();
     if (attached.connection.authority.document.deploymentId !== input.deploymentId)
-      throw new Error("The integration attempt belongs to a different Deployment.");
+      throw new Error("The sign-in belongs to a different Deployment.");
     const origin = await context.options.hostTransport.integrationAuthorizationOrigin(
       input.deploymentId,
     );
@@ -42,10 +42,9 @@ export const handleOpenIntegrationAuthorization =
     );
     target.searchParams.set("ticket", input.launchTicket);
     const authorizations = context.options.integrationAuthorizations;
-    if (!authorizations) throw new Error("Integration authorization returns are unavailable.");
+    if (!authorizations) throw new Error("Sign-in returns are unavailable.");
     await authorizations.register(
       {
-        kind: input.kind,
         deploymentId: input.deploymentId,
         attemptId: input.attemptId,
         expiresAt: input.expiresAt,

@@ -666,24 +666,120 @@ export function pluginLocalToolSummary(tool: Pick<PluginLocalToolView, "tools">)
 }
 
 /**
- * Where approvals, launch review and secrets for a local tool live: the device
- * screen of the computer it runs on, or the local servers screen.
+ * What a local tool row says under its title, in a person's words. A device
+ * app's title already names its computer; a local server's says where it runs.
  */
-export function pluginLocalToolManage(
+export function pluginLocalToolDetail(tool: PluginLocalToolView): string {
+  return [pluginLocalToolStatus(tool).label, pluginLocalToolWhere(tool)]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** Where a local server runs; null for a device app, whose title says it. */
+export function pluginLocalToolWhere(
   tool: Pick<PluginLocalToolView, "kind" | "computer">,
+): string | null {
+  if (tool.kind === "device-app") return null;
+  return tool.computer ? `Runs on ${tool.computer.name}` : "No computer to run on";
+}
+
+/**
+ * The record a local tool stands for. Its id is the Host's stable provider id:
+ * `app_device_<connection>` for a device data app, `app_server_<server>` for a
+ * local server.
+ */
+export function pluginLocalToolSource(
+  tool: Pick<PluginLocalToolView, "id">,
 ):
-  | { readonly kind: "device"; readonly runnerId: string; readonly label: string }
-  | { readonly kind: "local-servers"; readonly label: string } {
-  if (tool.kind === "device-app" && tool.computer)
-    return {
-      kind: "device",
-      runnerId: tool.computer.id,
-      label: `Approvals on ${tool.computer.name}`,
-    };
-  return { kind: "local-servers", label: "Launch review and secrets" };
+  | { readonly kind: "device-app"; readonly connectionId: string }
+  | { readonly kind: "local-server"; readonly serverId: string }
+  | null {
+  if (tool.id.startsWith("app_device_"))
+    return { kind: "device-app", connectionId: tool.id.slice("app_device_".length) };
+  if (tool.id.startsWith("app_server_"))
+    return { kind: "local-server", serverId: tool.id.slice("app_server_".length) };
+  return null;
+}
+
+/** The local tool agents reach for one local server, when there is one. */
+export function pluginLocalToolForServer(
+  tools: readonly PluginLocalToolView[],
+  serverId: string,
+): PluginLocalToolView | null {
+  return tools.find((tool) => tool.id === `app_server_${serverId}`) ?? null;
 }
 
 /** Which way it reaches agents, as they type it. */
 export function pluginLocalToolAddress(tool: Pick<PluginLocalToolView, "name">) {
   return /^[a-z_$][a-z0-9_$]*$/iu.test(tool.name) ? `tools.${tool.name}` : `tools["${tool.name}"]`;
+}
+
+/* ---- Local servers: where they run, their state, secrets and removal ---- */
+
+/** The installation records a local server lives in, as `integration.platform.get` lists them. */
+export interface LocalServerInstallations {
+  readonly installations: readonly {
+    readonly installation: {
+      readonly id: string;
+      readonly title: string;
+      readonly pluginId?: string | null | undefined;
+    };
+    readonly servers: readonly {
+      readonly id: string;
+      readonly name: string;
+      readonly status: "active" | "disabled" | "needs-attention";
+      readonly statusDetail: string | null;
+    }[];
+  }[];
+}
+
+/** One local server, found by its server id or by the plugin record that registered it. */
+export function localServerRecord(
+  platform: LocalServerInstallations,
+  by: { readonly serverId: string } | { readonly pluginId: string },
+) {
+  for (const { installation, servers } of platform.installations) {
+    const server =
+      "serverId" in by
+        ? servers.find(({ id }) => id === by.serverId)
+        : installation.pluginId === by.pluginId
+          ? servers[0]
+          : undefined;
+    if (!server) continue;
+    return {
+      pluginId: installation.pluginId ?? null,
+      installationId: installation.id,
+      serverId: server.id,
+      title: installation.title,
+      state: localServerState(server),
+    };
+  }
+  return null;
+}
+
+/** A local server's state as a person reads it. */
+export function localServerState(server: {
+  readonly status: "active" | "disabled" | "needs-attention";
+  readonly statusDetail: string | null;
+}): { readonly label: string; readonly tone: PluginTone } {
+  if (server.status === "active") return { label: "Approved", tone: "ok" };
+  if (server.status === "disabled") return { label: "Turned off", tone: "muted" };
+  return {
+    label: server.statusDetail ?? "Waiting for approval on its computer",
+    tone: "attention",
+  };
+}
+
+/* ---- Skills in Agent home ---- */
+
+/** The skills in the agent home folder, from the plugins overview, each with its switch. */
+export function agentHomeSkills<Row extends { readonly target: { readonly kind: string } }>(
+  rows: readonly Row[],
+): readonly (Row & { readonly target: { readonly kind: "skill"; readonly fullName: string } })[] {
+  return rows.filter(
+    (
+      row,
+    ): row is Row & { readonly target: { readonly kind: "skill"; readonly fullName: string } } =>
+      row.target.kind === "skill",
+  );
 }

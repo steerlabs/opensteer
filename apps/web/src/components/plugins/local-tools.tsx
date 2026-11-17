@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import {
   pluginAccessChoices,
   pluginLocalToolAddress,
-  pluginLocalToolManage,
+  pluginLocalToolSource,
   pluginLocalToolStatus,
   pluginLocalToolSummary,
+  pluginLocalToolWhere,
   readInstalledPlugins,
   setPluginAccess,
   type PluginLocalToolView,
@@ -21,6 +22,8 @@ import {
 } from "../settings/primitives.js";
 import { useSettingsRead } from "../settings/use-settings-read.js";
 import { actionErrorMessage } from "../../ui-utils.js";
+import { deviceRoute } from "../devices/device-routes.js";
+import { LocalServerSection } from "./local-server-section.js";
 import { localToolPath, pluginsPath } from "./plugins-area.js";
 
 /** Device data apps and local servers, which agents reach beside plugins. */
@@ -31,6 +34,7 @@ export function LocalTools({ tools }: { readonly tools: readonly PluginLocalTool
       <div className="card" role="list">
         {tools.map((tool) => {
           const status = pluginLocalToolStatus(tool);
+          const where = pluginLocalToolWhere(tool);
           return (
             <Link
               className="card__row plugins-row"
@@ -47,7 +51,7 @@ export function LocalTools({ tools }: { readonly tools: readonly PluginLocalTool
                   <span className={`plugins-status plugins-status--${status.tone}`}>
                     {status.label}
                   </span>
-                  <span className="plugins-author"> · {pluginLocalToolAddress(tool)}</span>
+                  {where ? <span className="plugins-author"> · {where}</span> : null}
                 </span>
               </span>
               <Icon name="chevron-right" />
@@ -94,10 +98,11 @@ export function LocalToolPage({ id }: { readonly id: string }) {
 
 function LocalToolContent({ tool }: { readonly tool: PluginLocalToolView }) {
   const { hostClient } = useShell();
+  const navigate = useNavigate();
   const [pending, setPending] = useState<PluginLocalToolView["access"] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const access = pending ?? tool.access;
-  const manage = pluginLocalToolManage(tool);
+  const source = pluginLocalToolSource(tool);
   return (
     <>
       <SectionHeader
@@ -164,28 +169,30 @@ function LocalToolContent({ tool }: { readonly tool: PluginLocalToolView }) {
           <p className="settings-footnote">{pluginLocalToolSummary(tool)}</p>
         )}
       </section>
-      <section className="settings-group">
-        <div className="card">
-          <Link
-            className="card__row plugins-link-row"
-            to={
-              manage.kind === "device"
-                ? `/settings/devices/${encodeURIComponent(manage.runnerId)}`
-                : `${pluginsPath}/local`
-            }
-          >
-            <span className="card__row-body">
-              <span className="card__row-title">{manage.label}</span>
-              <span className="card__row-detail">
-                {manage.kind === "device"
-                  ? "What this device lets agents read and change"
-                  : "Where it runs, its launch review and secrets"}
+      {tool.computer ? (
+        <section className="settings-group">
+          <div className="card">
+            <Link className="card__row plugins-link-row" to={deviceRoute(tool.computer.id)}>
+              <span className="card__row-body">
+                <span className="card__row-title">{tool.computer.name}</span>
+                <span className="card__row-detail">
+                  {tool.kind === "device-app"
+                    ? "What this device lets agents read and change"
+                    : "Where it runs, and its launch approvals"}
+                </span>
               </span>
-            </span>
-            <Icon name="chevron-right" />
-          </Link>
-        </div>
-      </section>
+              <Icon name="chevron-right" />
+            </Link>
+          </div>
+        </section>
+      ) : null}
+      {source?.kind === "local-server" ? (
+        <LocalServerSection
+          by={{ serverId: source.serverId }}
+          name={tool.title}
+          onRemoved={() => void navigate(pluginsPath)}
+        />
+      ) : null}
     </>
   );
 }
