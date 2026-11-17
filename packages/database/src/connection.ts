@@ -79,15 +79,15 @@ export function createDatabase<Schema = DatabaseSchema>(
       controlClient: Client,
       onCreateConnection: async (connection) => {
         const execute = connection.executeQuery.bind(connection);
-        connection.executeQuery = async (query) => {
+        connection.executeQuery = async <R>(query: CompiledQuery) => {
           const operation = databaseOperation();
-          if (!operation?.transaction) return execute(query);
+          if (!operation?.transaction) return execute<R>(query);
           operation.signal.throwIfAborted();
           const remaining = Math.max(1, Math.ceil(operation.expiresAt - Date.now()));
           await execute(CompiledQuery.raw(`set local statement_timeout = ${remaining}`));
           await connection.collectSessionInfo?.();
           operation.signal.throwIfAborted();
-          const pending = execute(query);
+          const pending = execute<R>(query);
           let cancellation: Promise<void> | undefined;
           const abort = addAbortListener(operation.signal, () => {
             cancellation = connection
