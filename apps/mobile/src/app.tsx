@@ -463,8 +463,9 @@ export function App(): ReactNode {
           // Connect intent must exist before initialization's singleton-computer shortcut.
           return routeComputerLink(url, (id) => client.openComputer(id));
         },
-        resolve: async (url, current) => {
+        resolve: async (url, current, release) => {
           if (parseNativeIntegrationAuthorizationCallback(url) !== null) {
+            release();
             setIntegrationNotice(null);
             const result = await client.handleIntegrationAuthorizationCallback(url);
             if (!current() || result === null) return null;
@@ -490,7 +491,10 @@ export function App(): ReactNode {
               (await client.catalog.load()).deployments.map(
                 ({ authority }) => authority.document.deploymentId,
               ),
-            refreshDirectory: () => client.refreshDirectory(),
+            refreshDirectory: () => {
+              release();
+              return client.refreshDirectory();
+            },
           });
           if (!current() || outcome.kind === "ignore") return null;
           if (outcome.kind === "unknown-deployment") {
@@ -501,7 +505,18 @@ export function App(): ReactNode {
             client.cancelOpenComputer();
           return applicationLinkState(outcome, {
             selectedDeploymentId: client.getSnapshot().selection.deploymentId,
-            select: (id) => client.select(id),
+            select: (id) =>
+              client.select(id).catch((error: unknown) => {
+                if (!current()) return;
+                destinations.selectionFailed();
+                setLinkFailure(
+                  operationDetail(
+                    error,
+                    "That deployment could not be opened. You can try again there.",
+                  ),
+                );
+                observeRootSelection();
+              }),
             teams,
           });
         },

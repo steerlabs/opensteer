@@ -411,7 +411,11 @@ describe("warm mobile sides on the native stack router", () => {
 
 describe("pending external destinations", () => {
   function fixture(
-    resolve: (url: string, current: () => boolean) => Promise<ReturnType<typeof threadRoot> | null>,
+    resolve: (
+      url: string,
+      current: () => boolean,
+      release: () => void,
+    ) => Promise<ReturnType<typeof threadRoot> | null>,
   ) {
     const present = vi.fn();
     const failed = vi.fn();
@@ -483,7 +487,9 @@ describe("pending external destinations", () => {
     f.pending.hydrated();
     const tapA = f.pending.submit("a");
     const initial = f.pending.initialState(() => deploymentsRoot());
-    await vi.waitFor(() => expect(resolve).toHaveBeenCalledWith("a", expect.any(Function)));
+    await vi.waitFor(() =>
+      expect(resolve).toHaveBeenCalledWith("a", expect.any(Function), expect.any(Function)),
+    );
     const tapB = f.pending.submit("b");
     await vi.waitFor(async () => expect(await initial).toEqual(destination));
     f.pending.ready();
@@ -503,7 +509,9 @@ describe("pending external destinations", () => {
     f.pending.hydrated();
     f.pending.ready();
     const tapA = f.pending.submit("a");
-    await vi.waitFor(() => expect(resolve).toHaveBeenCalledWith("a", expect.any(Function)));
+    await vi.waitFor(() =>
+      expect(resolve).toHaveBeenCalledWith("a", expect.any(Function), expect.any(Function)),
+    );
     const acknowledgedB = vi.fn();
     const tapB = f.pending.submit("b").then(acknowledgedB);
     a.reject(new Error("old failure"));
@@ -527,6 +535,45 @@ describe("pending external destinations", () => {
     expect(f.pending.mayReconcileSelection("remembered")).toBe(false);
     expect(f.pending.mayReconcileSelection("new")).toBe(true);
     expect(f.pending.account("another-account")).toBe(true);
+  });
+
+  it("renders the first stack while a cold link waits on the network, then presents it", async () => {
+    const directory = Promise.withResolvers<void>();
+    const f = fixture(async (_url, _current, release) => {
+      release();
+      await directory.promise;
+      return destination;
+    });
+    f.pending.hydrated();
+    const tap = f.pending.submit("unknown-yet");
+    expect(await f.pending.initialState(() => deploymentRoot("remembered"))).toEqual(
+      deploymentRoot("remembered"),
+    );
+    f.pending.ready();
+    expect(f.present).not.toHaveBeenCalled();
+    directory.resolve();
+    await tap;
+    expect(f.present).toHaveBeenCalledWith(destination);
+  });
+
+  it("lets the shown selection reconcile once the linked Deployment fails to open, even before landing", async () => {
+    const f = fixture(async () => {
+      f.pending.selectionFailed();
+      return destination;
+    });
+    f.pending.hydrated();
+    f.pending.ready();
+    await f.pending.submit("unreachable");
+    expect(f.present).toHaveBeenCalledWith(destination);
+    expect(f.pending.mayReconcileSelection("remembered")).toBe(true);
+
+    const landed = fixture(async () => destination);
+    landed.pending.hydrated();
+    landed.pending.ready();
+    await landed.pending.submit("new");
+    expect(landed.pending.mayReconcileSelection("remembered")).toBe(false);
+    landed.pending.selectionFailed();
+    expect(landed.pending.mayReconcileSelection("remembered")).toBe(true);
   });
 
   it("reports a routing failure and rejects the acknowledgment so the OS response remains retryable", async () => {

@@ -2,7 +2,12 @@ import type { InitialState } from "@react-navigation/native";
 
 interface DestinationPorts {
   readonly receive: (url: string) => boolean | "callback";
-  readonly resolve: (url: string, current: () => boolean) => Promise<InitialState | null>;
+  /** `release` lets the first screen render while resolution waits on the network. */
+  readonly resolve: (
+    url: string,
+    current: () => boolean,
+    release: () => void,
+  ) => Promise<InitialState | null>;
   readonly present: (state: InitialState) => void;
   readonly failed: (error: unknown) => void;
 }
@@ -12,6 +17,7 @@ interface Pending {
   readonly done: Promise<void>;
   readonly finish: () => void;
   readonly reject: (error: unknown) => void;
+  readonly released: Promise<void>;
   work: Promise<void>;
 }
 
@@ -28,6 +34,7 @@ export class PendingDestination {
   #generation = 0;
   #received = false;
   #selection: string | null | undefined;
+  #selectionFailed = -1;
   #account: string | null | undefined;
 
   constructor(options: DestinationPorts) {
@@ -57,11 +64,16 @@ export class PendingDestination {
       finish = resolve;
       reject = fail;
     });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const pending: Pending = {
       state: undefined,
       done,
       finish,
       reject,
+      released,
       work: Promise.resolve(),
     };
     this.#pending = pending;
@@ -69,10 +81,10 @@ export class PendingDestination {
     pending.work = (async () => {
       await this.#hydrated;
       if (!current()) return;
-      const state = consumed ? null : await this.#options.resolve(url, current);
+      const state = consumed ? null : await this.#options.resolve(url, current, release);
       if (!current()) return;
       pending.state = state;
-      if (state !== null) {
+      if (state !== null && this.#selectionFailed !== this.#generation) {
         const home = state.routes[0];
         this.#selection =
           home?.params &&
@@ -98,8 +110,9 @@ export class PendingDestination {
   async initialState(fallback: () => InitialState): Promise<InitialState> {
     while (this.#pending !== null) {
       const pending = this.#pending;
-      await Promise.race([pending.work, pending.done]);
+      await Promise.race([pending.work, pending.done, pending.released]);
       if (pending !== this.#pending) continue;
+      if (pending.state === undefined) return fallback();
       this.#initial = pending;
       return pending.state ?? fallback();
     }
@@ -118,6 +131,12 @@ export class PendingDestination {
     return (
       previous !== undefined && previous !== null && previous !== subject && this.#pending === null
     );
+  }
+
+  /** The destination's Deployment could not be selected, so the shown selection may take the root back. */
+  selectionFailed(): void {
+    this.#selectionFailed = this.#generation;
+    this.#selection = undefined;
   }
 
   mayReconcileSelection(deploymentId: string | null): boolean {
