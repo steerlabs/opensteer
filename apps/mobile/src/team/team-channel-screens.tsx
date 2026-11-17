@@ -255,7 +255,7 @@ export function TeamThreadScreen(props: StaticScreenProps<TeamThreadRoute>): Rea
   const root = view?.messages.find((message) => message.id === rootId) ?? null;
 
   if (session === null || view === null || view.channel === null || root === null)
-    return <PlaceWaiting failure={place.failure} />;
+    return <PlaceWaiting failure={place.failure ?? (view === null ? null : snapshot.error)} />;
   return (
     <Screen edgeToEdge>
       <Place

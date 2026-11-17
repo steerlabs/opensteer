@@ -696,6 +696,34 @@ describe("ComputerUseService", () => {
     await expect(second).rejects.toThrow("The database is unavailable");
   });
 
+  it("finishes recording a Stop pressed on the Mac before shutdown returns", async () => {
+    let finish!: () => void;
+    const written = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const recording = vi.fn(() => written);
+    const test = harness({
+      stops: { clear: async () => undefined, initial: [], record: recording },
+    });
+    await observe(test.service, callable, context);
+    const sessionId = test.service.sessionsForRunner(runnerId)[0]?.sessionId;
+    if (!sessionId) throw new Error("The session was not opened.");
+    test.service.handleHelperEvent(runnerId, {
+      event: "session.stopped",
+      params: { reason: "user", sessionId },
+    });
+    expect(recording).toHaveBeenCalledOnce();
+
+    const events: string[] = [];
+    const shutdown = test.service.shutdown().then(() => events.push("shutdown"));
+    // Every task the shutdown could finish on its own runs in this turn.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    events.push("recorded");
+    finish();
+    await shutdown;
+    expect(events).toEqual(["recorded", "shutdown"]);
+  });
+
   it("publishes a change when a session opens and throttles action counts", async () => {
     await observe(test.service, callable, context);
     expect(test.onSessionsChanged).toHaveBeenCalledTimes(1);

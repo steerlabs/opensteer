@@ -189,9 +189,9 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The service validates its durable Personal or team authority before acting.",
   },
-  "apps/mobile/src/app.tsx": {
+  "apps/mobile/src/navigation-state.ts": {
     counts: {
-      "outcome.kind": 2,
+      "outcome.kind": 1,
     },
     reason: "Navigation selects a verified team deep-link destination rather than a Personal task.",
   },

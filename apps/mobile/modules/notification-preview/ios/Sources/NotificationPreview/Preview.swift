@@ -33,14 +33,11 @@ public enum Preview {
         + ["deploymentId", "notificationId", "installationId"].map { fields[$0] ?? "" } + [keyId]
         + ["kind", "deepLink", "expiresAt"].map { fields[$0] ?? "" })
   }
-  public static func validateRoute(_ f: [String: String], now: Date = Date()) throws {
+  public static func validateFields(_ f: [String: String], now: Date = Date()) throws {
     guard f.values.allSatisfy({ $0.utf8.count <= 4096 }),
-      let dep = f["deploymentId"], let thread = f["threadId"], let kind = f["kind"],
-      dep.range(of: "^dep_[0-9a-f-]{36}$", options: .regularExpression) != nil,
-      thread.range(of: "^thr_[0-9a-f-]{36}$", options: .regularExpression) != nil,
-      let link = f["deepLink"], let url = URLComponents(string: link),
-      url.scheme == "com.opensteer.mobile", url.host == nil,
-      url.path == "/deployments/\(dep)/threads/\(thread)", url.fragment == nil,
+      ["deploymentId", "notificationId", "installationId", "kind", "deepLink"].allSatisfy({
+        f[$0]?.isEmpty == false
+      }),
       let expiry = f["expiresAt"],
       expiry.range(
         of: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
@@ -51,28 +48,12 @@ public enum Preview {
     guard let date = formatter.date(from: expiry), date > now,
       formatter.string(from: date) == expiry
     else { throw PreviewError.invalid }
-    let name: String?
-    switch kind {
-    case "reply-published": name = "messageId"
-    case "request-opened": name = "requestId"
-    case "run-failed": name = nil
-    default: throw PreviewError.invalid
-    }
-    if let name {
-      let prefix = name == "messageId" ? "msg" : "req"
-      guard let anchor = f[name],
-        anchor.range(of: "^\(prefix)_[0-9a-f-]{36}$", options: .regularExpression) != nil,
-        url.queryItems == [URLQueryItem(name: name, value: anchor)]
-      else { throw PreviewError.invalid }
-    } else if url.query != nil {
-      throw PreviewError.invalid
-    }
   }
   public static func open(
     _ fields: [String: String], key: String?, marker: String, recordMarker: String,
     now: Date = Date()
   ) throws -> PreviewText {
-    try validateRoute(fields, now: now)
+    try validateFields(fields, now: now)
     guard marker == recordMarker, !marker.isEmpty, let key, let raw = fields["preview"],
       raw.utf8.count <= 4096,
       let data = raw.data(using: .utf8),
