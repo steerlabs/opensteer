@@ -1,0 +1,169 @@
+--- a/sdk/src/contracts/pluginEngine.ts
++++ b/sdk/src/contracts/pluginEngine.ts
+@@ -189,2 +189,13 @@
+   ) => Effect.Effect<void, StorageError | AccountConnectionRefused>;
++  /** Product check after preparation and before an irreversible resource write. */
++  readonly beforeResourceWrite?: (
++    app: AppId,
++    operation: "deploy" | "activate" | "schedule" | "workflow",
++  ) => Effect.Effect<void, StorageError>;
++  readonly scheduleApprovalDefault?: Effect.Effect<"browser" | "automatic">;
++  /** Product check before supplying resolved capabilities to a workflow. */
++  readonly workflowContextResolved?: (
++    app: AppId,
++    context: import("apps/contracts").HostContext,
++  ) => Effect.Effect<void, Error>;
+   /** Called once after inserting a new configured app, before its transaction commits. */
+--- a/sdk/src/implementation/apps.ts
++++ b/sdk/src/implementation/apps.ts
+@@ -532,2 +532,3 @@
+       if (before !== null) yield* droppedMigrations(db, before.code);
++      if (lifecycle?.beforeResourceWrite) yield* lifecycle.beforeResourceWrite(appId, "deploy");
+       if (requirements.sql === true)
+@@ -885,2 +886,3 @@
+           const version = yield* storedVersion(tx, app, input.version);
++          if (lifecycle?.beforeResourceWrite) yield* lifecycle.beforeResourceWrite(app.id, "activate");
+           yield* query(() =>
+--- a/sdk/src/implementation/create.ts
++++ b/sdk/src/implementation/create.ts
+@@ -114,2 +114,3 @@
+       options.workflows,
++      options.hooks,
+     );
+--- a/sdk/src/implementation/workflows.ts
++++ b/sdk/src/implementation/workflows.ts
+@@ -1,2 +1,2 @@
+-import { CurrentActor } from "../contracts/pluginEngine.ts";
++import { CurrentActor, type ResourceLifecycle } from "../contracts/pluginEngine.ts";
+ /** Retained run identities pin code/accounts; the backend owns timers and checkpoint execution. */
+@@ -148,2 +148,3 @@
+   backend?: WorkflowRuntime,
++  lifecycle?: ResourceLifecycle,
+ ) => {
+@@ -239,6 +240,9 @@
+         const state = yield* captured(row);
++        const resolved = yield* resolve(state, resolveAccount).pipe(
++          Effect.provideService(CurrentActor, state.actor),
++        );
++        if (lifecycle?.workflowContextResolved)
++          yield* lifecycle.workflowContextResolved(row.app, resolved);
+         return {
+-          ...(yield* resolve(state, resolveAccount).pipe(
+-            Effect.provideService(CurrentActor, state.actor),
+-          )),
++          ...resolved,
+           hostApi: declarations.hostApi(state.version),
+@@ -526,2 +530,4 @@
+             }
++            if (lifecycle?.beforeResourceWrite)
++              yield* lifecycle.beforeResourceWrite(input.app, "workflow");
+             yield* query(() =>
+--- a/sdk/src/implementation/schedules.ts
++++ b/sdk/src/implementation/schedules.ts
+@@ -524,2 +524,3 @@
+             const previous = yield* findOwn(target);
++            if (lifecycle?.beforeResourceWrite) yield* lifecycle.beforeResourceWrite(app.id, "schedule");
+             if (previous === null) {
+@@ -533,3 +534,3 @@
+                 enabled: parsed.enabled,
+-                approvalMode: parsed.approvalMode ?? "automatic",
++                approvalMode: parsed.approvalMode ?? (yield* (lifecycle?.scheduleApprovalDefault ?? Effect.succeed("automatic" as const))),
+                 nextAt,
+@@ -569,3 +570,5 @@
+             yield* lockApp(db, { app: saved.app });
+-            return yield* save(yield* readCopy(parsed), { ...parsed, timing, nextAt, revision });
++            const current = yield* readCopy(parsed);
++            if (lifecycle?.beforeResourceWrite) yield* lifecycle.beforeResourceWrite(saved.app, "schedule");
++            return yield* save(current, { ...parsed, timing, nextAt, revision });
+           }),
+@@ -585,2 +588,3 @@
+           Effect.gen(function* () {
++            if (lifecycle?.beforeResourceWrite) yield* lifecycle.beforeResourceWrite(settings.app, "schedule");
+             yield* query(() =>
+@@ -742,2 +746,7 @@
+                 if (pending.requestId === null || pending.answer === null) return;
++                const settings = yield* readSettings(pending.scheduleId);
++                if (Result.isFailure(yield* Effect.result(authorize({ ...settings, phase: "resume" })))) {
++                  yield* finish(pending, "interrupted", "AccessRevoked", "runtime");
++                  return;
++                }
+                 const requestId = pending.requestId;
+@@ -825,4 +834,5 @@
+                 // occurrence after reconnecting or linking runs as usual.
+-                const waiting = yield* waitingOn(setting);
+-                if (waiting !== undefined) {
++                const refused = Result.isFailure(yield* Effect.result(authorize({ ...setting, phase: "start" })));
++                const waiting = refused ? undefined : yield* waitingOn(setting);
++                if (refused || waiting !== undefined) {
+                   // Invalid timing is left to the run path, which pauses the schedule.
+@@ -850,3 +860,3 @@
+                           "pluginEngine.app.id": setting.app,
+-                          ...("reconnectAccount" in waiting
++                          ...(waiting === undefined ? { "pluginEngine.outcome": "access_revoked" } : "reconnectAccount" in waiting
+                             ? {
+@@ -869,2 +879,4 @@
+                     yield* lockApp(db, { app: setting.app });
++                    if (Result.isFailure(yield* Effect.result(authorize({ ...setting, phase: "start" }))))
++                      return null;
+                     yield* query(() =>
+--- a/apps/src/implementation/failure-detail.ts
++++ b/apps/src/implementation/failure-detail.ts
+@@ -1 +1,2 @@
++import type { JsonValue } from "../contracts/schema.ts";
+ import { Match, Option, Predicate, Redacted, Schema } from "effect";
+@@ -162,2 +163,14 @@
+ 
++export const redactOutput = (value: JsonValue, secrets: readonly string[]): JsonValue => {
++  if (!secrets.length) return value;
++  if (typeof value === "string") return replaceSecrets(value, secrets);
++  if (Array.isArray(value)) return value.map((item) => redactOutput(item, secrets));
++  if (value !== null && typeof value === "object")
++    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
++      replaceSecrets(key, secrets),
++      redactOutput(item, secrets),
++    ]));
++  return value;
++};
++
+ const bound = (text: string, maximum: number) =>
+--- a/apps/src/implementation/host.ts
++++ b/apps/src/implementation/host.ts
+@@ -91,2 +91,3 @@
+   parseSkillLoadFailed,
++  redactOutput,
+ } from "./failure-detail.ts";
+@@ -718,2 +719,3 @@
+           return yield* new WorkflowFailure({ reason: "unavailable", retryable: false });
++        const workflowSecrets = new Set(secrets);
+         const workflowContext = yield* makeWorkflowContext(
+@@ -728,2 +730,4 @@
+               );
++              const stepSecrets = accountSecrets(current.accounts);
++              for (const secret of stepSecrets) workflowSecrets.add(secret);
+               return {
+@@ -745,3 +749,3 @@
+                 // The resolved values, not the app's decoded fields, which may be `Redacted`.
+-                secrets: accountSecrets(current.accounts),
++                secrets: stepSecrets,
+               };
+@@ -771,3 +775,3 @@
+           }),
+-        );
++        ).pipe(Effect.map((value) => redactOutput(value, [...workflowSecrets])));
+       }
+@@ -988,3 +992,3 @@
+             new HostOutputInvalid(),
+-          );
++          ).pipe(Effect.map((value) => redactOutput(value, secrets)));
+         });
+--- a/apps/src/implementation/workflow-context.ts
++++ b/apps/src/implementation/workflow-context.ts
+@@ -20,3 +20,3 @@
+ import { fromPromise, toPromise } from "./authoring.ts";
+-import { failureDetail } from "./failure-detail.ts";
++import { failureDetail, redactOutput } from "./failure-detail.ts";
+ 
+@@ -143,2 +143,3 @@
+                   return yield* Schema.decodeUnknownEffect(WorkflowValue)(result).pipe(
++                    Effect.map((value) => redactOutput(value, step.secrets)),
+                     Effect.mapError(

@@ -120,9 +120,3 @@ export type {
   AppServerTable,
 } from "./schema.js";
 export * from "./plugin-agent-store.js";
-
-export {
-  withTaskPluginAdmission,
-  acquireTaskPluginAdmission,
-  pluginAdmissionKey,
-} from "./plugin-admission.js";

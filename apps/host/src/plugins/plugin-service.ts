@@ -120,7 +120,6 @@ interface Pending {
 
 /** Host-owned Promise boundary. Its callbacks are the only route back to Host authority and tools. */
 export class PluginService {
-  readonly #admissions = new Map<string, { authority: PluginAuthorization; callback: string }>();
   readonly skillCache: PluginSkillCache;
   readonly #versionChanges = new MutationQueue();
   readonly #config: EngineInit;
@@ -412,16 +411,6 @@ export class PluginService {
         void this.#callback(child, message);
       } else if (message.type === "callbackCancel") {
         this.#callbacks.get(message.id)?.abort();
-        for (const [lease, entry] of this.#admissions)
-          if (entry.callback === message.id) {
-            this.#admissions.delete(lease);
-            void this.#options
-              .authorize?.(
-                { ...entry.authority, admission: false, lease },
-                new AbortController().signal,
-              )
-              .catch(() => undefined);
-          }
       } else if (message.type === "elicitResult" || message.type === "elicitError") {
         const pending = this.#elicits.get(message.id);
         this.#elicits.delete(message.id);
@@ -447,11 +436,6 @@ export class PluginService {
       );
       rejectReady(error);
       this.#child = undefined;
-      for (const [lease, { authority }] of this.#admissions)
-        void this.#options
-          .authorize?.({ ...authority, admission: false, lease }, new AbortController().signal)
-          .catch(() => undefined);
-      this.#admissions.clear();
       for (const pending of this.#pending.values()) {
         pending.cleanup();
         pending.reject(error);
@@ -608,19 +592,6 @@ export class PluginService {
                   .parse(message.input)
                   .caller.startsWith(this.#options.owner + ":"),
             };
-        const authority = callbackOperations.authorize.input.parse(message.input);
-        const permission = callbackOperations.authorize.output.parse(result);
-        if (authority.lease) this.#admissions.delete(authority.lease);
-        else if (permission.lease) {
-          if (controller.signal.aborted || !child.connected) {
-            await this.#options.authorize?.(
-              { ...authority, admission: false, lease: permission.lease },
-              new AbortController().signal,
-            );
-            throw new PluginServiceError("cancelled", "Plugin admission was cancelled");
-          }
-          this.#admissions.set(permission.lease, { authority, callback: message.id });
-        }
       } else if (message.operation === "webhookOrigin")
         result = (await this.webhookOrigin()) ?? null;
       else if (message.operation === "providers")

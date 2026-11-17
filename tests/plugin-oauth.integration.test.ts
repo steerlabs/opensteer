@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import { z } from "zod";
 import { sql } from "kysely";
+import { plugin_account_request } from "../packages/agent-tools/src/tools/plugins.js";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "../packages/access/src/index.js";
 import { type RequestId } from "../packages/core/src/index.js";
 import {
@@ -641,7 +642,7 @@ test("one-click completion commits a reviewed managed link, fulfils its Request 
       jti: randomUUID(),
     },
   };
-  const request = await handlers.accountRequest({
+  const request = await handlers.handlers().plugin_account_request!({
     caller,
     input: {
       pluginId: target.plugin,
@@ -687,7 +688,9 @@ test("one-click completion commits a reviewed managed link, fulfils its Request 
   loseRefresh = true;
   const connected = await oauth.returned(started.attemptId, proof!, personal.userId);
   expect(connected).toMatchObject({ status: "completed", account: expect.stringMatching(/^acc_/) });
-  expect(await store.requests.get(request.requestId as RequestId)).toMatchObject({
+  expect(
+    await store.requests.get(plugin_account_request.output.parse(request).requestId as RequestId),
+  ).toMatchObject({
     status: "fulfilled",
   });
   const continued = Promise.withResolvers<unknown>();
@@ -753,7 +756,7 @@ test("one-click completion commits a reviewed managed link, fulfils its Request 
   );
   expect(result.result?.execution?.value, JSON.stringify(result)).toMatchObject({
     ok: true,
-    value: { token: expect.stringMatching(/^oscred/u), refused: "blocked" },
+    value: { token: "[redacted]", refused: "blocked" },
   });
   expect(JSON.stringify(result)).not.toContain("renewed-test-token");
   expect(apiTokens).toEqual(["Bearer renewed-test-token"]);

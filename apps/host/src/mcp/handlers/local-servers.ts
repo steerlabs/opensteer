@@ -10,6 +10,7 @@ export function localServerToolHandlers(registry: LocalServerRegistry): Partial<
         { userId: run.userId, threadId: run.thread.id },
         c.input,
         operationId(c.caller, c.operationKey, "local_server_add"),
+        c.checkLive,
       );
     },
     local_server_list: async (c) => ({ servers: await registry.list(c.caller.userId) }),
@@ -19,6 +20,7 @@ export function localServerToolHandlers(registry: LocalServerRegistry): Partial<
         { userId: run.userId },
         c.input.name,
         operationId(c.caller, c.operationKey, "local_server_remove"),
+        c.checkLive,
       );
       return { ok: true as const };
     },

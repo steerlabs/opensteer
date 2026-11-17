@@ -93,11 +93,7 @@ export interface PluginOwnerApiOptions {
   readonly assertOwner: (userId: UserId) => Promise<void>;
   /** The owner's device data apps and local servers in the plugin namespace, read live. */
   readonly localTools?: (owner: UserId) => Promise<readonly LocalTool[]>;
-  readonly accessAdmission?: <A>(
-    owner: UserId,
-    plugin: string,
-    work: () => Promise<A>,
-  ) => Promise<A>;
+  readonly cancelPlugin?: (owner: UserId, plugin: string) => Promise<void>;
   /** Tells the owner's clients to reread what they show. */
   readonly changed: (owner: UserId) => void;
 }
@@ -1009,15 +1005,13 @@ export class PluginOwnerApi {
         return { type: command.type };
       case "plugins.remove":
         await this.#call(service.remove({ plugin: command.pluginId }, owner));
+        await this.#options.cancelPlugin?.(userId, command.pluginId);
         this.pages?.forget(command.pluginId);
         changed();
         return { type: command.type };
       case "plugins.access.set":
-        if (this.#options.accessAdmission)
-          await this.#options.accessAdmission(userId, command.pluginId, () =>
-            settings.setAccess(userId, command.pluginId, command.access),
-          );
-        else await settings.setAccess(userId, command.pluginId, command.access);
+        await settings.setAccess(userId, command.pluginId, command.access);
+        if (command.access === "off") await this.#options.cancelPlugin?.(userId, command.pluginId);
         changed();
         return { type: command.type, access: command.access };
       case "plugins.account.create": {
@@ -1065,6 +1059,7 @@ export class PluginOwnerApi {
             owner,
           ),
         );
+        await this.#options.cancelPlugin?.(userId, command.pluginId);
         changed();
         return { type: command.type };
       case "plugins.schedule.configure":

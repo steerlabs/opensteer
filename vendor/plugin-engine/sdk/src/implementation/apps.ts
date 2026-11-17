@@ -530,6 +530,7 @@ export const makeApps = (
         }).pipe(Effect.mapError(() => new StorageError()));
       const retainedFiles: SourceFiles = [...codeFiles, ...publicFiles.retained];
       if (before !== null) yield* droppedMigrations(db, before.code);
+      if (lifecycle?.beforeResourceWrite) yield* lifecycle.beforeResourceWrite(appId, "deploy");
       if (requirements.sql === true)
         yield* runtime.migrate({ app: appId, build: built.build }).pipe(
           Effect.mapError((error) => {
@@ -883,6 +884,7 @@ export const makeApps = (
             );
           }
           const version = yield* storedVersion(tx, app, input.version);
+          if (lifecycle?.beforeResourceWrite) yield* lifecycle.beforeResourceWrite(app.id, "activate");
           yield* query(() =>
             tx.updateMany("apps", {
               where: (b) => b("id", "=", app.id),

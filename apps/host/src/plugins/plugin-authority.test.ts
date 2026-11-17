@@ -68,7 +68,7 @@ test("retires completed occurrences while retaining a handed-off execution", asy
   expect(authority.caller(key)).toBe(caller);
   await authority.scoped(caller, async () => {
     authority.execution("pending", key, false);
-    expect(authority.caller(key)).toBe(caller);
+    expect(authority.caller(key)).toBeUndefined();
   });
   expect(authority.caller(key)).toBeUndefined();
   for (let occurrence = 0; occurrence < 30; occurrence++) {

@@ -1,5 +1,5 @@
 import { beforeAll, afterAll, afterEach, test, expect, vi } from "vitest";
-import { mkdtemp, rm, mkdir, writeFile, readFile, symlink } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -29,6 +29,7 @@ import {
 } from "../packages/database/src/personal-run-fixture.test-support.js";
 import { AgentHomeFiles } from "../apps/host/src/threads/agent-home-files.js";
 import { withFolderPluginPackage } from "../apps/host/src/local-servers/folder-plugin-package.js";
+import { PluginOwnerApi } from "../apps/host/src/plugins/plugin-owner-api.js";
 import { PluginService } from "../apps/host/src/plugins/plugin-service.js";
 import { PluginAuthority } from "../apps/host/src/plugins/plugin-authority.js";
 import { PluginExecutions } from "../apps/host/src/plugins/plugin-executions.js";
@@ -41,6 +42,7 @@ import { continuationMessage } from "../apps/host/src/agents/continuation-servic
 import { pendingEvent } from "../packages/database/src/store.integration.test-support.js";
 import { ContinuationService } from "../apps/host/src/agents/continuation-service.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { NativeFsHelper } from "@opensteer/shared/files/native-fs-helper";
 
 const deadline = <T>(promise: Promise<T>, message: string) =>
   withTimeout(promise, 15000, { timeoutError: () => new Error(message) });
@@ -62,6 +64,7 @@ const events = new EventEmitter();
 const errors: unknown[] = [];
 const enginePhases: string[] = [];
 let effects = 0;
+let exportWait: (() => Promise<void>) | undefined;
 let current: AgentCaller;
 let authorizationWait:
   | ((
@@ -262,14 +265,18 @@ beforeAll(async () => {
     notify: () => {},
     folder: async (_c, d) =>
       withFolderPluginPackage({ directory: d, files: homeFiles, install: pluginSourceFiles }),
-    exportFiles: async (_c, d, f) =>
-      exportPluginSource(
+    exportFiles: async (_c, d, f, authorize, signal) => {
+      await exportWait?.();
+      return exportPluginSource(
         directory,
         d,
         f.files,
         new URL("../apps/runner/native-fs-helper/opensteer-native-fs-test", import.meta.url)
           .pathname,
-      ),
+        authorize,
+        signal,
+      );
+    },
   });
   mcp = new OpensteerMcpService({
     callers: { authenticate: async () => current },
@@ -818,6 +825,120 @@ test.each(["trigger", "watch", "voice", "background"] as const)(
   },
 );
 
+test("task and plugin settings commit while source export is in flight", async () => {
+  const caller = await run("full-access");
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  exportWait = async () => {
+    entered.resolve();
+    await deadline(release.promise, "Export was never released");
+  };
+  const pending = call(caller, "opensteer_plugin_export", {
+    pluginId: plugin,
+    directory: "blocked-export",
+  }).then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error }),
+  );
+  try {
+    await deadline(entered.promise, "Export did not reach its pending file write");
+    const changed = Promise.all([
+      store.updateThreadAccessMode({
+        threadId: caller.thread.id,
+        requestedBy: personal.userId,
+        accessMode: "approval-required",
+      }),
+      records.setAccess(personal.userId, plugin, "off"),
+    ]);
+    await withTimeout(changed, 3000, {
+      timeoutError: () => new Error("A person's setting change waited for plugin export"),
+    });
+    release.resolve();
+    expect(await deadline(pending, "Narrowed export did not return")).toHaveProperty("error");
+  } finally {
+    exportWait = undefined;
+    release.resolve();
+    await pending;
+  }
+});
+
+test("cancelling an export during the root lookup leaves no draft", async () => {
+  const caller = await run("full-access");
+  current = caller;
+  const controller = new AbortController();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const original = NativeFsHelper.prototype.directoryIdentity;
+  const lookup = vi
+    .spyOn(NativeFsHelper.prototype, "directoryIdentity")
+    .mockImplementationOnce(async function (this: NativeFsHelper, ...args) {
+      const identity = await original.apply(this, args);
+      entered.resolve();
+      await deadline(release.promise, "Export root lookup was never released");
+      return identity;
+    });
+  const pending = mcp
+    .callTool(
+      "token",
+      "opensteer_plugin_export",
+      { pluginId: plugin, directory: "cancelled-export" },
+      { caller, operationKey: randomUUID(), signal: controller.signal },
+    )
+    .then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+  try {
+    await deadline(entered.promise, "Export never looked up its root");
+    controller.abort();
+    release.resolve();
+    expect(await deadline(pending, "Cancelled export never returned")).toHaveProperty("error");
+    await expect(stat(join(directory, "cancelled-export"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  } finally {
+    release.resolve();
+    lookup.mockRestore();
+    await pending;
+  }
+});
+
+test("a later discovery call leaves the submitted execution's approval mode intact", async () => {
+  const caller = await run();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  authorizationWait = async (input) => {
+    if (input.operation !== "call" || input.plugin) return;
+    entered.resolve();
+    await deadline(release.promise, "Original execution was never released");
+  };
+  const pending = call(caller, "plugin_call", {
+    calls: { path: "tools.fixture.reviewed", input: { amount: 1 } },
+  });
+  try {
+    await deadline(entered.promise, "Original execution did not reach engine admission");
+    await store.updateThreadAccessMode({
+      threadId: caller.thread.id,
+      requestedBy: personal.userId,
+      accessMode: "auto",
+    });
+    const automatic = { ...caller, accessMode: "auto" as const };
+    await call(automatic, "plugin_search", { namespace: "fixture" });
+    release.resolve();
+    const result = await deadline(pending, "Original execution did not ask for approval");
+    expect(result.status).toBe("pending");
+    expect((await records.execution(String(result.executionId)))?.mode).toBe("ask");
+    await answer(z.custom<RequestId>().parse(result.requestId));
+    expect(await executions.resume(automatic, String(result.executionId))).toMatchObject({
+      status: "completed",
+    });
+  } finally {
+    authorizationWait = undefined;
+    release.resolve();
+    await pending.catch(() => undefined);
+  }
+});
+
 test("raising a task to automatic never answers its existing approval Request", async () => {
   const caller = await run();
   const pending = await call(caller, "plugin_call", {
@@ -841,16 +962,192 @@ test("raising a task to automatic never answers its existing approval Request", 
   });
 });
 
-test("turning access off refuses both answer delivery and later resume", async () => {
-  const caller = await run();
-  const result = await call(caller, "plugin_call", {
-    calls: { path: "tools.fixture.reviewed", input: { amount: 1 } },
-  });
-  await records.setAccess(personal.userId, plugin, "off");
-  await expect(answer(z.custom<RequestId>().parse(result.requestId))).rejects.toThrow();
-  await expect(
-    call(caller, "plugin_resume", { executionId: result.executionId }),
-  ).rejects.toThrow();
+test.each(["off", "remove", "unlink"] as const)(
+  "plugin %s cancels its execution and removes the pending Request",
+  async (change) => {
+    const caller = await run();
+    const installed = await service.install(
+      {
+        kind: "files",
+        name: `Cancellation fixture ${change}`,
+        files: pluginFixtureFiles(1, ["api.fixture.invalid"]),
+      },
+      ownerContext,
+    );
+    if (installed.status !== "installed") throw new Error("Cancellation fixture did not install");
+    const pluginId = installed.plugin.id;
+    const target = { plugin: pluginId, requirement: "service", scope: "user" as const };
+    const account = await service.createApiKeyAccount(
+      {
+        provider: installed.plugin.requirements.accounts.service!.provider,
+        method: "key",
+        fields: { token: "fixture-cancellation-key" },
+      },
+      ownerContext,
+    );
+    await service.linkAccount(
+      {
+        ...target,
+        account: account.id,
+        consent: await service.reviewAccountLink(target, ownerContext),
+      },
+      ownerContext,
+    );
+    const accountRequest = await call(caller, "plugin_account_request", {
+      pluginId,
+      requirement: target.requirement,
+      scope: target.scope,
+      reason: "Review this link",
+    });
+    const pending = await call(caller, "plugin_call", {
+      calls: {
+        path: `tools[${JSON.stringify(installed.plugin.slug)}].reviewed`,
+        input: { amount: 1 },
+      },
+    });
+    const requestId = z.custom<RequestId>().parse(pending.requestId);
+    const api = new PluginOwnerApi({
+      service,
+      settings: records,
+      assertOwner: async () => {},
+      accountLinked: async () => {},
+      cancelPlugin: (owner, plugin) => executions.cancelPlugin(owner, plugin),
+      changed: () => {},
+    });
+    const key = { pluginId, idempotencyKey: randomUUID() };
+    const changeCommand =
+      change === "off"
+        ? { ...key, type: "plugins.access.set" as const, access: "off" as const }
+        : change === "remove"
+          ? { ...key, type: "plugins.remove" as const }
+          : {
+              ...key,
+              type: "plugins.account.unlink" as const,
+              requirement: target.requirement,
+              scope: target.scope,
+              accountId: account.id,
+            };
+    await api.command(changeCommand, {
+      session: {
+        id: createId("authSession"),
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        absoluteExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        user: {
+          id: personal.userId,
+          displayName: "Person",
+          email: "fixture@example.test",
+          emailVerified: true,
+          disabledAt: null,
+          image: null,
+        },
+      },
+      headers: {},
+      requestId: "fixture",
+      requestUrl: "/",
+      signal: new AbortController().signal,
+      surface: "canonical",
+      setHeader: () => {},
+    });
+    expect(await store.requests.get(requestId)).toMatchObject({
+      status: "cancelled",
+      cancellationReason: "plugin-interrupted",
+    });
+    expect(
+      await store.requests.get(z.custom<RequestId>().parse(accountRequest.requestId)),
+    ).toMatchObject({ status: "cancelled", cancellationReason: "plugin-interrupted" });
+    await expect(answer(requestId)).rejects.toThrow();
+    expect(await call(caller, "plugin_resume", { executionId: pending.executionId })).toMatchObject(
+      {
+        status: "interrupted",
+      },
+    );
+  },
+);
+
+test("a refused plugin update leaves the active SQLite schema and version intact", async () => {
+  const readSource = pluginFixtureFiles(1).map((file) =>
+    file.path !== "index.ts"
+      ? file
+      : {
+          ...file,
+          content: file.content.replace(
+            "async (_ctx, { amount }) => amount + 1",
+            'async (ctx) => ctx.sql.exec("SELECT value FROM counter").one().value',
+          ),
+        },
+  );
+  const files = [
+    ...readSource,
+    {
+      path: "migrations/0001_counter.sql",
+      content: "CREATE TABLE counter (value INTEGER); INSERT INTO counter VALUES (7);",
+    },
+  ];
+  const prior = await service.install(
+    { kind: "files", name: "Migration fixture", files },
+    ownerContext,
+  );
+  if (prior.status !== "installed") throw new Error("Migration fixture did not install");
+  const caller = await run("full-access");
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  authorizationWait = async (input) => {
+    if (input.operation !== "install" || input.plugin !== prior.plugin.id) return;
+    entered.resolve();
+    await deadline(release.promise, "Update was never released");
+  };
+  const update = authority
+    .scoped(caller, () =>
+      service.install(
+        {
+          kind: "files",
+          plugin: prior.plugin.id,
+          files: [
+            ...files,
+            {
+              path: "migrations/0002_rename.sql",
+              content: "ALTER TABLE counter RENAME COLUMN value TO renamed;",
+            },
+          ],
+        },
+        authority.admit(caller),
+      ),
+    )
+    .catch((error: unknown) => error);
+  try {
+    await deadline(entered.promise, "Update did not pass admission before its build");
+    await store.updateThreadAccessMode({
+      threadId: caller.thread.id,
+      requestedBy: personal.userId,
+      accessMode: "approval-required",
+    });
+    authorizationWait = undefined;
+    release.resolve();
+    expect(await deadline(update, "Refused update did not end")).toMatchObject({
+      code: "forbidden",
+    });
+    expect(
+      (await service.detail({ plugin: prior.plugin.id }, ownerContext)).plugin.activeVersion,
+    ).toBe(prior.version.id);
+    expect(
+      (
+        await service.call(
+          {
+            calls: {
+              path: `tools[${JSON.stringify(prior.plugin.slug)}].read`,
+              input: { amount: 0 },
+            },
+          },
+          ownerContext,
+        )
+      ).result,
+    ).toMatchObject({ execution: { value: { ok: true, value: 7 } } });
+  } finally {
+    authorizationWait = undefined;
+    release.resolve();
+    await update;
+  }
 });
 
 test("Stop discards an execution and cancels its Request", async () => {
@@ -1092,6 +1389,7 @@ test("resource updates respect plugin settings and schedule run operations repla
     false,
     configurationKey,
   );
+  expect(configured).toMatchObject({ approvalMode: "browser" });
   const { sql } = await import("kysely");
   await sql`update plugin_engine.plugin_engine_schedules set next_at = (now() at time zone 'UTC') + interval '1 hour', revision = 'configured' where app = ${plugin}`.execute(
     database,
@@ -1115,6 +1413,13 @@ test("resource updates respect plugin settings and schedule run operations repla
     database,
   );
   expect(await call(caller, "opensteer_plugin_resource_update", input, false, key)).toEqual(first);
+  await service.manage(
+    {
+      operation: "schedules.configure",
+      input: { app: plugin, name: "periodic", enabled: true, approvalMode: "automatic" },
+    },
+    ownerContext,
+  );
   await records.setAccess(personal.userId, plugin, "read-only");
   await expect(
     call(caller, "opensteer_plugin_resource_update", {
@@ -1123,12 +1428,24 @@ test("resource updates respect plugin settings and schedule run operations repla
     }),
   ).rejects.toThrow();
   await expect(call(caller, "opensteer_plugin_resource_update", input)).rejects.toThrow();
+  await records.setAccess(personal.userId, plugin, "off");
+  await expect(
+    call(caller, "opensteer_plugin_resource_update", {
+      pluginId: plugin,
+      change: {
+        action: "schedule.configure",
+        schedule: "periodic",
+        enabled: false,
+        approvalMode: "browser",
+      },
+    }),
+  ).rejects.toThrow();
   await expect(
     call(caller, "opensteer_plugin_resource_update", {
       pluginId: plugin,
       change: { action: "schedule.configure", schedule: "periodic", enabled: false },
     }),
-  ).resolves.toMatchObject({ enabled: false });
+  ).resolves.toMatchObject({ enabled: false, approvalMode: "automatic" });
 });
 
 test.each(["cloud", "resource"] as const)(

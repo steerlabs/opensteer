@@ -1,4 +1,4 @@
-import { CurrentActor } from "../contracts/pluginEngine.ts";
+import { CurrentActor, type ResourceLifecycle } from "../contracts/pluginEngine.ts";
 /** Retained run identities pin code/accounts; the backend owns timers and checkpoint execution. */
 import { Cause, Clock, Effect, Exit, Redacted, Result, Schema } from "effect";
 import { Digest } from "effect/crypto";
@@ -146,6 +146,7 @@ export const makeWorkflowRuns = (
   crypto: HostCrypto,
   declarations: Declarations,
   backend?: WorkflowRuntime,
+  lifecycle?: ResourceLifecycle,
 ) => {
   const db = database(storage);
   const read = (run: WorkflowRunId, app?: AppId) =>
@@ -237,10 +238,13 @@ export const makeWorkflowRuns = (
         if (terminal(row))
           return yield* failure(row.status === "terminated" ? "terminated" : "conflict");
         const state = yield* captured(row);
+        const resolved = yield* resolve(state, resolveAccount).pipe(
+          Effect.provideService(CurrentActor, state.actor),
+        );
+        if (lifecycle?.workflowContextResolved)
+          yield* lifecycle.workflowContextResolved(row.app, resolved);
         return {
-          ...(yield* resolve(state, resolveAccount).pipe(
-            Effect.provideService(CurrentActor, state.actor),
-          )),
+          ...resolved,
           hostApi: declarations.hostApi(state.version),
           database: ownsDatabase(state.version.requirements),
           workflowControls: controls(state),
@@ -524,6 +528,8 @@ export const makeWorkflowRuns = (
               );
               yield* storedAccount(db, account);
             }
+            if (lifecycle?.beforeResourceWrite)
+              yield* lifecycle.beforeResourceWrite(input.app, "workflow");
             yield* query(() =>
               db.create("workflowRuns", {
                 id,

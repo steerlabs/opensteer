@@ -19,5 +19,5 @@ export interface ToolCaller {
   readonly threadId: ThreadId;
   /** For a call through the plugin tools: asks the person through the calling execution. */
   readonly elicit?: PluginElicit;
-  readonly authorize?: () => Promise<(() => void) | void>;
+  readonly authorize?: () => Promise<void>;
 }

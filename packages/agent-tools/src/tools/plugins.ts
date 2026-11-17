@@ -267,7 +267,7 @@ export const opensteer_plugin_resource_update = defineAgentTool({
   callers: ["run"],
   openWorld: true,
   description:
-    "Configure a declared schedule, run it now, start or stop a workflow, or remove a webhook subscription. Read plugin_resources first for current identities; cursor paging keeps every live workflow reachable. Starting a workflow needs a unique key: reusing that key recovers the same start. Manual provider cleanup and its confirmation, scheduled approval answers, webhook secret setup and account links remain person-only.",
+    "Configure a declared schedule, run it now, start or stop a workflow, or remove a webhook subscription. Read plugin_resources first for current identities; cursor paging keeps every live workflow reachable. Starting a workflow needs a unique key: reusing that key recovers the same start. Manual provider cleanup and its confirmation, scheduled approval settings and answers, webhook secret setup and account links remain person-only.",
   input: z.strictObject({
     pluginId: id,
     change: z.discriminatedUnion("action", [
@@ -275,7 +275,6 @@ export const opensteer_plugin_resource_update = defineAgentTool({
         action: z.literal("schedule.configure"),
         schedule: id,
         enabled: z.boolean(),
-        approvalMode: z.enum(["browser", "automatic"]).optional(),
       }),
       z.strictObject({ action: z.literal("schedule.run"), schedule: id, scheduleId: id }),
       z.strictObject({ action: z.literal("workflow.start"), workflow: id, input: json, key: id }),
