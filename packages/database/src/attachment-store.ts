@@ -1,7 +1,7 @@
 import { assertActiveGrant, type ActiveExecutionBindingInput } from "./execution-authority.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
-  lockDeploymentEvents,
+  lockPersonalSyncState,
   withPersonalReadTransaction,
   withPersonalTransaction,
 } from "./personal-transaction.js";
@@ -164,7 +164,7 @@ export class AttachmentStore {
     if (!/^[0-9a-f]{64}$/u.test(input.sha256)) throw conflict("Invalid attachment checksum");
     // Non-retrying: install publishes attachment bytes while this row fence is held.
     return this.database.transaction().execute(async (transaction) => {
-      await lockDeploymentEvents(transaction);
+      await lockPersonalSyncState(transaction);
       const row = await transaction
         .selectFrom("attachments")
         .selectAll()

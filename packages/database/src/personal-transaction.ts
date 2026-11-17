@@ -5,6 +5,7 @@ import type { IsolationLevel, Kysely, Transaction } from "kysely";
 import { withDatabaseTransaction } from "./connection.js";
 
 const clocks = new WeakMap<object, () => number>();
+const transactionDatabases = new WeakMap<object, object>();
 
 export function setExecutionClock<Schema>(database: Kysely<Schema>, now: () => number) {
   clocks.set(database, now);
@@ -20,6 +21,11 @@ export function inheritExecutionClock<Schema>(
 ) {
   const clock = clocks.get(database);
   if (clock) clocks.set(transaction, clock);
+  transactionDatabases.set(transaction, database);
+}
+
+export function personalTransactionDatabase<Schema>(transaction: Transaction<Schema>) {
+  return transactionDatabases.get(transaction) as Kysely<Schema> | undefined;
 }
 
 const held = new WeakSet<object>();
@@ -62,14 +68,14 @@ export function withPersonalReadTransaction<Result, Schema = DatabaseSchema>(
 }
 
 /** Personal mutations reserve commit order before taking any domain row lock. */
-export async function lockDeploymentEvents<Schema>(transaction: Transaction<Schema>) {
+export async function lockPersonalSyncState<Schema>(transaction: Transaction<Schema>) {
   if (held.has(transaction)) return;
   const state = (
     await sql<{
       deploymentId: DeploymentId;
-    }>`select deployment_id from deployment_event_state for no key update`.execute(transaction)
+    }>`select deployment_id from client_sync_state limit 1 for no key update`.execute(transaction)
   ).rows[0];
-  if (!state) throw new Error("Personal deployment event state is missing");
+  if (!state) throw new Error("Personal sync state is missing");
   // Settings follow enrollment of the hosting computer during first-owner setup.
   await sql`select singleton_key from personal_settings for no key update`.execute(transaction);
   held.add(transaction);
@@ -84,13 +90,13 @@ export function withPersonalTransaction<Result, Schema = DatabaseSchema>(
 ): Promise<Result> {
   if (database.isTransaction) {
     const transaction = database as Transaction<Schema>;
-    return lockDeploymentEvents(transaction).then(() => action(transaction));
+    return lockPersonalSyncState(transaction).then(() => action(transaction));
   }
   return withDatabaseTransaction(
     database,
     async (transaction) => {
       inheritExecutionClock(database, transaction);
-      await lockDeploymentEvents(transaction);
+      await lockPersonalSyncState(transaction);
       return action(transaction);
     },
     isolationLevel,

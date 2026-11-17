@@ -1,11 +1,11 @@
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { syncTranscriptMessage } from "./message-visibility.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   createId,
   MessageAuthorSchema,
   OpensteerError,
   PersonMessageSchema,
-  type AgentEvent,
   type Message,
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
@@ -13,14 +13,13 @@ import { admitRunToolCallInTransaction, type RunToolAdmissionInput } from "./run
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue, systemPrincipalId } from "./store-primitives.js";
 import { messageFromRow } from "./thread-row-mappers.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
 export interface PersonMessageInput {
   readonly admission: RunToolAdmissionInput;
   readonly message: string;
 }
 export interface PersonMessageResult {
   readonly message: Message;
-  readonly events: readonly AgentEvent[];
+
   readonly wasDuplicate: boolean;
 }
 export async function publishPersonMessage(
@@ -34,7 +33,7 @@ export async function publishPersonMessage(
       code: "bad_request",
       message: "Invalid notification admission",
     });
-  return withPersonalTransaction(database, async (personalTransaction) => {
+  return commitPersonalMutation(database, async (personalTransaction) => {
     await (async (transaction) => {
       await admitRunToolCallInTransaction(transaction, admission);
     })(personalTransaction);
@@ -57,11 +56,7 @@ export async function publishPersonMessage(
           .selectAll()
           .where("id", "=", receipt.resultMessageId)
           .executeTakeFirstOrThrow();
-        return {
-          message: messageFromRow(row),
-          events: [],
-          wasDuplicate: true,
-        };
+        return { message: messageFromRow(row), wasDuplicate: true };
       }
       const thread = await transaction
         .selectFrom("threads")
@@ -111,17 +106,7 @@ export async function publishPersonMessage(
         .where("id", "=", admission.sourceThreadId)
         .executeTakeFirstOrThrow();
       const message = messageFromRow(row);
-      const event = await appendHostDeploymentEvent(transaction, {
-        type: "message.created",
-        data: {
-          input: null,
-          message,
-          addressedToUserId: run.requestedBy,
-        },
-        environmentId: admission.environmentId,
-        runId: admission.runId,
-        threadId: admission.sourceThreadId,
-      });
+      await syncTranscriptMessage(transaction, message.id);
       await transaction
         .updateTable("agentControlRequests")
         .set({
@@ -130,11 +115,7 @@ export async function publishPersonMessage(
         .where("runId", "=", admission.runId)
         .where("requestId", "=", admission.requestId)
         .executeTakeFirstOrThrow();
-      return {
-        message,
-        events: [event],
-        wasDuplicate: false,
-      };
+      return { message, wasDuplicate: false };
     })(personalTransaction);
   });
 }

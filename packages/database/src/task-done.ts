@@ -1,4 +1,5 @@
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { refreshInputQueue } from "./waiting-inputs.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
   lockThreadCaller,
@@ -10,8 +11,6 @@ import {
   createId,
   nonTerminalRunStatuses,
   OpensteerError,
-  SequenceSchema,
-  type AgentEvent,
   type AssignmentId,
   type RunId,
   type ThreadId,
@@ -21,7 +20,7 @@ import { sql, type Kysely, type Transaction } from "kysely";
 import { TransactionScopeChanged } from "./connection.js";
 import type { DatabaseSchema, ThreadRow } from "./schema.js";
 import {
-  assignmentEventsInTransaction,
+  publishAssignmentSummaries,
   cancelAssignmentRowsInTransaction,
 } from "./assignment-store.js";
 import { persistRunnerControlCommand } from "./command-store.js";
@@ -30,7 +29,6 @@ import { revokeRunGrants } from "./run-grants.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { cancelPending } from "./request-cancellation.js";
 import { pauseTriggerInTransaction } from "./trigger-store.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
 import {
   idempotencyConflict,
   jsonValue,
@@ -41,14 +39,12 @@ import {
 import {
   threadContinuationIdentitySelection,
   threadFromRow,
-  threadInputFromRow,
   threadPendingRequestsSelection,
   threadVisitSelection,
-  threadLatestRunCompletedAtSelection,
   threadProviderSessionSelection,
 } from "./thread-row-mappers.js";
 import { lockThreadChannelAuthorities } from "./channel-execution.js";
-import { projectThreadState } from "./thread-status.js";
+import { projectThreadState, publishThreadSummary, threadMutationHead } from "./thread-status.js";
 import { admitRunToolCallInTransaction, type RunToolAdmissionInput } from "./run-tool-admission.js";
 import { threadIsQuiet } from "./quiet-tasks.js";
 export interface ThreadWriteActor {
@@ -195,7 +191,7 @@ export async function setThreadDone(
   links: ChannelLinks,
   input: SetThreadDoneInput,
 ) {
-  return withPersonalTransaction(
+  return commitPersonalMutation(
     database,
     async (transaction) => {
       await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
@@ -322,7 +318,7 @@ export async function setThreadDone(
       });
       if (!isDeepStrictEqual(scope, await discoverDoneScope(transaction, input)))
         throw new TransactionScopeChanged("Task changed while being marked Done");
-      const events: AgentEvent[] = [];
+
       const interruptCommands = [];
       let doneWhenRunEnds = false;
       const now = new Date();
@@ -394,6 +390,8 @@ export async function setThreadDone(
           }
           if (input.done) {
             for (const trigger of triggers) await pauseTriggerInTransaction(transaction, trigger);
+            for (const row of threads)
+              if (row.inputQueuePaused) await refreshInputQueue(transaction, row.id);
             const cancelledAssignments = await cancelAssignmentRowsInTransaction(
               transaction,
               scope.assignments.map(({ id }) => id),
@@ -413,33 +411,15 @@ export async function setThreadDone(
               .execute();
             for (const row of cancelledInputs) {
               const owner = threads.find(({ id }) => id === row.threadId)!;
-              events.push(
-                await appendHostDeploymentEvent(transaction, {
-                  data: {
-                    input: threadInputFromRow(row),
-                  },
-                  environmentId: owner.environmentId,
-                  threadId: owner.id,
-                  runId: null,
-                  type: "thread-input.updated",
-                }),
-              );
+              await refreshInputQueue(transaction, owner.id, row.messageId);
             }
-            events.push(
-              ...(await cancelPending(transaction, {
-                reason: "thread-archived",
-                resolvedAt: now,
-                requestIds: scope.requests.map(({ id }) => id),
-              })),
-            );
+            await cancelPending(transaction, {
+              reason: "thread-archived",
+              resolvedAt: now,
+              requestIds: scope.requests.map(({ id }) => id),
+            });
             for (const assignment of cancelledAssignments)
-              events.push(
-                ...(await assignmentEventsInTransaction(
-                  transaction,
-                  assignment,
-                  "assignment.updated",
-                )),
-              );
+              await publishAssignmentSummaries(transaction, assignment, true);
             for (const run of runs) {
               if (
                 !scope.threadIds.includes(run.threadId) ||
@@ -450,17 +430,15 @@ export async function setThreadDone(
                 run.status === "queued" ||
                 (run.status === "starting" && run.bindingGeneration === null)
               ) {
-                events.push(
-                  ...(await finalizeRunTransaction(transaction, {
-                    completedAt: now,
-                    links,
-                    runId: run.id,
-                    source: "host",
-                    status: "interrupted",
-                    queuedInputCancellation: "activation-input",
-                    requestCancellationReason: "thread-archived",
-                  })),
-                );
+                await finalizeRunTransaction(transaction, {
+                  completedAt: now,
+                  links,
+                  runId: run.id,
+                  source: "host",
+                  status: "interrupted",
+                  queuedInputCancellation: "activation-input",
+                  requestCancellationReason: "thread-archived",
+                });
               } else {
                 interruptCommands.push(
                   await persistRunnerControlCommand(transaction, {
@@ -487,8 +465,8 @@ export async function setThreadDone(
             }
           }
           for (const row of threads) {
-            events.push(...(await projectThreadState(transaction, row.id, now)));
-            events.push(await appendDoneState(transaction, row.id));
+            await projectThreadState(transaction, row.id, now);
+            await publishThreadSummary(transaction, row.id);
           }
         }
         await transaction
@@ -525,54 +503,22 @@ export async function setThreadDone(
         .select([
           threadPendingRequestsSelection,
           threadVisitSelection,
-          threadLatestRunCompletedAtSelection,
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
         ])
         .where("id", "=", thread.id)
         .executeTakeFirstOrThrow();
-      const head = await transaction
-        .selectFrom("deploymentEventState")
-        .select("sequence")
-        .executeTakeFirstOrThrow();
       return {
-        asOfSequence: SequenceSchema.parse(head.sequence),
+        asOfSequence: await threadMutationHead(transaction, thread.id),
         thread: threadFromRow(current),
-        events,
         interruptCommands,
         revokedGrants,
         wasDuplicate: !!existing,
         doneWhenRunEnds,
       };
     },
-    undefined,
     (error) => error instanceof TransactionScopeChanged,
   );
-}
-export async function appendDoneState(
-  transaction: Transaction<DatabaseSchema>,
-  threadId: ThreadId,
-): Promise<AgentEvent> {
-  const thread = await transaction
-    .selectFrom("threads")
-    .selectAll()
-    .where("id", "=", threadId)
-    .executeTakeFirstOrThrow();
-  return appendHostDeploymentEvent(transaction, {
-    data: {
-      status: thread.status,
-      title: thread.title,
-      icon: thread.icon,
-      doneAt: thread.doneAt?.toISOString() ?? null,
-      doneReason: thread.doneReason,
-      inputQueuePaused: thread.inputQueuePaused,
-      pendingRequests: thread.pendingRequestCount,
-    },
-    environmentId: thread.environmentId,
-    threadId,
-    runId: null,
-    type: "thread.state-changed",
-  });
 }
 export async function admitThreadWrite(
   transaction: Transaction<DatabaseSchema>,

@@ -1,3 +1,7 @@
+import { unreadTaskContribution } from "./personal-attention-store.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { syncTranscriptMessage } from "./message-visibility.js";
+import { refreshInputQueue } from "./waiting-inputs.js";
 import { executionDate } from "./personal-transaction.js";
 import {
   liveInputLease,
@@ -7,13 +11,11 @@ import {
   lockInputQueueProjection,
   advanceThreadQueue,
   clearInputLease,
-  leaseChangedEvent,
 } from "./waiting-inputs.js";
 import { compactionIsEligible } from "./compaction-eligibility.js";
 import { freshContextBoundary } from "./fresh-context.js";
 import { threadAllowsPersonalContext } from "./run-personal-context.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
 import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
 import {
   isMemoryPassWake,
@@ -35,7 +37,12 @@ import { recordIncludedBrowserPages } from "./browser-session-store.js";
 import { TransactionScopeChanged } from "./connection.js";
 
 import { harnessRevisionChanged, prepareThreadInsertion } from "./thread-insertion.js";
-import { projectThreadState } from "./thread-status.js";
+import {
+  projectThreadState,
+  publishRunQueue,
+  publishThreadSummary,
+  invalidateThreadCollection,
+} from "./thread-status.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -72,7 +79,6 @@ import {
   threadInputMaxPendingEntries,
   threadInputMaxPendingSerializedBytes,
   surrogateSafeCut,
-  type AgentEvent,
   type AssignmentId,
   type CausalChainId,
   type ContentPart,
@@ -84,8 +90,8 @@ import {
   type ReplyTarget,
   type RunId,
   type ThreadId,
+  type ThreadInput,
   type TriggerId,
-  type ThreadInputQueue,
   type TriggerWatchActivationId,
   type UserId,
 } from "@opensteer/core";
@@ -105,8 +111,6 @@ import type {
 } from "./schema.js";
 import {
   messageFromRow,
-  messageViewFromRow,
-  messageEditFromRow,
   runFromRow,
   threadFromRow,
   threadPendingRequestsSelection,
@@ -115,7 +119,6 @@ import {
   threadProviderSessionSelection,
   threadContinuationIdentitySelection,
   threadInputFromRow,
-  threadRunQueueEntryFromRow,
 } from "./thread-row-mappers.js";
 import {
   idempotencyConflict,
@@ -142,8 +145,7 @@ import type {
   SteerThreadInputRequest,
   ThreadInputSource,
 } from "./store.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
-import { appendDoneState, requireThreadWriteAuthority } from "./task-done.js";
+import { requireThreadWriteAuthority } from "./task-done.js";
 import {
   assertDelegationDepth,
   descendsByParentLink,
@@ -169,10 +171,7 @@ import {
   lockThreadChannelAuthorities,
 } from "./channel-execution.js";
 import { resolveMessageQuote } from "./message-quotes.js";
-import {
-  assignmentEventsInTransaction,
-  assignmentSummaryInTransaction,
-} from "./assignment-store.js";
+import { publishAssignmentSummaries, assignmentSummaryInTransaction } from "./assignment-store.js";
 import {
   assertThreadCaller,
   lockThreadCaller,
@@ -215,30 +214,71 @@ function canManageQueuedInput(
  * delegation completion. Harnesses receive only references to this state.
  */
 
+interface WaitingInputView {
+  readonly message: {
+    readonly id: MessageId;
+    readonly revision: number;
+    readonly author: MessageAuthor["kind"];
+    readonly preview: string;
+    readonly truncated: boolean;
+  };
+  readonly input: {
+    readonly messageId: MessageId;
+    readonly state: ThreadInput["state"];
+    readonly queueRank: string;
+  };
+  readonly canEdit: boolean;
+  readonly canCancel: boolean;
+  readonly canMove: boolean;
+  readonly canSteer: boolean;
+  readonly lease: { readonly deviceLabel: string; readonly expiresAt: string } | null;
+}
+
+export interface ThreadInputQueueResult {
+  readonly threadId: ThreadId;
+  readonly revision: string;
+  readonly paused: boolean;
+  readonly steerRunId: RunId | null;
+  readonly items: readonly WaitingInputView[];
+}
+
 export async function readThreadInputQueue(
   transaction: Transaction<DatabaseSchema>,
   request: {
     readonly authority?: import("./thread-caller.js").ThreadCallerAuthority;
     readonly threadId: ThreadId;
     readonly requestedBy: UserId;
+    readonly expectedRevision?: string;
   },
-): Promise<ThreadInputQueue> {
+): Promise<ThreadInputQueueResult> {
   await requirePersonalOwner(transaction, request.requestedBy);
   const thread = await transaction
     .selectFrom("threads")
     .selectAll()
     .where("id", "=", request.threadId)
+    .where("removedAt", "is", null)
     .executeTakeFirst();
   if (!thread)
     throw new OpensteerError({
       code: "not_found",
       message: "Task not found",
     });
+  if (
+    request.expectedRevision !== undefined &&
+    BigInt(thread.inputQueueRevision) < BigInt(request.expectedRevision)
+  )
+    throw new OpensteerError({
+      code: "conflict",
+      reason: "input-queue-revision",
+      message: "The input queue revision is unavailable",
+    });
   const runs = await transaction
     .selectFrom("runs")
     .selectAll()
     .where("threadId", "=", thread.id)
     .where("status", "in", nonTerminalRunStatuses)
+    .orderBy("runOrdinal")
+    .limit(2)
     .execute();
   const active = runs.find((run) => run.status === "running");
   const steerable =
@@ -251,54 +291,72 @@ export async function readThreadInputQueue(
     (await steerRoute(transaction, active.id)) !== null &&
     (await threadExecutionIsAvailableToUser(transaction, thread.id, request.requestedBy));
   const rows = await waitingThreadInputs(transaction, thread.id);
-  const messages =
-    rows.length === 0
-      ? []
-      : await transaction
-          .selectFrom("messages")
-          .selectAll()
-          .where(
-            "id",
-            "in",
-            rows.map((row) => row.messageId),
-          )
-          .execute();
+  const messages = rows.length
+    ? await transaction
+        .selectFrom("messages")
+        .leftJoin("transcriptItems", "transcriptItems.messageId", "messages.id")
+        .select([
+          "messages.id",
+          "messages.kind",
+          "messages.author",
+          "messages.revision",
+          "transcriptItems.view",
+        ])
+        .where(
+          "messages.id",
+          "in",
+          rows.map(({ messageId }) => messageId),
+        )
+        .execute()
+    : [];
   const byId = new Map(messages.map((message) => [message.id, message]));
-  const editEligibility = new Map<MessageId, boolean>();
+  const items: WaitingInputView[] = [];
   for (const row of rows) {
     const message = byId.get(row.messageId);
-    editEligibility.set(
-      row.messageId,
-      !request.authority &&
-        Boolean(message) &&
-        (await inputEditEligibility(transaction, thread, row, message!, request.requestedBy)),
-    );
+    if (!message) throw new Error("Pending input lost its message");
+    const own = row.state === "pending" && !row.teamRequestId && canManageQueuedInput(row, request);
+    const liveLease = liveInputLease(transaction, row);
+    const lease = liveLease
+      ? { deviceLabel: utf8Prefix(liveLease.deviceLabel, 100), expiresAt: liveLease.expiresAt }
+      : null;
+    const view = {
+      message: {
+        id: message.id,
+        revision: message.revision,
+        author: message.author.kind,
+        preview: message.view?.preview ?? "",
+        truncated: message.view?.truncated ?? false,
+      },
+      input: {
+        messageId: row.messageId,
+        state: row.state,
+        queueRank: row.queueRank,
+      },
+      canEdit:
+        !request.authority &&
+        (await inputEditEligibility(transaction, thread, row, message, request.requestedBy)),
+      lease,
+      canCancel: own && thread.status !== "archived",
+      canMove: own && thread.status !== "archived",
+      canSteer: Boolean(
+        steerable && own && !row.freshContext && compatibleSteeringTarget(active.replyTarget, row),
+      ),
+    };
+    while (view.message.preview && Buffer.byteLength(JSON.stringify(view)) > 900) {
+      view.message.preview = utf8Prefix(
+        view.message.preview,
+        Math.floor(Buffer.byteLength(view.message.preview) / 2),
+      );
+      view.message.truncated = true;
+    }
+    items.push(view);
   }
   return {
     threadId: thread.id,
+    revision: thread.inputQueueRevision,
     paused: thread.inputQueuePaused,
     steerRunId: steerable ? active.id : null,
-    items: rows.map((row) => {
-      const message = byId.get(row.messageId);
-      if (!message) throw new Error("Pending input lost its message");
-      const own =
-        row.state === "pending" && !row.teamRequestId && canManageQueuedInput(row, request);
-      const eligible = editEligibility.get(row.messageId) === true;
-      return {
-        message: messageViewFromRow(message),
-        input: threadInputFromRow(row),
-        canEdit: eligible,
-        lease: liveInputLease(transaction, row),
-        canCancel: own && thread.status !== "archived",
-        canMove: own && thread.status !== "archived",
-        canSteer: Boolean(
-          steerable &&
-          own &&
-          !row.freshContext &&
-          compatibleSteeringTarget(active.replyTarget, row),
-        ),
-      };
-    }),
+    items,
   };
 }
 
@@ -463,7 +521,6 @@ async function claimFollowUps(
   },
 ): Promise<{
   readonly claimed: number;
-  readonly events: readonly AgentEvent[];
 }> {
   const barrier = await transaction
     .selectFrom("threadInputs")
@@ -488,11 +545,7 @@ async function claimFollowUps(
     .orderBy("threadInputs.queueRank", "asc")
     .limit(input.limit)
     .execute();
-  if (waiting.length === 0)
-    return {
-      claimed: 0,
-      events: [],
-    };
+  if (waiting.length === 0) return { claimed: 0 };
   const ids = waiting.map(({ messageId }) => messageId);
   const locked = await transaction
     .selectFrom("threadInputs")
@@ -511,7 +564,7 @@ async function claimFollowUps(
     .execute();
   const lockedById = new Map(locked.map((row) => [row.messageId, row]));
   const contentById = new Map(contents.map(({ content, id }) => [id, content]));
-  const events: AgentEvent[] = [];
+
   let claimed = 0;
   for (const messageId of ids) {
     const row = lockedById.get(messageId);
@@ -528,7 +581,7 @@ async function claimFollowUps(
         .where("state", "=", "pending")
         .returningAll()
         .executeTakeFirstOrThrow();
-      events.push(await inputUpdatedEvent(transaction, thread, cancelled));
+      await refreshChangedInput(transaction, thread, cancelled);
       continue;
     }
     if (input.holds?.(ContentPartSchema.array().parse(contentById.get(messageId)))) break;
@@ -553,16 +606,11 @@ async function claimFollowUps(
       .where("id", "=", messageId)
       .execute();
     await recordPersonWaited(transaction, run.id);
-    events.push(
-      await placeQueuedMessage(transaction, thread, messageId, run.id),
-      await inputUpdatedEvent(transaction, thread, taken),
-    );
+    await placeQueuedMessage(transaction, thread, messageId, run.id);
+    await refreshChangedInput(transaction, thread, taken);
     claimed += 1;
   }
-  return {
-    claimed,
-    events,
-  };
+  return { claimed };
 }
 
 /** The image test `attachmentInputFailure` applies before an engine takes a message. */
@@ -586,11 +634,9 @@ export async function deliverConversationInputsInTransaction(
   transaction: Transaction<DatabaseSchema>,
   runId: RunId,
 ): Promise<{
-  readonly events: readonly AgentEvent[];
   readonly revokedGrants: readonly RevokedRunGrant[];
 }> {
   const none = {
-    events: [],
     revokedGrants: [],
   };
   const run = await transaction
@@ -687,25 +733,14 @@ export async function deliverConversationInputsInTransaction(
     route === "restart" && claimed.claimed > 0
       ? await supersedeForRestart(transaction, run.id)
       : [];
-  return {
-    events: claimed.events,
-    revokedGrants,
-  };
+  return { revokedGrants };
 }
-async function inputUpdatedEvent(
+async function refreshChangedInput(
   transaction: Transaction<DatabaseSchema>,
   thread: Pick<ThreadRow, "environmentId" | "id">,
   row: Selectable<ThreadInputTable>,
-): Promise<AgentEvent> {
-  return appendHostDeploymentEvent(transaction, {
-    data: {
-      input: threadInputFromRow(row),
-    },
-    environmentId: thread.environmentId,
-    runId: row.runId,
-    threadId: thread.id,
-    type: "thread-input.updated",
-  });
+): Promise<void> {
+  return refreshInputQueue(transaction, thread.id, row.messageId);
 }
 
 /** Whether the person stopped this Run themselves, rather than a deadline or a cancelled task. */
@@ -778,7 +813,7 @@ async function endsWithStoppedReply(
 export async function settleStoppedConversationInputs(
   transaction: Transaction<DatabaseSchema>,
   runId: RunId,
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   const run = await transaction
     .selectFrom("runs")
     .selectAll()
@@ -790,7 +825,7 @@ export async function settleStoppedConversationInputs(
     .where("id", "=", run.threadId)
     .executeTakeFirstOrThrow();
   if (run.voiceSessionId || !(await conversationalReply(transaction, thread, run.replyTarget)))
-    return [];
+    return;
   const now = new Date();
   const replacement = await pendingReplacementAttempt(transaction, run.id);
   const restartSent = replacement?.dispatchedAt != null;
@@ -881,10 +916,9 @@ export async function settleStoppedConversationInputs(
           .where("messageId", "in", [...cancelledById.keys()])
           .orderBy("queueRank", "asc")
           .execute();
-  const events: AgentEvent[] = [];
+
   for (const { messageId } of order)
-    events.push(await inputUpdatedEvent(transaction, thread, cancelledById.get(messageId)!));
-  return events;
+    await refreshChangedInput(transaction, thread, cancelledById.get(messageId)!);
 }
 
 /** Each steered message has its own restart; the first one interrupts the attempt. */
@@ -1055,9 +1089,9 @@ export async function steerThreadInputInTransaction(
     })
     .returningAll()
     .executeTakeFirstOrThrow();
-  const leaseEvent = row.editLeaseId
-    ? await leaseChangedEvent(transaction, thread, row.messageId, null)
-    : null;
+  if (row.editLeaseId) {
+    await refreshInputQueue(transaction, thread.id);
+  }
   const promoted = await transaction
     .updateTable("threadInputs")
     .set({
@@ -1078,20 +1112,11 @@ export async function steerThreadInputInTransaction(
     .where("id", "=", row.messageId)
     .execute();
   await recordPersonWaited(transaction, run.id);
-  const placed = await placeQueuedMessage(transaction, thread, row.messageId, run.id);
-  const event = await appendHostDeploymentEvent(transaction, {
-    data: {
-      input: threadInputFromRow(promoted),
-    },
-    environmentId: run.environmentId,
-    runId: run.id,
-    threadId: thread.id,
-    type: "thread-input.updated",
-  });
+  await placeQueuedMessage(transaction, thread, row.messageId, run.id);
+  await refreshInputQueue(transaction, thread.id, promoted.messageId);
   const revokedGrants = route === "restart" ? await supersedeForRestart(transaction, run.id) : [];
   return {
     ...(await replayThreadInput(transaction, promoted)),
-    events: [...(leaseEvent ? [leaseEvent] : []), placed, event],
     revokedGrants,
     wasDuplicate: false,
   };
@@ -1151,10 +1176,7 @@ export async function moveThreadInputInTransaction(
   if (existing) {
     if (!isDeepStrictEqual(existing.payload, payload))
       throw idempotencyConflict(request.idempotencyKey);
-    return {
-      events: [],
-      wasDuplicate: true,
-    };
+    return { wasDuplicate: true };
   }
   assertInputLease(transaction, row, row.editLeaseId ?? undefined, request.sessionId);
   if (thread.status === "archived")
@@ -1218,21 +1240,9 @@ export async function moveThreadInputInTransaction(
       .where("messageId", "=", input.messageId)
       .execute();
   }
-  const event = await appendHostDeploymentEvent(transaction, {
-    data: {
-      paused: thread.inputQueuePaused,
-    },
-    environmentId: thread.environmentId,
-    runId: null,
-    threadId: thread.id,
-    type: "thread.input-queue-updated",
-  });
+  await refreshInputQueue(transaction, thread.id);
   const advanced = await advanceThreadQueue(transaction, thread);
-  return {
-    ...advanced,
-    events: [event, ...advanced.events],
-    wasDuplicate: false,
-  };
+  return { ...advanced, wasDuplicate: false };
 }
 
 /**
@@ -1287,11 +1297,7 @@ export async function cancelThreadInputInTransaction(
   if (existing) {
     if (!isDeepStrictEqual(existing.payload, payload))
       throw idempotencyConflict(request.idempotencyKey);
-    return {
-      events: [],
-      input: threadInputFromRow(row),
-      wasDuplicate: true,
-    };
+    return { input: threadInputFromRow(row), wasDuplicate: true };
   }
   assertInputLease(transaction, row, row.editLeaseId ?? undefined, request.sessionId);
   if (thread.status === "archived")
@@ -1342,27 +1348,14 @@ export async function cancelThreadInputInTransaction(
     .returningAll()
     .executeTakeFirstOrThrow();
   const input = threadInputFromRow(cancelled);
-  const event = await appendHostDeploymentEvent(transaction, {
-    data: {
-      input,
-    },
-    environmentId: thread.environmentId,
-    runId: null,
-    threadId: thread.id,
-    type: "thread-input.updated",
-  });
+  await refreshInputQueue(transaction, thread.id, input.messageId);
   const advanced = await advanceThreadQueue(transaction, thread);
-  return {
-    ...advanced,
-    events: [event, ...advanced.events],
-    input,
-    wasDuplicate: false,
-  };
+  return { ...advanced, input, wasDuplicate: false };
 }
 export async function claimRunInputBatch(
   transaction: Transaction<DatabaseSchema>,
   runId: RunId,
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   const run = await transaction
     .selectFrom("runs")
     .selectAll()
@@ -1379,7 +1372,7 @@ export async function claimRunInputBatch(
       code: "conflict",
       message: "The task queue is paused",
     });
-  if (run.reportContext !== null) return [];
+  if (run.reportContext !== null) return;
   const seed = await transaction
     .selectFrom("threadWorkInputs")
     .selectAll()
@@ -1393,7 +1386,6 @@ export async function claimRunInputBatch(
       message: "A Run must start with its queued work item",
     });
 
-  const events: AgentEvent[] = [];
   if (run.maintenance) {
     if (run.providerSessionId !== run.maintenance.providerSessionId || seed.freshContext)
       throw new OpensteerError({ code: "conflict", message: "Compaction session changed" });
@@ -1427,7 +1419,8 @@ export async function claimRunInputBatch(
       })
       .where("id", "=", runId)
       .execute();
-    return [await inputUpdatedEvent(transaction, thread, claimed)];
+    await refreshChangedInput(transaction, thread, claimed);
+    return;
   }
   if (seed.freshContext) {
     const providerSessionId = await ensureSelectedProviderSession(transaction, thread, {
@@ -1440,27 +1433,7 @@ export async function claimRunInputBatch(
       .where("id", "=", run.id)
       .execute();
     run.providerSessionId = providerSessionId;
-    const updated = await transaction
-      .selectFrom("threads")
-      .selectAll()
-      .select([
-        threadPendingRequestsSelection,
-        threadVisitSelection,
-        threadLatestRunCompletedAtSelection,
-        threadProviderSessionSelection,
-        threadContinuationIdentitySelection,
-      ])
-      .where("id", "=", thread.id)
-      .executeTakeFirstOrThrow();
-    events.push(
-      await appendHostDeploymentEvent(transaction, {
-        data: { thread: threadFromRow(updated) },
-        environmentId: thread.environmentId,
-        runId: null,
-        threadId: thread.id,
-        type: "thread.execution-updated",
-      }),
-    );
+    await invalidateThreadCollection(transaction, thread.id, "thread-details");
   }
   const seedMessage = await transaction
     .selectFrom("messages")
@@ -1515,17 +1488,7 @@ export async function claimRunInputBatch(
           .executeTakeFirst();
         if (cancelled) {
           cancelledCount += 1;
-          events.push(
-            await appendHostDeploymentEvent(transaction, {
-              data: {
-                input: threadInputFromRow(cancelled),
-              },
-              environmentId: thread.environmentId,
-              runId: cancelled.runId,
-              threadId: thread.id,
-              type: "thread-input.updated",
-            }),
-          );
+          await refreshInputQueue(transaction, thread.id, cancelled.messageId);
         }
         continue;
       }
@@ -1635,20 +1598,8 @@ export async function claimRunInputBatch(
     })
     .where("id", "=", runId)
     .execute();
-  for (const row of claimed)
-    events.push(
-      await appendHostDeploymentEvent(transaction, {
-        data: {
-          input: threadInputFromRow(row),
-        },
-        environmentId: thread.environmentId,
-        runId,
-        threadId: run.threadId,
-        type: "thread-input.updated",
-      }),
-    );
-  events.push(...(await claimConversationBatch(transaction, runId, runExecuteInputsMax - 1)));
-  return events;
+  for (const row of claimed) await refreshInputQueue(transaction, run.threadId, row.messageId);
+  await claimConversationBatch(transaction, runId, runExecuteInputsMax - 1);
 }
 
 /**
@@ -1662,7 +1613,7 @@ export async function claimConversationBatch(
   transaction: Transaction<DatabaseSchema>,
   runId: RunId,
   capacity: number,
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   const run = await transaction
     .selectFrom("runs")
     .selectAll()
@@ -1678,12 +1629,10 @@ export async function claimConversationBatch(
     capacity <= 0 ||
     !(await conversationalReply(transaction, thread, run.replyTarget))
   )
-    return [];
-  return (
-    await claimFollowUps(transaction, run, thread, {
-      limit: capacity,
-    })
-  ).events;
+    return;
+  await claimFollowUps(transaction, run, thread, {
+    limit: capacity,
+  });
 }
 
 /**
@@ -1694,13 +1643,13 @@ export async function claimConversationBatch(
  * left for that reply stays as context for the person's next turn (a report)
  * rather than running now or being dropped. No Run waits behind such a pause:
  * a queued Run is never created while a Thread is paused, and Stop ends one
- * that no Runner holds. Records are kept and every change is an event.
+ * that no Runner holds.
  * Settling an unpaused conversation does nothing.
  */
 export async function settlePausedConversation(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   await lockThreadRow(transaction, threadId);
   await lockRunProjectionRows(transaction, {
     runIds: [],
@@ -1711,9 +1660,9 @@ export async function settlePausedConversation(
     .selectAll()
     .where("id", "=", threadId)
     .executeTakeFirstOrThrow();
-  if (thread.purpose !== "voice" || !thread.inputQueuePaused) return [];
+  if (thread.purpose !== "voice" || !thread.inputQueuePaused) return;
   const now = new Date();
-  const events: AgentEvent[] = [];
+
   const held = await transaction
     .selectFrom("threadInputs")
     .select(["authoritySource", "messageId", "queueRank"])
@@ -1744,7 +1693,7 @@ export async function settlePausedConversation(
       .where("state", "=", "pending")
       .returningAll()
       .executeTakeFirstOrThrow();
-    events.push(await inputUpdatedEvent(transaction, thread, settled));
+    await refreshChangedInput(transaction, thread, settled);
   }
   await transaction
     .updateTable("threads")
@@ -1755,19 +1704,8 @@ export async function settlePausedConversation(
     })
     .where("id", "=", threadId)
     .execute();
-  events.push(
-    await appendHostDeploymentEvent(transaction, {
-      data: {
-        paused: false,
-      },
-      environmentId: thread.environmentId,
-      runId: null,
-      threadId,
-      type: "thread.input-queue-updated",
-    }),
-  );
-  events.push(...(await projectThreadState(transaction, threadId, now)));
-  return events;
+  await refreshInputQueue(transaction, threadId);
+  await projectThreadState(transaction, threadId, now);
 }
 
 /** What a restart's replacement attempt can still take along when it is dispatched. */
@@ -1783,7 +1721,7 @@ export async function settleSteer(
   outcome: "failed" | "unknown",
   reason: string,
   reasonCode?: string,
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   const observed = await transaction
     .selectFrom("commands")
     .innerJoin("threadInputs", "threadInputs.steerCommandId", "commands.id")
@@ -1802,7 +1740,7 @@ export async function settleSteer(
     .where("commands.id", "=", commandId)
     .where("commands.type", "=", "run.steer")
     .executeTakeFirst();
-  if (!observed?.runId) return [];
+  if (!observed?.runId) return;
   // Every path that settles delivery against a Run takes the same global
   // order.  In particular, an RPC acknowledgement must never hold Command
   // while a terminal Runner event holds Run and waits for that Command.
@@ -1812,7 +1750,7 @@ export async function settleSteer(
     .where("id", "=", observed.runId)
     .forNoKeyUpdate()
     .executeTakeFirst();
-  if (!run) return [];
+  if (!run) return;
   const channelAuthorityCurrent = await channelInputAuthorityIsCurrent(
     transaction,
     observed.messageId,
@@ -1830,7 +1768,7 @@ export async function settleSteer(
     .where("id", "=", commandId)
     .forNoKeyUpdate()
     .executeTakeFirst();
-  if (!command || !["pending", "dispatched"].includes(command.status)) return [];
+  if (!command || !["pending", "dispatched"].includes(command.status)) return;
   const now = new Date();
   // A refusal proves the message never reached a reply the person stopped.
   const stopped =
@@ -1893,7 +1831,7 @@ export async function settleSteer(
     .where("state", "=", "claimed")
     .returningAll()
     .executeTakeFirst();
-  if (!inputRow) return [];
+  if (!inputRow) return;
   if (inputRow.state === "pending") {
     await transaction
       .updateTable("messages")
@@ -1904,24 +1842,13 @@ export async function settleSteer(
       .execute();
   }
   const input = threadInputFromRow(inputRow);
-  const events: AgentEvent[] = [
-    await appendHostDeploymentEvent(transaction, {
-      data: {
-        input,
-      },
-      environmentId: observed.environmentId,
-      runId: input.runId,
-      threadId: observed.threadId,
-      type: "thread-input.updated",
-    }),
-  ];
+  await refreshInputQueue(transaction, observed.threadId, input.messageId);
   if (
     inputRow.state === "pending" &&
     isPersonsMessage(observed) &&
     (await conversationalReply(transaction, observed, run.replyTarget))
   )
-    events.push(...(await returnHandOffsBehind(transaction, commandId, run, observed)));
-  return events;
+    await returnHandOffsBehind(transaction, commandId, run, observed);
 }
 
 /**
@@ -1938,7 +1865,7 @@ async function returnHandOffsBehind(
   thread: Pick<ThreadRow, "environmentId"> & {
     readonly threadId: ThreadId;
   },
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   const behind = await exchangeInputs(transaction, run, thread.threadId, "claimed")
     .innerJoin("commands", "commands.id", "threadInputs.steerCommandId")
     .select(["commands.id as commandId", "threadInputs.messageId"])
@@ -1950,7 +1877,7 @@ async function returnHandOffsBehind(
     )
     .orderBy("threadInputs.queueRank", "asc")
     .execute();
-  if (behind.length === 0) return [];
+  if (behind.length === 0) return;
   const now = new Date();
   const ids = behind.map(({ messageId }) => messageId);
   await transaction
@@ -1990,28 +1917,25 @@ async function returnHandOffsBehind(
     .where("id", "in", ids)
     .execute();
   const returnedById = new Map(returned.map((row) => [row.messageId, row]));
-  const events: AgentEvent[] = [];
+
   for (const messageId of ids) {
     const row = returnedById.get(messageId);
     if (row)
-      events.push(
-        await inputUpdatedEvent(
-          transaction,
-          {
-            environmentId: thread.environmentId,
-            id: thread.threadId,
-          },
-          row,
-        ),
+      await refreshChangedInput(
+        transaction,
+        {
+          environmentId: thread.environmentId,
+          id: thread.threadId,
+        },
+        row,
       );
   }
-  return events;
 }
 export async function settleOutstandingSteersForRun(
   transaction: Transaction<DatabaseSchema>,
   runId: RunId,
   recoveringLostExecution = false,
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   // finalizeRunTransaction already owns the prefix in ./lock-order.ts. Commands
   // are locked only after those scope locks, matching settleSteer and the ACK
   // path. A promoted message is returned to its queue only with proof that
@@ -2042,7 +1966,7 @@ export async function settleOutstandingSteersForRun(
     ? await pendingReplacementAttempt(transaction, runId)
     : undefined;
   const restartSent = replacement?.dispatchedAt != null;
-  const events: AgentEvent[] = [];
+
   for (const command of commands) {
     const now = new Date();
     const restart = command.type === "run.restart";
@@ -2134,24 +2058,8 @@ export async function settleOutstandingSteersForRun(
         .where("id", "=", row.messageId)
         .execute();
     }
-    const thread = await transaction
-      .selectFrom("threads")
-      .select(["environmentId"])
-      .where("id", "=", row.threadId)
-      .executeTakeFirstOrThrow();
-    events.push(
-      await appendHostDeploymentEvent(transaction, {
-        data: {
-          input: threadInputFromRow(row),
-        },
-        environmentId: thread.environmentId,
-        runId,
-        threadId: row.threadId,
-        type: "thread-input.updated",
-      }),
-    );
+    await refreshInputQueue(transaction, row.threadId, row.messageId);
   }
-  return events;
 }
 async function lockThreadInputPreconditions(
   transaction: Transaction<DatabaseSchema>,
@@ -2176,6 +2084,7 @@ async function lockThreadInputPreconditions(
     .selectFrom("threads")
     .select("harnessInstanceId")
     .where("id", "=", input.threadId)
+    .where("removedAt", "is", null)
     .executeTakeFirstOrThrow(
       () => new OpensteerError({ code: "not_found", message: "Task not found" }),
     );
@@ -2438,10 +2347,10 @@ export function deliverTaskQuestionNotice(
   database: Kysely<DatabaseSchema>,
   requestId: RequestId,
   isWaiting: (parentThreadId: ThreadId, workerThreadId: ThreadId) => boolean,
-): Promise<readonly AgentEvent[]> {
-  return withPersonalTransaction(database, async (transaction) => {
+): Promise<void> {
+  return commitPersonalMutation(database, async (transaction) => {
     const source = await taskQuestionNoticeSource(transaction, requestId);
-    if (!source) return [];
+    if (!source) return;
     const key = `task-question:${requestId}`;
     await lockCommandIdempotency(transaction, source.request.requestedBy, key);
     if (
@@ -2451,7 +2360,7 @@ export function deliverTaskQuestionNotice(
         .where("requestId", "=", requestId)
         .executeTakeFirst()
     )
-      return [];
+      return;
     const input: EnqueueThreadInputRequest = {
       idempotencyKey: key,
       policy: "queue",
@@ -2479,7 +2388,7 @@ export function deliverTaskQuestionNotice(
           messageId: null,
         })
         .execute();
-      return [];
+      return;
     }
     const queued = await enqueueThreadInputInTransaction(transaction, input);
     await transaction
@@ -2489,14 +2398,13 @@ export function deliverTaskQuestionNotice(
         messageId: queued.message.id,
       })
       .execute();
-    return queued.events;
   });
 }
 export function cancelSettledTaskQuestionNotice(
   database: Kysely<DatabaseSchema>,
   requestId: RequestId,
-): Promise<readonly AgentEvent[]> {
-  return withPersonalTransaction(database, async (transaction) => {
+): Promise<void> {
+  return commitPersonalMutation(database, async (transaction) => {
     const notice = await transaction
       .selectFrom("taskQuestionNotices")
       .innerJoin("threadInputs", "threadInputs.messageId", "taskQuestionNotices.messageId")
@@ -2505,7 +2413,7 @@ export function cancelSettledTaskQuestionNotice(
       .where("taskQuestionNotices.requestId", "=", requestId)
       .where("threadInputs.state", "=", "pending")
       .executeTakeFirst();
-    if (!notice?.messageId) return [];
+    if (!notice?.messageId) return;
     const reserved = await transaction
       .selectFrom("runs")
       .select(["id", "status"])
@@ -2514,13 +2422,13 @@ export function cancelSettledTaskQuestionNotice(
       .orderBy("id", "asc")
       .forNoKeyUpdate()
       .execute();
-    if (reserved.some(({ status }) => status !== "queued")) return [];
+    if (reserved.some(({ status }) => status !== "queued")) return;
     await lockThreadRow(transaction, notice.id);
     await lockRunProjectionRows(transaction, {
       threadIds: [notice.id],
       runIds: reserved.map(({ id }) => id),
     });
-    if (await taskQuestionNoticeIsPending(transaction, notice.messageId)) return [];
+    if (await taskQuestionNoticeIsPending(transaction, notice.messageId)) return;
     const cancelled = await transaction
       .updateTable("threadInputs")
       .set({
@@ -2532,20 +2440,17 @@ export function cancelSettledTaskQuestionNotice(
       .where("state", "=", "pending")
       .returningAll()
       .executeTakeFirst();
-    if (!cancelled) return [];
-    const events = [await inputUpdatedEvent(transaction, notice, cancelled)];
+    if (!cancelled) return;
+    await refreshChangedInput(transaction, notice, cancelled);
     for (const run of reserved)
-      events.push(
-        ...(await finalizeRunTransaction(transaction, {
-          runId: run.id,
-          status: "interrupted",
-          source: "host",
-          links: threadPathLinks,
-          queuedInputCancellation: "seed-input",
-          completedAt: new Date(),
-        })),
-      );
-    return events;
+      await finalizeRunTransaction(transaction, {
+        runId: run.id,
+        status: "interrupted",
+        source: "host",
+        links: threadPathLinks,
+        queuedInputCancellation: "seed-input",
+        completedAt: new Date(),
+      });
   });
 }
 export async function lockThreadInputIdempotency(
@@ -2653,7 +2558,7 @@ export async function enqueueThreadInputInTransaction(
   )
     throw new OpensteerError({ code: "conflict", message: "Compaction is no longer eligible" });
   const messageId = createId("message");
-  const compactionEvents: AgentEvent[] = [];
+
   if (
     request.compaction === "compactFirst" &&
     request.source.kind === "human" &&
@@ -2675,7 +2580,7 @@ export async function enqueueThreadInputInTransaction(
         pairedInputId: messageId,
       } as const;
       if (await compactionIsEligible(transaction, thread.id, maintenance, Date.now())) {
-        const admitted = await enqueueThreadInputInTransaction(
+        await enqueueThreadInputInTransaction(
           transaction,
           {
             threadId: thread.id,
@@ -2692,7 +2597,6 @@ export async function enqueueThreadInputInTransaction(
           },
           preconditions,
         );
-        compactionEvents.push(...admitted.events);
         thread = {
           ...thread,
           nextMessageSequence: String(BigInt(thread.nextMessageSequence) + 1n),
@@ -2706,7 +2610,7 @@ export async function enqueueThreadInputInTransaction(
     source: request.source,
     targetThread: thread,
   });
-  const passEvents: AgentEvent[] = [...compactionEvents];
+
   if (request.source.kind === "human" && policy !== "report" && prelockedActiveRunId) {
     const prior = await transaction
       .selectFrom("runs")
@@ -2718,16 +2622,14 @@ export async function enqueueThreadInputInTransaction(
       (prior.status === "queued" ||
         (prior.status === "starting" && prior.bindingGeneration === null))
     )
-      passEvents.push(
-        ...(await finalizeRunTransaction(transaction, {
-          runId: prior.id,
-          status: "interrupted",
-          source: "host",
-          links: threadPathLinks,
-          queuedInputCancellation: "seed-input",
-          completedAt: new Date(),
-        })),
-      );
+      await finalizeRunTransaction(transaction, {
+        runId: prior.id,
+        status: "interrupted",
+        source: "host",
+        links: threadPathLinks,
+        queuedInputCancellation: "seed-input",
+        completedAt: new Date(),
+      });
   }
 
   if (thread.doneAt && request.policy !== "report") {
@@ -2767,7 +2669,7 @@ export async function enqueueThreadInputInTransaction(
       doneAt: null,
       doneReason: null,
     };
-    passEvents.push(await appendDoneState(transaction, thread.id));
+    await publishThreadSummary(transaction, thread.id);
   }
   if (facts.memoryPass) {
     if (policy !== "queue" || !request.memoryPass)
@@ -2785,7 +2687,6 @@ export async function enqueueThreadInputInTransaction(
     ];
     const started = await startMemoryPassInTransaction(transaction, thread, request.memoryPass);
     thread = started.worker;
-    passEvents.push(started.event);
   }
   await lockThreadProjectionParents(transaction, {
     threadIds: [thread.id],
@@ -3119,16 +3020,9 @@ export async function enqueueThreadInputInTransaction(
     .executeTakeFirstOrThrow();
   const message = messageFromRow(messageRow);
   const durableInput = threadInputFromRow(inputRow);
-  const messageEvent = await appendHostDeploymentEvent(transaction, {
-    data: {
-      input: durableInput,
-      message,
-    },
-    environmentId: thread.environmentId,
-    runId: steerRun?.id ?? null,
-    threadId: thread.id,
-    type: "message.created",
-  });
+  await refreshInputQueue(transaction, thread.id, message.id);
+  if (facts.author.kind === "human" && policy !== "report" && executionValid)
+    await publishThreadSummary(transaction, thread.id);
   // The pages a person included are the conversation's from the moment the
   // message is, and last, after everything else that kept it.
   const credited = async (result: EnqueuedThreadInput): Promise<EnqueuedThreadInput> => {
@@ -3151,7 +3045,6 @@ export async function enqueueThreadInputInTransaction(
     return credited({
       command: steerCommand,
       disposition: "steering",
-      events: [...passEvents, messageEvent],
       input: durableInput,
       message,
       revokedGrants,
@@ -3160,7 +3053,6 @@ export async function enqueueThreadInputInTransaction(
     });
   }
   let handed: Awaited<ReturnType<typeof deliverConversationInputsInTransaction>> = {
-    events: [],
     revokedGrants: [],
   };
   if (
@@ -3183,7 +3075,6 @@ export async function enqueueThreadInputInTransaction(
           .where("id", "=", joined.steerCommandId)
           .executeTakeFirstOrThrow(),
         disposition: "steering",
-        events: [...passEvents, messageEvent, ...handed.events],
         input: threadInputFromRow(joined),
         message: messageFromRow(
           await transaction
@@ -3222,6 +3113,7 @@ export async function enqueueThreadInputInTransaction(
           .where("messageId", "=", messageId)
           .executeTakeFirstOrThrow();
   const finalInput = threadInputFromRow(finalInputRow);
+  if (gated) await projectThreadState(transaction, thread.id);
   return credited({
     command: queued?.run?.seedInputId === messageId ? queued.command : null,
     disposition:
@@ -3230,13 +3122,6 @@ export async function enqueueThreadInputInTransaction(
         : finalInput.state === "cancelled"
           ? "cancelled"
           : "pending",
-    events: [
-      ...passEvents,
-      messageEvent,
-      ...handed.events,
-      ...(queued?.events ?? []),
-      ...(gated ? await projectThreadState(transaction, thread.id) : []),
-    ],
     input: finalInput,
     message,
     revokedGrants: handed.revokedGrants,
@@ -3885,28 +3770,18 @@ export async function ensureQueuedRun(
   } = {},
 ): Promise<{
   readonly command: CommandRow | null;
-  readonly events: readonly AgentEvent[];
+
   readonly run: RunRow | null;
 }> {
-  const events: AgentEvent[] = [];
   if (thread.status === "archived" || thread.inputQueuePaused || thread.doneAt)
-    return {
-      command: null,
-      events,
-      run: null,
-    };
+    return { command: null, run: null };
   const existing = await transaction
     .selectFrom("runs")
     .selectAll()
     .where("threadId", "=", thread.id)
     .where("status", "=", "queued")
     .executeTakeFirst();
-  if (existing)
-    return {
-      command: null,
-      events,
-      run: existing,
-    };
+  if (existing) return { command: null, run: existing };
   // Follow-ups remain inputs until their predecessor ends. They do not reserve
   // a Run, charge its budget, or freeze execution settings while waiting.
   const active = await transaction
@@ -3915,12 +3790,7 @@ export async function ensureQueuedRun(
     .where("threadId", "=", thread.id)
     .where("status", "in", nonTerminalRunStatuses)
     .executeTakeFirst();
-  if (active)
-    return {
-      command: null,
-      events,
-      run: null,
-    };
+  if (active) return { command: null, run: null };
   const pending = await transaction
     .selectFrom("threadWorkInputs")
     .select("messageId")
@@ -3928,12 +3798,7 @@ export async function ensureQueuedRun(
     .where("state", "=", "pending")
     .limit(1)
     .executeTakeFirst();
-  if (!pending)
-    return {
-      command: null,
-      events,
-      run: null,
-    };
+  if (!pending) return { command: null, run: null };
   const selected = await transaction
     .selectFrom("providerSessions")
     .select("harnessInstanceId")
@@ -3941,12 +3806,7 @@ export async function ensureQueuedRun(
     .where("active", "=", true)
     .executeTakeFirst();
   if (selected && selected.harnessInstanceId !== thread.harnessInstanceId) {
-    if (options.onInvalidSelection === "defer")
-      return {
-        command: null,
-        events,
-        run: null,
-      };
+    if (options.onInvalidSelection === "defer") return { command: null, run: null };
     throw new OpensteerError({
       code: "conflict",
       message:
@@ -3961,12 +3821,7 @@ export async function ensureQueuedRun(
       .limit(1)
       .executeTakeFirst();
     if (prior) {
-      if (options.onInvalidSelection === "defer")
-        return {
-          command: null,
-          events,
-          run: null,
-        };
+      if (options.onInvalidSelection === "defer") return { command: null, run: null };
       throw new OpensteerError({
         code: "conflict",
         message: "This task has no selected provider session; choose an AI account to continue",
@@ -3993,11 +3848,7 @@ export async function ensureQueuedRun(
       .orderBy("threadInputs.queueRank", "asc")
       .executeTakeFirst();
     if (!candidate || (await inputLeaseBarrier(transaction, thread.id, candidate.queueRank)))
-      return {
-        command: null,
-        events,
-        run: null,
-      };
+      return { command: null, run: null };
 
     // Channel authority can change after inbox admission. Read and lock its
     // binding before taking the input lock so revocation and policy updates
@@ -4016,17 +3867,7 @@ export async function ensureQueuedRun(
         .returningAll()
         .executeTakeFirst();
       if (cancelled) {
-        events.push(
-          await appendHostDeploymentEvent(transaction, {
-            data: {
-              input: threadInputFromRow(cancelled),
-            },
-            environmentId: thread.environmentId,
-            runId: null,
-            threadId: thread.id,
-            type: "thread-input.updated",
-          }),
-        );
+        await refreshInputQueue(transaction, thread.id, cancelled.messageId);
       }
       continue;
     }
@@ -4052,7 +3893,7 @@ export async function ensureQueuedRun(
         .where("messageId", "=", candidate.messageId)
         .returningAll()
         .executeTakeFirstOrThrow();
-      events.push(await inputUpdatedEvent(transaction, thread, cancelled));
+      await refreshChangedInput(transaction, thread, cancelled);
       continue;
     }
     if (candidate.assignmentId) {
@@ -4074,17 +3915,7 @@ export async function ensureQueuedRun(
           .returningAll()
           .executeTakeFirst();
         if (cancelled) {
-          events.push(
-            await appendHostDeploymentEvent(transaction, {
-              data: {
-                input: threadInputFromRow(cancelled),
-              },
-              environmentId: thread.environmentId,
-              runId: null,
-              threadId: thread.id,
-              type: "thread-input.updated",
-            }),
-          );
+          await refreshInputQueue(transaction, thread.id, cancelled.messageId);
         }
         continue;
       }
@@ -4109,17 +3940,7 @@ export async function ensureQueuedRun(
         .returningAll()
         .execute();
       for (const row of cancelled) {
-        events.push(
-          await appendHostDeploymentEvent(transaction, {
-            data: {
-              input: threadInputFromRow(row),
-            },
-            environmentId: thread.environmentId,
-            runId: null,
-            threadId: thread.id,
-            type: "thread-input.updated",
-          }),
-        );
+        await refreshInputQueue(transaction, thread.id, row.messageId);
       }
       continue;
     }
@@ -4154,25 +3975,10 @@ export async function ensureQueuedRun(
       .returningAll()
       .execute();
     for (const row of cancelled) {
-      events.push(
-        await appendHostDeploymentEvent(transaction, {
-          data: {
-            input: threadInputFromRow(row),
-          },
-          environmentId: thread.environmentId,
-          runId: null,
-          threadId: thread.id,
-          type: "thread-input.updated",
-        }),
-      );
+      await refreshInputQueue(transaction, thread.id, row.messageId);
     }
   }
-  if (!seed)
-    return {
-      command: null,
-      events,
-      run: null,
-    };
+  if (!seed) return { command: null, run: null };
   const selectedSession = options.maintenance
     ? options.maintenance.providerSessionId
     : await ensureSelectedProviderSession(transaction, thread, {
@@ -4204,6 +4010,7 @@ export async function ensureQueuedRun(
       runOrdinal: thread.nextRunOrdinal,
       startedAt: null,
       status: "queued",
+      executeClaimState: "unclaimed",
       threadId: thread.id,
       seedInputId: seed.messageId,
       personWaited: sql<boolean>`exists (select 1 from messages where id = ${seed.messageId} and author->>'kind' = 'human')`,
@@ -4243,19 +4050,9 @@ export async function ensureQueuedRun(
     }))
     .where("id", "=", thread.id)
     .executeTakeFirstOrThrow();
-  events.push(
-    await placeQueuedMessage(transaction, thread, seed.messageId, runId),
-    await appendHostDeploymentEvent(transaction, {
-      data: {
-        run: threadRunQueueEntryFromRow(runRow),
-      },
-      environmentId: thread.environmentId,
-      runId,
-      threadId: thread.id,
-      type: "run.queued",
-    }),
-  );
-  events.push(...(await projectThreadState(transaction, thread.id, new Date(), true)));
+  await placeQueuedMessage(transaction, thread, seed.messageId, runId);
+  await publishRunQueue(transaction, thread.id, runId);
+  await projectThreadState(transaction, thread.id, new Date(), true);
   if (seed.teamRequestId)
     await transaction
       .updateTable("personalTeamRequests")
@@ -4263,11 +4060,7 @@ export async function ensureQueuedRun(
       .where("requestId", "=", seed.teamRequestId)
       .where("localInputId", "=", seed.messageId)
       .execute();
-  return {
-    command,
-    events,
-    run: runRow,
-  };
+  return { command, run: runRow };
 }
 
 /**
@@ -4296,8 +4089,9 @@ async function waitingThreadInputs(
         ),
       ),
     )
-    .orderBy(sql`case when state = 'awaiting-approval' then 1 else 0 end`)
+    .orderBy(sql`approval_sort`)
     .orderBy("queueRank", "asc")
+    .orderBy("messageId", "asc")
     .limit(threadInputMaxPendingEntries)
     .execute();
 }
@@ -4312,7 +4106,7 @@ async function placeQueuedMessage(
   thread: Pick<ThreadRow, "environmentId" | "id">,
   messageId: MessageId,
   runId: RunId,
-): Promise<AgentEvent> {
+): Promise<void> {
   const { nextMessageSequence } = await transaction
     .selectFrom("threads")
     .select("nextMessageSequence")
@@ -4341,15 +4135,9 @@ async function placeQueuedMessage(
       .where("id", "=", thread.id)
       .executeTakeFirstOrThrow();
   }
-  return appendHostDeploymentEvent(transaction, {
-    data: {
-      message: messageFromRow(placed),
-      ...(messageEditFromRow(placed) ? { edit: messageEditFromRow(placed) } : {}),
-    },
-    environmentId: thread.environmentId,
+  return syncTranscriptMessage(transaction, messageId, {
     runId,
-    threadId: thread.id,
-    type: "message.placed",
+    move: placed.sequence !== current.sequence,
   });
 }
 function isGuaranteedCompletionKind(kind: MessageKind): boolean {
@@ -4408,7 +4196,6 @@ async function replayThreadInput(
         : row.state === "cancelled"
           ? "cancelled"
           : "pending",
-    events: [],
     input: threadInputFromRow(row),
     message: messageFromRow(messageRow),
     revokedGrants: [],
@@ -4609,8 +4396,7 @@ async function rewriteAssignmentReturn(
   input: Selectable<ThreadInputTable>,
   members: readonly AssignmentReturnMember[],
   mayGrow = false,
-): Promise<readonly AgentEvent[]> {
-  const events: AgentEvent[] = [];
+): Promise<void> {
   const readable: AssignmentReturnMember[] = [];
   for (const member of members) {
     if (
@@ -4636,12 +4422,10 @@ async function rewriteAssignmentReturn(
         .where("id", "=", member.id)
         .returningAll()
         .executeTakeFirstOrThrow();
-      events.push(
-        ...(await assignmentEventsInTransaction(transaction, unavailable, "assignment.updated")),
-      );
+      await publishAssignmentSummaries(transaction, unavailable);
     }
   }
-  if (!readable.length) return [...events, await withdrawAssignmentReturn(transaction, input)];
+  if (!readable.length) return withdrawAssignmentReturn(transaction, input);
   const currentMessage = await transaction
     .selectFrom("messages")
     .select("content")
@@ -4663,7 +4447,7 @@ async function rewriteAssignmentReturn(
     input.policy,
     input.messageId,
   );
-  const updatedInput = await transaction
+  await transaction
     .updateTable("threadInputs")
     .set({
       requestFingerprint: createHash("sha256").update(JSON.stringify(content)).digest("base64url"),
@@ -4680,24 +4464,7 @@ async function rewriteAssignmentReturn(
     .where("id", "=", input.messageId)
     .returningAll()
     .executeTakeFirstOrThrow();
-  const parent = await transaction
-    .selectFrom("threads")
-    .select(["environmentId"])
-    .where("id", "=", input.threadId)
-    .executeTakeFirstOrThrow();
-  events.push(
-    await appendHostDeploymentEvent(transaction, {
-      data: {
-        input: threadInputFromRow(updatedInput),
-        message: messageFromRow(message),
-      },
-      environmentId: parent.environmentId,
-      runId: null,
-      threadId: input.threadId,
-      type: "message.updated",
-    }),
-  );
-  return events;
+  await refreshInputQueue(transaction, input.threadId, message.id);
 }
 async function withdrawAssignmentReturn(
   transaction: Transaction<DatabaseSchema>,
@@ -4713,29 +4480,16 @@ async function withdrawAssignmentReturn(
     .where("messageId", "=", input.messageId)
     .returningAll()
     .executeTakeFirstOrThrow();
-  const parent = await transaction
-    .selectFrom("threads")
-    .select(["environmentId"])
-    .where("id", "=", input.threadId)
-    .executeTakeFirstOrThrow();
-  return appendHostDeploymentEvent(transaction, {
-    data: {
-      input: threadInputFromRow(pending),
-    },
-    environmentId: parent.environmentId,
-    runId: null,
-    threadId: input.threadId,
-    type: "thread-input.updated",
-  });
+  return refreshInputQueue(transaction, input.threadId, pending.messageId);
 }
 async function deliverAssignmentReturnTransaction(
   transaction: Transaction<DatabaseSchema>,
   assignmentId: AssignmentId,
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   const locked = await lockAssignmentReturn(transaction, assignmentId);
-  if (!locked) return [];
+  if (!locked) return;
   const { assignment } = locked;
-  if (assignment.status === "open" || assignment.resultStatus !== "pending") return [];
+  if (assignment.status === "open" || assignment.resultStatus !== "pending") return;
   // An empty result has nothing to return and wakes nobody. A parent task still
   // receives it below: it needs the completion to continue and settle.
   if (
@@ -4756,7 +4510,7 @@ async function deliverAssignmentReturnTransaction(
       .where("resultStatus", "=", "pending")
       .returningAll()
       .executeTakeFirstOrThrow();
-    return assignmentEventsInTransaction(transaction, settled, "assignment.updated");
+    return publishAssignmentSummaries(transaction, settled);
   }
   const [worker, parent, requester, parentOpenAssignment] = await Promise.all([
     transaction
@@ -4809,7 +4563,7 @@ async function deliverAssignmentReturnTransaction(
       .where("resultStatus", "=", "pending")
       .returningAll()
       .executeTakeFirstOrThrow();
-    return assignmentEventsInTransaction(transaction, updated, "assignment.updated");
+    return publishAssignmentSummaries(transaction, updated);
   }
   for (const wait of assignment.resultWaits) {
     if (wait.expiresAt <= Date.now()) continue;
@@ -4825,7 +4579,7 @@ async function deliverAssignmentReturnTransaction(
         })
         .where("id", "=", assignment.id)
         .execute();
-      return [];
+      return;
     } catch (error) {
       if (!(error instanceof OpensteerError && error.code === "forbidden")) throw error;
     }
@@ -4871,10 +4625,9 @@ async function deliverAssignmentReturnTransaction(
       .where("id", "=", assignment.id)
       .returningAll()
       .executeTakeFirstOrThrow();
-    return [
-      ...(await rewriteAssignmentReturn(transaction, waiting, members, true)),
-      ...(await assignmentEventsInTransaction(transaction, updated, "assignment.updated")),
-    ];
+    await rewriteAssignmentReturn(transaction, waiting, members, true);
+    await publishAssignmentSummaries(transaction, updated);
+    return;
   }
   const content = assignmentReturnContent([member]);
   await assertThreadInputCapacity(
@@ -4903,7 +4656,7 @@ async function deliverAssignmentReturnTransaction(
     })
     .returningAll()
     .executeTakeFirstOrThrow();
-  const inputRow = await transaction
+  await transaction
     .insertInto("threadInputs")
     .values({
       actorPrincipalId: systemPrincipalId,
@@ -4955,21 +4708,9 @@ async function deliverAssignmentReturnTransaction(
     .where("resultStatus", "=", "pending")
     .returningAll()
     .executeTakeFirstOrThrow();
-  const events: AgentEvent[] = [
-    await appendHostDeploymentEvent(transaction, {
-      data: {
-        input: threadInputFromRow(inputRow),
-        message: messageFromRow(messageRow),
-      },
-      environmentId: parent.environmentId,
-      runId: null,
-      threadId: parent.id,
-      type: "message.created",
-    }),
-  ];
-  if (policy === "queue") events.push(...(await ensureQueuedRun(transaction, parent)).events);
-  events.push(...(await assignmentEventsInTransaction(transaction, updated, "assignment.updated")));
-  return events;
+  await refreshInputQueue(transaction, parent.id, messageRow.id);
+  if (policy === "queue") await ensureQueuedRun(transaction, parent);
+  await publishAssignmentSummaries(transaction, updated);
 }
 async function assignmentResultReader(
   transaction: Transaction<DatabaseSchema>,
@@ -5037,7 +4778,7 @@ export function beginAssignmentResultWait(
     readonly signal?: AbortSignal;
   },
 ): Promise<string | null> {
-  return withPersonalTransaction(
+  return commitPersonalMutation(
     database,
     async (transaction) => {
       const { assignment, assigner } = await assignmentResultReader(transaction, input);
@@ -5066,7 +4807,6 @@ export function beginAssignmentResultWait(
       input.signal?.throwIfAborted();
       return id;
     },
-    undefined,
     (error) => error instanceof TransactionScopeChanged,
   );
 }
@@ -5076,8 +4816,8 @@ export async function endAssignmentResultWait(
     readonly assignmentId: AssignmentId;
     readonly waitId: string;
   },
-): Promise<readonly AgentEvent[]> {
-  await withPersonalTransaction(
+): Promise<void> {
+  await commitPersonalMutation(
     database,
     async (transaction) => {
       const locked = await lockAssignmentReturn(transaction, input.assignmentId);
@@ -5092,7 +4832,6 @@ export async function endAssignmentResultWait(
         .where("id", "=", input.assignmentId)
         .execute();
     },
-    undefined,
     (error) => error instanceof TransactionScopeChanged,
   );
   return drainAssignmentReturn(database, input.assignmentId);
@@ -5102,7 +4841,7 @@ export async function endAssignmentResultWait(
 export async function recoverAssignmentResultWaits(
   database: Kysely<DatabaseSchema>,
 ): Promise<void> {
-  await withPersonalTransaction(database, async (transaction) => {
+  await commitPersonalMutation(database, async (transaction) => {
     const waits = await transaction
       .selectFrom("delegations")
       .select("id")
@@ -5134,12 +4873,12 @@ export function readAssignmentResult(
     readonly signal?: AbortSignal;
   },
 ) {
-  return withPersonalTransaction(
+  return commitPersonalMutation(
     database,
     async (transaction) => {
       let { assignment, assigner } = await assignmentResultReader(transaction, input);
       const authority = input.authority;
-      const events: AgentEvent[] = [];
+
       let result = assignment.resultText;
       if (assigner && assignment.status !== "open") {
         let canRead =
@@ -5152,9 +4891,9 @@ export function readAssignmentResult(
               await assignmentReturnMembers(transaction, waiting.messageId)
             ).filter(({ id }) => id !== assignment.id);
             if (remaining.length) {
-              events.push(...(await rewriteAssignmentReturn(transaction, waiting, remaining)));
+              await rewriteAssignmentReturn(transaction, waiting, remaining);
             } else {
-              events.push(await withdrawAssignmentReturn(transaction, waiting));
+              await withdrawAssignmentReturn(transaction, waiting);
             }
           }
         }
@@ -5172,9 +4911,7 @@ export function readAssignmentResult(
             .where("id", "=", assignment.id)
             .returningAll()
             .executeTakeFirstOrThrow();
-          events.push(
-            ...(await assignmentEventsInTransaction(transaction, assignment, "assignment.updated")),
-          );
+          await publishAssignmentSummaries(transaction, assignment);
         }
         if (!canRead) result = null;
       }
@@ -5183,13 +4920,8 @@ export function readAssignmentResult(
         readOnly: true,
       });
       input.signal?.throwIfAborted();
-      return {
-        assignment: await assignmentSummaryInTransaction(transaction, assignment),
-        result,
-        events,
-      };
+      return { assignment: await assignmentSummaryInTransaction(transaction, assignment), result };
     },
-    undefined,
     (error) => error instanceof TransactionScopeChanged,
   );
 }
@@ -5202,12 +4934,11 @@ export function readAssignmentResult(
 export async function drainAssignmentReturn(
   database: Kysely<DatabaseSchema>,
   assignmentId: AssignmentId,
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   try {
-    return await withPersonalTransaction(
+    return await commitPersonalMutation(
       database,
       (transaction) => deliverAssignmentReturnTransaction(transaction, assignmentId),
-      undefined,
       (error) => error instanceof TransactionScopeChanged,
     );
   } catch (error) {
@@ -5219,12 +4950,11 @@ export async function drainAssignmentReturn(
       .where("id", "=", assignmentId)
       .where("resultStatus", "=", "pending")
       .execute();
-    if (error instanceof OpensteerError && error.code === "resource_exhausted") return [];
+    if (error instanceof OpensteerError && error.code === "resource_exhausted") return;
     throw error;
   }
 }
 export interface AssignmentReturnDrain {
-  readonly events: readonly AgentEvent[];
   readonly failures: readonly {
     readonly assignmentId: AssignmentId;
     readonly error: unknown;
@@ -5245,14 +4975,14 @@ export async function drainPendingAssignmentReturns(
     .orderBy("createdAt", "asc")
     .limit(Math.max(1, Math.min(limit, 1_000)))
     .execute();
-  const events: AgentEvent[] = [];
+
   const failures: {
     readonly assignmentId: AssignmentId;
     readonly error: unknown;
   }[] = [];
   for (const candidate of candidates) {
     try {
-      events.push(...(await drainAssignmentReturn(database, candidate.id)));
+      await drainAssignmentReturn(database, candidate.id);
     } catch (error) {
       failures.push({
         assignmentId: candidate.id,
@@ -5260,10 +4990,7 @@ export async function drainPendingAssignmentReturns(
       });
     }
   }
-  return {
-    events,
-    failures,
-  };
+  return { failures };
 }
 function canonicalDelegateThreadRequest(
   input: DelegateThreadRequest,
@@ -5509,7 +5236,6 @@ async function replayDelegatedThread(
   return {
     assignment: await assignmentSummaryInTransaction(database, delegationRow),
     command: executeCommand,
-    events: [],
     input: threadInputFromRow(inputRow),
     message: messageFromRow(messageRow),
     run: runFromRow(runRow),
@@ -5870,6 +5596,7 @@ export async function delegateThreadInTransaction(
         .selectAll()
         .select([threadVisitSelection, threadLatestRunCompletedAtSelection])
         .where("id", "=", threadId)
+        .where("removedAt", "is", null)
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow()
     : null;
@@ -5893,6 +5620,7 @@ export async function delegateThreadInTransaction(
         .executeTakeFirst()
     : null;
   const listedNow = reusedRow !== null && !reusedRow.listed && listed && !managedAnchor;
+  const unreadBeforeListing = listedNow ? await unreadTaskContribution(transaction, threadId) : 0;
   const threadRow = reusedRow
     ? listedNow
       ? await transaction
@@ -5963,18 +5691,16 @@ export async function delegateThreadInTransaction(
     providerSessionId: selectedSession.id,
     pendingRequests: threadRow.pendingRequestCount,
   });
-  const threadEvent =
-    reusedRow === null || listedNow
-      ? await appendHostDeploymentEvent(transaction, {
-          data: {
-            thread,
-          },
-          environmentId: thread.environmentId,
-          runId: null,
-          threadId,
-          type: reusedRow === null ? "thread.created" : "thread.listed",
-        })
-      : null;
+  if (listedNow)
+    await commitPersonalMutation(transaction, async (tx, mutation) => {
+      mutation.count(
+        "unreadTaskCount",
+        (await unreadTaskContribution(tx, threadId)) - unreadBeforeListing,
+      );
+    });
+  if (reusedRow === null || listedNow) {
+    await publishThreadSummary(transaction, threadId);
+  }
   const queued = await enqueueThreadInputInTransaction(transaction, {
     ...(input.origin.kind === "run"
       ? {
@@ -6053,11 +5779,7 @@ export async function delegateThreadInTransaction(
     })
     .returningAll()
     .executeTakeFirstOrThrow();
-  const assignmentEvents = await assignmentEventsInTransaction(
-    transaction,
-    delegationRow,
-    "assignment.created",
-  );
+  await publishAssignmentSummaries(transaction, delegationRow);
   const [assignedInput, assignedRun] = await Promise.all([
     transaction
       .selectFrom("threadInputs")
@@ -6074,7 +5796,6 @@ export async function delegateThreadInTransaction(
     assignment: await assignmentSummaryInTransaction(transaction, delegationRow),
     ...queued,
     command: queued.command,
-    events: [...(threadEvent ? [threadEvent] : []), ...queued.events, ...assignmentEvents],
     input: threadInputFromRow(assignedInput),
     run: runFromRow(assignedRun),
     thread,

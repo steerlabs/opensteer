@@ -1,194 +1,236 @@
-import { isDeepStrictEqual } from "node:util";
-import { compactionReturnHint } from "./compaction-eligibility.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
-import "./connection.js";
 import {
+  SequenceSchema,
   deriveThreadStatus,
   nonTerminalRunStatuses,
-  type AgentEvent,
+  utf8Prefix,
+  type RunId,
   type ThreadId,
 } from "@opensteer/core";
-import type { Kysely, Transaction } from "kysely";
-import { assignmentStateEventsForThread } from "./assignment-store.js";
+import { sql, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { isOfflineSettlement } from "./personal-transaction.js";
+import { refreshLatestRunCompletion, unreadTaskContribution } from "./personal-attention-store.js";
+import { refreshAssignmentWorkerSummaries } from "./assignment-store.js";
 
-/** Callers hold the fences in ./lock-order.ts; Run and Request facts are unlocked reads. */
+type Tx = Transaction<DatabaseSchema>;
+
+export async function invalidateThreadCollection(tx: Tx, threadId: ThreadId, collection: string) {
+  if (isOfflineSettlement(tx)) return;
+  await commitPersonalMutation(tx, async (_tx, mutation) => {
+    mutation.change(
+      {
+        scopeKey: `thread:${threadId}`,
+        entityKind: "collection",
+        entityId: collection,
+        operation: "invalidate",
+      },
+      () => ({ revision: mutation.sequence }),
+    );
+  });
+}
+
+export async function publishThreadSummary(tx: Tx, threadId: ThreadId): Promise<void> {
+  if (isOfflineSettlement(tx)) return;
+  await commitPersonalMutation(tx, async (tx, mutation) => {
+    const row = await tx
+      .updateTable("threads")
+      .set({ revision: mutation.sequence })
+      .where("id", "=", threadId)
+      .returning([
+        "id",
+        "title",
+        "revision",
+        "status",
+        "purpose",
+        "askedAt",
+        "doneAt",
+        "pendingRequestCount",
+        "lastReplyPreview",
+        "failurePreview",
+        "latestRunCompletedAt",
+        "listed",
+        "removedAt",
+      ])
+      .executeTakeFirstOrThrow();
+    const threadScope = `thread:${threadId}` as const;
+    const view = {
+      id: row.id,
+      title: row.title,
+      revision: row.revision,
+      status: row.status,
+      purpose: row.purpose,
+      askedAt: row.askedAt.toISOString(),
+      doneAt: row.doneAt?.toISOString() ?? null,
+      pendingRequestCount: row.pendingRequestCount,
+      lastReplyPreview: row.lastReplyPreview,
+      failurePreview: row.failurePreview,
+      latestRunCompletedAt: row.latestRunCompletedAt?.toISOString() ?? null,
+    };
+    if (row.removedAt) {
+      mutation.change({
+        scopeKey: threadScope,
+        entityKind: "thread",
+        entityId: threadId,
+        operation: "remove",
+      });
+    } else {
+      mutation.change(
+        { scopeKey: threadScope, entityKind: "thread", entityId: threadId, operation: "upsert" },
+        () => view,
+      );
+    }
+    if (row.listed && row.status !== "archived" && !row.removedAt) {
+      mutation.change(
+        { scopeKey: "shell", entityKind: "task", entityId: threadId, operation: "upsert" },
+        () => view,
+      );
+    } else {
+      mutation.change({
+        scopeKey: "shell",
+        entityKind: "task",
+        entityId: threadId,
+        operation: "remove",
+      });
+    }
+  });
+}
+
+export async function publishRunQueue(tx: Tx, threadId: ThreadId, runId?: RunId) {
+  if (isOfflineSettlement(tx)) return;
+  await commitPersonalMutation(tx, async (tx, mutation) => {
+    if (runId)
+      await tx
+        .updateTable("runs")
+        .set({ revision: mutation.sequence })
+        .where("id", "=", runId)
+        .where("threadId", "=", threadId)
+        .execute();
+    const thread = await tx
+      .selectFrom("threads")
+      .select("inputQueuePaused")
+      .where("id", "=", threadId)
+      .executeTakeFirstOrThrow();
+    const runs = await tx
+      .selectFrom("runs")
+      .select(["id", "status", "revision"])
+      .select(sql<boolean>`finish_intent is not null`.as("finishing"))
+      .where("threadId", "=", threadId)
+      .where(sql<boolean>`status in ('queued','starting','running','waiting')`)
+      .orderBy("runOrdinal")
+      .limit(2)
+      .execute();
+    mutation.change(
+      {
+        scopeKey: `thread:${threadId}`,
+        entityKind: "run-queue",
+        entityId: threadId,
+        operation: "upsert",
+      },
+      () => ({ revision: mutation.sequence, runs, paused: thread.inputQueuePaused }),
+    );
+  });
+}
+
+/** Callers hold the domain locks. Intrinsic summary facts are read from the same commit. */
 export async function projectThreadState(
-  transaction: Transaction<DatabaseSchema>,
+  tx: Tx,
   threadId: ThreadId,
   updatedAt = new Date(),
   force = false,
-): Promise<readonly AgentEvent[]> {
-  await transaction
-    .selectFrom("delegations")
-    .select("id")
-    .where("childThreadId", "=", threadId)
-    .where("status", "=", "open")
-    .orderBy("id", "asc")
-    .forNoKeyUpdate()
-    .execute();
-  // Every Request mutation records its marker after appending its event under
-  // the Deployment fence; a later commit therefore cannot lose its wakeup here.
-  await transaction.deleteFrom("threadStatePending").where("threadId", "=", threadId).execute();
-  const thread = await transaction
-    .selectFrom("threads")
-    .select([
-      "status",
-      "title",
-      "icon",
-      "doneAt",
-      "doneReason",
-      "inputQueuePaused",
-      "projectedInputQueuePaused",
-      "pendingRequestCount",
-      "environmentId",
-    ])
-    .where("id", "=", threadId)
-    .executeTakeFirstOrThrow();
-  const active = await transaction
-    .selectFrom("runs")
-    .select("status")
-    .where("threadId", "=", threadId)
-    .where("maintenance", "is", null)
-    .where("status", "in", nonTerminalRunStatuses)
-    .orderBy("runOrdinal", "asc")
-    .limit(1)
-    .executeTakeFirst();
-  const last = await transaction
-    .selectFrom("runs")
-    .select(["status", "maintenance"])
-    .where("threadId", "=", threadId)
-    .orderBy("runOrdinal", "desc")
-    .limit(1)
-    .executeTakeFirst();
-  const status =
-    thread.status === "archived"
-      ? "archived"
-      : deriveThreadStatus({
-          earliestActiveRunStatus: active?.status ?? null,
-          inputQueuePaused: thread.inputQueuePaused,
-          lastRunFailed: !last?.maintenance && last?.status === "failed",
-        });
-  const pending = await transaction
-    .selectFrom("requests")
-    .select(({ fn }) => fn.countAll<string>().as("count"))
-    .where("originatingThreadId", "=", threadId)
-    .where("status", "=", "pending")
-    .executeTakeFirstOrThrow();
-  const asks = await transaction
-    .selectFrom("threadInputs")
-    .select(({ fn }) => fn.countAll<string>().as("count"))
-    .where("threadId", "=", threadId)
-    .where("state", "=", "awaiting-approval")
-    .executeTakeFirstOrThrow();
-  const pendingRequests = Number(pending.count) + Number(asks.count);
-  const changed =
-    status !== thread.status ||
-    pendingRequests !== thread.pendingRequestCount ||
-    thread.inputQueuePaused !== thread.projectedInputQueuePaused;
-  await transaction
-    .updateTable("threads")
-    .set({
-      status,
-      pendingRequestCount: pendingRequests,
-      projectedInputQueuePaused: thread.inputQueuePaused,
-      ...(last?.maintenance || (!changed && !force) ? {} : { updatedAt }),
-    })
-    .where("id", "=", threadId)
-    .executeTakeFirstOrThrow();
-  const returnHint = await compactionReturnHint(transaction, threadId);
-  const previous = await transaction
-    .selectFrom("deploymentEvents")
-    .select("data")
-    .where("threadId", "=", threadId)
-    .where("type", "=", "thread.state-changed")
-    .orderBy("sequence", "desc")
-    .limit(1)
-    .executeTakeFirst();
-  const priorHint =
-    previous?.data && typeof previous.data === "object" && "returnHint" in previous.data
-      ? previous.data.returnHint
-      : null;
-  if (!changed && !force && isDeepStrictEqual(priorHint, returnHint)) return [];
-  return [
-    await appendHostDeploymentEvent(transaction, {
-      data: {
-        returnHint,
-        status,
-        title: thread.title,
-        icon: thread.icon,
-        doneAt: thread.doneAt?.toISOString() ?? null,
-        doneReason: thread.doneReason,
-        inputQueuePaused: thread.inputQueuePaused,
-        pendingRequests,
-      },
-      environmentId: thread.environmentId,
-      runId: null,
-      threadId,
-      type: "thread.state-changed",
-    }),
-    ...(pendingRequests !== thread.pendingRequestCount
-      ? await assignmentStateEventsForThread(transaction, threadId)
-      : []),
-  ];
+): Promise<void> {
+  if (isOfflineSettlement(tx)) return;
+  await commitPersonalMutation(tx, async (tx, mutation) => {
+    const before = await unreadTaskContribution(tx, threadId);
+    const thread = await tx
+      .selectFrom("threads")
+      .select([
+        "status",
+        "inputQueuePaused",
+        "pendingRequestCount",
+        "failurePreview",
+        "latestRunCompletedAt",
+      ])
+      .where("id", "=", threadId)
+      .executeTakeFirstOrThrow();
+    const active = await tx
+      .selectFrom("runs")
+      .select("status")
+      .where("threadId", "=", threadId)
+      .where("maintenance", "is", null)
+      .where("status", "in", nonTerminalRunStatuses)
+      .orderBy("runOrdinal")
+      .limit(1)
+      .executeTakeFirst();
+    const last = await tx
+      .selectFrom("runs")
+      .select(["status", "maintenance", "failure"])
+      .where("threadId", "=", threadId)
+      .orderBy("runOrdinal", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    const failed = last?.status === "failed" && last.maintenance === null;
+    const status =
+      thread.status === "archived"
+        ? "archived"
+        : deriveThreadStatus({
+            earliestActiveRunStatus: active?.status ?? null,
+            inputQueuePaused: thread.inputQueuePaused,
+            lastRunFailed: failed,
+          });
+    const failure = last?.failure;
+    const failurePreview = failed && failure ? utf8Prefix(failure.message, 1120) : null;
+    const { pending } = await tx
+      .selectNoFrom([
+        sql<number>`((select count(*) from requests where originating_thread_id = ${threadId} and status = 'pending')
+        + (select count(*) from thread_inputs where thread_id = ${threadId} and state = 'awaiting-approval'))::integer`.as(
+          "pending",
+        ),
+      ])
+      .executeTakeFirstOrThrow();
+    const changed =
+      status !== thread.status ||
+      pending !== thread.pendingRequestCount ||
+      failurePreview !== thread.failurePreview;
+    if (changed || force) {
+      await tx
+        .updateTable("threads")
+        .set({
+          status,
+          pendingRequestCount: pending,
+          failurePreview,
+          ...(last?.maintenance ? {} : { updatedAt }),
+        })
+        .where("id", "=", threadId)
+        .execute();
+    }
+    await refreshLatestRunCompletion(tx, mutation, threadId, before);
+    const current = await tx
+      .selectFrom("threads")
+      .select("latestRunCompletedAt")
+      .where("id", "=", threadId)
+      .executeTakeFirstOrThrow();
+    if (
+      changed ||
+      force ||
+      current.latestRunCompletedAt?.getTime() !== thread.latestRunCompletedAt?.getTime()
+    )
+      await publishThreadSummary(tx, threadId);
+    if (changed || force) await invalidateThreadCollection(tx, threadId, "return-hint");
+    if (status !== thread.status || pending !== thread.pendingRequestCount)
+      await refreshAssignmentWorkerSummaries(tx, threadId);
+  });
 }
 
-/** Request events already hold the Deployment sequence fence. */
-export { markThreadStatePending } from "./thread-state-pending.js";
-
-/** How many Threads one drain pass projects; the next pass takes the rest. */
-const threadStateDrainBatch = 100;
-
-/**
- * Projects the Threads whose state is pending, oldest first. Each is its own
- * transaction, so one that fails is reported after the others are done and
- * never holds them back.
- */
-export async function drainPendingThreadStates(
-  database: Kysely<DatabaseSchema>,
-  onCommitted?: (events: readonly AgentEvent[]) => void,
-): Promise<readonly AgentEvent[]> {
-  // Discover without a marker lock: Request writers own the Deployment fence before
-  // touching the marker, so taking the marker first would reverse that order.
-  const pending = await database
-    .selectFrom("threadStatePending")
-    .innerJoin("threads", "threads.id", "threadStatePending.threadId")
-    .select(["threadStatePending.threadId"])
-    .orderBy("threadStatePending.requestedAt", "asc")
-    .orderBy("threadStatePending.threadId", "asc")
-    .limit(threadStateDrainBatch)
-    .execute();
-  const events: AgentEvent[] = [];
-  const failures: unknown[] = [];
-  for (const row of pending) {
-    let committed: readonly AgentEvent[];
-    try {
-      committed = await withPersonalTransaction(database, async (transaction) => {
-        const thread = await transaction
-          .selectFrom("threads")
-          .select("id")
-          .where("id", "=", row.threadId)
-          .forNoKeyUpdate()
-          .executeTakeFirst();
-        if (!thread) return [];
-        const marker = await transaction
-          .selectFrom("threadStatePending")
-          .select("threadId")
-          .where("threadId", "=", row.threadId)
-          .executeTakeFirst();
-        return marker ? projectThreadState(transaction, row.threadId) : [];
-      });
-    } catch (error) {
-      failures.push(error);
-      continue;
-    }
-    events.push(...committed);
-    // Deliver each committed transaction even if a later Thread blocks or fails.
-    onCommitted?.(committed);
-  }
-  if (failures.length > 0) {
-    throw new AggregateError(failures, "Some Thread states could not be projected");
-  }
-  return events;
+export async function threadMutationHead(tx: Tx, threadId: ThreadId) {
+  const state = await tx
+    .selectFrom("clientSyncState")
+    .select(
+      sql<string>`greatest(sequence, (select revision from threads where id = ${threadId}))`.as(
+        "sequence",
+      ),
+    )
+    .limit(1)
+    .executeTakeFirstOrThrow();
+  return SequenceSchema.parse(state.sequence);
 }

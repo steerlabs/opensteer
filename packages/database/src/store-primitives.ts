@@ -2,7 +2,6 @@ import { PrincipalIdSchema, type PrincipalId } from "@opensteer/channel-core";
 import {
   IsoDateTimeSchema,
   OpensteerError,
-  type AgentEvent,
   type EnvironmentId,
   type ThreadId,
   type UserId,
@@ -18,8 +17,7 @@ import {
 import { databaseOperationOptions } from "./operation-budget.js";
 import type { DatabaseSchema } from "./schema.js";
 import { type CommandRow, type RunRow } from "./schema.js";
-import { projectThreadState } from "./thread-status.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
+import { projectThreadState, publishRunQueue } from "./thread-status.js";
 export const systemPrincipalId = PrincipalIdSchema.parse(
   "pri_00000000-0000-4000-8000-000000000001",
 );
@@ -108,8 +106,11 @@ export async function lockThreadRow(
     .selectFrom("threads")
     .select("id")
     .where("id", "=", threadId)
+    .where("removedAt", "is", null)
     .forNoKeyUpdate()
-    .executeTakeFirstOrThrow(databaseOperationOptions());
+    .executeTakeFirstOrThrow(
+      () => new OpensteerError({ code: "not_found", message: "Task not found" }),
+    );
 }
 export async function requireExecutionEnvironmentAccess(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
@@ -153,7 +154,7 @@ export async function returnRunToQueue(
   input: {
     readonly run: Pick<RunRow, "environmentId" | "id" | "threadId">;
   },
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   const queued = await transaction
     .updateTable("runs")
     .set({
@@ -169,20 +170,10 @@ export async function returnRunToQueue(
       message: "The Run could not return to queued atomically",
     });
   }
-  const event = await appendHostDeploymentEvent(transaction, {
-    data: {
-      status: "queued",
-    },
-    environmentId: input.run.environmentId,
-    runId: input.run.id,
-    threadId: input.run.threadId,
-    type: "run.status",
-  });
-  return [
-    event,
-    ...(await projectThreadState(transaction, input.run.threadId)),
-    ...(await assignmentActivityEventsForRun(transaction, input.run.id)),
-  ];
+  await publishRunQueue(transaction, input.run.threadId, input.run.id);
+  await projectThreadState(transaction, input.run.threadId);
+  await assignmentActivityEventsForRun(transaction, input.run.id);
+  return;
 }
 export async function findCommandByIdempotency(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,

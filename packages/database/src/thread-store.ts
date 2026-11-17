@@ -1,12 +1,9 @@
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { refreshInputQueue } from "./waiting-inputs.js";
 import { lockThreadProviderSession } from "./run-projection-locks.js";
-import { markThreadStatePending } from "./thread-state-pending.js";
 import { compactionReturnHint } from "./compaction-eligibility.js";
 import { projectDeviceAccessAssignment } from "@opensteer/protocol";
-import {
-  lockDeploymentEvents,
-  withPersonalReadTransaction,
-  withPersonalTransaction,
-} from "./personal-transaction.js";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
 import { type TaskPurpose, type TeamTaskOrigin } from "@opensteer/core";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import type { MemoryPassExecution } from "./memory-pass-store.js";
@@ -19,9 +16,8 @@ import {
   type ThreadCallerAuthority,
 } from "./thread-caller.js";
 import { admitThreadWrite, requireThreadWriteAuthority } from "./task-done.js";
-import { retryDatabaseTransaction, TransactionScopeChanged } from "./connection.js";
+import { TransactionScopeChanged } from "./connection.js";
 import { prepareThreadInsertion } from "./thread-insertion.js";
-import { deploymentHead } from "./deployment-events.js";
 import type { Sequence } from "@opensteer/core";
 import {
   type IconName,
@@ -33,7 +29,6 @@ import {
   type HarnessInstanceId,
   type ThreadId,
   type ModelSelection,
-  type AgentEvent,
   type Thread,
   type RunId,
   type TriggerOccurrenceId,
@@ -66,7 +61,6 @@ import {
   ProviderContinuationIdentitySchema,
   nonTerminalRunStatuses,
   sameProviderContinuationIdentity,
-  type ThreadInputQueue,
 } from "@opensteer/core";
 import { type CommandRow, type ThreadRow, type DatabaseSchema } from "./schema.js";
 import { type RevokedRunGrant } from "./run-grants.js";
@@ -107,7 +101,6 @@ import { isDeepStrictEqual } from "node:util";
 import {
   threadPendingRequestsSelection,
   threadVisitSelection,
-  threadLatestRunCompletedAtSelection,
   threadProviderSessionSelection,
   threadContinuationIdentitySelection,
   threadFromRow,
@@ -118,7 +111,7 @@ import {
 import { boundedSerializedPrefix } from "./message-window.js";
 import {
   assignmentSummaryInTransaction,
-  assignmentNameEventsForThread,
+  refreshAssignmentWorkerSummaries,
   lockThreadNameDestinations,
   type CancelAssignmentInput,
   type CancelAssignmentResult,
@@ -141,8 +134,12 @@ import {
   moveThreadInputInTransaction,
   readThreadInputQueue,
 } from "./thread-inbox.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
-import { projectThreadState } from "./thread-status.js";
+import {
+  projectThreadState,
+  invalidateThreadCollection,
+  publishThreadSummary,
+  threadMutationHead,
+} from "./thread-status.js";
 export interface CreateThreadInput {
   readonly specialistId?: string;
   readonly expectedHarnessRevision?: number;
@@ -163,14 +160,13 @@ export interface CreateThreadInput {
 }
 export interface ThreadCreationResult {
   readonly asOfSequence: Sequence;
-  readonly event?: AgentEvent;
+
   readonly thread: Thread;
   readonly wasDuplicate: boolean;
 }
 export interface ThreadUpdateResult {
   readonly asOfSequence: Sequence;
-  readonly events?: readonly AgentEvent[];
-  readonly event?: AgentEvent;
+
   readonly thread: Thread;
 }
 
@@ -269,7 +265,7 @@ export interface EnqueuedThreadInput {
   readonly browserUsage?: readonly BrowserUsageCredit[];
   readonly command: CommandRow | null;
   readonly disposition: "cancelled" | "pending" | "steering" | "run-queued";
-  readonly events: readonly AgentEvent[];
+
   readonly input: ThreadInput;
   readonly message: Message;
   /** The grant a restart took from the attempt it interrupts. */
@@ -301,7 +297,7 @@ export interface CancelThreadInputRequest {
  */
 export interface CancelledThreadInput {
   readonly revokedGrants?: readonly RevokedRunGrant[];
-  readonly events: readonly AgentEvent[];
+
   readonly input: ThreadInput;
   readonly wasDuplicate: boolean;
 }
@@ -317,7 +313,7 @@ export interface MoveThreadInputRequest {
 }
 export interface MovedThreadInput {
   readonly revokedGrants?: readonly RevokedRunGrant[];
-  readonly events: readonly AgentEvent[];
+
   readonly wasDuplicate: boolean;
 }
 export interface DelegateThreadRequest {
@@ -358,7 +354,7 @@ export interface DelegatedThreadResult {
   readonly browserUsage?: readonly BrowserUsageCredit[];
   readonly assignment: import("@opensteer/core").AssignmentSummary;
   readonly command: CommandRow;
-  readonly events: readonly AgentEvent[];
+
   readonly input: ThreadInput;
   readonly message: Message;
   readonly run: Run;
@@ -442,14 +438,13 @@ async function findExistingThreadCreation(
     .select([
       threadPendingRequestsSelection,
       threadVisitSelection,
-      threadLatestRunCompletedAtSelection,
       threadProviderSessionSelection,
       threadContinuationIdentitySelection,
     ])
     .where("id", "=", existingCommand.threadId)
     .executeTakeFirstOrThrow();
   return {
-    asOfSequence: await deploymentHead(transaction),
+    asOfSequence: await threadMutationHead(transaction, existingThread.id),
     thread: threadFromRow(existingThread),
     wasDuplicate: true,
   };
@@ -589,7 +584,6 @@ export async function listThreadsForOwner(
     .select([
       threadPendingRequestsSelection,
       threadVisitSelection,
-      threadLatestRunCompletedAtSelection,
       threadProviderSessionSelection,
       threadContinuationIdentitySelection,
     ])
@@ -622,7 +616,6 @@ export async function ownerThreadPageForOwner(
         .select([
           threadPendingRequestsSelection,
           threadVisitSelection,
-          threadLatestRunCompletedAtSelection,
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
         ]);
@@ -842,7 +835,7 @@ export async function agentThreadPageForOwner(
                 .executeTakeFirstOrThrow()
             ).lineageRootThreadId
           : null;
-      let base = transaction.selectFrom("threads");
+      let base = transaction.selectFrom("threads").where("removedAt", "is", null);
       if (input.parentThreadId) {
         base = base.where((eb) =>
           eb.or([
@@ -914,7 +907,6 @@ export async function agentThreadPageForOwner(
           .select([
             threadPendingRequestsSelection,
             threadVisitSelection,
-            threadLatestRunCompletedAtSelection,
             threadProviderSessionSelection,
             threadContinuationIdentitySelection,
           ])
@@ -964,7 +956,6 @@ export async function getThreadForOwner(
     .select([
       threadPendingRequestsSelection,
       threadVisitSelection,
-      threadLatestRunCompletedAtSelection,
       threadProviderSessionSelection,
       threadContinuationIdentitySelection,
     ])
@@ -1005,19 +996,19 @@ export async function readThreadForOwner(
         .select([
           threadPendingRequestsSelection,
           threadVisitSelection,
-          threadLatestRunCompletedAtSelection,
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
         ])
         .where("threads.id", "=", threadId)
+        .where("threads.removedAt", "is", null)
         .executeTakeFirst();
       if (!threadRow) return null;
       const messageRows = await transaction
         .selectFrom("messages")
         .selectAll()
         .where("threadId", "=", threadId)
-        .orderBy("createdAt", "desc")
-        .orderBy("id", "desc")
+        .where("published", "=", true)
+        .orderBy("sequence", "desc")
         .limit(limit)
         .execute();
       return {
@@ -1035,8 +1026,8 @@ export async function createThread(
   database: Kysely<DatabaseSchema>,
   input: CreateThreadInput,
 ): Promise<ThreadCreationResult> {
-  return withThreadCallerTransaction(database, input, (transaction) =>
-    createThreadInTransaction(transaction, input),
+  return commitPersonalMutation(database, (tx) =>
+    withThreadCallerTransaction(tx, input, (tx) => createThreadInTransaction(tx, input)),
   );
 }
 export async function createThreadInTransaction(
@@ -1139,18 +1130,9 @@ export async function createThreadInTransaction(
     providerSessionId: selected.id,
     pendingRequests: thread.pendingRequestCount,
   });
-  const event = await appendHostDeploymentEvent(transaction, {
-    data: {
-      thread: parsedThread,
-    },
-    environmentId: parsedThread.environmentId,
-    runId: null,
-    threadId: id,
-    type: "thread.created",
-  });
+  await publishThreadSummary(transaction, id);
   return {
-    asOfSequence: await deploymentHead(transaction),
-    event,
+    asOfSequence: await threadMutationHead(transaction, parsedThread.id),
     thread: parsedThread,
     wasDuplicate: false,
   };
@@ -1184,7 +1166,7 @@ export async function delegateThread(
   database: Kysely<DatabaseSchema>,
   input: DelegateThreadRequest,
 ): Promise<DelegatedThreadResult> {
-  return withPersonalTransaction(database, (transaction) =>
+  return commitPersonalMutation(database, (transaction) =>
     delegateThreadInTransaction(transaction, input),
   );
 }
@@ -1194,7 +1176,7 @@ export async function delegateAdmittedThread(
   executionNow: () => number = Date.now,
 ): Promise<DelegatedThreadResult> {
   assertThreadMutationAdmission(request.admission, "thread.delegate", request.input);
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     await admitThreadMutation(transaction, request.admission, "check", executionNow);
     await lockDelegationIdempotency(transaction, request.input);
     const result = await delegateThreadInTransaction(transaction, request.input);
@@ -1243,20 +1225,19 @@ export async function cancelAssignment(
   }
   // Work that joined the tree after its snapshot cannot be locked in order
   // inside the same transaction; a fresh attempt snapshots it first.
-  return retryDatabaseTransaction(
-    () =>
-      database.transaction().execute(async (transaction) => {
-        await lockDeploymentEvents(transaction);
-        if (input.admission) {
-          await admitRunToolCallInTransaction(transaction, input.admission, "check", executionNow);
-        }
-        await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
-        const result = await cancelAssignmentInTransaction(transaction, input, links);
-        if (input.admission) {
-          await admitRunToolCallInTransaction(transaction, input.admission, "admit", executionNow);
-        }
-        return result;
-      }),
+  return commitPersonalMutation(
+    database,
+    async (transaction) => {
+      if (input.admission) {
+        await admitRunToolCallInTransaction(transaction, input.admission, "check", executionNow);
+      }
+      await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
+      const result = await cancelAssignmentInTransaction(transaction, input, links);
+      if (input.admission) {
+        await admitRunToolCallInTransaction(transaction, input.admission, "admit", executionNow);
+      }
+      return result;
+    },
     (error) => error instanceof OpensteerError && error.reason === assignmentTreeChangedReason,
   );
 }
@@ -1268,8 +1249,8 @@ export function drainPendingAssignmentReturns(
 }
 export function drainAssignmentReturn(
   database: Kysely<DatabaseSchema>,
-  assignmentId: import("@opensteer/core").AssignmentId,
-): Promise<readonly AgentEvent[]> {
+  assignmentId: AssignmentId,
+): Promise<void> {
   return drainAssignmentReturnInStore(database, assignmentId);
 }
 export async function updateThreadExecutionSelection(
@@ -1289,7 +1270,7 @@ export async function updateThreadExecutionSelection(
 ): Promise<{
   readonly asOfSequence: Sequence;
   readonly thread: Thread;
-  readonly event: AgentEvent | null;
+
   readonly wasDuplicate: boolean;
 }> {
   const modelSelection = ModelSelectionSchema.parse(input.modelSelection);
@@ -1301,28 +1282,75 @@ export async function updateThreadExecutionSelection(
     modelSelection,
     threadId: input.threadId,
   };
-  return withThreadCallerTransaction(database, input, async (transaction) => {
-    await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
-    const existingCommand = await findCommandByIdempotency(
-      transaction,
-      input.requestedBy,
-      input.idempotencyKey,
-    );
-    if (existingCommand) {
-      if (
-        existingCommand.type !== "thread.execution.update" ||
-        existingCommand.threadId !== input.threadId ||
-        !isDeepStrictEqual(existingCommand.payload, requestPayload)
-      ) {
-        throw idempotencyConflict(input.idempotencyKey);
+  return commitPersonalMutation(database, (tx) =>
+    withThreadCallerTransaction(tx, input, async (transaction) => {
+      await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
+      const existingCommand = await findCommandByIdempotency(
+        transaction,
+        input.requestedBy,
+        input.idempotencyKey,
+      );
+      if (existingCommand) {
+        if (
+          existingCommand.type !== "thread.execution.update" ||
+          existingCommand.threadId !== input.threadId ||
+          !isDeepStrictEqual(existingCommand.payload, requestPayload)
+        ) {
+          throw idempotencyConflict(input.idempotencyKey);
+        }
+        const current = await transaction
+          .selectFrom("threads")
+          .selectAll()
+          .select([
+            threadPendingRequestsSelection,
+            threadVisitSelection,
+            threadProviderSessionSelection,
+            threadContinuationIdentitySelection,
+          ])
+          .where("id", "=", input.threadId)
+          .forNoKeyUpdate()
+          .executeTakeFirstOrThrow();
+        await requireExecutionEnvironmentAccess(
+          transaction,
+          current.environmentId,
+          input.requestedBy,
+          "Only the execution owner can change this task's AI account",
+        );
+        return {
+          asOfSequence: await threadMutationHead(transaction, current.id),
+          thread: threadFromRow(current),
+          wasDuplicate: true,
+        };
       }
-      const current = await transaction
+      const observed = await transaction
+        .selectFrom("threads")
+        .where("id", "=", input.threadId)
+        .where("removedAt", "is", null)
+        .executeTakeFirst();
+      if (!observed)
+        throw new OpensteerError({
+          code: "not_found",
+          message: "Task not found",
+        });
+      await requirePersonalOwner(transaction, input.requestedBy);
+      const requestedHarness = await transaction
+        .selectFrom("harnessInstances")
+        .select(["driverKind", "enabled", "environmentId"])
+        .where("id", "=", input.harnessInstanceId)
+        .forShare()
+        .executeTakeFirst();
+      if (!requestedHarness?.enabled) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "AI engine is unavailable",
+        });
+      }
+      const thread = await transaction
         .selectFrom("threads")
         .selectAll()
         .select([
           threadPendingRequestsSelection,
           threadVisitSelection,
-          threadLatestRunCompletedAtSelection,
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
         ])
@@ -1331,214 +1359,158 @@ export async function updateThreadExecutionSelection(
         .executeTakeFirstOrThrow();
       await requireExecutionEnvironmentAccess(
         transaction,
-        current.environmentId,
+        thread.environmentId,
         input.requestedBy,
         "Only the execution owner can change this task's AI account",
       );
-      return {
-        asOfSequence: await deploymentHead(transaction),
-        thread: threadFromRow(current),
-        event: null,
-        wasDuplicate: true,
-      };
-    }
-    const observed = await transaction
-      .selectFrom("threads")
-      .where("id", "=", input.threadId)
-      .executeTakeFirst();
-    if (!observed)
-      throw new OpensteerError({
-        code: "not_found",
-        message: "Task not found",
-      });
-    await requirePersonalOwner(transaction, input.requestedBy);
-    const requestedHarness = await transaction
-      .selectFrom("harnessInstances")
-      .select(["driverKind", "enabled", "environmentId"])
-      .where("id", "=", input.harnessInstanceId)
-      .forShare()
-      .executeTakeFirst();
-    if (!requestedHarness?.enabled) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "AI engine is unavailable",
-      });
-    }
-    const thread = await transaction
-      .selectFrom("threads")
-      .selectAll()
-      .select([
-        threadPendingRequestsSelection,
-        threadVisitSelection,
-        threadLatestRunCompletedAtSelection,
-        threadProviderSessionSelection,
-        threadContinuationIdentitySelection,
-      ])
-      .where("id", "=", input.threadId)
-      .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
-    await requireExecutionEnvironmentAccess(
-      transaction,
-      thread.environmentId,
-      input.requestedBy,
-      "Only the execution owner can change this task's AI account",
-    );
-    const activeRun = await transaction
-      .selectFrom("runs")
-      .select("id")
-      .where("threadId", "=", thread.id)
-      .where("status", "in", nonTerminalRunStatuses)
-      .executeTakeFirst();
-    if (activeRun) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "The AI engine cannot change while a Run is active",
-        retryable: true,
-      });
-    }
-    if (requestedHarness.environmentId !== thread.environmentId) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "AI account belongs to a different computer",
-      });
-    }
-    if (requestedHarness.driverKind !== continuationIdentity.driverKind) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "AI engine continuation identity does not match its driver",
-      });
-    }
-    const selected = (await lockThreadProviderSession(transaction, thread.id)) ?? null;
-    const compatible =
-      selected !== null &&
-      (selected.continuationIdentity
-        ? sameProviderContinuationIdentity(selected.continuationIdentity, continuationIdentity)
-        : selected.harnessInstanceId === input.harnessInstanceId);
-    if (!compatible && input.continuation === undefined) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Changing native provider context requires the expected current session",
-      });
-    }
-    if (
-      input.continuation &&
-      input.continuation.expectedProviderSessionId !== (selected?.id ?? null)
-    ) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "The selected provider session changed before this AI engine update",
-      });
-    }
-    const selectionChanged =
-      thread.harnessInstanceId !== input.harnessInstanceId ||
-      !isDeepStrictEqual(thread.modelSelection, modelSelection);
-    if (selectionChanged) {
-      await transaction
-        .updateTable("providerSessions")
-        .set({ contextSnapshot: null })
+      const activeRun = await transaction
+        .selectFrom("runs")
+        .select("id")
         .where("threadId", "=", thread.id)
-        .execute();
-      await markThreadStatePending(transaction, thread.id);
-    }
-    let providerSessionId = selected?.id ?? null;
-    if (compatible && selected && input.continuation === undefined) {
-      await transaction
-        .updateTable("providerSessions")
-        .set({
-          continuationIdentity: jsonValue(continuationIdentity),
-          harnessInstanceId: input.harnessInstanceId,
-          updatedAt: new Date(),
-        })
-        .where("id", "=", selected.id)
-        .executeTakeFirstOrThrow();
-    } else {
-      if (selected) {
+        .where("status", "in", nonTerminalRunStatuses)
+        .executeTakeFirst();
+      if (activeRun) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "The AI engine cannot change while a Run is active",
+          retryable: true,
+        });
+      }
+      if (requestedHarness.environmentId !== thread.environmentId) {
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "AI account belongs to a different computer",
+        });
+      }
+      if (requestedHarness.driverKind !== continuationIdentity.driverKind) {
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "AI engine continuation identity does not match its driver",
+        });
+      }
+      const selected = (await lockThreadProviderSession(transaction, thread.id)) ?? null;
+      const compatible =
+        selected !== null &&
+        (selected.continuationIdentity
+          ? sameProviderContinuationIdentity(selected.continuationIdentity, continuationIdentity)
+          : selected.harnessInstanceId === input.harnessInstanceId);
+      if (!compatible && input.continuation === undefined) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Changing native provider context requires the expected current session",
+        });
+      }
+      if (
+        input.continuation &&
+        input.continuation.expectedProviderSessionId !== (selected?.id ?? null)
+      ) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "The selected provider session changed before this AI engine update",
+        });
+      }
+      const selectionChanged =
+        thread.harnessInstanceId !== input.harnessInstanceId ||
+        !isDeepStrictEqual(thread.modelSelection, modelSelection);
+      if (selectionChanged) {
+        await transaction
+          .updateTable("providerSessions")
+          .set({ contextSnapshot: null })
+          .where("threadId", "=", thread.id)
+          .execute();
+        await invalidateThreadCollection(transaction, thread.id, "return-hint");
+      }
+      let providerSessionId = selected?.id ?? null;
+      if (compatible && selected && input.continuation === undefined) {
         await transaction
           .updateTable("providerSessions")
           .set({
-            active: false,
+            continuationIdentity: jsonValue(continuationIdentity),
+            harnessInstanceId: input.harnessInstanceId,
             updatedAt: new Date(),
           })
           .where("id", "=", selected.id)
           .executeTakeFirstOrThrow();
+      } else {
+        if (selected) {
+          await transaction
+            .updateTable("providerSessions")
+            .set({
+              active: false,
+              updatedAt: new Date(),
+            })
+            .where("id", "=", selected.id)
+            .executeTakeFirstOrThrow();
+        }
+        providerSessionId = createId("providerSession");
+        await transaction
+          .insertInto("providerSessions")
+          .values({
+            active: true,
+            bindingGeneration: 0,
+            continuationIdentity: jsonValue(continuationIdentity),
+            harnessInstanceId: input.harnessInstanceId,
+            id: providerSessionId,
+            leaseExpiresAt: null,
+            leaseTokenHash: null,
+            providerSessionReference: null,
+            runnerBootId: null,
+            runnerId: null,
+            status: "starting",
+            stateLayout: "session",
+            threadId: thread.id,
+          })
+          .executeTakeFirstOrThrow();
       }
-      providerSessionId = createId("providerSession");
-      await transaction
-        .insertInto("providerSessions")
-        .values({
-          active: true,
-          bindingGeneration: 0,
-          continuationIdentity: jsonValue(continuationIdentity),
+      const now = new Date();
+      const row = await transaction
+        .updateTable("threads")
+        .set({
           harnessInstanceId: input.harnessInstanceId,
-          id: providerSessionId,
-          leaseExpiresAt: null,
-          leaseTokenHash: null,
-          providerSessionReference: null,
-          runnerBootId: null,
-          runnerId: null,
-          status: "starting",
-          stateLayout: "session",
+          modelSelection: jsonValue(modelSelection),
+          updatedAt: now,
+        })
+        .where("id", "=", thread.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      const parsedThread = {
+        ...threadFromRow({
+          ...thread,
+          ...row,
+          continuationIdentity,
+          providerSessionId,
+        }),
+        returnHint: await compactionReturnHint(transaction, thread.id),
+      };
+      await transaction
+        .insertInto("commands")
+        .values({
+          actorPrincipalId: await principalIdForUser(transaction, input.requestedBy),
+          authoritySource: jsonValue({
+            kind: "user-session",
+            userId: input.requestedBy,
+          }),
+          dispatcherId: null,
+          environmentId: thread.environmentId,
+          id: createId("command"),
+          idempotencyKey: input.idempotencyKey,
+          lastError: null,
+          payload: jsonValue(requestPayload),
+          requestedBy: input.requestedBy,
+          runId: null,
+          status: "succeeded",
           threadId: thread.id,
+          type: "thread.execution.update",
         })
         .executeTakeFirstOrThrow();
-    }
-    const now = new Date();
-    const row = await transaction
-      .updateTable("threads")
-      .set({
-        harnessInstanceId: input.harnessInstanceId,
-        modelSelection: jsonValue(modelSelection),
-        updatedAt: now,
-      })
-      .where("id", "=", thread.id)
-      .returningAll()
-      .executeTakeFirstOrThrow();
-    const parsedThread = {
-      ...threadFromRow({
-        ...thread,
-        ...row,
-        continuationIdentity,
-        providerSessionId,
-      }),
-      returnHint: await compactionReturnHint(transaction, thread.id),
-    };
-    await transaction
-      .insertInto("commands")
-      .values({
-        actorPrincipalId: await principalIdForUser(transaction, input.requestedBy),
-        authoritySource: jsonValue({
-          kind: "user-session",
-          userId: input.requestedBy,
-        }),
-        dispatcherId: null,
-        environmentId: thread.environmentId,
-        id: createId("command"),
-        idempotencyKey: input.idempotencyKey,
-        lastError: null,
-        payload: jsonValue(requestPayload),
-        requestedBy: input.requestedBy,
-        runId: null,
-        status: "succeeded",
-        threadId: thread.id,
-        type: "thread.execution.update",
-      })
-      .executeTakeFirstOrThrow();
-    const event = await appendHostDeploymentEvent(transaction, {
-      data: {
+      await publishThreadSummary(transaction, thread.id);
+      return {
+        asOfSequence: await threadMutationHead(transaction, parsedThread.id),
         thread: parsedThread,
-      },
-      environmentId: thread.environmentId,
-      runId: null,
-      threadId: thread.id,
-      type: "thread.execution-updated",
-    });
-    return {
-      asOfSequence: await deploymentHead(transaction),
-      thread: parsedThread,
-      event,
-      wasDuplicate: false,
-    };
-  });
+        wasDuplicate: false,
+      };
+    }),
+  );
 }
 export async function resumeThreadInputQueue(
   database: Kysely<DatabaseSchema>,
@@ -1551,122 +1523,112 @@ export async function resumeThreadInputQueue(
 ): Promise<{
   readonly asOfSequence: Sequence;
   readonly thread: Thread;
-  readonly events: readonly AgentEvent[];
 }> {
-  return withThreadCallerTransaction(database, input, async (transaction) => {
-    await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
-    const observed = await transaction
-      .selectFrom("threads")
-      .where("id", "=", input.threadId)
-      .executeTakeFirst();
-    if (!observed)
-      throw new OpensteerError({
-        code: "not_found",
-        message: "Task not found",
+  return commitPersonalMutation(database, (tx) =>
+    withThreadCallerTransaction(tx, input, async (transaction) => {
+      await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
+      const observed = await transaction
+        .selectFrom("threads")
+        .where("id", "=", input.threadId)
+        .where("removedAt", "is", null)
+        .executeTakeFirst();
+      if (!observed)
+        throw new OpensteerError({
+          code: "not_found",
+          message: "Task not found",
+        });
+      await lockThreadRow(transaction, input.threadId);
+      const thread = await transaction
+        .selectFrom("threads")
+        .selectAll()
+        .select([
+          threadPendingRequestsSelection,
+          threadVisitSelection,
+          threadProviderSessionSelection,
+          threadContinuationIdentitySelection,
+        ])
+        .where("id", "=", input.threadId)
+        .executeTakeFirstOrThrow();
+      await assertThreadCaller(transaction, input.authority, {
+        threadId: input.threadId,
+        activate: true,
       });
-    await lockThreadRow(transaction, input.threadId);
-    const thread = await transaction
-      .selectFrom("threads")
-      .selectAll()
-      .select([
-        threadPendingRequestsSelection,
-        threadVisitSelection,
-        threadLatestRunCompletedAtSelection,
-        threadProviderSessionSelection,
-        threadContinuationIdentitySelection,
-      ])
-      .where("id", "=", input.threadId)
-      .executeTakeFirstOrThrow();
-    await assertThreadCaller(transaction, input.authority, {
-      threadId: input.threadId,
-      activate: true,
-    });
-    await requirePersonalOwner(transaction, input.requestedBy);
-    if (thread.status === "archived")
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Archived tasks cannot run",
-      });
-    const payload = {
-      type: "thread.inputQueue.resume",
-      threadId: input.threadId,
-    };
-    const existing = await findCommandByIdempotency(
-      transaction,
-      input.requestedBy,
-      input.idempotencyKey,
-    );
-    if (existing) {
-      if (!isDeepStrictEqual(existing.payload, payload))
-        throw idempotencyConflict(input.idempotencyKey);
-      return {
-        asOfSequence: await deploymentHead(transaction),
-        thread: threadFromRow(thread),
-        events: [],
+      await requirePersonalOwner(transaction, input.requestedBy);
+      if (thread.status === "archived")
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Archived tasks cannot run",
+        });
+      const payload = {
+        type: "thread.inputQueue.resume",
+        threadId: input.threadId,
       };
-    }
-    await transaction
-      .insertInto("commands")
-      .values({
-        actorPrincipalId: await principalIdForUser(transaction, input.requestedBy),
-        authoritySource: jsonValue({
-          kind: "user-session",
-          userId: input.requestedBy,
-        }),
-        dispatcherId: null,
-        environmentId: thread.environmentId,
-        id: createId("command"),
-        idempotencyKey: input.idempotencyKey,
-        lastError: null,
-        payload: jsonValue(payload),
-        requestedBy: input.requestedBy,
-        runId: null,
-        status: "succeeded",
-        threadId: thread.id,
-        type: payload.type,
-      })
-      .execute();
-    await transaction
-      .updateTable("threads")
-      .set({
+      const existing = await findCommandByIdempotency(
+        transaction,
+        input.requestedBy,
+        input.idempotencyKey,
+      );
+      if (existing) {
+        if (!isDeepStrictEqual(existing.payload, payload))
+          throw idempotencyConflict(input.idempotencyKey);
+        return {
+          asOfSequence: await threadMutationHead(transaction, thread.id),
+          thread: threadFromRow(thread),
+        };
+      }
+      await transaction
+        .insertInto("commands")
+        .values({
+          actorPrincipalId: await principalIdForUser(transaction, input.requestedBy),
+          authoritySource: jsonValue({
+            kind: "user-session",
+            userId: input.requestedBy,
+          }),
+          dispatcherId: null,
+          environmentId: thread.environmentId,
+          id: createId("command"),
+          idempotencyKey: input.idempotencyKey,
+          lastError: null,
+          payload: jsonValue(payload),
+          requestedBy: input.requestedBy,
+          runId: null,
+          status: "succeeded",
+          threadId: thread.id,
+          type: payload.type,
+        })
+        .execute();
+      await transaction
+        .updateTable("threads")
+        .set({
+          inputQueuePaused: false,
+          inputQueuePausedBy: null,
+          updatedAt: new Date(),
+        })
+        .where("id", "=", thread.id)
+        .execute();
+      await refreshInputQueue(transaction, thread.id);
+      await ensureQueuedRun(transaction, {
+        ...thread,
         inputQueuePaused: false,
-        inputQueuePausedBy: null,
-        updatedAt: new Date(),
-      })
-      .where("id", "=", thread.id)
-      .execute();
-    const event = await appendHostDeploymentEvent(transaction, {
-      data: {
-        paused: false,
-      },
-      environmentId: thread.environmentId,
-      runId: null,
-      threadId: thread.id,
-      type: "thread.input-queue-updated",
-    });
-    const queued = await ensureQueuedRun(transaction, {
-      ...thread,
-      inputQueuePaused: false,
-    });
-    const statusEvents = await projectThreadState(transaction, thread.id);
-    const current = await transaction
-      .selectFrom("threads")
-      .selectAll()
-      .select([
-        threadPendingRequestsSelection,
-        threadVisitSelection,
-        threadLatestRunCompletedAtSelection,
-        threadProviderSessionSelection,
-        threadContinuationIdentitySelection,
-      ])
-      .where("id", "=", thread.id)
-      .executeTakeFirstOrThrow();
-    return {
-      asOfSequence: await deploymentHead(transaction),
-      thread: threadFromRow(current),
-      events: [event, ...queued.events, ...statusEvents],
-    };
-  });
+      });
+      await projectThreadState(transaction, thread.id, new Date(), true);
+      const current = await transaction
+        .selectFrom("threads")
+        .selectAll()
+        .select([
+          threadPendingRequestsSelection,
+          threadVisitSelection,
+          threadProviderSessionSelection,
+          threadContinuationIdentitySelection,
+        ])
+        .where("id", "=", thread.id)
+        .executeTakeFirstOrThrow();
+      return {
+        asOfSequence: await threadMutationHead(transaction, current.id),
+        thread: threadFromRow(current),
+      };
+    }),
+  );
 }
 export async function renameThread(
   database: Kysely<DatabaseSchema>,
@@ -1681,7 +1643,7 @@ export async function renameThread(
   },
 ): Promise<ThreadUpdateResult> {
   const title = ThreadTitleSchema.parse(input.title);
-  return withPersonalTransaction(
+  return commitPersonalMutation(
     database,
     async (transaction) => {
       await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
@@ -1721,7 +1683,6 @@ export async function renameThread(
         .select([
           threadPendingRequestsSelection,
           threadVisitSelection,
-          threadLatestRunCompletedAtSelection,
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
         ])
@@ -1736,7 +1697,7 @@ export async function renameThread(
       await requireThreadWriteAuthority(transaction, thread, input, "rename");
       if (existing)
         return {
-          asOfSequence: await deploymentHead(transaction),
+          asOfSequence: await threadMutationHead(transaction, thread.id),
           thread: threadFromRow(thread),
         };
       const row = await transaction
@@ -1749,25 +1710,11 @@ export async function renameThread(
         .where("id", "=", thread.id)
         .returningAll()
         .executeTakeFirstOrThrow();
-      const event =
-        thread.title !== title
-          ? await appendHostDeploymentEvent(transaction, {
-              data: {
-                status: row.status,
-                title: row.title,
-                icon: row.icon,
-                inputQueuePaused: row.inputQueuePaused,
-                pendingRequests: row.pendingRequestCount,
-              },
-              environmentId: row.environmentId,
-              runId: null,
-              threadId: row.id,
-              type: "thread.state-changed",
-            })
-          : undefined;
-      const events = event
-        ? [event, ...(await assignmentNameEventsForThread(transaction, row.id))]
-        : [];
+      if (thread.title !== title) {
+        await publishThreadSummary(transaction, row.id);
+        await invalidateThreadCollection(transaction, row.id, "thread-details");
+        await refreshAssignmentWorkerSummaries(transaction, row.id);
+      }
       const actorPrincipalId = await principalIdForUser(transaction, input.requestedBy);
       await transaction
         .insertInto("commands")
@@ -1791,20 +1738,13 @@ export async function renameThread(
         })
         .executeTakeFirstOrThrow();
       return {
-        asOfSequence: await deploymentHead(transaction),
-        ...(event
-          ? {
-              event,
-            }
-          : {}),
-        events,
+        asOfSequence: await threadMutationHead(transaction, row.id),
         thread: threadFromRow({
           ...thread,
           ...row,
         }),
       };
     },
-    undefined,
     (error) => error instanceof TransactionScopeChanged,
   );
 }
@@ -1821,7 +1761,7 @@ export async function setThreadIcon(
   },
 ): Promise<ThreadUpdateResult> {
   const icon = IconNameSchema.parse(input.icon ?? defaultTaskSymbol);
-  return withPersonalTransaction(
+  return commitPersonalMutation(
     database,
     async (transaction) => {
       await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
@@ -1861,7 +1801,6 @@ export async function setThreadIcon(
         .select([
           threadPendingRequestsSelection,
           threadVisitSelection,
-          threadLatestRunCompletedAtSelection,
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
         ])
@@ -1876,7 +1815,7 @@ export async function setThreadIcon(
       await requireThreadWriteAuthority(transaction, thread, input, "set_icon");
       if (existing)
         return {
-          asOfSequence: await deploymentHead(transaction),
+          asOfSequence: await threadMutationHead(transaction, thread.id),
           thread: threadFromRow(thread),
         };
       const row = await transaction
@@ -1889,25 +1828,11 @@ export async function setThreadIcon(
         .where("id", "=", thread.id)
         .returningAll()
         .executeTakeFirstOrThrow();
-      const event =
-        thread.icon !== icon
-          ? await appendHostDeploymentEvent(transaction, {
-              data: {
-                status: row.status,
-                title: row.title,
-                icon: row.icon,
-                inputQueuePaused: row.inputQueuePaused,
-                pendingRequests: row.pendingRequestCount,
-              },
-              environmentId: row.environmentId,
-              runId: null,
-              threadId: row.id,
-              type: "thread.state-changed",
-            })
-          : undefined;
-      const events = event
-        ? [event, ...(await assignmentNameEventsForThread(transaction, row.id))]
-        : [];
+      if (thread.icon !== icon) {
+        await publishThreadSummary(transaction, row.id);
+        await invalidateThreadCollection(transaction, row.id, "thread-details");
+        await refreshAssignmentWorkerSummaries(transaction, row.id);
+      }
       const actorPrincipalId = await principalIdForUser(transaction, input.requestedBy);
       await transaction
         .insertInto("commands")
@@ -1931,20 +1856,13 @@ export async function setThreadIcon(
         })
         .executeTakeFirstOrThrow();
       return {
-        asOfSequence: await deploymentHead(transaction),
-        ...(event
-          ? {
-              event,
-            }
-          : {}),
-        events,
+        asOfSequence: await threadMutationHead(transaction, row.id),
         thread: threadFromRow({
           ...thread,
           ...row,
         }),
       };
     },
-    undefined,
     (error) => error instanceof TransactionScopeChanged,
   );
 }
@@ -1959,15 +1877,12 @@ export async function applyGeneratedThreadName(
       readonly expiresAt: number;
     };
   },
-): Promise<{
-  readonly event: AgentEvent;
-  readonly events: readonly AgentEvent[];
-} | null> {
+): Promise<ThreadId | null> {
   const title =
     input.title === undefined ? undefined : GeneratedThreadTitleSchema.parse(input.title);
   const icon = input.icon === undefined ? undefined : IconNameSchema.parse(input.icon);
   if (title === undefined && icon === undefined) return null;
-  return withPersonalTransaction(
+  return commitPersonalMutation(
     database,
     async (transaction) => {
       if (!(await lockThreadNameDestinations(transaction, input.threadId))) return null;
@@ -2031,25 +1946,11 @@ export async function applyGeneratedThreadName(
         .selectAll()
         .where("id", "=", input.threadId)
         .executeTakeFirstOrThrow();
-      const event = await appendHostDeploymentEvent(transaction, {
-        data: {
-          status: row.status,
-          title: row.title,
-          icon: row.icon,
-          inputQueuePaused: row.inputQueuePaused,
-          pendingRequests: row.pendingRequestCount,
-        },
-        environmentId: row.environmentId,
-        runId: null,
-        threadId: row.id,
-        type: "thread.state-changed",
-      });
-      return {
-        event,
-        events: [event, ...(await assignmentNameEventsForThread(transaction, row.id))],
-      };
+      await publishThreadSummary(transaction, row.id);
+      await invalidateThreadCollection(transaction, row.id, "thread-details");
+      await refreshAssignmentWorkerSummaries(transaction, row.id);
+      return row.id;
     },
-    undefined,
     (error) => error instanceof TransactionScopeChanged,
   );
 }
@@ -2062,10 +1963,11 @@ export async function updateThreadAccessMode(
   },
 ): Promise<ThreadUpdateResult> {
   const accessMode = ThreadAccessModeSchema.parse(input.accessMode);
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     const observed = await transaction
       .selectFrom("threads")
       .where("id", "=", input.threadId)
+      .where("removedAt", "is", null)
       .executeTakeFirst();
     if (!observed)
       throw new OpensteerError({
@@ -2079,7 +1981,6 @@ export async function updateThreadAccessMode(
       .select([
         threadPendingRequestsSelection,
         threadVisitSelection,
-        threadLatestRunCompletedAtSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
       ])
@@ -2094,7 +1995,7 @@ export async function updateThreadAccessMode(
     );
     if (thread.accessMode === accessMode)
       return {
-        asOfSequence: await deploymentHead(transaction),
+        asOfSequence: await threadMutationHead(transaction, observed.id),
         thread: threadFromRow(thread),
       };
     const updatedAt = new Date();
@@ -2111,20 +2012,9 @@ export async function updateThreadAccessMode(
       ...thread,
       ...row,
     });
-    const event = await appendHostDeploymentEvent(transaction, {
-      data: {
-        accessMode,
-      },
-      environmentId: updated.environmentId,
-      runId: null,
-      threadId: updated.id,
-      type: "thread.access-mode-updated",
-    });
-    return {
-      asOfSequence: await deploymentHead(transaction),
-      event,
-      thread: updated,
-    };
+    await publishThreadSummary(transaction, updated.id);
+    await invalidateThreadCollection(transaction, updated.id, "thread-details");
+    return { asOfSequence: await threadMutationHead(transaction, updated.id), thread: updated };
   });
 }
 
@@ -2156,7 +2046,7 @@ export async function enqueueThreadInput(
   database: Kysely<DatabaseSchema>,
   input: EnqueueThreadInputRequest,
 ): Promise<EnqueuedThreadInput> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     await lockThreadInputIdempotency(transaction, input);
     await lockThreadCaller(transaction, input.authority);
     const result = await enqueueThreadInputInTransaction(transaction, input);
@@ -2170,7 +2060,7 @@ export async function steerThreadInput(
   database: Kysely<DatabaseSchema>,
   input: SteerThreadInputRequest,
 ): Promise<EnqueuedThreadInput> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
     await lockThreadCaller(transaction, input.authority, [input.expectedRunId]);
     const result = await steerThreadInputInTransaction(transaction, input);
@@ -2185,7 +2075,7 @@ export async function cancelThreadInput(
   database: Kysely<DatabaseSchema>,
   input: CancelThreadInputRequest,
 ): Promise<CancelledThreadInput> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
     await lockThreadCaller(transaction, input.authority);
     const result = await cancelThreadInputInTransaction(transaction, input);
@@ -2199,7 +2089,7 @@ export async function moveThreadInput(
   database: Kysely<DatabaseSchema>,
   input: MoveThreadInputRequest,
 ): Promise<MovedThreadInput> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
     await lockThreadCaller(transaction, input.authority);
     const result = await moveThreadInputInTransaction(transaction, input);
@@ -2215,8 +2105,9 @@ export async function getThreadInputQueue(
     readonly authority?: ThreadCallerAuthority;
     readonly threadId: ThreadId;
     readonly requestedBy: UserId;
+    readonly expectedRevision?: string;
   },
-): Promise<ThreadInputQueue> {
+) {
   return withPersonalReadTransaction(database, async (transaction) => {
     await assertThreadCaller(transaction, input.authority, {
       threadId: input.threadId,
@@ -2231,7 +2122,7 @@ export async function enqueueAdmittedThreadInput(
   executionNow: () => number = Date.now,
 ): Promise<EnqueuedThreadInput> {
   assertThreadMutationAdmission(request.admission, "thread.message", request.input);
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     await admitThreadMutation(transaction, request.admission, "check", executionNow);
     await lockCommandIdempotency(
       transaction,
