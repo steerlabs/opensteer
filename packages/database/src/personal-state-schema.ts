@@ -187,53 +187,6 @@ export interface PersonalAttentionTable {
   revision: Generated<string>;
 }
 
-type SupersededTable =
-  | "deploymentEventState"
-  | "deploymentEvents"
-  | "threadStatePending"
-  | "threads"
-  | "runs"
-  | "messages"
-  | "requests"
-  | "personalTeamLinks"
-  | "threadInputs";
-
-export interface PersonalStateSchema extends Omit<DatabaseSchema, SupersededTable> {
-  clientSyncState: ClientSyncStateTable;
-  clientChanges: ClientChangesTable;
-  toolCalls: ToolCallTable;
-  transcriptItems: TranscriptItemTable;
-  toolOutputImages: ToolOutputImageTable;
-  runnerEventReceipts: RunnerEventReceiptTable;
-  personalAttention: PersonalAttentionTable;
-  threads: Omit<DatabaseSchema["threads"], "projectedInputQueuePaused"> & {
-    revision: Generated<string>;
-    nextTranscriptPosition: Generated<string>;
-    transcriptOrderRevision: Generated<string>;
-    inputQueueRevision: Generated<string>;
-    lastReplyMessageId: Generated<MessageId | null>;
-    lastReplyPreview: Generated<string | null>;
-    failurePreview: Generated<string | null>;
-    latestRunCompletedAt: Generated<Date | null>;
-    latestPlace: Generated<PlaceView | null>;
-    removedAt: Generated<Date | null>;
-  };
-  runs: DatabaseSchema["runs"] & {
-    revision: Generated<string>;
-    latestPlace: Generated<PlaceView | null>;
-    terminalReplyMessageId: Generated<MessageId | null>;
-    runnerSafetyTerminal: Generated<boolean>;
-    executeClaimState: Generated<"not-created" | "unclaimed" | "claimed">;
-    finishIntent: Generated<FinishIntent | null>;
-  };
-  messages: DatabaseSchema["messages"] & { published: Generated<boolean> };
-  requests: DatabaseSchema["requests"] & { revision: Generated<string> };
-  personalTeamLinks: DatabaseSchema["personalTeamLinks"] & {
-    approvalAttentionCount: Generated<number>;
-  };
-  threadInputs: DatabaseSchema["threadInputs"] & { approvalSort: Generated<number> };
-}
-
 export const uncertainEarlierRun =
   "started_at is null and binding_generation is not null and not runner_safety_terminal and execute_claim_state <> 'unclaimed'";
 

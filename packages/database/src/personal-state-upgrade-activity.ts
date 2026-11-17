@@ -4,6 +4,8 @@ import {
   ThreadIdSchema,
   type AgentEvent,
   type DeploymentId,
+  type EnvironmentId,
+  type EventId,
   type ExecutionNodeId,
   type RunAttemptId,
   type RunId,
@@ -11,9 +13,8 @@ import {
   utf8Prefix,
 } from "@opensteer/core";
 import { sql, type Insertable, type Selectable, type Transaction } from "kysely";
-import type { DatabaseSchema, DeploymentEventRow } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import type {
-  PersonalStateSchema,
   ToolCallTable,
   ToolOutputImageTable,
   TranscriptItemTable,
@@ -26,19 +27,20 @@ import {
 } from "./transcript-store.js";
 
 type Tx = Transaction<DatabaseSchema>;
-type LegacyActivity = Pick<
-  DeploymentEventRow,
-  | "eventId"
-  | "sequence"
-  | "runId"
-  | "threadId"
-  | "runnerOrdinal"
-  | "runnerBindingGeneration"
-  | "createdAt"
-  | "environmentId"
-  | "type"
-  | "data"
-> & { readonly attemptId: RunAttemptId | null; readonly nodeId: ExecutionNodeId | null };
+interface LegacyActivity {
+  readonly eventId: EventId;
+  readonly sequence: string;
+  readonly runId: RunId | null;
+  readonly threadId: ThreadId | null;
+  readonly runnerOrdinal: number | null;
+  readonly runnerBindingGeneration: number | null;
+  readonly createdAt: Date;
+  readonly environmentId: EnvironmentId | null;
+  readonly type: AgentEvent["type"];
+  readonly data: unknown;
+  readonly attemptId: RunAttemptId | null;
+  readonly nodeId: ExecutionNodeId | null;
+}
 
 export interface LegacyImportCounts {
   tools: number;
@@ -278,14 +280,10 @@ async function importToolBatch(
       );
     return stats;
   }
-  const typed =
-    tx.withTables<
-      Pick<PersonalStateSchema, "toolCalls" | "transcriptItems" | "toolOutputImages">
-    >();
   const ids = [...new Set(candidates.map(({ call }) => call.id))];
   const current = new Map(
     (
-      await typed
+      await tx
         .selectFrom("toolCalls")
         .select(["id", "origin", "status", "tool", "startedAt", "integration", "completedAt"])
         .where("id", "in", ids)
@@ -399,14 +397,14 @@ async function importToolBatch(
       tx,
     );
   if (cards.size)
-    await typed
+    await tx
       .insertInto("transcriptItems")
       .values([...cards.values()])
       .onConflict((conflict) =>
         conflict.column("id").doUpdateSet((eb) => ({ view: eb.ref("excluded.view") })),
       )
       .execute();
-  if (images.length) await typed.insertInto("toolOutputImages").values(images).execute();
+  if (images.length) await tx.insertInto("toolOutputImages").values(images).execute();
   return { ...stats, images: images.length };
 }
 
@@ -503,8 +501,7 @@ export async function importLegacyActivity(
   counts.images = tools.images;
   counts.skipped += tools.skipped;
   if (owned.size) {
-    const typed = tx.withTables<Pick<PersonalStateSchema, "transcriptItems">>();
-    const inserted = await typed
+    const inserted = await tx
       .insertInto("transcriptItems")
       .values([...owned.values()])
       .onConflict((conflict) => conflict.column("id").doNothing())

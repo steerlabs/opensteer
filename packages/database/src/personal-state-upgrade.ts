@@ -1,6 +1,5 @@
 import { TranscriptItemPreviewSchema } from "@opensteer/protocol/transcript";
 import { itemView } from "./personal-sync-store.js";
-import type { PersonalStateSchema } from "./personal-state-schema.js";
 import { sql, type Kysely, type Transaction } from "kysely";
 import {
   type DeploymentId,
@@ -520,7 +519,6 @@ async function deriveAttentionLinks(tx: Tx, source: Source, cursor: UpgradeCurso
 
 async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
   const cards = await tx
-    .withTables<Pick<PersonalStateSchema, "transcriptItems">>()
     .selectFrom("transcriptItems")
     .select([
       "id",

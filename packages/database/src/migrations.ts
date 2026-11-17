@@ -94,7 +94,7 @@ const MESSAGE_ORIGIN_SQL = `
 alter table messages add column origin jsonb;
 `;
 export function migrationProvider(options?: {
-  readonly personalCurrentState?: true;
+  readonly personalCurrentState?: boolean;
 }): MigrationProvider {
   return {
     async getMigrations() {
@@ -325,7 +325,7 @@ export function migrationProvider(options?: {
             await sql.raw(DEVICE_DRIVERS_SQL).execute(database);
           },
         },
-        ...(options?.personalCurrentState
+        ...(options?.personalCurrentState !== false
           ? {
               [personalCurrentStateMigrationName]: { up: applyPersonalStateSchema },
             }

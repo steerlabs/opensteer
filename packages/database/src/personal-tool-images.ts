@@ -1,6 +1,7 @@
+import type { DatabaseSchema } from "./schema.js";
 import { OpensteerError, type ExecutionNodeId, type ThreadId, type UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
-import type { PersonalStateSchema, ToolOutputImageTable } from "./personal-state-schema.js";
+import type { ToolOutputImageTable } from "./personal-state-schema.js";
 import {
   authorizedDetail,
   authorizedSyncState,
@@ -23,7 +24,7 @@ function scopeOf(input: ImageScope) {
 type ImageView = Pick<ToolOutputImageTable, "id" | "path" | "mediaType" | "generated">;
 
 export async function resolvePersonalToolImages(
-  database: Kysely<PersonalStateSchema>,
+  database: Kysely<DatabaseSchema>,
   input: ImageScope & { readonly paths: readonly string[] },
 ) {
   if (input.paths.length > 32)
@@ -53,7 +54,7 @@ export async function resolvePersonalToolImages(
 }
 
 export async function readPersonalToolImage(
-  database: Kysely<PersonalStateSchema>,
+  database: Kysely<DatabaseSchema>,
   input: ImageScope & { readonly imageId: string },
 ) {
   return withPersonalSyncRead(database, async (tx) => {

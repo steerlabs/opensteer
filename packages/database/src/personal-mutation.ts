@@ -1,3 +1,4 @@
+import type { DatabaseSchema } from "./schema.js";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type {
   DeploymentId,
@@ -20,7 +21,6 @@ import type {
   ClientSyncStateTable,
   PersonalResourceKind,
   PersonalScopeKey,
-  PersonalStateSchema,
 } from "./personal-state-schema.js";
 
 const retainedRows = 4_096;
@@ -30,8 +30,8 @@ const maxCommitBytes = 64 * 1024;
 const scopeEnvelopeReserve = 1024;
 const retentionMs = 24 * 60 * 60 * 1000;
 
-type TargetDb = Kysely<PersonalStateSchema>;
-export type PersonalMutationTransaction = Transaction<PersonalStateSchema>;
+type TargetDb = Kysely<DatabaseSchema>;
+export type PersonalMutationTransaction = Transaction<DatabaseSchema>;
 type ScopeAuthority = PersonalScopeKey | "deployment";
 type State = Selectable<ClientSyncStateTable>;
 type Counter = "pendingRequestCount" | "needsYouCount" | "unreadTaskCount";
@@ -82,8 +82,8 @@ export type PersonalCommitReaction =
   | {
       readonly type: "requestChanged";
       readonly requestId: RequestId;
-      readonly kind: PersonalStateSchema["requests"]["kind"];
-      readonly status: PersonalStateSchema["requests"]["status"];
+      readonly kind: DatabaseSchema["requests"]["kind"];
+      readonly status: DatabaseSchema["requests"]["status"];
       readonly threadId: ThreadId;
       readonly runId: RunId | null;
     }

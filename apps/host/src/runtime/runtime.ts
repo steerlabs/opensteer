@@ -532,6 +532,7 @@ export async function createHostRuntime(
     // A team database is served by several Host processes at once; a personal one by exactly one.
     if (!deploymentPolicy(config.deploymentShape).services.team)
       authorityLease = await acquireDeploymentAuthorityLease(database);
+    // Conversion must finish before startup reads or creates a Deployment.
     await migrateToLatest(database).catch((error: unknown) => {
       throw config.mode === "development" ? withDevelopmentDatabaseReset(error) : error;
     });

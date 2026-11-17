@@ -1,7 +1,7 @@
+import type { DatabaseSchema } from "./schema.js";
 import type { ThreadId, UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { PersonalMutationTransaction } from "./personal-mutation.js";
-import type { PersonalStateSchema } from "./personal-state-schema.js";
 import { authorizedSyncState, withPersonalSyncRead } from "./personal-sync-store.js";
 
 export type TaskWindow = "recent" | "active" | "done";
@@ -70,7 +70,7 @@ function taskWindow(
 }
 
 export function readPersonalTaskPage(
-  database: Kysely<PersonalStateSchema>,
+  database: Kysely<DatabaseSchema>,
   input: {
     readonly viewerId: UserId;
     readonly window: TaskWindow;

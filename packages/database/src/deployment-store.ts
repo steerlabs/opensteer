@@ -47,7 +47,6 @@ export async function ensureDeployment(
     readonly deploymentId?: DeploymentId;
     readonly hostInstanceId: HostInstanceId;
     readonly deploymentShape: DeploymentShape;
-    readonly personalCurrentState?: true;
   },
 ): Promise<Deployment> {
   return withDatabaseTransaction(database, async (transaction) => {
@@ -130,16 +129,10 @@ export async function ensureDeployment(
       .returningAll()
       .executeTakeFirstOrThrow();
     if (input.deploymentShape.kind === "personal") {
-      if (input.personalCurrentState) {
-        await sql`insert into client_sync_state (deployment_id, ready) values (${created.id}, true)`.execute(
-          transaction,
-        );
-      } else {
-        await transaction
-          .insertInto("deploymentEventState")
-          .values({ deploymentId: created.id })
-          .execute();
-      }
+      await transaction
+        .insertInto("clientSyncState")
+        .values({ deploymentId: created.id, ready: true })
+        .execute();
     }
     return deploymentFromRow(created);
   });

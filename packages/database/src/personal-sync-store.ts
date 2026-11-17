@@ -1,3 +1,4 @@
+import type { DatabaseSchema } from "./schema.js";
 import {
   OpensteerError,
   type DeploymentId,
@@ -10,12 +11,11 @@ import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type {
   ClientChangesTable,
   PersonalScopeKey,
-  PersonalStateSchema,
   TranscriptItemTable,
 } from "./personal-state-schema.js";
 
-type Database = Kysely<PersonalStateSchema>;
-type Read = Transaction<PersonalStateSchema>;
+type Database = Kysely<DatabaseSchema>;
+type Read = Transaction<DatabaseSchema>;
 
 export type PersonalReadScope =
   | { readonly kind: "shell" }

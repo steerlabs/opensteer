@@ -1,3 +1,4 @@
+import type { DatabaseSchema } from "./schema.js";
 import {
   OpensteerError,
   type DeploymentId,
@@ -11,12 +12,11 @@ import {
   type PersonalMutation,
   type PersonalMutationTransaction,
 } from "./personal-mutation.js";
-import type { PersonalAttentionTable, PersonalStateSchema } from "./personal-state-schema.js";
+import type { PersonalAttentionTable } from "./personal-state-schema.js";
 
 type Tx = PersonalMutationTransaction;
 const liveLinkStates = ["active", "unreachable", "needs_update"] as const;
-type LinkState =
-  import("./personal-state-schema.js").PersonalStateSchema["personalTeamLinks"]["state"];
+type LinkState = DatabaseSchema["personalTeamLinks"]["state"];
 
 function eligibleLink(state: LinkState): boolean {
   return state === "active" || state === "unreachable" || state === "needs_update";
@@ -259,7 +259,7 @@ export async function requireFreshPersonalAttention(tx: Tx) {
     });
 }
 
-export function settleExpiredPersonalAttention(database: Kysely<PersonalStateSchema>) {
+export function settleExpiredPersonalAttention(database: Kysely<DatabaseSchema>) {
   return commitPersonalMutation(database, async (tx, mutation) => {
     const due = await tx
       .selectFrom("personalAttention")

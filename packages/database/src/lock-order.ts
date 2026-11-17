@@ -11,7 +11,6 @@
  */
 export const databaseLockOrder = [
   "client_sync_state",
-  "deployment_event_state",
   "personal_settings",
   // BEGIN team authority and content lock order.
   "team_access_state",
@@ -129,7 +128,6 @@ export const databaseLockOrder = [
   // Independent lifecycle rows retain their position when no observed edge constrains them.
   "request_continuations",
   "advisory:grant",
-  "deployment_events",
   "auth_admissions",
   "auth_jwks",
   "auth_rate_limits",
@@ -207,7 +205,6 @@ export const databaseLockOrder = [
   "integration_tools",
   "integration_tool_definitions",
   "integration_skills",
-  "thread_state_pending",
   // Erasure acknowledgements follow profile archival, history cleanup and grant revocation.
   "browser_profile_deletions",
   "browser_site_grants",

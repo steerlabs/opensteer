@@ -8,7 +8,7 @@ import {
   migrationProvider,
   personalCurrentStateMigrationName,
 } from "./migrations.js";
-import { applyPersonalStateSchema, type PersonalStateSchema } from "./personal-state-schema.js";
+import { applyPersonalStateSchema } from "./personal-state-schema.js";
 import { finishPersonalStateUpgrade } from "./personal-state-upgrade.js";
 import type { DatabaseSchema } from "./schema.js";
 import { createStoreFixture, pendingEvent } from "./store.integration.test-support.js";
@@ -238,7 +238,7 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
     const target =
       database.withTables<
         Pick<
-          PersonalStateSchema,
+          DatabaseSchema,
           | "clientSyncState"
           | "runnerEventReceipts"
           | "runs"
@@ -293,7 +293,7 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
       .selectFrom("toolOutputImages")
       .selectAll()
       .executeTakeFirstOrThrow();
-    const current = createDatabase<PersonalStateSchema>({ connectionString: fixture.databaseUrl });
+    const current = createDatabase<DatabaseSchema>({ connectionString: fixture.databaseUrl });
     try {
       const newRunId = createId("run");
       const newAttemptId = createId("runAttempt");

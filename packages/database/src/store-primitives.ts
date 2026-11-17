@@ -217,7 +217,6 @@ export function messageWasNotWithdrawn(expression: ExpressionBuilder<DatabaseSch
   );
 }
 
-export { eventFromRow } from "./deployment-events.js";
 export function safeError(error: unknown): Readonly<Record<string, unknown>> {
   if (error instanceof OpensteerError) {
     return {

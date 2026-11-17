@@ -1,6 +1,7 @@
+import type { DatabaseSchema } from "./schema.js";
 import { sql } from "kysely";
 import { createDatabase } from "./connection.js";
-import { applyPersonalStateSchema, type PersonalStateSchema } from "./personal-state-schema.js";
+import { applyPersonalStateSchema } from "./personal-state-schema.js";
 import { createStoreFixture } from "./store.integration.test-support.js";
 import { ownTestDatabaseProducer } from "./test-database.test-support.js";
 
@@ -13,7 +14,7 @@ export async function createPersonalStateFixture(suffix: string) {
       fixture.database,
     );
     const { database } = await ownTestDatabaseProducer(fixture.databaseUrl, async () => {
-      const database = createDatabase<PersonalStateSchema>({
+      const database = createDatabase<DatabaseSchema>({
         connectionString: fixture.databaseUrl,
       });
       return { database, close: () => database.destroy() };

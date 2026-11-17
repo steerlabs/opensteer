@@ -1,3 +1,4 @@
+import type { DatabaseSchema } from "./schema.js";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +7,7 @@ import { expect, test } from "vitest";
 import { createDatabase } from "./connection.js";
 import { withLockOrderMode } from "./lock-order-checker.test-support.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
-import { applyPersonalStateSchema, type PersonalStateSchema } from "./personal-state-schema.js";
+import { applyPersonalStateSchema } from "./personal-state-schema.js";
 import { finishPersonalStateUpgrade } from "./personal-state-upgrade.js";
 import { authorizedSyncState, withPersonalSyncRead } from "./personal-sync-store.js";
 import {
@@ -115,7 +116,7 @@ async function measure(events: number) {
       batchMs: distribution(batches),
     };
     const { target } = await ownTestDatabaseProducer(fixture.databaseUrl, async () => {
-      const target = createDatabase<PersonalStateSchema>({ connectionString: fixture.databaseUrl });
+      const target = createDatabase<DatabaseSchema>({ connectionString: fixture.databaseUrl });
       return { target, close: () => target.destroy() };
     });
     const settled = await target
