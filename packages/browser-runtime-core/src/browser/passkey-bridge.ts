@@ -17,8 +17,8 @@ import type { CdpSession } from "./backend.js";
 
 export function createPasskeyProviderConfig(): NonNullable<BrowserPagePolicyConfig> {
   return {
-    bindingName: `opensteerPasskey_${randomBytes(32).toString("hex")}`,
-    replyName: `opensteerReply_${randomBytes(32).toString("hex")}`,
+    bindingName: `b_${randomBytes(32).toString("hex")}`,
+    replyName: `r_${randomBytes(32).toString("hex")}`,
   };
 }
 const bindingEvent = z.object({

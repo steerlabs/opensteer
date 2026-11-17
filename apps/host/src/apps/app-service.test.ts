@@ -1,4 +1,3 @@
-import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { connect } from "node:net";
@@ -6,140 +5,110 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createId, OpensteerError } from "@opensteer/core";
+import type { Readable } from "node:stream";
+import { createId, OpensteerError, type AppId } from "@opensteer/core";
+import type { AppStore, PublishedApp } from "@opensteer/database";
+import type { RunnerConnectionId } from "@opensteer/protocol";
 import { closeHttpServerNow } from "@opensteer/shared/httpServer";
-import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, it, vi } from "vitest";
-import type { AppStore } from "@opensteer/database";
-import { hostApi } from "@opensteer/protocol";
 import { AppService } from "./app-service.js";
-import { AppTunnelError } from "./app-tunnel-hub.js";
 
-function fixture(
-  connectApp: NonNullable<ConstructorParameters<typeof AppService>[0]["tunnels"]>["connect"],
-) {
-  const computerId = createId("runner");
-  const userId = createId("user");
-  const environmentId = createId("environment");
-  const app = {
-    id: `app_${crypto.randomUUID()}`,
-
-    threadId: createId("thread"),
-    runId: createId("run"),
-    title: "App",
-    latestVersion: 1,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-  const agentHome = { computerId, path: "/fixture/home" };
-  const server = { folder: agentHome, command: "node server.js" };
+function fixture(app: PublishedApp) {
+  let current = app;
   const apps = {
-    authorize: vi.fn(async () => ({ app, agentHome })),
-    get: async () => app,
-    latest: async () => ({ app, version: { version: 1, server } }),
-  } as unknown as AppStore;
-  const scope = {
-    requestedBy: userId,
-    environmentId,
-    threadId: app.threadId,
-    runId: app.runId,
+    get: vi.fn(async () => current),
+    record: async () => current,
+    setLastError: async () => false,
+    runtimeSet: async () => [],
+    deleting: async () => [],
   };
-  const options = {
+  const connectionId = `rcn_${crypto.randomUUID()}` as RunnerConnectionId;
+  const sync = vi.fn(async () => ({ ok: true }));
+  const connectApp = vi.fn();
+  const tunnels = {
+    connection: vi.fn(() => ({ connectionId, signal: new AbortController().signal })),
+    sync,
+    connect: connectApp,
+    start: vi.fn(),
+    stop: vi.fn(),
+    close: vi.fn(),
+    accept: vi.fn(),
+  };
+  const service = new AppService({
     dataDirectory: tmpdir(),
-    apps,
+    apps: apps as unknown as AppStore,
     files: { list: vi.fn(), download: vi.fn() },
-    agentHome: async () => agentHome,
-    tokens: {
-      authenticate: async () => scope,
-      reauthorize: async () => scope,
-    } as unknown as ConstructorParameters<typeof AppService>[0]["tokens"],
-
-    tunnels: {
-      connect: connectApp,
-      start: vi.fn(),
-      stop: vi.fn(async () => undefined),
-      accept: vi.fn(),
-    },
-    publishEvent: () => undefined,
-  };
+    agentHome: async () => ({ computerId: app.computerId, path: "/fixture/home" }),
+    tokens: { reauthorize: async (scope) => scope },
+    tunnels: tunnels as unknown as ConstructorParameters<typeof AppService>[0]["tunnels"],
+    tabs: { removeTabs: async () => [] },
+    changed: vi.fn(),
+    publishEvent: vi.fn(),
+  });
   return {
-    service: new AppService(options),
-    app,
-    userId,
-    options,
-    scope: scope as unknown as RunToolScope,
+    service,
+    apps,
+    tunnels,
+    connectionId,
+    connectApp,
+    sync,
+    replace: (next: PublishedApp) => {
+      current = next;
+    },
   };
 }
 
-it.each(["timeout", "bytes"] as const)(
-  "cancels an endless app_fetch upstream on %s",
-  async (mode) => {
-    const received = Promise.withResolvers<void>();
-    const closed = Promise.withResolvers<void>();
-    const server = createServer((req, res) => {
-      req.socket.once("close", closed.resolve);
-      res.writeHead(409, { "content-type": "text/event-stream" });
-      res.write(mode === "bytes" ? "x".repeat(300_000) : "data: first\n\n");
-      received.resolve();
-    });
-    try {
-      const listening = once(server, "listening", { signal: AbortSignal.timeout(2_000) });
-      server.listen(0, "127.0.0.1");
-      await listening;
-      const address = server.address();
-      if (!address || typeof address === "string") throw new Error("Missing app server listener");
-      const { service, app, scope } = fixture(async (_spec, signal) => ({
-        stream: connect({ host: "127.0.0.1", port: address.port, signal }),
-        port: address.port,
-      }));
-      const timeout = new AbortController();
-      const deadline = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal);
-      const result = service.fetch(scope, { appId: app.id, method: "GET", path: "/events" });
-      await withTimeout(received.promise, 2_000, {
-        timeoutError: () => new Error("app_fetch never reached its server"),
-      });
-      if (mode === "timeout") timeout.abort(new Error("App fetch deadline"));
-      const response = await withTimeout(result, 2_000, {
-        timeoutError: () => new Error("app_fetch did not stop at its bound"),
-      });
-      expect(deadline).toHaveBeenCalledWith(30_000);
-      deadline.mockRestore();
-      if (mode === "bytes")
-        expect(response).toMatchObject({
-          status: 409,
-          truncated: true,
-          body: expect.stringContaining("Response truncated"),
-        });
-      else expect(response.status).toBe(503);
-      await withTimeout(closed.promise, 2_000, {
-        timeoutError: () => new Error("Bounded app_fetch left its upstream socket open"),
-      });
-    } finally {
-      await closeHttpServerNow(server);
-    }
-  },
-);
+function serverApp(desiredState: "running" | "stopped" = "running"): PublishedApp {
+  const computerId = createId("runner");
+  return {
+    id: `app_${crypto.randomUUID()}` as AppId,
+    ownerId: createId("user"),
+    computerId,
+    threadId: null,
+    runId: null,
+    name: "Notes",
+    deleting: false,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    version: {
+      version: 1,
+      sha256: null,
+      sizeBytes: null,
+      server: { folder: { computerId, path: "/fixture/home/notes" }, command: "node s.js" },
+    },
+    server: { port: 51_000, desiredState, generation: 1, lastError: null },
+  };
+}
 
-it.each([false, true])(
-  "keeps failure log tails out of viewer errors with real origin %s",
-  async (realOrigin) => {
-    const { service, app, userId, scope } = fixture(async () => {
-      throw new AppTunnelError("App startup failed", "private server log tail");
-    });
-    const view = await service.view(app.id, userId, "dark");
-    // Clients parse this answer with the wire schema; a mismatch blanks every viewer.
-    expect(hostApi["apps.view"].success.safeParse(view).success).toBe(true);
-    const { path } = view;
-    const token = path.split("/").at(-2)!;
-    const response = await service.response({
+async function text(body: Readable) {
+  let result = "";
+  for await (const chunk of body) result += String(chunk);
+  return result;
+}
+
+it("connects a viewer only to a reconciled running server, never starting a stopped, failed or offline one", async () => {
+  const html =
+    "<!DOCTYPE HTML>\n<html><head><title>Exact</title></head><body>original</body></html>";
+  const upstream = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(html);
+  });
+  const listening = once(upstream, "listening", { signal: AbortSignal.timeout(2_000) });
+  upstream.listen(0, "127.0.0.1");
+  await listening;
+  const address = upstream.address();
+  if (!address || typeof address === "string") throw new Error("Missing app listener");
+  const app = serverApp();
+  const f = fixture(app);
+  f.connectApp.mockImplementation(async (_spec, signal: AbortSignal) => ({
+    stream: connect({ host: "127.0.0.1", port: address.port, signal }),
+    port: address.port,
+  }));
+  const { path } = await f.service.view(app.ownerId, app.id, "dark");
+  const view = () =>
+    f.service.response({
       appId: app.id,
-      token,
-      ...(realOrigin
-        ? {
-            userId,
-            originMode: { origin: "https://app.example.test", parents: ["app://opensteer"] },
-          }
-        : {}),
+      token: path.split("/").at(-2)!,
       theme: "dark",
       method: "GET",
       path: "/",
@@ -147,115 +116,70 @@ it.each([false, true])(
       headers: { accept: "text/html" },
       signal: AbortSignal.timeout(2_000),
     });
-    let html = "";
-    for await (const chunk of response.body) html += String(chunk);
-    expect(response.status).toBe(503);
-    expect(html).toContain("opensteer-app:ready");
-    expect(html.includes("history.replaceState")).toBe(realOrigin);
-    expect(html).not.toContain("private server log tail");
-    expect(Number(response.headers["content-length"])).toBe(Buffer.byteLength(html));
-    expect(
-      await service.fetch(scope, { appId: app.id, method: "GET", path: "/api/" }),
-    ).toMatchObject({ status: 503, body: expect.stringContaining("private server log tail") });
-  },
-);
-
-it("returns server HTML unchanged to app_fetch while preparing viewer frames", async () => {
-  const html =
-    "<!DOCTYPE HTML>\n<html><head><title>Exact</title></head><body>  original &amp; text\n</body></html>";
-  const server = createServer((_req, res) => {
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    res.end(html);
-  });
   try {
-    const listening = once(server, "listening", { signal: AbortSignal.timeout(2_000) });
-    server.listen(0, "127.0.0.1");
-    await listening;
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("Missing app listener");
-    const { service, app, userId, scope } = fixture(async (_spec, signal) => ({
-      stream: connect({ host: "127.0.0.1", port: address.port, signal }),
-      port: address.port,
-    }));
-    expect(await service.fetch(scope, { appId: app.id, method: "GET", path: "/" })).toMatchObject({
-      status: 200,
-      body: html,
-      truncated: false,
-    });
-    const { path } = await service.view(app.id, userId, "dark");
-    const response = await service.response({
+    const offline = await view();
+    expect(offline.status).toBe(503);
+    expect(await text(offline.body)).toContain("computer is offline");
+
+    f.sync.mockResolvedValueOnce({ ok: false });
+    await f.service.onRunnerConnected(app.computerId);
+    await f.service.onAppState(app.computerId, f.connectionId, {
       appId: app.id,
-      token: path.split("/").at(-2)!,
-      theme: "dark",
-      method: "GET",
-      path: "/",
-      prefix: path.slice(0, -1),
-      headers: {},
-      signal: AbortSignal.timeout(2_000),
+      generation: 1,
+      state: "running",
     });
-    let frame = "";
-    for await (const chunk of response.body) frame += String(chunk);
-    expect(frame).toContain("opensteer-app:ready");
-    expect(response.headers["content-security-policy"]).toContain("sandbox");
-  } finally {
-    await closeHttpServerNow(server);
-  }
-});
+    // A failed reconciliation keeps connects unavailable until the next one.
+    await expect(
+      f.service.connect(app.id, app.ownerId, AbortSignal.timeout(1_000)),
+    ).rejects.toThrow("could not reconcile");
+    await f.service.onRunnerConnected(app.computerId);
+    const running = await view();
+    expect(running.status).toBe(200);
+    expect(await text(running.body)).toContain("opensteer-app:ready");
+    expect(running.headers["content-security-policy"]).toContain("sandbox");
 
-it("rechecks personal authority after waiting for an app's publication lock", async () => {
-  vi.useFakeTimers();
-  const { service, app, options, scope } = fixture(vi.fn());
-  const started = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  let deleting = false;
-  const initial = await options.apps.authorize({ ...scope, userId: scope.requestedBy });
-  vi.spyOn(options.apps, "authorize").mockImplementation(async () => {
-    if (deleting)
-      throw new OpensteerError({ code: "forbidden", message: "Personal owner revoked" });
-    return initial;
-  });
-  Object.assign(options.apps, {
-    publication: async () => undefined,
-    publish: async () => {
-      throw new Error("Publication cancelled");
-    },
-  });
-  options.tunnels.start.mockImplementation(async () => {
-    started.resolve();
-    await withTimeout(release.promise, 1_000, {
-      timeoutError: () => new Error("Publication start was not released"),
+    // A report from a replaced connection changes nothing.
+    await f.service.onAppState(app.computerId, `rcn_${crypto.randomUUID()}` as RunnerConnectionId, {
+      appId: app.id,
+      generation: 1,
+      state: "failed",
     });
-  });
-  const input = { appId: app.id, title: "Server", path: ".", start: "node server.js" };
-  const first = service.publish(scope, "first", input).catch((error: unknown) => error);
-  try {
-    await withTimeout(started.promise, 1_000, {
-      timeoutError: () => new Error("Publication never started"),
+    expect((await f.service.get(app.ownerId, app.id)).state).toBe("running");
+    await f.service.onAppState(app.computerId, f.connectionId, {
+      appId: app.id,
+      generation: 1,
+      state: "failed",
+      error: "App server exited",
     });
-    const queued = service.publish(scope, "queued", input).catch((error: unknown) => error);
-    await vi.advanceTimersByTimeAsync(0);
-    deleting = true;
-    release.resolve();
-    await first;
-    const refused = await queued;
-    expect(options.tunnels.start).toHaveBeenCalledTimes(1);
-    expect(refused).toMatchObject({ code: "forbidden" });
+    const failed = await view();
+    expect(failed.status).toBe(503);
+    expect(await text(failed.body)).toContain("failed");
+
+    f.replace({ ...app, server: { ...app.server!, desiredState: "stopped", generation: 2 } });
+    const stopped = await view();
+    expect(stopped.status).toBe(503);
+    expect(await text(stopped.body)).toContain("stopped");
+    expect(f.connectApp).toHaveBeenCalledTimes(1);
+    expect(f.tunnels.start).not.toHaveBeenCalled();
   } finally {
-    release.resolve();
-    await first;
-    vi.useRealTimers();
+    await closeHttpServerNow(upstream);
   }
 });
 
 it("explains an app removed while its tunnel decision waited", async () => {
-  const connectApp = vi.fn();
-  const { service, app, userId, options } = fixture(connectApp);
-  const { path } = await service.view(app.id, userId, "dark");
-  const latest = await options.apps.latest(app.id, userId);
-  vi.spyOn(options.apps, "latest")
-    .mockResolvedValueOnce(latest)
+  const app = serverApp();
+  const f = fixture(app);
+  await f.service.onRunnerConnected(app.computerId);
+  await f.service.onAppState(app.computerId, f.connectionId, {
+    appId: app.id,
+    generation: 1,
+    state: "running",
+  });
+  const { path } = await f.service.view(app.ownerId, app.id, "dark");
+  f.apps.get
+    .mockResolvedValueOnce(app)
     .mockRejectedValueOnce(new OpensteerError({ code: "not_found", message: "App removed" }));
-  const response = await service.response({
+  const response = await f.service.response({
     appId: app.id,
     token: path.split("/").at(-2)!,
     theme: "dark",
@@ -263,48 +187,34 @@ it("explains an app removed while its tunnel decision waited", async () => {
     path: "/",
     prefix: path.slice(0, -1),
     headers: {},
-    signal: AbortSignal.timeout(2000),
+    signal: AbortSignal.timeout(2_000),
   });
-  let body = "";
-  for await (const chunk of response.body) body += String(chunk);
   expect(response.status).toBe(404);
-  expect(body).toContain("This app is no longer available");
-  expect(body).not.toContain("reconnect");
-  expect(connectApp).not.toHaveBeenCalled();
-});
-it("reports a committed tab change when notifying other devices fails", async () => {
-  const appTabs = [{ appId: `app_${crypto.randomUUID()}` }];
-  const service = new AppService({
-    dataDirectory: tmpdir(),
-    apps: { setTabOpen: async () => ({ appTabs }) } as unknown as AppStore,
-
-    files: { list: vi.fn(), download: vi.fn() },
-    agentHome: async () => ({ computerId: createId("runner"), path: "/fixture/home" }),
-    tokens: { authenticate: vi.fn(), reauthorize: vi.fn() },
-    publishEvent: vi.fn(),
-    tabsChanged: async () => {
-      throw new Error("device notification failed");
-    },
-  });
-  await expect(service.setTabOpen(appTabs[0]!.appId, createId("user"), true)).resolves.toEqual({
-    appTabs,
-  });
+  expect(await text(response.body)).toContain("This app is no longer available");
+  expect(f.connectApp).not.toHaveBeenCalled();
 });
 
-it("serves stored HTML with origin bootstrap while keeping the legacy document opaque", async () => {
-  const { app, userId, options } = fixture(async () => {
-    throw new Error("Stored HTML opened a tunnel");
-  });
+it("serves stored HTML with origin bootstrap while keeping the capability document opaque", async () => {
   const directory = await mkdtemp(join(tmpdir(), "opensteer-stored-app-origin-"));
   const bytes = Buffer.from("<html><head></head><body>Stored app</body></html>");
   const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const server = serverApp();
+  const app: PublishedApp = {
+    ...server,
+    version: { version: 1, sha256, sizeBytes: bytes.length, server: null },
+    server: null,
+  };
+  const f = fixture(app);
   const service = new AppService({
-    ...options,
     dataDirectory: directory,
-    apps: {
-      ...options.apps,
-      latest: async () => ({ app, version: { sha256, sizeBytes: bytes.length, server: null } }),
-    } as unknown as AppStore,
+    apps: f.apps as unknown as AppStore,
+    files: { list: vi.fn(), download: vi.fn() },
+    agentHome: async () => ({ computerId: app.computerId, path: "/fixture/home" }),
+    tokens: { reauthorize: async (scope) => scope },
+    tunnels: f.tunnels as unknown as ConstructorParameters<typeof AppService>[0]["tunnels"],
+    tabs: { removeTabs: async () => [] },
+    changed: vi.fn(),
+    publishEvent: vi.fn(),
   });
   try {
     await mkdir(join(directory, "apps"));
@@ -312,7 +222,7 @@ it("serves stored HTML with origin bootstrap while keeping the legacy document o
     const originMode = { origin: "https://app.example.test", parents: ["app://opensteer"] };
     const result = await service.response({
       appId: app.id,
-      userId,
+      userId: app.ownerId,
       originMode,
       theme: "dark",
       prefix: "",
@@ -321,17 +231,17 @@ it("serves stored HTML with origin bootstrap while keeping the legacy document o
       headers: {},
       signal: AbortSignal.timeout(2_000),
     });
-    const chunks: Buffer[] = [];
-    for await (const chunk of result.body) chunks.push(Buffer.from(chunk));
-    const html = Buffer.concat(chunks).toString();
+    const html = await text(result.body);
     expect(html).toContain("Stored app");
     expect(html).toContain("Object.defineProperty(document,'cookie'");
     expect(html).toContain("opensteer-app:ready");
     expect(result.headers["content-security-policy"]).toBe("frame-ancestors app://opensteer");
     expect(result.headers["cache-control"]).toBe("private, no-store");
-    const legacy = await service.view(app.id, userId, "dark");
-    const old = await service.content(app.id, legacy.path.split("/").at(-2)!, "dark");
-    expect(old).not.toContain("Object.defineProperty(document,'cookie'");
+    const view = await service.view(app.ownerId, app.id, "dark");
+    expect(view.app).toMatchObject({ kind: "html", state: "running", server: null });
+    const capability = await service.content(app.id, view.path.split("/").at(-2)!, "dark");
+    expect(capability).not.toContain("Object.defineProperty(document,'cookie'");
+    expect(f.connectApp).not.toHaveBeenCalled();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

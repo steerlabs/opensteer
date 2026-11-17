@@ -395,7 +395,7 @@ try {
   await installFixture(context);
   const page = await context.newPage();
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  await page.goto(`${web.origin}/threads/${threadA}`);
+  await page.goto(`${web.origin}/tasks/${threadA}`);
   await shownThread(page, threadA);
   await page
     .locator(`[data-message-id="${fixture.newestMessageId}"]`)
@@ -503,13 +503,13 @@ try {
   });
 
   await page.locator(`.side-task[data-thread-id="${threadB}"] .side-task__main`).click();
-  await page.waitForURL(`**/threads/${threadB}*`);
+  await page.waitForURL(`**/tasks/${threadB}*`);
   await shownThread(page, threadB);
   await check("opening B after reading up in A starts at B's latest", () =>
     latest(page, "other-task-latest"),
   );
   await page.locator(`.side-task[data-thread-id="${threadA}"] .side-task__main`).click();
-  await page.waitForURL(`**/threads/${threadA}*`);
+  await page.waitForURL(`**/tasks/${threadA}*`);
   await shownThread(page, threadA);
   await check("returning to A restores its earlier reading position", async () => {
     await settle(page);

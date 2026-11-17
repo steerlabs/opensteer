@@ -84,7 +84,7 @@ async function startToolServer(token: string) {
         server.setRequestHandler(ListToolsRequestSchema, () => ({
           tools: [
             {
-              name: "thread_read",
+              name: "opensteer_task_read",
               description: "Read the person's latest note.",
               inputSchema: { type: "object", properties: {}, additionalProperties: false },
             },
@@ -154,7 +154,7 @@ describe.skipIf(!qualify).each([
       ),
     );
     const guide =
-      "Voice call: replies are spoken. Use 1–3 short sentences. Use your tools. For the person's notes, call thread_read.";
+      "Voice call: replies are spoken. Use 1–3 short sentences. Use your tools. For the person's notes, call opensteer_task_read.";
     const stops: (() => Promise<void>)[] = [];
 
     /** One call: a browser peer, its audio, and a Run on the same Thread. */
@@ -223,7 +223,7 @@ describe.skipIf(!qualify).each([
           url: tools.url,
           token,
           instructions: guide,
-          tools: ["thread_read"],
+          tools: ["opensteer_task_read"],
           toolsRevision: "voice-qualification",
           skills: [],
         },
@@ -287,8 +287,8 @@ describe.skipIf(!qualify).each([
         context: {
           assignment: null,
           teamTurnContext: null,
-          requesterTimeZone: null,
           threadState: { previousAssignment: null, previousRun: null },
+          startedAt: "2026-08-22T00:00:00.000Z",
         },
         reports: { messages: [], omittedCount: 0, throughSequence: null },
       });
@@ -328,7 +328,7 @@ describe.skipIf(!qualify).each([
       await first.speak("What does my latest note say?", "first.wav");
       // The voice acknowledges first ("On it…"); only speech carrying the tool's fact is the answer.
       await first.says(/4:30|four[- ]thirty/iu, "No spoken answer from the tool");
-      expect(tools.calls).toContain("thread_read");
+      expect(tools.calls).toContain("opensteer_task_read");
       // News from outside the call: nobody speaks, yet the agent takes it and says it.
       await first.session.steer!({
         input: {

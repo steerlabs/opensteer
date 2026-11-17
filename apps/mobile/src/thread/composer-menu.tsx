@@ -5,6 +5,7 @@ import {
   Platform,
   Pressable,
   View,
+  type AccessibilityState,
   type HostInstance,
   type StyleProp,
   type ViewStyle,
@@ -79,6 +80,9 @@ export type NativeMenuSection = readonly NativeMenuOption[];
 export function NativeMenu(props: {
   readonly accessibilityHint?: string;
   readonly accessibilityLabel: string;
+  /** What the trigger is besides a way into the menu, such as the chosen tab of a switch. */
+  readonly accessibilityRole?: "button" | "tab";
+  readonly accessibilityState?: AccessibilityState;
   readonly children: ReactNode;
   /** Stated when the control is tapped while it cannot be used. */
   readonly disabledReason?: string | null;
@@ -157,7 +161,10 @@ export function NativeMenu(props: {
           : {})}
         accessibilityHint={props.accessibilityHint}
         accessibilityLabel={props.accessibilityLabel}
-        accessibilityRole="button"
+        accessibilityRole={props.accessibilityRole ?? "button"}
+        {...(props.accessibilityState === undefined
+          ? {}
+          : { accessibilityState: props.accessibilityState })}
         onTouchStart={props.onPresent}
         ref={props.triggerRef}
         style={props.triggerStyle}

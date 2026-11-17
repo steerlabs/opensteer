@@ -1,3 +1,5 @@
+import { OpensteerError } from "@opensteer/core";
+import { DeviceIdSchema } from "@opensteer/core";
 import { createId } from "@opensteer/core";
 import { DeviceAccessRefusal } from "../../administration/device-access.js";
 import { Worker } from "node:worker_threads";
@@ -57,7 +59,7 @@ describe("computer REPL worker boundary", () => {
   it("preserves a device refusal through the worker and its strict result envelope", async () => {
     const machineId = createId("runner");
     const { run } = setup(async () => {
-      throw new DeviceAccessRefusal("device-access-off", machineId, "apps");
+      throw new DeviceAccessRefusal("device-access-off", DeviceIdSchema.parse(machineId), "apps");
     });
     const result = await run("await apps()");
     expect(result).toMatchObject({
@@ -219,6 +221,36 @@ describe("computer REPL worker boundary", () => {
     await service.endRun(context.runId);
     expect((await run('return "ended"')).isError).toBe(true);
   });
+  it("preserves the blocked phone recommendation when selected by computerId", async () => {
+    const blocked = {
+      code: "access_required",
+      message: "Pixel needs access for this task.",
+      next: 'Use app_access_request {computerId:"rnr_pixel", access:"read-write", reason:"Check calendar"}.',
+    };
+    const { run } = setup(async () => ({
+      value: [{ id: "connection", computerId: "rnr_pixel", name: "Pixel", blocked }],
+    }));
+    const result = await run('await phone("rnr_pixel")');
+    expect(result.structuredContent).toEqual({ error: { ...blocked, performed: [] } });
+  });
+  it("preserves typed Host refusal details in the same REPL failure shape", async () => {
+    const { run } = setup(async () => {
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: "access_pending",
+        message: "Access is pending.",
+        next: "The owner can answer the request.",
+      });
+    });
+    expect((await run("await apps()")).structuredContent).toEqual({
+      error: {
+        code: "access_pending",
+        message: "Access is pending.",
+        next: "The owner can answer the request.",
+        performed: [],
+      },
+    });
+  });
   it("serializes Promise.all, shares window snapshots and preserves emission order", async () => {
     const calls: string[] = [];
     const { run } = setup(async (request) => {
@@ -230,13 +262,25 @@ describe("computer REPL worker boundary", () => {
           ],
         };
       if (request.operation === "bind")
-        return { value: { window: { ref: "w", id: 7, title: "Doc" } } };
+        return {
+          value: {
+            window: {
+              ref: "w",
+              windowId: "win_00000000-0000-4000-8000-000000000007",
+              title: "Doc",
+            },
+          },
+        };
       if (request.operation === "observe")
         return {
           value: {
             observation: {
               snapshot: "s",
-              window: { ref: "w", id: 7, title: "Doc" },
+              window: {
+                ref: "w",
+                windowId: "win_00000000-0000-4000-8000-000000000007",
+                title: "Doc",
+              },
               tree: "[1] Save",
               screenshot: null,
             },
@@ -250,11 +294,144 @@ describe("computer REPL worker boundary", () => {
       };
     });
     const result = await run(
-      'const a=await app("Notes"); const w=await a.window(7); const alias=await a.window(7); await Promise.all([w.observe(),alias.click(1)]); return "done"',
+      'const a=await app("Notes"); const w=await a.window("win_00000000-0000-4000-8000-000000000007"); const alias=await a.window("win_00000000-0000-4000-8000-000000000007"); await Promise.all([w.observe(),alias.click(1)]); return "done"',
     );
     expect(result.isError).toBeUndefined();
     expect(calls).toEqual(["apps", "bind", "bind", "observe", "click"]);
     expect(output(result)).toBe('observed\nClicked Save\n"done"');
+  });
+  it("returns read-only tab identities and never reacquires during observations", async () => {
+    const acquisitions: string[] = [];
+    const { run } = setup(async (request) => {
+      if (request.operation === "tab") {
+        acquisitions.push(request.target!);
+        return {
+          value:
+            request.target === "phone-tab"
+              ? {
+                  kind: "phone",
+                  connectionId: "p",
+                  tabId: "phone-tab",
+                  name: "Phone",
+                  computerId: "phone",
+                }
+              : {
+                  kind: "window",
+                  connectionId: "a",
+                  tabId: "window-tab",
+                  window: {
+                    windowId: "win_00000000-0000-4000-8000-000000000007",
+                    title: "Note",
+                    ref: "w",
+                  },
+                },
+        };
+      }
+      if (request.operation === "observe")
+        return { value: { observation: { snapshot: "s", observationId: "o" } } };
+      throw new Error("Unexpected operation");
+    });
+    expect(
+      output(
+        await run(
+          'const w=await tab("window-tab"); const p=await tab("phone-tab"); try {w.tabId="other"} catch {} try {p.tabId="other"} catch {} await w.observe(); await p.observe(); return [w.tabId,p.tabId,w.windowId,typeof w.id]',
+        ),
+      ),
+    ).toBe('["window-tab","phone-tab","win_00000000-0000-4000-8000-000000000007","undefined"]');
+    await run("await w.observe(); await p.observe()");
+    expect(acquisitions).toEqual(["window-tab", "phone-tab"]);
+  });
+  it("binds one phone of either kind and sends only advertised navigation", async () => {
+    const phones = [
+      {
+        id: "android",
+        name: "Pixel",
+        computer: "Pixel",
+        computerId: "rnr_00000000-0000-4000-8000-000000000001",
+        definitionId: "android-phone",
+        platform: "android",
+        navigation: ["back", "home"],
+      },
+      {
+        id: "iphone",
+        name: "Work iPhone",
+        computer: "Work iPhone",
+        computerId: "dev_00000000-0000-4000-8000-000000000002",
+        definitionId: "iphone-screen",
+        platform: "ios",
+        navigation: ["home"],
+      },
+      {
+        id: "iphone-2",
+        name: "Work iPhone",
+        computer: "Work iPhone",
+        computerId: "dev_00000000-0000-4000-8000-000000000003",
+        definitionId: "iphone-screen",
+        platform: "ios",
+        navigation: ["home"],
+      },
+    ];
+    const sent: unknown[] = [];
+    const { run } = setup(async (request) => {
+      if (request.operation === "phones") return { value: phones };
+      if (request.operation === "bind")
+        return { value: { tabId: `tab-${request.target}`, connectionId: request.target } };
+      if (request.operation === "tab")
+        return {
+          value: {
+            kind: "phone",
+            connectionId: "iphone",
+            tabId: "tab-iphone",
+            name: "Work iPhone",
+            computerId: "dev_00000000-0000-4000-8000-000000000002",
+          },
+        };
+      if (request.operation === "installedApps")
+        return { value: { apps: [{ label: "Maps", appId: "opaque-maps" }], total: 1 } };
+      sent.push([request.target, request.args.actions]);
+      return { value: { observation: { observationId: "o" } } };
+    });
+    const ambiguous = await run('await phone("Work iPhone")');
+    expect(output(ambiguous)).toContain(
+      "Choose one: Work iPhone (computerId dev_00000000-0000-4000-8000-000000000002), Work iPhone (computerId dev_00000000-0000-4000-8000-000000000003)",
+    );
+    const result = await run(
+      'const p=await phone("dev_00000000-0000-4000-8000-000000000002"); const {apps}=await p.installedApps({query:"maps"}); await p.launch(apps[0].appId); await p.navigate("home"); await p.wait(250); let refused; try {await p.navigate("back")} catch (error) {refused=error.message} const t=await tab("tab-iphone"); try {await t.navigate("back")} catch (error) {refused+=" / "+error.message} const a=await phone("Pixel"); await a.navigate("back"); return [p.platform,refused]',
+    );
+    expect(output(result)).toBe(
+      '["ios","Work iPhone has no back button. It offers: home. / Work iPhone has no back button. It offers: home."]',
+    );
+    expect(sent).toEqual([
+      ["iphone", [{ type: "launch", appId: "opaque-maps" }]],
+      ["iphone", [{ type: "navigate", to: "home" }]],
+      ["iphone", [{ type: "wait", ms: 250 }]],
+      ["android", [{ type: "navigate", to: "back" }]],
+    ]);
+  });
+  it("requires a new observation after explicitly reacquiring a native target", async () => {
+    const snapshots: unknown[] = [];
+    const { run } = setup(async (request) => {
+      if (request.operation === "tab")
+        return {
+          value: {
+            kind: "window",
+            connectionId: "a",
+            tabId: "window-tab",
+            window: {
+              windowId: "win_00000000-0000-4000-8000-000000000007",
+              title: "Note",
+              ref: "w",
+            },
+          },
+        };
+      if (request.operation === "observe") return { value: { observation: { snapshot: "prior" } } };
+      snapshots.push(request.args.snapshot);
+      return { value: { performed: [] } };
+    });
+    await run(
+      'const first=await tab("window-tab"); await first.observe(); const fresh=await tab("window-tab"); await fresh.click(1)',
+    );
+    expect(snapshots).toEqual([null]);
   });
   it("cancels unstarted detached operations at body settlement", async () => {
     const calls: string[] = [];

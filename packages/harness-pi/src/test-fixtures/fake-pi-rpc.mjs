@@ -410,6 +410,17 @@ function ask(request) {
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function runTurn(prompt) {
+  if (scenario === "tool-image-output") {
+    send({ type: "tool_execution_start", toolCallId: "image-1", toolName: "probe", args: {} });
+    send({
+      type: "tool_execution_end",
+      toolCallId: "image-1",
+      toolName: "probe",
+      result: { content: [{ type: "image", mimeType: "image/png", data: "iVBORw0KGgoA" }] },
+      isError: false,
+    });
+  }
+
   streaming = true;
   aborted = false;
   send({ type: "agent_start" });
@@ -537,7 +548,7 @@ async function runTurn(prompt) {
       toolCallId: "call_a",
       toolName: "bash",
     });
-    const name = extensionTools[0] ?? "thread_read";
+    const name = extensionTools[0] ?? "opensteer_task_read";
     send({
       args: { query: "recent" },
       toolCallId: "call_b",
@@ -573,7 +584,7 @@ async function runTurn(prompt) {
   }
 
   if (scenario === "opensteer-tool" || scenario === "opensteer-tool-error") {
-    const name = extensionTools[0] ?? "thread_read";
+    const name = extensionTools[0] ?? "opensteer_task_read";
     send({
       args: { query: "recent" },
       toolCallId: "call_2",

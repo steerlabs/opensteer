@@ -1,17 +1,23 @@
 ---
 name: computer-use
-description: Operate Mac apps and Agent Phones through the computer tool when the task needs their interfaces.
+description: Operate desktop app windows and phone screens (Android Agent Phones and Mac-driven iPhones) through computer_use when the task needs their interfaces.
 ---
 
 # Opensteer Computer Use
 
-Prefer a purpose-built integration, API or browser when it fits: Apple Messages conversations, photos and files come from the Apple Messages integration, never the Messages window. Use `computer` for app interfaces, mobile-only apps and messages from a phone's own number. Discover and request access through integrations; interact through `computer`, never with `integration_call`. computer is Run-only; programs and connections can delegate a task to use it.
+`computer_use` runs JavaScript against approved desktop app windows and phone screens: Android Agent Phones and iPhones driven by one of the person's Macs. Each window or phone you acquire is a tab in the person's tab list, and its handle reports `tabId`. Variables and handles last for this Run attempt; a later Run, including a resumed task, binds again and observes before acting.
 
-To operate an interface, never read an app's private data files or use AppleScript, `screencapture`, SSH or synthetic events for that purpose. Use the computer included in the person's message or the one they name. Preserve credential boundaries and do not bypass blocked access.
+```js
+const win = await tab("tab_…"); // a window or phone tab from tab_list or tab_open
+await win.observe();
+await win.click(12);
+await win.observe(); // check the result
+```
 
-Observe the intended window or phone, act on current targets and verify the result. Never repeat an action whose outcome is unknown without looking first. `globalThis` and handles last within one Run; a later Run, including a resumed task, must reopen `app()`, `window()` or `phone()` handles and observe before acting. Release a phone when finished or handing it off.
+- `tab(tabId)` binds that exact window or phone. `apps()`/`app()` and `phones()`/`phone()` discover and bind others; `app.windows()` lists windows by opaque `windowId`.
+- A window keeps its identity and is never matched by title. If the person closes its tab, the window and your session keep running; if the window itself closed, pick another.
+- Look, act, look. After an outcome-unknown action, observe before repeating it.
+- Prefer an integration, API or browser when it fits: Apple Messages conversations, photos and files come from the Apple Messages integration, not the Messages window, and an iPhone's calendar, contacts and reminders come from the Opensteer iPhone app's integrations, not its screen. Use `computer_use` for app interfaces, mobile-only apps and messages from a phone's own number. `computer_use` is Run-only; programs and connections can delegate a task to use it.
+- Operate interfaces through `computer_use`, not by reading an app's private data files or using AppleScript, `screencapture`, SSH or synthetic events. Use the computer or phone the person's message includes or names; an iPhone's driving Mac is never a way to reach it.
 
-- Read [access](references/access.md) when discovering a device or resolving approval, busy or blocked access.
-- Read [API](references/api.md) before writing computer code or handling observations, errors or Show.
-- Read [phones](references/phones.md) when operating or unlocking an Agent Phone.
-- Read [app sign-in](references/sign-in.md) when filling an authorized saved login in a genuine app.
+Read [API](references/api.md) before writing `computer_use` code, [access](references/access.md) when discovering a device or resolving approval, busy or blocked access, [phones](references/phones.md) before operating, unlocking or diagnosing any phone, and [app sign-in](references/sign-in.md) when filling a saved login in a genuine app.

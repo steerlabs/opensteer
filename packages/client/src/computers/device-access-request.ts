@@ -50,8 +50,11 @@ export async function turnOnDeviceAccess(
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const machine = client.getSnapshot().machines.find((entry) => entry.id === machineId);
     if (!machine?.access) throw new Error("This device can’t be changed from here right now.");
+    const fact = machine.capabilities?.[access];
+    if (fact && (!fact.supported || !fact.configurable))
+      throw new Error("This device does not offer that access switch.");
     const result = await client.updateMachineAccess({
-      runnerId: machineId,
+      deviceId: machineId,
       expectedRevision: machine.access.revision,
       policy: withDeviceSwitch(machine.access.policy, access, true),
     });
@@ -81,7 +84,7 @@ export async function applyDeviceAccess(
     )
       return current;
     const result = await client.updateMachineAccess({
-      runnerId: machineId,
+      deviceId: machineId,
       expectedRevision: access.revision,
       policy: {
         ...withDeviceSwitch(access.policy, "files", wanted.files),

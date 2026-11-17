@@ -1,3 +1,10 @@
+import type {
+  IphoneRunnerMethod,
+  IphoneRunnerParams,
+  IphoneRunnerResult,
+  IphoneRunnerEvent,
+} from "@opensteer/protocol/iphone-bridge";
+import { ComputerAppIdentitySchema, WindowIdSchema } from "@opensteer/core";
 import { WebSocket } from "ws";
 import type { RunId } from "@opensteer/core";
 import {
@@ -21,7 +28,7 @@ import {
   computerUseHelperResults,
   computerUseRequestMayHaveEffect,
   type ComputerUseBridgeEvent,
-  type ComputerUseBridgeMethod,
+  type ComputerUseBridgeMethod as AllComputerUseBridgeMethods,
   type ComputerUseDataGrants,
   type ComputerUseIMessageAccountResultSchema,
   type ComputerUseIMessagePollParamsSchema,
@@ -39,8 +46,11 @@ import {
   ComputerUseBridgeClient,
   ComputerUseBridgeDeadlineError,
   ComputerUseBridgeError,
+  type ComputerUseBridgeRequestOptions,
 } from "./computer-use-bridge-client.js";
 import type { ComputerAppValue } from "./provider.js";
+
+type ComputerUseBridgeMethod = Exclude<AllComputerUseBridgeMethods, IphoneRunnerMethod>;
 
 /** How long a status probe may take before this Mac counts as unreachable. */
 export const computerUsePermissionsTimeoutMs = 5_000;
@@ -116,6 +126,8 @@ export class ComputerUseHandler {
   >();
   readonly #sessions = new Map<ComputerUseSessionId, SessionState>();
   readonly #listeners = new Set<(event: ComputerUseSessionEvent) => void>();
+  readonly #iphoneEvents = new Set<(event: IphoneRunnerEvent) => void>();
+  readonly #iphoneConnections = new Set<(state: "connected" | "lost") => void>();
 
   readonly #passwordListeners = new Set<(event: PasswordSignInAuthorityEvent) => void>();
   #loginTextNegotiated = false;
@@ -142,18 +154,43 @@ export class ComputerUseHandler {
     this.#client = new ComputerUseBridgeClient({
       ...(options.graceMs === undefined ? {} : { graceMs: options.graceMs }),
       now: this.#now,
+      iphoneScreen: true,
       // A desktop this Runner just (re)connected to may have missed the list.
       onConnected: () => {
         // The initial probe opens this connection; loss already fenced older replies.
         this.#readiness = undefined;
+        for (const listener of this.#iphoneConnections) listener("connected");
       },
       ownerInputVersion: () => this.#readiness?.ownerInputVersion,
       videoProfile: () => this.#readiness?.videoProfile,
       onEvent: (event) => this.#receiveEvent(event),
-      onLost: () => this.#bridgeLost(),
+      onLost: () => {
+        this.#bridgeLost();
+        for (const listener of this.#iphoneConnections) listener("lost");
+      },
       token: options.bridge.token,
       url: options.bridge.url,
     });
+  }
+
+  iphoneRequest<M extends IphoneRunnerMethod>(
+    method: M,
+    params: IphoneRunnerParams<M>,
+    options: ComputerUseBridgeRequestOptions,
+  ): Promise<IphoneRunnerResult<M>> {
+    return this.#client.iphoneRequest(method, params, options);
+  }
+  onIphoneEvent(listener: (event: IphoneRunnerEvent) => void): () => void {
+    this.#iphoneEvents.add(listener);
+    return () => {
+      this.#iphoneEvents.delete(listener);
+    };
+  }
+  onIphoneConnection(listener: (state: "connected" | "lost") => void): () => void {
+    this.#iphoneConnections.add(listener);
+    return () => {
+      this.#iphoneConnections.delete(listener);
+    };
   }
 
   async videoRequest<Method extends keyof typeof macWindowVideoParams>(
@@ -326,12 +363,38 @@ export class ComputerUseHandler {
     return this.#readiness?.ownerViewVersion;
   }
 
+  async resolveTabWindow(
+    input: { windowId: string } | { app: import("@opensteer/protocol").ComputerAppIdentity },
+    options: RequestOptions,
+  ) {
+    const params = z
+      .union([
+        z.strictObject({ windowId: WindowIdSchema }),
+        z.strictObject({ app: ComputerAppIdentitySchema }),
+      ])
+      .parse(input);
+    const result = await this.#client.request("window.resolve", params, options);
+    return z
+      .object({
+        windowId: WindowIdSchema.nullable(),
+        app: ComputerAppIdentitySchema.nullable(),
+        title: z.string().max(1024).nullable(),
+        unavailableReason: z.string().nullable(),
+      })
+      .parse(result);
+  }
+
   async runView(
     frame: HostIntegrationsComputerView,
     signal: AbortSignal,
     receivedAt = this.#now(),
   ): Promise<ComputerViewNativeResult> {
-    if (frame.version !== macOwnerViewVersion || frame.target.kind !== "app") {
+    if (
+      frame.deviceId !== undefined ||
+      frame.driverGeneration !== undefined ||
+      frame.version !== macOwnerViewVersion ||
+      frame.target.kind !== "app"
+    ) {
       throw new ComputerUseBridgeError("unsupported", "That owner view is not supported.");
     }
     const authority = {
@@ -427,6 +490,11 @@ export class ComputerUseHandler {
     signal: AbortSignal,
     receivedAt: number = this.#now(),
   ): Promise<ComputerAppValue> {
+    if (frame.deviceId !== undefined || frame.driverGeneration !== undefined)
+      throw new ComputerUseBridgeError(
+        "unsupported",
+        "External screens cannot use the Mac helper.",
+      );
     const deadline = receivedAt + frame.timeoutMs;
     const options = (): RequestOptions => ({ deadline, signal });
     switch (frame.operation) {
@@ -471,7 +539,7 @@ export class ComputerUseHandler {
         return await this.#onSession(frame.sessionId, session, () =>
           this.#request(
             "session.bind",
-            { app, window: params.data.window, sessionId: frame.sessionId },
+            { app, windowId: params.data.windowId, sessionId: frame.sessionId },
             options(),
           ),
         );
@@ -755,6 +823,10 @@ export class ComputerUseHandler {
   }
 
   #receiveEvent(event: ComputerUseBridgeEvent): void {
+    if (event.event === "iphone.targetsChanged" || event.event === "iphone.sessionEnded") {
+      for (const listener of this.#iphoneEvents) listener(event);
+      return;
+    }
     if (event.event === "passwords.event") {
       for (const listener of this.#passwordListeners) listener(event.params);
       return;

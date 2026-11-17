@@ -186,7 +186,7 @@ export async function createStoreFixture() {
         idempotencyKey: "trigger-" + suffix,
         name: "Trigger " + suffix,
         program: {
-          toolContractVersion: 3,
+          toolContractVersion: 4,
           language: "javascript",
           source: "export default async () => null",
         },
@@ -942,13 +942,11 @@ export const readEmptyPersonalResources: import("./snapshot-store.js").PersonalS
         "This fixture needs a resource snapshot collaborator for its private resources",
       );
     return {
-      appTabs: [],
+      tabs: { tabs: [], layout: { revision: 0, items: [] }, complete: true },
       browser: {
         available: false,
         placements: [],
         profiles: [],
-        groups: { rows: [], complete: true },
-        tabs: [],
       },
     };
   };

@@ -1,3 +1,10 @@
+import {
+  iphoneRunnerMethodSchema,
+  iphoneRunnerParams,
+  iphoneRunnerEventSchema,
+} from "./iphone-bridge.js";
+import { WindowIdSchema, TabIdSchema, RunnerIdSchema } from "@opensteer/core";
+import { ComputerViewSchema } from "./computer-view.js";
 import { DeviceRefusalContextSchema } from "./devices.js";
 import {
   macWindowVideoParams,
@@ -9,13 +16,8 @@ import {
   MacVideoProfileSchema,
 } from "./mac-window-video.js";
 import { ComputerViewHelperRequestSchema } from "./computer-view-requests.js";
-import { ComputerViewSchema, ComputerViewNativeResultSchema } from "./computer-view.js";
-import {
-  ComputerWindowIdSchema,
-  IsoDateTimeSchema,
-  RunIdSchema,
-  ThreadIdSchema,
-} from "@opensteer/core";
+import { ComputerViewNativeResultSchema } from "./computer-view.js";
+import { IsoDateTimeSchema, RunIdSchema, ThreadIdSchema } from "@opensteer/core";
 import {
   ComputerAppIdentitySchema,
   ComputerAppIdentityViewSchema,
@@ -144,7 +146,7 @@ export const ComputerUseObservationIdSchema = z.string().min(1).max(64);
 export const computerUseMaxWindows = 64;
 
 export const computerUseToolRequiredSentence =
-  "Use the computer tool to see and operate apps and phones.";
+  "Use computer_use to see and operate apps and phones.";
 export const computerUseWindowClosedSentence = "That window is closed.";
 export const computerUseObserveAgainSentence = "Observe this window again.";
 export const computerUseObserveFirstSentence = "Observe this window first.";
@@ -276,16 +278,21 @@ const ComputerUseWindowFrameSchema = z.strictObject({
   y: PointSchema,
 });
 
+/** A window the person's picker offers; where it stands is optional for apps inside the API window. */
 export const OwnerWindowInfoSchema = z.strictObject({
-  id: ComputerWindowIdSchema,
+  windowId: WindowIdSchema,
   title: z.string().max(1_024),
+  minimized: z.boolean().optional(),
+  onScreen: z.boolean().optional(),
+});
+export type OwnerWindowInfo = z.infer<typeof OwnerWindowInfoSchema>;
+const windowStateSchema = OwnerWindowInfoSchema.extend({
   focused: z.boolean(),
   main: z.boolean(),
   minimized: z.boolean(),
   onScreen: z.boolean(),
 });
-export type OwnerWindowInfo = z.infer<typeof OwnerWindowInfoSchema>;
-export const WindowInfoSchema = OwnerWindowInfoSchema.extend({
+export const WindowInfoSchema = windowStateSchema.extend({
   ref: ComputerUseWindowRefSchema,
   modal: z.boolean(),
   current: z.boolean(),
@@ -295,7 +302,7 @@ export type WindowInfo = z.infer<typeof WindowInfoSchema>;
 
 export const ComputerUseWindowSchema = z.strictObject({
   ref: ComputerUseWindowRefSchema,
-  id: ComputerWindowIdSchema,
+  windowId: WindowIdSchema,
   frame: ComputerUseWindowFrameSchema,
   /** Pixels per window point after resizing. */
   scale: z.number().min(0.1).max(8),
@@ -336,7 +343,7 @@ export const ComputerUseObservationSchema = z
     blockedBy: z
       .array(
         z.strictObject({
-          id: ComputerWindowIdSchema,
+          windowId: WindowIdSchema,
           title: z.string().max(1_024),
           kind: z.enum(["dialog", "menu"]),
         }),
@@ -432,7 +439,7 @@ export type ComputerUseOperation = z.infer<typeof ComputerUseOperationSchema>;
 export const ComputerUseWindowsParamsSchema = z.strictObject({});
 export type ComputerUseWindowsParams = z.infer<typeof ComputerUseWindowsParamsSchema>;
 export const ComputerUseBindParamsSchema = z.strictObject({
-  window: ComputerWindowIdSchema.nullable(),
+  windowId: WindowIdSchema.nullable(),
 });
 export type ComputerUseBindParams = z.infer<typeof ComputerUseBindParamsSchema>;
 export const ComputerUseObserveParamsSchema = z.strictObject({
@@ -522,7 +529,7 @@ export const ComputerUseSessionSummarySchema = z
       .array(
         z.object({
           appKey: z.string().min(1).max(255),
-          id: ComputerWindowIdSchema,
+          windowId: WindowIdSchema,
           title: z.string().max(1_024),
         }),
       )
@@ -586,6 +593,7 @@ export const computerUseHelperMaxFrameBytes = 4 * 1_024 * 1_024;
 
 export const ComputerUseHelperMethodSchema = z.enum([
   "hello",
+  "window.resolve",
   "display.input",
   "display.input-reset",
   "display.resolve",
@@ -920,7 +928,23 @@ const helperRequestIdSchema = z.number().int().nonnegative().max(Number.MAX_SAFE
 export const computerUseMaxTimeoutMs = 120_000;
 const ComputerUseTimeoutMsSchema = z.number().int().positive().max(computerUseMaxTimeoutMs);
 
+export const ComputerUseWindowResolveParamsSchema = z.union([
+  z.strictObject({ windowId: WindowIdSchema }),
+  z.strictObject({ app: ComputerAppIdentitySchema }),
+]);
+export const ComputerUseWindowResolveResultSchema = z.object({
+  windowId: WindowIdSchema.nullable(),
+  app: ComputerAppIdentitySchema.nullable(),
+  title: z.string().max(1024).nullable(),
+  unavailableReason: z.string().nullable(),
+});
 export const ComputerUseHelperRequestSchema = z.discriminatedUnion("method", [
+  z.strictObject({
+    id: helperRequestIdSchema,
+    timeoutMs: ComputerUseTimeoutMsSchema.optional(),
+    method: z.literal("window.resolve"),
+    params: ComputerUseWindowResolveParamsSchema,
+  }),
   z.strictObject({
     id: helperRequestIdSchema,
     timeoutMs: ComputerUseTimeoutMsSchema.optional(),
@@ -1088,6 +1112,7 @@ export type ComputerUseHelperRequest = z.infer<typeof ComputerUseHelperRequestSc
  * table is the one place that pairing lives.
  */
 export const computerUseHelperResults = {
+  "window.resolve": ComputerUseWindowResolveResultSchema,
   "display.input": z.lazy(() => macWindowVideoResults["display.input"]),
   "display.input-reset": z.lazy(() => macWindowVideoResults["display.input-reset"]),
   "display.resolve": z.lazy(() => macWindowVideoResults["display.resolve"]),
@@ -1215,6 +1240,7 @@ export const ComputerUseBridgeMethodSchema = z.enum([
   ...ComputerUseHelperMethodSchema.exclude(["hello"]).options,
   "passwords.control",
   "passwords.capabilities",
+  ...iphoneRunnerMethodSchema.options,
 ]);
 export type ComputerUseBridgeMethod = z.infer<typeof ComputerUseBridgeMethodSchema>;
 
@@ -1232,11 +1258,14 @@ export function computerUseRequestMayHaveEffect(method: string, params: unknown)
     method === "display.input" ||
     method === "display.input-reset" ||
     method === "session.act" ||
+    method === "iphone.perform" ||
     method === "imessage.send" ||
     method === "view.open" ||
     method === "view.activate"
   )
     return true;
+  if (method === "window.resolve")
+    return typeof params === "object" && params !== null && "app" in params;
   return method === "data.invoke" && WritingDataInvokeSchema.safeParse(params).success;
 }
 
@@ -1261,13 +1290,23 @@ export const computerUseBridgePasswordsResults = {
 
 const bridgeRequestIdSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 
-export const ComputerUseBridgeRequestSchema = z.strictObject({
-  id: bridgeRequestIdSchema,
-  kind: z.literal("request"),
-  method: ComputerUseBridgeMethodSchema,
-  params: z.json(),
-  timeoutMs: ComputerUseTimeoutMsSchema.optional(),
-});
+export const ComputerUseBridgeRequestSchema = z
+  .strictObject({
+    id: bridgeRequestIdSchema,
+    kind: z.literal("request"),
+    method: ComputerUseBridgeMethodSchema,
+    params: z.json(),
+    timeoutMs: ComputerUseTimeoutMsSchema.optional(),
+  })
+  .superRefine((request, context) => {
+    const method = iphoneRunnerMethodSchema.safeParse(request.method);
+    if (method.success && !iphoneRunnerParams[method.data].safeParse(request.params).success)
+      context.addIssue({
+        code: "custom",
+        path: ["params"],
+        message: "Invalid iPhone request parameters",
+      });
+  });
 export type ComputerUseBridgeRequest = z.infer<typeof ComputerUseBridgeRequestSchema>;
 
 /**
@@ -1290,7 +1329,7 @@ export type ComputerUseBridgeResponse = z.infer<typeof ComputerUseBridgeResponse
  * approval answered, or the person at the Mac answered macOS about a grant,
  * so every app's readiness is read again now rather than on its next round.
  */
-export const ComputerUseBridgeEventSchema = z.discriminatedUnion("event", [
+const MacComputerUseBridgeEventSchema = z.discriminatedUnion("event", [
   z.strictObject({
     event: z.literal("passwords.event"),
     kind: z.literal("event"),
@@ -1302,6 +1341,10 @@ export const ComputerUseBridgeEventSchema = z.discriminatedUnion("event", [
   z.strictObject({ ...computerUseEventVariants[3].shape, kind: z.literal("event") }),
   z.strictObject({ ...computerUseEventVariants[4].shape, kind: z.literal("event") }),
   z.strictObject({ event: z.literal("grants.changed"), kind: z.literal("event") }),
+]);
+export const ComputerUseBridgeEventSchema = z.union([
+  MacComputerUseBridgeEventSchema,
+  iphoneRunnerEventSchema,
 ]);
 export type ComputerUseBridgeEvent = z.infer<typeof ComputerUseBridgeEventSchema>;
 
@@ -1320,3 +1363,29 @@ export type ComputerUseBridgeFrame = z.infer<typeof ComputerUseBridgeFrameSchema
 function bridgeFrameFits(value: unknown): boolean {
   return utf8ByteLength(JSON.stringify(value)) <= computerUseBridgeMaxFrameBytes;
 }
+
+export const ComputerUseTabRequestSchema = z.strictObject({
+  operation: z.literal("tab"),
+  target: TabIdSchema,
+  args: z.strictObject({}),
+});
+export const ComputerUseTabBindingSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("window"),
+    connectionId: z.string().min(1).max(255),
+    tabId: TabIdSchema,
+    window: z.strictObject({
+      windowId: WindowIdSchema,
+      title: z.string().max(1024),
+      ref: ComputerUseWindowRefSchema,
+    }),
+  }),
+  z.strictObject({
+    kind: z.literal("phone"),
+    connectionId: z.string().min(1).max(255),
+    tabId: TabIdSchema,
+    name: z.string().max(200),
+    computerId: RunnerIdSchema,
+  }),
+]);
+export type ComputerUseTabBinding = z.infer<typeof ComputerUseTabBindingSchema>;

@@ -358,7 +358,12 @@ export const BrowserActionResultSchema = z
       nextCursor: tabCursor.nullable(),
     }),
     bindingResult("surface.attach"),
-    bindingResult("surface.resume"),
+    z.strictObject({
+      type: z.literal("surface.resume"),
+      binding: BrowserActionBindingSchema,
+      dialog: BrowserActionDialogSchema.nullable(),
+      reloaded: z.boolean(),
+    }),
     bindingResult("surface.open"),
     z.strictObject({
       type: z.literal("surface.close"),
@@ -489,13 +494,7 @@ export const BrowserAgentEventSchema = z.strictObject({
 export const BrowserResumeTabParametersSchema = z.strictObject({
   surfaceId: BrowserSurfaceIdSchema,
 });
-export const BrowserResumeTabResultSchema = z.strictObject({
-  surfaceId: BrowserSurfaceIdSchema,
-  targetId: identifier,
-  documentId: z.string().min(1).max(255),
-  reloaded: z.boolean(),
-});
-export type BrowserResumeTabResult = z.infer<typeof BrowserResumeTabResultSchema>;
+
 export const BrowserListTabsParametersSchema = z.strictObject(tabPage);
 export const AgentTabSchema = z.strictObject({
   surfaceId: BrowserSurfaceIdSchema,
@@ -561,3 +560,21 @@ export function pageBrowserTabs<T>(
   }
   return { tabs, nextCursor: null };
 }
+
+export const BrowserActionResumeResultSchema = z.strictObject({
+  type: z.literal("surface.resume"),
+  binding: BrowserActionBindingSchema,
+  dialog: BrowserActionDialogSchema.nullable(),
+  reloaded: z.boolean(),
+});
+
+export const BrowserResumeTabResultSchema = z.strictObject({
+  dialog: AgentTabSchema.shape.dialog,
+  userActivity: AgentTabSchema.shape.userActivity,
+  pageResize: AgentTabSchema.shape.pageResize,
+  surfaceId: BrowserSurfaceIdSchema,
+  targetId: identifier,
+  documentId: z.string().min(1).max(255),
+  reloaded: z.boolean(),
+});
+export type BrowserResumeTabResult = z.infer<typeof BrowserResumeTabResultSchema>;

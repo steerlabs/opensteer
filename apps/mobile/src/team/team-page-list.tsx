@@ -11,61 +11,73 @@ import { color, controlFontScaleLimit, material, radius, space, touchTarget } fr
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { UnreadDot } from "../threads/task-row.js";
-import {
-  Avatar,
-  ChannelGlyph,
-  FaceStack,
-  MentionCount,
-  PeopleOnlyBadge,
-  TeamTile,
-} from "./team-marks.js";
+import { Avatar, ChannelGlyph, FaceStack, MentionCount, PeopleOnlyBadge } from "./team-marks.js";
 import type { ChannelRowView, DmRowView, TeamDrawerSectionView } from "./team-models.js";
 
 type PageRow =
+  | { readonly kind: "knowledge" }
   | { readonly kind: "channels" }
   | { readonly kind: "browse" }
+  | { readonly kind: "invite" }
   | { readonly kind: "dms" }
   | { readonly kind: "message-someone" }
   | { readonly kind: "channel"; readonly channel: ChannelRowView }
   | { readonly kind: "dm"; readonly dm: DmRowView };
 
 /**
- * A team's own page: its channels (alphabetical), then its direct messages
- * (newest first). Unread is bold; mentions of the reader are an ember count;
- * a DM never shows an unread total. The team's menu is the page's title menu.
- * Each heading's + makes one; Browse channels closes the channel list.
+ * A team's side of the sidebar: its knowledge, its channels (alphabetical), then
+ * its direct messages (newest first). Unread is bold; mentions of the reader are
+ * an ember count; a DM never shows an unread total. Each heading's + makes one;
+ * Browse channels closes the channel list.
  */
 export function TeamPageList(props: {
   readonly section: TeamDrawerSectionView;
   /** The team lets the reader make channels. */
   readonly canCreateChannel: boolean;
   readonly onOpenChannel: (channelId: string) => void;
+  readonly onKnowledge: () => void;
   readonly onBrowseChannels: () => void;
   readonly onNewChannel: () => void;
   readonly onNewMessage: () => void;
+  /** Present only when the team lets the reader invite people. */
+  readonly onInvite?: (() => void) | undefined;
   /** The end of the list is near: the team's next page of channels and DMs. */
   readonly onLoadMore: () => void;
-  /** A team the reader left or was removed from: take it off this phone. */
-  readonly onRemoveTeam: () => void;
+  /** The channel or DM in front, marked as the one open. */
+  readonly openChannelId: string | null;
   readonly paddingBottom: number;
 }): ReactNode {
   const { section } = props;
+  const invites = props.onInvite !== undefined;
   const rows = useMemo(
     (): readonly PageRow[] => [
+      { kind: "knowledge" },
       { kind: "channels" },
       ...section.channels.map((channel) => ({ kind: "channel" as const, channel })),
       { kind: "browse" },
+      ...(invites ? [{ kind: "invite" as const }] : []),
       { kind: "dms" },
       ...(section.dms.length === 0
         ? [{ kind: "message-someone" as const }]
         : section.dms.map((dm) => ({ kind: "dm" as const, dm }))),
     ],
-    [section.channels, section.dms],
+    [invites, section.channels, section.dms],
   );
-  const { onOpenChannel, onBrowseChannels, onNewChannel, onNewMessage, canCreateChannel } = props;
+  const {
+    onOpenChannel,
+    onKnowledge,
+    onBrowseChannels,
+    onNewChannel,
+    onNewMessage,
+    onInvite,
+    canCreateChannel,
+    openChannelId,
+  } = props;
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<PageRow>) => {
       switch (item.kind) {
+        case "knowledge":
+          return <QuietRow icon="lightbulb" label="Knowledge" onPress={onKnowledge} strong />;
         case "channels":
           return (
             <Subhead label="Channels">
@@ -83,6 +95,10 @@ export function TeamPageList(props: {
         case "browse":
           return (
             <QuietRow icon="magnifyingglass" label="Browse channels" onPress={onBrowseChannels} />
+          );
+        case "invite":
+          return onInvite === undefined ? null : (
+            <QuietRow icon="person.badge.plus" label="Invite people" onPress={onInvite} />
           );
         case "message-someone":
           return <QuietRow icon="plus" label="Message someone" onPress={onNewMessage} />;
@@ -104,50 +120,38 @@ export function TeamPageList(props: {
           return (
             <ChannelRow
               channel={item.channel}
-              current={false}
+              current={item.channel.id === openChannelId}
               id={item.channel.id}
               onOpen={onOpenChannel}
             />
           );
         case "dm":
-          return <DmRow current={false} dm={item.dm} onOpen={onOpenChannel} />;
+          return (
+            <DmRow current={item.dm.id === openChannelId} dm={item.dm} onOpen={onOpenChannel} />
+          );
       }
     },
-    [canCreateChannel, onBrowseChannels, onNewChannel, onNewMessage, onOpenChannel],
+    [
+      canCreateChannel,
+      onBrowseChannels,
+      onInvite,
+      onKnowledge,
+      onNewChannel,
+      onNewMessage,
+      onOpenChannel,
+      openChannelId,
+    ],
   );
-  if (section.state === "removed") {
-    return (
-      <View style={styles.removed}>
-        <TeamTile size={20} team={section.team} />
-        <View style={styles.removedWords}>
-          <AppText numberOfLines={1} role="secondaryMedium" tone="soft">
-            You're no longer in {section.team.name}
-          </AppText>
-          <AppText role="caption" tone="muted">
-            Tasks it started stay in your list
-          </AppText>
-        </View>
-        <Pressable
-          accessibilityLabel={`Remove ${section.team.name} from this phone`}
-          accessibilityRole="button"
-          hitSlop={8}
-          onPress={props.onRemoveTeam}
-          style={styles.iconButton}
-        >
-          <Symbol name="xmark" size={14} tint={color.muted} weight="semibold" />
-        </Pressable>
-      </View>
-    );
-  }
   return (
     <FlatList
-      contentContainerStyle={{ paddingBottom: props.paddingBottom }}
+      contentContainerStyle={[styles.content, { paddingBottom: props.paddingBottom }]}
       data={rows}
       initialNumToRender={24}
       keyExtractor={rowKey}
       onEndReached={props.onLoadMore}
       onEndReachedThreshold={0.8}
       renderItem={renderItem}
+      showsVerticalScrollIndicator={false}
       windowSize={11}
     />
   );
@@ -166,9 +170,11 @@ function rowKey(row: PageRow): string {
 
 /** A way in under a list, quieter than the rows it sits under. */
 const QuietRow = memo(function QuietRow(props: {
-  readonly icon: "magnifyingglass" | "plus";
+  readonly icon: "magnifyingglass" | "plus" | "lightbulb" | "person.badge.plus";
   readonly label: string;
   readonly onPress: () => void;
+  /** A place in the team rather than a way to find or make one. */
+  readonly strong?: boolean;
 }): ReactNode {
   return (
     <Pressable
@@ -178,13 +184,18 @@ const QuietRow = memo(function QuietRow(props: {
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
     >
       <View style={styles.mark}>
-        <Symbol name={props.icon} size={15} tint={color.muted} weight="medium" />
+        <Symbol
+          name={props.icon}
+          size={15}
+          tint={props.strong ? color.textSoft : color.muted}
+          weight="medium"
+        />
       </View>
       <AppText
         maxFontSizeMultiplier={controlFontScaleLimit}
         numberOfLines={1}
         role="secondary"
-        style={[styles.label, styles.muted]}
+        style={[styles.label, !props.strong && styles.muted]}
       >
         {props.label}
       </AppText>
@@ -213,6 +224,7 @@ const ChannelRow = memo(function ChannelRow(props: {
   const label = [
     channel.kind === "private" ? `${channel.name}, private` : channel.name,
     channel.peopleOnly ? "people only" : null,
+    channel.shared ? "shared channel" : null,
     channel.mentions > 0 ? `${channel.mentions} mentions` : channel.unread ? "unread" : null,
   ]
     .filter(Boolean)
@@ -240,6 +252,7 @@ const ChannelRow = memo(function ChannelRow(props: {
       >
         {channel.name}
       </AppText>
+      {channel.shared ? <Symbol name="link" size={12} tint={color.muted} /> : null}
       {channel.peopleOnly ? <PeopleOnlyBadge compact /> : null}
       <MentionCount count={channel.mentions} />
     </Pressable>
@@ -298,6 +311,7 @@ function rowTone(unread: boolean, muted: boolean) {
 const markWidth = 28;
 
 const styles = StyleSheet.create({
+  content: { paddingHorizontal: space[8] },
   current: { ...material.selected },
   head: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
   headAction: {
@@ -308,43 +322,11 @@ const styles = StyleSheet.create({
     marginTop: space[4],
     width: touchTarget,
   },
-  headMain: {
-    alignItems: "center",
-    borderRadius: radius.md,
-    flex: 1,
-    flexDirection: "row",
-    gap: space[10],
-    minHeight: touchTarget,
-    paddingHorizontal: space[10],
-  },
-  iconButton: {
-    alignItems: "center",
-    borderRadius: radius.full,
-    height: touchTarget,
-    justifyContent: "center",
-    width: touchTarget,
-  },
   label: { flex: 1 },
   mark: { alignItems: "center", width: markWidth },
-  more: {
-    justifyContent: "center",
-    minHeight: touchTarget - 8,
-    paddingLeft: space[10] + markWidth + space[10],
-  },
   muted: { color: color.mutedDim },
   pressed: { ...material.quiet },
   read: { color: color.textSoft },
-  removed: {
-    ...material.plate,
-    alignItems: "center",
-    borderRadius: radius.md,
-    flexDirection: "row",
-    gap: space[10],
-    marginTop: space[12],
-    paddingLeft: space[10],
-    paddingVertical: space[8],
-  },
-  removedWords: { flex: 1, minWidth: 0 },
   row: {
     alignItems: "center",
     borderColor: "transparent",
@@ -357,15 +339,5 @@ const styles = StyleSheet.create({
     paddingRight: space[12],
   },
   subhead: { paddingBottom: space[2], paddingLeft: space[10], paddingTop: space[10] },
-  tag: {
-    backgroundColor: color.surfaceRaised,
-    borderRadius: radius.full,
-    paddingHorizontal: space[6],
-    paddingVertical: 1,
-  },
-  tagText: { color: color.muted, fontWeight: "600" },
-  tagUpdate: { backgroundColor: color.amberWash },
-  tagUpdateText: { color: color.amber, fontWeight: "600" },
-  teamName: { color: color.text, flexShrink: 1, fontWeight: "600" },
   unread: { color: color.text, fontWeight: "600" },
 });

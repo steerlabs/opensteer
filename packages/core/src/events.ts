@@ -1,8 +1,15 @@
+import { DeviceIdSchema } from "./devices.js";
+import { TabIdSchema } from "./ids.js";
+import { CompactionReturnHintSchema } from "./idle-compaction.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { AppIdSchema, AppTitleSchema } from "./apps.js";
-import { PlaceIdentitySchema, PlaceIdentityViewSchema } from "./places.js";
+import { AppIdSchema, AppNameSchema } from "./apps.js";
+
 import { z } from "zod";
+import {
+  ProviderContextMeasurementSchema,
+  NativeCompactionActivitySchema,
+} from "./idle-compaction.js";
 import { TeamRunDeliverySchema, TeamRunDeliveryViewSchema } from "./team.js";
 import {
   DelegationIdSchema,
@@ -15,7 +22,6 @@ import {
   RunIdSchema,
   SequenceSchema,
   RequestIdSchema,
-  RunnerIdSchema,
   ThreadIdSchema,
 } from "./ids.js";
 import {
@@ -24,6 +30,8 @@ import {
   MessageContentSchema,
   MessageAuthorSchema,
   MessageAuthorViewSchema,
+  MessageEditSchema,
+  MessageEditViewSchema,
   MessageSchema,
   MessageViewSchema,
   RunFailureViewSchema,
@@ -36,6 +44,7 @@ import {
   ThreadAccessModeSchema,
   ThreadRunQueueEntrySchema,
   ThreadRunQueueEntryViewSchema,
+  ThreadInputEditLeaseViewSchema,
   ThreadInputSchema,
   ThreadInputViewSchema,
   ThreadSchema,
@@ -78,7 +87,7 @@ export const IntegrationCallSubjectSchema = z.strictObject({
       bundleId: z.string().min(1).max(255),
       computer: z.string().min(1).max(240),
       /** Stable identity for grouping calls when two Macs share a display name. */
-      runnerId: RunnerIdSchema,
+      runnerId: DeviceIdSchema,
     })
     .nullable(),
   effect: z.enum(["read", "write"]),
@@ -89,7 +98,7 @@ export const IntegrationCallSubjectSchema = z.strictObject({
   phone: z
     .strictObject({
       computer: z.string().min(1).max(240),
-      runnerId: RunnerIdSchema,
+      runnerId: DeviceIdSchema,
     })
     .optional(),
   /** The integration's title: "Gmail", "Computer use". */
@@ -189,11 +198,11 @@ const eventDataSchemas = {
   "app.published": z.strictObject({
     appId: AppIdSchema,
     version: z.number().int().positive(),
-    title: AppTitleSchema,
+    title: AppNameSchema,
   }),
   "place.entered": z.strictObject({
-    place: PlaceIdentitySchema,
-    title: z.string().max(256),
+    tabId: TabIdSchema,
+    title: z.string().max(1024),
     site: placeSiteSchema.nullable(),
   }),
   "assignment.created": z.strictObject({ assignment: AssignmentSummarySchema }),
@@ -241,6 +250,16 @@ const eventDataSchemas = {
    */
   "message.placed": z.object({
     message: MessageSchema,
+    edit: MessageEditSchema.optional(),
+  }),
+  /**
+   * A person edited a waiting message in place. It replaces the content where
+   * the message stands; it never creates or publishes a transcript entry.
+   */
+  "message.updated": z.object({
+    input: ThreadInputSchema,
+    message: MessageSchema,
+    edit: MessageEditSchema.optional(),
   }),
   "reasoning.completed": z.object({
     blockId: z.string().min(1).max(255),
@@ -266,7 +285,17 @@ const eventDataSchemas = {
     pendingDeviceAccessRequests: z.number().int().nonnegative().optional(),
   }),
   "thread-input.updated": z.object({ input: ThreadInputSchema }),
+  /** A waiting message's edit lease was taken, handed over, released or lapsed. Renewals are silent. */
+  "thread-input.lease-changed": z.strictObject({
+    messageId: MessageIdSchema,
+    lease: ThreadInputEditLeaseViewSchema.nullable(),
+  }),
   "thread.input-queue-updated": z.strictObject({ paused: z.boolean() }),
+  /**
+   * A task that only ever held a teammate's ask that never ran was removed
+   * after the ask ended. Stored without a Thread reference, which no longer exists.
+   */
+  "task.removed": z.strictObject({}),
   /**
    * A Thread's absolute list state at this sequence. `title` is its title then;
    * the Host includes it on every state change it writes, and a title change is
@@ -277,6 +306,8 @@ const eventDataSchemas = {
    * `doneReason` says the Host moved it there; absent before it could.
    */
   "thread.state-changed": z.strictObject({
+    updatedAt: IsoDateTimeSchema.optional(),
+    returnHint: CompactionReturnHintSchema.nullable().optional(),
     latestRunCompletedAt: IsoDateTimeSchema.nullable().optional(),
     status: ThreadStatusSchema,
     inputQueuePaused: z.boolean(),
@@ -353,6 +384,8 @@ const eventDataSchemas = {
    * protocol does not report per-turn usage.
    */
   "run.usage": RunUsageSchema,
+  "run.context-measured": ProviderContextMeasurementSchema,
+  "run.compaction": NativeCompactionActivitySchema,
   /**
    * The engine finished a turn while work it started in the background is
    * still running (`background`), or began another turn in the same Run
@@ -491,7 +524,6 @@ const eventDataViewSchemas = {
   "app.published": z.object(eventDataSchemas["app.published"].shape),
   "place.entered": z.object({
     ...eventDataSchemas["place.entered"].shape,
-    place: PlaceIdentityViewSchema,
   }),
   "assignment.created": z.object({ assignment: AssignmentSummarySchema }),
   "assignment.updated": z.object({ assignment: AssignmentSummarySchema }),
@@ -513,7 +545,15 @@ const eventDataViewSchemas = {
     addressedToUserId: UserIdSchema.optional(),
   }),
   "message.injected": eventDataSchemas["message.injected"],
-  "message.placed": z.object({ message: MessageViewSchema }),
+  "message.placed": z.object({
+    message: MessageViewSchema,
+    edit: MessageEditViewSchema.optional(),
+  }),
+  "message.updated": z.object({
+    input: ThreadInputViewSchema,
+    message: MessageViewSchema,
+    edit: MessageEditViewSchema.optional(),
+  }),
   "reasoning.completed": eventDataSchemas["reasoning.completed"],
   "run.queued": z.object({ run: ThreadRunQueueEntryViewSchema }),
   "thread.created": z.object({
@@ -526,7 +566,9 @@ const eventDataViewSchemas = {
     thread: ThreadViewSchema,
   }),
   "thread-input.updated": z.object({ input: ThreadInputViewSchema }),
+  "thread-input.lease-changed": z.object(eventDataSchemas["thread-input.lease-changed"].shape),
   "thread.input-queue-updated": z.object(eventDataSchemas["thread.input-queue-updated"].shape),
+  "task.removed": z.object({}),
   "thread.state-changed": z.object({
     ...eventDataSchemas["thread.state-changed"].shape,
     // A reason a newer Host added reads as a person's Done rather than failing the event.
@@ -568,6 +610,8 @@ const eventDataViewSchemas = {
     personWaiting: z.boolean().optional(),
     startedBy: MessageAuthorViewSchema.optional(),
   }),
+  "run.context-measured": z.object(ProviderContextMeasurementSchema.shape),
+  "run.compaction": z.object(NativeCompactionActivitySchema.shape),
   "run.usage": RunUsageViewSchema,
   "run.phase": z.object({
     ...eventDataSchemas["run.phase"].shape,
@@ -630,6 +674,11 @@ function makeEventViewVariant<T extends AgentEventType>(type: T) {
 
 export const agentEventMaxSerializedBytes = 512 * 1_024;
 
+export const PlaceEnteredEventSchema = makeEventVariant("place.entered").extend({
+  runId: RunIdSchema,
+});
+export type PlaceEnteredEvent = z.infer<typeof PlaceEnteredEventSchema>;
+
 export const AgentEventSchema = z
   .discriminatedUnion("type", [
     makeEventVariant("assignment.created"),
@@ -644,6 +693,7 @@ export const AgentEventSchema = z
     makeEventVariant("message.created"),
     makeEventVariant("message.injected"),
     makeEventVariant("message.placed"),
+    makeEventVariant("message.updated"),
     makeEventVariant("reasoning.completed"),
     makeEventVariant("run.delivery-updated").extend({ runId: RunIdSchema }),
     makeEventVariant("run.queued"),
@@ -653,6 +703,8 @@ export const AgentEventSchema = z
     makeEventVariant("run.restarted"),
     makeEventVariant("run.started"),
     makeEventVariant("run.status"),
+    makeEventVariant("run.context-measured"),
+    makeEventVariant("run.compaction"),
     makeEventVariant("run.usage"),
     makeEventVariant("run.phase"),
     makeEventVariant("node.started"),
@@ -665,11 +717,13 @@ export const AgentEventSchema = z
     makeEventVariant("thread.execution-updated"),
     makeEventVariant("thread.listed"),
     makeEventVariant("thread-input.updated"),
+    makeEventVariant("thread-input.lease-changed"),
     makeEventVariant("thread.input-queue-updated"),
+    makeEventVariant("task.removed"),
     makeEventVariant("thread.state-changed"),
     makeEventVariant("thread.continuation-established"),
     makeEventVariant("thread.access-mode-updated"),
-    makeEventVariant("place.entered").extend({ runId: RunIdSchema }),
+    PlaceEnteredEventSchema,
     makeEventVariant("app.published").extend({ runId: RunIdSchema }),
   ])
   .refine(
@@ -698,6 +752,7 @@ export const AgentEventViewSchema = z
     makeEventViewVariant("message.created"),
     makeEventViewVariant("message.injected"),
     makeEventViewVariant("message.placed"),
+    makeEventViewVariant("message.updated"),
     makeEventViewVariant("reasoning.completed"),
     makeEventViewVariant("run.delivery-updated").extend({ runId: RunIdSchema }),
     makeEventViewVariant("run.queued"),
@@ -707,6 +762,8 @@ export const AgentEventViewSchema = z
     makeEventViewVariant("run.restarted"),
     makeEventViewVariant("run.started"),
     makeEventViewVariant("run.status"),
+    makeEventViewVariant("run.context-measured"),
+    makeEventViewVariant("run.compaction"),
     makeEventViewVariant("run.usage"),
     makeEventViewVariant("run.phase"),
     makeEventViewVariant("node.started"),
@@ -719,7 +776,9 @@ export const AgentEventViewSchema = z
     makeEventViewVariant("thread.execution-updated"),
     makeEventViewVariant("thread.listed"),
     makeEventViewVariant("thread-input.updated"),
+    makeEventViewVariant("thread-input.lease-changed"),
     makeEventViewVariant("thread.input-queue-updated"),
+    makeEventViewVariant("task.removed"),
     makeEventViewVariant("thread.state-changed"),
     makeEventViewVariant("thread.continuation-established"),
     makeEventViewVariant("thread.access-mode-updated"),

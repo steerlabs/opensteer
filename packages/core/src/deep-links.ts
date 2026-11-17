@@ -1,3 +1,4 @@
+import { TabIdSchema, type TabId } from "./ids.js";
 import {
   DeploymentIdSchema,
   MessageIdSchema,
@@ -189,6 +190,56 @@ export function parseMobileOpenDeepLink(
     if (keys.length !== 1 || keys[0] !== "d") return null;
     const id = DeploymentIdSchema.safeParse(url.searchParams.get("d"));
     return id.success ? { deploymentId: id.data } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildMobileNeedsYouDeepLink(deploymentId: DeploymentId): string {
+  return `${mobileDeepLinkScheme}:/deployments/${DeploymentIdSchema.parse(deploymentId)}/needs-you`;
+}
+
+export function parseMobileNeedsYouDeepLink(
+  value: string,
+): { readonly deploymentId: DeploymentId } | null {
+  if (!value.startsWith(`${mobileDeepLinkScheme}:/deployments/`)) return null;
+  try {
+    const url = new URL(value);
+    const segments = url.pathname.split("/");
+    if (
+      url.host ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      segments.length !== 4 ||
+      segments[3] !== "needs-you"
+    )
+      return null;
+    const id = DeploymentIdSchema.safeParse(segments[2]);
+    return id.success ? { deploymentId: id.data } : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface MobileTabDeepLink {
+  readonly deploymentId: DeploymentId;
+  readonly tabId: TabId;
+}
+export function buildMobileTabDeepLink(link: MobileTabDeepLink): string {
+  return `${mobileDeepLinkScheme}:/deployments/${DeploymentIdSchema.parse(link.deploymentId)}/tabs/${encodeURIComponent(TabIdSchema.parse(link.tabId))}`;
+}
+export function parseMobileTabDeepLink(value: string): MobileTabDeepLink | null {
+  const match = /^com\.opensteer\.mobile:\/deployments\/([^/?#]+)\/tabs\/([^/?#]+)$/u.exec(value);
+  if (!match) return null;
+  try {
+    const deploymentId = DeploymentIdSchema.safeParse(match[1]);
+    const decoded = decodeURIComponent(match[2]!);
+    const tabId = TabIdSchema.safeParse(decoded);
+    return deploymentId.success && tabId.success && encodeURIComponent(decoded) === match[2]
+      ? { deploymentId: deploymentId.data, tabId: tabId.data }
+      : null;
   } catch {
     return null;
   }

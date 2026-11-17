@@ -1,3 +1,4 @@
+import { TeamPaneGate } from "./team-pane-gate.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 import { TeamChannelIdSchema, UserIdSchema } from "@opensteer/core";
@@ -17,6 +18,7 @@ import { useToast } from "../components/toast.js";
 import { actionErrorMessage } from "../ui-utils.js";
 import { ChannelRoute, TeamUnavailable } from "./channel-route.js";
 import { useTeamAttachment, useTeamSession } from "./team-attachments.js";
+import { TeamReferences } from "../components/references/reference-scope.js";
 import { TeamKnowledge } from "./team-knowledge.js";
 import { channelPath, teamPath } from "./team-paths.js";
 import { useTeamView, type TeamView } from "./team-view.js";
@@ -29,9 +31,21 @@ const noPreviews: ReadonlyMap<string, string> = new Map();
 export function TeamRoutes() {
   const { teamId = "", "*": splat = "" } = useParams();
   const [section, ...rest] = splat.split("/").filter(Boolean);
-  if (section === "c") return <ChannelRoute rest={rest} teamId={teamId} />;
-  if (!section) return <TeamLanding teamId={teamId} />;
-  return <TeamPage rest={rest} section={section ?? ""} teamId={teamId} />;
+  // Everything under a team reads its words as that team's: its pages open here, personal ones don't.
+  const team = useTeamAttachment(teamId);
+  return (
+    <TeamPaneGate teamId={teamId}>
+      <TeamReferences team={team}>
+        {section === "c" ? (
+          <ChannelRoute rest={rest} teamId={teamId} />
+        ) : !section ? (
+          <TeamLanding teamId={teamId} />
+        ) : (
+          <TeamPage rest={rest} section={section} teamId={teamId} />
+        )}
+      </TeamReferences>
+    </TeamPaneGate>
+  );
 }
 
 /** A team's own address lands in #general once its sidebar has loaded. */
@@ -39,7 +53,7 @@ function TeamLanding({ teamId }: { readonly teamId: string }) {
   const team = useTeamAttachment(teamId);
   const snapshot = useTeamSession(team?.client ?? null);
   const channels = snapshot?.sidebar?.channels ?? null;
-  if (!team) return <TeamUnavailable teamId={teamId} />;
+  if (!team?.client) return <TeamUnavailable teamId={teamId} />;
   if (!channels) return null;
   const general =
     channels.find((row) => row.channel.id === snapshot?.bootstrap?.generalChannelId) ??

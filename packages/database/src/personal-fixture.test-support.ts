@@ -1,3 +1,4 @@
+import { upsertSelfDeviceInTransaction } from "./device-inventory-store.js";
 import { createId, type DeploymentId, type ComputerFolder, type UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
@@ -49,9 +50,19 @@ export async function seedPersonalOwnerResources(
     name: "Hosting computer",
     runnerKind: "main",
   });
-  await sql`insert into runners(id,owner_kind,owner_user_id,name,kind,public_key_pem,public_key_fingerprint,enrollment_token_hash,capabilities,allowed_modules,module_descriptors,access_policy,access_policy_revision,connection_generation,max_concurrent_runs) values(${runnerId},'deployment',null,'Hosting computer','main','test-public-key','test-fingerprint','test-enrollment',${JSON.stringify(descriptor.capabilities)},'["agents"]',${JSON.stringify(descriptor.modules)},'{"reach":"nobody","commands":false,"forwarding":false,"shares":[]}',0,1,4)`.execute(
+  const hasDevices = (await database.introspection.getTables()).some(
+    (table) => table.name === "devices",
+  );
+  await sql`insert into runners(id,owner_kind,owner_user_id,name,kind,public_key_pem,public_key_fingerprint,enrollment_token_hash,capabilities,allowed_modules,module_descriptors,${sql.raw(hasDevices ? "" : "access_policy,access_policy_revision,")}connection_generation,max_concurrent_runs) values(${runnerId},'deployment',null,'Hosting computer','main','test-public-key','test-fingerprint','test-enrollment',${JSON.stringify(descriptor.capabilities)},'["agents"]',${JSON.stringify(descriptor.modules)},${sql.raw(hasDevices ? "" : `'{"reach":"nobody","commands":false,"forwarding":false,"shares":[]}',0,`)}1,4)`.execute(
     database,
   );
+  if (hasDevices)
+    await upsertSelfDeviceInTransaction(database, runnerId, {
+      reach: "nobody",
+      commands: false,
+      forwarding: false,
+      shares: [],
+    });
   await sql`insert into execution_environments(id,name,kind,runner_id,capabilities) values(${environmentId},'Hosting computer','main',${runnerId},'[]')`.execute(
     database,
   );
@@ -60,4 +71,18 @@ export async function seedPersonalOwnerResources(
     database,
   );
   return { runnerId, environmentId, agentHome };
+}
+
+/** Stands in for the hosting Runner's report of settings.json in Agent home. */
+export async function writeAgentHomeSettings(
+  database: Kysely<DatabaseSchema>,
+  settings: import("@opensteer/core").AgentHomeSettings,
+  file: import("@opensteer/protocol").AgentHomeSettingsFileView = { status: "valid" },
+) {
+  await sql`insert into agent_home_settings(computer_id,environment_id,boot_id,connection_generation,connection_id,connection_lease_id,read_sequence,read_at,file_status,file_error,settings)
+    select p.agent_home_computer_id,e.id,'fixture',0,'fixture','fixture',1,now(),${file.status},${file.error ? JSON.stringify(file.error) : null}::jsonb,${JSON.stringify(settings)}::jsonb
+    from personal_settings p join execution_environments e on e.runner_id=p.agent_home_computer_id
+    on conflict(computer_id) do update set file_status=excluded.file_status,file_error=excluded.file_error,settings=excluded.settings`.execute(
+    database,
+  );
 }

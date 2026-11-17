@@ -180,14 +180,8 @@ function harness() {
           return { type: "login.approve.result", result: { ok: true } };
         }
         if (command.type === "login.commit") return { type: "login.committed", committed: true };
-        if (command.type === "login.cancel") {
-          emit(target.computer.runnerId, {
-            type: "login.result",
-            operationId,
-            outcome: { kind: "cancelled", reason: command.reason },
-          });
-          return { type: "login.cancelled" };
-        }
+        // Like the desktop authority, a confirmed cancel is its last word on the operation.
+        if (command.type === "login.cancel") return { type: "login.cancelled" };
         return { type: "login.seal.result", status: "denied" };
       },
     ),
@@ -547,6 +541,9 @@ describe("human Passwords settlement", () => {
         integrations: {
           listDiscoveryInventory: async () => [],
           listCallableTools: async () => [],
+          computerAccess: async () => {
+            throw new Error("No computer access fixture");
+          },
           computerUseMachines: async () => [],
           computerUsePhones: async () => [],
         },
@@ -624,6 +621,9 @@ describe("human Passwords settlement", () => {
         integrations: {
           listDiscoveryInventory: async () => [],
           listCallableTools: async () => [],
+          computerAccess: async () => {
+            throw new Error("No computer access fixture");
+          },
           computerUseMachines: async () => [],
           computerUsePhones: async () => [],
         },
@@ -667,7 +667,7 @@ describe("human Passwords settlement", () => {
         .wait({
           caller: { claims: h.call } as unknown as RunCaller,
           result: { status: "pending", requestId: h.request().id },
-          tool: "sign_in",
+          tool: "saved_login_request",
           admittedAt: Date.now(),
           steersAtAdmission: 0,
           limitMs: 45_000,
@@ -692,12 +692,17 @@ describe("human Passwords settlement", () => {
         const result = await call;
         if (committed) {
           expect(result).toMatchObject({
-            record: { status: "ready", loginRef: h.loginRef(), account: expect.any(String) },
+            record: {
+              status: "fulfilled",
+              loginStatus: "ready",
+              loginRef: h.loginRef(),
+              account: expect.any(String),
+            },
           });
           expect(result?.text).toContain(h.loginRef());
         } else {
           expect(result).toMatchObject({
-            record: { status: "resolved" },
+            record: { status: "fulfilled", loginStatus: "unavailable", reason: "interrupted" },
             text: expect.stringContaining("stopped"),
           });
           expect(JSON.stringify(result)).not.toContain(h.loginRef());
@@ -880,6 +885,23 @@ describe("human Passwords settlement", () => {
       h.hub.sendPasswordSignIn.mock.calls.filter(([, c]) => c.type === "login.approve"),
     ).toHaveLength(1);
   });
+  it("settles a decline once the authority confirms the cancel, without waiting out its window", async () => {
+    const h = await pending();
+    let settled = false;
+    const declined = h.service
+      .respond({
+        ownerId: h.call.ownerId,
+        requestId: h.request().id,
+        sessionId: "declining-session",
+        decision: { kind: "decline" },
+        revalidate: async () => {},
+      })
+      .then(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(true);
+    await declined;
+    expect(h.request().status).toBe("declined");
+  });
   it("records the declining session without inventing an automatic approver", async () => {
     const h = await pending();
     await h.service.respond({
@@ -971,6 +993,11 @@ describe("card personal lifecycle", () => {
         revision: 1,
         permissionVersion: 7,
       },
+    });
+    // A call whose Request settled while it was reading it replays the live card lease.
+    expect(h.service.replayResult(h.request(), h.call.deploymentId)).toMatchObject({
+      status: "ready",
+      loginRef: h.loginRef(),
     });
     expect(await h.service.requestCard({ ...input, callId: "reuse" })).toMatchObject({
       status: "ready",

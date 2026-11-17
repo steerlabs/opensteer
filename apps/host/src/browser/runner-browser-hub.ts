@@ -24,6 +24,7 @@ export interface RunnerBrowserPeer {
 export type BrowserRelayEvent = BrowserRuntimeRelayEvent;
 
 export interface RunnerBrowserHooks {
+  readonly onAttached?: (stream: RunnerAuxiliaryStream) => void;
   readonly onFrame?: (
     stream: RunnerAuxiliaryStream,
     frame: { readonly frame: Buffer; readonly header: BrowserRelayFrameHeader },
@@ -66,6 +67,7 @@ export class RunnerBrowserHub implements RunnerBrowserRegistry {
     const entry = { peer, stream };
     this.#byPeer.set(peer.id, entry);
     this.#byRunner.set(stream.identity.runnerId, entry);
+    for (const hooks of this.#hooks) hooks.onAttached?.(stream);
   }
 
   /** Keeps the stream's renewed lease visible to capability leases derived from it. */

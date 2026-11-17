@@ -718,9 +718,9 @@ integration("Runs that outlive their connection", () => {
           }) as Transport,
         );
         const result = await client.callTool({
-          name: "delegate_task",
+          name: "opensteer_task_delegate",
           arguments: {
-            task: "Keep the delegated task running until its Runner restarts.",
+            message: "Keep the delegated task running until its Runner restarts.",
             title: "Restart task",
           },
         });
@@ -735,7 +735,7 @@ integration("Runs that outlive their connection", () => {
       }
     })();
     if (delegated.type !== "thread.delegate.result") throw new Error("Parent did not delegate");
-    const { assignmentId } = delegated.result;
+    const { delegationId: assignmentId } = delegated.result;
     const { run: childRun, thread: childThread } = await readToolRecords(
       active.host.store,
       delegated.result,
@@ -1312,7 +1312,7 @@ integration("Runs that outlive their connection", () => {
       if (
         role &&
         !backendPids.has(role) &&
-        statement === 'select "deployment_id" from "deployment_event_state" for no key update'
+        statement === "select deployment_id from deployment_event_state for no key update"
       ) {
         backendPids.set(role, (this as PgClient & { processID: number }).processID);
       }

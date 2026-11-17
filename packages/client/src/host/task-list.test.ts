@@ -1,30 +1,27 @@
-import { browserStoreFixture } from "../test-support/browser-snapshot.js";
-import type { BrowserGroupRow, BrowserTabRow } from "@opensteer/protocol/browser-tabs";
+import { tabFixture, tabStoreFixture } from "../test-support/tab-fixtures.js";
 import { mergeTaskEntries } from "./task-entries.js";
 import { describe, expect, it } from "vitest";
 import {
   createId,
+  TabIdSchema,
   ThreadIdSchema,
   WaitingRequestSchema,
   type ThreadStatus,
   type WaitingRequest,
 } from "@opensteer/core";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import {
-  mainDoneTasks,
-  type BrowserSessionSummary,
-  type HostSnapshot,
-  type TaskEntry,
-} from "./client.js";
+import { mainDoneTasks, type HostSnapshot, type TaskEntry } from "./client.js";
 import {
   doneTaskList,
   heldThread,
   listedRowThreadId,
   sameTaskRow,
   taskList,
+  taskAfter,
   taskRowLabel,
   taskTime,
   threadRequester,
+  type TaskRow,
 } from "./task-list.js";
 import { liveWork } from "./surfaces.js";
 
@@ -34,7 +31,7 @@ const threadId = (index: number) =>
   `thr_00000000-0000-4000-8000-${String(900 + index).padStart(12, "0")}`;
 
 const base = new MockHostClient({ latencyMs: 0 }).getSnapshot();
-const template = base.threads[0]!;
+const template = { ...base.threads[0]!, pendingRequests: 0 };
 const pending = Object.values(base.requests)
   .flat()
   .find((request) => request.status === "pending")!;
@@ -52,7 +49,6 @@ function entry(
     lastReply: lines.lastReply ?? null,
     thread: {
       ...template,
-
       askedAt: hoursAgo(created),
       createdAt: hoursAgo(created),
       id: threadId(index),
@@ -77,7 +73,7 @@ function asking(index: number, title: string): WaitingRequest {
 function snapshot(
   entries: readonly TaskEntry[],
   options: {
-    readonly browserSessions?: readonly BrowserSessionSummary[];
+    readonly tabs?: HostSnapshot["tabs"];
     readonly chat?: number;
     readonly unread?: readonly number[];
     readonly waiting?: readonly WaitingRequest[];
@@ -88,7 +84,7 @@ function snapshot(
     ...base,
     activeTasks: [],
     assignments: {},
-    browserSessions: [...(options.browserSessions ?? [])],
+    tabs: options.tabs ?? tabStoreFixture([]),
 
     voiceThreadId: null,
     machines: [],
@@ -269,51 +265,19 @@ describe("taskList", () => {
   });
 
   it("names the site a working task is on, and no place for a task that is not working", () => {
-    const session = {
-      acting: true,
-      createdAt: hoursAgo(1),
-      id: "brs_1",
-      profileId: null,
-      state: "ready",
-      tabs: [
-        { id: "other", active: true, title: "Other page", url: "https://example.com" },
-        {
-          id: "awards",
-          active: false,
-          title: "Award search",
-          url: "https://www.united.com/en/us/awards",
-        },
-      ],
-      browserTabs: browserStoreFixture(
-        [{ id: "brs_1", sessionId: "brs_1", createdAt: hoursAgo(1) } as BrowserGroupRow],
-        [
-          {
-            groupId: "brs_1",
-            rows: [
-              {
-                id: "other",
-                title: "Other page",
-                site: "https://example.com",
-                order: 0,
-                occupants: [],
-              },
-              {
-                id: "awards",
-                title: "Award search",
-                site: "https://www.united.com/en/us/awards",
-                order: 1,
-                occupants: [{ acting: true, lastActiveAt: hoursAgo(0) }],
-              },
-            ].map((tab) => ({ ...tab, sessionId: "brs_1" })) as BrowserTabRow[],
-          },
-        ],
-      ),
-      threadIds: [threadId(1), threadId(2)],
-    } as unknown as BrowserSessionSummary;
+    const tabs = tabStoreFixture([
+      tabFixture({ tabId: TabIdSchema.parse("other"), url: "https://example.com" }),
+      tabFixture({
+        tabId: TabIdSchema.parse("awards"),
+        title: "Award search",
+        url: "https://www.united.com/en/us/awards",
+        usedBy: [{ taskId: ThreadIdSchema.parse(threadId(1)) }],
+      }),
+    ]);
     const list = taskList(
       snapshot(
         [entry(1, "Flight award alerts", "running", 1, 0), entry(2, "Finished", "idle", 2, 1)],
-        { browserSessions: [session] },
+        { tabs },
       ),
     );
     expect(list.working[0]!.place).toBe("united.com");
@@ -339,6 +303,19 @@ describe("taskList", () => {
     expect(taskList({ ...source, tasks: { ...source.tasks!, entries: [completed] } }).running).toBe(
       0,
     );
+  });
+});
+
+describe("taskAfter", () => {
+  const rows = (...ids: string[]) => ids.map((id) => ({ threadId: id }) as TaskRow);
+
+  it("goes down across Working into Ready, up from the bottom, and nowhere from the last task", () => {
+    const list = { working: rows("a", "b"), ready: rows("c") };
+    expect(taskAfter(list, "a")).toBe("b");
+    expect(taskAfter(list, "b")).toBe("c");
+    expect(taskAfter(list, "c")).toBe("b");
+    expect(taskAfter({ working: [], ready: rows("a") }, "a")).toBeNull();
+    expect(taskAfter(list, "unlisted")).toBeNull();
   });
 });
 
@@ -572,4 +549,14 @@ describe("doneTaskList", () => {
     ]);
     expect(titles(taskList(state).ready)).toEqual(["Reported after Done"]);
   });
+});
+
+it("keeps Needs you visible when its decision is outside the loaded page", () => {
+  const task = entry(999, "Waiting for approval", "idle", 1, 1);
+  const state = snapshot([{ ...task, thread: { ...task.thread, pendingRequests: 1 } }]);
+  const rows = taskList({ ...state, needsYou: { ...base.needsYou!, entries: [] } });
+  expect(
+    [...rows.working, ...rows.ready, ...rows.done].find((row) => row.threadId === task.thread.id)
+      ?.tone,
+  ).toBe("needs-you");
 });

@@ -608,8 +608,10 @@ describe("wire protocol", () => {
     } as const;
     expect(RunnerToHostMessageSchema.parse(status)).toEqual(status);
     expect(
-      RunnerToHostMessageSchema.safeParse({ ...status, stdoutTail: "x".repeat(16 * 1_024 + 1) })
-        .success,
+      RunnerToHostMessageSchema.safeParse({
+        ...status,
+        stdoutTail: "x".repeat(16 * 1_024 + 1),
+      }).success,
     ).toBe(false);
   });
 
@@ -641,10 +643,10 @@ describe("wire protocol", () => {
         taskPurpose: "task",
         threadState: { previousAssignment: null, previousRun: null },
         agentTools: {
-          tools: ["thread_read", "thread_send"],
+          tools: ["opensteer_task_read", "opensteer_task_send"],
           toolsRevision: "test-tools-v1",
           instructions: "Host Opensteer instructions",
-          skills: ["opensteer:threads"],
+          skills: ["opensteer:tasks"],
           token: "agent-tools-token",
           url: "https://host.example.test/internal/v1/mcp",
         },
@@ -690,7 +692,6 @@ describe("wire protocol", () => {
         providerSessionReference: null,
         providerSessionStateLayout: "session",
         requestedBy: createId("user"),
-        requesterTimeZone: "America/New_York",
         runId: createId("run"),
         threadId,
       },

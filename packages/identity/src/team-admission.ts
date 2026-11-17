@@ -85,7 +85,10 @@ export class TeamIdentityAdmission {
   readonly invites: TeamInvitesStore;
   readonly #authority: AccountAdoptionAuthority;
   readonly #verifier: AccountAdoptionGrantVerifier;
-  readonly #install: (bundle: HostAccountAdoptionBundle) => Promise<void>;
+  readonly #install: (
+    bundle: HostAccountAdoptionBundle,
+    transaction: Transaction<DatabaseSchema>,
+  ) => Promise<void>;
   readonly #hosted:
     | {
         readonly createGeneralChannel: (
@@ -96,13 +99,19 @@ export class TeamIdentityAdmission {
       }
     | undefined;
   readonly #identityVerifier: TeamIdentityAssertionVerifier | undefined;
+  readonly #applyProfile: ((userId: UserId, receipt: string) => Promise<boolean>) | undefined;
   constructor(options: {
     access: TeamAccessStore;
     invites: TeamInvitesStore;
     authority: AccountAdoptionAuthority;
     grantVerifier: AccountAdoptionGrantVerifier;
     identityVerifier?: TeamIdentityAssertionVerifier;
-    installAccountBundle: (bundle: HostAccountAdoptionBundle) => Promise<void>;
+    /** Applies an Account-signed name receipt to the user that Account signs in as here. */
+    applyProfile?: (userId: UserId, receipt: string) => Promise<boolean>;
+    installAccountBundle: (
+      bundle: HostAccountAdoptionBundle,
+      transaction: Transaction<DatabaseSchema>,
+    ) => Promise<void>;
     /** Enables Account's hosted bootstrap (`team-hosted-bootstrap-v1`). */
     hosted?: {
       createGeneralChannel: (
@@ -117,8 +126,13 @@ export class TeamIdentityAdmission {
     this.#authority = options.authority;
     this.#verifier = options.grantVerifier;
     this.#identityVerifier = options.identityVerifier;
+    this.#applyProfile = options.applyProfile;
     this.#install = options.installAccountBundle;
     this.#hosted = options.hosted;
+  }
+  /** A browser sign-in carries the person's current Account name; apply it like a relayed one. */
+  async applyProfile(userId: UserId, receipt: string): Promise<boolean> {
+    return this.#applyProfile ? this.#applyProfile(userId, receipt) : false;
   }
   get hostedBootstrapAvailable() {
     return this.#hosted !== undefined;
@@ -175,7 +189,7 @@ export class TeamIdentityAdmission {
         message: "Team session exchange is unavailable",
       });
     const claims = await this.#identityVerifier.verify(assertion);
-    if (!sameAuthority(claims.authority, this.#authority)) refuseEntry("assertion-invalid");
+    if (!sameAuthority(claims.authority, this.#authority)) refuseEntry("authority-changed");
     return claims;
   }
   /**
@@ -562,13 +576,13 @@ export class TeamIdentityAdmission {
         const receipt = hosted
           ? await this.#bootstrapOwner(t, durableAdmission, verified.proofId, hosted, providerId)
           : undefined;
+        await this.#install(bundle, t);
         return { value: { receipt, fresh: true }, effects: emptyTeamAccessEffects };
       },
       async (t, value) => {
         if (value.fresh && value.receipt) await publishTeamMember(t, value.receipt.ownerUserId);
       },
     );
-    await this.#install(bundle);
     return {
       provider: {
         providerId: "opensteer-account",
@@ -897,6 +911,7 @@ async function spendAssertion(t: Transaction<DatabaseSchema>, claims: TeamIdenti
 
 const entryRefusals = {
   "assertion-invalid": "Your Opensteer sign-in could not be verified. Try again.",
+  "authority-changed": "The team authority changed. Open its address again.",
   "not-a-member": "You're not a member of this team. Ask for an invite.",
 } as const;
 

@@ -45,7 +45,15 @@ describe("ActionForm", () => {
       kind: "harness.input",
       payload: { kind: "harness.input" },
       presentation: {
-        fields: [{ id: "token", multiSelect: false, prompt: "Enter the token", secret: true }],
+        fields: [
+          {
+            custom: false,
+            id: "token",
+            multiSelect: false,
+            prompt: "Enter the token",
+            secret: true,
+          },
+        ],
         kind: "form",
         title: "Secret needed",
       },

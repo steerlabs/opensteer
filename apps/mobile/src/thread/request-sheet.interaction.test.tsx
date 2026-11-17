@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { authenticatePasswordApproval } from "./password-approval-auth.js";
 // @vitest-environment happy-dom
 
@@ -14,7 +15,7 @@ import type { MachineSummary } from "@opensteer/protocol";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mockCardUseRequest, mockTmdbProposal } from "@opensteer/client/mock";
+import { MockHostClient, mockCardUseRequest, mockTmdbProposal } from "@opensteer/client/mock";
 import { createThreadMutationGate, type ThreadMutationGate } from "./thread-mutation-gate.js";
 
 vi.mock("./agent-mark.js", () => ({
@@ -157,6 +158,8 @@ vi.mock("../ui/sheet.js", () => ({
     ) : null,
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
+// A question opens as its card, which question.interaction.test.tsx covers.
+vi.mock("./waiting-questions.js", () => ({ QuestionCard: () => null }));
 vi.mock("../computers/here-device.js", () => ({ useHereDeviceId: () => null }));
 vi.mock("../ui/sheet-bar.js", () => ({
   SheetBarButton: ({ onPress }: { onPress: () => void }) => (
@@ -188,7 +191,9 @@ vi.mock("./composer-menu.js", () => ({
   ),
 }));
 
-const { RequestSheetContent } = await import("./request-sheet.js");
+const { RequestSheetContent, RequestSheetScreen } = await import("./request-sheet.js");
+const { useMobileState } = await import("../ui/mobile-client-context.js");
+const { useNavigation } = await import("@react-navigation/native");
 const { resetRequestSessionsForTests } = await import("./request-session.js");
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -211,15 +216,22 @@ afterEach(() => {
  * - the agent's reason is shown twice, or unlabelled as if Opensteer said it.
  */
 describe("RequestSheetContent computer owner approvals", () => {
-  it.each(["macos-app", "android-phone"] as const)(
+  it.each(["macos-app", "android-phone", "iphone-screen"] as const)(
     "reviews %s from the phone and sends the owner command",
     async (definitionId) => {
       const request = computerAppRequest();
       if (request.payload.kind !== "computer.app.access") throw new Error("Expected app request");
       request.payload.definitionId = definitionId;
+      if (definitionId !== "macos-app") request.payload.app = null;
+      if (definitionId === "iphone-screen")
+        request.payload.deviceId = DeviceIdSchema.parse("dev_00000000-0000-4000-8000-000000000004");
       const dispatch = vi.fn(async (command: { type: string }) => ({ type: command.type }));
       const review = computerAppReview(request);
-      await render(surface(request), dispatch, { review });
+      await render(surface(request), dispatch, {
+        review,
+        machines: [studio],
+        snapshot: { deviceDriversAvailable: true },
+      });
       expect(review).not.toHaveBeenCalled();
       await click("Allow");
       if (definitionId === "macos-app") {
@@ -240,7 +252,16 @@ describe("RequestSheetContent computer owner approvals", () => {
       } else {
         expect(review).not.toHaveBeenCalled();
         expect(dispatch).toHaveBeenCalledWith(
-          expect.objectContaining({ type: "integration.computer.setup.set" }),
+          expect.objectContaining({
+            type: "integration.computer.setup.set",
+            input: {
+              kind: "app",
+              app: null,
+              access: request.payload.access,
+              definitionId,
+              deviceId: request.payload.deviceId,
+            },
+          }),
         );
       }
       expect(document.querySelector("[data-modal]")).toBeNull();
@@ -681,7 +702,7 @@ describe("RequestSheetContent external requests", () => {
       expectedRevision: 7,
       idempotencyKey: expect.any(String),
       policy: { reach: policy.reach, commands: false, forwarding: false, shares: [], apps: true },
-      runnerId: laptop.id,
+      deviceId: laptop.id,
       type: "machine.access.update",
     });
     expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({ type: "request.respond" }));
@@ -980,7 +1001,7 @@ async function render(
             subscribe: () => () => undefined,
             getSnapshot: () => snapshot,
             updateMachineAccess: async (input: {
-              runnerId: string;
+              deviceId: string;
               expectedRevision: number;
               policy: object;
             }) =>
@@ -1222,7 +1243,7 @@ function computerAppRequest(): Request {
       definitionId: "macos-app",
       kind: "computer.app.access",
       reason: "Move the plan into Notes",
-      runnerId: studioId,
+      deviceId: studioId,
       setupRequestId: "00000000-0000-4000-8000-000000000003",
     },
     presentation: {
@@ -1369,5 +1390,60 @@ it.each(["live", "durable"] as const)(
     );
   },
 );
+
+describe("RequestSheetScreen opened from a link", () => {
+  const settled = "req_0192f4a1-1111-4000-8000-000000000001";
+  const threadId = "thr_00000000-0000-4000-8000-000000000003";
+
+  async function open(requestId: string) {
+    const host = new MockHostClient({ latencyMs: 0 });
+    await host.load();
+    await host.dispatch({
+      idempotencyKey: "settle",
+      requestId: settled,
+      response: { kind: "choice", optionId: "approve" },
+      type: "request.respond",
+    });
+    const deploymentId = host.getSnapshot().deploymentId!;
+    const goBack = vi.fn();
+    vi.mocked(useMobileState).mockReturnValue({
+      selection: { deploymentId, hostClient: host },
+    } as unknown as ReturnType<typeof useMobileState>);
+    vi.mocked(useNavigation).mockReturnValue({ dispatch: vi.fn(), goBack } as never);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () =>
+      root.render(
+        <RequestSheetScreen
+          route={{ params: { deploymentId, opened: "reference", requestId, threadId } }}
+        />,
+      ),
+    );
+    return { container, goBack };
+  }
+
+  it("shows a settled Request as it ended, read only, rather than closing", async () => {
+    const { container, goBack } = await open(settled);
+    await act(() =>
+      vi.waitFor(() => expect(container.textContent).toContain("Send the launch email"), {
+        timeout: 2_000,
+      }),
+    );
+    expect(container.textContent).toContain("Answered");
+    expect(container.textContent).not.toContain("Allow");
+    expect(goBack).not.toHaveBeenCalled();
+  });
+
+  it("says a Request the Host no longer has isn't available", async () => {
+    const { container } = await open("req_0192f4a1-1111-4000-8000-0000000000ff");
+    await act(() =>
+      vi.waitFor(() => expect(container.textContent).toContain("This isn't available"), {
+        timeout: 2_000,
+      }),
+    );
+  });
+});
 
 vi.mock("../ui/ai-sharing.js", () => import("../../test-support/ai-sharing.js"));

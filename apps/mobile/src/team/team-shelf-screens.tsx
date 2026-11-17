@@ -1,4 +1,9 @@
+import { TeamImageSources } from "./team-image-hold.js";
+import { teamImageSource } from "./team-file-export.js";
+import { useTeamShareParticipants } from "@opensteer/client/react";
+import { ChannelShares } from "./channel-shares.js";
 import { unwrapRpcResult } from "@opensteer/client/host";
+import { isRecord } from "@opensteer/shared/isRecord";
 import type { TeamSessionClient } from "@opensteer/client/team";
 import {
   SequenceSchema,
@@ -14,9 +19,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootParamList } from "../navigation.js";
+import { sideMemory } from "../side-memory.js";
 import { color, space } from "../theme.js";
 import type { NativeMenuOption } from "../thread/composer-menu.js";
-import { AppText, Notice, RowGroup } from "../ui/primitives.js";
+import { AppText, Notice, RowGroup, SecondaryButton } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 import {
   ChannelDetailsBody,
@@ -182,6 +188,15 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
   return (
     <Screen edgeToEdge>
       <ChannelDetailsBody
+        sharedAgents={
+          value.can.manage && value.share?.shareId && value.share.agentsEnabled !== undefined
+            ? {
+                enabled: value.share.agentsEnabled,
+                onChange: (enabled) =>
+                  run({ type: "team.share.agents.set", shareId: value.share!.shareId!, enabled }),
+              }
+            : undefined
+        }
         actions={{
           onMembers: () => navigation.navigate("TeamMembers", { teamId, channelId }),
           onFiles: () => navigation.navigate("TeamFiles", { teamId, channelId }),
@@ -214,9 +229,17 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
                   style: "destructive",
                   text: "Leave",
                   onPress: () =>
-                    run({ type: "team.channel.leave", channelId: channelKey }, () =>
-                      navigation.popToTop(),
-                    ),
+                    run({ type: "team.channel.leave", channelId: channelKey }, () => {
+                      const action = sideMemory.trim(
+                        navigation.getState(),
+                        (route) =>
+                          isRecord(route.params) &&
+                          route.params["teamId"] === teamId &&
+                          route.params["channelId"] === channelId,
+                      );
+                      if (action !== null) navigation.dispatch(action);
+                      else navigation.popToTop();
+                    }),
                 },
               ],
             ),
@@ -235,6 +258,7 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
             ),
           onRestore: () => run({ type: "team.channel.restore", channelId: channelKey }),
         }}
+        sharing={<ChannelShares session={session} channel={value} />}
         archived={value.archivedAt !== null}
         canLeave={value.can.leave}
         canManage={value.can.manage}
@@ -258,8 +282,8 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
  */
 export function TeamMembersScreen(props: ChannelParams): ReactNode {
   const { teamId, channelId } = props.route.params;
-  const { session } = useTeamSession(teamId);
-  const { members, directory } = useTeamMembers(teamId);
+  const { session, snapshot } = useTeamSession(teamId);
+  const { members, directory } = useTeamMembers(teamId, channelId);
   const padding = useBottomPadding();
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
@@ -275,6 +299,11 @@ export function TeamMembersScreen(props: ChannelParams): ReactNode {
       return { list, groups: groups.groups, channel };
     },
     channelId,
+  );
+  const participants = useTeamShareParticipants(
+    session,
+    channelKey,
+    access.value?.channel.share ? query : null,
   );
   if (session === null || access.value === null)
     return (
@@ -371,7 +400,34 @@ export function TeamMembersScreen(props: ChannelParams): ReactNode {
       <MembersBody
         canAdd={canAdd}
         candidates={candidates}
-        members={rows}
+        members={[
+          ...rows,
+          ...participants.items
+            .filter((row) => snapshot.people?.[row.userId])
+            .map((row): MemberRowView => {
+              const person = personView(row.userId, directory);
+              return {
+                id: row.userId,
+                kind: "person",
+                name: person.name,
+                detail: `@${row.handle} · External · ${person.externalTeam}`,
+                person,
+                role: "member",
+                canRemove: false,
+              };
+            }),
+        ]}
+        more={
+          participants.nextCursor ? (
+            <SecondaryButton
+              label="More people"
+              busy={participants.loadingMore}
+              onPress={() => void participants.more()}
+            />
+          ) : participants.error ? (
+            <SecondaryButton label="Retry partner people" onPress={participants.reload} />
+          ) : null
+        }
         onAdd={() => setAdding((now) => !now)}
         onAddMember={(userId) =>
           groupDm
@@ -508,20 +564,34 @@ export function TeamFilesScreen(props: ChannelParams): ReactNode {
     );
   return (
     <Screen edgeToEdge>
-      <FilesBody
-        files={files}
-        filter={filter}
-        onFilter={setFilter}
-        onOpen={(file) =>
-          navigation.navigate("TeamChannel", { teamId, channelId, messageId: file.messageId })
-        }
-        onQuery={setQuery}
-        onShowMessage={(messageId) =>
-          navigation.navigate("TeamChannel", { teamId, channelId, messageId })
-        }
-        paddingBottom={padding}
-        query={query}
-      />
+      <TeamImageSources
+        value={(id) => {
+          const file = read.value?.find((row) => row.file.id === id)?.file;
+          if (!file)
+            return {
+              name: "Image",
+              read: async () => {
+                throw new Error("Image unavailable");
+              },
+            };
+          return teamImageSource(session, file);
+        }}
+      >
+        <FilesBody
+          files={files}
+          filter={filter}
+          onFilter={setFilter}
+          onOpen={(file) =>
+            navigation.navigate("TeamChannel", { teamId, channelId, messageId: file.messageId })
+          }
+          onQuery={setQuery}
+          onShowMessage={(messageId) =>
+            navigation.navigate("TeamChannel", { teamId, channelId, messageId })
+          }
+          paddingBottom={padding}
+          query={query}
+        />
+      </TeamImageSources>
     </Screen>
   );
 }
@@ -531,13 +601,12 @@ export function TeamPinnedScreen(props: ChannelParams): ReactNode {
   const { teamId, channelId } = props.route.params;
   const navigation = useNavigation<Navigation>();
   const { session, snapshot } = useTeamSession(teamId);
-  const { directory } = useTeamMembers(teamId);
+  const { directory } = useTeamMembers(teamId, channelId);
   const padding = useBottomPadding();
   const channelKey = TeamChannelIdSchema.parse(channelId);
   const read = useTeamRead(
     session,
-    async (team) =>
-      unwrapRpcResult(await team.rpc["team.pins.page"]({ channelId: channelKey })).messages,
+    async (team) => (await team.pinnedMessages(channelKey)).messages,
     channelId,
   );
   if (session === null || read.value === null)
@@ -788,6 +857,7 @@ export function TeamNoticesScreen(
   return (
     <Screen edgeToEdge>
       <ScrollView contentContainerStyle={[styles.form, { paddingBottom: padding }]}>
+        <ChannelShares session={session} />
         {read.value.length === 0 ? (
           <AppText role="secondary" tone="muted">
             Nothing from the team.

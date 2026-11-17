@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { createId, PendingRequestSchema } from "@opensteer/core";
 import type { ReachableMachineRecord } from "@opensteer/database";
 import { describe, expect, it, vi } from "vitest";
@@ -18,6 +19,7 @@ const claims: RunToolScope = {
   runnerId: createId("runner"),
   threadId: createId("thread"),
 };
+const computerId = createId("runner");
 function machine(overrides: Partial<ReachableMachineRecord> = {}): ReachableMachineRecord {
   return {
     commands: true,
@@ -27,7 +29,7 @@ function machine(overrides: Partial<ReachableMachineRecord> = {}): ReachableMach
     lastSeenAt: null,
     name: "Test Mac",
     platform: "darwin",
-    runnerId: createId("runner"),
+    runnerId: computerId,
     shares: [],
     ...overrides,
   };
@@ -57,6 +59,7 @@ function fixture(machines: ReachableMachineRecord[]) {
   const listReachableMachines = vi.fn(async () => machines);
   const service = new MachineFullDiskAccessService({
     store: {
+      requireSelfDeviceId: async (id) => DeviceIdSchema.parse(id),
       listReachableMachines,
       requests: {
         create,
@@ -72,7 +75,11 @@ function fixture(machines: ReachableMachineRecord[]) {
 
 describe("Machine macOS Full Disk Access requests", () => {
   it.each([
-    { machines: [], message: "No reachable computer is called test-mac." },
+    { machines: [], message: "This Run reaches no computer with that computerId over SSH." },
+    {
+      machines: [machine({ runnerId: claims.runnerId })],
+      message: `This Run reaches no computer with that computerId over SSH. It reaches Test Mac (${claims.runnerId}).`,
+    },
     {
       machines: [machine({ platform: "linux", fullDiskAccess: null })],
       message: "Test Mac is not a Mac, so macOS Full Disk Access does not apply.",
@@ -84,7 +91,7 @@ describe("Machine macOS Full Disk Access requests", () => {
   ])("refuses unavailable requests: $message", async ({ machines, message }) => {
     const { service, create } = fixture(machines);
     await expect(
-      service.request({ callId: "call", computer: "test-mac", reason: "Read Mail", claims }),
+      service.request({ callId: "call", computerId, reason: "Read Mail", claims }),
     ).rejects.toMatchObject({ code: "bad_request", message });
     expect(create).not.toHaveBeenCalled();
   });

@@ -1,4 +1,12 @@
-import type { BrowserCdpBackend, CdpChannel, CdpParameters } from "@opensteer/browser-core";
+/// <reference lib="dom" />
+import {
+  SessionCdpRouterError,
+  contextScopedCdpMethods,
+  reducedUserAgentMetadata,
+  type BrowserCdpBackend,
+  type CdpChannel,
+  type CdpParameters,
+} from "@opensteer/browser-core";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   BrowserRuntimeError,
@@ -77,6 +85,18 @@ interface PlaywrightChromiumLauncherOptions {
   executablePath: string;
   headless: boolean;
   proxyUrl?: string;
+}
+
+/** Reduced Chrome UA at the shipped engine major; stock headless announces itself. */
+export function reducedChromeUserAgent(version: string): string {
+  const major = version.split(".")[0] ?? version;
+  const platform =
+    process.platform === "win32"
+      ? "Windows NT 10.0; Win64; x64"
+      : process.platform === "darwin"
+        ? "Macintosh; Intel Mac OS X 10_15_7"
+        : "X11; Linux x86_64";
+  return `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
 }
 
 const commonChromiumEnvironmentVariables = [
@@ -230,9 +250,10 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
   private startServer(timeout?: number): Promise<PlaywrightBrowserServer> {
     return chromium.launchServer({
       ...(timeout === undefined ? {} : { timeout }),
+      ignoreDefaultArgs: ["--enable-automation"],
       args: [
         ...this.args,
-        `--disable-blink-features=${browserPageDisabledBlinkFeatures}`,
+        `--disable-blink-features=${browserPageDisabledBlinkFeatures},AutomationControlled`,
         ...(this.proxyUrl
           ? [
               "--disable-background-networking",
@@ -325,7 +346,70 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       signal?.throwIfAborted();
       const browser = await chromium.connect(browserServer.wsEndpoint());
       const openDialogs = new Map<Page, Dialog>();
+      const guestUserAgent = reducedChromeUserAgent(browser.version());
+      // Playwright derives UA metadata from the UA string, which reports the
+      // frozen "10_15_7" platform version and x86 on Apple Silicon. Read the
+      // engine's own high-entropy values from a throwaway context instead of
+      // deriving them, then override each Guest page with those.
+      const nativeSystem = await (async () => {
+        try {
+          const probe = await browser.newContext();
+          try {
+            const page = await probe.newPage();
+            return await page.evaluate(async () => {
+              const data = (
+                navigator as {
+                  userAgentData?: {
+                    getHighEntropyValues: (hints: readonly string[]) => Promise<{
+                      architecture?: string;
+                      bitness?: string;
+                      platform?: string;
+                      platformVersion?: string;
+                    }>;
+                  };
+                }
+              ).userAgentData;
+              if (!data) return undefined;
+              const high = await data.getHighEntropyValues([
+                "architecture",
+                "bitness",
+                "platform",
+                "platformVersion",
+              ]);
+              return {
+                architecture: high.architecture ?? "",
+                bitness: high.bitness ?? "",
+                platform: high.platform ?? "",
+                platformVersion: high.platformVersion ?? "",
+              };
+            });
+          } finally {
+            await probe.close();
+          }
+        } catch {
+          return undefined;
+        }
+      })();
+      const guestMetadata = reducedUserAgentMetadata(
+        browser.version(),
+        nativeSystem?.platform ||
+          (process.platform === "win32"
+            ? "Windows"
+            : process.platform === "darwin"
+              ? "macOS"
+              : "Linux"),
+        {
+          architecture:
+            nativeSystem?.architecture ||
+            (process.arch === "arm64" ? "arm" : process.arch === "x64" ? "x86" : ""),
+          bitness:
+            nativeSystem?.bitness ||
+            (process.arch === "arm64" || process.arch === "x64" ? "64" : ""),
+          platformVersion: nativeSystem?.platformVersion ?? "",
+        },
+      );
       const context = await browser.newContext({
+        userAgent: guestUserAgent,
         acceptDownloads: false,
         // The Runtime's ledger alone sizes pages. A Playwright viewport would
         // be a second emulator that Playwright re-applies on its own, such as
@@ -352,6 +436,26 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       });
       context.on("page", (page) => {
         page.on("close", () => openDialogs.delete(page));
+        if (guestMetadata)
+          void context
+            .newCDPSession(page)
+            .then((cdp) =>
+              cdp.send("Emulation.setUserAgentOverride", {
+                userAgent: guestUserAgent,
+                userAgentMetadata: {
+                  brands: guestMetadata.brands.map((entry) => ({ ...entry })),
+                  fullVersionList: guestMetadata.fullVersionList.map((entry) => ({ ...entry })),
+                  fullVersion: guestMetadata.fullVersion,
+                  platform: guestMetadata.platform,
+                  platformVersion: guestMetadata.platformVersion,
+                  architecture: guestMetadata.architecture,
+                  model: guestMetadata.model,
+                  mobile: guestMetadata.mobile,
+                  bitness: guestMetadata.bitness,
+                },
+              }),
+            )
+            .catch(() => undefined);
       });
       const anchor = await context.newPage();
       if (context.pages().every((page) => page === anchor)) await context.newPage();
@@ -489,8 +593,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         "--restore-last-session",
         "--no-first-run",
         "--no-default-browser-check",
-        "--enable-automation",
-        `--disable-blink-features=${browserPageDisabledBlinkFeatures}`,
+        `--disable-blink-features=${browserPageDisabledBlinkFeatures},AutomationControlled`,
         ...(this.headless ? ["--headless=new"] : []),
         ...(this.chromiumSandbox ? [] : ["--no-sandbox"]),
         ...(this.proxyUrl
@@ -764,13 +867,13 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
    * disposable Guest owners kill only their own child.
    */
   private async closeOnce(): Promise<void> {
-    const stopped = this.owner.close();
-    const results = await Promise.allSettled([
+    const detached = await Promise.allSettled([
       withTimeout((this.cdp as PlaywrightBrowserCdpBackend).close(), 500, {
         timeoutError: () => new Error("Browser CDP detach did not finish."),
       }),
-      stopped,
     ]);
+    const stopped = await Promise.allSettled([this.owner.close()]);
+    const results = [...detached, ...stopped];
     const failures = results.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],
     );
@@ -894,6 +997,9 @@ class PlaywrightPageHandle implements BrowserPage {
   private captureSession: Promise<PlaywrightCdpSession> | undefined;
   private captureWorld: number | undefined;
   private cdpPromise: Promise<CdpSession> | null = null;
+  private cdpChannel: CdpSession | null = null;
+  private closing = false;
+  private closePromise: Promise<void> | null = null;
   private targetIdPromise: Promise<string> | null = null;
   private readonly context: PlaywrightBrowserContext;
   private readonly contextHandle: PlaywrightContextHandle;
@@ -1068,12 +1174,21 @@ class PlaywrightPageHandle implements BrowserPage {
   }
 
   agentCdp(): Promise<CdpSession> {
-    return this.context
-      .newCDPSession(this.page)
-      .then((session) => new PlaywrightCdpHandle(session));
+    if (this.closing)
+      return Promise.reject(new BrowserRuntimeError("not_found", "The browser page closed."));
+    return this.context.newCDPSession(this.page).then(async (session) => {
+      const channel = new PlaywrightCdpHandle(session);
+      if (this.closing) {
+        await channel.detach();
+        throw new BrowserRuntimeError("not_found", "The browser page closed.");
+      }
+      return channel;
+    });
   }
 
   cdp(): Promise<CdpSession> {
+    if (this.closing)
+      return Promise.reject(new BrowserRuntimeError("not_found", "The browser page closed."));
     this.cdpPromise ??= this.context.newCDPSession(this.page).then(async (session) => {
       const channel = new PlaywrightPageCdpHandle(
         session,
@@ -1081,6 +1196,11 @@ class PlaywrightPageHandle implements BrowserPage {
         this.openDialogs,
         this.contextHandle.authenticator ? ["Network", "Security"] : [],
       );
+      this.cdpChannel = channel;
+      if (this.closing) {
+        await channel.detach();
+        throw new BrowserRuntimeError("not_found", "The browser page closed.");
+      }
       if (this.contextHandle.authenticator) {
         const bridge = new PasskeyBridge(channel, this.contextHandle.authenticator, {
           lateBootstrap: true,
@@ -1104,12 +1224,18 @@ class PlaywrightPageHandle implements BrowserPage {
     return this.cdpPromise;
   }
 
-  async close(): Promise<void> {
-    if (!this.page.isClosed()) await this.page.close({ runBeforeUnload: false });
+  close(): Promise<void> {
+    this.closing = true;
+    this.closePromise ??= (async () => {
+      // Native close can wait on a navigation still held by this private debugger.
+      await this.cdpChannel?.detach();
+      if (!this.page.isClosed()) await this.page.close({ runBeforeUnload: false });
+    })();
+    return this.closePromise;
   }
 
   isClosed(): boolean {
-    return this.page.isClosed();
+    return this.closing || this.page.isClosed();
   }
 
   onClose(listener: () => void): void {
@@ -1358,12 +1484,38 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
     return page.agentCdp();
   }
 
+  assertScope(_method: string, parameters: CdpParameters): void {
+    if (
+      parameters.browserContextId !== undefined &&
+      parameters.browserContextId !== this.browserContextId
+    )
+      throw new SessionCdpRouterError(
+        "forbidden",
+        "CDP command requested another browser context.",
+      );
+    if (parameters.windowId !== undefined)
+      throw new SessionCdpRouterError(
+        "forbidden",
+        "Native browser windows are outside this page context.",
+      );
+  }
+
+  async scopeParameters(method: string, parameters: CdpParameters): Promise<CdpParameters> {
+    if (!contextScopedCdpMethods.has(method) || !this.browserContextId) return parameters;
+    return { ...parameters, browserContextId: this.browserContextId };
+  }
+
   onEvent(listener: (method: string, parameters: CdpParameters) => void): () => void {
     return this.handle.onEvent(listener);
   }
 
   send(method: string, parameters?: CdpParameters): Promise<unknown> {
     if (this.closed) return Promise.reject(new Error("Browser CDP backend is closed."));
+    try {
+      this.assertScope(method, parameters ?? {});
+    } catch (error) {
+      return Promise.reject(error);
+    }
     if (method === "Target.createTarget") {
       const requestedContext = parameters?.browserContextId;
       if (requestedContext !== undefined && requestedContext !== this.browserContextId) {
@@ -1376,7 +1528,7 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
         browserContextIds: this.browserContextId ? [this.browserContextId] : [],
       });
     }
-    if (contextScopedBrowserMethods.has(method)) {
+    if (contextScopedCdpMethods.has(method)) {
       const requestedContext = parameters?.browserContextId;
       if (requestedContext !== undefined && requestedContext !== this.browserContextId) {
         return Promise.reject(new Error("CDP command requested another browser context."));
@@ -1415,15 +1567,6 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
     return { targetId };
   }
 }
-
-const contextScopedBrowserMethods = new Set([
-  "Browser.grantPermissions",
-  "Browser.resetPermissions",
-  "Browser.setPermission",
-  "Storage.clearCookies",
-  "Storage.getCookies",
-  "Storage.setCookies",
-]);
 
 type ProtocolJson = {
   readonly domains?: readonly {

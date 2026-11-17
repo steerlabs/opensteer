@@ -43,7 +43,7 @@ describe("team review regressions", () => {
         channelId: f.channel.id,
         threadRootId: null,
         clientMessageId: randomUUID(),
-        bodyMarkdown: "Pending push",
+        bodyMarkdown: "@reviewmember Pending push",
         mentions: [{ kind: "person", userId: f.member.userId }],
         attachmentIds: [],
       });

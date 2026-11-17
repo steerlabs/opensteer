@@ -75,9 +75,8 @@ export const IdentityConfigSchema = z.strictObject({
   /**
    * Whether this Deployment's only identity is the implicit local machine
    * owner — the seeded owner of a Personal Host with no way to sign in as
-   * anybody else. There is no person to name, so clients render no email, no
-   * display name, and no avatar: showing the placeholder the seeding uses
-   * would be a lie about who is signed in.
+   * anybody else. Its email is a placeholder clients never show; the owner's
+   * name is the bootstrap's `ownerProfile`.
    */
   machineOwner: z.boolean(),
   oidcProviders: z.array(IdentityProviderSummarySchema).max(16),
@@ -90,6 +89,67 @@ export const IdentityConfigSchema = z.strictObject({
   signupPolicy: z.enum(["closed", "invite-only", "open"]),
 });
 export type IdentityConfig = z.infer<typeof IdentityConfigSchema>;
+
+/**
+ * The placeholder email of a desktop Host's implicit owner. It names no person and never leaves
+ * the Host; the owner's own name lives in personal settings.
+ */
+export const localMachineOwnerEmail = "owner@personal.opensteer.invalid";
+
+/** In UTF-16 units, as every reader of a name (sessions, team members) bounds it. */
+const personNameMaxLength = 120;
+
+/**
+ * A person's own name as others see it, in the one canonical form every store
+ * and wire accepts: NFKC, single spaces, no control characters, 1–120 UTF-16
+ * units. Null when nothing usable is left.
+ */
+export function normalizePersonName(value: string): string | null {
+  const normalized = value.normalize("NFKC").replace(/\s+/gu, " ").trim();
+  if (normalized === "" || /\p{Cc}/u.test(normalized)) return null;
+  return normalized.length <= personNameMaxLength ? normalized : null;
+}
+
+export const PersonNameSchema = z
+  .string()
+  .max(personNameMaxLength)
+  .refine((value) => normalizePersonName(value) === value, "Use a name of 1 to 120 characters");
+export type PersonName = z.infer<typeof PersonNameSchema>;
+
+/** The longest whole-character prefix that fits a name, so no surrogate pair is split. */
+function boundedName(value: string): string | null {
+  let bounded = "";
+  for (const character of value.normalize("NFKC").replace(/\s+/gu, " ").trim()) {
+    if (bounded.length + character.length > personNameMaxLength) break;
+    bounded += character;
+  }
+  return normalizePersonName(bounded);
+}
+
+/**
+ * Asking a new account to invent a name adds a required field that carries no
+ * information the email address does not already carry. Derive one from the
+ * part before the @ and let the person change it.
+ */
+export function personNameFromEmail(email: string): string {
+  const words = email
+    .slice(0, Math.max(0, email.lastIndexOf("@")))
+    .replace(/[._+-]+/g, " ")
+    .replace(/\d+/gu, " ")
+    .trim()
+    .split(/\s+/u)
+    .filter((word) => word !== "")
+    .map((word) => word.charAt(0).toLocaleUpperCase() + word.slice(1));
+  return boundedName(words.join(" ")) ?? "Member";
+}
+
+/** A sign-in provider's name when it gave a usable one, otherwise one derived from the email. */
+export function personNameFromSignIn(
+  providerName: string | null | undefined,
+  email: string,
+): string {
+  return boundedName(providerName ?? "") ?? personNameFromEmail(email);
+}
 
 export const AuthenticatedUserSchema = z.strictObject({
   disabledAt: z.iso.datetime({ offset: true }).nullable(),

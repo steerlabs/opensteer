@@ -85,6 +85,27 @@ it("identifies a killed hanging child and releases its captured identity", async
   expect(roots.size).toBe(0);
 });
 
+it("names interpreter startup separately and kills it before the observation deadline", async () => {
+  const roots = new Set<number>();
+  await expect(
+    command(process.execPath, ["-e", "setInterval(() => {}, 1000)"], 2000, roots, () => {}, {
+      marker: "observer interpreter.start\n",
+      timeoutMs: 100,
+    }),
+  ).rejects.toThrow(/interpreter did not start within 100ms/);
+  expect(roots.size).toBe(0);
+  await expect(
+    command(
+      process.execPath,
+      ["-e", 'process.stdout.write("observer interpreter."); process.stdout.write("start\\n");'],
+      2000,
+      roots,
+      () => {},
+      { marker: "observer interpreter.start\n", timeoutMs: 1500 },
+    ),
+  ).resolves.toContain("observer interpreter.start");
+});
+
 it("distinguishes the outer bound from child and application failures", async () => {
   vi.useFakeTimers();
   vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {

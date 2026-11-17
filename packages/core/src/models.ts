@@ -1,7 +1,10 @@
+import { DeviceIdSchema } from "./devices.js";
+import { CompactionReturnHintSchema } from "./idle-compaction.js";
+import { RunMaintenanceSchema, RunMaintenanceViewSchema } from "./idle-compaction.js";
 import {
   TeamTaskOriginSchema,
   TeamSourceSchema,
-  TeamAudienceSchema,
+  TeamAudienceViewSchema,
   TeamRunDeliverySchema,
   TeamRunDeliveryViewSchema,
 } from "./team.js";
@@ -56,6 +59,23 @@ export const TimeZoneSchema = z
   .max(64)
   .refine(isTimeZone, "Time zone must be an IANA name such as America/New_York");
 export type TimeZone = z.infer<typeof TimeZoneSchema>;
+
+/**
+ * Where a person sent a message from, as their app observed it. Facts for the
+ * agent, never authority. The zone is checked for shape only: a message is
+ * never refused because a reader's time zone data predates the sender's.
+ */
+export const MessageOriginSchema = z.strictObject({
+  app: z.enum(["web", "desktop", "ios", "android"]),
+  device: z.enum(["phone", "tablet", "computer"]),
+  timeZone: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9_+:/-]+$/u)
+    .optional(),
+});
+export type MessageOrigin = z.infer<typeof MessageOriginSchema>;
 
 function isTimeZone(value: string): boolean {
   try {
@@ -126,6 +146,8 @@ export type User = z.infer<typeof UserSchema>;
 // The wire contract stays limited to the capabilities every Runner actually advertises.
 export const RunnerCapabilitySchema = z.enum([
   "background-text-v1",
+  // Reports settings.json in the Agent home its welcome names, before it attaches.
+  "agent-home-settings-v1",
   "settings-plugin-policy-v1",
   "assignments-v1",
   // Runs a successor attempt of a Run from the Host's next ordinal, and stops
@@ -139,7 +161,7 @@ export const RunnerCapabilitySchema = z.enum([
   "browser-profile-create-v1",
   "environment-list-v1",
   // Can parse and execute v3 Trigger and Watch programs; independent of tool discovery.
-  "trigger-program-v3",
+  "trigger-program-v4",
   "native-place-input-v1",
   "execution-plane-v2",
   "filesystem",
@@ -148,8 +170,11 @@ export const RunnerCapabilitySchema = z.enum([
   "voice-run-v1",
   "network-egress",
   "native-session-continuation-v1",
-  // Carries `requesterTimeZone` in every Run's context.
+  "claude-compaction-v1",
+  // Older Hosts require it; the `requesterTimeZone` it names is read and unused.
   "requester-time-zone-v1",
+  // Reads a person's input `origin`; the Run's clock comes from its own computer.
+  "message-origin-v1",
   "agent-tools-plan-v1",
   // A message steered into a Run and accepted by its engine is answered in that
   // Run, as a turn of its own if the engine was already answering.
@@ -311,6 +336,7 @@ export function threadAccessModeAtMost(mode: ThreadAccessMode, ceiling: ThreadAc
 export const DEFAULT_THREAD_ACCESS_MODE: ThreadAccessMode = "full-access";
 
 export const ThreadSchema = z.object({
+  returnHint: CompactionReturnHintSchema.nullable().optional(),
   specialistId: z.string().nullable().optional(),
   accessMode: ThreadAccessModeSchema,
   askedAt: IsoDateTimeSchema.optional(),
@@ -378,14 +404,14 @@ export const BrowserPageContentPartSchema = z.object({
 });
 export const ComputerAppContentPartSchema = z.object({
   type: z.literal("computer-app"),
-  machineId: RunnerIdSchema,
+  machineId: DeviceIdSchema,
   app: ComputerAppIdentityViewSchema,
   name: z.string().min(1).max(255),
   auto: z.literal(false).optional(),
 });
 export const PhoneContentPartSchema = z.object({
   type: z.literal("phone"),
-  machineId: RunnerIdSchema,
+  machineId: DeviceIdSchema,
   display: z.string().min(1).max(255),
   name: z.string().min(1).max(255),
   auto: z.literal(false).optional(),
@@ -520,6 +546,13 @@ const messageAuthorVariants = [
     kind: z.literal("connection"),
     connectionId: z.string().min(1).max(255),
   }),
+  z.strictObject({
+    kind: z.literal("team-member"),
+    actor: z.enum(["human", "agent"]),
+    teamId: DeploymentIdSchema,
+    teamUserId: UserIdSchema,
+    displayName: z.string().trim().min(1).max(160),
+  }),
 ] as const;
 export const MessageAuthorSchema = z.discriminatedUnion("kind", messageAuthorVariants);
 export const MessageAuthorViewSchema = z.discriminatedUnion("kind", [
@@ -529,6 +562,7 @@ export const MessageAuthorViewSchema = z.discriminatedUnion("kind", [
   z.object(messageAuthorVariants[3].shape),
   z.object(messageAuthorVariants[4].shape),
   z.object(messageAuthorVariants[5].shape),
+  z.object(messageAuthorVariants[6].shape),
 ]);
 export type MessageAuthor = z.infer<typeof MessageAuthorSchema>;
 
@@ -579,6 +613,7 @@ export const ReplyTargetViewSchema = z.discriminatedUnion("kind", [
 export type ReplyTarget = z.infer<typeof ReplyTargetSchema>;
 
 const messageShape = {
+  ownerEdited: z.literal(true).optional(),
   author: MessageAuthorSchema,
   content: MessageContentSchema,
   createdAt: IsoDateTimeSchema,
@@ -620,12 +655,31 @@ export const MessageViewSchema = z
     /** Whether this read's input has reached the published conversation. */
     published: z.boolean().optional(),
     quote: MessageQuoteViewSchema.optional(),
+    edit: z.lazy(() => MessageEditViewSchema).optional(),
   })
   .superRefine(validateMessage);
+/**
+ * A message a person edited in place while it waited; absent when never
+ * edited. Runners never receive it: the content they get is already the edit.
+ */
+export const MessageEditSchema = z.strictObject({
+  revision: z.number().int().positive(),
+  editedAt: IsoDateTimeSchema,
+  /** The owner edited a teammate's ask, so its words are no longer only the teammate's. */
+  ownerEdited: z.literal(true).optional(),
+});
+export const MessageEditViewSchema = z.object(MessageEditSchema.shape);
+export type MessageEdit = z.infer<typeof MessageEditSchema>;
 export type Message = z.infer<typeof MessageSchema>;
 export type MessageView = z.infer<typeof MessageViewSchema>;
 
+/**
+ * `awaiting-approval` is a teammate's ask waiting for its owner's decision. It
+ * sits in the task but not in line: no Run can take it until approval makes it
+ * `pending` at the back of the queue.
+ */
 export const ThreadInputStateSchema = z.enum([
+  "awaiting-approval",
   "pending",
   "claimed",
   "delivered",
@@ -654,9 +708,7 @@ const threadInputShape = {
 export const ThreadInputSchema = z.strictObject(threadInputShape);
 export const ThreadInputViewSchema = z.object({
   ...threadInputShape,
-  teamSource: z
-    .object({ ...TeamSourceSchema.shape, audience: z.object(TeamAudienceSchema.shape) })
-    .nullable(),
+  teamSource: z.object({ ...TeamSourceSchema.shape, audience: TeamAudienceViewSchema }).nullable(),
   replyTarget: ReplyTargetViewSchema.nullable(),
 });
 export type ThreadInput = z.infer<typeof ThreadInputSchema>;
@@ -667,12 +719,25 @@ export function threadInputIsPublished(input: Pick<ThreadInput, "policy" | "stat
 }
 
 /**
+ * One device's claim on a waiting message while a person edits it. While it is
+ * live nothing takes that message and nothing behind it overtakes it, except a
+ * person's explicit steer or move. It lapses on its own.
+ */
+export const ThreadInputEditLeaseViewSchema = z.object({
+  leaseId: z.string().min(1).max(64),
+  deviceLabel: z.string().min(1).max(120),
+  expiresAt: IsoDateTimeSchema,
+});
+export type ThreadInputEditLeaseView = z.infer<typeof ThreadInputEditLeaseViewSchema>;
+export const threadInputEditLeaseMs = 2 * 60_000;
+
+/**
  * The messages waiting behind a Thread's current work: queued inputs that no
- * Run has picked up yet, in the order the next Run takes them. A message that
- * already seeds a Run, or that a promotion has handed to one, belongs to the
- * transcript, not here. Steering, cancelling and moving act on the same
- * durable message; the Host says per item which of them it will accept from
- * the reader.
+ * Run has picked up yet, in the order the next Run takes them, followed by
+ * teammates' asks awaiting the owner's decision. A message that already seeds
+ * a Run, or that a promotion has handed to one, belongs to the transcript, not
+ * here. Every action acts on the same durable message; the Host says per item
+ * which it will accept from the reader.
  */
 export const ThreadInputQueueViewSchema = z.object({
   threadId: ThreadIdSchema,
@@ -684,13 +749,29 @@ export const ThreadInputQueueViewSchema = z.object({
         message: MessageViewSchema,
         input: ThreadInputViewSchema,
         canCancel: z.boolean(),
+        canEdit: z.boolean(),
         canMove: z.boolean(),
         canSteer: z.boolean(),
+        lease: ThreadInputEditLeaseViewSchema.nullable(),
       }),
     )
     .max(100),
 });
 export type ThreadInputQueue = z.infer<typeof ThreadInputQueueViewSchema>;
+
+/**
+ * One version of a message a person edited while it waited. Revision 0 is the
+ * original, by the message's author; each later one is a person's edit. The
+ * history stays on the Host it was written on.
+ */
+export const MessageRevisionViewSchema = z.object({
+  revision: z.number().int().nonnegative(),
+  content: MessageContentSchema,
+  author: MessageAuthorViewSchema,
+  deviceLabel: z.string().min(1).max(120).nullable(),
+  createdAt: IsoDateTimeSchema,
+});
+export type MessageRevisionView = z.infer<typeof MessageRevisionViewSchema>;
 
 /**
  * The one rule for rearranging a queue: `moving` stands immediately in front
@@ -796,6 +877,7 @@ export const RunUsageViewSchema = z.object(runUsageShape);
 export type RunUsage = z.infer<typeof RunUsageSchema>;
 
 const runShape = {
+  maintenance: RunMaintenanceSchema.nullable().optional(),
   delivery: TeamRunDeliverySchema.nullable().default(null),
   accessMode: ThreadAccessModeSchema,
   activationInputId: MessageIdSchema,
@@ -821,6 +903,7 @@ const runShape = {
 export const RunSchema = z.strictObject(runShape);
 export const RunViewSchema = z.object({
   ...runShape,
+  maintenance: RunMaintenanceViewSchema.nullable().optional(),
   delivery: TeamRunDeliveryViewSchema.nullable().default(null),
   failure: RunFailureViewSchema.nullable(),
   modelSelection: ModelSelectionViewSchema,
@@ -1095,6 +1178,7 @@ export type RunThreadState = z.infer<typeof RunThreadStateSchema>;
  * entry after every lower ordinal is terminal.
  */
 export const ThreadRunQueueEntrySchema = RunSchema.pick({
+  maintenance: true,
   createdAt: true,
   id: true,
   status: true,
@@ -1103,7 +1187,10 @@ export const ThreadRunQueueEntrySchema = RunSchema.pick({
 })
   .extend({ status: ActiveRunStatusSchema })
   .strict();
-export const ThreadRunQueueEntryViewSchema = z.object(ThreadRunQueueEntrySchema.shape);
+export const ThreadRunQueueEntryViewSchema = z.object({
+  ...ThreadRunQueueEntrySchema.shape,
+  maintenance: RunMaintenanceViewSchema.nullable().optional(),
+});
 export type ThreadRunQueueEntry = z.infer<typeof ThreadRunQueueEntrySchema>;
 
 export const ExecutionBindingStatusSchema = z.enum([

@@ -80,9 +80,14 @@ export function developmentPreflightCommands(
   services: readonly ServiceName[],
   kind: ReturnType<typeof developmentKind> = "personal",
 ): readonly (readonly string[])[] {
-  return services.includes("runner") || (kind === "personal" && services.includes("host"))
-    ? [["--filter", "@opensteer/runner", "build:native-fs"]]
-    : [];
+  if (!services.includes("runner") && !(kind === "personal" && services.includes("host")))
+    return [];
+  return [
+    ["--filter", "@opensteer/runner", "build:native-fs"],
+    ...(process.platform === "darwin"
+      ? [["--filter", "@opensteer/desktop", "build:iphone-bridge"]]
+      : []),
+  ];
 }
 
 export async function runDevelopmentStack(
@@ -362,6 +367,14 @@ export function configureDevelopmentEnvironment(
     environment.OPENSTEER_HOST_DATA_DIR = resolve(repositoryRoot, ".opensteer/team-host");
     return;
   }
+  // pnpm runs the Runner in apps/runner, so its relative data directory is
+  // absolute here for the Host, which serves that directory's `images`.
+  environment.OPENSTEER_RUNNER_DATA_DIR = resolve(
+    repositoryRoot,
+    "apps",
+    "runner",
+    environment.OPENSTEER_RUNNER_DATA_DIR?.trim() || ".opensteer/runner",
+  );
   const runnerEnvironment = environment.OPENSTEER_ENVIRONMENT_ID?.trim();
   const hostingEnvironment = environment.OPENSTEER_HOSTING_ENVIRONMENT_ID?.trim();
   if (runnerEnvironment && hostingEnvironment && runnerEnvironment !== hostingEnvironment)

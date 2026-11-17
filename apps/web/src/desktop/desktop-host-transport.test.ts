@@ -315,3 +315,33 @@ function socketFixture() {
     ) => receive!({ connectionId, ...event }),
   };
 }
+
+it("withholds IPC when authorization ends while the renderer reads a request body", async () => {
+  const controller = new AbortController();
+  const hostRequest = vi.fn();
+  const read = Request.prototype.text;
+  const reading = vi.spyOn(Request.prototype, "text").mockImplementation(async function (
+    this: Request,
+  ) {
+    const body = await read.call(this);
+    controller.abort(new Error("Account changed"));
+    return body;
+  });
+  try {
+    const fetch = createDesktopHostFetch(
+      { hostRequest } as unknown as OpensteerDesktopBridge,
+      "https://team.example",
+    );
+    await expect(
+      fetch("https://team.example/v1/rpc/commands.dispatch", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("Account changed");
+    expect(hostRequest).not.toHaveBeenCalled();
+  } finally {
+    reading.mockRestore();
+  }
+});

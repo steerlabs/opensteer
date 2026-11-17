@@ -1,23 +1,49 @@
-import { createId, TeamMessageIdSchema } from "@opensteer/core";
+import { DeviceIdSchema } from "@opensteer/core";
+import { seedPrivatePublisher } from "./private-publisher.test-support.js";
+import {
+  AgentEventViewSchema,
+  createId,
+  createToolOutput,
+  parseReferenceHref,
+  PlaceEnteredEventViewSchema,
+  TabIdSchema,
+  tabReferenceHref,
+  TeamMessageIdSchema,
+} from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
 import {
+  tabsAndAppsMigrationName,
+  agentHomeSettingsMigrationName,
   MigrationLineageError,
   migrateToLatest,
   migrationProvider,
   personalTeamBaselineName,
   teamKnowledgeNotesMigrationName,
   teamAgentMigrationName,
+  teamAgentAsksMigrationName,
+  teamPrincipalsMigrationName,
+  waitingInputEditsMigrationName,
 } from "./migrations.js";
 import type { DatabaseSchema } from "./schema.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 import { OpensteerStore } from "./store.js";
 import { createPersonalRunFixturePort } from "./personal-run-fixture.test-support.js";
-import { PersonalTeamRequestsStore } from "./personal-team-requests-store.js";
+import { teamRequestView } from "./team-chat-store.js";
+import {
+  PersonalTeamRequestsStore,
+  personalTeamRequestMirrorFromRow,
+} from "./personal-team-requests-store.js";
 import { personalTeamRunOutcome } from "./personal-team-run-store.js";
 import { AccountDirectoryStore } from "./account-directory-store.js";
+import { DeploymentSnapshotSchema } from "@opensteer/protocol";
+import { eventFromRow } from "./deployment-events.js";
+import { readAgentThreadActivity, readAgentThreadRecent } from "./agent-thread-history.js";
+import { latestNativePlaces } from "./browser-session-store.js";
+import { resolvePersonalReferences } from "./reference-store.js";
+import { readEmptyPersonalResources } from "./store.integration.test-support.js";
 
 let clone: TestDatabase;
 let database: Kysely<DatabaseSchema>;
@@ -43,6 +69,9 @@ async function catalog() {
   ).rows;
 }
 async function team() {
+  await sql`insert into deployments(id,singleton_key,active_host_instance_id,canonical_origin,lifecycle,deployment_shape)
+    values(${createId("deployment")},'primary',${createId("hostInstance")},'https://team.example.invalid','active','{"kind":"team"}')
+    on conflict(singleton_key) do nothing`.execute(database);
   const owner = createId("user");
   const channel = createId("teamChannel");
   const other = createId("teamChannel");
@@ -81,7 +110,421 @@ function migrationsBefore(name: string) {
   };
 }
 
+async function legacyQueuedInput(input: {
+  readonly threadId: string;
+  readonly requestedBy: string;
+  readonly idempotencyKey: string;
+  readonly content: readonly unknown[];
+}) {
+  const messageId = createId("message");
+  const chainId = createId("causalChain");
+  const thread = await database
+    .selectFrom("threads")
+    .selectAll()
+    .where("id", "=", input.threadId as import("@opensteer/core").ThreadId)
+    .executeTakeFirstOrThrow();
+  const sequence = thread.nextMessageSequence;
+  const author = {
+    kind: "human",
+    displayName: "Alex",
+    principalId: thread.createdByPrincipalId,
+    userId: input.requestedBy,
+  };
+  await sql`insert into causal_chains(id,max_delegations,max_autonomous_runs,used_delegations,used_autonomous_runs) values(${chainId},100,100,0,0)`.execute(
+    database,
+  );
+  await sql`insert into messages(id,thread_id,sequence,kind,actor_principal_id,author,content) values(${messageId},${thread.id},${sequence},'input',${thread.createdByPrincipalId},${JSON.stringify(author)}::jsonb,${JSON.stringify(input.content)}::jsonb)`.execute(
+    database,
+  );
+  await sql`insert into thread_inputs(message_id,thread_id,actor_principal_id,authority_source,causal_chain_id,idempotency_key,policy,queue_rank,request_fingerprint,requested_by,state) values(${messageId},${thread.id},${thread.createdByPrincipalId},'{}',${chainId},${input.idempotencyKey},'queue',${sequence},'fixture',${input.requestedBy},'pending')`.execute(
+    database,
+  );
+  const existing = await database
+    .selectFrom("runs")
+    .select("id")
+    .where("threadId", "=", thread.id)
+    .executeTakeFirst();
+  const runId = existing ? null : createId("run");
+  if (runId)
+    await sql`insert into runs(id,thread_id,environment_id,harness_instance_id,model_selection,access_mode,activation_input_id,seed_input_id,causal_chain_id,requested_by,actor_principal_id,authority_source,run_ordinal,status) values(${runId},${thread.id},${thread.environmentId},${thread.harnessInstanceId},${JSON.stringify(thread.modelSelection)}::jsonb,${thread.accessMode},${messageId},${messageId},${chainId},${input.requestedBy},${thread.createdByPrincipalId},'{}',0,'queued')`.execute(
+      database,
+    );
+  await sql`update threads set next_message_sequence=next_message_sequence+1 where id=${thread.id}`.execute(
+    database,
+  );
+  await sql`insert into deployment_events(deployment_id,sequence,event_id,thread_id,type,data)
+    select deployment_id,sequence+1,${createId("event")},${thread.id},'message.created',${JSON.stringify({ message: { id: messageId, content: input.content }, input: { messageId, replyTarget: null } })}::jsonb from deployment_event_state`.execute(
+    database,
+  );
+  await sql`update deployment_event_state set sequence=sequence+1`.execute(database);
+  return { message: { id: messageId }, run: runId ? { id: runId } : null };
+}
+
 describe("fresh personal/team lineage", () => {
+  it("upgrades a team server that has messages to shared channels in one migration run", async () => {
+    // A team server last migrated by an older build, holding messages, as a real upgrade finds it.
+    await migrateToLatest(database, migrationsBefore("0014_claude_idle_compaction"));
+    const { owner, channel } = await team();
+    const first = await message(channel, owner);
+    // An agent's reply references its request through a deferred foreign key.
+    const linkId = createId("teamLink"),
+      requestId = createId("teamAgentRequest");
+    await sql`insert into team_links(id,owner_user_id,state,code_hash) values(${linkId},${owner},'pending',${crypto.randomUUID()})`.execute(
+      database,
+    );
+    await sql`insert into team_agent_requests(id,owner_user_id,channel_id,thread_root_id,trigger_message_id,link_id,state,steps,change_seq)
+      values(${requestId},${owner},${channel},${first},${first},${linkId},'queued','[]',1)`.execute(
+      database,
+    );
+    const second = (
+      await sql<{
+        id: string;
+      }>`insert into team_messages(channel_id,thread_root_id,author_user_id,author_kind,agent_request_id,client_message_id,body_markdown,plain_text,change_seq)
+        values(${channel},${first},${owner},'agent',${requestId},${crypto.randomUUID()},'Done','Done',1) returning id`.execute(
+        database,
+      )
+    ).rows[0]!.id;
+    await migrateToLatest(database);
+    const rows = await database
+      .selectFrom("teamMessages")
+      .select(["id", "createdSeq", "publicId"])
+      .where("channelId", "=", channel as never)
+      .orderBy("id")
+      .execute();
+    expect(rows.map((row) => [row.id, String(row.createdSeq)])).toEqual([
+      [first, "1"],
+      [second, "2"],
+    ]);
+    expect(new Set(rows.map((row) => row.publicId)).size).toBe(2);
+  });
+  it("preserves existing uploaded bytes and assigns partner-safe identities when adding shared files", async () => {
+    await migrateToLatest(database, migrationsBefore("0018_team_share_files"));
+    const { owner, channel, other } = await team();
+    const id = createId("teamBlob");
+    await sql`insert into team_blobs(id,channel_id,uploader_user_id,uploader_kind,client_upload_id,storage_key,filename,declared_type,verified_type,size_bytes,sha256,state,received_bytes)
+      values(${id},${channel},${owner},'human',${crypto.randomUUID()},${id},'notes.txt','text/plain','text/plain',3,${"a".repeat(64)},'ready',3)`.execute(
+      database,
+    );
+    await migrateToLatest(database);
+    const row = await database
+      .selectFrom("teamBlobs")
+      .selectAll()
+      .where("id", "=", id)
+      .executeTakeFirstOrThrow();
+    expect(row).toMatchObject({
+      storageKey: id,
+      channelId: channel,
+      remoteShareId: null,
+      previewSha256: null,
+      cacheOriginalReserved: false,
+      cachePreviewReserved: false,
+      sizeBytes: "3",
+    });
+    expect(row.publicId).toMatch(/^[a-f0-9-]{36}$/);
+    await database
+      .insertInto("teamBlobs")
+      .values({ ...row, id: createId("teamBlob"), channelId: other })
+      .execute();
+    expect(
+      await database
+        .selectFrom("teamBlobs")
+        .select("storageKey")
+        .where("storageKey", "=", id)
+        .execute(),
+    ).toHaveLength(2);
+  });
+  it("backfills principals for active and removed members without changing content ids", async () => {
+    await migrateToLatest(database, migrationsBefore(teamPrincipalsMigrationName));
+    const { owner, channel } = await team();
+    const removed = createId("user");
+    await sql`insert into users(id,display_name,email,email_verified) values(${removed},'Former','former@example.invalid',true)`.execute(
+      database,
+    );
+    await sql`insert into team_members(user_id,handle,role,state) values(${removed},'former','member','removed')`.execute(
+      database,
+    );
+    const id = await message(channel, removed);
+    await sql`insert into team_mentions(message_id,channel_id,target_user_id,target_kind) values(${id},${channel},${owner},'person')`.execute(
+      database,
+    );
+    await sql`insert into team_message_pins(message_id,channel_id,pinned_by) values(${id},${channel},${removed})`.execute(
+      database,
+    );
+    const before = await database.selectFrom("teamMessages").selectAll().execute();
+    await migrateToLatest(database);
+    const after = await database.selectFrom("teamMessages").selectAll().execute();
+    expect(
+      after.map(
+        ({
+          publicId: _publicId,
+          createdSeq: _createdSeq,
+          ownerChangeSeq: _ownerChangeSeq,
+          ...original
+        }) => original,
+      ),
+    ).toEqual(before);
+    expect(
+      after.map((row) => ({ createdSeq: row.createdSeq, ownerChangeSeq: row.ownerChangeSeq })),
+    ).toEqual([{ createdSeq: "1", ownerChangeSeq: null }]);
+    expect(after[0]!.publicId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+    expect(
+      (
+        await database
+          .selectFrom("teamPrincipals")
+          .select(["id", "memberUserId", "displayName", "handle"])
+          .execute()
+      ).sort((a, b) => a.id.localeCompare(b.id)),
+    ).toEqual(
+      [owner, removed]
+        .sort()
+        .map((userId) => ({ id: userId, memberUserId: userId, displayName: null, handle: null })),
+    );
+    expect(await database.selectFrom("teamMentions").select("targetUserId").execute()).toEqual([
+      { targetUserId: owner },
+    ]);
+    expect(await database.selectFrom("teamMessagePins").select("pinnedBy").execute()).toEqual([
+      { pinnedBy: removed },
+    ]);
+  });
+  it("backfills self requests and preserves their execution and publication receipts", async () => {
+    await migrateToLatest(database, migrationsBefore(teamAgentAsksMigrationName));
+    const { userId } = await seedPersonalFixture(database, "/tmp/ws0-asks-agent-home");
+    const store = new OpensteerStore(database);
+    const base = await createPersonalRunFixturePort(store).createTask({
+      ownerId: userId,
+      suffix: "ask-upgrade",
+    });
+    const input = await legacyQueuedInput({
+      threadId: base.thread.id,
+      requestedBy: userId,
+      content: [{ type: "text", text: "Existing work" }],
+      idempotencyKey: "ask-upgrade",
+    });
+    const { owner, channel } = await team();
+    const root = await message(channel, owner);
+    const linkId = createId("teamLink"),
+      teamId = createId("deployment");
+    await sql`insert into team_links(id,owner_user_id,state,code_hash) values(${linkId},${owner},'pending',${crypto.randomUUID()})`.execute(
+      database,
+    );
+    const states = [
+      "queued",
+      "working",
+      "needs_you",
+      "done",
+      "failed",
+      "cancelled",
+      "stopped",
+    ] as const;
+    const requestIds = [];
+    for (const state of states) {
+      const trigger = await message(channel, owner),
+        id = createId("teamAgentRequest");
+      requestIds.push(id);
+      await sql`insert into team_agent_requests(id,owner_user_id,channel_id,thread_root_id,trigger_message_id,link_id,state,steps,accepted_at,expires_at,finished_at,change_seq)
+        values(${id},${owner},${channel},${root},${trigger},${linkId},${state},'[]',
+          case when ${state}='queued' then null else now() end,
+          case when ${state}='queued' then null else now()+interval '7 days' end,
+          case when ${state} in ('done','failed','cancelled','stopped') then now() else null end,1)`.execute(
+        database,
+      );
+    }
+    await sql`insert into personal_team_links(id,team_deployment_id,team_host_instance_id,host_key_fingerprint,approved_origin,authority_envelope,state)
+      values('ask-upgrade',${teamId},${createId("hostInstance")},'fixture','https://team.invalid','{}','active')`.execute(
+      database,
+    );
+    const source = {
+      teamId,
+      channelId: channel,
+      threadRootId: root,
+      messageId: root,
+      audience: {
+        teamName: "Studio",
+        channelName: "support",
+        channelKind: "public",
+        memberCount: 2,
+        peopleOnly: false,
+      },
+    };
+    await sql`insert into personal_team_requests(team_deployment_id,request_id,trigger_message_id,local_task_id,local_input_id,publication_state,terminal_state,source)
+      values(${teamId},${requestIds[0]},${root},${base.thread.id},${input.message.id},'accepted','done',${JSON.stringify(source)}::jsonb)`.execute(
+      database,
+    );
+    const before = await database
+      .selectFrom("teamAgentRequests")
+      .select(["id", "state", "acceptedAt", "expiresAt", "finishedAt"])
+      .orderBy("id")
+      .execute();
+    await migrateToLatest(database);
+    const rows = await database.selectFrom("teamAgentRequests").selectAll().orderBy("id").execute();
+    expect(
+      rows.map(({ id, state, acceptedAt, expiresAt, finishedAt }) => ({
+        id,
+        state,
+        acceptedAt,
+        expiresAt,
+        finishedAt,
+      })),
+    ).toEqual(before);
+    for (const row of rows)
+      expect(teamRequestView(row)).toMatchObject({
+        kind: "self",
+        consentExpiresAt: null,
+      });
+    expect(await new PersonalTeamRequestsStore(database).get(teamId, requestIds[0]!)).toMatchObject(
+      {
+        kind: "self",
+        remoteState: "done",
+        taskId: base.thread.id,
+        inputId: input.message.id,
+        publicationState: "accepted",
+        terminalState: "done",
+        localDecision: null,
+        returnPayload: null,
+        returnAdmission: null,
+      },
+    );
+  });
+
+  it("stores taskless consent and unique returns while keeping self trigger uniqueness", async () => {
+    await migrateToLatest(database);
+    const { owner, channel } = await team();
+    const trigger = await message(channel, owner),
+      otherTrigger = await message(channel, owner);
+    const linkId = createId("teamLink"),
+      teamId = createId("deployment"),
+      askId = createId("teamAgentRequest"),
+      otherAskId = createId("teamAgentRequest");
+    await sql`insert into team_links(id,owner_user_id,state,code_hash) values(${linkId},${owner},'pending',${crypto.randomUUID()})`.execute(
+      database,
+    );
+    const presentation = {
+      asker: { teamUserId: owner, displayName: "Maya", actor: "agent" },
+      bodyMarkdown: "Review this",
+      attachments: [],
+      destination: { teamId, channelId: channel, threadRootId: trigger },
+      audience: {
+        teamName: "Studio",
+        channelName: "support",
+        channelKind: "public",
+        memberCount: 2,
+        peopleOnly: false,
+      },
+    };
+    for (const [id, messageId] of [
+      [askId, trigger],
+      [otherAskId, otherTrigger],
+    ])
+      await sql`insert into team_agent_requests(id,kind,owner_user_id,channel_id,thread_root_id,trigger_message_id,link_id,state,steps,change_seq,presentation,consent_expires_at)
+        values(${id},'ask',${owner},${channel},${trigger},${messageId},${linkId},'awaiting_approval','[]',1,${JSON.stringify(presentation)}::jsonb,now()+interval '7 days')`.execute(
+        database,
+      );
+    await expect(
+      sql`insert into team_agent_requests(id,owner_user_id,channel_id,thread_root_id,trigger_message_id,link_id,state,steps,change_seq)
+      values(${createId("teamAgentRequest")},${owner},${channel},${trigger},${trigger},${linkId},'queued','[]',1)`.execute(
+        database,
+      ),
+    ).rejects.toMatchObject({ code: "23505" });
+    const payload = {
+      originAskId: askId,
+      resumeRunId: createId("run"),
+      outcome: "declined",
+      bodyMarkdown: null,
+      attachments: [],
+    };
+    const insertReturn = (originAskId: string) =>
+      sql`insert into team_agent_requests(id,kind,owner_user_id,channel_id,thread_root_id,trigger_message_id,link_id,state,steps,change_seq,return_payload)
+      values(${createId("teamAgentRequest")},'return',${owner},${channel},${trigger},${trigger},${linkId},'queued','[]',1,${JSON.stringify({ ...payload, originAskId })}::jsonb)`.execute(
+        database,
+      );
+    await insertReturn(askId);
+    await insertReturn(otherAskId);
+    await expect(insertReturn(askId)).rejects.toMatchObject({ code: "23505" });
+    await sql`update team_agent_requests set state='declined',finished_at=now() where id=${askId}`.execute(
+      database,
+    );
+    const returned = await database
+      .selectFrom("teamAgentRequests")
+      .selectAll()
+      .where("kind", "=", "return")
+      .executeTakeFirstOrThrow();
+    expect(teamRequestView(returned)).not.toHaveProperty("returnPayload");
+    await sql`insert into personal_team_links(id,team_deployment_id,team_host_instance_id,host_key_fingerprint,approved_origin,authority_envelope,state)
+      values('ask-consent',${teamId},${createId("hostInstance")},'fixture','https://team.invalid','{}','active')`.execute(
+      database,
+    );
+    const source = {
+      ...presentation.destination,
+      messageId: trigger,
+      audience: presentation.audience,
+    };
+    await sql`insert into personal_team_requests(team_deployment_id,request_id,kind,remote_state,trigger_message_id,local_task_id,local_input_id,publication_state,source,presentation,consent_expires_at)
+      values(${teamId},${askId},'ask','awaiting_approval',${trigger},null,null,'pending',${JSON.stringify(source)}::jsonb,${JSON.stringify(presentation)}::jsonb,now()+interval '7 days')`.execute(
+      database,
+    );
+    await expect(
+      sql`update personal_team_requests set local_decision='approve' where request_id=${askId}`.execute(
+        database,
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+    await sql`update personal_team_requests set local_decision='decline',decision_at=now() where request_id=${askId}`.execute(
+      database,
+    );
+    const consent = await database
+      .selectFrom("personalTeamRequests")
+      .selectAll()
+      .where("requestId", "=", askId)
+      .executeTakeFirstOrThrow();
+    expect(personalTeamRequestMirrorFromRow(consent)).toMatchObject({
+      kind: "ask",
+      taskId: null,
+      inputId: null,
+      localDecision: "decline",
+      presentation,
+    });
+    const rejectedId = createId("teamAgentRequest");
+    const insertReceipt = (id = createId("teamAgentRequest")) =>
+      sql`insert into personal_team_requests(team_deployment_id,request_id,kind,trigger_message_id,local_task_id,local_input_id,publication_state,source,return_payload)
+      values(${teamId},${id},'return',${trigger},null,null,'pending',${JSON.stringify(source)}::jsonb,${JSON.stringify(payload)}::jsonb)`.execute(
+        database,
+      );
+    await insertReceipt(rejectedId);
+    await expect(insertReceipt()).rejects.toMatchObject({ code: "23505" });
+    await database
+      .updateTable("personalTeamRequests")
+      .set({ returnAdmission: "undeliverable" })
+      .where("requestId", "=", rejectedId)
+      .execute();
+    await insertReceipt();
+    const receipt = await database
+      .selectFrom("personalTeamRequests")
+      .selectAll()
+      .where("requestId", "=", rejectedId)
+      .executeTakeFirstOrThrow();
+    expect(personalTeamRequestMirrorFromRow(receipt)).toMatchObject({
+      kind: "return",
+      taskId: null,
+      inputId: null,
+      returnPayload: payload,
+      returnAdmission: "undeliverable",
+    });
+    await expect(
+      sql`update personal_team_requests set return_admission='admitted' where request_id=${receipt.requestId}`.execute(
+        database,
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+    const indexes = (await catalog()).filter(({ kind }) => kind === "i").map(({ name }) => name);
+    expect(indexes).toEqual(
+      expect.arrayContaining([
+        "team_requests_return_origin",
+        "team_requests_consent_expiring",
+        "personal_team_requests_pending_consent",
+      ]),
+    );
+  });
+
   it("backfills only request-associated reply targets and repairs hydrated messages and history", async () => {
     await migrateToLatest(database, migrationsBefore(teamAgentMigrationName));
     const { userId } = await seedPersonalFixture(database, "/tmp/ws0-migration-agent-home");
@@ -117,11 +560,9 @@ describe("fresh personal/team lineage", () => {
     const inputs = [];
     for (const key of ["run", "queued", "ledger", "private"])
       inputs.push(
-        await store.enqueueThreadInput({
+        await legacyQueuedInput({
           threadId: thread.id,
           requestedBy: userId,
-          source: { kind: "human" },
-          policy: "queue",
           content: [
             { type: "text", text: key === "private" ? "Private follow-up" : "Legacy input" },
           ],
@@ -252,6 +693,79 @@ describe("fresh personal/team lineage", () => {
       ).rows,
     ).toEqual([]);
   });
+  it("upgrades waiting edits without releasing undecided or unacknowledged asks", async () => {
+    await migrateToLatest(database, migrationsBefore(waitingInputEditsMigrationName));
+    const { userId } = await seedPersonalFixture(database, "/tmp/opensteer-waiting-upgrade");
+    const { thread } = await createPersonalRunFixturePort(new OpensteerStore(database)).createTask({
+      ownerId: userId,
+      suffix: "waiting-upgrade",
+    });
+    const input = await legacyQueuedInput({
+      threadId: thread.id,
+      requestedBy: userId,
+      idempotencyKey: "waiting-upgrade",
+      content: [{ type: "text", text: "Original" }],
+    });
+    const teamId = createId("deployment");
+    await sql`insert into personal_team_links(id,team_deployment_id,team_host_instance_id,host_key_fingerprint,approved_origin,authority_envelope,state)
+      values('waiting-upgrade',${teamId},${createId("hostInstance")},'fixture','https://team.invalid','{}','active')`.execute(
+      database,
+    );
+    const pending = createId("teamAgentRequest"),
+      approving = createId("teamAgentRequest"),
+      released = createId("teamAgentRequest");
+    for (const id of [pending, approving, released])
+      await sql`insert into personal_team_requests(team_deployment_id,request_id,trigger_message_id,local_task_id,local_input_id,kind,remote_state,presentation,consent_expires_at,local_decision,decision_at,source,publication_state)
+        values(${teamId},${id},'1',${id === released ? thread.id : null},${id === released ? input.message.id : null},'ask','awaiting_approval','{}',now()+interval '1 day',
+          ${id === pending ? null : "approve"},case when ${id}=${pending} then null else now() end,'{}','pending')`.execute(
+        database,
+      );
+    await migrateToLatest(database);
+    expect(
+      await database
+        .selectFrom("messages")
+        .select(["revision", "editedAt"])
+        .where("id", "=", input.message.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ revision: 0, editedAt: null });
+    expect(await database.selectFrom("messageRevisions").selectAll().execute()).toEqual([]);
+    expect(
+      await database
+        .selectFrom("threadWorkInputs")
+        .select(["editLeaseId", "editLeaseSessionId", "editLeaseExpiresAt"])
+        .execute(),
+    ).toEqual([{ editLeaseId: null, editLeaseSessionId: null, editLeaseExpiresAt: null }]);
+    const rows = await database.selectFrom("personalTeamRequests").selectAll().execute();
+    expect(rows.find((row) => row.requestId === pending)).toMatchObject({
+      localTaskId: null,
+      approvedRevision: null,
+      releasedAt: null,
+    });
+    expect(rows.find((row) => row.requestId === approving)).toMatchObject({
+      localTaskId: null,
+      approvedRevision: 0,
+      releasedAt: null,
+    });
+    const admitted = rows.find((row) => row.requestId === released)!;
+    expect(admitted.approvedRevision).toBe(0);
+    expect(admitted.releasedAt).toEqual(admitted.decisionAt);
+  });
+  it("drops stored background model choices from databases made before settings.json held them", async () => {
+    await migrateToLatest(database, migrationsBefore(agentHomeSettingsMigrationName));
+    await seedPersonalFixture(database, "/tmp/fixture-agent-home");
+    await sql`alter table personal_settings add column background_model_preferences jsonb not null default '{"roles":{},"excludedAccounts":[]}'`.execute(
+      database,
+    );
+    await migrateToLatest(database);
+    expect(
+      (
+        await sql`select column_name from information_schema.columns where table_name='personal_settings' and column_name='background_model_preferences'`.execute(
+          database,
+        )
+      ).rows,
+    ).toEqual([]);
+    expect(await database.selectFrom("agentHomeSettings").selectAll().execute()).toEqual([]);
+  });
   it("upgrades existing queued inputs with fresh context disabled in the table and work view", async () => {
     await migrateToLatest(database, migrationsBefore("0005_thread_input_fresh_context"));
     const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
@@ -260,12 +774,10 @@ describe("fresh personal/team lineage", () => {
       ownerId: userId,
       suffix: "before-fresh-context",
     });
-    const input = await store.enqueueThreadInput({
+    const input = await legacyQueuedInput({
       content: [{ type: "text", text: "Already queued" }],
       idempotencyKey: "before-upgrade",
-      policy: "queue",
       requestedBy: userId,
-      source: { kind: "human" },
       threadId: thread.id,
     });
     await migrateToLatest(database);
@@ -387,9 +899,9 @@ describe("fresh personal/team lineage", () => {
     );
     await migrateToLatest(database);
     const runner = await database
-      .selectFrom("runners")
+      .selectFrom("devices")
       .select("accessPolicy")
-      .where("id", "=", fixture.runnerId)
+      .where("id", "=", DeviceIdSchema.parse(fixture.runnerId))
       .executeTakeFirstOrThrow();
     expect(runner.accessPolicy).toEqual({ ...original, browser: true, apps: true });
     const columns = await sql<{
@@ -519,7 +1031,7 @@ describe("fresh personal/team lineage", () => {
     ["integration_connections", "computer_app", "jsonb", "NO"],
     ["plugin_owner_settings", "revision", "integer", "NO"],
     ["delegations", "revision", "integer", "NO"],
-    ["browser_tab_layouts", "tab_order", "jsonb", "NO"],
+    ["tab_layouts", "items", "jsonb", "NO"],
     ["machine_access_events", "id", "bigint", "YES"],
     ["mcp_oauth_credentials", "encrypted_state", "bytea", "NO"],
   ])("preserves the private storage contract for %s.%s", async (table, column, type, identity) => {
@@ -826,5 +1338,281 @@ it("migrates baseline read positions, including the declared message-only and ne
   ).toEqual([
     { id: "msg_future-read", createdAt: "2099-01-01 00:00:00.000000" },
     { id: "msg_microsecond-unread", createdAt: "2026-01-02 00:00:00.000500" },
+  ]);
+});
+
+it("keeps pre-tabs/apps history and recent places readable without live tabs", async () => {
+  await migrateToLatest(database, migrationsBefore(tabsAndAppsMigrationName));
+  const publisher = await seedPrivatePublisher(database);
+  const browser = {
+    kind: "browser",
+    sessionId: `bsn_${crypto.randomUUID()}`,
+    surfaceId: "legacy/page:1",
+  };
+  const app = { kind: "app", machineId: publisher.runnerId, appKey: "com.apple.Notes" };
+  const phone = { kind: "phone", machineId: publisher.runnerId, display: "main" };
+  const places = [browser, app, phone, browser, app, phone];
+  const nativeWindow = { id: 42, title: "Notes" };
+  const unchanged = [
+    {
+      type: "app.published",
+      data: { appId: `app_${crypto.randomUUID()}`, version: 1, title: "Existing app" },
+    },
+    {
+      type: "tool.started",
+      data: {
+        callId: "computer:legacy",
+        tool: { namespace: "integrations", name: "computer.bind" },
+        arguments: { window: nativeWindow.id },
+      },
+    },
+    {
+      type: "tool.completed",
+      data: {
+        callId: "computer:legacy",
+        isError: false,
+        output: createToolOutput(JSON.stringify({ window: nativeWindow })),
+      },
+    },
+    { type: "place.entered", data: { tabId: "already-current", title: "Current", site: null } },
+  ];
+  const fixtures = [
+    ...places.map((place, index) => ({
+      type: "place.entered",
+      data: {
+        place,
+        title: `Historical ${index}`,
+        site: place.kind === "browser" ? "https://example.com" : null,
+      },
+    })),
+    ...unchanged,
+  ];
+  for (const fixture of fixtures)
+    await sql`with next as (update deployment_event_state set sequence=sequence+1 returning *)
+      insert into deployment_events(deployment_id,sequence,event_id,thread_id,run_id,environment_id,type,data)
+      select deployment_id,sequence,${createId("event")},${publisher.threadId},${publisher.runId},${publisher.environmentId},${fixture.type},${JSON.stringify(fixture.data)}::jsonb from next`.execute(
+      database,
+    );
+  const before = await database
+    .selectFrom("deploymentEvents")
+    .selectAll()
+    .orderBy("sequence")
+    .execute();
+  // These are valid pre-0026 rows, but the new strict event reader cannot read them yet.
+  expect(() => eventFromRow(before[0]!)).toThrow();
+  await migrateToLatest(database);
+  const after = await database
+    .selectFrom("deploymentEvents")
+    .selectAll()
+    .orderBy("sequence")
+    .execute();
+  expect(after.map(({ data: _data, ...row }) => row)).toEqual(
+    before.map(({ data: _data, ...row }) => row),
+  );
+  expect(after.slice(places.length)).toEqual(before.slice(places.length));
+  const events = after.map(eventFromRow);
+  for (const event of events) expect(AgentEventViewSchema.parse(event)).toEqual(event);
+  const migrated = events.slice(0, places.length).map((event, index) => {
+    const place = PlaceEnteredEventViewSchema.parse(event);
+    expect(place.data).toEqual({
+      tabId: place.data.tabId,
+      title: `Historical ${index}`,
+      site: places[index]!.kind === "browser" ? "https://example.com" : null,
+    });
+    return place;
+  });
+  const ids = migrated.map((event) => TabIdSchema.parse(event.data.tabId));
+  expect(ids.slice(0, 3)).toEqual(ids.slice(3));
+  expect(new Set(ids).size).toBe(3);
+  expect(ids[0]).toBe(browser.surfaceId);
+  for (const id of [ids[1], ids[2]])
+    expect(id).toMatch(/^tab_[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u);
+  const store = new OpensteerStore(database, {
+    readPersonalResources: readEmptyPersonalResources,
+  });
+  const owner = { ownerId: publisher.userId, threadId: publisher.threadId };
+  const page = await store.threadEventPageForOwner({ ...owner, placeEvents: "include" });
+  expect(page?.events).toEqual(events);
+  // These are the durable activity/recent-place readers used by opensteer_task_read.
+  const activity = await readAgentThreadActivity(database, { ...owner, limit: 100 });
+  expect(activity?.items).toEqual(
+    events
+      .toReversed()
+      .map((event) =>
+        event.type === "tool.started"
+          ? { ...event, data: { ...event.data, arguments: null } }
+          : event,
+      ),
+  );
+  const started = events.find((event) => event.type === "tool.started")!;
+  expect(
+    (await readAgentThreadActivity(database, { ...owner, limit: 1, itemId: started.sequence }))
+      ?.items,
+  ).toEqual([started]);
+  const recent = await readAgentThreadRecent(database, { ...owner, runLimit: 1 });
+  const placeEvents = events.filter((event) => event.type === "place.entered");
+  expect(recent?.places).toEqual(placeEvents.toReversed());
+  expect(await store.latestRunPlace(publisher.runId)).toEqual(placeEvents.at(-1));
+  const snapshot = await store.deploymentSnapshot({
+    viewerId: publisher.userId,
+    placeEvents: "include",
+    omitMessages: true,
+  });
+  expect(DeploymentSnapshotSchema.parse(snapshot).runPlaces).toEqual([placeEvents.at(-1)]);
+  expect(await latestNativePlaces(database, publisher.userId)).toMatchObject([
+    { taskId: publisher.threadId, tabId: "already-current" },
+  ]);
+  for (const id of ids)
+    expect(parseReferenceHref(tabReferenceHref(id))).toEqual({ kind: "tab", id });
+  expect(await resolvePersonalReferences(database, { ownerId: publisher.userId, ids })).toEqual(
+    [...new Set(ids)].map((id) => ({ id, status: "unavailable" })),
+  );
+  await migrateToLatest(database);
+  expect(
+    await database.selectFrom("deploymentEvents").selectAll().orderBy("sequence").execute(),
+  ).toEqual(after);
+});
+
+it("reaches the same tabs/apps schema fresh and after preserving existing publications", async () => {
+  await migrateToLatest(database, migrationsBefore(tabsAndAppsMigrationName));
+  const publisher = await seedPrivatePublisher(database);
+  const html = `app_${crypto.randomUUID()}`;
+  const server = `app_${crypto.randomUUID()}`;
+  const secondServer = `app_${crypto.randomUUID()}`;
+  for (const appId of [html, server, secondServer]) {
+    await sql`insert into apps(id,thread_id,run_id,title,latest_version) values(${appId},${publisher.threadId},${publisher.runId},'Preserved',1)`.execute(
+      database,
+    );
+    const serverSpec =
+      appId === server || appId === secondServer
+        ? JSON.stringify({
+            folder: { computerId: publisher.runnerId, path: "/tmp/migrated-server" },
+            command: "node server.mjs",
+          })
+        : null;
+    await sql`insert into app_versions(app_id,version,sha256,size_bytes,server,created_by_run,publish_key) values(${appId},1,${serverSpec ? null : "a".repeat(64)},${serverSpec ? null : 10},${serverSpec}::jsonb,${publisher.runId},${appId})`.execute(
+      database,
+    );
+  }
+  await migrateToLatest(database);
+  const rows = (
+    await sql<{
+      id: string;
+      ownerId: string;
+      computerId: string;
+      name: string;
+      threadId: string | null;
+      runId: string | null;
+    }>`select id,owner_id,computer_id,name,thread_id,run_id from apps order by id`.execute(database)
+  ).rows;
+  expect(rows).toHaveLength(3);
+  for (const row of rows)
+    expect(row).toMatchObject({
+      ownerId: publisher.userId,
+      computerId: publisher.runnerId,
+      name: "Preserved",
+      threadId: publisher.threadId,
+      runId: publisher.runId,
+    });
+  const ports = (
+    await sql<{
+      appId: string;
+      port: number;
+      desiredState: string;
+    }>`select app_id,port,desired_state from app_servers order by app_id`.execute(database)
+  ).rows;
+  expect(ports).toHaveLength(2);
+  expect(new Set(ports.map((row) => row.port)).size).toBe(2);
+  for (const row of ports) {
+    expect(row.port).toBeGreaterThanOrEqual(49152);
+    expect(row.port).toBeLessThanOrEqual(65535);
+    expect(row.desiredState).toBe("running");
+  }
+  await sql`delete from runs where id=${publisher.runId}`.execute(database);
+  expect((await sql`select run_id from apps`.execute(database)).rows).toEqual(
+    Array.from({ length: 3 }, () => ({ runId: null })),
+  );
+  await sql`update causal_chains set root_message_id=null where id=${publisher.causalChainId}`.execute(
+    database,
+  );
+  await sql`delete from threads where id=${publisher.threadId}`.execute(database);
+  expect((await sql`select thread_id from apps`.execute(database)).rows).toEqual(
+    Array.from({ length: 3 }, () => ({ threadId: null })),
+  );
+  expect((await sql`select * from app_versions`.execute(database)).rows).toHaveLength(3);
+  await migrateToLatest(database);
+  expect(
+    (await sql`select app_id,port,desired_state from app_servers order by app_id`.execute(database))
+      .rows,
+  ).toEqual(ports);
+  const upgraded = await catalog();
+  await sql`drop schema public cascade;create schema public`.execute(database);
+  await migrateToLatest(database);
+  expect(await catalog()).toEqual(upgraded);
+});
+
+it("enforces generic tab identity, descriptor shape, and fixed server ports on a fresh database", async () => {
+  await migrateToLatest(database);
+  const person = await seedPersonalFixture(database, "/tmp/tabs-contract-migration");
+  const tab = (id: string) =>
+    sql`insert into personal_tabs(id,owner_id,kind,computer_id,title,opened_by) values(${id},${person.userId},'phone',${person.runnerId},'Phone','"person"')`.execute(
+      database,
+    );
+  await tab("first");
+  await expect(tab("second")).rejects.toThrow(/unique/u);
+  await sql`update personal_tabs set closed_at=now() where id='first'`.execute(database);
+  await expect(tab("second")).rejects.toThrow(/unique/u);
+  await expect(
+    sql`insert into personal_tabs(id,owner_id,kind,computer_id,title,opened_by) values('page',${person.userId},'page',${person.runnerId},'Missing URL','"person"')`.execute(
+      database,
+    ),
+  ).rejects.toThrow(/check constraint/u);
+  const columns = (
+    await sql<{
+      tableName: string;
+      columnName: string;
+    }>`select table_name,column_name from information_schema.columns where table_schema='public' and table_name in ('apps','personal_tabs','runners','tab_layouts')`.execute(
+      database,
+    )
+  ).rows;
+  expect(columns.filter((row) => row.columnName === "tab_opened_at")).toEqual([]);
+  expect(
+    (
+      await sql`select to_regclass('browser_tab_layouts') as old_layout,to_regclass('browser_tab_groups') as old_groups,to_regclass('browser_tab_group_members') as old_members`.execute(
+        database,
+      )
+    ).rows,
+  ).toEqual([{ oldLayout: null, oldGroups: null, oldMembers: null }]);
+});
+
+it("keeps a server's recorded home when the publishing computer can no longer be derived", async () => {
+  await migrateToLatest(database, migrationsBefore(tabsAndAppsMigrationName));
+  const publisher = await seedPrivatePublisher(database);
+  const html = `app_${crypto.randomUUID()}`,
+    server = `app_${crypto.randomUUID()}`;
+  for (const appId of [html, server]) {
+    await sql`insert into apps(id,thread_id,run_id,title,latest_version) values(${appId},${publisher.threadId},${publisher.runId},'Existing',1)`.execute(
+      database,
+    );
+    const spec =
+      appId === server
+        ? JSON.stringify({
+            folder: { computerId: publisher.runnerId, path: "/tmp/saved-app" },
+            command: "node server.mjs",
+          })
+        : null;
+    await sql`insert into app_versions(app_id,version,sha256,size_bytes,server,created_by_run,publish_key) values(${appId},1,${spec ? null : "a".repeat(64)},${spec ? null : 10},${spec}::jsonb,${publisher.runId},${appId})`.execute(
+      database,
+    );
+  }
+  await sql`update execution_environments set runner_id=null where id=${publisher.environmentId}`.execute(
+    database,
+  );
+  await migrateToLatest(database);
+  expect((await sql`select id,computer_id from apps`.execute(database)).rows).toEqual([
+    { id: server, computerId: publisher.runnerId },
+  ]);
+  expect((await sql`select app_id from app_versions`.execute(database)).rows).toEqual([
+    { appId: server },
   ]);
 });

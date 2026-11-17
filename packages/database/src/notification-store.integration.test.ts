@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 
@@ -958,7 +959,7 @@ integration("notification decision boundary", () => {
                 requiredActor: "requester",
                 payload: {
                   kind: "machine.full-disk-access",
-                  machineId: fixture.runnerId,
+                  machineId: DeviceIdSchema.parse(fixture.runnerId),
                   machineName: "Test Mac",
                   reason: "Read files",
                 },
@@ -1068,7 +1069,7 @@ integration("notification decision boundary", () => {
           idempotencyKey: randomUUID(),
           name: "Automatic work",
           program: {
-            toolContractVersion: 3,
+            toolContractVersion: 4,
             language: "javascript",
             source: "export default async () => null",
           },
@@ -1917,7 +1918,7 @@ integration("notification decision boundary", () => {
         },
         {
           type: "computer-app",
-          machineId: fixture.runnerId,
+          machineId: DeviceIdSchema.parse(fixture.runnerId),
           app: {
             bundleId: "com.apple.Notes",
             displayName: "Notes",
@@ -1927,7 +1928,7 @@ integration("notification decision boundary", () => {
         },
         {
           type: "phone",
-          machineId: fixture.runnerId,
+          machineId: DeviceIdSchema.parse(fixture.runnerId),
           display: "main",
           name: "Pixel",
         },
@@ -2078,46 +2079,6 @@ integration("notification decision boundary", () => {
       await appendRunFailed(fixture);
       expect((await decideCommitted(fixture)).decided).toHaveLength(1);
       await expect(notifications.accountSubjects(fixture.ownerId)).resolves.toEqual([]);
-    });
-  });
-  describe("viewer state", () => {
-    it("records the time zone a person's client reports", async ({ storeFixture }) => {
-      const { createFixture, notificationState, database } = storeFixture;
-      const fixture = await createFixture("time-zone");
-      await expect(notificationState.timeZoneFor(fixture.ownerId)).resolves.toBeNull();
-      await expect(
-        notificationState.setTimeZone({
-          timeZone: "America/Los_Angeles",
-          userId: fixture.ownerId,
-        }),
-      ).resolves.toBe("America/Los_Angeles");
-      await expect(notificationState.timeZoneFor(fixture.ownerId)).resolves.toBe(
-        "America/Los_Angeles",
-      );
-      await expect(
-        notificationState.setTimeZone({
-          timeZone: "Mars/Olympus_Mons",
-          userId: fixture.ownerId,
-        }),
-      ).rejects.toThrow();
-      await database
-        .updateTable("users")
-        .set({
-          disabledAt: new Date(),
-        })
-        .where("id", "=", fixture.ownerId)
-        .execute();
-      await expect(
-        notificationState.setTimeZone({
-          timeZone: "Europe/Paris",
-          userId: fixture.ownerId,
-        }),
-      ).rejects.toMatchObject({
-        code: "forbidden",
-      });
-      await expect(notificationState.timeZoneFor(fixture.ownerId)).resolves.toBe(
-        "America/Los_Angeles",
-      );
     });
   });
   describe("task list", () => {

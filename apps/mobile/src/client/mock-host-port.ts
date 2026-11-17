@@ -1,7 +1,6 @@
 import type { DeploymentConnection } from "@opensteer/client/connections";
 import type { HostClient } from "@opensteer/client/host";
 import { MockDesktopUpdates, MockHostClient, type MockSubagentScene } from "@opensteer/client/mock";
-import type { HostApiCommandInput } from "@opensteer/protocol";
 import type { MobileHostPortFactory } from "./host-port.js";
 import { mockSignedOutDeploymentId } from "./mock-mode.js";
 
@@ -21,7 +20,7 @@ export function createMockHostPort(
     /** One subagent scene of the design, so each of its states can be looked at. */
     readonly subagents?: MockSubagentScene | null;
     /** Each command a kept Host accepted, as a real Host would push its effects. */
-    readonly onCommand?: (command: HostApiCommandInput) => void;
+    readonly onCommand?: (command: Parameters<HostClient["dispatch"]>[0]) => void;
   } = {},
 ): MobileHostPortFactory {
   const loginIds = new Map<string, string>();

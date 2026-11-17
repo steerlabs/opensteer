@@ -1,12 +1,17 @@
 import type { TaskMark as TaskMarkValue } from "@opensteer/client/host";
-import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
+import type {
+  NativeStackHeaderItem,
+  NativeStackNavigationOptions,
+} from "@react-navigation/native-stack";
 import { memo, useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { Platform, Pressable, StyleSheet, View } from "react-native";
 import Animated, { LayoutAnimationConfig } from "react-native-reanimated";
 import { ActingDot } from "../browser/acting-dot.js";
+import type { HeaderActionSpec } from "../ui/header-item.js";
 import { color, headerFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
+import { BarControl } from "../ui/bar-control.js";
 import { appear } from "../ui/motion.js";
 import { TaskMark } from "../ui/task-mark.js";
 import {
@@ -52,11 +57,45 @@ export function barOverContentOptions(glass: boolean): NativeStackNavigationOpti
  * the bar's trailing slot. With nothing around, both slots are emptied: the
  * navigator merges options, so a slot left out would keep the last control.
  */
-export function aroundHeaderOptions(control: ReactElement | null): NativeStackNavigationOptions {
+export function aroundHeaderOptions(
+  control: ReactElement | null,
+  /** Around as a plain item, beside the custom control: for a vertical bar to hold. */
+  plain: NativeStackHeaderItem | null = null,
+): NativeStackNavigationOptions {
+  const item = control === null ? null : <BarControl>{control}</BarControl>;
   return {
-    headerRight: () => control,
-    unstable_headerRightItems: () =>
-      control === null ? [] : [{ element: control, type: "custom" }],
+    headerRight: () => item,
+    unstable_headerRightItems: () => [
+      ...(plain === null ? [] : [plain]),
+      ...(item === null ? [] : [{ element: item, type: "custom" as const }]),
+    ],
+  };
+}
+
+/**
+ * Around as one plain bar button, for iPhone Duo's vertical bar: UIKit stands
+ * plain items in that bar beside the Menu, and leaves a custom view in a row
+ * over the page. It says what leads Around, with its count; amber when a task
+ * needs you.
+ */
+export function aroundBarItem(glance: AroundGlance, onPress: () => void): HeaderActionSpec {
+  const { family } = glance;
+  const lead: { icon: NonNullable<HeaderActionSpec["icon"]>; count: number | null } =
+    glance.places > 0
+      ? { icon: glance.placeGlyph ?? "rectangle.on.rectangle", count: glance.places }
+      : family !== null && (family.running > 0 || family.earlier > 0)
+        ? { icon: "checklist", count: family.running > 0 ? family.running : family.earlier }
+        : family !== null && family.automations > 0
+          ? { icon: "clock", count: family.automations }
+          : { icon: "arrow.up", count: null };
+  return {
+    accessibilityHint: "Shows the places, tasks and schedules around this conversation",
+    accessibilityLabel: aroundLabel(glance),
+    ...(lead.count === null ? {} : { badge: String(lead.count) }),
+    icon: lead.icon,
+    label: "Around",
+    onPress,
+    ...(family?.needsYou === true ? {} : { tintColor: color.text }),
   };
 }
 

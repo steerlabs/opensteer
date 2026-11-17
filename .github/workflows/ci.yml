@@ -9,20 +9,20 @@ on:
   push:
     branches:
       - main
-  # Main picks its native tasks per push; this full run backs that up, and skips
-  # when main has not changed since the last full run.
+  # PRs and main pushes run what each change can reach; this full run, every lane and every
+  # native task, backs that up, and skips heavy lanes when main has not changed since.
   schedule:
     - cron: "23 */4 * * *"
   workflow_dispatch: null
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.event_name == 'push' && github.ref || github.event.pull_request.number || github.sha }}-${{ github.event_name }}
+  group: ci-${{ github.event.pull_request.number || github.sha }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   changes:
     runs-on: ubuntu-24.04
-    timeout-minutes: 3
+    timeout-minutes: 5
     permissions:
       contents: read
       # A scheduled run reads which commit the last full run covered.
@@ -31,8 +31,11 @@ jobs:
       tests-shards: ${{ steps.changes.outputs.tests-shards }}
       integration-shards: ${{ steps.changes.outputs.integration-shards }}
       native-mac-tasks: ${{ steps.changes.outputs.native-mac-tasks }}
+      typecheck-filters: ${{ steps.changes.outputs.typecheck-filters }}
+      build-filters: ${{ steps.changes.outputs.build-filters }}
       lint: ${{ steps.changes.outputs.lint }}
       build-types: ${{ steps.changes.outputs.build-types }}
+      build: ${{ steps.changes.outputs.build }}
       tests: ${{ steps.changes.outputs.tests }}
       integration: ${{ steps.changes.outputs.integration }}
       native-mac: ${{ steps.changes.outputs.native-mac }}
@@ -59,7 +62,7 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.lint != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 11
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -69,6 +72,18 @@ jobs:
       - uses: ./.github/actions/ci-setup
         with:
           go: "false"
+      - name: Lint GitHub workflows
+        shell: bash
+        env:
+          ACTIONLINT_VERSION: "1.7.7"
+          ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+        run: |
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$archive"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
       - run: mkdir -p "$RUNNER_TEMP/evidence"
       - shell: bash
         run: |
@@ -76,6 +91,8 @@ jobs:
           {
             pnpm format:check
             pnpm lint
+            node .github/scripts/ci-stable-api.mjs
+            pnpm exec tsx scripts/quarantine.ts
             # Prose guards: docs-only changes run no test lane, so lint carries them.
             pnpm exec vitest run tests/product-name-spelling.test.ts
             node --test .github/scripts/*.test.mjs
@@ -92,21 +109,29 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.build-types != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 7
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - uses: ./.github/actions/ci-setup
+        with:
+          go: "false"
       - run: mkdir -p "$RUNNER_TEMP/evidence"
+      # Typecheck what the change reaches.
       - shell: bash
+        env:
+          TYPECHECK: ${{ needs.changes.outputs.typecheck-filters }}
         run: |
           set -o pipefail
           {
-            pnpm typecheck
-            pnpm build
-            # Package the Account app as its image does; pnpm deploy checks peers workspace-wide.
-            pnpm --filter @opensteer/control-plane deploy --legacy --prod "$RUNNER_TEMP/control-plane"
+            if [[ "$TYPECHECK" == all ]]; then
+              pnpm typecheck
+            else
+              read -r -a filters <<< "$TYPECHECK"
+              if (( ${#filters[@]} )); then pnpm "${filters[@]}" --if-present typecheck; fi
+              pnpm typecheck:tests
+            fi
           } 2>&1 | tee "$RUNNER_TEMP/evidence/build-types.log"
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -115,11 +140,49 @@ jobs:
           path: |
             ${{ runner.temp }}/evidence
           if-no-files-found: error
+  # No later job consumes these builds, so PRs skip them: main builds what each push
+  # changed and the scheduled run builds everything.
+  build:
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.outputs.build != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+      - run: mkdir -p "$RUNNER_TEMP/evidence"
+      - shell: bash
+        env:
+          BUILD: ${{ needs.changes.outputs.build-filters }}
+        run: |
+          set -o pipefail
+          {
+            if [[ "$BUILD" == all ]]; then
+              pnpm build
+            else
+              read -r -a filters <<< "$BUILD"
+              pnpm --filter @opensteer/runner build:native-fs
+              pnpm "${filters[@]}" --if-present build
+            fi
+            if [[ "$BUILD" == all || " $BUILD " == *" --filter=@opensteer/control-plane... "* ]]; then
+              # Package the Account app as its image does; pnpm deploy checks peers workspace-wide.
+              pnpm --filter @opensteer/control-plane deploy --legacy --prod "$RUNNER_TEMP/control-plane"
+            fi
+          } 2>&1 | tee "$RUNNER_TEMP/evidence/build.log"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: build-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/evidence
+          if-no-files-found: error
   tests:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.tests != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 9
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -134,28 +197,39 @@ jobs:
           persist-credentials: false
       - id: setup
         uses: ./.github/actions/ci-setup
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: plan-${{ github.sha }}
+          path: ${{ runner.temp }}/plan
       - run: |-
           mkdir -p "$RUNNER_TEMP/evidence"
           {
             echo "CI_DISCOVERY_PATH=$RUNNER_TEMP/evidence/$CI_LANE-$CI_SHARD.discovered.json"
             echo "CI_INVENTORY_PATH=$RUNNER_TEMP/evidence/$CI_LANE-$CI_SHARD.inventory.json"
           } >> "$GITHUB_ENV"
+          # The files the plan selected; none when it runs the whole suite.
+          jq -r 'if .whole.tests then empty else .files.tests[] end' "$RUNNER_TEMP/plan/ci-plan.json" > "$RUNNER_TEMP/files"
         shell: bash
       - uses: ./.github/actions/ci-browser
-      - run: pnpm exec vitest list --filesOnly --json "$CI_DISCOVERY_PATH"
-      - name: Test native-fs once per selected unit lane
+      - shell: bash
+        run: |
+          mapfile -t files < "$RUNNER_TEMP/files"
+          pnpm exec vitest list --filesOnly --json "$CI_DISCOVERY_PATH" "${files[@]}"
+      - name: Test Go helpers once per selected unit lane
         if: matrix.shard == 1
         shell: bash
         run: |
           set -o pipefail
           pnpm --filter @opensteer/runner test:native-fs 2>&1 | tee "$RUNNER_TEMP/evidence/native-fs.log"
+          pnpm --filter @opensteer/desktop test:iphone-bridge 2>&1 | tee "$RUNNER_TEMP/evidence/iphone-bridge.log"
       - shell: bash
         run: |
           set -o pipefail
           pnpm --filter @opensteer/runner build:native-fs
           pnpm --filter @opensteer/runner build:native-fs:test
           pnpm --filter @opensteer/desktop build:process-supervisor
-          pnpm exec vitest run --shard=${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=junit --reporter=json --reporter=./scripts/ci-inventory-reporter.ts --outputFile.junit="$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.xml" --outputFile.json="$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.results.json" 2>&1 | tee "$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.log"
+          mapfile -t files < "$RUNNER_TEMP/files"
+          pnpm exec vitest run "${files[@]}" --shard=${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=junit --reporter=json --reporter=./scripts/ci-inventory-reporter.ts --outputFile.junit="$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.xml" --outputFile.json="$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.results.json" 2>&1 | tee "$RUNNER_TEMP/evidence/tests-${{ matrix.shard }}.log"
       - name: Verify populated Go caches before publishing
         if: ${{ success() && matrix.shard == 1 && steps.setup.outputs.go-cache-hit != 'true' }}
         shell: bash
@@ -179,7 +253,7 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.integration != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 11
+    timeout-minutes: 22
     strategy:
       fail-fast: false
       matrix:
@@ -198,6 +272,10 @@ jobs:
           persist-credentials: false
       - id: setup
         uses: ./.github/actions/ci-setup
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: plan-${{ github.sha }}
+          path: ${{ runner.temp }}/plan
       - run: |-
           mkdir -p "$RUNNER_TEMP/evidence"
           {
@@ -205,16 +283,21 @@ jobs:
             echo "CI_INVENTORY_PATH=$RUNNER_TEMP/evidence/$CI_LANE-$CI_SHARD.inventory.json"
             echo "OPENSTEER_LOCK_ORDER_TRACE=$RUNNER_TEMP/evidence/integration-$CI_SHARD.jsonl"
           } >> "$GITHUB_ENV"
+          jq -r 'if .whole.integration then empty else .files.integration[] end' "$RUNNER_TEMP/plan/ci-plan.json" > "$RUNNER_TEMP/files"
         shell: bash
       - uses: ./.github/actions/ci-browser
       - name: Pull the integration PostgreSQL image
         # Pulled here so a registry problem fails this step, not the launcher's 60 s bound.
         run: docker pull "$(node -p 'require("yaml").parse(require("node:fs").readFileSync("deploy/compose/compose.yaml", "utf8")).services.postgres.image')"
-      - run: pnpm exec vitest list --config vitest.integration.config.ts --filesOnly --json "$CI_DISCOVERY_PATH"
+      - shell: bash
+        run: |
+          mapfile -t files < "$RUNNER_TEMP/files"
+          pnpm exec vitest list --config vitest.integration.config.ts --filesOnly --json "$CI_DISCOVERY_PATH" "${files[@]}"
       - shell: bash
         run: |
           set -o pipefail
-          pnpm test:integration -- --shard=${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=junit --reporter=json --reporter=./scripts/ci-inventory-reporter.ts --outputFile.junit="$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.xml" --outputFile.json="$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.results.json" 2>&1 | tee "$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.log"
+          mapfile -t files < "$RUNNER_TEMP/files"
+          pnpm test:integration -- "${files[@]}" --shard=${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=junit --reporter=json --reporter=./scripts/ci-inventory-reporter.ts --outputFile.junit="$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.xml" --outputFile.json="$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.results.json" 2>&1 | tee "$RUNNER_TEMP/evidence/integration-${{ matrix.shard }}.log"
       - name: Verify populated Go caches before publishing
         if: ${{ success() && matrix.shard == 1 && steps.setup.outputs.go-cache-hit != 'true' && needs.changes.outputs.tests == 'false' }}
         shell: bash
@@ -264,6 +347,7 @@ jobs:
           xcodebuild -version >> "$RUNNER_TEMP/swift-toolchain"
           xcrun --show-sdk-version >> "$RUNNER_TEMP/swift-toolchain"
           toolchain=$(shasum -a 256 "$RUNNER_TEMP/swift-toolchain" | cut -d' ' -f1)
+          # shellcheck disable=SC2086 # SWIFT_INPUTS is a space-separated path list.
           inputs=$(git ls-tree -r HEAD -- ${SWIFT_INPUTS:?} | shasum -a 256 | cut -d' ' -f1)
           echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
           echo "inputs=$inputs" >> "$GITHUB_OUTPUT"
@@ -337,10 +421,14 @@ jobs:
           # read and launch nothing else.
           CI_ACCESS_TRACE: ${{ runner.temp }}/evidence/darwin-1.access.jsonl
         run: |
+          # The iPhone bridge tests under computer-use/ drive the native-fs test helper.
+          pnpm --filter @opensteer/runner build:native-fs:test
           export NODE_OPTIONS="--import $GITHUB_WORKSPACE/.github/scripts/ci-access-trace.mjs"
           pnpm exec vitest run tests/helper-data-contracts.test.ts packages/protocol/src/computer-use-helper-wire.test.ts packages/protocol/src/passwords-broker-wire.test.ts apps/desktop/src/computer-use/ apps/desktop/src/passwords/
           darwin_only=$(node .github/scripts/ci-test-files.mjs darwin-only)
+          # shellcheck disable=SC2086 # darwin_only is a space-separated file list.
           pnpm exec vitest list --filesOnly --json "$CI_DISCOVERY_PATH" $darwin_only
+          # shellcheck disable=SC2086 # darwin_only is a space-separated file list.
           pnpm exec vitest run $darwin_only --reporter=default --reporter=./scripts/ci-inventory-reporter.ts
           unset NODE_OPTIONS
           node .github/scripts/ci-native-access.mjs "$CI_ACCESS_TRACE" "${{ matrix.task }}"
@@ -402,7 +490,7 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.android != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 9
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -446,7 +534,7 @@ jobs:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.browser-journeys != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 17
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -500,12 +588,16 @@ jobs:
           path: ${{ runner.temp }}/evidence
           if-no-files-found: error
   Check:
-    timeout-minutes: 3
+    timeout-minutes: 5
     if: always()
+    permissions:
+      contents: read
+      actions: read
     needs:
       - changes
       - lint
       - build-types
+      - build
       - tests
       - integration
       - native-mac
@@ -521,19 +613,21 @@ jobs:
         with:
           go: "false"
           filters: opensteer... @opensteer/database...
+      # One folder per artifact: ci-check.ts reads each file only from the job that owns it.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: ${{ runner.temp }}/evidence
-          merge-multiple: true
       - run: pnpm exec tsx scripts/ci-check.ts "$RUNNER_TEMP/evidence"
         env:
           CI_NEEDS: ${{ toJSON(needs) }}
           CI_EVENT: ${{ github.event_name }}
+          # Reads job timings to name a lane that hit its time limit.
+          GITHUB_TOKEN: ${{ github.token }}
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: aggregate-${{ github.sha }}
           path: |
-            ${{ runner.temp }}/evidence/ci-plan.json
+            ${{ runner.temp }}/evidence/plan-${{ github.sha }}/ci-plan.json
             ${{ runner.temp }}/evidence/combined-lock-graph.json
           if-no-files-found: error

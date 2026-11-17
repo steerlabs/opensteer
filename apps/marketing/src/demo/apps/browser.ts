@@ -21,17 +21,17 @@ const SITE = glyph("M3 5.5h5M11 5.5h2M3 10.5h2M8 10.5h5M9.5 4v3M6.5 9v3");
 const STAR = glyph("m8 2.3 1.8 3.7 4 .6-2.9 2.8.7 4L8 11.5l-3.6 1.9.7-4L2.2 6.6l4-.6Z");
 const MORE = `<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="3.5" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="8" cy="12.5" r="1.2"/></svg>`;
 
-/** A Chrome window. The first tab starts in front; a scene switches tabs with `front(<tab id>)`. */
-export function browser(place: string, tabs: readonly BrowserTab[]): string {
+/** A Chrome window. The first tab starts in front; a scene switches tabs with `front(<tab id>)`. Pass `behind` when another window starts in front of it. */
+export function browser(place: string, tabs: readonly BrowserTab[], behind = false): string {
   const on = (index: number): string => (index === 0 ? " is-on" : "");
-  return `<div class="win br is-open is-front" data-win="browser" style="${place}">
+  return `<div class="win br is-open${behind ? "" : " is-front"}" data-win="browser" style="${place}">
   <div class="br-strip">${TRAFFIC_LIGHTS}${tabs
     .map(
       (tab, index) =>
         `<div class="br-tab${on(index)}" data-for="${tab.id}">${tab.mark}<span>${tab.title}</span>${use("i-xmark")}</div>`,
     )
     .join("")}<span class="br-new">${use("m-plus")}</span></div>
-  <div class="br-bar">${BACK}${FORWARD}<span data-h="br-reload">${RELOAD}</span><div class="br-omni">${SITE}${tabs
+  <div class="br-bar"><span data-h="br-back">${BACK}</span>${FORWARD}<span data-h="br-reload">${RELOAD}</span><div class="br-omni">${SITE}${tabs
     .map((tab, index) => `<span class="br-url${on(index)}" data-for="${tab.id}">${tab.url}</span>`)
     .join("")}${STAR}</div><span class="br-me">AR</span>${MORE}</div>
   <div class="br-pages">${tabs

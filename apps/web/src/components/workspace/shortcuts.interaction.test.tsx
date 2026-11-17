@@ -16,7 +16,7 @@ import {
   tabSearch,
   settle,
 } from "./workspace.interaction.test-support.js";
-import { tabOrder } from "./tab-order.js";
+import { composerText, rewrite } from "../composer-editor.test-support.js";
 
 let execute: ((command: DesktopPersonalTabCommand) => void) | undefined;
 const bridge = {
@@ -41,33 +41,27 @@ async function command(value: DesktopPersonalTabCommand) {
   await act(async () => execute!(value));
   await settle();
 }
-const selected = () => document.querySelector(".place")?.getAttribute("data-place-key");
+const selected = () =>
+  document.querySelector(".place:not([hidden])")?.getAttribute("data-place-key");
+/** Every tab a person can reach by shortcut, in the list's order. */
+const visible = () => client.getSnapshot().tabs.strip.visible;
 
 it("new and close commands across composer, address and sidebar preserve the draft and never create threads", async () => {
   await mount((source) => `/${tabSearch(pageTab(source))}`);
-  const initial = tabOrder(placeList(client.getSnapshot()));
-  const quiet = initial.filter(
-    (place) =>
-      place.closable &&
-      place.destination.kind === "browser" &&
-      client
-        .getSnapshot()
-        .browserSessions.find(
-          (session) =>
-            place.destination.kind === "browser" && session.id === place.destination.sessionId,
-        )?.attachedRunIds.length === 0,
-  );
+  const initial = visible();
+  const places = placeList(client.getSnapshot());
+  const quiet = initial
+    .map((key) => places.find((place) => place.key === key)!)
+    .filter(
+      (place) => place.kind === "page" && place.tab.state === "open" && !place.occupants.length,
+    );
   expect(quiet.length).toBeGreaterThanOrEqual(2);
   const threads = client.getSnapshot().threads.map((thread) => thread.id);
-  const close = vi.spyOn(client, "closeBrowserTab");
-  const field = element<HTMLTextAreaElement>("[data-composer-input]");
+  const close = vi.spyOn(client, "closeTabs");
+  const field = element<HTMLElement>("[data-composer-input]");
   field.focus();
   await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
-      field,
-      "Keep this draft",
-    );
-    field.dispatchEvent(new Event("input", { bubbles: true }));
+    rewrite(field, "Keep this draft");
   });
   await click(element(`.side-tab[data-place-key="${quiet[0]!.key}"] .side-tab__main`));
   await command({ type: "new-tab" });
@@ -79,10 +73,8 @@ it("new and close commands across composer, address and sidebar preserve the dra
   field.focus();
   await command({ type: "close-tab" });
   expect(close).toHaveBeenCalledTimes(1);
-  expect(selected()).toBe(
-    initial[initial.findIndex((place) => place.key === quiet[0]!.key) + 1]!.key,
-  );
-  expect(field.value).toBe("Keep this draft");
+  expect(selected()).toBe(initial[initial.indexOf(quiet[0]!.key) + 1]);
+  expect(composerText(field)).toBe("Keep this draft");
   await click(element(`.side-tab[data-place-key="${quiet[1]!.key}"] .side-tab__main`));
   const send = vi.spyOn(client, "sendBrowserCommand");
   element<HTMLElement>("[data-live-page] textarea").focus();
@@ -94,28 +86,30 @@ it("new and close commands across composer, address and sidebar preserve the dra
     ),
   ).toBe(false);
   expect(client.getSnapshot().threads.map((thread) => thread.id)).toEqual(threads);
-  expect(field.value).toBe("Keep this draft");
+  expect(composerText(field)).toBe("Keep this draft");
 });
 
 it("number and cycle commands select exactly their tab while editing chords leave navigation, tabs and threads alone", async () => {
   await mount((source) => `/${tabSearch(pageTab(source))}`);
-  const field = element<HTMLTextAreaElement>("[data-composer-input]");
+  const field = element<HTMLElement>("[data-composer-input]");
   field.focus();
-  const places = tabOrder(placeList(client.getSnapshot()));
-  expect(places.map((place) => place.key)).toEqual(
-    [...document.querySelectorAll(".side-tab")].map((row) => row.getAttribute("data-place-key")),
+  const places = visible();
+  expect(places).toEqual(
+    [...document.querySelectorAll(".side-tab[data-place-key]")]
+      .filter((row) => !row.classList.contains("side-tab--start"))
+      .map((row) => row.getAttribute("data-place-key")),
   );
   const threads = client.getSnapshot().threads.map((thread) => thread.id);
   for (let index = 1; index <= 9; index++) {
     if (index === 5) element<HTMLElement>(".side-tab__main").focus();
     await command({ type: "select-tab", index });
     const expected = index === 9 ? places.at(-1) : places[index - 1];
-    if (expected) expect(selected()).toBe(expected.key);
+    if (expected) expect(selected()).toBe(expected);
   }
   await command({ type: "next-tab" });
-  expect(selected()).toBe(places[0]!.key);
+  expect(selected()).toBe(places[0]);
   await command({ type: "previous-tab" });
-  expect(selected()).toBe(places.at(-1)!.key);
+  expect(selected()).toBe(places.at(-1));
   const before = [...history];
   for (const key of ["a", "c", "v", "z", "l", "t", "w"]) {
     await act(async () =>
@@ -125,8 +119,6 @@ it("number and cycle commands select exactly their tab while editing chords leav
     );
   }
   expect(history).toEqual(before);
-  expect(tabOrder(placeList(client.getSnapshot())).map((place) => place.key)).toEqual(
-    places.map((place) => place.key),
-  );
+  expect(visible()).toEqual(places);
   expect(client.getSnapshot().threads.map((thread) => thread.id)).toEqual(threads);
 });

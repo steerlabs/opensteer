@@ -45,7 +45,7 @@ export const NotificationViewSchema = z.object({
   occurredAt: IsoDateTimeSchema,
   requestId: RequestIdSchema.nullable(),
   runId: RunIdSchema.nullable(),
-  threadId: ThreadIdSchema,
+  threadId: ThreadIdSchema.nullable(),
   title: z.string().min(1).max(notificationTitleMaxCharacters),
 });
 export type NotificationView = z.infer<typeof NotificationViewSchema>;

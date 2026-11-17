@@ -1,3 +1,15 @@
+import { useMobileClient } from "../ui/mobile-client-context.js";
+import type { ComposerEditorHandle } from "@opensteer/client/references";
+import { ComposerEditor } from "../ui/composer-editor.js";
+import {
+  activeReferenceQuery,
+  ComposerReferencePicker,
+  insertReference,
+  personalReferenceSections,
+  startReference,
+} from "../ui/composer-reference-picker.js";
+import { useCompactionOffer } from "@opensteer/client/react";
+import { compactionOfferText } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { useHostSelector } from "@opensteer/client/react";
 import { useFocusEffect } from "@react-navigation/native";
@@ -16,6 +28,7 @@ import {
   type UsageLimitNotice,
 } from "@opensteer/client/host";
 import {
+  attachmentMaxBytes,
   attachmentMessageMaxCount,
   type ArtifactContentPart,
   type AuthenticatedUser,
@@ -29,19 +42,19 @@ import * as Haptics from "expo-haptics";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
+  type RefObject,
 } from "react";
 import {
   AccessibilityInfo,
   Alert,
   Pressable,
   StyleSheet,
-  TextInput,
-  type TextInputInstance,
   useWindowDimensions,
   View,
 } from "react-native";
@@ -79,9 +92,8 @@ import {
   useDraftAttachments,
 } from "./draft-attachments.js";
 import { AnswerBar } from "./answer-bar.js";
+import { QuestionRequestCard } from "./question-card.js";
 import { RequestCard } from "./request-card.js";
-import { requestCardAnswers, requestCardHeading } from "./request-answers.js";
-import { requestTitle } from "./docked-requests.js";
 import { beginPendingDelivery, sendPendingMessage } from "./send-pending-message.js";
 import type { ThreadMutationClaim, ThreadMutationGate } from "./thread-mutation-gate.js";
 import { UsageNotice } from "./usage-notice.js";
@@ -154,15 +166,19 @@ export function Composer(props: {
   readonly stopLabel?: string;
   /** Why the model and access settings cannot be changed right now, or null. */
   readonly settingsDisabledReason: string | null;
-  /** Each subagent this Thread's Runs started, by node id, so a Request one asked can say so. */
-  readonly subagentTitles: ReadonlyMap<string, string>;
   readonly threadId: string;
   /** The line under the bar while this Thread's account is out of plan capacity. */
   readonly usageNotice?: UsageLimitNotice | null;
   readonly user: AuthenticatedUser;
   /** Home's composer, which offers the voice button beside the microphone. */
   readonly voice?: boolean;
-  /** Where this Thread's attached files are uploaded; null until the Thread is known. */
+  /**
+   * The pane draws the message this Thread owes in its transcript, with its
+   * own way to send it again, so the bar does not repeat it.
+   */
+  readonly owedInline?: boolean;
+  /** Where the bar puts its way to send the owed message again, for the transcript to offer. */
+  readonly retryRef?: RefObject<(() => void) | null>;
 }): ReactNode {
   const aiSharing = useAiSharing();
   const surface = useMemo(
@@ -182,6 +198,8 @@ export function Composer(props: {
   const currentOwner = useRef(owner);
   currentOwner.current = owner;
   const selection = useRef({ start: text.length, end: text.length });
+  // The caret, as state only so an `@` it follows opens the reference picker.
+  const [caret, setCaret] = useState(text.length);
   const speechView = dictationView(dictationState, owner);
   const preview = speechView.preview;
   const dictating = ["starting", "listening", "finishing"].includes(speechView.phase);
@@ -205,7 +223,7 @@ export function Composer(props: {
   const [failure, setFailure] = useState<string | null>(null);
   const [draftFailure, setDraftFailure] = useState<string | null>(null);
   const [focused, setFocused] = useState(false);
-  const input = useRef<TextInputInstance>(null);
+  const input = useRef<ComposerEditorHandle>(null);
   // Out of view, the field lets go of the keyboard: nothing is typed where it
   // cannot be seen.
   useEffect(() => {
@@ -275,21 +293,13 @@ export function Composer(props: {
   const readOnly = done === "closed" || (props.readOnly ?? false);
   const disabled = props.disabledReason !== null || !props.canRespond || readOnly;
   const textHidden = surface !== null && surface.textRole === "hidden";
-  // One open question the Run is holding on is answered in this bar. A durable
-  // Request leaves the field to messages, as it always has, and answers in its sheet.
-  const typedField =
-    surface === null ||
-    readOnly ||
-    surface.denied !== null ||
-    surface.request.mode !== "live" ||
-    // The card is what says which subagent is asking.
-    (surface.request.originatingNodeId !== undefined &&
-      props.subagentTitles.has(surface.request.originatingNodeId))
-      ? null
-      : (() => {
-          const answers = requestCardAnswers(surface.request, false);
-          return answers.kind === "type" ? answers.field : null;
-        })();
+  // A question the viewer can answer turns this bar into its answer field,
+  // unless a message is already being written here: that draft keeps the bar
+  // until it is sent or emptied, or the person chooses to answer instead.
+  const question = surface !== null && surface.textRole === "answer" && !readOnly ? surface : null;
+  const holdsDraft = text.trim() !== "" || staged.items.length > 0 || quote !== null;
+  const [answerInstead, setAnswerInstead] = useState<string | null>(null);
+  const answering = question !== null && (!holdsDraft || answerInstead === question.request.id);
   // Which control the bar shows, and whether its settings row is open, is
   // arithmetic over the state above — including the rule that keeps one message
   // in flight at a time, because a second claim would be a second key for a
@@ -313,6 +323,16 @@ export function Composer(props: {
   const canSend =
     view.canSend || (dictating && !disabled && !sending && pending === null && attachmentsReady);
   const requestBlocked = disabled || sending || pending !== null;
+  // A typed `@` offers references to put in the words, until the caret leaves it.
+  const referenceQuery =
+    focused && !dictating && !disabled && !textHidden && !answering
+      ? activeReferenceQuery(displayedText, caret)
+      : null;
+  // Read when the picker opens and as the query narrows; nothing subscribes while it is closed.
+  const referenceSections =
+    referenceQuery === null
+      ? []
+      : personalReferenceSections(hostClient.getSnapshot(), referenceQuery.query, threadId);
   const changeText = (next: string): void => {
     draftText.current = next;
     const write = ++draftWrite.current;
@@ -327,24 +347,48 @@ export function Composer(props: {
       },
     );
   };
+  /** Puts other words in the field outright; a keystroke still on its way cannot undo it. */
+  const replaceText = (next: string): void => {
+    changeText(next);
+    const editor = input.current;
+    editor?.restore({
+      composing: false,
+      generation: editor.readSnapshot().generation + 1,
+      selection: { start: next.length, end: next.length },
+      text: next,
+    });
+  };
 
+  // Dictation shows its words in the field without making them the draft or an undo
+  // step; when it ends the field returns to the draft, with the words if they were kept.
   const committedSelection = useRef<{ text: string; start: number; end: number } | null>(null);
+  const dictationBase = useRef(selection.current);
+  const previewing = useRef(false);
   useEffect(() => {
-    const caret = committedSelection.current;
-    if (caret && displayedText === caret.text) {
-      input.current?.setSelection(caret.start, caret.end);
-      committedSelection.current = null;
-    }
-  }, [displayedText, preview]);
-  useEffect(() => {
+    const editor = input.current;
     if (preview) {
+      previewing.current = true;
       selection.current = preview.selection;
-      input.current?.setSelection(preview.selection.start, preview.selection.end);
+      editor?.preview({ ...editor.readSnapshot(), composing: false, ...preview });
+      return;
     }
+    if (!previewing.current) return;
+    previewing.current = false;
+    const committed = committedSelection.current;
+    committedSelection.current = null;
+    const next = draftText.current;
+    const at = committed?.text === next ? committed : dictationBase.current;
+    if (editor === null) return;
+    editor.restore({
+      composing: false,
+      generation: editor.readSnapshot().generation,
+      selection: { start: Math.min(at.start, next.length), end: Math.min(at.end, next.length) },
+      text: next,
+    });
   }, [preview?.text]);
   useEffect(() => {
-    if (readOnly || textHidden) dictation.leave(owner);
-  }, [readOnly, textHidden, dictation, owner]);
+    if (readOnly || textHidden || answering) dictation.leave(owner);
+  }, [readOnly, textHidden, answering, dictation, owner]);
   const phase = speechView.phase;
   const notice = speechView.notice?.message ?? null;
   const previousPhase = useRef(phase);
@@ -374,10 +418,13 @@ export function Composer(props: {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     dictation.start({
       owner,
-      read: () => ({
-        text: drafts.readDraft(deploymentId, userId, threadId)?.text ?? "",
-        selection: selection.current,
-      }),
+      read: () => {
+        dictationBase.current = selection.current;
+        return {
+          text: drafts.readDraft(deploymentId, userId, threadId)?.text ?? "",
+          selection: selection.current,
+        };
+      },
       commit: (next, caret) => {
         selection.current = caret;
         if (mounted.current && currentOwner.current === owner)
@@ -421,7 +468,7 @@ export function Composer(props: {
   useEffect(() => {
     if (restore === null) return;
     const current = draftText.current;
-    if (restore.text) changeText(current.trim() ? `${restore.text}\n${current}` : restore.text);
+    if (restore.text) replaceText(current.trim() ? `${restore.text}\n${current}` : restore.text);
     // A restore without a quote leaves the one already standing; only an
     // explicit null takes it away.
     if (restore.quote !== undefined) changeQuote(restore.quote);
@@ -437,7 +484,7 @@ export function Composer(props: {
     setRefused(null);
     if (refused.text) {
       const current = draftText.current;
-      changeText(current.trim() ? `${refused.text}\n${current}` : refused.text);
+      replaceText(current.trim() ? `${refused.text}\n${current}` : refused.text);
     }
     // Each file returns with this phone's copy when it has one, and by
     // reference to the Host's when it does not.
@@ -484,6 +531,7 @@ export function Composer(props: {
     async (command: PendingCommand): Promise<void> => {
       const endDelivery = beginPendingDelivery(drafts, deploymentId, userId, command);
       if (endDelivery === null) return;
+      let failed = false;
       try {
         if (
           !(await sendPendingMessage(
@@ -492,8 +540,11 @@ export function Composer(props: {
             () => authorizeAiSharing(aiSharing, hostClient),
             notifications.registration,
           ))
-        )
+        ) {
+          // Not shared, so not sent: still owed, and offered again.
+          failed = true;
           return;
+        }
         // Acknowledged, and only now: until this line the command is still the
         // one this phone owes the Host.
         const cleared = await drafts.clearPending(
@@ -507,11 +558,9 @@ export function Composer(props: {
         if (cleared) {
           forgetDraftFiles({ deploymentId, threadId, userId }, command.localUris ?? []);
         }
-        // Felt, because the message leaves the composer before the transcript
-        // shows it and the hand has usually moved on by then.
-        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       } catch (error) {
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        failed = true;
         if (isHostRefusal(error) && mounted.current) {
           // The Host answered no, so the message is no longer owed: its words
           // and files go back to the draft to be changed, and the next send is
@@ -526,7 +575,14 @@ export function Composer(props: {
         }
         setFailure(operationDetail(error, "That message did not reach your deployment."));
       } finally {
-        endDelivery();
+        // Still owed after a failure, it says so where it is drawn until the next try.
+        endDelivery(
+          failed &&
+            drafts.readPending(deploymentId, userId, threadId)?.idempotencyKey ===
+              command.idempotencyKey
+            ? "failed"
+            : undefined,
+        );
       }
     },
     [aiSharing, deploymentId, drafts, hostClient, notifications, threadId, userId],
@@ -566,7 +622,19 @@ export function Composer(props: {
     void deliverExclusively(pending);
   }, [deliverExclusively, pending, props.canRespond, readOnly]);
 
-  const sendMessage = async (sourceText: string): Promise<void> => {
+  const returnHint = useHostSelector(
+    hostClient,
+    (snapshot) => snapshot.threads.find((t) => t.id === threadId)?.returnHint,
+  );
+  const compactionOffer = useCompactionOffer(
+    returnHint,
+    `${deploymentId}/${userId}/${threadId}`,
+    useMobileClient().usageNotices,
+  );
+  const sendMessage = async (
+    sourceText: string,
+    choice?: import("@opensteer/core").CompactionSendChoice,
+  ): Promise<void> => {
     if (
       !canSend ||
       inFlight.current ||
@@ -602,6 +670,7 @@ export function Composer(props: {
       // still hand a refused message's files back, or delete the copies once
       // the Host has them.
       await drafts.claimPending(deploymentId, userId, threadId, {
+        ...(choice || compactionOffer.visible ? { compaction: choice ?? "compactFirst" } : {}),
         ...(attachments.length > 0
           ? { attachments, localUris: carried.map((item) => item.localUri) }
           : {}),
@@ -611,8 +680,14 @@ export function Composer(props: {
         text: sourceText.trim(),
         threadId,
       });
-      // Do not erase words typed while the durable claim was being written.
-      if (draftText.current === sourceText) changeText("");
+      // Felt as it is written down, which is when the transcript draws it.
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      if (choice === "keepFullHistory") compactionOffer.dismiss();
+      // The claim took the draft's words; the field empties unless words were
+      // typed while it was being written. Read the store, not the render's copy,
+      // which the claim may already have emptied.
+      const left = drafts.readDraft(deploymentId, userId, threadId)?.text ?? "";
+      if (left === "" || left === sourceText) replaceText("");
       changeQuote(null);
       setDeclinedPage(null);
       const claimed = drafts.readPending(deploymentId, userId, threadId);
@@ -639,22 +714,23 @@ export function Composer(props: {
   const latestSend = useRef({ canSend, sendMessage });
   latestSend.current = { canSend, sendMessage };
   const finishingSend = useRef(false);
-  const send = async (): Promise<void> => {
+  const send = async (choice?: import("@opensteer/core").CompactionSendChoice): Promise<void> => {
     if (finishingSend.current) return;
     finishingSend.current = true;
     try {
+      const generation = input.current?.readSnapshot().generation ?? null;
       const result = dictating ? await dictation.stop(owner) : { kind: "idle" as const };
-      if (
-        result.kind === "failed" ||
-        result.kind === "aborted" ||
-        !mounted.current ||
-        !visible.current ||
-        !latestSend.current.canSend
-      )
-        return;
-      await latestSend.current.sendMessage(
-        result.kind === "committed" ? result.text : draftText.current,
-      );
+      if (result.kind === "failed" || result.kind === "aborted" || !mounted.current) return;
+      let words = result.kind === "committed" ? result.text : draftText.current;
+      // The field's last keystroke, or an autocorrection the tap on Send accepted, can
+      // still be on its way to React: read what the field holds now.
+      if (result.kind !== "committed" && input.current !== null && generation !== null) {
+        const flushed = await input.current.flushPendingInput(generation).catch(() => null);
+        if (flushed === null || flushed.composing) return;
+        words = flushed.text;
+      }
+      if (!mounted.current || !visible.current || !latestSend.current.canSend) return;
+      await latestSend.current.sendMessage(words, choice);
     } finally {
       finishingSend.current = false;
     }
@@ -665,6 +741,14 @@ export function Composer(props: {
     attempted.current = pending.idempotencyKey;
     void deliverExclusively(pending);
   };
+  const { retryRef } = props;
+  useLayoutEffect(() => {
+    if (retryRef === undefined) return;
+    retryRef.current = retry;
+    return () => {
+      retryRef.current = null;
+    };
+  });
 
   const stop = async (): Promise<void> => {
     if (stoppingRef.current || props.runStopping || !props.canRespond) return;
@@ -687,6 +771,14 @@ export function Composer(props: {
     props.disabledReason === null &&
     !inFlight.current &&
     drafts.readPending(deploymentId, userId, threadId) === null;
+
+  const requestDisabledReason = readOnly
+    ? "This thread is archived."
+    : props.disabledReason !== null
+      ? props.disabledReason
+      : sending || pending !== null
+        ? "Finish sending your message before responding."
+        : null;
 
   const hold = useCallback(() => setPresenting(true), []);
   const settle = useCallback(() => setPresenting(false), []);
@@ -756,7 +848,27 @@ export function Composer(props: {
     );
   return (
     <View style={styles.dock}>
-      {surface === null || typedField !== null ? null : (
+      {surface === null ? null : question !== null ? (
+        <Animated.View entering={appear}>
+          <QuestionRequestCard
+            canRespond={props.canRespond && !requestBlocked}
+            canStartResponse={canStartRequestResponse}
+            composer={answering ? "answer" : "message"}
+            deploymentId={deploymentId}
+            disabledReason={requestDisabledReason}
+            highlighted={question.request.id === props.highlightRequestId}
+            hostClient={hostClient}
+            key={question.request.id}
+            mutationGate={props.mutationGate}
+            {...(answering
+              ? holdsDraft
+                ? { onBackToMessage: () => setAnswerInstead(null) }
+                : {}
+              : { onAnswerHere: () => setAnswerInstead(question.request.id) })}
+            surface={question}
+          />
+        </Animated.View>
+      ) : (
         <Animated.View entering={appear}>
           <RequestCard
             canRespond={props.canRespond && !requestBlocked}
@@ -765,15 +877,7 @@ export function Composer(props: {
             onPresent={hold}
             onSettle={settle}
             canStartResponse={canStartRequestResponse}
-            disabledReason={
-              readOnly
-                ? "This thread is archived."
-                : props.disabledReason !== null
-                  ? props.disabledReason
-                  : sending || pending !== null
-                    ? "Finish sending your message before responding."
-                    : null
-            }
+            disabledReason={requestDisabledReason}
             hostClient={props.hostClient}
             key={surface.request.id}
             mutationGate={props.mutationGate}
@@ -781,7 +885,7 @@ export function Composer(props: {
           />
         </Animated.View>
       )}
-      {pending === null ? null : (
+      {pending === null || props.owedInline === true ? null : (
         <Animated.View entering={enter} exiting={exit}>
           <PendingMessage
             attachments={pending.attachments ?? []}
@@ -807,7 +911,7 @@ export function Composer(props: {
           </AppText>
         </Animated.View>
       )}
-      {quote === null || view.readOnly ? null : (
+      {quote === null || view.readOnly || answering ? null : (
         <View accessibilityLabel="Quoted update" style={styles.quote}>
           <View style={styles.quoteText}>
             <AppText numberOfLines={1} role="secondaryMedium">
@@ -832,7 +936,7 @@ export function Composer(props: {
           </Pressable>
         </View>
       )}
-      {view.readOnly ? null : (
+      {view.readOnly || answering ? null : (
         <AttachmentStrip
           disabled={disabled}
           items={staged.items}
@@ -852,21 +956,48 @@ export function Composer(props: {
           Done · Sending reopens it
         </AppText>
       ) : null}
+      {compactionOffer.visible && !answering ? (
+        <View style={{ padding: space[14] }}>
+          <AppText role="caption" tone="muted">
+            {compactionOfferText}
+          </AppText>
+          <Pressable
+            accessibilityRole="button"
+            disabled={!canSend}
+            onPress={() => void send("compactFirst")}
+            style={{ minHeight: touchTarget, justifyContent: "center" }}
+          >
+            <AppText role="caption">Summarize and send</AppText>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            disabled={!canSend}
+            onPress={() => void send("keepFullHistory")}
+            style={{ minHeight: touchTarget, justifyContent: "center" }}
+          >
+            <AppText role="caption">Send with full history</AppText>
+          </Pressable>
+        </View>
+      ) : null}
+      {referenceQuery === null ? null : (
+        <ComposerReferencePicker
+          onPick={(row) => insertReference(input.current, referenceQuery, caret, row.markdown)}
+          sections={referenceSections}
+        />
+      )}
       <DictationStatus controller={dictation} snapshot={dictationState} owner={owner} />
       <VoiceDock />
-      {surface !== null && typedField !== null ? (
+      {answering ? (
         <AnswerBar
           canRespond={props.canRespond && !requestBlocked}
           canStartResponse={canStartRequestResponse}
-          fieldId={typedField.id}
           gate={props.mutationGate}
           hostClient={hostClient}
-          key={surface.request.id}
+          key={question.request.id}
           onStop={props.running ? () => void stop() : null}
-          {...requestCardHeading(surface.request, requestTitle(surface.request))}
           stopBusy={stopping || props.runStopping}
           stopLabel={props.stopLabel ?? "Stop this run"}
-          surface={surface}
+          surface={question}
         />
       ) : (
         <ComposerBar
@@ -882,15 +1013,28 @@ export function Composer(props: {
             ? {}
             : {
                 leading: (
-                  <NativeMenu
-                    accessibilityHint="Change the model, and what else can be done here"
-                    accessibilityLabel="Thread actions"
-                    onPresent={hold}
-                    onSettle={settle}
-                    options={menuOptions}
-                  >
-                    <ComposerGlyph icon="plus" />
-                  </NativeMenu>
+                  <View style={styles.leading}>
+                    <NativeMenu
+                      accessibilityHint="Change the model, and what else can be done here"
+                      accessibilityLabel="Thread actions"
+                      onPresent={hold}
+                      onSettle={settle}
+                      options={menuOptions}
+                    >
+                      <ComposerGlyph icon="plus" />
+                    </NativeMenu>
+                    {view.shape === "rounded" && view.showField && !textHidden ? (
+                      <Pressable
+                        accessibilityHint="Puts a link to a task, automation or computer in your message"
+                        accessibilityLabel="Add a reference"
+                        accessibilityRole="button"
+                        disabled={disabled}
+                        onPress={() => startReference(input.current)}
+                      >
+                        <ComposerGlyph icon="at" muted={disabled} />
+                      </Pressable>
+                    ) : null}
+                  </View>
                 ),
               })}
           field={
@@ -910,32 +1054,32 @@ export function Composer(props: {
               <Pressable
                 accessible={false}
                 onPress={() => input.current?.focus()}
+                // A touch that reaches the field is proof no menu is over it any
+                // more: iOS gives no dismissal event for a native menu, and this
+                // is the moment the bar can stop holding its shape for one.
+                onTouchStart={settle}
                 style={styles.lane}
               >
-                <TextInput
+                <ComposerEditor
                   accessibilityLabel="Message"
-                  cursorColor={color.ember}
-                  maxFontSizeMultiplier={controlFontScaleLimit}
-                  multiline
+                  maxHeight={fieldMaxHeight}
+                  maxImageBytes={attachmentMaxBytes}
                   onBlur={() => setFocused(false)}
                   onChangeText={editText}
-                  onSelectionChange={(event) => {
-                    selection.current = event.nativeEvent.selection;
-                  }}
                   onFocus={() => {
                     setFocused(true);
                     settle();
                   }}
-                  // A touch that reaches the field is proof no menu is over it any
-                  // more: iOS gives no dismissal event for a native menu, and this
-                  // is the moment the bar can stop holding its shape for one.
-                  onTouchStart={settle}
+                  onPasteImages={(pasted) => void staged.paste(pasted)}
+                  onSelectionChange={(next) => {
+                    selection.current = next;
+                    setCaret(next.start);
+                  }}
+                  paddingVertical={fieldPadding}
                   placeholder={pageInBar === null ? props.placeholder : "Ask about this page…"}
-                  placeholderTextColor={color.muted}
                   ref={input}
-                  selectionColor={color.ember}
-                  style={[styles.input, { maxHeight: fieldMaxHeight }]}
-                  value={displayedText}
+                  scope="personal"
+                  value={text}
                 />
               </Pressable>
             ) : (
@@ -975,7 +1119,13 @@ export function Composer(props: {
                             busy={sending}
                             disabled={!canSend}
                             kind="send"
-                            label={sending ? "Sending" : "Send message"}
+                            label={
+                              sending
+                                ? "Sending"
+                                : compactionOffer.visible
+                                  ? "Summarize and send"
+                                  : "Send message"
+                            }
                             onPress={() => void send()}
                           />
                         )}
@@ -1114,12 +1264,11 @@ function IncludedPage(props: {
 }
 
 /**
- * The field's padding, the same above and below. One line in the system font's
- * own height — about 20 points at the default size — plus this on each side
- * fills the 36-point lane, so a wrapped last line stays level with the controls
- * the way the first line is.
+ * The field's padding, the same above and below. One 24-point body line plus
+ * this on each side fills the 36-point lane, so a wrapped last line stays level
+ * with the controls the way the first line is.
  */
-const fieldPadding = space[8];
+const fieldPadding = space[6];
 
 const styles = StyleSheet.create({
   // The update the next message answers. The excerpt is shown so the reader
@@ -1152,6 +1301,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[6],
   },
   disabled: { opacity: 0.45 },
+  leading: { flexDirection: "row" },
   dock: { gap: space[8] },
   failure: { paddingHorizontal: space[12] },
   pending: {
@@ -1163,22 +1313,6 @@ const styles = StyleSheet.create({
   },
   pendingFoot: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: space[12] },
   pendingRetry: { justifyContent: "center", minHeight: touchTarget },
-  // No `lineHeight`. React Native gives a multiline iOS field that value as a
-  // paragraph's minimum and maximum line height and, unlike `Text`, never adds
-  // the baseline offset that centres the glyphs in it — so UIKit puts all the
-  // extra height above them and the words and the placeholder sit low in their
-  // own line. The font's own line height has nothing to redistribute. The field
-  // grows line by line from there, then scrolls inside itself rather than
-  // pushing the transcript off the screen.
-  input: {
-    color: color.text,
-    fontSize: type.body.fontSize,
-    fontWeight: type.body.fontWeight,
-    includeFontPadding: false,
-    paddingHorizontal: 0,
-    paddingVertical: fieldPadding,
-    textAlignVertical: "top",
-  },
   lane: { flex: 1, justifyContent: "center", minHeight: composerLaneHeight },
   page: {
     ...material.control,

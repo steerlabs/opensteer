@@ -53,6 +53,7 @@ it("bounds Unicode subjects and retains the newest fifty across working, ready a
             id: createId("thread"),
             title: "🌺".repeat(1000),
             listed: true,
+            pendingRequests: 0,
             status: index % 3 === 0 ? "running" : "idle",
             doneAt: index % 3 === 2 ? new Date().toISOString() : null,
             askedAt: new Date(index * 1000).toISOString(),

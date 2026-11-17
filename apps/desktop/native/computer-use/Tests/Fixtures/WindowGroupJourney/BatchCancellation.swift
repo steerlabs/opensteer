@@ -4,7 +4,7 @@ import ApplicationServices
 extension WireJourney {
   /// Real protocol-10 batches, not an obsolete wait action. The receiver trace
   /// establishes actual partial delivery and proves the final click never ran.
-  func batchCancellation(app: AppIdentity, window: CGWindowID, deadline: Bool) async throws {
+  func batchCancellation(app: AppIdentity, window: String, deadline: Bool) async throws {
     let session =
       deadline
       ? "cus_55555555-5555-4555-8555-555555555555" : "cus_44444444-4444-4444-8444-444444444444"
@@ -14,7 +14,7 @@ extension WireJourney {
     _ = try await request(
       "session.open", ["sessionId": session, "threadTitle": "Batch cancellation"])
     let bound = try await request(
-      "session.bind", ["sessionId": session, "app": target, "window": window])
+      "session.bind", ["sessionId": session, "app": target, "windowId": window])
     let ref = try ((bound["window"] as? [String: Any])?["ref"] as? String).unwrap("batch ref")
     let observed = try await request(
       "session.observe",

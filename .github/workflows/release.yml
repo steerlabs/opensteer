@@ -123,7 +123,13 @@ jobs:
       OPENSTEER_DESKTOP_TARGET_ARCH: arm64
       OPENSTEER_RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
       OPENSTEER_SOURCE_REVISION: ${{ needs.preflight.outputs.sha }}
+      OPENSTEER_MAC_SIGN_TIMINGS: "1"
     steps:
+      # The runner context is unavailable in job env, so the path is set from a step.
+      - name: Locate release phase timings
+        run: |
+          echo "OPENSTEER_RELEASE_TIMING_FILE=$RUNNER_TEMP/release-timing.jsonl" >> "$GITHUB_ENV"
+          echo "OPENSTEER_NATIVE_BUILD_CACHE_DIRECTORY=$RUNNER_TEMP/native-products" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.preflight.outputs.sha }}
@@ -142,6 +148,10 @@ jobs:
             apps/runner/native-fs-helper/go.sum
             apps/desktop/process-supervisor/go.mod
             apps/desktop/process-supervisor/go.sum
+            apps/desktop/iphone-bridge/go.mod
+            apps/desktop/iphone-bridge/go.sum
+            apps/desktop/iphone-bridge/third_party/go-ios/go.mod
+            apps/desktop/iphone-bridge/third_party/go-ios/go.sum
             apps/desktop/personal-runtime-launcher/go.mod
       - uses: actions/setup-java@816722acf8fd27c9d1e9ae6ee6085da07e0d44c1
         with:
@@ -160,7 +170,6 @@ jobs:
           xcrun clang++ --version
           { xcodebuild -version; xcrun --show-sdk-version; xcrun clang++ --version; swift --version; uname -m; sw_vers; } > "$RUNNER_TEMP/release-toolchain"
           echo "toolchain=$(shasum -a 256 "$RUNNER_TEMP/release-toolchain" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-          echo "swift=$(git ls-tree -r HEAD -- apps/desktop/native apps/desktop/scripts packages scripts/generate-apple-data-contracts.ts package.json pnpm-lock.yaml | shasum -a 256 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           java -version 2> "$RUNNER_TEMP/release-java"
           echo "java=$(shasum -a 256 "$RUNNER_TEMP/release-java" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       # No restore prefixes: PR caches and other toolchains cannot supply release products.
@@ -170,14 +179,30 @@ jobs:
         with:
           path: ${{ runner.temp }}/macos-build/postgres
           key: release-only-postgres-v1-${{ runner.arch }}-${{ steps.release-cache.outputs.toolchain }}-${{ hashFiles('scripts/build-desktop-macos.ts', '.github/workflows/release.yml') }}
-      - name: Cache release SwiftPM objects
+      - name: Fingerprint unsigned Swift products
+        id: native-cache
+        if: hashFiles('apps/desktop/scripts/release-native-cache-inputs.ts') != ''
+        run: pnpm exec tsx apps/desktop/scripts/release-native-cache-inputs.ts
+      # Main insiders seed the default-branch scope, also readable by tag runs.
+      # Cache only the selected unsigned executables and their verified input proof.
+      - name: Cache unsigned Computer Use compiler products
+        if: steps.native-cache.outputs.computer-use != ''
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
-          path: |
-            apps/desktop/native/computer-use/.build
-            apps/desktop/native/passwords/.build
-            apps/desktop/native/dictation/.build
-          key: release-only-swift-v1-${{ runner.arch }}-${{ steps.release-cache.outputs.toolchain }}-${{ steps.release-cache.outputs.swift }}
+          path: ${{ runner.temp }}/native-products/computer-use/${{ steps.native-cache.outputs.computer-use }}
+          key: release-only-native-v2-computer-use-${{ steps.native-cache.outputs.computer-use }}
+      - name: Cache unsigned Passwords compiler products
+        if: steps.native-cache.outputs.passwords != ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/native-products/passwords/${{ steps.native-cache.outputs.passwords }}
+          key: release-only-native-v2-passwords-${{ steps.native-cache.outputs.passwords }}
+      - name: Cache unsigned Dictation compiler products
+        if: steps.native-cache.outputs.dictation != ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/native-products/dictation/${{ steps.native-cache.outputs.dictation }}
+          key: release-only-native-v2-dictation-${{ steps.native-cache.outputs.dictation }}
       - name: Cache Gradle dependencies for releases
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
@@ -185,6 +210,22 @@ jobs:
             ~/.gradle/caches/modules-2
             ~/.gradle/wrapper/dists
           key: release-only-gradle-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.release-cache.outputs.java }}-${{ hashFiles('apps/agent-phone/**', 'scripts/build-agent-phone.ts', '.github/workflows/release.yml') }}
+      - name: Checkout launch tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: launch-tooling
+          persist-credentials: false
+      - name: Install launch tooling
+        run: |
+          mv "$GITHUB_WORKSPACE/launch-tooling" "$RUNNER_TEMP/launch-tooling"
+          cd "$RUNNER_TEMP/launch-tooling"
+          pnpm install --frozen-lockfile --prefer-offline
+      - name: Probe launch observer
+        timeout-minutes: 1
+        run: |
+          cd "$RUNNER_TEMP/launch-tooling"
+          pnpm exec tsx scripts/smoke-desktop-release-python.ts
       - name: Build signed Agent Phone
         env:
           KEYSTORE_BASE64: ${{ secrets.OPENSTEER_AGENT_PHONE_KEYSTORE_BASE64 }}
@@ -230,6 +271,7 @@ jobs:
           # On macOS 15 codesign --keychain still fails with "could not be found in
           # the keychain" unless that keychain is on the user search list.
           # Deleting the keychain afterwards also removes it from the list.
+          # shellcheck disable=SC2046 # The existing search list is one keychain path per word.
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)".*/\1/p')
           echo "::add-mask::$identity"
@@ -242,17 +284,6 @@ jobs:
           xcrun stapler validate "$app"
           spctl -a -vv -t exec "$app"
           ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/Opensteer.zip"
-      - name: Checkout launch tooling
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.sha }}
-          path: launch-tooling
-          persist-credentials: false
-      - name: Install launch tooling
-        run: |
-          mv "$GITHUB_WORKSPACE/launch-tooling" "$RUNNER_TEMP/launch-tooling"
-          cd "$RUNNER_TEMP/launch-tooling"
-          pnpm install --frozen-lockfile --prefer-offline
       - name: Launch check
         # The script enforces 180 seconds and owns process cleanup.
         timeout-minutes: 4
@@ -273,6 +304,13 @@ jobs:
         with:
           name: desktop-launch-${{ needs.preflight.outputs.channel }}
           path: ${{ runner.temp }}/launch-check/
+          if-no-files-found: ignore
+      - name: Release phase timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: desktop-timings-${{ needs.preflight.outputs.channel }}
+          path: ${{ runner.temp }}/release-timing.jsonl
           if-no-files-found: ignore
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -484,27 +522,21 @@ jobs:
           TAG: ${{ needs.preflight.outputs.tag }}
           SOURCE_SHA: ${{ needs.preflight.outputs.sha }}
         run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG" --source-sha "$SOURCE_SHA"
+  # Builds beside the desktop build: images only deploy through the manual promote-team-servers
+  # workflow, so nothing here waits for the Beta to publish.
   team-provisioner:
-    # Hosted teams follow Stable: once Tim publishes it, the provisioner rolls every hosted team
-    # to this release's team images, one team at a time.
-    needs: [preflight, team-images, publish-stable]
-    if: ${{ !cancelled() && needs.publish-stable.result == 'success' && needs.team-images.result == 'success' }}
+    needs: [preflight, team-images]
+    if: ${{ !cancelled() && needs.preflight.outputs.channel == 'beta' && needs.preflight.outputs.superseded != 'true' && needs['team-images'].result == 'success' }}
     runs-on: ubuntu-latest
-    environment: teams
     timeout-minutes: 30
     permissions:
       contents: read
-      id-token: write
       packages: write
     env:
       IMAGE: ghcr.io/steerlabs/opensteer-team-provisioner
       SHA: ${{ needs.preflight.outputs.sha }}
       VERSION: ${{ needs.preflight.outputs.version }}
       TEAM_HOST_IMAGE: ${{ needs.team-images.outputs.host_image }}
-      TEAM_GATEWAY_IMAGE: ${{ needs.team-images.outputs.gateway_image }}
-      # Made outside this repo for the `teams` environment.
-      TEAMS_WORKLOAD_IDENTITY_PROVIDER: projects/920572344872/locations/global/workloadIdentityPools/github/providers/github-teams-deployer
-      TEAMS_DEPLOYER: gha-teams-deployer@opensteer-admin.iam.gserviceaccount.com
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -523,17 +555,16 @@ jobs:
           docker buildx build --file deploy/container/Containerfile --target team-provisioner \
             --platform linux/amd64 --build-arg OPENSTEER_RELEASE_VERSION="$VERSION" \
             --build-arg OPENSTEER_SOURCE_REVISION="$SHA" --tag "$IMAGE:$VERSION" \
+            --label "org.opencontainers.image.revision=$SHA" \
             --metadata-file "$RUNNER_TEMP/provisioner.json" --push .
           digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/provisioner.json")
-          echo "PROVISIONER_IMAGE=$IMAGE@$digest" >> "$GITHUB_ENV"
-      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
-        with:
-          workload_identity_provider: ${{ env.TEAMS_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ env.TEAMS_DEPLOYER }}
-      - uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395
-        with:
-          cluster_name: teams-1
-          location: us-west1
-          project_id: opensteer-prod
-          use_dns_based_endpoint: true
-      - run: bash .github/scripts/deploy-team-provisioner.sh "$PROVISIONER_IMAGE" "$TEAM_HOST_IMAGE" "$TEAM_GATEWAY_IMAGE" "$SHA"
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          {
+            echo "### Promote these team servers"
+            echo '```sh'
+            echo "gh workflow run promote-team-servers.yml -R \"$GITHUB_REPOSITORY\" \\"
+            echo "  -f provisioner_image=$IMAGE@$digest \\"
+            echo "  -f host_image=$TEAM_HOST_IMAGE \\"
+            echo "  -f source_revision=$SHA"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

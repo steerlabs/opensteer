@@ -8,7 +8,10 @@ import { desktopBridge } from "../desktop/desktop-bridge.js";
 import { browserClientLifecycle } from "./browser-lifecycle.js";
 
 export interface BrowserHostClientOptions {
+  readonly desktopMedia?: boolean;
+  readonly assetRoute?: HttpHostClientOptions["assetRoute"];
   readonly passkeys?: HttpHostClientOptions["passkeys"];
+  readonly iphoneSetup?: HttpHostClientOptions["iphoneSetup"];
   readonly capabilities: Exclude<HttpHostClientOptions["capabilities"], undefined>;
   /** The Desktop renderer attaches to a selected Deployment rather than to the
    * origin that served this bundle. */
@@ -28,8 +31,11 @@ export interface BrowserHostClientOptions {
  */
 export function createBrowserHostClient(options: BrowserHostClientOptions): HttpHostClient {
   return new HttpHostClient({
+    ...(options.assetRoute ? { assetRoute: options.assetRoute } : {}),
+    ...(options.desktopMedia ? { desktopMedia: true } : {}),
     deviceAccessRequests: "include",
     ...(options.passkeys ? { passkeys: options.passkeys } : {}),
+    ...(options.iphoneSetup ? { iphoneSetup: options.iphoneSetup } : {}),
     capabilities: options.capabilities ?? null,
     baseUrl: options.baseUrl ?? window.location.origin,
     ...(options.fetch ? { fetch: options.fetch } : {}),
@@ -43,8 +49,18 @@ export function createBrowserHostClient(options: BrowserHostClientOptions): Http
         ?.reportRealtimeDiagnostic?.(record)
         .catch(() => undefined),
     viewerPlatform: /Mac|iPhone|iPad|iPod/u.test(navigator.platform) ? "mac" : "pc",
+    origin: { app: desktopBridge() ? "desktop" : "web", device: browserDevice() },
     ...(options.webSocketFactory ? { webSocketFactory: options.webSocketFactory } : {}),
   });
+}
+
+/** iPadOS reports itself as a Mac, so touch tells the two apart. */
+function browserDevice(): "phone" | "tablet" | "computer" {
+  const agent = navigator.userAgent;
+  if (/iPad|Tablet/u.test(agent) || (/Macintosh/u.test(agent) && navigator.maxTouchPoints > 1))
+    return "tablet";
+  if (/Android/u.test(agent)) return /Mobile/u.test(agent) ? "phone" : "tablet";
+  return /Mobi|iPhone|iPod/u.test(agent) ? "phone" : "computer";
 }
 
 /**

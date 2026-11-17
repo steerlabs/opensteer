@@ -1,3 +1,4 @@
+import { BrowserSurfaceIdSchema } from "../packages/core/src/index.js";
 /**
  * Written against CONTRACTS.md before implementation. Failure journeys:
  * Guest copies lose later login; request replays duplicate approvals; restricted
@@ -52,12 +53,12 @@ const reportSchema = z
     replayed: z.object({ requestId: RequestIdSchema, replayed: z.boolean() }).optional(),
     opened: z
       .object({
-        session: z.object({ id: z.string(), profileId: z.string().nullable() }).passthrough(),
+        tabId: z.string(),
       })
       .optional(),
     page: z.object({ signedIn: z.boolean(), url: z.string() }).optional(),
     request: z.object({ requestId: RequestIdSchema }).passthrough().optional(),
-    delegated: z.object({ threadId: ThreadIdSchema }).passthrough().optional(),
+    delegated: z.object({ taskId: ThreadIdSchema }).passthrough().optional(),
     profiles: z
       .object({
         profiles: z.array(profileSchema),
@@ -71,8 +72,7 @@ const reportSchema = z
           .object({
             tabId: z.string(),
             state: z.string(),
-            sessionId: z.string().nullable(),
-            profileId: z.string().nullable().optional(),
+            profile: z.object({ profileId: BrowserProfileIdSchema, name: z.string() }).nullable(),
           })
           .passthrough(),
       )
@@ -312,7 +312,9 @@ async function fulfillNewProfile(
   evidence.observations.push({
     requestId,
     profile,
-    sessionIds: bootstrap.data.browser.groups.rows.map((session) => session.sessionId),
+    sessionIds: (await stack.host.store.listBrowserSessions(bootstrap.data.user.id)).map(
+      (session) => session.id,
+    ),
   });
   if (people) {
     try {
@@ -384,7 +386,12 @@ run("Browser profiles through a whole deployment", () => {
       bootstrap.data.browser.profiles.map(({ name }) => name),
       ["Brex"],
     );
-    equal(evidence, "approval opened no session", bootstrap.data.browser.groups.rows.length, 0);
+    equal(
+      evidence,
+      "approval opened no session",
+      (await stack.host.store.listBrowserSessions(bootstrap.data.user.id)).length,
+      0,
+    );
     const profile = bootstrap.data.browser.profiles[0]!;
     await waitFor(
       async () =>
@@ -400,26 +407,24 @@ run("Browser profiles through a whole deployment", () => {
         client.getSnapshot().browserProfiles.find((row) => row.id === profile.id)?.name,
         "Brex",
       );
-    const opened = await profileTurn(stack, evidence, { open: { profileId: profile.id } });
-    const sessionId = opened.report.opened!.session.id;
+    const opened = await profileTurn(stack, evidence, { open: { profile: profile.id } });
+    const sessionId = (
+      await stack.host.store.database
+        .selectFrom("personalTabs")
+        .select("pageBinding")
+        .where("id", "=", BrowserSurfaceIdSchema.parse(opened.report.opened!.tabId))
+        .executeTakeFirstOrThrow()
+    ).pageBinding!.sessionId;
     await waitFor(
       async () =>
         people[0]!
           .getSnapshot()
-          .browserSessions.some(
-            (session) =>
-              session.id === sessionId &&
-              (session.browserTabs?.sessionTabs(session?.id) ?? []).length,
-          ),
+          .tabs.get(BrowserSurfaceIdSchema.parse(opened.report.opened!.tabId)) !== undefined,
       10_000,
     );
     const client = people[0]!;
-    const pageId = (client
-      .getSnapshot()
-      .browserSessions.find((session) => session.id === sessionId)!
-      .browserTabs?.sessionTabs(
-        client.getSnapshot().browserSessions.find((session) => session.id === sessionId)!.id,
-      ) ?? [])[0]!.id;
+    const pageId = BrowserSurfaceIdSchema.parse(opened.report.opened!.tabId);
+    await client.activateTab(pageId);
     const release = client.retainBrowserWatch(sessionId, pageId);
     try {
       await waitFor(async () => client.browserWatchFrames.get(sessionId, pageId) !== null, 10_000);
@@ -436,7 +441,7 @@ run("Browser profiles through a whole deployment", () => {
     const { stack } = await profileDeployment();
     const main = await profileTurn(stack, evidence, {});
     const delegated = await profileTurn(stack, evidence, { delegate: true }, main.threadId);
-    const childId = delegated.report.delegated!.threadId;
+    const childId = delegated.report.delegated!.taskId;
     let child: Report | undefined;
     await waitFor(async () => {
       const snapshot = await stack.host.store.deploymentSnapshot();
@@ -481,7 +486,7 @@ run("Browser profiles through a whole deployment", () => {
       equal(
         evidence,
         `${kind} does not offer retired sign-in`,
-        report.tools!.includes("browser_sign_in"),
+        report.tools!.some((name) => name === "browser_sign_in" || name === "sign_in"),
         false,
       );
     }
@@ -513,7 +518,7 @@ run("Browser profiles through a whole deployment", () => {
         return continuation !== undefined;
       }, 30_000);
       evidence.observations.push({ continuation, profile: result.profile });
-      const expected = `Request ${result.requestId} was fulfilled. The person chose browser profile "Brex Ops" (${result.profile.id}); use it for this task even if you suggested another. Open it with browser_session_open and profileId ${result.profile.id}, then continue the task.`;
+      const expected = `Request ${result.requestId} was fulfilled. The person chose browser profile "Brex Ops" (${result.profile.id}); use it for this task even if you suggested another. Open a tab with Browser Harness newTab(url, { profile: "${result.profile.id}" }), then continue the task.`;
       equal(
         evidence,
         "continuation identifies Host-created renamed profile",
@@ -560,19 +565,19 @@ run("Browser profiles through a whole deployment", () => {
     const profileId = await createProfile(stack);
     const origin = await fixtureAccount();
     const profiled = await profileTurn(stack, evidence, {
-      open: { profileId },
+      open: { profile: profileId },
       visit: `${origin}/account`,
     });
     const guest = await profileTurn(
       stack,
       evidence,
-      { open: { fresh: true }, visit: `${origin}/account` },
+      { open: { guest: true }, visit: `${origin}/account` },
       profiled.threadId,
     );
     const live = await profileTurn(stack, evidence, { tabs: true }, profiled.threadId);
     const expected = [
-      { sessionId: profiled.report.opened!.session.id, profileId },
-      { sessionId: guest.report.opened!.session.id, profileId: null },
+      { tabId: profiled.report.opened!.tabId, profileId },
+      { tabId: guest.report.opened!.tabId, profileId: null },
     ];
     // Observe both states before asserting identity so the base failure also
     // leaves verifiable evidence for asleep rows and the no-wake guarantee.
@@ -588,11 +593,21 @@ run("Browser profiles through a whole deployment", () => {
       live.report.tabs!.map(() => "asleep"),
     );
     for (const identity of expected) {
-      const tab = live.report.tabs!.find((tab) => tab.sessionId === identity.sessionId);
-      expect(tab, `live tab for ${identity.sessionId}`).toBeDefined();
-      equal(evidence, `open ${identity.sessionId} identity`, tab!.profileId, identity.profileId);
+      const tab = live.report.tabs!.find((tab) => tab.tabId === identity.tabId);
+      expect(tab, `live tab for ${identity.tabId}`).toBeDefined();
+      equal(
+        evidence,
+        `open ${identity.tabId} identity`,
+        tab!.profile?.profileId ?? null,
+        identity.profileId,
+      );
       const sleeping = asleep.report.tabs!.find((row) => row.tabId === tab!.tabId);
-      equal(evidence, `asleep ${tab!.tabId} identity`, sleeping?.profileId, identity.profileId);
+      equal(
+        evidence,
+        `asleep ${tab!.tabId} identity`,
+        sleeping?.profile?.profileId ?? null,
+        identity.profileId,
+      );
     }
   });
 
@@ -631,7 +646,7 @@ run("Browser profiles through a whole deployment", () => {
     equal(
       evidence,
       "no session opened to trigger invalidation",
-      bootstrap.data.browser.groups.rows.length,
+      (await stack.host.store.listBrowserSessions(bootstrap.data.user.id)).length,
       0,
     );
   });
@@ -651,7 +666,12 @@ run("Browser profiles through a whole deployment", () => {
         );
       const bootstrap = await stack.api["bootstrap.get"]({});
       if (!bootstrap.ok) throw new Error(bootstrap.error.message);
-      equal(evidence, "Request opened no session", bootstrap.data.browser.groups.rows.length, 0);
+      equal(
+        evidence,
+        "Request opened no session",
+        (await stack.host.store.listBrowserSessions(bootstrap.data.user.id)).length,
+        0,
+      );
     },
   );
 

@@ -36,6 +36,12 @@ export function profileFailureDiagnostic(error: unknown, depth = 0): unknown {
       "ENAMETOOLONG",
       "ENOTEMPTY",
       "EXDEV",
+      "ECONNREFUSED",
+      "ECONNRESET",
+      "ETIMEDOUT",
+      "ENOTFOUND",
+      "EHOSTUNREACH",
+      "ENETUNREACH",
     ].includes(code)
       ? { code }
       : {}),

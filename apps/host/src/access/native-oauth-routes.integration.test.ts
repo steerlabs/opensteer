@@ -569,11 +569,6 @@ async function hostWithNativeOAuth(onSessionEnded?: (sessionId: string) => void)
   });
   await identity.initialize();
   const app = Fastify();
-  app.addContentTypeParser(
-    "application/x-www-form-urlencoded",
-    { parseAs: "buffer" },
-    (_request, body, done) => done(null, body),
-  );
   const authenticator = new HostAuthenticator({ identity, publicUrl: new URL(origin) });
   registerIdentityRoutes(app, authenticator, {
     assertOwner: (id) => requirePersonalOwner(database, id),

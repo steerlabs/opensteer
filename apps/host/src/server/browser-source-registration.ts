@@ -20,11 +20,14 @@ import {
   type PersonalHostAccessRouteEnvelope,
 } from "@opensteer/deployment-authority";
 import type { BrowserSourceService } from "../browser/browser-source-service.js";
+import type { PasswordSignInService } from "../browser/password-sign-in-service.js";
 import { exchangeRouteOrigin } from "../access/session-exchange-routes.js";
 import { hostInternalRoutePaths } from "./internal-routes.js";
 
 export interface BrowserSourceRpcOptions {
   readonly service: BrowserSourceService;
+  /** The person's answers to saved-login and card Requests. */
+  readonly passwords: Pick<PasswordSignInService, "get" | "respond">;
   readonly revalidateSession: (context: HostApiServerContext) => Promise<void>;
   readonly canonicalOrigin: string;
   readonly authority: HostDiscoveryEnvelope;
@@ -45,7 +48,7 @@ export function createBrowserSourceRpcHandlers(
     "browser.password-sign-in.get": async (input, context) => {
       context.setHeader("cache-control", "no-store");
       return rpcSuccess(
-        await options.service.passwordSignInGet({
+        await options.passwords.get({
           ownerId: requireOwner(context),
           requestId: input.requestId,
         }),
@@ -144,7 +147,7 @@ export async function handleBrowserSourceCommand(
         });
       return {
         type: command.type,
-        ...(await options.service.passwordSignInRespond({
+        ...(await options.passwords.respond({
           ownerId,
           requestId: command.requestId,
           decision: command.decision,

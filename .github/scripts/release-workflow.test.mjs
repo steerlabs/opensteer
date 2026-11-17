@@ -44,7 +44,7 @@ test("read-only preflight, secret-free discovery and only stable publication app
       ...(name === "preflight" ? { actions: "read" } : {}),
       ...(name === "account" ? { "id-token": "write" } : {}),
       ...(name.startsWith("team-image") ? { packages: "write" } : {}),
-      ...(name === "team-provisioner" ? { "id-token": "write", packages: "write" } : {}),
+      ...(name === "team-provisioner" ? { packages: "write" } : {}),
     });
     assert.equal(
       job.environment,
@@ -52,7 +52,6 @@ test("read-only preflight, secret-free discovery and only stable publication app
         build: "release",
         "publish-stable": "publish",
         account: "account",
-        "team-provisioner": "teams",
       }[name],
     );
     for (const step of job.steps) {
@@ -67,9 +66,9 @@ test("read-only preflight, secret-free discovery and only stable publication app
   // A Beta must never reach people before the Account service it may depend on.
   assert.ok(workflow.jobs["publish-insider"].needs.includes("account"));
   assert.match(workflow.jobs.account.if, /channel == 'beta'/);
-  // Hosted teams move only to a Stable that Tim published.
-  assert.ok(workflow.jobs["team-provisioner"].needs.includes("publish-stable"));
-  assert.match(workflow.jobs["team-provisioner"].if, /needs\.publish-stable\.result == 'success'/);
+  // Team images deploy only through promote-team-servers, so their build never waits on desktop.
+  assert.deepEqual(workflow.jobs["team-provisioner"].needs, ["preflight", "team-images"]);
+  assert.match(workflow.jobs["team-provisioner"].if, /channel == 'beta'/);
   assert.ok(workflow.jobs.build.needs.includes("discover"));
   assert.match(
     workflow.jobs.build.steps.find((step) => step.run?.includes("stampReleaseVersion")).run,
@@ -101,6 +100,70 @@ test("read-only preflight, secret-free discovery and only stable publication app
   assert.match(
     workflow.jobs.build.steps.find((step) => step.name === "Delete signing material").if,
     /always/,
+  );
+});
+test("hosted teams are promoted explicitly from published digests", () => {
+  const job = workflow.jobs["team-provisioner"];
+  assert.doesNotMatch(JSON.stringify(job), /google-github-actions|deploy-team-provisioner.sh/);
+  const promotion = parseDocument(
+    readFileSync(new URL("../workflows/promote-team-servers.yml", import.meta.url), "utf8"),
+  ).toJS();
+  assert.ok(promotion.on.workflow_dispatch.inputs.provisioner_image.required);
+  assert.equal(promotion.jobs.promote.environment, "teams");
+  assert.match(JSON.stringify(promotion), /deploy-team-provisioner.sh/);
+});
+
+test("observer preflight fails before signing and persists one interpreter for launch tooling", () => {
+  const steps = workflow.jobs.build.steps;
+  const probe = steps.findIndex((step) => step.name === "Probe launch observer");
+  assert.ok(probe > steps.findIndex((step) => step.name === "Install launch tooling"));
+  assert.ok(probe < steps.findIndex((step) => step.name === "Sign, notarize and staple desktop"));
+  assert.equal(steps[probe]["timeout-minutes"], 1);
+  assert.match(steps[probe].run, /smoke-desktop-release-python.ts/);
+  // Job env cannot read the runner context (GitHub rejects the whole workflow), so a
+  // step exports the path before signing.
+  for (const [name, value] of Object.entries(workflow.jobs.build.env ?? {}))
+    assert.doesNotMatch(String(value), /\$\{\{\s*runner\./, name);
+  const locate = steps.findIndex((step) => step.name === "Locate release phase timings");
+  assert.match(
+    steps[locate].run,
+    /OPENSTEER_RELEASE_TIMING_FILE=\$RUNNER_TEMP\/release-timing\.jsonl.*GITHUB_ENV/,
+  );
+  assert.ok(locate < steps.findIndex((step) => step.name === "Sign, notarize and staple desktop"));
+  assert.equal(workflow.jobs.build.env.OPENSTEER_MAC_SIGN_TIMINGS, "1");
+  const timing = steps.find((step) => step.name === "Release phase timings");
+  assert.equal(timing.if, "always()");
+  assert.equal(timing.with.path, "${{ runner.temp }}/release-timing.jsonl");
+});
+
+test("directory packaging keeps notarization and the final public archive and verification gates", () => {
+  const packaging = readFileSync(
+    new URL("../../apps/desktop/scripts/package-macos.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(packaging, /"--mac",\s*"--dir"/);
+  assert.doesNotMatch(packaging, /deferNotarization \? \["--dir"/);
+  assert.doesNotMatch(JSON.stringify(workflow.jobs.build), /DEFER_NOTARIZATION/);
+  const config = parseDocument(
+    readFileSync(new URL("../../apps/desktop/electron-builder.base.yml", import.meta.url), "utf8"),
+  ).toJS();
+  assert.equal(config.mac.notarize, true);
+  assert.equal(config.mac.hardenedRuntime, true);
+  assert.match(packaging, /"--deep",\s*"--strict"/);
+  assert.match(packaging, /"stapler", "validate"/);
+  assert.match(packaging, /"--assess"/);
+  const verify = workflow.jobs.build.steps.find(
+    (step) => step.name === "Verify and prepare exact release bytes",
+  ).run;
+  assert.match(verify, /xcrun stapler validate "\$app"/);
+  assert.match(verify, /spctl -a -vv -t exec "\$app"/);
+  assert.match(
+    verify,
+    /ditto -c -k --sequesterRsrc --keepParent "\$app" "\$RUNNER_TEMP\/Opensteer.zip"/,
+  );
+  assert.match(
+    workflow.jobs.build.steps.find((step) => step.name === "Prepare checked release bytes").run,
+    /--app-zip "\$RUNNER_TEMP\/Opensteer.zip"/,
   );
 });
 test("team images build natively per architecture and expose digests to later jobs", () => {
@@ -525,12 +588,24 @@ test("preflight refuses missing, failed, pending or non-main qualification of th
       { head_sha: "b".repeat(40) },
       { head_branch: "other" },
       { event: "pull_request" },
+      { event: "schedule" },
+      { event: "workflow_dispatch" },
     ]) {
       f.state.runs = [{ ...valid, ...mutation }];
       assert.throws(() => preflight({ root: f.root, event: "push" }, f.run));
     }
     f.state.runs = [valid, { ...valid, id: 43, run_number: 8, conclusion: "failure" }];
     assert.throws(() => preflight({ root: f.root, event: "push" }, f.run));
+    // A rerun keeps its run number/id; GitHub exposes only its latest attempt.
+    f.state.runs = [{ ...valid, run_attempt: 2, conclusion: "failure" }];
+    assert.throws(() => preflight({ root: f.root, event: "push" }, f.run), /must succeed/);
+    f.state.runs = [{ ...valid, run_attempt: 2, status: "in_progress", conclusion: null }];
+    assert.throws(() => preflight({ root: f.root, event: "push" }, f.run), /Waiting for main CI/);
+    f.state.runs = [{ ...valid, run_attempt: 2 }];
+    f.state.jobs = [{ ...job, conclusion: "failure" }];
+    assert.throws(() => preflight({ root: f.root, event: "push" }, f.run), /Check must succeed/);
+    f.state.jobs = [job];
+    assert.deepEqual(preflight({ root: f.root, event: "push" }, f.run), f.source);
     f.state.runs = [];
     assert.throws(() => preflight({ root: f.root, event: "push" }, f.run));
     f.state.runs = [valid];

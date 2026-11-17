@@ -1,7 +1,6 @@
 import { memo, useMemo, useRef, useState, type CSSProperties } from "react";
-import type { BrowserTabGroup } from "@opensteer/protocol";
-import { BrowserTabGroupColorSchema, browserTabGroupTitleMaxLength } from "@opensteer/protocol";
-import type { HostClient, PlaceItem, PlaceOccupant, PlaceDescriptor } from "@opensteer/client/host";
+import { TabGroupColorSchema, type TabGroup, type TabId } from "@opensteer/core";
+import type { HostClient, PlaceItem, PlaceOccupant } from "@opensteer/client/host";
 import { usePlaces } from "@opensteer/client/react";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { Icon } from "../icon.js";
@@ -13,7 +12,10 @@ import { useTabGroupCloser } from "./tab-closer.js";
 import type { TaskDirectory } from "./task-directory.js";
 import type { TabSortHandle } from "./use-tab-sort.js";
 
-export function tabGroupStyle(color: BrowserTabGroup["color"]): CSSProperties {
+/** The Host's group name limit. */
+const groupNameMaxLength = 80;
+
+export function tabGroupStyle(color: TabGroup["color"]): CSSProperties {
   return { "--tab-group-color": `var(--tab-group-${color})` } as CSSProperties;
 }
 
@@ -25,17 +27,18 @@ export const TabGroupHeader = memo(function TabGroupHeader({
   hostClient,
   onEdit,
   onOpenMark,
-  places: slots,
+  tabIds,
   sort,
 }: {
   readonly active: boolean;
   readonly directory: TaskDirectory;
   readonly editing: boolean;
-  readonly group: BrowserTabGroup;
+  readonly group: TabGroup;
   readonly hostClient: HostClient;
   readonly onEdit: (id: string | null) => void;
   readonly onOpenMark: (place: PlaceItem, threadId: string) => void;
-  readonly places: readonly PlaceDescriptor[];
+  /** Its members this device lists, in order. */
+  readonly tabIds: readonly TabId[];
   /** Drag-and-drop and ⌘↑/⌘↓ for the whole group. */
   readonly sort: TabSortHandle;
 }) {
@@ -43,10 +46,7 @@ export const TabGroupHeader = memo(function TabGroupHeader({
   const toast = useToast();
   const [at, setAt] = useState<{ x: number; y: number } | undefined>();
   // Collapsed, it wears its members' marks: only then does it read them live.
-  const keys = useMemo(
-    () => (group.collapsed ? slots.map((slot) => slot.key) : []),
-    [group.collapsed, slots],
-  );
+  const keys = useMemo(() => (group.collapsed ? tabIds : []), [group.collapsed, tabIds]);
   const places = usePlaces(hostClient, keys);
   const occupants = useMemo(() => {
     const members = new Map<string, PlaceOccupant>();
@@ -60,30 +60,30 @@ export const TabGroupHeader = memo(function TabGroupHeader({
   }, [places]);
   const edit = (point?: { x: number; y: number }) => {
     setAt(point);
-    onEdit(group.id);
+    onEdit(group.groupId);
   };
-  const name = group.title || "Untitled group";
+  const name = group.name;
   return (
     <li
       className={`side-tab side-tab-group${active && group.collapsed ? " is-active" : ""}`}
-      data-motion-key={group.id}
-      data-tab-group-id={group.id}
+      data-motion-key={group.groupId}
+      data-tab-group-id={group.groupId}
       style={tabGroupStyle(group.color)}
       onContextMenu={(event) => {
         event.preventDefault();
         edit({ x: event.clientX, y: event.clientY });
       }}
-      onKeyDown={(event) => sort.keyMove(event, group.id)}
-      onPointerDown={(event) => sort.press(event, group.id)}
+      onKeyDown={(event) => sort.keyMove(event, group.groupId)}
+      onPointerDown={(event) => sort.press(event, group.groupId)}
     >
       <button
         aria-current={active && group.collapsed ? "true" : undefined}
         aria-expanded={!group.collapsed}
-        aria-label={`${name}, ${slots.length} tabs`}
+        aria-label={`${name}, ${tabIds.length} tabs`}
         className="side-tab__main side-tab-group__main"
         onClick={() =>
           void hostClient
-            .updateBrowserTabGroup(group.id, { collapsed: !group.collapsed })
+            .updateTabGroup({ groupId: group.groupId, collapsed: !group.collapsed })
             .catch((error: unknown) => toast.error(actionErrorMessage(error)))
         }
         onKeyDown={(event) => {
@@ -101,12 +101,8 @@ export const TabGroupHeader = memo(function TabGroupHeader({
         >
           <Icon name="chevron-right" />
         </span>
-        <span
-          className={`side-tab-group__chip${group.title ? "" : " side-tab-group__chip--empty"}`}
-        >
-          {group.title}
-        </span>
-        {group.collapsed ? <span className="side-tab-group__count">{slots.length}</span> : null}
+        <span className="side-tab-group__chip">{group.name}</span>
+        {group.collapsed ? <span className="side-tab-group__count">{tabIds.length}</span> : null}
       </button>
       {group.collapsed ? (
         <OccupantMarks
@@ -140,11 +136,7 @@ export const TabGroupHeader = memo(function TabGroupHeader({
           group={group}
           hostClient={hostClient}
           onClose={() => onEdit(null)}
-          tabIds={slots.flatMap((place) =>
-            place.destination.kind === "browser" && place.destination.tabId
-              ? [place.destination.tabId]
-              : [],
-          )}
+          tabIds={tabIds}
         />
       ) : null}
     </li>
@@ -161,24 +153,27 @@ function TabGroupEditor({
 }: {
   readonly anchor: HTMLElement;
   readonly at: { x: number; y: number } | undefined;
-  readonly group: BrowserTabGroup;
+  readonly group: TabGroup;
   readonly hostClient: HostClient;
   readonly onClose: () => void;
-  readonly tabIds: readonly string[];
+  readonly tabIds: readonly TabId[];
 }) {
-  const [title, setTitle] = useState(group.title);
-  const saved = useRef(group.title);
+  const [title, setTitle] = useState(group.name);
+  const saved = useRef(group.name);
   const toast = useToast();
   const closeGroup = useTabGroupCloser();
   const failed = (error: unknown) => toast.error(actionErrorMessage(error));
   const save = () => {
     const trimmed = title.trim();
-    if (trimmed === saved.current) return;
+    // A group always has a name; clearing it keeps the one it had.
+    if (!trimmed || trimmed === saved.current) return;
     saved.current = trimmed;
-    void hostClient.updateBrowserTabGroup(group.id, { title: trimmed }).catch((error: unknown) => {
-      saved.current = group.title;
-      failed(error);
-    });
+    void hostClient
+      .updateTabGroup({ groupId: group.groupId, name: trimmed })
+      .catch((error: unknown) => {
+        saved.current = group.name;
+        failed(error);
+      });
   };
   return (
     <Popover
@@ -197,7 +192,7 @@ function TabGroupEditor({
         <input
           aria-label="Group title"
           data-autofocus
-          maxLength={browserTabGroupTitleMaxLength}
+          maxLength={groupNameMaxLength}
           onBlur={save}
           onChange={(event) => setTitle(event.target.value)}
           onKeyDown={(event) => {
@@ -212,13 +207,15 @@ function TabGroupEditor({
         />
       </div>
       <div aria-label="Group colour" className="tab-group-editor__colors" role="group">
-        {BrowserTabGroupColorSchema.options.map((color) => (
+        {TabGroupColorSchema.options.map((color) => (
           <button
             aria-label={color}
             aria-pressed={color === group.color}
             className="tab-group-editor__swatch"
             key={color}
-            onClick={() => void hostClient.updateBrowserTabGroup(group.id, { color }).catch(failed)}
+            onClick={() =>
+              void hostClient.updateTabGroup({ groupId: group.groupId, color }).catch(failed)
+            }
             style={tabGroupStyle(color)}
             title={color}
             type="button"
@@ -232,7 +229,7 @@ function TabGroupEditor({
           item={{ icon: "browser", label: "Ungroup" }}
           onChoose={() => {
             onClose();
-            void hostClient.ungroupBrowserTabs(group.tabIds).catch(failed);
+            void hostClient.deleteTabGroup(group.groupId).catch(failed);
           }}
         />
         <SurfaceMenuRow

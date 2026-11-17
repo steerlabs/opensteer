@@ -57,6 +57,8 @@ export type NativePictureView = ComponentType<
     ref?: Ref<NativePicture>;
     /** The view dropped its pixels by itself: the app left the foreground or the view its window. */
     onCleared?: (event: { nativeEvent: { generation: number } }) => void;
+    /** The view can draw again: it rejoined its window, or the app the foreground. Older binaries never say. */
+    onShown?: (event: { nativeEvent: { generation: number } }) => void;
   }
 >;
 

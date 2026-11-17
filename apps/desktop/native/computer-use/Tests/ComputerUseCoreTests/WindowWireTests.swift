@@ -27,10 +27,18 @@ final class WindowWireTests: XCTestCase {
 
   func testOwnerWindowInventoryNeverCarriesAnAgentRef() throws {
     let info = OwnerWindowInfo(
-      id: 3, title: "A", focused: false, main: true, minimized: false, onScreen: true)
+      windowId: "win_00000000-0000-4000-8000-000000000042", title: "A", minimized: false,
+      onScreen: true)
     let value =
       try JSONSerialization.jsonObject(with: JSONCoding.encoder.encode(info)) as! [String: Any]
-    XCTAssertEqual(Set(value.keys), ["id", "title", "focused", "main", "minimized", "onScreen"])
+    XCTAssertEqual(Set(value.keys), ["windowId", "title", "minimized", "onScreen"])
+  }
+
+  func testWindowResolutionAlwaysCarriesNullableState() throws {
+    let result = Wire.WindowResolveResult(windowId: nil, app: nil, title: nil, unavailableReason: "window-identity-lost")
+    let value = try JSONSerialization.jsonObject(with: JSONCoding.encoder.encode(result)) as! [String: Any]
+    XCTAssertEqual(Set(value.keys), ["windowId", "app", "title", "unavailableReason"])
+    XCTAssertTrue(value["windowId"] is NSNull)
   }
 
   func testActOnlyReturnsReceiptsAndExplicitNullableError() throws {

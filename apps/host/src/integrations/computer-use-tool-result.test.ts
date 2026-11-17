@@ -4,6 +4,9 @@ import {
   readComputerUseResultHeadline,
   type AndroidPhoneObservation,
   type ComputerUseObservation,
+  PhoneDisplayObservationResultSchema,
+  getPhoneDisplayCodec,
+  type PhoneDisplayObservation,
 } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import { computerObservationContent } from "./computer-use-tool-result.js";
@@ -24,7 +27,7 @@ function observation(overrides: Partial<ComputerUseObservation> = {}): ComputerU
     truncated: false,
     window: {
       ref: "window-1",
-      id: 7,
+      windowId: "win_7" as never,
       frame: { height: 450, width: 720, x: 0, y: 0 },
       scale: 2,
       title: "Opensteer",
@@ -65,8 +68,8 @@ describe("computer observation emission", () => {
 describe("phone observation emission", () => {
   function phoneObservation(
     overrides: Partial<AndroidPhoneObservation> = {},
-  ): AndroidPhoneObservation {
-    return AndroidPhoneObservationSchema.parse({
+  ): PhoneDisplayObservation {
+    const observation = AndroidPhoneObservationSchema.parse({
       capturedAt: "2026-10-11T10:00:00.000Z",
       elementCount: 2,
       foreground: { label: "Messages", packageName: "com.google.android.apps.messaging" },
@@ -82,6 +85,9 @@ describe("phone observation emission", () => {
       truncated: false,
       ...overrides,
     });
+    return PhoneDisplayObservationResultSchema.parse(
+      getPhoneDisplayCodec("android-phone").decodeResult("observe", { observation }),
+    ).observation;
   }
   const hidden = {
     elementCount: 0,

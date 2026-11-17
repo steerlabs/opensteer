@@ -1,8 +1,9 @@
+import { randomUUID } from "node:crypto";
+import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { BrowserSessionIdSchema } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
@@ -29,6 +30,7 @@ const cases = [
   "same-owner-task-reuse",
   "browser-close-keeps-lease",
   "revocation",
+  "exact-tab-request",
 ];
 
 describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
@@ -40,7 +42,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       finish = async () => {};
       await cleanup();
     });
-    it("keeps sessionful sign_in and origin-fill admission while the personal lease outlives a browser", async () => {
+    it("keeps sessionful saved_login_request and origin-fill admission while the personal lease outlives a browser", async () => {
       const evidence = new PasswordsJourneyEvidence("host/browser-reuse", command, cases, [
         passwordFixture.password,
       ]);
@@ -80,6 +82,8 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           wireVersion: 2,
           cdpBoundary: 1,
           sharedControl: 1,
+          tabRestoreVersion: 1,
+          surfaceState: 1,
           signIn: { version: 3 },
           cardFill: 1,
         },
@@ -107,13 +111,14 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       await evidence.run("sessionless-before-browser", async () => {
         expect(await host.store.listBrowserSessions(host.ownerId)).toEqual([]);
         const result = await client.callTool({
-          name: "sign_in",
+          name: "saved_login_request",
           arguments: { site: passwordFixture.site, reason: "Sign in to the fixture app" },
         });
         await evidence.write("sessionless-result.json", result);
         loginRef = z
           .object({
-            status: z.literal("ready"),
+            status: z.literal("fulfilled"),
+            loginStatus: z.literal("ready"),
             loginRef: z.string(),
             account: z.literal(passwordFixture.account),
           })
@@ -128,27 +133,38 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         agentReady: true,
         signIn: true,
         targetedStreaming: true,
+        personalTabs: true,
+        surfaceState: true,
+        uniqueTabs: true,
+        tabCommands: true,
       });
       cleanups.push(() => runtime.close());
       await waitForValue(async () => (host.runtime.browser.available ? true : undefined));
       const open = async () => {
         const result = await client.callTool({
-          name: "browser_session_open",
-          arguments: { fresh: true },
+          name: "tab_open",
+          arguments: { target: { kind: "page", url: "about:blank", guest: true } },
         });
-        expect(result.isError).not.toBe(true);
-        return z
-          .object({ session: z.object({ id: BrowserSessionIdSchema }) })
-          .parse(result.structuredContent).session.id;
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        const tabId = z
+          .object({ tab: z.object({ tabId: BrowserSurfaceIdSchema }) })
+          .parse(result.structuredContent).tab.tabId;
+        const { TabStore } = await import("@opensteer/database");
+        const row = (await new TabStore(host.store.database).get(host.ownerId, tabId))!;
+        return { tabId, sessionId: row.pageBinding!.sessionId };
       };
-      const sessionId = await open();
+      const { sessionId, tabId } = await open();
       await evidence.run("sessionful-sign-in", async () => {
         const result = await client.callTool({
-          name: "sign_in",
-          arguments: { sessionId, site: passwordFixture.site, reason: "Continue in browser" },
+          name: "saved_login_request",
+          arguments: { tabId, site: passwordFixture.site, reason: "Continue in browser" },
         });
-        expect(result.structuredContent).toEqual({
-          status: "ready",
+        expect(result.structuredContent, JSON.stringify(result.structuredContent)).toEqual({
+          requestId: null,
+          kind: "browser.password-sign-in",
+          next: "Use loginRef to sign in and continue the task.",
+          status: "fulfilled",
+          loginStatus: "ready",
           site: passwordFixture.site,
           loginRef,
           account: passwordFixture.account,
@@ -204,9 +220,10 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       await evidence.run("personal-reuse", async () => {
         await fulfillFill(connection);
       });
+      await open();
       const cardResult = client.callTool({
-        name: "use_card",
-        arguments: { site: passwordFixture.site, sessionId, reason: "Fill the approved purchase" },
+        name: "card_request",
+        arguments: { site: passwordFixture.site, tabId, reason: "Fill the approved purchase" },
       });
       void cardResult.catch(() => undefined);
       const cardPending = await vi.waitFor(
@@ -215,10 +232,17 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
             after: null,
             limit: 64,
           });
-          expect(rows, "use_card did not open its Request").toHaveLength(1);
+          expect(rows, "card_request did not open its Request").toHaveLength(1);
           return { requestId: rows[0]!.id };
         },
         { timeout: 10_000 },
+      );
+      await vi.waitFor(
+        () =>
+          expect(
+            runtime.receivedCommands().filter((command) => command.type === "session.state"),
+          ).toContainEqual(expect.objectContaining({ type: "session.state", pinned: [tabId] })),
+        { timeout: 2000 },
       );
       const chooser = await testRpcData(
         host.origin,
@@ -247,17 +271,19 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       );
       const approved = await cardResult;
       expect(approved.structuredContent).toMatchObject({
-        status: "ready",
+        status: "fulfilled",
+        cardStatus: "ready",
         brand: "Visa",
         lastFour: "4242",
       });
       const reused = await client.callTool({
-        name: "use_card",
-        arguments: { site: passwordFixture.site, sessionId, reason: "Continue approved purchase" },
+        name: "card_request",
+        arguments: { site: passwordFixture.site, tabId, reason: "Continue approved purchase" },
       });
       const cardReady = z
         .object({
-          status: z.literal("ready"),
+          status: z.literal("fulfilled"),
+          cardStatus: z.literal("ready"),
           cardRef: z.string(),
           brand: z.literal("Visa"),
           lastFour: z.literal("4242"),
@@ -300,14 +326,11 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           key: "foreign",
           title: "Other task",
         });
-        const foreignClient = await connect(other.toolsToken);
-        const opened = await foreignClient.callTool({
-          name: "browser_session_open",
-          arguments: { fresh: true },
-        });
-        const foreignSession = z
-          .object({ session: z.object({ id: BrowserSessionIdSchema }) })
-          .parse(opened.structuredContent).session.id;
+        const opened = await host.runtime.browser.openAgentTab(
+          { ownerId: host.ownerId, agentBindingId: `run:${other.runId}`, threadId: other.threadId },
+          { identity: { kind: "guest" }, operationKey: randomUUID() },
+        );
+        const foreignSession = opened.sessionId;
         const foreign = await attach(other, foreignSession);
         await fulfillFill(foreign, foreignSession);
         expect(
@@ -315,20 +338,24 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         ).toHaveLength(1);
       });
       await evidence.run("browser-close-keeps-lease", async () => {
-        const secondSession = await open();
-        const second = await attach(run, secondSession);
         await host.runtime.browser.closeAgentSession({
           agentBindingId: `run:${run.runId}`,
           ownerId: host.ownerId,
           sessionId,
         });
         expect(await connection.request(fill)).toEqual({ status: "expired" });
+        const { sessionId: secondSession } = await open();
+        const second = await attach(run, secondSession);
         await fulfillFill(second, secondSession);
         const result = await client.callTool({
-          name: "sign_in",
+          name: "saved_login_request",
           arguments: { site: passwordFixture.site, reason: "Return to the phone app" },
         });
-        expect(result.structuredContent).toMatchObject({ status: "ready", loginRef });
+        expect(result.structuredContent).toMatchObject({
+          status: "fulfilled",
+          loginStatus: "ready",
+          loginRef,
+        });
         expect(
           authority.commands.filter((c) => c.type === "login.authorize" && "loginRef" in c),
         ).toHaveLength(1);
@@ -338,13 +365,71 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         if (operation?.type !== "login.authorize") throw new Error("Missing authorization");
         await authority.end(operation.operationId);
         const next = await client.callTool({
-          name: "sign_in",
+          name: "saved_login_request",
           arguments: { site: passwordFixture.site, reason: "Reauthorize" },
         });
         const ready = z
-          .object({ status: z.literal("ready"), loginRef: z.string() })
+          .object({
+            status: z.literal("fulfilled"),
+            loginStatus: z.literal("ready"),
+            loginRef: z.string(),
+          })
           .parse(next.structuredContent);
         expect(ready.loginRef).not.toBe(loginRef);
+      });
+      await evidence.run("exact-tab-request", async () => {
+        const exact = await open();
+        const sibling = await open();
+        expect(sibling.sessionId).toBe(exact.sessionId);
+        authority.policy.approval = true;
+        const site = "https://pin-fixture.test";
+        const pending = client.callTool({
+          name: "saved_login_request",
+          arguments: { tabId: exact.tabId, site, reason: "Sign in in the chosen tab" },
+        });
+        void pending.catch(() => undefined);
+        const requestId = await vi.waitFor(
+          async () => {
+            const rows = await host.store.requests.listPendingPasswordSignIns({
+              after: null,
+              limit: 64,
+            });
+            expect(rows, "saved_login_request did not open its Request").toHaveLength(1);
+            return rows[0]!.id;
+          },
+          { timeout: 10_000 },
+        );
+        await vi.waitFor(
+          () =>
+            expect(runtime.receivedCommands()).toContainEqual(
+              expect.objectContaining({ type: "session.state", pinned: [exact.tabId] }),
+            ),
+          { timeout: 2000 },
+        );
+        await testRpcData(
+          host.origin,
+          "commands.dispatch",
+          {
+            type: "browser.password-sign-in.respond",
+            idempotencyKey: "decline-pin-test",
+            requestId,
+            decision: { kind: "decline" },
+          },
+          { headers: host.ownerHeaders },
+        );
+        expect((await pending).structuredContent).toMatchObject({ status: "declined", site });
+        const closed = await client.callTool({
+          name: "tab_close",
+          arguments: { tabIds: [exact.tabId] },
+        });
+        expect(closed.isError, JSON.stringify(closed)).not.toBe(true);
+        const starts = authority.commands.filter((c) => c.type === "login.authorize").length;
+        const stale = await client.callTool({
+          name: "saved_login_request",
+          arguments: { tabId: exact.tabId, site, reason: "Try the stale tab" },
+        });
+        expect(stale.isError).toBe(true);
+        expect(authority.commands.filter((c) => c.type === "login.authorize")).toHaveLength(starts);
       });
       expect(authority.protocolErrors).toEqual([]);
       expect(runtime.protocolErrors()).toEqual([]);

@@ -1,9 +1,9 @@
+import { productToolOutput } from "./tool-output.js";
 import { IntegrationCallOutputSchema } from "@opensteer/agent-tools/outputs";
 import { z } from "zod";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   isInitializeRequest,
@@ -22,19 +22,14 @@ import {
 } from "@opensteer/agent-tools";
 import {
   OpensteerError,
-  RequestIdSchema,
   ThreadIdSchema,
   type Thread,
   requestHoldLimitMs,
   shortRequestHoldMs,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
-import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
+import { advertisedToolInputSchema } from "../agents/agent-tools-plan.js";
 import { safeMessage } from "@opensteer/shared/safeMessage";
-import {
-  requestPendingGuidance,
-  requestStillOpenGuidance,
-} from "@opensteer/shared/requestGuidance";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -70,7 +65,7 @@ export class OpensteerMcpService {
   readonly #detachObserve: (() => void) | undefined;
   readonly options: {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
-    readonly handlers: AgentToolHandlers;
+    readonly handlers: Partial<AgentToolHandlers>;
     readonly requestHold?: Pick<RequestHold, "admit" | "wait">;
     readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
     readonly realtime?: Pick<RealtimeHub, "observe">;
@@ -84,7 +79,7 @@ export class OpensteerMcpService {
   };
   constructor(options: {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
-    readonly handlers: AgentToolHandlers;
+    readonly handlers: Partial<AgentToolHandlers>;
     readonly requestHold?: Pick<RequestHold, "admit" | "wait">;
     readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
     readonly realtime?: Pick<RealtimeHub, "observe">;
@@ -373,87 +368,27 @@ export class OpensteerMcpService {
       advertisedTools.push({
         name: tool.name,
         ...registration,
-        inputSchema: advertisedJsonSchema(
-          ("advertisedInputSchema" in tool ? tool.advertisedInputSchema : undefined) ??
-            toJsonSchemaCompat(tool.input, { strictUnions: true, pipeStrategy: "input" }),
-        ) as Tool["inputSchema"],
+        inputSchema: advertisedToolInputSchema(tool) as Tool["inputSchema"],
         execution: { taskSupport: "forbidden" },
       });
       server.registerTool(tool.name, registration, async (args, extra) => {
-        const admittedAt = Date.now();
-        const signal =
-          extra.authInfo?.extra?.disconnected instanceof AbortSignal
-            ? AbortSignal.any([extra.signal, extra.authInfo.extra.disconnected])
-            : extra.signal;
-        try {
-          const token = extra.authInfo?.token;
-          if (!token) throw new Error("MCP authorization is missing");
-          const resolvedCaller = extra.authInfo?.extra?.caller as AgentCaller | undefined;
-          const currentCaller = resolvedCaller ?? caller;
-          const hold =
-            currentCaller.kind === "run" && requestTools.has(tool.name) && this.options.requestHold
-              ? {
-                  caller: currentCaller,
-                  service: this.options.requestHold,
-                  steersAtAdmission: await this.options.requestHold.admit(currentCaller),
-                }
-              : null;
-          const result = await this.callTool(token, tool.name, args, {
-            ...(resolvedCaller ? { caller: resolvedCaller } : {}),
-            operationKey: mcpToolCallId(
-              caller.key,
-              detachedSessionId ?? extra.sessionId,
-              extra.requestId,
-              tool.name,
-            ),
-            signal,
-          });
-          // A text result is the whole answer, sent once as written.
-          // Each result goes out once, in the shape a model reads best: text as
-          // written, a provider's content (text, images, its error) as it came,
-          // and a record as JSON with its structured copy.
-          if (typeof result === "string")
-            return { content: [{ type: "text" as const, text: result }] };
-          if (tool.output === IntegrationCallOutputSchema)
-            return IntegrationCallOutputSchema.parse(result);
-          if (hold && typeof result.requestId === "string") {
-            const held = await hold.service.wait({
-              caller: hold.caller,
-              result,
-              tool: tool.name,
-              admittedAt,
-              steersAtAdmission: hold.steersAtAdmission,
-              signal,
-              limitMs: longRequestHold ? requestHoldLimitMs : shortRequestHoldMs,
-            });
-            if (held)
-              return agentToolRecordResult(held.record, held.text ?? requestStillOpenGuidance);
-          }
-          let pendingRequest = false;
-          if (
-            currentCaller.kind === "run" &&
-            result.status === "pending" &&
-            typeof result.requestId === "string"
-          ) {
-            const id = RequestIdSchema.safeParse(result.requestId);
-            const request = id.success ? await this.options.store.requests.get(id.data) : null;
-            pendingRequest =
-              request?.mode === "durable" &&
-              request.status === "pending" &&
-              request.originatingRunId === currentCaller.claims.runId;
-          }
-          return agentToolRecordResult(result, pendingRequest ? requestPendingGuidance : undefined);
-        } catch (error) {
-          const parsed = tool.input.safeParse(args);
-          const access =
-            parsed.success && "readsOnly" in tool && tool.readsOnly?.(parsed.data as never)
-              ? "read"
-              : tool.access;
-          const failure = agentToolFailure(error, access);
-          if (failure.code === internalToolFailureCode && !signal.aborted)
-            this.options.onToolError?.(error, tool.name);
-          return agentToolFailureResult(failure);
-        }
+        const disconnected = extra.authInfo?.extra?.disconnected;
+        return this.callToolResult(extra.authInfo?.token ?? "", tool.name, args, {
+          operationKey: mcpToolCallId(
+            caller.key,
+            detachedSessionId ?? extra.sessionId,
+            extra.requestId,
+            tool.name,
+          ),
+          signal:
+            disconnected instanceof AbortSignal
+              ? AbortSignal.any([extra.signal, disconnected])
+              : extra.signal,
+          longRequestHold,
+          ...(extra.authInfo?.extra?.caller
+            ? { caller: extra.authInfo.extra.caller as AgentCaller }
+            : {}),
+        });
       });
     }
     server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -461,6 +396,82 @@ export class OpensteerMcpService {
     }));
     return server;
   }
+  validateToolInput(name: string, value: unknown): unknown {
+    const tool = agentTools.find((spec) => spec.name === name);
+    if (!tool) throw new OpensteerError({ code: "not_found", message: "Unknown Opensteer tool" });
+    return tool.input.parse(value);
+  }
+
+  async callToolResult(
+    bearer: string,
+    name: string,
+    args: unknown,
+    identity: {
+      readonly operationKey: string;
+      readonly signal?: AbortSignal;
+      readonly caller?: AgentCaller;
+      readonly longRequestHold?: boolean;
+    },
+  ) {
+    const tool = agentTools.find((spec) => spec.name === name);
+    const admittedAt = Date.now();
+    const signal = identity.signal ?? new AbortController().signal;
+    try {
+      const token = bearer;
+      if (!token) throw new Error("MCP authorization is missing");
+      const currentCaller = identity.caller ?? (await this.options.callers.authenticate(token));
+      const hold =
+        currentCaller.kind === "run" && requestTools.has(name) && this.options.requestHold
+          ? {
+              caller: currentCaller,
+              service: this.options.requestHold,
+              steersAtAdmission: await this.options.requestHold.admit(currentCaller),
+            }
+          : null;
+      const result = await abortableToolResult(
+        this.callTool(token, name, args, {
+          caller: currentCaller,
+          operationKey: identity.operationKey,
+          signal,
+        }),
+        signal,
+      );
+      // A text result is the whole answer, sent once as written.
+      // Each result goes out once, in the shape a model reads best: text as
+      // written, a provider's content (text, images, its error) as it came,
+      // and a record as JSON with its structured copy.
+      if (typeof result === "string") return { content: [{ type: "text" as const, text: result }] };
+      if (tool?.output === IntegrationCallOutputSchema)
+        return IntegrationCallOutputSchema.parse(result);
+      if (hold && typeof result.requestId === "string") {
+        const held = await hold.service.wait({
+          caller: hold.caller,
+          result,
+          tool: name,
+          admittedAt,
+          steersAtAdmission: hold.steersAtAdmission,
+          signal,
+          limitMs:
+            (identity.longRequestHold ?? (await this.options.longRequestHold?.(hold.caller)))
+              ? requestHoldLimitMs
+              : shortRequestHoldMs,
+        });
+        if (held) return agentToolRecordResult(held.record);
+      }
+      return agentToolRecordResult(result);
+    } catch (error) {
+      const parsed = tool?.input.safeParse(args);
+      const access =
+        parsed?.success && tool && "readsOnly" in tool && tool.readsOnly?.(parsed.data as never)
+          ? "read"
+          : (tool?.access ?? "write");
+      const failure = agentToolFailure(error, access);
+      if (failure.code === internalToolFailureCode && !signal.aborted)
+        this.options.onToolError?.(error, name);
+      return agentToolFailureResult(failure);
+    }
+  }
+
   async callTool(
     bearer: string,
     name: string,
@@ -476,8 +487,14 @@ export class OpensteerMcpService {
     const tool = found;
     const input = tool.input.parse(value);
     let caller = identity.caller ?? (await this.options.callers.authenticate(bearer));
+    if (!this.options.handlers[tool.name])
+      throw new OpensteerError({
+        code: "not_found",
+        message: "This tool is unavailable on this Host",
+      });
     const key = toolOperationKey(caller, input, identity.operationKey);
     const check = async () => {
+      identity.signal?.throwIfAborted();
       const access = "readsOnly" in tool && tool.readsOnly?.(input as never) ? "read" : tool.access;
       toolAccess[access](caller, await this.#targets(caller, tool, input));
       if (!(await this.#toolsFor(caller)).some((spec) => spec.name === tool.name))
@@ -485,7 +502,7 @@ export class OpensteerMcpService {
           code: "forbidden",
           message: "This tool is unavailable to this caller",
         });
-      const authorize = this.options.handlers[tool.name].authorize as
+      const authorize = this.options.handlers[tool.name]?.authorize as
         ((call: ToolCall<typeof tool.name>) => Promise<void>) | undefined;
       await authorize?.({
         caller,
@@ -497,6 +514,7 @@ export class OpensteerMcpService {
     const invoke = async () => {
       const call: ToolCall<typeof tool.name> = {
         checkLive: async () => {
+          identity.signal?.throwIfAborted();
           caller = await this.options.callers.authenticate(bearer);
           await check();
         },
@@ -510,7 +528,15 @@ export class OpensteerMcpService {
       const handler = this.options.handlers[tool.name] as (
         call: ToolCall<typeof tool.name>,
       ) => Promise<unknown>;
-      const output = tool.output.safeParse(await handler(call));
+      identity.signal?.throwIfAborted();
+      const handled = await handler(call);
+      const raw = handled;
+      identity.signal?.throwIfAborted();
+      const output = tool.output.safeParse(
+        /^(opensteer_(task|delegation|subagent|request|automation|app)_|person_)/.test(tool.name)
+          ? productToolOutput(raw)
+          : raw,
+      );
       // A result outside the contract is the Host's fault, never the caller's arguments.
       // Field paths only: a value could be anything the tool returned.
       if (!output.success)
@@ -541,7 +567,7 @@ export class OpensteerMcpService {
       if (id.success) ids.push(id.data);
     };
     for (const field of tool.targetFields ?? []) await add(record[field]);
-    const targets = this.options.handlers[tool.name].targets as
+    const targets = this.options.handlers[tool.name]?.targets as
       ((call: ToolCall<typeof tool.name>) => Promise<readonly string[]>) | undefined;
     if (targets)
       for (const value of await targets({ caller, input } as ToolCall<typeof tool.name>))
@@ -550,7 +576,7 @@ export class OpensteerMcpService {
       [...new Set(ids)].map(async (id) => {
         const thread = await this.options.store.getThreadForOwner(id, caller.userId);
         if (!thread)
-          throw new OpensteerError({ code: "forbidden", message: "Thread is unavailable" });
+          throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
         return thread;
       }),
     );
@@ -649,3 +675,18 @@ function sendJsonRpcError(response: ServerResponse, status: number, message: str
 }
 
 const safeMessageOptions = { fallback: "Opensteer tool request failed" } as const;
+
+async function abortableToolResult<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    void work.catch(() => undefined);
+    throw signal.reason;
+  }
+  const aborted = Promise.withResolvers<never>();
+  const abort = () => aborted.reject(signal.reason);
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    return await Promise.race([work, aborted.promise]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}

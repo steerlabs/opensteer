@@ -40,12 +40,16 @@ export function ChannelDetails({
   channel,
   notify,
   workingAgents,
+  sharing,
+  sharedAgents,
 }: {
+  readonly sharing?: ReactNode;
   readonly actions: ChannelDetailsActions;
   readonly channel: ChannelView;
   readonly notify: NotifyLevel;
   /** Agents mid-run in this channel, which making it people only would stop from posting. */
   readonly workingAgents: number;
+  readonly sharedAgents?: { enabled: boolean; onChange: (enabled: boolean) => void } | undefined;
 }) {
   const dm = channel.kind === "dm" || channel.kind === "group-dm";
   const manage = channel.canManage;
@@ -100,8 +104,28 @@ export function ChannelDetails({
                 type="checkbox"
               />
             </div>
+            {sharedAgents ? (
+              <div className="details-switch">
+                <span className="details-switch__text">
+                  <span className="details-switch__title">Our team’s agents</span>
+                  <span className="details-note">
+                    Allow our agents to read, receive asks and post in this shared channel.
+                  </span>
+                </span>
+                <input
+                  aria-label="Our team’s agents"
+                  checked={sharedAgents.enabled}
+                  className="switch"
+                  disabled={!manage}
+                  onChange={(event) => sharedAgents.onChange(event.currentTarget.checked)}
+                  role="switch"
+                  type="checkbox"
+                />
+              </div>
+            ) : null}
           </DetailsBlock>
         )}
+        {sharing}
         <DetailsBlock title="Notify me about">
           <SegmentedControl
             ariaLabel="Notify me about"
@@ -412,11 +436,15 @@ export function MembersPane({
   canManage,
   channel,
   members,
+  onQuery,
+  more,
 }: {
   readonly actions: MembersActions;
   readonly canManage: boolean;
   readonly channel: ChannelView;
   readonly members: readonly MemberEntryView[];
+  readonly onQuery?: (query: string) => void;
+  readonly more?: ReactNode;
 }) {
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
@@ -448,7 +476,10 @@ export function MembersPane({
           <Icon name="search" />
           <input
             aria-label="Find a member"
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              onQuery?.(event.target.value);
+            }}
             placeholder="Find a member"
             value={query}
           />
@@ -463,6 +494,7 @@ export function MembersPane({
             />
           ))}
         </ul>
+        {more}
         {groups.length > 0 ? (
           <p className="details-note">
             Groups count as members: everyone in{" "}
@@ -500,6 +532,9 @@ function MemberRow({
       <span className="member__text">
         <span className="member__name">
           {name}
+          {entry.kind === "person" && entry.person.externalTeam ? (
+            <span className="team-external">External · {entry.person.externalTeam}</span>
+          ) : null}
           {entry.kind === "person" && entry.person.you ? " (you)" : ""}
         </span>
         <span className="member__detail">
@@ -509,7 +544,9 @@ function MemberRow({
         </span>
       </span>
       <span className="member__role">{entry.manager ? "Manager" : "Member"}</span>
-      {canManage && (actions.onRemove || actions.onSetManager) ? (
+      {canManage &&
+      !(entry.kind === "person" && entry.person.externalTeam) &&
+      (actions.onRemove || actions.onSetManager) ? (
         <button
           aria-expanded={menu}
           aria-haspopup="menu"

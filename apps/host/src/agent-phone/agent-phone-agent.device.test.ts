@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 /**
  * A real agent uses an Android phone, end to end: the shipped engine named by
  * OPENSTEER_AGENT_PHONE_AGENT_ENGINE (`claude` or `codex`), on this computer's
@@ -135,7 +136,7 @@ describe.skipIf(requestedEngine === undefined)(
     let build: AgentPhoneE2eBuild | null = null;
     let stack: VerticalStack | null = null;
     let passwordsBridge: Awaited<ReturnType<typeof startPersonalPasswordsBridge>> | null = null;
-    let integrations: ReturnType<typeof prepareIntegrationsModule>;
+    let integrations: Awaited<ReturnType<typeof prepareIntegrationsModule>>;
     let frontDoor: TlsFrontDoor | null = null;
     let publicOrigin: URL;
     let owner: AgentPhoneOwner;
@@ -180,13 +181,13 @@ describe.skipIf(requestedEngine === undefined)(
       const publicPort = await freePort();
       publicOrigin = new URL(`https://${address}:${publicPort}`);
       passwordsBridge = await startPersonalPasswordsBridge();
+      integrations = await prepareIntegrationsModule({
+        platform: "darwin",
+        dataDirectory: join(scratch, "integrations"),
+        computerUseBridge: passwordsBridge!.bridge,
+      });
       stack = await startVerticalStack({
         integrations: () => {
-          integrations = prepareIntegrationsModule({
-            platform: "darwin",
-            dataDirectory: join(scratch, "integrations"),
-            computerUseBridge: passwordsBridge!.bridge,
-          });
           if (!integrations) throw new Error("Missing scripted Personal authority module");
           return integrations;
         },
@@ -427,8 +428,11 @@ describe.skipIf(requestedEngine === undefined)(
         const calls = turn.events.flatMap((event) =>
           event.type === "tool.started" ? [event.data] : [],
         );
-        const signIns = calls.filter((call) => call.tool.name === "sign_in");
-        expect(signIns, "the real engine discovers first-class sign_in").not.toHaveLength(0);
+        const signIns = calls.filter((call) => call.tool.name === "saved_login_request");
+        expect(
+          signIns,
+          "the real engine discovers first-class saved_login_request",
+        ).not.toHaveLength(0);
         for (const call of signIns) {
           const arguments_ = z
             .object({ site: z.string(), reason: z.string().min(1) })
@@ -839,7 +843,10 @@ function auditPhoneTurn(events: readonly AgentEvent[], runnerId: RunnerId) {
   let rejecting = false;
   let unclassifiedLockedTaps = 0;
   for (const event of events) {
-    if (event.type === "tool.started" && event.data.integration?.phone?.runnerId === runnerId) {
+    if (
+      event.type === "tool.started" &&
+      event.data.integration?.phone?.runnerId === DeviceIdSchema.parse(runnerId)
+    ) {
       const operation = event.data.integration.operation.name;
       phoneCalls.set(event.data.callId, operation);
       safeEvents.push({

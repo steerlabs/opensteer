@@ -1,11 +1,38 @@
+import { changeDeviceDrivers } from "../administration/device-removal.js";
+import { DeviceDriverResolver } from "../computer-use/device-drivers.js";
+import { DeviceIdSchema, type DeviceId } from "@opensteer/core";
+import { TabStore, AgentToolActivityStore, appendHostDeploymentEvent } from "@opensteer/database";
+import { TabService } from "../tabs/tab-service.js";
+import { NativeTabTargets } from "../computer-use/native-tab-targets.js";
+import {
+  tabOwner,
+  tabComputer,
+  tabComputers,
+  authorizeTabTarget,
+  authorizeTabActor,
+  tabReadAuthority,
+  canReadTab,
+} from "../tabs/tab-authority.js";
+import { TabToolHandlers } from "../mcp/handlers/tabs.js";
+import { createTranscriptFileServices } from "../threads/transcript-files.js";
+import { TranscriptFileAccess } from "../threads/transcript-file-access.js";
+import {
+  admitTranscriptFiles,
+  resolveThreadOutputImages,
+  readThreadOutputImage,
+} from "@opensteer/database";
+import { AuthSessionIdSchema } from "@opensteer/core";
+import { IdleCompactionService } from "../agents/idle-compaction-service.js";
+import { admitIdleCompaction, idleCompactionCandidates } from "@opensteer/database/idle-compaction";
 import { DeviceAccessService } from "../administration/device-access-service.js";
 import { requireDeviceAccess } from "../administration/device-access.js";
 import { digestSecret } from "@opensteer/shared/secretDigest";
-import { PersonalTabStore, runAllowsPersonalContext } from "@opensteer/database";
+import { runAllowsPersonalContext } from "@opensteer/database";
 import { resolveTeamTaskExecution } from "./team-task-execution.js";
 import { ReconcileLoop, reconcileServices } from "./reconcile-loop.js";
 import { TeamRunEvents } from "./team-run-events.js";
 import { initializePersonalState } from "./personal-state.js";
+import { OwnerProfileService } from "../administration/owner-profile.js";
 import { createTeamHostRuntime } from "./team-runtime.js";
 import { AgentHomeFiles } from "../threads/agent-home-files.js";
 import { createPersonalTeamLinkServices } from "../team-links/index.js";
@@ -15,13 +42,14 @@ import {
 } from "../attachments/personal-team-ports.js";
 import { TaskAdmissionService } from "../threads/task-admission-service.js";
 import {
+  findPersonalSettings,
   personalSettings,
+  reportAgentHomeSettings,
   reportAgentHomeSkills,
   ensureDeployment,
-  personalDeploymentOwner,
 } from "@opensteer/database";
-import { readPersonalResources } from "../browser/personal-snapshot.js";
-import { deploymentPolicy } from "@opensteer/core";
+import { createTabResourcesReader } from "../browser/personal-snapshot.js";
+import { deploymentPolicy, localMachineOwnerEmail } from "@opensteer/core";
 import { RequestHold } from "../mcp/request-hold.js";
 import { ThreadNaming } from "../agents/thread-naming.js";
 import { QuietTasks } from "../threads/quiet-tasks.js";
@@ -66,7 +94,6 @@ import {
   AttachmentStore,
   AutomationFailureStore,
   BrowserSourceStore,
-  BrowserTabGroupStore,
   ChannelStore,
   createDatabase,
   databaseShutdownDetails,
@@ -157,10 +184,10 @@ import { BrowserLocalProfiles } from "../browser/browser-local-profiles.js";
 import { announceBrowserUsage } from "../browser/browser-presence.js";
 import { BrowserService } from "../browser/browser-service.js";
 import { BrowserSourceService } from "../browser/browser-source-service.js";
-import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
 import { BrowserAttachTicketSigner } from "../browser/browser-ticket.js";
 import { PasswordSignInService } from "../browser/password-sign-in-service.js";
 import { passwordsLoginSavedMessage } from "../browser/passwords-offers.js";
+import { SavedLoginService } from "../browser/saved-logins.js";
 import { RunnerBrowserHub } from "../browser/runner-browser-hub.js";
 import { RunnerBrowserRuntimeRouter } from "../browser/runner-browser-runtime.js";
 import { ChannelService } from "../channels/channel-service.js";
@@ -168,14 +195,14 @@ import { MessagingRelayHub } from "../channels/messaging-relay-hub.js";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { ComputerUseService } from "../computer-use/computer-use-service.js";
 import { ComputerViewService } from "../computer-use/computer-view-service.js";
-import { PhoneTabs } from "../computer-use/phone-tabs.js";
 import { DisplayStreamHub } from "../computer-use/display-stream-hub.js";
 import { PlaceContextService } from "../computer-use/place-context-service.js";
 import { HostAuthenticator } from "../identity/auth.js";
 import { CredentialService, loadOrCreateCredentialKey } from "../identity/credential-service.js";
 import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
-import { loadOrCreateHostInstance } from "../identity/host-instance.js";
+import { loadHostInstance, loadOrCreateHostInstance } from "../identity/host-instance.js";
 import {
+  loadHostKeys,
   loadOrCreateHostKeys,
   SignedTokenService,
   signHostDiscovery,
@@ -354,6 +381,16 @@ export async function confirmRunnerRegistration(
   return false;
 }
 
+export function runnerAttachedReaction(
+  wake: () => void,
+  reconcile: () => Promise<void>,
+): () => Promise<void> {
+  return async () => {
+    wake();
+    await reconcile();
+  };
+}
+
 export function runnerRegistrationHook<T>(
   wake: (identity: T) => void,
   afterRegistration: (identity: T) => Promise<void>,
@@ -374,6 +411,11 @@ export interface PersonalHostRuntime {
   readonly kind: "personal";
   readonly app: FastifyInstance;
   readonly browser: BrowserService;
+  readonly computerApps: ComputerAppHub;
+  readonly computerUse: ComputerUseService;
+  readonly computerViews: ComputerViewService;
+  readonly displayStreams: DisplayStreamHub;
+  readonly tabs: TabService;
   readonly notifications: Pick<NotificationDispatcher, "drain">;
   readonly deployment: Deployment;
   readonly store: OpensteerStore;
@@ -393,12 +435,18 @@ export interface TeamHostRuntime {
   readonly app: FastifyInstance;
   readonly deployment: Deployment;
   readonly team: Awaited<ReturnType<typeof import("../team/services.js").startTeamServices>>;
-  readonly authorityLost: Promise<Error>;
+  /** Turns unready and retires keep-alive connections while load balancers drop this process. */
+  drain(): Promise<void>;
   close(): Promise<void>;
   closingStep(): string | undefined;
   listen(): Promise<string>;
 }
 export interface HostRuntimeOptions {
+  readonly teamPartnerNetwork?: import("../team-partners/service.js").TeamPartnerNetwork;
+  /** How long a stopping team Host stays reachable while load balancers drop it; tests shorten it. */
+  readonly teamDrainDelayMs?: number;
+  /** How long a stopping team Host waits for in-flight requests and transfers before cutting them. */
+  readonly teamDrainDeadlineMs?: number;
   readonly onDeploymentEvent?: (event: AgentEvent) => void;
   readonly executionClock?: import("@opensteer/shared/clock").Clock;
   /** Controls notification grace/backoff independently of Account transport. */
@@ -440,11 +488,18 @@ export async function createHostRuntime(
   const executionNow = options.executionClock?.now ?? (() => Date.now());
   assertHostConfigInvariants(config);
   const dataDirectory = resolve(config.dataDirectory);
-  const keys = await loadOrCreateHostKeys({
-    dataDirectory,
-    ...(config.privateKeyPath ? { privateKeyPath: config.privateKeyPath } : {}),
-    ...(config.publicKeyPath ? { publicKeyPath: config.publicKeyPath } : {}),
-  });
+  // A strict installation was provisioned outside this process and is read, never created.
+  const keys =
+    config.strictInstallation && config.privateKeyPath && config.publicKeyPath
+      ? await loadHostKeys({
+          privateKeyPath: config.privateKeyPath,
+          publicKeyPath: config.publicKeyPath,
+        })
+      : await loadOrCreateHostKeys({
+          dataDirectory,
+          ...(config.privateKeyPath ? { privateKeyPath: config.privateKeyPath } : {}),
+          ...(config.publicKeyPath ? { publicKeyPath: config.publicKeyPath } : {}),
+        });
   const hostKeyFingerprint = fingerprintForSpki(
     keys.publicKey.export({ format: "der", type: "spki" }).toString("base64url"),
   );
@@ -457,10 +512,10 @@ export async function createHostRuntime(
   // HostInstanceId belongs to this installation, not to the portable database.
   // Materialize it before any database work so startup never creates a
   // Deployment row without first having a durable local identity.
-  const hostInstance = await loadOrCreateHostInstance(
-    dataDirectory,
-    config.deploymentIdentity?.hostInstanceId,
-  );
+  const hostInstance =
+    config.strictInstallation && config.hostInstancePath
+      ? await loadHostInstance(config.hostInstancePath, config.deploymentIdentity?.hostInstanceId)
+      : await loadOrCreateHostInstance(dataDirectory, config.deploymentIdentity?.hostInstanceId);
   const database = createDatabase({
     applicationName: "opensteer-host",
     connectionString: config.databaseUrl,
@@ -474,7 +529,9 @@ export async function createHostRuntime(
   let taskQuestions: TaskQuestionNotices | undefined;
   let pluginChangeNotices: PluginChangeNotices | undefined;
   try {
-    authorityLease = await acquireDeploymentAuthorityLease(database);
+    // A team database is served by several Host processes at once; a personal one by exactly one.
+    if (!deploymentPolicy(config.deploymentShape).services.team)
+      authorityLease = await acquireDeploymentAuthorityLease(database);
     await migrateToLatest(database).catch((error: unknown) => {
       throw config.mode === "development" ? withDevelopmentDatabaseReset(error) : error;
     });
@@ -486,7 +543,7 @@ export async function createHostRuntime(
       hostInstanceId: hostInstance.hostInstanceId,
       deploymentShape: config.deploymentShape,
     });
-    if (deploymentPolicy(config.deploymentShape).services.team) {
+    if (!authorityLease) {
       return await createTeamHostRuntime({
         config,
         options,
@@ -494,7 +551,6 @@ export async function createHostRuntime(
         deployment,
         keys,
         hostKeyFingerprint,
-        authorityLease,
       });
     }
     const personalConfig = config.personal!;
@@ -507,7 +563,11 @@ export async function createHostRuntime(
     const initializePersonal = async () => {
       if (initializedPersonal) return initializedPersonal;
       initializingPersonal ??= initializePersonalState(database, personalConfig, realtime)
-        .then((execution) => (initializedPersonal = execution))
+        .then(async (execution) => {
+          // The owner's first name is in place before anyone reads it.
+          if (execution) await ownerProfile.seed(config.ownerNameSeed ?? null);
+          return (initializedPersonal = execution);
+        })
         .finally(() => {
           initializingPersonal = undefined;
         });
@@ -530,11 +590,17 @@ export async function createHostRuntime(
     await recoverAssignmentResultWaits(database);
     // Only the Host knows the origin its own web app answers on, so it is the
     // Host that teaches the store how to name a Thread in a channel message.
+    let tabs: TabService | undefined;
+    let apps: AppService | undefined;
+    const tabStore = new TabStore(database);
+    const toolActivity = new AgentToolActivityStore(database, appendHostDeploymentEvent);
     const store = new OpensteerStore(database, {
       ...(options.executionClock ? { executionClock: options.executionClock } : {}),
       links: { threadUrl: (threadId) => `${config.canonicalOrigin.origin}/tasks/${threadId}` },
       readPersonalResources: (input) =>
-        readPersonalResources(input, () => runnerBrowsers.placements()),
+        createTabResourcesReader(requiredService(tabs, "Tabs"), (owner) =>
+          browser.workspaceBootstrap(owner),
+        )(input),
     });
     // What active Runs are streaming, held only in memory; it learns each Run
     // from that Run's committed durable events and forgets it at the terminal.
@@ -591,7 +657,7 @@ export async function createHostRuntime(
         ? {
             localMachineOwner: {
               displayName: "You",
-              email: "owner@personal.opensteer.invalid",
+              email: localMachineOwnerEmail,
             },
           }
         : {}),
@@ -645,8 +711,18 @@ export async function createHostRuntime(
           ...(options.accountDirectoryFetch ? { fetch: options.accountDirectoryFetch } : {}),
           identity,
           keys,
+          onAccountLinkChanged: () => {
+            void ownerProfile.refresh().catch(reportOwnerProfileError);
+          },
         })
       : undefined;
+    let reportOwnerProfileError: (error: unknown) => void = () => {};
+    const ownerProfile = new OwnerProfileService({
+      store: store.ownerProfile,
+      account: personalRemoteAccess ?? null,
+      changed: () => notifyMachinesChanged(realtime, "owner-profile"),
+      report: (error) => reportOwnerProfileError(error),
+    });
     await personalRemoteAccess?.purgeExpiredAccountLinkKeys();
     const tokens = new SignedTokenService(keys, {
       deploymentId: deployment.id,
@@ -668,12 +744,45 @@ export async function createHostRuntime(
     // lost, so one of the two is bound after the other exists.
     let computerUse: ComputerUseService | undefined;
     let computerViews: ComputerViewService | undefined;
-    let phoneTabs: PhoneTabs | undefined;
     let displayStreams: DisplayStreamHub | undefined;
     let pluginPackages: PluginPackageService | undefined;
+    const deviceDrivers = new DeviceDriverResolver({
+      store,
+      invalidated: (binding) => computerApps.invalidateDevice(binding),
+    });
+    await deviceDrivers.refresh();
     const computerApps = new ComputerAppHub({
-      requireAgentAccess: (runnerId) =>
-        requireDeviceAccess(database, runnerId, "apps", runners.isRunnerConnected(runnerId)),
+      drivers: deviceDrivers,
+      requireDeviceAgentAccess: async (deviceId) => {
+        const binding = deviceDrivers.binding(deviceId);
+        await requireDeviceAccess(
+          database,
+          deviceId,
+          "apps",
+          binding.role === "self"
+            ? runners.isRunnerConnected(binding.runnerId)
+            : computerApps.attached(deviceId),
+        );
+      },
+      onDeviceInputWithdrawn: (deviceId) => displayStreams?.withdrawOwnerInput(deviceId),
+      onDeviceRemoved: (deviceId, removed) => {
+        computerUse?.forgetDevice(deviceId, removed);
+        computerViews?.forgetDevice(deviceId);
+        displayStreams?.forgetDevice(deviceId);
+      },
+      onDeviceInvalidated: (binding) => {
+        computerUse?.forgetDriver(binding);
+        computerViews?.forgetDriver(binding);
+        displayStreams?.forgetDriver(binding);
+        tabs?.changed();
+      },
+      requireAgentAccess: async (runnerId) =>
+        requireDeviceAccess(
+          database,
+          await store.requireSelfDeviceId(runnerId),
+          "apps",
+          runners.isRunnerConnected(runnerId),
+        ),
       packageSource: (serverId, runnerId, launch) =>
         pluginPackages?.computerSource(serverId, runnerId, launch),
       knownDefinitionIds: () => computerAppDefinitionIds,
@@ -683,9 +792,10 @@ export async function createHostRuntime(
         notifyMachinesChanged(realtime, "computer-apps.status");
         notices.notify({ runnerId });
       },
-      onComputerUseEvent: (runnerId, event) => computerUse?.handleHelperEvent(runnerId, event),
+      onComputerUseEvent: (deviceId, event, route) =>
+        computerUse?.handleHelperEvent(deviceId, event, route),
       onRunnerDetached: (runnerId, reason) => {
-        computerViews?.disconnect(runnerId);
+        computerViews?.forgetRunner(runnerId);
         displayStreams?.forgetRunner(runnerId, reason);
         computerUse?.forgetRunner(runnerId);
       },
@@ -697,7 +807,6 @@ export async function createHostRuntime(
     computerUse = new ComputerUseService({
       deploymentId: deployment.id,
       onSessionEnded: (sessionId) => displayStreams?.endSession(sessionId),
-      onPhoneHeld: (runnerId) => phoneTabs?.opened(runnerId),
       onAuthorityRevoked: ({ runId, bindingGeneration }) =>
         integrationPlatform.resetComputerGeneration(runId, bindingGeneration),
       // The same minute tick that ends idle sessions settles the approvals
@@ -709,7 +818,14 @@ export async function createHostRuntime(
         await integrationPlatform.requestLocalServerApprovals();
       },
       hub: computerApps,
-      loginReceiver: (runnerId) => computerApps.loginReceiver(runnerId),
+      loginReceiver: (target) => {
+        try {
+          const binding = deviceDrivers.binding(DeviceIdSchema.parse(target));
+          return binding.role === "self" ? computerApps.loginReceiver(binding.runnerId) : null;
+        } catch {
+          return null;
+        }
+      },
       passwords: {
         validateLease: (input) => passwordSignIns.validateLease(input),
         seal: (input) => passwordSignIns.seal(input),
@@ -717,39 +833,144 @@ export async function createHostRuntime(
       // Every computer serving computer apps, Mac or phone; which definitions
       // each serves is the catalog's to say, by the platform it reports.
       listMachines: async (ownerId) => {
-        const machines: { name: string; platform: ComputerAppPlatform; runnerId: RunnerId }[] = [];
-        let after: RunnerId | undefined;
+        const drivers = await store.listDeviceDrivers({ includeDetached: true });
+        const runnerNames = new Map<RunnerId, string>();
+        const selfRunners = new Map<RunnerId, import("@opensteer/protocol").RunnerModules>();
+        let runnerCursor: RunnerId | undefined;
         do {
           const page = await store.listRunners({
             ownerId,
             includeDeployment: true,
             limit: 100,
-            ...(after ? { after } : {}),
+            ...(runnerCursor ? { after: runnerCursor } : {}),
           });
           for (const runner of page.runners) {
-            const platform = runner.moduleDescriptors.integrations?.platform;
-            if (runner.revokedAt === null && platform !== undefined)
-              machines.push({ name: runner.name, platform, runnerId: runner.id });
+            selfRunners.set(runner.id, runner.moduleDescriptors);
+            runnerNames.set(runner.id, runner.name);
+          }
+          runnerCursor = page.nextCursor ?? undefined;
+        } while (runnerCursor);
+        const machines: {
+          name: string;
+          platform: ComputerAppPlatform;
+          deviceId: DeviceId;
+          definitionId?: "android-phone" | "iphone-screen";
+          availability?: import("@opensteer/protocol").DeviceAvailability;
+          setup?: import("@opensteer/protocol").PhoneDisplayView["setup"];
+        }[] = [];
+        let after: DeviceId | undefined;
+        do {
+          const page = await store.listDevices({
+            ownerId,
+            includeDeployment: true,
+            limit: 100,
+            ...(after ? { after } : {}),
+          });
+          for (const device of page.devices) {
+            const bindings = drivers.filter((binding) => binding.deviceId === device.id);
+            const screen = bindings.find((binding) => binding.role === "screen");
+            const self = bindings.find((binding) => binding.role === "self" && !binding.detachedAt);
+            const platform = screen
+              ? "ios"
+              : self
+                ? selfRunners.get(self.runnerId)?.integrations?.platform
+                : undefined;
+            if (platform)
+              machines.push({
+                name: device.name,
+                platform,
+                deviceId: device.id,
+                ...(screen
+                  ? {
+                      availability: screen.detachedAt
+                        ? {
+                            state: "unavailable" as const,
+                            reason: { kind: "not-connected" as const },
+                          }
+                        : !runnerRegistry?.isRunnerConnected(screen.runnerId)
+                          ? {
+                              state: "unavailable" as const,
+                              reason: { kind: "driver-offline" as const },
+                            }
+                          : !device.accessPolicy.apps
+                            ? {
+                                state: "disabled" as const,
+                                reason: { kind: "access-off" as const },
+                              }
+                            : (computerApps.deviceStatus(device.id)?.availability ?? {
+                                state: "unavailable" as const,
+                                reason: { kind: "unreported" as const },
+                              }),
+                      setup: {
+                        location: "driver-mac" as const,
+                        driverRunnerId: screen.runnerId,
+                        driverRunnerName: runnerNames.get(screen.runnerId) ?? "its driving Mac",
+                      },
+                    }
+                  : platform === "android"
+                    ? {
+                        setup: { location: "android-usb" as const },
+                        ...(!device.accessPolicy.apps
+                          ? {
+                              availability: {
+                                state: "disabled" as const,
+                                reason: { kind: "access-off" as const },
+                              },
+                            }
+                          : {}),
+                      }
+                    : {}),
+                ...(screen
+                  ? { definitionId: "iphone-screen" as const }
+                  : platform === "android"
+                    ? { definitionId: "android-phone" as const }
+                    : {}),
+              });
           }
           after = page.nextCursor ?? undefined;
         } while (after);
         return machines;
       },
-      machineOwners: (runnerIds) => store.effectiveMachineOwners(runnerIds),
+      machineOwners: (ids) =>
+        store.effectiveDeviceOwners(ids.map((id) => DeviceIdSchema.parse(id))),
       // A live session is a row on the machines list and a card in its Thread,
       // so opening, closing, gaining an app or acting is a change to publish.
       onError: (error) => reportComputerUseSweepError(error),
-      onSessionsChanged: () => notifyMachinesChanged(realtime, "computer-use.sessions"),
+      onSessionsChanged: () => {
+        notifyMachinesChanged(realtime, "computer-use.sessions");
+        tabs?.changed();
+      },
       onPresenceChanged: (ownerUserId, sessions) =>
         notifyComputerPresence(realtime, ownerUserId, sessions),
       authorizer: store,
       stops: {
         clear: (runId) => store.clearComputerUseStops(runId),
         initial: await store.activeComputerUseStops(),
-        record: (runId, runnerId) => store.recordComputerUseStop({ runId, runnerId }),
+        record: (runId, deviceId) =>
+          store.recordComputerUseStop({ runId, deviceId: DeviceIdSchema.parse(deviceId) }),
       },
-      beginPlaceEntry: (runId, generation) => browser.beginRunPlace(runId, generation),
-      onPlaceActivity: (input) => browser.noteNativeActivity(input),
+      onPlaceActivity: (input) => {
+        void (async () => {
+          const deviceId = DeviceIdSchema.parse(input.place.machineId);
+          let query = database
+            .selectFrom("personalTabs")
+            .select(["id", "title"])
+            .where("ownerId", "=", input.ownerId)
+            .where("computerId", "=", deviceId)
+            .where("closedAt", "is", null);
+          if (input.place.kind === "phone") query = query.where("kind", "=", "phone");
+          else if (input.windowId) query = query.where("windowId", "=", input.windowId);
+          else return;
+          const row = await query.executeTakeFirst();
+          if (!row) return;
+          browser.noteTabActivity({ ...input, tabId: row.id, title: row.title });
+          if (!input.ended)
+            browser.beginRunTabPlace(
+              input.runId,
+              input.generation,
+            )({ tabId: row.id, title: row.title, site: null });
+        })().catch((error) => reportComputerUseSweepError(error));
+      },
       resolveActor: (runId, ownerId) =>
         store.resolvePlaceActor({ agentBindingId: `run:${runId}`, ownerId }),
       threadTitle: async (threadId, ownerUserId) =>
@@ -795,11 +1016,17 @@ export async function createHostRuntime(
     let reportBrowserUsageError: (error: unknown) => void = (error) => {
       console.warn("Browser usage recording failed", error);
     };
-    const browserTabGroups = new BrowserTabGroupStore(database);
     let logMissingBrowserActor: (sessionId: string, bindingId: string) => void = () => undefined;
     const browser = new BrowserService({
-      requireAgentAccess: (runnerId) =>
-        requireDeviceAccess(database, runnerId, "browser", runners.isRunnerConnected(runnerId)),
+      requireAgentAccess: async (runnerId) =>
+        requireDeviceAccess(
+          database,
+          await store.requireSelfDeviceId(runnerId),
+          "browser",
+          runners.isRunnerConnected(runnerId),
+        ),
+      requireAgentVisibility: async (runnerId) =>
+        requireDeviceAccess(database, await store.requireSelfDeviceId(runnerId), "browser", true),
       detachRunnerAgents: async (runnerId) => {
         const sessions = await database
           .selectFrom("browserSessions")
@@ -842,9 +1069,13 @@ export async function createHostRuntime(
         realtime.sendToUsers([ownerId], { type: "host.browser-history-changed", profileId }),
       onProfilesChanged: (ownerId) =>
         realtime.publishBrowserSessionsChanged([ownerId], "browser.profiles"),
-      tabGroups: browserTabGroups,
-      personalTabs: new PersonalTabStore(database),
-      onPlaceNotice: (ownerId, notice) => realtime.sendToUsers([ownerId], notice),
+      tabs: tabStore,
+      onTabsChanged: (owner, ids) => tabs?.changed(owner, ids),
+      tabPlaces: {
+        write: (input) => store.recordRunTabPlace(input),
+        publish: (event) => publishDeploymentEvent(event),
+        notice: (owner, notice) => realtime.sendToUsers([owner], notice),
+      },
       onSessionsChanged: (sessionIds, source) => {
         // Catalog visibility is viewer-wide, independent of socket subscriptions.
         void Promise.all(sessionIds.map((sessionId) => store.listBrowserSessionViewers(sessionId)))
@@ -915,6 +1146,16 @@ export async function createHostRuntime(
       store: new BrowserSourceStore(database),
       requests: store.requests,
       onError: (error) => reportBrowserSignInError(error),
+      onRequestResolved: () => notifyIntegrationContinuations(),
+      onDeploymentEvent: (event) => publishDeploymentEvent(event),
+    });
+    const savedLogins = new SavedLoginService({
+      passwords: passwordSignIns,
+      browser,
+      requests: store.requests,
+      canonicalOrigin: config.canonicalOrigin.origin,
+      currentRoute: async () => (await personalRemoteAccess?.status())?.route ?? null,
+      onError: (error) => reportBrowserSignInError(error),
       onLoginSaved: async (offer) => {
         await commands.enqueueThreadInput({
           content: [{ text: passwordsLoginSavedMessage(offer), type: "text" }],
@@ -925,9 +1166,6 @@ export async function createHostRuntime(
           threadId: offer.threadId,
         });
       },
-      onRequestResolved: () => notifyIntegrationContinuations(),
-      onDeploymentEvent: (event) => publishDeploymentEvent(event),
-      passwords: passwordSignIns,
       stoppedByPerson: (threadId) => store.latestRunStoppedByPerson(threadId),
     });
     disconnectBrowserSources = () => browserSources.disconnectRouteAdmittedSources();
@@ -1005,17 +1243,11 @@ export async function createHostRuntime(
     let logComputerLifecycle = (event: string, details: Readonly<Record<string, unknown>>) =>
       console.info(event, details);
     computerViews = new ComputerViewService({
-      onPhoneView: (status) => {
-        app.log.info(status, "Phone owner view command");
-        if (status.operation === "computer.view.open" && status.viewId !== null)
-          phoneTabs?.opened(
-            status.machineId,
-            () => computerViews?.holdsPhoneView(status.machineId) ?? false,
-          );
-      },
+      selfDeviceId: (runnerId) => store.requireSelfDeviceId(runnerId),
+      onPhoneView: (status) => app.log.info(status, "Phone owner view command"),
       hub: computerApps,
-      connections: (ownerId) => integrationStore.listConnections(ownerId),
-      owners: (ids) => store.effectiveMachineOwners(ids),
+      connections: (ownerId) => integrationStore.listDeviceConnections(ownerId),
+      owners: (ids) => store.effectiveDeviceOwners(ids.map((id) => DeviceIdSchema.parse(id))),
       changed: (ownerId, notice) => {
         if (notice.type === "host.computer-view.removed")
           app.log.info(
@@ -1028,18 +1260,91 @@ export async function createHostRuntime(
             "Computer owner view ended",
           );
         realtime.sendToUsers([ownerId], notice);
+        tabs?.changed(ownerId);
       },
       log: (event, details) => logComputerLifecycle(event, details),
       ended: (viewId, generation, reason) =>
         displayStreams?.endOwnerView(viewId, generation, reason),
     });
-    phoneTabs = new PhoneTabs({
-      store,
-      heldByTask: (machine) =>
-        computerUse?.sessionsForRunner(machine).some(({ display }) => display) ?? false,
-      closeViews: (owner, machine) => computerViews?.closePhoneViews(owner, machine),
-      changed: () => notifyMachinesChanged(realtime, "phone-tab"),
-      onError: (error) => reportComputerUseSweepError(error),
+    const nativeTabs = new NativeTabTargets({
+      views: computerViews,
+      connections: (owner) => integrationStore.listDeviceConnections(owner),
+      owns: async (owner, computer) =>
+        (await store.effectiveDeviceOwners([DeviceIdSchema.parse(computer)])).get(
+          DeviceIdSchema.parse(computer),
+        )?.effectiveOwner === owner,
+      connected: (computer) => computerApps.attached(computer),
+      queryWindow: (computer, target) =>
+        computerApps.resolveWindow(computer, target, { timeoutMs: 10_000 }),
+      users: (owner, computer, window) => computerUse!.nativeTargetUsers(owner, computer, window),
+      phoneUnavailable: (computer) => computerApps.displayUnavailableReason(computer),
+    });
+    tabs = new TabService({
+      store: tabStore,
+      devices: store,
+      pages: browser.pageTabs,
+      nativeTargets: nativeTabs,
+      deviceNativeTargets: nativeTabs,
+      apps: { get: (owner, id) => requiredService(apps, "Apps").get(owner, id) },
+      computer: async (owner, id, db) => {
+        const computer = await tabComputer(owner, id, db);
+        return {
+          ...computer,
+          connected: computer.selfRunnerId
+            ? runners.isRunnerConnected(computer.selfRunnerId)
+            : computerApps.attached(id),
+        };
+      },
+      canRead: canReadTab,
+      canReadTask: async (actor, id, db) =>
+        !!(await db
+          .selectFrom("threads")
+          .select("id")
+          .where("id", "=", id)
+          .where("createdBy", "=", tabOwner(actor))
+          .executeTakeFirst()),
+      readableTasks: async (actor, ids, db) =>
+        new Set(
+          ids.length
+            ? (
+                await db
+                  .selectFrom("threads")
+                  .select("id")
+                  .where("id", "in", ids)
+                  .where("createdBy", "=", tabOwner(actor))
+                  .execute()
+              ).map((row) => row.id)
+            : [],
+        ),
+      readAuthority: async (actor, db) => {
+        const check = await tabReadAuthority(actor, db);
+        return async (row) => {
+          try {
+            return await check(row);
+          } catch (error) {
+            if (error instanceof OpensteerError && ["forbidden", "not_found"].includes(error.code))
+              return false;
+            throw error;
+          }
+        };
+      },
+      computers: async (owner, ids, db) =>
+        new Map(
+          [...(await tabComputers(owner, ids, db))].map(([id, computer]) => {
+            return [
+              id,
+              {
+                ...computer,
+                connected: computer.selfRunnerId
+                  ? runners.isRunnerConnected(computer.selfRunnerId)
+                  : computerApps.attached(id),
+              },
+            ] as const;
+          }),
+        ),
+      authorize: authorizeTabTarget,
+      authorizeMembership: authorizeTabActor,
+      onError: (error) => reportBrowserUsageError(error),
     });
     // A connection gaining authority settles Requests targeting the hosting
     // computer and resumes their agents. The reaction is bound once the platform
@@ -1245,6 +1550,11 @@ export async function createHostRuntime(
       // the Mac is told to end it and take its pill down the moment the Run
       // is over.
       closeComputerUseSessions: (runId) => {
+        void toolActivity
+          .finalize(runId)
+          .then((events) => events.forEach(publishDeploymentEvent))
+          .catch((error) => reportComputerUseTeardownError(runId, error));
+        tabs?.changed();
         computerUse?.closeForRun(runId);
         integrationPlatform
           .endComputerRun(runId)
@@ -1260,6 +1570,7 @@ export async function createHostRuntime(
     // its Runner reports an end, so what the grant admitted ends here instead.
     // Shell audit keeps its existing `run-ended` reason; computer-use cleanup
     // closes the exact session without adding a wire reason.
+    let idleCompactionService: IdleCompactionService | undefined;
     store.onRunGrantsRevoked((grants) => {
       browser.endRevokedRunActors(grants);
       computerUse?.endGrantSessions(grants);
@@ -1360,9 +1671,38 @@ export async function createHostRuntime(
       adapters: integrationAdapters,
       secretVault: integrationVault,
       listConnections: (ownerUserId) => integrationStore.listConnections(ownerUserId),
+      listDeviceConnections: (ownerUserId) => integrationStore.listDeviceConnections(ownerUserId),
+      onDeviceTargetAcquired: (target) => tabs!.acquired(target),
+      onDeviceInputAccessWithdrawn: (id) => displayStreams?.withdrawOwnerInput(id),
       authorizationSource: integrations,
       computerApps,
       computerUse,
+      nativeTabs,
+      tabs,
+      onTabUsed: (claims, tabId, title) =>
+        browser.beginRunTabPlace(
+          claims.runId,
+          claims.bindingGeneration,
+        )({ tabId, title, site: null }),
+      nativeTabTarget: async (owner, id) => {
+        const row = await tabStore.get(owner, id);
+        if (!row || (row.kind !== "window" && row.kind !== "phone"))
+          throw new OpensteerError({ code: "not_found", message: "Tab not found." });
+        return row.kind === "window"
+          ? {
+              kind: "window",
+              computerId: row.computerId,
+              windowId: row.windowId!,
+              app: row.windowApp!,
+              tabGeneration: row.generation,
+            }
+          : {
+              kind: "phone",
+              computerId: row.computerId,
+              driverGeneration: (await computerApps.captureRoute(row.computerId))?.generation,
+              tabGeneration: row.generation,
+            };
+      },
       credentialMaterializer: integrations,
       dataDirectory,
       definitions: integrationDefinitions,
@@ -1438,6 +1778,7 @@ export async function createHostRuntime(
       ...(options.integrationFetch ? { publicFetch: options.integrationFetch } : {}),
       store: integrationPlatformStore,
     });
+    for (const event of await toolActivity.finalize()) publishDeploymentEvent(event);
     observeIntegrationInput = (event) => integrationPlatform.inputRequests.observe(event);
     // Before accepting installs: their data folder can precede the plugin transaction.
     await integrationPlatform.recoverPluginData();
@@ -1573,7 +1914,7 @@ export async function createHostRuntime(
             {
               listCallableTools: (input) => integrationPlatform.listCallableTools(input),
               getComputerConnectionForCall: (input) =>
-                integrationPlatformStore.getComputerConnectionForCall(input),
+                integrationPlatformStore.getDeviceComputerConnectionForCall(input),
               onError: (error, failed) => reportIntegrationCallSubjectError(failed, error),
               runRequester: (input) => store.runRequester(input),
             },
@@ -1597,6 +1938,8 @@ export async function createHostRuntime(
           }
           if (!committed.wasDuplicate) {
             publishDeploymentEvent(committed.event);
+            if (committed.event.type === "run.completed" && committed.event.threadId)
+              void idleCompactionService?.arm(committed.event.threadId);
             if (
               ["run.completed", "run.failed", "run.interrupted"].includes(committed.event.type) ||
               (committed.event.type === "run.phase" && committed.event.data.phase === "background")
@@ -1650,6 +1993,20 @@ export async function createHostRuntime(
           );
           if (changed) notices.notify({ runnerId: identity.runnerId });
         },
+        onSettingsReport: async (identity, report) => {
+          if (!identity.environmentIds.includes(report.environmentId)) return;
+          const owner = await reportAgentHomeSettings(
+            database,
+            { ...identity.fence, environmentId: report.environmentId },
+            report,
+          );
+          if (owner) realtime.sendToUsers([owner], { type: "host.plugins-changed" });
+        },
+        agentHome: async (identity) => {
+          if (!identity.capabilities.includes("agent-home-settings-v1")) return null;
+          const settings = await findPersonalSettings(database);
+          return settings?.agentHome.computerId === identity.runnerId ? settings.agentHome : null;
+        },
         onLive: (_identity, live) => {
           const frame = liveRuns.apply(live.progress);
           if (frame) realtime.publishLive(frame);
@@ -1659,7 +2016,16 @@ export async function createHostRuntime(
             publishDeploymentEvent(event);
           }
         },
+        onAppState: (identity, state) => {
+          void apps
+            ?.onAppState(identity.runnerId, identity.connectionId, state)
+            .catch((error) => app.log.warn({ err: error }, "App state report failed"));
+        },
         onDisconnect: async (identity, scope) => {
+          void apps
+            ?.onRunnerDisconnected(identity.runnerId, identity.connectionId)
+            .catch((error) => app.log.warn({ err: error }, "App disconnect handling failed"));
+          tabs?.changed();
           // Before the recovery work, which is retried until it succeeds: the
           // row is already offline, and a repeated "reread the list" costs a
           // reader nothing.
@@ -1720,7 +2086,10 @@ export async function createHostRuntime(
           for (const execution of attached.resumed) liveRuns.track(execution);
           return attached.results;
         },
-        onAttached: async () => wakeExecutionCoordinator(),
+        onAttached: runnerAttachedReaction(
+          wakeExecutionCoordinator,
+          () => idleCompactionService?.reconcile() ?? Promise.resolve(),
+        ),
         onHarnessInstallation: async () => {
           notifyMachinesChanged(realtime, "harness.update");
         },
@@ -1763,6 +2132,10 @@ export async function createHostRuntime(
             // A computer is online the moment it registers, whatever its
             // inventory reconciliation goes on to do.
             notifyMachinesChanged(realtime, "runner.registered");
+            tabs?.changed();
+            void apps
+              ?.onRunnerConnected(identity.runnerId)
+              .catch((error) => app.log.warn({ err: error }, "App reconciliation failed"));
             notices.notify({ runnerId: identity.runnerId });
             // macOS applies a Full Disk Access grant only once the app has quit
             // and reopened, so the grant usually arrives as a fresh registration
@@ -1964,6 +2337,7 @@ export async function createHostRuntime(
         if (context.request.id !== requestId)
           throw new OpensteerError({ code: "forbidden", message: "Team request changed" });
         return {
+          asker: context.asker,
           instructionsMarkdown: context.instructionsMarkdown,
           instructionsRevision: context.instructionsRevision,
           source: context.source,
@@ -2054,6 +2428,7 @@ export async function createHostRuntime(
       passwordSignIn: (operationId) => passwordSignIns.continuationState(operationId),
       commands,
       integrations: {
+        computerAccess: (input, run) => integrationPlatform.computerAccess(input, run),
         computerUseMachines: (ownerUserId) =>
           integrationPlatform.computerAppApprovals.computerUseMachines(ownerUserId),
         computerUsePhones: (ownerUserId) =>
@@ -2122,6 +2497,21 @@ export async function createHostRuntime(
       runners,
       onDeploymentEvent: publishDeploymentEvent,
       continuations,
+      deviceOnline: (id, capability) => {
+        let binding;
+        try {
+          binding = deviceDrivers.binding(id);
+        } catch {
+          return false;
+        }
+        if (binding.role === "screen")
+          return (
+            capability === "apps" &&
+            computerApps.attached(id) &&
+            computerApps.deviceStatus(id)?.availability.state === "ready"
+          );
+        return runners.isRunnerConnected(binding.runnerId);
+      },
     });
     const machineFullDiskAccess = new MachineFullDiskAccessService({
       store,
@@ -2135,11 +2525,7 @@ export async function createHostRuntime(
       integrations: integrationPlatform,
       store,
     });
-    const browserTabs = new BrowserTabGroupService({
-      groups: browserTabGroups,
-      browser,
-      publish: (ownerIds) => realtime.publishBrowserSessionsChanged(ownerIds, "browser.groups"),
-    });
+
     const threadService = new ThreadService({
       store,
       commands,
@@ -2194,7 +2580,7 @@ export async function createHostRuntime(
         );
         return connectedDevices;
       },
-      browserTabs,
+      tabs,
       supportsLoginFill: (scope) => {
         const runner = runners.identityForEnvironment(scope.environmentId);
         return (
@@ -2206,6 +2592,7 @@ export async function createHostRuntime(
       placeContext,
       onBrowserUsage: (credits) => browser.announceUsage(credits),
       browserSources,
+      savedLogins,
       deviceAccess: deviceAccessService,
       machineFullDiskAccess,
       browser,
@@ -2218,13 +2605,14 @@ export async function createHostRuntime(
       onEvent: publishDeploymentEvent,
       store,
     });
-    const apps = new AppService({
+    apps = new AppService({
       tunnels: new AppTunnelHub(runners),
       dataDirectory,
       apps: new AppStore(database),
-      tabsChanged: async () => {
-        const ownerId = await personalDeploymentOwner(database);
-        if (ownerId) realtime.sendToUsers([ownerId], { type: "host.app-tabs-changed" });
+      tabs: { removeTabs: (tx, id) => tabStore.removeTabs(tx, id) },
+      changed: (owner, ids) => {
+        realtime.sendToUsers([owner], { type: "host.apps.changed", appIds: ids });
+        tabs?.appsChanged(ids);
       },
       files,
       agentHome: async () => (await personalExecution()).options.agentHome,
@@ -2317,11 +2705,13 @@ export async function createHostRuntime(
           channels: { service: channels, relay: messagingRelay },
           realtime,
           publishDeploymentEvent,
+          reconcileIdleCompaction: () => idleCompactionService?.reconcile() ?? Promise.resolve(),
           integrations: { platform: integrationPlatform, service: integrations, continuations },
         },
         (id) => administrationCatalogs?.schedule(id),
       ),
       (ownerId) => integrationStore.listConnections(ownerId),
+      execution.canExecute,
     );
     const agentTools = new OpensteerMcpService({
       teamsAvailable: async () =>
@@ -2354,6 +2744,7 @@ export async function createHostRuntime(
       handlers: agentToolHandlers({
         administration,
         apps,
+        tabs: new TabToolHandlers(tabs),
         product: productHandlers,
         integrations: integrationTools,
         triggers: new TriggerToolHandlers(triggers),
@@ -2424,7 +2815,10 @@ export async function createHostRuntime(
           },
         );
       },
-      publish: (events) => events.forEach(publishDeploymentEvent),
+      publish: (events) => {
+        events.forEach(publishDeploymentEvent);
+        if (events.length) wakeExecutionCoordinator();
+      },
       revokeGrants: (grants) => store.announceRevokedGrants(grants),
     });
     async function ensureLinks() {
@@ -2441,6 +2835,10 @@ export async function createHostRuntime(
           admission: taskAdmission,
           runs: personalTeamRunPort(database),
           onDeliveryEvent: publishDeploymentEvent,
+          onConsentChanged: async (teamId, requestId, opened) => {
+            realtime.sendToUsers([service.options.ownerId], { type: "host.requests-changed" });
+            if (opened) notificationDispatcher?.dispatchTeamAsk(teamId, requestId);
+          },
           onPublished: async () => {
             const ownerId = service.options.ownerId;
             realtime.publishViewerTasksChanged(ownerId);
@@ -2477,6 +2875,34 @@ export async function createHostRuntime(
       });
       return linkStarting;
     }
+    const transcriptFileServices = createTranscriptFileServices({
+      authSecret: config.authSecret,
+      dataDirectory,
+      deploymentId: deployment.id,
+      access: new TranscriptFileAccess({
+        home: files,
+        attachments,
+        imagesRoot: resolve(config.runnerDataDirectory, "images"),
+        helperPath: personalConfig.nativeFsHelperPath,
+        admit: ({ userId, threadId }) =>
+          admitTranscriptFiles(database, { ownerId: userId, threadId }),
+        outputImages: (input) => resolveThreadOutputImages(database, input),
+        outputImage: (input) => readThreadOutputImage(database, input),
+      }),
+      authorizeMedia: async ({ sessionId, userId }) =>
+        Boolean(
+          await database
+            .selectFrom("authSessions")
+            .innerJoin("users", "users.id", "authSessions.userId")
+            .select("authSessions.id")
+            .where("authSessions.id", "=", AuthSessionIdSchema.parse(sessionId))
+            .where("authSessions.userId", "=", userId)
+            .where("authSessions.expiresAt", ">", new Date())
+            .where("authSessions.absoluteExpiresAt", ">", new Date())
+            .where("users.disabledAt", "is", null)
+            .executeTakeFirst(),
+        ),
+    });
     const app = await createHostServer(
       {
         connections,
@@ -2490,6 +2916,8 @@ export async function createHostRuntime(
             }
           : {}),
         attachments,
+        assets: transcriptFileServices.assets,
+        transcriptFiles: transcriptFileServices.files,
         runFiles: runFileRelay,
         apps,
         appOriginSigningKey: createHmac("sha256", config.authSecret)
@@ -2502,10 +2930,12 @@ export async function createHostRuntime(
         requestResponseVault: integrationVault,
         runToolTokens,
         agentTools,
+        toolActivity,
         authenticator,
         browser,
-        browserTabs,
+        tabs,
         browserSources,
+        passwordSignIns,
         signBrowserSourceInvitation: (bytes) =>
           sign(null, bytes, keys.privateKey).toString("base64url"),
         browserAttachPublicKeys,
@@ -2513,9 +2943,12 @@ export async function createHostRuntime(
         channels: { relay: messagingRelay, service: channels },
         commands,
         computerApps,
+        deviceDrivers: {
+          screenDriver: (id) => computerApps.screenDriverConnection(id),
+          change: (input, commit) => changeDeviceDrivers({ store, computerApps }, input, commit),
+        },
         computerUse,
         computerViews,
-        phoneTabs,
         displayStreams,
         placeContext,
         credentials,
@@ -2537,6 +2970,7 @@ export async function createHostRuntime(
         ...(personalRemoteAccess
           ? { personalRemoteAccess: { service: personalRemoteAccess } }
           : {}),
+        ownerProfile,
         realtime,
         publishDeploymentEvent,
         runnerAuthenticator,
@@ -2623,6 +3057,8 @@ export async function createHostRuntime(
       app.log.error({ runId, err: error }, "Run computer-use teardown failed");
     reportBrowserSignInError = (error) =>
       app.log.warn({ err: error }, "Chrome sign-in delivery failed");
+    reportOwnerProfileError = (error) =>
+      app.log.warn({ err: error }, "Owner name refresh from the Opensteer Account failed");
     reportBrowserPresenceError = (error) =>
       app.log.warn({ err: error }, "Browser presence delivery failed");
     reportBrowserUsageError = (error) =>
@@ -2680,6 +3116,30 @@ export async function createHostRuntime(
         if (!closed) directoryPublisher.start();
       });
     }
+    idleCompactionService = new IdleCompactionService({
+      list: (threadId) => idleCompactionCandidates(store.database, threadId),
+      admit: async (candidate) => {
+        const identity = runners.identityForEnvironment(candidate.environmentId);
+        if (!identity?.capabilities.includes("claude-compaction-v1") || !candidate.contextSnapshot)
+          return;
+        const result = await admitIdleCompaction(store.database, {
+          threadId: candidate.threadId,
+          requestedBy: candidate.requestedBy,
+          maintenance: {
+            kind: "claude-compaction",
+            reason: "idle",
+            sourceRunId: candidate.contextSnapshot.sourceRunId,
+            providerSessionId: candidate.providerSessionId,
+          },
+        });
+        if (result) {
+          for (const event of result.events) publishDeploymentEvent(event);
+          coordinator.wake();
+        }
+      },
+      onError: (error) => app.log.error({ err: error }, "Idle compaction failed"),
+    });
+    await idleCompactionService.start();
     const triggerScheduleLoop = new TriggerScheduleLoop({
       onChanged: () => realtime.publishTriggersChanged(),
       onError: (error) => app.log.error({ err: error }, "Trigger scheduling failed"),
@@ -2710,7 +3170,10 @@ export async function createHostRuntime(
               }
             })(),
             initializePersonalState(database, personalConfig, realtime).then(async (service) => {
-              if (service) await ensureLinks();
+              if (!service) return;
+              await ensureLinks();
+              await ownerProfile.seed(config.ownerNameSeed ?? null);
+              ownerProfile.refreshSoon();
             }),
             ...(personalRemoteAccess ? [personalRemoteAccess.purgeExpiredAccountLinkKeys()] : []),
             // What a work location can run is durable state like any other, so it
@@ -2760,6 +3223,10 @@ export async function createHostRuntime(
       intervalMs: Math.min(10_000, Math.floor(config.executionLeaseMs / 4)),
       onError: (error) => app.log.error({ err: error }, "Execution lease sweep failed"),
       reconcile: async () => {
+        const leases = await store.expireThreadInputLeases();
+        for (const event of leases.events) publishDeploymentEvent(event);
+        if (leases.events.length) wakeExecutionCoordinator();
+        await linkServices?.requests.expireUndecidedAsks();
         const expired = await store.recoverRunsWithExpiredExecutionBindings();
         for (const event of expired.events) publishDeploymentEvent(event);
         if (expired.events.some((event) => event.type === "run.restarted"))
@@ -2784,7 +3251,12 @@ export async function createHostRuntime(
 
     return {
       kind: "personal",
+      computerApps,
+      computerUse,
+      computerViews,
+      displayStreams,
       app,
+      tabs: requiredService(tabs, "Tabs"),
       browser,
       notifications: notificationDispatcher,
       deployment,
@@ -2809,6 +3281,9 @@ export async function createHostRuntime(
         });
         await step("personal reconcile loop", () => personalReconcileLoop.close());
         await step("execution lease loop", () => executionLeaseLoop.close());
+        await step("idle compaction", async () => {
+          await idleCompactionService?.close();
+        });
         await step("trigger schedule loop", () => triggerScheduleLoop.close());
         await step("watch service", () => watchService?.close());
         await step("continuations", () => continuations.close());
@@ -2824,6 +3299,8 @@ export async function createHostRuntime(
         displayStreams?.close();
         await step("computer use", () => computerUse.shutdown());
         computerApps.close();
+        deviceDrivers.close();
+        tabs?.dispose();
         await step("agent tools", () => agentTools.close());
         await step("team Run publication", () => teamRunEvents?.close());
         await step("team links", async () => {
@@ -2835,6 +3312,7 @@ export async function createHostRuntime(
         await step("browser", () => browser.close());
         await step("password sign-ins", () => passwordSignIns.close());
         browserSources.close();
+        savedLogins.close();
         runnerBrowsers.close();
         browserRelay.close();
         await step("shell hub", () => shellHub?.close());
@@ -2843,7 +3321,7 @@ export async function createHostRuntime(
         await step("quiet tasks", () => quietTasks.stop());
         await step("coordinator", () => coordinator.stop());
         await step("task questions", () => taskQuestions?.close());
-        files.close();
+        transcriptFileServices.close();
         await step("HTTP server", () => app.close());
         await step("admission", () => admission.close());
         await step("thread state loop", () => threadStateLoop?.close());

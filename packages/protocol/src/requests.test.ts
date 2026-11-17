@@ -78,13 +78,11 @@ describe("Request protocol", () => {
       tasks: { recent: emptyPage, active: emptyPage, done: emptyPage },
       needsYou: { count: 1, entries: [], window: emptyWindow },
       resources: {
-        appTabs: [],
+        tabs: { tabs: [], layout: { revision: 0, items: [] }, complete: true },
         browser: {
           available: false,
           profiles: [],
           placements: [],
-          groups: { rows: [], complete: true },
-          tabs: [],
         },
       },
       messageWindows: [],

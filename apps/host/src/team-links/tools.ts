@@ -1,7 +1,9 @@
+import { stripRefs } from "@opensteer/shared/stripRefs";
 import { OpensteerError, type DeploymentId, type RunId, type TeamBlobId } from "@opensteer/core";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
-import { TeamSearchInputSchema } from "@opensteer/protocol";
+import { TeamMarkdownSchema, TeamSearchInputSchema } from "@opensteer/protocol";
+import { teamMentionHandles } from "@opensteer/shared/teamMentions";
 import type { z } from "zod";
 import {
   linkError,
@@ -14,15 +16,18 @@ import { teamOperationId } from "./operation-id.js";
 export class TeamRunTools {
   readonly linksStore: PersonalTeamLinksStore;
   readonly requests: PersonalTeamRequestsStore;
+  readonly onPost: ((teamId: DeploymentId) => Promise<void>) | undefined;
   readonly rpc: (teamId: DeploymentId) => TeamLinkRpc;
   constructor(
     linksStore: PersonalTeamLinksStore,
     requests: PersonalTeamRequestsStore,
     rpc: (teamId: DeploymentId) => TeamLinkRpc,
+    onPost?: (teamId: DeploymentId) => Promise<void>,
   ) {
     this.linksStore = linksStore;
     this.requests = requests;
     this.rpc = rpc;
+    this.onPost = onPost;
   }
 
   async teams() {
@@ -62,7 +67,16 @@ export class TeamRunTools {
       requestId: request.requestId,
     });
     if (result.kind !== "context") throw linkError("bad_request");
-    return result.context;
+    return {
+      ...result.context,
+      asker:
+        request.kind === "ask" && request.localDecision === "approve"
+          ? {
+              displayName: request.presentation!.asker.displayName,
+              actor: request.presentation!.asker.actor,
+            }
+          : null,
+    };
   }
 
   async channels(
@@ -121,6 +135,17 @@ export class TeamRunTools {
     const result = await this.rpc(teamId).call({ type: "receipt", requestId: request.requestId });
     if (result.kind !== "receipt") throw linkError("bad_request");
     if (result.messageId !== null) {
+      if (
+        request.deliveryVia === "tool" &&
+        request.answerPayload &&
+        stripRefs(request.answerPayload.bodyMarkdown) === request.answerPayload.bodyMarkdown &&
+        (await this.requests.post(teamId, request.clientMessageId))?.messageId === null
+      )
+        return this.post(run, teamId, {
+          channelId: request.source.channelId,
+          ...(request.source.threadRootId ? { threadRootId: request.source.threadRootId } : {}),
+          ...request.answerPayload,
+        });
       await this.requests.publication(teamId, request.requestId, "accepted", result.messageId);
       return { messageId: result.messageId, source: request.source };
     }
@@ -137,24 +162,98 @@ export class TeamRunTools {
       readonly attachmentIds: readonly TeamBlobId[];
     },
   ): ReturnType<TeamToolPort["post"]> {
+    const link = await this.linksStore.get(teamId);
+    if (!link?.remoteLinkId || !["active", "unreachable"].includes(link.state)) throw linkError();
     const request = await this.requests.forRun(run.runId);
     const claimsReply =
       request?.teamId === teamId &&
       request.source.channelId === input.channelId &&
       request.source.threadRootId === (input.threadRootId ?? null);
     const clientMessageId = teamOperationId("tool", run.runId, run.operationId);
-    const { source } = await this.read(run, teamId, {
+    const frozen =
+      claimsReply && request.clientMessageId === clientMessageId ? request.answerPayload : null;
+    const previous = await this.requests.post(teamId, clientMessageId);
+    const savedBody = frozen?.bodyMarkdown ?? previous?.bodyMarkdown;
+    if (savedBody !== undefined && stripRefs(savedBody) !== savedBody) {
+      if (claimsReply) {
+        const receipt = await this.rpc(teamId).call({
+          type: "receipt",
+          requestId: request.requestId,
+        });
+        if (receipt.kind !== "receipt") throw linkError("bad_request");
+        if (receipt.messageId) {
+          await this.requests.publication(teamId, request.requestId, "accepted", receipt.messageId);
+          return {
+            messageId: receipt.messageId,
+            source: { ...request.source, messageId: receipt.messageId },
+          };
+        }
+        await this.requests.publication(
+          teamId,
+          request.requestId,
+          "blocked",
+          null,
+          "The saved post contains private references and cannot be replayed. Send a new post.",
+        );
+      }
+      throw new OpensteerError({
+        code: "conflict",
+        message:
+          "The saved post contains private references and cannot be replayed. Send a new post.",
+      });
+    }
+    input = {
+      ...input,
+      bodyMarkdown: savedBody ?? stripRefs(input.bodyMarkdown),
+      attachmentIds: frozen?.attachmentIds ?? previous?.attachmentIds ?? input.attachmentIds,
+    };
+    if (!TeamMarkdownSchema.safeParse(input.bodyMarkdown).success)
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "The sanitized post is empty or exceeds the team message limit.",
+      });
+    const { source, ownerHandle } = await this.read(run, teamId, {
       channelId: input.channelId,
       ...(input.threadRootId ? { threadRootId: input.threadRootId } : {}),
     });
-    if (claimsReply)
-      await this.requests.freeze(teamId, request.requestId, {
+    if (claimsReply) {
+      const saved = await this.requests.freeze(teamId, request.requestId, {
         runId: run.runId,
         via: "tool",
         clientMessageId,
         answerMessageId: null,
         payload: { bodyMarkdown: input.bodyMarkdown, attachmentIds: [...input.attachmentIds] },
       });
+      if (
+        saved.clientMessageId === clientMessageId &&
+        saved.answerPayload &&
+        (saved.answerPayload.bodyMarkdown !== input.bodyMarkdown ||
+          JSON.stringify(saved.answerPayload.attachmentIds) !== JSON.stringify(input.attachmentIds))
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          message:
+            "The saved post changed while it was being prepared. Check its receipt before retrying.",
+        });
+    }
+    const mentionedAgentHandles = [...new Set(teamMentionHandles(input.bodyMarkdown))].filter(
+      (handle) => handle.endsWith("-agent") && handle !== `${ownerHandle}-agent`,
+    );
+    const provenance = {
+      teamDeploymentId: teamId,
+      localLinkId: link.id,
+      remoteLinkId: link.remoteLinkId,
+      clientMessageId,
+      runId: run.runId,
+      messageId: null,
+      channelId: input.channelId,
+      threadRootId: input.threadRootId ?? null,
+      mentionedAgentHandles,
+      bodyMarkdown: input.bodyMarkdown,
+      attachmentIds: [...input.attachmentIds],
+      requestId: claimsReply ? request.requestId : null,
+    };
+    if (mentionedAgentHandles.length) await this.requests.recordPost(provenance);
     const result = await this.rpc(teamId)
       .call({
         type: "post",
@@ -166,7 +265,6 @@ export class TeamRunTools {
       })
       .catch(async (error: unknown) => {
         if (
-          claimsReply &&
           error instanceof OpensteerError &&
           [
             "bad_request",
@@ -176,11 +274,22 @@ export class TeamRunTools {
             "conflict",
             "resource_exhausted",
           ].includes(error.code)
-        )
-          await this.requests.clearFreeze(teamId, request.requestId, clientMessageId);
+        ) {
+          if (mentionedAgentHandles.length)
+            await this.requests.forgetPost(teamId, clientMessageId, link.id);
+          if (claimsReply)
+            await this.requests.clearFreeze(teamId, request.requestId, clientMessageId);
+        }
         throw error;
       });
     if (result.kind !== "receipt" || result.messageId === null) throw linkError("bad_request");
+    if (mentionedAgentHandles.length)
+      await this.requests.recordPost({
+        ...provenance,
+        messageId: result.messageId,
+        askOutcomes: result.askOutcomes,
+      });
+    await this.onPost?.(teamId);
     if (claimsReply) {
       const receipt = await this.rpc(teamId).call({
         type: "receipt",
@@ -192,6 +301,7 @@ export class TeamRunTools {
     }
     return {
       messageId: result.messageId,
+      ...(result.askOutcomes?.length ? { askOutcomes: result.askOutcomes } : {}),
       source: { ...source, messageId: result.messageId, threadRootId: input.threadRootId ?? null },
     };
   }

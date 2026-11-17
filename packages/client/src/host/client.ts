@@ -1,6 +1,8 @@
+import type { ClientCommandInput } from "./device-commands.js";
+import type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";
+import type { TabsClient } from "./tabs-contract.js";
 import type { TeamRunDelivery, TeamSource } from "@opensteer/core";
 import type { PersonShowMessage } from "@opensteer/protocol";
-import type { BrowserSignInPasswords } from "@opensteer/protocol/browser-sources";
 import type { DesktopUpdates } from "../connections/desktop-updates-contract.js";
 import type {
   ChannelAccessPolicy,
@@ -26,8 +28,10 @@ import type {
   IntegrationCallSubject,
   MarkColor,
   MessageAuthor,
+  MessageEdit,
   MessageKind,
   MessageQuote,
+  MessageRevisionView,
   ModelSelection,
   NotificationView,
   PhoneContentPart,
@@ -42,6 +46,7 @@ import type {
   ThreadAccessMode,
   ThreadDoneReason,
   QuietTaskDays,
+  PersonName,
   ThreadInputPolicy,
   ThreadInputQueue,
   ThreadStatus,
@@ -51,6 +56,7 @@ import type {
   IconName,
 } from "@opensteer/core";
 import type {
+  OwnerProfileView,
   ApprovedComputerApp,
   BrowserRasterDensity,
   BrowserSessionOpener,
@@ -62,26 +68,19 @@ import type {
   HarnessModelSettingsMap,
   HarnessSourceDescriptor,
   HostApiClient,
-  HostApiCommandInput,
   HostApiCommandOutput,
   HostEnvironmentStatus,
-  MachineAccessPolicy,
   MachineSummary,
   OwnerWindowInfo,
   ShellSessionHistoryEntry,
   ThreadMessagePage,
   ThreadMessageWindow,
-  PersonalTabActivateResultSchema,
-  PersonalTabReopenResultSchema,
 } from "@opensteer/protocol";
 import type {
   BrowserBinaryFrameHeader,
   BrowserClientMessage,
   BrowserDialog,
   BrowserSurfaceId,
-  BrowserTabGroupColor,
-  BrowserTabLayout,
-  BrowserTabMove,
   HostedBrowserSessionState,
 } from "@opensteer/protocol/browser";
 import type {
@@ -90,7 +89,6 @@ import type {
   TriggerRevision,
   TriggerWatchActivation,
 } from "@opensteer/triggers/models";
-import type { z } from "zod";
 import type { BrowserEditingStore } from "./browser-editing.js";
 import type { BrowserHistoryClient } from "./browser-history.js";
 import type { BrowserPasskeys } from "./browser-passkeys.js";
@@ -99,48 +97,17 @@ import type { ComputerViewRetention } from "./computer-view-retention.js";
 import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
 import type { WebSocketClient } from "./host-session-client.js";
 import type { SavedViewReadiness } from "./saved-host-view.js";
-import type { BrowserIdentityChoice } from "./start-page-model.js";
 import type { NativeViewerSource } from "./surfaces.js";
 
-import type {
-  BrowserContextCandidate,
-  BrowserTabCloseResult,
-  BrowserTabOpenResult,
-  PlaceIdentity,
-} from "@opensteer/protocol";
+import type { BrowserContextCandidate } from "@opensteer/protocol";
 import type { BrowserWatchState } from "./browser-watch.js";
 import type { ClientNetworkState } from "./lifecycle.js";
 import type { PlaceActivity } from "./place-activity.js";
 
+/** Who a new page browses as, and for a Guest the computer it opens on. */
 export interface BrowserIdentityOpenInput {
-  readonly identity: BrowserIdentityChoice;
+  readonly identity: import("./start-page-model.js").BrowserIdentityChoice;
   readonly placement?: { readonly kind: "runner"; readonly runnerId: string };
-}
-export type BrowserTabOpenInput = { readonly sessionId: string } | BrowserIdentityOpenInput;
-export interface BrowserTabOpenOptions {
-  readonly signal?: AbortSignal;
-  readonly url?: string;
-  readonly typed?: boolean;
-  readonly viewport?: { readonly width: number; readonly height: number };
-  readonly idempotencyKey?: string;
-}
-export interface PersonalTabActivationOptions {
-  readonly opening?: string;
-  readonly asleep?: boolean;
-}
-export interface PendingBrowserTab extends Omit<BrowserTabOpenOptions, "idempotencyKey"> {
-  readonly idempotencyKey: string;
-  readonly target: BrowserTabOpenInput;
-  readonly state: "opening" | "unknown" | "failed";
-  readonly error?: { readonly code: string; readonly message: string };
-}
-export interface BrowserTabOpenHandle {
-  readonly idempotencyKey: string;
-  readonly result: Promise<BrowserTabOpenResult>;
-}
-export interface PendingBrowserTabDestination {
-  readonly kind: "pending-browser";
-  readonly idempotencyKey: string;
 }
 export interface ComputerViewMutationOptions {
   readonly idempotencyKey?: string;
@@ -228,6 +195,7 @@ export interface HarnessSummary {
 }
 
 export interface ThreadSummary {
+  returnHint?: import("@opensteer/core").CompactionReturnHint | null | undefined;
   lastVisitedAt: string | null;
   latestRunCompletedAt: string | null;
   /** When a person last asked for work; task lists order by this time. */
@@ -297,6 +265,7 @@ export interface TaskListState {
 }
 
 export interface RunQueueEntry {
+  maintenance?: Run["maintenance"];
   createdAt: string;
   id: string;
   status: "queued" | "starting" | "running" | "waiting";
@@ -324,6 +293,11 @@ export interface MessageEntry {
   places?: readonly (ComputerAppContentPart | PhoneContentPart)[];
   body: string;
   createdAt: string;
+  /**
+   * Set once a person edited the message while it waited; the content above
+   * is already the edit. Its mark opens the history (`listMessageRevisions`).
+   */
+  edit?: MessageEdit;
   /** Why a sent message did not, or may not, reach the Run it was sent to. */
   delivery?: {
     reason: string;
@@ -409,7 +383,7 @@ export interface PlaceEntry {
   createdAt: string;
   id: string;
   kind: "place";
-  place: PlaceIdentity;
+  tabId: import("@opensteer/core").TabId;
   runId: string;
   site: string | null;
   title: string;
@@ -454,8 +428,6 @@ export interface RequestReceiptEntry {
   id: string;
   kind: "request";
   outcome: string;
-  /** What a Chrome sign-in that ended found Opensteer Passwords lacking. */
-  passwordsOffer?: { readonly need: BrowserSignInPasswords; readonly site: string };
   requestId: string;
   requestKind: Request["kind"] | null;
   runId: string | null;
@@ -489,6 +461,7 @@ export type RunEntryStatus =
   "completed" | "failed" | "interrupted" | "queued" | "running" | "starting" | "waiting";
 
 export interface RunEntry {
+  compaction?: import("@opensteer/core").NativeCompactionActivity;
   delivery?: TeamRunDelivery | null;
   /** Absent on an older Host: its waking input is unknown. */
   startedBy?: MessageAuthor;
@@ -749,11 +722,9 @@ export interface PersonalTabLineage {
 }
 
 export interface BrowserSessionSummary {
-  readonly browserTabs?: import("./browser-tab-store.js").BrowserTabStore;
   /** Host freshness for bootstrap lifecycle reconciliation. */
   updatedAt?: string;
   navigationVersion?: 1 | undefined;
-  tabRestoreVersion?: 1 | undefined;
   opener?: BrowserSessionOpener;
   access: "read" | "read-write";
   /**
@@ -802,12 +773,11 @@ type HostSessionState = "authenticated" | "authentication-required" | "checking"
 export type ThreadLookupState = "failed" | "loading" | "missing";
 
 export interface HostSnapshot {
-  /** Live tab selectors, shared with HostClient.browserTabs. */
-  readonly browserTabs?: import("./browser-tab-store.js").BrowserTabStore;
-  readonly openingAppTabs?: readonly string[];
-  readonly appTabs?: readonly import("@opensteer/protocol").AppTab[];
+  /** The person's tab catalog and layout, shared by every surface; patched row by row. */
+  readonly tabs: import("./tab-store.js").TabStore;
+  /** Bumped by host.apps.changed and every reconnect; an Apps page rereads on change. */
+  readonly appsRevision: number;
   readonly appVersions?: Readonly<Record<string, number>>;
-  readonly pendingBrowserTabs?: readonly PendingBrowserTab[];
   readonly savedViewReadiness?: SavedViewReadiness;
   /**
    * Per conversation this client shows, whether its browser usage has been
@@ -839,10 +809,6 @@ export interface HostSnapshot {
    */
   waitingRequests: readonly WaitingRequest[];
   runQueue: RunQueueEntry[];
-  tabRestoreVersion?: 1 | undefined;
-  /** Tab activation calls owned by this client, before the Host reports restoration. */
-  readonly activatingPersonalTabs?: readonly string[] | undefined;
-  browserTabGroups?: BrowserTabLayout | undefined;
   browserAvailable: boolean;
   browserPlacements: BrowserPlacementSummary[];
   browserProfiles: BrowserProfileSummary[];
@@ -903,7 +869,8 @@ export interface HostSnapshot {
   machines: MachineSummary[];
   /** Bumped when a machine's access sessions change, so readers refetch. */
   machineRevision: number;
-  ownerName: string | null;
+  /** The personal owner's name; null before bootstrap or from a Host that has none. */
+  ownerProfile: OwnerProfileView | null;
   revision: number;
   session: HostSessionState;
   /**
@@ -931,6 +898,8 @@ export interface HostSnapshot {
   quietTasksAvailable?: boolean;
   /** The Host accepts installed-engine update commands. */
   harnessUpdateAvailable?: boolean;
+  /** The Host serves `agent-images-v1`: transcript images load from the hosting computer. */
+  agentImagesAvailable?: boolean;
   tabReopenAvailable?: boolean;
   /** The Host serves `browser-profile-manage-v1`: a person can rename and delete profiles. */
   browserProfileManageAvailable?: boolean;
@@ -938,6 +907,7 @@ export interface HostSnapshot {
   iphoneAppsAvailable: boolean;
   /** The Host serves `devices-v1`: device setup choices, session binding and the Browser and Apps switches. */
   devicesAvailable?: boolean;
+  deviceDriversAvailable?: boolean;
   ownerViewWindowsAvailable?: boolean;
   /** The Host advertises voice-run-v1: a call's agent runs as a Run with Opensteer's tools. */
   voiceAvailable?: boolean;
@@ -983,6 +953,7 @@ export interface CreateHarnessInstanceInput {
 }
 
 export interface SendMessageInput {
+  compaction?: import("@opensteer/core").CompactionSendChoice;
   body: string;
   content?: readonly ContentPart[];
   quotedMessageId?: string;
@@ -1057,8 +1028,39 @@ export interface MachineAccessHistoryPage {
 export type MachineAccessUpdateOutcome =
   { readonly outcome: "conflict" } | { readonly outcome: "updated"; readonly revision: number };
 
-export interface HostClient {
-  readonly browserTabs: import("./browser-tab-store.js").BrowserTabStore;
+/**
+ * One device editing one waiting message. `revision` is the version the
+ * lease was taken at. `touch` on every keystroke; renewals go out at most
+ * every half minute. `save` replaces the message in place and ends the edit,
+ * if the message is still at `expectedRevision`: the version the person's
+ * words were written against (`WaitingDraft.baseRevision`). It rejects with
+ * code `conflict` when the message was already taken or changed elsewhere,
+ * leaving the person's text with them.
+ */
+export interface WaitingMessageEditor {
+  readonly leaseId: string;
+  readonly revision: number;
+  touch(): void;
+  save(content: readonly ContentPart[], expectedRevision: number): Promise<MessageEdit>;
+  cancel(): Promise<void>;
+}
+
+/** A person's answer to a teammate's ask; approval names the revision they saw. */
+export type TeamAskDecision =
+  | {
+      readonly decision: "approve";
+      readonly expectedRevision: number;
+      readonly requestId: string;
+      readonly teamId: string;
+    }
+  | { readonly decision: "decline"; readonly requestId: string; readonly teamId: string };
+
+export interface HostClient extends TabsClient {
+  /**
+   * What this device's own activation of a tab bound — its page session, its
+   * view of a window or phone, or its app — until the tab leaves the list.
+   */
+  tabViewer(tabId: string): import("@opensteer/protocol").TabViewer | null;
   /**
    * The page a viewer of this tab holds now, exactly (its address, icon and
    * size owner); undefined until a viewer of it is admitted. A list row reads
@@ -1071,6 +1073,7 @@ export interface HostClient {
   ): import("@opensteer/protocol/browser-tabs").BrowserViewerSurface | undefined;
   /** A Host without a network supplies its own; every other client reaches updates by route. */
   readonly desktopUpdates?: DesktopUpdates;
+  readonly iphoneSetup?: import("./iphone-setup.js").IphoneSetupPort | undefined;
   readonly browserPasskeys?: BrowserPasskeys;
   /** Popups this client's own input opens from one tab, as each one opens. */
   readonly subscribeBrowserPopups?: (
@@ -1085,25 +1088,17 @@ export interface HostClient {
     generation: number,
     options?: { readonly visible?: boolean },
   ): ComputerViewRetention;
+  /** The opaque windows of one approved app, for opening one exactly as a tab. */
   listComputerAppWindows(
     machineId: string,
     app: Extract<ComputerViewTarget, { kind: "app" }>["app"],
   ): Promise<readonly OwnerWindowInfo[]>;
   listApprovedComputerApps(): Promise<readonly ApprovedComputerApp[]>;
-  openComputerView(
-    machineId: string,
-    target: ComputerViewTarget,
-    options?: ComputerViewMutationOptions & {
-      /** False when nobody pressed anything: a phone wakes only for a person's Open. */
-      readonly wake?: boolean;
-    },
-  ): Promise<ComputerView>;
   closeComputerView(
     viewId: string,
     generation: number,
     options?: ComputerViewMutationOptions,
   ): Promise<ComputerView>;
-  closePhoneTab(machineId: string): Promise<void>;
   renewComputerView(
     viewId: string,
     generation: number,
@@ -1111,6 +1106,9 @@ export interface HostClient {
   ): Promise<ComputerView>;
   readonly browserFrames: BrowserFrameStore;
   readonly browserWatchFrames: BrowserFrameStore;
+  readonly assetUrls?: import("./asset-urls.js").AssetUrlStore;
+  readonly references: import("../references/store.js").ReferenceStore;
+  readonly transcriptFiles: import("./transcript-files.js").TranscriptFileController;
   readonly rpc: HostApiClient;
   createAttachment(input: {
     readonly name: string;
@@ -1123,13 +1121,11 @@ export interface HostClient {
     readonly source: Blob;
     readonly signal?: AbortSignal;
   }): Promise<Attachment>;
-  openAppTab(appId: string): Promise<void>;
-  closeAppTab(appId: string): Promise<void>;
   viewApp(
     appId: string,
     theme: "light" | "dark",
     signal?: AbortSignal,
-  ): Promise<{ readonly app: import("@opensteer/core").OpensteerApp; readonly url: string }>;
+  ): Promise<{ readonly title: string; readonly url: string }>;
   getAttachment(attachmentId: string): Promise<Attachment>;
   readAttachment(attachmentId: string, signal?: AbortSignal): Promise<Blob>;
   discardAttachment(attachmentId: string): Promise<void>;
@@ -1178,12 +1174,26 @@ export interface HostClient {
 
   loadEarlierTasks(): Promise<void>;
   loadEarlierNeedsYou(): Promise<void>;
+  /**
+   * One Request of a task by id, settled or not; null once the Host has none.
+   * Asks for device Requests as the rest of this client's Request reads do.
+   */
+  readRequest(threadId: string, requestId: string): Promise<Request | null>;
 
   loadDoneTasks(deploymentId?: string): Promise<void>;
   loadEarlierDoneTasks(deploymentId?: string): Promise<void>;
+  setIdleCompactionPolicy(policy: import("@opensteer/core").IdleCompactionPolicy): Promise<void>;
   setQuietTaskDays(days: QuietTaskDays): Promise<void>;
+  /** False when the Account already had a newer name, which the snapshot then shows. */
+  setOwnerName(
+    name: PersonName | null,
+    /** `ownerProfile.version` when the person began editing. */
+    expectedVersion: string | null,
+  ): Promise<{ readonly applied: boolean }>;
 
-  dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput>;
+  dispatch(command: ClientCommandInput): Promise<HostApiCommandOutput>;
+  /** Where a message sent now comes from; `dispatch` adds it to `thread.sendMessage`. */
+  messageOrigin?(): import("@opensteer/core").MessageOrigin | undefined;
   dispose(): void;
   getSnapshot(): HostSnapshot;
   load(): Promise<void>;
@@ -1194,6 +1204,40 @@ export interface HostClient {
    * under the same key rather than as a second cancellation.
    */
   cancelThreadInput(threadId: string, messageId: string): Promise<void>;
+  /**
+   * Starts editing one waiting message in place on this device: takes its
+   * edit lease (another device's only with `takeOver`), so no Run takes it
+   * while the person types. The editor renews the lease as `touch` is called
+   * and ends it on `save` or `cancel`; a lease that lapsed is not an error
+   * until a save finds the message already taken.
+   */
+  editWaitingMessage(
+    threadId: string,
+    messageId: string,
+    options?: { readonly takeOver?: boolean },
+  ): Promise<WaitingMessageEditor>;
+  /** Ends whichever device's edit lease holds a waiting message, so its queue can move. */
+  releaseWaitingMessage(threadId: string, messageId: string): Promise<void>;
+  /**
+   * Whether this device holds that edit lease: an editor open here, rather
+   * than another device. Settled before the Host reports the take, so a
+   * queue read never shows this device's own edit as someone else's.
+   */
+  ownsEditLease(leaseId: string): boolean;
+  /**
+   * Answers a teammate's ask awaiting this person. Approving names the
+   * version of the task's copy the person saw (`WaitingAsk.revision`, or the
+   * Needs-you entry's `task.revision`); the Host refuses it with `conflict`
+   * if that copy changed since. Until the team confirms, the ask stays in
+   * its task as approving; a decline cancels it there.
+   */
+  decideTeamAsk(decision: TeamAskDecision): Promise<void>;
+  /** One page of a message's versions, newest first. */
+  listMessageRevisions(
+    threadId: string,
+    messageId: string,
+    before?: number,
+  ): Promise<{ readonly revisions: readonly MessageRevisionView[]; readonly hasMore: boolean }>;
   /**
    * Reads the Host's durable pending-input truth into `snapshot.inputQueues`;
    * transcript pagination is not authoritative. Activating a Thread reads its
@@ -1256,46 +1300,6 @@ export interface HostClient {
   readBrowserContextCandidate(sessionId: string, tabId: string): Promise<BrowserContextCandidate>;
   browserPresentationDeadline?(sessionId: string, tabId: string): number | null;
   markBrowserPagePresented?(sessionId: string, tabId: string): void;
-  beginBrowserTabOpen(
-    target: string | BrowserTabOpenInput,
-    options?: BrowserTabOpenOptions,
-  ): BrowserTabOpenHandle;
-  dismissPendingBrowserTab(idempotencyKey: string): void;
-  openBrowserTab(
-    target: string | BrowserTabOpenInput,
-    options?: BrowserTabOpenOptions,
-  ): Promise<BrowserTabOpenResult>;
-  readPersonalTabs?(sessionId: string): Promise<PersonalTabLineage | null>;
-  activatePersonalTab?(
-    tabId: string,
-    options?: PersonalTabActivationOptions,
-  ): Promise<z.infer<typeof PersonalTabActivateResultSchema> | null>;
-  reopenPersonalTab?(): Promise<z.infer<typeof PersonalTabReopenResultSchema>>;
-  groupBrowserTabs(
-    tabIds: readonly string[],
-    target:
-      | { readonly groupId: string }
-      | { readonly title?: string; readonly color?: BrowserTabGroupColor },
-  ): Promise<string>;
-  moveBrowserTabs(move: BrowserTabMove): Promise<void>;
-  ungroupBrowserTabs(tabIds: readonly string[]): Promise<void>;
-  updateBrowserTabGroup(
-    groupId: string,
-    update: {
-      readonly title?: string;
-      readonly color?: BrowserTabGroupColor;
-      readonly collapsed?: boolean;
-    },
-  ): Promise<void>;
-  closePersonalTabs(tabIds: readonly string[]): Promise<{
-    readonly closed: readonly string[];
-    readonly failed: readonly { readonly tabId: string; readonly message: string }[];
-  }>;
-  closeBrowserTab(
-    sessionId: string,
-    surfaceId: string,
-    expected: BrowserInventory,
-  ): Promise<BrowserTabCloseResult>;
   browserWatchFrame(sessionId: string, surfaceId: string): BrowserFrameView | null;
   browserWatchState(sessionId: string, surfaceId: string): BrowserWatchState;
   /**
@@ -1310,7 +1314,8 @@ export interface HostClient {
   ) => () => void;
   browserViewerState(sessionId: string, surfaceId: string): BrowserWatchState;
   subscribeBrowserWatch(sessionId: string, surfaceId: string, listener: () => void): () => void;
-  readBrowserTabIcon(sessionId: string, iconRef: string): Promise<string | null>;
+  /** A page tab's stored site icon, whether or not this device has the page awake. */
+  readBrowserTabIcon(tabId: string, iconRef: string): Promise<string | null>;
   /**
    * The view is done with this Control or Watch picture — drawn, or dropped because it
    * could not be — so the next may come. A late or repeated token is ignored.
@@ -1328,13 +1333,6 @@ export interface HostClient {
   /** Lets a queue a Stop paused admit work again. Idempotent on the Host. */
   resumeThreadInputQueue(threadId: string): Promise<void>;
   sendBrowserCommand(sessionId: string, command: BrowserCommand): void;
-  startBrowser(
-    deploymentId: string,
-    identity: BrowserStartIdentity,
-    placement?: BrowserPlacementSummary,
-    threadId?: string,
-    viewport?: Extract<BrowserCommand, { type: "surface.open" }>["viewport"],
-  ): Promise<BrowserSessionSummary>;
   stopMachineAccessSession(sessionId: string): Promise<boolean>;
   /**
    * Promotes one of the reader's own queued messages into the Run the queue
@@ -1362,11 +1360,15 @@ export interface HostClient {
     readonly machineId: string;
     readonly proof: import("@opensteer/protocol").DeviceSessionBindingProof;
   }): Promise<void>;
-  updateMachineAccess(input: {
-    readonly expectedRevision: number;
-    readonly policy: MachineAccessPolicy;
-    readonly runnerId: string;
-  }): Promise<MachineAccessUpdateOutcome>;
+  attachIphoneScreen(
+    input: IphoneScreenAttachInput,
+  ): Promise<import("@opensteer/protocol").IphoneScreenAttachResult>;
+  detachIphoneScreen(input: {
+    readonly deviceId: string;
+    readonly expectedGeneration: number;
+    readonly idempotencyKey?: string;
+  }): Promise<import("@opensteer/protocol").IphoneScreenDetachResult>;
+  updateMachineAccess(input: MachineAccessUpdateInput): Promise<MachineAccessUpdateOutcome>;
 }
 
 export class HostClientRequestError extends Error {

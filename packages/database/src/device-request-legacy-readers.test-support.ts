@@ -31,8 +31,7 @@ export function devicesLegacyReaders() {
           setup(builder) {
             builder.onLoad(
               {
-                filter:
-                  /\/packages\/(?:core\/src\/requests|protocol\/src\/(?:client|needs-you))\.ts$/,
+                filter: /\/packages\/(?:core\/src\/requests|protocol\/src\/needs-you)\.ts$/,
               },
               ({ path }) => ({
                 contents: readFileSync(
@@ -50,7 +49,7 @@ export function devicesLegacyReaders() {
         },
       ],
     });
-    // Keep released Request kinds, payloads and mandatory page readers independent of current readers.
+    // Freeze pre-devices Request kinds and pages; unrelated tab contracts follow the new baseline.
     return import(
       `data:text/javascript;base64,${Buffer.from(result.outputFiles[0]!.text).toString("base64")}`
     );

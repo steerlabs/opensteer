@@ -1,3 +1,4 @@
+import { computerTargetId } from "@opensteer/client/host";
 import { SettingsDeviceCapabilities } from "./settings-device-capabilities.js";
 import { ComputerSetupApprovals } from "../computers/computer-app-approval.js";
 import { ActivityIndicator, ScrollView, View } from "react-native";
@@ -18,16 +19,21 @@ import {
   computerUsesChosenElsewhere,
   computerUsesPhrase,
 } from "@opensteer/client/computers";
-import { computerUseView, isIphone, phoneUseView } from "@opensteer/client/integrations";
+import {
+  computerUseView,
+  isIphone,
+  phoneScreenMac,
+  phoneUseView,
+} from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useLayoutEffect, useMemo, useState, useRef, useEffect, type ReactNode } from "react";
 import { StyleSheet } from "react-native";
-import { tabsRoute } from "../browser/surface-route.js";
+import { tabRoute } from "../browser/surface-route.js";
+import { TabTargetSchema } from "@opensteer/core";
 import { operationDetail } from "../client/mobile-client.js";
 import { useLeaveSheets } from "./leave-sheets.js";
 
-import { openPhoneOwnerView } from "../computers/open-owner-view.js";
 import { useComputerUseData } from "../computers/use-computer-use-data.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 
@@ -123,21 +129,17 @@ function ComputerDetail(props: {
       mounted.current = false;
     };
   }, []);
+  const phoneTab = TabTargetSchema.safeParse({ kind: "phone", computerId: props.machineId });
   const openPhone = async () => {
     setOpeningPhone(true);
     setOpenFailure(null);
     try {
-      const opened = await openPhoneOwnerView(
-        props.hostClient,
-        props.machineId,
-        () => mounted.current && navigation.isFocused(),
-      );
-      if (opened)
+      // The phone's one tab; showing it is the person's Open, which may wake it.
+      if (!phoneTab.success) return;
+      const tab = await props.hostClient.openTab(phoneTab.data);
+      if (mounted.current && navigation.isFocused())
         navigation.dispatch(
-          StackActions.push(
-            "WorkspaceBrowser",
-            tabsRoute(props.deploymentId, { kind: "phone", machineId: props.machineId }),
-          ),
+          StackActions.push("WorkspaceBrowser", tabRoute(props.deploymentId, tab.tabId)),
         );
     } catch (error) {
       if (mounted.current) setOpenFailure(operationDetail(error, "The phone could not be opened."));
@@ -199,7 +201,7 @@ function ComputerDetail(props: {
             />
           </>
         )}
-        {machine && !thisIphone ? (
+        {machine && !thisIphone && phoneScreenMac(machine) === null ? (
           <SettingsDeviceCapabilities
             host={props.hostClient}
             machine={machine}
@@ -238,7 +240,7 @@ function ComputerDetail(props: {
           />
         ) : phone !== null ? (
           <View style={styles.summary}>
-            {canRespond && phone.access !== null && phone.state.kind === "ready" ? (
+            {canRespond && phone.canView && phoneTab.success ? (
               <SecondaryButton
                 busy={openingPhone}
                 label="Open phone"
@@ -260,7 +262,7 @@ function ComputerDetail(props: {
             <ComputerSetupApprovals
               hostClient={props.hostClient}
               requests={(data.data?.setupRequests ?? []).filter(
-                (request) => request.runnerId === machine.id && request.kind !== "app",
+                (request) => computerTargetId(request) === machine.id && request.kind !== "app",
               )}
               onChanged={data.reload}
             />

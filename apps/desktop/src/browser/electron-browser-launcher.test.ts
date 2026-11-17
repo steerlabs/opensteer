@@ -94,17 +94,19 @@ vi.mock("electron", () => {
         return (
           result ??
           Promise.resolve(
-            method === "Target.getTargetInfo"
-              ? { targetInfo: { targetId: "target-1" } }
-              : method === "Page.getFrameTree"
-                ? {
-                    frameTree: {
-                      frame: { id: "target-1", loaderId: "loader-1", url: this.getURL() },
-                    },
-                  }
-                : method === "Network.getAllCookies"
-                  ? { cookies: [] }
-                  : {},
+            method === "Target.attachToTarget"
+              ? { sessionId: "agent-native-session" }
+              : method === "Target.getTargetInfo"
+                ? { targetInfo: { targetId: "target-1" } }
+                : method === "Page.getFrameTree"
+                  ? {
+                      frameTree: {
+                        frame: { id: "target-1", loaderId: "loader-1", url: this.getURL() },
+                      },
+                    }
+                  : method === "Network.getAllCookies"
+                    ? { cookies: [] }
+                    : {},
           )
         );
       }),
@@ -182,7 +184,10 @@ vi.mock("electron", () => {
     clearCache: vi.fn(async () => undefined),
     clearStorageData: vi.fn(async () => undefined),
     getPreloadScripts: vi.fn(() => []),
-    getUserAgent: vi.fn(() => "Mozilla/5.0 Chrome/1 Safari/1"),
+    getUserAgent: vi.fn(
+      () =>
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.169 Electron/44.10.2 Safari/537.36",
+    ),
     on: vi.fn(),
     registerPreloadScript: vi.fn(),
     setPermissionCheckHandler: vi.fn(),
@@ -191,6 +196,7 @@ vi.mock("electron", () => {
     unregisterPreloadScript: vi.fn(),
     webRequest: {
       onBeforeRequest: vi.fn(),
+      onBeforeSendHeaders: vi.fn(),
       onHeadersReceived: vi.fn(),
       onCompleted: vi.fn(),
       onErrorOccurred: vi.fn(),
@@ -200,7 +206,13 @@ vi.mock("electron", () => {
   const sessions = new Map<string, ReturnType<typeof makeSession>>();
   return {
     ipcMain: { on: vi.fn(), off: vi.fn() },
-    app: { on: vi.fn(), whenReady: vi.fn(async () => undefined) },
+    app: {
+      on: vi.fn(),
+      whenReady: vi.fn(async () => undefined),
+      getPreferredSystemLanguages: () => ["en-US"],
+      userAgentFallback:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Opensteer/1.0 Chrome/152.0.7977.169 Electron/44.10.2 Safari/537.36",
+    },
     safeStorage: {
       isAsyncEncryptionAvailable: async () => true,
       getSelectedStorageBackend: () => "gnome_libsecret",
@@ -214,6 +226,13 @@ vi.mock("electron", () => {
     WebContentsView: MockWebContentsView,
     screen: { getDisplayMatching: vi.fn(() => ({ scaleFactor: 1 })), on: vi.fn(), off: vi.fn() },
     session: {
+      defaultSession: {
+        setUserAgent: vi.fn(),
+        getUserAgent: vi.fn(
+          () =>
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Opensteer/1.0 Chrome/152.0.7977.169 Electron/44.10.2 Safari/537.36",
+        ),
+      },
       fromPath: vi.fn((directory: string) => {
         if (!sessions.has(directory)) sessions.set(directory, makeSession());
         return sessions.get(directory)!;
@@ -1144,19 +1163,17 @@ describe("Electron geometry lifecycle", () => {
     }
   });
 
-  it("admits private platform composition without granting agents or derived gestures", async () => {
+  it("admits page composition and synthesized gestures for both platform and full-access agents", async () => {
     const { browser, page, view, unbind } = await launch();
     try {
       const platform = await page.cdp();
       const agent = await page.agentCdp();
       const composition = { text: "한", selectionStart: 1, selectionEnd: 1 };
-      await expect(agent.send("Input.imeSetComposition", composition)).rejects.toThrow(
-        /unavailable/,
-      );
+      await expect(agent.send("Input.imeSetComposition", composition)).resolves.toEqual({});
       for (const channel of [platform, agent])
-        await expect(channel.send("Input.synthesizeScrollGesture", { x: 5, y: 5 })).rejects.toThrow(
-          /unavailable/,
-        );
+        await expect(
+          channel.send("Input.synthesizeScrollGesture", { x: 5, y: 5 }),
+        ).resolves.toEqual({});
       await expect(platform.send("Input.imeSetComposition", composition)).resolves.toEqual({});
       const cancel = { text: "", selectionStart: 0, selectionEnd: 0 };
       await expect(platform.send("Input.imeSetComposition", cancel)).resolves.toEqual({});
@@ -1166,6 +1183,9 @@ describe("Electron geometry lifecycle", () => {
         ),
       ).toEqual([
         ["Input.imeSetComposition", composition],
+        ["Input.synthesizeScrollGesture", { x: 5, y: 5 }],
+        ["Input.synthesizeScrollGesture", { x: 5, y: 5 }],
+        ["Input.imeSetComposition", composition],
         ["Input.imeSetComposition", cancel],
       ]);
     } finally {
@@ -1174,12 +1194,12 @@ describe("Electron geometry lifecycle", () => {
     }
   });
 
-  it("allows private drag cleanup on the originating channel without granting it to agents", async () => {
+  it("allows page drag cancellation and private cleanup on the originating channel", async () => {
     const { browser, page, view } = await launch(false);
     const platform = await page.cdp();
     const agent = await page.agentCdp();
     try {
-      await expect(agent.send("Input.cancelDragging")).rejects.toThrow(/unavailable/);
+      await expect(agent.send("Input.cancelDragging")).resolves.toEqual({});
       await platform.cancelDragging!();
       await agent.cancelDragging!();
       expect(
@@ -1187,6 +1207,7 @@ describe("Electron geometry lifecycle", () => {
           ([method]) => method === "Input.cancelDragging",
         ),
       ).toEqual([
+        ["Input.cancelDragging", undefined],
         ["Input.cancelDragging", undefined],
         ["Input.cancelDragging", undefined],
       ]);
@@ -2150,6 +2171,39 @@ it("updates provider header policy disabled, enabled, disabled on the same Sessi
   }
 });
 
+it("presents the session identity on passkey provider pages too", async () => {
+  const launcher = new ElectronBrowserLauncher({
+    downloads: { accept: vi.fn() },
+    pagePolicyPreloadPath: "/policy.cjs",
+  });
+  const browser = await launcher.launch({
+    initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
+    partitionKey: "session:provider-identity",
+    sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000010"),
+    storage: { kind: "guest" },
+    authenticator: {
+      ceremony: async () => ({ kind: "refused" as const, error: "NotAllowedError" as const }),
+    },
+  });
+  try {
+    // The bridge owns these pages' debugger and attaches it during
+    // bootstrap; the identity override lands once it is attached.
+    await vi.waitFor(() => {
+      const calls = electron.views.at(-1)!.webContents.debugger.sendCommand.mock.calls;
+      expect(
+        calls.some(
+          ([method, parameters]) =>
+            method === "Emulation.setUserAgentOverride" &&
+            (parameters as { userAgent: string }).userAgent.includes("Chrome/152.0.0.0"),
+        ),
+      ).toBe(true);
+    });
+  } finally {
+    await browser.close();
+    launcher.close();
+  }
+});
+
 describe("native Electron profiles", () => {
   async function fixture(policyFailure = false) {
     const root = await mkdtemp(path.join(tmpdir(), "opensteer-native-unit-"));
@@ -2237,6 +2291,57 @@ describe("native Electron profiles", () => {
         },
       });
       expect(announced).toHaveBeenCalledOnce();
+    } finally {
+      await browser?.close();
+      f.launcher.close();
+      await f.launcher.localProfiles.release(f.directory);
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("presents the session user agent per page on a local profile", async () => {
+    const f = await fixture();
+    let browser: Awaited<ReturnType<typeof f.launch>> | undefined;
+    try {
+      await f.initialize();
+      browser = await f.launch();
+      // A fromPath session's user agent never reaches its contents, so the
+      // launcher presents it per page over CDP before navigation.
+      const overrides = electron.views
+        .at(-1)!
+        .webContents.debugger.sendCommand.mock.calls.filter(
+          ([method]) => method === "Emulation.setUserAgentOverride",
+        );
+      expect(overrides).toHaveLength(1);
+      const parameters = overrides[0]![1] as {
+        userAgent: string;
+        userAgentMetadata: { brands: unknown; platform: string };
+        acceptLanguage: string;
+      };
+      expect(parameters.userAgent).toContain("Chrome/152.0.0.0");
+      expect(parameters.userAgent).not.toContain("Electron/");
+      expect(parameters.acceptLanguage).toBe("en-US,en");
+      // Contents that never see the session identity use the app fallback,
+      // which the launcher reduces for the same reason. The app's own
+      // service traffic keeps the branded agent device lists read.
+      const { app, session } = await import("electron");
+      expect(app.userAgentFallback).toBe(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+      );
+      expect(session.defaultSession.setUserAgent).toHaveBeenCalledWith(
+        expect.stringContaining("Electron/44.10.2"),
+      );
+      // Without metadata Chromium empties navigator.userAgentData while the
+      // wire carries client hints; the two identities must agree.
+      expect(parameters.userAgentMetadata).toEqual(
+        expect.objectContaining({
+          brands: [
+            { brand: "Not?A_Brand", version: "24" },
+            { brand: "Chromium", version: "152" },
+          ],
+          platform: "macOS",
+          mobile: false,
+        }),
+      );
     } finally {
       await browser?.close();
       f.launcher.close();
@@ -3087,7 +3192,6 @@ describe("native Electron profiles through the shared runtime", () => {
       launcher,
       ticketVerifier: verifier,
       localProfiles: { root },
-      acknowledgeProfileReady: async () => {},
       runtimeId: "runtime_test",
       sessionFilesRoot: sessionFilesRoot(root),
     });
@@ -3149,4 +3253,49 @@ describe("native Electron profiles through the shared runtime", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+});
+
+it("routes root and attached cookie commands to the admitted native profile context", async () => {
+  electron.bootstrap = (method) =>
+    method === "Target.getTargetInfo"
+      ? Promise.resolve({
+          targetInfo: { targetId: "target-1", browserContextId: "native-profile-context" },
+        })
+      : undefined;
+  const browser = await new ElectronBrowserLauncher({
+    downloads: { accept: () => undefined },
+    pagePolicyPreloadPath: "/opensteer/browser-page-preload.cjs",
+  }).launch({
+    initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+    partitionKey: "session:bsn_00000000-0000-4000-8000-000000000306",
+    sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000306"),
+    storage: { kind: "guest" },
+  });
+  const { SessionCdpRouter } = await import("@opensteer/browser-core");
+  const router = new SessionCdpRouter(browser.cdp);
+  const targetId = await browser.context.pages()[0]!.targetId();
+  router.registerSession("agent", targetId, async () => true, "/files");
+  try {
+    const { sessionId } = (await router.send("agent", {
+      method: "Target.attachToTarget",
+      parameters: { targetId },
+    })) as { sessionId: string };
+    await router.send("agent", { method: "Storage.getCookies", sessionId });
+    await router.send("agent", { method: "Storage.getCookies" });
+    const native = electron.views.at(-1)!.webContents.debugger.sendCommand;
+    expect(native.mock.calls.filter(([method]) => method === "Storage.getCookies")).toEqual([
+      ["Storage.getCookies", { browserContextId: "native-profile-context" }],
+      ["Storage.getCookies", { browserContextId: "native-profile-context" }],
+    ]);
+    await expect(
+      router.send("agent", {
+        method: "Storage.setCookies",
+        parameters: { browserContextId: "foreign-context", cookies: [] },
+        sessionId,
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+  } finally {
+    await router.close();
+    await browser.close();
+  }
 });

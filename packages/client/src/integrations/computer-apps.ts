@@ -3,7 +3,6 @@ import type {
   ComputerAppPresentationView,
   ComputerAppSetupSummary as ComputerAppSetupRequest,
   IntegrationAccess,
-  IntegrationConnectionSummary,
   IntegrationDefinitionSummaryView,
 } from "@opensteer/integration-core";
 import { computerAppUsesSessions } from "@opensteer/integration-core";
@@ -13,7 +12,13 @@ import type {
   MachineDevice,
   MachineSummary,
 } from "@opensteer/protocol";
-import { androidAccessibilityStep, isAgentPhone } from "./computer-use.js";
+import { androidAccessibilityStep } from "./computer-use.js";
+import {
+  computerTargetId,
+  deviceMachine,
+  type ClientComputerConnection,
+  type ClientComputerSetupRequest,
+} from "../host/device-projection.js";
 
 /**
  * Apps on a computer, as every client surface reasons about them.
@@ -65,11 +70,12 @@ export function computerAppDefinitions(
 
 /** The live app connections one person owns on one computer. */
 export function computerConnectionsOn(
-  connections: readonly IntegrationConnectionSummary[],
+  connections: readonly ClientComputerConnection[],
   machineId: string,
-): readonly IntegrationConnectionSummary[] {
+): readonly ClientComputerConnection[] {
   return connections.filter(
-    (connection) => connection.status !== "revoked" && connection.computer?.runnerId === machineId,
+    (connection) =>
+      connection.status !== "revoked" && computerTargetId(connection.computer) === machineId,
   );
 }
 
@@ -81,10 +87,10 @@ export function computerConnectionsOn(
  * definition. Unknown reported definitions are ignored.
  */
 export function computerAppRows(input: {
-  readonly connections: readonly IntegrationConnectionSummary[];
+  readonly connections: readonly ClientComputerConnection[];
   readonly definitions: readonly IntegrationDefinitionSummaryView[];
   readonly machine: MachineSummary;
-  readonly setupRequests?: readonly ComputerAppSetupRequest[];
+  readonly setupRequests?: readonly ClientComputerSetupRequest[];
 }): readonly ComputerAppRow[] {
   const { machine } = input;
   const online = machine.status === "online";
@@ -95,11 +101,12 @@ export function computerAppRows(input: {
     const connection = connected.find(({ definitionId }) => definitionId === definition.id) ?? null;
     const entry = machine.apps?.find(({ definitionId }) => definitionId === definition.id) ?? null;
     const pending = input.setupRequests?.some(
-      (request) => request.runnerId === machine.id && request.definitionId === definition.id,
+      (request) =>
+        computerTargetId(request) === machine.id && request.definitionId === definition.id,
     );
     if (!connection && !(online && entry) && !pending) return [];
     const access = connection?.computer?.access ?? null;
-    const phone = isAgentPhone(machine);
+    const phone = deviceMachine(machine).phoneDisplay?.setup.location === "android-usb";
     return [
       {
         access,
@@ -249,11 +256,11 @@ export const computerAppTurnOffConsequence = "Turning this off removes your agen
  * list, rather than a claim about whichever device is displaying the row.
  */
 export function computerAppConnectionLabel(input: {
-  readonly connection: Pick<IntegrationConnectionSummary, "computer" | "displayName">;
+  readonly connection: Pick<ClientComputerConnection, "computer" | "displayName">;
   readonly definition: Pick<IntegrationDefinitionSummaryView, "computerApp" | "name">;
   readonly machines: readonly MachineSummary[];
 }): string {
-  const runnerId = input.connection.computer?.runnerId;
+  const runnerId = computerTargetId(input.connection.computer);
   const machine = input.machines.find((candidate) => candidate.id === runnerId);
   // Computer use has one connection per approved app, so the app names it, and
   // its stored display name already reads "<App> on <computer>".
@@ -267,14 +274,14 @@ export function computerAppConnectionLabel(input: {
 }
 
 export interface ComputerAppTarget {
-  readonly connection: IntegrationConnectionSummary | null;
+  readonly connection: ClientComputerConnection | null;
   readonly machine: MachineSummary;
   readonly state: ComputerAppLiveState;
 }
 
 /** Online computers reporting this exact app, including ones already connected. */
 export function computerAppTargets(input: {
-  readonly connections: readonly IntegrationConnectionSummary[];
+  readonly connections: readonly ClientComputerConnection[];
   readonly definition: IntegrationDefinitionSummaryView;
   readonly machines: readonly MachineSummary[];
 }): readonly ComputerAppTarget[] {
@@ -298,7 +305,7 @@ export function computerAppTargets(input: {
           integrationsAdvertised: machine.modules.integrations !== undefined,
           name: input.definition.name,
           online: true,
-          phone: isAgentPhone(machine),
+          phone: deviceMachine(machine).phoneDisplay?.setup.location === "android-usb",
         }),
       },
     ];
@@ -307,13 +314,14 @@ export function computerAppTargets(input: {
 
 /** Live state of an existing computer-app connection. */
 export function computerConnectionState(input: {
-  readonly connection: IntegrationConnectionSummary;
+  readonly connection: ClientComputerConnection;
   readonly definition: IntegrationDefinitionSummaryView;
   readonly machines: readonly MachineSummary[];
 }): ComputerAppLiveState {
   const machine =
-    input.machines.find((candidate) => candidate.id === input.connection.computer?.runnerId) ??
-    null;
+    input.machines.find(
+      (candidate) => candidate.id === computerTargetId(input.connection.computer),
+    ) ?? null;
   if (!machine) return { kind: "offline" };
   const presentation = input.definition.computerApp;
   if (!presentation) return { kind: "unavailable", detail: "Computer app is unavailable." };
@@ -325,7 +333,7 @@ export function computerConnectionState(input: {
     integrationsAdvertised: machine.modules.integrations !== undefined,
     name: input.definition.name,
     online: machine.status === "online",
-    phone: isAgentPhone(machine),
+    phone: deviceMachine(machine).phoneDisplay?.setup.location === "android-usb",
   });
 }
 
@@ -553,7 +561,7 @@ export function computerAppStateDotClass(state: ComputerAppRowState): string {
  * keep the block visible while their computer is offline.
  */
 export function ownsComputerApps(input: {
-  readonly connections: readonly IntegrationConnectionSummary[];
+  readonly connections: readonly ClientComputerConnection[];
   readonly hostsDeployment: boolean;
   readonly machine: MachineSummary;
 }): boolean {

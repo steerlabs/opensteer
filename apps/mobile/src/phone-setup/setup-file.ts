@@ -1,7 +1,7 @@
 import type { PrivateFilesystem } from "@opensteer/client/connections";
 import { z } from "zod";
 
-const AppSchema = z.enum([
+const LegacyAppSchema = z.enum([
   "apple-calendar",
   "apple-contacts",
   "apple-reminders",
@@ -14,14 +14,16 @@ const ProgressSchema = z.strictObject({
     name: z.string().max(160),
     browser: z.boolean(),
     notifications: z.boolean(),
-    apps: z.partialRecord(AppSchema, z.boolean()),
+    apps: z.partialRecord(LegacyAppSchema, z.boolean()),
   }),
   runnerId: z.string().min(1).max(255).nullable(),
-  completed: z.array(z.union([z.literal("enrollment"), z.literal("notifications"), AppSchema])),
+  completed: z.array(
+    z.union([z.literal("enrollment"), z.literal("notifications"), LegacyAppSchema]),
+  ),
   deferred: z.boolean(),
   browser: OutcomeSchema,
   notifications: OutcomeSchema,
-  apps: z.partialRecord(AppSchema, OutcomeSchema),
+  apps: z.partialRecord(LegacyAppSchema, OutcomeSchema),
 });
 const SetupFileSchema = z.strictObject({
   schemaVersion: z.literal(1),

@@ -1,4 +1,8 @@
-import type { AccountCredential, HostCredential } from "@opensteer/client/auth";
+import {
+  LegacyHostCredentialSchema,
+  type AccountCredential,
+  type HostCredential,
+} from "@opensteer/client/auth";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import { DeploymentIdSchema, HostInstanceIdSchema } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
@@ -43,6 +47,24 @@ const store = () => {
 };
 
 describe("createSecureAuthStore", () => {
+  it("keeps the previous strict Host record format and ignores missing binding metadata", async () => {
+    const records = createSecureRecordStore({
+      keyPrefix: "opensteer.auth",
+      secureStore: new MemorySecureStore(),
+    });
+    const auth = createSecureAuthStore(records);
+    const host = { ...hostCredential(first), accountIdentity: null };
+    await auth.setAccount(accountCredential());
+    await auth.setHost(host);
+    expect(
+      LegacyHostCredentialSchema.parse(JSON.parse((await records.read(`host.${first}`))!)),
+    ).not.toHaveProperty("accountIdentity");
+    expect((await auth.load()).hosts).toEqual([host]);
+    await records.remove(`host.${first}.binding`);
+    expect((await auth.load()).hosts[0]?.accountIdentity).toBeUndefined();
+    expect((await auth.load()).account).not.toBeNull();
+  });
+
   it("keeps one record per Host credential", async () => {
     const { auth, secureStore } = store();
     await auth.setHost(hostCredential(first));

@@ -1,3 +1,4 @@
+import { getSelfDeviceId, getDeviceSelfRunnerId } from "./device-inventory-store.js";
 import {
   OpensteerError,
   RunnerIdSchema,
@@ -42,6 +43,7 @@ export async function bindDeviceSession(
       .where("id", "=", input.machineId)
       .forNoKeyUpdate()
       .executeTakeFirst();
+    const deviceId = await getSelfDeviceId(transaction, input.machineId);
     const session = await transaction
       .selectFrom("authSessions")
       .select(["deviceId", "expiresAt", "absoluteExpiresAt", "userId"])
@@ -55,6 +57,7 @@ export async function bindDeviceSession(
       .where("singletonKey", "=", "primary")
       .executeTakeFirstOrThrow();
     if (
+      !deviceId ||
       !runner ||
       runner.revokedAt ||
       !session ||
@@ -62,7 +65,7 @@ export async function bindDeviceSession(
       session.expiresAt.getTime() <= Date.now() ||
       session.absoluteExpiresAt.getTime() <= Date.now() ||
       ownership?.effectiveOwner !== input.userId ||
-      (session.deviceId !== null && session.deviceId !== input.machineId) ||
+      (session.deviceId !== null && session.deviceId !== deviceId) ||
       !verifyDeviceSessionBindingSignature(runner.publicKeyPem, {
         deploymentId: deployment.id,
         runnerId: input.machineId,
@@ -74,7 +77,7 @@ export async function bindDeviceSession(
     }
     await transaction
       .updateTable("authSessions")
-      .set({ deviceId: input.machineId })
+      .set({ deviceId })
       .where("id", "=", input.sessionId)
       .execute();
   });
@@ -97,11 +100,14 @@ export async function revokeDeviceSession(
       .where("userId", "=", input.userId)
       .executeTakeFirst();
     if (!session) return { runnerId: null, removed: null, endedSessionIds: [input.sessionId] };
-    const runner = session.deviceId
+    const selfRunnerId = session.deviceId
+      ? await getDeviceSelfRunnerId(transaction, session.deviceId)
+      : null;
+    const runner = selfRunnerId
       ? await transaction
           .selectFrom("runners")
           .select(["id", "kind", "ownerKind"])
-          .where("id", "=", session.deviceId)
+          .where("id", "=", selfRunnerId)
           .executeTakeFirst()
       : undefined;
     if (runner && !(runner.kind === "main" && runner.ownerKind === "deployment")) {

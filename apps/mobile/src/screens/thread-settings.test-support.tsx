@@ -128,6 +128,7 @@ vi.mock("@react-navigation/native", () => ({
   useFocusEffect: () => undefined,
   useIsFocused: () => true,
 }));
+vi.mock("../ui/composer-editor.js", () => import("../ui/composer-editor.fake.js"));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("expo-haptics", () => ({ selectionAsync: async () => undefined }));
 vi.mock("@expo/ui/community/menu", () => ({ MenuView: () => null }));
@@ -174,7 +175,7 @@ vi.mock("react-native-keyboard-controller", () => ({
 }));
 vi.mock("react-native-reanimated", () => {
   const View = ({ children }: { readonly children?: ReactNode }) => <div>{children}</div>;
-  const transition = { duration: () => transition };
+  const transition = { delay: () => transition, duration: () => transition };
   return {
     default: { View },
     FadeIn: transition,

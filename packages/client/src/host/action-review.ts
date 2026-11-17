@@ -9,8 +9,7 @@ export type ReviewedAction =
   | { readonly kind: "stop-run"; readonly threadId: string }
   | { readonly kind: "stop-assignment"; readonly assignmentId: string }
   | { readonly kind: "task-done"; readonly threadId: string; readonly done: boolean }
-  | { readonly kind: "close-view"; readonly viewId: string; readonly generation: number }
-  | { readonly kind: "close-tab"; readonly sessionId: string; readonly tabId: string };
+  | { readonly kind: "close-view"; readonly viewId: string; readonly generation: number };
 
 export interface ActionReview {
   readonly action: ReviewedAction;
@@ -139,23 +138,6 @@ function actionState(snapshot: HostSnapshot, action: ReviewedAction): string | n
         ? JSON.stringify([viewer, action])
         : null;
     }
-    case "close-tab": {
-      const session = snapshot.browserSessions.find((item) => item.id === action.sessionId);
-      if (session?.state !== "ready") return null;
-      const store = snapshot.browserTabs;
-      if (!store?.sessionTab(session.id, action.tabId)) return null;
-      // The person reviewed this tab, its holders and whether it is the last
-      // one; other tabs opening or closing change none of that. Confirming
-      // sends the inventory current then.
-      return JSON.stringify([
-        viewer,
-        action,
-        session.profileId,
-        [...session.attachedRunIds].sort(),
-        store.groupForSession(session.id),
-        store.sessionList(session.id).whole && store.sessionTabs(session.id).length === 1,
-      ]);
-    }
   }
 }
 
@@ -171,10 +153,5 @@ async function performAction(client: HostClient, action: ReviewedAction): Promis
       return client.setTaskDone(action.threadId, action.done);
     case "close-view":
       return client.closeComputerView(action.viewId, action.generation);
-    case "close-tab": {
-      const inventory = client.browserTabs.inventory(action.sessionId);
-      if (inventory) return client.closeBrowserTab(action.sessionId, action.tabId, inventory);
-      return undefined;
-    }
   }
 }

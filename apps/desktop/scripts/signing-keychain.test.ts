@@ -125,20 +125,18 @@ describe("explicit signing keychain boundary", () => {
   });
 
   it("identity discovery uses the configured file rather than the search list", () => {
-    for (const file of ["native-build-cache.ts", "../../../scripts/release-mac.ts"]) {
-      const root = source(file);
-      const start = root.indexOf('"find-identity"');
-      const argsExpression = balanced(root, root.lastIndexOf("[", start), "[", "]");
-      for (const configured of [false, true]) {
-        const args = Array.from(
-          evaluate(argsExpression, {
-            keychain: configured ? keychain : undefined,
-            config: {},
-            signingInput: () => (configured ? { keychain } : {}),
-          }) as string[],
-        );
-        expect(args.includes(keychain)).toBe(configured);
-      }
+    const root = source("../../../scripts/release-mac.ts");
+    const start = root.indexOf('"find-identity"');
+    const argsExpression = balanced(root, root.lastIndexOf("[", start), "[", "]");
+    for (const configured of [false, true]) {
+      const args = Array.from(
+        evaluate(argsExpression, {
+          keychain: configured ? keychain : undefined,
+          config: {},
+          signingInput: () => (configured ? { keychain } : {}),
+        }) as string[],
+      );
+      expect(args.includes(keychain)).toBe(configured);
     }
   });
 

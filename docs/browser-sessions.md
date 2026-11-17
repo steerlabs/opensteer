@@ -7,11 +7,14 @@ even when they share a profile, and a session's identity is fixed at creation. C
 
 ## Open tabs
 
-A tab is a durable record; its live page is a runtime lease. Task lineages survive a session
-ending. Trigger and watch browsers write no tabs. Only a lineage's latest session can close its
-records, late updates never resurrect a closed row, and reopen makes a new row. Only committed
-navigation becomes a restore URL, except that failed navigation keeps its attempted address.
-Overlong addresses are never truncated; legacy Chromium error URLs cannot be reopened.
+A page tab is one entry in the Host's single tab list, beside window, phone and app tabs;
+its `tabId` is durable and its live page is a replaceable
+runtime binding. Trigger and watch browsers write no tabs. Only a page's latest session can close it,
+late updates never resurrect a closed tab, and Reopen restores the same `tabId` under a new
+generation. Closing removes the tab from the list and from person viewing, never stopping a Run that
+holds the page; that Run keeps it until ordinary release, and binding the closed tab anew fails.
+Only committed navigation becomes a restore URL, except that failed navigation keeps its attempted
+address. Overlong addresses are never truncated; legacy Chromium error URLs cannot be reopened.
 
 Old document, node and object handles become invalid after wake. A dormant tab whose session ended
 needs a new binding on its saved computer and profile, never a substitute or Guest; neither path
@@ -22,7 +25,10 @@ when its last tab or session ends, and deleted at the next startup. Guest browsi
 Incomplete catalog snapshots never imply closure. Only committed explicit removal closes a tab;
 browser teardown and late updates cannot recreate or delete durable records.
 
-The Host's open budget sits inside the client's deadline, including first paint. An uncertain open
+The Host's open budget sits inside the client's deadline, including first paint. Desktop clients
+attach as soon as the Host serves, before its own Runner connects, so an open or restore bound for the
+hosting computer, or for a computer still reconciling its profile inventory, waits for that browser's
+admission within that budget instead of refusing; any other absent computer still refuses at once. An uncertain open
 retries with its original key and replays the recorded outcome, so it never starts a second browser. Tickets, native creation and navigation are never blindly replayed. Tab
 groups grant no access, and agent reads reveal nothing of a group they only partly reach. Links
 opened with Opensteer as the macOS default browser start no agent.
@@ -37,6 +43,22 @@ Restore state stays in runtime memory, never a database, stream or log. Electron
 in-page state than other engines; phones and Playwright promise only a descriptor and URL reload.
 Passwords, files and arbitrary app state are never promised. Ending a runtime loses that state,
 while the durable descriptor still permits reopening.
+
+## Agents address tabs
+
+Agents see what the person sees: profiles and one list of tabs. Browser Harness is a disposable
+shell invocation: `openPage(tabId)` returns a handle bound to that one tab, and the Host resolves,
+wakes or restores the browser behind it ([contract](../packages/protocol/src/browser-agent.ts)).
+Attaching resumes only that tab, never listing every tab first. There is no daemon: it would stream
+idle events over weak links, hold memory per Run and share hidden state between parallel scripts.
+`opensteer.callTool` reaches the same tools as MCP through the Run's protected Runner relay; the Host
+enforces their authority and records each call as Run activity. No session ID reaches the model,
+because two kinds of address made agents open duplicates instead of finding pages already open.
+Opening a tab as a profile joins that profile's running browser, as a person's open does; a restored lineage may still run beside it, unseen by agents. Guest belongs to the
+task its session's opener records, so tasks never share signed-out state. Every agent entry point
+(listing, opening, using, closing and organizing tabs, CDP and actions) passes one admission: live Run,
+personal owner, the browser computer's device access, and the Run's resource ceiling, where driving or
+changing tabs needs read-write.
 
 ## Agent access and input
 
@@ -85,20 +107,26 @@ preference. Cursor hints are a bounded enum; CSS, URLs and images never leave th
 icons load through the page's own storage and service worker, never a cache shared across sign-ins,
 and clients read only bounded rasters.
 
-## Agent CDP boundary
+## Agent CDP access
 
-Agents get a frame's main-world script reach plus person-like input, never HttpOnly cookies, headers
-hidden from page scripts, privileged storage, browser diagnostics, the machine clipboard or
-isolated, preload and platform worlds. Cross-site out-of-process frames and auto-attach are refused.
-The [allowlist](../packages/browser-core/src/agent-cdp-allowlist.ts) is deny by default: new
-methods, fields, enum values and events stay refused until reviewed against the pinned protocol.
-Log-domain events can carry hidden response headers, so only proven main-world console and exception
-events reach agents. Main-world access needs positive context provenance; the
-[router](../packages/browser-core/src/session-cdp-router.ts) checks every object handle.
+Agents drive the person's browser as browser-use does: every CDP domain, method and event the engine
+supports, including Network, Log, Fetch, cookies and storage, every frame and execution world of
+their pages, and auto-attached iframes and workers. There is no method allowlist or event filter.
 
-Agent keys are page actions, never browser or OS shortcuts. Agent paste is always refused, and on an
-engine sharing the machine clipboard so are copy and cut: they could overwrite a person's copied
-password. `Opensteer.fillLogin` and `Opensteer.fillCard` are platform-handled and never reach Chromium.
+What remains is routing. A Run reaches only the computer, profile, session and browser context it
+was admitted to, even when another profile shares the engine: child targets attach only beneath an
+admitted target, cookie and storage commands use the admitted context, an explicit foreign target or
+context is refused as an ownership violation, and a command whose effect cannot be scoped to that
+browser, such as closing a shared engine, refuses. The
+[router](../packages/browser-core/src/portable-session-cdp-router.ts) keeps malformed-message and
+size checks and input ordering and release; Run admission, Stop, profile home ownership and the
+computer's browser access switch still apply. Agents never reach Opensteer itself: its app windows
+and targets, preload and platform worlds, IPC bridges carrying Host credentials, or the runtime's
+control channel. That isolates the product, not the person's browser.
+
+Agent keys are page input, never browser or OS shortcuts. On an engine sharing the machine
+clipboard, an agent's copy, cut and paste use the computer's clipboard. `Opensteer.fillLogin` and
+`Opensteer.fillCard` are platform-handled and never reach Chromium.
 Card approval binds the top-level merchant, and filling may reach its cross-origin payment frame.
 After a fill, page scripts and agent JavaScript can read the value ([Passwords](passwords.md#filling-a-field)).
 
@@ -114,9 +142,9 @@ viewer. Browsers without this ability retain the full editing contract's existin
 On iPhone the agent has no arbitrary-script, clipboard or paste action and the native helper never
 reads UIPasteboard. A website may still ask iOS for Paste permission. The person can approve that
 system UI; Opensteer does not claim to prevent the website or its DOM from then receiving clipboard
-data. A JavaScript clipboard shim would not be a security boundary and is not used as one. Android's
-CDP backend must qualify machine-clipboard denial independently before it is enabled.
-It must also prove that releasing the last native CDP permit makes the WebView debugger inaccessible.
+data. A JavaScript clipboard shim would not be a security boundary and is not used as one. Android's CDP backend permits the same browser access as other CDP engines, including the
+clipboard capabilities its engine supports. Releasing the last native CDP permit must make the
+WebView debugger inaccessible.
 Debug app builds never declare CDP; a release on a debuggable system or provider that fails shutdown
 also omits it. The phone still offers each independently qualified browser/viewer/file ability, and
 agent backend negotiation returns `unsupported-operation` rather than falling back.
@@ -124,13 +152,13 @@ Android cannot map a page-opened popup to an agent's trusted CDP target. That ta
 people, but an agent receives: “A page opened this tab and this phone cannot hand it to an agent;
 open its address in a new tab instead.” Opensteer never reloads or recreates it to bypass that refusal.
 
-For full editing, each frame's private editing world, hidden from
-agent CDP, reports field kind, sensitivity and a caret, never values or surrounding text. A
-replacement first verifies the exact text around the caret, else refuses. Rebuilding the hidden
-caret mirror between keystrokes would split Blink's Undo grouping, so the observer updates its nodes
-in place. Headless Chromium has an isolated in-memory clipboard behind a helper context agents
-cannot discover; Electron shares the machine clipboard, so copy publishes plain text to the
-controlling viewer and paste inserts the copy's plain text without touching that clipboard.
+For full editing, each frame's platform editing world reports field kind, sensitivity and a caret
+to viewers, never values or surrounding text. A replacement first verifies the exact text around
+the caret, else refuses. Rebuilding the hidden caret mirror between keystrokes would split Blink's
+Undo grouping, so the observer updates its nodes in place. Headless Chromium has an isolated
+in-memory clipboard behind a helper context; Electron shares the machine clipboard, so copy
+publishes plain text to the controlling viewer and paste inserts the copy's plain text without
+touching that clipboard.
 Sensitive fields never publish. Clipboard data goes only to the consumer the Host assigns, never to
 Watch, and any agent command ends a person's page-write attribution. Diagnostics never hold text or
 clipboard bytes. Client adapters, the native proxies and their evidence follow the
@@ -145,6 +173,10 @@ leaves it pending, never silently streaming. Overlays are acknowledged before co
 fullscreen and get no other permission.
 A phone's own page follows the same rule; its tabs sleep until shown, so only its own control socket
 is admitted to a sleeping tab, and the screen wakes the tab after that snapshot.
+A mobile page keeps its admitted viewer for as long as its screen is on the stack in the foreground:
+a sheet over it takes only input, and a screen over it also takes pictures, so showing it again asks
+nothing of the Host. A held control viewer counts as viewing, so its tab stays awake until the
+person leaves that screen or the app.
 
 The surface ledger alone owns geometry. Keep agent emulation on a long-lived platform channel:
 Chromium drops it on navigation after the issuing channel detaches. Electron frame callbacks cannot
@@ -189,8 +221,12 @@ its own storage when it learns of removal or leaves, including at sign-out.
 
 A profile's home and established storage identity are fixed. Missing directories, sentinels or
 cookie mirrors refuse open while preserving what remains; never create an empty replacement or
-fall back to another computer or Guest. An engine-owned directory never moves. There is no portable
-snapshot, sync or profile Vault key
+fall back to another computer or Guest. The owning device keeps its own record of every profile it
+created, so it refuses a missing one even before the Host knows it exists. The Host records that
+fact when the profile's first session becomes ready, before anyone can use it. A browser runtime
+reaches the Host only through its Runner's relay, never by an address the Host mints: the Host's
+own origin is usually loopback, which on another computer is that computer. An engine-owned
+directory never moves. There is no portable snapshot, sync or profile Vault key
 ([storage contract](../packages/protocol/src/browser-profile-storage.ts)).
 
 Electron roots live under `sessionData`, outside disposable Runner slots, because the Network
@@ -242,9 +278,9 @@ never another account, and inspection never sends cookie values. Any agent with 
 can act as the person on that site.
 
 When a Chrome connects while a Request nobody has allowed waits, and every paired Chrome is
-connected without the site, the Request ends as `not-signed-in`: the check `agentSignIn` makes
-before opening one. Left pending, its card offers only Don't allow, which tells the agent the
-person refused; ending it lets the agent offer signing in by hand or Opensteer Passwords.
+connected without the site, the Request ends as `not-signed-in`: the check
+`agentCopyChromeCookies` makes before opening one. Left pending, its card offers only Don't allow,
+which tells the agent the person refused; ending it lets the agent try another way in.
 
 A source token works only at the destination (origin and route generation) it paired on; a source
 paired before that rule binds to the first destination it connects through. The Host checks token,

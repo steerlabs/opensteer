@@ -5,7 +5,15 @@ import { unversionedRoute } from "../server/unversioned-route.js";
 import { appTunnelMaxFrameBytes } from "@opensteer/protocol";
 import { appCorsHeaders } from "./app-proxy.js";
 import { AppIdSchema } from "@opensteer/core";
-import { rpcSuccess, type HostApiHandlers } from "@opensteer/protocol";
+import {
+  rpcSuccess,
+  type AppCommand,
+  type AppCommandResult,
+  type HostApiServerContext,
+} from "@opensteer/protocol";
+import type { UserId } from "@opensteer/core";
+import type { AppTheme } from "@opensteer/shared/appFrame";
+import type { AppsListInputSchema } from "@opensteer/protocol";
 import { appFrameContentSecurityPolicy, appFrameHeaders } from "@opensteer/shared/appFrame";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -14,23 +22,58 @@ import type { AppGateway } from "./app-gateway.js";
 import type { AppService } from "./app-service.js";
 
 export function createAppHandlers(
-  apps: Pick<AppService, "get" | "view">,
+  apps: Pick<AppService, "get" | "list" | "view">,
   gateway?: Pick<AppGateway, "entryUrl">,
-): Pick<HostApiHandlers, "apps.get" | "apps.view"> {
+) {
   return {
-    "apps.get": async (input, context) =>
-      rpcSuccess(await apps.get(input.appId, requireSession(context).user.id)),
-    "apps.view": async (input, context) => {
+    "apps.list": async (input: AppsListInput, context: HostApiServerContext) =>
+      rpcSuccess({
+        apps: await apps.list(
+          { kind: "person", ownerId: requireSession(context).user.id },
+          input.query,
+        ),
+      }),
+    "apps.get": async (input: { appId: string }, context: HostApiServerContext) =>
+      rpcSuccess(await apps.get(requireSession(context).user.id, input.appId)),
+    "apps.view": async (
+      input: { appId: string; theme: AppTheme },
+      context: HostApiServerContext,
+    ) => {
       const session = requireSession(context);
-      const view = await apps.view(input.appId, session.user.id, input.theme);
+      const view = await apps.view(session.user.id, input.appId, input.theme);
       const entryUrl = gateway?.entryUrl(input.appId, session, input.theme, context.headers);
       return rpcSuccess({ ...view, ...(entryUrl ? { entryUrl } : {}) });
     },
   };
 }
 
+/** The person's app commands; each one goes through `commands.dispatch`. */
+export async function handleAppCommand(
+  apps: Pick<AppService, "rename" | "start" | "stop" | "delete">,
+  command: AppCommand,
+  ownerId: UserId,
+): Promise<AppCommandResult> {
+  const actor = { kind: "person", ownerId } as const;
+  switch (command.type) {
+    case "app.rename":
+      return { type: command.type, app: await apps.rename(ownerId, command.appId, command.name) };
+    case "app.start":
+      return { type: command.type, app: await apps.start(actor, command.appId) };
+    case "app.stop":
+      return { type: command.type, app: await apps.stop(actor, command.appId) };
+    case "app.delete":
+      await apps.delete(actor, command.appId);
+      return { type: command.type, appId: command.appId, deleted: true };
+  }
+}
+
 /** This download has its own capability; ambient Opensteer credentials confer no access. */
-export function registerAppRoutes(app: FastifyInstance, apps: AppService): void {
+type AppsListInput = z.infer<typeof AppsListInputSchema>;
+
+export function registerAppRoutes(
+  app: FastifyInstance,
+  apps: Pick<AppService, "authorizeView" | "response" | "acceptTunnel">,
+): void {
   void app.register(async (proxy) => {
     proxy.removeAllContentTypeParsers();
     proxy.addContentTypeParser("*", (_request, payload, done) => done(null, payload));

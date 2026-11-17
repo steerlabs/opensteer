@@ -1,11 +1,23 @@
+import { DeviceIdSchema } from "@opensteer/core";
+import { WindowIdSchema, OpensteerError } from "@opensteer/core";
+import { productToolOutput } from "./tool-output.js";
+import {
+  opensteer_subagent_read,
+  opensteer_subagent_stop,
+  opensteer_task_resume,
+} from "@opensteer/agent-tools/tools";
 import { personalBrowserRepository } from "@opensteer/database/test-support/store";
 import { personalTestExecution } from "./personal-execution.test-support.js";
 import { randomUUID } from "node:crypto";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { expect, vi } from "vitest";
 import { sql } from "kysely";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";
 import {
   createId,
+  formatReferenceLink,
+  MessageIdSchema,
   BrowserSurfaceIdSchema,
   type AgentEvent,
   type RunId,
@@ -17,18 +29,20 @@ import {
   type RequestResponse,
 } from "@opensteer/core";
 import {
-  thread_read,
-  thread_list,
-  person_show,
-  thread_configure,
-  thread_queue,
-  delegate_task,
-  task_status,
-  task_cancel,
-  thread_interrupt,
-  thread_wait,
-  pending_request,
-  orchestrator_capabilities,
+  opensteer_task_read,
+  opensteer_task_send,
+  opensteer_task_list,
+  show_to_person,
+  opensteer_task_configure,
+  opensteer_task_queue,
+  opensteer_task_delegate,
+  opensteer_delegation_status,
+  opensteer_task_interrupt,
+  opensteer_delegation_wait,
+  opensteer_request_read,
+  opensteer_task_wait,
+  opensteer_request_answer,
+  opensteer_ai_account_list,
 } from "@opensteer/agent-tools/tools";
 import { ThreadReadOutputSchema } from "@opensteer/agent-tools/outputs";
 import {
@@ -36,8 +50,7 @@ import {
   needsYouPage,
   dispatchNodeStop,
   withDatabaseTransaction,
-  BrowserTabGroupStore,
-  PersonalTabStore,
+  TabStore,
   assignmentSummaryInTransaction,
   withDatabaseOperationSignal,
   AgentConnectionStore,
@@ -45,6 +58,8 @@ import {
   deliverTaskQuestionNotice,
   cancelSettledTaskQuestionNotice,
   requestInsert,
+  createDatabase,
+  OpensteerStore,
 } from "@opensteer/database";
 import {
   describeStore,
@@ -53,18 +68,17 @@ import {
   liveRequest,
   testContinuationIdentity,
   type StoreFixture,
+  readEmptyPersonalResources,
 } from "@opensteer/database/test-support/store";
 import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
 import {
   createBrowserSessionId,
-  ComputerUseSessionSummarySchema,
-  mintComputerUseSessionId,
   type PendingAgentEvent,
   type PersonShowMessage,
 } from "@opensteer/protocol";
 import { BrowserService } from "../browser/browser-service.js";
-import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
 import { ThreadService } from "../threads/thread-service.js";
+import { ThreadWaitService } from "../threads/thread-wait.js";
 import { ProductToolHandlers } from "./handlers/product.js";
 import type { AgentCaller, RunCaller } from "./agent-caller.js";
 import { TaskQuestionNotices } from "../threads/task-question-notices.js";
@@ -108,13 +122,8 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     sessionsForRunner: vi.fn<
       import("../computer-use/computer-use-service.js").ComputerUseService["sessionsForRunner"]
     >(() => []),
-    authorizeDisplay: vi.fn(async () => f.runnerId),
+    authorizeDisplay: vi.fn(async () => ({ deviceId: DeviceIdSchema.parse(f.runnerId) })),
   };
-  const browserTabs = new BrowserTabGroupService({
-    groups: new BrowserTabGroupStore(store.database),
-    browser,
-    publish: () => {},
-  });
   const threads = new ThreadService({
     store,
     commands,
@@ -133,12 +142,22 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     store,
     commands,
     browser,
-    browserTabs,
     threads,
     realtime,
     requestResponseVault: vault,
     questionNotices,
     computerUse,
+    tabs: {
+      get: async (owner, id) => {
+        const row = await new TabStore(store.database).get(owner, id);
+        if (!row) throw new OpensteerError({ code: "not_found", message: "Tab not found" });
+        return {} as import("@opensteer/core").Tab;
+      },
+      authorizeShow: async (claims, id) => {
+        if (!(await new TabStore(store.database).get(claims.requestedBy, id)))
+          throw new OpensteerError({ code: "not_found", message: "Tab not found" });
+      },
+    },
     personShow: async (_userId, frame) => {
       frames.push(frame);
       return 1;
@@ -148,6 +167,7 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     harnessAccessModes: () => ThreadAccessModeSchema.options,
     onEvent: () => {},
     browserSources: {} as never,
+    savedLogins: {} as never,
     deviceAccess: {} as never,
     machineFullDiskAccess: {} as never,
     execution: personalTestExecution(store, f),
@@ -174,15 +194,15 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     },
   };
   const read = (input: Record<string, unknown> = {}, actor: AgentCaller = caller) =>
-    product.thread_read({
+    product.opensteer_task_read({
       caller: actor,
-      input: thread_read.input.parse({ threadId: f.thread.id, ...input }),
+      input: opensteer_task_read.input.parse(input),
       operationKey: randomUUID(),
     });
   const show = (target: unknown, actor: RunCaller = caller) =>
-    product.person_show({
+    product.show_to_person({
       caller: actor,
-      input: person_show.input.parse({ target }),
+      input: show_to_person.input.parse({ target }),
       operationKey: randomUUID(),
     });
   return {
@@ -203,9 +223,9 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
 async function waitingTask(storeFixture: StoreFixture, suffix: string) {
   const f = await storeFixture.startRunFixture(suffix);
   const s = setup(storeFixture, f);
-  const task = await s.product.delegate_task({
+  const task = await s.product.opensteer_task_delegate({
     caller: s.caller,
-    input: delegate_task.input.parse({ task: "Find the answer" }),
+    input: opensteer_task_delegate.input.parse({ message: "Find the answer" }),
     operationKey: randomUUID(),
   });
   const assignmentId = task.assignmentId!;
@@ -274,15 +294,19 @@ async function waitingTask(storeFixture: StoreFixture, suffix: string) {
   };
   const checkLive = vi.fn(async () => {});
   const wait = (timeoutMs = 2_000, caller: AgentCaller = s.caller, signal?: AbortSignal) =>
-    s.product.thread_wait({
+    s.product.opensteer_task_wait({
       caller,
-      input: thread_wait.input.parse({ assignmentId, timeoutMs }),
+      input: opensteer_delegation_wait.input.parse({ delegationId: assignmentId, timeoutMs }),
       operationKey: randomUUID(),
       checkLive,
       ...(signal ? { signal } : {}),
     });
   const status = (caller: AgentCaller = s.caller) =>
-    s.product.task_status({ caller, input: { assignmentId }, operationKey: randomUUID() });
+    s.product.opensteer_delegation_status({
+      caller,
+      input: { delegationId: assignmentId },
+      operationKey: randomUUID(),
+    });
   const returns = () =>
     storeFixture.database
       .selectFrom("threadInputs")
@@ -343,9 +367,9 @@ async function questionTask(
     }),
   });
   const readRequest = (actor: AgentCaller = s.caller, requestId = request.id) =>
-    s.product.pending_request({
+    s.product.opensteer_request_answer({
       caller: actor,
-      input: pending_request.input.parse({ action: "read", requestId }),
+      input: { ...opensteer_request_read.input.parse({ requestId }), action: "read", limit: 50 },
       operationKey: randomUUID(),
     });
   const respond = (
@@ -353,14 +377,17 @@ async function questionTask(
     expectedRevision = requestRevision(request),
     requestId = request.id,
   ) =>
-    s.product.pending_request({
+    s.product.opensteer_request_answer({
       caller: actor,
-      input: pending_request.input.parse({
+      input: {
+        ...opensteer_request_answer.input.parse({
+          requestId,
+          expectedRevision,
+          response: { kind: "form", answers: { format: ["CSV"] } },
+        }),
         action: "respond",
-        requestId,
-        expectedRevision,
-        response: { kind: "form", answers: { format: ["CSV"] } },
-      }),
+        limit: 50,
+      },
       operationKey: randomUUID(),
     });
   const dispatch = async () => {
@@ -533,14 +560,14 @@ describeStore("agents answering task questions", (it) => {
       "device.access": {
         kind: "device.access",
         reason,
-        machineId: s.f.runnerId,
+        machineId: DeviceIdSchema.parse(s.f.runnerId),
         machineName: "Mac",
         access: "files",
       },
       "machine.full-disk-access": {
         kind: "machine.full-disk-access",
         reason,
-        machineId: s.f.runnerId,
+        machineId: DeviceIdSchema.parse(s.f.runnerId),
         machineName: "Mac",
       },
       "computer.app.access": {
@@ -549,7 +576,7 @@ describeStore("agents answering task questions", (it) => {
         access: "read",
         app: null,
         definitionId: "android-phone",
-        runnerId: s.f.runnerId,
+        deviceId: DeviceIdSchema.parse(s.f.runnerId),
         setupRequestId: randomUUID(),
       },
       "integration.input": {
@@ -557,6 +584,7 @@ describeStore("agents answering task questions", (it) => {
         installationId: "installation",
         serverId: "server",
       },
+      "person.question": { kind: "person.question" },
     };
     for (const kind of RequestKindSchema.options.filter((kind) => kind !== "harness.input")) {
       const request = PendingRequestSchema.parse({
@@ -676,7 +704,7 @@ describeStore("agents answering task questions", (it) => {
       .where("requestId", "=", s.request.id)
       .executeTakeFirstOrThrow();
     expect(row.author).toMatchObject({ kind: "platform", cause: "task-question" });
-    expect(JSON.stringify(row.content)).toContain("pending_request");
+    expect(JSON.stringify(row.content)).toContain("opensteer_request_answer");
     await s.respond();
     await s.dispatch();
     await cancelSettledTaskQuestionNotice(storeFixture.database, s.request.id);
@@ -692,7 +720,7 @@ describeStore("agents answering task questions", (it) => {
     ).toEqual([]);
   });
 
-  it("delivers a waiting parent's question through thread_wait without a second notice", async ({
+  it("delivers a waiting parent's question through opensteer_task_wait without a second notice", async ({
     storeFixture,
   }) => {
     let waiting: ReturnType<Awaited<ReturnType<typeof waitingTask>>["wait"]> | undefined;
@@ -853,13 +881,70 @@ async function place(
   value: PlaceIdentity,
   title = "Place",
 ) {
+  const id =
+    value.kind === "browser"
+      ? value.surfaceId
+      : BrowserSurfaceIdSchema.parse(
+          value.kind === "app"
+            ? `window:${value.machineId}:${value.appKey}`
+            : `phone:${value.machineId}`,
+        );
+  if (
+    value.kind === "browser" &&
+    !(await storeFixture.store.getBrowserSessionForOwner(value.sessionId, f.userId))
+  )
+    await storeFixture.store.createBrowserSession({
+      id: value.sessionId,
+      ownerId: f.userId,
+      runnerId: f.runnerId,
+      origin: "agent",
+      profileId: null,
+      placementKey: "place",
+      runtimeId: "test",
+    });
+  await new TabStore(storeFixture.database).open(
+    {
+      id,
+      ownerId: f.userId,
+      computerId:
+        value.kind === "browser"
+          ? await storeFixture.store.requireSelfDeviceId(f.runnerId)
+          : value.machineId,
+      kind: value.kind === "browser" ? "page" : value.kind === "app" ? "window" : "phone",
+      title,
+      openedBy: "person",
+      ...(value.kind === "browser"
+        ? {
+            url: "https://example.com/",
+            pageBinding: { lineageId: value.sessionId, sessionId: value.sessionId, surfaceId: id },
+          }
+        : value.kind === "app"
+          ? {
+              windowId: WindowIdSchema.parse(`win_${randomUUID()}`),
+              windowApp: { bundleId: value.appKey, displayName: title, teamId: null },
+            }
+          : {}),
+    },
+    randomUUID(),
+  );
   return withDatabaseTransaction(storeFixture.database, (tx) =>
     appendHostDeploymentEvent(tx, {
       type: "place.entered",
       threadId: f.thread.id,
       runId: f.run.id,
       environmentId: f.environmentId,
-      data: { place: value, title, site: null },
+      data: {
+        tabId:
+          value.kind === "browser"
+            ? value.surfaceId
+            : BrowserSurfaceIdSchema.parse(
+                value.kind === "app"
+                  ? `window:${value.machineId}:${value.appKey}`
+                  : `phone:${value.machineId}`,
+              ),
+        title,
+        site: null,
+      },
     }),
   );
 }
@@ -897,7 +982,99 @@ async function tool(
   return { started, completed };
 }
 
-describeStore("shaped agent Thread tools", (it) => {
+describeStore("shaped agent task tools", (it) => {
+  for (const ending of ["timeout", "disconnect"] as const) {
+    it(`joins a blocked store snapshot and returns its checkout on ${ending}`, async ({
+      storeFixture,
+    }) => {
+      const f = await storeFixture.createRunFixture(`blocked-wait-${ending}`);
+      const { database } = await ownTestDatabaseProducer(storeFixture.databaseUrl, async () => {
+        const database = createDatabase({
+          connectionString: storeFixture.databaseUrl,
+          maxConnections: 1,
+        });
+        return { database, close: () => database.destroy() };
+      });
+      const store = new OpensteerStore(database, {
+        readPersonalResources: readEmptyPersonalResources,
+      });
+      const locked = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const blocker = storeFixture.database.transaction().execute(async (tx) => {
+        // MVCC reads ignore row locks; an exclusive relation lock blocks the real store's SELECT.
+        await sql`lock table threads in access exclusive mode`.execute(tx);
+        locked.resolve();
+        await withTimeout(release.promise, 3000, {
+          timeoutError: () => new Error("Snapshot blocker was not released"),
+        });
+      });
+      void blocker.catch(locked.reject);
+      const controller = new AbortController();
+      const disconnected = new Error("Disconnected");
+      const unsubscribe = vi.fn();
+      const reading = Promise.withResolvers<void>();
+      const service = new ThreadWaitService({
+        subscribe: () => unsubscribe,
+        read: ({ signal, expiresAt }) =>
+          withDatabaseOperationSignal(signal, expiresAt, async () => {
+            reading.resolve();
+            await store.getThreadForOwner(f.thread.id, f.userId);
+            return { connected: true, messages: [] };
+          }),
+      });
+      let pending: Promise<unknown> | undefined;
+      try {
+        await withTimeout(locked.promise, 1000, {
+          timeoutError: () => new Error("task relation was not locked"),
+        });
+        pending = service.wait({
+          timeoutMs: ending === "timeout" ? 100 : 2000,
+          signal: controller.signal,
+        });
+        const outcome = pending.then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error }),
+        );
+        await withTimeout(reading.promise, 1000, {
+          timeoutError: () => new Error("Snapshot did not start"),
+        });
+        if (ending === "disconnect") {
+          await vi.waitFor(
+            async () => {
+              const { rows } = await sql<{
+                count: number;
+              }>`select count(*)::int as count from pg_stat_activity
+              where datname = current_database() and wait_event_type = 'Lock'`.execute(
+                storeFixture.database,
+              );
+              expect(rows[0]?.count, "Snapshot never reached the relation lock").toBe(1);
+            },
+            { timeout: 500 },
+          );
+          controller.abort(disconnected);
+        }
+        const result = await withTimeout(outcome, 1000, {
+          timeoutError: () => new Error("task wait did not join its cancelled store read"),
+        });
+        if (ending === "timeout") expect(result).toMatchObject({ value: { status: "timed_out" } });
+        else expect(result).toEqual({ error: disconnected });
+        expect(unsubscribe).toHaveBeenCalledOnce();
+        expect(
+          (
+            await withTimeout(sql`select 1 as alive`.execute(database), 500, {
+              timeoutError: () => new Error("task wait retained the only checkout"),
+            })
+          ).rows,
+        ).toEqual([{ alive: 1 }]);
+      } finally {
+        controller.abort(disconnected);
+        release.resolve();
+        await withTimeout(Promise.all([blocker, pending?.catch(() => undefined)]), 1000, {
+          timeoutError: () => new Error("Blocked snapshot did not release its checkout"),
+        });
+      }
+    });
+  }
   it("reads only a reachable subagent's paged, clipped items and fences its Stop to the current attempt", async ({
     storeFixture,
   }) => {
@@ -958,7 +1135,7 @@ describeStore("shaped agent Thread tools", (it) => {
       data: {
         nodeId,
         callId: "sensitive",
-        tool: { name: "computer", namespace: "opensteer" },
+        tool: { name: "computer_use", namespace: "opensteer" },
         arguments: { secret: "NEVER_RETURN" },
       },
     });
@@ -967,9 +1144,9 @@ describeStore("shaped agent Thread tools", (it) => {
       data: { nodeId, callId: "sensitive", isError: false, output: { text: "NEVER_RETURN" } },
     });
     const read = (extra: Record<string, unknown> = {}, caller: AgentCaller = s.caller) =>
-      s.product.thread_read({
+      s.product.opensteer_task_read({
         caller,
-        input: thread_read.input.parse({
+        input: opensteer_subagent_read.input.parse({
           subagentId: nodeId,
           view: "activity",
           limit: 2,
@@ -978,7 +1155,7 @@ describeStore("shaped agent Thread tools", (it) => {
         operationKey: randomUUID(),
       });
     const page = await read();
-    expect(ThreadReadOutputSchema.parse(page).subagent).toMatchObject({
+    expect(ThreadReadOutputSchema.parse(productToolOutput(page)).subagent).toMatchObject({
       id: nodeId,
       title: "Inspect parser",
       model: "child-model",
@@ -989,7 +1166,7 @@ describeStore("shaped agent Thread tools", (it) => {
     });
     expect(page.items.map((item) => item.text)).toEqual([null, null]);
     expect(JSON.stringify(page)).not.toContain("NEVER_RETURN");
-    const older = await read({ before: page.nextBefore });
+    const older = await read({ cursor: page.nextBefore });
     expect(older.items[0]).toMatchObject({
       type: "tool.completed",
       text: "😀".repeat(500),
@@ -998,7 +1175,7 @@ describeStore("shaped agent Thread tools", (it) => {
     });
     const full = await read({ itemId: older.items[0]!.itemId, textOffset: 500 });
     expect(full.items[0]).toMatchObject({ text: "😀".repeat(200), textTruncated: false });
-    const oldest = await read({ before: older.nextBefore });
+    const oldest = await read({ cursor: older.nextBefore });
     expect(oldest.items).toHaveLength(1);
     expect(oldest.items[0]).toMatchObject({ type: "node.message", text: "Child reply 😀" });
     expect(oldest.hasMore).toBe(false);
@@ -1016,9 +1193,9 @@ describeStore("shaped agent Thread tools", (it) => {
     });
     expect(missing).toMatchObject({ code: "forbidden", message: "Subagent is unavailable" });
     await expect(
-      s.product.task_cancel({
+      s.product.opensteer_delegation_cancel({
         caller: { ...s.caller, claims: { ...s.caller.claims, runId: createId("run") } },
-        input: task_cancel.input.parse({ subagentId: nodeId }),
+        input: opensteer_subagent_stop.input.parse({ subagentId: nodeId }),
         operationKey: randomUUID(),
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
@@ -1028,9 +1205,9 @@ describeStore("shaped agent Thread tools", (it) => {
       .where("id", "=", nodeId)
       .execute();
     await expect(
-      s.product.task_cancel({
+      s.product.opensteer_delegation_cancel({
         caller: s.caller,
-        input: task_cancel.input.parse({ subagentId: nodeId }),
+        input: opensteer_subagent_stop.input.parse({ subagentId: nodeId }),
         operationKey: randomUUID(),
       }),
     ).rejects.toMatchObject({
@@ -1042,13 +1219,13 @@ describeStore("shaped agent Thread tools", (it) => {
       .set({ stopSupported: true })
       .where("id", "=", nodeId)
       .execute();
-    const result = await s.product.task_cancel({
+    const result = await s.product.opensteer_delegation_cancel({
       caller: s.caller,
-      input: task_cancel.input.parse({ subagentId: nodeId }),
+      input: opensteer_subagent_stop.input.parse({ subagentId: nodeId }),
       operationKey: randomUUID(),
     });
     expect(result).toEqual({ subagentId: nodeId, status: "stopping" });
-    expect(ThreadReadOutputSchema.parse(await read()).subagent).toMatchObject({
+    expect(ThreadReadOutputSchema.parse(productToolOutput(await read())).subagent).toMatchObject({
       stopSupported: true,
       stopping: true,
     });
@@ -1068,9 +1245,9 @@ describeStore("shaped agent Thread tools", (it) => {
       .where("id", "=", node.attemptId)
       .execute();
     await expect(
-      s.product.task_cancel({
+      s.product.opensteer_delegation_cancel({
         caller: s.caller,
-        input: task_cancel.input.parse({ subagentId: nodeId }),
+        input: opensteer_subagent_stop.input.parse({ subagentId: nodeId }),
         operationKey: randomUUID(),
       }),
     ).rejects.toMatchObject({
@@ -1196,13 +1373,13 @@ describeStore("shaped agent Thread tools", (it) => {
     expect(await storeFixture.store.drainAssignmentReturn(s.assignmentId)).toEqual([]);
   });
 
-  it("hands the result once to a Run that waits on its own task's conversation", async ({
+  it("hands the result once to a Run that waits on its own task's task", async ({
     storeFixture,
   }) => {
     const s = await waitingTask(storeFixture, "wait-own-thread");
-    const pending = s.product.thread_wait({
+    const pending = s.product.opensteer_task_wait({
       caller: s.caller,
-      input: thread_wait.input.parse({ threadId: s.task.threadId, timeoutMs: 2_000 }),
+      input: opensteer_task_wait.input.parse({ taskId: s.task.threadId, timeoutMs: 2_000 }),
       operationKey: randomUUID(),
       checkLive: s.checkLive,
     });
@@ -1229,10 +1406,10 @@ describeStore("shaped agent Thread tools", (it) => {
       .where("threadId", "=", s.task.threadId)
       .orderBy("createdAt", "asc")
       .executeTakeFirstOrThrow();
-    const pending = s.product.thread_wait({
+    const pending = s.product.opensteer_task_wait({
       caller: s.caller,
-      input: thread_wait.input.parse({
-        threadId: s.task.threadId,
+      input: opensteer_task_wait.input.parse({
+        taskId: s.task.threadId,
         afterMessageId: seed.id,
         timeoutMs: 2_000,
       }),
@@ -1344,15 +1521,15 @@ describeStore("shaped agent Thread tools", (it) => {
   it("refuses self and ancestor waits", async ({ storeFixture }) => {
     const s = await waitingTask(storeFixture, "wait-ancestry");
     const wait = (threadId: Fixture["thread"]["id"], caller = s.caller) =>
-      s.product.thread_wait({
+      s.product.opensteer_task_wait({
         caller,
-        input: thread_wait.input.parse({ threadId, timeoutMs: 1 }),
+        input: opensteer_task_wait.input.parse({ taskId: threadId, timeoutMs: 1 }),
         operationKey: randomUUID(),
       });
     await expect(wait(s.f.thread.id)).rejects.toThrow("Cannot wait on yourself");
     const child = (await storeFixture.store.getThreadForOwner(s.task.threadId, s.f.userId))!;
     await expect(wait(s.f.thread.id, { ...s.caller, thread: child })).rejects.toThrow(
-      "conversation you are working for",
+      "task you are working for",
     );
   });
 
@@ -1373,40 +1550,35 @@ describeStore("shaped agent Thread tools", (it) => {
     expect(await s.returns()).toHaveLength(1);
   });
 
-  it("uses the same waiter for delegate_task wait mode", async ({ storeFixture }) => {
+  it("uses the same waiter for opensteer_task_delegate wait mode", async ({ storeFixture }) => {
     const s = await waitingTask(storeFixture, "delegate-wait");
-    const input = delegate_task.input.parse({
-      task: "Another answer",
+    const input = opensteer_task_delegate.input.parse({
+      message: "Another answer",
       mode: "wait",
       timeoutMs: 2_000,
     });
-    const pending = s.product.delegate_task({
+    const created =
+      Promise.withResolvers<Awaited<ReturnType<CommandService["delegateAdmittedThread"]>>>();
+    const delegate = s.commands.delegateAdmittedThread.bind(s.commands);
+    vi.spyOn(s.commands, "delegateAdmittedThread").mockImplementationOnce((request) => {
+      const result = delegate(request);
+      void result.then(created.resolve, created.reject);
+      return result;
+    });
+    const pending = s.product.opensteer_task_delegate({
       caller: s.caller,
       input,
       operationKey: randomUUID(),
     });
-    let assignmentId: typeof s.assignmentId | undefined;
-    await vi.waitFor(
-      async () => {
-        const row = await storeFixture.database
-          .selectFrom("delegations")
-          .selectAll()
-          .where("parentRunId", "=", s.f.run.id)
-          .where("id", "!=", s.assignmentId)
-          .executeTakeFirst();
-        expect(row, "wait-mode delegation never created its Assignment").toBeDefined();
-        assignmentId = row!.id;
-      },
-      { timeout: 1000 },
-    );
-    const row = await storeFixture.database
-      .selectFrom("delegations")
-      .select(["childRunId", "childThreadId"])
-      .where("id", "=", assignmentId!)
-      .executeTakeFirstOrThrow();
+    void pending.catch(created.reject);
+    const delegated = await withTimeout(created.promise, 1000, {
+      timeoutError: () => new Error("wait-mode delegation never committed its delegation"),
+    });
+    const assignmentId = delegated.assignment.id;
+    expect(assignmentId).not.toBe(s.assignmentId);
     const { terminal } = await storeFixture.runDelegatedTurn(
       s.f,
-      { id: row.childRunId, threadId: row.childThreadId },
+      { id: delegated.run.id, threadId: delegated.thread.id },
       {
         replies: ["84"],
         end: "completed",
@@ -1419,7 +1591,7 @@ describeStore("shaped agent Thread tools", (it) => {
       status: "completed",
       wait: { status: "settled" },
     });
-    expect(await storeFixture.store.drainAssignmentReturn(assignmentId!)).toEqual([]);
+    expect(await storeFixture.store.drainAssignmentReturn(assignmentId)).toEqual([]);
   });
 
   it("returns a task's Request promptly and reads it without exposing its payload", async ({
@@ -1453,25 +1625,40 @@ describeStore("shaped agent Thread tools", (it) => {
       status: "running",
       pendingRequest: { id: created.request.id },
     });
-    const read = await s.product.pending_request({
+    const read = await s.product.opensteer_request_answer({
       caller: s.caller,
-      input: pending_request.input.parse({ action: "read", requestId: created.request.id }),
+      input: {
+        ...opensteer_request_read.input.parse({ requestId: created.request.id }),
+        action: "read",
+        limit: 50,
+      },
       operationKey: randomUUID(),
     });
     expect(read).toMatchObject({
-      request: { id: created.request.id, status: "pending", title: "Browser access" },
+      request: {
+        id: created.request.id,
+        status: "pending",
+        title: "Browser access",
+        link: formatReferenceLink(created.request.id, "Browser access"),
+      },
     });
     expect(read).not.toHaveProperty("request.payload");
     await expect(
-      s.product.pending_request({
+      s.product.opensteer_request_answer({
         caller: s.caller,
-        input: pending_request.input.parse({ action: "read", requestId: createId("request") }),
+        input: {
+          ...opensteer_request_read.input.parse({ requestId: createId("request") }),
+          action: "read",
+          limit: 50,
+        },
         operationKey: randomUUID(),
       }),
     ).rejects.toThrow("Request is unavailable");
   });
 
-  it("discovers enforced budgets separately from computer tools", async ({ storeFixture }) => {
+  it("discovers enforced budgets and names each AI account's computer", async ({
+    storeFixture,
+  }) => {
     const s = await waitingTask(storeFixture, "orchestration-limits");
     const run = await storeFixture.database
       .selectFrom("runs")
@@ -1483,11 +1670,14 @@ describeStore("shaped agent Thread tools", (it) => {
       .set({ maxDelegations: 7, usedDelegations: 2, maxAutonomousRuns: 12, usedAutonomousRuns: 4 })
       .where("id", "=", run.causalChainId)
       .execute();
-    const result = await s.product.orchestrator_capabilities({
+    const result = await s.product.opensteer_ai_account_list({
       caller: s.caller,
-      input: orchestrator_capabilities.input.parse({}),
+      input: opensteer_ai_account_list.input.parse({}),
       operationKey: randomUUID(),
     });
+    expect(result.accounts).toContainEqual(
+      expect.objectContaining({ aiAccountId: s.f.harnessInstance.id, computerId: s.f.runnerId }),
+    );
     expect(result).toMatchObject({
       accessCeiling: s.caller.accessMode,
       limits: {
@@ -1498,13 +1688,6 @@ describeStore("shaped agent Thread tools", (it) => {
         maxWaitMs: 100_000,
       },
     });
-    const computers = await s.product.environment_list({
-      caller: s.caller,
-      input: {},
-      operationKey: randomUUID(),
-    });
-    expect(computers.environments).toHaveLength(1);
-    expect(computers).not.toHaveProperty("harnesses");
   });
   it("lists personal recent places and refuses another person", async ({ storeFixture }) => {
     const f = await storeFixture.startRunFixture("shaped-places");
@@ -1522,8 +1705,8 @@ describeStore("shaped agent Thread tools", (it) => {
       runtimeId: "test",
     });
     const values: PlaceIdentity[] = [
-      { kind: "app", machineId: nativeRunner, appKey: "com.apple.finder" },
-      { kind: "phone", machineId: nativeRunner, display: "main" },
+      { kind: "app", machineId: DeviceIdSchema.parse(nativeRunner), appKey: "com.apple.finder" },
+      { kind: "phone", machineId: DeviceIdSchema.parse(nativeRunner), display: "main" },
       { kind: "browser", sessionId, surfaceId: BrowserSurfaceIdSchema.parse("shared") },
       {
         kind: "browser",
@@ -1533,7 +1716,19 @@ describeStore("shaped agent Thread tools", (it) => {
     ];
     for (const value of values) await place(storeFixture, f, value);
     const owner = await s.read({ view: "activity" });
-    expect(owner.recentPlaces.map((p) => p.place)).toEqual(values.slice(0, 3).reverse());
+    expect(owner.recentPlaces.map((p) => p.tabId)).toEqual(
+      values
+        .map((value) =>
+          value.kind === "browser"
+            ? value.surfaceId
+            : BrowserSurfaceIdSchema.parse(
+                value.kind === "app"
+                  ? `window:${value.machineId}:${value.appKey}`
+                  : `phone:${value.machineId}`,
+              ),
+        )
+        .reverse(),
+    );
     const actor = { ...s.caller, userId: reader };
     await expect(s.read({ view: "activity" }, actor)).rejects.toMatchObject({ code: "forbidden" });
     const part = {
@@ -1629,7 +1824,13 @@ describeStore("shaped agent Thread tools", (it) => {
   }) => {
     const f = await storeFixture.startRunFixture("shaped-tools");
     const s = setup(storeFixture, f);
-    for (const name of ["sign_in", "use_card", "computer", "computer.type"]) {
+    for (const name of [
+      "saved_login_request",
+      "chrome_cookies_request",
+      "card_request",
+      "computer_use",
+      "computer_use.type",
+    ]) {
       const t = await tool(storeFixture, f, name);
       for (const event of [t.started, t.completed])
         expect((await s.read({ view: "activity", itemId: event.sequence })).items[0]).toMatchObject(
@@ -1664,7 +1865,8 @@ describeStore("shaped agent Thread tools", (it) => {
   }) => {
     const f = await storeFixture.startRunFixture("shaped-events");
     const s = setup(storeFixture, f);
-    const request = await storeFixture.openLiveRequest(f, createId("request"));
+    const requestId = createId("request");
+    const request = await storeFixture.openLiveRequest(f, requestId);
     const base = {
       bindingGeneration: f.bindingGeneration,
       environmentId: f.environmentId,
@@ -1724,7 +1926,8 @@ describeStore("shaped agent Thread tools", (it) => {
     );
     const page = await s.read({ view: "activity", limit: 1 });
     expect(page.items[0]).toMatchObject({ itemId: messageId, text: "Published answer" });
-    const earlier = await s.read({ view: "activity", before: page.nextBefore });
+    expect(page.items[0]!.link).toBe(formatReferenceLink(messageId, "Message"));
+    const earlier = await s.read({ view: "activity", cursor: page.nextBefore });
     expect(
       earlier.items
         .filter((i) => i.type.startsWith("node."))
@@ -1735,6 +1938,7 @@ describeStore("shaped agent Thread tools", (it) => {
     ]);
     expect(earlier.items.find((i) => i.type === "request.opened")).toMatchObject({
       title: "Approval required",
+      link: formatReferenceLink(requestId, "Approval required"),
     });
     const serialized = JSON.stringify(earlier);
     for (const secret of [
@@ -1789,48 +1993,64 @@ describeStore("shaped agent Thread tools", (it) => {
     expect(Buffer.byteLength(JSON.stringify(page.items))).toBeLessThanOrEqual(256 * 1024);
     expect(page.hasMore).toBe(true);
     expect(page.nextBefore).not.toBeNull();
-    ThreadReadOutputSchema.parse(page);
-    const older = await s.read({ limit: 100, maxCharsPerItem: 50000, before: page.nextBefore });
+    const shaped = ThreadReadOutputSchema.parse(productToolOutput(page));
+    expect(shaped.task.link).toBe(formatReferenceLink(page.thread.id, page.thread.title));
+    expect(
+      shaped.recentRuns.every(
+        (run) => run.link === formatReferenceLink(run.runId, `Run · ${page.thread.title}`),
+      ),
+    ).toBe(true);
+    expect(
+      shaped.items.every(
+        (item) => item.link === formatReferenceLink(MessageIdSchema.parse(item.itemId), "Message"),
+      ),
+    ).toBe(true);
+    const older = await s.read({ limit: 100, maxCharsPerItem: 50000, cursor: page.nextBefore });
     expect(older.items.length).toBeGreaterThan(0);
     expect(older.items.some((i) => page.items.some((p) => p.itemId === i.itemId))).toBe(false);
   });
 
-  it("reads configure and lists queue by default on this Thread and refuses unnamed connection targets", async ({
+  it("reads configure and lists queue by default on this task and refuses unnamed connection targets", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("shaped-configure");
     const s = setup(storeFixture, f);
-    const configuration = await s.product.thread_configure({
-      caller: s.caller,
-      input: thread_configure.input.parse({}),
-      operationKey: randomUUID(),
-    });
-    expect(configuration).toMatchObject({
-      threadId: f.thread.id,
-      providerSessionId: f.thread.providerSessionId,
+    const configuration = await s.read({});
+    expect(configuration.thread).toMatchObject({
+      id: f.thread.id,
+      link: formatReferenceLink(f.thread.id, f.thread.title),
       modelSelection: testModelSelection,
+      accessMode: f.thread.accessMode,
     });
-    const queue = await s.product.thread_queue({
+    const queue = await s.product.opensteer_task_queue({
       caller: s.caller,
-      input: thread_queue.input.parse({ action: "list" }),
+      input: opensteer_task_queue.input.parse({ action: "list" }),
       operationKey: randomUUID(),
     });
-    expect(queue).toEqual({ paused: false, items: [] });
+    expect(queue).toEqual({
+      paused: false,
+      items: [],
+      link: formatReferenceLink(f.thread.id, f.thread.title),
+    });
     await storeFixture.database
       .updateTable("threads")
       .set({ accessMode: "full-access" })
       .where("id", "=", f.thread.id)
       .execute();
     const lower = { ...s.caller, accessMode: "approval-required" as const };
-    const listing = thread_queue.input.parse({ action: "list" });
-    expect(thread_queue.readsOnly?.(listing)).toBe(true);
+    const listing = opensteer_task_queue.input.parse({ action: "list" });
+    expect(opensteer_task_queue.readsOnly?.(listing)).toBe(true);
     expect(
-      await s.product.thread_queue({ caller: lower, input: listing, operationKey: randomUUID() }),
-    ).toEqual({ paused: false, items: [] });
-    await expect(
-      s.product.thread_queue({
+      await s.product.opensteer_task_queue({
         caller: lower,
-        input: thread_queue.input.parse({ action: "resume" }),
+        input: listing,
+        operationKey: randomUUID(),
+      }),
+    ).toEqual({ paused: false, items: [], link: formatReferenceLink(f.thread.id, f.thread.title) });
+    await expect(
+      s.product.opensteer_task_queue({
+        caller: lower,
+        input: { ...opensteer_task_resume.input.parse({}), action: "resume" },
         operationKey: randomUUID(),
       }),
     ).rejects.toThrow("stronger access mode");
@@ -1839,13 +2059,13 @@ describeStore("shaped agent Thread tools", (it) => {
       .set({ accessMode: f.thread.accessMode })
       .where("id", "=", f.thread.id)
       .execute();
-    expect((await s.read({ threadId: "self" })).thread.id).toBe(f.thread.id);
-    await s.product.delegate_task({
+    expect((await s.read({})).thread.id).toBe(f.thread.id);
+    await s.product.opensteer_task_delegate({
       caller: s.caller,
-      input: delegate_task.input.parse({
-        harnessInstanceId: f.harnessInstance.id,
+      input: opensteer_task_delegate.input.parse({
+        aiAccountId: f.harnessInstance.id,
         model: { ...testModelSelection, options: {} },
-        task: "Work here",
+        message: "Work here",
       }),
       operationKey: randomUUID(),
     });
@@ -1857,27 +2077,75 @@ describeStore("shaped agent Thread tools", (it) => {
       accessMode: "full-access",
     };
     await expect(
-      s.product.thread_configure({
+      s.product.opensteer_task_configure({
         caller: connection,
-        input: thread_configure.input.parse({}),
+        input: opensteer_task_configure.input.parse({ modelSelection: testModelSelection }),
         operationKey: randomUUID(),
       }),
-    ).rejects.toThrow("must name threadId");
+    ).rejects.toThrow("must name taskId");
     await expect(
-      s.product.thread_queue({
+      s.product.opensteer_task_queue({
         caller: connection,
-        input: thread_queue.input.parse({ action: "list" }),
+        input: opensteer_task_queue.input.parse({ action: "list" }),
         operationKey: randomUUID(),
       }),
-    ).rejects.toThrow("must name threadId");
-    await expect(s.read({ threadId: "self" }, connection)).rejects.toThrow("must name threadId");
-    await expect(
-      s.product.thread_list({
-        caller: connection,
-        input: thread_list.input.parse({ parentThreadId: "self" }),
-        operationKey: randomUUID(),
+    ).rejects.toThrow("must name taskId");
+    await expect(s.read({}, connection)).rejects.toThrow("must name taskId");
+  });
+
+  it("keeps sent and queued message links through output validation and strips previews before clipping", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("send-reference-links");
+    const s = setup(storeFixture, f);
+    const target = await storeFixture.startRunFixture("send-reference-target");
+    const label = "Readable title ".repeat(50);
+    const message = formatReferenceLink(f.thread.id, label);
+    const sent = opensteer_task_send.output.parse(
+      productToolOutput(
+        await s.product.opensteer_task_send({
+          caller: s.caller,
+          input: opensteer_task_send.input.parse({
+            taskId: target.thread.id,
+            delivery: "queue",
+            message,
+          }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    const link = formatReferenceLink(sent.messageId, `Message · ${target.thread.title}`);
+    expect(sent.link).toBe(link);
+    expect(sent.disposition).toBe("pending");
+    const queue = opensteer_task_queue.output.parse(
+      productToolOutput(
+        await s.product.opensteer_task_queue({
+          caller: s.caller,
+          input: opensteer_task_queue.input.parse({ taskId: target.thread.id, action: "list" }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    expect(queue.items).toContainEqual(
+      expect.objectContaining({
+        messageId: sent.messageId,
+        link,
+        preview: label.slice(0, 500),
+        truncated: true,
       }),
-    ).rejects.toThrow("must name parentThreadId");
+    );
+    expect(queue.items.find((item) => item.messageId === sent.messageId)!.preview).not.toContain(
+      "opensteer:",
+    );
+    expect(
+      (
+        await storeFixture.database
+          .selectFrom("messages")
+          .select("content")
+          .where("id", "=", sent.messageId)
+          .executeTakeFirstOrThrow()
+      ).content,
+    ).toEqual([{ type: "text", text: message }]);
   });
 
   it("returns one task shape on delegation and replay, full results, and open/latest assignments across personal tasks", async ({
@@ -1885,36 +2153,68 @@ describeStore("shaped agent Thread tools", (it) => {
   }) => {
     const f = await storeFixture.startRunFixture("shaped-tasks");
     const s = setup(storeFixture, f);
-    const input = delegate_task.input.parse({
-      harnessInstanceId: f.harnessInstance.id,
+    const input = opensteer_task_delegate.input.parse({
+      aiAccountId: f.harnessInstance.id,
       model: { ...testModelSelection, options: {} },
       title: "Worker",
-      task: "Do the work",
+      message: "Do the work",
     });
     const operationKey = randomUUID();
-    const delegated = await s.product.delegate_task({ caller: s.caller, input, operationKey });
+    const delegated = await s.product.opensteer_task_delegate({
+      caller: s.caller,
+      input,
+      operationKey,
+    });
     expect(delegated).toMatchObject({
+      link: formatReferenceLink(delegated.threadId, delegated.title),
       assignmentId: expect.any(String),
       status: "open",
       threadId: expect.any(String),
       parentThreadId: f.thread.id,
     });
-    expect(await s.product.delegate_task({ caller: s.caller, input, operationKey })).toEqual(
-      delegated,
-    );
+    expect(
+      await s.product.opensteer_task_delegate({ caller: s.caller, input, operationKey }),
+    ).toEqual(delegated);
     const list = () =>
-      s.product.thread_list({
+      s.product.opensteer_task_list({
         caller: s.caller,
-        input: thread_list.input.parse({ parentThreadId: "self" }),
+        input: opensteer_task_list.input.parse({ parentTaskId: f.thread.id }),
         operationKey: randomUUID(),
       });
     expect((await list()).threads).toContainEqual(
       expect.objectContaining({
         id: delegated.threadId,
+        link: delegated.link,
         assignmentId: delegated.assignmentId,
         taskStatus: "open",
       }),
     );
+    const changedSince = async (since: string) =>
+      opensteer_task_list.output
+        .parse(
+          productToolOutput(
+            await s.product.opensteer_task_list({
+              caller: s.caller,
+              input: opensteer_task_list.input.parse({ changedSince: since }),
+              operationKey: randomUUID(),
+            }),
+          ),
+        )
+        .tasks.find((task) => task.id === f.thread.id);
+    const all = (await changedSince("2000-01-01T00:00:00Z"))!;
+    const history = opensteer_task_read.output.parse(
+      productToolOutput(
+        await s.product.opensteer_task_read({
+          caller: s.caller,
+          input: opensteer_task_read.input.parse({ taskId: f.thread.id, limit: 100 }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    ).items;
+    // A pass reads back to firstNewAt, so it must be where task history shows the oldest one.
+    expect(all.newMessages).toBe(history.length);
+    expect(all.firstNewAt).toBe(history.map((item) => item.createdAt).toSorted()[0]);
+    expect(await changedSince(new Date(Date.now() + 60_000).toISOString())).toBeUndefined();
     await storeFixture.store.cancelAssignment({
       assignmentId: delegated.assignmentId!,
       requestedBy: f.userId,
@@ -1932,10 +2232,18 @@ describeStore("shaped agent Thread tools", (it) => {
       profileId: null,
       runtimeId: "test",
     });
-    await new PersonalTabStore(storeFixture.database).recordChanges(
-      sessionId,
-      [{ id: tabId, title: "Guest", url: "https://example.com", order: 0, openerId: null }],
-      [],
+    await new TabStore(storeFixture.database).open(
+      {
+        id: tabId,
+        ownerId: f.userId,
+        computerId: DeviceIdSchema.parse(f.runnerId),
+        kind: "page",
+        title: "Guest",
+        url: "https://example.com",
+        openedBy: "person",
+        pageBinding: { lineageId: sessionId, sessionId, surfaceId: tabId },
+      },
+      randomUUID(),
     );
     await place(
       storeFixture,
@@ -1946,14 +2254,17 @@ describeStore("shaped agent Thread tools", (it) => {
       },
       { kind: "browser", sessionId, surfaceId: tabId },
     );
-    await s.show({ runId: delegated.runId });
+    await s.show({ tabId });
     expect(s.frames.at(-1)).toMatchObject({
       runId: f.run.id,
-      target: { runId: delegated.runId, place: { surfaceId: tabId } },
+      target: { tabId },
     });
-    const next = await s.product.delegate_task({
+    const next = await s.product.opensteer_task_delegate({
       caller: s.caller,
-      input: delegate_task.input.parse({ threadId: delegated.threadId, task: "Continue" }),
+      input: opensteer_task_delegate.input.parse({
+        taskId: delegated.threadId,
+        message: "Continue",
+      }),
       operationKey: randomUUID(),
     });
     expect((await list()).threads.find((t) => t.id === delegated.threadId)).toMatchObject({
@@ -1988,9 +2299,9 @@ describeStore("shaped agent Thread tools", (it) => {
       userId: f.userId,
       accessMode: "approval-required",
     };
-    const status = await s.product.task_status({
+    const status = await s.product.opensteer_delegation_status({
       caller: connection,
-      input: task_status.input.parse({ assignmentId: next.assignmentId }),
+      input: opensteer_delegation_status.input.parse({ delegationId: next.assignmentId }),
       operationKey: randomUUID(),
     });
     expect(status.result).toBe(result);
@@ -2004,99 +2315,17 @@ describeStore("shaped agent Thread tools", (it) => {
       .where("threadId", "=", f.thread.id)
       .execute();
     expect(
-      await s.product.thread_interrupt({
+      await s.product.opensteer_task_interrupt({
         caller: s.caller,
-        input: thread_interrupt.input.parse({}),
+        input: opensteer_task_interrupt.input.parse({}),
         operationKey: randomUUID(),
       }),
-    ).toEqual({ interruptedRunId: null });
-  });
-
-  it("shows another Run using the caller actor and emits both Run identities, with reach but no write ceiling", async ({
-    storeFixture,
-  }) => {
-    const f = await storeFixture.startRunFixture("shaped-show");
-    const s = setup(storeFixture, f);
-    const nativeRunner = f.runnerId;
-    const delegated = await storeFixture.store.delegateThread({
-      createdBy: f.userId,
-      environmentId: f.environmentId,
-      harnessInstanceId: f.harnessInstance.id,
-      modelSelection: testModelSelection,
-      origin: { kind: "run", parentRunId: f.run.id, parentThreadId: f.thread.id },
-      task: [{ type: "text", text: "Task" }],
-      title: "Task",
-      accessMode: "full-access",
-      idempotencyKey: "show-task",
-    });
-    const target = { ...f, run: delegated.run, thread: delegated.thread };
-    await expect(s.show({ runId: delegated.run.id })).rejects.toMatchObject({
-      next: "Read recentPlaces with thread_read.",
-    });
-    const sessionId = createBrowserSessionId();
-    const tabId = BrowserSurfaceIdSchema.parse("guest-task");
-    await storeFixture.store.createBrowserSession({
-      id: sessionId,
-      runnerId: f.runnerId,
-      origin: "agent",
-      ownerId: f.userId,
-      placementKey: "guest",
-      profileId: null,
-      runtimeId: "test",
-    });
-    await new PersonalTabStore(storeFixture.database).recordChanges(
-      sessionId,
-      [{ id: tabId, title: "Guest", url: "https://example.com", order: 0, openerId: null }],
-      [],
-    );
-    await place(storeFixture, target, { kind: "browser", sessionId, surfaceId: tabId });
-    await s.show({ runId: delegated.run.id }, { ...s.caller, accessMode: "approval-required" });
-    expect(s.frames[0]).toMatchObject({
-      runId: f.run.id,
-      target: { runId: delegated.run.id, place: { kind: "browser", surfaceId: tabId } },
-    });
-    await expect(
-      s.show(
-        { current: true },
-        { ...s.caller, claims: { ...s.caller.claims, runId: delegated.run.id } },
+    ).toEqual({
+      interruptedRunId: null,
+      link: formatReferenceLink(
+        f.thread.id,
+        (await storeFixture.store.getThreadForOwner(f.thread.id, f.userId))!.title,
       ),
-    ).rejects.toThrow("assigned it");
-    await place(storeFixture, target, {
-      kind: "app",
-      machineId: nativeRunner,
-      appKey: "com.apple.finder",
     });
-    await expect(s.show({ runId: delegated.run.id })).rejects.toThrow("Run's app session ended");
-    const appSession = ComputerUseSessionSummarySchema.parse({
-      sessionId: mintComputerUseSessionId(),
-      runId: f.run.id,
-      threadId: f.thread.id,
-      threadTitle: "Other Run",
-      openedAt: new Date().toISOString(),
-      actionCount: 0,
-      apps: [{ bundleId: "com.apple.finder", displayName: "Finder", teamId: null }],
-      display: false,
-    });
-    s.computerUse.sessionsForRunner.mockReturnValue([appSession]);
-    await expect(s.show({ runId: delegated.run.id })).rejects.toThrow("Run's app session ended");
-    expect(s.computerUse.authorizeDisplay).not.toHaveBeenCalled();
-    s.computerUse.sessionsForRunner.mockReturnValue([{ ...appSession, runId: delegated.run.id }]);
-    await s.show({ runId: delegated.run.id });
-    s.computerUse.sessionsForRunner.mockReturnValue([]);
-    await expect(s.show({ runId: delegated.run.id })).rejects.toThrow("Run's app session ended");
-    await place(storeFixture, target, { kind: "phone", machineId: nativeRunner, display: "main" });
-    await storeFixture.database
-      .updateTable("runs")
-      .set({ status: "completed", completedAt: new Date() })
-      .where("id", "=", delegated.run.id)
-      .execute();
-    await s.show({ runId: delegated.run.id });
-    const reader = await storeFixture.store.createUser("Other person");
-    await expect(
-      s.show(
-        { runId: delegated.run.id },
-        { ...s.caller, userId: reader, claims: { ...s.caller.claims, requestedBy: reader } },
-      ),
-    ).rejects.toMatchObject({ code: "forbidden", message: "The personal owner is required." });
   });
 });

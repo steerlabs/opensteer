@@ -1,6 +1,16 @@
+import { useTeamShareParticipants } from "@opensteer/client/react";
+import { teamMentions, teamMessage } from "@opensteer/shared/teamMentions";
+import { TeamImageSources } from "./team-image-hold.js";
+import { teamImageSource, shareTeamFile } from "./team-file-export.js";
 import { MenuView, type MenuComponentRef } from "@expo/ui/community/menu";
 import { PersonalTeamLinks, watchTeamReplyRead, unwrapRpcResult } from "@opensteer/client/host";
-import { teamScopeKey, type TeamSessionClient, type TeamTimeline } from "@opensteer/client/team";
+import {
+  channelShareView,
+  teamAskRefusalNotice,
+  teamScopeKey,
+  type TeamSessionClient,
+  type TeamTimeline,
+} from "@opensteer/client/team";
 import {
   TeamAgentRequestIdSchema,
   TeamChannelIdSchema,
@@ -9,11 +19,14 @@ import {
   teamPageUrl,
   type TeamMessageId,
 } from "@opensteer/core";
-import type { HostApiCommandInput, TeamMember, TeamMessage } from "@opensteer/protocol";
+import {
+  teamUploadMaxBytes,
+  type HostApiCommandInput,
+  type TeamMember,
+  type TeamMessage,
+} from "@opensteer/protocol";
 import { useFocusEffect, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { File, Paths } from "expo-file-system";
-import * as Sharing from "expo-sharing";
 import {
   useCallback,
   useEffect,
@@ -21,11 +34,16 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { ActivityIndicator, Alert, AppState, Pressable, StyleSheet, View } from "react-native";
+import { enterSide } from "../navigation-ref.js";
 import type { RootParamList } from "../navigation.js";
+import * as Haptics from "expo-haptics";
 import { color, space } from "../theme.js";
+import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
+import { BarControl } from "../ui/bar-control.js";
 import { useCopy } from "../ui/copy-mark.js";
 import { useMobileClient, useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { AppText, Notice } from "../ui/primitives.js";
@@ -41,7 +59,7 @@ import { sendFromComposer } from "./composer-send.js";
 import { useConnectionBanner } from "./connection-banner.js";
 import { messageActions, type MessageActionId } from "./message-row.js";
 import type { MobileTeam } from "./mobile-teams.js";
-import { dataUri, useTeamMembers, useTeamPreviews, useTeamSession } from "./team-context.js";
+import { useTeamMembers, useTeamPreviews, useTeamSession } from "./team-context.js";
 import { GeneralWelcome } from "./team-entry-screens.js";
 import type {
   AgentReach,
@@ -52,7 +70,16 @@ import type {
   StagedAttachmentView,
 } from "./team-models.js";
 import type { TeamComposerProps } from "./team-composer.js";
+import type { ComposerEditorHandle } from "@opensteer/client/references";
 import {
+  insertReference,
+  startReference,
+  useTeamReferenceSections,
+} from "../ui/composer-reference-picker.js";
+import { discardPastedImage } from "../../modules/composer-editor/files.js";
+import type { PastedImages } from "../../modules/composer-editor/index.js";
+import {
+  pastedTeamSource,
   pickTeamPhoto,
   uploadRefusal,
   uploadToTeam,
@@ -66,6 +93,7 @@ import {
   ownReplyInView,
   timelineItems,
   typingLine,
+  type AskOwnerFacts,
   type MemberDirectory,
 } from "./team-views.js";
 
@@ -111,7 +139,7 @@ export function TeamChannelScreen(props: StaticScreenProps<TeamChannelRoute>): R
         session.selectThread(TeamChannelIdSchema.parse(channelId), null);
     }, [channelId, landing.settled, session]),
   );
-  const people = useTeamMembers(teamId);
+  const people = useTeamMembers(teamId, channelId);
   const memberCount = useChannelMemberCount(session, channelId);
   const header = useMemo(
     () =>
@@ -122,23 +150,27 @@ export function TeamChannelScreen(props: StaticScreenProps<TeamChannelRoute>): R
     navigation.setOptions({
       headerTitle: () =>
         header === null ? null : (
-          <Pressable
-            accessibilityHint="Opens members, files, pinned messages and settings"
-            accessibilityRole="button"
-            onPress={() => navigation.navigate("TeamDetails", { teamId, channelId })}
-          >
-            <ChannelTitle channel={header} />
-          </Pressable>
+          <BarControl>
+            <Pressable
+              accessibilityHint="Opens members, files, pinned messages and settings"
+              accessibilityRole="button"
+              onPress={() => navigation.navigate("TeamDetails", { teamId, channelId })}
+            >
+              <ChannelTitle channel={header} />
+            </Pressable>
+          </BarControl>
         ),
       headerRight: () => (
-        <Pressable
-          accessibilityLabel="Search this channel"
-          accessibilityRole="button"
-          hitSlop={10}
-          onPress={() => navigation.navigate("TeamSearch", { teamId, channelId })}
-        >
-          <Symbol name="magnifyingglass" size={18} tint={color.ember} />
-        </Pressable>
+        <BarControl>
+          <Pressable
+            accessibilityLabel="Search this channel"
+            accessibilityRole="button"
+            hitSlop={10}
+            onPress={() => navigation.navigate("TeamSearch", { teamId, channelId })}
+          >
+            <Symbol name="magnifyingglass" size={18} tint={color.ember} />
+          </Pressable>
+        </BarControl>
       ),
     });
   }, [channelId, header, navigation, teamId]);
@@ -204,7 +236,7 @@ export function TeamThreadScreen(props: StaticScreenProps<TeamThreadRoute>): Rea
         );
     }, [channelId, landing.settled, rootId, session]),
   );
-  const people = useTeamMembers(teamId);
+  const people = useTeamMembers(teamId, channelId);
   const channelName = view?.channel?.name ?? null;
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -223,7 +255,7 @@ export function TeamThreadScreen(props: StaticScreenProps<TeamThreadRoute>): Rea
   const root = view?.messages.find((message) => message.id === rootId) ?? null;
 
   if (session === null || view === null || view.channel === null || root === null)
-    return <PlaceWaiting failure={place.failure} />;
+    return <PlaceWaiting failure={place.failure ?? (view === null ? null : snapshot.error)} />;
   return (
     <Screen edgeToEdge>
       <Place
@@ -240,7 +272,7 @@ export function TeamThreadScreen(props: StaticScreenProps<TeamThreadRoute>): Rea
             {...place}
             anchorId={landing.anchorId}
             replyCount={root.replySummary.count}
-            root={rootView(root, place.viewerId, people.directory)}
+            root={rootView(root, place.viewerId, people.directory, place.asks)}
           />
         )}
       </Place>
@@ -287,7 +319,12 @@ function useLanding(
     : { anchorId: null, settled: false };
 }
 
-function rootView(root: TeamMessage, viewerId: string, directory: MemberDirectory): MessageView {
+function rootView(
+  root: TeamMessage,
+  viewerId: string,
+  directory: MemberDirectory,
+  asks: AskOwnerFacts,
+): MessageView {
   return messageView(root, {
     viewerId,
     members: directory,
@@ -295,6 +332,7 @@ function rootView(root: TeamMessage, viewerId: string, directory: MemberDirector
     previous: null,
     requests: root.requests,
     inThread: true,
+    asks,
   });
 }
 
@@ -336,6 +374,7 @@ function useChannelMemberCount(
 
 interface PlaceProps {
   readonly actions: Parameters<typeof ChannelScreenBody>[0]["actions"];
+  readonly asks: AskOwnerFacts;
   readonly banner: ConnectionBannerView | null;
   readonly composer: TeamComposerProps;
   /** Why the reader can't post here, in the composer's place; null when they can. */
@@ -365,6 +404,14 @@ function Place(props: {
   const navigation = useNavigation<Navigation>();
   const mobile = useMobileClient();
   const personal = useSelectedHostClient();
+  const aiSharing = useAiSharing();
+  // The reader's own Needs you knows which asks of their agent wait in a task, and at
+  // which version, which is what answering one from here approves.
+  const needsYou = useSyncExternalStore(
+    useCallback((notify: () => void) => personal?.subscribe(notify) ?? (() => {}), [personal]),
+    useCallback(() => personal?.getSnapshot().needsYou ?? null, [personal]),
+  );
+  const asks = useMemo(() => ({ needsYou, teamId }), [needsYou, teamId]);
   const snapshot = session.getSnapshot();
   const viewerId = snapshot.bootstrap?.member.userId ?? "";
   const channel = view.channel!;
@@ -385,17 +432,21 @@ function Place(props: {
         previews,
         lastReadMessageId: newLineAt,
         pending: snapshot.pending,
-        connected: snapshot.connection === "connected",
+        sendErrors: snapshot.sendErrors,
+        connected: !snapshot.unreachable,
         now: new Date(),
         ...(rootId === null ? {} : { skipId: rootId }),
+        asks,
       }),
     [
+      asks,
       directory,
       newLineAt,
       previews,
       rootId,
-      snapshot.connection,
+      snapshot.unreachable,
       snapshot.pending,
+      snapshot.sendErrors,
       snapshot.presence,
       view,
       viewerId,
@@ -457,6 +508,18 @@ function Place(props: {
 
   // The composer: words, mentions, files, and whether it asks the reader's agent.
   const [text, setText] = useState(() => snapshot.drafts[scopeKey] ?? "");
+  const editor = useRef<ComposerEditorHandle>(null);
+  /** Puts other words in the field outright; a keystroke still on its way cannot undo it. */
+  const replaceText = (next: string): void => {
+    setText(next);
+    const field = editor.current;
+    field?.restore({
+      composing: false,
+      generation: field.readSnapshot().generation + 1,
+      selection: { start: next.length, end: next.length },
+      text: next,
+    });
+  };
   // Editing one of the reader's messages sets their unsent words aside until it ends.
   const [editing, setEditing] = useState<{
     readonly id: TeamMessageId;
@@ -486,21 +549,71 @@ function Place(props: {
   };
   const [staged, setStaged] = useState<readonly Staged[]>([]);
   const [failure, setFailure] = useState<string | null>(null);
+  // Pasted images are this screen's own temporary copies: each goes once its
+  // row leaves the strip (removed or sent), and all go with the screen.
+  const pastedFiles = useRef(new Map<string, string>());
+  useEffect(() => {
+    const held = new Set(staged.map((row) => row.source.localId));
+    for (const [localId, uri] of pastedFiles.current)
+      if (!held.has(localId)) {
+        pastedFiles.current.delete(localId);
+        discardPastedImage(uri);
+      }
+  }, [staged]);
+  useEffect(() => {
+    const files = pastedFiles.current;
+    return () => {
+      for (const uri of files.values()) discardPastedImage(uri);
+      files.clear();
+    };
+  }, []);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const changeText = (next: string): void => {
     setText(next);
     session.typing(channelId, rootId, next !== "");
     if (draftTimer.current !== null) clearTimeout(draftTimer.current);
     draftTimer.current = setTimeout(() => {
-      if (editing === null) void session.setDraft(view.scope, next).catch(() => undefined);
+      if (editing === null)
+        void session.setDraft(view.scope, next).catch((error: unknown) => {
+          if (!session.owner?.signal.aborted)
+            setFailure(error instanceof Error ? error.message : "Draft could not be saved.");
+        });
     }, 400);
   };
   const mentionQuery = activeMention(text, selection.start);
+  const participants = useTeamShareParticipants(
+    session,
+    channelId,
+    channel.share ? mentionQuery : null,
+  );
   const mentions: readonly MentionOption[] | null =
     mentionQuery === null
       ? null
-      : mentionOptions({ query: mentionQuery, viewerId, members: props.members, reach });
-  const me = props.members.find((member) => member.userId === viewerId) ?? null;
+      : mentionOptions({
+          query: mentionQuery,
+          viewerId,
+          members: props.members,
+          reach,
+          people: [...directory.values()]
+            .filter((p) =>
+              p.externalTeam
+                ? participants.items.some(
+                    (row) => row.userId === p.userId && row.state === "active",
+                  )
+                : props.members.some((row) => row.userId === p.userId && row.state === "active"),
+            )
+            .map((p) => ({
+              ...p,
+              handle: participants.items.find((row) => row.userId === p.userId)?.handle ?? p.handle,
+            })),
+        });
+  const me = directory.get(viewerId) ?? null;
+  const references = useTeamReferenceSections(
+    session,
+    props.team?.origin ?? null,
+    snapshot.sidebar,
+    mentionQuery,
+  );
 
   const pickMention = (option: MentionOption): void => {
     if (mentionQuery === null) return;
@@ -522,7 +635,27 @@ function Place(props: {
 
   const attach = async (): Promise<void> => {
     const source = await pickTeamPhoto().catch(() => null);
-    if (source === null) return;
+    if (source !== null) await stage(source);
+  };
+
+  const pasteImages = (pasted: PastedImages): void => {
+    // An edit changes only the words; an image pasted into it belongs to no message.
+    if (editing !== null) {
+      for (const image of pasted.images) discardPastedImage(image.uri);
+      return;
+    }
+    if (pasted.tooLarge > 0)
+      setFailure(`A pasted image is over ${teamUploadMaxBytes / 1_048_576} MB.`);
+    else if (pasted.failed > 0) setFailure("A pasted image could not be read.");
+    for (const image of pasted.images) {
+      const source = pastedTeamSource(image);
+      pastedFiles.current.set(source.localId, source.uri);
+      void stage(source);
+    }
+  };
+
+  const stage = async (source: TeamUploadSource): Promise<void> => {
+    if (session.owner?.signal.aborted) return;
     const refused = uploadRefusal(source);
     const entry: Staged = { source, fileId: null, refused, failed: null };
     setStaged((held) => [...held, entry]);
@@ -544,7 +677,17 @@ function Place(props: {
   };
 
   const send = async (): Promise<void> => {
-    const words = text.trim();
+    // The field's last keystroke can still be on its way to React: read what it holds now.
+    const field = editor.current;
+    let current = text;
+    if (field !== null) {
+      const flushed = await field
+        .flushPendingInput(field.readSnapshot().generation)
+        .catch(() => null);
+      if (flushed === null || flushed.composing || openEdit.current !== editing) return;
+      current = flushed.text;
+    }
+    const words = current.trim();
     setFailure(null);
     if (editing !== null) {
       if (words === "" || savingEdit) return;
@@ -556,10 +699,10 @@ function Place(props: {
           channelId,
           messageId: saving.id,
           bodyMarkdown: words,
-          mentions: writtenMentions(words, props.members),
+          mentions: [...teamMentions(words, directory.values())],
         });
         if (openEdit.current === saving) {
-          setText(saving.draft);
+          replaceText(saving.draft);
           setEditing(null);
         }
       } catch (error) {
@@ -574,14 +717,9 @@ function Place(props: {
     if (words === "" && files.length === 0) return;
     if (staged.some((row) => row.fileId === null)) return;
     const asking = rootId === null && toMyAgent && reach === "available" && me !== null;
-    const body = asking ? `@${teamAgentHandle(me.handle)} ${words}` : words;
-    const found = writtenMentions(body, props.members);
-    const mentioned = asking
-      ? [
-          { userId: me.userId, kind: "agent" as const },
-          ...found.filter((row) => row.userId !== me.userId || row.kind !== "agent"),
-        ]
-      : found;
+    const message = me
+      ? teamMessage({ body: words, toMyAgent: asking }, me, directory)
+      : { bodyMarkdown: words, mentions: teamMentions(words, directory.values()) };
     try {
       session.typing(channelId, rootId, false);
       await sendFromComposer(
@@ -590,8 +728,8 @@ function Place(props: {
         {
           channelId,
           threadRootId: rootId,
-          bodyMarkdown: body,
-          mentions: mentioned.slice(0, 20),
+          bodyMarkdown: message.bodyMarkdown,
+          mentions: [...message.mentions],
           attachmentIds: files as never,
         },
         () => {
@@ -600,7 +738,7 @@ function Place(props: {
           setStaged([]);
         },
       );
-      setText("");
+      replaceText("");
       // After sending it stays as the reader left it, in a thread; a channel's
       // ask opens its own thread, so the channel's composer starts off again.
       if (rootId === null) setToMyAgent(false);
@@ -611,7 +749,7 @@ function Place(props: {
 
   const cancelEdit = (): void => {
     if (editing === null) return;
-    setText(editing.draft);
+    replaceText(editing.draft);
     setEditing(null);
   };
   const report = (error: unknown): void =>
@@ -644,7 +782,9 @@ function Place(props: {
           canPost: channel.can.post,
           inThread: rootId !== null,
           message: heldView,
-        });
+        }).filter(
+          (action) => channel.can.post || action.id === "reply" || action.id === "copy-link",
+        );
   const act = async (message: TeamMessage, id: MessageActionId): Promise<void> => {
     switch (id) {
       case "reply":
@@ -679,7 +819,7 @@ function Place(props: {
       }
       case "edit":
         setEditing((held) => ({ id: message.id, draft: held?.draft ?? text }));
-        setText(message.bodyMarkdown);
+        replaceText(message.bodyMarkdown);
         return;
       case "delete":
         Alert.alert("Delete this message?", "It's removed for everyone here.", [
@@ -712,7 +852,7 @@ function Place(props: {
       return;
     }
     const taskId = await new PersonalTeamLinks(personal.rpc).task(teamId, channelId, threadRoot);
-    if (taskId !== null) navigation.navigate("Thread", { deploymentId, threadId: taskId });
+    if (taskId !== null) enterSide({ name: "Thread", params: { deploymentId, threadId: taskId } });
     else Alert.alert("That task isn't on your computer");
   };
 
@@ -732,27 +872,30 @@ function Place(props: {
     }
   };
   const shareFile = async (file: TeamMessage["attachments"][number]): Promise<void> => {
-    const blob = await session.file(file, true);
-    if (blob === null) throw new Error(`${file.filename} isn't available to you any more.`);
-    const uri = await dataUri(blob);
-    const target = new File(
-      Paths.cache,
-      `team-${file.id}-${file.filename.replace(/[^\w.-]+/g, "_")}`,
-    );
-    if (target.exists) target.delete();
-    target.create();
-    await target.write(base64Bytes(uri.slice(uri.indexOf(",") + 1)));
-    await Sharing.shareAsync(target.uri, { mimeType: file.mediaType, dialogTitle: file.filename });
+    await shareTeamFile(session, file);
   };
 
-  const banner = useConnectionBanner(props.team, snapshot.connection, () => session.connect());
+  const connectionBanner = useConnectionBanner(props.team, snapshot, () => session.connect());
+  const shareView = channelShareView(channel.share);
+  const banner: ConnectionBannerView | null =
+    connectionBanner ??
+    (shareView && (channel.share?.state === "disconnected" || channel.share?.updateRequired)
+      ? { text: `${shareView.label}. ${shareView.detail}`, tone: "muted", action: null }
+      : null);
   const closed = channel.can.post
     ? null
-    : channel.archivedAt !== null
-      ? "This channel is archived."
-      : "You can read this channel but not post here.";
+    : channel.share?.state === "disconnected"
+      ? `No longer shared with ${channel.share.teamName}. This is a read-only archive.`
+      : channel.archivedAt !== null
+        ? "This channel is archived."
+        : "You can read this channel but not post here.";
   const typingKey = JSON.stringify([channelId, rootId]);
+  const refusalNotice = teamAskRefusalNotice(
+    snapshot.sendNotices[teamScopeKey(view.scope)] ?? [],
+    (id) => props.members.find((member) => member.userId === id)?.displayName ?? "That person",
+  );
   const composer: TeamComposerProps = {
+    editor,
     placeholder:
       rootId !== null
         ? "Reply…"
@@ -764,14 +907,24 @@ function Place(props: {
     onSelectionChange: setSelection,
     agent: reach,
     toMyAgent,
-    sticky: rootId !== null,
     onToMyAgentChange: setToMyAgent,
     onAgentUnavailable: () => navigation.navigate("ConnectOpensteer", { teamId }),
     mentions,
     onPickMention: pickMention,
-    onMention: () => changeText(`${text.slice(0, selection.start)}@${text.slice(selection.end)}`),
+    references,
+    onPickReference: (row) => {
+      if (mentionQuery === null) return;
+      insertReference(
+        editor.current,
+        { start: selection.start - mentionQuery.length - 1 },
+        selection.start,
+        row.markdown,
+      );
+    },
+    onMention: () => startReference(editor.current),
     attachments: staged.map(stagedView),
     onAttach: () => void attach(),
+    onPasteImages: pasteImages,
     onRemoveAttachment: (id) =>
       setStaged((held) => held.filter((row) => row.source.localId !== id)),
     onSend: () => void send(),
@@ -795,56 +948,109 @@ function Place(props: {
               </View>
             ),
           }
-        : {}),
+        : refusalNotice !== null
+          ? {
+              hint: (
+                <AppText role="caption" style={styles.line} tone="muted">
+                  {refusalNotice}
+                </AppText>
+              ),
+            }
+          : {}),
   };
   const byId = (id: string) => view.messages.find((message) => message.id === id) ?? null;
   return (
     <View style={styles.fill}>
-      {props.children({
-        actions: {
-          onHold: (id) => setHeld(byId(id)),
-          onOpenAttachment: (messageId, fileId) => void openFile(messageId, fileId).catch(report),
-          onOpenThread: (id) =>
-            navigation.navigate("TeamThread", { teamId, channelId, rootId: id }),
-          onOpenTask: (messageId) => void openTask(null, messageId).catch(report),
-          onUnsent: (messageId, choice) => {
-            const clientMessageId = messageId.replace(/^pending:/, "");
-            const pending = snapshot.pending.find(
-              (row) => row.command.clientMessageId === clientMessageId,
-            );
-            if (pending === undefined) return;
-            const done =
-              choice === "edit"
-                ? session
-                    .editPending(clientMessageId, pending.command.bodyMarkdown)
-                    .then(() => setText(pending.command.bodyMarkdown))
-                : session.discardPending(clientMessageId);
-            void done.catch(report);
+      <TeamImageSources
+        value={(id) => {
+          const file = view.messages
+            .flatMap((message) => message.attachments)
+            .find((file) => file.id === id);
+          if (!file)
+            return {
+              name: "Image",
+              read: async () => {
+                throw new Error("Image unavailable");
+              },
+            };
+          return teamImageSource(session, file);
+        }}
+      >
+        {props.children({
+          actions: {
+            onHold: (id) => setHeld(byId(id)),
+            onOpenAttachment: (messageId, fileId) => void openFile(messageId, fileId).catch(report),
+            onOpenThread: (id) =>
+              navigation.navigate("TeamThread", { teamId, channelId, rootId: id }),
+            onOpenTask: (messageId) => void openTask(null, messageId).catch(report),
+            onDecideAsk: async (control, decision) => {
+              if (personal === null) return;
+              // Answering starts the reader's agent on the ask, with their AI companies.
+              if (decision === "approve" && !(await authorizeAiSharing(aiSharing, personal)))
+                return;
+              void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              await personal
+                .decideTeamAsk(
+                  decision === "approve"
+                    ? {
+                        decision,
+                        expectedRevision: control.expectedRevision,
+                        requestId: control.requestId,
+                        teamId: control.teamId,
+                      }
+                    : { decision, requestId: control.requestId, teamId: control.teamId },
+                )
+                .catch((error: unknown) => {
+                  void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+                  report(error);
+                });
+            },
+            onOpenAskTask: (threadId) => {
+              const deploymentId = mobile.getSnapshot().selection.deploymentId;
+              if (deploymentId !== null) navigation.navigate("Thread", { deploymentId, threadId });
+            },
+            onUnsent: (messageId, choice) => {
+              const clientMessageId = messageId.replace(/^pending:/, "");
+              const pending = snapshot.pending.find(
+                (row) => row.command.clientMessageId === clientMessageId,
+              );
+              if (pending === undefined) return;
+              const done =
+                choice === "retry"
+                  ? session.reconcilePending()
+                  : choice === "edit"
+                    ? session
+                        .editPending(clientMessageId, pending.command.bodyMarkdown)
+                        .then(() => setText(pending.command.bodyMarkdown))
+                    : session.discardPending(clientMessageId);
+              void done.catch(report);
+            },
+            onCardAction: (requestId, action) => {
+              if (action === "cancel" || action === "stop")
+                void command(session, {
+                  type: "team.agent.request.cancel",
+                  requestId: TeamAgentRequestIdSchema.parse(requestId),
+                }).catch(report);
+              else void openTask(requestId, null).catch(report);
+            },
+            onOpenCardTask: (requestId) => void openTask(requestId, null).catch(report),
+            onLoadOlder: () =>
+              void session
+                .loadPage(rootId === null ? "channel" : "thread", "before")
+                .catch(() => undefined),
+            onFollowingChange: setFollowing,
+            onVisibleMessages: setVisible,
           },
-          onCardAction: (requestId, action) => {
-            if (action === "cancel" || action === "stop")
-              void command(session, {
-                type: "team.agent.request.cancel",
-                requestId: TeamAgentRequestIdSchema.parse(requestId),
-              }).catch(report);
-            else void openTask(requestId, null).catch(report);
-          },
-          onOpenCardTask: (requestId) => void openTask(requestId, null).catch(report),
-          onLoadOlder: () =>
-            void session
-              .loadPage(rootId === null ? "channel" : "thread", "before")
-              .catch(() => undefined),
-          onFollowingChange: setFollowing,
-          onVisibleMessages: setVisible,
-        },
-        banner,
-        closed,
-        composer,
-        items,
-        jump,
-        typing: typingLine(snapshot.typing[typingKey] ?? [], viewerId, directory),
-        viewerId,
-      })}
+          asks,
+          banner,
+          closed,
+          composer,
+          items,
+          jump,
+          typing: typingLine(snapshot.typing[typingKey] ?? [], viewerId, directory),
+          viewerId,
+        })}
+      </TeamImageSources>
       {held === null ? null : (
         <MenuView
           actions={heldActions.map(({ destructive, id, title }) => ({
@@ -894,34 +1100,6 @@ export function activeMention(text: string, cursor: number): string | null {
   const before = text.slice(0, cursor);
   const match = /(^|\s)@([a-z0-9-]*)$/i.exec(before);
   return match === null ? null : match[2]!.toLowerCase();
-}
-
-/**
- * The structured mentions a message's words carry: `@maya` names a person and
- * `@maya-agent` their agent. A handle nobody here has stays plain text.
- */
-export function writtenMentions(
-  body: string,
-  members: readonly Pick<TeamMember, "handle" | "userId">[],
-): { readonly userId: TeamMember["userId"]; readonly kind: "person" | "agent" }[] {
-  const byHandle = new Map(members.map((member) => [member.handle, member.userId]));
-  const found = new Map<string, { userId: TeamMember["userId"]; kind: "person" | "agent" }>();
-  for (const match of body.matchAll(/(?:^|\s)@([a-z0-9]+(?:-[a-z0-9]+)*)/g)) {
-    const handle = match[1]!;
-    const agent = handle.endsWith("-agent");
-    const userId = byHandle.get(agent ? handle.slice(0, -"-agent".length) : handle);
-    if (userId === undefined) continue;
-    const kind = agent ? "agent" : "person";
-    found.set(`${userId}:${kind}`, { userId, kind });
-  }
-  return [...found.values()];
-}
-
-function base64Bytes(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-  return bytes;
 }
 
 const styles = StyleSheet.create({

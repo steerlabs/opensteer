@@ -1,22 +1,27 @@
+import { WindowIdSchema } from "@opensteer/core";
 import {
-  BrowserSessionIdSchema,
-  BrowserSurfaceIdSchema,
   createId,
   OpensteerError,
   type RunId,
   type RunnerId,
+  DeviceIdSchema,
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
 import { computerAppIdentityKey, type ComputerAppIdentity } from "@opensteer/integration-core";
 import {
+  RunnerAuxiliaryFrameFenceSchema,
+  type RunnerIntegrationsDeviceStatus,
   computerUseMaxTimeoutMs,
   mintComputerUseSessionId,
   type AndroidPhoneObservation,
+  type PhoneDisplayObservation,
+  getPhoneDisplayCodec,
+  PhoneDisplayObservationResultSchema,
   type ComputerUseObservation,
   type MachineAppStatus,
 } from "@opensteer/protocol";
-import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
+
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { readFileSync } from "node:fs";
 import type { WebSocket } from "ws";
@@ -25,6 +30,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComputerAppPlatform } from "@opensteer/integration-core";
 import type {
   ComputerAppMachine,
+  ComputerTargetId,
   ComputerUseOutcome,
   ComputerUseSendInput,
 } from "../computer-apps/computer-app-hub.js";
@@ -65,14 +71,17 @@ function flakyStops(failures: number) {
 
 /** Stands in for the Stops table: what one Host records, the next one starts from. */
 function durableStops() {
-  const rows = new Map<string, { readonly runId: RunId; readonly runnerId: RunnerId }>();
+  const rows = new Map<string, { readonly runId: RunId; readonly runnerId: ComputerTargetId }>();
   return {
     rows,
     ledger: (): ComputerUseStopLedger => ({
       clear: async (runId) => {
         for (const [key, row] of rows) if (row.runId === runId) rows.delete(key);
       },
-      initial: [...rows.values()],
+      initial: [...rows.values()].map((row) => ({
+        runId: row.runId,
+        deviceId: DeviceIdSchema.parse(row.runnerId),
+      })),
       record: async (runId, runnerId) => {
         rows.set(`${runId}|${runnerId}`, { runId, runnerId });
       },
@@ -107,7 +116,7 @@ function observation(overrides: Partial<ComputerUseObservation> = {}): ComputerU
     alone: false,
     window: {
       ref: "window-1",
-      id: 7,
+      windowId: WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000007"),
       frame: { x: 0, y: 0, width: 800, height: 600 },
       scale: 1,
       title: "Notes",
@@ -117,7 +126,10 @@ function observation(overrides: Partial<ComputerUseObservation> = {}): ComputerU
 }
 
 /** A computer as the hub lists it, with the platform the Runner registry records for it. */
-type ListedMachine = ComputerAppMachine & { readonly platform: ComputerAppPlatform };
+type ListedMachine = ComputerAppMachine & {
+  readonly platform: ComputerAppPlatform;
+  readonly definitionId?: "android-phone" | "iphone-screen";
+};
 
 /** What the Agent Phone app answers an observe with, screen on and nothing in the way. */
 function phoneObservation(
@@ -144,7 +156,7 @@ function phoneObservation(
 interface Harness {
   /** Every "Stop recorded" the Host told a computer, in order. */
   readonly acknowledged: {
-    readonly runnerId: RunnerId;
+    readonly runnerId: ComputerTargetId;
     readonly runId: RunId;
     readonly sessionId: string;
   }[];
@@ -171,8 +183,7 @@ function macosApp(): MachineAppStatus {
 
 function harness(
   options: {
-    readonly beginPlaceEntry?: ComputerUseServiceOptions["beginPlaceEntry"];
-    readonly onPhoneHeld?: ComputerUseServiceOptions["onPhoneHeld"];
+    readonly hub?: Partial<ComputerUseServiceOptions["hub"]>;
     readonly passwords?: ComputerUseServiceOptions["passwords"];
     readonly loginReceiver?: ComputerUseServiceOptions["loginReceiver"];
     readonly expireSetupRequests?: () => Promise<void>;
@@ -195,14 +206,17 @@ function harness(
   const state: { now: number } = { now: 1_000_000 };
   const service = new ComputerUseService({
     deploymentId: deploymentId,
-    ...(options.beginPlaceEntry ? { beginPlaceEntry: options.beginPlaceEntry } : {}),
-    ...(options.onPhoneHeld ? { onPhoneHeld: options.onPhoneHeld } : {}),
     ...(options.passwords ? { passwords: options.passwords } : {}),
     ...(options.loginReceiver ? { loginReceiver: options.loginReceiver } : {}),
     ...(options.expireSetupRequests ? { expireSetupRequests: options.expireSetupRequests } : {}),
     ...(options.onError ? { onError: options.onError } : {}),
     listMachines: async () =>
-      machines.map(({ name, platform, runnerId }) => ({ name, platform, runnerId })),
+      machines.map(({ name, platform, runnerId, definitionId }) => ({
+        name,
+        platform,
+        deviceId: DeviceIdSchema.parse(runnerId),
+        ...(definitionId ? { definitionId } : {}),
+      })),
     hub: {
       acknowledgeComputerUseStop: async (stoppedOn, stop) => {
         acknowledged.push({ runnerId: stoppedOn, ...stop });
@@ -214,7 +228,16 @@ function harness(
         sent.push(input);
         const gate = pending.shift();
         // A phone answers in a phone's shapes, exactly as its app does.
-        const observed = input.definitionId === undefined ? observation() : phoneObservation();
+        const observed =
+          input.definitionId === undefined
+            ? observation()
+            : input.definitionId === "iphone-screen"
+              ? PhoneDisplayObservationResultSchema.parse(
+                  getPhoneDisplayCodec("android-phone").decodeResult("observe", {
+                    observation: phoneObservation(),
+                  }),
+                ).observation
+              : phoneObservation();
         const next =
           outcomes.shift() ??
           (input.operation === "act"
@@ -233,6 +256,7 @@ function harness(
         return { outcome: gate ? gate.then(() => next) : Promise.resolve(next) };
       },
       withRunnerAdmission: async (_runnerId, task) => task(),
+      ...options.hub,
     },
     machineOwners: async (runnerIds) =>
       new Map(
@@ -387,50 +411,6 @@ async function act(
     service.release(lease);
   }
 }
-
-describe("native Run place admission", () => {
-  it("records app use but does not let a slow native completion reclaim a browser place", async () => {
-    const write = vi.fn(async (_input: { data: { place: { kind: string } } }) => undefined);
-    const recorder = new RunPlaceRecorder({ write, publish: vi.fn(), onError: vi.fn() });
-    const test = harness({
-      beginPlaceEntry: (runId, generation) => recorder.begin(runId, generation),
-    });
-    const gate = Promise.withResolvers<void>();
-    const drain = () =>
-      withTimeout(recorder.drain(context.runId), 1000, {
-        timeoutError: () => new Error("Native Run place writes did not drain"),
-      });
-    try {
-      await observe(test.service, callable, context);
-      await drain();
-      test.pending.push(gate.promise);
-      const slow = await sendAct(
-        test.service,
-        callable,
-        { actions: [{ type: "key", keys: "Escape" }], snapshot: "obs-1" },
-        context,
-      );
-      recorder.enter(context.runId, context.bindingGeneration, {
-        place: {
-          kind: "browser",
-          sessionId: BrowserSessionIdSchema.parse("bsn_11111111-1111-4111-8111-111111111111"),
-          surfaceId: BrowserSurfaceIdSchema.parse("A"),
-        },
-        title: "Page",
-        site: null,
-      });
-      gate.resolve();
-      await withTimeout(slow.settle(), 1000, {
-        timeoutError: () => new Error("The admitted native call did not settle"),
-      });
-      await drain();
-      expect(write.mock.calls.map(([input]) => input.data.place.kind)).toEqual(["app", "browser"]);
-    } finally {
-      gate.resolve();
-      await test.service.shutdown();
-    }
-  });
-});
 
 describe("ComputerUseService", () => {
   let test: Harness;
@@ -716,6 +696,34 @@ describe("ComputerUseService", () => {
     await expect(second).rejects.toThrow("The database is unavailable");
   });
 
+  it("finishes recording a Stop pressed on the Mac before shutdown returns", async () => {
+    let finish!: () => void;
+    const written = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const recording = vi.fn(() => written);
+    const test = harness({
+      stops: { clear: async () => undefined, initial: [], record: recording },
+    });
+    await observe(test.service, callable, context);
+    const sessionId = test.service.sessionsForRunner(runnerId)[0]?.sessionId;
+    if (!sessionId) throw new Error("The session was not opened.");
+    test.service.handleHelperEvent(runnerId, {
+      event: "session.stopped",
+      params: { reason: "user", sessionId },
+    });
+    expect(recording).toHaveBeenCalledOnce();
+
+    const events: string[] = [];
+    const shutdown = test.service.shutdown().then(() => events.push("shutdown"));
+    // Every task the shutdown could finish on its own runs in this turn.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    events.push("recorded");
+    finish();
+    await shutdown;
+    expect(events).toEqual(["recorded", "shutdown"]);
+  });
+
   it("publishes a change when a session opens and throttles action counts", async () => {
     await observe(test.service, callable, context);
     expect(test.onSessionsChanged).toHaveBeenCalledTimes(1);
@@ -739,8 +747,8 @@ describe("ComputerUseService", () => {
     );
 
     await expect(test.service.eligibleMachines(ownerUserId, "macos-app")).resolves.toEqual([
-      { name: "Alex's Mac", ready: true, state: "ready", runnerId },
-      { name: "Studio Mac", ready: false, state: "unavailable", runnerId: other },
+      { name: "Alex's Mac", ready: true, state: "ready", runnerId, deviceId: runnerId },
+      { name: "Studio Mac", ready: false, state: "unavailable", runnerId: other, deviceId: other },
     ]);
   });
 });
@@ -767,6 +775,20 @@ describe("ComputerUseService helper wire fixtures", () => {
     expect(observed.snapshot).toBe("9f2c41ab7e0d5638");
     expect(observed.app.bundleId).toBe("com.apple.Notes");
     expect(observed.elementCount).toBe(5);
+  });
+
+  it("refuses a valid bind reply for a different opaque identity", async () => {
+    const fixture = harness();
+    fixture.outcomes.push({ kind: "ok", value: wire.results["session.bind"] as never });
+    const lease = await fixture.service.prepare(callable, context);
+    try {
+      const sent = await fixture.service.sendWindowOperation(lease, callable, "bind", {
+        windowId: "win_00000000-0000-4000-8000-000000000099",
+      });
+      await expect(sent.settle()).rejects.toThrow("different window");
+    } finally {
+      fixture.service.release(lease);
+    }
   });
 
   it("reads session.act as the same envelope", async () => {
@@ -1155,7 +1177,7 @@ describe("ComputerUseService thread and run scoping", () => {
 });
 
 describe("per-app sessions", () => {
-  it("allows two Runs on different apps and names only the holder of the busy app", async () => {
+  it("allows two Runs on different apps without disclosing the busy app holder", async () => {
     const test = harness({
       threadTitle: async (id) => (id === context.threadId ? "Tidy the notes" : "Plan the week"),
     });
@@ -1167,11 +1189,8 @@ describe("per-app sessions", () => {
     expect(test.sent[1]?.threadTitle).toBe("Tidy the notes");
     expect(test.service.holders(runnerId)).toEqual(
       new Map([
-        [computerAppIdentityKey(calendar), { runId: second.runId, threadTitle: "Plan the week" }],
-        [
-          computerAppIdentityKey(callable.app),
-          { runId: context.runId, threadTitle: "Tidy the notes" },
-        ],
+        [computerAppIdentityKey(calendar), { runId: second.runId }],
+        [computerAppIdentityKey(callable.app), { runId: context.runId }],
       ]),
     );
     test.outcomes.push({
@@ -1180,9 +1199,11 @@ describe("per-app sessions", () => {
       message: "This app is already being used by another task.",
       retryable: false,
     });
-    await expect(observe(test.service, callable, third)).rejects.toThrow(
-      "This app is already being used by another task. (Thread: Tidy the notes)",
-    );
+    await expect(observe(test.service, callable, third)).rejects.toMatchObject({
+      code: "busy",
+      message:
+        "This app is already being used by another task. Continue with other work, or tell the person it is busy; do not retry in a loop.",
+    });
     expect(test.service.sessionsForRunner(runnerId)).toHaveLength(2);
     // Busy on a new app leaves the existing Calendar session alive.
     test.outcomes.push({
@@ -1438,7 +1459,7 @@ describe("ComputerUseService call lifecycle", () => {
     ).rejects.toMatchObject({
       code: "failed",
       message: expect.stringMatching(
-        /^Those actions are not usable — actions\[1\]\.[a-z]+: .+\. Correct those fields as the computer tool describes, observe this window again, and act on its snapshot\.$/u,
+        /^Those actions are not usable — actions\[1\]\.[a-z]+: .+\. Correct those fields as computer_use describes, observe this window again, and act on its snapshot\.$/u,
       ),
     });
     expect(test.sent).toEqual([]);
@@ -1480,7 +1501,7 @@ describe("display sessions on an Android phone", () => {
   async function observePhone(
     service: ComputerUseService,
     on: ComputerUseContext,
-  ): Promise<AndroidPhoneObservation> {
+  ): Promise<PhoneDisplayObservation> {
     const lease = await service.prepare(phone, on);
     let sent;
     try {
@@ -1509,29 +1530,13 @@ describe("display sessions on an Android phone", () => {
     });
   }
 
-  it("opens the phone's tab once, when the phone first answers a session", async () => {
-    const onPhoneHeld = vi.fn();
-    const test = harness({ onPhoneHeld });
+  it("reports the phone holder without changing tab membership", async () => {
+    const test = harness();
     await observePhone(test.service, context);
     await observePhone(test.service, context);
-    expect(onPhoneHeld).toHaveBeenCalledExactlyOnceWith(phoneId);
-  });
-
-  it("records a successful phone observation as entering its main display", async () => {
-    const complete = vi.fn();
-    const beginPlaceEntry = vi.fn(() => complete);
-    const test = harness({ beginPlaceEntry });
-    try {
-      await observePhone(test.service, context);
-      expect(beginPlaceEntry).toHaveBeenCalledWith(context.runId, context.bindingGeneration);
-      expect(complete).toHaveBeenCalledWith({
-        place: { kind: "phone", machineId: phoneId, display: "main" },
-        title: "Pixel 8",
-        site: null,
-      });
-    } finally {
-      await test.service.shutdown();
-    }
+    expect(test.service.nativeTargetUsers(context.requestedBy, phoneId)).toEqual([
+      { taskId: context.threadId },
+    ]);
   });
 
   it("lets the phone go when the first Run's frame never reached it", async () => {
@@ -1931,9 +1936,10 @@ describe("display sessions on an Android phone", () => {
       message: "Only this computer's owner can do that.",
     });
     test.now += 120_000;
-    await expect(test.service.authorizeDisplay(session.sessionId, ownerUserId)).resolves.toBe(
-      phoneId,
-    );
+    await expect(test.service.authorizeDisplay(session.sessionId, ownerUserId)).resolves.toEqual({
+      deviceId: phoneId,
+      route: undefined,
+    });
     test.now += 61_000;
     test.service.sweepIdle();
     expect(test.service.isDisplaySessionLive(session.sessionId, phoneId)).toBe(false);
@@ -1999,10 +2005,17 @@ describe("display sessions on an Android phone", () => {
     );
 
     await expect(test.service.eligibleMachines(ownerUserId, "android-phone")).resolves.toEqual([
-      { name: "Pixel 8", ready: false, runnerId: phoneId, state: "unavailable" },
+      {
+        name: "Pixel 8",
+        ready: false,
+        runnerId: phoneId,
+        deviceId: phoneId,
+        definitionId: "android-phone",
+        state: "unavailable",
+      },
     ]);
     await expect(test.service.eligibleMachines(ownerUserId, "macos-app")).resolves.toEqual([
-      { name: "Alex's Mac", ready: true, runnerId, state: "ready" },
+      { name: "Alex's Mac", ready: true, runnerId, deviceId: runnerId, state: "ready" },
     ]);
   });
 });
@@ -2141,4 +2154,280 @@ describe("saved login batch admission", () => {
       });
     }
   }
+});
+
+it("keeps two screen Device holds and Stops independent from each other and Mac apps", async () => {
+  const first = DeviceIdSchema.parse(createId("device"));
+  const second = DeviceIdSchema.parse(createId("device"));
+  const stops = durableStops();
+  const host = harness({ stops: stops.ledger() });
+  const phoneTarget = {
+    kind: "display" as const,
+    definitionId: "iphone-screen" as const,
+    access: "read-write" as const,
+  };
+  const use = async (deviceId: typeof first, on = context) => {
+    const lease = await host.service.prepare({ deviceId, deviceName: "iPhone", ownerUserId }, on);
+    try {
+      const sent = await host.service.sendObserve(lease, phoneTarget, false);
+      await sent.settle();
+      return sent.sessionId;
+    } finally {
+      host.service.release(lease);
+    }
+  };
+  try {
+    const firstSession = await use(first);
+    await use(second);
+    await observe(host.service, callable, context);
+    host.service.handleHelperEvent(runnerId, {
+      event: "session.stopped",
+      params: { sessionId: firstSession, runId: context.runId, reason: "user" },
+    });
+    expect(stops.rows.size).toBe(0);
+    expect(host.service.sessionsForRunner(first)).toHaveLength(1);
+    const other = { ...context, runId: createId("run"), threadId: createId("thread") };
+    await expect(use(first, other)).rejects.toMatchObject({ code: "busy" });
+    await host.service.stop(firstSession, ownerUserId);
+    await expect(use(first)).rejects.toThrow(/stopped/);
+    await use(second);
+    expect(host.service.sessionsForRunner(runnerId)).toHaveLength(1);
+    expect([...stops.rows.values()]).toEqual([{ runId: context.runId, runnerId: first }]);
+    host.service.forgetDevice(first);
+    await expect(use(first)).rejects.toThrow(/stopped/);
+    const restarted = harness({ stops: stops.ledger() });
+    try {
+      await expect(
+        restarted.service.prepare({ deviceId: first, deviceName: "iPhone", ownerUserId }, context),
+      ).rejects.toThrow(/stopped/);
+    } finally {
+      await restarted.service.shutdown();
+    }
+  } finally {
+    await host.service.shutdown();
+  }
+});
+
+it("validates a no-session Stop's captured driver and retires pending acknowledgements on Device removal", async () => {
+  const deviceId = DeviceIdSchema.parse(createId("device"));
+  const { RunnerAuxiliaryFrameFenceSchema } = await import("@opensteer/protocol");
+  const route = {
+    deviceId,
+    runnerId,
+    role: "screen" as const,
+    generation: 4,
+    auxiliaryFence: RunnerAuxiliaryFrameFenceSchema.parse({
+      runnerId,
+      module: "integrations",
+      bootId: `rbt_${globalThis.crypto.randomUUID()}`,
+      auxiliaryStreamId: `rax_${globalThis.crypto.randomUUID()}`,
+      connectionGeneration: 1,
+      connectionId: `rcn_${globalThis.crypto.randomUUID()}`,
+      connectionLeaseId: `rls_${globalThis.crypto.randomUUID()}`,
+    }),
+  };
+  let finish!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const record = vi.fn(async () => waiting);
+  const host = harness({
+    hub: {
+      routeCurrent: (candidate) => candidate.generation === 4 && candidate.deviceId === deviceId,
+    },
+    stops: { initial: [], clear: async () => undefined, record },
+  });
+  const event = {
+    event: "session.stopped" as const,
+    params: {
+      sessionId: mintComputerUseSessionId(),
+      runId: context.runId,
+      reason: "user" as const,
+    },
+  };
+  try {
+    host.service.handleHelperEvent(deviceId, event, { ...route, generation: 3 });
+    expect(record).not.toHaveBeenCalled();
+    host.service.handleHelperEvent(deviceId, event, route);
+    expect(record).toHaveBeenCalledWith(context.runId, deviceId);
+    host.service.forgetDevice(deviceId, true);
+    finish();
+    await withTimeout(waiting, 1_000, {
+      timeoutError: () => new Error("The held Stop write never settled"),
+    });
+    await Promise.resolve();
+    expect(host.acknowledged).toEqual([]);
+  } finally {
+    finish();
+    await host.service.shutdown();
+  }
+});
+
+it("lists only the matching display definition and excludes the iPhone data app", async () => {
+  const host = harness();
+  const operation = { operation: "observe", state: "ready" as const, detail: null, remedy: null };
+  const screen = DeviceIdSchema.parse(createId("device"));
+  host.machines.push(
+    { name: "iPhone app", platform: "ios", runnerId: createId("runner"), status: null },
+    {
+      name: "Screen",
+      platform: "ios",
+      runnerId: screen,
+      definitionId: "iphone-screen",
+      status: { definitionId: "iphone-screen", operations: [operation] },
+    },
+    {
+      name: "Android",
+      platform: "android",
+      runnerId: createId("runner"),
+      status: { definitionId: "android-phone", operations: [operation] },
+    },
+  );
+  try {
+    expect(
+      (await host.service.eligibleMachines(ownerUserId, "iphone-screen")).map(({ name }) => name),
+    ).toEqual(["Screen"]);
+    expect(
+      (await host.service.eligibleMachines(ownerUserId, "android-phone")).map(({ name }) => name),
+    ).toEqual(["Android"]);
+  } finally {
+    await host.service.shutdown();
+  }
+});
+
+describe("iPhone agent readiness", () => {
+  function iphone() {
+    const deviceId = DeviceIdSchema.parse(createId("device"));
+    const route = {
+      deviceId,
+      runnerId,
+      role: "screen" as const,
+      generation: 1,
+      auxiliaryFence: RunnerAuxiliaryFrameFenceSchema.parse({
+        runnerId,
+        module: "integrations",
+        bootId: `rbt_${crypto.randomUUID()}`,
+        auxiliaryStreamId: `rax_${crypto.randomUUID()}`,
+        connectionGeneration: 1,
+        connectionId: `rcn_${crypto.randomUUID()}`,
+        connectionLeaseId: `rls_${crypto.randomUUID()}`,
+      }),
+    };
+    const status: RunnerIntegrationsDeviceStatus = {
+      ...route.auxiliaryFence,
+      module: "integrations",
+      type: "runner.integrations.device-status",
+      deviceId,
+      driverGeneration: 1,
+      definitionId: "iphone-screen",
+      availability: { state: "ready", reason: null },
+      operations: ["observe", "act", "close", "installed_apps"].map((operation) => ({
+        operation,
+        state: "ready",
+        detail: null,
+        remedy: null,
+      })),
+      actions: ["tap", "navigate", "launch", "wait"],
+      navigationButtons: [{ id: "home", label: "Home" }],
+      wake: false,
+      lock: false,
+      displayVersion: null,
+      ownerViewVersion: null,
+      inputVersion: null,
+      powerVersion: null,
+    };
+    let current = status;
+    const host = harness({
+      hub: {
+        captureRoute: async () => route,
+        routeCurrent: () => true,
+        deviceStatus: () => current,
+      },
+    });
+    const callable = { deviceId, deviceName: "iPhone", ownerUserId };
+    const target = {
+      kind: "display",
+      definitionId: "iphone-screen",
+      access: "read-write",
+    } as const;
+    const dispatch = async (
+      operation: (lease: ComputerUseLease) => Promise<ComputerUseDispatch>,
+    ) => {
+      const lease = await host.service.prepare(callable, context);
+      try {
+        return await (await operation(lease)).settle();
+      } finally {
+        host.service.release(lease);
+      }
+    };
+    return {
+      host,
+      status,
+      setStatus: (next: RunnerIntegrationsDeviceStatus) => {
+        current = next;
+      },
+      act: (actions: unknown) =>
+        dispatch((lease) =>
+          host.service.sendAct(lease, target, { observationId: "phone-obs-1", actions }, false),
+        ),
+      observe: () => dispatch((lease) => host.service.sendObserve(lease, target, false)),
+    };
+  }
+
+  it("taps, navigates and launches with production capabilities and no owner input stream", async () => {
+    const f = iphone();
+    try {
+      const result = await f.act([
+        { type: "tap", target: { x: 10, y: 20 } },
+        { type: "navigate", to: "home" },
+        { type: "launch", appId: "example.app" },
+      ]);
+      expect(result.error).toBeNull();
+      expect(f.host.sent[0]?.params).toMatchObject({
+        actions: [{ type: "tap" }, { type: "navigate" }, { type: "launch" }],
+      });
+      f.setStatus({
+        ...f.status,
+        inputVersion: 1,
+        operations: f.status.operations.map((operation) => ({
+          ...operation,
+          state: operation.operation === "act" ? "unavailable" : "ready",
+        })),
+      });
+      await expect(f.act([{ type: "navigate", to: "home" }])).rejects.toThrow(
+        "input is unavailable",
+      );
+      f.setStatus({ ...f.status, actions: ["wait"] });
+      await expect(f.act([{ type: "tap", target: { x: 10, y: 20 } }])).rejects.toThrow(
+        "does not advertise tap",
+      );
+      expect(f.host.sent).toHaveLength(1);
+    } finally {
+      await f.host.service.shutdown();
+    }
+  });
+
+  it.each(["locked", "protected"] as const)(
+    "observes again after %s without replacing the driver",
+    async (kind) => {
+      const f = iphone();
+      f.setStatus({
+        ...f.status,
+        availability: { state: "unavailable", reason: { kind } },
+        operations: f.status.operations.map((operation) => ({
+          ...operation,
+          state: "unavailable",
+        })),
+      });
+      try {
+        await expect(f.act([{ type: "navigate", to: "home" }])).rejects.toThrow("not ready");
+        expect((await f.observe()).error).toBeNull();
+        f.setStatus(f.status);
+        expect((await f.act([{ type: "navigate", to: "home" }])).error).toBeNull();
+        expect(f.host.sent.map(({ operation }) => operation)).toEqual(["observe", "act"]);
+      } finally {
+        await f.host.service.shutdown();
+      }
+    },
+  );
 });

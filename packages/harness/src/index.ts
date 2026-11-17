@@ -5,6 +5,7 @@ export * from "./deferred.js";
 export * from "./directory-links.js";
 export * from "./denial-note.js";
 export * from "./errors.js";
+export * from "./guidance-delivery.js";
 export * from "./event-stream.js";
 export * from "./input-projection.js";
 export * from "./initial-context.js";
@@ -32,3 +33,6 @@ export * from "./types.js";
 export { programEnvironment } from "./program-environment.js";
 
 export { resolveLightModel } from "./light-model.js";
+export * from "./generated-image.js";
+export * from "./output-images.js";
+export * from "./image-generation-events.js";

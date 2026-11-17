@@ -1,3 +1,8 @@
+import {
+  TeamPartnerInviteSchema,
+  TeamPartnerLinkSchema,
+  TeamPartnerOfferTextSchema,
+} from "./team-partner.js";
 import { z } from "zod";
 import { teamReadSchemas } from "./team-api.js";
 import { ProtocolErrorSchema } from "./common.js";
@@ -17,6 +22,7 @@ import {
   TeamTopicCanSchema,
 } from "./team-access.js";
 import {
+  TeamRemotePeopleSchema,
   TeamAgentRequestSchema,
   TeamAgentRecipientSchema,
   TeamBootstrapSchema,
@@ -39,7 +45,9 @@ import {
 import {
   KnowledgeNoteIdSchema,
   SequenceSchema,
-  TeamAudienceSchema,
+  TeamAskPresentationViewSchema,
+  TeamAskOutcomeSchema,
+  TeamAgentReturnPayloadViewSchema,
   TeamBlobIdSchema,
   TeamChannelIdSchema,
   TeamGroupIdSchema,
@@ -122,6 +130,23 @@ export const TeamLinkViewViewSchema = z.object({ ...TeamLinkViewSchema.shape });
 export const PersonalTeamLinkViewSchema = z.object({ ...PersonalTeamLinkSchema.shape });
 
 export const TeamCommandResultViewSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("team.share.agents.set") }),
+  z.object({ type: z.literal("team.share.participant.restore") }),
+  z.object({ type: z.literal("team.share.participant.remove") }),
+  z.object({ type: z.literal("team.share.offer"), shareId: z.uuid() }),
+  z.object({ type: z.literal("team.share.approve") }),
+  z.object({ type: z.literal("team.share.accept"), channel: TeamChannelViewSchema }),
+  z.object({ type: z.literal("team.share.end") }),
+  z.object({
+    type: z.literal("team.partner.invite.create"),
+    offer: TeamPartnerOfferTextSchema,
+    invite: TeamPartnerInviteSchema.optional(),
+  }),
+  z.object({ type: z.literal("team.partner.invite.revoke") }),
+  z.object({ type: z.literal("team.partner.invite.redeem"), link: TeamPartnerLinkSchema }),
+  z.object({ type: z.literal("team.partner.approve") }),
+  z.object({ type: z.literal("team.partner.revoke") }),
+  z.object({ type: z.literal("team.sharing.policy.set") }),
   z.object({ type: z.literal("team.agent.recipient.set") }),
   z.object({ type: z.literal("team.channel.create"), channel: TeamChannelViewSchema }),
   z.object({ type: z.literal("team.channel.update") }),
@@ -133,6 +158,7 @@ export const TeamCommandResultViewSchema = z.discriminatedUnion("type", [
     type: z.literal("team.message.send"),
     message: TeamMessageViewSchema,
     wake: z.enum(["queued", "no-link", "not-requested", "rate-limited", "people-only"]),
+    askOutcomes: z.array(z.object(TeamAskOutcomeSchema.shape)).max(21).default([]),
   }),
   z.object({ type: z.literal("team.message.edit") }),
   z.object({ type: z.literal("team.channel.read") }),
@@ -141,6 +167,7 @@ export const TeamCommandResultViewSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("team.member.role.set") }),
   z.object({ type: z.literal("team.member.remove") }),
   z.object({ type: z.literal("team.owner.transfer") }),
+  z.object({ type: z.literal("team.member.profile.apply"), applied: z.boolean() }),
   z.object({ type: z.literal("team.group.create") }),
   z.object({ type: z.literal("team.group.rename") }),
   z.object({ type: z.literal("team.group.delete") }),
@@ -171,6 +198,7 @@ export const TeamCommandResultViewSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("team.agent.request.cancel") }),
   z.object({ type: z.literal("teams.link.join"), link: PersonalTeamLinkViewSchema }),
   z.object({ type: z.literal("teams.link.leave") }),
+  z.object({ type: z.literal("teams.ask.decide") }),
   z.object({ type: z.literal("team.channel.archive") }),
   z.object({ type: z.literal("team.channel.restore") }),
   z.object({ type: z.literal("team.channel.join") }),
@@ -233,7 +261,8 @@ export const TeamMessagePageViewSchema = z.object({
 
 export const TeamTaskOriginViewSchema = z.object({ ...TeamTaskOriginSchema.shape });
 
-export const TeamAudienceViewSchema = z.object({ ...TeamAudienceSchema.shape });
+export { TeamAudienceViewSchema } from "@opensteer/core";
+import { TeamAudienceViewSchema } from "@opensteer/core";
 
 export const TeamSourceViewSchema = TeamTaskOriginViewSchema.extend({
   threadRootId: TeamMessageIdSchema.nullable(),
@@ -308,6 +337,12 @@ const TeamKnowledgeTopicViewViewSchema = z.object({
 });
 
 export const teamReadViews = {
+  "team.share.participants.get": teamReadSchemas["team.share.participants.get"].output,
+  "team.shares.list": teamReadSchemas["team.shares.list"].output,
+  "team.partners.list": teamReadSchemas["team.partners.list"].output,
+  "team.partner.invites.list": teamReadSchemas["team.partner.invites.list"].output,
+  "team.sharing.policy.get": teamReadSchemas["team.sharing.policy.get"].output,
+  "team.partner.invite.preview": teamReadSchemas["team.partner.invite.preview"].output,
   "team.agent.recipient.get": teamReadSchemas["team.agent.recipient.get"].output.strip(),
   "team.bootstrap.get": TeamBootstrapViewSchema,
   "team.sidebar.get": TeamSidebarViewSchema,
@@ -323,7 +358,7 @@ export const teamReadViews = {
   }),
   "team.messages.page": TeamMessagePageViewSchema,
   "team.thread.page": TeamMessagePageViewSchema,
-  "team.message.get": TeamMessageViewSchema,
+  "team.message.get": TeamMessageViewSchema.extend({ people: TeamRemotePeopleSchema.optional() }),
   "team.messages.check": z.object({ messages: z.array(TeamMessageViewSchema).max(50) }),
   "team.search": TeamSearchPageViewSchema,
   "team.members.list": z.object({
@@ -363,10 +398,12 @@ export const teamReadViews = {
     teamReadSchemas["teams.replyTask.get"].output.options[1].strip(),
   ]),
   "team.mentions.page": z.object({
+    people: TeamRemotePeopleSchema.optional(),
     messages: z.array(TeamMessageViewSchema).max(50),
     hasMore: z.boolean(),
   }),
   "team.pins.page": z.object({
+    people: TeamRemotePeopleSchema.optional(),
     messages: z.array(TeamMessageViewSchema).max(50),
     hasMore: z.boolean(),
   }),
@@ -393,6 +430,7 @@ const TeamSubscriptionScopeViewSchema = z.discriminatedUnion("kind", [
 
 const [snapshotCut, resumedCut] = TeamConsistentCutSchema.options;
 const cutView = {
+  people: TeamRemotePeopleSchema.optional(),
   agentRecipients: z.array(TeamAgentRecipientSchema.strip()).max(200).default([]),
   linkPresence: z.array(TeamLinkPresenceSchema.strip()).max(200),
   scope: TeamSubscriptionScopeViewSchema,
@@ -404,6 +442,7 @@ export const TeamConsistentCutViewSchema = z.discriminatedUnion("type", [
   z.object({
     ...snapshotCut.shape,
     ...cutView,
+    people: TeamRemotePeopleSchema.optional(),
     messages: z.array(TeamMessageViewSchema).max(50),
   }),
   z.object({
@@ -417,8 +456,17 @@ export const TeamConsistentCutViewSchema = z.discriminatedUnion("type", [
  * Frame views are what a peer reads: unknown fields are dropped, and
  * readTeamFrame skips unknown frame types. Writers keep the strict schemas.
  */
-const [cut, sidebar, sidebarDirty, linkPresence, typing, presence, accessChanged, recipient] =
-  TeamServerFrameSchema.options;
+const [
+  cut,
+  sidebar,
+  sidebarDirty,
+  linkPresence,
+  typing,
+  presence,
+  accessChanged,
+  recipient,
+  memberUpdated,
+] = TeamServerFrameSchema.options;
 export const TeamServerFrameViewSchema = z.discriminatedUnion("type", [
   z.object({ ...cut.shape, cut: TeamConsistentCutViewSchema }),
   z.object({ ...sidebar.shape, sidebar: TeamSidebarViewSchema }),
@@ -428,6 +476,7 @@ export const TeamServerFrameViewSchema = z.discriminatedUnion("type", [
   z.object({ ...presence.shape, people: z.array(presence.shape.people.element.strip()).max(50) }),
   accessChanged.strip(),
   z.object({ ...recipient.shape, recipient: recipient.shape.recipient.strip() }),
+  z.object({ ...memberUpdated.shape, member: TeamMemberViewSchema }),
 ]);
 
 const [subscribe, clientTyping, clientPresence] = TeamClientFrameSchema.options;
@@ -440,18 +489,38 @@ export const TeamClientFrameViewSchema = z.discriminatedUnion("type", [
 const TeamRequestContextViewSchema = z.object({
   ...TeamRequestContextSchema.shape,
   request: TeamAgentRequestViewSchema,
+  presentation: TeamAskPresentationViewSchema.nullable().default(null),
   source: TeamSourceViewSchema,
   audience: TeamAudienceViewSchema,
 });
-const [accepted, context, receipt, read, search, topics, knowledgeRead, write, file, ok, channels] =
-  TeamLinkResultSchema.options;
+const [
+  accepted,
+  context,
+  receipt,
+  read,
+  search,
+  topics,
+  knowledgeRead,
+  write,
+  file,
+  ok,
+  channels,
+  reconciled,
+] = TeamLinkResultSchema.options;
 const TeamLinkResultViewSchema = z.discriminatedUnion("kind", [
   z.object({ ...accepted.shape, request: TeamAgentRequestViewSchema }),
   z.object({ ...context.shape, context: TeamRequestContextViewSchema }),
-  receipt.strip(),
+  z.object({
+    ...receipt.shape,
+    askOutcomes: z.array(z.object(TeamAskOutcomeSchema.shape)).max(21).optional(),
+  }),
   z.object({
     ...read.shape,
-    result: z.object({ page: TeamMessagePageViewSchema, source: TeamSourceViewSchema }),
+    result: z.object({
+      ...read.shape.result.shape,
+      page: TeamMessagePageViewSchema,
+      source: TeamSourceViewSchema,
+    }),
   }),
   z.object({ ...search.shape, result: TeamSearchPageViewSchema }),
   z.object({
@@ -484,6 +553,17 @@ const TeamLinkResultViewSchema = z.discriminatedUnion("kind", [
       channels: z.array(TeamChannelSummaryViewSchema).max(50),
     }),
   }),
+  z.object({
+    ...reconciled.shape,
+    requests: z
+      .array(
+        z.object({
+          requestId: reconciled.shape.requests.element.shape.requestId,
+          request: TeamAgentRequestViewSchema.nullable(),
+        }),
+      )
+      .max(200),
+  }),
 ]);
 const [ready, requests, cancel, result, error, revoked, pong] = TeamLinkServerFrameSchema.options;
 export const TeamLinkServerFrameViewSchema = z.discriminatedUnion("type", [
@@ -494,6 +574,8 @@ export const TeamLinkServerFrameViewSchema = z.discriminatedUnion("type", [
       .array(
         z.object({
           request: TeamAgentRequestViewSchema,
+          presentation: TeamAskPresentationViewSchema.nullable().default(null),
+          returnPayload: TeamAgentReturnPayloadViewSchema.nullable().default(null),
           source: TeamSourceViewSchema,
           bodyMarkdown: TeamMarkdownSchema,
           attachments: z.array(TeamFileViewSchema).max(10),
@@ -523,6 +605,7 @@ const [
   channelsCall,
   revoke,
   ping,
+  reconcile,
 ] = TeamLinkClientFrameSchema.options;
 export const TeamLinkClientFrameViewSchema = z.discriminatedUnion("type", [
   z.object({
@@ -543,6 +626,7 @@ export const TeamLinkClientFrameViewSchema = z.discriminatedUnion("type", [
   channelsCall.strip(),
   revoke.strip(),
   ping.strip(),
+  reconcile.strip(),
 ]);
 
 /** A frame from a peer of any version in the window, or null for a type this side does not know. */

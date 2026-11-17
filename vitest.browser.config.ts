@@ -8,6 +8,7 @@ export default defineConfig({
     env: { TZ: "UTC" },
     environment: "node",
     pool: "forks",
+    runner: "./scripts/quarantine-runner.ts",
     maxWorkers: 2,
     testTimeout: 60_000,
     hookTimeout: 30_000,

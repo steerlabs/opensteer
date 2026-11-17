@@ -16,6 +16,7 @@ export const databaseLockOrder = [
   "team_access_state",
   "team_channels",
   "team_members",
+  "team_principals",
   "team_groups",
   "team_invites",
   "team_invite_uses",
@@ -27,6 +28,14 @@ export const databaseLockOrder = [
   "team_topic_grants",
   "team_notes",
   "team_note_versions",
+  "team_sharing_settings",
+  "team_partner_invites",
+  "team_partner_links",
+  // A link's forwarded calls are admitted under its row.
+  "team_partner_calls",
+  "team_shares",
+  "team_share_participants",
+  "team_share_relays",
   "team_links",
   "team_messages",
   "team_agent_recipients",
@@ -37,6 +46,7 @@ export const databaseLockOrder = [
   "team_mentions",
   "team_message_pins",
   "team_agent_requests",
+  "team_share_asks",
   "team_audit",
   "team_notices",
   "team_outbox",
@@ -90,10 +100,8 @@ export const databaseLockOrder = [
   "trigger_occurrences",
   "advisory:personal-tab-reopen",
   "browser_sessions",
+  "tab_layouts",
   "personal_tabs",
-  "browser_tab_layouts",
-  "browser_tab_groups",
-  "browser_tab_group_members",
   // Personal reservations serialize browser and installation creation.
   "advisory:browser-sign-in",
   "advisory:browser-site-grants",
@@ -105,6 +113,8 @@ export const databaseLockOrder = [
   // Enrollment and Runner ownership precede integration and execution authority.
   "runner_enrollments",
   "runners",
+  "devices",
+  "device_drivers",
   "computer_use_approval_keys",
   // Installation and sorted Servers establish the parents of Connections and Tools.
   "advisory:installation",
@@ -113,6 +123,7 @@ export const databaseLockOrder = [
   // Environment and profile fences prevent rebinding or catalog adoption across Thread work.
   "execution_environments",
   "agent_home_skill_inventory",
+  "agent_home_settings",
   "harness_instances",
   // Independent lifecycle rows retain their position when no observed edge constrains them.
   "request_continuations",
@@ -167,6 +178,7 @@ export const databaseLockOrder = [
   "attachments",
   "apps",
   "app_versions",
+  "app_servers",
   "channel_deliveries",
   "channel_link_codes",
   // Computer approvals and integration Grants precede Request settlement.
@@ -187,6 +199,7 @@ export const databaseLockOrder = [
   "commands",
   "thread_inputs",
   "messages",
+  "message_revisions",
   "personal_team_requests",
   "integration_request_details",
   // Tool/skill projections follow complete authority and Request settlement.
@@ -200,6 +213,7 @@ export const databaseLockOrder = [
   // Independent credential and access lifecycles have no earlier observed dependencies.
   "credentials",
   "personal_team_links",
+  "personal_team_posts",
   "machine_access_events",
   "machine_access_sessions",
   "advisory:personal-remote-access",

@@ -21,6 +21,8 @@ it("loads owner details only on review and clears them when the signed-in sessio
           launch: {
             type: "stdio",
             command: "/private/owner-program",
+            args: [],
+            cwd: "/private",
             env: { TOKEN: "owner-secret" },
           },
         },
@@ -29,7 +31,7 @@ it("loads owner details only on review and clears them when the signed-in sessio
     },
   }));
   const host = {
-    getSnapshot: () => ({ user: { id: owner } }),
+    getSnapshot: () => ({ machines: [], user: { id: owner } }),
     subscribe: (listener: () => void) => {
       notify = listener;
       return () => {};
@@ -98,7 +100,7 @@ it("asks for a server's secrets, keeps saved ones blank, and sends only what was
   }));
   const dispatch = vi.fn(async () => ({ type: "integration.computer.setup.respond" }));
   const host = {
-    getSnapshot: () => ({ user: { id: "owner" } }),
+    getSnapshot: () => ({ machines: [], user: { id: "owner" } }),
     subscribe: () => () => {},
     rpc: { "integration.computer.setup.review": rpc },
     dispatch,

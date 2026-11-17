@@ -1,0 +1,464 @@
+/* SAP Business Network (Ariba Network) for a Standard-account supplier: SAP Fiori 3 styling at its real sizes.
+   SAP's own "72" typeface isn't shipped here; Arial stands in. */
+.ar {
+  position: relative;
+  height: 100%;
+  background: #edeff0;
+  color: #32363a;
+  font:
+    14px/1.4 "72",
+    Arial,
+    Helvetica,
+    sans-serif;
+  letter-spacing: 0;
+}
+.ar svg {
+  display: block;
+  flex: none;
+}
+.ar-fav {
+  background: none;
+  border-radius: 0;
+}
+.ar-fav svg {
+  width: 16px;
+  height: auto;
+}
+.ar-lnk {
+  color: #0a6ed1;
+}
+.ar-shell {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  height: 44px;
+  padding: 0 16px 0 14px;
+  background: #354a5f;
+  color: #fff;
+  white-space: nowrap;
+}
+.ar-logo {
+  margin-right: 22px;
+}
+.ar-shell b {
+  font-weight: 700;
+}
+.ar-caret {
+  margin: 1px 14px 0 9px;
+  border: solid transparent;
+  border-width: 5px 4.5px 0;
+  border-top-color: #fff;
+}
+.ar-upgrade {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  margin-left: 14px;
+  padding: 0 12px;
+  border-radius: 4px;
+  background: #e9730c;
+  font-weight: 700;
+}
+.ar-shell-r {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  margin-left: auto;
+}
+.ar-shell-r svg {
+  width: 20px;
+  height: 20px;
+}
+.ar-avatar {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #0f828f;
+  font-size: 13px;
+}
+.ar-view {
+  position: absolute;
+  inset: 44px 0 0;
+  overflow: hidden;
+}
+.ar-review,
+.ar-done {
+  display: none;
+}
+.grp[data-ar-review] .ar-review,
+.grp[data-ar-done] .ar-done {
+  display: block;
+}
+.grp[data-ar-review] .ar-entry {
+  display: none;
+}
+.ar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 100px;
+  height: 36px;
+  padding: 0 16px;
+  border: 1px solid #0854a0;
+  border-radius: 4px;
+  background: #fff;
+  color: #0854a0;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+.ar-btn.is-em {
+  border-color: #0a6ed1;
+  background: #0a6ed1;
+  color: #fff;
+  font-weight: 700;
+}
+.grp[data-ar-over-next] [data-h="ar-next"],
+.grp[data-ar-over-submit] [data-h="ar-submit"] {
+  border-color: #085caf;
+  background: #085caf;
+}
+.grp[data-ar-over-save] [data-h="ar-save"] {
+  background: #ebf5fe;
+}
+.ar-phead {
+  display: flex;
+  align-items: center;
+  height: 56px;
+  padding: 0 16px;
+}
+.ar-ptitle {
+  font-size: 20px;
+}
+.ar-pbtns {
+  display: flex;
+  gap: 14px;
+  margin-left: auto;
+}
+.ar-panel {
+  margin: 0 16px;
+  padding: 16px 16px 24px;
+  background: #fff;
+}
+
+/* Entry step */
+.ar-sect {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 38px;
+  border-bottom: 1px solid #d9d9d9;
+  font-size: 16px;
+}
+.ar-tri {
+  border: solid transparent;
+  border-width: 5px 4px 0;
+  border-top-color: #32363a;
+}
+.ar-sub {
+  margin: 14px 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.ar-form {
+  display: flex;
+  justify-content: space-between;
+}
+.ar-r {
+  display: flex;
+  align-items: center;
+  min-height: 19px;
+  font-size: 13px;
+  line-height: 19px;
+  white-space: nowrap;
+}
+.ar-r--in {
+  height: 34px;
+}
+.ar-r--top {
+  align-items: flex-start;
+  margin-top: 8px;
+}
+.ar-k {
+  width: 230px;
+  padding-right: 7px;
+  color: #6a6d70;
+  text-align: right;
+  box-sizing: border-box;
+}
+.ar-k em {
+  color: #bb0000;
+  font-style: normal;
+}
+.ar-k.is-b,
+.ar-v.is-b {
+  color: #32363a;
+  font-weight: 700;
+}
+.ar-in {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 220px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid #89919a;
+  border-radius: 2px;
+  background: #fff;
+  box-sizing: border-box;
+}
+.ar-in--wide {
+  width: 340px;
+}
+.ar-in--date svg {
+  width: 15px;
+  height: 15px;
+  color: #0854a0;
+}
+.grp[data-ar-at-no] [data-h="ar-no-field"],
+.grp[data-ar-at-desc] [data-h="ar-desc-field"] {
+  border-color: #0854a0;
+  box-shadow: inset 0 0 0 1px #0854a0;
+}
+.ar-sums .ar-k {
+  width: 150px;
+}
+.ar-sums .ar-v {
+  width: 120px;
+  text-align: right;
+}
+.ar-foot-bar {
+  position: absolute;
+  inset: auto 0 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 14px;
+  height: 52px;
+  padding: 8px 16px;
+  background: #f7f7f7;
+  box-shadow: 0 -1px 0 #d9d9d9;
+  box-sizing: border-box;
+}
+
+/* Review step */
+.ar-confirm {
+  width: 1100px;
+  max-width: 100%;
+  margin: 0;
+  font-weight: 600;
+  line-height: 20px;
+}
+.ar-doc {
+  height: 32px;
+  margin-top: 12px;
+  border-bottom: 1px solid #d9d9d9;
+  font-size: 18px;
+  line-height: 24px;
+}
+.ar-sum {
+  display: flex;
+  gap: 8px;
+  height: 112px;
+  margin-top: 14px;
+}
+.ar-kv {
+  width: 470px;
+}
+.ar-kv--totals .ar-k {
+  width: 252px;
+}
+.ar-kv--totals .ar-v {
+  width: 112px;
+  text-align: right;
+}
+.ar-addrs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 8px;
+}
+.ar-addr {
+  width: 373px;
+  height: 150px;
+  padding: 10px 10px 0;
+  background: #f2f2f2;
+  font-size: 13px;
+  line-height: 18px;
+  box-sizing: border-box;
+}
+.ar-addr h6 {
+  height: 25px;
+  margin: 0;
+  padding-top: 1px;
+  border-bottom: 1px solid #d9d9d9;
+  font-size: 13px;
+  box-sizing: border-box;
+}
+.ar-nm {
+  margin: 9px 0;
+}
+.ar-done {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  background: #edeff0;
+}
+.ar-done-box {
+  position: absolute;
+  left: 74px;
+  right: 62px;
+  top: 21px;
+  height: 91px;
+  padding: 2px 3px 0;
+  background: #fff;
+}
+.ar-done-box b {
+  font-size: 16px;
+  line-height: 20px;
+}
+.ar-done-box ul {
+  margin: 32px 0 0;
+  padding-left: 40px;
+  line-height: 18px;
+}
+.ar-copy {
+  position: absolute;
+  left: 41px;
+  top: 200px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #6a6d70;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+/* Workbench */
+.ar-tabs {
+  display: flex;
+  height: 52px;
+  padding-left: 18px;
+  background: #fff;
+  box-shadow:
+    0 2px 2px rgb(0 0 0 / 5%),
+    inset 0 -1px 0 #d9d9d9;
+}
+.ar-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 18px 0 1px;
+  white-space: nowrap;
+}
+.ar-tab svg {
+  width: 8px;
+  height: 5px;
+}
+.ar-tab.is-dim {
+  color: #8c9196;
+}
+.ar-tab.is-on {
+  color: #0a6ed1;
+}
+.ar-tab.is-on::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 18px;
+  bottom: 0;
+  height: 3px;
+  background: #0a6ed1;
+}
+.ar-card {
+  margin: 14px 16px 0;
+  border: 1px solid #e5e5e5;
+  background: #fff;
+}
+.ar-card-h {
+  height: 44px;
+  padding: 0 23px;
+  border-bottom: 1px solid #e5e5e5;
+  font-size: 16px;
+  line-height: 44px;
+}
+.ar-tiles {
+  display: flex;
+  height: 124px;
+  border-bottom: 1px solid #e5e5e5;
+}
+.ar-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  color: #6a6d70;
+}
+.ar-tile + .ar-tile::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 24px;
+  height: 74px;
+  border-left: 1px dashed #bfc3c7;
+}
+.ar-tile b {
+  margin-top: 14px;
+  color: #8c9196;
+  font-size: 44px;
+  font-weight: 300;
+  line-height: 44px;
+}
+.ar-tile span {
+  margin-top: 9px;
+  line-height: 18px;
+}
+.ar-tile small {
+  margin-top: 10px;
+  font-size: 12px;
+}
+.ar-tile.is-on b,
+.ar-tile.is-on span {
+  color: #32363a;
+}
+.ar-tile.is-on::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 -1px 1px;
+  height: 4px;
+  background: #0a6ed1;
+}
+.ar-ih {
+  padding: 15px 23px 18px;
+}
+.ar-ih b {
+  font-size: 18px;
+  font-weight: 400;
+}
+.ar-ih b span {
+  color: #6a6d70;
+}
+.ar-ih div {
+  display: flex;
+  align-items: center;
+  margin-top: 8px;
+}
+.ar-ih i {
+  width: 1px;
+  height: 16px;
+  margin: 0 8px;
+  background: #6a6d70;
+}
+.ar-chip {
+  height: 20px;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid #b5b9bd;
+  border-radius: 3px;
+  background: #fafafa;
+  color: #6a6d70;
+  font-size: 12px;
+  line-height: 18px;
+}

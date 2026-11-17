@@ -1,4 +1,5 @@
 import type { CdpParameters } from "@opensteer/browser-core";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { sendAsAgent } from "./browser-harness.test-support.js";
 import { describe, expect } from "vitest";
 import { z } from "zod";
@@ -24,15 +25,23 @@ describe("Browser Harness element actions / real hosted Chromium", () => {
           parameters,
           sessionId,
         );
-      kit.hooks.before = async (method, _parameters, sessionId) => {
-        if (method !== "Target.detachFromTarget" || probed !== undefined) return;
+      // Probe right after the operation's own group is released; the script's last
+      // detach is not awaited, so it is not a point the release can be observed at.
+      kit.hooks.after = async (method, parameters) => {
+        if (
+          method !== "Runtime.releaseObjectGroup" ||
+          typeof parameters?.objectGroup !== "string" ||
+          !parameters.objectGroup.startsWith("opensteer-op-") ||
+          probed !== undefined
+        )
+          return;
         const used = kit.trace.find(
           (e) =>
             e.method === "Runtime.callFunctionOn" &&
             typeof e.parameters?.objectGroup === "string" &&
             e.parameters.objectGroup.startsWith("opensteer-op-"),
         );
-        handle = { objectId: used?.parameters?.objectId, sessionId: used?.sessionId ?? sessionId };
+        handle = { objectId: used?.parameters?.objectId, sessionId: used?.sessionId };
         // A fresh object on the same live session must still resolve, so a failing
         // probe below means the handle was released, not that the session is gone.
         const fresh = await agent(
@@ -101,7 +110,7 @@ describe("Browser Harness element actions / real hosted Chromium", () => {
       // Each program ends on an action whose group release is not awaited inline:
       // one past its deadline, one interrupted by a dialog the program answers.
       await kit.run(
-        `await fails(()=>page.getByRole('button',{name:'Missing action'}).click({timeout:300}),/element was not found/);`,
+        `await fails(()=>page.getByRole('button',{name:'Missing action'}).click({timeout:300}),/Timeout 300ms:/);`,
       );
       await kit.navigate(kit.site.url("13"));
       await kit.run(
@@ -147,7 +156,7 @@ describe("Browser Harness element actions / real hosted Chromium", () => {
       // Each program ends on an action whose group release is not awaited inline:
       // one past its deadline, one interrupted by a dialog the program answers.
       await kit.run(
-        `await fails(()=>page.getByRole('button',{name:'Missing action'}).click({timeout:300}),/element was not found/);`,
+        `await fails(()=>page.getByRole('button',{name:'Missing action'}).click({timeout:300}),/Timeout 300ms:/);`,
       );
       await kit.navigate(kit.site.url("13"));
       await kit.run(
@@ -302,19 +311,57 @@ await fails(()=>page.locator('.duplicate').click({timeout:3000}),/Strict mode vi
     "02",
   );
 
+  // A lookup still awaiting CDP cannot establish whether the element exists.
   for (const round of [1, 2, 3])
     acceptance(
       `15-deadline-soak-${round}`,
-      "a 300 ms missing-element action, repeated, always has its slow release awaited",
+      "a 300 ms missing-element action, repeated, waits for release acknowledgement before detaching",
       async (kit, report) => {
-        kit.hooks.before = async (method) => {
-          if (method === "Runtime.releaseObjectGroup")
-            await new Promise((resolve) => setTimeout(resolve, 2500));
-        };
-        for (let iteration = 0; iteration < 5; iteration++)
-          await kit.run(
-            `await fails(()=>page.getByRole('button',{name:'Missing action'}).click({timeout:300}),/element was not found/);`,
+        for (let iteration = 0; iteration < 5; iteration++) {
+          const acknowledge = Promise.withResolvers<void>();
+          const waiting = Promise.withResolvers<void>();
+          kit.hooks.before = async (method) => {
+            if (method === "Runtime.releaseObjectGroup")
+              await withTimeout(acknowledge.promise, 5_000, {
+                timeoutError: () =>
+                  new Error("The test never acknowledged the object-group release"),
+              });
+          };
+          const running = kit.run(
+            `await fails(()=>page.getByRole('button',{name:'Missing action'}).click({timeout:300}),/Timeout 300ms:/);`,
+            {
+              onStderrLine: (line) => {
+                if (line.startsWith("[opensteer] Waiting for the page to acknowledge"))
+                  waiting.resolve();
+              },
+            },
           );
+          try {
+            await withTimeout(
+              Promise.race([
+                waiting.promise,
+                running.then(() => {
+                  throw new Error(
+                    "The Harness left without awaiting its held object-group release",
+                  );
+                }),
+              ]),
+              5_000,
+              {
+                timeoutError: () => new Error("The Harness never awaited its object-group release"),
+              },
+            );
+            const release = kit.trace.findLast(
+              (entry) => entry.method === "Runtime.releaseObjectGroup",
+            );
+            expect(release).toBeDefined();
+            expect(release!.finished).toBeUndefined();
+          } finally {
+            acknowledge.resolve();
+            await running;
+          }
+        }
+        expect(kit.trace.filter((entry) => entry.method.startsWith("Input."))).toHaveLength(0);
         report.groups = expectGroupsReleasedBeforeDetach(kit);
       },
       "12",

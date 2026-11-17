@@ -6,11 +6,19 @@ import {
   UserIdSchema,
   MessageIdSchema,
   SequenceSchema,
+  TeamAgentRequestIdSchema,
+  TeamBlobIdSchema,
+  RunIdSchema,
 } from "./ids.js";
 
 export const TeamChannelKindSchema = z.enum(["public", "private", "dm", "group_dm"]);
 export type TeamChannelKind = z.infer<typeof TeamChannelKindSchema>;
+const TeamExternalTeamSchema = z.strictObject({
+  teamId: DeploymentIdSchema,
+  name: z.string().min(1).max(160),
+});
 export const TeamAudienceSchema = z.strictObject({
+  externalTeams: z.array(TeamExternalTeamSchema).max(1).optional(),
   teamName: z.string().min(1).max(160),
   channelName: z.string().min(1).max(160),
   channelKind: TeamChannelKindSchema,
@@ -18,6 +26,10 @@ export const TeamAudienceSchema = z.strictObject({
   peopleOnly: z.boolean(),
 });
 export type TeamAudience = z.infer<typeof TeamAudienceSchema>;
+export const TeamAudienceViewSchema = z.object({
+  ...TeamAudienceSchema.shape,
+  externalTeams: z.array(z.object(TeamExternalTeamSchema.shape)).max(1).optional(),
+});
 export const TeamTaskOriginSchema = z.strictObject({
   teamId: DeploymentIdSchema,
   channelId: TeamChannelIdSchema,
@@ -65,7 +77,88 @@ export function uniqueTeamHandle(displayName: string, occupied: ReadonlySet<stri
 export function teamAgentHandle(handle: TeamHandle): string {
   return `${handle}-agent`;
 }
+export const TeamAgentRequestKindSchema = z.enum(["self", "ask", "return"]);
+export type TeamAgentRequestKind = z.infer<typeof TeamAgentRequestKindSchema>;
+export const TeamAskOutcomeSchema = z.strictObject({
+  ownerUserId: UserIdSchema,
+  handle: TeamHandleSchema.optional(),
+  requestId: TeamAgentRequestIdSchema.optional(),
+  outcome: z.enum(["queued", "people-only", "no-access", "no-link", "rate-limited"]),
+});
+export type TeamAskOutcome = z.infer<typeof TeamAskOutcomeSchema>;
+
+export const TeamAskDecisionSchema = z.enum(["approve", "decline"]);
+export type TeamAskDecision = z.infer<typeof TeamAskDecisionSchema>;
+export const TeamAskerSchema = z.strictObject({
+  homeTeamName: z.string().min(1).max(160).optional(),
+  teamUserId: UserIdSchema,
+  displayName: z.string().trim().min(1).max(160),
+  actor: z.enum(["human", "agent"]),
+});
+export type TeamAsker = z.infer<typeof TeamAskerSchema>;
+export const TeamAttachmentRefSchema = z.strictObject({
+  id: TeamBlobIdSchema,
+  filename: z.string().min(1).max(255),
+  mediaType: z.string().min(1).max(255),
+  sizeBytes: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(100 * 1024 * 1024),
+});
+export type TeamAttachmentRef = z.infer<typeof TeamAttachmentRefSchema>;
+export const TeamRequestTextSchema = z
+  .string()
+  .max(16384)
+  .refine(
+    (value) => new TextEncoder().encode(value).byteLength <= 16384,
+    "Markdown exceeds 16 KiB",
+  );
+export const TeamAskPresentationSchema = z.strictObject({
+  asker: TeamAskerSchema,
+  bodyMarkdown: TeamRequestTextSchema,
+  attachments: z.array(TeamAttachmentRefSchema).max(10),
+  destination: TeamTaskOriginSchema,
+  audience: TeamAudienceSchema,
+});
+export const TeamAskPresentationViewSchema = z.object({
+  ...TeamAskPresentationSchema.shape,
+  asker: z.object(TeamAskerSchema.shape),
+  attachments: z.array(z.object(TeamAttachmentRefSchema.shape)).max(10),
+  destination: z.object(TeamTaskOriginSchema.shape),
+  audience: TeamAudienceViewSchema,
+});
+export type TeamAskPresentation = z.infer<typeof TeamAskPresentationSchema>;
+export const TeamAgentReturnOutcomeSchema = z.enum([
+  "answered",
+  "declined",
+  "expired",
+  "cancelled",
+  "failed",
+]);
+export type TeamAgentReturnOutcome = z.infer<typeof TeamAgentReturnOutcomeSchema>;
+// This payload is private to the receiving link; never include it in team member views.
+export const TeamAgentReturnPayloadSchema = z.strictObject({
+  author: TeamAskerSchema.extend({ handle: TeamHandleSchema.optional() }).optional(),
+  originAskId: TeamAgentRequestIdSchema,
+  triggerClientMessageId: z.uuid().optional(),
+  resumeRunId: RunIdSchema,
+  outcome: TeamAgentReturnOutcomeSchema,
+  bodyMarkdown: TeamRequestTextSchema.nullable(),
+  attachments: z.array(TeamAttachmentRefSchema).max(10),
+});
+export const TeamAgentReturnPayloadViewSchema = z.object({
+  ...TeamAgentReturnPayloadSchema.shape,
+  author: z.object(TeamAgentReturnPayloadSchema.shape.author.unwrap().shape).optional(),
+  attachments: z.array(z.object(TeamAttachmentRefSchema.shape)).max(10),
+});
+export type TeamAgentReturnPayload = z.infer<typeof TeamAgentReturnPayloadSchema>;
+export const TeamReturnAdmissionSchema = z.enum(["admitted", "undeliverable"]);
+export type TeamReturnAdmission = z.infer<typeof TeamReturnAdmissionSchema>;
+
 export const TeamAgentRequestStateSchema = z.enum([
+  "awaiting_approval",
+  "declined",
   "queued",
   "working",
   "needs_you",
@@ -103,6 +196,8 @@ export const TeamTurnContextSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("team"),
     source: TeamSourceSchema,
+    // Non-null only for an ask approved by this Host's owner.
+    asker: TeamAskerSchema.pick({ displayName: true, actor: true }).nullable().default(null),
     instructionsMarkdown: z
       .string()
       .max(16384)

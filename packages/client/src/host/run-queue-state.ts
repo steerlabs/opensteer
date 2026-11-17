@@ -178,10 +178,11 @@ export function isActiveRunStatus(status: Run["status"]): status is ActiveRunSta
 }
 
 export function toRunQueueEntry(
-  run: Pick<Run, "createdAt" | "id" | "runOrdinal" | "status" | "threadId">,
+  run: Pick<Run, "createdAt" | "id" | "runOrdinal" | "status" | "threadId" | "maintenance">,
 ): RunQueueEntry | null {
   if (!isActiveRunStatus(run.status)) return null;
   return {
+    ...(run.maintenance ? { maintenance: run.maintenance } : {}),
     createdAt: run.createdAt,
     id: run.id,
     status: run.status,

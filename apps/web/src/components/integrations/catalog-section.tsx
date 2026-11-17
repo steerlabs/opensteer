@@ -1,9 +1,7 @@
+import type { IntegrationDashboard } from "@opensteer/client/integrations";
 import { useState } from "react";
 import { Link } from "react-router";
-import type {
-  IntegrationDashboard,
-  IntegrationPlatformDashboardView,
-} from "@opensteer/integration-core";
+import type { IntegrationPlatformDashboardView } from "@opensteer/integration-core";
 import { computerAppPlatformRequirementLabel } from "@opensteer/client/integrations";
 import { Icon } from "../icon.js";
 import { AgentProposedChip } from "./agent-proposed-chip.js";

@@ -1,3 +1,11 @@
+import { runHasBrowserPages } from "../agents/browser-capability.js";
+import {
+  PageAgentBindInputSchema,
+  browserAgentHostRoutePrefix,
+} from "@opensteer/protocol/browser-agent";
+import type { AgentCallerResolver } from "../mcp/agent-caller.js";
+import type { TabServicePort } from "../tabs/ports.js";
+import { normalizeHostError } from "../server/http-errors.js";
 import { DeviceAccessRefusal } from "../administration/device-access.js";
 import type {} from "@fastify/websocket";
 import { OpensteerError } from "@opensteer/core";
@@ -78,6 +86,7 @@ export function registerAgentCdpBridge(
   app: FastifyInstance,
   browser: BrowserService,
   tokens: RunToolTokenService,
+  _tabs?: unknown,
 ): void {
   const route = {
     authenticate: (token: string) => tokens.authenticate(token),
@@ -115,6 +124,42 @@ export function registerAgentCdpBridge(
     ...route,
     path: hostInternalRoutePaths.browserCdp,
   });
+}
+
+export function registerAgentPageBindingRoute(
+  app: FastifyInstance,
+  tokens: Pick<RunToolTokenService, "authenticate" | "reauthorize">,
+  tabs: Pick<TabServicePort, "requireOpenPage">,
+  callers: Pick<AgentCallerResolver, "authenticate">,
+  runBrowser: (
+    claims: RunToolScope,
+  ) => Promise<{ driverKind: string; accessMode: import("@opensteer/core").ThreadAccessMode }>,
+): void {
+  app.post(
+    `${browserAgentHostRoutePrefix}/pages/bind`,
+    { bodyLimit: 16_384 },
+    async (request, reply) => {
+      try {
+        const token = bearerToken(request.headers);
+        const claims = await tokens.authenticate(token);
+        const caller = await callers.authenticate(token);
+        const capability = caller.kind === "run" ? await runBrowser(claims) : null;
+        if (!capability || !runHasBrowserPages(capability.driverKind, capability.accessMode))
+          return reply.code(403).send({
+            error: {
+              code: "access_denied",
+              message: "Browser control requires full access for this Run.",
+              next: "Use a full-access Run to control browser tabs.",
+            },
+          });
+        const { tabId } = PageAgentBindInputSchema.parse(request.body);
+        return await tabs.requireOpenPage(await tokens.reauthorize(claims), tabId);
+      } catch (error) {
+        const normalized = normalizeHostError(error);
+        return reply.code(normalized.status).send({ error: normalized.error });
+      }
+    },
+  );
 }
 
 export function registerTriggerCdpBridge(
@@ -219,7 +264,7 @@ function attachCdpSocket<Scope>(
       const parsed = BrowserSessionIdSchema.safeParse(connection.sessionId);
       if (!parsed.success) {
         throw new BrowserCdpConnectionEnded(
-          `"${connection.sessionId.slice(0, 80)}" is not a Browser Session ID. browser_session_open and browser_session_list return session IDs.`,
+          "This browser binding is invalid. Use tab_list and openPage(tabId).",
         );
       }
       sessionId = parsed.data;
@@ -231,11 +276,13 @@ function attachCdpSocket<Scope>(
     }
     if (options.backend === "actions") {
       if (!sessionId)
-        throw new BrowserCdpConnectionEnded("Actions require an exact Browser Session.");
+        throw new BrowserCdpConnectionEnded(
+          "Bind a tab with Browser Harness openPage(tabId) before using actions.",
+        );
       const attached = await options.browser.attachActionsForAgent(
         { ...authority, sessionId },
         (event) => sendJson(socket, { event }),
-        () => closeSocket(socket, new Error("The Browser Session ended."), 1000),
+        () => closeSocket(socket, new Error("The browser tab became unavailable."), 1000),
       );
       return {
         close: () => attached.close(),
@@ -251,17 +298,54 @@ function attachCdpSocket<Scope>(
           ...(event.sessionId ? { sessionId: event.sessionId } : {}),
         });
       },
-      () => closeSocket(socket, new Error("The Browser Session ended."), 1000),
+      () => closeSocket(socket, new Error("The browser tab became unavailable."), 1000),
     );
+    const channels = new Set<string>();
+    const attaching = new Set<Promise<unknown>>();
     return {
-      close: () => attached.close(),
-      dispatch: (value: unknown) => {
+      close: () => {
+        // The runtime owns input release; enqueue detach before retiring this Host attachment.
+        void Promise.allSettled(attaching).then(async () => {
+          await Promise.allSettled(
+            [...channels].map(async (sessionId) => {
+              const pending = await attached.dispatch({
+                method: "Target.detachFromTarget",
+                parameters: { sessionId },
+              });
+              void pending.result.catch(() => undefined);
+            }),
+          );
+          attached.close();
+        });
+      },
+      dispatch: async (value: unknown) => {
         const request = CdpRequestSchema.parse(value);
-        return attached.dispatch({
+        const dispatching = attached.dispatch({
           method: request.method,
           ...(request.params ? { parameters: request.params } : {}),
           ...(request.sessionId ? { sessionId: request.sessionId } : {}),
         });
+        if (request.method === "Target.attachToTarget") {
+          const tracked = dispatching
+            .then(({ result }) => result)
+            .then((result) => {
+              const id = z.object({ sessionId: z.string() }).parse(result).sessionId;
+              channels.add(id);
+              return result;
+            });
+          attaching.add(tracked);
+          void tracked.then(
+            () => attaching.delete(tracked),
+            () => attaching.delete(tracked),
+          );
+        }
+        const pending = await dispatching;
+        if (request.method === "Target.detachFromTarget")
+          void pending.result.then(
+            () => channels.delete(String(request.params?.sessionId)),
+            () => undefined,
+          );
+        return pending;
       },
     };
   })();
@@ -408,7 +492,11 @@ function attachCdpSocket<Scope>(
 function bearerToken(headers: IncomingHttpHeaders): string {
   const value = headers.authorization;
   const match = /^Bearer ([^\s]{20,4096})$/u.exec(value ?? "");
-  if (!match?.[1]) throw new Error("CDP authorization is missing");
+  if (!match?.[1])
+    throw new OpensteerError({
+      code: "unauthorized",
+      message: "Browser authorization is missing.",
+    });
   return match[1];
 }
 

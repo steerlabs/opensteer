@@ -39,7 +39,10 @@ import {
   TeamOriginSchema,
 } from "@opensteer/core";
 import { z } from "zod";
-import { HostAccountAdoptionAuthoritySchema } from "@opensteer/control-plane-protocol";
+import {
+  HostAccountAdoptionAuthoritySchema,
+  UpdateAccountProfileRequestSchema,
+} from "@opensteer/control-plane-protocol";
 import {
   CreateHostedTeamRequestSchema,
   HostedTeamIdSchema,
@@ -262,11 +265,24 @@ export const DesktopPersonalDeploymentStatusSchema = z.strictObject({
   deploymentId: DeploymentIdSchema.nullable(),
   environmentId: EnvironmentIdSchema.nullable(),
   issue: DesktopPersonalDeploymentIssueSchema.nullable(),
+  /**
+   * What this computer's Opensteer is called, or will be called when set up:
+   * the name the person chose, else the Mac's own. Absent until it is read.
+   */
+  name: z.string().trim().min(1).max(120).optional(),
   schemaVersion: z.literal(1),
   state: DesktopPersonalDeploymentStateSchema,
   step: DesktopPersonalDeploymentStepSchema.nullable(),
 });
 export type DesktopPersonalDeploymentStatus = z.infer<typeof DesktopPersonalDeploymentStatusSchema>;
+
+/** Setting up this computer: the name it is created with, fixed from then on. */
+export const DesktopCreatePersonalDeploymentInputSchema = z.strictObject({
+  name: z.string().trim().min(1).max(120).optional(),
+});
+export type DesktopCreatePersonalDeploymentInput = z.infer<
+  typeof DesktopCreatePersonalDeploymentInputSchema
+>;
 
 /** One app the helper serves, set up on this Mac at the access its connection allows. */
 export const DesktopOpenComputerAppSetupInputSchema = z.strictObject({
@@ -478,7 +494,7 @@ export const DesktopNotificationTargetSchema = z.strictObject({
   messageId: MessageIdSchema.nullable(),
   notificationId: NotificationIdSchema,
   requestId: RequestIdSchema.nullable(),
-  threadId: ThreadIdSchema,
+  threadId: ThreadIdSchema.nullable(),
   title: NotificationViewSchema.shape.title,
 });
 export type DesktopNotificationTarget = z.infer<typeof DesktopNotificationTargetSchema>;
@@ -1092,7 +1108,7 @@ function boundedUtf8String(minimumBytes: number, maximumBytes: number) {
 
 const DesktopAcceptHeaderSchema = z.string().regex(/^[\x20-\x7e]{1,255}$/u);
 const DesktopIdempotencyKeySchema = z.string().regex(/^[\x21-\x7e]{1,255}$/u);
-/** The protocol epoch the calling client states, relayed as it was sent. */
+/** A version the calling client states, relayed as it was sent. */
 const DesktopApiVersionSchema = z.string().regex(/^[0-9]{1,6}$/u);
 
 export const DesktopHostHttpRequestSchema = z.strictObject({
@@ -1101,6 +1117,7 @@ export const DesktopHostHttpRequestSchema = z.strictObject({
   headers: z.strictObject({
     accept: DesktopAcceptHeaderSchema.optional(),
     apiVersion: DesktopApiVersionSchema.optional(),
+    apiCurrent: DesktopApiVersionSchema.optional(),
     bootstrapDiagnostics: z
       .string()
       .regex(/^[\x20-\x7e]{1,2048}$/u)
@@ -1163,6 +1180,7 @@ export const DesktopHostBinaryOpenInputSchema = z
     headers: z.strictObject({
       accept: DesktopAcceptHeaderSchema.optional(),
       apiVersion: DesktopApiVersionSchema.optional(),
+      apiCurrent: DesktopApiVersionSchema.optional(),
       contentType: z.literal("application/octet-stream").optional(),
       teamUpload: z.string().min(1).max(2048).optional(),
     }),
@@ -1467,6 +1485,8 @@ export const DesktopAccountTeamsCallSchema = z.discriminatedUnion("call", [
     id: HostedTeamIdSchema,
     to: TransferHostedTeamRequestSchema.shape.to,
   }),
+  z.strictObject({ call: z.literal("profile") }),
+  z.strictObject({ call: z.literal("profile.update"), request: UpdateAccountProfileRequestSchema }),
 ]);
 export type DesktopAccountTeamsCall = z.infer<typeof DesktopAccountTeamsCallSchema>;
 export const DesktopAccountTeamsResultSchema = z.discriminatedUnion("ok", [
@@ -1495,6 +1515,7 @@ export const DesktopTeamSessionsCallSchema = z.discriminatedUnion("call", [
   }),
   z.strictObject({
     call: z.literal("enter"),
+    deploymentId: DeploymentIdSchema,
     origin: TeamOriginSchema,
     invite: TeamInviteSecretSchema.nullable(),
   }),
@@ -1504,6 +1525,7 @@ export const DesktopTeamSessionsCallSchema = z.discriminatedUnion("call", [
    */
   z.strictObject({
     call: z.literal("sign-in"),
+    deploymentId: DeploymentIdSchema,
     origin: TeamOriginSchema,
     invite: TeamInviteSecretSchema.nullable(),
   }),
@@ -1902,6 +1924,7 @@ export interface OpensteerDesktopBridge {
   /** The Agent Phone app this build carries, or null when it carries none. */
   readAgentPhoneArtifact(): Promise<DesktopAgentPhoneArtifact | null>;
   agentPhoneAdb?: DesktopAgentPhoneAdbBridge;
+  iphoneSetup?: import("./desktop-iphone.js").DesktopIphoneSetupBridge;
   /** Several phones answered a WebUSB request from this page; the person picks one. */
   onUsbDeviceChoice(listener: (choice: DesktopUsbDeviceChoice) => void): () => void;
   /** Answers the open USB choice with the person's pick, or declines it. */
@@ -1959,7 +1982,7 @@ export interface OpensteerDesktopBridge {
   cancel(): Promise<void>;
   closeHostWebSocket(input: DesktopCloseHostWebSocketInput): Promise<void>;
   connectPrivate(input: DesktopConnectPrivateDeploymentInput): Promise<void>;
-  createPersonalDeployment(): Promise<void>;
+  createPersonalDeployment(input?: DesktopCreatePersonalDeploymentInput): Promise<void>;
   getDeploymentAccessSnapshot(): Promise<DeploymentAccessSnapshot>;
   getLocalExecutionStatus(input: DesktopLocalExecutionInput): Promise<DesktopLocalExecutionStatus>;
   hostRequest(input: DesktopHostHttpRequest): Promise<DesktopHostResult<DesktopHostHttpResponse>>;
@@ -2056,3 +2079,5 @@ export interface OpensteerDesktopBridge {
   setUpDevice(input: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus>;
   unlinkPersonal(): Promise<void>;
 }
+
+export * from "./desktop-iphone.js";

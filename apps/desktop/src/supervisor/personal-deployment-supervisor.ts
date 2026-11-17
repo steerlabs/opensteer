@@ -1,4 +1,6 @@
 import type { ResolvedConnection, VerifiedHostEndpoint } from "@opensteer/client/connections";
+import { computerName } from "./computer-name.js";
+import { personFullName } from "./person-name.js";
 import {
   deploymentConnectionFromVerifiedEndpoints,
   type DeploymentCatalogStore,
@@ -45,7 +47,6 @@ import type {
   PersonalDeploymentSecrets,
 } from "../secrets/personal-deployment-credentials.js";
 import {
-  defaultPersonalDeploymentName,
   PersonalDeploymentManifestSchema,
   PersonalFilesystemError,
   PersonalRuntimeTransitionError,
@@ -111,6 +112,10 @@ interface PersonalDeploymentSupervisorOptions {
   readonly allocatePort?: () => Promise<number>;
   readonly baseEnvironment?: Readonly<Record<string, string>>;
   readonly catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
+  /** The name the person gave this Mac, which a new Personal Deployment is called by default. */
+  readonly computerName?: () => Promise<string>;
+  /** This computer account's full name, the owner's name until they choose one. */
+  readonly personFullName?: () => Promise<string | null>;
   /**
    * The computer-use bridge for this Deployment's hosting Runner, or null where
    * computer use does not exist. The hosting Runner is this Mac's own Runner, so
@@ -119,6 +124,7 @@ interface PersonalDeploymentSupervisorOptions {
   readonly computerUse?: {
     startForSlot(
       deploymentId: string,
+      owner: { deploymentId: string; hostInstanceId: string; runnerId: string },
     ): Promise<{ readonly token: string; readonly url: URL } | null>;
     stopForSlot(deploymentId: string): Promise<void>;
   };
@@ -126,6 +132,7 @@ interface PersonalDeploymentSupervisorOptions {
   readonly files: PersonalDeploymentFilesystemPort;
   readonly host: PersonalHostControlPort;
   readonly localRuntimes: PersonalLocalRuntimePort;
+  readonly inspectRunnerIdentity?: typeof inspectRunnerIdentity;
   readonly loopbackPorts?: PersonalLoopbackPortPort;
   readonly now?: () => Date;
   readonly log?: ShutdownLog;
@@ -219,11 +226,14 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   readonly #passkeys: boolean;
   readonly #baseEnvironment: Readonly<Record<string, string>>;
   readonly #catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
+  readonly #computerName: () => Promise<string>;
+  readonly #personFullName: () => Promise<string | null>;
   readonly #computerUse: PersonalDeploymentSupervisorOptions["computerUse"];
   readonly #credentials: PersonalDeploymentCredentialPort;
   readonly #files: PersonalDeploymentFilesystemPort;
   readonly #host: PersonalHostControlPort;
   readonly #localRuntimes: PersonalLocalRuntimePort;
+  readonly #inspectRunnerIdentity: typeof inspectRunnerIdentity;
   readonly #listeners = new Set<StatusListener>();
   readonly #loopbackPorts: PersonalLoopbackPortPort;
   readonly #now: () => Date;
@@ -281,11 +291,14 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         ? new FixedPersonalUserEnvironment(options.baseEnvironment)
         : new NativePersonalUserEnvironment());
     this.#catalog = options.catalog;
+    this.#computerName = options.computerName ?? computerName;
+    this.#personFullName = options.personFullName ?? personFullName;
     this.#computerUse = options.computerUse;
     this.#credentials = options.credentials;
     this.#files = options.files;
     this.#host = options.host;
     this.#localRuntimes = options.localRuntimes;
+    this.#inspectRunnerIdentity = options.inspectRunnerIdentity ?? inspectRunnerIdentity;
     this.#processes = options.processes;
     this.#portalOrigin = options.portalOrigin ? new URL(String(options.portalOrigin)).origin : null;
     this.#release = options.release ?? (() => readPersonalRuntimeRelease(options.releaseDirectory));
@@ -357,7 +370,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     if (!manifest || manifest.deploymentId !== deploymentId || manifest.runnerId !== runnerId) {
       return { local: false, reason: "not-local" };
     }
-    const identity = await inspectRunnerIdentity(
+    const identity = await this.#inspectRunnerIdentity(
       (await this.#files.prepare(manifest)).runnerDataDirectory,
     );
     if (!identity?.enrolled || identity.runnerId !== runnerId) {
@@ -419,9 +432,12 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     return () => this.#listeners.delete(listener);
   }
 
-  start(): Promise<DesktopPersonalDeploymentStatus> {
-    if (this.#status.state === "ready") return Promise.resolve(this.#status);
+  /** `name` is used only when this start creates the Deployment. */
+  start(
+    input: { readonly name?: string | undefined } = {},
+  ): Promise<DesktopPersonalDeploymentStatus> {
     if (this.#startPromise) return this.#startPromise;
+    if (this.#status.state === "ready") return Promise.resolve(this.#status);
     if (this.#shutdownRequested || this.#stopPromise) {
       return Promise.reject(new Error("Personal deployment is stopping."));
     }
@@ -438,7 +454,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         // newer wish to keep the stack running.
         if (this.#status.state === "ready") return this.#status;
         this.#desiredRunning = true;
-        return this.#startOperation(false);
+        return this.#startOperation(false, input.name);
       });
     })();
     this.#startPromise = operation;
@@ -529,7 +545,10 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     return child?.logs.text ?? this.#diagnosticLogs.get(component) ?? "";
   }
 
-  async #startOperation(recovery: boolean): Promise<DesktopPersonalDeploymentStatus> {
+  async #startOperation(
+    recovery: boolean,
+    name?: string | undefined,
+  ): Promise<DesktopPersonalDeploymentStatus> {
     this.#abort?.abort(new Error("A newer Personal deployment start replaced this attempt."));
     const abort = new AbortController();
     this.#abort = abort;
@@ -542,12 +561,13 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       if (this.#children.size || this.#browser) await this.#stopChildren();
       const release = await this.#release();
       // Read every start: an earlier attempt may have advanced the manifest.
-      let manifest = await this.#loadOrCreateManifest(release);
+      let manifest = await this.#loadOrCreateManifest(release, name);
       manifest = await this.#reconcileCompatibleRelease(manifest, release);
       this.#setStatus({
         components: componentsWithVersions(release),
         deploymentId: manifest.deploymentId,
         environmentId: manifest.environmentId,
+        name: manifest.name,
       });
       await this.#loopbackPorts.assertAvailable(manifest.postgresPort, "postgresql");
       await this.#loopbackPorts.assertAvailable(manifest.hostPort, "host");
@@ -564,6 +584,8 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         );
       }
       await this.#startStack(release, manifest, paths, secrets, abort.signal);
+      throwIfAborted(abort.signal, "Personal setup was cancelled.");
+      this.#assertCompleteStack();
       if (recovery) this.#restartPolicy.markStarted();
       else this.#restartPolicy.reset();
       this.#setStatus({ issue: this.#messagingIssue, state: "ready", step: "ready" });
@@ -572,6 +594,30 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       if (abort.signal.aborted && !this.#desiredRunning) {
         await this.#stopChildren().catch(() => undefined);
         return this.#status;
+      }
+      if (this.#status.state === "ready" && !permanentStartFailure(error)) {
+        // An unfinished startup tail needs a full restart, including agent home and placement.
+        this.#hostLaunch = null;
+        if (recovery) throw error;
+        const failure = classifyFailure(error, this.#status.step);
+        const component =
+          failure.issue.component === "desktop" ? "runner" : failure.issue.component;
+        this.#setStatus({
+          components: componentState(this.#status.components, component, "degraded"),
+          issue: failure.issue,
+          state: "degraded",
+          step: null,
+        });
+        void this.#mutations
+          .run(() =>
+            this.#recoverAfterCrash(
+              component,
+              { code: null, signal: null },
+              safeErrorDetail(error),
+            ),
+          )
+          .catch(() => undefined);
+        throw error;
       }
       await this.#stopChildren().catch(() => undefined);
       await this.#planOldData(error);
@@ -604,13 +650,16 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       if (await this.#dataReset?.needsFreshStart()) this.#resetRecovered = true;
       return this.#files.load();
     })().then(
-      (manifest) => {
+      async (manifest) => {
+        // Read before the status settles, so the offer to set up names this Mac.
+        const name = manifest?.name ?? (await this.#computerName());
         if (this.#shutdownRequested) return manifest;
         if (manifest) {
           this.#setStatus({
             deploymentId: manifest.deploymentId,
             environmentId: manifest.environmentId,
             issue: null,
+            name,
             state: "checking",
             step: "checking-computer",
           });
@@ -619,6 +668,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
             deploymentId: null,
             environmentId: null,
             issue: null,
+            name,
             state: "stopped",
             step: null,
           });
@@ -661,151 +711,218 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     secrets: PersonalDeploymentSecrets,
     signal: AbortSignal,
   ): Promise<void> {
-    this.#ownerClaim = null;
-    this.#messagingIssue = null;
-    let manifest = manifestInput;
-    this.#setStatus({
-      components: componentState(this.#status.components, "postgresql", "starting"),
-      step: "preparing-database",
+    const started = performance.now();
+    const browserStart = this.#startupStep("browser-runtime", async () => {
+      try {
+        const browser = await this.#localRuntimes.startBrowser({
+          paths,
+          runtimeId: "desktop-browser",
+        });
+        this.#browser = browser;
+        return browser;
+      } catch (error) {
+        throw new PersonalBrowserUnavailableError(safeErrorDetail(error), { cause: error });
+      }
     });
-    manifest = await this.#ensureDatabaseInitialized(release, manifest, paths, secrets, signal);
-    const postgres = this.#spawn(postgresSpec(release, manifest, paths));
-    await this.#raceChild(
-      postgres,
-      this.#waitForPostgres(release, manifest, paths, signal),
-      signal,
-      "PostgreSQL",
+    const environmentStart = this.#startupStep("user-environment", () =>
+      this.#userEnvironment.resolve(),
     );
-    this.#setStatus({
-      components: componentState(this.#status.components, "postgresql", "ready"),
-      step: "starting-host",
-    });
-
-    const launchedHost = await this.#launchHost(release, manifest, paths, secrets, signal);
-    const { bootstrap, origin, verifiedHost } = launchedHost;
-    manifest = launchedHost.manifest;
-    this.#hostLaunch = { manifest, paths, release, secrets };
-
-    // The browser starts first because the Runner is what relays it: the
-    // bridge has to exist before the process that reaches it does, and both
-    // belong to one machine identity rather than two.
-    this.#setStatus({
-      components: componentState(this.#status.components, "browser", "starting"),
-      step: "connecting-computer",
-    });
-    let browser: PersonalLocalBrowserHandle;
-    try {
-      browser = await this.#localRuntimes.startBrowser({ paths, runtimeId: "desktop-browser" });
-    } catch (error) {
-      throw new PersonalBrowserUnavailableError(safeErrorDetail(error), { cause: error });
-    }
-    this.#browser = browser;
-
-    this.#setStatus({
-      components: componentState(this.#status.components, "runner", "starting"),
-      step: "starting-local-agents",
-    });
-    const userEnvironment = await this.#userEnvironment.resolve();
-    // Computer use reaches the hosting Runner too: it is this Mac's own Runner,
-    // and a Personal Deployment is the shape where that Mac and this app are
-    // the same computer.
-    const computerUse =
-      (await this.#computerUse?.startForSlot(manifest.deploymentId).catch(() => null)) ?? null;
-    this.#computerUseSlotId = computerUse ? manifest.deploymentId : null;
-    const runner = this.#spawn(
-      runnerSpec(
-        release,
-        manifest,
-        paths,
-        bootstrap.runnerEnrollmentToken,
-        userEnvironment,
-        {
-          bridgeToken: browser.bridgeToken,
-          runtimeId: browser.runtimeId,
-          signIn: browser.signIn,
-          personFill: browser.personFill,
-          url: browser.url,
-        },
-        computerUse,
-      ),
-    );
-    await this.#raceChild(
-      runner,
-      this.#host.waitForRunner(
-        origin,
-        manifest.deploymentId,
-        manifest.environmentId as EnvironmentId,
-        manifest.runnerId,
-        signal,
-      ),
-      signal,
-      "Runner",
-    );
-    this.#setStatus({ step: "preparing-agent-home" });
-    await withTimeout(
-      this.#host.ensureAgentHome(origin, manifest.deploymentId, signal),
-      this.#startupTimeoutMs,
-      {
-        abortFallback: "Personal setup was cancelled.",
-        signal,
-        timeoutError: () => new Error("Personal agent home readiness timed out."),
-      },
-    );
-    this.#assertCompleteStack();
-    await this.#catalog.upsertAndSelect(
-      deploymentConnectionFromVerifiedEndpoints({
-        accountAccess: null,
-        endpoints: [verifiedHost],
-        kind: "personal",
-        name: manifest.name,
-        source: { kind: "manual" },
-      }),
-    );
-    this.#assertCompleteStack();
-    this.#setStatus({
-      components: componentState(this.#status.components, "runner", "ready"),
-    });
-
-    // The placement poll gets its own controller so no outcome — success,
-    // timeout, or stack teardown — can leave it polling a Host this operation
-    // no longer owns.
-    const placementAbort = new AbortController();
-    const relayAbort = () => placementAbort.abort(signal.reason);
-    if (signal.aborted) relayAbort();
-    else signal.addEventListener("abort", relayAbort, { once: true });
-    try {
-      await withTimeout(
-        this.#host.waitForBrowserPlacement(
-          origin,
-          manifest.deploymentId,
-          manifest.environmentId as EnvironmentId,
-          browser.runtimeId,
-          placementAbort.signal,
-        ),
-        this.#startupTimeoutMs,
-        {
-          abortFallback: "Personal setup was cancelled.",
-          signal,
-          timeoutError: () =>
-            new Error("This computer's Browser Runtime did not become available in time."),
-        },
+    const computerUseStart = this.#startupStep("computer-use", async () => {
+      this.#computerUseSlotId = manifestInput.deploymentId;
+      return (
+        (await this.#computerUse
+          ?.startForSlot(manifestInput.deploymentId, {
+            deploymentId: manifestInput.deploymentId,
+            hostInstanceId: manifestInput.hostInstanceId,
+            runnerId: manifestInput.runnerId,
+          })
+          .catch(() => null)) ?? null
       );
-    } catch (error) {
-      if (signal.aborted) throw error;
-      throw new PersonalBrowserUnavailableError(safeErrorDetail(error), { cause: error });
-    } finally {
-      signal.removeEventListener("abort", relayAbort);
-      placementAbort.abort(new Error("Personal browser placement wait ended."));
-    }
-    this.#assertCompleteStack();
-    this.#setStatus({
-      components: componentState(this.#status.components, "browser", "ready"),
     });
+    // Observe failures immediately, and retain ownership until every acquired handle can be stopped.
+    const independentStarts = Promise.allSettled([
+      browserStart,
+      environmentStart,
+      computerUseStart,
+    ]);
+    try {
+      this.#ownerClaim = null;
+      this.#messagingIssue = null;
+      let manifest = manifestInput;
+      this.#setStatus({
+        components: componentState(
+          componentState(this.#status.components, "postgresql", "starting"),
+          "browser",
+          "starting",
+        ),
+        step: "preparing-database",
+      });
+      manifest = await this.#startupStep("database", () =>
+        this.#ensureDatabaseInitialized(release, manifest, paths, secrets, signal),
+      );
+      const postgres = this.#spawn(postgresSpec(release, manifest, paths));
+      await this.#startupStep("postgresql", () =>
+        this.#raceChild(
+          postgres,
+          this.#waitForPostgres(release, manifest, paths, signal),
+          signal,
+          "PostgreSQL",
+        ),
+      );
+      this.#setStatus({
+        components: componentState(this.#status.components, "postgresql", "ready"),
+        step: "starting-host",
+      });
 
-    // Last, and never gating: messaging carries Slack, and a Deployment with no
-    // messaging account connected is complete without it. Its failures are
-    // reported as a component issue on an otherwise ready stack.
-    await this.#startMessaging(release, manifest, paths, secrets, origin);
+      const launchedHost = await this.#startupStep("host", () =>
+        this.#launchHost(release, manifest, paths, secrets, signal),
+      );
+      const { bootstrap, origin, verifiedHost } = launchedHost;
+      manifest = launchedHost.manifest;
+      this.#hostLaunch = { manifest, paths, release, secrets };
+
+      await this.#catalog.upsertAndSelect(
+        deploymentConnectionFromVerifiedEndpoints({
+          accountAccess: null,
+          endpoints: [verifiedHost],
+          kind: "personal",
+          name: manifest.name,
+          source: { kind: "manual" },
+        }),
+      );
+      throwIfAborted(signal, "Personal setup was cancelled.");
+      const publishReady = (step: DesktopPersonalDeploymentStep) => {
+        this.#setStatus({ issue: null, state: "ready", step });
+        this.#log("desktop.startup.step.finished", {
+          step: "ready",
+          elapsedMs: performance.now() - started,
+        });
+      };
+      // The Host knows this Mac as its main computer only once the Runner has
+      // enrolled; before that, setup stays on screen until the Runner connects.
+      const enrolled =
+        (await this.#inspectRunnerIdentity(paths.runnerDataDirectory))?.enrolled === true;
+      this.#assertExpectedStack("host");
+      if (enrolled) publishReady("connecting-computer");
+
+      const browser = await browserStart;
+      this.#setStatus({
+        components: componentState(this.#status.components, "runner", "starting"),
+        step: "starting-local-agents",
+      });
+      const userEnvironment = await environmentStart;
+      const computerUse = await computerUseStart;
+      throwIfAborted(signal, "Personal setup was cancelled.");
+      const runner = this.#spawn(
+        runnerSpec(
+          release,
+          manifest,
+          paths,
+          bootstrap.runnerEnrollmentToken,
+          userEnvironment,
+          {
+            bridgeToken: browser.bridgeToken,
+            runtimeId: browser.runtimeId,
+            signIn: browser.signIn,
+            personFill: browser.personFill,
+            url: browser.url,
+          },
+          computerUse,
+        ),
+      );
+      await this.#startupStep("runner", () =>
+        this.#raceChild(
+          runner,
+          this.#host.waitForRunner(
+            origin,
+            manifest.deploymentId,
+            manifest.environmentId as EnvironmentId,
+            manifest.runnerId,
+            signal,
+          ),
+          signal,
+          "Runner",
+        ),
+      );
+      if (enrolled) this.#setStatus({ step: "preparing-agent-home" });
+      else publishReady("preparing-agent-home");
+      await this.#startupStep("agent-home", () =>
+        withTimeout(
+          this.#host.ensureAgentHome(origin, manifest.deploymentId, signal),
+          this.#startupTimeoutMs,
+          {
+            abortFallback: "Personal setup was cancelled.",
+            signal,
+            timeoutError: () => new Error("Personal agent home readiness timed out."),
+          },
+        ),
+      );
+      this.#assertCompleteStack();
+      this.#setStatus({
+        components: componentState(this.#status.components, "runner", "ready"),
+      });
+
+      // The placement poll gets its own controller so no outcome — success,
+      // timeout, or stack teardown — can leave it polling a Host this operation
+      // no longer owns.
+      const placementAbort = new AbortController();
+      const relayAbort = () => placementAbort.abort(signal.reason);
+      if (signal.aborted) relayAbort();
+      else signal.addEventListener("abort", relayAbort, { once: true });
+      try {
+        await this.#startupStep("browser-placement", () =>
+          withTimeout(
+            this.#host.waitForBrowserPlacement(
+              origin,
+              manifest.deploymentId,
+              manifest.environmentId as EnvironmentId,
+              browser.runtimeId,
+              placementAbort.signal,
+            ),
+            this.#startupTimeoutMs,
+            {
+              abortFallback: "Personal setup was cancelled.",
+              signal,
+              timeoutError: () =>
+                new Error("This computer's Browser Runtime did not become available in time."),
+            },
+          ),
+        );
+      } catch (error) {
+        if (signal.aborted) throw error;
+        throw new PersonalBrowserUnavailableError(safeErrorDetail(error), { cause: error });
+      } finally {
+        signal.removeEventListener("abort", relayAbort);
+        placementAbort.abort(new Error("Personal browser placement wait ended."));
+      }
+      this.#assertCompleteStack();
+      this.#setStatus({
+        components: componentState(this.#status.components, "browser", "ready"),
+      });
+
+      // Last, and never gating: messaging carries Slack, and a Deployment with no
+      // messaging account connected is complete without it. Its failures are
+      // reported as a component issue on an otherwise ready stack.
+      await this.#startupStep("messaging", () =>
+        this.#startMessaging(release, manifest, paths, secrets, origin),
+      );
+      throwIfAborted(signal, "Personal setup was cancelled.");
+      this.#assertCompleteStack();
+    } finally {
+      await independentStarts;
+    }
+  }
+
+  async #startupStep<T>(step: string, start: () => Promise<T>): Promise<T> {
+    const started = performance.now();
+    try {
+      const result = await start();
+      this.#log("desktop.startup.step.finished", { step, elapsedMs: performance.now() - started });
+      return result;
+    } catch (error) {
+      this.#log("desktop.startup.step.failed", { step, elapsedMs: performance.now() - started });
+      throw error;
+    }
   }
 
   /**
@@ -853,6 +970,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         this.#portalOrigin,
         this.#passkeys,
         extensionDirectory,
+        await this.#personFullName(),
       ),
     );
     const origin = `http://127.0.0.1:${manifest.hostPort}`;
@@ -1270,7 +1388,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         void this.#recoverMessagingAfterCrash(result, logs.text).catch(() => undefined);
         return;
       }
-      if (this.#status.state === "ready") {
+      if (this.#status.state === "ready" && !this.#abort) {
         this.#messagingReadinessAbort?.abort(new Error("The Personal Host connection ended."));
         void this.#mutations
           .run(() => this.#recoverAfterCrash(spec.component, result, stderr.text))
@@ -1526,6 +1644,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
 
   async #loadOrCreateManifest(
     release: VerifiedPersonalRuntimeRelease,
+    name?: string | undefined,
   ): Promise<PersonalDeploymentManifest> {
     const existing = await this.#files.load();
     if (existing) return existing;
@@ -1546,7 +1665,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       hostInstanceId: createId("hostInstance"),
       hostKeyFingerprint: null,
       hostPort: firstPort,
-      name: defaultPersonalDeploymentName(),
+      name: name?.trim() || (await this.#computerName()),
       ownerInitialized: false,
       postgresPort: secondPort,
       release: release.identity,
@@ -1763,6 +1882,7 @@ function hostSpec(
   portalOrigin: string | null,
   passkeys: boolean,
   extensionDirectory: string | null,
+  ownerNameSeed: string | null,
 ): PersonalProcessSpec {
   const fingerprint = HostKeyFingerprintSchema.parse(manifest.hostKeyFingerprint);
   const origin = `http://127.0.0.1:${manifest.hostPort}`;
@@ -1779,6 +1899,7 @@ function hostSpec(
       OPENSTEER_DEPLOYMENT_NAME: manifest.name,
       OPENSTEER_DEPLOYMENT_KIND: "personal",
       OPENSTEER_HOST_DATA_DIR: paths.hostDataDirectory,
+      OPENSTEER_RUNNER_DATA_DIR: paths.runnerDataDirectory,
       OPENSTEER_HOST_INSTANCE_ID: manifest.hostInstanceId,
       OPENSTEER_HOST_KEY_FINGERPRINT: fingerprint,
       OPENSTEER_HOST_PRIVATE_KEY_PATH: paths.hostPrivateKeyPath,
@@ -1792,6 +1913,9 @@ function hostSpec(
       OPENSTEER_NATIVE_FS_HELPER: release.entrypoints.nativeFsHelper,
       OPENSTEER_PORT: String(manifest.hostPort),
       ...(extensionDirectory ? { OPENSTEER_BROWSER_EXTENSION_DIRECTORY: extensionDirectory } : {}),
+      // Not a secret: secret values are redacted wherever they appear in logs, and a short name
+      // would be redacted out of unrelated words.
+      ...(ownerNameSeed ? { OPENSTEER_OWNER_NAME_SEED: ownerNameSeed } : {}),
       ...(accountIssuer ? { OPENSTEER_PERSONAL_ACCOUNT_ISSUER: accountIssuer } : {}),
       ...(portalOrigin ? { OPENSTEER_PORTAL_ORIGIN: portalOrigin } : {}),
       OPENSTEER_RUNTIME_ORIGIN: origin,

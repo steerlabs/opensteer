@@ -1,4 +1,4 @@
-import { seedBrowserSession } from "../test-support/browser-snapshot.js";
+import { tabStoreFixture } from "../test-support/tab-fixtures.js";
 import {
   SequenceSchema,
   createId,
@@ -8,7 +8,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import type { BrowserSessionSummary, HostSnapshot, MessageEntry, ThreadSummary } from "./client.js";
-import { applyOptimisticCommandPatch, withThreadNames } from "./optimistic-command-patches.js";
+import { applyOptimisticCommandPatch, withThreadState } from "./optimistic-command-patches.js";
 
 const now = "2026-08-09T20:00:00.000Z";
 const threadId = createId("thread");
@@ -16,24 +16,20 @@ const runId = createId("run");
 
 describe("independent browser creation", () => {
   it("keeps another session in the same workspace when a new browser starts", () => {
-    const original: BrowserSessionSummary = seedBrowserSession(
-      {
-        access: "read-write",
-        attachedRunIds: [],
-        dialog: null,
-        error: null,
-        id: "original",
-        origin: "person",
-        placement: { kind: "runner", runnerId: "runner" },
-        profileId: null,
-        runtimeId: "runtime",
-        state: "ready",
-        viewerError: null,
-        viewerState: "synchronized",
-      },
-      undefined,
-      [],
-    );
+    const original: BrowserSessionSummary = {
+      access: "read-write",
+      attachedRunIds: [],
+      dialog: null,
+      error: null,
+      id: "original",
+      origin: "person",
+      placement: { kind: "runner", runnerId: "runner" },
+      profileId: null,
+      runtimeId: "runtime",
+      state: "ready",
+      viewerError: null,
+      viewerState: "synchronized",
+    };
     const opened: BrowserSessionSummary = { ...original, id: "opened" };
     const snapshot = { ...baseSnapshot(), browserSessions: [original] };
     const result = applyOptimisticCommandPatch(snapshot, {
@@ -69,7 +65,7 @@ describe("browser profile patches", () => {
 });
 
 describe("task mark patches", () => {
-  it("keeps names in every task copy and completed assignment worker without changing page state", () => {
+  it("carries thread state into every task copy and names into a completed assignment worker", () => {
     const mock = new MockHostClient({ latencyMs: 0 });
     try {
       const base = mock.getSnapshot();
@@ -85,20 +81,27 @@ describe("task mark patches", () => {
         threads: [thread],
         tasks: page,
         activeTasks: [entry],
-
+        doneTasks: { main: page },
         assignments: { completed: assignment },
       };
-      const result = withThreadNames(snapshot, (name) =>
-        name.id === thread.id ? { title: name.title, icon: "plane" } : name,
+      const result = withThreadState(snapshot, (name) =>
+        name.id === thread.id
+          ? { title: name.title, icon: "plane", status: "idle", inputQueuePaused: true }
+          : name,
       );
       expect(result.threads[0]?.icon).toBe("plane");
-      expect(result.tasks?.entries[0]?.thread).toMatchObject({
-        icon: "plane",
-        color: "blue",
-        status: thread.status,
-        updatedAt: thread.updatedAt,
-      });
-      expect(result.activeTasks[0]?.thread.icon).toBe("plane");
+      for (const copy of [
+        result.tasks?.entries[0]?.thread,
+        result.activeTasks[0]?.thread,
+        result.doneTasks.main?.entries[0]?.thread,
+      ])
+        expect(copy).toMatchObject({
+          icon: "plane",
+          color: "blue",
+          status: "idle",
+          inputQueuePaused: true,
+          updatedAt: thread.updatedAt,
+        });
 
       expect(result.assignments.completed?.workerThread.icon).toBe("plane");
       expect(result.tasks?.window).toBe(page.window);
@@ -209,8 +212,10 @@ function queuedItem(text: string): ThreadInputQueue["items"][number] {
   const messageId = createId("message");
   return {
     canCancel: true,
+    canEdit: true,
     canMove: true,
     canSteer: true,
+    lease: null,
     input: {
       teamRequestId: null,
       teamSource: null,
@@ -252,6 +257,8 @@ function withQueue(
 
 function baseSnapshot(): HostSnapshot {
   return {
+    tabs: tabStoreFixture([]),
+    appsRevision: 0,
     doneTasks: {},
     quietTaskDays: null,
     threadRenameAvailable: true,
@@ -290,7 +297,7 @@ function baseSnapshot(): HostSnapshot {
     machineRevision: 0,
     machines: [],
     network: "unknown",
-    ownerName: null,
+    ownerProfile: null,
     requests: {},
     revision: 0,
     runQueue: [],
@@ -304,3 +311,24 @@ function baseSnapshot(): HostSnapshot {
     user: null,
   };
 }
+
+it.each([0, 1, 2])(
+  "preserves a newer lease when a delayed revision %i save is acknowledged",
+  (revision) => {
+    const item = queuedItem("Edited on phone");
+    const edit = { revision: 1, editedAt: now, ownerEdited: true as const };
+    const lease = { leaseId: "newer-lease", deviceLabel: "Phone", expiresAt: now };
+    const snapshot = withQueue(baseSnapshot(), {
+      steerRunId: null,
+      items: [{ ...item, message: { ...item.message, edit }, lease }],
+    });
+    const result = applyOptimisticCommandPatch(snapshot, {
+      type: "thread.input.edit",
+      threadId,
+      leaseId: "saved-under-old-lease",
+      message: item.message,
+      edit: { ...edit, revision },
+    });
+    expect(result.inputQueues[threadId]!.items[0]!.lease).toEqual(lease);
+  },
+);

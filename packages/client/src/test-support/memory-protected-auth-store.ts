@@ -55,6 +55,19 @@ export class MemoryProtectedAuthStore implements ProtectedAuthStore {
     return this.#mutate((current) => ({ ...current, account: null }));
   }
 
+  setTeamSignOutSuppression(
+    deploymentId: DeploymentId,
+    suppressed: boolean,
+  ): Promise<ProtectedAuthState> {
+    return this.#mutate((current) => ({
+      ...current,
+      signedOutTeams: [
+        ...(current.signedOutTeams ?? []).filter((id) => id !== deploymentId),
+        ...(suppressed ? [deploymentId] : []),
+      ],
+    }));
+  }
+
   setHost(credential: HostCredential): Promise<ProtectedAuthState> {
     const parsed = HostCredentialSchema.parse(credential);
     return this.#mutate((current) => ({

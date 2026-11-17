@@ -1,6 +1,21 @@
+import { IphoneService } from "./iphone/iphone-service.js";
+import { IphoneStore } from "./iphone/iphone-store.js";
+import { IphoneSetup } from "./iphone/iphone-setup.js";
+import { iphoneMacSupport } from "./iphone/mac-support.js";
+import { IphoneBridgeClient } from "./iphone/bridge-client.js";
+import {
+  bundledIphoneBridgePath,
+  verifyIphoneBridge,
+  iphoneOwnershipRoot,
+} from "./iphone/bridge-paths.js";
+import { forwardMedia } from "./app/media-protocol.js";
 import { deploymentPolicy } from "@opensteer/core";
 import { DesktopTeamLinks } from "./app/team-links.js";
-import { HttpAccountTeamsClient, NativeTeamEntry } from "@opensteer/client/team";
+import {
+  HttpAccountTeamsClient,
+  NativeTeamEntry,
+  verifyTeamEndpoint,
+} from "@opensteer/client/team";
 import { DesktopTeamSessions } from "./app/team-sessions.js";
 import { PersonalDataReset } from "./supervisor/personal-data-reset.js";
 import { desktopPersonalDataReset } from "./app/personal-data-reset.js";
@@ -155,7 +170,10 @@ import {
   PersonalHostConnectOrchestrator,
   PersonalHostConnectTeardownCoordinator,
 } from "./supervisor/personal-host-connect-orchestrator.js";
-import { openDesktopPrivateFilesystemSync } from "./secrets/desktop-private-files.js";
+import {
+  openDesktopPrivateFilesystem,
+  openDesktopPrivateFilesystemSync,
+} from "./secrets/desktop-private-files.js";
 import type { DesktopPrivateFilesystem } from "./secrets/desktop-private-files.js";
 import type { PersonalLocalRuntimePort } from "./supervisor/personal-local-runtime.js";
 import { probeFullDiskAccess } from "./full-disk-access/full-disk-access-probe.js";
@@ -316,6 +334,7 @@ async function runDesktop(
     protocol,
     path.join(import.meta.dirname, "web"),
     (request) => reportEvent("desktop.app-protocol.slow", request),
+    (request) => forwardMedia(request, (id) => hostTransport.mediaTransport(id)),
   );
   const updater = new DesktopUpdater({
     updates: loaded.config.updates,
@@ -388,6 +407,71 @@ async function runDesktop(
   });
   // Computer use owns the helper for every supervised slot on this Mac, so it
   // is built before anything that supervises one.
+  const iphoneFiles =
+    process.platform === "darwin"
+      ? await openDesktopPrivateFilesystem({
+          binary: loaded.config.localExecution.nativeFsHelperBinary,
+          root: iphoneOwnershipRoot(loaded.config.dataDirectory),
+        })
+      : privateFiles;
+  const iphone = new IphoneService({
+    store: new IphoneStore(privateFiles, iphoneFiles),
+    supported: process.platform === "darwin",
+    startNative: async () => {
+      const binary = await verifyIphoneBridge({
+        binary: bundledIphoneBridgePath({
+          developmentRoot: path.resolve(import.meta.dirname, "..", "..", ".."),
+          packaged: app.isPackaged,
+          resourcesPath: process.resourcesPath,
+        }),
+        packaged: app.isPackaged,
+      });
+      return IphoneBridgeClient.start({
+        binary,
+        supervisorExecutable: readPersonalProcessSupervisorRelease(resourcesDirectory),
+        privateRoot: iphoneFiles.root,
+        imageRoots: (await iphoneMacSupport.inspect()).imageRoots,
+        environment: {
+          [processSupervisorExecutableVariable]:
+            readPersonalProcessSupervisorRelease(resourcesDirectory),
+        },
+      });
+    },
+  });
+  const iphoneSetup = new IphoneSetup(iphone);
+  shutdown.add({
+    component: "iphone",
+    step: "stop",
+    order: 49,
+    timeoutMs: 5000,
+    stop: async () => {
+      try {
+        await iphoneSetup.stop();
+      } finally {
+        await iphone.stop();
+      }
+    },
+  });
+  let iphoneSuspension = Promise.resolve();
+  let iphonePowerRevision = 0;
+  const suspendIphones = () => {
+    iphonePowerRevision++;
+    iphoneSuspension = iphoneSuspension
+      .then(() => iphoneSetup.stop())
+      .finally(() => iphone.suspend())
+      .catch(() => undefined);
+  };
+  powerMonitor.on("suspend", suspendIphones);
+  shutdown.add({
+    component: "iphone",
+    step: "detach-power",
+    order: 1,
+    timeoutMs: 1000,
+    stop: () => {
+      powerMonitor.removeListener("suspend", suspendIphones);
+    },
+  });
+  void iphone.start().catch(() => reportEvent("desktop.iphone.unavailable"));
   const computerUse = new ComputerUseService({
     appBundleId: loaded.config.release.id,
     appVersion: app.getVersion(),
@@ -491,14 +575,28 @@ async function runDesktop(
       }),
   };
   const processSupervisorExecutable = readPersonalProcessSupervisorRelease(resourcesDirectory);
+  const computerUseForSlots = {
+    startForSlot: (
+      id: string,
+      owner: { deploymentId: string; hostInstanceId: string; runnerId: string },
+    ) => computerUse.startForSlot(id, passwordsLoginAuthority, iphone.forSlot(owner)),
+    stopForSlot: async (id: string) => {
+      try {
+        await iphoneSetup.stopForSlot(id);
+      } finally {
+        try {
+          await iphone.stopForSlot(id);
+        } finally {
+          await computerUse.stopForSlot(id);
+        }
+      }
+    },
+  };
   const personal = new PersonalDeploymentSupervisor({
     userDataDirectory: app.getPath("userData"),
     accountIssuer: loaded.config.accountUrl,
     catalog: deploymentCatalog,
-    computerUse: {
-      startForSlot: (id) => computerUse.startForSlot(id, passwordsLoginAuthority),
-      stopForSlot: (id) => computerUse.stopForSlot(id),
-    },
+    computerUse: computerUseForSlots,
     credentials: new NativePersonalDeploymentCredentials(protectedStorage, { privateFiles }),
     dataReset,
     files: personalFiles,
@@ -544,6 +642,9 @@ async function runDesktop(
     clearDeploymentSession: (deploymentId) => hostNetwork.clearDeploymentSession(deploymentId),
   });
   const nativeAuth = new NativeOAuthManager({
+    beforeHostChange: async (connection) => {
+      hostTransport.closeDeploymentConnections(connection.authority.document.deploymentId);
+    },
     beforeAccountIdentityChange: async (next) => {
       if (!deviceLifecycle) throw new Error("Device membership is still loading.");
       await deviceLifecycle.leaveAccountMemberships(next ?? undefined);
@@ -615,6 +716,19 @@ async function runDesktop(
         await deviceLifecycle?.sessionLost(attachment.resolved.deploymentId);
     },
   };
+  const sessionsForAttachment = (attachment: import("@opensteer/client/auth").HostAttachment) => {
+    const sessions: HostSession = new HostSession({
+      ...deviceSessionOptions,
+      attachment,
+      onDispose: () => sessionOwners.delete(sessions),
+      clearDeploymentSession: (id) => hostNetwork.clearDeploymentSession(id),
+      exchange: hostSessionExchange,
+      localOwner: personal,
+      oauth: nativeAuth,
+    });
+    sessionOwners.add(sessions);
+    return sessions;
+  };
   const hostSessions = new HostSession({
     ...deviceSessionOptions,
     accountCredentialRejected: () =>
@@ -648,6 +762,7 @@ async function runDesktop(
     network: hostNetwork,
     projection: accessProjection,
     sessions: hostSessions,
+    pinnedSessions: sessionsForAttachment,
   });
   hostTransport.onAttachmentInvalidated(() => appOriginPolicy.setAttachedHost(null));
   const deploymentUpdates = new Map<DeploymentId, DesktopUpdatesService>();
@@ -661,15 +776,7 @@ async function runDesktop(
       localRuntime: { current: async () => desktopLocalHostRuntime(await personal.current()) },
       network: hostNetwork,
       sessions: (attachment) => {
-        const sessions = new HostSession({
-          ...deviceSessionOptions,
-          attachment,
-          clearDeploymentSession: (id) => hostNetwork.clearDeploymentSession(id),
-          exchange: hostSessionExchange,
-          localOwner: personal,
-          oauth: nativeAuth,
-        });
-        sessionOwners.add(sessions);
+        const sessions = sessionsForAttachment(attachment);
         return {
           assertSessionAllowed: (deploymentId) => sessions.assertSessionAllowed(deploymentId),
           sessionEnded: (selected) => sessions.sessionEnded(selected),
@@ -734,7 +841,7 @@ async function runDesktop(
         profileRoot: input.profileRoot,
         runtimeId: input.runtimeId,
       }),
-    computerUse,
+    computerUse: computerUseForSlots,
     fork: (module, args, options) =>
       electronUtilityProcessFork(utilityProcess.fork)(module, args, {
         ...options,
@@ -1019,6 +1126,10 @@ async function runDesktop(
       },
       subscribe: (listener) => hostTransport.subscribe(listener),
     },
+    devices: {
+      joinedDeploymentIds: () => localRunner.joinedDeploymentIds(),
+      subscribe: (listener) => localRunner.subscribe(listener),
+    },
     direct: {
       addRoute: async (input) => {
         await directRoutes.add(input);
@@ -1053,11 +1164,11 @@ async function runDesktop(
     hostSession: {
       abandonAuthorization: (deploymentId) => hostSessions.abandonAuthorization(deploymentId),
       closeCurrent: async () => hostTransport.closeAllConnections(),
-      establish: (deploymentId) => hostSessions.establish(deploymentId),
+      establish: (deploymentId, interactive) => hostSessions.establish(deploymentId, interactive),
       subscribe: (listener) => hostSessions.subscribe(listener),
     },
     personal: {
-      start: () => personal.start(),
+      start: (input) => personal.start(input),
       // Read through, not copied: a status captured at wiring time would be
       // the supervisor's answer from before this app finished starting.
       get status() {
@@ -1142,7 +1253,14 @@ async function runDesktop(
       : null,
     teamSessions: loaded.config.accountUrl
       ? new DesktopTeamSessions({
-          entry: new NativeTeamEntry({ oauth: nativeAuth, catalog: deploymentCatalog }),
+          entry: new NativeTeamEntry({
+            oauth: nativeAuth,
+            verify: (origin) =>
+              verifyTeamEndpoint(origin, { fetch: serviceNetwork.fetch.bind(serviceNetwork) }),
+            catalog: deploymentCatalog,
+            bootstrap: (connection) =>
+              hostTransport.bootstrapTeam(connection.authority.document.deploymentId),
+          }),
           fetch: serviceNetwork.fetch.bind(serviceNetwork),
         })
       : null,
@@ -1174,6 +1292,7 @@ async function runDesktop(
     passkeys,
     localVisibility,
     access,
+    iphone: { service: iphone, setup: iphoneSetup },
     agentPhone: {
       adb: phoneAdb,
       chooseUsbDevice: (input, frame) => usbDevices.choose(input, frame),
@@ -1421,6 +1540,13 @@ async function runDesktop(
   const refreshOnSystemResume = () => {
     if (shutdown.requested) return;
     access.wake();
+    const iphoneResumeRevision = ++iphonePowerRevision;
+    void iphoneSuspension
+      .then(async () => {
+        if (!shutdown.requested && iphoneResumeRevision === iphonePowerRevision)
+          await iphone.resume();
+      })
+      .catch(() => reportEvent("desktop.iphone.resume-failed"));
     void localRunner
       .reconcile()
       .catch((error: unknown) => reportNonFatal("desktop.local-runner.resume-failed", error));

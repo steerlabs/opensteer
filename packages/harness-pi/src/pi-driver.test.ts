@@ -1,3 +1,4 @@
+import { createToolImageStore } from "@opensteer/harness";
 import { agentTools } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
@@ -57,8 +58,8 @@ import { PiHarnessConfigSchema, TESTED_PI_VERSION } from "./config.js";
 const noThreadContext = {
   teamTurnContext: null,
   assignment: null,
-  requesterTimeZone: null,
   threadState: { previousAssignment: null, previousRun: null },
+  startedAt: "2026-08-22T00:00:00.000Z",
 };
 
 const fakePi = fileURLToPath(new URL("./test-fixtures/fake-pi-rpc.mjs", import.meta.url));
@@ -740,6 +741,38 @@ describe("Pi sessions", () => {
     },
   );
 
+  it("rebinds a warm session with fresh user notices and stable system text", async () => {
+    const fixture = await setup();
+    const previous = new AbortController();
+    const session = await fixture.adapter.startSession({
+      ...fixture.context,
+      signal: previous.signal,
+    });
+    const instructionsPath = join(
+      fixture.context.threadStateDirectory,
+      "opensteer-instructions.md",
+    );
+    const stable = await readFile(instructionsPath, "utf8");
+    try {
+      await session.execute(fixture.turn("one"));
+      expect(await session.releaseForReuse?.()).toBe(true);
+      session.rebind?.({
+        ...fixture.context,
+        machineAccessNotice: "Computer offline",
+      });
+      previous.abort();
+      await session.execute(fixture.turn("two"));
+      const prompts = (await fixture.capture()).filter((entry) => entry.type === "prompt");
+      expect(prompts).toHaveLength(2);
+      expect(String(prompts[1]?.message)).toContain("Computer offline");
+      expect(await readFile(instructionsPath, "utf8")).toBe(stable);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+    expect(await session.releaseForReuse?.()).toBe(false);
+  });
+
   it("writes the extension and the instructions into Thread state at 0600", async () => {
     const fixture = await setup();
     const session = await fixture.adapter.startSession(fixture.context);
@@ -747,8 +780,8 @@ describe("Pi sessions", () => {
     const extensionPath = join(fixture.context.threadStateDirectory, piExtensionFileName);
     expect((await stat(extensionPath)).mode & 0o777).toBe(0o600);
     const extension = await readFile(extensionPath, "utf8");
-    expect(extension).toContain(noComputersNotice);
-    expect(extension).toContain("thread_read");
+    expect(extension).not.toContain(noComputersNotice);
+    expect(extension).toContain("opensteer_task_read");
     // No credential ever reaches the file the model's own commands could read.
     expect(extension).not.toContain(fixture.context.agentTools.token);
 
@@ -758,7 +791,7 @@ describe("Pi sessions", () => {
     );
     expect(instructions).toContain("Opensteer platform guide.");
     expect(instructions).toContain("Follow the workspace instructions.");
-    expect(instructions).toContain("thread_read");
+    expect(instructions).toContain("opensteer_task_read");
     await fixture.adapter.close();
   });
 
@@ -882,13 +915,16 @@ describe("Pi sessions", () => {
     const session = await fixture.adapter.startSession(fixture.context);
     const observer = observe(session.events);
     await session.execute(fixture.turn("Read the Thread"));
-    expect(calls).toEqual([{ args: { query: "recent" }, name: "thread_read" }]);
+    expect(calls).toEqual([{ args: { query: "recent" }, name: "opensteer_task_read" }]);
     const started = observer.events.find((event) => event.type === "tool.started");
     expect(started).toMatchObject({
-      data: { tool: { name: "thread_read", namespace: "opensteer" } },
+      data: { tool: { name: "opensteer_task_read", namespace: "opensteer" } },
     });
     expect(observer.events.find((event) => event.type === "tool.completed")).toMatchObject({
-      data: { isError: false, output: expect.objectContaining({ text: "served thread_read" }) },
+      data: {
+        isError: false,
+        output: expect.objectContaining({ text: "served opensteer_task_read" }),
+      },
     });
     await session.stop();
     await fixture.adapter.close();
@@ -917,32 +953,35 @@ describe("Pi sessions", () => {
   it("reads Opensteer's tools from a real MCP server over Streamable HTTP", async () => {
     const directory = await temporaryDirectory();
     const token = "os_secret_test_token";
-    const url = await startFakeMcpServer(directory, token, ["thread_read", "workspace_list"]);
+    const url = await startFakeMcpServer(directory, token, [
+      "opensteer_task_read",
+      "workspace_list",
+    ]);
     const connectOptions = { signal: new AbortController().signal, timeoutMs: 10_000 };
     expect(piToolCallTimeoutMs).toBe(heldToolCallTimeoutMs);
     const connection = await connectPiMcpServer(
-      { name: "opensteer", token, toolNames: ["thread_read"], url },
+      { name: "opensteer", token, toolNames: ["opensteer_task_read"], url },
       connectOptions,
     );
     try {
       const tools = await connection.listTools(connectOptions);
       // Only the declared tool is offered onward, whatever the server listed.
-      expect(tools.map((tool) => tool.name)).toEqual(["thread_read"]);
+      expect(tools.map((tool) => tool.name)).toEqual(["opensteer_task_read"]);
       expect(tools[0]?.inputSchema).toMatchObject({ required: ["query"], type: "object" });
       const result = await connection.callTool(
-        "thread_read",
+        "opensteer_task_read",
         { query: "hello" },
         new AbortController().signal,
       );
       expect(result).toEqual({
-        content: [{ text: "thread_read:hello", type: "text" }],
+        content: [{ text: "opensteer_task_read:hello", type: "text" }],
         isError: false,
       });
       await expect(
         connection.callTool("workspace_list", {}, new AbortController().signal),
       ).rejects.toThrow(/does not offer the tool/);
       const failure = await connection.callTool(
-        "thread_read",
+        "opensteer_task_read",
         { query: "fail" },
         new AbortController().signal,
       );
@@ -951,13 +990,13 @@ describe("Pi sessions", () => {
       // and images in exactly these shapes. The audio block has no place in
       // one, so it is left out rather than handed to a provider blind.
       const picture = await connection.callTool(
-        "thread_read",
+        "opensteer_task_read",
         { query: "picture" },
         new AbortController().signal,
       );
       expect(picture).toEqual({
         content: [
-          { text: "thread_read:observed", type: "text" },
+          { text: "opensteer_task_read:observed", type: "text" },
           { data: "aW1hZ2UtYnl0ZXM=", mimeType: "image/png", type: "image" },
         ],
         isError: false,
@@ -1394,7 +1433,7 @@ describe("Pi tool servers", () => {
       // The real connector, pointed at a server that answers the bearer and
       // then says nothing.
       const token = fixture.context.agentTools.token;
-      const url = await startFakeMcpServer(directory, token, ["thread_read"], stall);
+      const url = await startFakeMcpServer(directory, token, ["opensteer_task_read"], stall);
       fixture.connectMcpServer.value = (plan, options) =>
         connectPiMcpServer({ ...plan, url }, options);
       // The Host accepted the socket and said nothing; only Opensteer's own
@@ -1601,13 +1640,13 @@ describe("Pi inputs and instructions", () => {
     await fixture.adapter.close();
   });
 
-  it("puts the durable-history notice in front of the model when there is earlier history", () => {
+  it("keeps changing Run notices out of stable system instructions", () => {
     const context = {
       agentTools: {
         tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
         toolsRevision: "test-tools-v1",
         instructions: "Host Opensteer instructions",
-        skills: ["opensteer:threads"],
+        skills: ["opensteer:tasks"],
         token: "t",
         url: "https://host.example/mcp",
       },
@@ -1616,13 +1655,23 @@ describe("Pi inputs and instructions", () => {
       platformGuide: "Platform guide.",
     } as unknown as HarnessSessionContext;
     const tools: PiExtensionToolDefinition[] = [
-      { description: "d", inputSchema: {}, name: "thread_read", server: "opensteer" },
+      { description: "d", inputSchema: {}, name: "opensteer_task_read", server: "opensteer" },
     ];
     const text = piInstructions(context, tools);
     expect(text).toContain("Platform guide.");
     expect(text).toContain("Workspace instructions.");
-    expect(text).toContain("most recent 3 durable messages");
-    expect(text).toContain("thread_read");
+    expect(text).not.toContain("most recent 3 durable messages");
+    expect(
+      piInstructions(
+        {
+          ...context,
+          machineAccessNotice: "offline 4m",
+          historyWindow: { byteCount: 50, hasEarlier: true, itemCount: 9 },
+        },
+        tools,
+      ),
+    ).toBe(text);
+    expect(text).toContain("opensteer_task_read");
   });
 });
 
@@ -1692,7 +1741,7 @@ function testDriver(
 
 function fakeMcp(
   call: (name: string, args: unknown) => PiToolAnswer,
-  toolNames: readonly string[] = ["thread_read"],
+  toolNames: readonly string[] = ["opensteer_task_read"],
 ): PiMcpConnect {
   return async (plan) => {
     const connection: PiMcpConnection = {
@@ -1781,7 +1830,7 @@ async function setup(options: SetupOptions = {}): Promise<Fixture> {
       tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
       toolsRevision: "test-tools-v1",
       instructions: "Host Opensteer instructions",
-      skills: ["opensteer:threads"],
+      skills: ["opensteer:tasks"],
       token: "os_secret_agent_tools_token",
       url: "https://host.example/internal/v1/mcp",
     },
@@ -2179,4 +2228,29 @@ it("delivers distinct full names for two plugins and a loose review skill", asyn
     expect(payload).toContain(skill.path);
   }
   await fixture.adapter.close();
+});
+
+it("retains tool-result image files without provider base64", async () => {
+  const fixture = await setup({ scenario: "tool-image-output" });
+  const session = await fixture.adapter.startSession({
+    ...fixture.context,
+    imageStore: createToolImageStore(fixture.context.threadStateDirectory),
+  });
+  const observer = observe(session.events);
+  try {
+    await session.execute(fixture.turn("Show an image"));
+    await session.stop();
+    const event = observer.events.find(
+      (e) => e.type === "tool.completed" && e.data.callId === "image-1",
+    );
+    expect(event).toMatchObject({
+      data: {
+        output: { images: [{ path: expect.stringMatching(/\.png$/), mediaType: "image/png" }] },
+      },
+    });
+    expect(JSON.stringify(observer.events)).not.toContain("iVBORw0KGgoA");
+  } finally {
+    await session.stop();
+    await fixture.adapter.close();
+  }
 });

@@ -1,3 +1,4 @@
+import { TranscriptImageContext } from "@opensteer/client/react";
 import {
   conversationActivityTurn,
   formatClockTime,
@@ -6,7 +7,7 @@ import {
   visibleTranscript,
   withoutOwnAssignment,
   type HostClient,
-  type SurfaceDestination,
+  type TabDestination,
 } from "@opensteer/client/host";
 import { useHostSnapshot, useThreadInputQueue } from "@opensteer/client/react";
 import {
@@ -15,9 +16,9 @@ import {
   useNavigation,
   type StaticScreenProps,
 } from "@react-navigation/native";
-import { useCallback, useMemo, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
-import { surfaceRoute } from "../browser/surface-route.js";
+import { useOpenPlace } from "../tabs/viewer-open.js";
 import { color, space } from "../theme.js";
 import { TranscriptHostClientContext } from "../thread/attachment-views.js";
 import {
@@ -33,6 +34,7 @@ import { useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { useContentInsets } from "../ui/pane.js";
 import { useGutter } from "../ui/screen.js";
+import { readFailure, UnavailableState } from "../ui/unavailable-state.js";
 
 export type ConversationActivityScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -40,6 +42,9 @@ export type ConversationActivityScreenProps = StaticScreenProps<{
   /** The reply to show, by its turn's key. Absent, the reply under way or else the latest. */
   readonly turnKey?: string | undefined;
   readonly messageId?: string | undefined;
+  /** A Run a link named, found once the transcript around its first message is loaded. */
+  readonly runId?: string | undefined;
+  readonly anchorMessageId?: string | undefined;
 }>;
 
 /**
@@ -51,7 +56,7 @@ export type ConversationActivityScreenProps = StaticScreenProps<{
  * a route parameter, so a reply still being written keeps adding to it here.
  */
 export function ConversationActivityScreen(props: ConversationActivityScreenProps): ReactNode {
-  const { deploymentId, threadId, turnKey } = props.route.params;
+  const { anchorMessageId, deploymentId, runId, threadId, turnKey } = props.route.params;
   const { selection } = useMobileState();
   if (selection.deploymentId !== deploymentId || selection.hostClient === null) {
     return <Unavailable detail="This deployment is no longer open." />;
@@ -61,10 +66,48 @@ export function ConversationActivityScreen(props: ConversationActivityScreenProp
       messageId={props.route.params.messageId ?? null}
       deploymentId={deploymentId}
       hostClient={selection.hostClient}
+      run={runId && anchorMessageId ? { anchorMessageId, runId } : null}
       threadId={threadId}
       turnKey={turnKey ?? null}
     />
   );
+}
+
+type RunLoad = "loading" | "loaded" | "unavailable" | "offline" | "failed";
+
+/**
+ * A Run a link named may be from long ago: the conversation is held while
+ * this sheet is open, and when the Run is not among what is loaded, the
+ * window around its first message is read before deciding it is gone.
+ */
+function useRunLoad(
+  hostClient: HostClient,
+  threadId: string,
+  run: { readonly anchorMessageId: string; readonly runId: string } | null,
+  found: boolean,
+): { readonly state: RunLoad; readonly retry: () => void } {
+  const [state, setState] = useState<RunLoad>(run === null || found ? "loaded" : "loading");
+  const [attempt, setAttempt] = useState(0);
+  const foundNow = useRef(found);
+  foundNow.current = found;
+  useEffect(
+    () => (run === null ? undefined : hostClient.observeThread(threadId)),
+    [hostClient, run, threadId],
+  );
+  const anchor = run?.anchorMessageId ?? null;
+  useEffect(() => {
+    if (anchor === null || foundNow.current) return;
+    let current = true;
+    setState("loading");
+    hostClient.loadTranscriptAround(threadId, anchor).then(
+      () => current && setState("loaded"),
+      (error: unknown) => current && setState(readFailure(error)),
+    );
+    return () => {
+      current = false;
+    };
+  }, [anchor, attempt, hostClient, threadId]);
+  return { state, retry: () => setAttempt((count) => count + 1) };
 }
 
 function ReplyActivity(props: {
@@ -73,8 +116,9 @@ function ReplyActivity(props: {
   readonly threadId: string;
   readonly turnKey: string | null;
   readonly messageId: string | null;
+  readonly run: { readonly anchorMessageId: string; readonly runId: string } | null;
 }): ReactNode {
-  const { deploymentId, hostClient, threadId, turnKey } = props;
+  const { deploymentId, hostClient, run, threadId, turnKey } = props;
   const navigation = useNavigation();
   const { snapshot } = useHostSnapshot(hostClient);
   const queue = useThreadInputQueue(hostClient, threadId);
@@ -97,10 +141,15 @@ function ReplyActivity(props: {
     () =>
       conversationActivityTurn(
         groups,
-        turnKey === null ? { kind: "latest" } : { key: turnKey, kind: "turn" },
+        run !== null
+          ? { kind: "run", runId: run.runId }
+          : turnKey === null
+            ? { kind: "latest" }
+            : { key: turnKey, kind: "turn" },
       ),
-    [groups, turnKey],
+    [groups, run, turnKey],
   );
+  const load = useRunLoad(hostClient, threadId, run, activity !== null);
   const environment = snapshot.environments.find(({ id }) => id === thread?.environmentId);
   const engine = threadEngine(snapshot, threadId);
   const live = showsHostLive(snapshot) && environment?.status === "connected";
@@ -133,20 +182,33 @@ function ReplyActivity(props: {
     [deploymentId, focused, hostClient, navigation, threadId],
   );
   const memory = useRef(new Map<string, boolean>()).current;
+  const leave = useCallback(() => navigation.goBack(), [navigation]);
+  const openPlace = useOpenPlace(deploymentId, threadId, leave);
   const surfaces = useMemo<TranscriptSurfaces>(
     () => ({
       hostClient,
       threadId,
-      open: (destination: SurfaceDestination) => {
-        navigation.goBack();
-        navigation.dispatch(
-          StackActions.push("WorkspaceBrowser", surfaceRoute(deploymentId, threadId, destination)),
-        );
-      },
+      open: (destination: TabDestination) => openPlace(destination),
     }),
-    [deploymentId, hostClient, navigation, threadId],
+    [hostClient, openPlace, threadId],
   );
 
+  if (activity === null && run !== null) {
+    return load.state === "loading" ? (
+      <Frame status={null}>
+        <AppText role="secondary" tone="muted">
+          Loading…
+        </AppText>
+      </Frame>
+    ) : (
+      <View style={styles.sheet}>
+        <UnavailableState
+          onBack={() => navigation.goBack()}
+          onRetry={load.state === "offline" || load.state === "failed" ? load.retry : undefined}
+        />
+      </View>
+    );
+  }
   if (activity === null) {
     return turnKey === null ? (
       <Frame status={null}>
@@ -159,43 +221,45 @@ function ReplyActivity(props: {
     );
   }
   return (
-    <TaskScopeContext value={scope}>
-      <AgentEngine value={engine}>
-        <AgentGround value={color.surfaceElevated}>
-          <AgentMemoryContext value={memory}>
-            <TranscriptHostClientContext value={hostClient}>
-              <Frame
-                status={
-                  activity.live
-                    ? "Now"
-                    : activity.reply === null
-                      ? null
-                      : formatClockTime(activity.reply.createdAt)
-                }
-              >
-                <TranscriptSurfacesContext.Provider value={surfaces}>
-                  <ReplySurfaces turn={activity.turn} turnKey={activity.key} />
-                </TranscriptSurfacesContext.Provider>
-                {activity.steps.length === 0 ? (
-                  <AppText role="secondary" tone="muted">
-                    {activity.live ? "Nothing yet." : "Opensteer answered without any steps."}
-                  </AppText>
-                ) : (
-                  <ConversationSteps
-                    reveal={props.messageId}
-                    entries={activity.steps}
-                    highlightRequestId={null}
-                    live={live}
-                    onOpenStep={openStep}
-                    turn={activity.turn}
-                  />
-                )}
-              </Frame>
-            </TranscriptHostClientContext>
-          </AgentMemoryContext>
-        </AgentGround>
-      </AgentEngine>
-    </TaskScopeContext>
+    <TranscriptImageContext value={{ client: hostClient, threadId }}>
+      <TaskScopeContext value={scope}>
+        <AgentEngine value={engine}>
+          <AgentGround value={color.surfaceElevated}>
+            <AgentMemoryContext value={memory}>
+              <TranscriptHostClientContext value={hostClient}>
+                <Frame
+                  status={
+                    activity.live
+                      ? "Now"
+                      : activity.reply === null
+                        ? null
+                        : formatClockTime(activity.reply.createdAt)
+                  }
+                >
+                  <TranscriptSurfacesContext.Provider value={surfaces}>
+                    <ReplySurfaces turn={activity.turn} turnKey={activity.key} />
+                  </TranscriptSurfacesContext.Provider>
+                  {activity.steps.length === 0 ? (
+                    <AppText role="secondary" tone="muted">
+                      {activity.live ? "Nothing yet." : "Opensteer answered without any steps."}
+                    </AppText>
+                  ) : (
+                    <ConversationSteps
+                      reveal={props.messageId}
+                      entries={activity.steps}
+                      highlightRequestId={null}
+                      live={live}
+                      onOpenStep={openStep}
+                      turn={activity.turn}
+                    />
+                  )}
+                </Frame>
+              </TranscriptHostClientContext>
+            </AgentMemoryContext>
+          </AgentGround>
+        </AgentEngine>
+      </TaskScopeContext>
+    </TranscriptImageContext>
   );
 }
 

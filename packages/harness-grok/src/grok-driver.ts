@@ -103,6 +103,7 @@ const grokCapabilities: HarnessCapabilities = Object.freeze({
   steering: false,
   toolCalls: true,
   userInput: true,
+  warmReuse: true,
 });
 
 const grokAccessModes = [

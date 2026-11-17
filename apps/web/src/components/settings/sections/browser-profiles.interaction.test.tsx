@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
 
+import { RunnerIdSchema } from "@opensteer/core";
+
 import type { HostSnapshot } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { act } from "react";
@@ -45,12 +47,12 @@ describe("Settings → Browser profiles", () => {
       deletions: [
         {
           profileId: "bpr_deleted_offline",
-          computerId: "computer-delete",
+          computerId: RunnerIdSchema.parse("rnr_88888888-8888-4888-8888-888888888888"),
           state: "pending-computer",
         },
         {
           profileId: "bpr_deleted_restart",
-          computerId: "computer-delete",
+          computerId: RunnerIdSchema.parse("rnr_88888888-8888-4888-8888-888888888888"),
           state: "pending-restart",
         },
       ],
@@ -121,7 +123,14 @@ async function mount(
     ...base,
     browserProfileManageAvailable: input.manageable ?? true,
     browserProfileDeletions: input.deletions,
-    machines: [{ ...base.machines[0]!, id: "computer-delete", name: "Studio Mac" }],
+    machines: [
+      {
+        ...base.machines[0]!,
+        id: "computer-delete",
+        selfRunnerId: RunnerIdSchema.parse("rnr_88888888-8888-4888-8888-888888888888"),
+        name: "Studio Mac",
+      },
+    ],
     browserProfiles: [
       { homeRunnerId: null, id: "bpr_work", name: "Work" },
       { homeRunnerId: null, id: "bpr_shopping", name: "Shopping" },

@@ -75,12 +75,16 @@ runtime.attach = async (ticket, sink) => {
     const metadata = z
       .object({
         type: z.string(),
+        action: z.string().optional(),
+        code: z.string().optional(),
         operationId: z.string().optional(),
         part: z.object({ operationId: z.string(), index: z.number(), data: z.string() }).optional(),
       })
       .parse(JSON.parse(frame.toString()));
     const facts = {
       type: metadata.type,
+      action: metadata.action,
+      code: metadata.code,
       operationId: metadata.operationId ?? metadata.part?.operationId,
       ...(metadata.part
         ? { index: metadata.part.index, bytes: Buffer.from(metadata.part.data, "base64").length }

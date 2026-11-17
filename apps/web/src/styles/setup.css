@@ -431,6 +431,87 @@
   color: var(--amber-text);
 }
 
+/* Turning on Connect, one line per step: done, now, next. */
+.setup-checks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.setup-checks__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  color: var(--muted);
+  font-size: var(--text-md);
+  transition: color var(--duration-med) var(--ease-out);
+}
+
+.setup-checks__item--done {
+  color: var(--text-soft);
+}
+
+.setup-checks__item--active {
+  color: var(--text);
+  font-weight: var(--weight-medium);
+}
+
+.setup-checks__mark {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border: 1.5px solid var(--line-hover);
+  border-radius: var(--radius-full);
+  transition:
+    background-color var(--duration-med) var(--ease-out),
+    border-color var(--duration-med) var(--ease-out);
+}
+
+.setup-checks__item--active .setup-checks__mark {
+  border-color: var(--line-hover);
+  border-top-color: var(--ember);
+  animation: spin 0.8s linear infinite;
+}
+
+.setup-checks__item--done .setup-checks__mark {
+  border-color: var(--green-line);
+  background: var(--green-wash);
+}
+
+.setup-checks__item--done .setup-checks__mark::after {
+  content: "";
+  position: absolute;
+  left: 3.5px;
+  top: 3px;
+  width: 5px;
+  height: 3px;
+  border-left: 1.5px solid var(--green);
+  border-bottom: 1.5px solid var(--green);
+  transform: rotate(-45deg);
+}
+
+/* Its label lines up under the steps' marks. */
+.setup-panel__cancel {
+  margin: var(--space-8) 0 0 calc(-1 * var(--space-10));
+  color: var(--muted);
+}
+
+/* The footer's one action keeps its width while it works. */
+.setup-action {
+  gap: var(--space-8);
+}
+
+.setup-action .spinner {
+  width: 12px;
+  height: 12px;
+  border-color: color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+}
+
 /* A code a phone's camera reads: dark on light, whatever the theme. */
 .setup-scan {
   display: flex;
@@ -611,7 +692,13 @@
 
   .setup-meter::after,
   .setup-radio,
-  .setup-progress__segment {
+  .setup-progress__segment,
+  .setup-checks__item,
+  .setup-checks__mark {
     transition: none;
+  }
+
+  .setup-checks__item--active .setup-checks__mark {
+    animation: none;
   }
 }

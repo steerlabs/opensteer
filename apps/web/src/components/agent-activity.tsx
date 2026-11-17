@@ -1,9 +1,12 @@
+import { TranscriptImageContext } from "@opensteer/client/react";
+import { AssetImage } from "./asset-image.js";
+import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
 import { TeamInputSource } from "../team/task-source-chip.js";
 import { useToolOutput } from "@opensteer/client/react";
 import { copyText } from "@opensteer/shared/clipboard";
-import { placeIdentityKey, voiceCallSeed } from "@opensteer/core";
+import { voiceCallSeed } from "@opensteer/core";
 import { AppCard } from "./apps/app-card.js";
-import { AppMark } from "./computer-apps/computer-use-section.js";
+import { AppMark } from "./computer-apps/app-icons.js";
 import { useTaskSnapshot } from "./task-rows.js";
 import { taskMark, threadMark } from "@opensteer/client/host";
 import {
@@ -24,8 +27,9 @@ import {
   type SetStateAction,
 } from "react";
 import {
-  type BrowserSessionSummary,
+  TabStore,
   type BrowserSessionUseSummary,
+  type HostSnapshot,
   incomingMessageAction,
   activityStepHead,
   conversationActivities,
@@ -104,6 +108,8 @@ import {
   MessageAttachments,
 } from "./attachments/message-attachments.js";
 import { CopyMark } from "./copy-mark.js";
+import type { MarkdownProfile } from "./markdown.js";
+import { readableMarkdown } from "./references/readable-markdown.js";
 import { Dialog } from "./dialog.js";
 import { Icon, type IconName } from "./icon.js";
 import { LoadingRows } from "./loading-rows.js";
@@ -123,6 +129,7 @@ import { TaskMark, AgentOrb } from "./workspace/task-mark.js";
 import { automationPath, useMediaQuery } from "../ui-utils.js";
 import { AreaLink } from "./workspace/area-link.js";
 import { DelegationLine } from "./task-line.js";
+import { EditedMark } from "./message-revisions.js";
 import { AgentFolds, AgentGroupRow, AgentRow, AgentsLive, WorkflowRow } from "./subagent-rows.js";
 
 // Fetched with this module, not when a reply is first drawn: until it lands a
@@ -180,7 +187,10 @@ const TaskViews = createContext<TaskRenderer | undefined>(undefined);
 /** The reader's Home: a message from it leads to Home itself, not to a Thread page. */
 /** Every browser this reader can see, which a Run's pages are looked up in. */
 const TranscriptBrowserUses = createContext<readonly BrowserSessionUseSummary[]>([]);
-const TranscriptBrowsers = createContext<readonly BrowserSessionSummary[]>([]);
+/** The person's tabs, as links in the transcript open them; a new object on every tab change. */
+export type TranscriptTabSource = Pick<HostSnapshot, "tabs" | "browserProfiles">;
+const noTabs: TranscriptTabSource = { tabs: new TabStore(), browserProfiles: [] };
+const TranscriptBrowsers = createContext<TranscriptTabSource>(noTabs);
 /** Whose transcript this is and the reader's Workspaces, which say who speaks in it. */
 const Speakers = createContext<{
   readonly threadId: string | null;
@@ -247,7 +257,6 @@ function useAgentSource(
 const noWaitingRequests: readonly WaitingRequest[] = [];
 const noAssignments: Readonly<Record<string, AssignmentSummary>> = {};
 const noBrowserUses: readonly BrowserSessionUseSummary[] = [];
-const noBrowsers: readonly BrowserSessionSummary[] = [];
 
 /**
  * The agent's side of the conversation.
@@ -264,7 +273,7 @@ export function AgentTranscript({
   entries,
   waitingRequests = noWaitingRequests,
   assignments = noAssignments,
-  browserSessions = noBrowsers,
+  browserSessions = noTabs,
   browserUses = noBrowserUses,
   activityOwner = null,
   onOpenActivity,
@@ -298,7 +307,7 @@ export function AgentTranscript({
   entries: readonly TranscriptEntry[];
   waitingRequests?: readonly WaitingRequest[];
   assignments?: Readonly<Record<string, AssignmentSummary>>;
-  browserSessions?: readonly BrowserSessionSummary[];
+  browserSessions?: TranscriptTabSource;
   browserUses?: readonly BrowserSessionUseSummary[];
   /**
    * Given, each reply in a conversation that did anything on the way offers
@@ -424,56 +433,68 @@ export function AgentTranscript({
                                 <TranscriptBrowserUses value={browserUses}>
                                   <TranscriptBrowsers value={browserSessions}>
                                     <Speakers value={speakers}>
-                                      {rows.map(({ group, key }, index) => (
-                                        <Fragment key={key}>
-                                          {places?.[index]?.time ? (
-                                            <p className="transcript__time">{places[index].time}</p>
-                                          ) : null}
-                                          <div
-                                            className="transcript__row"
-                                            data-continued={places?.[index]?.continued || undefined}
-                                            data-joined={places?.[index]?.joined || undefined}
-                                            data-transcript-row={key}
-                                          >
-                                            {group.kind === "app" ? (
-                                              <AppCard entry={group.entry} />
-                                            ) : group.kind === "turn" ? (
-                                              <TurnView
-                                                turn={group.turn}
-                                                turnKey={group.key}
-                                                reveal={revealMessage}
-                                              />
-                                            ) : group.kind === "delegation" ? (
-                                              <DelegationNotice delegation={group.entry} />
-                                            ) : group.kind === "assignment" ? (
-                                              renderTask?.([group.entry])
-                                            ) : (
-                                              <TranscriptMessage
-                                                joinedRun={group.joinedRun === true}
-                                                reveal={
-                                                  revealMessage?.id === group.entry.id
-                                                    ? revealMessage
-                                                    : null
-                                                }
-                                                message={group.entry}
-                                                viewerUserId={viewerUserId}
-                                              />
-                                            )}
+                                      <TranscriptImageContext
+                                        value={
+                                          attachmentReader && threadId
+                                            ? { client: attachmentReader, threadId }
+                                            : null
+                                        }
+                                      >
+                                        {rows.map(({ group, key }, index) => (
+                                          <Fragment key={key}>
+                                            {places?.[index]?.time ? (
+                                              <p className="transcript__time">
+                                                {places[index].time}
+                                              </p>
+                                            ) : null}
+                                            <div
+                                              className="transcript__row"
+                                              data-continued={
+                                                places?.[index]?.continued || undefined
+                                              }
+                                              data-joined={places?.[index]?.joined || undefined}
+                                              data-transcript-row={key}
+                                            >
+                                              {group.kind === "app" ? (
+                                                <AppCard entry={group.entry} />
+                                              ) : group.kind === "turn" ? (
+                                                <TurnView
+                                                  turn={group.turn}
+                                                  turnKey={group.key}
+                                                  reveal={revealMessage}
+                                                />
+                                              ) : group.kind === "delegation" ? (
+                                                <DelegationNotice delegation={group.entry} />
+                                              ) : group.kind === "assignment" ? (
+                                                renderTask?.([group.entry])
+                                              ) : (
+                                                <TranscriptMessage
+                                                  joinedRun={group.joinedRun === true}
+                                                  reveal={
+                                                    revealMessage?.id === group.entry.id
+                                                      ? revealMessage
+                                                      : null
+                                                  }
+                                                  message={group.entry}
+                                                  viewerUserId={viewerUserId}
+                                                />
+                                              )}
+                                            </div>
+                                          </Fragment>
+                                        ))}
+                                        {indicator === null ? null : indicator.kind === "typing" ? (
+                                          // No turn has begun, so there is no Activity to open yet.
+                                          <div className="turn turn--conversation">
+                                            <Typing />
                                           </div>
-                                        </Fragment>
-                                      ))}
-                                      {indicator === null ? null : indicator.kind === "typing" ? (
-                                        // No turn has begun, so there is no Activity to open yet.
-                                        <div className="turn turn--conversation">
-                                          <Typing />
-                                        </div>
-                                      ) : (
-                                        <WorkingIndicator label={indicator.label} />
-                                      )}
-                                      {passwordsOffer === null
-                                        ? null
-                                        : renderPasswordsSuggestion?.(passwordsOffer)}
-                                      {queued}
+                                        ) : (
+                                          <WorkingIndicator label={indicator.label} />
+                                        )}
+                                        {passwordsOffer === null
+                                          ? null
+                                          : renderPasswordsSuggestion?.(passwordsOffer)}
+                                        {queued}
+                                      </TranscriptImageContext>
                                     </Speakers>
                                   </TranscriptBrowsers>
                                 </TranscriptBrowserUses>
@@ -520,6 +541,11 @@ function TurnView({
     handledReveal.current = reveal;
     if (hiddenTarget) setChosen(true);
   }, [conversation, reveal, hiddenTarget, targetInWork]);
+  if (
+    turn.run?.compaction &&
+    (turn.run.compaction.reason === "idle" || turn.run.compaction.reason === "before-send")
+  )
+    return <CompactionDivider run={turn.run} />;
   if (conversation) return <ConversationTurn turn={turn} turnKey={turnKey} />;
   const spoken = turn.reply ?? turn.work.find((entry) => entry.kind === "message");
   const outcome = turn.run !== null && showsRunOutcome(turn.run);
@@ -528,6 +554,7 @@ function TurnView({
   const placesUnderOutcome = placesShown && outcome && turn.reply === null;
   return (
     <div className="turn" data-run-id={turn.runId ?? undefined}>
+      {turn.run?.compaction ? <CompactionDivider run={turn.run} /> : null}
       <AgentByline author={spoken?.kind === "message" ? spoken.author : null} />
       <TurnContent
         fold={turnFolds(turn) ? { open, onToggle: () => setChosen(!open) } : undefined}
@@ -865,6 +892,7 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   // only this screen knows: a Mac session it is not shown, or tasks it has no
   // card for.
   if (
+    !turn.run?.compaction &&
     !now &&
     !kept &&
     !composing &&
@@ -878,6 +906,7 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
     return null;
   return (
     <div className="turn turn--conversation">
+      {turn.run?.compaction ? <CompactionDivider run={turn.run} /> : null}
       {now ? (
         <ComputerUseLine key={now.session.sessionId} now={now} />
       ) : kept ? (
@@ -935,18 +964,17 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
 function ReplySurfaces({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   const uses = useContext(TranscriptBrowserUses);
   const sessions = useContext(TranscriptBrowsers);
-  const computers = useContext(ReaderComputers);
   const whole = useContext(ActivityOfTurn).get(turnKey)?.turn ?? turn;
   const surfaces = useMemo(
     () =>
-      replyPlaces(whole, uses, sessions, computers?.machines ?? []).map((place) =>
+      replyPlaces(whole, uses, sessions).map((place) =>
         place.kind === "page"
-          ? pageChip(place.page, sessions)
+          ? pageChip(place.page)
           : place.kind === "phone"
             ? phoneChip(place.phone)
             : appChip(place.app),
       ),
-    [computers?.machines, uses, sessions, whole],
+    [uses, sessions, whole],
   );
   return <SurfaceChips label="Pages and apps this reply used" surfaces={surfaces} />;
 }
@@ -1064,7 +1092,13 @@ function ReplyBubblePart({
         {part.kind === "draft" ? (
           part.text
         ) : (
-          <Suspense fallback={<p className="md-prose md-prose--plain">{part.text}</p>}>
+          <Suspense
+            fallback={
+              <p className="md-prose md-prose--plain">
+                {part.kind === "code" ? part.text : readableMarkdown(part.text)}
+              </p>
+            }
+          >
             <Markdown
               bare={part.kind === "code"}
               text={part.kind === "code" ? part.source : part.text}
@@ -1253,7 +1287,7 @@ function Typing({ turnKey = null }: { turnKey?: string | null }) {
  */
 export function ConversationActivity({
   anchor,
-  browserSessions = noBrowsers,
+  browserSessions = noTabs,
   browserUses = noBrowserUses,
   entries,
   id,
@@ -1268,7 +1302,7 @@ export function ConversationActivity({
 }: {
   /** What the panel hangs from beside the conversation: the control that holds it, or the header. */
   anchor: HTMLElement;
-  browserSessions?: readonly BrowserSessionSummary[];
+  browserSessions?: TranscriptTabSource;
   browserUses?: readonly BrowserSessionUseSummary[];
   /** The conversation as it is drawn. */
   entries: readonly TranscriptEntry[];
@@ -1565,22 +1599,16 @@ function TracePlace({
   markOnly?: boolean;
 }) {
   const sessions = useContext(TranscriptBrowsers);
-  const { threadId } = useContext(Speakers);
-  const computers = useContext(ReaderComputers);
-  const place = useMemo(
-    () => placeReply(entry, sessions, computers?.machines ?? [], threadId),
-    [entry, sessions, computers?.machines, threadId],
-  );
+  const place = useMemo(() => placeReply(entry, sessions), [entry, sessions]);
   const page =
     place.kind === "page"
-      ? pageChip(place.page, sessions)
+      ? pageChip(place.page)
       : place.kind === "app"
         ? appChip(place.app)
         : phoneChip(place.phone);
-  // An agent is in one tab at a time, so only the turn's latest stop can be live.
+  // An agent is in one tab at a time: the live turn's latest stop, while its tab is listed.
   const acting =
     turnState(turn) !== "settled" &&
-    page.acting &&
     !page.ended &&
     turn.work.findLast((work) => work.kind === "place") === entry;
   if (markOnly)
@@ -1694,7 +1722,11 @@ export function SubagentSteps({
                   key={part.entry.id}
                 >
                   <Suspense
-                    fallback={<p className="md-prose md-prose--plain">{part.entry.text}</p>}
+                    fallback={
+                      <p className="md-prose md-prose--plain">
+                        {readableMarkdown(part.entry.text)}
+                      </p>
+                    }
                   >
                     <Markdown text={part.entry.text} />
                   </Suspense>
@@ -1727,10 +1759,7 @@ function StepsRow({ row, turn }: { row: Extract<WorkRow, { kind: "steps" }>; tur
         places={row.places.slice(0, 3).map((entry) => (
           <TracePlace
             entry={
-              row.currentPlace &&
-              placeIdentityKey(row.currentPlace.place) === placeIdentityKey(entry.place)
-                ? row.currentPlace
-                : entry
+              row.currentPlace && row.currentPlace.tabId === entry.tabId ? row.currentPlace : entry
             }
             turn={turn}
             markOnly
@@ -1780,7 +1809,9 @@ function Reasoning({ entry, active }: { entry: ReasoningEntry; active: boolean }
       <StepHead head={activityStepHead(entry)} onToggle={() => setOpen(!open)} open={open} />
       {open ? (
         <div className="trace-step__thought">
-          <Suspense fallback={<p className="md-prose md-prose--plain">{entry.text}</p>}>
+          <Suspense
+            fallback={<p className="md-prose md-prose--plain">{readableMarkdown(entry.text)}</p>}
+          >
             <Markdown text={entry.text} />
           </Suspense>
         </div>
@@ -1839,6 +1870,11 @@ function ToolDetail({ tool: preview }: { tool: ToolEntry }) {
   const Section = body.collapsed ? DisclosedSection : OpenSection;
   return (
     <div className="trace-step__body">
+      <TranscriptImageContext value={client && threadId ? { client, threadId } : null}>
+        {tool.output?.images?.map((image) => (
+          <AssetImage key={image.path} path={image.path} />
+        ))}
+      </TranscriptImageContext>
       {body.summary ? <p className="trace-step__summary">{body.summary}</p> : null}
       {body.command ? <pre className="trace-code trace-code--command">{body.command}</pre> : null}
       {body.argumentsText ? <Section label="Input" text={body.argumentsText} /> : null}
@@ -2036,7 +2072,9 @@ function Reply({
   return (
     <div aria-busy={streaming} className="msg--assistant__body" data-message-id={message.id}>
       {message.body ? (
-        <Suspense fallback={<p className="md-prose md-prose--plain">{message.body}</p>}>
+        <Suspense
+          fallback={<p className="md-prose md-prose--plain">{readableMarkdown(message.body)}</p>}
+        >
           <Markdown streaming={streaming} text={message.body} />
         </Suspense>
       ) : null}
@@ -2142,6 +2180,35 @@ function SteerMark() {
   );
 }
 
+/**
+ * The edit mark on a message a Run took, which still opens its versions; a
+ * waiting message's row carries its own. Without a Host to ask, only the words.
+ */
+function TranscriptEditMark({
+  label,
+  message,
+  viewerUserId,
+}: {
+  label: string;
+  message: MessageEntry & { edit: NonNullable<MessageEntry["edit"]> };
+  viewerUserId: string | null;
+}) {
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
+  return client && threadId ? (
+    <EditedMark
+      client={client}
+      edit={message.edit}
+      label={label}
+      messageId={message.id}
+      threadId={threadId}
+      viewerUserId={viewerUserId}
+    />
+  ) : (
+    label
+  );
+}
+
 /** The reader's own message: their words in full, folded only once they run long. */
 function OwnMessage({
   message,
@@ -2174,6 +2241,13 @@ function OwnMessage({
         <div className={arrived ? "msg--user-line msg--user-line--arrived" : "msg--user-line"}>
           {queued ? null : (
             <div className="reply__marks">
+              {message.edit ? (
+                <TranscriptEditMark
+                  label="Edited"
+                  message={{ ...message, edit: message.edit }}
+                  viewerUserId={viewerUserId}
+                />
+              ) : null}
               <CopyMark label="Copy message" text={message.body} />
             </div>
           )}
@@ -2183,7 +2257,7 @@ function OwnMessage({
               onOpenChange={setOpen}
               open={open}
             >
-              {message.body}
+              <PersonWords text={message.body} />
             </MessageFold>
           </div>
         </div>
@@ -2198,6 +2272,22 @@ function OwnMessage({
   );
 }
 
+/**
+ * A person's own words, as the Markdown they typed: a reference reads as its
+ * chip. Until the renderer arrives they read as words, each link as its label.
+ */
+function PersonWords({ text }: { readonly text: string }) {
+  return (
+    <Suspense
+      fallback={
+        <p className="md-prose md-prose--plain md-prose--person">{readableMarkdown(text)}</p>
+      }
+    >
+      <Markdown profile="person" text={text} />
+    </Suspense>
+  );
+}
+
 /** The pages a person included with their message, above its words. */
 function MessagePages({ pages }: { pages: readonly BrowserPageContentPart[] }) {
   const sessions = useContext(TranscriptBrowsers);
@@ -2207,7 +2297,7 @@ function MessagePages({ pages }: { pages: readonly BrowserPageContentPart[] }) {
       {pages.map((part) => (
         <SurfaceChip
           key={`${part.sessionId}:${part.tabId}`}
-          surface={pageChip(messagePages([part], sessions)[0]!, sessions)}
+          surface={pageChip(messagePages([part], sessions)[0]!)}
           withSite
         />
       ))}
@@ -2296,7 +2386,11 @@ function RecoveryNote({
         <div className="update-line__body" id={bodyId}>
           <MessageAttachments attachments={message.attachments ?? []} />
           {message.body ? (
-            <Suspense fallback={<p className="md-prose md-prose--plain">{message.body}</p>}>
+            <Suspense
+              fallback={
+                <p className="md-prose md-prose--plain">{readableMarkdown(message.body)}</p>
+              }
+            >
               <Markdown text={message.body} />
             </Suspense>
           ) : null}
@@ -2343,6 +2437,7 @@ function updateSource(author: UpdateAuthor): {
     case "watch":
       return { glyph: "bolt", href: automationPath(author.triggerId), name };
     case "connection":
+    case "team-member":
     case "platform":
       return { glyph: "message", href: null, name };
   }
@@ -2407,7 +2502,23 @@ function InputMessage({
           ) : (
             <span className="input-card__sender">{sender}</span>
           )}
-          {action ? <span className="input-card__action">{action}</span> : null}
+          {action ? (
+            <span className="input-card__action">{action}</span>
+          ) : message.edit?.ownerEdited ? (
+            // An ask its owner reworded before approving is no longer only its sender's words.
+            <span className="input-card__action">
+              ·{" "}
+              {queued ? (
+                "edited by you"
+              ) : (
+                <TranscriptEditMark
+                  label="edited by you"
+                  message={{ ...message, edit: message.edit }}
+                  viewerUserId={viewerUserId}
+                />
+              )}
+            </span>
+          ) : null}
           {message.body && !queued ? (
             <CopyMark className="input-card__copy" label="Copy message" text={message.body} />
           ) : null}
@@ -2421,8 +2532,16 @@ function InputMessage({
             open={open}
           >
             {source.markdown ? (
-              <Suspense fallback={<p className="md-prose md-prose--plain">{body}</p>}>
-                <Markdown text={body} />
+              <Suspense
+                fallback={
+                  <p
+                    className={`md-prose md-prose--plain${source.markdown === "person" ? " md-prose--person" : ""}`}
+                  >
+                    {readableMarkdown(body)}
+                  </p>
+                }
+              >
+                <Markdown profile={source.markdown} text={body} />
               </Suspense>
             ) : (
               <p className="input-card__plain">{body}</p>
@@ -2447,7 +2566,8 @@ function InputMessage({
 function inputSource(message: MessageEntry): {
   glyph: ReactNode;
   href: string | null;
-  markdown: boolean;
+  /** How its words read: an agent's or a person's Markdown, or plain words. */
+  markdown: MarkdownProfile | null;
   name: string;
 } {
   const { author } = message;
@@ -2457,7 +2577,7 @@ function inputSource(message: MessageEntry): {
       return {
         glyph: <SenderTaskMark threadId={author.threadId} />,
         href: `/tasks/${author.threadId}`,
-        markdown: true,
+        markdown: "assistant",
         name,
       };
     case "trigger":
@@ -2469,11 +2589,12 @@ function inputSource(message: MessageEntry): {
           </span>
         ),
         href: automationPath(author.triggerId),
-        markdown: true,
+        markdown: "assistant",
         name,
       };
     case "connection":
-      return { glyph: null, href: null, markdown: true, name };
+    case "team-member":
+      return { glyph: null, href: null, markdown: "assistant", name };
     case "human":
       return {
         glyph: (
@@ -2482,12 +2603,12 @@ function inputSource(message: MessageEntry): {
           </span>
         ),
         href: null,
-        markdown: false,
+        markdown: "person",
         name,
       };
     case "platform":
       // The schema forbids platform-authored input; typed for exhaustiveness.
-      return { glyph: null, href: null, markdown: false, name };
+      return { glyph: null, href: null, markdown: null, name };
   }
 }
 
@@ -2610,4 +2731,39 @@ function TeamDelivery({ run }: { readonly run: RunEntry }) {
   const delivery = run.delivery;
   if (!delivery) return null;
   return <small className="team-run-delivery">{teamDeliveryLabel(delivery, channelName)}</small>;
+}
+
+function CompactionDivider({ run }: { run: RunEntry }) {
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!run.compaction) return null;
+  return (
+    <div className="run-restart" role="status">
+      <details>
+        <summary title={compactionDisclosure}>{compactionLabel(run.compaction)}</summary>
+        <p>{compactionDisclosure}</p>
+      </details>
+      {run.compaction.status === "running" && client && threadId ? (
+        <button
+          className="btn btn--small btn--ghost"
+          disabled={busy}
+          type="button"
+          onClick={() => {
+            setBusy(true);
+            void client
+              .stopRun(threadId)
+              .catch((e: unknown) =>
+                setError(e instanceof Error ? e.message : "Could not stop summary."),
+              )
+              .finally(() => setBusy(false));
+          }}
+        >
+          Stop
+        </button>
+      ) : null}
+      {error ? <span role="alert">{error}</span> : null}
+    </div>
+  );
 }

@@ -3,6 +3,7 @@ import { useThreadVisits } from "@opensteer/client/react";
 import { ThreadServerApprovals } from "./computer-apps/thread-server-approvals.js";
 import { threadMark, type PasswordsSetupOffer } from "@opensteer/client/host";
 import { observeResize } from "@opensteer/shared/resizeObserver";
+import { readTail, type TailReading } from "@opensteer/shared/tailFollow";
 import {
   useCallback,
   useContext,
@@ -14,7 +15,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { Navigate, useLocation, useParams, useSearchParams } from "react-router";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import { placeContentLabel, type ModelSelection, type Request } from "@opensteer/core";
 import {
   type ConversationActivitySelection,
@@ -51,8 +52,13 @@ import {
   type TranscriptEntry,
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
-import { useThreadInputQueue } from "@opensteer/client/react";
-import { fromLivePage, useMediaQuery, useWindowInForeground } from "../ui-utils.js";
+import {
+  useRunPage,
+  useTabsRevision,
+  useThreadInputQueue,
+  useWaitingInputs,
+} from "@opensteer/client/react";
+import { fromLivePage, useMediaQuery, usePageVisible, useWindowInForeground } from "../ui-utils.js";
 import { AgentTranscript, ConversationActivity } from "./agent-activity.js";
 import { useShell } from "./app-shell.js";
 import { ExecutionControls } from "./execution-controls.js";
@@ -79,18 +85,24 @@ import type { ComposerQuote, ComposerRestore } from "./composer.js";
 import { InputSurface, RequestStack, focusOpenRequest, useRequestDock } from "./input-surface.js";
 import { useVoiceOn } from "@opensteer/client/react";
 import { VoiceStart } from "./voice.js";
-import { QueuedMessages } from "./queued-messages.js";
+import { usePendingSends } from "./pending-sends.js";
+import { WaitingInputs } from "./waiting-inputs.js";
 import { setThreadReading } from "./thread-reading.js";
 import { ThreadFind } from "./thread-find.js";
 import { BrandMark } from "./brand.js";
 import { useVisualViewportKeyboardInset } from "./visual-viewport-keyboard.js";
 import { ConversationHeader } from "./workspace/conversation-header.js";
 import { useBarYield } from "./workspace/bar-yield.js";
-import { RunPage, useRunPage } from "./workspace/run-page.js";
-import { LivePlace } from "./workspace/viewfinder.js";
+import { destinationPlaceKey } from "./workspace/navigation.js";
+import { meteredConnection, RunPage, useRoom, useTypingHere } from "./workspace/run-page.js";
+import { RunPlacePictureScope, useDisplayDecoding } from "./workspace/run-place-picture.js";
+import { LivePlace, useRunPlaceView } from "./workspace/viewfinder.js";
 import { useWorkspace } from "./workspace/workspace-context.js";
 import { TaskMark, TaskState, taskStateWords } from "./workspace/task-mark.js";
 import { useTaskDirectory } from "./workspace/task-directory.js";
+import { PersonalReferences } from "./references/reference-scope.js";
+import { Unavailable } from "./references/unavailable.js";
+import { notFound, useLinkedRequest } from "./references/linked-request.js";
 
 export function ThreadRoute() {
   const { threadId } = useParams();
@@ -100,14 +112,40 @@ export function ThreadRoute() {
 /** One task, wherever it is reached from: a row, a link, Voice. */
 export function ThreadSurface({ threadId }: { readonly threadId: string | null }) {
   const { hostClient, placements, snapshot } = useShell();
+  const { nav } = useWorkspace();
+  const navigate = useNavigate();
   const thread = snapshot.threads.find((candidate) => candidate.id === threadId) ?? null;
+  const missing =
+    thread === null && threadId !== null && snapshot.threadLookups[threadId] === "missing";
   useEffect(() => {
     if (threadId) hostClient.activateThread(threadId);
   }, [hostClient, threadId, thread?.id]);
+  // Back to where the reader came from, or Home when a link opened the app here.
+  const back = () => {
+    const state: unknown = window.history.state;
+    if (typeof state === "object" && state && "idx" in state && Number(state.idx) > 0)
+      void navigate(-1);
+    else nav.openConversation("/", { replace: true });
+  };
 
   if (!thread) {
-    if (threadId && snapshot.threadLookups[threadId] === "missing")
-      return <Navigate replace to="/" />;
+    // A link to a task that was deleted, or that this reader may not see, says so.
+    if (missing)
+      return (
+        <div className="thread">
+          <Unavailable onBack={back} />
+        </div>
+      );
+    if (
+      threadId &&
+      snapshot.threadLookups[threadId] === "failed" &&
+      snapshot.connection !== "connected"
+    )
+      return (
+        <div className="thread">
+          <Unavailable offline onBack={back} onRetry={() => hostClient.activateThread(threadId)} />
+        </div>
+      );
     if (threadId && snapshot.threadLookups[threadId] === "failed")
       return (
         <div className="thread">
@@ -180,7 +218,7 @@ function ThreadView({
   thread,
 }: ThreadViewProps) {
   const teamSource = useTaskSourceView(thread.teamOrigin);
-  const { nav, phone, selection, work } = useWorkspace();
+  const { dock: workspaceDock, nav, phone, selection, work } = useWorkspace();
   // A subagent opened from this conversation: in its column, or beside it when it stands alone and wide.
   const [searchParams] = useSearchParams();
   const openedNode = searchParams.get("subagent");
@@ -207,8 +245,9 @@ function ThreadView({
   const phoneStageRef = useRef(phoneStage);
   phoneStageRef.current = phoneStage;
   const currentScroller = () => (phoneStageRef.current ? bodyRef.current : scrollRef.current);
-  const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const followsTailRef = useRef(true);
+  const composerInputRef = useRef<HTMLElement | null>(null);
+  // Whether new content keeps the reader at the foot, and where the scroller stood when last read.
+  const tailRef = useRef<TailReading>({ follows: true, offset: 0 });
   const scrollGeometryRef = useRef<{
     readonly scroller: HTMLElement;
     readonly height: number;
@@ -233,6 +272,11 @@ function ThreadView({
   // is not the conversation's tail and nothing here may claim it is.
   const [historical, setHistorical] = useState(false);
   const [revealMessage, setRevealMessage] = useState<{ readonly id: string } | null>(null);
+  // A message a link named that this conversation no longer holds, or could not reach.
+  const [missingMessage, setMissingMessage] = useState<{
+    readonly id: string;
+    readonly offline: boolean;
+  } | null>(null);
   const [returning, setReturning] = useState(false);
   const [switchingAccount, setSwitchingAccount] = useState(false);
   const [finding, setFinding] = useState(false);
@@ -251,8 +295,8 @@ function ThreadView({
   const [activityOwnerAnchor, setActivityOwnerAnchor] = useState<HTMLElement | null>(null);
   const activityPanelId = useId();
   const headerTitleRef = useRef<HTMLHeadingElement | null>(null);
-  // A queued message taken back to be reworded, on its way into the composer.
-  // It belongs to the composer of the conversation it came from, and to no other.
+  // A quoted reply on its way into the composer. It belongs to the composer
+  // of the conversation it came from, and to no other.
   const [restoredDraft, setRestoredDraft] = useState<{
     readonly composer: string;
     readonly restore: ComposerRestore;
@@ -268,6 +312,19 @@ function ThreadView({
     setActivityView(null);
   }, [composerKey]);
   const inputQueue = useThreadInputQueue(hostClient, thread.id);
+  const waiting = useWaitingInputs(hostClient, thread.id);
+  // Links in the transcript open tabs; a tab change gives them a new source to read.
+  const tabRevision = useTabsRevision(hostClient);
+  const tabSource = useMemo(
+    () => ({ tabs: snapshot.tabs, browserProfiles: snapshot.browserProfiles, tabRevision }),
+    [snapshot.tabs, snapshot.browserProfiles, tabRevision],
+  );
+  // The composer's own record: words sent as new from an open edit are kept the same way.
+  const pendingSends = usePendingSends(
+    snapshot.deploymentId && snapshot.user?.id
+      ? { deploymentId: snapshot.deploymentId, threadId: thread.id, userId: snapshot.user.id }
+      : null,
+  );
   // The Tasks count opens a task at its exact request; one already answered stays answered.
   const location = useLocation();
   const focusRequest =
@@ -406,15 +463,14 @@ function ThreadView({
     const scroller = currentScroller();
     const saved = readingPositions.get(composerKey);
     if (scroller && saved !== undefined) {
-      followsTailRef.current = false;
-      setAtTail(false);
+      setFollows(false);
       // What had arrived by then was seen; only what came after is new.
       seenSequenceRef.current = saved.seenSequence;
       scroller.scrollTop = saved.scrollTop;
     }
     return () => {
       if (!scroller) return;
-      if (followsTailRef.current) readingPositions.delete(composerKey);
+      if (tailRef.current.follows) readingPositions.delete(composerKey);
       else
         readingPositions.set(composerKey, {
           scrollTop: scroller.scrollTop,
@@ -423,19 +479,51 @@ function ThreadView({
     };
   }, [composerKey]);
 
-  // Pin to the bottom while the reader is already there; never fight a
-  // scroll-up. Requests matter too: a docked request grows the input surface
-  // and would otherwise push the newest activity out of view.
-  const keepTailInView = () => {
+  const setFollows = (follows: boolean) => {
+    tailRef.current = { ...tailRef.current, follows };
+    setAtTail(follows);
+    if (!follows) return;
+    seenSequenceRef.current = observed;
+    setPendingUpdates(0);
+  };
+
+  // Reads where the reader stands and keeps a follower at the foot; a scroll
+  // up lets go at once, so nothing pulls back against it. Only a scroll that
+  // moved nothing but the position is the reader's own: layout can deliver a
+  // scroll before ResizeObserver, and a changed viewport, content height or
+  // scroll owner does not mean the reader moved. Requests matter too: a docked
+  // request grows the input surface and would otherwise push the newest
+  // activity out of view.
+  const readScroller = (scrolled: boolean) => {
     const scroller = currentScroller();
     if (!scroller) return;
-    if (followsTailRef.current) scroller.scrollTop = scroller.scrollHeight;
+    const before = scrollGeometryRef.current;
+    const own =
+      scrolled &&
+      before?.scroller === scroller &&
+      before.height === scroller.scrollHeight &&
+      before.viewport === scroller.clientHeight;
+    const previous =
+      before?.scroller === scroller
+        ? tailRef.current
+        : { ...tailRef.current, offset: scroller.scrollTop };
+    const { follows } = readTail(
+      previous,
+      scroller.scrollTop,
+      scroller.scrollHeight - scroller.clientHeight,
+      own,
+    );
+    if (follows && !own) scroller.scrollTop = scroller.scrollHeight;
+    tailRef.current = { follows, offset: scroller.scrollTop };
     scrollGeometryRef.current = {
       scroller,
       height: scroller.scrollHeight,
       viewport: scroller.clientHeight,
     };
+    if (follows !== previous.follows) setFollows(follows);
   };
+  const keepTailInView = () => readScroller(false);
+  const handleScroll = () => readScroller(true);
   useLayoutEffect(() => {
     keepTailInView();
   }, [conversation, inputQueue, keyboardInset, phoneStage, requests]);
@@ -452,39 +540,9 @@ function ThreadView({
     return observeResize(elements, keepTailInView);
   }, []);
 
-  const handleScroll = () => {
-    const scroller = currentScroller();
-    if (!scroller) return;
-    const previous = scrollGeometryRef.current;
-    // Layout can deliver a scroll before ResizeObserver. A changed viewport,
-    // content height or scroll owner does not mean the reader left the tail.
-    if (
-      followsTailRef.current &&
-      previous !== null &&
-      (previous.scroller !== scroller ||
-        previous.height !== scroller.scrollHeight ||
-        previous.viewport !== scroller.clientHeight)
-    ) {
-      keepTailInView();
-      return;
-    }
-    scrollGeometryRef.current = {
-      scroller,
-      height: scroller.scrollHeight,
-      viewport: scroller.clientHeight,
-    };
-    const tail = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 90;
-    followsTailRef.current = tail;
-    setAtTail(tail);
-    if (tail) {
-      seenSequenceRef.current = observed;
-      setPendingUpdates(0);
-    }
-  };
-
   // Arriving work never moves a reader who is elsewhere; it offers.
   useEffect(() => {
-    if (followsTailRef.current) {
+    if (tailRef.current.follows) {
       seenSequenceRef.current = observed;
       setPendingUpdates(0);
       return;
@@ -504,13 +562,8 @@ function ThreadView({
 
   const goToTail = () => {
     abandonEarlier();
-    const scroller = currentScroller();
-    if (!scroller) return;
-    followsTailRef.current = true;
-    setAtTail(true);
-    seenSequenceRef.current = observed;
-    setPendingUpdates(0);
-    scroller.scrollTop = scroller.scrollHeight;
+    setFollows(true);
+    keepTailInView();
   };
 
   // Restore before paint on every page, including pages that only add Activity.
@@ -604,8 +657,7 @@ function ThreadView({
       };
     if (scroller && button && document.activeElement === button)
       earlierFocus.current = { button, scroller };
-    followsTailRef.current = false;
-    setAtTail(false);
+    setFollows(false);
     setLoadingEarlier(true);
     try {
       await hostClient.loadEarlierTranscript(thread.id);
@@ -630,13 +682,43 @@ function ThreadView({
     return () => setThreadReading(null);
   }, [atTail, historical, thread.id]);
 
-  /** Moves the reader to one exact message, and leaves them there. */
-  const jumpToMessage = async (messageId: string) => {
+  /**
+   * Moves the reader to one exact message, and leaves them there. A message
+   * still waiting to be taken is at the foot, not in the history; one the
+   * conversation no longer holds says so rather than doing nothing.
+   */
+  const jumpToMessage = async (messageId: string): Promise<boolean> => {
+    setMissingMessage(null);
+    if (inputQueue?.items.some((item) => item.message.id === messageId)) {
+      requestAnimationFrame(() =>
+        currentScroller()
+          ?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageId)}"]`)
+          ?.scrollIntoView({ block: "center" }),
+      );
+      return true;
+    }
     setHistorical(true);
-    followsTailRef.current = false;
-    setAtTail(false);
+    setFollows(false);
     setRevealMessage({ id: messageId });
-    await hostClient.loadTranscriptAround(thread.id, messageId);
+    const unreachable = async (error: unknown) => {
+      setMissingMessage({
+        id: messageId,
+        offline: !notFound(error) && hostClient.getSnapshot().connection !== "connected",
+      });
+      await returnToLatest().catch(() => undefined);
+      return false;
+    };
+    try {
+      await hostClient.loadTranscriptAround(thread.id, messageId);
+    } catch (error) {
+      return unreachable(error);
+    }
+    if (
+      !(hostClient.getSnapshot().transcripts[thread.id] ?? []).some(
+        (entry) => entry.kind === "message" && entry.id === messageId,
+      )
+    )
+      return unreachable(null);
     requestAnimationFrame(() => {
       const target = currentScroller()?.querySelector<HTMLElement>(
         `[data-message-id="${CSS.escape(messageId)}"]`,
@@ -646,6 +728,7 @@ function ThreadView({
       target.classList.add("transcript__found");
       window.setTimeout(() => target.classList.remove("transcript__found"), 2400);
     });
+    return true;
   };
 
   /**
@@ -708,26 +791,43 @@ function ThreadView({
     releaseAnchor();
     setRevealMessage(null);
     setHistorical(false);
-    followsTailRef.current = true;
-    setAtTail(true);
-    seenSequenceRef.current = observed;
-    setPendingUpdates(0);
-    requestAnimationFrame(() => {
-      const scroller = currentScroller();
-      if (scroller) scroller.scrollTop = scroller.scrollHeight;
-    });
+    setFollows(true);
+    requestAnimationFrame(keepTailInView);
   };
 
   // A notification or a link can name the exact update it is about. The router
   // owns the query, so a second notification for this same conversation — which
   // pushes a new entry rather than popping one — is seen here.
   const [anchoredMessageId, releaseAnchor] = useAnchoredMessageId();
+  const [linkSearch, setLinkSearch] = useSearchParams();
   const anchored = useRef<string | null>(null);
   useEffect(() => {
     if (!anchoredMessageId || anchored.current === anchoredMessageId) return;
     anchored.current = anchoredMessageId;
-    void jumpToMessage(anchoredMessageId).catch(reportActionError);
+    // A Run's link names the message that started it; its Activity opens once that is loaded.
+    const runId = linkSearch.get("runId");
+    if (runId) releaseLinkParam("runId");
+    void jumpToMessage(anchoredMessageId)
+      .then((found) => {
+        if (found && runId && conversational) openActivity({ kind: "run", runId }, null);
+      })
+      .catch(reportActionError);
   }, [anchoredMessageId]);
+
+  const releaseLinkParam = (name: string) =>
+    setLinkSearch(
+      (current) => {
+        const next = new URLSearchParams(current);
+        next.delete(name);
+        return next;
+      },
+      { replace: true },
+    );
+  // A Request a link named: one still waiting opens where it is answered,
+  // exactly as the Tasks count opens it; a finished one is shown, never answered again.
+  const linkedRequest = useLinkedRequest(hostClient, thread.id, (id) =>
+    setFocusTarget({ id, key: location.key }),
+  );
 
   // ⌘F / Ctrl+F searches this conversation rather than the rendered page,
   // which only holds the window that happens to be loaded.
@@ -742,16 +842,6 @@ function ThreadView({
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
-
-  /** A message taken back from the queue returns to this composer to be reworded. */
-  const editQueued = useCallback(
-    (message: Omit<ComposerRestore, "key">) =>
-      setRestoredDraft((current) => ({
-        composer: composerKey,
-        restore: { ...message, key: (current?.restore.key ?? 0) + 1 },
-      })),
-    [composerKey],
-  );
 
   /* ---- Quoting a reply ---- */
 
@@ -869,19 +959,50 @@ function ThreadView({
 
   // On a phone with the conversation alone, its Run's page can stand above it.
   const threadRef = useRef<HTMLDivElement | null>(null);
+  const pageHere = phone && !work;
   // Where the head has no room for the page's folded picture, folded is a row above the thread.
   const [pictureYielded, setPictureYielded] = useState(false);
-  const runPage = useRunPage(
-    hostClient,
-    thread.id,
-    phone && !work ? (stopTarget?.id ?? null) : null,
-    () => ({
-      scrolledUp: !followsTailRef.current,
-      typing:
-        keyboardInset > 0 ||
-        (composerInputRef.current !== null && document.activeElement === composerInputRef.current),
-    }),
+  const runId = stopTarget?.id ?? null;
+  const runPlace = useRunPlaceView(hostClient, runId, thread.id).place;
+  // The middle showing the Run's own place shows its picture there; no form here needs one.
+  const placeInMiddle =
+    runPlace !== null &&
+    selection.kind === "place" &&
+    destinationPlaceKey(selection.destination) === runPlace.placeKey;
+  const pageVisible = usePageVisible();
+  const room = useRoom(threadRef, pageHere && runPlace !== null);
+  const typing = useTypingHere(threadRef, keyboardInset);
+  // The owner opens a Mac app's or phone's stream only once a decoder here can draw it.
+  const decoding = useDisplayDecoding(
+    runPlace !== null && (runPlace.kind === "window" || runPlace.kind === "phone"),
   );
+  // Some form of the place is drawn: the page or its row here, or the head's
+  // picture, which yields to the row where the bar has no room for it.
+  const pictureShown = (!work || phone || workspaceDock.open) && !placeInMiddle;
+  const runPage = useRunPage({
+    hostClient,
+    threadId: thread.id,
+    runId,
+    paneVisible: pictureShown,
+    displayCapable: decoding !== null,
+    // Only where a page can stand is its opening something the person sees.
+    visible: pageHere && pageVisible,
+    typing,
+    scrolledUp: !atTail,
+    cellular: meteredConnection(),
+    room: pageHere ? room : null,
+    headHasRoom: !pictureYielded,
+  });
+  // Pressing the folded picture hands focus to the page it opens.
+  const focusPage = useRef(false);
+  const { open: openRunPage } = runPage;
+  const unfoldRunPage = useCallback(() => {
+    focusPage.current = document.activeElement?.closest(".viewfinder") != null;
+    openRunPage();
+  }, [openRunPage]);
+  // The row stands in for an open page that has no picture yet; one standing
+  // in for the head's picture leaves the head as it is.
+  const pageStands = runPage.shown === "page" || (runPage.shown === "row" && !pictureYielded);
 
   // On a phone with a page open, the conversation is a sheet under it: the
   // composer and the latest reply, opened to the whole conversation on request.
@@ -889,8 +1010,7 @@ function ThreadView({
   // Choosing a place is choosing to look at it.
   useEffect(() => setSheetOpen(false), [phoneStage, selection]);
   useLayoutEffect(() => {
-    const scroller = currentScroller();
-    if (sheetOpen && scroller && followsTailRef.current) scroller.scrollTop = scroller.scrollHeight;
+    if (sheetOpen) keepTailInView();
   }, [sheetOpen]);
 
   const threadPath = nav.threadPath(thread.id);
@@ -946,387 +1066,432 @@ function ThreadView({
         : dockedRequests.filter((item) => item.surface.request.originatingNodeId !== openedNode),
     [dockedRequests, openedNode],
   );
+  // The composer answers the question the stack shows, never one answered elsewhere.
+  const shownRequest =
+    dockItems.find((item) => item.surface.request.id === openRequestId) ?? dockItems[0];
+  const dockQuestion = shownRequest?.surface.textRole === "answer" ? shownRequest : null;
 
   return (
-    <AgentEngine value={engine}>
-      <AgentsLive value={live}>
-        <div
-          className={[
-            "thread",
-            pushed ? "thread--pushed" : "",
-            phoneStage
-              ? `thread--sheet ${sheetOpen ? "thread--sheet-open" : "thread--sheet-closed"}`
-              : "",
-          ]
-            .filter(Boolean)
-            .join(" ")}
-          ref={threadRef}
-        >
-          {phoneStage ? (
-            <ConversationSheetHandle
-              hostClient={hostClient}
-              onToggle={setSheetOpen}
-              open={sheetOpen}
-              runId={stopTarget?.id ?? null}
-              threadId={thread.id}
-              title={title}
-            />
-          ) : null}
-          <ConversationHeader
-            key={thread.id}
-            cause={cause}
-            hostClient={hostClient}
-            onFind={() => setFinding(true)}
-            onPictureYield={setPictureYielded}
-            onUnfold={runPage.unfold}
-            pageOpen={runPage.shown === "open"}
-            threadId={thread.id}
-            title={title}
-            titleRef={headerTitleRef}
-          />
+    <PersonalReferences client={hostClient} threadId={thread.id}>
+      <RunPlacePictureScope
+        decoding={decoding}
+        enabled={pictureShown}
+        hostClient={hostClient}
+        picture={runPage.picture}
+        threadId={thread.id}
+      >
+        <AgentEngine value={engine}>
+          <AgentsLive value={live}>
+            <div
+              className={[
+                "thread",
+                pushed ? "thread--pushed" : "",
+                phoneStage
+                  ? `thread--sheet ${sheetOpen ? "thread--sheet-open" : "thread--sheet-closed"}`
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+              ref={threadRef}
+            >
+              {phoneStage ? (
+                <ConversationSheetHandle
+                  hostClient={hostClient}
+                  onToggle={setSheetOpen}
+                  open={sheetOpen}
+                  runId={stopTarget?.id ?? null}
+                  threadId={thread.id}
+                  title={title}
+                />
+              ) : null}
+              <ConversationHeader
+                key={thread.id}
+                cause={cause}
+                hostClient={hostClient}
+                onFind={() => setFinding(true)}
+                onPictureYield={setPictureYielded}
+                onUnfold={runPage.page === null ? null : unfoldRunPage}
+                pageOpen={pageHere && pageStands}
+                threadId={thread.id}
+                title={title}
+                titleRef={headerTitleRef}
+              />
 
-          {finding ? (
-            <ThreadFind
-              client={hostClient}
-              onClose={() => setFinding(false)}
-              onJump={jumpToMessage}
-              threadId={thread.id}
-            />
-          ) : null}
+              {finding ? (
+                <ThreadFind
+                  client={hostClient}
+                  onClose={() => setFinding(false)}
+                  onJump={async (messageId) => void (await jumpToMessage(messageId))}
+                  threadId={thread.id}
+                />
+              ) : null}
 
-          {runPage.placeRunId === null ? null : (
-            <RunPage
-              focusPage={runPage.focusPage}
-              foldedHere={pictureYielded}
-              hostClient={hostClient}
-              key={`${thread.id}:${runPage.placeRunId}`}
-              onFits={runPage.setFits}
-              onFold={runPage.fold}
-              onUnfold={runPage.unfold}
-              open={runPage.shown === "open"}
-              runId={runPage.placeRunId}
-              scrollRef={scrollRef}
-              threadId={thread.id}
-              threadRef={threadRef}
-            />
-          )}
+              {/* Wider than a phone no page opens here, but the row still stands in for a yielded head. */}
+              {runPage.entry === null ||
+              !pictureShown ||
+              !(pageHere || runPage.shown === "row") ? null : (
+                <RunPage
+                  focusPage={focusPage}
+                  foldedHere={pictureYielded}
+                  hostClient={hostClient}
+                  key={`${thread.id}:${runPage.entry.runId}`}
+                  onFold={runPage.fold}
+                  onUnfold={runPage.page === null ? null : unfoldRunPage}
+                  page={runPage.page}
+                  room={room}
+                  runId={runPage.entry.runId}
+                  scrollRef={scrollRef}
+                  shown={runPage.shown}
+                  threadId={thread.id}
+                  threadRef={threadRef}
+                />
+              )}
 
-          <div
-            className="thread__body"
-            onScroll={handleScroll}
-            onWheel={abandonEarlier}
-            onTouchStart={abandonEarlier}
-            onPointerDown={abandonEarlier}
-            onKeyDown={(event) => {
-              if (
-                ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(
-                  event.key,
-                )
-              )
-                abandonEarlier();
-            }}
-            ref={bodyRef}
-          >
-            <div className="thread__conversation">
-              <div className="transcript-scroll" onScroll={handleScroll} ref={scrollRef}>
-                <div
-                  aria-live="polite"
-                  className={conversational ? "transcript transcript--conversation" : "transcript"}
-                  role="log"
-                >
-                  {canLoadEarlier || loadingEarlier ? (
-                    <button
-                      className="btn btn--small transcript__load-earlier"
-                      disabled={loadingEarlier}
-                      aria-busy={loadingEarlier}
-                      aria-label={loadingEarlier ? "Loading earlier messages" : "Earlier messages"}
-                      onClick={() => void loadEarlier()}
-                      type="button"
+              <div
+                className="thread__body"
+                onScroll={handleScroll}
+                onWheel={abandonEarlier}
+                onTouchStart={abandonEarlier}
+                onPointerDown={abandonEarlier}
+                onKeyDown={(event) => {
+                  if (
+                    ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(
+                      event.key,
+                    )
+                  )
+                    abandonEarlier();
+                }}
+                ref={bodyRef}
+              >
+                <div className="thread__conversation">
+                  <div className="transcript-scroll" onScroll={handleScroll} ref={scrollRef}>
+                    <div
+                      aria-live="polite"
+                      className={
+                        conversational ? "transcript transcript--conversation" : "transcript"
+                      }
+                      role="log"
                     >
-                      {loadingEarlier ? (
-                        <span aria-hidden="true" className="spinner" />
-                      ) : (
-                        <Icon name="arrow-up" />
-                      )}
-                      <span className="transcript__earlier-label">
-                        <span aria-hidden={loadingEarlier}>Earlier messages</span>
-                        {loadingEarlier ? <span>Loading…</span> : null}
-                      </span>
-                    </button>
-                  ) : null}
-                  {conversation.length === 0 && historyState === undefined ? (
-                    <EmptyThread voice={voiceThread} />
-                  ) : null}
-                  <AgentTranscript
-                    teamChannelName={teamSource?.channel.name ?? null}
-                    revealMessage={revealMessage}
-                    key={thread.id}
-                    attachmentReader={hostClient}
-                    activity={activity}
-                    browserSessions={snapshot.browserSessions}
-                    browserUses={snapshot.browserUses}
-                    // A conversation (Opensteer, a direct message) reads as messages, each
-                    // turn's steps behind its reply; work keeps its whole trace in view.
-                    conversation={conversational}
-                    live={live}
-                    computers={computers}
-                    entries={conversation}
-                    waitingRequests={snapshot.waitingRequests}
-                    assignments={snapshot.assignments}
-                    inputQueuePaused={thread.inputQueuePaused}
-                    renderPasswordsSuggestion={renderPasswordsSuggestion}
-                    queued={
-                      inputQueue && !conversational ? (
-                        <QueuedMessages
-                          client={hostClient}
-                          disabled={!canRespond || thread.status === "archived"}
-                          onEdit={editQueued}
-                          onError={reportActionError}
-                          queue={inputQueue}
-                          viewerUserId={snapshot.user?.id ?? null}
-                        />
-                      ) : null
-                    }
-                    {...(conversational
-                      ? {
-                          activityOwner:
-                            activityView?.source === "reply" &&
-                            activityView.selection.kind === "turn"
-                              ? {
-                                  onClose: () => setActivityView(null),
-                                  panelId: activityPanelId,
-                                  turnKey: activityView.selection.key,
-                                }
-                              : null,
-                          onActivityAnchor: setActivityOwnerAnchor,
-                          onOpenActivity: (key: string, opener: HTMLElement) =>
-                            openActivity({ key, kind: "turn" }, opener),
+                      {canLoadEarlier || loadingEarlier ? (
+                        <button
+                          className="btn btn--small transcript__load-earlier"
+                          disabled={loadingEarlier}
+                          aria-busy={loadingEarlier}
+                          aria-label={
+                            loadingEarlier ? "Loading earlier messages" : "Earlier messages"
+                          }
+                          onClick={() => void loadEarlier()}
+                          type="button"
+                        >
+                          {loadingEarlier ? (
+                            <span aria-hidden="true" className="spinner" />
+                          ) : (
+                            <Icon name="arrow-up" />
+                          )}
+                          <span className="transcript__earlier-label">
+                            <span aria-hidden={loadingEarlier}>Earlier messages</span>
+                            {loadingEarlier ? <span>Loading…</span> : null}
+                          </span>
+                        </button>
+                      ) : null}
+                      {conversation.length === 0 &&
+                      historyState === undefined &&
+                      !waiting?.length ? (
+                        <EmptyThread voice={voiceThread} />
+                      ) : null}
+                      <AgentTranscript
+                        teamChannelName={teamSource?.channel.name ?? null}
+                        revealMessage={revealMessage}
+                        key={thread.id}
+                        attachmentReader={hostClient}
+                        activity={activity}
+                        browserSessions={tabSource}
+                        browserUses={snapshot.browserUses}
+                        // A conversation (Opensteer, a direct message) reads as messages, each
+                        // turn's steps behind its reply; work keeps its whole trace in view.
+                        conversation={conversational}
+                        live={live}
+                        computers={computers}
+                        entries={conversation}
+                        waitingRequests={snapshot.waitingRequests}
+                        assignments={snapshot.assignments}
+                        inputQueuePaused={thread.inputQueuePaused}
+                        renderPasswordsSuggestion={renderPasswordsSuggestion}
+                        queued={
+                          inputQueue && waiting && !conversational ? (
+                            <WaitingInputs
+                              client={hostClient}
+                              disabled={!canRespond}
+                              inputs={waiting}
+                              onError={reportActionError}
+                              paused={inputQueue.paused}
+                              pendingSends={pendingSends}
+                              resumable={thread.status !== "archived"}
+                              threadId={thread.id}
+                              viewerUserId={snapshot.user?.id ?? null}
+                            />
+                          ) : null
                         }
-                      : {})}
-                    onReply={replyWith}
-                    renderTask={(entries) => <TaskRows entries={entries} />}
-                    requestShown={dockedRequests.length > 0}
-                    startHold={startHold}
-                    subagentReader={snapshot}
-                    threadId={thread.id}
-                    viewerUserId={snapshot.user?.id ?? null}
-                  />
-                </div>
-              </div>
+                        {...(conversational
+                          ? {
+                              activityOwner:
+                                activityView?.source === "reply" &&
+                                activityView.selection.kind === "turn"
+                                  ? {
+                                      onClose: () => setActivityView(null),
+                                      panelId: activityPanelId,
+                                      turnKey: activityView.selection.key,
+                                    }
+                                  : null,
+                              onActivityAnchor: setActivityOwnerAnchor,
+                              onOpenActivity: (key: string, opener: HTMLElement) =>
+                                openActivity({ key, kind: "turn" }, opener),
+                            }
+                          : {})}
+                        onReply={replyWith}
+                        renderTask={(entries) => <TaskRows entries={entries} />}
+                        requestShown={dockedRequests.length > 0}
+                        startHold={startHold}
+                        subagentReader={snapshot}
+                        threadId={thread.id}
+                        viewerUserId={snapshot.user?.id ?? null}
+                      />
+                      {missingMessage ? (
+                        <Unavailable
+                          backLabel="Dismiss"
+                          inline
+                          offline={missingMessage.offline}
+                          onBack={() => setMissingMessage(null)}
+                          onRetry={() =>
+                            void jumpToMessage(missingMessage.id).catch(reportActionError)
+                          }
+                        />
+                      ) : null}
+                    </div>
+                  </div>
 
-              {/* An anchored search leaves the reader in an older window, and the only
+                  {/* An anchored search leaves the reader in an older window, and the only
           way back is to load the live one — so the offer stands whether or not
           anything new has arrived since. */}
-              {historical ? (
-                <button
-                  className="transcript__jump"
-                  disabled={returning}
-                  onClick={() => {
-                    setReturning(true);
-                    void returnToLatest()
-                      .catch(reportActionError)
-                      .finally(() => setReturning(false));
-                  }}
-                  type="button"
-                >
-                  <Icon name="chevron-down" /> {returning ? "Loading…" : "Back to latest"}
-                </button>
-              ) : !atTail && computerNow ? (
-                <button className="transcript__jump" onClick={goToTail} type="button">
-                  <Icon name="laptop" /> {computerUseNowSummary(computerNow)}
-                </button>
-              ) : !atTail ? (
-                <button
-                  aria-label={pendingUpdates > 0 ? "Jump to new messages" : "Jump to latest"}
-                  className={
-                    pendingUpdates > 0
-                      ? "transcript__jump"
-                      : "transcript__jump transcript__jump--quiet"
-                  }
-                  onClick={goToTail}
-                  title="Jump to latest"
-                  type="button"
-                >
-                  <Icon name="chevron-down" />
-                  {pendingUpdates > 0 ? (
-                    <span>
-                      {pendingUpdates === 1 ? "New message" : `${pendingUpdates} new messages`}
-                    </span>
+                  {historical ? (
+                    <button
+                      className="transcript__jump"
+                      disabled={returning}
+                      onClick={() => {
+                        setReturning(true);
+                        void returnToLatest()
+                          .catch(reportActionError)
+                          .finally(() => setReturning(false));
+                      }}
+                      type="button"
+                    >
+                      <Icon name="chevron-down" /> {returning ? "Loading…" : "Back to latest"}
+                    </button>
+                  ) : !atTail && computerNow ? (
+                    <button className="transcript__jump" onClick={goToTail} type="button">
+                      <Icon name="laptop" /> {computerUseNowSummary(computerNow)}
+                    </button>
+                  ) : !atTail ? (
+                    <button
+                      aria-label={pendingUpdates > 0 ? "Jump to new messages" : "Jump to latest"}
+                      className={
+                        pendingUpdates > 0
+                          ? "transcript__jump"
+                          : "transcript__jump transcript__jump--quiet"
+                      }
+                      onClick={goToTail}
+                      title="Jump to latest"
+                      type="button"
+                    >
+                      <Icon name="chevron-down" />
+                      {pendingUpdates > 0 ? (
+                        <span>
+                          {pendingUpdates === 1 ? "New message" : `${pendingUpdates} new messages`}
+                        </span>
+                      ) : null}
+                    </button>
                   ) : null}
-                </button>
-              ) : null}
-            </div>
-            {/* An older window can't say what runs now; back at the latest, it returns. */}
-            {voiceThread || historical ? null : (
-              <div className="running-now-slot">
-                <RunningNow
-                  live={live}
-                  onOpenChange={showRunning}
-                  open={nowOpen}
-                  scroller={scrollRef}
+                </div>
+                {/* An older window can't say what runs now; back at the latest, it returns. */}
+                {voiceThread || historical ? null : (
+                  <div className="running-now-slot">
+                    <RunningNow
+                      live={live}
+                      onOpenChange={showRunning}
+                      open={nowOpen}
+                      scroller={scrollRef}
+                      threadId={thread.id}
+                    />
+                  </div>
+                )}
+                <ThreadServerApprovals threadId={thread.id} />
+                <RequestStack
+                  composer={!voiceThread}
+                  disabled={!canRespond}
+                  folded={requestFolded && nowOpen && !historical}
+                  items={dockItems}
+                  onOpen={openRequest}
+                  onUnfold={unfoldRequest}
+                  openId={openRequestId}
                   threadId={thread.id}
                 />
               </div>
-            )}
-            <ThreadServerApprovals threadId={thread.id} />
-            <RequestStack
-              disabled={!canRespond}
-              folded={requestFolded && nowOpen && !historical}
-              items={dockItems}
-              onOpen={openRequest}
-              onUnfold={unfoldRequest}
-              openId={openRequestId}
-              threadId={thread.id}
-            />
-          </div>
 
-          {conversational && activityView ? (
-            <ConversationActivity
-              anchor={
-                activityView.source === "reply"
-                  ? (activityOwnerAnchor ?? activityView.opener)
-                  : (activityAnchor() ?? activityView.opener)
-              }
-              browserSessions={snapshot.browserSessions}
-              browserUses={snapshot.browserUses}
-              entries={conversation}
-              id={activityPanelId}
-              inputQueuePaused={thread.inputQueuePaused}
-              live={live}
-              onClose={() => setActivityView(null)}
-              returnFocusTo={activityView.opener}
-              reveal={activityView.reveal}
-              selection={activityView.selection}
-              subagentReader={snapshot}
-              threadId={thread.id}
-            />
-          ) : null}
+              {conversational && activityView ? (
+                <ConversationActivity
+                  anchor={
+                    activityView.source === "reply"
+                      ? (activityOwnerAnchor ?? activityView.opener)
+                      : (activityAnchor() ?? activityView.opener)
+                  }
+                  browserSessions={tabSource}
+                  browserUses={snapshot.browserUses}
+                  entries={conversation}
+                  id={activityPanelId}
+                  inputQueuePaused={thread.inputQueuePaused}
+                  live={live}
+                  onClose={() => setActivityView(null)}
+                  returnFocusTo={activityView.opener}
+                  reveal={activityView.reveal}
+                  selection={activityView.selection}
+                  subagentReader={snapshot}
+                  threadId={thread.id}
+                />
+              ) : null}
 
-          <div className="composer-dock">
-            {voiceThread ? (
-              <VoiceStart
-                dockHidden={phoneStage && !sheetOpen}
-                controls={
-                  <ExecutionControls
+              <div className="composer-dock">
+                {voiceThread ? (
+                  <VoiceStart
+                    dockHidden={phoneStage && !sheetOpen}
+                    controls={
+                      <ExecutionControls
+                        disabled={!canRespond}
+                        onAuthenticate={openHarnessAuthentication ?? undefined}
+                        onRefresh={refreshHarnessCatalog}
+                        onApply={applyExecution}
+                        placements={executionPlacements}
+                        preferences={executionPreferences}
+                        review={reviewSelection}
+                        reviewFresh={reviewFresh}
+                        selection={threadSelection}
+                      />
+                    }
+                  />
+                ) : null}
+                {voiceThread ? null : (
+                  <InputSurface
+                    autoContext={false}
+                    voice={false}
+                    variant={conversational ? "conversation" : "work"}
+                    key={composerKey}
+                    composerHidden={dock.composerHidden}
+                    voiceHidden={phoneStage && !sheetOpen}
                     disabled={!canRespond}
-                    onAuthenticate={openHarnessAuthentication ?? undefined}
-                    onRefresh={refreshHarnessCatalog}
-                    onApply={applyExecution}
+                    inputRef={composerInputRef}
+                    onEscape={
+                      dockedRequests.length > 0
+                        ? () => focusOpenRequest(bodyRef.current)
+                        : undefined
+                    }
+                    readOnly={thread.status === "archived"}
+                    onStop={
+                      stopTarget
+                        ? async () => {
+                            try {
+                              await hostClient.stopRun(thread.id);
+                            } catch (error) {
+                              reportActionError(error);
+                            }
+                          }
+                        : undefined
+                    }
+                    placeholder={composerPlaceholder}
+                    question={dockQuestion}
+                    recipient={recipient}
+                    // A conversation's Stop ends the reply under way, and Chat's cards each
+                    // stop their own task. A task's strip stops the task; this stops only
+                    // the turn under way, which leaves a task paused.
+                    stopLabel={
+                      conversational
+                        ? "Stop the reply"
+                        : workerAssignment(snapshot.assignments, thread.id)?.status === "open"
+                          ? "Pause this task"
+                          : "Stop the run"
+                    }
+                    restoredDraft={
+                      restoredDraft?.composer === composerKey ? restoredDraft.restore : null
+                    }
+                    running={stopTarget !== null}
+                    stopping={activity === "stopping"}
+                    threadId={thread.id}
+                    footerExtras={
+                      <>
+                        {/* The picker opens while a response runs. What it cannot do is
+                  apply — and it says why, instead of being a dead control. */}
+                        <ExecutionControls
+                          access={{
+                            engine: threadPlacement,
+                            mode: thread.accessMode,
+                            onApply: async (accessMode) => {
+                              try {
+                                await hostClient.updateThreadAccess(thread.id, accessMode);
+                              } catch (error) {
+                                reportActionError(error);
+                              }
+                            },
+                          }}
+                          disabled={!canRespond || thread.status === "archived"}
+                          onAuthenticate={openHarnessAuthentication ?? undefined}
+                          onRefresh={refreshHarnessCatalog}
+                          onApply={applyExecution}
+                          placements={executionPlacements}
+                          preferences={executionPreferences}
+                          returnFocusRef={composerInputRef}
+                          review={reviewSelection}
+                          reviewFresh={reviewFresh}
+                          selection={threadSelection}
+                        />
+                      </>
+                    }
+                  />
+                )}
+                {dock.composerHidden ? null : (
+                  <UsageNotice
+                    action={
+                      usageAlternative ? (
+                        <button
+                          className="usage-notice__action"
+                          disabled={switchingAccount || !canRespond}
+                          onClick={() => {
+                            setSwitchingAccount(true);
+                            void applyExecution(
+                              recoverySelection(usageAlternative, thread.modelSelection),
+                            ).finally(() => setSwitchingAccount(false));
+                          }}
+                          title={`Switch to ${placementAccountTitle(usageAlternative)}`}
+                          type="button"
+                        >
+                          {switchingAccount ? "Switching…" : "Switch account"}
+                        </button>
+                      ) : null
+                    }
+                    entries={entries}
                     placements={executionPlacements}
-                    preferences={executionPreferences}
-                    review={reviewSelection}
-                    reviewFresh={reviewFresh}
+                    returnFocusTo={composerInputRef}
                     selection={threadSelection}
                   />
-                }
-              />
-            ) : null}
-            {voiceThread ? null : (
-              <InputSurface
-                autoContext={false}
-                voice={false}
-                variant={conversational ? "conversation" : "work"}
-                key={composerKey}
-                composerHidden={dock.composerHidden}
-                voiceHidden={phoneStage && !sheetOpen}
-                disabled={!canRespond}
-                inputRef={composerInputRef}
-                onEscape={
-                  dockedRequests.length > 0 ? () => focusOpenRequest(bodyRef.current) : undefined
-                }
-                readOnly={thread.status === "archived"}
-                onStop={
-                  stopTarget
-                    ? async () => {
-                        try {
-                          await hostClient.stopRun(thread.id);
-                        } catch (error) {
-                          reportActionError(error);
-                        }
-                      }
-                    : undefined
-                }
-                placeholder={composerPlaceholder}
-                recipient={recipient}
-                // A conversation's Stop ends the reply under way, and Chat's cards each
-                // stop their own task. A task's strip stops the task; this stops only
-                // the turn under way, which leaves a task paused.
-                stopLabel={
-                  conversational
-                    ? "Stop the reply"
-                    : workerAssignment(snapshot.assignments, thread.id)?.status === "open"
-                      ? "Pause this task"
-                      : "Stop the run"
-                }
-                restoredDraft={
-                  restoredDraft?.composer === composerKey ? restoredDraft.restore : null
-                }
-                running={stopTarget !== null}
-                stopping={activity === "stopping"}
-                threadId={thread.id}
-                footerExtras={
-                  <>
-                    {/* The picker opens while a response runs. What it cannot do is
-                  apply — and it says why, instead of being a dead control. */}
-                    <ExecutionControls
-                      access={{
-                        engine: threadPlacement,
-                        mode: thread.accessMode,
-                        onApply: async (accessMode) => {
-                          try {
-                            await hostClient.updateThreadAccess(thread.id, accessMode);
-                          } catch (error) {
-                            reportActionError(error);
-                          }
-                        },
-                      }}
-                      disabled={!canRespond || thread.status === "archived"}
-                      onAuthenticate={openHarnessAuthentication ?? undefined}
-                      onRefresh={refreshHarnessCatalog}
-                      onApply={applyExecution}
-                      placements={executionPlacements}
-                      preferences={executionPreferences}
-                      returnFocusRef={composerInputRef}
-                      review={reviewSelection}
-                      reviewFresh={reviewFresh}
-                      selection={threadSelection}
-                    />
-                  </>
-                }
-              />
-            )}
-            {dock.composerHidden ? null : (
-              <UsageNotice
-                action={
-                  usageAlternative ? (
-                    <button
-                      className="usage-notice__action"
-                      disabled={switchingAccount || !canRespond}
-                      onClick={() => {
-                        setSwitchingAccount(true);
-                        void applyExecution(
-                          recoverySelection(usageAlternative, thread.modelSelection),
-                        ).finally(() => setSwitchingAccount(false));
-                      }}
-                      title={`Switch to ${placementAccountTitle(usageAlternative)}`}
-                      type="button"
-                    >
-                      {switchingAccount ? "Switching…" : "Switch account"}
-                    </button>
-                  ) : null
-                }
-                entries={entries}
-                placements={executionPlacements}
-                returnFocusTo={composerInputRef}
-                selection={threadSelection}
-              />
-            )}
-          </div>
-          {pushed ? pane : null}
-          {paneLayout === "beside" && besideSlot && pane ? createPortal(pane, besideSlot) : null}
-        </div>
-      </AgentsLive>
-    </AgentEngine>
+                )}
+              </div>
+              {pushed ? pane : null}
+              {paneLayout === "beside" && besideSlot && pane
+                ? createPortal(pane, besideSlot)
+                : null}
+              {linkedRequest}
+            </div>
+          </AgentsLive>
+        </AgentEngine>
+      </RunPlacePictureScope>
+    </PersonalReferences>
   );
 }
 

@@ -1,3 +1,6 @@
+import { computerConnectionDeviceId } from "./integration-store.js";
+import { getDeviceSelfRunnerId } from "./device-inventory-store.js";
+import { stripRefs } from "@opensteer/shared/stripRefs";
 import { placeContentLabel } from "@opensteer/core";
 import {
   ChannelConversationIdSchema,
@@ -47,7 +50,7 @@ export async function insertStatusDelivery(
       claimExpiresAt: null,
       claimOwner: null,
       claimTokenHash: null,
-      content: jsonValue([{ text: input.text, type: "text" }]),
+      content: jsonValue([{ text: stripRefs(input.text), type: "text" }]),
       conversationId: input.conversationId,
       id: createChannelId("delivery"),
       ingressId: input.ingressId,
@@ -160,7 +163,7 @@ export async function channelSourceAllows(
   // then the source, then the channel; callers needing a Workspace lock it first.
   const source = await transaction
     .selectFrom("integrationConnections")
-    .select(["computerAccess", "ownerUserId", "runnerId", "status"])
+    .select(["computerAccess", "ownerUserId", computerConnectionDeviceId.as("deviceId"), "status"])
     .where("id", "=", channel.sourceConnectionId)
     .$if(lock, (query) => query.forShare())
     .executeTakeFirst();
@@ -169,7 +172,8 @@ export async function channelSourceAllows(
     source.status !== "revoked" &&
     source.computerAccess === "read-write" &&
     source.ownerUserId === channel.ownerUserId &&
-    source.runnerId === channel.runnerId
+    source.deviceId !== null &&
+    (await getDeviceSelfRunnerId(transaction, source.deviceId)) === channel.runnerId
   );
 }
 
@@ -349,7 +353,7 @@ export async function enqueueChannelReply(
   }
 }
 
-function channelReplyMarkdown(content: readonly ContentPart[], threadUrl: string): string {
+export function channelReplyMarkdown(content: readonly ContentPart[], threadUrl: string): string {
   const blocks = content.map((part) =>
     part.type === "text"
       ? part.text
@@ -359,6 +363,6 @@ function channelReplyMarkdown(content: readonly ContentPart[], threadUrl: string
           ? `${part.type === "phone" ? "📱" : "🖥️"} ${placeContentLabel(part)} — [Open in Opensteer](${threadUrl})`
           : `📎 ${part.name} — [Open in Opensteer](${threadUrl})`,
   );
-  const text = blocks.join("\n\n").trim();
+  const text = stripRefs(blocks.join("\n\n")).trim();
   return text.length > 0 ? text : "(No text content)";
 }

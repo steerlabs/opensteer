@@ -1,3 +1,6 @@
+import { toolOutputWithImages } from "@opensteer/harness";
+import { createHash } from "node:crypto";
+import { CodexAdditionalContext, legacyCodexContextKeys } from "./additional-context.js";
 import { requestToolNames } from "@opensteer/agent-tools";
 import { backgroundLightModels, voiceCallSeed } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
@@ -39,6 +42,8 @@ import {
   harnessUsageLimitFailureCode,
   heldToolCallTimeoutMs,
   normalizeToolOutput,
+  createToolOutput,
+  imageGenerationToolName,
   type HarnessInstanceId,
   type ModelSelection,
   type PendingRequest,
@@ -55,6 +60,7 @@ import {
 import { maxHarnessModelsPerCatalog, VoiceSdpSchema } from "@opensteer/protocol";
 import {
   Deferred,
+  generatedImage,
   withBackgroundTextDirectory,
   backgroundTextResult,
   type HarnessGenerateTextInput,
@@ -70,6 +76,8 @@ import {
   compatibleModelDescriptors,
   compatibleModelHint,
   compatibleEndpointHost,
+  harnessSentLine,
+  harnessThreadContextPrompt,
   harnessTurnPreamble,
   nativeImageBase64Budget,
   nativeImageNeedsPreparation,
@@ -166,8 +174,9 @@ const codexIsolatedPermissionProfile = Object.freeze({
 });
 
 /**
- * The output budget Codex gives `integration_call` and `integration_describe`,
- * in its own approximate tokens (UTF-8 bytes / 4), before its 20% allowance.
+ * The output budget Codex gives `integration_call`, `integration_describe` and
+ * `computer_use`, in its own approximate tokens (UTF-8 bytes / 4), before its
+ * 20% allowance.
  *
  * A computer-use observation is one text block of up to about 33,000 bytes
  * (a 32,000-byte tree plus its header and notes) and one image, which Codex
@@ -220,6 +229,8 @@ interface ActiveTurn {
    * turn goes on anyway, a message steered in has opened a turn of its own.
    */
   answered: boolean;
+  readonly imageGenerations: Map<string, ExecutionNodeId | undefined>;
+  readonly finishedImageGenerations: Set<string>;
   /** Child agent threads this turn started, by thread id, with their current turn. */
   readonly childTurns: Map<string, string>;
   /**
@@ -288,6 +299,7 @@ export interface CodexLaunch {
 /** Every Codex adapter runs with the same provider capabilities. */
 const codexHarnessCapabilities: HarnessCapabilities = Object.freeze({
   voiceCalls: true,
+  warmSelection: { options: ["effort"] },
   approvals: true,
   attachments: true,
   messageAttachments: {
@@ -1236,7 +1248,11 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
    * `acceptForSession` — was given; only this Run may rely on it.
    */
   #sessionApprovalGranted = false;
-  readonly #resumed: boolean;
+  #additionalContextBuilder: Promise<CodexAdditionalContext> | undefined;
+  #resumedConversation = false;
+  #additionalContext: Record<string, { kind: "application"; value: string }> = {};
+  #contextCompacted = false;
+  #contextRestore: Promise<void> = Promise.resolve();
   readonly #publisher: TurnPublisher;
   readonly #onClose: (session: CodexHarnessSession) => void;
   readonly #pendingRequests = new Map<RequestId, PendingServerRequest>();
@@ -1258,7 +1274,6 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
   private constructor(
     config: CodexHarnessConfig,
     context: HarnessSessionContext,
-    resumed: boolean,
     acquire: (lifetime: AbortSignal) => Promise<CodexAppServer>,
     log: HarnessLog | undefined,
     onClose: (session: CodexHarnessSession) => void,
@@ -1267,7 +1282,6 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     this.#config = config;
     this.#log = log;
     this.#context = context;
-    this.#resumed = resumed;
     this.#onClose = onClose;
     this.#publisher = new TurnPublisher({
       maxBytes: config.maxEventBytes,
@@ -1292,14 +1306,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         message: "Codex session was cancelled before startup",
       });
     }
-    const session = new CodexHarnessSession(
-      config,
-      context,
-      mode.type === "resume",
-      acquire,
-      log,
-      onClose,
-    );
+    const session = new CodexHarnessSession(config, context, acquire, log, onClose);
     try {
       await session.#initialize(mode);
       return session;
@@ -1328,6 +1335,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
   }
 
   async execute(run: HarnessRunInput): Promise<void> {
+    await this.#contextRestore;
     this.#assertUsable();
     if (this.#activeTurn) {
       throw new OpensteerError({
@@ -1338,15 +1346,11 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     assertSameEnvironment(this.#context.environment, run.environment);
     const initialContext = initialContinuationContextPrompt(this.#context);
     const overrides = turnOverrides(this.#context);
-    const additionalContext = runAdditionalContext(this.#context, this.#resumed);
-    additionalContext.opensteer_skills = {
-      kind: "application",
-      value: (await renderHarnessSkillCatalog(this.#context.skills)) ?? "(No skills selected.)",
-    };
+    const additionalContext = await this.#buildAdditionalContext();
     // The one request both measured for image budgeting and sent.
     const turnStart = (input: readonly JsonObject[]): JsonObject => ({
       ...overrides,
-      additionalContext,
+      ...(additionalContext ? { additionalContext } : {}),
       input: initialContext
         ? [{ text: initialContext, text_elements: [], type: "text" }, ...input]
         : [...input],
@@ -1361,6 +1365,8 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         });
     const active: ActiveTurn = {
       answered: false,
+      imageGenerations: new Map(),
+      finishedImageGenerations: new Set(),
       childTurns: new Map(),
       children: new Map(),
       root: "executing",
@@ -1382,6 +1388,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     this.#activeTurn = active;
     const abort = () => {
       active.interruptRequested = true;
+      this.#cancelImageGenerations(active);
       active.toolLifetime.abort(run.signal.reason ?? new Error("Codex turn interrupted"));
       if (this.#context.voiceCall) this.#context.voiceCall.end();
       else void this.#interruptActive(active);
@@ -1415,6 +1422,54 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       run.signal.removeEventListener("abort", abort);
       if (this.#activeTurn === active) this.#activeTurn = undefined;
     }
+  }
+
+  /** Voice calls carry their instructions in startup developer instructions instead. */
+  async #buildAdditionalContext(): Promise<JsonObject | undefined> {
+    if (this.#context.voiceCall) return undefined;
+    const families: Record<string, string> = {
+      opensteer_computers: this.#context.machineAccessNotice,
+      opensteer_current_instructions: [
+        "Current Opensteer and task instructions for this Run follow. They replace their counterparts from earlier Runs.",
+        this.#context.platformGuide,
+        this.#context.instructions?.trim()
+          ? this.#context.instructions
+          : "(There are no current task instructions.)",
+        durableHistoryWindowNotice(this.#context),
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+    };
+    for (const skill of this.#context.skills?.skills ?? []) {
+      const id = createHash("sha256").update(skill.fullName).digest("hex");
+      families[`opensteer_skills_${id}`] = (await renderHarnessSkillCatalog({ skills: [skill] }))!;
+    }
+    this.#additionalContextBuilder ??= CodexAdditionalContext.open(
+      join(this.#context.threadStateDirectory, "codex-context-keys.json"),
+      this.#resumedConversation ? legacyCodexContextKeys : [],
+    );
+    this.#additionalContext = await (await this.#additionalContextBuilder).build(families);
+    return this.#additionalContext;
+  }
+
+  #restoreAdditionalContext(): void {
+    if (!this.#contextCompacted) return;
+    this.#contextCompacted = false;
+    const entries = this.#additionalContext;
+    // Injection during a turn triggers another sample; queue it only after turn/completed.
+    this.#contextRestore = this.#contextRestore.then(async () => {
+      await this.#requireClient().request("thread/inject_items", {
+        threadId: this.#requireCodexThreadId(),
+        items: Object.entries(entries).map(([key, entry]) => ({
+          type: "message",
+          role: "developer",
+          content: [{ type: "input_text", text: `<${key}>${entry.value}</${key}>` }],
+        })),
+      });
+    });
+    void this.#contextRestore.catch((error: unknown) =>
+      this.#handleConnectionFailure(toHarnessError(error, "Codex context restoration failed")),
+    );
   }
 
   #voiceFinal = "";
@@ -1504,6 +1559,25 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       });
       this.#ensureRunStarted(active);
       active.root = "idle";
+      // Before realtime starts, so no turn is running to lose its spoken reply.
+      const seed = run.inputs.find(isVoiceCallSeed);
+      await client.request("thread/inject_items", {
+        threadId,
+        items: [
+          {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: [harnessThreadContextPrompt(run.context), seed && harnessSentLine(seed)]
+                  .filter(Boolean)
+                  .join("\n"),
+              },
+            ],
+          },
+        ],
+      });
       await startRealtime(client, threadId, call, this.#config.startupTimeoutMs);
       await withTimeout(this.#voiceSdp.promise, this.#config.startupTimeoutMs, {
         signal: call.signal,
@@ -1540,6 +1614,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     const active = this.#activeTurn;
     if (!active || active.terminal) return;
     active.interruptRequested = true;
+    this.#cancelImageGenerations(active);
     active.toolLifetime.abort(new Error("Codex turn interrupted"));
     if (this.#context.voiceCall) {
       this.#context.voiceCall.end();
@@ -1590,9 +1665,12 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
    * on: the root takes it as a new turn of the same Run.
    */
   async #startFollowUpTurn(active: ActiveTurn, input: HarnessSteerInput): Promise<void> {
+    await this.#contextRestore;
+    const additionalContext = await this.#buildAdditionalContext();
     const threadId = this.#requireCodexThreadId();
     const turnStart = (steered: readonly JsonObject[]): JsonObject => ({
       ...turnOverrides(this.#context),
+      ...(additionalContext ? { additionalContext } : {}),
       input: [...steered],
       threadId,
     });
@@ -1643,7 +1721,8 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       this.#context.voiceCall ||
       active.terminal ||
       active.root !== "idle" ||
-      active.childTurns.size > 0
+      active.childTurns.size > 0 ||
+      active.imageGenerations.size > 0
     )
       return;
     this.#publishTerminal(active, active.interruptRequested ? "interrupted" : "completed");
@@ -1670,6 +1749,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     if (this.#sessionApprovalGranted || this.#pendingRequests.size > 0) return false;
     if (!this.#server?.usable) return false;
     try {
+      await this.#contextRestore;
       const client = this.#requireClient();
       for (const threadId of [this.#requireCodexThreadId(), ...this.#childThreads]) {
         await client.request("thread/backgroundTerminals/clean", { threadId });
@@ -1802,6 +1882,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     }
     server.claim(reference, this);
     this.#codexThreadId = reference;
+    this.#resumedConversation = resume;
     if (this.#closed) {
       // Stopped while Codex was loading it: nothing of it may stay loaded.
       await this.#unload(server, undefined);
@@ -1878,6 +1959,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     const active = this.#activeTurn;
     if (active && !active.terminal) {
       active.interruptRequested = true;
+      this.#cancelImageGenerations(active);
       active.toolLifetime.abort(new Error("Codex session stopped"));
       if (this.#context.voiceCall) {
         this.#context.voiceCall.end();
@@ -2131,14 +2213,18 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         break;
       case "item/started":
         if (this.#isActiveTurn(params)) {
-          this.#continueAnsweredTurn();
+          if (!isRecord(params.item) || params.item.type !== "imageGeneration")
+            this.#continueAnsweredTurn();
           this.#noteSubagentActivity(params.item, this.#requireCodexThreadId());
           this.#publishToolStarted(params.item);
         }
         break;
       case "item/completed":
         if (this.#isActiveTurn(params)) {
-          this.#continueAnsweredTurn();
+          if (isRecord(params.item) && params.item.type === "contextCompaction")
+            this.#contextCompacted = true;
+          if (!isRecord(params.item) || params.item.type !== "imageGeneration")
+            this.#continueAnsweredTurn();
           this.#noteSubagentActivity(params.item, this.#requireCodexThreadId());
           this.#publishItemCompleted(params.item);
         }
@@ -2287,9 +2373,25 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       ? optionalString(requireObject(params.turn, "turn").id)
       : undefined;
     const turnId = optionalString(params.turnId) ?? nativeTurn;
-    if (turnId && context.completedTurns.has(turnId)) return;
+    if (
+      turnId &&
+      context.completedTurns.has(turnId) &&
+      !(
+        method === "item/completed" &&
+        isRecord(params.item) &&
+        params.item.type === "imageGeneration" &&
+        typeof params.item.id === "string" &&
+        active.imageGenerations.has(params.item.id)
+      )
+    )
+      return;
     if (method === "turn/started" && turnId) {
+      const alreadyRegistered = active.childTurns.get(childThreadId) === turnId;
       active.childTurns.set(childThreadId, turnId);
+      if (active.interruptRequested && !alreadyRegistered)
+        void this.#requireClient()
+          .request("turn/interrupt", { threadId: childThreadId, turnId })
+          .catch(() => undefined);
       active.nodes.update(childThreadId, { stopSupported: true });
       this.#childThreads.add(childThreadId);
       this.#ownTurn(active, childThreadId, turnId);
@@ -2339,10 +2441,6 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         const turn = requireObject(params.turn, "turn/started params.turn");
         const turnId = requireString(turn.id, "turn/started params.turn.id");
         // A new turn on a child whose last invocation ended is a resumption.
-        active.childTurns.set(childThreadId, turnId);
-        active.nodes.update(childThreadId, { stopSupported: true });
-        this.#childThreads.add(childThreadId);
-        this.#ownTurn(active, childThreadId, turnId);
         ensure(`${childThreadId}:${turnId}`);
         this.#readChildSelection(childThreadId);
         break;
@@ -2398,6 +2496,12 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         }
         const descriptor = toolDescriptor(item);
         if (!descriptor) return;
+        if (type === "imageGeneration") {
+          const nodeId = active.imageGenerations.get(descriptor.callId) ?? ensure(invocation);
+          if (method === "item/started") this.#publishToolStarted(item, nodeId);
+          else this.#publishItemCompleted(item, nodeId);
+          break;
+        }
         const nodeId = ensure(invocation);
         if (method === "item/started") {
           active.nodes.progress(
@@ -2421,7 +2525,10 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
               callId: descriptor.callId,
               isError: toolItemFailed(item),
               nodeId,
-              output: normalizeToolOutput(codexToolOutput(item)),
+              output:
+                item.type === "mcpToolCall"
+                  ? toolOutputWithImages(codexToolOutput(item), this.#context.imageStore)
+                  : normalizeToolOutput(codexToolOutput(item)),
             },
             type: "tool.completed",
           });
@@ -2521,6 +2628,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
               {
                 fields: questions.map((question) => ({
                   ...(question.choices ? { choices: question.choices } : {}),
+                  custom: question.custom,
                   id: question.id,
                   multiSelect: question.multiSelect,
                   prompt: question.prompt,
@@ -2602,6 +2710,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     const active = this.#activeTurn;
     if (!active?.answered || active.terminal) return;
     active.answered = false;
+    if (active.imageGenerations.size) return;
     this.#publish({ data: { phase: "background" }, type: "run.phase" });
     this.#publish({ data: { phase: "turn" }, type: "run.phase" });
   }
@@ -2616,6 +2725,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     this.#setActiveTurnId(active, turnId);
     const status = requireString(turn.status, "turn/completed params.turn.status");
     active.providerTurnOpen = false;
+    this.#restoreAdditionalContext();
     if (this.#context.voiceCall) {
       // A failed turn is one request that didn't go through, not the end of the call.
       this.#settleVoiceTurn();
@@ -2633,6 +2743,10 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       this.#voiceFinal = "";
       active.root = "idle";
       void this.#deliverVoiceNotes().catch(() => this.#context.voiceCall?.end());
+      return;
+    }
+    if (status === "completed" && active.imageGenerations.size > 0) {
+      active.root = "idle";
       return;
     }
     // The root answered while children it started still run: the Run waits
@@ -2661,13 +2775,26 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     }
   }
 
-  #publishToolStarted(value: unknown): void {
+  #publishToolStarted(value: unknown, nodeId?: ExecutionNodeId): void {
     const item = requireObject(value, "item/started params.item");
     const descriptor = toolDescriptor(item);
     if (!descriptor) return;
+    if (item.type === "imageGeneration") {
+      const active = this.#activeTurn;
+      if (
+        !active ||
+        active.interruptRequested ||
+        active.finishedImageGenerations.has(descriptor.callId)
+      )
+        return;
+      if (active.root === "idle" && !active.imageGenerations.size)
+        this.#publish({ type: "run.phase", data: { phase: "turn" } });
+      active.imageGenerations.set(descriptor.callId, nodeId);
+    }
     this.#publish({
       data: {
         arguments: createToolArguments(descriptor.arguments),
+        nodeId,
         callId: descriptor.callId,
         tool: descriptor.tool,
       },
@@ -2694,7 +2821,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     this.#publish({ data: { blockId: itemId, text }, type: "reasoning.delta" });
   }
 
-  #publishItemCompleted(value: unknown): void {
+  #publishItemCompleted(value: unknown, nodeId?: ExecutionNodeId): void {
     const item = requireObject(value, "item/completed params.item");
     const type = optionalString(item.type);
     // A hand-off restates words the realtime transcript already recorded.
@@ -2730,13 +2857,37 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       this.#publish({ data: { blockId, text }, type: "reasoning.completed" });
       return;
     }
+    if (type === "imageGeneration") {
+      const active = this.#activeTurn;
+      const callId = optionalString(item.id);
+      if (!active || active.terminal || !callId || active.finishedImageGenerations.has(callId))
+        return;
+      if (!active.imageGenerations.has(callId)) this.#publishToolStarted(item, nodeId);
+      if (item.status !== "completed" && !toolItemFailed(item)) return;
+      this.#publish({
+        type: "tool.completed",
+        data: {
+          callId,
+          isError: toolItemFailed(item),
+          output: codexImageOutput(item),
+          nodeId,
+        },
+      });
+      active.imageGenerations.delete(callId);
+      active.finishedImageGenerations.add(callId);
+      this.#settleIfDone(active);
+      return;
+    }
     const descriptor = toolDescriptor(item);
     if (!descriptor) return;
     this.#publish({
       data: {
         callId: descriptor.callId,
         isError: toolItemFailed(item),
-        output: normalizeToolOutput(codexToolOutput(item)),
+        output:
+          item.type === "mcpToolCall"
+            ? toolOutputWithImages(codexToolOutput(item), this.#context.imageStore)
+            : normalizeToolOutput(codexToolOutput(item)),
       },
       type: "tool.completed",
     });
@@ -2839,7 +2990,25 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     this.#publish(runStartedEvent());
   }
 
+  #cancelImageGenerations(active: ActiveTurn): void {
+    for (const [callId, nodeId] of active.imageGenerations) {
+      this.#publish({
+        type: "tool.completed",
+        data: {
+          callId,
+          isError: true,
+          output: createToolOutput("Image generation cancelled"),
+          nodeId,
+        },
+      });
+    }
+    for (const callId of active.imageGenerations.keys())
+      active.finishedImageGenerations.add(callId);
+    active.imageGenerations.clear();
+  }
+
   #publishTerminal(active: ActiveTurn, status: "completed" | "interrupted"): void {
+    this.#cancelImageGenerations(active);
     if (!this.#publisher.claimTerminal(active)) return;
     void this.#trackCancellation(this.#drainPendingRequests("run-ended"));
     active.toolLifetime.abort(new Error(`Codex turn ${status}`));
@@ -2855,6 +3024,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
   }
 
   #publishFailure(active: ActiveTurn, error: OpensteerError): void {
+    this.#cancelImageGenerations(active);
     if (!this.#publisher.claimTerminal(active)) return;
     void this.#trackCancellation(this.#drainPendingRequests("run-ended"));
     active.toolLifetime.abort(error);
@@ -4092,7 +4262,7 @@ async function codexThreadRuntimeConfig(
       runtimeConfig[codexMcpConfigPath(name, "omit_tools_from")] = ["code_mode", "deferred"];
     }
   }
-  for (const tool of ["integration_call", "integration_describe", "computer"]) {
+  for (const tool of ["integration_call", "integration_describe", "computer_use"]) {
     runtimeConfig[codexMcpConfigPath("opensteer", `tools.${tool}.output_token_limit`)] =
       codexIntegrationOutputTokenLimit;
   }
@@ -4205,7 +4375,11 @@ async function codexSkillsDisabled(
 }
 
 function codexMcpTools(tools: readonly string[]): ReadonlyMap<string, readonly string[]> {
-  const requestTools = new Set<string>([...requestToolNames, "thread_wait"]);
+  const requestTools = new Set<string>([
+    ...requestToolNames,
+    "opensteer_task_wait",
+    "opensteer_delegation_wait",
+  ]);
   const directTools = tools.filter((tool) => requestTools.has(tool));
   return new Map([
     ["opensteer", tools.filter((tool) => !requestTools.has(tool))],
@@ -4313,7 +4487,7 @@ function threadStartupOptions(context: HarnessSessionContext): JsonObject {
     approvalPolicy: access.approvalPolicy,
     approvalsReviewer: access.approvalsReviewer,
     cwd: context.workspacePath,
-    ...(developerInstructions ? { developerInstructions } : {}),
+    ...(context.voiceCall && developerInstructions ? { developerInstructions } : {}),
     model: harnessModelId(context.modelSelection),
     // Native-user preserves Codex's trust-write boundary. Isolated services use
     // a session-flag permission profile that cannot expose Runner private state.
@@ -4328,40 +4502,6 @@ function threadStartupOptions(context: HarnessSessionContext): JsonObject {
                 : "workspace-write"
             : "read-only",
         }),
-  };
-}
-
-/**
- * Per-Run facts travel on the turn, not only on thread startup: Codex renders
- * `developerInstructions` when it builds a conversation's initial context, so
- * a resumed thread would otherwise keep an earlier Run's facts. The platform
- * guide and Agent home instructions need this refresh only on resume;
- * a fresh thread already has them in `developerInstructions`. This also lets a
- * long-lived thread receive a changed capability guide. `additionalContext` is keyed and diffed by
- * Codex, which emits a developer message when a value changes and nothing when
- * it repeats; a key that is dropped emits nothing either, which is why empty
- * current values are sent as text rather than omitted.
- */
-function runAdditionalContext(
-  context: Pick<HarnessSessionContext, "instructions" | "machineAccessNotice" | "platformGuide">,
-  resumed: boolean,
-): JsonObject {
-  return {
-    opensteer_computers: { kind: "application", value: context.machineAccessNotice },
-    ...(resumed
-      ? {
-          opensteer_current_instructions: {
-            kind: "application",
-            value: [
-              "Current Opensteer and task instructions for this Run follow. They replace their counterparts from earlier Runs.",
-              context.platformGuide,
-              context.instructions?.trim()
-                ? context.instructions
-                : "(There are no current task instructions.)",
-            ].join("\n\n"),
-          },
-        }
-      : {}),
   };
 }
 
@@ -4791,6 +4931,7 @@ function parseInputQuestions(value: unknown): RequestFormField[] {
       : undefined;
     return {
       ...(choices ? { choices } : {}),
+      custom: question.isOther === true,
       id,
       multiSelect: false,
       prompt,
@@ -4870,6 +5011,15 @@ function toolDescriptor(
         callId,
         tool: { name: "web_search", namespace: "codex" },
       };
+    case "imageGeneration":
+      return {
+        arguments: {
+          prompt: item.revisedPrompt,
+          transparentBackground: item.transparentBackground,
+        },
+        callId,
+        tool: { namespace: "codex", name: imageGenerationToolName },
+      };
     case "imageView":
       return {
         arguments: { path: item.path },
@@ -4934,12 +5084,38 @@ function stringArray(value: unknown): readonly string[] {
 
 function toolItemFailed(item: JsonObject): boolean {
   const status = optionalString(item.status);
-  return status === "failed" || status === "declined" || item.success === false;
+  return (
+    (item.type === "imageGeneration" && (item.failure != null || status === "cancelled")) ||
+    status === "failed" ||
+    status === "declined" ||
+    item.success === false
+  );
+}
+
+function codexImageOutput(item: JsonObject): ReturnType<typeof createToolOutput> {
+  const failure = item.failure;
+  const reason =
+    typeof failure === "string"
+      ? failure
+      : isRecord(failure)
+        ? (optionalString(failure.message) ??
+          optionalString(failure.type) ??
+          optionalString(failure.code))
+        : undefined;
+  if (item.status === "cancelled") return createToolOutput("Image generation cancelled");
+  return createToolOutput(
+    toolItemFailed(item)
+      ? `Image generation failed: ${reason ?? "generation failed"}`
+      : "Image generation completed",
+    item.status === "completed" && !toolItemFailed(item) ? generatedImage(item.savedPath) : [],
+  );
 }
 
 /** Select only the semantic result from Codex's provider-native item envelope. */
 function codexToolOutput(item: JsonObject): unknown {
   switch (optionalString(item.type)) {
+    case "imageGeneration":
+      return codexImageOutput(item);
     case "commandExecution":
       return item.aggregatedOutput ?? "";
     case "mcpToolCall":

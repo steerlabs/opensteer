@@ -6,6 +6,7 @@ import {
   hostsDeployment,
   isServiceMachine,
 } from "@opensteer/client/computers";
+import { phoneScreenMac, phoneScreenStatus } from "@opensteer/client/integrations";
 import type { MachineSummary, OtherDevice } from "@opensteer/protocol";
 import type { SFSymbolName } from "../ui/symbol.js";
 import { computerSymbols } from "./settings-model.js";
@@ -62,7 +63,7 @@ export function deviceListSections(input: {
     const status =
       machine.id === homeMachine?.id
         ? "Home · your agent runs here"
-        : computerStatus(machine, input.now).label;
+        : (screenStatusLine(machine) ?? computerStatus(machine, input.now).label);
     const kind = thisDevice || machine.id === homeMachine?.id ? null : deviceKindLabel(machine);
     return {
       key: machine.id,
@@ -126,6 +127,14 @@ export function deviceListSections(input: {
       rows: signedIn,
     },
   ].filter((section) => section.rows.length > 0);
+}
+
+/** A Mac-driven phone's state, naming the Mac only as what controls it. */
+function screenStatusLine(machine: MachineSummary): string | null {
+  const status = phoneScreenStatus(machine);
+  const mac = phoneScreenMac(machine);
+  if (!status || !mac) return null;
+  return status.tone === "online" ? `${status.label} · through ${mac.name}` : status.label;
 }
 
 /** What kind of device it is, where its name alone doesn't say: from the Host's kind only. */

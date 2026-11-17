@@ -26,6 +26,26 @@ const sources = new Map(
  * way to make a stray copy pass.
  */
 const helperHomes: Readonly<Record<string, string | readonly string[]>> = {
+  referenceHref: "packages/core/src/references.ts",
+  parseReferenceHref: "packages/core/src/references.ts",
+  formatReferenceLink: "packages/core/src/references.ts",
+  classifyHref: "packages/core/src/hrefs.ts",
+  isNetworkPath: "packages/shared/src/fileHref.ts",
+  fileHref: "packages/shared/src/fileHref.ts",
+  parseFileHref: "packages/shared/src/fileHref.ts",
+  markdownLink: "packages/shared/src/markdownLinks.ts",
+  stripRefs: "packages/shared/src/stripRefs.ts",
+  visitMarkdownSource: "packages/shared/src/markdownParser.ts",
+  markdownSourceTree: "packages/shared/src/markdownParser.ts",
+  hideIncompleteLinkTail: "packages/shared/src/markdown.ts",
+  personMarkdownTree: "packages/shared/src/personMarkdown.ts",
+  teamMentionHandles: "packages/shared/src/teamMentions.ts",
+  teamMentionHandleRanges: "packages/shared/src/teamMentions.ts",
+  collectComposerTokens: "packages/client/src/references/composer.ts",
+  snapComposerSelection: "packages/client/src/references/composer.ts",
+  replaceComposerRange: "packages/client/src/references/composer.ts",
+  teamMessage: "packages/shared/src/teamMentions.ts",
+  teamMentions: "packages/shared/src/teamMentions.ts",
   copyText: "packages/shared/src/clipboard.ts",
   freePort: "packages/shared/src/loopbackPort.test-support.ts",
   CoalescedWake: "packages/shared/src/coalescedWake.ts",
@@ -125,6 +145,17 @@ const helperHomes: Readonly<Record<string, string | readonly string[]>> = {
   isRecord: "packages/shared/src/isRecord.ts",
   integrationToolEffect: "packages/integration-core/src/effect.ts",
   messageAuthorName: "packages/client/src/host/conversation-presentation.ts",
+  /**
+   * What waits for the agent at a task's foot, and who may approve an ask
+   * from chat. Web and mobile each grew their own queue rules before; these
+   * are the one reading of a queue, a revision history and an ask's owner.
+   */
+  waitingInputs: "packages/client/src/host/waiting-inputs.ts",
+  waitingAskConsent: "packages/client/src/host/waiting-inputs.ts",
+  messageRevisionRows: "packages/client/src/host/waiting-inputs.ts",
+  isWaitingInputState: "packages/client/src/host/transcript.ts",
+  openWaitingMessageEditor: "packages/client/src/host/waiting-message-editor.ts",
+  teamAskOwnerControl: "packages/client/src/team/ask-status.ts",
   HarnessSessionRegistry: "packages/harness/src/session-registry.ts",
   MutationQueue: "packages/shared/src/mutationQueue.ts",
   digestSecret: "packages/shared/src/secretDigest.ts",

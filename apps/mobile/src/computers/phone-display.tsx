@@ -1,22 +1,26 @@
 import {
-  phonePlaceKey,
+  deviceMachine,
   type HostClient,
   type HostSnapshot,
   type NativeViewerSource,
+  type RunPlaceDisplay,
+  type RunPlacePictureReport,
 } from "@opensteer/client/host";
 import {
   computerUseStops,
   computerReasonWords,
-  ownerViewComputerReadiness,
   computerDisplayScope,
   computerDisplayAuthorityKey,
   computerDisplayStatus,
+  phoneViewerNavigation,
+  phoneViewerPower,
   sharedDisplayStreams,
+  type PhoneNavigationTo,
   type DisplayFrame,
   type DisplaySnapshot,
   type DisplayLease,
 } from "@opensteer/client/integrations";
-import { useHostSelector, usePhoneTabView, usePlaceList } from "@opensteer/client/react";
+import { useHostSelector } from "@opensteer/client/react";
 import {
   displayViewerCloseCodes,
   displayViewerWindowFrames,
@@ -25,20 +29,9 @@ import {
 } from "@opensteer/protocol";
 import { encodeBase64Url } from "@opensteer/shared/base64url";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  AppState,
-  PixelRatio,
-  Pressable,
-  StyleSheet,
-  View,
-} from "react-native";
-import { StackActions, useNavigation } from "@react-navigation/native";
+import { ActivityIndicator, AppState, PixelRatio, Pressable, StyleSheet, View } from "react-native";
 import Animated, { useAnimatedStyle } from "react-native-reanimated";
-import { tabsRoute } from "../browser/surface-route.js";
 import { MacAppIcon } from "./app-mark.js";
-import { openAppOwnerView, openPhoneOwnerView } from "./open-owner-view.js";
 import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "../browser/place-bar.js";
 import { PlaceVoiceDock, usePlaceStatus } from "../browser/place-foot.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
@@ -46,7 +39,7 @@ import { color, controlFontScaleLimit, radius, space } from "../theme.js";
 import type { NativeMenuOption, NativeMenuSection } from "../thread/composer-menu.js";
 import { GlassSurface } from "../ui/glass.js";
 import { AppText, SecondaryButton } from "../ui/primitives.js";
-import { Symbol } from "../ui/symbol.js";
+import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import {
   DisplayControls,
   type DisplayPicture,
@@ -101,7 +94,7 @@ export function ComputerDisplay({
   label,
   machineId,
   onPageSize,
-  onShown,
+  runPlace,
   interactive = false,
   onReopen,
   preserveLastFrame = false,
@@ -117,8 +110,17 @@ export function ComputerDisplay({
   readonly label: string;
   readonly machineId?: string;
   readonly onPageSize?: ((size: { width: number; height: number }) => void) | undefined;
-  /** Whether a picture of the screen is drawn now, not a word in its place. */
-  readonly onShown?: ((shown: boolean) => void) | undefined;
+  /**
+   * A Run place's picture: the stream is the owner's, attached rather than
+   * retained, and the view says when its pixels become usable or unusable.
+   * The caller draws every state; the view draws no words of its own.
+   */
+  readonly runPlace?:
+    | {
+        readonly display: RunPlaceDisplay | null;
+        readonly report: (report: RunPlacePictureReport) => void;
+      }
+    | undefined;
 }) {
   useNativeBarAway(bar !== undefined);
   // The picture and its touch layer ease into the room the status row leaves;
@@ -128,6 +130,11 @@ export function ComputerDisplay({
   const lift = useAnimatedStyle(() => ({ bottom: reserve.value }));
   const [viewerWidth, setViewerWidth] = useState<number | null>(null);
   const unavailable = !phone && !macWindowVideoSupported();
+  const phoneDisplay = useHostSelector(hostClient, (snapshot) => {
+    const machine = snapshot.machines.find(({ id }) => id === machineId);
+    return phone && machine ? (deviceMachine(machine).phoneDisplay ?? null) : null;
+  });
+  const navigation = phoneViewerNavigation(phoneDisplay);
   const kind = reference.kind;
   const sessionId = reference.kind === "task-session" ? reference.sessionId : "";
   const appKey = reference.kind === "task-session" ? reference.appKey : undefined;
@@ -151,8 +158,15 @@ export function ComputerDisplay({
   const [foreground, setForeground] = useState(AppState.currentState === "active");
   const [words, setWords] = useState<string | null>("Connecting…");
   const [shown, setShown] = useState(false);
-  const pictured = shown && words === null && !unavailable;
-  useEffect(() => onShown?.(pictured), [onShown, pictured]);
+  const drawn = useRef(shown);
+  drawn.current = shown;
+  const attached = runPlace?.display;
+  const reportPicture = runPlace?.report;
+  const report = useRef(reportPicture);
+  report.current = reportPicture;
+  useEffect(() => {
+    if (unavailable) reportPicture?.({ kind: "cleared" });
+  }, [reportPicture, unavailable]);
   const [terminal, setTerminal] = useState(false);
   const viewport = useRef(1280);
   const viewportChanged = useRef<((size: number) => void) | null>(null);
@@ -257,7 +271,16 @@ export function ComputerDisplay({
     return () => listener.remove();
   }, []);
   useLayoutEffect(() => {
-    if (unavailable || !active || !foreground || !scope || authorityKey === null) {
+    // Until the Run place's owner hands over its stream, nothing drawn means nothing to fence.
+    if (attached === null && !drawn.current) return;
+    if (
+      unavailable ||
+      !active ||
+      !foreground ||
+      !scope ||
+      authorityKey === null ||
+      attached === null
+    ) {
       const keepPicture = preserve && active && foreground && authorityKey !== null;
       if (!keepPicture) {
         setShown(false);
@@ -266,8 +289,12 @@ export function ComputerDisplay({
       return;
     }
     const pool = sharedDisplayStreams(hostClient);
-    const lease = pool.retain({ scope, source, ...(interactive ? { editing: 1 as const } : {}) });
-    setInputLease(lease);
+    const owned =
+      attached === undefined
+        ? pool.retain({ scope, source, ...(interactive ? { editing: 1 as const } : {}) })
+        : null;
+    const lease: RunPlaceDisplay = attached ?? owned!;
+    setInputLease(owned);
     reopen.current = () =>
       pool.reopen({ scope, source, ...(interactive ? { editing: 1 as const } : {}) });
     requestKeyframe.current = () => lease.requestKeyframe();
@@ -285,6 +312,8 @@ export function ComputerDisplay({
       if (!keepPicture) {
         setPicture(null);
         setShown(false);
+        // Letting go is not losing the picture: only the stream can say that.
+        if (!disposed) report.current?.({ kind: "cleared" });
       }
       resetDecoder(epoch.current, keepPicture);
       generation = -1;
@@ -433,10 +462,11 @@ export function ComputerDisplay({
           next.authorityKey === authorityKey &&
           authorityKey !== null,
       );
-      lease.release();
+      owned?.release();
     };
   }, [
     active,
+    attached,
     foreground,
     hostClient,
     resetDecoder,
@@ -454,10 +484,15 @@ export function ComputerDisplay({
   ]);
   const navigable =
     interactive && phone && inputLease !== null && shown && displayState?.input === "available";
-  const go = (to: "back" | "home" | "recents") => {
+  const go = (to: PhoneNavigationTo) => {
     if (picture !== null) inputLease?.input(picture.generation, [{ kind: "nav", to }]);
   };
-  const power = displayState?.power === "available" ? displayState.display?.state : null;
+  const state = displayState?.power === "available" ? displayState.display?.state : null;
+  const power =
+    (state === "screen-off" && phoneViewerPower(phoneDisplay, "wake")) ||
+    (state === "live" && phoneViewerPower(phoneDisplay, "lock"))
+      ? state
+      : null;
   const stage = (
     <View
       accessibilityLabel={label}
@@ -478,6 +513,7 @@ export function ComputerDisplay({
               controls.current?.resetInput();
               setPicture(null);
               setShown(false);
+              report.current?.({ kind: "cleared" });
             }
             requestKeyframe.current?.();
           }}
@@ -487,6 +523,11 @@ export function ComputerDisplay({
             setShown(true);
             setPicture(decodingPicture.current);
             onPageSize?.({ width: nativeEvent.width, height: nativeEvent.height });
+            report.current?.({
+              kind: "drawn",
+              width: nativeEvent.width,
+              height: nativeEvent.height,
+            });
           }}
         />
         {interactive && inputLease && !unavailable ? (
@@ -509,7 +550,8 @@ export function ComputerDisplay({
             </AppText>
           </GlassSurface>
         ) : null}
-        {unavailable || !shown || (!preserve && (words || updateName !== null)) ? (
+        {runPlace === undefined &&
+        (unavailable || !shown || (!preserve && (words || updateName !== null))) ? (
           <View style={styles.status}>
             {!unavailable && !words && updateName === null ? (
               <ActivityIndicator color={color.muted} />
@@ -573,13 +615,11 @@ export function ComputerDisplay({
       <PlaceVoiceDock />
       <Toolbar edge="bottom" testID="display-toolbar">
         <ToolbarLeave />
-        {interactive && phone ? (
+        {interactive && phone && navigation.length > 0 ? (
           <GlassSurface interactive shape="capsule" style={styles.keys}>
-            {(["back", "home", "recents"] as const).map((to) => (
+            {navigation.map(({ label, to }) => (
               <Pressable
-                accessibilityLabel={
-                  to === "back" ? "Phone back" : to === "home" ? "Home" : "Recent apps"
-                }
+                accessibilityLabel={navLabels[to] ?? label}
                 accessibilityRole="button"
                 accessibilityState={{ disabled: !navigable }}
                 disabled={!navigable}
@@ -588,7 +628,7 @@ export function ComputerDisplay({
                 style={({ pressed }) => [styles.key, pressed && styles.pressed]}
               >
                 <Symbol
-                  name={to === "back" ? "chevron.left" : to === "home" ? "circle" : "square"}
+                  name={navSymbols[to]}
                   size={to === "back" ? 18 : 15}
                   tint={navigable ? color.text : color.mutedDim}
                   weight="semibold"
@@ -677,7 +717,10 @@ export function ComputerTaskView(props: {
       machine.status === "updating" ||
       machine.status === "update-pending") ? (
     <View style={styles.stage}>
-      <AppText>{machine.detail ?? `Update Agent Phone on ${label}.`}</AppText>
+      <AppText>
+        {machine.detail ??
+          `Update ${deviceMachine(machine).phoneDisplay?.setup.location === "android-usb" ? "Agent Phone" : "Opensteer"} on ${label}.`}
+      </AppText>
     </View>
   ) : (
     <ComputerDisplay
@@ -721,162 +764,6 @@ function stopMenuItem(
         runId: session.runId,
       }),
   };
-}
-
-/**
- * A phone's tab: the person's own view while that can show anything, else the
- * task holding the phone, else one Open. Nothing here opens by itself, so only
- * that press arms the phone's wake.
- */
-export function PhoneTabView(props: {
-  readonly active: boolean;
-  readonly hostClient: HostClient;
-  readonly machineId: string;
-  readonly onClosed: () => void;
-  readonly onTyping: (typing: boolean) => void;
-}) {
-  const { hostClient, machineId, onClosed } = props;
-  const navigation = useNavigation();
-  // The view Open asked for can replace the page that asked before the answer
-  // arrives. That is not leaving, so presence is the tab's, or Open cancels its wake.
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-  const stillHere = useCallback(() => mounted.current && navigation.isFocused(), [navigation]);
-  const key = phonePlaceKey(machineId);
-  const place = usePlaceList(hostClient).find((item) => item.key === key) ?? null;
-  const viewOpening = usePhoneTabView(hostClient, machineId, props.active);
-  const closeTab = () => {
-    hostClient.closePhoneTab(machineId).then(onClosed, (error: unknown) => {
-      Alert.alert(
-        "Couldn’t close this tab",
-        error instanceof Error ? error.message : "Please try again.",
-      );
-    });
-  };
-  const closable = place?.phoneTab === true && place.closable;
-  if (place?.ownerView)
-    return (
-      <ComputerOwnerView
-        active={props.active}
-        appKey={null}
-        generation={place.ownerView.generation}
-        hostClient={hostClient}
-        key={`${place.ownerView.viewId}:${place.ownerView.generation}`}
-        machineId={machineId}
-        menu={[
-          ...(place.task ? [stopMenuItem(hostClient, place.title, true, place.task)] : []),
-          ...(closable
-            ? [
-                {
-                  destructive: true,
-                  icon: "xmark.circle" as const,
-                  id: "close",
-                  label: "Close tab",
-                  onPress: closeTab,
-                },
-              ]
-            : []),
-        ]}
-        onTyping={props.onTyping}
-        stillHere={stillHere}
-        viewId={place.ownerView.viewId}
-      />
-    );
-  if (place?.task)
-    return (
-      <ComputerTaskView
-        active={props.active}
-        appKey={null}
-        computerSessionId={place.task.sessionId}
-        hostClient={hostClient}
-        key={place.task.sessionId}
-        machineId={machineId}
-        onTyping={props.onTyping}
-      />
-    );
-  return (
-    <PhoneTabResting
-      hostClient={hostClient}
-      machineId={machineId}
-      onClose={closable ? closeTab : null}
-      opening={viewOpening}
-      stillHere={stillHere}
-    />
-  );
-}
-
-function PhoneTabResting(props: {
-  readonly hostClient: HostClient;
-  readonly machineId: string;
-  readonly onClose: (() => void) | null;
-  /** The tab is opening its view by itself. */
-  readonly opening: boolean;
-  readonly stillHere: () => boolean;
-}) {
-  const { hostClient, machineId } = props;
-  const [opening, setOpening] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-  const machine = useHostSelector(hostClient, (snapshot) =>
-    snapshot.machines.find((value) => value.id === machineId),
-  );
-  const name = machine?.name ?? "Your phone";
-  const computer = ownerViewComputerReadiness(machine, true);
-  const open = async () => {
-    setOpening(true);
-    setFailure(null);
-    try {
-      const deploymentId = hostClient.getSnapshot().deploymentId;
-      await openPhoneOwnerView(
-        hostClient,
-        machineId,
-        () => props.stillHere() && hostClient.getSnapshot().deploymentId === deploymentId,
-      );
-    } catch (error) {
-      if (mounted.current)
-        setFailure(error instanceof Error ? error.message : `${name} could not be opened.`);
-    } finally {
-      if (mounted.current) setOpening(false);
-    }
-  };
-  return (
-    <View style={styles.stage}>
-      <View style={styles.status}>
-        <AppText role="bodyMedium" style={styles.statusText}>
-          {props.opening
-            ? `Opening ${name}…`
-            : computer === null
-              ? `Open ${name} to see it and use it.`
-              : computerReasonWords(computer, { machine: name, phone: true, target: name })}
-        </AppText>
-        {computer === null && !props.opening ? (
-          <SecondaryButton
-            accessibilityLabel={`Open ${name}`}
-            disabled={opening}
-            label={opening ? "Opening…" : "Open"}
-            onPress={() => void open()}
-          />
-        ) : null}
-        {props.onClose ? <SecondaryButton label="Close tab" onPress={props.onClose} /> : null}
-        {failure ? (
-          <AppText role="secondary" style={styles.statusText} tone="muted">
-            {failure}
-          </AppText>
-        ) : null}
-      </View>
-    </View>
-  );
 }
 
 /** A view this close to its expiry when it comes into sight is renewed at once. */
@@ -927,53 +814,11 @@ export function ComputerOwnerView(props: {
   readonly hostClient: HostClient;
   readonly machineId: string;
   readonly menu?: NativeMenuSection;
-  /** Presence of whatever outlives this view being replaced by a newer generation. */
-  readonly stillHere?: () => boolean;
+  /** Opens the tab again, as the person's own Open, once this view has ended. */
+  readonly onReopen: () => void;
   readonly viewId: string;
-  /** The Mac window the view bound, reopened as the same window. */
-  readonly windowId?: number | undefined;
 }) {
   const { active, generation, hostClient, viewId } = props;
-  const navigation = useNavigation();
-  const [reopening, setReopening] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-  const reopen = async () => {
-    setReopening(true);
-    setFailure(null);
-    try {
-      const deploymentId = hostClient.getSnapshot().deploymentId;
-      const stillHere = () =>
-        (props.stillHere?.() ?? (mounted.current && navigation.isFocused())) &&
-        hostClient.getSnapshot().deploymentId === deploymentId;
-      if (props.appKey === null) {
-        await openPhoneOwnerView(hostClient, props.machineId, stillHere);
-        return;
-      }
-      const destination = await openAppOwnerView(
-        hostClient,
-        props.machineId,
-        props.appKey,
-        props.windowId,
-        stillHere,
-      );
-      if (destination && deploymentId)
-        navigation.dispatch(
-          StackActions.replace("WorkspaceBrowser", tabsRoute(deploymentId, destination)),
-        );
-    } catch (error) {
-      if (mounted.current)
-        setFailure(error instanceof Error ? error.message : `${label} could not be opened.`);
-    } finally {
-      if (mounted.current) setReopening(false);
-    }
-  };
   const machine = useHostSelector(hostClient, (snapshot) =>
     snapshot.machines.find((value) => value.id === props.machineId),
   );
@@ -996,15 +841,9 @@ export function ComputerOwnerView(props: {
           </AppText>
           <SecondaryButton
             accessibilityLabel={phone ? "Reopen phone" : `Reopen ${label}`}
-            disabled={reopening}
-            label={reopening ? "Opening…" : "Reopen"}
-            onPress={() => void reopen()}
+            label="Reopen"
+            onPress={props.onReopen}
           />
-          {failure ? (
-            <AppText role="secondary" style={styles.statusText} tone="muted">
-              {failure}
-            </AppText>
-          ) : null}
         </View>
       </View>
     );
@@ -1023,7 +862,7 @@ export function ComputerOwnerView(props: {
       label={label}
       machineId={props.machineId}
       phone={phone}
-      onReopen={phone ? () => void reopen() : undefined}
+      onReopen={phone ? props.onReopen : undefined}
       source={{ generation, kind: "owner-view", viewId }}
     />
   );
@@ -1066,3 +905,15 @@ const styles = StyleSheet.create({
   statusText: { textAlign: "center" },
   viewer: { flex: 1 },
 });
+
+const navLabels: Partial<Record<PhoneNavigationTo, string>> = {
+  back: "Phone back",
+  home: "Home",
+  recents: "Recent apps",
+};
+const navSymbols: Readonly<Record<PhoneNavigationTo, SFSymbolName>> = {
+  back: "chevron.left",
+  home: "circle",
+  recents: "square",
+  notifications: "bell",
+};

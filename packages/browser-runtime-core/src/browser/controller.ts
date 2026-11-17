@@ -207,6 +207,7 @@ const screenshotParameters = z.object({
     .optional(),
   format: z.enum(["jpeg", "png", "webp"]).default("png"),
   quality: z.number().int().min(0).max(100).optional(),
+  optimizeForSpeed: z.boolean().optional(),
 });
 
 /**
@@ -3404,7 +3405,13 @@ export class BrowserController {
         "conflict",
         "A JavaScript dialog is open on this page. Answer it with Page.handleJavaScriptDialog, then capture.",
       );
-    const request = screenshotParameters.parse(parameters);
+    const parsedCapture = screenshotParameters.safeParse(parameters);
+    if (!parsedCapture.success)
+      throw new BrowserRuntimeError(
+        "bad_message",
+        `Invalid screenshot parameters: ${parsedCapture.error.issues.map((issue) => issue.path.join(".")).join(", ")}.`,
+      );
+    const request = parsedCapture.data;
     const page = this.ledger.binding(surfaceId)?.page;
     if (!page) throw new BrowserRuntimeError("not_found", "The browser page closed.");
     const stop = new AbortController();
@@ -3521,7 +3528,8 @@ export class BrowserController {
         throw new BrowserRuntimeError("bad_message", "Invalid tab-resume parameters.");
       const reloaded = this.ledger.stateOf(parsed.data.surfaceId) === "suspended";
       const binding = await this.ledger.wake(parsed.data.surfaceId);
-      await this.drainTabs();
+      if (reloaded) await this.drainTabs();
+      const dialog = this.ledger.dialogOf(parsed.data.surfaceId);
       await this.send({
         type: "cdp.result",
         requestId: message.requestId,
@@ -3529,6 +3537,9 @@ export class BrowserController {
           surfaceId: parsed.data.surfaceId,
           targetId: binding.targetId,
           documentId: binding.surface.documentId,
+          dialog: dialog ? { id: dialog.id, message: dialog.message, type: dialog.type } : null,
+          userActivity: this.ledger.targetActivity(binding.targetId) ?? null,
+          pageResize: this.ledger.targetResize(binding.targetId) ?? null,
           reloaded,
         },
       });
@@ -3563,6 +3574,7 @@ export class BrowserController {
       const { idempotencyKey, url: requestedUrl, viewport, operationAuthority } = parsed.data;
       const started = Date.now();
       let remaining = 18_000;
+      let origin: "agent" | "person" = "person";
       if (operationAuthority) {
         if (!this.verifyOpenAuthority)
           throw new BrowserRuntimeError("forbidden", "Browser opening authority is unavailable.");
@@ -3588,6 +3600,7 @@ export class BrowserController {
           authority.remainingBudgetMs,
           Date.parse(authority.operationExpiresAt) - Date.now(),
         );
+        origin = authority.creationOrigin;
       }
       if (remaining <= 0)
         throw new BrowserRuntimeError("conflict", "The browser opening authority expired.");
@@ -3611,6 +3624,7 @@ export class BrowserController {
           this.ledger.openSurface({
             signal: operationSignal,
             activate: false,
+            origin,
             ...(surfaceId ? { surfaceId } : {}),
             ...(viewport ? { viewport: { devicePixelRatio: 1, ...viewport } } : {}),
           }),
@@ -3638,7 +3652,7 @@ export class BrowserController {
         if (url !== undefined) {
           const binding = this.ledger.binding(tabId);
           if (!binding) throw new BrowserRuntimeError("not_found", "The new tab closed.");
-          this.ledger.recordHumanActivity(tabId, { kind: "navigation" });
+          if (origin === "person") this.ledger.recordHumanActivity(tabId, { kind: "navigation" });
           void this.ledger.navigate(tabId, url, message.navigationId).catch(() => undefined);
         }
       }
@@ -3790,6 +3804,16 @@ export class BrowserController {
     attachedActivity: AttachedActivity | undefined,
   ): unknown {
     const method = command.method;
+    if (
+      method === "Target.createTarget" &&
+      result !== null &&
+      typeof result === "object" &&
+      !Array.isArray(result)
+    ) {
+      const targetId = targetIdFromResult(result);
+      const surfaceId = targetId ? this.ledger.surfaceIdForTarget(targetId) : undefined;
+      if (surfaceId) return { ...result, surfaceId };
+    }
     if (method === "Target.attachToTarget" && typeof command.parameters?.targetId === "string") {
       const surfaceId = this.ledger.surfaceIdForTarget(command.parameters.targetId);
       if (surfaceId && result !== null && typeof result === "object" && !Array.isArray(result)) {

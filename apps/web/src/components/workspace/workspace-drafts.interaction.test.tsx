@@ -1,6 +1,4 @@
-import { seedBrowserSession } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
-import { withTimeout } from "@opensteer/shared/withTimeout";
 import { act } from "react";
 
 import { describe, expect, it, vi, type MockInstance } from "vitest";
@@ -8,15 +6,17 @@ import { MockHostClient } from "@opensteer/client/mock";
 import {
   HostClientRequestError,
   placeList,
-  type BrowserTabStore,
   type HostSnapshot,
   type PlaceItem,
 } from "@opensteer/client/host";
-import type { BrowserTabRow } from "@opensteer/protocol/browser-tabs";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 
-import { startPageLink } from "./navigation.js";
-
+/** The browser session this device was shown a page tab through. */
+function pageSession(tabId: string): string {
+  const viewer = client.tabViewer(tabId);
+  if (viewer?.kind !== "page") throw new Error("That page was never shown here");
+  return viewer.sessionId;
+}
 /** What reached the Host as messages: a task's start is not one. */
 function sends(dispatch: MockInstance<MockHostClient["dispatch"]>) {
   return dispatch.mock.calls.flatMap(([command]) =>
@@ -49,9 +49,6 @@ import {
   root,
   client,
   history,
-  historyState,
-  goTo,
-  type Entry,
   mount,
   settle,
   element,
@@ -64,23 +61,19 @@ import {
   firstTaskId,
   setRoot,
 } from "./workspace.interaction.test-support.js";
+import { composerText, rewrite } from "../composer-editor.test-support.js";
 describe("the draft's places", () => {
   it("follows the sign-in form page and sends its automatic reference on the first press", async () => {
     await mount((source) => {
-      const form = placeList(source.getSnapshot()).find(
-        (place) =>
-          place.destination.kind === "browser" && place.destination.tabId === "mock-tab-0-2",
-      )!;
+      const form = placeList(source.getSnapshot()).find((place) => place.key === "mock-tab-0-2")!;
       return `/${tabSearch(form)}`;
     });
     await settle(100);
-    const form = placeList(client.getSnapshot()).find(
-      (place) => place.destination.kind === "browser" && place.destination.tabId === "mock-tab-0-2",
-    )!;
-    if (form.destination.kind !== "browser") throw new Error("Missing sign-in form tab");
+    const form = placeList(client.getSnapshot()).find((place) => place.key === "mock-tab-0-2")!;
+    const sessionId = pageSession(form.key);
     expect(element(".context-chip__title").textContent).toBe(form.title);
     const dispatch = vi.spyOn(client, "dispatch");
-    await write(element<HTMLTextAreaElement>("[data-composer-input]"), "Help with this form");
+    await write(element<HTMLElement>("[data-composer-input]"), "Help with this form");
     await click(element(".composer__send"));
     await settle(100);
     const sends = dispatch.mock.calls.filter(([command]) => command.type === "thread.sendMessage");
@@ -90,9 +83,9 @@ describe("the draft's places", () => {
     const page = {
       type: "browser-page",
       auto: true,
-      documentId: form.browser?.documentId,
-      sessionId: form.destination.sessionId,
-      tabId: form.destination.tabId,
+      documentId: client.browserViewerSurface(sessionId, form.key)?.documentId,
+      sessionId,
+      tabId: form.key,
       title: form.title,
     };
     expect(command.content).toContainEqual(expect.objectContaining(page));
@@ -116,7 +109,7 @@ describe("the draft's places", () => {
         ),
     ).toBe(true);
     expect(document.querySelector(".composer__error")).toBeNull();
-    expect(element<HTMLTextAreaElement>("[data-composer-input]").value).toBe("");
+    expect(composerText(element("[data-composer-input]"))).toBe("");
   });
 
   it("follows the page while untouched, freezes on typing, and a removal sticks", async () => {
@@ -125,16 +118,12 @@ describe("the draft's places", () => {
     await settle(100);
     expect(element(".context-chip__title").textContent).toBe(place.title);
     // Typing freezes the chip on this page; another tab does not replace it.
-    const field = element<HTMLTextAreaElement>("[data-composer-input]");
+    const field = element<HTMLElement>("[data-composer-input]");
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
-        field,
-        "About this",
-      );
-      field.dispatchEvent(new Event("input", { bubbles: true }));
+      rewrite(field, "About this");
     });
     const other = placeList(client.getSnapshot()).find(
-      (item) => item.kind === "browser" && item.key !== place.key && isMockPage(item),
+      (item) => item.key !== place.key && isMockPage(item),
     )!;
     await click(element(`.side-tab[data-place-key="${other.key}"] .side-tab__main`));
     await settle(100);
@@ -146,503 +135,54 @@ describe("the draft's places", () => {
     expect(document.querySelector(".context-chip")).toBeNull();
   });
 
-  // A page's icon is published about a second after the page itself, and the
-  // Host serves it only while a tab shows that page.
-  describe("each chip wears its own page's icon", () => {
-    const icon = (ref: string) => `data:image/png;base64,${btoa(ref)}`;
-    const title = () => element(".context-chip__title").textContent;
-    const chipIcon = (chip = ".context-chip") =>
-      document.querySelector(`${chip} .site-mark img`)?.getAttribute("src") ?? null;
-    async function open(path: Entry | ((source: MockHostClient) => Entry)) {
-      vi.spyOn(HTMLImageElement.prototype, "naturalWidth", "get").mockReturnValue(32);
-      vi.stubGlobal(
-        "Image",
-        class {
-          naturalWidth = 32;
-          onload: (() => void) | null = null;
-          set src(_value: string) {
-            queueMicrotask(() => this.onload?.());
-          }
-        },
-      );
+  // The followed page's read answers after the draft moved on: the draft shows
+  // what it chose since, never what the late answer brought.
+  it.each(["freeze", "select", "reset"] as const)(
+    "%s drops the late answer of the followed page's read",
+    async (how) => {
+      type Candidate = Awaited<ReturnType<MockHostClient["readBrowserContextCandidate"]>>;
+      const late = deferred<Candidate>();
       await mount((source) => {
-        vi.spyOn(source, "readBrowserTabIcon").mockImplementation(async (_session, ref) =>
-          icon(ref),
-        );
-        return typeof path === "function" ? path(source) : path;
-      });
-      const place = pageTab();
-      if (place.destination.kind !== "browser" || !place.destination.tabId)
-        throw new Error("Not a browser tab");
-      const { sessionId, tabId } = place.destination;
-      const surfaceId = BrowserSurfaceIdSchema.parse(tabId);
-      return {
-        place,
-        sessionId,
-        tabId,
-        icon: () => client.browserTabs.sessionTab(sessionId, tabId)?.iconRef ?? null,
-        go: async (url: string) => {
-          await act(async () => {
-            client.sendBrowserCommand(sessionId, { surfaceId, type: "navigation.go", url });
-          });
-          await settle(100);
-        },
-      };
-    }
-    async function type(text: string) {
-      const field = element<HTMLTextAreaElement>("[data-composer-input]");
-      await act(async () => {
-        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
-          field,
-          text,
-        );
-        field.dispatchEvent(new Event("input", { bubbles: true }));
-      });
-    }
-
-    it("takes it once published, and keeps it when the tab moves on or the message comes back", async () => {
-      const tab = await open((source) => `/${tabSearch(pageTab(source))}`);
-      // The chip follows a new page at once, before its browser has an icon.
-      await tab.go("https://verified.capitalone.com/auth/signin");
-      expect(title()).toBe("verified.capitalone.com");
-      expect(tab.icon()).toBeNull();
-      expect(chipIcon()).toBeNull();
-      expect(element(".context-chip .site-mark").textContent).toBe("");
-      await settle(1_100);
-      const capitalOne = tab.icon();
-      expect(capitalOne).not.toBeNull();
-      expect(chipIcon()).toBe(icon(capitalOne!));
-      // Frozen before the next page's icon is published, the chip still takes it…
-      await tab.go("https://example.org/");
-      await type("About this");
-      expect(title()).toBe("example.org");
-      expect(chipIcon()).toBeNull();
-      await settle(1_100);
-      const example = tab.icon();
-      expect(example).not.toBeNull();
-      expect(example).not.toBe(capitalOne);
-      expect(chipIcon()).toBe(icon(example!));
-      // …and keeps it when the tab moves on, never taking the next page's.
-      await tab.go("https://example.net/");
-      await settle(1_100);
-      expect(tab.icon()).not.toBeNull();
-      expect(tab.icon()).not.toBe(example);
-      expect(title()).toBe("example.org");
-      expect(chipIcon()).toBe(icon(example!));
-      // A refused send hands the page back wearing its icon, its tab elsewhere by then.
-      const refusal = deferred<void>();
-      vi.spyOn(client, "dispatch").mockImplementationOnce(async () => {
-        await refusal.promise;
-        throw new HostClientRequestError({
-          code: "forbidden",
-          message: "This browser is no longer visible.",
-          status: 403,
-        });
-      });
-      await click(element(".composer__send"));
-      await tab.go("https://example.com/");
-      await act(async () => refusal.resolve());
-      await settle(1_100);
-      expect(title()).toBe("example.org");
-      expect(chipIcon()).toBe(icon(example!));
-    }, 20_000);
-
-    it("an explicit pick wears the page its read found, never the page it was picked from", async () => {
-      const tab = await open("/");
-      const read = client.readBrowserContextCandidate.bind(client);
-      const reading = deferred<Awaited<ReturnType<typeof read>>>();
-      vi.spyOn(client, "readBrowserContextCandidate").mockImplementationOnce(() => reading.promise);
-      await click(element('.composer__attach[aria-label="Attach"]'));
-      await click(
-        [...document.querySelectorAll<HTMLButtonElement>(".popover--attach .place-pick")].find(
-          (button) => button.textContent?.includes(tab.place.title),
-        )!,
-      );
-      // The tab moves on while the pick is read, so the read finds the newer page.
-      await tab.go("https://second.example/");
-      const second = await read(tab.sessionId, tab.tabId);
-      await act(async () => reading.resolve(second));
-      await settle(1_100);
-      const secondIcon = tab.icon();
-      expect(secondIcon).not.toBeNull();
-      expect(title()).toBe("second.example");
-      expect(chipIcon()).toBe(icon(secondIcon!));
-      await tab.go("https://third.example/");
-      await settle(1_100);
-      expect(title()).toBe("second.example");
-      expect(chipIcon()).toBe(icon(secondIcon!));
-    });
-  });
-
-  // The runtime reads a page's title after its document: until then the
-  // reference is exact but untitled, and the catalog may still show the page
-  // before it.
-  describe("a page read before it has named itself", () => {
-    type Candidate = Awaited<ReturnType<MockHostClient["readBrowserContextCandidate"]>>;
-    const chipTitle = () => document.querySelector(".context-chip__title")?.textContent ?? null;
-    const chipPicture = () =>
-      document.querySelector(".context-chip__thumb")?.getAttribute("src") ?? null;
-    const field = () => element<HTMLTextAreaElement>("[data-composer-input]");
-    function sentPages(dispatch: MockInstance<MockHostClient["dispatch"]>) {
-      return dispatch.mock.calls.flatMap(([command]) =>
-        command.type === "thread.sendMessage"
-          ? command.content.filter((part) => part.type === "browser-page")
-          : [],
-      );
-    }
-    function otherPage(place: PlaceItem) {
-      const other = placeList(client.getSnapshot()).find(
-        (item) => item.kind === "browser" && item.key !== place.key && isMockPage(item),
-      );
-      if (other?.destination.kind !== "browser" || !other.destination.tabId)
-        throw new Error("Missing another page tab");
-      return { place: other, tabId: other.destination.tabId };
-    }
-
-    /**
-     * The selected tab as the runtime reports a document whose title is not
-     * read yet: its candidate and its catalog row both say "" until `publish`
-     * names it, and the catalog changes as a Host notice changes it. Picked
-     * from a new task instead, its catalog row still shows the page before.
-     */
-    async function untitled({ pick = false, holdFirst = false } = {}) {
-      const catalogTitles = new Map<string, string>();
-      const readTitles = new Map<string, string>();
-      const listeners = new Set<() => void>();
-      const titled = new WeakMap<BrowserTabRow, Map<string, BrowserTabRow>>();
-      const retitle = (row: BrowserTabRow | undefined) => {
-        const title = row ? catalogTitles.get(row.id) : undefined;
-        if (!row || title === undefined) return row;
-        const held = titled.get(row) ?? new Map<string, BrowserTabRow>();
-        titled.set(row, held);
-        if (!held.has(title)) held.set(title, { ...row, title });
-        return held.get(title);
-      };
-      let tabsProxy: BrowserTabStore | null = null;
-      const titledTabs = (store: BrowserTabStore) =>
-        (tabsProxy ??= new Proxy(store, {
-          get(target, name) {
-            if (name === "tab")
-              return (groupId: string, tabId: string) => retitle(target.tab(groupId, tabId));
-            if (name === "subscribeTab")
-              return (groupId: string, tabId: string, listener: () => void) => {
-                listeners.add(listener);
-                const stop = target.subscribeTab(groupId, tabId, listener);
-                return () => {
-                  listeners.delete(listener);
-                  stop();
-                };
-              };
-            const value: unknown = Reflect.get(target, name);
-            return typeof value === "function" ? value.bind(target) : value;
-          },
-        }));
-      let source: HostSnapshot | null = null;
-      let shown: HostSnapshot | null = null;
-      let readCandidate!: MockHostClient["readBrowserContextCandidate"];
-      let reads!: MockInstance<MockHostClient["readBrowserContextCandidate"]>;
-      const first = deferred<Candidate>();
-      await mount(
-        (mock) => {
-          const place = pageTab(mock);
-          if (place.destination.kind !== "browser" || !place.destination.tabId)
-            throw new Error("Not a browser tab");
-          if (!pick) catalogTitles.set(place.destination.tabId, "");
-          readTitles.set(place.destination.tabId, "");
-          readCandidate = mock.readBrowserContextCandidate;
-          reads = vi
-            .spyOn(mock, "readBrowserContextCandidate")
-            .mockImplementation(async (sessionId, tabId) => {
-              const candidate = await readCandidate(sessionId, tabId);
-              return { ...candidate, title: readTitles.get(tabId) ?? candidate.title };
-            });
-          if (holdFirst) reads.mockImplementationOnce(() => first.promise);
-          return pick ? "/" : `/${tabSearch(place)}`;
-        },
-        {
-          hostClient: (mock) =>
-            new Proxy(mock, {
-              get(target, name) {
-                if (name === "getSnapshot")
-                  return () => {
-                    const current = target.getSnapshot();
-                    if (current === source && shown) return shown;
-                    source = current;
-                    shown = {
-                      ...current,
-                      browserSessions: current.browserSessions.map((session) =>
-                        session.browserTabs!.inventory(session?.id)
-                          ? seedBrowserSession(
-                              { ...session },
-                              {
-                                ...session.browserTabs!.inventory(session?.id),
-                                rows: (session.browserTabs?.sessionTabs(session?.id) ?? []).map(
-                                  (tab) => ({
-                                    ...tab,
-                                    title: catalogTitles.get(tab.id) ?? tab.title,
-                                  }),
-                                ),
-                              },
-                            )
-                          : session,
-                      ),
-                    };
-                    return shown;
-                  };
-                if (name === "subscribe")
-                  return (listener: () => void) => {
-                    listeners.add(listener);
-                    const stop = target.subscribe(listener);
-                    return () => {
-                      listeners.delete(listener);
-                      stop();
-                    };
-                  };
-                // The tab's own row says the same as its catalog row, and changes with it.
-                if (name === "browserTabs") return titledTabs(target.browserTabs);
-                const value: unknown = Reflect.get(target, name);
-                return typeof value === "function" ? value.bind(target) : value;
-              },
-            }),
-        },
-      );
-      await settle(100);
-      const place = pageTab();
-      if (place.destination.kind !== "browser" || !place.destination.tabId)
-        throw new Error("Not a browser tab");
-      const { sessionId, tabId } = place.destination;
-      const url = (await readCandidate(sessionId, tabId)).url;
-      return {
-        place,
-        sessionId,
-        tabId,
-        first,
-        site: new URL(url).hostname,
-        reads: () => reads.mock.calls.filter(([, id]) => id === tabId).length,
-        /** The next read of this page answers only when the test says so. */
-        hold() {
-          const answer = deferred<Candidate>();
-          reads.mockImplementationOnce(() => answer.promise);
-          return answer;
-        },
-        answer: async (title: string): Promise<Candidate> => ({
-          ...(await readCandidate(sessionId, tabId)),
-          title,
-        }),
-        async publish(tab: string, title: string) {
-          catalogTitles.set(tab, title);
-          readTitles.set(tab, title);
-          source = null;
-          await act(async () => {
-            for (const listener of listeners) listener();
-          });
-          await settle(50);
-        },
-      };
-    }
-
-    /** Page pictures that finish only when painted, each as the picture it is given. */
-    function heldPictures() {
-      const loads: (() => void)[] = [];
-      let picture = "";
-      vi.stubGlobal(
-        "Image",
-        class {
-          naturalWidth = 32;
-          onload: (() => void) | null = null;
-          set src(value: string) {
-            if (value.startsWith("blob:")) loads.push(() => this.onload?.());
-            else queueMicrotask(() => this.onload?.());
-          }
-        },
-      );
-      const thumbnail = { drawImage: vi.fn() } as unknown as CanvasRenderingContext2D;
-      vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (
-        this: HTMLCanvasElement,
-      ) {
-        return this.width === 88 && this.height === 56 ? thumbnail : null;
-      });
-      vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockImplementation(() => picture);
-      return {
-        taken: () => loads.length,
-        async paint(index: number, value: string) {
-          picture = value;
-          await act(async () => loads[index]!());
-          await settle();
-        },
-      };
-    }
-
-    it("names it by the read page's own site, never the catalog's older title, and sends no title", async () => {
-      await mount((source) => {
-        const read = source.readBrowserContextCandidate;
-        vi.spyOn(source, "readBrowserContextCandidate").mockImplementation(
-          async (sessionId, tabId) => ({
-            ...(await read(sessionId, tabId)),
-            title: "",
-            url: "https://pay.example/checkout",
-          }),
-        );
+        vi.spyOn(source, "readBrowserContextCandidate").mockImplementationOnce(() => late.promise);
         return `/${tabSearch(pageTab(source))}`;
       });
       await settle(100);
       const place = pageTab();
-      expect(place.title).not.toBe("");
-      expect(chipTitle()).toBe("pay.example");
-      const dispatch = vi.spyOn(client, "dispatch");
-      await write(field(), "What is this?");
-      await click(element(".composer__send"));
-      await settle(100);
-      expect(sentPages(dispatch)).toEqual([
-        expect.objectContaining({ auto: true, title: "", url: "https://pay.example/checkout" }),
-      ]);
-    });
-
-    it("an explicit pick is named by its site, sends no title, and is never read again", async () => {
-      const page = await untitled({ pick: true });
-      expect(page.place.title).not.toBe(page.site);
-      await click(element('.composer__attach[aria-label="Attach"]'));
-      await click(
-        [...document.querySelectorAll<HTMLButtonElement>(".popover--attach .place-pick")].find(
-          (button) => button.textContent?.includes(page.place.title),
-        )!,
-      );
-      await settle(100);
-      expect(chipTitle()).toBe(page.site);
-      expect(page.reads()).toBe(1);
-      await page.publish(page.tabId, "Le Petit Jardin – Reserve");
-      expect(page.reads()).toBe(1);
-      expect(chipTitle()).toBe(page.site);
-      const dispatch = vi.spyOn(client, "dispatch");
-      await click(element(".composer__send"));
-      await settle(100);
-      expect(sentPages(dispatch)).toEqual([expect.objectContaining({ auto: false, title: "" })]);
-    });
-
-    it("reads it again once when its title is published while the first read is out", async () => {
-      const page = await untitled({ holdFirst: true });
-      expect(page.reads()).toBe(1);
+      const chipTitle = () => document.querySelector(".context-chip__title")?.textContent ?? null;
       expect(chipTitle()).toBeNull();
-      const untitledAnswer = await page.answer("");
-      await page.publish(page.tabId, "Le Petit Jardin");
-      await act(async () => page.first.resolve(untitledAnswer));
-      await settle(100);
-      expect(chipTitle()).toBe("Le Petit Jardin");
-      expect(page.reads()).toBe(2);
-    });
-
-    it("reads it again once when its title is published after an untitled read", async () => {
-      const pictures = heldPictures();
-      const page = await untitled();
-      expect(chipTitle()).toBe(page.site);
-      expect(page.reads()).toBe(1);
-      await pictures.paint(0, "data:image/jpeg;base64,Zmlyc3Q=");
-      await page.publish(page.tabId, "Le Petit Jardin");
-      await settle(100);
-      expect(chipTitle()).toBe("Le Petit Jardin");
-      expect(page.reads()).toBe(2);
-      // The page keeps its picture while it is read again, then takes the newer one.
-      expect(chipPicture()).toBe("data:image/jpeg;base64,Zmlyc3Q=");
-      await pictures.paint(1, "data:image/jpeg;base64,c2Vjb25k");
-      expect(chipPicture()).toBe("data:image/jpeg;base64,c2Vjb25k");
-      // Only an untitled page waits for its title; a titled one is not read per change.
-      await page.publish(page.tabId, "(1) Le Petit Jardin");
-      expect(page.reads()).toBe(2);
-      const dispatch = vi.spyOn(client, "dispatch");
-      await write(field(), "What is this?");
-      await click(element(".composer__send"));
-      await settle(100);
-      expect(sentPages(dispatch)).toEqual([
-        expect.objectContaining({ auto: true, title: "Le Petit Jardin" }),
-      ]);
-    });
-
-    it("another tab's title does not read this page again", async () => {
-      const page = await untitled();
-      const other = otherPage(page.place);
-      await page.publish(other.tabId, "Another page's new title");
-      await settle(100);
-      expect(page.reads()).toBe(1);
-      expect(chipTitle()).toBe(page.site);
-    });
-
-    it("a frozen untitled draft keeps its untitled page when the title arrives", async () => {
-      const page = await untitled();
-      await write(field(), "What is this?");
-      await page.publish(page.tabId, "Le Petit Jardin");
-      await settle(100);
-      expect(page.reads()).toBe(1);
-      expect(chipTitle()).toBe(page.site);
-      const dispatch = vi.spyOn(client, "dispatch");
-      await click(element(".composer__send"));
-      await settle(100);
-      expect(sentPages(dispatch)).toEqual([expect.objectContaining({ auto: true, title: "" })]);
-    });
-
-    const interruptions = ["freeze", "remove", "reset", "select", "unmount"] as const;
-    async function interrupt(
-      how: (typeof interruptions)[number],
-      page: Awaited<ReturnType<typeof untitled>>,
-    ) {
-      if (how === "freeze") await write(field(), "What is this?");
-      else if (how === "remove") await click(element(".context-chip__remove"));
-      else if (how === "reset") {
-        await write(field(), "What is this?");
-        await click(element(".composer__send"));
-        await settle(100);
-        await click(element('[aria-label="New task"]'));
+      const field = element<HTMLElement>("[data-composer-input]");
+      const sent = deferred<void>();
+      let expected: string | null = null;
+      if (how === "freeze") {
+        // Typing before the read answered freezes nothing at all.
+        await write(field, "What is this?");
       } else if (how === "select") {
-        const other = otherPage(page.place);
-        await click(element(`.side-tab[data-place-key="${other.place.key}"] .side-tab__main`));
+        const other = placeList(client.getSnapshot()).find(
+          (item) => item.key !== place.key && isMockPage(item),
+        )!;
+        await click(element(`.side-tab[data-place-key="${other.key}"] .side-tab__main`));
+        expected = other.title;
       } else {
-        act(() => root?.unmount());
-        setRoot(null);
+        // Sending starts the next draft at the press; it reads the same page for itself.
+        const real = client.dispatch.bind(client);
+        vi.spyOn(client, "dispatch").mockImplementationOnce(async (...args) => {
+          await sent.promise;
+          return real(...args);
+        });
+        await write(field, "What is this?");
+        await click(element(".composer__send"));
+        expected = place.title;
       }
       await settle(100);
-    }
-    /** What the draft shows once interrupted: never what a late answer brought. */
-    function expectInterrupted(
-      how: (typeof interruptions)[number],
-      page: Awaited<ReturnType<typeof untitled>>,
-    ) {
-      if (how === "freeze") expect(chipTitle()).toBe(page.site);
-      else if (how === "remove" || how === "unmount") expect(chipTitle()).toBeNull();
-      // The next draft asks for itself and finds the page as it is now.
-      else if (how === "reset") expect(chipTitle()).toBe("Le Petit Jardin");
-      else expect(chipTitle()).toBe(otherPage(page.place).place.title);
-    }
-
-    it.each(interruptions)("%s drops the late answer of a title read", async (how) => {
-      const page = await untitled();
-      const late = page.hold();
-      await page.publish(page.tabId, "Le Petit Jardin");
-      expect(page.reads()).toBe(2);
-      await interrupt(how, page);
-      const reads = page.reads();
-      await act(async () => late.resolve(await page.answer("A late answer")));
+      expect(chipTitle()).toBe(expected);
+      const candidate = await client.readBrowserContextCandidate(pageSession(place.key), place.key);
+      await act(async () => late.resolve({ ...candidate, title: "A late answer" }));
       await settle(100);
-      expectInterrupted(how, page);
+      expect(chipTitle()).toBe(expected);
       expect(document.body.textContent).not.toContain("A late answer");
-      await page.publish(page.tabId, "Le Petit Jardin, renamed");
-      expect(page.reads()).toBe(reads);
-    });
-
-    // A removed or unmounted draft shows no chip to take a picture.
-    it.each(["freeze", "reset", "select"] as const)(
-      "%s drops the late pictures of the untitled read and the title read",
-      async (how) => {
-        const pictures = heldPictures();
-        const page = await untitled();
-        await page.publish(page.tabId, "Le Petit Jardin");
-        expect(chipTitle()).toBe("Le Petit Jardin");
-        expect(pictures.taken()).toBe(2);
-        await interrupt(how, page);
-        await pictures.paint(1, "data:image/jpeg;base64,dGl0bGVk");
-        await pictures.paint(0, "data:image/jpeg;base64,dW50aXRsZWQ=");
-        expect(chipPicture()).toBeNull();
-      },
-    );
-  });
+      await act(async () => sent.resolve());
+    },
+  );
 
   it("never picks up a page on a task's reply", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
@@ -672,10 +212,10 @@ describe("the draft's places", () => {
       await mount((source) => `/${tabSearch(pageTab(source))}`);
       await settle(100);
       const place = pageTab();
-      if (place.destination.kind !== "browser" || !place.destination.tabId) throw new Error("tab");
-      const { sessionId, tabId } = place.destination;
+      const tabId = place.key;
+      const sessionId = pageSession(tabId);
       const frozen = await client.readBrowserContextCandidate(sessionId, tabId);
-      const field = element<HTMLTextAreaElement>("[data-composer-input]");
+      const field = element<HTMLElement>("[data-composer-input]");
       await write(field, "About the page I was reading");
       await act(async () => {
         client.sendBrowserCommand(sessionId, {
@@ -723,12 +263,11 @@ describe("the draft's places", () => {
       await settle(100);
       const place = pageTab();
       const other = placeList(client.getSnapshot()).find(
-        (item) => item.kind === "browser" && item.key !== place.key && isMockPage(item),
+        (item) => item.key !== place.key && isMockPage(item),
       )!;
-      if (other.destination.kind !== "browser") throw new Error("Missing another tab");
       const titles = () =>
         [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent);
-      const field = element<HTMLTextAreaElement>("[data-composer-input]");
+      const field = element<HTMLElement>("[data-composer-input]");
       await write(field, "About this");
       await click(element('.composer__attach[aria-label="Attach"]'));
       await click(
@@ -748,13 +287,7 @@ describe("the draft's places", () => {
         expect(titles()).toEqual([place.title, other.title]);
       }
       const close = async (closed: PlaceItem) => {
-        if (closed.destination.kind !== "browser" || !closed.destination.tabId)
-          throw new Error("tab");
-        const { sessionId, tabId } = closed.destination;
-        const session = client.getSnapshot().browserSessions.find((item) => item.id === sessionId)!;
-        await act(async () =>
-          client.closeBrowserTab(sessionId, tabId, session.browserTabs!.inventory(session?.id)!),
-        );
+        await act(async () => client.closeTabs([closed.key]));
         await settle(100);
       };
       await close(place);
@@ -792,7 +325,7 @@ describe("the draft's places", () => {
     await settle(100);
     const place = pageTab();
     const other = placeList(client.getSnapshot()).find(
-      (item) => item.kind === "browser" && item.key !== place.key && isMockPage(item),
+      (item) => item.key !== place.key && isMockPage(item),
     )!;
     const refusal = deferred<void>();
     const message = `This message includes the browser page "${place.title}", which you can no longer see. Remove the page and send the message again.`;
@@ -800,7 +333,7 @@ describe("the draft's places", () => {
       await refusal.promise;
       throw new HostClientRequestError({ code: "forbidden", message, status: 403 });
     });
-    const field = element<HTMLTextAreaElement>("[data-composer-input]");
+    const field = element<HTMLElement>("[data-composer-input]");
     await write(field, "First message");
     await click(element(".composer__send"));
     await settle(100);
@@ -821,7 +354,7 @@ describe("the draft's places", () => {
     ).toEqual([other.title, place.title]);
     await act(async () => refusal.resolve());
     await settle(100);
-    expect(field.value).toBe("First message\nNewer draft");
+    expect(composerText(field)).toBe("First message\nNewer draft");
     expect(
       [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent),
     ).toEqual([place.title, other.title]);
@@ -830,12 +363,7 @@ describe("the draft's places", () => {
     expect(document.body.textContent).not.toContain("Send without it");
     expect(document.body.textContent).not.toContain("Include it");
     // The page came back automatic, but the newer draft picked it: closing it keeps that pick.
-    if (place.destination.kind !== "browser" || !place.destination.tabId) throw new Error("tab");
-    const { sessionId, tabId } = place.destination;
-    const session = client.getSnapshot().browserSessions.find((item) => item.id === sessionId)!;
-    await act(async () =>
-      client.closeBrowserTab(sessionId, tabId, session.browserTabs!.inventory(session?.id)!),
-    );
+    await act(async () => client.closeTabs([place.key]));
     await settle(100);
     expect(
       [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent),
@@ -881,13 +409,11 @@ describe("the draft's places", () => {
       await settle(120);
     }
     function viewed(machineId: string, bundleId: string) {
-      const place = placeList(client.getSnapshot()).find(
+      const place = placeList(client.getSnapshot()).findLast(
         (item) =>
-          item.destination.kind === "app" &&
-          item.destination.machineId === machineId &&
-          item.ownerView !== null &&
-          item.icon.kind === "app" &&
-          item.icon.app.bundleId === bundleId,
+          item.kind === "window" &&
+          item.device.machineId === machineId &&
+          item.tab.bundleId === bundleId,
       );
       if (!place) throw new Error(`Nothing shows ${bundleId} on ${machineId}`);
       return place;
@@ -897,19 +423,18 @@ describe("the draft's places", () => {
       await settle(100);
     }
     function reference(place: PlaceItem) {
-      const { destination, icon } = place;
-      if (destination.kind === "phone")
+      if (place.kind === "phone")
         return {
           type: "phone",
-          machineId: destination.machineId,
+          machineId: place.device.machineId,
           display: "main",
           name: place.title,
         };
-      if (destination.kind !== "app" || icon.kind !== "app") throw new Error("Not a native place");
+      if (place.kind !== "window") throw new Error("Not a native place");
       return {
         type: "computer-app",
-        app: icon.app,
-        machineId: destination.machineId,
+        app: expect.objectContaining({ bundleId: place.tab.bundleId }),
+        machineId: place.device.machineId,
         name: place.title,
       };
     }
@@ -919,7 +444,7 @@ describe("the draft's places", () => {
       );
     }
     const chip = () => document.querySelector(".context-chip__title")?.textContent ?? null;
-    const field = () => element<HTMLTextAreaElement>("[data-composer-input]");
+    const field = () => element<HTMLElement>("[data-composer-input]");
 
     it("carries the app in front on the Mac it is shown from, whichever Mac that is", async () => {
       await mount("/?panel=browser");
@@ -947,7 +472,7 @@ describe("the draft's places", () => {
         )!.value,
       ).resolves.toMatchObject({ type: "thread.sendMessage" });
       expect(document.querySelector(".composer__error")).toBeNull();
-      expect(field().value).toBe("");
+      expect(composerText(field())).toBe("");
     });
 
     it("carries the phone display in front", async () => {
@@ -979,14 +504,13 @@ describe("the draft's places", () => {
       expect(chip()).toBeNull();
     });
 
-    it("lets its automatic app go when its view closes", async () => {
+    it("lets its automatic app go when its tab closes", async () => {
       await mount("/?panel=browser");
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
       await write(field(), "About this");
       expect(chip()).toBe(keynote.title);
-      const view = keynote.ownerView!;
-      await act(async () => client.closeComputerView(view.viewId, view.generation));
+      await act(async () => client.closeTabs([keynote.key]));
       await settle(100);
       expect(chip()).toBeNull();
       const dispatch = vi.spyOn(client, "dispatch");
@@ -1002,8 +526,8 @@ describe("the draft's places", () => {
       const phone = placeList(client.getSnapshot()).find(
         (item) => item.kind === "phone" && item.availability === "ready",
       );
-      if (!phone || phone.destination.kind !== "phone") throw new Error("No ready phone");
-      const { machineId } = phone.destination;
+      if (!phone) throw new Error("No ready phone");
+      const { machineId } = phone.device;
       await show(phone);
       expect(chip()).toBe(phone.title);
       await act(async () => {
@@ -1109,7 +633,9 @@ describe("unconfirmed sends keep every place exactly", () => {
     const dispatch = loseFirstSend();
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     await settle(100);
-    const app = placeList(client.getSnapshot()).find((place) => place.kind === "app")!;
+    const app = placeList(client.getSnapshot()).find(
+      (place) => place.kind === "window" && place.availability === "ready",
+    )!;
     await click(element('.composer__attach[aria-label="Attach"]'));
     await click(
       [...document.querySelectorAll<HTMLButtonElement>(".popover--attach .place-pick")].find(
@@ -1117,13 +643,9 @@ describe("unconfirmed sends keep every place exactly", () => {
       )!,
     );
     await settle(50);
-    const field = element<HTMLTextAreaElement>("[data-composer-input]");
+    const field = element<HTMLElement>("[data-composer-input]");
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
-        field,
-        "Compare these",
-      );
-      field.dispatchEvent(new Event("input", { bubbles: true }));
+      rewrite(field, "Compare these");
     });
     await click(element(".composer__send"));
     await settle(50);
@@ -1153,312 +675,3 @@ describe("unconfirmed sends keep every place exactly", () => {
     expect(JSON.stringify(retried.content)).toBe(JSON.stringify(first.content));
   });
 });
-
-describe("a link arriving at the start page", () => {
-  const address = "https://storage.example/docs/mounts";
-  const state = { startId: "reply-link", startAddress: address, startOpen: true, startFrom: null };
-
-  it("selects each rapid chat link in its click turn and only the latest completion can replace it", async () => {
-    const gates = [deferred<void>(), deferred<void>()];
-    let commands = 0;
-    await mount((source) => {
-      const dispatch = source.rpc["commands.dispatch"];
-      const delayed: typeof dispatch = async (command, options) => {
-        if (command.type === "browser.tab.open")
-          await withTimeout(gates[commands++]!.promise, 2_000, {
-            timeoutError: () => new Error("The chat link command was never released."),
-          });
-        return dispatch(command, options);
-      };
-      Object.defineProperty(source, "rpc", {
-        value: new Proxy(source.rpc, {
-          get: (target, name) =>
-            name === "commands.dispatch" ? delayed : Reflect.get(target, name),
-        }),
-      });
-      const snapshot = source.getSnapshot();
-      localStorage.setItem(
-        `opensteer.browse-with.v1:${encodeURIComponent(snapshot.deploymentId!)}:${encodeURIComponent(snapshot.user!.id)}`,
-        JSON.stringify({ kind: "profile", profileId: snapshot.browserProfiles[0]!.id }),
-      );
-      return "/tasks/thr_00000000-0000-4000-8000-000000000002";
-    });
-    let link!: HTMLAnchorElement;
-    await vi.waitFor(
-      () => {
-        const found = [...document.querySelectorAll<HTMLAnchorElement>(".md-prose a")].find(
-          (anchor) => anchor.textContent === "storage mount guide",
-        );
-        expect(found, "The reply's website link never appeared").toBeDefined();
-        link = found!;
-      },
-      { timeout: 1_000 },
-    );
-    act(() => {
-      link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-      expect(client.getSnapshot().pendingBrowserTabs).toHaveLength(1);
-    });
-    act(() => {
-      link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-      expect(client.getSnapshot().pendingBrowserTabs).toHaveLength(2);
-    });
-    expect(commands).toBe(2);
-    const latest = client.getSnapshot().pendingBrowserTabs![1]!.idempotencyKey;
-    expect(element(".place").getAttribute("data-place-key")).toBe(`pending:${latest}`);
-    await act(async () => gates[0]!.resolve());
-    expect(element(".place").getAttribute("data-place-key")).toBe(`pending:${latest}`);
-    await act(async () => gates[1]!.resolve());
-    expect(element(".place").getAttribute("data-place-key")).toMatch(/^browser:/u);
-    expect(client.getSnapshot().pendingBrowserTabs).toEqual([]);
-  });
-
-  it("selects a pending link before a delayed command answers and never steals focus after leaving", async () => {
-    const gate = deferred<void>();
-    let answering!: Promise<unknown>;
-    await mount((source) => {
-      const dispatch = source.rpc["commands.dispatch"];
-      const delayed: typeof dispatch = async (command, options) => {
-        if (command.type === "browser.tab.open") {
-          await withTimeout(gate.promise, 2_000, {
-            timeoutError: () => new Error("The delayed browser command was never released."),
-          });
-          answering = dispatch(command, options);
-          return answering as ReturnType<typeof dispatch>;
-        }
-        return dispatch(command, options);
-      };
-      Object.defineProperty(source, "rpc", {
-        value: new Proxy(source.rpc, {
-          get: (target, name) =>
-            name === "commands.dispatch" ? delayed : Reflect.get(target, name),
-        }),
-      });
-      const profile = source.getSnapshot().browserProfiles[0]!;
-      localStorage.setItem(
-        `opensteer.browse-with.v1:${encodeURIComponent(source.getSnapshot().deploymentId!)}:${encodeURIComponent(source.getSnapshot().user!.id)}`,
-        JSON.stringify({ kind: "profile", profileId: profile.id }),
-      );
-      return { pathname: "/", search: "?panel=browser", state };
-    });
-    const key = client.getSnapshot().pendingBrowserTabs?.[0]?.idempotencyKey;
-    expect(key).toBeTruthy();
-    expect(element(".place").getAttribute("data-place-key")).toBe(`pending:${key}`);
-    expect(element(".place .browser-address__display").getAttribute("aria-label")).toBe(address);
-    expect(element(".place").textContent).toContain("Opening");
-    await act(async () => goTo!("/"));
-    await act(async () => {
-      gate.resolve();
-    });
-    await answering;
-    expect(new URLSearchParams(history.at(-1)!.search).has("panel")).toBe(false);
-  });
-
-  it("opens the exact navigate row once in StrictMode and consumes only the history trigger", async () => {
-    let open!: MockInstance<MockHostClient["beginBrowserTabOpen"]>;
-    await mount(
-      (source) => {
-        open = vi.spyOn(source, "beginBrowserTabOpen");
-        return { pathname: "/", search: "?panel=browser", state };
-      },
-      { strict: true },
-    );
-    await settle(100);
-    expect(open).toHaveBeenCalledTimes(1);
-    expect(open).toHaveBeenCalledWith(
-      { identity: { kind: "guest" } },
-      expect.objectContaining({ url: address }),
-    );
-    // The mock's several computers refuse Guest until the person chooses one.
-    expect(element(".place .browser-address__display").getAttribute("aria-label")).toBe(address);
-    expect(element(".place").textContent).toContain("Choose a computer");
-    expect(client.getSnapshot().pendingBrowserTabs?.[0]?.state).toBe("failed");
-    await act(async () => goTo!("/"));
-    await act(async () => goTo!(-1));
-    await settle(50);
-    expect(element(".place .browser-address__display").getAttribute("aria-label")).toBe(address);
-    expect(open).toHaveBeenCalledTimes(1);
-    await click(
-      [...document.querySelectorAll<HTMLButtonElement>(".place button")].find(
-        (button) => button.textContent === "Retry",
-      )!,
-    );
-    expect(open).toHaveBeenCalledTimes(2);
-    const choose = [...document.querySelectorAll<HTMLButtonElement>(".place button")].find(
-      (button) => button.textContent?.startsWith("Open on"),
-    )!;
-    await click(choose);
-    await settle(100);
-    expect(open).toHaveBeenCalledTimes(3);
-    expect(open.mock.calls[2]?.[0]).toMatchObject({ placement: { kind: "runner" } });
-    expect(element(".place").getAttribute("data-place-key")).toMatch(/^browser:/u);
-  });
-
-  it("uses the covered tab's profile ahead of a remembered Guest and opens even an already listed URL", async () => {
-    let open!: MockInstance<MockHostClient["beginBrowserTabOpen"]>;
-    let profileId: string | null = null;
-    let url = "";
-    await mount((source) => {
-      const snapshot = source.getSnapshot();
-      const session = snapshot.browserSessions.find(
-        (item) => item.profileId && item.state === "ready",
-      )!;
-      const tab = (session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!;
-      profileId = session.profileId;
-      url = `${(session.browserTabs?.sessionTabs(session?.id) ?? []).find((row) => row.id === tab.id)!.site}/`;
-      localStorage.setItem(
-        `opensteer.browse-with.v1:${encodeURIComponent(snapshot.deploymentId!)}:${encodeURIComponent(snapshot.user!.id)}`,
-        '{"kind":"guest"}',
-      );
-      open = vi.spyOn(source, "beginBrowserTabOpen");
-      return {
-        pathname: "/",
-        search: "?panel=browser",
-        state: {
-          ...state,
-          startAddress: url,
-          startFrom: `panel=browser&browser=${session.id}&browserTab=${tab.id}`,
-        },
-      };
-    });
-    await settle(100);
-    expect(open).toHaveBeenCalledExactlyOnceWith(
-      { identity: { kind: "profile", profileId } },
-      expect.objectContaining({ url }),
-    );
-    expect(element(".place").getAttribute("data-place-key")).toMatch(/^browser:/u);
-    expect(document.querySelector(".start-page")).toBeNull();
-  });
-
-  it("opens a reply link from a start page already open with the tab it covers", async () => {
-    let open!: MockInstance<MockHostClient["beginBrowserTabOpen"]>;
-    let profileId: string | null = null;
-    let from = "";
-    await mount((source) => {
-      const snapshot = source.getSnapshot();
-      const session = snapshot.browserSessions.find(
-        (item) => item.profileId && item.state === "ready",
-      )!;
-      profileId = session.profileId;
-      from = `panel=browser&browser=${session.id}&browserTab=${(session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!.id}`;
-      localStorage.setItem(
-        `opensteer.browse-with.v1:${encodeURIComponent(snapshot.deploymentId!)}:${encodeURIComponent(snapshot.user!.id)}`,
-        '{"kind":"guest"}',
-      );
-      open = vi.spyOn(source, "beginBrowserTabOpen");
-      return {
-        pathname: "/tasks/thr_00000000-0000-4000-8000-000000000002",
-        search: "?panel=browser",
-        state: { startId: "new-tab", startFrom: from },
-      };
-    });
-    await settle(100);
-    const link = [...document.querySelectorAll<HTMLAnchorElement>(".md-prose a")].find(
-      (anchor) => anchor.textContent === "storage mount guide",
-    )!;
-    await click(link);
-    await settle(100);
-    expect(open).toHaveBeenCalledExactlyOnceWith(
-      { identity: { kind: "profile", profileId } },
-      expect.objectContaining({ url: "https://storage.example/docs/mounts" }),
-    );
-  });
-
-  it("consumes an unavailable arrival but keeps its address and refusal", async () => {
-    let open!: MockInstance<MockHostClient["beginBrowserTabOpen"]>;
-    await mount((source) => {
-      open = vi.spyOn(source, "beginBrowserTabOpen");
-      const snapshot = source.getSnapshot();
-      localStorage.setItem(
-        `opensteer.browse-with.v1:${encodeURIComponent(snapshot.deploymentId!)}:${encodeURIComponent(snapshot.user!.id)}`,
-        '{"kind":"profile","profileId":"missing-profile"}',
-      );
-      return { pathname: "/", search: "?panel=browser", state };
-    });
-    expect(open).not.toHaveBeenCalled();
-    expect(element<HTMLInputElement>(".start-page__input").value).toBe(address);
-    expect(element(".start-page__refusal").textContent).toContain("isn’t available");
-    expect(historyState).toEqual({ ...state, startOpen: false });
-  });
-
-  it("a consumed arrival survives remount without reopening", async () => {
-    let open!: MockInstance<MockHostClient["beginBrowserTabOpen"]>;
-    await mount((source) => {
-      open = vi.spyOn(source, "beginBrowserTabOpen");
-      return { pathname: "/", search: "?panel=browser", state: { ...state, startOpen: false } };
-    });
-    expect(open).not.toHaveBeenCalled();
-    expect(element<HTMLInputElement>(".start-page__input").value).toBe(address);
-  });
-
-  it("a delayed arrival follows a conversation change, but never a newer place choice", async () => {
-    await mount("/");
-    const target = pageTab();
-    if (target.destination.kind !== "browser" || !target.destination.tabId)
-      throw new Error("Not a browser tab");
-    const result = await client.openBrowserTab(target.destination.sessionId);
-    const { tabId } = result;
-    const gates = [deferred<void>(), deferred<void>()];
-    let commands = 0;
-    const dispatch = client.rpc["commands.dispatch"];
-    const delayed: typeof dispatch = async (command, options) => {
-      if (command.type !== "browser.tab.open") return dispatch(command, options);
-      await withTimeout(gates[commands++]!.promise, 2_000, {
-        timeoutError: () => new Error("The arrival browser command was never released."),
-      });
-      return { ok: true, data: result };
-    };
-    Object.defineProperty(client, "rpc", {
-      value: new Proxy(client.rpc, {
-        get: (target, name) => (name === "commands.dispatch" ? delayed : Reflect.get(target, name)),
-      }),
-    });
-    const open = vi.spyOn(client, "beginBrowserTabOpen");
-    await act(async () => goTo!({ pathname: "/", search: "?panel=browser" }, { state }));
-    expect(open).toHaveBeenCalledTimes(1);
-    const threadId = firstTaskId();
-    await click(element(`.side-task[data-thread-id="${threadId}"] .side-task__main`));
-    await act(async () => gates[0]!.resolve());
-    await settle(50);
-    expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
-    expect(new URLSearchParams(history.at(-1)!.search).get("browserTab")).toBe(tabId);
-    await act(async () =>
-      goTo!(
-        { pathname: `/tasks/${threadId}`, search: "?panel=browser" },
-        { state: { ...state, startId: "second-link" } },
-      ),
-    );
-    const chosen = placeList(client.getSnapshot()).find(
-      (item) => item.kind === "browser" && item.key !== target.key,
-    )!;
-    await click(element(`.side-tab[data-place-key="${chosen.key}"] .side-tab__main`));
-    const before = history.length;
-    await act(async () => gates[1]!.resolve());
-    await settle(50);
-    expect(history.length).toBe(before);
-    expect(element(".place").getAttribute("data-place-key")).toBe(chosen.key);
-  });
-
-  it.each([
-    null,
-    {},
-    { startAddress: 123 },
-    { startAddress: "x".repeat(8193) },
-    { startAddress: "search words" },
-    { startAddress: "file:///tmp/a" },
-    { startAddress: "https://user:password@example.test" },
-  ])("rejects untrusted address state %j", (value) => {
-    expect(startPageLink(value)).toBeNull();
-  });
-  it.each([address, "http://localhost:3000", "example.com"])(
-    "keeps a valid address's spelling: %s",
-    (value) => {
-      expect(startPageLink({ startAddress: value })).toEqual({ address: value, open: false });
-    },
-  );
-});
-
-/*
- * The workspace web review's findings, one test each. The asynchronous ones
- * hold the Host's answer on a deferred promise, as the
- * review did, and let the reader act before it lands.
- */

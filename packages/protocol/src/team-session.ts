@@ -56,9 +56,40 @@ export type TeamInvitePreviewResponse = z.infer<typeof TeamInvitePreviewResponse
  */
 export const TeamEntryRefusalReasonSchema = z.enum([
   "assertion-invalid",
+  "assertion-expired",
+  "authority-changed",
   "not-a-member",
   "invite-invalid",
   "invite-expired",
   "invite-used-up",
 ]);
 export type TeamEntryRefusalReason = z.infer<typeof TeamEntryRefusalReasonSchema>;
+
+/** Only a membership refusal authorizes deleting a viewer's local partition. */
+export const teamEntryRefusalOutcomes = {
+  "assertion-invalid": "retryable",
+  "assertion-expired": "retryable",
+  "authority-changed": "retryable",
+  "not-a-member": "membership",
+  "invite-invalid": "retryable",
+  "invite-expired": "retryable",
+  "invite-used-up": "retryable",
+  removed: "membership",
+} as const satisfies Record<TeamEntryRefusalReason | "removed", "membership" | "retryable">;
+
+/** At authenticated bootstrap only: older team servers refuse a removed member with a reasonless `forbidden`. */
+export function bootstrapMembershipRefused(error: {
+  readonly code?: string | undefined;
+  readonly reason?: string | null | undefined;
+}): boolean {
+  return (
+    teamEntryRefusalOutcome(error.reason) === "membership" ||
+    (error.code === "forbidden" && !error.reason)
+  );
+}
+
+export function teamEntryRefusalOutcome(reason: string | null | undefined) {
+  return reason && Object.hasOwn(teamEntryRefusalOutcomes, reason)
+    ? teamEntryRefusalOutcomes[reason as keyof typeof teamEntryRefusalOutcomes]
+    : undefined;
+}

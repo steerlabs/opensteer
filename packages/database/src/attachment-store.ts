@@ -27,6 +27,10 @@ import type { AttachmentTable, DatabaseSchema } from "./schema.js";
 import "./store-primitives.js";
 export type AttachmentRow = Selectable<AttachmentTable>;
 export const attachmentRetainedMaxBytes = 2 * 1024 * 1024 * 1024;
+export function attachmentUserAdmission(alias: string, userId: UserId) {
+  return sql<boolean>`(${sql.ref(`${alias}.uploaderId`)} = ${userId}
+    or ${sql.ref(`${alias}.messageId`)} is not null)`;
+}
 const conflict = (message: string) =>
   new OpensteerError({
     code: "conflict",
@@ -142,9 +146,9 @@ export class AttachmentStore {
         .selectFrom("attachments")
         .selectAll()
         .where("id", "=", attachmentId)
+        .where(attachmentUserAdmission("attachments", userId))
         .executeTakeFirst();
       if (!row) throw missing();
-      if (row.uploaderId !== userId && !row.messageId) throw missing();
       return row;
     });
   }

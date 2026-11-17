@@ -30,6 +30,10 @@ function run(client: AccountTeamsClient, call: DesktopAccountTeamsCall): Promise
       return client.hostedTeamOwners(call.id);
     case "transfer":
       return client.transferHostedTeam(call.id, call.to);
+    case "profile":
+      return client.profile();
+    case "profile.update":
+      return client.updateProfile(call.request);
   }
 }
 

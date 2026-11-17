@@ -16,8 +16,8 @@ skill](../.agents/skills/browser-and-passwords/SKILL.md).
 Authorization and input results carry metadata and status, never saved values. The TOTP seed stays
 in the broker, which releases only a current code. Agents must never read back, copy or reveal a
 saved field, and a successful input proves neither a website sign-in nor the intended account: the
-agent confirms both. After a browser fill, page scripts and agent JavaScript can read the value;
-there is no CDP read filter. App delivery does not verify the app's association with the site, so
+agent confirms both. After a browser fill, page scripts and the agent, which has full page and CDP
+access, can read the value. App delivery does not verify the app's association with the site, so
 the agent judges the package, publisher and install source. A tricked agent can expose the password.
 Secure-field observations suppress text, but screenshots and ordinary fields show what an app
 displays. Revoking or turning off cannot recall input, sign anything out or undo actions.
@@ -36,15 +36,14 @@ owns personal admission and memory-only leases and stores neither vault data nor
 Only the local personal Host can present the per-person consent key to the vault; team IDs and
 folders never become consent identities.
 
-Agents use `sign_in` for logins and `use_card` for checkout. Probes never prompt. For login
-requests given a Browser Session, the Host checks
-access to it first; the person's Chrome site consent goes first, then a saved login if
-that Chrome has no sign-in. Without a grant a saved login selects Passwords, and Chrome can fill in
-when Passwords has none. Every path refuses loopback and the
-Deployment's own sites before creating a Request. A login reference never grants access to a
+Agents use `saved_login_request` for logins and `card_request` for checkout; Chrome cookie copying
+is a separate tool, `chrome_cookies_request`. The agent chooses between them: the Host never falls from one
+to the other, because only the agent can see whether a site accepted copied cookies, and banks often
+refuse them. Probes never prompt. Every path refuses loopback and the Deployment's own sites before
+creating a Request. A login reference never grants access to a
 browser, phone or Mac app: each use still needs the Run's current authority over that surface.
 
-`sign_in` and `use_card` report what Passwords still needs instead of a separate tool suggesting it, so the
+`saved_login_request` and `card_request` report what Passwords still needs instead of a separate tool suggesting it, so the
 suggestion can't depend on a model remembering to call anything. Clients show it from that result
 at the end of the conversation until the person next speaks; absent, Passwords can't help here
 (a team server or an unsupported Mac) and nothing offers it.
@@ -67,7 +66,7 @@ expose the password. Only current per-person consent authorizes release; old sco
 never become new consent.
 Each release rechecks the pinned revision and, for remembered access, the current grant. Editing a
 login needs approval again; changing its websites, login page or username, or deleting it, removes
-its grants. Removals send no push, so `sign_in` can return `ready` until a release notices.
+its grants. Removals send no push, so `saved_login_request` can return `ready` until a release notices.
 
 ## The login lease
 
@@ -107,7 +106,7 @@ only, accepts the choice only from that viewer, and desktop main releases each v
 into the bound elements. The saved value travels only broker → desktop main → page on the vault
 Mac; the Host, Runners and viewers carry IDs, usernames and status. After insertion the page and
 any agent JavaScript in it can read the value, exactly as if the person had typed it. Agents have no
-tool for this; they keep `sign_in`.
+tool for this; they keep `saved_login_request`.
 
 Only the viewer that activated the field receives and accepts its offer. A changed document,
 origin or bound element ends the fill; an agent command withdraws it. Native input on the vault

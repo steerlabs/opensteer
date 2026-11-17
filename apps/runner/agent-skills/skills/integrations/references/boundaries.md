@@ -1,11 +1,11 @@
 # Credentials and authority
 
 Never ask for API keys, OAuth client secrets, passwords, or authorization codes in chat; sign in
-with the person's saved logins through `sign_in`. For a saved login in a genuine app, see opensteer:computer-use, references/sign-in.md. Never
+with the person's saved logins through `saved_login_request`. For a saved login in a genuine app, see opensteer:computer-use, references/sign-in.md. Never
 read, reveal, copy or move credentials through chat, tool output, screenshots, files or the
 clipboard, and don't fetch keys from provider dashboards yourself. Prepare non-secret setup steps
 and point the person to the key field on the request card; the UI owns secrets and every Request
-decision. For an authorized Agent Phone screen-lock PIN, follow the narrow exception in
+decision. For an authorized Android Agent Phone screen-lock PIN, follow the narrow exception in
 opensteer:computer-use, references/phones.md; this does not cover app or website passwords.
 
 When the person asks you to sign in, that covers its SMS/email code unless they say otherwise.
@@ -17,14 +17,14 @@ not permit approving an Opensteer Request, granting access or retrieving passwor
 A webhook creation result can include its setup address and secret. Use them only for the requested
 webhook setup; never commit the secret, put it in memory or send it to an unrelated recipient.
 
-Do not substitute a Browser Session merely because an account is not connected:
+Do not substitute the browser merely because an account is not connected:
 use the browser only when the user asks for website interaction, the work is inherently visual, or
 no integration applies.
 
-Trigger executions carry the full integration tool surface, including `integration_request` and
-`integration_propose`. A Request lands on the anchor task for the person to resolve; it does not resume a completed program occurrence. A later occurrence finds current readiness.
+Automation programs carry the program integration tools, including `integration_request` and
+`custom_integration_request`. A Request lands on the automation's task for the person to resolve; it does not resume a completed program occurrence. A later occurrence finds current readiness.
 Filing the same ask again from a later occurrence is safe: an equivalent pending Request is returned
-with `replayed: true` rather than duplicated, and the result says so. State in the thread output
+with `replayed: true` rather than duplicated, and the result says so. State in the program output
 what is still waiting on whom.
 
 ## Computer-hosted integrations

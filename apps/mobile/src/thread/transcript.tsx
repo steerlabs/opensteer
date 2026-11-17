@@ -1,4 +1,6 @@
+import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
 import { useNavigation } from "@react-navigation/native";
+import { sideMemory } from "../side-memory.js";
 import { useTeamsSnapshot } from "../team/team-context.js";
 import type { TeamSource } from "@opensteer/core";
 import {
@@ -11,7 +13,6 @@ import {
   hasRunOutcome,
   silentRunLabel,
   incomingMessagePreview,
-  justSent,
   messageAuthorName,
   messageFoldLines,
   turnFolds,
@@ -39,12 +40,13 @@ import {
   type WorkRow,
   type WorkSummary,
 } from "@opensteer/client/host";
-import { placeIdentityKey, voiceCallSeed } from "@opensteer/core";
+import { voiceCallSeed } from "@opensteer/core";
 import { replyParts, type ReplyPart } from "@opensteer/shared/markdown";
 import { memo, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, View, useWindowDimensions } from "react-native";
 import Animated, { LayoutAnimationConfig } from "react-native-reanimated";
 import { CodeLines, Markdown, PlainProse } from "../markdown/markdown.js";
+import { ReferenceVisibility } from "../markdown/reference-context.js";
 import { color, material, radius, space, touchTarget, type } from "../theme.js";
 import { CopyMark } from "../ui/copy-mark.js";
 import { appear, bubblePop, bubbleRise, exit } from "../ui/motion.js";
@@ -73,8 +75,11 @@ import { AppCard } from "./app-card.js";
 import { MessageAttachments } from "./attachment-views.js";
 import { Bubble, bubble } from "./bubble.js";
 import { ComputerUseLine, KeptComputerStopLine, useComputerLine } from "./computer-use-line.js";
-import { MessageHold, MessageMore } from "./message-hold.js";
-import { MessagePages, ReplySurfaces, TracePlace } from "./surface-chips.js";
+import { EditedMark } from "./edited-mark.js";
+import type { LinkAction } from "./link-context.js";
+import { MessageHold, MessageMore, WaitingHold } from "./message-hold.js";
+import { risesOnce } from "./owed-message-model.js";
+import { MessagePages, MessagePlaces, ReplySurfaces, TracePlace } from "./surface-chips.js";
 import { trace as traceStyle } from "./trace-styles.js";
 
 /**
@@ -224,8 +229,14 @@ function TurnView(props: {
   const { onToggle, turn, turnKey } = props;
   const folds = turnFolds(turn);
   const open = turnOpen(turn, props.open);
+  if (
+    turn.run?.compaction &&
+    (turn.run.compaction.reason === "idle" || turn.run.compaction.reason === "before-send")
+  )
+    return <CompactionDivider run={turn.run} />;
   return (
     <View style={styles.turn}>
+      {turn.run?.compaction ? <CompactionDivider run={turn.run} /> : null}
       <TurnContent
         {...(folds ? { fold: { onToggle: () => onToggle(turnKey, open), open } } : {})}
         reveal={props.reveal ?? null}
@@ -362,6 +373,11 @@ function ConversationTurn(props: {
   // the Thread opened, or that scrolling brought back, just stands there.
   const typed = useRef(false);
   if (composing) typed.current = true;
+  if (
+    turn.run?.compaction &&
+    (turn.run.compaction.reason === "idle" || turn.run.compaction.reason === "before-send")
+  )
+    return <CompactionDivider run={turn.run} />;
   const onActivity =
     activityKey === null || onOpenActivity === undefined
       ? undefined
@@ -383,6 +399,7 @@ function ConversationTurn(props: {
     ) : null;
   return (
     <View style={styles.turn}>
+      {turn.run?.compaction ? <CompactionDivider run={turn.run} /> : null}
       {line?.kind === "now" ? (
         <ComputerUseLine key={line.now.session.sessionId} now={line.now} />
       ) : line?.kind === "kept" ? (
@@ -1040,8 +1057,7 @@ function StepsRow(props: {
             <View style={{ flexDirection: "row" }}>
               {row.places.slice(0, 3).map((entry) => {
                 const place =
-                  row.currentPlace &&
-                  placeIdentityKey(row.currentPlace.place) === placeIdentityKey(entry.place)
+                  row.currentPlace && row.currentPlace.tabId === entry.tabId
                     ? row.currentPlace
                     : entry;
                 return (
@@ -1292,6 +1308,15 @@ function CallDivider(props: { readonly createdAt: string }): ReactNode {
 export function Message(props: {
   readonly continued?: boolean;
   readonly queued?: boolean;
+  /**
+   * A waiting bubble's own menu, held, and what a tap on it does; the list of
+   * waiting messages draws the rest of each one's controls around it.
+   */
+  readonly hold?: {
+    readonly actions: readonly LinkAction[];
+    readonly onAction: (id: string) => void;
+    readonly onPress?: (() => void) | undefined;
+  };
   readonly joinedRun?: boolean;
   readonly conversation: boolean;
   readonly onReply: ((message: MessageEntry) => void) | undefined;
@@ -1305,9 +1330,9 @@ export function Message(props: {
   const { message, open } = props;
   const preview = useMemo(() => incomingMessagePreview(message), [message]);
   const body = preview.truncated && !open ? preview.text : message.body;
-  const [arrived] = useState(
-    () => props.queued !== true && justSent(message.createdAt, Date.now()),
-  );
+  // What the reader sends rises once, as it is written down here; the Host's
+  // copy that later takes its place is already where the eye left it.
+  const [arrived] = useState(() => props.queued !== true && risesOnce(message.id));
   if (message.messageKind === "assistant") {
     return props.conversation ? (
       <ReplyBubble
@@ -1338,10 +1363,15 @@ export function Message(props: {
       onToggle={props.onToggle}
       open={open}
     >
-      {/* Only an agent or a trigger writes Markdown into a Thread; a person
-          typed exactly what is shown, so it is shown exactly. */}
+      {/* A person's words are Markdown too, read as a person writes it: their
+          line breaks stand, and the links they wrote are chips. */}
       {author.kind === "human" ? (
-        <PlainProse text={message.body} tone={mine && !props.queued ? "bubble" : "default"} />
+        <Markdown
+          look={mine && !props.queued ? "bubble" : "reading"}
+          mine={mine && !props.queued}
+          profile="person"
+          text={message.body}
+        />
       ) : (
         <Markdown text={body} />
       )}
@@ -1367,7 +1397,8 @@ export function Message(props: {
       ) : null}
       {mine ? null : (
         <Attribution
-          action={incomingMessageAction(message)}
+          // A teammate's ask in the person's own words, which history spells out.
+          action={message.edit?.ownerEdited ? "· edited by you" : incomingMessageAction(message)}
           mark={
             author.kind === "agent" ? (
               <ThreadMark threadId={author.threadId} />
@@ -1382,6 +1413,7 @@ export function Message(props: {
         />
       )}
       <MessagePages pages={message.pages ?? []} />
+      <MessagePlaces places={message.places ?? []} />
       <MessageAttachments attachments={message.attachments ?? []} />
       {!message.body ? null : mine && !props.queued ? (
         <MessageHold
@@ -1391,7 +1423,12 @@ export function Message(props: {
         >
           <Bubble
             fill={color.bubble}
-            fit={message.body}
+            // Lists, headings and code take the bubble's whole measure, as a reply's do.
+            fit={
+              notOnlyParagraphs.test(message.body) || /^ {0,3}(?:`{3}|~{3})/mu.test(message.body)
+                ? null
+                : message.body
+            }
             side="mine"
             // Messages' tail is a conversation's; a task keeps the bubble's corner instead.
             style={props.conversation ? undefined : styles.bubbleCorner}
@@ -1400,7 +1437,7 @@ export function Message(props: {
             {fold}
           </Bubble>
         </MessageHold>
-      ) : (
+      ) : props.hold === undefined ? (
         <View
           style={
             update
@@ -1418,8 +1455,28 @@ export function Message(props: {
         >
           {fold}
         </View>
+      ) : (
+        <WaitingHold
+          actions={props.hold.actions}
+          onAction={props.hold.onAction}
+          onPress={props.hold.onPress}
+          previewBottomEndRadius={radius.xs}
+          previewRadius={radius.xl}
+          style={styles.held}
+        >
+          <View
+            style={[
+              styles.bubble,
+              styles.bubbleQueued,
+              mine ? styles.bubbleQueuedMine : styles.bubbleQueuedOther,
+            ]}
+          >
+            {fold}
+          </View>
+        </WaitingHold>
       )}
       {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}
+      {message.edit && !props.queued ? <EditedMark messageId={message.id} /> : null}
       {message.delivery ? (
         <View accessibilityRole="alert" style={styles.failure}>
           <AppText role="secondaryMedium" tone="danger">
@@ -1450,11 +1507,13 @@ function MessageFold(props: {
   const fold = props.lines * type.body.lineHeight * fontScale;
   const [height, setHeight] = useState<number | null>(null);
   const overflowing = height !== null && height > fold + 1;
+  // Words folded out of sight look nothing up until the reader opens them.
+  const visible = props.open || (height !== null && !overflowing);
   return (
     <>
       <View style={props.open ? undefined : [styles.fold, { maxHeight: fold }]}>
         <View onLayout={(event) => setHeight(event.nativeEvent.layout.height)}>
-          {props.children}
+          <ReferenceVisibility value={visible}>{props.children}</ReferenceVisibility>
         </View>
       </View>
       {overflowing || props.more ? (
@@ -1772,6 +1831,7 @@ const styles = StyleSheet.create({
     paddingVertical: space[12] - 1,
   },
   bubbleCorner: { borderBottomEndRadius: radius.xs },
+  held: { alignSelf: "flex-end", maxWidth: "100%" },
   bubbleQueued: { backgroundColor: "transparent", borderWidth: 1.5, borderStyle: "dashed" },
   bubbleQueuedMine: { borderColor: color.emberLine },
   bubbleQueuedOther: { borderColor: color.lineStrong },
@@ -1865,16 +1925,79 @@ function TeamInputSource({ source }: { readonly source: TeamSource }): ReactNode
   return (
     <Pressable
       accessibilityRole="link"
-      onPress={() =>
-        navigation.navigate("TeamThread", {
-          teamId: source.teamId,
-          channelId: source.channelId,
-          rootId,
-          ...(source.messageId && source.messageId !== rootId ? { replyId: source.messageId } : {}),
-        })
-      }
+      onPress={() => {
+        const state = navigation.getState();
+        const action =
+          state &&
+          sideMemory.enter(state, {
+            name: "TeamThread",
+            params: {
+              teamId: source.teamId,
+              channelId: source.channelId,
+              rootId,
+              ...(source.messageId && source.messageId !== rootId
+                ? { replyId: source.messageId }
+                : {}),
+            },
+          });
+        if (action) navigation.dispatch(action);
+      }}
     >
       {label}
     </Pressable>
+  );
+}
+
+function CompactionDivider({ run }: { readonly run: RunEntry }): ReactNode {
+  const scope = useContext(TaskScopeContext);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!run.compaction) return null;
+  return (
+    <View
+      style={{
+        paddingVertical: space[10],
+        borderTopWidth: StyleSheet.hairlineWidth,
+        borderColor: color.lineStrong,
+      }}
+    >
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityHint={compactionDisclosure}
+        onPress={() => setOpen(!open)}
+        style={{ minHeight: touchTarget, justifyContent: "center" }}
+      >
+        <AppText role="caption" tone="muted">
+          {compactionLabel(run.compaction)}
+        </AppText>
+      </Pressable>
+      {open ? (
+        <AppText role="caption" tone="muted">
+          {compactionDisclosure}
+        </AppText>
+      ) : null}
+      {run.compaction.status === "running" && scope ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Stop summarizing conversation"
+          disabled={busy}
+          onPress={() => {
+            setBusy(true);
+            void scope.hostClient
+              .stopRun(scope.threadId)
+              .catch((e: unknown) =>
+                setError(e instanceof Error ? e.message : "Could not stop summary."),
+              )
+              .finally(() => setBusy(false));
+          }}
+          style={{ minHeight: touchTarget, justifyContent: "center" }}
+        >
+          <AppText role="caption">Stop</AppText>
+        </Pressable>
+      ) : null}
+      {error ? <AppText role="caption">{error}</AppText> : null}
+    </View>
   );
 }

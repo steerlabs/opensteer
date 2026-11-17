@@ -23,7 +23,7 @@ afterEach(async () => {
 describe("Runner Agent Skills", () => {
   it("loads exactly the bundled skills named by the Host", async () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
-    const names = ["opensteer:triggers", "opensteer:browser"];
+    const names = ["opensteer:automations", "opensteer:browser"];
     expect(skillNames(bundle, names)).toEqual(names);
     expect(skillNames(bundle, [])).toEqual([]);
     expect(() => planAgentSkills(bundle, ["opensteer:missing"])).toThrow();
@@ -36,37 +36,39 @@ describe("Runner Agent Skills", () => {
     expect(catalog).not.toContain("Metadata unavailable");
   });
 
-  it("links only registry tools from the browser skill", async () => {
+  it("names only registry tools in every bundled skill", async () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
-    // Check the skill's tool links against the actual registry, not its prose.
-    const skill = (
-      await Promise.all(
-        ["SKILL.md", "references/identity.md", "references/tabs-and-show.md"].map((file) =>
-          readFile(join(bundle.paths["opensteer:browser"], file), "utf8"),
-        ),
-      )
-    ).join("\n");
+    // Check the skills' tool names against the actual registry, not their prose.
+    const files: string[] = [];
+    for (const path of Object.values(bundle.paths)) {
+      files.push(await readFile(join(path, "SKILL.md"), "utf8"));
+      for (const file of await readdir(join(path, "references")))
+        if (file.endsWith(".md"))
+          files.push(await readFile(join(path, "references", file), "utf8"));
+    }
     const runTools = new Set<string>(
       agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
     );
-    const references = [...skill.matchAll(/`((?:browser|request|pending)_[a-z_]+)`/gu)].map(
-      (match) => match[1],
+    const references = files.flatMap((text) =>
+      [
+        ...text.matchAll(
+          /`((?:browser|opensteer|tab|app|person|computer|integration|saved|chrome|card)_[a-z_]+|(?:send|show)_to_person|ask_person)`/gu,
+        ),
+      ].map((match) => match[1]!),
     );
     expect(references).toEqual(
       expect.arrayContaining([
-        "browser_session_open",
-        "browser_session_list",
         "browser_profile_list",
         "browser_profile_request",
-        "browser_tab_read",
-        "pending_request",
-        "request_withdraw",
+        "tab_open",
+        "app_list",
+        "show_to_person",
       ]),
     );
-    for (const name of references) expect(runTools.has(name!)).toBe(true);
+    for (const name of new Set(references)) expect(runTools.has(name), name).toBe(true);
   });
 
-  it("routes app UI work to the computer tool in the skill catalog and bodies", async () => {
+  it("routes app UI work to computer_use in the skill catalog and bodies", async () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
     const read = (name: OpensteerAgentSkillName) =>
       readFile(join(bundle.paths[name], "SKILL.md"), "utf8");
@@ -80,7 +82,7 @@ describe("Runner Agent Skills", () => {
       "Use Opensteer SSH access for another computer’s files, commands or forwarded ports.",
     );
     expect(computerUseMetadata.description).toBe(
-      "Operate Mac apps and Agent Phones through the computer tool when the task needs their interfaces.",
+      "Operate desktop app windows and phone screens (Android Agent Phones and Mac-driven iPhones) through computer_use when the task needs their interfaces.",
     );
     for (const metadata of [computerMetadata, computerUseMetadata, integrationMetadata]) {
       expect(Array.from(metadata.description).length).toBeLessThanOrEqual(1_024);
@@ -92,49 +94,51 @@ describe("Runner Agent Skills", () => {
       expect(catalog).toContain(metadata.description);
     }
     expect(computers).toContain(
-      "Use opensteer:computer-use to see or operate Mac app interfaces and Agent Phones.",
+      "Use opensteer:computer-use to see or operate Mac app interfaces and phone screens (Android Agent Phones and Mac-driven iPhones).",
     );
     expect(computerUse).toContain(
-      "never read an app's private data files or use AppleScript, `screencapture`, SSH or synthetic events for that purpose.",
+      "not by reading an app's private data files or using AppleScript, `screencapture`, SSH or synthetic events.",
     );
     expect(integrations).toContain("never with `integration_call`.");
     const api = await readFile(
       join(bundle.paths["opensteer:computer-use"], "references", "api.md"),
       "utf8",
     );
-    expect(api).toContain("`globalThis` persists between computer calls in this Run.");
+    expect(api).toContain("`globalThis` persists between `computer_use` calls in this Run.");
     expect(api).toContain(
-      "including a resumed task, reopen `app()`, `window()` or `phone()` handles and observe before acting.",
+      "including a resumed task, bind again with `tab()`, `app()` or `phone()` and observe before acting.",
     );
-    expect(api).toContain("Outside an Assignment, if `person_show` is listed");
+    expect(api).toContain("Outside a delegation, show your work without being asked");
     const signIn = await readFile(
       join(bundle.paths["opensteer:computer-use"], "references", "sign-in.md"),
       "utf8",
     );
     expect(signIn).toContain("never reveal, read back or screenshot a typed saved field");
-    expect(signIn).toContain("Delegated tasks can use `sign_in` for already-authorized sites.");
+    expect(signIn).toContain(
+      "Delegated tasks can use `saved_login_request` for already-authorized sites.",
+    );
   });
 
   it("teaches that a reply, never a report, is what reaches the person", async () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
-    const threads = await readFile(
-      join(bundle.paths["opensteer:threads"], "references", "coordination.md"),
+    const tasks = await readFile(
+      join(bundle.paths["opensteer:tasks"], "references", "coordination.md"),
       "utf8",
     );
-    const triggers = await readFile(
-      join(bundle.paths["opensteer:triggers"], "references", "reminders.md"),
+    const automations = await readFile(
+      join(bundle.paths["opensteer:automations"], "references", "reminders.md"),
       "utf8",
     );
 
-    expect(threads).toContain("Starts nothing and never alerts the person");
-    expect(threads).not.toMatch(/publish an\s+update there/u);
-    expect(triggers).toContain("# Reminders and updates for the person");
-    // A reminder wakes its actual anchor task, whose reply is the notification.
-    expect(triggers).toMatch(
-      /opensteer\.callTool\("thread_send", \{\s+delivery: "queue",\s+message: "Reminder: /u,
+    expect(tasks).toContain("Starts nothing and never alerts the person");
+    expect(tasks).not.toMatch(/publish an\s+update there/u);
+    expect(automations).toContain("# Reminders and updates for the person");
+    // A reminder wakes its automation's actual task, whose reply is the notification.
+    expect(automations).toMatch(
+      /opensteer\.callTool\("opensteer_task_send", \{\s+delivery: "queue",\s+message: "Reminder: /u,
     );
-    expect(triggers).toContain("threadId: event.trigger.anchorThreadId");
-    expect(triggers).toContain("toolContractVersion: 3");
+    expect(automations).toContain("taskId: event.trigger.anchorThreadId");
+    expect(automations).toContain("toolContractVersion: 4");
   });
 
   it("ships the machine access refusal sentences verbatim", async () => {
@@ -166,9 +170,9 @@ describe("Runner Agent Skills", () => {
     expect(skill).toContain("the common refusals are:");
     expect(skill).not.toContain("and the only ones");
     expect(skill).not.toContain("is the alias you used");
-    expect(skill).toContain("If `machine_full_disk_access_request` is listed for this Run");
+    expect(skill).toContain("If `computer_access_request` is listed for this Run");
     expect(skill).toContain(
-      "Otherwise return the exact Mac alias and access needed to your assigner.",
+      "Otherwise return the exact Mac alias and access needed to the delegating task.",
     );
   });
 
@@ -291,7 +295,7 @@ it("ships role-based memory controls without an agent setup recipe", async () =>
   );
   expect(memory).toContain("references/controls.md");
   expect(memory).not.toContain("references/setup.md");
-  for (const field of ["systemRole", "memory-light", "memory-nightly", "anchorThreadId"])
+  for (const field of ["systemRole", "memory-light", "memory-nightly", "taskId"])
     expect(controls).toContain(`\`${field}\``);
   await expect(
     readFile(join(bundleDirectory, "skills/memory/references/setup.md"), "utf8"),

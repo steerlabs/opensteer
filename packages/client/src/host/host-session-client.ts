@@ -1,32 +1,49 @@
+import type { ClientCommandInput } from "./device-commands.js";
+import type { HostClient } from "./client.js";
+import {
+  clientCommandSchema,
+  deviceAccessCommand,
+  deviceDriversApiVersion,
+  deviceDriversCapability,
+  type MachineAccessUpdateInput,
+} from "./device-commands.js";
+import { visibleDeviceMachines, deviceDriverKey } from "./device-projection.js";
+import { DeviceIdSchema } from "@opensteer/core";
+import { createIphoneSetupPort, type IphoneSetupPort } from "./iphone-setup.js";
+import { clearRunPageViews } from "./run-page-memory.js";
+import { clearRunPlacePictures } from "./run-place-picture.js";
+import { ReferenceStore } from "../references/store.js";
+import { TranscriptFileController } from "./transcript-files.js";
+import { AssetUrlStore, type AssetRoute } from "./asset-urls.js";
+import { needsYouEntryKey, refreshNeedsYou } from "./needs-you.js";
+import {
+  isSettledInputMutationError,
+  openWaitingMessageEditor,
+  type WaitingMessageEditorPort,
+} from "./waiting-message-editor.js";
 import type { MachineSummary } from "@opensteer/protocol";
 import type { PersonalStreamCache, PersonalCacheScope } from "./personal-stream-cache.js";
-import { withTimeout } from "@opensteer/shared/withTimeout";
-import { browserOpeningTimeoutMs } from "./browser-presentation-wait.js";
-import { BrowserTabStore } from "./browser-tab-store.js";
 import { familyAutomations } from "./task-family.js";
-import { BrowserSnapshotDerivation, personalTabLineage } from "./browser-snapshot.js";
 import { catalogModelDisplayName } from "./model-catalog.js";
 import { NodeDetailStore, type NodeDetailSubscription } from "./node-detail.js";
 import { executionNodeEntry } from "./subagent-model.js";
-import { AppTabSchema } from "@opensteer/protocol";
-import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
 import { BrowserCursorStore } from "./browser-cursor.js";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { drawnTranscriptRowKeys } from "./transcript-projection.js";
-import { PendingBrowserTabs } from "./pending-browser-tabs.js";
 import type { BootstrapReason } from "@opensteer/shared/bootstrapDiagnostics";
 import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
 import { emptySavedViewReadiness } from "./saved-host-view.js";
 import { BrowserEditingStore } from "./browser-editing.js";
 import { BrowserPreferences } from "./browser-preferences.js";
-import { PersonalTabActivations } from "./personal-tab-activations.js";
-import { browserTabOrderTabs } from "./browser-tab-order.js";
-import { BrowserTabGroupClient } from "./browser-tab-groups.js";
 import type { HostCapability as AuthorityHostCapability } from "@opensteer/deployment-authority";
 import type { NativeViewerSource } from "./surfaces.js";
+import { TabStore } from "./tab-store.js";
+import { createTabsClient, type TabsClientPort } from "./tabs-client.js";
+import { TabViewers } from "./tab-viewers.js";
+import { BrowserSurfaceIdSchema, type App, type Tab, type TabId } from "@opensteer/core";
 import { BrowserHistoryClient } from "./browser-history.js";
 import type { BrowserPreferencesStorage } from "./browser-preferences.js";
 import { computerViewMethods } from "./computer-views.js";
@@ -34,12 +51,17 @@ import { OwnerViewRecords } from "./owner-view-records.js";
 import { ViewerScope, viewerScopeOf } from "./viewer-scope.js";
 import {
   DeploymentIdSchema,
-  RunnerIdSchema,
+  EnvironmentIdSchema,
+  EventIdSchema,
+  IsoDateTimeSchema,
+  MessageIdSchema,
   ExecutionNodeIdSchema,
+  TeamAgentRequestIdSchema,
+  RequestIdSchema,
   nodeDetailEventNodeId,
   type QuietTaskDays,
+  type PersonName,
   AgentEventViewSchema,
-  BrowserSurfaceIdSchema,
   LiveItemViewSchema,
   LiveRunProgressViewSchema,
   RunIdSchema,
@@ -49,6 +71,7 @@ import {
   ThreadTitleSchema,
   ThreadViewSchema,
   TimeZoneSchema,
+  type MessageOrigin,
   compareSequence,
   defaultTaskSymbol,
   emptyExecutionPreferences,
@@ -73,42 +96,40 @@ import {
   type ThreadVisit,
   type WaitingRequest,
   type IconName,
+  type MessageRevisionView,
 } from "@opensteer/core";
-import { hostApiVersion, apiVersionQueryParameter } from "@opensteer/deployment-authority";
 import {
-  BrowserSessionIdSchema,
+  hostApiVersion,
+  minimumHostApiVersion,
+  setApiVersionQuery,
+} from "@opensteer/deployment-authority";
+import {
   DisplaySourceSchema,
   HarnessModelSettingsMapSchema,
   HostToClientMessageSchema,
   DeploymentSnapshotSchema,
   browserUsageRunBatchSize,
-  hostApi,
-  realtimeEnvelopeTypes,
   threadPageMaxItems,
   deploymentSnapshotMaxThreads,
   type BrowserSessionUsageProjection,
   type DurableWindow,
+  hostApi,
   type HostApiClient,
   type HostApiCommand,
   type HostApiCommandInput,
   type HostApiCommandOutput,
   type HostToClientMessage,
-  type MachineAccessPolicy,
   type RealtimeFrameDiagnostic,
   type RpcResult,
   type DeploymentSnapshot,
+  realtimeEnvelopeTypes,
 } from "@opensteer/protocol";
 import { z } from "zod";
 import { BrowserWatchStore, browserCommandNeedsNoView } from "./browser-watch.js";
 import type {
   BrowserCommand,
   BrowserFrameStore,
-  BrowserPlacementSummary,
   BrowserSessionSummary,
-  BrowserStartIdentity,
-  BrowserInventory,
-  BrowserTabOpenInput,
-  BrowserTabOpenOptions,
   CreateThreadInput,
   EnvironmentSummary,
   HarnessSummary,
@@ -120,13 +141,13 @@ import type {
   TaskListState,
   ThreadSummary,
   TranscriptEntry,
-  PersonalTabActivationOptions,
-  PersonalTabLineage,
+  TeamAskDecision,
+  WaitingMessageEditor,
 } from "./client.js";
 import { HostClientRequestError, isHostRefusal, mainDoneTasks } from "./client.js";
 import { browserProfileHomeCommand } from "./browser-access.js";
 import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
-import { createHttpHostApiClient } from "./host-api-client.js";
+import { dispatchDeviceCommand, createHttpHostApiClient } from "./host-api-client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
 import { RunPlaceStore } from "./run-place.js";
 import {
@@ -141,7 +162,12 @@ import {
   type ClientVisibility,
 } from "./lifecycle.js";
 import { LiveStreamLedger, type LiveProgressInput } from "./live-progress.js";
-import { applyOptimisticCommandPatch, withThreadNames } from "./optimistic-command-patches.js";
+import {
+  applyOptimisticCommandPatch,
+  withEditedWaitingMessage,
+  withEditLease,
+  withThreadState,
+} from "./optimistic-command-patches.js";
 import { PlaceActivityStore } from "./place-activity.js";
 import { placeByKey } from "./places.js";
 import { reconcileBrowserLastPictures } from "./browser-last-picture.js";
@@ -155,6 +181,7 @@ import {
   drawnLiveStream,
   foldLiveRun,
   foldTranscriptEvent,
+  isWaitingInputState,
   mergeTranscriptSegments,
   toMessageEntry,
   toTranscriptEntry,
@@ -168,7 +195,7 @@ import {
   realtimeFrameLoss,
 } from "./realtime-frames.js";
 
-type HostCapability = AuthorityHostCapability | "node-detail-v1";
+type HostCapability = AuthorityHostCapability | "node-detail-v1" | "device-drivers-v1";
 
 const defaultRefreshIntervalMs = 15_000;
 const historyPageTurns = 10;
@@ -205,23 +232,28 @@ const realtimeEventTypes = new Set<string>(
 const realtimeSnapshotFrameSchema = z.object({
   snapshot: z.looseObject({ threads: z.array(z.unknown()).max(deploymentSnapshotMaxThreads) }),
 });
-const realtimeThreadStateEventSchema = AgentEventViewSchema.options[0]
-  .omit({ type: true, data: true })
-  .extend({
-    type: z.literal("thread.state-changed"),
-    data: z.object({
-      ...eventDataSchemas["thread.state-changed"].shape,
-      status: z.string().min(1),
-    }),
-  });
-const realtimeThreadEventSchema = AgentEventViewSchema.options[0]
-  .omit({ type: true, data: true })
-  .extend({
-    type: z.enum(["thread.created", "thread.execution-updated", "thread.listed"]),
-    data: z.object({
-      thread: ThreadViewSchema.extend({ status: z.string().min(1) }),
-    }),
-  });
+/** Any event's envelope, whose Run may be null; place entries alone always name one. */
+const realtimeEventEnvelopeSchema = z.object({
+  createdAt: IsoDateTimeSchema,
+  environmentId: EnvironmentIdSchema,
+  eventId: EventIdSchema,
+  runId: RunIdSchema.nullable(),
+  sequence: SequenceSchema,
+  threadId: ThreadIdSchema,
+});
+const realtimeThreadStateEventSchema = realtimeEventEnvelopeSchema.extend({
+  type: z.literal("thread.state-changed"),
+  data: z.object({
+    ...eventDataSchemas["thread.state-changed"].shape,
+    status: z.string().min(1),
+  }),
+});
+const realtimeThreadEventSchema = realtimeEventEnvelopeSchema.extend({
+  type: z.enum(["thread.created", "thread.execution-updated", "thread.listed"]),
+  data: z.object({
+    thread: ThreadViewSchema.extend({ status: z.string().min(1) }),
+  }),
+});
 const realtimeResyncSchema = z.object({
   type: z.literal("host.resync-required"),
   // The reason explains the reset; every present or future reason requires it.
@@ -257,25 +289,6 @@ const inputQueueEventTypes: ReadonlySet<AgentEvent["type"]> = new Set<AgentEvent
   "thread.input-queue-updated",
 ]);
 
-/**
- * The refusals that settle a steer or cancel: the Host looked and would not,
- * so nothing was recorded and the next attempt is a new one. Anything else, a
- * timeout, an unreachable Runner, a transport failure, leaves open whether
- * the mutation landed.
- */
-const settledInputMutationCodes: ReadonlySet<string> = new Set([
-  "bad_request",
-  "canonical_surface_required",
-  "conflict",
-  "forbidden",
-  "not_found",
-  "unauthorized",
-]);
-
-function isSettledInputMutationError(error: unknown): boolean {
-  return error instanceof HostClientRequestError && settledInputMutationCodes.has(error.code);
-}
-
 function showsSubscriptionProgress(message: RealtimeMessage, channel: DeploymentChannel): boolean {
   switch (message.type) {
     case "host.snapshot":
@@ -304,9 +317,11 @@ function queuedInputItem(
   if (result.input.policy !== "queue" || result.input.state !== "pending") return null;
   return {
     canCancel: true,
+    canEdit: true,
     canMove: true,
     canSteer: queue.steerRunId !== null && !result.input.freshContext,
     input: result.input,
+    lease: null,
     message: result.message,
   };
 }
@@ -356,6 +371,8 @@ export interface WebSocketClient {
 interface DeploymentChannel {
   refused: boolean;
   cursor: Sequence;
+  /** The version `cursor` was read at; state read at another one is replaced. */
+  apiVersion: number;
   /** The nonce of the liveness probe this channel is waiting on, if any. */
   probeFollowsNetwork: boolean;
   probeNonce: string | null;
@@ -364,6 +381,8 @@ interface DeploymentChannel {
   progressAt: number;
   reconnectAttempt: number;
   reconnectTimer: Timer | null;
+  /** Whether this subscription was answered by replay, which carries events but never notices. */
+  resumed: boolean;
   socket: WebSocketClient | null;
   synchronized: boolean;
   /** Replay and sync frames this client could not read since it last synchronized. */
@@ -395,11 +414,16 @@ export type HostCapabilityReader = (options?: {
 }) => Promise<readonly HostCapability[]>;
 
 export interface HttpHostClientOptions {
+  readonly iphoneSetup?: import("@opensteer/protocol/desktop").DesktopIphoneSetupBridge;
+  readonly assetRoute?: AssetRoute;
+  readonly desktopMedia?: boolean;
   readonly deviceAccessRequests?: "include";
   readonly streamCache?: PersonalStreamCache;
   readonly passkeys?: BrowserPasskeyPort;
   /** The viewer's command platform for exact baseline shortcut projection. */
   readonly viewerPlatform?: "mac" | "pc";
+  /** This app and device, stated with each message a person sends from it. */
+  readonly origin?: Omit<MessageOrigin, "timeZone">;
   /** Verified by the connection owner for this client’s attachment. Null is unknown. */
   readonly capabilities?: readonly HostCapability[] | null | HostCapabilityReader;
   readonly browserPreferencesStorage?: BrowserPreferencesStorage;
@@ -433,6 +457,7 @@ type AttachmentRead = {
 
 export class HttpHostClient {
   readonly browserPasskeys: BrowserPasskeys;
+  readonly iphoneSetup: IphoneSetupPort | undefined;
   readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
   readonly retainComputerView: OwnerViewHostClient["retainComputerView"];
@@ -445,11 +470,13 @@ export class HttpHostClient {
     clear: () => undefined,
     setConnected: () => undefined,
   };
-  readonly openComputerView: OwnerViewHostClient["openComputerView"];
   readonly closeComputerView: OwnerViewHostClient["closeComputerView"];
   readonly renewComputerView: OwnerViewHostClient["renewComputerView"];
   readonly listComputerAppWindows: OwnerViewHostClient["listComputerAppWindows"];
   readonly listApprovedComputerApps: OwnerViewHostClient["listApprovedComputerApps"];
+  readonly assetUrls: AssetUrlStore;
+  readonly references: ReferenceStore;
+  readonly transcriptFiles: TranscriptFileController;
   readonly rpc: HostApiClient;
   readonly #baseUrl: URL;
   readonly #streamCache: PersonalStreamCache | undefined;
@@ -457,6 +484,11 @@ export class HttpHostClient {
   #cacheLoaded = false;
   #applyingSnapshot = false;
   #restoredCursor: Sequence | null = null;
+  /**
+   * The version the Host serves this client, from bootstrap. A Host from before
+   * the window admits this client only at its minimum, and does not say so.
+   */
+  #servedApiVersion = minimumHostApiVersion;
   readonly #channels = new Map<string, DeploymentChannel>();
   readonly #fetch: Fetch;
   readonly #listeners = new Set<() => void>();
@@ -488,25 +520,20 @@ export class HttpHostClient {
   readonly #presenceMarks = new Map<string, number>();
   #presenceCounter = 0;
   #browserCarrier: DeploymentChannel | null = null;
-  #browserContinuation: string | undefined;
-  readonly #browserWaiters = new Set<() => void>();
-  readonly #browserTabs = new BrowserTabStore(
-    (groupId) => this.#resyncBrowser(groupId),
-    (sessionId, tabId) =>
-      this.#targetedControl.surface(sessionId, tabId) ??
-      this.#targetedWatch.surface(sessionId, tabId),
-  );
-  readonly browserTabs = this.#browserTabs;
-  #browserStructure: ReturnType<BrowserTabStore["structure"]> = [];
-  #browserTargetRevision = -1;
-  #browserTabIds = new Map<string, readonly string[]>();
+  readonly #tabs = new TabStore();
+  /** The page session each tab's viewer was bound to by this device's own activation. */
+  readonly #pageSessions = new Map<string, string>();
+  readonly #viewers = new TabViewers();
+  tabViewer(tabId: string) {
+    return this.#viewers.get(tabId, this.#snapshot.machines);
+  }
+  #tabRows: ReadonlyMap<TabId, Tab> | null = null;
   browserViewerSurface(sessionId: string, surfaceId: string) {
     return (
       this.#targetedControl.surface(sessionId, surfaceId) ??
       this.#targetedWatch.surface(sessionId, surfaceId)
     );
   }
-  readonly #browserSnapshot = new BrowserSnapshotDerivation();
   readonly #placeActivity = new PlaceActivityStore();
   readonly #runPlaces = new RunPlaceStore();
   readonly #targetedControl = new BrowserWatchStore(
@@ -573,7 +600,9 @@ export class HttpHostClient {
     );
     if (mode === "watch") url.searchParams.set("mode", mode);
     const passkeys = this.browserPasskeys.optIn(
-      this.#capabilities?.filter((capability) => capability !== "node-detail-v1"),
+      this.#capabilities?.filter(
+        (capability) => capability !== "node-detail-v1" && capability !== "device-drivers-v1",
+      ),
     );
     if (mode === "control" && passkeys) url.searchParams.set("passkeys", passkeys);
     if (mode === "control") {
@@ -585,15 +614,13 @@ export class HttpHostClient {
     url.searchParams.set("editing", "2");
     return this.#webSocketFactory(url.toString());
   }
+  /** A page viewer may attach only to a listed page tab this device activated into that session. */
   #browserTargetAllowed(sessionId: string, surfaceId: string, asleep: boolean): boolean {
-    const groupId = this.#browserTabs.groupForSession(sessionId);
-    const group = groupId ? this.#browserTabs.group(groupId) : undefined;
-    const tab = groupId ? this.#browserTabs.tab(groupId, surfaceId) : undefined;
+    const tab = this.#tabs.get(surfaceId as TabId);
     return (
-      group?.state === "ready" &&
-      tab?.availability === "ready" &&
-      tab.documentId !== null &&
-      (tab.state === "live" || asleep)
+      tab?.kind === "page" &&
+      this.#pageSessions.get(surfaceId) === sessionId &&
+      (tab.state === "open" || (asleep && tab.state === "asleep"))
     );
   }
   readonly #browserPopups = new Map<string, Set<(popupId: string) => void>>();
@@ -653,160 +680,107 @@ export class HttpHostClient {
   async readBrowserContextCandidate(sessionId: string, tabId: string) {
     return unwrapRpcResult(await this.rpc["browser.contextCandidate.get"]({ sessionId, tabId }));
   }
-  readonly #pendingBrowserTabs = new PendingBrowserTabs({
-    admitted: () => viewerScopeOf(this.#snapshot) !== null,
-    open: (target, options) => this.#openBrowserTab(target, options),
-    close: (result) =>
-      this.closeBrowserTab(
-        result.sessionId,
-        result.tabId,
-        this.browserTabs.inventory(result.sessionId) ?? { generation: 0, revision: 0 },
-      ),
-    changed: (pendingBrowserTabs) => this.#update({ ...this.#snapshot, pendingBrowserTabs }),
-  });
-  readonly beginBrowserTabOpen: OwnerViewHostClient["beginBrowserTabOpen"] = (target, options) => {
-    if (typeof target !== "string" && "identity" in target)
-      this.browserPreferences.lastBrowsingChoice = target.identity;
-    return this.#pendingBrowserTabs.begin(target, options);
-  };
-  readonly browserPresentationDeadline = this.#pendingBrowserTabs.presentationDeadline;
-  readonly markBrowserPagePresented = this.#pendingBrowserTabs.markPresented;
-  readonly dismissPendingBrowserTab = this.#pendingBrowserTabs.dismiss;
-  async openBrowserTab(target: string | BrowserTabOpenInput, options: BrowserTabOpenOptions = {}) {
-    if (!viewerScopeOf(this.#snapshot))
-      return this.#openBrowserTab(
-        typeof target === "string" ? { sessionId: target } : target,
-        options,
-      );
-    return this.beginBrowserTabOpen(target, options).result;
-  }
-  async #openBrowserTab(target: BrowserTabOpenInput, options: BrowserTabOpenOptions) {
-    const started = this.#viewer.generation;
-    const result = unwrapRpcResult(
-      await this.rpc["commands.dispatch"](
-        {
-          type: "browser.tab.open",
-          ...(typeof target === "string" ? { sessionId: target } : target),
-          ...(options.url === undefined ? {} : { url: options.url }),
-          ...(options.typed === undefined ? {} : { typed: options.typed }),
-          ...(options.viewport ? { viewport: options.viewport } : {}),
-          idempotencyKey: options.idempotencyKey ?? mutationIdempotencyKey("open-tab"),
-        },
-        options.signal ? { signal: options.signal } : undefined,
-      ),
-    );
-    if (started !== this.#viewer.generation)
-      throw new HostClientRequestError({
-        code: "unauthorized",
-        status: 401,
-        message: "The signed-in account changed while the browser was opening.",
-      });
-    if (result.type !== "browser.tab.open") throw new Error("Unexpected browser command result.");
-    if (this.#snapshot.session === "authenticated")
-      await this.#waitBrowser(() => {
-        const groupId = result.groupId ?? this.#browserTabs.groupForSession(result.sessionId);
-        return groupId && this.#browserTabs.tab(groupId, result.tabId);
-      }, options.signal);
-    return result;
-  }
-  async readPersonalTabs(sessionId: string): Promise<PersonalTabLineage | null> {
-    await this.#waitBrowser(() => {
-      const groupId =
-        this.#browserTabs.group(sessionId)?.id ?? this.#browserTabs.groupForSession(sessionId);
-      return groupId ? this.#browserTabs.tabs(groupId).whole : this.#browserTabs.groups().whole;
-    });
-    const groupId =
-      this.#browserTabs.group(sessionId)?.id ?? this.#browserTabs.groupForSession(sessionId);
-    return groupId ? personalTabLineage(this.#browserTabs, groupId) : null;
-  }
-
-  readonly #personalTabActivations: PersonalTabActivations;
-  activatePersonalTab(tabId: string, options?: PersonalTabActivationOptions) {
-    return this.#personalTabActivations.activate(tabId, options);
-  }
-
-  async reopenPersonalTab() {
-    if (!this.#snapshot.tabReopenAvailable) throw new Error("This Host cannot reopen closed tabs.");
-    const viewer = this.#viewer.generation;
-    const result = unwrapRpcResult(
-      await this.rpc["commands.dispatch"]({
-        type: "tab.reopen",
-        idempotencyKey: mutationIdempotencyKey("reopen-tab"),
-      }),
-    );
-    if (viewer !== this.#viewer.generation)
-      throw new Error("The signed-in account changed while reopening the tab.");
-    if (result.type !== "tab.reopen") throw new Error("Unexpected tab reopen result.");
-    this.#update({ ...this.#snapshot, browserTabGroups: this.#tabGroups.receive(result.layout) });
-    await this.#waitBrowser(() => this.#browserTabs.tab(result.groupId!, result.tabId));
-    return result;
-  }
-  readonly #tabGroups: BrowserTabGroupClient;
-  readonly groupBrowserTabs: OwnerViewHostClient["groupBrowserTabs"] = (ids, target) =>
-    this.#tabGroups.groupBrowserTabs(ids, target);
-  readonly moveBrowserTabs: OwnerViewHostClient["moveBrowserTabs"] = (move) =>
-    this.#tabGroups.moveBrowserTabs(move);
-  readonly ungroupBrowserTabs: OwnerViewHostClient["ungroupBrowserTabs"] = (ids) =>
-    this.#tabGroups.ungroupBrowserTabs(ids);
-  readonly updateBrowserTabGroup: OwnerViewHostClient["updateBrowserTabGroup"] = (id, update) =>
-    this.#tabGroups.updateBrowserTabGroup(id, update);
-  readonly closePersonalTabs: OwnerViewHostClient["closePersonalTabs"] = async (tabIds) => {
-    const viewer = this.#viewer.generation;
-    const result = unwrapRpcResult(
-      await this.rpc["commands.dispatch"]({
-        type: "tabs.close",
-        tabIds: tabIds.map((id) => BrowserSurfaceIdSchema.parse(id)),
-        idempotencyKey: mutationIdempotencyKey("close-tabs"),
-      }),
-    );
-    if (viewer !== this.#viewer.generation)
-      throw new Error("The signed-in account changed while closing tabs.");
-    if (result.type !== "tabs.close") throw new Error("Unexpected tabs close result.");
-    this.#tabGroups.removeClosed(result.closed);
-    return result;
-  };
-  async closeBrowserTab(sessionId: string, surfaceId: string, expected: BrowserInventory) {
-    const viewer = this.#viewer.generation;
-    const groupId = this.#browserTabs.groupForSession(sessionId);
-    const tab = groupId ? this.#browserTabs.tab(groupId, surfaceId) : undefined;
-    if (tab?.documentId === null) {
-      const result = unwrapRpcResult(
-        await this.rpc["commands.dispatch"]({
-          type: "tab.close",
-          tabId: surfaceId,
-          idempotencyKey: `close:${surfaceId}`,
-        }),
-      );
+  readonly #tabsClient = createTabsClient({
+    store: this.#tabs,
+    dispatch: async (command) => {
+      const viewer = this.#viewer.generation;
+      const result = unwrapRpcResult(await this.rpc["commands.dispatch"](command));
       if (viewer !== this.#viewer.generation)
-        throw new Error("The signed-in account changed while closing the tab.");
-      if (result.type !== "tab.close") throw new Error("Unexpected tab close result.");
-      return {
-        type: "browser.tab.close" as const,
-        sessionId: BrowserSessionIdSchema.parse(sessionId),
-        outcome: "tab-closed" as const,
-      };
-    }
-    const inventoryRevision = expected.inventoryRevision ?? expected.revision;
-    const result = unwrapRpcResult(
-      await this.rpc["commands.dispatch"]({
-        type: "browser.tab.close",
-        sessionId,
-        surfaceId,
-        inventoryRevision,
-        idempotencyKey: `close-tab:${sessionId}:${surfaceId}:${inventoryRevision}`,
-      }),
-    );
-    if (viewer !== this.#viewer.generation)
-      throw new HostClientRequestError({
-        code: "unauthorized",
-        status: 401,
-        message: "The signed-in account changed while closing the tab.",
+        throw new HostClientRequestError({
+          code: "unauthorized",
+          status: 401,
+          message: "The signed-in account changed while the tab command was under way.",
+        });
+      return result as Awaited<ReturnType<TabsClientPort["dispatch"]>>;
+    },
+    listApps: async (query) =>
+      unwrapRpcResult(await this.rpc["apps.list"](query ? { query } : {})).apps as App[],
+    getApp: async (appId) => unwrapRpcResult(await this.rpc["apps.get"]({ appId })) as App,
+    activated: (tab, viewer, wake) => {
+      // A tab the stream closed while its activation was answering stays closed;
+      // one a still-loading list has not reached yet is bound as answered.
+      if (this.#tabs.complete && !this.#tabs.get(tab.tabId)) return;
+      this.#viewers.set(tab.tabId, viewer, this.#snapshot.machines);
+      if (viewer.kind === "page") this.#bindPage(tab, viewer.sessionId);
+      else if (viewer.kind !== "app") this.#acceptOwnerView(viewer.view, wake);
+      else this.#update(this.#snapshot);
+    },
+  });
+  readonly openTab = this.#tabsClient.openTab;
+  readonly closeTabs = this.#tabsClient.closeTabs;
+  readonly reopenTab = this.#tabsClient.reopenTab;
+  readonly activateTab = this.#tabsClient.activateTab;
+  readonly organizeTabs = this.#tabsClient.organizeTabs;
+  readonly updateTabGroup = this.#tabsClient.updateTabGroup;
+  readonly deleteTabGroup = this.#tabsClient.deleteTabGroup;
+  readonly listApps = this.#tabsClient.listApps;
+  readonly getApp = this.#tabsClient.getApp;
+  readonly renameApp = this.#tabsClient.renameApp;
+  readonly startApp = this.#tabsClient.startApp;
+  readonly stopApp = this.#tabsClient.stopApp;
+  readonly deleteApp = this.#tabsClient.deleteApp;
+  /** A person's own view of a window or phone, opened by activating its tab. */
+  #acceptOwnerView(view: import("@opensteer/protocol").ComputerView, wake: boolean): void {
+    this.#update({
+      ...this.#snapshot,
+      machines: [...this.#ownerViews.accept(this.#snapshot.machines, view)],
+    });
+    // Only the person's explicit Open may wake a phone, and only once.
+    if (
+      wake &&
+      view.target.kind === "phone" &&
+      view.state === "ready" &&
+      this.#snapshot.machines.some(
+        (machine) =>
+          machine.id === view.machineId &&
+          machine.phoneDisplay?.wake === true &&
+          machine.computerUse?.ownerViews?.some(
+            (held) => held.viewId === view.viewId && held.generation === view.generation,
+          ),
+      )
+    )
+      sharedDisplayStreams(this).armAutoWake({
+        kind: "owner-view",
+        viewId: view.viewId,
+        generation: view.generation,
       });
-    if (result.type !== "browser.tab.close") throw new Error("Unexpected browser command result.");
-    return result;
   }
-  async readBrowserTabIcon(sessionId: string, iconRef: string): Promise<string | null> {
-    return unwrapRpcResult(await this.rpc["browser.tabIcon.get"]({ sessionId, iconRef })).favicon;
+  /**
+   * The page session a tab's activation bound: viewers attach to it, and the
+   * snapshot names it so the page's view can follow its dialog and viewer state.
+   */
+  #bindPage(tab: Tab, sessionId: string): void {
+    this.#pageSessions.set(tab.tabId, sessionId);
+    if (this.#snapshot.browserSessions.some((session) => session.id === sessionId)) {
+      this.#update(this.#snapshot);
+      return;
+    }
+    const session: BrowserSessionSummary = {
+      id: sessionId,
+      access: "read-write",
+      attachedRunIds: [],
+      dialog: null,
+      error: null,
+      origin: "person",
+      placement: { kind: "runner", runnerId: tab.computer.computerId },
+      profileId: tab.profile?.profileId ?? null,
+      runtimeId: sessionId,
+      state: "ready",
+      viewerError: null,
+      viewerState: "disconnected",
+    };
+    this.#update({
+      ...this.#snapshot,
+      browserSessions: [...this.#snapshot.browserSessions, session],
+    });
+  }
+  async readBrowserTabIcon(tabId: string, iconRef: string): Promise<string | null> {
+    return unwrapRpcResult(
+      await this.rpc["browser.tabIcon.get"]({
+        tabId: BrowserSurfaceIdSchema.parse(tabId),
+        iconRef,
+      }),
+    ).favicon;
   }
   /** Holds on Threads observed beside the active one, counted per Thread. */
   readonly #observedThreads = new Map<string, number>();
@@ -824,6 +798,10 @@ export class HttpHostClient {
    * retry after a lost answer repeats the mutation instead of adding one.
    */
   readonly #threadInputMutationKeys = new Map<string, string>();
+  /** The edit leases this device holds, so its own edit never reads as another device's. */
+  readonly #editLeases = new Set<string>();
+  /** Tasks the Host removed; an open view of one stays `missing` rather than reading it again. */
+  readonly #removedThreads = new Set<string>();
 
   readonly #hydratedThreads = new Map<string, Sequence>();
   readonly #historicalThreads = new Set<string>();
@@ -867,7 +845,7 @@ export class HttpHostClient {
       (this.#snapshot.transcripts[threadId] ?? []).filter((entry) => entry.kind === "node"),
     readNodes: (runId) => this.#readRunNodes(runId),
     read: async (input) => {
-      const page = unwrapRpcResult(
+      const page = tabEventPage(
         await this.rpc["node.events.list"]({
           ...(this.#supportsDeviceAccessRequests()
             ? { deviceAccessRequests: "include" as const }
@@ -925,8 +903,10 @@ export class HttpHostClient {
   #backgroundedAt: number | null = null;
 
   #bootstrapPromise: Promise<void> | null = null;
+  #bootstrapFailed = false;
   #rereadPending: BootstrapReason | null = null;
   #waitingRead: "again" | "idle" | "reading" = "idle";
+  #tasksStale = false;
 
   readonly #taskReads = new Map<string | null, { again: boolean; done: Promise<void> }>();
   /** Per task list, the one read of a later page in flight, for the viewer that asked. */
@@ -938,14 +918,20 @@ export class HttpHostClient {
   #disposed = false;
   #refreshTimer: Timer | null = null;
 
-  #snapshot: HostSnapshot = emptySnapshot();
+  #snapshot: HostSnapshot = emptySnapshot(this.#tabs);
+  #remembering: Promise<unknown> = Promise.resolve();
 
   readonly #deviceAccessRequests: boolean;
   readonly #viewerPlatform: "mac" | "pc" | null;
+  readonly #origin: Omit<MessageOrigin, "timeZone"> | undefined;
   constructor(options: HttpHostClientOptions) {
     this.#deviceAccessRequests = options.deviceAccessRequests === "include";
+    this.#origin = options.origin;
     this.#streamCache = options.streamCache;
     this.browserPasskeys = new BrowserPasskeys(options.passkeys);
+    this.iphoneSetup = options.iphoneSetup
+      ? createIphoneSetupPort(options.iphoneSetup, (command) => this.dispatch(command))
+      : undefined;
     this.#viewerPlatform = options.viewerPlatform ?? null;
     this.#readCapabilities =
       typeof options.capabilities === "function" ? options.capabilities : null;
@@ -972,7 +958,7 @@ export class HttpHostClient {
         });
       },
     });
-    this.#browserTabs.subscribe(() => {
+    this.#tabs.subscribe(() => {
       if (!this.#applyingSnapshot) this.#update(this.#snapshot);
     });
     this.#baseUrl = new URL(options.baseUrl);
@@ -989,35 +975,61 @@ export class HttpHostClient {
       },
       onVersionMismatch: () => this.#reverifyCapabilities(),
     });
-    this.#personalTabActivations = new PersonalTabActivations({
-      snapshot: () => this.#snapshot,
-      subscribe: (listener) => this.subscribe(listener),
-      changed: () => this.#update(this.#snapshot),
-      dispatch: async (tabId) => {
-        const result = unwrapRpcResult(
-          await this.rpc["commands.dispatch"]({
-            type: "tab.activate",
-            tabId,
-            idempotencyKey: `restore:${tabId}`,
-          }),
-        );
-        if (result.type !== "tab.activate") throw new Error("Unexpected tab activation result.");
-        return result;
-      },
-      resolved: (result) => {
-        const groupId =
-          result.groupId ??
-          this.#browserTabs.groupForSession(result.sessionId ?? result.session.id);
-        const row = groupId ? this.#browserTabs.tab(groupId, result.tabId) : undefined;
-        return row?.documentId !== null && row?.state === "live";
+    this.assetUrls = new AssetUrlStore(
+      async (input, signal) =>
+        unwrapRpcResult(await this.rpc["asset.urls"](input, signal ? { signal } : undefined)),
+      options.assetRoute
+        ? {
+            origin: async (deploymentId) => {
+              const { resolved } = await options.assetRoute!.current();
+              if (resolved.deploymentId !== deploymentId)
+                throw new Error("The image belongs to another Deployment.");
+              return resolved.origin;
+            },
+            subscribe: (listener) => options.assetRoute!.onAttachmentInvalidated(listener),
+          }
+        : { origin: async () => this.#baseUrl.origin },
+      options.desktopMedia,
+    );
+    this.transcriptFiles = new TranscriptFileController({
+      images: { store: this.assetUrls, deploymentId: () => this.#snapshot.deploymentId },
+      rpc: {
+        openFile: async (input, signal) =>
+          unwrapRpcResult(await this.rpc["file.open"](input, signal ? { signal } : undefined)),
+        readFile: async (input, signal) =>
+          unwrapRpcResult(await this.rpc["file.content"](input, signal ? { signal } : undefined)),
       },
     });
-    this.#tabGroups = new BrowserTabGroupClient(
-      this.rpc,
-      (browserTabGroups) => this.#update({ ...this.#snapshot, browserTabGroups }),
-      () => this.#viewer.generation,
-      () => browserTabOrderTabs(this.browserTabs),
-    );
+    const initialReferenceSnapshot = this.#snapshot;
+    let referenceOwner = JSON.stringify([
+      initialReferenceSnapshot.deploymentId,
+      initialReferenceSnapshot.user?.id,
+      initialReferenceSnapshot.sessionId,
+      initialReferenceSnapshot.session,
+    ]);
+    this.references = new ReferenceStore({
+      getSnapshot: () => this.#snapshot,
+      resolveReferences: async (input, signal) =>
+        unwrapRpcResult(
+          await this.rpc["references.resolve"](input, signal ? { signal } : undefined),
+        ),
+      subscribe: (listener) =>
+        this.subscribe(() => {
+          const snapshot = this.#snapshot;
+          const owner = JSON.stringify([
+            snapshot.deploymentId,
+            snapshot.user?.id,
+            snapshot.sessionId,
+            snapshot.session,
+          ]);
+          if (owner !== referenceOwner) {
+            referenceOwner = owner;
+            this.assetUrls.reset();
+            this.transcriptFiles.reset();
+          }
+          listener();
+        }),
+    });
     this.#random = options.random ?? Math.random;
     this.#livenessIdleMs = Math.max(1, options.realtimeLiveness?.idleMs ?? realtimeIdleProbeMs);
     this.#livenessDeadlineMs = Math.max(
@@ -1051,6 +1063,7 @@ export class HttpHostClient {
 
       quietTasksAvailable: this.#capabilities?.includes("quiet-tasks-v1") === true,
       harnessUpdateAvailable: this.#capabilities?.includes("harness-update-v1") === true,
+      agentImagesAvailable: this.#capabilities?.includes("agent-images-v1") === true,
       tabReopenAvailable: this.#capabilities?.includes("tab-reopen-v1") === true,
       browserProfileManageAvailable:
         this.#capabilities?.includes("browser-profile-manage-v1") === true,
@@ -1085,16 +1098,6 @@ export class HttpHostClient {
     );
     this.#computerViews = views;
     this.retainComputerView = views.retainComputerView;
-    this.openComputerView = async (...args) => {
-      const view = await views.openComputerView(...args);
-      if (view.target.kind === "phone" && view.state === "ready" && args[2]?.wake !== false)
-        sharedDisplayStreams(this).armAutoWake({
-          kind: "owner-view",
-          viewId: view.viewId,
-          generation: view.generation,
-        });
-      return view;
-    };
     this.closeComputerView = (...args) => {
       sharedDisplayStreams(this).cancelAutoWake({
         kind: "owner-view",
@@ -1152,24 +1155,20 @@ export class HttpHostClient {
     return () => this.#listeners.delete(listener);
   };
 
-  async closePhoneTab(machineId: string): Promise<void> {
-    await this.dispatch({
-      type: "phone.tab.close",
-      machineId: RunnerIdSchema.parse(machineId),
-      idempotencyKey: crypto.randomUUID(),
-    });
-    this.#update({
-      ...this.#snapshot,
-      machines: this.#snapshot.machines.map((machine) =>
-        machine.id === machineId ? { ...machine, tabOpenedAt: null } : machine,
-      ),
-    });
-  }
-
-  async dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput> {
-    const parsedCommand = hostApi["commands.dispatch"].payload.parse(
-      browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes),
+  async dispatch(command: ClientCommandInput): Promise<HostApiCommandOutput> {
+    const parsedCommand = clientCommandSchema.parse(
+      this.#withOrigin(browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes)),
     );
+    const screenCommand =
+      parsedCommand.type === "iphone.screen.attach" ||
+      parsedCommand.type === "iphone.screen.detach" ||
+      (parsedCommand.type === "machine.access.update" && "deviceId" in parsedCommand) ||
+      (parsedCommand.type === "integration.computer.setup.set" &&
+        "deviceId" in parsedCommand.input) ||
+      ((parsedCommand.type === "machine.rename" || parsedCommand.type === "machine.revoke") &&
+        parsedCommand.machineId.startsWith("dev_"));
+    if (screenCommand && !this.#snapshot.deviceDriversAvailable)
+      throw new Error("Update this Opensteer to manage screen device drivers.");
     const needsDevices =
       parsedCommand.type === "machine.session.bind" ||
       (parsedCommand.type === "machine.access.update" &&
@@ -1184,7 +1183,27 @@ export class HttpHostClient {
         throw new Error("This Host does not support task marks.");
       return this.#setThreadIcon(parsedCommand);
     }
-    return this.#dispatchCommand(parsedCommand);
+    if (parsedCommand.type === "machine.access.update" && "deviceId" in parsedCommand)
+      return unwrapRpcResult(await dispatchDeviceCommand(this.rpc, parsedCommand));
+    if (
+      parsedCommand.type === "integration.computer.setup.set" &&
+      "deviceId" in parsedCommand.input
+    )
+      return unwrapRpcResult(await dispatchDeviceCommand(this.rpc, parsedCommand));
+    return this.#dispatchCommand(hostApi["commands.dispatch"].payload.parse(parsedCommand));
+  }
+
+  /** The zone is read at send time: a phone that crossed zones says so on its next message. */
+  messageOrigin(): MessageOrigin | undefined {
+    if (!this.#origin || !this.#capabilities?.includes("message-origin-v1")) return undefined;
+    const timeZone = TimeZoneSchema.safeParse(deviceTimeZone());
+    return { ...this.#origin, ...(timeZone.success ? { timeZone: timeZone.data } : {}) };
+  }
+
+  #withOrigin(command: HostApiCommandInput): HostApiCommandInput {
+    if (command.type !== "thread.sendMessage" || command.origin) return command;
+    const origin = this.messageOrigin();
+    return origin ? { ...command, origin } : command;
   }
 
   async #dispatchCommand(parsedCommand: HostApiCommand): Promise<HostApiCommandOutput> {
@@ -1207,14 +1226,56 @@ export class HttpHostClient {
         );
     const result = await this.#dispatch(parsedCommand);
     switch (result.type) {
+      case "teams.ask.decide":
+        if (commandIs(parsedCommand, result.type))
+          this.#update(
+            applyOptimisticCommandPatch(this.#snapshot, {
+              decision: parsedCommand.decision,
+              requestId: parsedCommand.requestId,
+              teamId: parsedCommand.teamId,
+              type: result.type,
+            }),
+          );
+        break;
+      case "thread.input.edit":
+        if (commandIs(parsedCommand, result.type))
+          this.#update(
+            applyOptimisticCommandPatch(this.#snapshot, {
+              edit: result.edit,
+              ...(parsedCommand.leaseId === undefined ? {} : { leaseId: parsedCommand.leaseId }),
+              message: result.message,
+              threadId: parsedCommand.threadId,
+              type: result.type,
+            }),
+          );
+        break;
+      case "thread.input.lease.take":
+        if (commandIs(parsedCommand, result.type))
+          this.#update(
+            applyOptimisticCommandPatch(this.#snapshot, {
+              lease: result.lease,
+              messageId: parsedCommand.messageId,
+              threadId: parsedCommand.threadId,
+              type: result.type,
+            }),
+          );
+        break;
+      case "thread.input.lease.release":
+        if (commandIs(parsedCommand, result.type))
+          this.#update(
+            applyOptimisticCommandPatch(this.#snapshot, {
+              leaseId: parsedCommand.leaseId,
+              messageId: parsedCommand.messageId,
+              threadId: parsedCommand.threadId,
+              type: result.type,
+            }),
+          );
+        break;
       case "assignment.cancel":
         this.#update({
           ...this.#snapshot,
           assignments: mergeAssignments(this.#snapshot.assignments, [result.assignment]),
         });
-        break;
-      case "browser.session.start":
-        await this.#waitBrowser(() => this.#browserTabs.groupForSession(result.session.id));
         break;
       case "browser.profile.create":
         this.#update(
@@ -1247,7 +1308,6 @@ export class HttpHostClient {
           );
         }
         break;
-      case "automaticModels.set":
       case "harness.model.configure":
       case "harness.create":
         // The Host reports a new harness only through bootstrap, so without
@@ -1427,127 +1487,11 @@ export class HttpHostClient {
     );
   }
 
-  #appTabGeneration = 0;
-  readonly #appTabWrites = new KeyedMutationQueue();
-  readonly #appTabPending = new Map<
-    string,
-    { token: symbol; tab: import("@opensteer/protocol").AppTab | null; opening: boolean }
-  >();
-  #overlayAppTabs(tabs: readonly import("@opensteer/protocol").AppTab[]) {
-    const result = new Map(tabs.map((tab) => [tab.appId, tab]));
-    for (const [id, { tab }] of this.#appTabPending) {
-      if (tab) result.set(id, tab);
-      else result.delete(id);
-    }
-    return [...result.values()].sort((a, b) => b.openedAt.localeCompare(a.openedAt));
-  }
-  #applyAppTabs(tabs: readonly import("@opensteer/protocol").AppTab[]) {
-    const appVersions = { ...this.#snapshot.appVersions };
-    for (const tab of tabs)
-      appVersions[tab.appId] = Math.max(appVersions[tab.appId] ?? 0, tab.latestVersion);
-    return {
-      appTabs: tabs,
-      appVersions,
-      openingAppTabs: [...this.#appTabPending]
-        .filter(([, pending]) => pending.opening && !pending.tab)
-        .map(([id]) => id),
-    };
-  }
-  openAppTab(appId: string): Promise<void> {
-    return this.#setAppTab(appId, true);
-  }
-  closeAppTab(appId: string): Promise<void> {
-    return this.#setAppTab(appId, false);
-  }
-  async #setAppTab(appId: string, open: boolean): Promise<void> {
-    const viewer = this.#viewerGeneration;
-    const token = Symbol();
-    const previous = this.#snapshot.appTabs?.find((tab) => tab.appId === appId);
-    const mutation = ++this.#appTabGeneration;
-    this.#appTabPending.set(appId, { token, tab: previous ?? null, opening: open });
-    this.#update({
-      ...this.#snapshot,
-      ...this.#applyAppTabs(this.#overlayAppTabs(this.#snapshot.appTabs ?? [])),
-    });
-    try {
-      let tab = previous;
-      if (open && !tab) {
-        const entry = Object.entries(this.#snapshot.transcripts).flatMap(([threadId, entries]) =>
-          entries
-            .filter((entry) => entry.kind === "app" && entry.appId === appId)
-            .map((entry) => ({ threadId, entry })),
-        )[0];
-        const thread = this.#snapshot.threads.find((thread) => thread.id === entry?.threadId);
-        if (entry?.entry.kind === "app" && thread)
-          tab = AppTabSchema.parse({
-            appId,
-            title: entry.entry.title,
-            threadId: thread.id,
-
-            latestVersion: entry.entry.version,
-            openedAt: new Date().toISOString(),
-          });
-        else {
-          const app = unwrapRpcResult(await this.rpc["apps.get"]({ appId }));
-          if (viewer !== this.#viewerGeneration || this.#appTabPending.get(appId)?.token !== token)
-            return;
-          tab = {
-            appId,
-            title: app.title,
-            threadId: app.threadId,
-            latestVersion: app.latestVersion,
-            openedAt: new Date().toISOString(),
-          };
-        }
-      }
-      this.#appTabPending.set(appId, { token, tab: open ? tab! : null, opening: open });
-      this.#update({
-        ...this.#snapshot,
-        ...this.#applyAppTabs(this.#overlayAppTabs(this.#snapshot.appTabs ?? [])),
-      });
-      const result = await this.#appTabWrites.run(appId, async () =>
-        viewer === this.#viewerGeneration && !this.#disposed
-          ? this.dispatch({
-              type: open ? "app.tab.open" : "app.tab.close",
-              appId,
-              idempotencyKey: crypto.randomUUID(),
-            })
-          : null,
-      );
-      if (result === null || viewer !== this.#viewerGeneration) return;
-      if (result.type !== "app.tab.open" && result.type !== "app.tab.close")
-        throw new Error("Unexpected app tab result");
-      if (this.#appTabPending.get(appId)?.token !== token) return;
-      this.#appTabPending.delete(appId);
-      const tabs =
-        mutation === this.#appTabGeneration
-          ? result.appTabs
-          : [
-              ...(this.#snapshot.appTabs ?? []).filter((tab) => tab.appId !== appId),
-              ...result.appTabs.filter((tab) => tab.appId === appId),
-            ];
-      this.#update({ ...this.#snapshot, ...this.#applyAppTabs(this.#overlayAppTabs(tabs)) });
-    } catch (error) {
-      if (viewer === this.#viewerGeneration && this.#appTabPending.get(appId)?.token === token) {
-        this.#appTabPending.delete(appId);
-        const restored = (this.#snapshot.appTabs ?? []).filter((tab) => tab.appId !== appId);
-        if (previous) restored.push(previous);
-        this.#update({ ...this.#snapshot, ...this.#applyAppTabs(this.#overlayAppTabs(restored)) });
-      }
-      throw error;
-    } finally {
-      if (viewer === this.#viewerGeneration) {
-        this.#appTabGeneration++;
-        this.#reread("host.app-tabs-changed");
-      }
-    }
-  }
-
   async viewApp(appId: string, theme: "light" | "dark", signal?: AbortSignal) {
     const view = unwrapRpcResult(
       await this.rpc["apps.view"]({ appId, theme }, signal ? { signal } : undefined),
     );
-    return { app: view.app, url: view.entryUrl ?? this.#url(view.path) };
+    return { title: view.app.name, url: view.entryUrl ?? this.#url(view.path) };
   }
 
   async getAttachment(attachmentId: string): Promise<Attachment> {
@@ -1649,6 +1593,7 @@ export class HttpHostClient {
     const thread = this.#snapshot.threads.find(({ id }) => id === threadId);
     const opened = !this.#showsThread(threadId);
     this.#activeThreadId = threadId;
+    if (this.#removedThreads.has(threadId)) return;
     for (const [id, scan] of this.#messagePageLoads) {
       if (!this.#showsThread(id)) scan.retired = true;
     }
@@ -2189,6 +2134,17 @@ export class HttpHostClient {
 
   async load(): Promise<void> {
     if (this.#disposed) throw new Error("The Host client is closed.");
+    const channel = this.#snapshot.deploymentId
+      ? this.#channels.get(this.#snapshot.deploymentId)
+      : undefined;
+    if (
+      !this.#bootstrapPromise &&
+      !this.#bootstrapFailed &&
+      this.#snapshot.session === "authenticated" &&
+      channel?.synchronized &&
+      channel.socket?.readyState === 1
+    )
+      return;
     await this.#bootstrap("load");
   }
 
@@ -2252,7 +2208,7 @@ export class HttpHostClient {
     await this.#threadHydrations.get(threadId);
     await this.#latestTranscriptLoads.get(threadId);
     await scan?.promise;
-    const page = unwrapRpcResult(
+    const page = tabEventPage(
       await this.rpc["thread.events.list"]({
         ...(this.#capabilities?.includes("tool-output-detail-v1")
           ? { toolOutputs: "preview" as const }
@@ -2602,7 +2558,7 @@ export class HttpHostClient {
   }
 
   async #readThreadHistory(threadId: string, before?: string) {
-    const page = unwrapRpcResult(
+    const page = tabEventPage(
       await this.rpc["thread.events.list"]({
         ...(this.#capabilities?.includes("tool-output-detail-v1")
           ? { toolOutputs: "preview" as const }
@@ -2621,43 +2577,6 @@ export class HttpHostClient {
     if (page.threadId !== threadId || page.thread.id !== threadId)
       throw new Error("Thread event page mismatch.");
     return page;
-  }
-
-  async startBrowser(
-    deploymentId: string,
-    identity: BrowserStartIdentity,
-    placement?: BrowserPlacementSummary,
-    threadId?: string,
-    viewport?: Extract<BrowserCommand, { type: "surface.open" }>["viewport"],
-  ): Promise<BrowserSessionSummary> {
-    // catalog page. Command admission, not this cache, checks access.
-    if (!this.#snapshot.browserAvailable) {
-      throw new Error("This Host does not have a connected Browser Runtime.");
-    }
-    this.#ensureDeploymentChannel(deploymentId);
-    const result = await this.dispatch({
-      idempotencyKey: mutationIdempotencyKey("browser"),
-      input: {
-        reuseExisting: false,
-        ...(viewport ? { viewport } : {}),
-        ...(threadId ? { threadId: ThreadIdSchema.parse(threadId) } : {}),
-        ...(placement
-          ? { placement: { kind: "runner" as const, runnerId: placement.runnerId } }
-          : {}),
-        ...(identity.kind === "fresh"
-          ? { fresh: true as const }
-          : { profileId: identity.profileId }),
-      },
-      type: "browser.session.start",
-    });
-    if (result.type !== "browser.session.start") {
-      throw new Error("Browser session command mismatch.");
-    }
-    const summary = this.#snapshot.browserSessions.find(
-      (session) => session.id === result.session.id,
-    );
-    if (!summary) throw new Error("The Browser Session was not projected.");
-    return summary;
   }
 
   #capabilities: readonly HostCapability[] | null;
@@ -2746,7 +2665,8 @@ export class HttpHostClient {
       title: input.title?.trim() || "New task",
     });
     if (result.type !== "thread.create") throw new Error("Thread command mismatch.");
-    await this.#rememberQuietly({
+    // Not waited for: the new Thread is what the person is waiting to see.
+    void this.#rememberQuietly({
       accessMode: input.accessMode,
       selection: {
         environmentId: input.environmentId,
@@ -2760,18 +2680,24 @@ export class HttpHostClient {
     );
   }
 
-  async rememberExecution(choice: ExecutionChoice): Promise<ExecutionPreferences> {
-    const result = await this.dispatch({
-      ...(choice.accessMode ? { accessMode: choice.accessMode } : {}),
-      idempotencyKey: mutationIdempotencyKey("execution-preferences"),
-      ...(choice.selection ? { selection: choice.selection } : {}),
-      type: "execution.preferences.remember",
+  rememberExecution(choice: ExecutionChoice): Promise<ExecutionPreferences> {
+    // One at a time, in the order chosen: a remember nobody waits for, such
+    // as a new Thread's, must not land after a later choice and take it back.
+    const remembered = this.#remembering.then(async () => {
+      const result = await this.dispatch({
+        ...(choice.accessMode ? { accessMode: choice.accessMode } : {}),
+        idempotencyKey: mutationIdempotencyKey("execution-preferences"),
+        ...(choice.selection ? { selection: choice.selection } : {}),
+        type: "execution.preferences.remember",
+      });
+      if (result.type !== "execution.preferences.remember") {
+        throw new Error("Execution preferences command mismatch.");
+      }
+      this.#update({ ...this.#snapshot, executionPreferences: result.preferences });
+      return result.preferences;
     });
-    if (result.type !== "execution.preferences.remember") {
-      throw new Error("Execution preferences command mismatch.");
-    }
-    this.#update({ ...this.#snapshot, executionPreferences: result.preferences });
-    return result.preferences;
+    this.#remembering = remembered.catch(() => undefined);
+    return remembered;
   }
 
   async renameThread(threadId: string, title: string): Promise<ThreadSummary> {
@@ -2809,8 +2735,8 @@ export class HttpHostClient {
         if (!this.#disposed)
           this.#update(
             thread
-              ? withThreadNames(this.#snapshot, (current) =>
-                  current.id === threadId ? this.#threadState.name(thread) : current,
+              ? withThreadState(this.#snapshot, (current) =>
+                  current.id === threadId ? this.#threadState.view(thread) : current,
                 )
               : this.#snapshot,
           );
@@ -2971,6 +2897,68 @@ export class HttpHostClient {
     );
   }
 
+  editWaitingMessage(
+    threadId: string,
+    messageId: string,
+    options?: { readonly takeOver?: boolean },
+  ): Promise<WaitingMessageEditor> {
+    return openWaitingMessageEditor(
+      this.#waitingMessageEditorPort,
+      threadId,
+      messageId,
+      options?.takeOver ?? false,
+    );
+  }
+
+  async releaseWaitingMessage(threadId: string, messageId: string): Promise<void> {
+    await this.dispatch({ messageId, threadId, type: "thread.input.lease.release" });
+  }
+
+  ownsEditLease(leaseId: string): boolean {
+    return this.#editLeases.has(leaseId);
+  }
+
+  async listMessageRevisions(
+    threadId: string,
+    messageId: string,
+    before?: number,
+  ): Promise<{ readonly revisions: readonly MessageRevisionView[]; readonly hasMore: boolean }> {
+    return unwrapRpcResult(
+      await this.rpc["thread.message.revisions.list"]({
+        messageId: MessageIdSchema.parse(messageId),
+        threadId: ThreadIdSchema.parse(threadId),
+        ...(before === undefined ? {} : { before }),
+      }),
+    );
+  }
+
+  async decideTeamAsk(input: TeamAskDecision): Promise<void> {
+    await this.dispatch({
+      decision: input.decision,
+      requestId: TeamAgentRequestIdSchema.parse(input.requestId),
+      teamId: DeploymentIdSchema.parse(input.teamId),
+      type: "teams.ask.decide",
+      ...(input.decision === "approve" ? { expectedRevision: input.expectedRevision } : {}),
+    });
+  }
+
+  readonly #waitingMessageEditorPort: WaitingMessageEditorPort = {
+    dispatch: (command) => this.dispatch(command),
+    leases: this.#editLeases,
+    // A take can report a newer version than this client has read; the person
+    // must start from that one, or their save would quietly undo it.
+    holdsRevision: async (threadId, messageId, revision) => {
+      for (let read = 0; read < 2; read += 1) {
+        const held = this.#snapshot.inputQueues[threadId]?.items.find(
+          (item) => item.message.id === messageId,
+        );
+        if ((held?.message.edit?.revision ?? 0) >= revision) return;
+        await this.loadThreadInputQueue(threadId);
+      }
+    },
+    now: () => Date.now(),
+  };
+
   async resumeThreadInputQueue(threadId: string): Promise<void> {
     // Resume is idempotent on the Host, so a lost answer is simply asked again.
     await this.dispatch({
@@ -3034,18 +3022,39 @@ export class HttpHostClient {
     if (result.type !== "machine.session.bind") throw new Error("Device binding command mismatch.");
   }
 
-  async updateMachineAccess(input: {
-    readonly expectedRevision: number;
-    readonly policy: MachineAccessPolicy;
-    readonly runnerId: string;
-  }): Promise<MachineAccessUpdateOutcome> {
+  async attachIphoneScreen(input: Parameters<HostClient["attachIphoneScreen"]>[0]) {
     const result = await this.dispatch({
-      expectedRevision: input.expectedRevision,
-      idempotencyKey: mutationIdempotencyKey("machine-access"),
-      policy: input.policy,
-      runnerId: input.runnerId,
-      type: "machine.access.update",
+      ...input,
+      type: "iphone.screen.attach",
+      idempotencyKey: input.idempotencyKey ?? mutationIdempotencyKey("iphone-attach"),
     });
+    if (result.type !== "iphone.screen.attach") throw new Error("Screen attach command mismatch.");
+    await this.refresh();
+    return result;
+  }
+
+  async detachIphoneScreen(input: Parameters<HostClient["detachIphoneScreen"]>[0]) {
+    const result = await this.dispatch({
+      ...input,
+      deviceId: DeviceIdSchema.parse(input.deviceId),
+      type: "iphone.screen.detach",
+      idempotencyKey: input.idempotencyKey ?? mutationIdempotencyKey("iphone-detach"),
+    });
+    if (result.type !== "iphone.screen.detach") throw new Error("Screen detach command mismatch.");
+    await this.refresh();
+    return result;
+  }
+
+  async updateMachineAccess(input: MachineAccessUpdateInput): Promise<MachineAccessUpdateOutcome> {
+    const command = deviceAccessCommand(
+      input,
+      mutationIdempotencyKey("machine-access"),
+      this.#snapshot.deviceDriversAvailable === true,
+    );
+    const result =
+      "deviceId" in command && command.type === "machine.access.update"
+        ? unwrapRpcResult(await dispatchDeviceCommand(this.rpc, command))
+        : await this.dispatch(command);
     if (result.type !== "machine.access.update") {
       throw new Error("Access settings command mismatch.");
     }
@@ -3084,10 +3093,25 @@ export class HttpHostClient {
   loadThreadInputQueue(threadId: string): Promise<ThreadInputQueue> {
     const existing = this.#threadInputQueueLoads.get(threadId);
     if (existing) return existing;
+    const generation = this.#viewerGeneration;
+    const held = this.#snapshot.inputQueues[threadId];
     const operation = this.rpc["thread.inputQueue.get"]({ threadId })
       .then(unwrapRpcResult)
       .then((queue) => {
         if (queue.threadId !== threadId) throw new Error("Thread input queue mismatch.");
+        if (
+          generation !== this.#viewerGeneration ||
+          this.#disposed ||
+          this.#removedThreads.has(threadId)
+        )
+          return queue;
+        if (
+          this.#snapshot.inputQueues[threadId] !== held ||
+          this.#threadInputQueueRereads.has(threadId)
+        ) {
+          this.#threadInputQueueRereads.add(threadId);
+          return queue;
+        }
         this.#update({
           ...this.#snapshot,
           inputQueues: { ...this.#snapshot.inputQueues, [threadId]: queue },
@@ -3132,24 +3156,25 @@ export class HttpHostClient {
   }
 
   dispose(): void {
+    clearRunPageViews(this);
+    clearRunPlacePictures(this);
+    this.references.dispose();
+    this.transcriptFiles.dispose();
+    this.assetUrls.dispose();
     this.#nodeDetails.clear();
-    this.#pendingBrowserTabs.dispose();
     if (this.#disposed) return;
     this.#clearInterruptionHold();
     this.#clearAttachmentReads();
     this.#cancelLostFrameReread();
     this.browserHistory.dispose();
-    this.#personalTabActivations.dispose();
-    this.#snapshot = { ...this.#snapshot, activatingPersonalTabs: [] };
     this.#disposed = true;
-    for (const check of this.#browserWaiters) check();
     this.#computerViews.clear();
     this.#browserUsageRead.clear();
     this.#browserUsageReads.clear();
     this.#browserUsageRunSources.clear();
     this.#browserUses.clear();
-    this.#browserTabs.clear();
-    this.#browserContinuation = undefined;
+    this.#tabs.clear();
+    this.#pageSessions.clear();
     this.#placeActivity.clear();
     this.#runPlaces.clear();
     this.#targetedWatch.clear();
@@ -3202,10 +3227,13 @@ export class HttpHostClient {
     }
     const operation = this.#performBootstrap(reason, revalidateCapabilities);
     this.#bootstrapPromise = operation;
+    let succeeded = false;
     try {
       await operation;
+      succeeded = true;
     } finally {
       if (this.#bootstrapPromise === operation) {
+        this.#bootstrapFailed = !succeeded;
         this.#bootstrapPromise = null;
         if (this.#rereadPending) {
           const reason = this.#rereadPending;
@@ -3266,14 +3294,30 @@ export class HttpHostClient {
     );
     if (generation !== this.#viewerGeneration || this.#disposed || this.#snapshot.needsYou !== held)
       return;
-    const ids = new Set(held.entries.map(({ request }) => request.id));
+    const ids = new Set(held.entries.map(needsYouEntryKey));
     this.#update({
       ...this.#snapshot,
       needsYou: {
         ...page,
-        entries: [...held.entries, ...page.entries.filter(({ request }) => !ids.has(request.id))],
+        entries: [
+          ...held.entries,
+          ...page.entries.filter((entry) => !ids.has(needsYouEntryKey(entry))),
+        ],
       },
     });
+  }
+
+  async readRequest(threadId: string, requestId: string): Promise<Request | null> {
+    const { requests } = unwrapRpcResult(
+      await this.rpc["thread.requests.list"]({
+        requestId: RequestIdSchema.parse(requestId),
+        threadId: ThreadIdSchema.parse(threadId),
+        ...(this.#supportsDeviceAccessRequests()
+          ? { deviceAccessRequests: "include" as const }
+          : {}),
+      }),
+    );
+    return requests.find(({ id }) => id === requestId) ?? null;
   }
 
   #supportsDeviceAccessRequests(): boolean {
@@ -3282,12 +3326,22 @@ export class HttpHostClient {
 
   async #readWaitingRequests(): Promise<void> {
     const needsGeneration = this.#viewerGeneration;
-    const needsYou = unwrapRpcResult(
-      await this.rpc["needsYou.get"](
-        this.#supportsDeviceAccessRequests() ? { deviceAccessRequests: "include" } : {},
+    const held = this.#snapshot.needsYou;
+    const needsYou = await refreshNeedsYou(held, async (before) =>
+      unwrapRpcResult(
+        await this.rpc["needsYou.get"]({
+          ...(before ? { before } : {}),
+          ...(this.#supportsDeviceAccessRequests()
+            ? { deviceAccessRequests: "include" as const }
+            : {}),
+        }),
       ),
     );
     if (needsGeneration !== this.#viewerGeneration || this.#disposed) return;
+    if (this.#snapshot.needsYou !== held) {
+      this.#rereadWaitingRequests();
+      return;
+    }
     this.#update({ ...this.#snapshot, needsYou });
     const generation = this.#viewerGeneration;
     const userId = this.#snapshot.user?.id;
@@ -3316,15 +3370,23 @@ export class HttpHostClient {
     this.#update({ ...this.#snapshot, waitingRequests });
   }
 
+  /** A page entry follows the newest thread state, but counts only the Requests its reader may see. */
+  #reconcilePageThread(thread: ThreadSummary, asOfSequence: Sequence): ThreadSummary {
+    const reconciled = this.#threadState.reconcile(thread, asOfSequence);
+    return reconciled.pendingRequests === thread.pendingRequests
+      ? reconciled
+      : { ...reconciled, pendingRequests: thread.pendingRequests };
+  }
+
+  /** A task notice is owed until a read answers it: one that arrives hidden waits for the foreground. */
   #rereadTasks(): void {
-    if (
-      this.#disposed ||
-      this.#visibility === "background" ||
-      this.#snapshot.session !== "authenticated"
-    )
-      return;
+    if (this.#disposed || this.#snapshot.session !== "authenticated") return;
+    this.#tasksStale = this.#visibility === "background";
+    if (this.#tasksStale) return;
     for (const scope of [null, "active", "done:*"])
-      void this.#readFirstTaskPage(scope, "changed").catch(() => undefined);
+      void this.#readFirstTaskPage(scope, "changed").catch(() => {
+        this.#tasksStale = true;
+      });
   }
 
   loadDoneTasks(): Promise<void> {
@@ -3335,6 +3397,37 @@ export class HttpHostClient {
     return this.#loadEarlier("done:*");
   }
 
+  async setIdleCompactionPolicy(
+    policy: import("@opensteer/core").IdleCompactionPolicy,
+  ): Promise<void> {
+    const result = await this.#dispatch({
+      type: "settings.idleCompaction.set",
+      policy,
+      idempotencyKey: mutationIdempotencyKey("idle-compaction"),
+    });
+    if (result.type === "settings.idleCompaction.set" && this.#snapshot.personalSettings)
+      this.#update({
+        ...this.#snapshot,
+        personalSettings: {
+          ...this.#snapshot.personalSettings,
+          idleCompactionPolicy: result.policy,
+        },
+      });
+  }
+  async setOwnerName(
+    name: PersonName | null,
+    expectedVersion: string | null,
+  ): Promise<{ readonly applied: boolean }> {
+    const result = await this.#dispatch({
+      idempotencyKey: mutationIdempotencyKey("owner-name"),
+      name,
+      expectedVersion,
+      type: "viewer.name.update",
+    });
+    if (result.type !== "viewer.name.update") return { applied: false };
+    this.#update({ ...this.#snapshot, ownerProfile: result.profile });
+    return { applied: result.applied };
+  }
   async setQuietTaskDays(days: QuietTaskDays): Promise<void> {
     const result = await this.#dispatch({
       idempotencyKey: mutationIdempotencyKey("quiet-tasks"),
@@ -3441,13 +3534,19 @@ export class HttpHostClient {
         if (!this.#viewerStillCurrent(generation, userId)) return;
         this.#mergeVisits(page.tasks.map((entry) => entry.thread));
         merged = mergeTasks(merged, {
-          entries: page.tasks.map((entry) => ({
-            ...entry,
-            thread: this.#threadState.reconcile(
-              toThreadSummary(entry.thread, this.#snapshot.environments, this.#snapshot.harnesses),
-              page.asOfSequence,
-            ),
-          })),
+          entries: page.tasks
+            .filter((entry) => !this.#removedThreads.has(entry.thread.id))
+            .map((entry) => ({
+              ...entry,
+              thread: this.#reconcilePageThread(
+                toThreadSummary(
+                  entry.thread,
+                  this.#snapshot.environments,
+                  this.#snapshot.harnesses,
+                ),
+                page.asOfSequence,
+              ),
+            })),
           window: page.window,
         });
         if (!page.window.hasMore || (scope !== "active" && merged.entries.length >= minimumItems))
@@ -3457,6 +3556,10 @@ export class HttpHostClient {
         before = page.window.nextBefore;
       }
       if (!merged || !this.#viewerStillCurrent(generation, userId)) return;
+      merged = {
+        ...merged,
+        entries: merged.entries.filter((entry) => !this.#removedThreads.has(entry.thread.id)),
+      };
       if (!scope) this.#savedViewReadiness = { ...this.#savedViewReadiness, tasksReady: true };
       this.#update(
         scope === "active"
@@ -3477,6 +3580,7 @@ export class HttpHostClient {
         status: 404,
       });
     }
+    const generation = this.#viewerGeneration;
     const result = await this.dispatch({
       done,
       idempotencyKey: mutationIdempotencyKey(`done:${threadId}`),
@@ -3484,6 +3588,7 @@ export class HttpHostClient {
       type: "thread.done.set",
     });
     if (result.type !== "thread.done.set") throw new Error("Done command mismatch.");
+    if (generation !== this.#viewerGeneration) return;
     this.#mergeVisits([result.thread]);
     const thread = this.#threadState.reconcile(
       toThreadSummary(result.thread, this.#snapshot.environments, this.#snapshot.harnesses),
@@ -3528,11 +3633,15 @@ export class HttpHostClient {
 
       quietTasksAvailable: capabilities.includes("quiet-tasks-v1"),
       harnessUpdateAvailable: capabilities.includes("harness-update-v1"),
+      agentImagesAvailable: capabilities.includes("agent-images-v1"),
       tabReopenAvailable: capabilities.includes("tab-reopen-v1"),
       browserProfileManageAvailable: capabilities.includes("browser-profile-manage-v1"),
       searchSuggestionsAvailable: capabilities.includes("browser-search-suggestions-v1"),
       iphoneAppsAvailable: capabilities.includes("iphone-apps-v1"),
       devicesAvailable: capabilities.includes("devices-v1"),
+      deviceDriversAvailable:
+        this.#servedApiVersion >= deviceDriversApiVersion &&
+        capabilities.includes(deviceDriversCapability),
       voiceAvailable: capabilities.includes("voice-run-v1"),
       ownerViewWindowsAvailable: capabilities.includes("ownerViewWindows"),
     });
@@ -3544,8 +3653,7 @@ export class HttpHostClient {
 
   async #performBootstrap(reason: BootstrapReason, revalidateCapabilities: boolean): Promise<void> {
     let generation = this.#viewerGeneration;
-    const appTabMark = this.#appTabGeneration,
-      presenceMark = this.#presenceCounter,
+    const presenceMark = this.#presenceCounter,
       ownerViewRevision = this.#ownerViews.revision;
     if (
       this.#snapshot.session === "checking" ||
@@ -3580,6 +3688,13 @@ export class HttpHostClient {
       this.#expireSession();
       generation = this.#viewerGeneration;
     }
+    this.#servedApiVersion = payload.apiVersion ?? minimumHostApiVersion;
+    this.#snapshot = {
+      ...this.#snapshot,
+      deviceDriversAvailable:
+        this.#servedApiVersion >= deviceDriversApiVersion &&
+        this.#capabilities?.includes(deviceDriversCapability) === true,
+    };
     const environments = payload.environments.map((environment) => ({ ...environment }));
     const harnesses = payload.harnesses.map(({ config, ...harness }) => ({
       ...harness,
@@ -3612,33 +3727,26 @@ export class HttpHostClient {
         browserProfiles: payload.browser.profiles,
         browserProfileHomes: payload.browser.profileHomes,
         browserProfileDeletions: payload.browser.profileDeletions,
-        tabRestoreVersion: payload.browser.tabRestoreVersion,
-        browserTabGroups: this.#tabGroups.receive(payload.browser.tabGroups),
-        ...this.#applyAppTabs(
-          appTabMark === this.#appTabGeneration
-            ? this.#overlayAppTabs(payload.appTabs)
-            : (this.#snapshot.appTabs ?? []),
-        ),
         executionPreferences: payload.executionPreferences,
         quietTaskDays: payload.quietTaskDays,
         identityConfig: payload.identityConfig,
         threads,
-        machines: payload.machines.map((machine) =>
+        machines: visibleDeviceMachines(payload.machines).map((machine) =>
           this.#ownerViews.reread(
             withNewerComputerPresence(machine, this.#snapshot.machines, patchedSince),
             this.#snapshot.machines.find((current) => current.id === machine.id),
             ownerViewRevision,
           ),
         ),
-        ownerName: payload.user.displayName,
+        ownerProfile: payload.ownerProfile ?? null,
         session: "authenticated",
         sessionId: payload.sessionId,
         sessionSurface: payload.sessionSurface,
         user: payload.user,
       }),
     });
-    if (this.#browserTabs.seed({ groups: payload.browser.groups, tabs: payload.browser.tabs }))
-      this.#browserContinuation = payload.browser.continuation;
+    // The stream, once running, is newer than any bootstrap prefix.
+    this.#tabs.seed(payload.tabs);
     if (!this.#cacheLoaded && this.#streamCache) {
       this.#cacheLoaded = true;
       await this.#checkpointWrite.catch(() => undefined);
@@ -3653,7 +3761,7 @@ export class HttpHostClient {
       if (
         cached &&
         cached.cursor.deploymentId === payload.deploymentId &&
-        cached.cursor.apiVersion === hostApiVersion &&
+        cached.cursor.apiVersion === this.#servedApiVersion &&
         cached.scope.userId === payload.user.id &&
         cached.scope.deploymentId === payload.deploymentId &&
         cached.scope.apiVersion === hostApiVersion
@@ -3730,7 +3838,6 @@ export class HttpHostClient {
   #enterForeground(): void {
     if (this.#disposed || this.#visibility === "foreground") return;
     const backgroundedForMs = Date.now() - (this.#backgroundedAt ?? Date.now());
-    this.#pendingBrowserTabs.checkDeadlines();
     this.#visibility = "foreground";
     this.#targetedControl.suspend(this.#network === "offline");
     this.#targetedWatch.suspend(this.#network === "offline");
@@ -3750,6 +3857,9 @@ export class HttpHostClient {
     this.#startRefresh();
     if (this.#snapshot.session === "authenticated")
       void this.#refresh("foreground").catch(() => undefined);
+    // A replaced socket answers what is owed once it synchronizes, so it is not read twice.
+    if (this.#tasksStale && [...this.#channels.values()].every(({ synchronized }) => synchronized))
+      this.#rereadTasks();
   }
 
   /**
@@ -3916,43 +4026,16 @@ export class HttpHostClient {
     this.#connect(channel);
   }
 
-  async #waitBrowser(read: () => unknown, signal?: AbortSignal): Promise<void> {
-    if (read()) return;
-    const viewer = this.#viewer.generation;
-    let release = () => {};
-    let check = () => {};
-    const ready = new Promise<void>((resolve, reject) => {
-      check = () => {
-        if (this.#disposed || viewer !== this.#viewer.generation)
-          reject(new Error("The browser viewer changed."));
-        else if (read()) resolve();
-      };
-      release = this.#browserTabs.subscribe(check);
-      this.#browserWaiters.add(check);
-      check();
-    });
-    try {
-      await withTimeout(ready, browserOpeningTimeoutMs, {
-        ...(signal ? { signal } : {}),
-        timeoutError: () => new Error("The browser tab did not arrive."),
-      });
-    } finally {
-      release();
-      this.#browserWaiters.delete(check);
-    }
+  /** Apps pages reread on this; nothing else is read again. */
+  #invalidateApps(): void {
+    this.#update({ ...this.#snapshot, appsRevision: this.#snapshot.appsRevision + 1 });
   }
-
-  #resyncBrowser(groupId?: string, continuation?: string): void {
+  /** Asks the carrier's Host to restart the tab stream from a fresh snapshot. */
+  #resyncTabs(): void {
     const carrier = this.#browserCarrier;
     if (!carrier?.socket || carrier.socket.readyState !== 1) return;
     try {
-      carrier.socket.send(
-        JSON.stringify({
-          type: "client.browser.resync",
-          ...(groupId ? { groupId } : {}),
-          ...(continuation ? { continuation } : {}),
-        }),
-      );
+      carrier.socket.send(JSON.stringify({ type: "client.browser.resync" }));
     } catch {
       this.#closeChannel(carrier, true, 1000, "Browser resync unsendable");
     }
@@ -3962,13 +4045,12 @@ export class HttpHostClient {
       return;
     this.#browserCarrier =
       [...this.#channels.values()].find((channel) => channel.socket?.readyState === 1) ?? null;
-    this.#resyncBrowser(undefined, this.#browserContinuation);
-    this.#browserContinuation = undefined;
+    this.#resyncTabs();
   }
   #releaseBrowserCarrier(channel: DeploymentChannel): void {
     if (channel !== this.#browserCarrier) return;
     this.#browserCarrier = null;
-    this.#browserTabs.disconnected();
+    this.#tabs.disconnected();
     this.#electBrowserCarrier();
   }
 
@@ -3980,6 +4062,7 @@ export class HttpHostClient {
       existing ??
       ({
         cursor: this.#restoredCursor ?? zeroSequence,
+        apiVersion: this.#servedApiVersion,
         refused: false,
         probeFollowsNetwork: false,
         probeNonce: null,
@@ -3987,6 +4070,7 @@ export class HttpHostClient {
         progressAt: 0,
         reconnectAttempt: 0,
         reconnectTimer: null,
+        resumed: false,
         socket: null,
         synchronized: false,
         unreadableFrames: 0,
@@ -4052,18 +4136,20 @@ export class HttpHostClient {
     socket.addEventListener("open", () => {
       if (channel.socket !== socket) return;
       channel.progressAt = Date.now();
+      if (channel.apiVersion !== this.#servedApiVersion) {
+        channel.apiVersion = this.#servedApiVersion;
+        channel.cursor = zeroSequence;
+      }
+      channel.resumed = true;
       try {
         socket.send(
           JSON.stringify({
             cursor: {
               deploymentId: channel.deploymentId,
-              apiVersion: hostApiVersion,
+              apiVersion: channel.apiVersion,
               afterSequence: channel.cursor,
             },
-            // The realtime half of the same negotiation the rpc header carries:
-            // an upgraded Host refuses the stream before sending an event this
-            // app would read with the wrong meaning.
-            apiVersion: hostApiVersion,
+            apiVersion: channel.apiVersion,
             ...(this.#supportsDeviceAccessRequests() ? { deviceAccessRequests: "include" } : {}),
             ...(this.#capabilities?.includes("person-show-v1") ? { personShow: "accept" } : {}),
             ...(this.#capabilities?.includes("tool-output-detail-v1")
@@ -4277,11 +4363,14 @@ export class HttpHostClient {
       return;
     }
     switch (loss) {
-      case "browser-stream":
+      case "tabs":
         if (channel === this.#browserCarrier) {
-          this.#browserTabs.disconnected();
-          this.#resyncBrowser();
+          this.#tabs.disconnected();
+          this.#resyncTabs();
         }
+        return;
+      case "apps":
+        this.#invalidateApps();
         return;
       case "none":
         return;
@@ -4400,6 +4489,13 @@ export class HttpHostClient {
       return;
     }
     if (message.type === "host.resync-required") {
+      this.references.reconnect();
+      // A Host behind this cursor restarted its history: state read from the old one,
+      // including answers still in flight, would outrank the snapshot that follows.
+      if (message.reason === "cursor-ahead") {
+        this.#viewerGeneration += 1;
+        this.#threadState.clear();
+      }
       channel.cursor = zeroSequence;
       channel.reconnectAttempt = 0;
       this.#closeChannel(channel, true, 4009, "Fresh snapshot required");
@@ -4408,6 +4504,7 @@ export class HttpHostClient {
     }
     if (message.type === "host.snapshot") {
       this.#applyDeploymentSnapshot(message.snapshot);
+      channel.resumed = false;
       channel.cursor = message.snapshot.sequence;
       this.#persistCheckpoint(channel);
       return;
@@ -4438,11 +4535,12 @@ export class HttpHostClient {
       this.browserHistory.changed(message.profileId);
       return;
     }
-    if (
-      message.type === "host.app-tabs-changed" ||
-      message.type === "host.browser-sessions-changed"
-    ) {
+    if (message.type === "host.browser-sessions-changed") {
       this.#reread(message.type);
+      return;
+    }
+    if (message.type === "host.apps.changed") {
+      this.#invalidateApps();
       return;
     }
     if (message.type === "host.thread-place-changed") {
@@ -4491,14 +4589,16 @@ export class HttpHostClient {
       this.#reread(message.type);
       return;
     }
-    if (message.type === "host.browser-groups" || message.type === "host.browser-tabs") {
+    if (message.type === "host.tabs") {
       if (channel !== this.#browserCarrier) return;
-      if (message.type === "host.browser-groups") this.#browserTabs.applyGroups(message.stream);
-      else this.#browserTabs.applyTabs(message.groupId, message.stream);
+      if (this.#tabs.apply(message.stream) === "resync") this.#resyncTabs();
       return;
     }
+    // What this socket sent was read at the version it names, whatever bootstrap last said.
+    if (message.apiVersion !== undefined)
+      channel.apiVersion = this.#servedApiVersion = message.apiVersion;
     channel.cursor = maxSequence(channel.cursor, message.sequence);
-    this.#persistCheckpoint(channel);
+    this.#persistCheckpoint(channel, true);
     // A resubscription sends every open stream whole right after this, so what
     // the old connection streamed is forgotten rather than continued, and any
     // reread still in flight belongs to the old subscription.
@@ -4516,6 +4616,7 @@ export class HttpHostClient {
         this.#scheduleLiveRefresh(thread.id, channel.deploymentId);
     }
     const reconnected = channel.reconnectAttempt > 0 || channel.unreadableFrames > 0;
+    const resumed = reconnected || channel.resumed;
     channel.synchronized = true;
     this.#nodeDetails.connected(channel.deploymentId);
     channel.reconnectAttempt = 0;
@@ -4524,13 +4625,12 @@ export class HttpHostClient {
     if (reconnected) this.#reread("reconnect");
     this.#sendAck(channel);
     this.#recomputeConnection();
-    // A task notice sent while this socket was away is lost with it, and so is
-    // a triggers notice.
-    if (reconnected) {
+    // Notices sent while no socket listened are lost, and replay does not carry them.
+    if (resumed) {
       this.#rereadTasks();
       this.#rereadWaitingRequests();
-    }
-    if (reconnected) this.#refreshShownAutomations(channel.deploymentId);
+      this.#refreshShownAutomations(channel.deploymentId);
+    } else if (this.#tasksStale) this.#rereadTasks();
     // A usage notice sent while this socket was away is lost: a shown
 
     // and one not shown is read whole when it next is. One shown while the
@@ -4625,20 +4725,16 @@ export class HttpHostClient {
     const taskPage = (page: import("@opensteer/protocol").TaskPage): TaskListState => ({
       entries: page.tasks.map((entry) => ({
         ...entry,
-        thread: toThreadSummary(
-          entry.thread,
-          this.#snapshot.environments,
-          this.#snapshot.harnesses,
+        thread: this.#reconcilePageThread(
+          toThreadSummary(entry.thread, this.#snapshot.environments, this.#snapshot.harnesses),
+          snapshot.sequence,
         ),
       })),
       window: page.window,
     });
     this.#applyingSnapshot = true;
     try {
-      this.#browserTabs.seed({
-        groups: snapshot.resources.browser.groups,
-        tabs: snapshot.resources.browser.tabs,
-      });
+      this.#tabs.seed(snapshot.resources.tabs);
     } finally {
       this.#applyingSnapshot = false;
     }
@@ -4660,7 +4756,8 @@ export class HttpHostClient {
       browserProfileHomes: snapshot.resources.browser.profileHomes,
       browserProfileDeletions: snapshot.resources.browser.profileDeletions,
       browserPlacements: snapshot.resources.browser.placements,
-      ...this.#applyAppTabs(snapshot.resources.appTabs),
+      // A new subscription may follow changes this client never heard of.
+      appsRevision: this.#snapshot.appsRevision + 1,
     });
     this.#refreshInputQueues(threads.map(({ id }) => id));
     for (const threadId of inFlight) {
@@ -4817,6 +4914,7 @@ export class HttpHostClient {
         continue;
       }
       this.#nodeDetails.accept(event);
+      this.references.accept(event);
       if (nodeDetailEventNodeId(event)) {
         this.#live.complete(event);
         applied = event.sequence;
@@ -4832,6 +4930,7 @@ export class HttpHostClient {
       )
         this.#runPlaces.end(event.runId, false);
       invalidateScheduleAnchor(this, event);
+      if (event.type === "task.removed") this.#forgetTask(event.threadId, event.sequence);
       const current = next.threads.find(({ id }) => id === event.threadId);
       const ownsState = this.#threadState.record(event);
       const retained =
@@ -4866,10 +4965,24 @@ export class HttpHostClient {
     this.#refreshInputQueues(touchedInputQueues);
   }
 
+  #forgetTask(threadId: string, sequence: Sequence): void {
+    this.#removedThreads.add(threadId);
+    this.#hydratedThreads.delete(threadId);
+    this.#historicalThreads.delete(threadId);
+    this.#threadInputQueueRereads.delete(threadId);
+    // A read already under way predates the removal and must not bring the task back.
+    if (this.#hydrationBuffers.has(threadId))
+      this.#invalidatedHydrations.set(
+        threadId,
+        maxSequence(this.#invalidatedHydrations.get(threadId) ?? zeroSequence, sequence),
+      );
+  }
+
   #refreshInputQueues(threadIds: Iterable<string>): void {
     const stale: string[] = [];
     for (const threadId of threadIds) {
-      if (!this.#snapshot.inputQueues[threadId]) continue;
+      if (!this.#snapshot.inputQueues[threadId] && !this.#threadInputQueueLoads.has(threadId))
+        continue;
       if (threadId === this.#activeThreadId) this.#reloadInputQueue(threadId);
       else stale.push(threadId);
     }
@@ -5148,18 +5261,18 @@ export class HttpHostClient {
     this.#cancelLostFrameReread();
     this.#savedViewReadiness = emptySavedViewReadiness();
     this.#viewerGeneration += 1;
-    this.#appTabPending.clear();
     this.#browserUsageRead.clear();
     this.#browserUsageReads.clear();
     this.#browserUsageRunSources.clear();
     this.#browserUses.clear();
-    this.#browserTabs.clear();
-    this.#browserContinuation = undefined;
+    this.#tabs.clear();
+    this.#pageSessions.clear();
     this.#placeActivity.clear();
     this.#runPlaces.clear();
     this.#targetedWatch.clear();
     this.#targetedControl.clear();
     this.#reportedTimeZone = null;
+    this.#tasksStale = false;
     this.#threadState.clear();
     this.#threadRenames.clear();
     this.#threadIcons.clear();
@@ -5185,7 +5298,7 @@ export class HttpHostClient {
     for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
     this.#channels.clear();
     this.#update({
-      ...emptySnapshot(),
+      ...emptySnapshot(this.#tabs),
       connection: "connected",
       identityConfig: this.#snapshot.identityConfig,
       revision: this.#snapshot.revision,
@@ -5202,14 +5315,11 @@ export class HttpHostClient {
     );
   }
 
+  /** A listed page tab, still bound to that session on this device. */
   #browserTargetAuthorized(sessionId: string, surfaceId: string): boolean {
-    const groupId = this.#browserTabs.groupForSession(sessionId);
-    const group = groupId ? this.#browserTabs.group(groupId) : undefined;
     return (
-      !!group &&
-      group.state !== "closed" &&
-      group.state !== "failed" &&
-      (!this.#browserTabs.tabs(group.id).whole || !!this.#browserTabs.tab(group.id, surfaceId))
+      this.#tabs.get(surfaceId as TabId)?.kind === "page" &&
+      this.#pageSessions.get(surfaceId) === sessionId
     );
   }
 
@@ -5220,8 +5330,7 @@ export class HttpHostClient {
   #webSocketUrl(path: string): string {
     const url = new URL(path, this.#baseUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    url.searchParams.set(apiVersionQueryParameter, String(hostApiVersion));
-    return url.toString();
+    return setApiVersionQuery(url, "personal").toString();
   }
 
   /**
@@ -5267,6 +5376,8 @@ export class HttpHostClient {
   #reportTimeZone(): void {
     const userId = this.#snapshot.user?.id;
     if (this.#disposed || this.#snapshot.session !== "authenticated" || !userId) return;
+    // A Host with `message-origin-v1` reads each message's zone instead.
+    if (this.#capabilities?.includes("message-origin-v1")) return;
     const timeZone = TimeZoneSchema.safeParse(deviceTimeZone());
     if (!timeZone.success) return;
     const report = `${this.#snapshot.deploymentId ?? ""}:${userId}:${timeZone.data}`;
@@ -5290,7 +5401,9 @@ export class HttpHostClient {
         }
       : null;
   }
-  #persistCheckpoint(channel: DeploymentChannel): void {
+  #persistCheckpoint(channel: DeploymentChannel, synchronizing = false): void {
+    // Until a socket synchronizes, the version its state was read at is unconfirmed.
+    if (!channel.synchronized && !synchronizing) return;
     const scope = this.#cacheScope();
     if (!scope || !this.#streamCache) return;
     const generation = this.#viewerGeneration;
@@ -5322,7 +5435,7 @@ export class HttpHostClient {
       threadStates: this.#threadState.checkpoint(),
       cursor: {
         deploymentId: DeploymentIdSchema.parse(scope.deploymentId),
-        apiVersion: hostApiVersion,
+        apiVersion: channel.apiVersion,
         afterSequence: channel.cursor,
       },
     };
@@ -5347,52 +5460,37 @@ export class HttpHostClient {
       Object.keys(snapshot.threadAutomations).length > 0
     )
       snapshot = { ...snapshot, threadAutomations: {} };
-    if (snapshot.session === "authenticated")
-      snapshot = {
-        ...snapshot,
-        ...this.#browserSnapshot.derive(snapshot, this.#browserTabs),
-      };
-    const structure = this.#browserTabs.structure();
-    const browserStructureChanged = structure !== this.#browserStructure;
-    const browserTargetsChanged = this.#browserTargetRevision !== this.#browserTabs.targetRevision;
-    const closedBrowserTabs: string[] = [];
-    if (browserStructureChanged) {
-      const tabIds = new Map<string, readonly string[]>();
-      for (const groupId of this.#browserTabs.groups().ids) {
-        const list = this.#browserTabs.tabs(groupId);
-        const previous = this.#browserTabIds.get(groupId);
-        tabIds.set(groupId, list.ids);
-        if (list.whole && previous && previous !== list.ids) {
-          const open = new Set(list.ids);
-          for (const id of previous) if (!open.has(id)) closedBrowserTabs.push(id);
-        }
-      }
-      this.#browserTabIds = tabIds;
+    const tabRows = this.#tabs.rows;
+    const tabsChanged = tabRows !== this.#tabRows;
+    if (tabsChanged) {
+      this.#tabRows = tabRows;
+      // A page binding lasts while its tab is listed; a closed tab's session is no longer this device's.
+      for (const tabId of this.#pageSessions.keys())
+        if (!tabRows.has(tabId as TabId)) this.#pageSessions.delete(tabId);
+      this.#viewers.retain(tabRows as ReadonlyMap<string, Tab>);
+      const bound = new Set(this.#pageSessions.values());
+      if (snapshot.browserSessions.some((session) => !bound.has(session.id)))
+        snapshot = {
+          ...snapshot,
+          browserSessions: snapshot.browserSessions.filter((session) => bound.has(session.id)),
+        };
     }
-    this.#browserStructure = structure;
-    this.#browserTargetRevision = this.#browserTabs.targetRevision;
     const scope = viewerScopeOf(snapshot);
     if (this.#viewer.change(scope)) {
-      for (const check of this.#browserWaiters) check();
+      clearRunPageViews(this);
+      clearRunPlacePictures(this);
       this.#nodeDetails.clear();
       this.#runPlaces.clear();
       this.#targetedWatch.clear();
       this.#targetedControl.clear();
-      this.#pendingBrowserTabs.clear();
       this.#clearAttachmentReads();
-      this.#personalTabActivations.clear(false);
       this.#computerViews.clear();
       this.#ownerViews.clear();
-      snapshot = {
-        ...snapshot,
-        browserTabGroups: this.#tabGroups.receive(snapshot.browserTabGroups),
-      };
+      this.#pageSessions.clear();
+      this.#viewers.clear();
+      this.#tabs.clear();
+      snapshot = { ...snapshot, browserSessions: [] };
     }
-    snapshot = {
-      ...snapshot,
-      activatingPersonalTabs: this.#personalTabActivations.ids,
-      pendingBrowserTabs: this.#pendingBrowserTabs.rows,
-    };
     // A dropped connection pauses the views being watched; it does not end them.
     this.#computerViews.setConnected(scope !== null && snapshot.connection === "connected");
     this.browserHistory.setScope(scope);
@@ -5413,8 +5511,7 @@ export class HttpHostClient {
         snapshot.browserSessions !== this.#snapshot.browserSessions ||
         snapshot.machines !== this.#snapshot.machines ||
         snapshot.connection !== this.#snapshot.connection ||
-        browserTargetsChanged ||
-        snapshot.appTabs !== this.#snapshot.appTabs ||
+        tabsChanged ||
         snapshot.browserPlacements !== this.#snapshot.browserPlacements ||
         snapshot.browserProfiles !== this.#snapshot.browserProfiles
       ) {
@@ -5424,9 +5521,12 @@ export class HttpHostClient {
           this.#browserTargetAllowed(sessionId, surfaceId, asleep);
         reconcileBrowserTargets = () => {
           const document = (sessionId: string, tabId: string) =>
-            placeByKey(this.#snapshot, `browser:${sessionId}:${tabId}`)?.browser?.documentId;
-          reconcileBrowserLastPictures(this.browserWatchFrames, document);
-          reconcileBrowserLastPictures(this.browserFrames, document);
+            this.#browserTargetAuthorized(sessionId, tabId)
+              ? (this.browserViewerSurface(sessionId, tabId)?.documentId ?? null)
+              : undefined;
+          const sessionForTab = (tabId: string) => this.#pageSessions.get(tabId);
+          reconcileBrowserLastPictures(this.browserWatchFrames, document, sessionForTab);
+          reconcileBrowserLastPictures(this.browserFrames, document, sessionForTab);
           if (this.#snapshot.connection === "connected")
             this.#placeActivity.reconcile(
               (key) => placeByKey(this.#snapshot, key)?.availability === "ready",
@@ -5469,9 +5569,9 @@ export class HttpHostClient {
       visits[id] = at;
     }
     snapshot = { ...snapshot, threadVisits: visits };
-    this.#threadState.retainLoaded(snapshot.threads);
-    snapshot = withThreadNames(snapshot, (thread) => ({
-      ...this.#threadState.name(thread),
+    this.#threadState.retainLoaded(incoming);
+    snapshot = withThreadState(snapshot, (thread) => ({
+      ...this.#threadState.view(thread),
       lastVisitedAt: snapshot.threadVisits[thread.id] ?? thread.lastVisitedAt,
       ...(this.#threadRenames.has(thread.id)
         ? { title: this.#threadRenames.get(thread.id)!.title }
@@ -5494,6 +5594,7 @@ export class HttpHostClient {
 
       quietTasksAvailable: this.#capabilities?.includes("quiet-tasks-v1") === true,
       harnessUpdateAvailable: this.#capabilities?.includes("harness-update-v1") === true,
+      agentImagesAvailable: this.#capabilities?.includes("agent-images-v1") === true,
       tabReopenAvailable: this.#capabilities?.includes("tab-reopen-v1") === true,
       browserProfileManageAvailable:
         this.#capabilities?.includes("browser-profile-manage-v1") === true,
@@ -5511,9 +5612,6 @@ export class HttpHostClient {
       network: this.#network,
       revision: this.#snapshot.revision + 1,
     };
-    if (closedBrowserTabs.length) this.#tabGroups.removeClosed(closedBrowserTabs);
-    if (browserStructureChanged)
-      this.#snapshot = { ...this.#snapshot, browserTabGroups: this.#tabGroups.project() };
     this.#runPlaces.flush();
     reconcileBrowserTargets?.();
     this.#nodeDetails.refreshNodes();
@@ -5570,9 +5668,14 @@ function withNewerComputerPresence(
     return { ...machine };
   }
   const known = new Map(
-    previous.flatMap((candidate) =>
-      (candidate.computerUse?.sessions ?? []).map((session) => [session.sessionId, session]),
-    ),
+    previous
+      .filter(
+        (candidate) =>
+          candidate.id === machine.id && deviceDriverKey(candidate) === deviceDriverKey(machine),
+      )
+      .flatMap((candidate) =>
+        (candidate.computerUse?.sessions ?? []).map((session) => [session.sessionId, session]),
+      ),
   );
   return {
     ...machine,
@@ -5616,6 +5719,63 @@ function withoutSteerTarget(
   const queue = inputQueues[threadId];
   if (!runId || queue?.steerRunId !== runId) return inputQueues;
   return { ...inputQueues, [threadId]: { ...queue, steerRunId: null } };
+}
+
+/**
+ * A task the Host removed leaves every list and record this client holds of
+ * it. A view still open on it reads `missing`, as for any task that is gone.
+ */
+function withoutTask(snapshot: HostSnapshot, threadId: string): HostSnapshot {
+  const without = <Value>(record: Readonly<Record<string, Value>>): Record<string, Value> => {
+    const { [threadId]: _removed, ...rest } = record;
+    return rest;
+  };
+  const withoutEntry = (list: TaskListState): TaskListState => {
+    const entries = list.entries.filter((entry) => entry.thread.id !== threadId);
+    if (entries.length === list.entries.length) return list;
+    return {
+      entries,
+      window: {
+        ...list.window,
+        itemCount: Math.max(0, list.window.itemCount - 1),
+        totalItems: Math.max(0, list.window.totalItems - 1),
+      },
+    };
+  };
+  const needsYou = snapshot.needsYou;
+  const asks = needsYou?.entries.filter(
+    (entry) => entry.kind === "team-ask" && entry.task?.threadId === threadId,
+  ).length;
+  return {
+    ...snapshot,
+    activeTasks: snapshot.activeTasks.filter((entry) => entry.thread.id !== threadId),
+    doneTasks: Object.fromEntries(
+      Object.entries(snapshot.doneTasks).map(([key, list]) => [key, withoutEntry(list)]),
+    ),
+    inputQueues: without(snapshot.inputQueues),
+    needsYou:
+      needsYou && asks
+        ? {
+            ...needsYou,
+            count: Math.max(0, needsYou.count - asks),
+            entries: needsYou.entries.filter(
+              (entry) => entry.kind !== "team-ask" || entry.task?.threadId !== threadId,
+            ),
+            window: {
+              ...needsYou.window,
+              itemCount: Math.max(0, needsYou.window.itemCount - asks),
+              totalItems: Math.max(0, needsYou.window.totalItems - asks),
+            },
+          }
+        : needsYou,
+    requests: without(snapshot.requests),
+    tasks: snapshot.tasks && withoutEntry(snapshot.tasks),
+    threadLookups: { ...snapshot.threadLookups, [threadId]: "missing" },
+    threads: snapshot.threads.filter((thread) => thread.id !== threadId),
+    threadVisits: without(snapshot.threadVisits),
+    transcriptWindows: without(snapshot.transcriptWindows),
+    transcripts: without(snapshot.transcripts),
+  };
 }
 
 export function rpcErrorStatus(code: string): number {
@@ -5792,13 +5952,13 @@ function projectAgentEvent(
       };
     }
     case "thread-input.updated": {
-      // The queue read decides what is waiting, but an input that has left
-      // `pending` has certainly left the queue, and the tray need not wait a
+      // The queue read decides what is waiting, but an input that has stopped
+      // waiting has certainly left the queue, and the tray need not wait a
       // round trip to stop offering it.
       const input = event.data.input;
       const queue = inputQueues[event.threadId];
       if (
-        input.state !== "pending" &&
+        !isWaitingInputState(input.state) &&
         queue?.items.some((item) => item.message.id === input.messageId)
       ) {
         inputQueues = {
@@ -5811,6 +5971,28 @@ function projectAgentEvent(
       }
       break;
     }
+    // Renewals are silent, so this is a take, a hand-over or an end: only
+    // that item's lease changes, without reading the queue's messages again.
+    case "thread-input.lease-changed":
+      return {
+        ...snapshot,
+        inputQueues: withEditLease(
+          inputQueues,
+          event.threadId,
+          event.data.messageId,
+          event.data.lease,
+        ),
+      };
+    case "message.updated":
+      return withEditedWaitingMessage(
+        snapshot,
+        event.threadId,
+        event.data.message,
+        event.data.edit,
+        event.data.input,
+      );
+    case "task.removed":
+      return withoutTask(snapshot, event.threadId);
     case "message.created":
       break;
     default:
@@ -5915,8 +6097,21 @@ function knownPendingRequestCount(snapshot: HostSnapshot, threadId: string): num
     .length;
 }
 
-function emptySnapshot(): HostSnapshot {
+/**
+ * History pages and the realtime stream share one event shape, whose
+ * place.entered names a tab.
+ */
+function tabEventPage<Page extends { readonly events: readonly unknown[] }>(
+  result: Parameters<typeof unwrapRpcResult<Page>>[0],
+): Omit<Page, "events"> & { readonly events: AgentEvent[] } {
+  const page = unwrapRpcResult(result);
+  return { ...page, events: z.array(AgentEventViewSchema).parse(page.events) };
+}
+
+function emptySnapshot(tabs: TabStore): HostSnapshot {
   return {
+    tabs,
+    appsRevision: 0,
     personalSettings: null,
     can: null,
     needsYou: null,
@@ -5925,6 +6120,7 @@ function emptySnapshot(): HostSnapshot {
 
     quietTasksAvailable: false,
     harnessUpdateAvailable: false,
+    agentImagesAvailable: false,
     iphoneAppsAvailable: false,
     assignments: {},
     threadAutomations: {},
@@ -5959,7 +6155,7 @@ function emptySnapshot(): HostSnapshot {
     identityConfig: null,
     inputQueues: {},
     machines: [],
-    ownerName: null,
+    ownerProfile: null,
     revision: 0,
     session: "checking",
     sessionSurface: null,
@@ -6035,6 +6231,7 @@ function toThreadSummary(
   const environment = environments.find((item) => item.id === thread.environmentId);
   const harness = harnesses.find((item) => item.id === thread.harnessInstanceId);
   return {
+    returnHint: thread.returnHint,
     doneAt: thread.doneAt,
     doneReason: thread.doneReason,
     accessMode: thread.accessMode,

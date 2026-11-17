@@ -433,6 +433,30 @@ final class PhoneBrowserTransportTests: XCTestCase {
     XCTAssertThrowsError(try connection.commitAttach(epoch: connection.epoch, attachHandle: nextHandle, claimsDigest: verified["claimsDigest"] as! String, replayTransition: proposed))
   }
 
+  func testReplacedStreamsLateFailureLeavesItsSuccessorOnline() throws {
+    let fixture = try vector("fences")
+    let ticketFixture = try vector("attach-tickets")
+    let now = (fixture["now"] as! NSNumber).int64Value
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let connection = PhoneBrowserConnection(now: { now })
+    try connection.configure(epoch: 0, runtimeId: "phone", ledger: PhoneBrowserReplayLedger(directory: directory))
+    var welcome = fixture["welcome"] as! [String: Any]
+    welcome["browserWireVersion"] = 2
+    welcome["browserAttachPublicKeys"] = [["keyId": "fixture", "publicKeyPem": ticketFixture["publicKeyPem"]!]]
+    var states: [String] = []
+    connection.setObserver { if let state = $0["state"] as? String { states.append(state) } }
+    let first = try connection.adopt(welcome, sender: { _, completion in completion(nil) }, close: {})
+    welcome["auxiliaryStreamId"] = "rax_22222222-2222-4222-8222-222222222222"
+    var secondClosed = false
+    try connection.adopt(welcome, sender: { _, completion in completion(nil) }, close: { secondClosed = true })
+    defer { connection.offline(reason: "test-finished") }
+    XCTAssertFalse(connection.offline(reason: "stream-closed", stream: first))
+    XCTAssertFalse(secondClosed)
+    XCTAssertTrue(connection.publishCurrent())
+    XCTAssertEqual(states.last, "online")
+  }
+
   func testQueuedRelayCannotCrossEpochOrStream() async throws {
     let fixture = try vector("fences")
     let ticketFixture = try vector("attach-tickets")

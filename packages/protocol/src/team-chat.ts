@@ -5,12 +5,16 @@ import {
   IsoDateTimeSchema,
   SequenceSchema,
   TeamAgentRequestIdSchema,
+  TeamAgentRequestKindSchema,
+  TeamAskPresentationSchema,
+  TeamRequestTextSchema,
   TeamAgentRequestStateSchema,
   TeamAudienceSchema,
   TeamBlobIdSchema,
   TeamChannelIdSchema,
   TeamChannelKindSchema,
   TeamMessageIdSchema,
+  TeamHandleSchema,
   TeamSourceSchema,
   TeamStatusStepSchema,
   UserIdSchema,
@@ -22,13 +26,7 @@ export const teamResumeMaxRows = 200;
 export const teamResumeMaxBytes = 256 * 1024;
 export const teamUploadMaxBytes = 100 * 1024 * 1024;
 export const teamPreviewMaxBytes = 64 * 1024;
-export const TeamMarkdownSchema = z
-  .string()
-  .max(16384)
-  .refine(
-    (value) => new TextEncoder().encode(value).byteLength <= 16384,
-    "Markdown exceeds 16 KiB",
-  );
+export const TeamMarkdownSchema = TeamRequestTextSchema;
 export const TeamMentionSchema = z.strictObject({
   userId: UserIdSchema,
   kind: z.enum(["person", "agent"]),
@@ -49,6 +47,10 @@ export const TeamFileSchema = z.strictObject({
 });
 export const TeamAgentRequestSchema = z.strictObject({
   id: TeamAgentRequestIdSchema,
+  kind: TeamAgentRequestKindSchema,
+  pendingRemote: z.boolean().optional(),
+  askRefusal: z.enum(["people-only", "no-access", "no-link", "rate-limited"]).nullable().optional(),
+  consentExpiresAt: IsoDateTimeSchema.nullable().default(null),
   ownerUserId: UserIdSchema,
   channelId: TeamChannelIdSchema,
   threadRootId: TeamMessageIdSchema,
@@ -61,12 +63,39 @@ export const TeamAgentRequestSchema = z.strictObject({
   finishedAt: IsoDateTimeSchema.nullable(),
   replyMessageId: TeamMessageIdSchema.nullable(),
   failureCode: z
-    .enum(["expired", "access_revoked", "link_revoked", "trigger_deleted", "execution_failed"])
+    .enum([
+      "expired",
+      "access_revoked",
+      "link_revoked",
+      "trigger_deleted",
+      "trigger_edited",
+      "execution_failed",
+    ])
     .nullable(),
   changeSeq: SequenceSchema,
 });
 export type TeamAgentRequest = z.infer<typeof TeamAgentRequestSchema>;
+export const TeamRemotePeopleSchema = z.record(
+  UserIdSchema,
+  z.object({
+    name: z.string().min(1).max(160),
+    handle: TeamHandleSchema,
+    homeTeamName: z.string().min(1).max(160),
+    external: z.literal(true),
+  }),
+);
+export const TeamChannelShareSchema = z.object({
+  viewerHandle: TeamHandleSchema.optional(),
+  shareId: z.uuid().optional(),
+  agentsEnabled: z.boolean().optional(),
+  updateRequired: z.boolean().optional(),
+  state: z.enum(["shared", "disconnected"]),
+  role: z.enum(["owner", "follower"]),
+  teamId: DeploymentIdSchema,
+  teamName: z.string().min(1).max(160),
+});
 export const TeamChannelSummarySchema = z.strictObject({
+  share: TeamChannelShareSchema.optional(),
   id: TeamChannelIdSchema,
   kind: TeamChannelKindSchema,
   name: z.string().min(1).max(160),
@@ -113,6 +142,7 @@ export const TeamPageDirectionSchema = z.discriminatedUnion("direction", [
   z.strictObject({ direction: z.literal("after"), messageId: TeamMessageIdSchema }),
 ]);
 export const TeamMessagePageSchema = z.strictObject({
+  people: TeamRemotePeopleSchema.optional(),
   messages: z.array(TeamMessageSchema).max(teamPageSize),
   hasMore: z.boolean(),
   throughSeq: SequenceSchema,
@@ -138,6 +168,7 @@ export const TeamAgentRecipientSchema = z.strictObject({
 });
 export type TeamAgentRecipient = z.infer<typeof TeamAgentRecipientSchema>;
 const cutShape = {
+  people: TeamRemotePeopleSchema.optional(),
   agentRecipients: z.array(TeamAgentRecipientSchema).max(200).default([]),
   linkPresence: z.array(TeamLinkPresenceSchema).max(200),
   subscriptionId: z.string().min(1).max(128),
@@ -188,6 +219,8 @@ export const TeamSidebarSchema = z.strictObject({
   totalMentionCount: z.number().int().nonnegative(),
   nextCursor: TeamChannelIdSchema.nullable(),
   accessRevision: SequenceSchema,
+  /** Moves with every member rename; absent from teams before names could change. */
+  namesRevision: SequenceSchema.optional(),
 });
 export const TeamBootstrapSchema = z.strictObject({
   teamId: DeploymentIdSchema,
@@ -210,12 +243,14 @@ export const TeamSearchInputSchema = z.strictObject({
   before: TeamMessageIdSchema.optional(),
 });
 export const TeamSearchPageSchema = z.strictObject({
+  people: TeamRemotePeopleSchema.optional(),
   results: z
     .array(z.strictObject({ message: TeamMessageSchema, source: TeamSourceSchema }))
     .max(50),
   hasMore: z.boolean(),
 });
 export const TeamReadResultSchema = z.strictObject({
+  ownerHandle: TeamHandleSchema.optional(),
   page: TeamMessagePageSchema,
   source: TeamSourceSchema,
 });
@@ -225,6 +260,7 @@ export const TeamFileResultSchema = z.strictObject({
 });
 export const TeamRequestContextSchema = z.strictObject({
   request: TeamAgentRequestSchema,
+  presentation: TeamAskPresentationSchema.nullable().default(null),
   instructionsMarkdown: TeamMarkdownSchema,
   instructionsRevision: SequenceSchema,
   source: TeamSourceSchema,
@@ -282,4 +318,6 @@ export const TeamServerFrameSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({ type: z.literal("team.access.changed"), accessRevision: SequenceSchema }),
   z.strictObject({ type: z.literal("team.agent.recipient"), recipient: TeamAgentRecipientSchema }),
+  /** A member's name changed; access did not, so nothing reloads. */
+  z.strictObject({ type: z.literal("team.member.updated"), member: TeamMemberSchema }),
 ]);

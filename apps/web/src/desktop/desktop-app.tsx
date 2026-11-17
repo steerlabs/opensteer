@@ -25,6 +25,7 @@ import { DeviceRemovedScreen, DeviceSignInScreen } from "../components/devices/d
 import { membershipRecord } from "../components/devices/this-device.js";
 import { observeLocalExecutionStatus } from "./local-execution-status.js";
 import { DesktopPlacesProvider, type DesktopPlaces } from "./places-context.js";
+import { ComputerFactsStore, readComputerFacts } from "./computer-facts.js";
 import { thisComputerLabel } from "./places.js";
 import { pendingSetupStep } from "../components/first-run/setup-memory.js";
 import { SetupOpening } from "../components/first-run/setup-opening.js";
@@ -62,12 +63,7 @@ export function desktopAccessPresentationFromSnapshot(
   snapshot: DeploymentAccessSnapshot,
 ): DesktopAccessPresentation {
   const selected = snapshot.deployments.find(({ id }) => id === snapshot.selectedDeploymentId);
-  if (
-    snapshot.personalSetup &&
-    snapshot.personalSetup.deploymentId === null &&
-    snapshot.personalSetup.state !== "stopped" &&
-    snapshot.personalSetup.state !== "repair-required"
-  )
+  if (personalSetupShowing(snapshot.personalSetup, snapshot.deployments, selected))
     return "personal";
   if (!selected) return "picker";
   if (selected.status === "connected") return "ready";
@@ -84,6 +80,26 @@ export function desktopAccessPresentationFromSnapshot(
   // row's own authority reports and lets a person choose again.
   if (selected.status === "idle" || selected.status === "needs-remote-access") return "picker";
   return "waiting";
+}
+
+/**
+ * Setting up this computer stays on screen until its own Opensteer is listed
+ * and attaching. The supervisor names the Deployment long before it is
+ * listed, and the list adds it before it attaches; neither is a reason to
+ * show the screens from before setup began. Until it is listed, a setup that
+ * fails keeps its own screen too: nothing else here can try it again.
+ */
+function personalSetupShowing(
+  setup: DeploymentAccessSnapshot["personalSetup"],
+  deployments: DeploymentAccessSnapshot["deployments"],
+  selected: DeploymentAccessSnapshot["deployments"][number] | undefined,
+): boolean {
+  if (!setup) return false;
+  if (setup.deploymentId === null)
+    return setup.state !== "stopped" && setup.state !== "repair-required";
+  if (!deployments.some(({ id }) => id === setup.deploymentId)) return !selected;
+  if (setup.state !== "checking" && setup.state !== "starting") return false;
+  return !selected || (selected.id === setup.deploymentId && selected.status === "idle");
 }
 
 export function desktopHostTransportIdentity(
@@ -223,6 +239,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   const hostClient = useMemo(() => {
     if (!selected || passkeyMode === null) return null;
     return createBrowserHostClient({
+      desktopMedia: true,
       passkeys: {
         mode: passkeyMode,
         present: async (requestId) => {
@@ -230,6 +247,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
           await bridge.passkeys.present({ requestId });
         },
       },
+      ...(bridge.iphoneSetup ? { iphoneSetup: bridge.iphoneSetup } : {}),
       baseUrl: selected.canonicalOrigin,
       capabilities: selectedConnection?.capabilities ?? null,
       fetch: createDesktopHostFetch(bridge, selected.canonicalOrigin, selected.id),
@@ -242,6 +260,10 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
 
   useEffect(() => () => hostClient?.dispose(), [hostClient]);
 
+  const facts = useMemo(
+    () => new ComputerFactsStore((computer) => readComputerFacts(bridge, computer)),
+    [bridge],
+  );
   const places = useMemo<DesktopPlaces | null>(
     () =>
       snapshot
@@ -253,11 +275,12 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
                 await bridge.select(input);
               },
             },
+            facts,
             onAddPlace: () => setScreen("pairing"),
             snapshot,
           }
         : null,
-    [bridge, snapshot],
+    [bridge, facts, snapshot],
   );
 
   useEffect(() => {
@@ -351,7 +374,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
           bridge={bridge}
           deploymentId={selected.id}
           name={selected.name}
-          onSetUpAgain={async () => {
+          onConnectAgain={async () => {
             setMembership(await bridge.getLocalExecutionStatus({ deploymentId: selected.id }));
           }}
           unconfirmed={membership?.membership?.leaveUnconfirmed === true}
@@ -393,12 +416,20 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     }
 
     if (presentation === "personal") {
+      // Before the list has this computer's Deployment, setting up again is
+      // how it is retried, and there is no attempt for Back to cancel.
+      const listed = snapshot.deployments.some(
+        ({ id }) => id === snapshot.personalSetup?.deploymentId,
+      );
       return (
         <DesktopPersonalSetup
           actionError={snapshot.personalSetup?.issue?.detail ?? operationError}
-          computerName={selected?.name ?? thisComputerLabel()}
-          onBack={() => runBridgeOperation(bridge.cancel())}
-          onRetry={() => runBridgeOperation(bridge.retry())}
+          computerName={snapshot.personalSetup?.name ?? selected?.name ?? thisComputerLabel()}
+          firstRun={settingUpHere}
+          onBack={listed ? () => runBridgeOperation(bridge.cancel()) : undefined}
+          onRetry={() =>
+            runBridgeOperation(listed ? bridge.retry() : bridge.createPersonalDeployment({}))
+          }
           requestPending={busy}
           status={
             snapshot.personalSetup ?? {
@@ -485,10 +516,10 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       const canSetUpHere =
         setup?.deploymentId === null && setup.state === "stopped" && setup.canStart;
       const setUpHere = canSetUpHere
-        ? () => {
+        ? (name?: string) => {
             setScreen(null);
             setSettingUpHere(true);
-            runBridgeOperation(bridge.createPersonalDeployment());
+            runBridgeOperation(bridge.createPersonalDeployment(name ? { name } : {}));
           }
         : null;
       if (snapshot.deployments.length === 0 && snapshot.unavailable.length === 0) {
@@ -501,7 +532,11 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
           />
         );
       }
-      const notice = chooserNotice(selectedConnection, snapshot.account, bridge);
+      const notice = chooserNotice(
+        selectedConnection ?? placeAwaitingSignIn(snapshot),
+        snapshot,
+        bridge,
+      );
       return (
         <DesktopChooser
           // A notice already says why the place it names could not open; its
@@ -567,14 +602,27 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
 }
 
 /**
+ * With nothing selected, the one Account place still listed while signed out.
+ * Main keeps such a place listed only because this computer joined it, so the
+ * sign-in that reopens it is the move to offer.
+ */
+export function placeAwaitingSignIn(
+  snapshot: DeploymentAccessSnapshot,
+): DeploymentAccessDeployment | undefined {
+  if (snapshot.selectedDeploymentId !== null || snapshot.account.status === "signed-in") return;
+  const waiting = snapshot.deployments.filter(({ source }) => source === "account");
+  return waiting.length === 1 ? waiting[0] : undefined;
+}
+
+/**
  * What the list of places says above itself when the place a person was in
  * cannot open: an Account place waiting on a sign-in that ended, or a place
  * that is not reachable right now. Each names the one move that helps.
  */
 export function chooserNotice(
-  selected: DeploymentAccessDeployment | undefined,
-  account: DeploymentAccessSnapshot["account"],
-  bridge: Pick<OpensteerDesktopBridge, "cancel" | "checkDeployments" | "signIn">,
+  place: DeploymentAccessDeployment | undefined,
+  snapshot: Pick<DeploymentAccessSnapshot, "account" | "selectedDeploymentId">,
+  bridge: Pick<OpensteerDesktopBridge, "cancel" | "checkDeployments" | "select" | "signIn">,
 ): {
   readonly action: {
     readonly label: string;
@@ -585,31 +633,38 @@ export function chooserNotice(
   readonly signIn: boolean;
   readonly title: string;
 } | null {
-  if (!selected) return null;
-  if (selected.source === "account" && account.status !== "signed-in") {
-    if (account.status === "authorizing") {
-      return {
-        // A browser tab can be closed without a word reaching this window, so
-        // the wait always has a way out.
-        action: { label: "Cancel", quiet: true, run: () => bridge.cancel() },
-        body: "Finish signing in in your browser. This window continues by itself.",
-        signIn: true,
-        title: `Signing in to open ${selected.name}`,
-      };
-    }
+  const { account } = snapshot;
+  if (account.status === "authorizing") {
     return {
-      action: account.available ? { label: "Sign in again", run: () => bridge.signIn() } : null,
-      body: `Your sign-in on this computer ended. Your work on ${selected.name} is safe and still running.`,
+      // A browser tab can be closed without a word reaching this window, so
+      // the wait always has a way out.
+      action: { label: "Cancel", quiet: true, run: () => bridge.cancel() },
+      body: "Finish signing in in your browser. This window continues by itself.",
       signIn: true,
-      title: `Sign in again to keep using ${selected.name}`,
+      title: place?.source === "account" ? `Signing in to open ${place.name}` : "Signing in",
     };
   }
-  if (selected.status === "needs-remote-access" || selected.statusInfo.status === "offline") {
+  if (!place) return null;
+  if (place.source === "account" && account.status !== "signed-in") {
+    // Selecting first is what lets the sign-in reopen this place by itself.
+    const signIn = async () => {
+      if (snapshot.selectedDeploymentId !== place.id)
+        await bridge.select({ deploymentId: place.id });
+      await bridge.signIn();
+    };
+    return {
+      action: account.available ? { label: "Sign in again", run: signIn } : null,
+      body: `Your sign-in on this computer ended. Your work on ${place.name} is safe and still running.`,
+      signIn: true,
+      title: `Sign in again to keep using ${place.name}`,
+    };
+  }
+  if (place.status === "needs-remote-access" || place.statusInfo.status === "offline") {
     return {
       action: { label: "Check again", run: () => bridge.checkDeployments() },
-      body: selected.statusInfo.reason,
+      body: place.statusInfo.reason,
       signIn: false,
-      title: `${selected.name} isn’t available right now`,
+      title: `${place.name} isn’t available right now`,
     };
   }
   return null;

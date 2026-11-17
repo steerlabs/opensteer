@@ -12,8 +12,6 @@ import {
   BrowserTabStreamSchema,
   BrowserSavedTabStreamSchema,
   BrowserIconKeySchema,
-  BrowserGroupRowSchema,
-  BrowserTabRowSchema,
   BrowserViewerSurfaceSchema,
 } from "./browser-tabs.js";
 export * from "./browser-tabs.js";
@@ -30,16 +28,6 @@ import {
   BrowserSessionIdSchema,
   BrowserSiteSchema,
   BrowserSurfaceIdSchema,
-  BrowserTabGroupColorSchema,
-  BrowserTabGroupIdSchema,
-  browserTabGroupMaxTabs,
-  browserTabGroupsMaxPerOwner,
-  BrowserTabGroupTabIdsSchema,
-  browserTabGroupTitleMaxLength,
-  BrowserTabGroupTitleSchema,
-  BrowserTabMoveSchema,
-  browserTabOrderMaxTabs,
-  BrowserTabWriteInputSchema,
   EnvironmentIdSchema,
   IsoDateTimeSchema,
   RunIdSchema,
@@ -116,26 +104,8 @@ export const BrowserRasterDensitySchema = z.union([
 export type BrowserRasterDensity = z.infer<typeof BrowserRasterDensitySchema>;
 
 export {
-  BrowserTabGroupColorSchema,
-  browserTabGroupMaxTabs,
-  browserTabGroupsMaxPerOwner,
-  BrowserTabGroupTabIdsSchema,
-  browserTabGroupTitleMaxLength,
-  BrowserTabGroupTitleSchema,
-  BrowserTabMoveSchema,
-  browserTabOrderMaxTabs,
-  BrowserTabReadInputSchema,
-  BrowserTabWriteInputSchema,
-  type BrowserTabGroupColor,
-  type BrowserTabMove,
-  type BrowserTabReadInput,
-  type BrowserTabWriteInput,
-} from "@opensteer/core";
-
-export {
   BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
-  BrowserTabGroupIdSchema,
   type BrowserSessionId,
   type BrowserSurfaceId,
   type BrowserTabGroupId,
@@ -161,6 +131,7 @@ export const BrowserAttachTicketIdentitySchema = z.discriminatedUnion("kind", [
     kind: z.literal("profile-local"),
     binding: LocalProfileBindingSchema,
     initialized: z.boolean(),
+    // Unused; retained because older phones require this identity key.
     readyUrl: z.url().max(8192),
   }),
 ]);
@@ -1287,10 +1258,10 @@ export type BrowserPagePresence = z.infer<typeof BrowserPagePresenceSchema>;
 
 export const browserCaptureMaxTargets = 8;
 export const BrowserContextEligibilitySchema = z.enum(["eligible", "blocked", "unknown"]);
-export const BrowserTabIconInputSchema = z.strictObject({
-  sessionId: BrowserSessionIdSchema,
-  iconRef: BrowserTabIconRefSchema,
-});
+export const BrowserTabIconInputSchema = z.union([
+  z.strictObject({ tabId: BrowserSurfaceIdSchema, iconRef: BrowserTabIconRefSchema }),
+  z.strictObject({ sessionId: BrowserSessionIdSchema, iconRef: BrowserTabIconRefSchema }),
+]);
 export const BrowserTabIconResultSchema = z.object({ favicon: BrowserFaviconSchema.nullable() });
 export type BrowserTabIconInput = z.infer<typeof BrowserTabIconInputSchema>;
 export type BrowserTabIconResult = z.infer<typeof BrowserTabIconResultSchema>;
@@ -1451,192 +1422,7 @@ export const AgentBrowserSessionSummarySchema = HostedBrowserSessionSchema.omit(
 });
 export type AgentBrowserSessionSummary = z.infer<typeof AgentBrowserSessionSummarySchema>;
 
-export const PersonalTabActivateCommandSchema = z.strictObject({
-  type: z.literal("tab.activate"),
-  tabId: BrowserSurfaceIdSchema,
-  idempotencyKey: z.string().min(1).max(255),
-});
-export const PersonalTabActivateResultSchema = z.object({
-  type: z.literal("tab.activate"),
-  groupId: BrowserSessionIdSchema.optional(),
-  sessionId: BrowserSessionIdSchema.optional(),
-  session: HostedBrowserSessionSchema,
-  tabId: BrowserSurfaceIdSchema,
-});
-export const PersonalTabCloseCommandSchema = z.strictObject({
-  type: z.literal("tab.close"),
-  tabId: BrowserSurfaceIdSchema,
-  idempotencyKey: z.string().min(1).max(255),
-});
-export const PersonalTabCloseResultSchema = z.object({
-  type: z.literal("tab.close"),
-  groupId: BrowserSessionIdSchema.optional(),
-  sessionId: BrowserSessionIdSchema.optional(),
-});
-
-export const PersonalTabReopenCommandSchema = z.strictObject({
-  type: z.literal("tab.reopen"),
-  idempotencyKey: z.string().min(1).max(255),
-});
-
-export const BrowserTabGroupSchema = z.object({
-  id: BrowserTabGroupIdSchema,
-  title: z.string().max(browserTabGroupTitleMaxLength),
-  // A colour a later release adds reads as grey rather than refusing the layout.
-  color: BrowserTabGroupColorSchema.catch("grey"),
-  collapsed: z.boolean(),
-  /** The member tabs this reader can see, in no particular order. */
-  tabIds: BrowserTabGroupTabIdsSchema,
-});
-export type BrowserTabGroup = z.infer<typeof BrowserTabGroupSchema>;
-/** One person's tab groups. The revision orders layouts; a higher one replaces a lower. */
-export const BrowserTabLayoutSchema = z.object({
-  revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-  groups: z.array(BrowserTabGroupSchema).max(browserTabGroupsMaxPerOwner),
-  /**
-   * The person's saved order of the tabs they can see, groups adjacent, from a
-   * Host that accepts `tabs.move`. Tabs not in it take the place
-   * `resolveBrowserTabOrder` gives them, on the Host and every client alike.
-   */
-  order: z.array(BrowserSurfaceIdSchema).max(browserTabOrderMaxTabs).optional(),
-});
-export type BrowserTabLayout = z.infer<typeof BrowserTabLayoutSchema>;
-export const PersonalTabReopenResultSchema = z.object({
-  type: z.literal("tab.reopen"),
-  groupId: BrowserSessionIdSchema.optional(),
-  sessionId: BrowserSessionIdSchema.optional(),
-  tabId: BrowserSurfaceIdSchema,
-  layout: BrowserTabLayoutSchema,
-});
-export const PersonalTabsGroupCommandSchema = z.strictObject({
-  type: z.literal("tabs.group"),
-  tabIds: BrowserTabGroupTabIdsSchema,
-  /** The group the tabs join; without it they form a new group with this title and colour. */
-  groupId: BrowserTabGroupIdSchema.optional(),
-  title: BrowserTabGroupTitleSchema.optional(),
-  color: BrowserTabGroupColorSchema.optional(),
-  idempotencyKey: z.string().min(1).max(255),
-});
-export const PersonalTabsGroupResultSchema = z.object({
-  type: z.literal("tabs.group"),
-  groupId: BrowserTabGroupIdSchema,
-  layout: BrowserTabLayoutSchema,
-});
-export const PersonalTabsMoveCommandSchema = BrowserTabMoveSchema.safeExtend({
-  type: z.literal("tabs.move"),
-  idempotencyKey: z.string().min(1).max(255),
-});
-export const PersonalTabsMoveResultSchema = z.object({
-  type: z.literal("tabs.move"),
-  layout: BrowserTabLayoutSchema,
-});
-export const PersonalTabsUngroupCommandSchema = z.strictObject({
-  type: z.literal("tabs.ungroup"),
-  tabIds: BrowserTabGroupTabIdsSchema,
-  idempotencyKey: z.string().min(1).max(255),
-});
-export const PersonalTabsUngroupResultSchema = z.object({
-  type: z.literal("tabs.ungroup"),
-  layout: BrowserTabLayoutSchema,
-});
-export const PersonalTabGroupUpdateCommandSchema = z.strictObject({
-  type: z.literal("tabGroup.update"),
-  groupId: BrowserTabGroupIdSchema,
-  title: BrowserTabGroupTitleSchema.optional(),
-  color: BrowserTabGroupColorSchema.optional(),
-  collapsed: z.boolean().optional(),
-  idempotencyKey: z.string().min(1).max(255),
-});
-export const PersonalTabGroupUpdateResultSchema = z.object({
-  type: z.literal("tabGroup.update"),
-  layout: BrowserTabLayoutSchema,
-});
-/** Closes exactly these tabs, each as `tab.close` would; one failing leaves the rest closed. */
-export const PersonalTabsCloseCommandSchema = z.strictObject({
-  type: z.literal("tabs.close"),
-  tabIds: BrowserTabGroupTabIdsSchema,
-  idempotencyKey: z.string().min(1).max(255),
-});
-const BrowserTabCloseFailureSchema = z.object({
-  tabId: BrowserSurfaceIdSchema,
-  message: z.string().max(1_000),
-});
-export const PersonalTabsCloseResultSchema = z.object({
-  type: z.literal("tabs.close"),
-  closed: z.array(BrowserSurfaceIdSchema).max(browserTabGroupMaxTabs),
-  failed: z.array(BrowserTabCloseFailureSchema).max(browserTabGroupMaxTabs),
-});
-
-/**
- * An agent's view of the tabs it can reach, open and asleep, a page at a time.
- * Every page lists all of the groups it may see: a group shows only when the
- * agent can reach every one of its tabs.
- */
-export const BrowserTabReadResultSchema = z.object({
-  totalMatches: z.number().int().nonnegative().optional(),
-  groups: z
-    .array(
-      z.object({
-        id: BrowserTabGroupIdSchema,
-        title: z.string().max(browserTabGroupTitleMaxLength),
-        color: BrowserTabGroupColorSchema,
-        collapsed: z.boolean(),
-        createdBy: z.enum(["person", "this-task", "another-task"]),
-        tabCount: z.number().int().min(1).max(browserTabGroupMaxTabs),
-      }),
-    )
-    .max(browserTabGroupsMaxPerOwner),
-  tabs: z
-    .array(
-      z.object({
-        tabId: BrowserSurfaceIdSchema,
-        title: z.string().max(256),
-        matchedFields: z.array(z.enum(["title", "site", "group", "profile"])).optional(),
-        site: z.string().max(2_048),
-        /** An `asleep` tab with a sessionId resumes there; otherwise restore it first. */
-        state: z.enum(["open", "opening", "asleep"]),
-        sessionId: BrowserSessionIdSchema.nullable(),
-        /** The profile this tab's lineage browses as; null is Guest, for open, opening and asleep tabs. */
-        profileId: BrowserProfileIdSchema.nullable(),
-        groupId: BrowserTabGroupIdSchema.nullable(),
-        /** Where the tab stands in the person's order, counting only the tabs you can reach. */
-        position: z.number().int().nonnegative().optional(),
-        usedByThisTask: z.boolean(),
-        usedByOtherTask: z.boolean(),
-      }),
-    )
-    .max(1_000),
-  nextCursor: z.string().min(1).max(512).nullable(),
-});
-export type BrowserTabReadResult = z.infer<typeof BrowserTabReadResultSchema>;
-export const browserTabRestoreMaxTabs = 8;
-export const BrowserTabWriteResultSchema = z.object({
-  action: BrowserTabWriteInputSchema.shape.action,
-  /** The group the tabs joined, for `group`. */
-  groupId: BrowserTabGroupIdSchema.optional(),
-  closed: z.array(BrowserSurfaceIdSchema).max(browserTabGroupMaxTabs).optional(),
-  failed: z.array(BrowserTabCloseFailureSchema).max(browserTabGroupMaxTabs).optional(),
-  /** Each restored tab's live session, attached to this Run for Browser Harness. */
-  restored: z
-    .array(z.object({ tabId: BrowserSurfaceIdSchema, sessionId: BrowserSessionIdSchema }))
-    .max(browserTabRestoreMaxTabs)
-    .optional(),
-});
-export type BrowserTabWriteResult = z.infer<typeof BrowserTabWriteResultSchema>;
-
 export const HostedBrowserBootstrapSchema = z.object({
-  continuation: z
-    .string()
-    .regex(/^[a-f0-9]{64}$/u)
-    .optional(),
-  groups: z.object({ rows: z.array(BrowserGroupRowSchema.strip()), complete: z.boolean() }),
-  tabs: z.array(
-    z.object({
-      groupId: BrowserSessionIdSchema,
-      rows: z.array(BrowserTabRowSchema.strip()),
-      complete: z.boolean(),
-    }),
-  ),
   profileDeletions: z
     .array(z.unknown())
     .max(128)
@@ -1647,10 +1433,6 @@ export const HostedBrowserBootstrapSchema = z.object({
       }),
     )
     .optional(),
-  tabRestoreVersion: z.literal(1).optional(),
-  /** 1 when this Host keeps tab groups and accepts their commands; clients show groups only then. */
-  tabGroupsVersion: z.number().int().positive().optional(),
-  tabGroups: BrowserTabLayoutSchema.optional(),
   available: z.boolean(),
   placements: z.array(BrowserPlacementSchema).max(129),
   /**

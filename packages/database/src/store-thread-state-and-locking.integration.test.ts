@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { ChannelStore, ChannelIngressDeferredError } from "./channel-store.js";
 import { pauseAfterLock } from "./lock-race.test-support.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -330,6 +331,8 @@ describeStore("PostgreSQL store", (it) => {
           expect.objectContaining({
             type: "thread.state-changed",
             data: {
+              updatedAt: expect.any(String),
+              returnHint: null,
               latestRunCompletedAt: null,
               pendingRequests: 1,
               inputQueuePaused: true,
@@ -625,6 +628,8 @@ describeStore("PostgreSQL store", (it) => {
         .executeTakeFirstOrThrow();
       expect(stored.map(({ data }) => data)).toEqual([
         {
+          updatedAt: expect.any(String),
+          returnHint: null,
           latestRunCompletedAt: null,
           status: "running",
           inputQueuePaused: false,
@@ -635,6 +640,8 @@ describeStore("PostgreSQL store", (it) => {
           doneReason: null,
         },
         {
+          updatedAt: expect.any(String),
+          returnHint: null,
           latestRunCompletedAt: completed.completedAt!.toISOString(),
           status: "idle",
           inputQueuePaused: true,
@@ -645,6 +652,8 @@ describeStore("PostgreSQL store", (it) => {
           doneReason: null,
         },
         {
+          updatedAt: expect.any(String),
+          returnHint: null,
           latestRunCompletedAt: null,
           status: "running",
           inputQueuePaused: false,
@@ -1086,7 +1095,7 @@ describeStore("PostgreSQL store", (it) => {
         requestedBy: fixture.userId,
         payload: {
           kind: "machine.full-disk-access",
-          machineId: target,
+          machineId: DeviceIdSchema.parse(target),
           machineName: "Mac",
           reason: "Read Mail",
         },
@@ -1319,7 +1328,7 @@ describeStore("PostgreSQL store", (it) => {
         name: "Watch FK race",
         program: {
           language: "javascript",
-          toolContractVersion: 3,
+          toolContractVersion: 4,
           source: "export default async () => null",
         },
         source: {

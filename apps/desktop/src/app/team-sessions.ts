@@ -1,6 +1,6 @@
-import type { VerifiedHostEndpoint } from "@opensteer/client/connections";
 import {
   NativeTeamEntry,
+  assertTeamEntryOutcome,
   previewTeamInvite,
   verifiedTeam,
   verifyTeamEndpoint,
@@ -14,8 +14,6 @@ import type { DesktopTeamSessionsCall } from "@opensteer/protocol/desktop";
 export class DesktopTeamSessions {
   readonly #entry: NativeTeamEntry;
   readonly #fetch: typeof globalThis.fetch;
-  /** The discovery a `verify` just checked, used by the `enter` that follows it. */
-  readonly #verified = new Map<string, VerifiedHostEndpoint>();
 
   constructor(options: {
     readonly entry: NativeTeamEntry;
@@ -29,25 +27,26 @@ export class DesktopTeamSessions {
     switch (call.call) {
       case "verify": {
         const verified = await this.#verify(call.origin);
-        if (this.#verified.size >= 20) this.#verified.clear();
-        this.#verified.set(call.origin, verified);
         return verifiedTeam(verified);
       }
       case "preview-invite":
         return previewTeamInvite(call.origin, call.invite, this.#fetch);
-      case "enter": {
-        const verified = this.#verified.get(call.origin) ?? (await this.#verify(call.origin));
-        this.#verified.delete(call.origin);
-        return this.#entry.enter(verified, call.invite);
-      }
+      case "enter":
       case "sign-in": {
-        const verified = this.#verified.get(call.origin) ?? (await this.#verify(call.origin));
-        this.#verified.delete(call.origin);
-        await this.#entry.signIn(verified, call.invite);
-        return null;
+        const outcome = await this.#entry.authorize({
+          deploymentId: call.deploymentId,
+          origin: call.origin,
+          mode: "interactive",
+          invite: call.invite,
+        });
+        assertTeamEntryOutcome(outcome);
+        if (call.call === "sign-in") return null;
+        if (outcome.status === "authorized" && outcome.member)
+          return { admitted: outcome.admitted, member: outcome.member };
+        return this.#entry.bootstrap(call.deploymentId);
       }
       case "restore":
-        await this.#entry.restore(call.deploymentId, () => this.#verify(call.origin));
+        await this.#entry.restore(call.deploymentId, call.origin);
         return null;
       case "forget":
         await this.#entry.forget(call.deploymentId);

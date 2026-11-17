@@ -441,7 +441,7 @@ export async function setComputerApp(
   const connection = await host.store.database
     .selectFrom("integrationConnections")
     .select("id")
-    .where("runnerId", "=", request.runnerId)
+    .where("deviceId", "=", await host.store.requireSelfDeviceId(request.runnerId))
     .where("integrationDefinitionId", "=", request.definitionId)
     .where("status", "!=", "revoked")
     .executeTakeFirstOrThrow();
@@ -631,21 +631,6 @@ export function operations(search: Record<string, unknown>) {
           },
         ];
   });
-}
-
-export function toolReadiness(search: Record<string, unknown>, name: string) {
-  const results = search.results as readonly {
-    readonly tools?: readonly {
-      readonly name: string;
-      readonly readiness: { readonly code: string; readonly detail: string | null };
-    }[];
-  }[];
-  const found = results.flatMap(({ tools }) => tools ?? []).find((tool) => tool.name === name);
-  if (found) return found.readiness;
-  if (operations(search).some((candidate) => candidate.name === name)) {
-    return { code: "READY", detail: null };
-  }
-  throw new Error(`Tool ${name} was not found in ${JSON.stringify(search)}`);
 }
 
 export function operation(search: Record<string, unknown>, name: string) {

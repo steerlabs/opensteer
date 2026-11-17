@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, writeSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
@@ -33,7 +33,18 @@ export function mergeLockGraphs(files: readonly string[]) {
   if (cycles.length) throw new Error(`Combined lock graph: ${cycles.length} conflicting cycles`);
   return { edges, cycles };
 }
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  const merged = mergeLockGraphs(process.argv.slice(2));
-  writeFileSync("combined-lock-graph.json", JSON.stringify(merged, null, 2) + "\n");
+/** Writes edge by edge: the shards' combined edges exceed V8's maximum string length. */
+export function writeLockGraph(path: string, merged: ReturnType<typeof mergeLockGraphs>) {
+  const fd = openSync(path, "w");
+  try {
+    writeSync(fd, `{"cycles":${JSON.stringify(merged.cycles)},"edges":[`);
+    merged.edges.forEach((item, index) =>
+      writeSync(fd, `${index === 0 ? "" : ","}\n${JSON.stringify(item)}`),
+    );
+    writeSync(fd, "\n]}\n");
+  } finally {
+    closeSync(fd);
+  }
 }
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url)
+  writeLockGraph("combined-lock-graph.json", mergeLockGraphs(process.argv.slice(2)));

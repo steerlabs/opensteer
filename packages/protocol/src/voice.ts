@@ -3,6 +3,7 @@ import {
   BrowserSurfaceIdSchema,
   EnvironmentIdSchema,
   HarnessInstanceIdSchema,
+  MessageOriginSchema,
   RunIdSchema,
   ThreadAccessModeSchema,
   ThreadIdSchema,
@@ -58,6 +59,8 @@ export const VoiceStartInputSchema = z.strictObject({
   environmentId: EnvironmentIdSchema,
   harnessInstanceId: HarnessInstanceIdSchema,
   offer: VoiceSdpSchema,
+  /** Sent only to a Host advertising `message-origin-v1`. */
+  origin: MessageOriginSchema.optional(),
 });
 export const VoiceStartResultSchema = z.object({
   answer: VoiceSdpSchema,

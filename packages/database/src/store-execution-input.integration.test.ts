@@ -1,6 +1,8 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import type { StoreFixture } from "./store.integration.test-support.js";
 import {
   AgentEventSchema,
+  TabIdSchema,
   MessageContentSchema,
   messageContentMaxSerializedBytes,
   ModelSelectionSchema,
@@ -1716,7 +1718,7 @@ describeStore("PostgreSQL store", (it) => {
         app: "Slack",
         bundleId: "com.tinyspeck.slackmacgap",
         computer: "Alex's MacBook Pro",
-        runnerId: fixture.runnerId,
+        runnerId: DeviceIdSchema.parse(fixture.runnerId),
       },
       effect: "write" as const,
       integration: "Computer use",
@@ -1858,7 +1860,8 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).rejects.toThrow("Only a tool.started event names an integration call's subject");
 
-    // After a restart the Host rebuilds the Thread's last app from its named calls.
+    // An integration subject alone neither invents a durable tab nor a recent place;
+    // only an explicit tab entry recovers one.
     await store.commitRunnerEvent({
       environmentId: fixture.environmentId,
       event: pendingEvent({
@@ -1876,16 +1879,16 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId,
       runnerId: fixture.runnerId,
     });
-    await expect(store.latestNativePlaces(fixture.userId)).resolves.toEqual([
-      expect.objectContaining({
-        place: {
-          appKey: "com.tinyspeck.slackmacgap",
-          kind: "app",
-          machineId: fixture.runnerId,
-        },
-        runId: work.run.id,
-        threadId: fixture.thread.id,
-      }),
+    await expect(store.latestNativePlaces(fixture.userId)).resolves.toEqual([]);
+    expect(await database.selectFrom("personalTabs").select("id").execute()).toEqual([]);
+    const place = { tabId: TabIdSchema.parse("slack-window-tab"), title: "Slack", site: null };
+    await store.recordRunTabPlace({
+      runId: work.run.id,
+      bindingGeneration: binding.bindingGeneration,
+      data: place,
+    });
+    await expect(new OpensteerStore(database).latestNativePlaces(fixture.userId)).resolves.toEqual([
+      expect.objectContaining({ ...place, runId: work.run.id, taskId: fixture.thread.id }),
     ]);
   });
   it("names a Run's requester only for its own Thread", async ({ storeFixture }) => {

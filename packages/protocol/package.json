@@ -8,6 +8,7 @@
     ".": "./src/index.ts",
     "./browser": "./src/browser.ts",
     "./browser-actions": "./src/browser-actions.ts",
+    "./browser-agent": "./src/browser-agent.ts",
     "./browser-sources": "./src/browser-sources.ts",
     "./browser-relay": "./src/browser-relay.ts",
     "./deployment-status": "./src/deployment-status.ts",
@@ -15,6 +16,8 @@
     "./desktop-supervisor": "./src/desktop-supervisor.ts",
     "./desktop": "./src/desktop.ts",
     "./dictation": "./src/dictation.ts",
+    "./devices": "./src/devices.ts",
+    "./phone-display": "./src/phone-display.ts",
     "./display-stream": "./src/display-stream.ts",
     "./editing": "./src/editing.ts",
     "./passwords-broker": "./src/passwords-broker.ts",
@@ -23,7 +26,12 @@
     "./voice": "./src/voice.ts",
     "./runner-auxiliary": "./src/runner-auxiliary.ts",
     "./keyed-stream": "./src/keyed-stream.ts",
-    "./browser-tabs": "./src/browser-tabs.ts"
+    "./browser-tabs": "./src/browser-tabs.ts",
+    "./tabs": "./src/tabs.ts",
+    "./apps": "./src/apps.ts",
+    "./agent-tool-relay": "./src/agent-tool-relay.ts",
+    "./iphone-bridge": "./src/iphone-bridge.ts",
+    "./test-support/personal-wire": "./src/personal-wire.test-support.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

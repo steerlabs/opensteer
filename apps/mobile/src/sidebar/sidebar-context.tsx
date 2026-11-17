@@ -34,6 +34,13 @@ export function useSidebarDocked(): boolean {
 export const SidebarControlContext = createContext<SidebarControl | null>(null);
 
 /**
+ * The sidebar for what navigates from outside the stack, as `navigationRef`
+ * is the stack's: a link or notification closes it even when the screen it
+ * names is already the one beneath.
+ */
+export const sidebarRef: { current: SidebarControl | null } = { current: null };
+
+/**
  * True from the moment the drawer starts to cover the screen until it has fully
  * left. A docked sidebar covers nothing: it is beside the screen, not over it.
  */

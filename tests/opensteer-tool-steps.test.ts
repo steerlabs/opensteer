@@ -33,21 +33,9 @@ it("reads every Opensteer product tool as what it did, never by its name", () =>
 });
 
 // New actions must not silently fall back to the generic tool summary.
-it("names every current administration and Thread action in running and completed rows", () => {
-  const names = new Set([
-    "project_write",
-    "settings_write",
-    "computer_write",
-    "integration_manage",
-    "channel_manage",
-    "plugin_manage",
-    "browser_profile_write",
-    "thread_update",
-    "thread_configure",
-    "thread_queue",
-  ]);
+it("names every action of every action tool in running and completed rows", () => {
   for (const spec of agentTools) {
-    if (!names.has(spec.name) || !("action" in spec.input.shape)) continue;
+    if (!("shape" in spec.input) || !("action" in spec.input.shape)) continue;
     const action = spec.input.shape.action;
     if (!(action instanceof z.ZodEnum)) throw new Error(`${spec.name} needs action coverage`);
     const fallback = toolPresentation(mcpPresentationTool(spec.name, {}, true));

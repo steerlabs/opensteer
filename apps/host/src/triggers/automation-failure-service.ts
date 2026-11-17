@@ -94,7 +94,7 @@ function noticeText(notice: PendingAutomationFailure): string {
     return [
       `${automation} was interrupted on its only scheduled run when Opensteer restarted or its computer disconnected. It may not have finished, and it will not run again on its own.`,
       "",
-      `Check what it already did, then run it again with trigger_write action "run" (triggerId ${notice.triggerId}) if it still needs to happen.`,
+      `Check what it already did, then run it again with opensteer_automation_control action "run_now" (automationId ${notice.triggerId}) if it still needs to happen.`,
       "",
       `Detail: ${JSON.stringify(notice.detail)}`,
     ].join("\n");

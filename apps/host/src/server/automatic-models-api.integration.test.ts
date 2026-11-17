@@ -1,5 +1,5 @@
 import { automaticModelsCapability, AutomaticModelsViewSchema } from "@opensteer/protocol";
-import { createId, emptyAutomaticModelConfig, type AutomaticModelConfig } from "@opensteer/core";
+import { createId } from "@opensteer/core";
 import { expect, it, vi } from "vitest";
 import { generateKeyPairSync } from "node:crypto";
 import { HostAuthenticator } from "../identity/auth.js";
@@ -13,7 +13,7 @@ import { injectRpcRequest } from "./test-host-api-request.js";
 const preview = vi.hoisted(() => vi.fn());
 vi.mock("../agents/automatic-models.js", () => ({ readAutomaticModelPreview: preview }));
 
-it("serves and replaces automatic models for the signed-in person only, behind its capability", async ({
+it("serves background models to the signed-in person only, behind its capability", async ({
   onTestFinished,
 }) => {
   const owner = await (
@@ -52,21 +52,18 @@ it("serves and replaces automatic models for the signed-in person only, behind i
     } as never,
     publicUrl: new URL("https://opensteer.example"),
   });
-  // A client gates both calls on this name; an older Host never advertises it.
+  // A client gates the read on this name; an older Host never advertises it.
   expect(advertisedCapabilities({ attachments: {} as never, authenticator })).toContain(
     automaticModelsCapability,
   );
   const view = AutomaticModelsViewSchema.parse({
-    config: emptyAutomaticModelConfig,
-    maintainedDefaults: { light: [], deep: [] },
-    accounts: [],
-    light: { label: "General preference", candidates: [], skipped: [] },
-    deep: { candidates: [], skipped: [] },
+    file: { status: "missing" },
+    excludedAccounts: [],
+    naming: null,
+    light: null,
+    deep: null,
   });
   preview.mockResolvedValue(view);
-  const setAutomaticModelConfig = vi.fn(
-    async (_userId: string, config: AutomaticModelConfig) => config,
-  );
   const app = await createHostServer(
     hostServerTestDependencies({
       authenticator,
@@ -77,7 +74,7 @@ it("serves and replaces automatic models for the signed-in person only, behind i
         hostKey: { algorithm: "Ed25519" },
         deploymentShape: { kind: "personal" },
       }),
-      store: { database: owner.database, setAutomaticModelConfig } as never,
+      store: { database: owner.database } as never,
     }),
   );
   try {
@@ -85,21 +82,6 @@ it("serves and replaces automatic models for the signed-in person only, behind i
     const read = await injectRpcRequest(app, "automaticModels.get", {}, headers);
     expect(read.json()).toEqual({ ok: true, data: view });
     expect(preview).toHaveBeenCalledWith(expect.anything(), userId);
-
-    const config = { roles: {}, excludedAccounts: [createId("harnessInstance")] };
-    const command = { type: "automaticModels.set", idempotencyKey: "automatic-set", config };
-    const set = await injectRpcRequest(app, "commands.dispatch", command, headers);
-    expect(set.json()).toEqual({ ok: true, data: { type: "automaticModels.set", config } });
-    expect(setAutomaticModelConfig).toHaveBeenCalledWith(userId, config);
-    // Whose config it is comes from the session alone.
-    const spoof = await injectRpcRequest(
-      app,
-      "commands.dispatch",
-      { ...command, userId: createId("user") },
-      headers,
-    );
-    expect(spoof.statusCode).toBe(400);
-    expect(setAutomaticModelConfig).toHaveBeenCalledOnce();
   } finally {
     await app.close();
   }

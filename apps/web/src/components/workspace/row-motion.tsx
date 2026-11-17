@@ -23,7 +23,7 @@ const enter = 200;
  * mid-drag included. A row that arrives fades in; one that leaves is simply
  * gone.
  *
- * The list snaps its rows to its top edge. From just before React moves its
+ * A list that snaps (`snap`, the default) snaps its rows to its top edge. From just before React moves its
  * rows until they stand still on a row top it is `data-moving`, so it does
  * not snap (a snapped list follows its row through the new order and the
  * slide), and nothing measures its rows. It lands on a row top before the
@@ -97,7 +97,7 @@ const slides = new WeakMap<HTMLElement, object>();
  * Lands the list on a row top with `keep` in view, then animates every keyed
  * row from its position in `before` to where it stands now. The list stays
  * `data-moving` until they stand still on a row top: what measures rows on
- * screen (the whole-row windows beside it) waits until then.
+ * screen waits until then.
  */
 function slideRows(
   list: HTMLElement,

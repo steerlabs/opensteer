@@ -27,6 +27,7 @@ import { TeamsProvider, type TeamAttachment } from "../../team/team-attachments.
 import {
   MockTeamHost,
   TeamSessionClient,
+  busyTeamIds,
   createMemoryTeamPersistence,
   mockAccountEmail,
   mockAccountSubject,
@@ -35,6 +36,7 @@ import {
 import { TeamDialogsProvider } from "../../team/hosted-teams.js";
 import { TeamsRoute } from "../../team/join-route.js";
 import { SettingsTeamRoute } from "../settings/settings-shell.js";
+import { composerField, rewrite } from "../composer-editor.test-support.js";
 
 /**
  * The workspace contract over the moving mock world: each selection action
@@ -50,13 +52,17 @@ let client: MockHostClient;
 let sessionClient: HostClient | null = null;
 let teamHost: MockTeamHost | null = null;
 let teamSession: TeamSessionClient | null = null;
+/** Teams past the first, for a mount with more than one. */
+let moreTeams: { host: MockTeamHost; session: TeamSessionClient }[] = [];
 interface Step {
   readonly type: string;
   readonly path: string;
   readonly search: string;
+  readonly hash?: string;
 }
 let history: Step[] = [];
 let historyState: unknown = null;
+let historyKey = "";
 /** The router's own navigate, for Back and Forward as a person's browser does them. */
 let goTo: ReturnType<typeof useNavigate> | null = null;
 /** The window's width as media queries read it, changeable mid-test like a resize. */
@@ -90,12 +96,18 @@ function cleanupWorkspace() {
   teamSession = null;
   teamHost?.dispose();
   teamHost = null;
+  for (const team of moreTeams) {
+    team.session.dispose();
+    team.host.dispose();
+  }
+  moreTeams = [];
   client?.dispose();
   history = [];
   goTo = null;
   viewport.queries.clear();
   document.body.replaceChildren();
   localStorage.clear();
+  sessionStorage.clear();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 }
@@ -103,11 +115,22 @@ function cleanupWorkspace() {
 function History() {
   const location = useLocation();
   historyState = location.state;
+  historyKey = location.key;
   const type = useNavigationType();
   goTo = useNavigate();
   const last = history.at(-1);
-  if (!last || last.path !== location.pathname || last.search !== location.search)
-    history.push({ path: location.pathname, search: location.search, type });
+  if (
+    !last ||
+    last.path !== location.pathname ||
+    last.search !== location.search ||
+    (last.hash ?? "") !== location.hash
+  )
+    history.push({
+      path: location.pathname,
+      search: location.search,
+      ...(location.hash ? { hash: location.hash } : {}),
+      type,
+    });
   return null;
 }
 
@@ -120,13 +143,15 @@ async function mount(
     hostClient?: (source: MockHostClient) => HostClient;
     strict?: boolean;
     width?: number;
+    /** A touch screen, where focusing a field brings up an on-screen keyboard. */
+    touch?: boolean;
     now?: () => Date;
     /** The mock Host's pace, for a scripted run that must still be working when acted on. */
     latencyMs?: number;
     /** What else the mock Host starts with: plugins, say. */
     mock?: Omit<MockHostClientOptions, "latencyMs" | "now">;
-    /** One live mock team beside the person's own tasks, as a joined desktop has. */
-    team?: boolean;
+    /** One live mock team beside the person's own tasks, as a joined desktop has; a second named here. */
+    team?: boolean | { readonly second: string };
     /** Hosted teams this app can create and join, in memory. */
     world?: MockTeamWorld;
     /** The Host the last mount drew, as a page reload finds it. */
@@ -139,7 +164,7 @@ async function mount(
     >;
   } = {},
 ) {
-  stubLayout(options.width ?? 1440);
+  stubLayout(options.width ?? 1440, options.touch);
   if (!options.sameHost) {
     client = new MockHostClient({
       ...options.mock,
@@ -152,7 +177,24 @@ async function mount(
   sessionClient = options.hostClient?.(client) ?? null;
   if (sessionClient) await sessionClient.load();
   let teams: readonly TeamAttachment[] = [];
-  if (options.team) {
+  if (options.team && options.sameHost && teamHost && teamSession) {
+    teams = [
+      {
+        teamId: teamHost.teamId,
+        name: teamHost.bootstrap.teamName,
+        origin: teamHost.origin,
+        client: teamSession,
+        link: null,
+      },
+      ...moreTeams.map(({ host, session }) => ({
+        teamId: host.teamId,
+        name: host.bootstrap.teamName,
+        origin: "https://chat.second.example",
+        client: session,
+        link: null,
+      })),
+    ];
+  } else if (options.team) {
     const host = new MockTeamHost();
     teamHost = host;
     const session = new TeamSessionClient({
@@ -172,6 +214,30 @@ async function mount(
         link: null,
       },
     ];
+    if (typeof options.team === "object") {
+      const second = new MockTeamHost({
+        teamId: busyTeamIds[1],
+        teamName: options.team.second,
+      });
+      const secondSession = new TeamSessionClient({
+        scope: { teamDeploymentId: second.teamId, userId: second.userId },
+        persistence: createMemoryTeamPersistence(),
+        rpc: second.rpc,
+        connect: second.connect,
+      });
+      await secondSession.load();
+      moreTeams.push({ host: second, session: secondSession });
+      teams = [
+        ...teams,
+        {
+          teamId: second.teamId,
+          name: second.bootstrap.teamName,
+          origin: "https://chat.second.example",
+          client: secondSession,
+          link: null,
+        },
+      ];
+    }
   }
   const node = document.createElement("div");
   document.body.append(node);
@@ -250,7 +316,7 @@ async function mount(
 }
 
 /** Observers that never fire and media queries that answer to `viewport.width`. */
-function stubLayout(width: number) {
+function stubLayout(width: number, touch = false) {
   vi.stubGlobal(
     "ResizeObserver",
     class {
@@ -275,7 +341,8 @@ function stubLayout(width: number) {
       removeListener: () => undefined,
     });
     Object.defineProperty(media, "matches", {
-      get: () => (max ? viewport.width <= Number(max[1]) : false),
+      get: () =>
+        max ? viewport.width <= Number(max[1]) : touch && query.includes("(pointer: coarse)"),
     });
     viewport.queries.add(media);
     return media as unknown as MediaQueryList;
@@ -303,29 +370,24 @@ async function click(target: Element) {
 
 function placeParams(search: string): string {
   const params = new URLSearchParams(search);
-  return ["panel", "browser", "browserTab", "computerSession", "app", "mac", "phone"]
-    .map((name) => `${name}=${params.get(name) ?? ""}`)
-    .join("&");
+  return ["panel", "tab"].map((name) => `${name}=${params.get(name) ?? ""}`).join("&");
 }
 
-function isMockPage(item: PlaceItem, source: MockHostClient = client): boolean {
-  if (item.destination.kind !== "browser") return false;
-  const { sessionId, tabId } = item.destination;
-  const row = tabId ? source.browserTabs.sessionTab(sessionId, tabId) : undefined;
-  return typeof row?.documentId === "string";
+/** A page tab whose browser is running now, so it shows without waking. */
+function isMockPage(item: PlaceItem): boolean {
+  return item.kind === "page" && item.tab.state === "open";
 }
 
 function pageTab(source: MockHostClient = client) {
   const place = placeList(source.getSnapshot()).find(
-    (item) => item.kind === "browser" && isMockPage(item, source) && item.occupants.length > 0,
+    (item) => isMockPage(item) && item.occupants.length > 0,
   );
-  if (!place || place.destination.kind !== "browser") throw new Error("Missing page tab");
+  if (!place) throw new Error("Missing page tab");
   return place;
 }
 
-function tabSearch(place: ReturnType<typeof pageTab>) {
-  if (place.destination.kind !== "browser") throw new Error("Not a browser place");
-  return `?panel=browser&browser=${place.destination.sessionId}&browserTab=${place.destination.tabId}`;
+function tabSearch(place: Pick<PlaceItem, "key">) {
+  return `?panel=browser&tab=${place.key}`;
 }
 
 function deferred<T>() {
@@ -336,10 +398,19 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-async function write(field: HTMLTextAreaElement, text: string) {
+/** Replaces what a field holds: a textarea's value, or a composer's words. */
+async function write(field: HTMLElement | { readonly element: HTMLElement }, text: string) {
+  const target = "element" in field ? field.element : field;
   await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, text);
-    field.dispatchEvent(new Event("input", { bubbles: true }));
+    if (target instanceof HTMLTextAreaElement) {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
+        target,
+        text,
+      );
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+      return;
+    }
+    rewrite(target.closest(".composer-editor__field") ?? composerField(target), text);
   });
 }
 
@@ -373,6 +444,7 @@ export {
   teamSession,
   history,
   historyState,
+  historyKey,
   goTo,
   resize,
   type Entry,

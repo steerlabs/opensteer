@@ -1,9 +1,33 @@
+import { machineSelfRunnerId } from "./device-projection.js";
+import type { MachineSummary } from "@opensteer/protocol";
+import { TabTargetSchema } from "@opensteer/core";
 import { computerGlyph, orderDevices, type ComputerGlyph } from "../computers/computers.js";
-import type { BrowserIdentityOpenInput, BrowserTabOpenInput, HostSnapshot } from "./client.js";
+import type { TabTarget } from "@opensteer/core";
+import type { BrowserIdentityOpenInput, HostSnapshot } from "./client.js";
 import type { BrowserIdentityChoice, StartPageProfileChoice } from "./start-page-model.js";
 
 type DeviceSource = Pick<HostSnapshot, "browserProfileHomes" | "machines">;
-type BrowsingSource = Pick<HostSnapshot, "browserProfiles" | "browserSessions" | "browserTabs">;
+type BrowsingSource = Pick<HostSnapshot, "browserProfiles" | "tabs" | "machines">;
+
+/** The Host's tab.open target for a page at this address. */
+export function pageOpenTarget(
+  input: BrowserIdentityOpenInput,
+  url: string,
+  machines: readonly MachineSummary[],
+): TabTarget {
+  if (input.identity.kind === "profile")
+    return TabTargetSchema.parse({ kind: "page", url, profileId: input.identity.profileId });
+  const machine = input.placement
+    ? machines.find((machine) => machineSelfRunnerId(machine) === input.placement?.runnerId)
+    : null;
+  if (input.placement && !machine) throw new Error("This Runner has no browser Device.");
+  return TabTargetSchema.parse({
+    kind: "page",
+    url,
+    guest: true,
+    ...(machine ? { computerId: machine.id } : {}),
+  });
+}
 
 /**
  * Whether the device the reader is at lends a browser in this Deployment now,
@@ -19,7 +43,8 @@ function browserDevices(snapshot: DeviceSource) {
     (machine) =>
       machine.status === "online" &&
       machine.modules.browser?.readiness === "ready" &&
-      (snapshot.browserProfileHomes?.includes(machine.id) ?? true),
+      machineSelfRunnerId(machine) !== null &&
+      (snapshot.browserProfileHomes?.includes(machineSelfRunnerId(machine)!) ?? true),
   );
 }
 
@@ -85,21 +110,20 @@ function privateIpv6(host: string): boolean {
  * has been used there.
  */
 export function recentProfileOn(snapshot: BrowsingSource, deviceId: string): string | null {
+  const machine = snapshot.machines.find(({ id }) => id === deviceId);
+  const runnerId = machine ? machineSelfRunnerId(machine) : null;
   const homed = new Map(
     snapshot.browserProfiles
-      .filter((profile) => profile.homeRunnerId === deviceId)
+      .filter((profile) => runnerId !== null && profile.homeRunnerId === runnerId)
       .map((profile) => [profile.id, profile]),
   );
   const latest = new Map<string, number>();
-  const sessions = [
-    ...snapshot.browserSessions,
-    ...(snapshot.browserTabs?.groups().ids ?? []).map((id) => snapshot.browserTabs!.group(id)!),
-  ];
-  for (const session of sessions) {
-    if (session.placement.runnerId !== deviceId || session.profileId === null) continue;
-    if (!homed.has(session.profileId)) continue;
-    const at = Date.parse(session.updatedAt ?? session.createdAt ?? "") || 0;
-    latest.set(session.profileId, Math.max(latest.get(session.profileId) ?? -1, at));
+  for (const tab of snapshot.tabs.rows.values()) {
+    if (tab.kind !== "page" || !tab.profile || tab.computer.computerId !== deviceId) continue;
+    const profileId = tab.profile.profileId;
+    if (!homed.has(profileId)) continue;
+    const at = Date.parse(tab.updatedAt) || 0;
+    latest.set(profileId, Math.max(latest.get(profileId) ?? -1, at));
   }
   const [chosen] = [...latest].sort(
     ([leftId, left], [rightId, right]) =>
@@ -111,10 +135,13 @@ export function recentProfileOn(snapshot: BrowsingSource, deviceId: string): str
 }
 
 /** A new tab on a device: in its most recent profile, else a Guest there. */
-export function browsingOn(snapshot: BrowsingSource, deviceId: string): BrowserTabOpenInput {
+export function browsingOn(snapshot: BrowsingSource, deviceId: string): BrowserIdentityOpenInput {
+  const machine = snapshot.machines.find(({ id }) => id === deviceId);
+  const runnerId = machine ? machineSelfRunnerId(machine) : null;
+  if (!runnerId) throw new Error("This device cannot host browser pages.");
   const profileId = recentProfileOn(snapshot, deviceId);
   return profileId === null
-    ? { identity: { kind: "guest" }, placement: { kind: "runner", runnerId: deviceId } }
+    ? { identity: { kind: "guest" }, placement: { kind: "runner", runnerId } }
     : { identity: { kind: "profile", profileId } };
 }
 
@@ -125,7 +152,7 @@ export interface LinkPlace {
   readonly here: boolean;
   readonly name: string;
   readonly glyph: ComputerGlyph;
-  readonly target: BrowserTabOpenInput;
+  readonly target: BrowserIdentityOpenInput;
 }
 
 export interface LinkPlaces {
@@ -154,7 +181,9 @@ export function linkPlaces(
   if (hereId === null || !browserDeviceHere(snapshot, hereId)) return noPlaces;
   const devices = browserDevices(snapshot);
   const ordered = orderDevices(devices, hereId);
-  const conversation = ordered.find(({ id }) => id === conversationRunnerId && id !== hereId);
+  const conversation = ordered.find(
+    (machine) => machineSelfRunnerId(machine) === conversationRunnerId && machine.id !== hereId,
+  );
   const hold = [
     ...ordered.filter(({ id }) => id === hereId),
     ...(conversation ? [conversation] : []),
@@ -187,9 +216,13 @@ export function newTabProfiles(
       ? (snapshot.browserProfiles.find(({ id }) => id === identity.profileId)?.homeRunnerId ?? null)
       : null;
   const devices = orderDevices(
-    snapshot.machines.filter(({ id }) => profiles.some((profile) => homeOf(profile) === id)),
+    snapshot.machines.filter(
+      (machine) =>
+        machineSelfRunnerId(machine) !== null &&
+        profiles.some((profile) => homeOf(profile) === machineSelfRunnerId(machine)),
+    ),
     hereId,
-  ).map(({ id }) => id);
+  ).map<string>((machine) => machineSelfRunnerId(machine)!);
   const rank = (profile: StartPageProfileChoice): number => {
     if (profile.identity.kind === "guest") return devices.length + 1;
     const index = devices.indexOf(homeOf(profile) ?? "");
@@ -215,9 +248,12 @@ export function newTabTarget(
   identity: BrowserIdentityChoice,
   hereId: string | null,
 ): BrowserIdentityOpenInput {
-  return identity.kind === "guest" && hereId !== null && browserDeviceHere(snapshot, hereId)
-    ? { identity, placement: { kind: "runner", runnerId: hereId } }
-    : { identity };
+  const machine =
+    identity.kind === "guest" && hereId !== null
+      ? browserDevices(snapshot).find(({ id }) => id === hereId)
+      : null;
+  const runnerId = machine ? machineSelfRunnerId(machine) : null;
+  return runnerId ? { identity, placement: { kind: "runner", runnerId } } : { identity };
 }
 
 /**

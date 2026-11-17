@@ -1,7 +1,9 @@
+import { appToolHandlers } from "./apps.js";
+import { TabToolHandlers } from "./tabs.js";
 import { administrationToolHandlers, type AdministrationToolHandlers } from "./administration.js";
 import type { AppService } from "../../apps/app-service.js";
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
-import { requireRun } from "../operations.js";
+
 import type { ProductToolHandlers } from "./product.js";
 import type { IntegrationToolHandlers } from "./integrations.js";
 import type { TriggerToolHandlers } from "./triggers.js";
@@ -16,7 +18,8 @@ export function agentToolHandlers(options: {
   readonly product: ProductToolHandlers;
   readonly integrations: IntegrationToolHandlers;
   readonly triggers: TriggerToolHandlers;
-  readonly apps: Pick<AppService, "publish" | "listForCaller" | "fetch">;
+  readonly apps: Pick<AppService, "publish" | "list" | "start" | "stop" | "delete">;
+  readonly tabs: TabToolHandlers;
   readonly pluginInstall: (
     scope: RunToolScope,
     directory: string,
@@ -29,60 +32,91 @@ export function agentToolHandlers(options: {
     runId: RunId,
     threadId: ThreadId,
   ) => Promise<TeamAgentRequestId | null>;
-}): AgentToolHandlers {
+}): Partial<AgentToolHandlers> {
   const p = options.product,
     i = options.integrations,
     t = options.triggers;
-  const handlers: AgentToolHandlers = {
-    ...administrationToolHandlers(options.administration),
-    app_publish: async (c) =>
-      await options.apps.publish(requireRun(c.caller).claims, c.operationKey, c.input),
-    app_list: async (c) => await options.apps.listForCaller({ requestedBy: c.caller.userId }),
-    app_fetch: async (c) => await options.apps.fetch(requireRun(c.caller).claims, c.input),
-    plugin_install: async (c) =>
-      await options.pluginInstall(requireRun(c.caller).claims, c.input.directory),
-    orchestrator_capabilities: async (c) => await p.orchestrator_capabilities(c),
-    environment_list: async (c) => await p.environment_list(c),
-    thread_read: async (c) => await p.thread_read(c),
-    thread_list: async (c) => await p.thread_list(c),
-    delegate_task: Object.assign(async (c: ToolCall<"delegate_task">) => await p.delegate_task(c), {
-      authorize: async (c: ToolCall<"delegate_task">) => {
-        await p.authorizeDelegation(c);
+  const handlers: Partial<AgentToolHandlers> = {
+    ...administrationToolHandlers(options.administration, options.pluginInstall),
+    ...appToolHandlers(options.apps),
+    tab_list: (c) => options.tabs.tab_list(c),
+    tab_open: (c) => options.tabs.tab_open(c),
+    tab_close: (c) => options.tabs.tab_close(c),
+    tab_organize: (c) => options.tabs.tab_organize(c),
+    tab_group_update: (c) => options.tabs.tab_group_update(c),
+    opensteer_ai_account_list: async (c) => await p.opensteer_ai_account_list(c),
+    opensteer_task_create: Object.assign(
+      async (c: ToolCall<"opensteer_task_create">) =>
+        p.opensteer_task_delegate({ ...c, input: { ...c.input, create: true } }),
+      {
+        authorize: async (c: ToolCall<"opensteer_task_create">) => {
+          await p.authorizeDelegation({ ...c, input: { ...c.input, create: true } });
+        },
       },
-    }),
-    thread_wait: async (c) => await p.thread_wait(c),
-    thread_configure: async (c) => await p.thread_configure(c),
-    thread_queue: async (c) => await p.thread_queue(c),
-    thread_send: async (c) => await p.thread_send(c),
-    thread_update: async (c) => await p.thread_update(c),
-    thread_interrupt: async (c) => await p.thread_interrupt(c),
-    task_status: async (c) => await p.task_status(c),
-    task_cancel: Object.assign(async (c: ToolCall<"task_cancel">) => p.task_cancel(c), {
-      targets: (c: ToolCall<"task_cancel">) => p.assignmentTargets(c),
-    }),
-    person_message: async (c) => await p.person_message(c),
-    person_show: Object.assign(async (c: ToolCall<"person_show">) => await p.person_show(c), {
-      targets: async (c: ToolCall<"person_show">) =>
-        "threadId" in c.input.target ? [c.input.target.threadId] : [],
-      authorize: async (c: ToolCall<"person_show">) => {
-        await p.preparePersonShow(c);
+    ),
+    opensteer_subagent_read: async (c) => p.opensteer_task_read({ ...c, input: { ...c.input } }),
+    opensteer_subagent_stop: Object.assign(
+      async (c: ToolCall<"opensteer_subagent_stop">) => p.opensteer_delegation_cancel(c),
+      { targets: (c: ToolCall<"opensteer_subagent_stop">) => p.assignmentTargets(c) },
+    ),
+    opensteer_delegation_wait: async (c) => p.opensteer_task_wait(c),
+    opensteer_task_resume: async (c) =>
+      p.opensteer_task_queue({ ...c, input: { ...c.input, action: "resume" } }),
+    opensteer_task_read: async (c) => await p.opensteer_task_read(c),
+    opensteer_task_list: async (c) => await p.opensteer_task_list(c),
+    opensteer_task_delegate: Object.assign(
+      async (c: ToolCall<"opensteer_task_delegate">) => await p.opensteer_task_delegate(c),
+      {
+        authorize: async (c: ToolCall<"opensteer_task_delegate">) => {
+          await p.authorizeDelegation(c);
+        },
       },
-    }),
-    pending_request: async (c) => await p.pending_request(c),
-    request_withdraw: async (c) => await p.request_withdraw(c),
-    browser_profile_list: async (c) => await p.browser_profile_list(c),
-    use_card: async (c) => await p.use_card(c),
-    sign_in: async (c) => await p.sign_in(c),
+    ),
+    opensteer_task_wait: async (c) => await p.opensteer_task_wait(c),
+    opensteer_task_configure: async (c) => await p.opensteer_task_configure(c),
+    opensteer_task_queue: async (c) => await p.opensteer_task_queue(c),
+    opensteer_task_send: async (c) => await p.opensteer_task_send(c),
+    opensteer_task_update: async (c) => await p.opensteer_task_update(c),
+    opensteer_task_interrupt: async (c) => await p.opensteer_task_interrupt(c),
+    opensteer_delegation_status: async (c) => await p.opensteer_delegation_status(c),
+    opensteer_delegation_cancel: Object.assign(
+      async (c: ToolCall<"opensteer_delegation_cancel">) => p.opensteer_delegation_cancel(c),
+      {
+        targets: (c: ToolCall<"opensteer_delegation_cancel">) => p.assignmentTargets(c),
+      },
+    ),
+    ask_person: async (c) => await p.ask_person(c),
+    send_to_person: async (c) => await p.send_to_person(c),
+    show_to_person: Object.assign(
+      async (c: ToolCall<"show_to_person">) => await p.show_to_person(c),
+      {
+        targets: async (c: ToolCall<"show_to_person">) =>
+          "taskId" in c.input.target ? [c.input.target.taskId] : [],
+        authorize: async (c: ToolCall<"show_to_person">) => {
+          await p.preparePersonShow(c);
+        },
+      },
+    ),
+    opensteer_request_list: async (c) =>
+      p.opensteer_request_answer({ ...c, input: { ...c.input, action: "list" } }),
+    opensteer_request_read: async (c) =>
+      p.opensteer_request_answer({ ...c, input: { ...c.input, action: "read", limit: 50 } }),
+    opensteer_request_answer: async (c) =>
+      await p.opensteer_request_answer({
+        ...c,
+        input: { ...c.input, action: "respond", limit: 50 },
+      }),
+    opensteer_request_withdraw: async (c) => await p.opensteer_request_withdraw(c),
+    card_request: async (c) => await p.card_request(c),
+    saved_login_request: async (c) => await p.saved_login_request(c),
+    chrome_cookies_request: async (c) => await p.chrome_cookies_request(c),
     browser_profile_request: async (c) => await p.browser_profile_request(c),
-    device_access_request: async (c) => await p.device_access_request(c),
-    machine_full_disk_access_request: async (c) => await p.machine_full_disk_access_request(c),
-    browser_tab_read: async (c) => await p.browser_tab_read(c),
-    browser_tab_write: async (c) => await p.browser_tab_write(c),
-    browser_session_list: async (c) => await p.browser_session_list(c),
-    browser_session_open: async (c) => await p.browser_session_open(c),
-    browser_session_close: async (c) => await p.browser_session_close(c),
-    trigger_read: async (c) => await t.trigger_read(c),
-    trigger_write: async (c) => await t.trigger_write(c),
+    computer_access_request: async (c) => await p.computer_access_request(c),
+    opensteer_automation_read: async (c) => t.read(c),
+    opensteer_automation_update: async (c) => t.write(c),
+    opensteer_automation_control: async (c) => t.write(c),
+    opensteer_automation_list: async (c) => await t.read(c),
+    opensteer_automation_create: async (c) => await t.write(c),
     integration_search: async (c) => await i.integration_search(c),
     integration_describe: async (c) => await i.integration_describe(c),
     integration_call: Object.assign(
@@ -93,9 +127,10 @@ export function agentToolHandlers(options: {
         },
       },
     ),
-    computer: async (c) => await i.computer(c),
+    computer_use: async (c) => await i.computer_use(c),
     integration_request: async (c) => await i.integration_request(c),
-    integration_propose: async (c) => await i.integration_propose(c),
+    app_access_request: async (c) => await i.app_access_request(c),
+    custom_integration_request: async (c) => await i.custom_integration_request(c),
     ...teamToolHandlers({ port: options.team, personalContext: options.personalContextForRun }),
     ...knowledgeToolHandlers({
       port: options.knowledge,

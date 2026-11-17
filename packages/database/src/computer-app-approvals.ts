@@ -6,7 +6,7 @@ import {
   type AgentEvent,
   type RequestId,
   type RequestSettlementProvenance,
-  type RunnerId,
+  type DeviceId,
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
@@ -44,17 +44,17 @@ import { jsonValue } from "./store-primitives.js";
 export async function lockComputerApprovalScopeInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: {
-    readonly runnerId: RunnerId;
+    readonly deviceId: DeviceId;
   },
 ): Promise<{
-  readonly id: RunnerId;
+  readonly id: DeviceId;
   readonly name: string;
-  readonly revokedAt: Date | null;
+  readonly removedAt: Date | null;
 }> {
   const runner = await transaction
-    .selectFrom("runners")
-    .select(["id", "name", "revokedAt"])
-    .where("id", "=", input.runnerId)
+    .selectFrom("devices")
+    .select(["id", "name", "removedAt"])
+    .where("id", "=", input.deviceId)
     .forNoKeyUpdate()
     .executeTakeFirst();
   if (!runner) throw new OpensteerError({ code: "not_found", message: "Computer not found" });
@@ -80,7 +80,7 @@ export interface ComputerUsePolicy {
 
 export async function computerUsePolicyInTransaction(
   database: Kysely<DatabaseSchema>,
-  runnerId: RunnerId,
+  deviceId: DeviceId,
   ownerUserId: UserId,
 ): Promise<ComputerUsePolicy> {
   const deployment = await database
@@ -92,7 +92,7 @@ export async function computerUsePolicyInTransaction(
     .selectFrom("computerUsePolicies")
     .select(["appApproval", "revision"])
     .where("deploymentId", "=", deployment.id)
-    .where("runnerId", "=", runnerId)
+    .where("runnerId", "=", deviceId)
     .where("ownerUserId", "=", ownerUserId)
     .executeTakeFirst();
   return row ?? { appApproval: "ask", revision: 0 };
@@ -127,7 +127,7 @@ export async function askForComputerAppApprovalInTransaction(
     readonly definitionId: string;
     readonly now: Date;
     readonly ownerUserId: UserId;
-    readonly runnerId: RunnerId;
+    readonly deviceId: DeviceId;
     readonly task: ComputerAppApprovalTask | null;
   },
 ): Promise<{
@@ -146,7 +146,7 @@ export async function askForComputerAppApprovalInTransaction(
     definitionId: input.definitionId,
     now: input.now,
     ownerUserId: input.ownerUserId,
-    runnerId: input.runnerId,
+    deviceId: input.deviceId,
   };
   if (!waiting) {
     const over = await deleteComputerAppSetupRequestsInTransaction(transaction, scope);
@@ -352,7 +352,7 @@ export async function settleComputerAppApprovalInTransaction(
         now: new Date(),
         ownerUserId: waiting.ownerUserId,
         reason: waiting.reason,
-        runnerId: waiting.runnerId,
+        deviceId: waiting.runnerId,
         threadId: waiting.threadId,
         threadTitle: waiting.threadTitle,
       });

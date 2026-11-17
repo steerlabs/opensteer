@@ -71,6 +71,7 @@ describe("helper wire fixture", () => {
       "session.windows",
       "view.open",
       "view.windows",
+      "window.resolve",
     ]);
     for (const [method, request] of Object.entries(fixture.requests)) {
       const parsed = ComputerUseHelperRequestSchema.safeParse(request);

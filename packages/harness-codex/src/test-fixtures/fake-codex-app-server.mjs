@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  watch,
   appendFileSync,
   existsSync,
   readFileSync,
@@ -71,6 +72,25 @@ if (process.argv.includes("--version")) {
   writeFileSync(1, `codex-cli ${version}\n`);
   process.exit(0);
 }
+// Recovery must exercise marker reaping after the supervisor has killed its own group.
+if (
+  process.platform !== "win32" &&
+  process.argv.includes("--survive-parent") &&
+  !process.argv.includes("--orphan-engine")
+) {
+  const engine = spawn(process.execPath, [...process.argv.slice(1), "--orphan-engine"], {
+    detached: true,
+    stdio: "inherit",
+  });
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"])
+    process.on(signal, () => engine.kill(signal));
+  const code = await new Promise((resolve) => {
+    engine.once("exit", (code) => resolve(code ?? 1));
+    engine.once("error", () => resolve(1));
+  });
+  process.exit(code);
+}
+
 const writeCaptureRecord = capturePath ? createCaptureRecordWriter(capturePath) : undefined;
 let captureRunId = null;
 
@@ -219,6 +239,14 @@ process.on("exit", () => {
   for (const thread of threads.values())
     for (const terminal of thread.terminals) terminal.kill("SIGKILL");
 });
+
+if (process.argv.includes("--survive-parent")) {
+  // A killed Runner may close its read pipe before the engine's last write flushes.
+  process.stdout.on("error", (error) => {
+    if (error.code !== "EPIPE") throw error;
+    capture({ recoveryBrokenPipe: true });
+  });
+}
 
 lines.on("close", () => {
   if (scenario === "ignore-termination") setInterval(() => undefined, 1_000);
@@ -693,12 +721,12 @@ function handleClientMethod(message) {
                   ).filter(
                     (tool) =>
                       (name !== "opensteer" ||
-                        ((scenario !== "previous-host" || tool !== "computer") &&
+                        ((scenario !== "previous-host" || tool !== "computer_use") &&
                           (scenario !== "mcp-missing-required-tool" ||
                             tool !== "integration_search"))) &&
                       (scenario !== "mcp-direct-missing-required-tool" ||
                         name !== "opensteer-direct" ||
-                        tool !== "sign_in"),
+                        tool !== "saved_login_request"),
                   ),
                   ...((scenario === "mcp-extra-tool" && name === "opensteer") ||
                   (scenario === "mcp-direct-extra-tool" && name === "opensteer-direct")
@@ -761,6 +789,63 @@ function handleClientMethod(message) {
           detached.unref();
           capture({ fakeDetachedChild: detached.pid });
         }
+      }
+      if (scenario.startsWith("image-")) {
+        current().turnId = "image-turn";
+        send({
+          id: message.id,
+          result: { turn: { id: current().turnId, status: "inProgress", items: [] } },
+        });
+        const item = {
+          type: "imageGeneration",
+          id: "image-call",
+          status: "inProgress",
+          revisedPrompt: "A tree",
+          transparentBackground: false,
+        };
+        const itemEvent = (method, value) =>
+          send({
+            method,
+            params: { threadId: current().id, turnId: current().turnId, item: value },
+          });
+        itemEvent("item/started", item);
+        if (scenario !== "image-only")
+          itemEvent("item/completed", {
+            type: "agentMessage",
+            id: "answer",
+            phase: "final_answer",
+            text: "Here is your tree",
+          });
+        if (scenario === "image-stop") {
+          sendTurnCompleted("completed");
+          break;
+        }
+        const completed = {
+          ...item,
+          status: "completed",
+          savedPath: "/tmp/tree.webp",
+          result: "SECRET_BASE64_IMAGE_BYTES",
+        };
+        if (scenario === "image-failed") {
+          completed.status = "failed";
+          completed.failure = { message: "Renderer failed" };
+        }
+        if (scenario === "image-usage") completed.failure = { type: "usageLimitExceeded" };
+        if (scenario === "image-missing-path") delete completed.savedPath;
+        if (scenario === "image-cancelled") completed.status = "cancelled";
+        if (scenario === "image-blank-path") completed.savedPath = "   ";
+        if (scenario === "image-file-id") {
+          delete completed.result;
+          completed.fileId = "opaque-file-id";
+        }
+        if (scenario === "image-late") sendTurnCompleted("completed");
+        itemEvent("item/completed", completed);
+        if (scenario === "image-duplicate-path") {
+          itemEvent("item/started", { ...item, id: "image-call-2" });
+          itemEvent("item/completed", { ...completed, id: "image-call-2" });
+        }
+        if (scenario !== "image-late") sendTurnCompleted("completed");
+        break;
       }
       handleTurnStart(message);
       break;
@@ -847,6 +932,20 @@ function handleClientMethod(message) {
       }
       break;
     case "thread/inject_items":
+      if (scenario === "context-compaction") {
+        send({
+          id: "context-restore-barrier",
+          method: "test/contextRestoreBarrier",
+          params: { threadId },
+        });
+        const release = process.env.FAKE_CODEX_RESTORE_RELEASE;
+        const watcher = watch(dirname(release), () => {
+          if (!existsSync(release)) return;
+          watcher.close();
+          send({ id: message.id, result: {} });
+        });
+        break;
+      }
       send({ id: message.id, result: {} });
       // Real Codex samples again for anything added to a running turn; a note draws an empty reply.
       if (current().voiceNoteTurnOpen) sendVoiceFinal(voiceNoteTurn, "");
@@ -896,6 +995,11 @@ function handleClientMethod(message) {
         if (starting) setTimeout(starting, 50);
         break;
       }
+      if (scenario === "subagents-late-start")
+        send({
+          method: "turn/started",
+          params: { threadId: childThreadOf(), turn: childTurn("child-turn-1", "inProgress") },
+        });
       capture({ rootInterrupted: message.params.turnId ?? null });
       // Opt-in: an engine that acknowledges an interrupt and keeps going.
       if (!process.argv.includes("--ignore-interrupt")) {
@@ -1348,12 +1452,39 @@ function handleTurnStart(message) {
     return;
   }
 
+  if (scenario === "tool-image-output") {
+    const item = {
+      id: "image-1",
+      type: "mcpToolCall",
+      server: "probe",
+      tool: "probe",
+      arguments: {},
+    };
+    send({
+      method: "item/started",
+      params: { threadId, turnId, item: { ...item, status: "inProgress" } },
+    });
+    send({
+      method: "item/completed",
+      params: {
+        threadId,
+        turnId,
+        item: {
+          ...item,
+          status: "completed",
+          result: { content: [{ type: "image", mimeType: "image/png", data: "iVBORw0KGgoA" }] },
+        },
+      },
+    });
+    finishTurnWith("Done.");
+    return;
+  }
   if (scenario === "direct-tools") {
     const item = {
       arguments: { site: "https://example.test" },
       id: "direct-1",
       server: "opensteer-direct",
-      tool: "sign_in",
+      tool: "saved_login_request",
       type: "mcpToolCall",
     };
     send({
@@ -1377,6 +1508,17 @@ function handleTurnStart(message) {
   }
   if (scenario === "conversation") {
     conversationTurn(message.params?.input ?? []);
+    return;
+  }
+  if (scenario === "context-compaction") {
+    if (!current().compacted) {
+      current().compacted = true;
+      send({
+        method: "item/completed",
+        params: { threadId, turnId, item: { id: "compact", type: "contextCompaction" } },
+      });
+    }
+    sendTurnCompleted("completed");
     return;
   }
   if (scenario === "resume-large-history") {
@@ -1564,7 +1706,7 @@ function handleTurnStart(message) {
     // later turn calls its tools on the session the first turn opened.
     void (async () => {
       current().sessionTools ??= await opensteerTools();
-      const listed = await current().sessionTools.call("pending_request", { limit: 1 });
+      const listed = await current().sessionTools.call("opensteer_request_list", { limit: 1 });
       capture({
         fakeMcpCall: { ok: true, pid: process.pid, sessionId: current().sessionTools.sessionId },
       });
@@ -1592,7 +1734,7 @@ function handleTurnStart(message) {
   }
   if (scenario === "browser-agent") {
     // Acts as an agent following the opensteer:browser skill: it opens
-    // Browser Sessions through Opensteer's MCP tools, drives each one by ID
+    // tabs through Browser Harness, chooses their identities, drives each by ID
     // with the shipped Browser Harness, and reports exactly what it saw.
     void browserAgentTurn(message.params.input).then(
       (report) => finishTurnWith(JSON.stringify(report)),
@@ -1826,6 +1968,10 @@ function handleTurnStart(message) {
     // A subagent asking before the Runner has heard of it.
     if (scenario === "subagents-early-approval") sendChildApproval();
     sendSubagentActivity("spawn-1", "started");
+    if (scenario === "subagents-late-start") {
+      announceChildThread();
+      return;
+    }
     send({
       method: "turn/started",
       params: { threadId: announceChildThread(), turn: childTurn("child-turn-1", "inProgress") },
@@ -2431,11 +2577,11 @@ function handleServerResponse(message) {
       method: "item/started",
       params: {
         item: {
-          arguments: { threadId: "thread_00000000-0000-4000-8000-000000000001" },
+          arguments: { taskId: "thread_00000000-0000-4000-8000-000000000001" },
           id: "mcp-core-1",
           server: "opensteer",
           status: "inProgress",
-          tool: "thread_read",
+          tool: "opensteer_task_read",
           type: "mcpToolCall",
         },
         threadId,
@@ -2446,12 +2592,12 @@ function handleServerResponse(message) {
       method: "item/completed",
       params: {
         item: {
-          arguments: { threadId: "thread_00000000-0000-4000-8000-000000000001" },
+          arguments: { taskId: "thread_00000000-0000-4000-8000-000000000001" },
           id: "mcp-core-1",
           result: { content: [{ text: '{"messages":[]}', type: "text" }] },
           server: "opensteer",
           status: "completed",
-          tool: "thread_read",
+          tool: "opensteer_task_read",
           type: "mcpToolCall",
         },
         threadId,
@@ -2708,14 +2854,26 @@ function finishTurnWith(text) {
   sendTurnCompleted("completed");
 }
 
-async function browserJourneyHarness(sessionId, program, targetId) {
+async function browserJourneyHarness(tabId, program) {
+  // Codex reports each command it runs, so a turn of several programs shows progress.
+  const thread = current();
+  const item = {
+    command: "browser-harness",
+    commandActions: [{ type: "unknown", command: "browser-harness" }],
+    id: `browser-harness-${randomUUID()}`,
+    type: "commandExecution",
+  };
+  send({
+    method: "item/started",
+    params: {
+      item: { ...item, aggregatedOutput: null, exitCode: null, status: "inProgress" },
+      threadId: thread.id,
+      turnId: thread.turnId,
+    },
+  });
   const child = spawn(
     process.execPath,
-    [
-      process.env.OPENSTEER_BROWSER_HARNESS,
-      ...(sessionId ? ["--session", sessionId] : []),
-      ...(targetId ? ["--tab", targetId] : []),
-    ],
+    [process.env.OPENSTEER_BROWSER_HARNESS, ...(tabId ? ["--tab", tabId] : [])],
     { env: threadEnvironment(), timeout: 60_000 },
   );
   const stdout = [];
@@ -2724,16 +2882,72 @@ async function browserJourneyHarness(sessionId, program, targetId) {
   child.stderr.on("data", (chunk) => stderr.push(chunk));
   const completed = new Promise((resolve, reject) => {
     child.once("error", reject);
-    child.once("close", (code) =>
+    child.once("close", (code) => {
+      const output = Buffer.concat(stdout).toString("utf8").trim();
+      send({
+        method: "item/completed",
+        params: {
+          item: {
+            ...item,
+            aggregatedOutput: output,
+            exitCode: code,
+            status: code === 0 ? "completed" : "failed",
+          },
+          threadId: thread.id,
+          turnId: thread.turnId,
+        },
+      });
       resolve({
         code,
         stderr: Buffer.concat(stderr).toString("utf8").trim(),
-        stdout: Buffer.concat(stdout).toString("utf8").trim(),
-      }),
-    );
+        stdout: output,
+      });
+    });
   });
-  child.stdin.end(program);
+  const helpers = [
+    "currentTab",
+    "pageInfo",
+    "gotoUrl",
+    "waitForLoad",
+    "js",
+    "setInputFiles",
+    "pressKey",
+    "cdp",
+    "respondDialog",
+    "click",
+    "fill",
+    "typeText",
+    "screenshot",
+    "drainEvents",
+    "waitForElement",
+    "scroll",
+    "readPage",
+  ];
+  let body = program
+    .replace(/\bnewTab\(/gu, "fixtureOpen(")
+    .replace(/\blistTabs\(/gu, "fixtureTabs(")
+    .replace(/\bswitchTab\(/gu, "fixtureBind(")
+    .replace(/\bcloseTab\(/gu, "fixtureClose(")
+    .replace(/\borganizeTabs\(/gu, "fixtureOrganize(")
+    .replace(/\bpage\./gu, "fixturePage.");
+  for (const helper of helpers)
+    body = body.replace(new RegExp(`(?<![.\\w])${helper}\\(`, "gu"), `fixturePage.${helper}(`);
+  child.stdin.end(`
+let fixturePage = page;
+const fixtureCall = async (name, input) => { const result = await opensteer.callTool(name, input); if (result.error) throw Object.assign(new Error(result.error.message), result.error); return result; };
+const fixtureTabs = async () => { const tabs = []; let cursor; do { const result = await fixtureCall("tab_list", { kind: "page", ...(cursor ? {cursor} : {}) }); tabs.push(...result.tabs); cursor = result.nextCursor; } while(cursor); return tabs; };
+const fixtureBind = async (value) => { fixturePage = await openPage(typeof value === "string" ? value : value.tabId); return fixturePage; };
+const fixtureOpen = async (url, identity = {guest: true}) => { const result = await fixtureCall("tab_open", { target: {kind:"page", url, ...(identity.profile ? {profileId: identity.profile} : {guest: true})} }); await fixtureBind(result.tab.tabId); return result.tab.tabId; };
+const fixtureClose = async (tabId) => fixtureCall("tab_close", {tabIds: [tabId]});
+const fixtureOrganize = async (input) => fixtureCall("tab_organize", input);
+${body}`);
   return completed;
+}
+
+async function browserJourneyJson(tabId, program) {
+  const result = await browserJourneyHarness(tabId, program);
+  if (result.code !== 0) throw new Error(`Browser Harness: ${result.stderr}`);
+  return JSON.parse(result.stdout);
 }
 
 async function tabGroupJourney(input) {
@@ -2742,39 +2956,38 @@ async function tabGroupJourney(input) {
     .map((p) => p.text)
     .join("\n");
   const plan = JSON.parse(/TAB_GROUP_JOURNEY:([^\n]+)/u.exec(text)[1]);
-  const tools = await opensteerTools();
-  const report = { pages: [], calls: [] };
+  const report = { calls: [] };
   for (const call of plan.calls ?? []) {
     try {
-      report.calls.push({ result: await tools.call(call.name, call.input, call.requestId) });
+      const args = JSON.stringify(call.input);
+      const program =
+        call.method === "listTabs"
+          ? `console.log(JSON.stringify(await listTabs(${args})));`
+          : call.method === "switchTab"
+            ? `await switchTab(${JSON.stringify(call.input.tabId)}); console.log(JSON.stringify(await currentTab()));`
+            : call.method === "closeTab"
+              ? `console.log(JSON.stringify(await closeTab(${JSON.stringify(call.input.tabIds[0])})));`
+              : `console.log(JSON.stringify(await organizeTabs(${args})));`;
+      report.calls.push({ result: await browserJourneyJson(undefined, program) });
     } catch (error) {
       report.calls.push({ error: String(error?.message ?? error) });
     }
   }
   if (plan.immediate) {
-    const opened = await tools.call("browser_session_open", { fresh: true });
-    const page = await browserJourneyHarness(
-      opened.session.id,
-      `await newTab(); console.log(JSON.stringify(await currentTab()));`,
+    report.immediate = await browserJourneyJson(
+      undefined,
+      `
+const tabId = await newTab("about:blank", { guest: true });
+const input = { action: "group", tabIds: [tabId], title: "Organize research" };
+const first = await organizeTabs(input);
+console.log(JSON.stringify({ tabId, first }));`,
     );
-    if (page.code !== 0) throw new Error(page.stderr);
-    const tab = JSON.parse(page.stdout);
-    const tabId = tab.surfaceId ?? tab.id;
-    const input = { action: "group", tabIds: [tabId], title: "Organize research" };
-    const first = await tools.call("browser_tab_write", input, 9001);
-    const replay = await tools.call("browser_tab_write", input, 9001);
-    report.immediate = { tabId, first, replay };
   }
-  if ((plan.calls ?? []).some((c) => c.input.action === "restore"))
-    report.attached = await tools.call("browser_session_list", {});
   if (plan.paginate) {
-    let cursor;
-    do {
-      const page = await tools.call("browser_tab_read", cursor ? { cursor } : {});
-      report.pages.push(page);
-      cursor = page.nextCursor;
-      if (report.pages.length > 100) throw new Error("Pagination did not terminate");
-    } while (cursor);
+    report.tabs = await browserJourneyJson(
+      undefined,
+      `console.log(JSON.stringify(await listTabs({all:true})));`,
+    );
   }
   return report;
 }
@@ -2791,11 +3004,12 @@ async function browserAgentTurn(input) {
   const checkProfile = /CHECK_PROFILE=(\S+)/u.exec(text)?.[1];
   if (checkProfile && uploadPage) {
     // A later Run: reopen the profile and read what it kept.
-    const tools = await opensteerTools();
-    const opened = await tools.call("browser_session_open", { profileId: checkProfile });
     const result = await browserJourneyHarness(
-      opened.session.id,
-      `await newTab(${JSON.stringify(`${uploadPage}?account`)});
+      undefined,
+      `const tabs = await listTabs();
+const existing = tabs.find(tab => tab.profile?.profileId === ${JSON.stringify(checkProfile)} && tab.url.startsWith(${JSON.stringify(uploadPage)}));
+if (existing) await switchTab(existing);
+else await newTab(${JSON.stringify(`${uploadPage}?account`)}, {profile:${JSON.stringify(checkProfile)}});
 await waitForLoad();
 console.log(JSON.stringify(await js("document.cookie")));`,
     );
@@ -2808,52 +3022,70 @@ console.log(JSON.stringify(await js("document.cookie")));`,
   const tools = await opensteerTools();
   const report = { photoName: basename(photo) };
 
-  const first = await tools.call("browser_session_open", { fresh: true });
-  const second = await tools.call("browser_session_open", { fresh: true });
-  report.opened = [first.session.id, second.session.id];
-  report.listed = (await tools.call("browser_session_list", {})).sessions.map((session) => ({
-    attached: session.attached,
-    id: session.id,
-  }));
+  const profileId = /PROFILE_ID=(\S+)/u.exec(text)?.[1];
+  const first = await browserJourneyJson(
+    undefined,
+    `console.log(JSON.stringify(await newTab(${JSON.stringify(uploadPage)}, {guest:true})));`,
+  );
+  const second = await browserJourneyJson(
+    undefined,
+    `console.log(JSON.stringify(await newTab(${JSON.stringify(`${uploadPage}?second`)}, {profile:${JSON.stringify(profileId)}})));`,
+  );
+  report.opened = [first, second];
+  report.profileSibling = await browserJourneyJson(
+    undefined,
+    `console.log(JSON.stringify(await newTab(${JSON.stringify(`${uploadPage}?sibling`)}, {profile:${JSON.stringify(profileId)}})));`,
+  );
+  report.listed = await browserJourneyJson(
+    undefined,
+    `console.log(JSON.stringify(await listTabs()));`,
+  );
+  report.reused = await browserJourneyJson(
+    undefined,
+    `
+const before = await listTabs();
+const existing = before.find(tab => tab.tabId === ${JSON.stringify(first)});
+await switchTab(existing);
+console.log(JSON.stringify({before:before.length, after:(await listTabs()).length, tabId:(await currentTab()).tabId}));`,
+  );
 
   const upload = await browserJourneyHarness(
-    first.session.id,
-    `await newTab(${JSON.stringify(uploadPage)});
+    first,
+    `
 await waitForLoad();
 const direct = await setInputFiles("#single", [${JSON.stringify(photo)}]);
 const box = await js("(() => { const r = document.querySelector('#choose').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()");
 const chooser = await setInputFiles(box, [${JSON.stringify(photo)}]);
-for (let attempt = 0; attempt < 50; attempt += 1) {
-  const received = await js("window.received");
-  if (received.single && received.hidden) break;
-  await sleep(100);
-}
-console.log(JSON.stringify({ chooser, direct, received: await js("window.received"), targetId: (await currentTab()).targetId }));`,
+await page.waitForFunction(() => window.received.single && window.received.hidden);
+console.log(JSON.stringify({ chooser, direct, received: await js("window.received"), tabId: (await currentTab()).tabId }));`,
   );
   report.upload = upload.code === 0 ? JSON.parse(upload.stdout) : upload;
 
   const other = await browserJourneyHarness(
-    second.session.id,
-    `await newTab(${JSON.stringify(`${uploadPage}?second`)});
+    second,
+    `
 await waitForLoad();
 console.log(JSON.stringify(await pageInfo()));`,
   );
   report.second = other.code === 0 ? JSON.parse(other.stdout) : other;
   const back = await browserJourneyHarness(
-    first.session.id,
+    first,
     `console.log(JSON.stringify(await js("({ received: Object.keys(window.received), url: location.href })")));`,
-    report.upload.targetId,
   );
   report.backToFirst = back.code === 0 ? JSON.parse(back.stdout) : back;
 
-  // Browsing as a person does: the session's own page carries each visit, and
+  // Browsing as a person does: one tab carries each visit, and
   // a tab that went nowhere or served its purpose does not stay open.
-  const browsing = await tools.call("browser_session_open", { fresh: true });
+  const browsing = await browserJourneyJson(
+    undefined,
+    `console.log(JSON.stringify(await newTab(${JSON.stringify(`${uploadPage}?first`)}, {guest:true})));`,
+  );
+  report.guestReuse = { first, second: browsing };
   const visit = async (program) => {
-    const result = await browserJourneyHarness(browsing.session.id, program);
+    const result = await browserJourneyHarness(browsing, program);
     return result.code === 0 ? { ...JSON.parse(result.stdout), stderr: result.stderr } : result;
   };
-  const tabState = `console.log(JSON.stringify({ tabs: (await listTabs()).length, url: (await pageInfo()).url }));`;
+  const tabState = `console.log(JSON.stringify({ tabs: (await listTabs()).filter(t => !t.profile).length, url: (await pageInfo()).url }));`;
   report.browsing = {
     start: await visit(`await gotoUrl(${JSON.stringify(`${uploadPage}?first`)});
 await waitForLoad();
@@ -2864,19 +3096,22 @@ ${tabState}`),
     failed: await visit(`const failures = [];
 for (const url of ["example.com", "http://127.0.0.1:1/"]) {
   try {
-    failures.push({ opened: await newTab(url) });
+    const opened = await newTab(url);
+    failures.push({opened});
+    await closeTab(opened);
   } catch (error) {
     failures.push({ error: error.message });
   }
 }
-console.log(JSON.stringify({ failures, tabs: (await listTabs()).length, url: (await pageInfo()).url }));`),
+await switchTab(${JSON.stringify(browsing)});
+console.log(JSON.stringify({ failures, tabs: (await listTabs()).filter(t => !t.profile).length, url: (await pageInfo()).url }));`),
     many: await visit(`const opened = [];
 for (let index = 0; index < 7; index += 1) {
   opened.push(await newTab(${JSON.stringify(`${uploadPage}?tab=`)} + index));
 }
-const whileMany = (await listTabs()).length;
+const whileMany = (await listTabs()).filter(t => !t.profile).length;
 for (const targetId of opened) await closeTab(targetId);
-console.log(JSON.stringify({ tabs: (await listTabs()).length, whileMany }));`),
+console.log(JSON.stringify({ tabs: (await listTabs()).filter(t => !t.profile).length, whileMany }));`),
     // Each way an agent presses Cmd+V, reported without what a paste would hold.
     paste: await visit(`await gotoUrl(${JSON.stringify(`${uploadPage}?paste`)});
 await waitForLoad();
@@ -2898,25 +3133,29 @@ for (const attempt of [
 await page.keyboard.type("ok");
 console.log(JSON.stringify({ refusals, ...(await js("({ pastes: window.pastes, vKeys: window.vKeys, typedOnly: document.querySelector('#paste-probe').textContent === 'ok' })")) }));`),
   };
-  await tools.call("browser_session_close", { sessionId: browsing.session.id });
+  await browserJourneyJson(
+    undefined,
+    `console.log(JSON.stringify(await closeTab(${JSON.stringify(browsing)})));`,
+  );
 
-  report.withoutSession = await browserJourneyHarness(undefined, "console.log(1)");
+  report.withoutTab = await browserJourneyHarness(undefined, "await pageInfo()");
   report.outsideFile = await browserJourneyHarness(
-    first.session.id,
+    first,
     `const found = await cdp("Runtime.evaluate", { expression: "document.querySelector('#single')" });
 await cdp("DOM.setFileInputFiles", { files: ["/etc/hosts"], objectId: found.result.objectId });`,
-    report.upload.targetId,
   );
-  await tools.call("browser_session_close", { sessionId: second.session.id });
-  report.endedSession = await browserJourneyHarness(second.session.id, "await pageInfo()");
-  report.unknownSession = await browserJourneyHarness(
-    "bsn_00000000-0000-4000-8000-00000000dead",
+  await browserJourneyJson(
+    undefined,
+    `console.log(JSON.stringify(await closeTab(${JSON.stringify(second)})));`,
+  );
+  report.endedTab = await browserJourneyHarness(second, "await pageInfo()");
+  report.unknownTab = await browserJourneyHarness(
+    "surface_00000000-0000-4000-8000-00000000dead",
     "await pageInfo()",
   );
 
-  // A granted profile: asking again is answered at once, and a session on it
+  // A granted profile: asking again is answered at once, and browsing in it
   // saves the profile's state while in use.
-  const profileId = /PROFILE_ID=(\S+)/u.exec(text)?.[1];
   if (profileId) {
     report.accessAlreadyAvailable = await tools
       .call("browser_profile_request", {
@@ -2927,11 +3166,14 @@ await cdp("DOM.setFileInputFiles", { files: ["/etc/hosts"], objectId: found.resu
         (result) => ({ result }),
         (error) => ({ error: String(error.message) }),
       );
-    const profiled = await tools.call("browser_session_open", { profileId });
-    report.profileSession = profiled.session.id;
+    const profiled = await browserJourneyJson(
+      undefined,
+      `console.log(JSON.stringify(await newTab(${JSON.stringify(`${uploadPage}?account`)}, {profile:${JSON.stringify(profileId)}})));`,
+    );
+    report.profileTab = profiled;
     report.signedIn = await browserJourneyHarness(
-      profiled.session.id,
-      `await newTab(${JSON.stringify(`${uploadPage}?account`)});
+      profiled,
+      `
 await waitForLoad();
 await js("document.cookie = 'marketplace_session=signed-in; max-age=86400; path=/'");
 console.log(JSON.stringify(await js("document.cookie")));`,
@@ -2946,11 +3188,13 @@ console.log(JSON.stringify(await js("document.cookie")));`,
  * "replacement": a dialog whose answer opens a second one.
  */
 async function browserDialogTurn(page, trigger) {
-  const tools = await opensteerTools();
-  const opened = await tools.call("browser_session_open", { fresh: true });
+  const opened = await browserJourneyJson(
+    undefined,
+    `console.log(JSON.stringify(await newTab(${JSON.stringify(page)}, {guest:true})));`,
+  );
   const timed = async (program) => {
     const started = Date.now();
-    const result = await browserJourneyHarness(opened.session.id, program);
+    const result = await browserJourneyHarness(opened, program);
     let output;
     try {
       output = JSON.parse(result.stdout.split("\n").at(-1));
@@ -3037,7 +3281,10 @@ await cdp("Page.handleJavaScriptDialog", { accept: true });
 ${settled}
 console.log(JSON.stringify({ outcome, actMs, dialogId, ...seen, answerMs: Date.now() - answering, doneAt: Date.now() }));`);
   }
-  await tools.call("browser_session_close", { sessionId: opened.session.id });
+  await browserJourneyJson(
+    undefined,
+    `console.log(JSON.stringify(await closeTab(${JSON.stringify(opened)})));`,
+  );
   return report;
 }
 
@@ -3058,8 +3305,8 @@ async function browserProfilesTurn(input) {
       return tools.call(name, args, replayId);
     };
     if (plan.delegate)
-      report.delegated = await call("delegate_task", {
-        task: 'Report your tool inventory. BROWSER_PROFILE_JOURNEY:{"kind":"delegated"}',
+      report.delegated = await call("opensteer_task_delegate", {
+        message: 'Report your tool inventory. BROWSER_PROFILE_JOURNEY:{"kind":"delegated"}',
         title: "Profile authority inventory",
       });
     if (plan.request) {
@@ -3071,32 +3318,36 @@ async function browserProfilesTurn(input) {
       if (plan.request.replay) report.replayed = await call("browser_profile_request", input, 9001);
       if (report.request.status === "pending") return report;
     }
-    let sessionId = plan.sessionId;
+    let tabId = plan.tabId;
     if (plan.open) {
-      report.opened = await call("browser_session_open", plan.open);
-      sessionId = report.opened.session.id;
-    } else if (sessionId && plan.visit) {
-      report.opened = await call("browser_session_open", { sessionId });
+      tabId = await browserJourneyJson(
+        undefined,
+        `console.log(JSON.stringify(await newTab(${JSON.stringify(plan.visit ?? "about:blank")}, ${JSON.stringify(plan.open)})));`,
+      );
+      report.opened = { tabId };
+    } else if (tabId && plan.visit) {
+      await browserJourneyJson(
+        undefined,
+        `await switchTab(${JSON.stringify(tabId)}); console.log(JSON.stringify(await currentTab()));`,
+      );
+      report.opened = { tabId };
     }
     if (plan.visit) {
-      const page = await browserJourneyHarness(
-        sessionId,
+      report.page = await browserJourneyJson(
+        tabId,
         `await gotoUrl(${JSON.stringify(plan.visit)});\nawait waitForLoad();\nconsole.log(JSON.stringify(await js("({signedIn: document.body.dataset.signedIn === 'true', url: location.href})")));`,
       );
-      if (page.code !== 0) throw new Error(`Browser Harness: ${page.stderr}`);
-      report.page = JSON.parse(page.stdout);
     }
-    if (plan.tabs) {
-      report.tabs = [];
-      let cursor;
-      do {
-        const page = await call("browser_tab_read", cursor ? { cursor } : {});
-        report.tabs.push(...page.tabs);
-        cursor = page.nextCursor;
-        if (report.tabs.length > 1000) throw new Error("Tab pagination did not terminate");
-      } while (cursor);
-    }
-    if (plan.close) report.closed = await call("browser_session_close", { sessionId });
+    if (plan.tabs)
+      report.tabs = await browserJourneyJson(
+        undefined,
+        `console.log(JSON.stringify(await listTabs({all:true})));`,
+      );
+    if (plan.close)
+      report.closed = await browserJourneyJson(
+        undefined,
+        `console.log(JSON.stringify(await closeTab(${JSON.stringify(tabId)})));`,
+      );
     report.profiles = await call("browser_profile_list", {});
   } catch (error) {
     report.error = String(error?.message ?? error);

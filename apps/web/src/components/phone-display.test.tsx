@@ -1,13 +1,16 @@
+import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MockHostClient } from "@opensteer/client/mock";
+import { MockHostClient, mockIphoneScreenDevice } from "@opensteer/client/mock";
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
-import { RunnerIdSchema } from "@opensteer/core";
-import type { HostSnapshot } from "@opensteer/client/host";
+import { type TabTarget } from "@opensteer/core";
+import { runPlacePicture, type HostSnapshot } from "@opensteer/client/host";
+import { useRunPlacePicture } from "@opensteer/client/react";
 import { LivePlace } from "./workspace/viewfinder.js";
+import { RunPlacePictureScope, useDisplayDecoding } from "./workspace/run-place-picture.js";
 import type { WebSocketClient } from "@opensteer/client/host";
 import type { MachineSummary } from "@opensteer/protocol";
 
@@ -106,7 +109,15 @@ vi.mock("./workspace/workspace-context.js", () => ({
 vi.mock("./workspace/tab-closer.js", () => ({ useTabCloser: () => () => undefined }));
 const { ComputerWatchView } = await import("./computer-watch.js");
 const { OwnerView } = await import("./workspace/owner-view.js");
-const { ownerViewDestination } = await import("@opensteer/client/host");
+const { PhoneControlBar } = await import("./phone-display.js");
+
+/** Opens a window or phone tab the way a person does and answers this device's view of it. */
+async function ownView(target: TabTarget) {
+  const tab = await client.openTab(target);
+  const viewer = await client.activateTab(tab.tabId);
+  if (viewer.kind !== "window" && viewer.kind !== "phone") throw new Error("Expected a view");
+  return viewer.view;
+}
 
 let root: Root | null = null;
 let client: MockHostClient;
@@ -377,7 +388,9 @@ describe("live phone Watch", () => {
       { kind: "text", submit: true },
       { kind: "nav", to: "back" },
     ]);
-    act(() => keyboard().dispatchEvent(new KeyboardEvent("keydown", { key: "F6", bubbles: true })));
+    act(() => {
+      keyboard().dispatchEvent(new KeyboardEvent("keydown", { key: "F6", bubbles: true }));
+    });
     expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.input-reset" });
     expect(document.activeElement).not.toBe(keyboard());
     expect(document.body.textContent).not.toContain("Take over");
@@ -585,11 +598,11 @@ function remoteEvents() {
   return inputs().flatMap((message) => message.events as Record<string, unknown>[]);
 }
 function hardware(field: HTMLElement, key: string, code: string, extra: KeyboardEventInit = {}) {
-  act(() =>
+  act(() => {
     field.dispatchEvent(
       new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key, code, ...extra }),
-    ),
-  );
+    );
+  });
 }
 function trustedPaste(field: HTMLElement, items: Record<string, string>) {
   const event = new Event("paste", { bubbles: true, cancelable: true });
@@ -599,7 +612,9 @@ function trustedPaste(field: HTMLElement, items: Record<string, string>) {
       value: { types: Object.keys(items), files: [], getData: (type: string) => items[type] ?? "" },
     },
   });
-  act(() => field.dispatchEvent(event));
+  act(() => {
+    field.dispatchEvent(event);
+  });
 }
 
 describe("negotiated phone viewer wire", () => {
@@ -635,17 +650,23 @@ describe("negotiated phone viewer wire", () => {
   it("cancels composition and resets input when the keyboard blurs", async () => {
     const field = await negotiatedPhone();
     act(() => field.focus());
-    act(() => field.dispatchEvent(composition("compositionstart", "")));
+    act(() => {
+      field.dispatchEvent(composition("compositionstart", ""));
+    });
     proxyInput(field, "に", "insertCompositionText", true);
     act(() => field.blur());
-    act(() => field.dispatchEvent(composition("compositionend", "に")));
+    act(() => {
+      field.dispatchEvent(composition("compositionend", "に"));
+    });
     expect(remoteEvents()).toEqual([]);
     expect(sockets[0]!.sent.at(-1)).toEqual({ type: "display.input-reset" });
     expect(document.querySelector("[data-remote-preedit]")).toBeNull();
   });
   it("keeps preedit local at the mapped caret and commits once at the old context", async () => {
     const field = await negotiatedPhone();
-    act(() => field.dispatchEvent(composition("compositionstart", "")));
+    act(() => {
+      field.dispatchEvent(composition("compositionstart", ""));
+    });
     proxyInput(field, "に", "insertCompositionText", true);
     expect(remoteEvents()).toEqual([]);
     expect(document.querySelector("[data-remote-preedit]")?.textContent).toBe("に");
@@ -658,7 +679,9 @@ describe("negotiated phone viewer wire", () => {
         context: { ...editingContext, contextId: "00000000-0000-4000-8000-000000000002" },
       }),
     );
-    act(() => field.dispatchEvent(composition("compositionend", "に")));
+    act(() => {
+      field.dispatchEvent(composition("compositionend", "に"));
+    });
     expect(remoteEvents()).toEqual([
       {
         kind: "edit",
@@ -673,7 +696,9 @@ describe("negotiated phone viewer wire", () => {
       value: { writeViewerClipboard: write },
     });
     const field = await negotiatedPhone();
-    act(() => field.dispatchEvent(new Event("cut", { bubbles: true, cancelable: true })));
+    act(() => {
+      field.dispatchEvent(new Event("cut", { bubbles: true, cancelable: true }));
+    });
     await settle();
     expect(remoteEvents()).toEqual([]);
     act(() =>
@@ -688,7 +713,9 @@ describe("negotiated phone viewer wire", () => {
         displayCut: 1,
       }),
     );
-    act(() => field.dispatchEvent(new Event("cut", { bubbles: true, cancelable: true })));
+    act(() => {
+      field.dispatchEvent(new Event("cut", { bubbles: true, cancelable: true }));
+    });
     const batch = inputs().at(-1)!;
     expect(batch.events).toEqual([{ kind: "cut", contextId: editingContext.contextId }]);
     act(() =>
@@ -720,7 +747,9 @@ describe("negotiated phone viewer wire", () => {
           displayCut: 1,
         }),
       );
-      act(() => field.dispatchEvent(new Event("cut", { bubbles: true, cancelable: true })));
+      act(() => {
+        field.dispatchEvent(new Event("cut", { bubbles: true, cancelable: true }));
+      });
       const sequence = inputs().at(-1)!.sequence;
       const clipboard = { type: "display.clipboard", sequence, outcome: "refused" };
       const receipt = {
@@ -753,7 +782,7 @@ describe("negotiated phone viewer wire", () => {
       }),
     );
     const canvas = document.querySelector("canvas")!;
-    act(() =>
+    act(() => {
       canvas.dispatchEvent(
         new MouseEvent("contextmenu", {
           bubbles: true,
@@ -761,8 +790,8 @@ describe("negotiated phone viewer wire", () => {
           clientX: 10,
           clientY: 20,
         }),
-      ),
-    );
+      );
+    });
     const cut = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
       (item) => item.textContent === "Cut",
     );
@@ -793,7 +822,7 @@ describe("negotiated phone viewer wire", () => {
       });
     });
     await settle();
-    act(() =>
+    act(() => {
       document.querySelector("canvas")!.dispatchEvent(
         new MouseEvent("contextmenu", {
           bubbles: true,
@@ -801,8 +830,8 @@ describe("negotiated phone viewer wire", () => {
           clientX: 10,
           clientY: 20,
         }),
-      ),
-    );
+      );
+    });
     expect(
       Object.fromEntries(
         [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].map((item) => [
@@ -819,7 +848,9 @@ describe("negotiated phone viewer wire", () => {
       value: { writeViewerClipboard: write },
     });
     const field = await negotiatedPhone();
-    act(() => field.dispatchEvent(new Event("copy", { bubbles: true, cancelable: true })));
+    act(() => {
+      field.dispatchEvent(new Event("copy", { bubbles: true, cancelable: true }));
+    });
     const batch = inputs().at(-1)!;
     expect(batch.events).toEqual([{ kind: "copy" }]);
     act(() =>
@@ -842,7 +873,9 @@ describe("negotiated phone viewer wire", () => {
         text: "unsolicited",
       }),
     );
-    act(() => field.dispatchEvent(new KeyboardEvent("keydown", { key: "F6", bubbles: true })));
+    act(() => {
+      field.dispatchEvent(new KeyboardEvent("keydown", { key: "F6", bubbles: true }));
+    });
     act(() =>
       sockets[0]!.deliver({
         type: "display.clipboard",
@@ -908,29 +941,31 @@ describe("negotiated phone viewer wire", () => {
 });
 
 async function macOwner() {
-  const machine = client
-    .getSnapshot()
-    .machines.find((machine) =>
-      machine.computerUse?.sessions.some((session) => !session.display && session.apps.length),
-    );
-  const app = machine?.computerUse?.sessions.find((session) => !session.display)?.apps[0];
-  if (!machine || !app) throw new Error("No Mac fixture");
-  const view = await client.openComputerView(machine.id, { kind: "app", app });
+  const approved = (await client.listApprovedComputerApps()).find(
+    (app) => app.target.kind === "app",
+  );
+  if (approved?.target.kind !== "app") throw new Error("No Mac fixture");
+  const view = await ownView({
+    kind: "window",
+    computerId: DeviceIdSchema.parse(approved.machineId),
+    bundleId: approved.target.app.bundleId,
+  });
   await settle();
-  const destination = ownerViewDestination(view);
-  if (destination.kind !== "app") throw new Error("No owner app destination");
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
   act(() =>
     root!.render(
       <OwnerView
-        destination={destination}
         hostClient={client}
         hostConnected
+        machineId={view.machineId}
         marks={null}
         leading={null}
+        onReopen={async () => undefined}
+        phone={false}
         place={null}
+        source={{ kind: "owner-view", viewId: view.viewId, generation: view.generation }}
         trailing={null}
       />,
     ),
@@ -1058,7 +1093,9 @@ describe("Mac owner viewer", () => {
     const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 78 });
     // happy-dom's WheelEvent inherits UIEvent and omits MouseEvent coordinates.
     Object.defineProperties(wheel, { clientX: { value: 270 }, clientY: { value: 390 } });
-    act(() => canvas().dispatchEvent(wheel));
+    act(() => {
+      canvas().dispatchEvent(wheel);
+    });
     expect(remoteEvents().some((event) => event.kind === "scroll")).toBe(false);
     act(() => {
       for (const batch of inputs())
@@ -1115,7 +1152,7 @@ describe("Mac owner viewer", () => {
   it("releases held mouse and keys before reset when leaving the view", async () => {
     const field = await negotiatedMacOwner();
     hardware(field, "F2", "F2");
-    act(() =>
+    act(() => {
       canvas().dispatchEvent(
         new PointerEvent("pointerdown", {
           bubbles: true,
@@ -1127,9 +1164,9 @@ describe("Mac owner viewer", () => {
           clientX: 270,
           clientY: 390,
         }),
-      ),
-    );
-    act(() =>
+      );
+    });
+    act(() => {
       canvas().dispatchEvent(
         new MouseEvent("mousedown", {
           bubbles: true,
@@ -1140,8 +1177,8 @@ describe("Mac owner viewer", () => {
           clientX: 270,
           clientY: 390,
         }),
-      ),
-    );
+      );
+    });
     act(() => root!.unmount());
     root = null;
     expect(remoteEvents()).toContainEqual(
@@ -1156,6 +1193,60 @@ describe("Mac owner viewer", () => {
 });
 
 describe("phone owner controls", () => {
+  it("offers only the navigation and power the Host advertises for the phone", () => {
+    const nav = vi.fn();
+    const power = vi.fn();
+    const display = {
+      snapshot: { input: "available", power: "available", display: { state: "live" } },
+      geometry: 3,
+      generation: 3,
+      input: { nav },
+      lease: { power },
+      viewportEnabled: false,
+      receipt: null,
+    } as unknown as Parameters<typeof PhoneControlBar>[0]["display"];
+    const iphone = mockIphoneScreenDevice("ready").phoneDisplay!;
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    act(() => root!.render(<PhoneControlBar display={display} phone={iphone} />));
+    expect(
+      [...container.querySelectorAll("button")].map((b) => b.getAttribute("aria-label")),
+    ).toEqual(["Home"]);
+    act(() => button("Home").click());
+    expect(nav).toHaveBeenCalledWith(3, "home");
+    act(() =>
+      root!.render(
+        <PhoneControlBar
+          display={display}
+          phone={{ ...iphone, actions: iphone.actions.filter((action) => action !== "navigate") }}
+        />,
+      ),
+    );
+    expect(container.querySelector("button")).toBeNull();
+    act(() =>
+      root!.render(
+        <PhoneControlBar
+          display={display}
+          phone={{
+            ...iphone,
+            navigationButtons: [
+              { id: "back", label: "Back" },
+              { id: "home", label: "Home" },
+              { id: "side", label: "Side button" },
+            ],
+            lock: true,
+          }}
+        />,
+      ),
+    );
+    expect(
+      [...container.querySelectorAll("button")].map(
+        (b) => b.textContent || b.getAttribute("aria-label"),
+      ),
+    ).toEqual(["Lock phone", "Back", "Home"]);
+  });
+
   it("follows lease input and power availability through screen-off and a locked screen", async () => {
     const pool = sharedDisplayStreams(client);
     const retain = pool.retain.bind(pool);
@@ -1188,20 +1279,20 @@ describe("phone owner controls", () => {
       (app) => app.machineId === machine.id && app.target.kind === "phone",
     )?.target;
     if (!target) throw new Error("Missing approved phone");
-    const view = await client.openComputerView(machine.id, target);
-    const destination = ownerViewDestination(view);
-    if (destination.kind !== "phone") throw new Error("Missing phone destination");
+    const view = await ownView({ kind: "phone", computerId: DeviceIdSchema.parse(machine.id) });
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
     act(() =>
       root!.render(
         <OwnerView
-          destination={destination}
           hostClient={client}
           hostConnected
+          machineId={view.machineId}
           marks={null}
           leading={null}
+          onReopen={async () => undefined}
+          phone
           trailing={null}
           place={null}
           source={{ kind: "owner-view", viewId: view.viewId, generation: view.generation }}
@@ -1262,12 +1353,38 @@ it.each([
   "denial-before-session-removal",
   "protected",
 ])("keeps live native pixels through binding recovery and clears %s", async (refusal) => {
+  // The pane holds the picture; the folded picture only reads it, as in a conversation.
+  function Pane({
+    folded = false,
+    runId,
+    threadId,
+  }: {
+    /** A second form of the place, as one folding into the head mounts. */
+    readonly folded?: boolean;
+    readonly runId: string;
+    readonly threadId: string;
+  }) {
+    const decoding = useDisplayDecoding(true);
+    const picture = useRunPlacePicture(client, threadId, runId, true, decoding !== null);
+    return (
+      <RunPlacePictureScope
+        decoding={decoding}
+        enabled
+        hostClient={client}
+        picture={picture}
+        threadId={threadId}
+      >
+        <LivePlace hostClient={client} runId={runId} threadId={threadId} />
+        {folded ? <LivePlace hostClient={client} runId={runId} threadId={threadId} /> : null}
+      </RunPlacePictureScope>
+    );
+  }
   const { machine, sessionId } = phone();
   const session = machine.computerUse!.sessions[0]!;
   const runId = session.runId,
     threadId = session.threadId;
   client.enterPlace(runId, threadId, {
-    place: { kind: "phone", machineId: RunnerIdSchema.parse(machine.id), display: "main" },
+    place: { kind: "phone", machineId: DeviceIdSchema.parse(machine.id), display: "main" },
     title: "Phone",
     site: null,
   });
@@ -1281,15 +1398,34 @@ it.each([
   const node = document.createElement("div");
   document.body.append(node);
   root = createRoot(node);
-  await act(async () =>
-    root!.render(<LivePlace hostClient={client} runId={runId} threadId={threadId} />),
-  );
+  await act(async () => root!.render(<Pane runId={runId} threadId={threadId} />));
   await vi.waitFor(async () => {
     await act(async () => {});
-    expect(node.querySelector(".phone-display__picture--hidden")).toBeNull();
+    expect(node.querySelector(".place-canvas--hidden")).toBeNull();
     expect(node.querySelector("canvas")?.width).toBe(360);
   });
   const canvas = node.querySelector("canvas");
+  if (refusal === "ownership") {
+    // A network change replaces the socket under the same decoder: the old picture stays
+    // on screen but is not current until the new socket's picture is drawn.
+    await vi.waitFor(() => expect(runPlacePicture(client, threadId, runId).fresh).toBe(true));
+    decoder.blocked = true;
+    decoder.pending.length = 0;
+    await act(async () => sharedDisplayStreams(client).reconnect());
+    await vi.waitFor(() =>
+      expect(decoder.pending.length, "reconnected stream never submitted a frame").toBeGreaterThan(
+        0,
+      ),
+    );
+    await act(async () => {});
+    expect(runPlacePicture(client, threadId, runId).fresh).toBe(false);
+    decoder.blocked = false;
+    await act(async () => decoder.pending.splice(0).forEach((output) => output()));
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(runPlacePicture(client, threadId, runId).fresh).toBe(true);
+    });
+  }
   const move = async (machines: HostSnapshot["machines"]) =>
     act(async () => {
       snapshot = { ...snapshot, machines };
@@ -1304,7 +1440,7 @@ it.each([
         generation: 1,
       }),
     );
-    expect(node.querySelector(".phone-display__picture--hidden")).not.toBeNull();
+    expect(node.querySelector(".place-canvas--hidden")).not.toBeNull();
     return;
   }
   const denied = {
@@ -1318,7 +1454,7 @@ it.each([
   };
   if (refusal === "denial-before-release" || refusal === "denial-before-session-removal") {
     await move([denied]);
-    expect(node.querySelector(".phone-display__picture--hidden")).not.toBeNull();
+    expect(node.querySelector(".place-canvas--hidden")).not.toBeNull();
     expect(sockets.at(-1)?.closed).toBe(true);
     return;
   }
@@ -1328,30 +1464,44 @@ it.each([
   ]) {
     await move([changed]);
     expect(node.querySelector("canvas")).toBe(canvas);
-    expect(node.querySelector(".phone-display__picture--hidden")).toBeNull();
+    expect(node.querySelector(".place-canvas--hidden")).toBeNull();
     expect(sockets.at(-1)?.closed).toBe(true);
     expect(node.querySelector(".viewfinder--still")).not.toBeNull();
   }
+  // A form mounted with no stream to decode draws the picture the conversation kept, at once.
+  await act(async () => root!.render(<Pane folded runId={runId} threadId={threadId} />));
+  const formed = node.querySelectorAll("canvas")[1];
+  expect(formed?.width).toBe(360);
+  expect(formed?.classList.contains("place-canvas--hidden")).toBe(false);
+  expect(node.querySelector(".viewfinder__glyph")).toBeNull();
   if (refusal === "denial-after-release") {
     await move([denied]);
-    expect(node.querySelector(".phone-display__picture--hidden")).not.toBeNull();
+    expect(node.querySelector(".place-canvas--hidden")).not.toBeNull();
     return;
   }
   decoder.blocked = true;
+  // A replacement stream that goes away before it draws leaves the kept picture in place.
+  await move([machine]);
+  await move([{ ...machine, computerUse: { ...machine.computerUse!, sessions: [] } }]);
+  decoder.pending.length = 0;
+  await act(async () => root!.render(<Pane runId={runId} threadId={threadId} />));
+  await act(async () => root!.render(<Pane folded runId={runId} threadId={threadId} />));
+  expect(node.querySelectorAll("canvas")[1]?.width).toBe(360);
+  await act(async () => root!.render(<Pane runId={runId} threadId={threadId} />));
   await move([machine]);
   expect(node.querySelector("canvas")).toBe(canvas);
-  expect(node.querySelector(".phone-display__picture--hidden")).toBeNull();
+  expect(node.querySelector(".place-canvas--hidden")).toBeNull();
   await vi.waitFor(() =>
     expect(decoder.pending.length, "replacement stream never submitted a frame").toBeGreaterThan(0),
   );
   await act(async () => decoder.pending.splice(0).forEach((output) => output()));
   await vi.waitFor(async () => {
     await act(async () => {});
-    expect(node.querySelector(".phone-display__picture--hidden")).toBeNull();
+    expect(node.querySelector(".place-canvas--hidden")).toBeNull();
     expect(node.querySelector(".viewfinder--still")).toBeNull();
   });
   await move([{ ...machine, ownership: "mine", computerUse: null }]);
-  expect(node.querySelector(".phone-display__picture--hidden")).not.toBeNull();
+  expect(node.querySelector(".place-canvas--hidden")).not.toBeNull();
   expect(node.querySelector("canvas")).toBe(canvas);
   expect(sessionId).toBeDefined();
 });

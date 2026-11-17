@@ -1,3 +1,4 @@
+import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
 import {
   loadOrCreateHostKeys,
@@ -19,7 +20,8 @@ import { hostInternalRoutePaths } from "./internal-routes.js";
 import { injectRpcRequest } from "./test-host-api-request.js";
 import {
   createId,
-  emptyAutomaticModelConfig,
+  DeviceIdSchema,
+  RunnerIdSchema,
   emptyExecutionPreferences,
   OpensteerError,
   personalRemoteAuthorizationScheme,
@@ -36,9 +38,10 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { IntegrationConnectionAuthStore, type OpensteerStore } from "@opensteer/database";
-import { hostApiVersion } from "@opensteer/deployment-authority";
+import { hostApiVersion, minimumHostApiVersion } from "@opensteer/deployment-authority";
 import { createIntegrationId } from "@opensteer/integration-core";
 import {
+  machineAccessPolicyDefault,
   agentToolPayloadMaxSerializedBytes,
   HarnessInstanceCatalogSchema,
   hostApiVersionHeader,
@@ -127,6 +130,68 @@ function createHostServer(dependencies: HostServerTestOverrides) {
       listPendingRunnerEnrollments: async () => [],
       listRunners: async () => ({ nextCursor: null, runners: [] }),
       listActiveShellSessions: async () => [],
+      requireSelfDeviceId: async (runnerId: RunnerId) => DeviceIdSchema.parse(runnerId),
+      getDeviceSelfRunnerId: async (deviceId: string) => RunnerIdSchema.parse(deviceId),
+      listDevices: async (input: Parameters<OpensteerStore["listDevices"]>[0]) => ({
+        nextCursor: null,
+        devices: (
+          await store.listRunners({
+            ownerId: input.ownerId,
+            includeDeployment: input.includeDeployment,
+            includeOtherOwners: true,
+            limit: input.limit,
+            ...(input.after ? { after: RunnerIdSchema.parse(input.after) } : {}),
+          })
+        ).runners
+          .filter((runner) => runner.revokedAt === null)
+          .map((runner) => ({
+            id: DeviceIdSchema.parse(runner.id),
+            kind: runner.kind === "main" ? ("home" as const) : ("computer" as const),
+            name: runner.name,
+            platform: runner.device?.platform ?? null,
+            form: runner.device?.form ?? null,
+            ownerKind: runner.ownerKind,
+            ownerUserId: runner.ownerUserId,
+            removedAt: null,
+            accessPolicy: runner.accessPolicy ?? machineAccessPolicyDefault,
+            accessPolicyRevision: runner.accessPolicyRevision ?? 1,
+          })),
+      }),
+      listDeviceDrivers: async (input: Parameters<OpensteerStore["listDeviceDrivers"]>[0] = {}) => {
+        const ids = input.deviceId
+          ? [RunnerIdSchema.parse(input.deviceId)]
+          : input.runnerId
+            ? [input.runnerId]
+            : (
+                await store.listRunners({
+                  ownerId: fixtureOwnerId,
+                  includeDeployment: true,
+                  includeOtherOwners: true,
+                  limit: 100,
+                })
+              ).runners
+                .filter((runner) => runner.revokedAt === null)
+                .map((runner) => runner.id);
+        return ids.map((runnerId) => ({
+          deviceId: DeviceIdSchema.parse(runnerId),
+          runnerId,
+          role: "self" as const,
+          generation: 1,
+          detachedAt: null,
+        }));
+      },
+      effectiveDeviceOwners: async (ids: readonly string[]) =>
+        new Map(
+          await Promise.all(
+            ids.map(
+              async (id) =>
+                [
+                  DeviceIdSchema.parse(id),
+                  await store.effectiveMachineOwner(RunnerIdSchema.parse(id)),
+                ] as const,
+            ),
+          ),
+        ),
     },
     complete.store,
   ) as typeof complete.store;
@@ -151,11 +216,16 @@ function createHostServer(dependencies: HostServerTestOverrides) {
           } as HostAuthenticator),
     browser: Object.assign(
       {
+        latestTabPlaces: async () => [],
         withRunnerAdmission: async <T>(_runnerId: RunnerId, action: () => Promise<T>) => action(),
       },
       complete.browser,
     ),
     runners,
+    computerApps: Object.assign(
+      new ComputerAppHub({ knownDefinitionIds: () => new Set(), onChanged: () => undefined }),
+      complete.computerApps,
+    ),
     store,
   });
 }
@@ -381,11 +451,12 @@ describe("Host signing keys", () => {
     try {
       const discovery = await app.inject({ method: "GET", url: "/.well-known/opensteer" });
       expect(discovery.statusCode).toBe(200);
-      expect(discovery.json().apiVersion).toBe(hostApiVersion);
+      expect(discovery.json().apiVersion).toBe(minimumHostApiVersion);
       expect(discovery.headers["cache-control"]).toBe("no-store");
       expect(discovery.json()).toEqual({
         kind: "personal",
-        apiVersion: hostApiVersion,
+        apiVersion: minimumHostApiVersion,
+        currentApiVersion: hostApiVersion,
         authority: testDiscovery,
         bootstrapMethods: ["password"],
         capabilities: [
@@ -394,6 +465,7 @@ describe("Host signing keys", () => {
           "task-attachments",
           "voice-run-v1",
           "thread-titles-v1",
+          "message-origin-v1",
           "task-marks-v1",
           "task-family-v1",
           "snapshot-messages-omit-v1",
@@ -538,13 +610,15 @@ describe("Host signing keys", () => {
       const discovery = await app.inject({ method: "GET", url: "/.well-known/opensteer" });
 
       expect(discovery.json()).toMatchObject({
-        apiVersion: hostApiVersion,
+        apiVersion: minimumHostApiVersion,
+        currentApiVersion: hostApiVersion,
         capabilities: [
           "devices-v1",
           "automatic-models-v1",
           "task-attachments",
           "voice-run-v1",
           "thread-titles-v1",
+          "message-origin-v1",
           "task-marks-v1",
           "task-family-v1",
           "snapshot-messages-omit-v1",
@@ -638,8 +712,9 @@ describe("rpc envelope", () => {
     const listRunners = vi.fn(async () => ({ nextCursor: null, runners: [] as const }));
     const app = await machinesServer({ authenticateSession, listRunners });
     try {
+      // Every version below the window; the window itself is served.
       for (const legacyHostApiVersion of Array.from(
-        { length: hostApiVersion - 1 },
+        { length: minimumHostApiVersion - 1 },
         (_, index) => index + 1,
       )) {
         const legacyEpoch = await injectRpcRequest(
@@ -690,7 +765,9 @@ describe("rpc envelope", () => {
     const listRunners = vi.fn(async () => ({ nextCursor: null, runners: [] as const }));
     const app = await machinesServer({ listRunners });
     try {
-      const response = await injectRpcRequest(app, "machines.list", { futureClientField: true });
+      const response = await injectRpcRequest(app, "machines.list", {
+        futureClientField: true,
+      });
       expect(response.statusCode).toBe(400);
       expect(response.json()).toMatchObject({ error: { code: "bad_request" }, ok: false });
       expect(listRunners).not.toHaveBeenCalled();
@@ -788,7 +865,9 @@ describe("rpc envelope", () => {
       user: testAuthenticatedSession(ownerId).user,
     };
     const runnerId = createId("runner");
-    const revokeRunner = vi.fn(async () => ({
+    const removeDevice = vi.fn(async () => ({
+      removedDeviceIds: [],
+      detachedDeviceBindings: [],
       endedSessionIds: [],
       cancelledRequestIds: [],
       closedBrowserSessions: [],
@@ -807,7 +886,7 @@ describe("rpc envelope", () => {
       channels: { relay: { forget: vi.fn() }, service: {} } as never,
       browser: { abandonSession: vi.fn(), profilesRemoved: vi.fn(async () => undefined) } as never,
       runners: { revoke: revokeLiveRunner } as never,
-      store: { revokeRunner } as never,
+      store: { removeDevice } as never,
     });
     try {
       const response = await injectRpcRequest(app, "commands.dispatch", {
@@ -816,8 +895,7 @@ describe("rpc envelope", () => {
         type: "machine.revoke",
       });
       expect(response.statusCode, response.body).toBe(200);
-      expect(revokeRunner).toHaveBeenCalledWith(runnerId, ownerId, {
-        allowDeployment: true,
+      expect(removeDevice).toHaveBeenCalledWith(runnerId, ownerId, {
         administration: undefined,
       });
       expect(revokeLiveRunner).toHaveBeenCalledWith(runnerId);
@@ -901,7 +979,9 @@ describe("rpc envelope", () => {
       realtime: testRealtime({ publish }),
       runners: { revoke: vi.fn(async () => undefined) } as never,
       store: {
-        revokeRunner: vi.fn(async () => ({
+        removeDevice: vi.fn(async () => ({
+          removedDeviceIds: [],
+          detachedDeviceBindings: [],
           endedSessionIds: [],
           cancelledRequestIds: [],
           closedBrowserSessions: [],
@@ -929,7 +1009,7 @@ describe("rpc envelope", () => {
   it("surfaces the refusal to retire the computer a Personal Deployment runs on", async () => {
     const ownerId = fixtureOwnerId;
     const runnerId = createId("runner");
-    const revokeRunner = vi.fn(async () => {
+    const removeDevice = vi.fn(async () => {
       throw new OpensteerError({
         code: "forbidden",
         message: "This computer runs the Deployment itself and cannot be removed",
@@ -945,7 +1025,7 @@ describe("rpc envelope", () => {
       channels: { relay: { forget: vi.fn() }, service: {} } as never,
       browser: { abandonSession: vi.fn() } as never,
       runners: { revoke: revokeLiveRunner } as never,
-      store: { revokeRunner } as never,
+      store: { removeDevice } as never,
     });
     try {
       const response = await injectRpcRequest(app, "commands.dispatch", {
@@ -1001,20 +1081,28 @@ describe("rpc envelope", () => {
       } as never,
       store: {
         effectiveMachineOwners: async () =>
-          new Map([[withShell, { effectiveOwner: ownerId, ownerKind: "user" }]]),
-        listActiveShellSessions: async () => [
-          {
-            bytesIn: 0,
-            bytesOut: 0,
-            callerMachineName: "cloud-1",
-            id: sessionId,
-            requestedBy: ownerId,
-            runId: createId("run"),
-            startedAt: new Date().toISOString(),
-            threadId: createId("thread"),
-            threadTitle: "Fix the deploy",
-          },
-        ],
+          new Map(
+            [withShell, withoutShell].map((id) => [
+              id,
+              { effectiveOwner: ownerId, ownerKind: "user" },
+            ]),
+          ),
+        listActiveShellSessions: async (runnerId: RunnerId) =>
+          runnerId === withShell
+            ? [
+                {
+                  bytesIn: 0,
+                  bytesOut: 0,
+                  callerMachineName: "cloud-1",
+                  id: sessionId,
+                  requestedBy: ownerId,
+                  runId: createId("run"),
+                  startedAt: new Date().toISOString(),
+                  threadId: createId("thread"),
+                  threadTitle: "Fix the deploy",
+                },
+              ]
+            : [],
         listRunners: async () => ({
           nextCursor: null,
           runners: [runnerRow(withShell, true), runnerRow(withoutShell, false)],
@@ -1034,9 +1122,10 @@ describe("rpc envelope", () => {
         ownerReachAvailable: true,
         revision: 3,
       });
-      // A computer that does not advertise `shell` has no access to show, so the
-      // page never offers controls the write side would refuse.
-      expect(machines.find((machine) => machine.id === withoutShell)?.access).toBeNull();
+      expect(machines.find((machine) => machine.id === withoutShell)).toMatchObject({
+        access: { activeSessions: [], ownerReachAvailable: true, revision: 3 },
+        capabilities: { files: { supported: false, state: "unsupported" } },
+      });
     } finally {
       await app.close();
     }
@@ -1119,7 +1208,6 @@ describe("rpc envelope", () => {
                 ownerKind,
                 ownerUserId: ownerKind === "user" ? otherOwnerId : null,
                 revokedAt: null,
-                tabOpenedAt: new Date("2026-11-05T12:00:00.000Z"),
               },
             ],
           }),
@@ -1130,12 +1218,12 @@ describe("rpc envelope", () => {
         expect(response.statusCode, response.body).toBe(200);
         const machines = (
           rpcData(response) as {
-            machines: { apps: unknown; id: string; tabOpenedAt: string | null }[];
+            machines: { apps: unknown; id: string }[];
           }
         ).machines;
         const machine = machines.find((candidate) => candidate.id === runnerId);
         expect(machine?.apps).toEqual(expected ? apps : null);
-        expect(machine?.tabOpenedAt).toBe(expected ? "2026-11-05T12:00:00.000Z" : null);
+        expect(machine).not.toHaveProperty("tabOpenedAt");
       } finally {
         await app.close();
       }
@@ -1180,9 +1268,11 @@ describe("rpc envelope", () => {
       } as never,
       shellControl: shellControl as never,
       store: {
-        revokeRunner: vi.fn(async () => {
+        removeDevice: vi.fn(async () => {
           order.push("durable");
           return {
+            removedDeviceIds: [],
+            detachedDeviceBindings: [],
             endedSessionIds: [],
             cancelledRequestIds: [],
             closedBrowserSessions: [],
@@ -1226,7 +1316,7 @@ describe("rpc envelope", () => {
     const ownerId = fixtureOwnerId;
     const runnerId = createId("runner");
     const sessionId = ShellSessionIdSchema.parse(`shs_${globalThis.crypto.randomUUID()}`);
-    const updateMachineAccessPolicy = vi.fn(async () => ({
+    const updateDeviceAccessPolicy = vi.fn(async () => ({
       outcome: "updated" as const,
       revision: 8,
       changed: { shell: true, browser: false, apps: false },
@@ -1252,7 +1342,7 @@ describe("rpc envelope", () => {
       store: {
         effectiveMachineOwner: async () => ({ effectiveOwner: ownerId, ownerKind: "user" }),
         getShellSession: async () => ({ id: sessionId, runnerId }),
-        updateMachineAccessPolicy,
+        updateDeviceAccessPolicy,
       } as never,
     });
     try {
@@ -1272,7 +1362,7 @@ describe("rpc envelope", () => {
 
       expect(saved.statusCode, saved.body).toBe(200);
       expect(stopped.statusCode, stopped.body).toBe(200);
-      expect(updateMachineAccessPolicy).toHaveBeenCalledWith(
+      expect(updateDeviceAccessPolicy).toHaveBeenCalledWith(
         expect.objectContaining({
           idempotency: { key: "save-access-key", requestedBy: ownerId },
         }),
@@ -1297,7 +1387,7 @@ describe("rpc envelope", () => {
     // A store that records the key the way the real one does: the second save
     // with the same key commits nothing and replays the recorded answer.
     const recorded = new Map<string, { readonly outcome: "updated"; readonly revision: number }>();
-    const updateMachineAccessPolicy = vi.fn(
+    const updateDeviceAccessPolicy = vi.fn(
       async (input: { readonly idempotency: { readonly key: string } }) => {
         const replay = recorded.get(input.idempotency.key);
         if (replay)
@@ -1338,7 +1428,7 @@ describe("rpc envelope", () => {
       shellControl: shellControl as never,
       store: {
         effectiveMachineOwner: async () => ({ effectiveOwner: ownerId, ownerKind: "user" }),
-        updateMachineAccessPolicy,
+        updateDeviceAccessPolicy,
       } as never,
     });
     try {
@@ -1999,6 +2089,44 @@ describe("Request routes", () => {
           type: "request.respond",
         }),
       );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("settles a question an agent asked the person and wakes its task", async () => {
+    const asked = pendingRequestFixture("harness.input");
+    const request = {
+      ...asked,
+      kind: "person.question",
+      mode: "durable",
+      payload: { kind: "person.question" },
+    } as const;
+    const answerPersonQuestion = vi.fn(async () => ({ events: [], request }));
+    const notify = vi.fn();
+    const app = await requestRouteServer({
+      continuations: { notify },
+      ownerId: fixtureOwnerId,
+      request,
+      store: { requests: { answerPersonQuestion } },
+    });
+    const answer = { answers: { password: ["Friday"] }, kind: "form" } as const;
+    try {
+      const response = await injectRpcRequest(app, "commands.dispatch", {
+        idempotencyKey: "answer-question",
+        requestId: request.id,
+        response: answer,
+        type: "request.respond",
+      });
+      expect(response.statusCode).toBe(200);
+      expect(answerPersonQuestion).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requestId: request.id,
+          resolvedBy: fixtureOwnerId,
+          response: answer,
+        }),
+      );
+      expect(notify).toHaveBeenCalledOnce();
     } finally {
       await app.close();
     }
@@ -2773,7 +2901,7 @@ describe("durable harness catalogs", () => {
       findThreadCreationByIdempotency: async () => null,
       getEnvironment: async () => environment,
       getExecutionPreferences: async () => executionPreferences,
-      getAutomaticModelConfig: async () => emptyAutomaticModelConfig,
+      getAgentHomeSettings: async () => ({ settings: {}, file: { status: "missing" as const } }),
       hasActiveRunForHarness: async () => options.activeRun ?? false,
       getHarnessCatalog: async () => options.catalog ?? null,
       getHarnessInstance: async () => harness,
@@ -2901,7 +3029,7 @@ describe("durable harness catalogs", () => {
         } as never,
         browser: {
           latestPlaces: async () => [],
-          bootstrap: async () => ({
+          workspaceBootstrap: async () => ({
             available: false,
             placements: [],
             profileGrants: [],
@@ -4017,6 +4145,7 @@ function pendingRequestFixture(
         ? {
             fields: [
               {
+                custom: false,
                 id: "password",
                 multiSelect: false,
                 prompt: "Enter the password",

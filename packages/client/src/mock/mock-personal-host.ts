@@ -99,40 +99,42 @@ export class MockPersonalHost {
     const raw = url.searchParams.get("input") ?? init?.body;
     const payload = typeof raw === "string" ? JSON.parse(raw) : {};
     const result = await this.client.rpc[name](payload as never);
-    return Response.json(
-      result.ok && result.data && typeof result.data === "object" && "asOfSequence" in result.data
-        ? { ...result, data: { ...result.data, asOfSequence: this.#through } }
-        : result,
-    );
+    if (!result.ok || !result.data || typeof result.data !== "object") return Response.json(result);
+    return Response.json({
+      ...result,
+      data: {
+        ...result.data,
+        ...("asOfSequence" in result.data ? { asOfSequence: this.#through } : {}),
+        // Like the Host, its bootstrap names the version its sockets serve.
+        ...(name === "bootstrap.get" ? { apiVersion: this.apiVersion } : {}),
+      },
+    });
   };
+  /** The version this Host's bootstrap names and its sockets serve. */
+  apiVersion = hostApiVersion;
   readonly connect = (): MockPersonalSocket => {
     const socket = new MockPersonalSocket((data) => {
       const frame = ClientToHostMessageSchema.parse(JSON.parse(data));
       if (frame.type !== "client.subscribe") return;
-      if (
-        frame.cursor.deploymentId !== this.client.getSnapshot().deploymentId ||
-        frame.cursor.apiVersion !== hostApiVersion
-      ) {
+      if (frame.cursor.deploymentId !== this.client.getSnapshot().deploymentId) {
         socket.close();
         return;
       }
       this.#subscribed.set(socket, frame.deviceAccessRequests === "include");
-      const rows = this.#rows.filter(
-        (row) => BigInt(row.sequence) > BigInt(frame.cursor.afterSequence),
-      );
+      // Like the Host, state read at another version is replaced, not resumed.
+      const after = frame.cursor.apiVersion === this.apiVersion ? frame.cursor.afterSequence : "0";
+      const rows = this.#rows.filter((row) => BigInt(row.sequence) > BigInt(after));
       if (
-        frame.cursor.afterSequence !== "0" &&
+        after !== "0" &&
         rows.length <= 200 &&
         this.#rows.length > 0 &&
-        BigInt(frame.cursor.afterSequence) >= BigInt(this.#rows[0]!.sequence) - 1n
+        BigInt(after) >= BigInt(this.#rows[0]!.sequence) - 1n
       )
         socket.deliver({
           type: "host.events",
           events: rows
-            .filter((event) => this.#subscribed.get(socket) || !isDeviceAccessRequestEvent(event))
-            .map((event) =>
-              projectDeviceAccessRequestEvent(event, this.#subscribed.get(socket) === true),
-            ),
+            .filter((event) => this.#subscribed.get(socket) || !deviceAccessEvent(event))
+            .map((event) => projected(event, this.#subscribed.get(socket) === true)),
           throughSequence: this.#through,
         });
       else this.#snapshot(socket);
@@ -144,7 +146,11 @@ export class MockPersonalHost {
       );
       for (let start = 0; start < visits.length; start += 100)
         socket.deliver({ type: "host.thread-visits", visits: visits.slice(start, start + 100) });
-      socket.deliver({ type: "host.synchronized", sequence: this.#through });
+      socket.deliver({
+        type: "host.synchronized",
+        apiVersion: this.apiVersion,
+        sequence: this.#through,
+      });
     });
     this.sockets.add(socket);
     socket.addEventListener("close", () => {
@@ -175,8 +181,8 @@ export class MockPersonalHost {
       socket.deliver({
         type: "host.events",
         events: events
-          .filter((event) => supportsDeviceAccess || !isDeviceAccessRequestEvent(event))
-          .map((event) => projectDeviceAccessRequestEvent(event, supportsDeviceAccess)),
+          .filter((event) => supportsDeviceAccess || !deviceAccessEvent(event))
+          .map((event) => projected(event, supportsDeviceAccess)),
         throughSequence: through,
       });
   }
@@ -185,4 +191,14 @@ export class MockPersonalHost {
     for (const socket of this.sockets) socket.close();
     this.client.dispose();
   }
+}
+
+/** Tab place events carry no Request; only the rest pass through the device projection. */
+function deviceAccessEvent(event: AgentEventView): boolean {
+  return event.type !== "place.entered" && isDeviceAccessRequestEvent(event);
+}
+function projected(event: AgentEventView, include: boolean): AgentEventView {
+  return event.type === "place.entered"
+    ? event
+    : (projectDeviceAccessRequestEvent(event, include) as AgentEventView);
 }

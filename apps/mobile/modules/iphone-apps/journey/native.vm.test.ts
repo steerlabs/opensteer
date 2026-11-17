@@ -261,7 +261,7 @@ suite.sequential("production Swift core against real Host and PostgreSQL", () =>
       await waitForCondition(async () => {
         const { machines } = await testRpcData(
           host.origin,
-          "machines.list",
+          "machines.legacy.list",
           {},
           { headers: host.ownerHeaders },
         );

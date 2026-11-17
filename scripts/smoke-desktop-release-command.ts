@@ -104,17 +104,22 @@ export function command(
   timeout: number,
   roots: Set<number>,
   trace: Trace = () => {},
+  startup?: { readonly marker: string; readonly timeoutMs: number },
 ): Promise<string> {
   const startedAt = new Date().toISOString();
   const started = performance.now();
   trace({ event: "command.start", program, args, startedAt, timeout });
   return new Promise((resolve, reject) => {
     let spawnedAt: string | null = null;
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let startupOutput = "";
+    let startupFailed = false;
     const child = execFile(
       program,
       args,
       { timeout, killSignal: "SIGKILL", maxBuffer: 2 * 1024 * 1024 },
       (error, stdout, stderr) => {
+        clearTimeout(startupTimer);
         if (child.pid) roots.delete(child.pid);
         const status = {
           program,
@@ -128,7 +133,13 @@ export function command(
           killed: error?.killed ?? child.killed,
         };
         trace({ event: "command.end", ...status });
-        if (error)
+        if (startupFailed || (startup && !startupOutput.includes(startup.marker)))
+          reject(
+            Error(
+              `Observer interpreter did not start within ${startup!.timeoutMs}ms: ${JSON.stringify(status)}\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+            ),
+          );
+        else if (error)
           reject(
             Error(
               `${program}: ${JSON.stringify(status)}\n${error.message}\nstdout:\n${stdout}\nstderr:\n${stderr}`,
@@ -138,6 +149,12 @@ export function command(
       },
     );
     if (child.pid) roots.add(child.pid);
+    if (startup)
+      startupTimer = setTimeout(() => {
+        startupFailed = true;
+        trace({ event: "command.interpreter-timeout", program, timeoutMs: startup.timeoutMs });
+        child.kill("SIGKILL");
+      }, startup.timeoutMs);
     child.once("spawn", () => {
       spawnedAt = new Date().toISOString();
       trace({
@@ -148,9 +165,13 @@ export function command(
         elapsedMs: performance.now() - started,
       });
     });
-    child.stdout?.on("data", (chunk: Buffer) =>
-      trace({ event: "command.stdout", pid: child.pid, text: chunk.toString() }),
-    );
+    child.stdout?.on("data", (chunk: Buffer) => {
+      trace({ event: "command.stdout", pid: child.pid, text: chunk.toString() });
+      if (startup && !startupOutput.includes(startup.marker)) {
+        startupOutput += chunk.toString();
+        if (startupOutput.includes(startup.marker)) clearTimeout(startupTimer);
+      }
+    });
     child.stderr?.on("data", (chunk: Buffer) =>
       trace({ event: "command.stderr", pid: child.pid, text: chunk.toString() }),
     );

@@ -1,11 +1,9 @@
-import { seedBrowserSession } from "@opensteer/client/test-support";
+import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 import { act } from "react";
-import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 import {
   assignmentPresentation,
   HostClientRequestError,
@@ -54,13 +52,7 @@ afterEach(() => {
 async function setup() {
   client = new MockHostClient({ latencyMs: 0 });
   await client.load();
-  snapshot = seedBrowserSnapshot(
-    seedBrowserSnapshot(
-      { ...client.getSnapshot(), tabRestoreVersion: undefined } as HostSnapshot,
-      undefined,
-    ),
-  );
-  vi.spyOn(client, "browserTabs", "get").mockImplementation(() => snapshot.browserTabs!);
+  snapshot = client.getSnapshot();
   vi.spyOn(client, "getSnapshot").mockImplementation(() => snapshot);
   vi.spyOn(client, "subscribe").mockImplementation((listener) => {
     listeners.add(listener);
@@ -71,7 +63,7 @@ async function setup() {
 }
 async function emit(next: HostSnapshot) {
   await act(async () => {
-    snapshot = seedBrowserSnapshot(next);
+    snapshot = next;
     for (const listener of listeners) listener();
   });
 }
@@ -101,6 +93,15 @@ async function mount(action: ReviewedAction) {
   await press("Review");
   expect(document.querySelector("section")).not.toBeNull();
 }
+/** A delegated task the person may stop now. */
+function stoppableAssignment() {
+  const assignment = Object.values(snapshot.assignments).find((item) => {
+    const presentation = assignmentPresentation(item, snapshot);
+    return presentation.open && presentation.stopBlocked === null;
+  })!;
+  expect(assignment).toBeDefined();
+  return assignment;
+}
 async function press(label: string) {
   const button = [...document.querySelectorAll("button")].find(
     (item) => item.textContent === label,
@@ -110,11 +111,7 @@ async function press(label: string) {
 
 it("Expo dismisses a delegated Stop when the task settles, and a retained confirmation is harmless", async () => {
   await setup();
-  const assignment = Object.values(snapshot.assignments).find((item) => {
-    const presentation = assignmentPresentation(item, snapshot);
-    return presentation.open && presentation.stopBlocked === null;
-  })!;
-  expect(assignment).toBeDefined();
+  const assignment = stoppableAssignment();
   const cancel = vi.spyOn(client, "cancelAssignment");
   await mount({ kind: "stop-assignment", assignmentId: assignment.id });
   const retained = heldReview!;
@@ -128,31 +125,6 @@ it("Expo dismisses a delegated Stop when the task settles, and a retained confir
   expect(document.querySelector("section")).toBeNull();
   expect(await retained.confirm()).toBe(false);
   expect(cancel).not.toHaveBeenCalled();
-  expect(errors).not.toHaveBeenCalled();
-});
-
-it("Expo dismisses tab-close review when its holders change, without closing their replacement work", async () => {
-  await setup();
-  const session = snapshot.browserSessions.find(
-    (item) =>
-      item.state === "ready" &&
-      item.attachedRunIds.length > 0 &&
-      (item.browserTabs?.sessionTabs(item?.id) ?? []).length,
-  )!;
-  const close = vi.spyOn(client, "closeBrowserTab");
-  await mount({
-    kind: "close-tab",
-    sessionId: session.id,
-    tabId: (session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!.id,
-  });
-  await emit({
-    ...snapshot,
-    browserSessions: snapshot.browserSessions.map((item) =>
-      item.id === session.id ? { ...item, attachedRunIds: [] } : item,
-    ),
-  });
-  expect(document.querySelector("section")).toBeNull();
-  expect(close).not.toHaveBeenCalled();
   expect(errors).not.toHaveBeenCalled();
 });
 
@@ -206,22 +178,16 @@ it("a stale Mark Done is a no-op after the task starts work again", async () => 
 
 it("confirming twice dispatches once, while current failures are reported", async () => {
   await setup();
-  const session = snapshot.browserSessions.find(
-    (item) => item.state === "ready" && (item.browserTabs?.sessionTabs(item?.id) ?? []).length,
-  )!;
+  const assignment = stoppableAssignment();
   const failure = new Error("Host unavailable");
-  const close = vi.spyOn(client, "closeBrowserTab").mockRejectedValue(failure);
-  await mount({
-    kind: "close-tab",
-    sessionId: session.id,
-    tabId: (session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!.id,
-  });
+  const cancel = vi.spyOn(client, "cancelAssignment").mockRejectedValue(failure);
+  await mount({ kind: "stop-assignment", assignmentId: assignment.id });
   const confirm = document.querySelector<HTMLButtonElement>("section button:last-child")!;
   await act(async () => {
     confirm.click();
     confirm.click();
   });
-  expect(close).toHaveBeenCalledOnce();
+  expect(cancel).toHaveBeenCalledOnce();
   expect(errors).toHaveBeenCalledExactlyOnceWith(failure);
   expect(document.querySelector("section")).toBeNull();
 });
@@ -230,15 +196,9 @@ it.each(["viewer", "offline", "cancel", "unmount"] as const)(
   "dismisses and revokes a review on %s",
   async (change) => {
     await setup();
-    const session = snapshot.browserSessions.find(
-      (item) => item.state === "ready" && (item.browserTabs?.sessionTabs(item?.id) ?? []).length,
-    )!;
-    const close = vi.spyOn(client, "closeBrowserTab");
-    await mount({
-      kind: "close-tab",
-      sessionId: session.id,
-      tabId: (session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!.id,
-    });
+    const assignment = stoppableAssignment();
+    const cancel = vi.spyOn(client, "cancelAssignment");
+    await mount({ kind: "stop-assignment", assignmentId: assignment.id });
     const retained = heldReview!;
     if (change === "viewer") await emit({ ...snapshot, user: null });
     if (change === "offline") await emit({ ...snapshot, connection: "offline" });
@@ -249,79 +209,9 @@ it.each(["viewer", "offline", "cancel", "unmount"] as const)(
     }
     expect(document.querySelector("section")).toBeNull();
     expect(await retained.confirm()).toBe(false);
-    expect(close).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
   },
 );
-
-it("dismisses a tab review when its last-tab consequence changes", async () => {
-  await setup();
-  const session = snapshot.browserSessions.find(
-    (item) => item.state === "ready" && (item.browserTabs?.sessionTabs(item?.id) ?? []).length,
-  )!;
-  const tab = (session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!;
-  const close = vi.spyOn(client, "closeBrowserTab");
-  await mount({ kind: "close-tab", sessionId: session.id, tabId: tab.id });
-  const retained = heldReview!;
-  await emit({
-    ...snapshot,
-    browserSessions: snapshot.browserSessions.map((item) =>
-      item.id === session.id
-        ? seedBrowserSession(
-            { ...item },
-            {
-              ...item.browserTabs!.inventory(item.id)!,
-              inventoryRevision:
-                (item.browserTabs!.inventory(item.id)!.inventoryRevision ??
-                  item.browserTabs!.inventory(item.id)!.revision) + 1,
-              rows: [tab],
-            },
-          )
-        : item,
-    ),
-  });
-  expect(document.querySelector("section")).toBeNull();
-  expect(await retained.confirm()).toBe(false);
-  expect(close).not.toHaveBeenCalled();
-});
-
-it("keeps a tab review while the browser's other tabs open and close, and closes the current inventory", async () => {
-  await setup();
-  const session = snapshot.browserSessions.find(
-    (item) =>
-      item.state === "ready" && ((item.browserTabs?.sessionTabs(item?.id) ?? []).length ?? 0) > 1,
-  )!;
-  const [tab, other] = session.browserTabs?.sessionTabs(session?.id) ?? [];
-  const close = vi.spyOn(client, "closeBrowserTab").mockResolvedValue(undefined as never);
-  await mount({ kind: "close-tab", sessionId: session.id, tabId: tab!.id });
-  // An agent opens a tab and closes another while the question is up.
-  const changed = {
-    ...session.browserTabs!.inventory(session.id)!,
-    revision: session.browserTabs!.inventory(session.id)!.revision + 2,
-    inventoryRevision:
-      (session.browserTabs!.inventory(session.id)!.inventoryRevision ??
-        session.browserTabs!.inventory(session.id)!.revision) + 2,
-    rows: [
-      ...(session.browserTabs?.sessionTabs(session?.id) ?? []).filter(
-        (item) => item.id !== other!.id,
-      ),
-      { ...other!, id: BrowserSurfaceIdSchema.parse("agent-opened-tab") },
-    ],
-  };
-  await emit({
-    ...snapshot,
-    browserSessions: snapshot.browserSessions.map((item) =>
-      item.id === session.id ? seedBrowserSession({ ...item }, changed) : item,
-    ),
-  });
-  expect(document.querySelector("section")).not.toBeNull();
-  await press("Confirm");
-  expect(close).toHaveBeenCalledExactlyOnceWith(session.id, tab!.id, {
-    generation: changed.generation,
-    revision: changed.revision,
-    inventoryRevision: changed.inventoryRevision,
-  });
-  expect(errors).not.toHaveBeenCalled();
-});
 
 it("a delegated review closes when its summary's run ends before the worker has been observed", async () => {
   await setup();
@@ -349,24 +239,21 @@ it("a delegated review closes when its summary's run ends before the worker has 
 
 it("a Host conflict that reveals an already ended action is quiet", async () => {
   await setup();
-  const session = snapshot.browserSessions.find(
-    (item) => item.state === "ready" && (item.browserTabs?.sessionTabs(item?.id) ?? []).length,
-  )!;
-  vi.spyOn(client, "closeBrowserTab").mockRejectedValue(
+  const assignment = stoppableAssignment();
+  vi.spyOn(client, "cancelAssignment").mockRejectedValue(
     new HostClientRequestError({ code: "conflict", status: 409, message: "Already finished" }),
   );
   const refresh = vi.spyOn(client, "refresh").mockImplementation(async () => {
     snapshot = {
       ...snapshot,
-      browserSessions: snapshot.browserSessions.filter((item) => item.id !== session.id),
+      assignments: {
+        ...snapshot.assignments,
+        [assignment.id]: { ...assignment, status: "cancelled" },
+      },
     };
     for (const listener of listeners) listener();
   });
-  await mount({
-    kind: "close-tab",
-    sessionId: session.id,
-    tabId: (session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!.id,
-  });
+  await mount({ kind: "stop-assignment", assignmentId: assignment.id });
   await press("Confirm");
   expect(refresh).toHaveBeenCalledOnce();
   expect(errors).not.toHaveBeenCalled();
@@ -375,10 +262,7 @@ it("a Host conflict that reveals an already ended action is quiet", async () => 
 
 it("a current delegated Stop still stops exactly that task once", async () => {
   await setup();
-  const assignment = Object.values(snapshot.assignments).find((item) => {
-    const presentation = assignmentPresentation(item, snapshot);
-    return presentation.open && presentation.stopBlocked === null;
-  })!;
+  const assignment = stoppableAssignment();
   const cancel = vi.spyOn(client, "cancelAssignment");
   await mount({ kind: "stop-assignment", assignmentId: assignment.id });
   await press("Confirm");
@@ -389,12 +273,20 @@ it("a current delegated Stop still stops exactly that task once", async () => {
 
 it("an old app-view close cannot close a reopened generation", async () => {
   await setup();
-  const app = (await client.listApprovedComputerApps()).find((item) => item.target.kind === "app")!;
-  const view = await client.openComputerView(app.machineId, app.target);
+  const phone = (await client.listApprovedComputerApps()).find(
+    (item) => item.target.kind === "phone",
+  )!;
+  const tab = await client.openTab({
+    kind: "phone",
+    computerId: DeviceIdSchema.parse(phone.machineId),
+  });
+  const viewer = await client.activateTab(tab.tabId);
+  if (viewer.kind !== "phone") throw new Error("Expected a phone viewer");
+  const { view } = viewer;
   snapshot = {
     ...snapshot,
     machines: snapshot.machines.map((machine) =>
-      machine.id === app.machineId && machine.computerUse
+      machine.id === phone.machineId && machine.computerUse
         ? { ...machine, computerUse: { ...machine.computerUse, ownerViews: [view] } }
         : machine,
     ),
@@ -405,7 +297,7 @@ it("an old app-view close cannot close a reopened generation", async () => {
   await emit({
     ...snapshot,
     machines: snapshot.machines.map((machine) =>
-      machine.id === app.machineId && machine.computerUse
+      machine.id === phone.machineId && machine.computerUse
         ? {
             ...machine,
             computerUse: {

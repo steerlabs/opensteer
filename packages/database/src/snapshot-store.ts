@@ -1,3 +1,4 @@
+import { compactionReturnHint, compactionReturnHints } from "./compaction-eligibility.js";
 import { deploymentEventsAfter } from "./deployment-events.js";
 import { needsYouPage } from "./needs-you-store.js";
 import { personalSettings } from "./personal-settings-store.js";
@@ -65,7 +66,7 @@ import {
   threadProviderSessionSelection,
   threadContinuationIdentitySelection,
   threadsFromRows,
-  messageFromRow,
+  messageViewFromRow,
   threadRunQueueEntriesFromRows,
   threadFromRow,
   executionNodeFromRow,
@@ -260,10 +261,10 @@ export async function deploymentSnapshot(
             ? { deviceAccessRequests: options.deviceAccessRequests }
             : {}),
         }),
-        options.readResources({ database: transaction, ownerId, maxBytes: 128 * 1024 }),
+        options.readResources({ database: transaction, ownerId, maxBytes: 240 * 1024 }),
       ]);
       const tasks = { recent, active, done };
-      if (Buffer.byteLength(JSON.stringify(resources)) > 128 * 1024)
+      if (Buffer.byteLength(JSON.stringify(resources)) > 240 * 1024)
         throw new OpensteerError({
           code: "resource_exhausted",
           message: "Personal resources exceed the snapshot byte limit.",
@@ -323,8 +324,16 @@ export async function deploymentSnapshot(
           .$if(options.listedOnly === true, (query) => query.where("listed", "=", true))
           .executeTakeFirstOrThrow(),
       ]);
+      const hintRows = threadRows.slice(0, maxThreads);
+      const returnHints = await compactionReturnHints(
+        transaction,
+        hintRows.map(({ id }) => id),
+      );
       const threads = boundedSerializedPrefix(
-        threadsFromRows(threadRows.slice(0, maxThreads)),
+        threadsFromRows(hintRows).map((thread) => ({
+          ...thread,
+          returnHint: returnHints.get(thread.id) ?? null,
+        })),
         maxThreads,
         Math.min(192 * 1_024, maxSerializedBytes),
       );
@@ -389,7 +398,7 @@ export async function deploymentSnapshot(
       );
       let messagesDesc = boundedSerializedPrefix(
         messageRows.slice(0, maxMessages).map(({ policy, published, ...row }): MessageView => ({
-          ...messageFromRow(row),
+          ...messageViewFromRow(row),
           ...(row.addressedToUserId
             ? {
                 addressedToUserId: row.addressedToUserId,
@@ -561,7 +570,15 @@ export async function taskPageForUser(
           .execute(),
         tasks.select(({ fn }) => fn.countAll<string>().as("count")).executeTakeFirstOrThrow(),
       ]);
-      const threads = threadsFromRows(rows.slice(0, maxItems));
+      const hintRows = rows.slice(0, maxItems);
+      const returnHints = await compactionReturnHints(
+        transaction,
+        hintRows.map(({ id }) => id),
+      );
+      const threads = threadsFromRows(hintRows).map((thread) => ({
+        ...thread,
+        returnHint: returnHints.get(thread.id) ?? null,
+      }));
       const lines = await taskLines(
         transaction,
         threads.map(({ id }) => id),
@@ -830,7 +847,10 @@ export async function threadEventPageForOwner(
       return {
         asOfSequence: await deploymentHead(transaction),
         events,
-        thread: threadFromRow(thread),
+        thread: {
+          ...threadFromRow(thread),
+          returnHint: await compactionReturnHint(transaction, input.threadId),
+        },
         threadId: input.threadId,
         window: {
           byteCount: serializedArrayBytes(events),

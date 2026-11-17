@@ -1,3 +1,5 @@
+import { legacySelfConnection } from "./device-legacy-store.js";
+import { getDeviceSelfRunnerId } from "./device-inventory-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   administrationCommand,
@@ -11,17 +13,24 @@ import type { IntegrationOAuthAccountBinding } from "@opensteer/integration-core
 
 import { jsonValue } from "./store-primitives.js";
 import {
-  IntegrationConnectionSummarySchema,
+  DeviceIntegrationConnectionSummarySchema,
   IntegrationProviderSchema,
   integrationProviderIdentityAlreadyConnectedDetail,
   type IntegrationConnectionId,
   type IntegrationConnectionSummary,
+  type DeviceIntegrationConnectionSummary,
   type IntegrationOAuthApplicationSource,
   type IntegrationOAuthAttemptId,
   type IntegrationProvider,
   type IntegrationProviderApplication,
 } from "@opensteer/integration-core";
-import { OpensteerError, createId, type UserId } from "@opensteer/core";
+import {
+  DeviceIdSchema,
+  OpensteerError,
+  createId,
+  type DeviceId,
+  type UserId,
+} from "@opensteer/core";
 import { erasedIntegrationAuthAttemptPayload } from "./integration-auth-attempt-store.js";
 import { type Kysely, type Selectable, sql } from "kysely";
 import type {
@@ -29,6 +38,9 @@ import type {
   IntegrationConnectionTable,
   IntegrationProviderApplicationTable,
 } from "./schema.js";
+
+// The previous Host still inserts computer connections with only runner_id.
+export const computerConnectionDeviceId = sql<DeviceId | null>`case when integration_connections.connection_kind='computer' then coalesce(integration_connections.device_id,integration_connections.runner_id) end`;
 
 export interface StoredIntegrationSecret {
   readonly envelope: Buffer;
@@ -391,7 +403,7 @@ export class IntegrationStore {
       return null;
     }
     return {
-      connection: integrationConnectionFromRow(row),
+      connection: await legacySelfConnection(this.#database, integrationConnectionFromRow(row)),
       credentialGeneration: row.credentialGeneration,
       encryptedCredential: row.encryptedCredential,
       encryptionKeyVersion: row.encryptionKeyVersion,
@@ -824,11 +836,25 @@ export class IntegrationStore {
           input.ownerUserId,
           input.accountBinding,
         );
-      return integrationConnectionFromRow(connectionRow);
+      return legacySelfConnection(transaction, integrationConnectionFromRow(connectionRow));
     });
   }
 
   async listConnections(ownerUserId: UserId): Promise<readonly IntegrationConnectionSummary[]> {
+    const result = [];
+    for (const connection of await this.listDeviceConnections(ownerUserId)) {
+      if (
+        connection.computer &&
+        !(await getDeviceSelfRunnerId(this.#database, connection.computer.deviceId))
+      )
+        continue;
+      result.push(await legacySelfConnection(this.#database, connection));
+    }
+    return result;
+  }
+  async listDeviceConnections(
+    ownerUserId: UserId,
+  ): Promise<readonly DeviceIntegrationConnectionSummary[]> {
     const rows = await this.#database
       .selectFrom("integrationConnections")
       .selectAll()
@@ -1023,7 +1049,7 @@ export class IntegrationStore {
           targetType: "integration-connection",
         })
         .executeTakeFirstOrThrow();
-      return integrationConnectionFromRow(row);
+      return legacySelfConnection(transaction, integrationConnectionFromRow(row));
     });
   }
 }
@@ -1049,18 +1075,21 @@ function providerApplicationFromRow(
 
 export function integrationConnectionFromRow(
   row: Selectable<IntegrationConnectionTable>,
-): IntegrationConnectionSummary {
-  return IntegrationConnectionSummarySchema.parse({
+): DeviceIntegrationConnectionSummary {
+  const deviceId =
+    row.deviceId ??
+    (row.connectionKind === "computer" && row.runnerId ? DeviceIdSchema.parse(row.runnerId) : null);
+  return DeviceIntegrationConnectionSummarySchema.parse({
     accountIdentifier: row.accountIdentifier,
     applicationSource: row.applicationSource,
     authMethodId: row.authMethodId,
     authorizationDigest: row.authorizationDigest,
     computer:
-      row.connectionKind === "computer" && row.computerAccess && row.runnerId
+      row.connectionKind === "computer" && row.computerAccess && deviceId
         ? {
             access: row.computerAccess,
             app: row.computerApp,
-            runnerId: row.runnerId,
+            deviceId,
             blockedAt: row.computerBlockedAt?.toISOString() ?? null,
             policyRevision: row.computerPolicyRevision,
           }

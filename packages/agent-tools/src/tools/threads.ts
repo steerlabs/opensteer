@@ -4,6 +4,7 @@ import {
   ExecutionNodeIdSchema,
   DelegationModelChoiceSchema,
   HarnessInstanceIdSchema,
+  IsoDateTimeSchema,
   MessageIdSchema,
   RunIdSchema,
   ModelSelectionSchema,
@@ -31,66 +32,75 @@ import {
 export const threadWaitMaxMs = 100_000;
 const ThreadWaitTimeoutSchema = z.number().int().min(1).max(threadWaitMaxMs).default(50_000);
 
-export const thread_read = defineAgentTool({
-  name: "thread_read",
-  targetFields: ["threadId"],
-  title: "Read a Thread",
+function validateReadWindow(
+  input: {
+    textOffset?: number | undefined;
+    itemId?: string | undefined;
+    cursor?: string | undefined;
+    query?: string | undefined;
+    aroundMessageId?: string | undefined;
+    view: string;
+  },
+  ctx: z.RefinementCtx,
+) {
+  if (input.textOffset !== undefined && !input.itemId)
+    ctx.addIssue({ code: "custom", message: "textOffset needs itemId" });
+  if (input.itemId && (input.cursor || input.query || input.aroundMessageId))
+    ctx.addIssue({ code: "custom", message: "itemId excludes paging and search" });
+  if (input.view === "activity" && (input.query || input.aroundMessageId))
+    ctx.addIssue({ code: "custom", message: "Search requires messages view" });
+}
+const readInput = z
+  .strictObject({
+    taskId: ThreadIdSchema.optional(),
+    view: z.enum(["messages", "activity"]).default("messages"),
+    limit: z.number().int().min(1).max(100).default(20).describe("Max items."),
+    runLimit: z.number().int().min(1).max(50).default(10).describe("Max recent Runs."),
+    maxCharsPerItem: z
+      .number()
+      .int()
+      .min(1)
+      .max(50000)
+      .default(20000)
+      .describe("Max characters per item."),
+    itemId: z.string().trim().min(1).max(255).optional().describe("Read this one item."),
+    textOffset: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe("nextTextOffset of a cut-off item, with its itemId."),
+    cursor: CursorSchema.optional().describe(
+      "nextCursor from the previous page; keep view and query.",
+    ),
+    query: z.string().trim().min(1).max(256).optional().describe("Search message text."),
+    aroundMessageId: MessageIdSchema.optional().describe(
+      "Messages around this one; excludes query and cursor.",
+    ),
+  })
+  .superRefine(validateReadWindow);
+export const opensteer_task_read = defineAgentTool({
+  name: "opensteer_task_read",
+  targetFields: ["taskId"],
+  title: "Read a task",
   description:
-    "Read a reachable Thread or subagentId; `self` this Thread. `messages` (default): published messages, newest first. `activity`: also its tools, places, apps and Requests. A subagent returns its own messages and tools, without reasoning. `recentRuns` and `recentPlaces` always come back; a place is recent, never proof it is still open, and its `runId` goes to `person_show`. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `before=nextBefore`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Tool text is clipped unless you name its `itemId`; sign-in, card and `computer` calls show status only.",
-  input: z
-    .strictObject({
-      threadId: z.union([ThreadIdSchema, z.literal("self")]).optional(),
-      subagentId: ExecutionNodeIdSchema.optional(),
-      view: z.enum(["messages", "activity"]).default("messages"),
-      limit: z.number().int().min(1).max(100).default(20).describe("Max items."),
-      runLimit: z.number().int().min(1).max(50).default(10).describe("Max recent Runs."),
-      maxCharsPerItem: z
-        .number()
-        .int()
-        .min(1)
-        .max(50_000)
-        .default(20_000)
-        .describe("Max chars per item."),
-      itemId: z.string().trim().min(1).max(255).optional().describe("Read this one item."),
-      textOffset: z.number().int().nonnegative().optional().describe("With itemId."),
-      before: CursorSchema.optional().describe("From nextBefore; keep view and query."),
-      query: z.string().trim().min(1).max(256).optional().describe("Search message text."),
-      aroundMessageId: MessageIdSchema.optional().describe(
-        "Messages around this one; excludes query and before.",
-      ),
-    })
-    .superRefine((input, context) => {
-      if (!!input.threadId === !!input.subagentId)
-        context.addIssue({ code: "custom", message: "Name exactly one threadId or subagentId" });
-      if (input.subagentId && (input.query || input.aroundMessageId))
-        context.addIssue({ code: "custom", message: "query and aroundMessageId require threadId" });
-      if (input.textOffset !== undefined && !input.itemId)
-        context.addIssue({ code: "custom", message: "textOffset needs itemId" });
-      if (input.itemId && (input.before || input.query || input.aroundMessageId))
-        context.addIssue({
-          code: "custom",
-          message: "itemId reads one item; omit before, query and aroundMessageId",
-        });
-      if (input.view === "activity" && (input.query || input.aroundMessageId))
-        context.addIssue({
-          code: "custom",
-          message: "query and aroundMessageId read messages; omit view",
-        });
-    }),
+    "Read a task with its current AI account, model and access mode; omit taskId for this task. The messages view returns published messages, newest first; activity adds its tools, places, apps and Requests. A message from a team carries teamSource, its channel and audience. recentRuns and recentPlaces always come back: a place is recent, never proof it is still open, and its tabId goes to show_to_person. Keep reads small with a low limit and maxCharsPerItem. Tool text is clipped unless you name its itemId; sign-in, card and computer_use calls show status only. Mention returned items by their `link`, verbatim.",
+  input: readInput,
   output: ThreadReadOutputSchema,
   access: "read",
   callers: ["run", "program", "connection"] as const,
 });
 
-export const thread_list = defineAgentTool({
-  name: "thread_list",
-  title: "List Threads",
+export const opensteer_task_list = defineAgentTool({
+  name: "opensteer_task_list",
+  title: "List tasks",
   description:
-    "List reachable Threads, newest updated first. `parentThreadId`: the tasks that Thread delegated; `self` for yours. A task row has `assignmentId` and `taskStatus`. Up to 50 per page; page with `before=nextBefore`.",
+    "List reachable tasks, newest updated first, up to 50 per page; page with cursor. parentTaskId lists the tasks that task delegated (for this task's own, take its ID from opensteer_task_read), and each row carries its delegationId and taskStatus. changedSince lists only tasks with messages after that time, most recent first, with newMessages and firstNewAt; read them with opensteer_task_read. Mention returned items by their `link`, verbatim.",
   input: z.strictObject({
-    before: CursorSchema.optional(),
+    changedSince: IsoDateTimeSchema.optional(),
+    cursor: CursorSchema.optional(),
     limit: z.number().int().min(1).max(50).default(25),
-    parentThreadId: z.union([ThreadIdSchema, z.literal("self")]).optional(),
+    parentTaskId: ThreadIdSchema.optional(),
     query: z.string().trim().min(1).max(256).optional().describe("Search titles."),
   }),
   output: ThreadListOutputSchema,
@@ -98,21 +108,21 @@ export const thread_list = defineAgentTool({
   callers: ["run", "program", "connection"] as const,
 });
 
-export const delegate_task = defineAgentTool({
-  name: "delegate_task",
-  targetFields: ["threadId"],
-  title: "Start or continue a task",
+export const opensteer_task_delegate = defineAgentTool({
+  name: "opensteer_task_delegate",
+  targetFields: ["taskId"],
+  title: "Delegate work",
   description:
-    "Start one task, or continue a finished one with `threadId`, keeping its engine/model. Starting context is only `task` and `places`; no secrets. Keep `assignmentId` for status, wait or cancel. mode async returns admission; mode wait uses thread_wait with timeoutMs. Results reach Runs/programs automatically unless the assigner read them first; ask checks for a brief result, including when nothing changed. Connections and `standalone: true` (a new listed task of its own, e.g. one per scheduled run) get no Assignment: wait on threadId. Change active work with thread_send.",
+    "Start a delegated task, or continue a finished one with taskId. Its starting context is only message and places, so never include secrets. Keep delegationId for status, wait or cancel. Mode async returns once admitted; mode wait waits up to timeoutMs. When delegating a check, ask for a brief result, including when nothing changed. Change a task's active work with opensteer_task_send instead. Mention returned items by their `link`, verbatim.",
   input: z
     .strictObject({
       mode: z.enum(["async", "wait"]).default("async"),
       timeoutMs: ThreadWaitTimeoutSchema,
-      harnessInstanceId: HarnessInstanceIdSchema.optional().describe(
-        "New task engine account from orchestrator_capabilities.",
+      aiAccountId: HarnessInstanceIdSchema.optional().describe(
+        "New task AI account from opensteer_ai_account_list.",
       ),
       model: DelegationModelChoiceSchema.optional().describe(
-        "New task model selectors/options from orchestrator_capabilities.",
+        "New task model selectors/options from opensteer_ai_account_list.",
       ),
       observationId: z
         .string()
@@ -126,7 +136,7 @@ export const delegate_task = defineAgentTool({
         .max(63)
         .optional()
         .describe("Authorized page/app/phone content to forward; text IDs alone do not attach it."),
-      task: z
+      message: z
         .string()
         .trim()
         .min(1)
@@ -145,73 +155,53 @@ export const delegate_task = defineAgentTool({
         .max(256)
         .optional()
         .describe("Ready specialist registration ID or plugin name."),
-      threadId: ThreadIdSchema.optional().describe(
+      taskId: ThreadIdSchema.optional().describe(
         "Finished task to continue; omit new-task selectors.",
       ),
-      standalone: z
-        .literal(true)
-        .optional()
-        .describe(
-          "Start a separate listed task with no parent or Assignment; nothing returns. Not with threadId or places.",
-        ),
     })
     .superRefine((input, context) => {
-      if (input.threadId && (input.harnessInstanceId || input.model)) {
+      if (input.taskId && (input.aiAccountId || input.model)) {
         context.addIssue({
           code: "custom",
-          message: "An existing Thread keeps its execution selection",
+          message: "An existing task keeps its execution selection",
         });
       }
-      if (input.standalone && (input.threadId || input.places?.length))
-        context.addIssue({
-          code: "custom",
-          message: "A standalone task is new and starts from task alone; omit threadId and places",
-        });
     })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: TaskSchema.extend({ wait: ThreadWaitOutputSchema.optional() }),
   access: "write",
-  callers: ["run", "program", "connection"] as const,
+  callers: ["run", "program"] as const,
 });
 
-export const task_status = defineAgentTool({
-  name: "task_status",
-  title: "Read a task",
+export const opensteer_delegation_status = defineAgentTool({
+  name: "opensteer_delegation_status",
+  title: "Read a delegation",
   description:
-    "Read one task. A settled result read by its assigner counts as delivery and suppresses its automatic return. A result already claimed for a return arrives in the assigner’s inbox instead.",
-  input: z.strictObject({ assignmentId: AssignmentIdSchema }),
+    "Read one delegation's state and result. Reading a settled result counts as delivery and suppresses its automatic return; a result already claimed for return arrives in the delegating task's inbox instead.",
+  input: z.strictObject({ delegationId: AssignmentIdSchema }),
   output: TaskSchema,
   access: "read",
   callers: ["run", "program", "connection"] as const,
 });
 
-export const task_cancel = defineAgentTool({
-  name: "task_cancel",
-  title: "Cancel a task",
+export const opensteer_delegation_cancel = defineAgentTool({
+  name: "opensteer_delegation_cancel",
+  title: "Cancel a delegation",
   description:
-    "Name assignmentId for a task, or subagentId for one child of this Run. A subagent stop needs engine support and never stops the parent; stopping means requested, interrupted confirms it ended. Stop one task for good: its Runs, its Requests and the tasks it delegated. A finished task keeps its result; its Thread stays reusable. Confirm the returned `status` before saying it stopped. To stop and resume later: `thread_interrupt`.",
-  input: z
-    .strictObject({
-      assignmentId: AssignmentIdSchema.optional(),
-      subagentId: ExecutionNodeIdSchema.optional(),
-    })
-    .refine(
-      (input) => !!input.assignmentId !== !!input.subagentId,
-      "Name exactly one assignmentId or subagentId",
-    )
-    .safeExtend({ operationKey: OperationKeySchema.optional() }),
-  output: z.union([TaskSchema, SubagentCancelOutputSchema]),
+    "Stop a delegation for good: its task's Runs, its Requests and the tasks it delegated. A finished task keeps its result and can be continued later. Confirm the returned status before saying it stopped. To stop work and resume it later, use opensteer_task_interrupt.",
+  input: z.strictObject({ delegationId: AssignmentIdSchema }),
+  output: TaskSchema,
   access: "write",
   callers: ["run"] as const,
   destructive: true,
 });
 
-export const thread_send = defineAgentTool({
-  name: "thread_send",
-  targetFields: ["threadId"],
-  title: "Message a Thread",
+export const opensteer_task_send = defineAgentTool({
+  name: "opensteer_task_send",
+  targetFields: ["taskId"],
+  title: "Send to a task",
   description:
-    "Send to a task. `report`: context for its next turn, starts nothing. `queue`: starts its next turn, or waits for it. `steer`: its active Run now, never falls back. `freshContext: true` with queue starts a fresh model session; include criteria, destination and state path in every wake. `assignmentId` names the task it joined. Null means nothing returns on its own, so to get a result from a finished task use `delegate_task` with `threadId` instead. Accepted is not read; `cancelled` will not run, so do not resend.",
+    "Send to a task. report leaves context for its next turn and starts nothing; queue starts its next turn or waits for one; steer reaches its active Run now and never falls back to queueing. The returned delegationId names the delegation it joined; when it is null nothing returns on its own, so give a finished task more work with opensteer_task_delegate and taskId. Accepted is not read, and cancelled will never run, so do not resend. Mention returned items by their `link`, verbatim.",
   input: z
     .strictObject({
       delivery: z.enum(["report", "queue", "steer"]).describe("report, queue or steer."),
@@ -233,7 +223,7 @@ export const thread_send = defineAgentTool({
         .max(255)
         .optional()
         .describe("Watch observation identity; reuse for the same observation."),
-      threadId: ThreadIdSchema,
+      taskId: ThreadIdSchema,
     })
     .safeExtend({ operationKey: OperationKeySchema.optional() })
     .refine((input) => !input.freshContext || input.delivery === "queue", {
@@ -245,110 +235,91 @@ export const thread_send = defineAgentTool({
   callers: ["run", "program", "connection"] as const,
 });
 
-export const thread_interrupt = defineAgentTool({
-  name: "thread_interrupt",
-  targetFields: ["threadId"],
-  title: "Interrupt a Thread",
+export const opensteer_task_interrupt = defineAgentTool({
+  name: "opensteer_task_interrupt",
+  targetFields: ["taskId"],
+  title: "Interrupt a task",
   description:
-    "Stop a Thread's current Run and pause a task's queue; waiting inputs stay. Omit `threadId` for this Thread. No effect when idle. Resume with `thread_queue`. For a task no longer wanted: `task_cancel`.",
-  input: z
-    .strictObject({ threadId: ThreadIdSchema.optional() })
-    .safeExtend({ operationKey: OperationKeySchema.optional() }),
+    "Stop a task's current Run and pause its queue; waiting inputs stay and an idle task is unaffected. Omit taskId for this task. Release it with opensteer_task_resume; to stop a delegation for good, use opensteer_delegation_cancel.",
+  input: z.strictObject({ taskId: ThreadIdSchema.optional() }),
   output: ThreadInterruptOutputSchema,
   access: "write",
   destructive: true,
   callers: ["run", "program", "connection"] as const,
 });
 
-export const thread_update = defineAgentTool({
-  name: "thread_update",
-  targetFields: ["threadId"],
-  title: "Update a Thread",
+export const opensteer_task_update = defineAgentTool({
+  name: "opensteer_task_update",
+  targetFields: ["taskId"],
+  title: "Update a task",
   description:
-    "Rename a Thread with `title`, or mark it `done` or `reopen` it. Omit `threadId` for this Thread. `done` stops its work; on this Thread it applies at turn end.",
+    "Rename a task with title, set done to true to mark it Done and stop its work, or false to reopen it. Omit taskId for this task; on this task, done applies at the end of the turn.",
   input: z
     .strictObject({
-      action: z.enum(["rename", "done", "reopen"]),
-      threadId: ThreadIdSchema.optional(),
+      taskId: ThreadIdSchema.optional(),
       title: ThreadTitleSchema.optional(),
+      done: z.boolean().optional(),
     })
-    .superRefine((input, context) => {
-      if ((input.action === "rename") !== (input.title !== undefined))
-        context.addIssue({ code: "custom", message: "rename takes title; no other action does" });
-    })
-    .safeExtend({ operationKey: OperationKeySchema.optional() }),
+    .refine((i) => i.title !== undefined || i.done !== undefined, "Provide title or done"),
   output: ThreadUpdateOutputSchema,
   access: "write",
-  destructive: true,
   callers: ["run", "program", "connection"] as const,
 });
 
-export const thread_wait = defineAgentTool({
-  name: "thread_wait",
-  targetFields: ["threadId"],
-  title: "Wait for a Thread",
+export const opensteer_task_wait = defineAgentTool({
+  name: "opensteer_task_wait",
+  targetFields: ["taskId"],
+  title: "Wait for a task",
   description:
-    "Wait on a conversation’s pinned Run or one assignmentId until settlement, a pending Request or timeout. afterMessageId observes new conversation messages. A settled task result read by its assigner suppresses automatic return. Cannot wait on yourself or a conversation you work for. Timeout stops nothing; hasMore resumes after the last itemId.",
-  input: z
-    .strictObject({
-      threadId: ThreadIdSchema.optional(),
-      assignmentId: AssignmentIdSchema.optional(),
-      afterMessageId: MessageIdSchema.optional().describe(
-        "Return published messages after this ID; omit to wait for Run settlement.",
-      ),
-      timeoutMs: ThreadWaitTimeoutSchema.describe(
-        "Maximum wait in milliseconds; timeout never cancels work.",
-      ),
-    })
-    .superRefine((input, context) => {
-      if (!!input.threadId === !!input.assignmentId)
-        context.addIssue({ code: "custom", message: "Name exactly one threadId or assignmentId" });
-      if (input.assignmentId && input.afterMessageId)
-        context.addIssue({ code: "custom", message: "afterMessageId requires threadId" });
-    }),
+    "Wait until a task's Run settles, a Request is pending or the timeout passes. You cannot wait on this task or a task you work for. A timeout stops no work; when hasMore is true, wait again after the last itemId.",
+  input: z.strictObject({
+    taskId: ThreadIdSchema,
+    afterMessageId: MessageIdSchema.optional().describe(
+      "Return published messages after this ID; omit to wait for the Run to settle.",
+    ),
+    timeoutMs: ThreadWaitTimeoutSchema,
+  }),
   output: ThreadWaitOutputSchema,
   access: "read",
   callers: ["run", "program", "connection"] as const,
 });
-export const thread_configure = defineAgentTool({
-  name: "thread_configure",
-  targetFields: ["threadId"],
-  title: "Configure a Thread",
+export const opensteer_task_configure = defineAgentTool({
+  name: "opensteer_task_configure",
+  targetFields: ["taskId"],
+  title: "Configure a task",
   description:
-    "Read a Thread's engine and model, or set them with `harnessInstanceId` or `modelSelection`. Omit `threadId` for this Thread. Access mode stays. Values from `orchestrator_capabilities`; never substitute after a refusal. `continuation` confirms a known native-session switch.",
+    "Set a task's AI account or model with values copied from opensteer_ai_account_list; never substitute another after a refusal. Omit taskId for this task. Its access mode stays. continuation confirms a known native-session switch.",
   input: z
     .strictObject({
-      threadId: ThreadIdSchema.optional(),
-      harnessInstanceId: HarnessInstanceIdSchema.optional(),
+      taskId: ThreadIdSchema.optional(),
+      aiAccountId: HarnessInstanceIdSchema.optional(),
       modelSelection: ModelSelectionSchema.optional(),
       continuation: z
         .strictObject({ expectedProviderSessionId: ProviderSessionIdSchema.nullable() })
         .optional(),
-      operationKey: OperationKeySchema.optional(),
     })
     .superRefine((input, ctx) => {
-      if (input.continuation && !input.harnessInstanceId && !input.modelSelection)
-        ctx.addIssue({ code: "custom", message: "continuation needs a new selection" });
+      if (!input.aiAccountId && !input.modelSelection)
+        ctx.addIssue({ code: "custom", message: "Provide aiAccountId or modelSelection" });
     }),
   output: ThreadConfigureOutputSchema,
   access: "write",
-  readsOnly: (input) => !input.harnessInstanceId && !input.modelSelection,
+
   callers: ["run", "program", "connection"] as const,
 });
-export const thread_queue = defineAgentTool({
-  name: "thread_queue",
-  targetFields: ["threadId"],
-  title: "Manage queued inputs",
+export const opensteer_task_queue = defineAgentTool({
+  name: "opensteer_task_queue",
+  targetFields: ["taskId"],
+  title: "Manage a task queue",
   description:
-    "Manage a Thread's waiting inputs. Omit `threadId` for this Thread. list: in order, with what you may do to each. cancel. move: before `beforeMessageId`, or to the end with null. steer: send one to the active `expectedRunId`. resume: release a paused queue. Keep a person's pause unless told to resume.",
+    "List, cancel, move or steer a task's waiting inputs; omit taskId for this task. list shows them in order with what you may do to each. move puts one before beforeMessageId, or last with null. steer sends one to the active expectedRunId. opensteer_task_resume releases a paused queue.",
   input: z
     .strictObject({
-      action: z.enum(["list", "cancel", "move", "steer", "resume"]),
-      threadId: ThreadIdSchema.optional(),
+      action: z.enum(["list", "cancel", "move", "steer"]),
+      taskId: ThreadIdSchema.optional(),
       messageId: MessageIdSchema.optional(),
       beforeMessageId: MessageIdSchema.nullable().optional(),
       expectedRunId: RunIdSchema.optional(),
-      operationKey: OperationKeySchema.optional(),
     })
     .superRefine((input, ctx) => {
       if (["cancel", "move", "steer"].includes(input.action) !== !!input.messageId)
@@ -365,5 +336,63 @@ export const thread_queue = defineAgentTool({
   access: "write",
   readsOnly: (input) => input.action === "list",
   callers: ["run", "program", "connection"] as const,
+});
+
+export const opensteer_task_create = defineAgentTool({
+  name: "opensteer_task_create",
+  title: "Create a task",
+  description:
+    "Start a top-level task of its own, such as one per scheduled run, with no parent or delegation. Its starting context is only message, so never include secrets. Nothing returns automatically: wait on its taskId with opensteer_task_wait. Mention returned items by their `link`, verbatim.",
+  input: z
+    .strictObject(opensteer_task_delegate.input.shape)
+    .omit({ taskId: true, places: true })
+    .safeExtend({ operationKey: OperationKeySchema.optional() }),
+  output: opensteer_task_delegate.output,
+  access: "write",
+  callers: ["run", "program", "connection"] as const,
+});
+export const opensteer_delegation_wait = defineAgentTool({
+  name: "opensteer_delegation_wait",
+  title: "Wait for a delegation",
+  description:
+    "Wait up to timeoutMs for a delegation to settle or raise a pending Request. Reading a settled result counts as delivery and suppresses its automatic return. A timeout stops no work.",
+  input: z.strictObject({ delegationId: AssignmentIdSchema, timeoutMs: ThreadWaitTimeoutSchema }),
+  output: ThreadWaitOutputSchema,
+  access: "read",
+  callers: ["run", "program", "connection"] as const,
+});
+export const opensteer_subagent_read = defineAgentTool({
+  name: "opensteer_subagent_read",
+  title: "Read a subagent",
+  description: "Read a reachable subagent's messages and activity without reasoning.",
+  input: z
+    .strictObject(readInput.shape)
+    .omit({ taskId: true, query: true, aroundMessageId: true })
+    .safeExtend({ subagentId: ExecutionNodeIdSchema })
+    .superRefine(validateReadWindow),
+  output: ThreadReadOutputSchema,
+  access: "read",
+  callers: ["run", "program", "connection"] as const,
+});
+export const opensteer_subagent_stop = defineAgentTool({
+  name: "opensteer_subagent_stop",
+  title: "Stop a subagent",
+  description:
+    "Ask one subagent of this Run to stop; this needs engine support and never stops the parent. stopping means requested; opensteer_subagent_read shows interrupted once it ended.",
+  input: z.strictObject({ subagentId: ExecutionNodeIdSchema }),
+  output: SubagentCancelOutputSchema,
+  access: "write",
+  callers: ["run"] as const,
   destructive: true,
+});
+export const opensteer_task_resume = defineAgentTool({
+  name: "opensteer_task_resume",
+  title: "Resume a task",
+  description:
+    "Release a task's paused queue; omit taskId for this task. Keep a person's pause unless they ask to resume.",
+  input: z.strictObject({ taskId: ThreadIdSchema.optional() }),
+  targetFields: ["taskId"],
+  output: ThreadQueueOutputSchema,
+  access: "write",
+  callers: ["run", "program", "connection"] as const,
 });

@@ -1,0 +1,169 @@
+/* The macOS Finder in the light appearance, list view, at its real sizes */
+.fd {
+  display: flex;
+  background: #fff;
+  color: #1d1d1f;
+  font: 13px/1.2 var(--mac-font);
+}
+.fd svg {
+  display: block;
+  flex: none;
+}
+.fd-side {
+  position: relative;
+  width: 180px;
+  padding: 50px 10px 0;
+  background: rgb(232 230 236 / 96%);
+  border-right: 1px solid #d9d9dc;
+  box-sizing: border-box;
+  flex: none;
+}
+.fd-side .tl {
+  position: absolute;
+  left: 18px;
+  top: 18px;
+}
+.fd-side h6 {
+  margin: 10px 0 4px 8px;
+  color: #8e8e93;
+  font-size: 11px;
+  font-weight: 600;
+}
+.fd-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding-left: 8px;
+  color: #262628;
+}
+.fd-item svg {
+  width: 16px;
+  height: 16px;
+  color: #007aff;
+}
+.fd-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.fd-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 52px;
+  padding: 0 14px 0 12px;
+  flex: none;
+}
+.fd-bar b {
+  font-size: 15px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.fd-nav {
+  display: flex;
+  gap: 12px;
+  color: #5b5b60;
+}
+.fd-nav svg {
+  width: 16px;
+  height: 16px;
+}
+.fd-nav .is-off {
+  opacity: 0.35;
+}
+.fd-tools {
+  display: flex;
+  align-items: center;
+  gap: 19px;
+  margin-left: auto;
+  color: #5b5b60;
+}
+.fd-tools svg {
+  width: 17px;
+  height: 17px;
+}
+.fd-view {
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgb(0 0 0 / 6%);
+}
+.fd-more {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 14%);
+}
+.fd-more svg {
+  width: 14px;
+  height: 14px;
+}
+.fd-head,
+.fd-row {
+  display: grid;
+  grid-template-columns: 1fr 170px 70px 104px;
+  align-items: center;
+  padding: 0 12px 0 16px;
+  white-space: nowrap;
+}
+.fd-head {
+  height: 26px;
+  border-bottom: 1px solid #e3e3e6;
+  color: #6e6e73;
+  font-size: 11px;
+}
+.fd-head span + span {
+  padding-left: 8px;
+  border-left: 1px solid #e3e3e6;
+}
+.fd-row {
+  height: 24px;
+  border-radius: 5px;
+  margin: 0 8px;
+  padding: 0 4px 0 8px;
+  color: #6e6e73;
+}
+.fd-row:nth-child(even) {
+  background: #f4f5f5;
+}
+.fd-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fd-row span + span {
+  padding-left: 8px;
+}
+.fd-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #1d1d1f;
+}
+.fd-pdf {
+  width: 14px;
+  height: 16px;
+}
+.fd-row--new {
+  display: none;
+}
+.grp[data-fd-new] .fd-row--new {
+  display: grid;
+  background: #0064e1;
+  color: #fff;
+}
+.grp[data-fd-new] .fd-row--new .fd-name {
+  color: #fff;
+}
+/* Adjacent selected rows read as one block */
+.grp[data-fd-new] .fd-row--new {
+  border-radius: 0;
+}
+.grp[data-fd-new] .fd-row--new:nth-child(5) {
+  border-radius: 5px 5px 0 0;
+}
+.grp[data-fd-new] .fd-row--new:last-child {
+  border-radius: 0 0 5px 5px;
+}

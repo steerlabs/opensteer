@@ -29,7 +29,7 @@ export interface TeamAccessEffects {
   readonly requests: readonly TeamAgentRequestId[];
 }
 export interface TeamAccessResolver {
-  channel(
+  peerChannel(
     transaction: Transaction<DatabaseSchema>,
     actor: TeamActor,
     channelId: TeamChannelId,
@@ -62,6 +62,8 @@ export interface TeamAccessLockPort {
     write: (transaction: Transaction<DatabaseSchema>) => Promise<Value>,
   ): Promise<Value>;
   readonly revision: Sequence;
+  current(): Promise<Sequence>;
+  withLinkEpoch<Value>(linkId: TeamLinkId, epoch: string, run: () => Value): Value;
   /** Reauthorize on revision change; discard the whole buffered result on access loss. */
   handoff<Value>(
     authorizedAt: Sequence,

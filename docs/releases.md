@@ -11,11 +11,11 @@ a new Deployment identity; it never deletes the old data or touches `~/Opensteer
 pair again, and the old Account/Connect entry remains removable. Test reset only in disposable
 fixtures or a VM.
 
-Team servers update through the [deploy/team recipe](../deploy/team/README.md), with hourly
+Self-hosted team servers update through the [deploy/team recipe](../deploy/team/README.md), with hourly
 scheduler-driven pull-before-replace updates. A failed pull leaves the running stack in place;
 there is no desktop team supervisor. Stable and Beta select the corresponding published tags,
-and each tag's version names the images it runs. Personal Host epoch and team API version
-advance independently.
+and each tag's version names the images it runs. The personal and team API windows advance
+independently. Hosted teams use the hosted release policy instead.
 
 ## Build inputs and local proof
 
@@ -67,6 +67,12 @@ signing material, and CI needs no private checkout or signing JSON. A [launch
 check](../scripts/smoke-desktop-release.ts) runs the final app from a disposable Applications copy
 with fresh data, refuses any machine but an ephemeral CI runner or the test VM guest, and changes
 no shipped behavior.
+
+Native compiler caches belong to the release workflow, separately per Swift helper. Main insiders
+seed the default-branch cache that tag runs can also restore; CI's native proof does not publish
+release products. Only unsigned (or linker ad-hoc) executables and their source/toolchain proof
+are cached. Bundles, versions, provisioning profiles, entitlements and distribution signatures are
+always produced and verified afresh. Missing or invalid compiler products rebuild.
 
 Publication re-verifies the draft's assets, hashes, `SHA256SUMS`, source and signer with the
 workflow commit's publisher; no certification receipt is needed. Provenance and native bundle versions are numeric `X.Y.Z`,
@@ -162,8 +168,9 @@ version `X.Y.Z` before its tag; Stable promotion reuses that `X.Y.Z`, so Stable
 runs the bytes Beta ran. GHCR tags are mutable, so [team-images.sh](../.github/scripts/team-images.sh)
 writes a version once and refuses one that records another source. There are no moving channel
 tags: the release tags are the channel feed. The `team-images` job outputs `host_image` and
-`gateway_image` as digest references for deployments in the same run. Tim makes both packages
-public once, after their first push.
+`gateway_image` as digest references; hosted teams take a Host digest only through
+promotion, and only self-hosted teams use the gateway. Tim makes both
+packages public once, after their first push.
 
 ## Account service
 

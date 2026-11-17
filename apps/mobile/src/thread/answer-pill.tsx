@@ -19,11 +19,17 @@ export function AnswerPill(props: {
   readonly accessibilityLabel?: string;
   readonly busy?: boolean;
   readonly disabled?: boolean;
+  /**
+   * Shares a row with the other answer at full touch height, for a decision
+   * docked on its own rather than answering beside the composer.
+   */
+  readonly fill?: boolean;
   readonly icon?: ReactNode;
   readonly label: string;
   readonly onPress: () => void;
   readonly tone: AnswerPillTone;
 }): ReactNode {
+  const fill = props.fill === true;
   const busy = props.busy === true;
   const disabled = props.disabled === true || busy;
   const primary = props.tone === "primary";
@@ -35,12 +41,13 @@ export function AnswerPill(props: {
       accessibilityState={{ busy, disabled }}
       disabled={disabled}
       onPress={props.onPress}
-      style={styles.target}
+      style={[styles.target, fill && styles.targetFill]}
     >
       {({ pressed }) => (
         <View
           style={[
             styles.pill,
+            fill && styles.pillFill,
             primary ? styles.primary : styles.secondary,
             props.tone === "danger" && styles.danger,
             pressed && (primary ? styles.primaryPressed : styles.secondaryPressed),
@@ -118,6 +125,9 @@ const styles = StyleSheet.create({
   row: { alignItems: "center", flexDirection: "row", minHeight: touchTarget },
   secondary: { ...material.control },
   secondaryPressed: { ...material.platePressed },
+  // A docked card's corner less the face's inset: 20 + 4 is its 24.
+  pillFill: { minHeight: touchTarget - space[4] },
   spinner: { position: "absolute" },
   target: { justifyContent: "center", maxWidth: "100%", minHeight: touchTarget },
+  targetFill: { flex: 1 },
 });

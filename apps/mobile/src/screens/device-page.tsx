@@ -1,9 +1,31 @@
 import { cancelDeviceSetup, withDeviceSwitch } from "@opensteer/client/computers";
-import { computerConnectionsOn } from "@opensteer/client/integrations";
+import {
+  computerConnectionsOn,
+  computerUseAccessLabel,
+  computerUseStops,
+  iphoneScreenKeepAwakeTip,
+  phoneScreenDisconnectCopy,
+  phoneScreenMac,
+  phoneScreenRemovalCopy,
+  phoneScreenSetupLine,
+  phoneScreenStatus,
+  phoneUseCardTitle,
+  phoneUseStatusLine,
+  phoneUseView,
+  setPhoneUseAccess,
+} from "@opensteer/client/integrations";
+import { TabTargetSchema } from "@opensteer/core";
 import { computerStatus } from "@opensteer/client/computers";
-import { mutationIdempotencyKey, type HostClient, type HostSnapshot } from "@opensteer/client/host";
+import {
+  canRespondToRequests,
+  deviceMachine,
+  mutationIdempotencyKey,
+  type HostClient,
+  type HostSnapshot,
+} from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { tabRoute } from "../browser/surface-route.js";
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Linking, Platform } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
@@ -64,7 +86,12 @@ function DevicePage(props: {
     enrollment?.state === "enrolled" &&
     enrollment.runnerId === props.machineId &&
     enrollment.deploymentId === props.deploymentId;
-  const apps = useComputerUseData(thisDevice ? props.hostClient : null, revision);
+  const screenMac = machine === null ? null : phoneScreenMac(machine);
+  const canRespond = useHostSelector(props.hostClient, canRespondToRequests);
+  const apps = useComputerUseData(
+    thisDevice || screenMac !== null ? props.hostClient : null,
+    revision,
+  );
   const { registration } = useMobileNotifications();
   const push = usePushRegistration();
   const [name, setName] = useState<string | null>(null);
@@ -176,7 +203,7 @@ function DevicePage(props: {
       const result = await props.hostClient.updateMachineAccess({
         expectedRevision: access.revision,
         policy: withDeviceSwitch(access.policy, key, on),
-        runnerId: machine.id,
+        deviceId: machine.id,
       });
       if (result.outcome === "conflict") {
         setFailure("It changed on another device. Look again and try once more.");
@@ -241,8 +268,185 @@ function DevicePage(props: {
   const kind = isHome(machine) ? null : deviceKindLabel(machine);
   const status = isHome(machine)
     ? "Home · your agent runs here"
-    : [kind, computerStatus(machine).label].filter(Boolean).join(" · ");
+    : [kind, phoneScreenStatus(machine)?.label ?? computerStatus(machine).label]
+        .filter(Boolean)
+        .join(" · ");
   const notificationsOn = push.status === "registered" && wantsAlerts(push.preferences);
+  const screen = screenMac === null ? null : screenSection();
+
+  /** A Mac-driven phone: its status, Apps, approval, holder and screen, and its two ways out. */
+  function screenSection() {
+    if (machine === null || screenMac === null) return null;
+    const status = phoneScreenStatus(machine)!;
+    const phone =
+      apps.data === null
+        ? null
+        : phoneUseView({ ...apps.data, hostConnected: canRespond, machine });
+    const appsOn = machine.capabilities?.apps.enabled !== false;
+    const setup = phoneScreenSetupLine(machine);
+    const tab = TabTargetSchema.safeParse({ kind: "phone", computerId: machine.id });
+    const disconnect = screenMac.attached
+      ? phoneScreenDisconnectCopy(machine.name, screenMac.name)
+      : null;
+    const removeCopy = phoneScreenRemovalCopy(machine.name, screenMac.name);
+    const rows: NativeSettingsRow[] = [
+      {
+        key: "status",
+        kind: "status",
+        tone:
+          status.tone === "online" ? "good" : status.tone === "waiting" ? "attention" : "neutral",
+        label: status.label,
+        ...((status.fix ?? (status.tone === "online" && phone))
+          ? { detail: status.fix ?? phoneUseStatusLine(phone!, machine.name) }
+          : {}),
+      },
+      ...switches.rows
+        .filter(({ key }) => key === "apps")
+        .map((row): NativeSettingsRow => ({
+          key: row.key,
+          kind: "toggle",
+          label: row.title,
+          detail: "See and control its screen",
+          disabled: row.disabled,
+          value: row.value,
+          onChange: (on) => toggle(row.key, on),
+        })),
+      ...(phone !== null && appsOn && screenMac.attached
+        ? [
+            {
+              key: "access",
+              kind: "chips" as const,
+              label: "Access",
+              value: phone.access ?? "off",
+              choices: [
+                { value: "off", label: "Off" },
+                { value: "read", label: computerUseAccessLabel.read },
+                { value: "read-write", label: computerUseAccessLabel["read-write"] },
+              ],
+              onChange: (value: string) =>
+                run(async () => {
+                  if (value === "read" || value === "read-write")
+                    return setPhoneUseAccess(props.hostClient, machine, value);
+                  if (phone.connectionId === null) return;
+                  await props.hostClient.dispatch({
+                    connectionId: phone.connectionId,
+                    idempotencyKey: mutationIdempotencyKey(`phone-access:${machine.id}`),
+                    type: "integration.disconnect",
+                  });
+                }, "Access did not change. Try again."),
+            },
+          ]
+        : []),
+      ...(phone?.session
+        ? [
+            {
+              key: "stop",
+              kind: "button" as const,
+              label: "Stop",
+              detail: `${phone.session.threadTitle ?? "A task"} is using ${machine.name}`,
+              destructive: true,
+              disabled: !canRespond,
+              onPress: () =>
+                computerUseStops(props.hostClient).stop({
+                  machineName: machine.name,
+                  runId: phone.session!.runId,
+                  sessionId: phone.session!.sessionId,
+                }),
+            },
+          ]
+        : []),
+      ...(phone?.canView && tab.success
+        ? [
+            {
+              key: "open",
+              kind: "button" as const,
+              label: "Open screen",
+              onPress: () =>
+                run(
+                  async () => {
+                    const opened = await props.hostClient.openTab(tab.data);
+                    if (navigation.isFocused())
+                      navigation.dispatch(
+                        StackActions.push(
+                          "WorkspaceBrowser",
+                          tabRoute(props.deploymentId, opened.tabId),
+                        ),
+                      );
+                  },
+                  "The screen could not be opened.",
+                  false,
+                ),
+            },
+          ]
+        : []),
+      ...(status.needsSetup && setup
+        ? [{ key: "setup", kind: "text" as const, label: setup.label, detail: setup.detail }]
+        : []),
+    ];
+    const way = (
+      copy: typeof removeCopy | NonNullable<typeof disconnect>,
+      act: () => Promise<unknown>,
+    ) =>
+      confirmDestructive({
+        title: copy.title,
+        message: copy.body,
+        confirm: copy.confirm,
+        onConfirm: () => run(act, `${machine.name} did not change. Try again.`),
+      });
+    const generation = deviceMachine(machine).phoneDisplay?.driver?.generation;
+    return {
+      card: {
+        key: "screen",
+        title: screenMac.attached
+          ? phoneUseCardTitle({ driver: deviceMachine(machine).phoneDisplay?.driver ?? null })
+          : "Screen control",
+        ...(failure !== null
+          ? { footer: { text: failure, tone: "danger" as const } }
+          : screenMac.attached
+            ? { footer: { text: iphoneScreenKeepAwakeTip } }
+            : {}),
+        rows,
+      } satisfies NativeSettingsSection,
+      exits: {
+        key: "remove",
+        title: "",
+        rows: [
+          ...(disconnect && generation !== undefined
+            ? [
+                {
+                  key: "disconnect",
+                  kind: "button" as const,
+                  label: disconnect.label,
+                  onPress: () =>
+                    way(disconnect, () =>
+                      props.hostClient.detachIphoneScreen({
+                        deviceId: machine.id,
+                        expectedGeneration: generation,
+                      }),
+                    ),
+                },
+              ]
+            : []),
+          {
+            key: "remove",
+            kind: "button" as const,
+            label: removeCopy.label,
+            destructive: true,
+            onPress: () =>
+              way(removeCopy, () =>
+                props.hostClient
+                  .dispatch({
+                    idempotencyKey: mutationIdempotencyKey("device-remove"),
+                    machineId: machine.id,
+                    type: "machine.revoke",
+                  })
+                  .then(() => navigation.goBack()),
+              ),
+          },
+        ],
+      } satisfies NativeSettingsSection,
+    };
+  }
 
   const sections: NativeSettingsSection[] = [
     {
@@ -263,42 +467,46 @@ function DevicePage(props: {
           : []),
       ],
     },
-    {
-      key: "agent",
-      title: "Your agent can use",
-      ...(failure !== null
-        ? { footer: { text: failure, tone: "danger" as const } }
-        : switches.footer !== null
-          ? { footer: { text: switches.footer } }
-          : {}),
-      rows: [
-        ...switches.rows.flatMap((row): NativeSettingsRow[] => [
-          row.fixed
-            ? { key: row.key, kind: "text", label: row.title, detail: row.detail }
-            : {
-                key: row.key,
-                kind: "toggle",
-                label: row.title,
-                detail: row.detail,
-                disabled: row.disabled,
-                value: row.value,
-                onChange: (on) => toggle(row.key, on),
-              },
-          ...(row.key === "apps" ? appRows : []),
-        ]),
-        ...(thisDevice
-          ? []
-          : [
-              {
-                key: "details",
-                kind: "button" as const,
-                label: "Apps, folders and permissions",
-                opens: true,
-                onPress: () => navigation.navigate("Computer", props),
-              },
-            ]),
-      ],
-    },
+    ...(screen
+      ? [screen.card]
+      : ([
+          {
+            key: "agent",
+            title: "Your agent can use",
+            ...(failure !== null
+              ? { footer: { text: failure, tone: "danger" as const } }
+              : switches.footer !== null
+                ? { footer: { text: switches.footer } }
+                : {}),
+            rows: [
+              ...switches.rows.flatMap((row): NativeSettingsRow[] => [
+                row.fixed
+                  ? { key: row.key, kind: "text", label: row.title, detail: row.detail }
+                  : {
+                      key: row.key,
+                      kind: "toggle",
+                      label: row.title,
+                      detail: row.detail,
+                      disabled: row.disabled,
+                      value: row.value,
+                      onChange: (on) => toggle(row.key, on),
+                    },
+                ...(row.key === "apps" ? appRows : []),
+              ]),
+              ...(thisDevice
+                ? []
+                : [
+                    {
+                      key: "details",
+                      kind: "button" as const,
+                      label: "Apps, folders and permissions",
+                      opens: true,
+                      onPress: () => navigation.navigate("Computer", props),
+                    },
+                  ]),
+            ],
+          },
+        ] satisfies NativeSettingsSection[])),
     ...(thisDevice
       ? [
           {
@@ -326,50 +534,52 @@ function DevicePage(props: {
           },
         ]
       : []),
-    ...(removal === null
-      ? []
-      : [
-          {
-            key: "remove",
-            title: "",
-            rows: [
-              {
-                key: "remove",
-                kind: "button" as const,
-                label: removal.label,
-                destructive: true,
-                onPress: () =>
-                  confirmDestructive({
-                    title: removal.title,
-                    message: removal.message,
-                    confirm: thisDevice ? "Sign out and remove" : "Remove",
-                    onConfirm: () => {
-                      if (thisDevice) {
-                        void client
-                          .signOut(props.deploymentId)
-                          .then(resetToDeployments)
-                          .catch((error: unknown) =>
-                            setFailure(operationDetail(error, "Signing out did not finish.")),
-                          );
-                        return;
-                      }
-                      run(
-                        () =>
-                          props.hostClient
-                            .dispatch({
-                              idempotencyKey: mutationIdempotencyKey("device-remove"),
-                              machineId: machine.id,
-                              type: "machine.revoke",
-                            })
-                            .then(() => navigation.goBack()),
-                        `${machine.name} could not be removed.`,
-                      );
-                    },
-                  }),
-              },
-            ],
-          },
-        ]),
+    ...(screen
+      ? [screen.exits]
+      : removal === null
+        ? []
+        : [
+            {
+              key: "remove",
+              title: "",
+              rows: [
+                {
+                  key: "remove",
+                  kind: "button" as const,
+                  label: removal.label,
+                  destructive: true,
+                  onPress: () =>
+                    confirmDestructive({
+                      title: removal.title,
+                      message: removal.message,
+                      confirm: thisDevice ? "Sign out and remove" : "Remove",
+                      onConfirm: () => {
+                        if (thisDevice) {
+                          void client
+                            .signOut(props.deploymentId)
+                            .then(resetToDeployments)
+                            .catch((error: unknown) =>
+                              setFailure(operationDetail(error, "Signing out did not finish.")),
+                            );
+                          return;
+                        }
+                        run(
+                          () =>
+                            props.hostClient
+                              .dispatch({
+                                idempotencyKey: mutationIdempotencyKey("device-remove"),
+                                machineId: machine.id,
+                                type: "machine.revoke",
+                              })
+                              .then(() => navigation.goBack()),
+                          `${machine.name} could not be removed.`,
+                        );
+                      },
+                    }),
+                },
+              ],
+            },
+          ]),
   ];
   return <NativeSettingsPage sections={sections} />;
 }

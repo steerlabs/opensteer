@@ -1,6 +1,12 @@
+import { DeviceIdSchema } from "@opensteer/core";
+import { phoneUseView } from "../integrations/computer-use.js";
+import { mockIphoneScreenStates } from "./mock-screen-devices.js";
+import { DeviceMachineSummarySchema } from "@opensteer/protocol";
+import { computerTargetId } from "../host/device-projection.js";
 import { describe, expect, it, vi } from "vitest";
 import {
   IntegrationDashboardSchema,
+  DeviceIntegrationConnectionSummarySchema,
   IntegrationPlatformDashboardSchema,
 } from "@opensteer/integration-core";
 
@@ -222,18 +228,23 @@ describe("MockHostClient", () => {
             ? {
                 type: kind,
                 sessionId: BrowserSessionIdSchema.parse(session.id),
-                tabId: client.browserTabs.sessionTabs(session.id)[0]!.id,
+                tabId: [...snapshot.tabs.rows.values()].find((row) => row.kind === "page")!.tabId,
                 title: "A page with a different name",
                 url: "https://example.com",
               }
             : kind === "computer-app"
               ? {
                   type: kind,
-                  machineId: createId("runner"),
+                  machineId: DeviceIdSchema.parse(createId("runner")),
                   name: "Notes",
                   app: { bundleId: "com.apple.Notes", teamId: null, displayName: "Notes" },
                 }
-              : { type: kind, machineId: createId("runner"), display: "main", name: "My phone" };
+              : {
+                  type: kind,
+                  machineId: DeviceIdSchema.parse(createId("runner")),
+                  display: "main",
+                  name: "My phone",
+                };
         const thread = await client.createThread({
           ...threadInput(client),
           title: "Keep this seed",
@@ -366,6 +377,57 @@ describe("MockHostClient", () => {
     await first;
   });
 
+  it("edits a person's queued message in place under its lease, keeping every version", async () => {
+    const client = createClient();
+    const thread = await client.createThread(threadInput(client));
+    const first = sendMessage(client, thread.id, "First turn");
+    const queued = unwrapSend(await sendMessage(client, thread.id, "Draft the reply"));
+    const editor = await client.editWaitingMessage(thread.id, queued.message.id);
+    expect(client.getSnapshot().inputQueues[thread.id]?.items[0]).toMatchObject({
+      canEdit: true,
+      lease: { leaseId: editor.leaseId },
+    });
+    const content = [{ text: "Draft a shorter reply", type: "text" as const }];
+    await expect(editor.save(content, 0)).resolves.toEqual({
+      editedAt: fixedNow.toISOString(),
+      revision: 1,
+    });
+    expect(client.getSnapshot().inputQueues[thread.id]?.items[0]).toMatchObject({
+      lease: null,
+      message: { content, edit: { revision: 1 } },
+    });
+    expect(
+      client.getSnapshot().transcripts[thread.id]?.find(({ id }) => id === queued.message.id),
+    ).toMatchObject({ body: "Draft a shorter reply", edit: { revision: 1 } });
+    const { revisions } = await client.listMessageRevisions(thread.id, queued.message.id);
+    expect(revisions.map(({ deviceLabel, revision }) => [revision, deviceLabel])).toEqual([
+      [1, "Chrome on Mac"],
+      [0, null],
+    ]);
+    await first;
+    client.dispose();
+  });
+
+  it("holds the queue at a message another device is editing until its lease ends", async () => {
+    const client = createClient();
+    try {
+      const thread = await client.createThread(threadInput(client));
+      vi.useFakeTimers();
+      const first = sendMessage(client, thread.id, "First turn");
+      const queued = unwrapSend(await sendMessage(client, thread.id, "Then this"));
+      client.mockOtherDeviceEdit(thread.id, queued.message.id, "iPhone");
+      // The first turn's scripted reply plays out well inside the lease's two minutes.
+      await vi.advanceTimersByTimeAsync(60_000);
+      await first;
+      expect(client.getSnapshot().inputQueues[thread.id]?.items).toHaveLength(1);
+      await client.releaseWaitingMessage(thread.id, queued.message.id);
+      expect(client.getSnapshot().inputQueues[thread.id]?.items ?? []).toHaveLength(0);
+    } finally {
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("dispatches thread.input.steer and thread.input.cancel with typed results and refusals", async () => {
     const client = createClient();
     const thread = await client.createThread(threadInput(client));
@@ -435,7 +497,11 @@ describe("MockHostClient", () => {
   it("seeds integrations that satisfy the Host dashboard contracts", async () => {
     const client = createClient();
 
-    const dashboard = IntegrationDashboardSchema.parse(await integrations(client));
+    const dashboard = IntegrationDashboardSchema.extend({
+      connections: IntegrationDashboardSchema.shape.connections.element
+        .or(DeviceIntegrationConnectionSummarySchema)
+        .array(),
+    }).parse(await integrations(client));
     const platform = IntegrationPlatformDashboardSchema.parse(await integrationPlatform(client));
 
     expect(platform.catalog.map(({ definition }) => definition.id)).toEqual([
@@ -452,6 +518,7 @@ describe("MockHostClient", () => {
       "apple-messages",
       "macos-app",
       "android-phone",
+      "iphone-screen",
       "slack",
       "resend",
     ]);
@@ -501,6 +568,7 @@ describe("MockHostClient", () => {
         ["vapi-api", "needs-attention"],
         ["vapi-api", "connected"],
         ["macos-app", "connected"],
+        ["iphone-screen", "connected"],
       ],
     );
     expect(
@@ -1017,5 +1085,128 @@ it("seeds an actionable delegated task alongside its parent's places and automat
     );
   } finally {
     client.dispose();
+  }
+});
+
+it("shares the compaction policy through the personal settings snapshot", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    await client.setIdleCompactionPolicy({ mode: "beforeCacheExpires" });
+    expect(client.getSnapshot().personalSettings?.idleCompactionPolicy).toEqual({
+      mode: "beforeCacheExpires",
+    });
+    await client.setIdleCompactionPolicy({ mode: "off" });
+    expect(client.getSnapshot().personalSettings?.idleCompactionPolicy).toEqual({ mode: "off" });
+  } finally {
+    client.dispose();
+  }
+});
+
+it("shows a Host return hint and compacts once before the mock human message", async () => {
+  const client = createClient();
+  try {
+    const thread = await client.createThread(threadInput(client));
+    const hint = {
+      eligible: true,
+      eligibleAt: 0,
+      sourceRunId: createId("run"),
+      sessionRevision: "session:1:2",
+    };
+    const event = AgentEventSchema.parse({
+      eventId: createId("event"),
+      type: "thread.state-changed",
+      threadId: thread.id,
+      environmentId: thread.environmentId,
+      runId: null,
+      sequence: String(client.getSnapshot().revision + 1),
+      createdAt: fixedNow.toISOString(),
+      data: { status: "idle", pendingRequests: 0, inputQueuePaused: false, returnHint: hint },
+    });
+    if (event.type !== "thread.state-changed") throw new Error("Wrong event");
+    client.applyThreadStateChanged(event);
+    expect(client.getSnapshot().threads.find((item) => item.id === thread.id)?.returnHint).toEqual(
+      hint,
+    );
+    await client.dispatch({
+      type: "thread.sendMessage",
+      threadId: thread.id,
+      idempotencyKey: "compact-mock",
+      compaction: "compactFirst",
+      content: [{ type: "text", text: "Continue" }],
+    });
+    expect(
+      client
+        .getSnapshot()
+        .transcripts[thread.id]?.filter((entry) => entry.kind === "run" && entry.compaction),
+    ).toMatchObject([{ compaction: { status: "created", reason: "before-send" } }]);
+    expect(
+      client.getSnapshot().threads.find((item) => item.id === thread.id)?.returnHint,
+    ).toBeNull();
+  } finally {
+    client.dispose();
+  }
+});
+
+it("projects each screen preview as its own Device and preserves both existing phone fixtures", async () => {
+  for (const state of mockIphoneScreenStates) {
+    const client = new MockHostClient({ latencyMs: 0, iphoneScreen: state });
+    try {
+      const snapshot = client.getSnapshot();
+      const phone = snapshot.machines.find(
+        (machine) => machine.phoneDisplay?.definitionId === "iphone-screen",
+      )!;
+      expect(DeviceMachineSummarySchema.parse(phone)).toMatchObject({
+        selfRunnerId: null,
+        allowedModules: [],
+        modules: {},
+        pinnedThreads: 0,
+      });
+      expect(
+        snapshot.machines.some((machine) => machine.id === phone.phoneDisplay?.driver?.runnerId),
+      ).toBe(true);
+      expect(snapshot.machines.some((machine) => machine.device?.platform === "android")).toBe(
+        true,
+      );
+      expect(
+        snapshot.machines.some(
+          (machine) => machine.device?.platform === "ios" && machine.id !== phone.id,
+        ),
+      ).toBe(true);
+      const dashboard = await client.rpc["integrations.get"]({});
+      if (!dashboard.ok) throw new Error(dashboard.error.message);
+      const connection = dashboard.data.connections.find(
+        ({ computer }) => computerTargetId(computer) === phone.id,
+      )!;
+      expect(connection.computer).toMatchObject({
+        deviceId: phone.id,
+        access: state === "read-only" ? "read" : "read-write",
+      });
+      expect(connection.computer).not.toHaveProperty("runnerId");
+      const platform = unwrap(await client.rpc["integration.platform.get"]({}));
+      const projected = phoneUseView({
+        machine: phone,
+        connections: dashboard.data.connections,
+        definitions: platform.catalog.map(({ definition }) => definition),
+        hostConnected: true,
+      });
+      expect(projected?.access).toBe(state === "read-only" ? "read" : "read-write");
+      expect(projected?.canView).toBe(["ready", "read-only", "apps-off"].includes(state));
+      const before = phone.access!.revision;
+      const result = await client.updateMachineAccess({
+        deviceId: phone.id,
+        expectedRevision: before,
+        policy: { ...phone.access!.policy, apps: false },
+      });
+      expect(result).toEqual({ outcome: "updated", revision: before + 1 });
+      expect(
+        await client.updateMachineAccess({
+          deviceId: phone.id,
+          expectedRevision: before,
+          policy: phone.access!.policy,
+        }),
+      ).toEqual({ outcome: "conflict" });
+    } finally {
+      client.dispose();
+    }
   }
 });

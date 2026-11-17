@@ -1090,9 +1090,10 @@ export class DeploymentCatalogStore {
     });
   }
 
-  remove(deploymentId: DeploymentId | string): Promise<DeploymentCatalog> {
+  remove(deploymentId: DeploymentId | string, revision?: number): Promise<DeploymentCatalog> {
     const id = DeploymentIdSchema.parse(deploymentId);
     return this.#mutate((catalog, now) => {
+      if (revision !== undefined && catalog.revision !== revision) return null;
       const deployments = catalog.deployments.filter(
         (deployment) => deployment.authority.document.deploymentId !== id,
       );

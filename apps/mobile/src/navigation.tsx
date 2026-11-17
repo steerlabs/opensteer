@@ -1,6 +1,10 @@
+import { useTeamSideBack } from "./side-back.js";
+import { TeamScreenLayout } from "./team/team-screen-gate.js";
 import { screenPresentations } from "./navigation-presentations.js";
 import type { ReactNode } from "react";
 import { SheetAnchor } from "./ui/sheet.js";
+import { PersonalReferenceProvider } from "./markdown/reference-navigation.js";
+import { useAttachedHostOf } from "./screens/deployment-gate.js";
 import { SettingsAiSharingScreen } from "./screens/settings-ai-sharing.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import {
@@ -9,14 +13,13 @@ import {
   useIsFocused,
   type Theme,
 } from "@react-navigation/native";
-import {
-  createNativeStackNavigator,
-  type NativeStackNavigationOptions,
-} from "@react-navigation/native-stack";
+import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { Platform } from "react-native";
-import type { SurfacesRoute } from "./browser/surface-route.js";
+import type { TabRoute } from "./browser/surface-route.js";
+import type { TabId } from "@opensteer/core";
 import { SetUpPhoneScreen } from "./phone-setup/setup-screen.js";
-import { headerActions, stackScreenOptions } from "./navigation-header.js";
+import { headerActions, stackScreenOptions, TopLevelMenu } from "./navigation-header.js";
+import { isTopLevel, topLevelScreenOptions } from "./top-level.js";
 import { AddDeploymentScreen } from "./screens/add-deployment.js";
 import { AddPersonalScreen } from "./screens/add-personal.js";
 import { AddServerScreen } from "./screens/add-server.js";
@@ -31,11 +34,13 @@ import { ComputerScreen } from "./screens/computer.js";
 import { DevicePageScreen } from "./screens/device-page.js";
 import { ConversationActivityScreen } from "./screens/conversation-activity.js";
 import { DeploymentsScreen } from "./screens/deployments.js";
+import { NeedsYouScreen } from "./screens/needs-you.js";
 import { HomeScreen } from "./screens/home.js";
 import { NotificationsIntroScreen } from "./screens/notifications-intro.js";
 import { OpenAppScreen } from "./screens/open-app.js";
 import { ScheduleScreen, type ScheduleDestination } from "./screens/schedule.js";
 import { SchedulesScreen } from "./screens/schedules.js";
+import { YourNameScreen, type YourNameParams } from "./screens/your-name.js";
 import {
   SettingsAccountScreen,
   SettingsSessionDetailScreen,
@@ -50,18 +55,21 @@ import { SettingsMessagingScreen } from "./screens/settings-messaging.js";
 import { AgentAuthorizationScreen } from "./screens/agent-authorization.js";
 import { SettingsPluginsScreen } from "./screens/settings-plugins.js";
 import { TabsScreen } from "./screens/tabs.js";
+import { AppsScreen } from "./screens/apps.js";
 import { TaskSearchScreen } from "./screens/task-search.js";
 import { ThreadFindScreen } from "./screens/thread-find.js";
 import { RequestSheetScreen } from "./thread/request-sheet.js";
+import { FileViewerScreen, type FileViewerParams } from "./thread/file-viewer.js";
 import { NewThreadScreen, ThreadSettingsScreen } from "./screens/thread-settings.js";
 import { RunningNowScreen } from "./screens/running-now.js";
 import { SubagentScreen } from "./screens/subagent.js";
 import { ThreadStepScreen } from "./screens/thread-step.js";
+import { MessageHistoryScreen } from "./screens/message-history.js";
 import { ThreadScreen } from "./screens/thread.js";
-import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
+import type { OpeningTabRoute } from "./browser/open-tab.js";
+import { OpeningTabScreen, WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { SidebarShell } from "./sidebar/sidebar-shell.js";
 import { DoneTasksScreen } from "./screens/done-tasks.js";
-import { TeamHomeScreen } from "./team/team-home-screen.js";
 import {
   TeamChannelScreen,
   TeamThreadScreen,
@@ -85,6 +93,7 @@ import {
   TeamSettingsScreen,
 } from "./team/team-admin-screens.js";
 import { TeamInvitesScreen } from "./team/invite-people-screen.js";
+import { TeamPartnerSettingsScreen } from "./team/team-partner-settings.js";
 import {
   CreateTeamScreen,
   DeleteTeamScreen,
@@ -99,17 +108,8 @@ import {
   TeamNewMessageScreen,
 } from "./team/team-directory-screens.js";
 import { TeamNewGroupScreen, TeamRenameChannelScreen } from "./team/team-name-forms.js";
-import {
-  TeamKnowledgeScreen,
-  TeamNoteHistoryScreen,
-  TeamNoteScreen,
-  TeamTopicScreen,
-} from "./team/knowledge-screens.js";
-import {
-  TeamNoteEditScreen,
-  TeamTopicAccessScreen,
-  TeamTopicFormScreen,
-} from "./team/knowledge-forms.js";
+import { TeamKnowledgeScreen, TeamNoteScreen } from "./team/knowledge-screens.js";
+import { TeamTopicAccessScreen, TeamTopicFormScreen } from "./team/knowledge-forms.js";
 import { color } from "./theme.js";
 import { AroundScreen } from "./thread/around-sheet.js";
 import { QuietlyMovedScreen } from "./threads/quietly-moved-sheet.js";
@@ -123,13 +123,8 @@ import { thisPhoneNoun } from "./computers/phone-noun.js";
  * tap arrive at the same screen by the same path. The header uses the platform
  * face and stays native chrome.
  *
- * Home — the reader's agent and their tasks — is the root of every
- * Deployment's stack and stays mounted under everything pushed over it. Needs
- * you, Tabs and Automations are the drawer's other places: each is pushed over
- * Home with the Menu in place of Back, and choosing Tasks returns to Home, so
- * the stack never grows by moving around the drawer. A team's channels, DMs and
- * threads are ordinary pushes with the native Back, like a task: they return to
- * the screen they were opened from, and Home is always underneath.
+ * Home keeps its unsent draft mounted beneath the active Tasks or team chain.
+ * The sidebar resumes each side; explicit entries replace only that side.
  *
  * The drawer is the stack's own `layout` (`SidebarShell`): one navigator, one
  * history, with the drawer or docked column around it.
@@ -138,13 +133,41 @@ import { thisPhoneNoun } from "./computers/phone-noun.js";
  * platform's large title; a thread's title is the person's words and keeps the
  * bar-height title that truncates gracefully.
  */
-function ScreenLayout(props: { readonly children: ReactNode; readonly modal: boolean }) {
+function ScreenLayout(props: {
+  readonly children: ReactNode;
+  readonly modal: boolean;
+  readonly route: { readonly params?: unknown };
+}) {
   const focused = useIsFocused();
+  useTeamSideBack();
+  const content = <RouteReferences route={props.route}>{props.children}</RouteReferences>;
   return (
     <>
-      {props.modal ? <Pane>{props.children}</Pane> : props.children}
+      {props.modal ? <Pane>{content}</Pane> : content}
+      {props.modal ? null : <TopLevelMenu />}
       <SheetAnchor active={focused} level={1} />
     </>
+  );
+}
+
+/**
+ * A personal Deployment's screen reads its links as that Deployment's: the
+ * route names the owner, so a link drawn here never asks the selection whose
+ * it is. A team's screens get their own context from the team's gate.
+ */
+function RouteReferences(props: {
+  readonly children: ReactNode;
+  readonly route: { readonly params?: unknown };
+}): ReactNode {
+  const params = isRecord(props.route.params) ? props.route.params : {};
+  const deploymentId = typeof params["deploymentId"] === "string" ? params["deploymentId"] : null;
+  const threadId = typeof params["threadId"] === "string" ? params["threadId"] : null;
+  const client = useAttachedHostOf(deploymentId);
+  if (deploymentId === null || client === null || "teamId" in params) return props.children;
+  return (
+    <PersonalReferenceProvider client={client} deploymentId={deploymentId} threadId={threadId}>
+      {props.children}
+    </PersonalReferenceProvider>
   );
 }
 
@@ -157,12 +180,20 @@ const RootStack = createNativeStackNavigator({
   // A sheet or modal is presented away from the screens: its safe area is
   // where it was presented, not the stack's or the sidebar's beside it, and no
   // region the shell measured lies over it.
-  screenLayout: ({ children, options }) => (
-    <ScreenLayout modal={options.presentation !== undefined && options.presentation !== "card"}>
-      {children}
+  screenLayout: ({ children, options, route }) => (
+    <ScreenLayout
+      modal={options.presentation !== undefined && options.presentation !== "card"}
+      route={route}
+    >
+      <TeamScreenLayout route={route}>{children}</TeamScreenLayout>
     </ScreenLayout>
   ),
-  screenOptions: stackScreenOptions,
+  // Recomputed as the stack changes, so a top-level screen's transition is in
+  // force as it is pushed, and its pop fades the same way back to Home.
+  screenOptions: ({ navigation, route }) =>
+    isTopLevel(navigation.getState(), route.key)
+      ? { ...stackScreenOptions, ...topLevelScreenOptions }
+      : stackScreenOptions,
   screens: {
     Deployments: {
       screen: DeploymentsScreen,
@@ -184,8 +215,9 @@ const RootStack = createNativeStackNavigator({
       }),
     },
     // Home: the new-task composer, holding its one unsent draft.
-    // The root every other screen of a Deployment is pushed over.
+    // The root every top-level screen of a Deployment stands on.
     Home: { screen: HomeScreen, options: { title: "Tasks" } },
+    NeedsYou: { screen: NeedsYouScreen, options: { title: "Needs you" } },
     // Every task in Done, newest Done first, from the last line of the drawer's Tasks.
     DoneTasks: { screen: DoneTasksScreen, options: { headerLargeTitle: true, title: "Done" } },
     // The tasks just moved to Done for the reader, from "+N" on that line.
@@ -193,37 +225,28 @@ const RootStack = createNativeStackNavigator({
       screen: QuietlyMovedScreen,
       options: {
         headerShown: false,
-        presentation: "formSheet",
+        presentation: screenPresentations.QuietlyMoved,
         sheetAllowedDetents: [0.6, 0.95],
         sheetGrabberVisible: true,
         title: "Moved to Done for you",
       },
     },
-    // A team's page from its drawer row: channels, then DMs; its menu is the title.
-    TeamHome: { screen: TeamHomeScreen, options: { title: "" } },
-    // Every tab this person may see, from the drawer like Needs you. A tab
-    // opened from here is shown alone.
-    Tabs: { screen: TabsScreen, options: { ...destinationOptions(), title: "Tabs" } },
+    // Every tab this person may see, from the sidebar. A tab opened from here
+    // is shown alone.
+    Tabs: { screen: TabsScreen, options: { headerLargeTitle: true, title: "Tabs" } },
+    // The person's published apps, from the sidebar like Tabs.
+    Apps: { screen: AppsScreen, options: { headerLargeTitle: true, title: "Apps" } },
     // Everything set to run on its own, from the sidebar like Tabs.
     Schedules: {
       screen: SchedulesScreen,
-      options: { ...destinationOptions(), title: "Automations" },
+      options: { headerLargeTitle: true, title: "Automations" },
     },
     // One schedule, from Schedules or a thread's Around sheet. Its name is
     // the large title, set once it loads.
     Schedule: { screen: ScheduleScreen, options: { headerLargeTitle: true, title: "" } },
-    Thread: {
-      screen: ThreadScreen,
-      // A task just started takes the place of its New task screen: it fades
-      // in where that screen was, the composer where it was, rather than
-      // sliding over it as if it were a step further in.
-      options: ({ route }) => ({
-        ...(isRecord(route.params) && route.params["started"] === true
-          ? { animation: "fade" as const }
-          : {}),
-        title: "Thread",
-      }),
-    },
+    // A task just started from Home is top-level, so it fades in where New
+    // task was, the composer where it was.
+    Thread: { screen: ThreadScreen, options: { title: "Thread" } },
     // A subagent's own read-only conversation, pushed over the one that started
     // it; its own header names it, and Back returns to the parent.
     Subagent: { screen: SubagentScreen, options: { title: "Subagent" } },
@@ -232,13 +255,13 @@ const RootStack = createNativeStackNavigator({
     // Every task on the Deployment, narrowed by the search field in its bar,
     // from the sidebar's magnifying glass.
     TaskSearch: { screen: TaskSearchScreen, options: { title: "Search" } },
-    // A conversation's tabs and Mac apps, pushed over it: the grid, or one
-    // tab or app, which a tile pushes over the grid; or one tab, app or phone
-    // alone, from Tabs or the sidebar. The native
-    // Back (and swipe, and Android's back) returns, and leaving stops nothing.
+    // Exactly one tab of any kind, by its tabId, from Tabs, the sidebar or a
+    // conversation. The native Back (and swipe, and Android's back) returns,
+    // and leaving stops nothing.
+    OpeningTab: { screen: OpeningTabScreen, options: { title: "Opening…" } },
     WorkspaceBrowser: { screen: WorkspaceBrowserScreen, options: { title: "Tabs" } },
-    // One browser's tabs, from the tab button in a page's bar; opened for a
-    // task, that task's tabs first. It opens at half height and grows for many.
+    // The one tab list, from the tab button in a page's bar, with that page
+    // marked. It opens at half height and grows for many.
     BrowserTabs: {
       screen: BrowserTabsScreen,
       options: {
@@ -311,6 +334,16 @@ const RootStack = createNativeStackNavigator({
         title: "Request",
       }),
     },
+    // A file a link named: its lines, its image or its download, over everything,
+    // with its own bar. Close returns to the words that named it.
+    FileViewer: {
+      screen: FileViewerScreen,
+      options: {
+        headerShown: false,
+        presentation: screenPresentations.FileViewer,
+        title: "File",
+      },
+    },
     // One step of an agent's work. Its own content names it, so the sheet has
     // no bar; it opens part-way so the transcript it came from stays in view.
     ThreadStep: {
@@ -347,6 +380,18 @@ const RootStack = createNativeStackNavigator({
         sheetAllowedDetents: [0.6, 0.95],
         sheetGrabberVisible: true,
         title: "Around this thread",
+      },
+    },
+    // Every version of a message edited while it waited, from its "Edited"
+    // mark. It is as tall as its versions, so the conversation stays in view.
+    MessageHistory: {
+      screen: MessageHistoryScreen,
+      options: {
+        headerShown: false,
+        presentation: screenPresentations.MessageHistory,
+        sheetAllowedDetents: "fitToContents",
+        sheetGrabberVisible: true,
+        title: "Edit history",
       },
     },
     // Running now: what works for a conversation at this moment, from the
@@ -389,14 +434,11 @@ const RootStack = createNativeStackNavigator({
     },
     TeamFiles: { screen: TeamFilesScreen, options: { title: "Files" } },
     TeamPinned: { screen: TeamPinnedScreen, options: { title: "Pinned" } },
-    // A team's knowledge: topics, their notes, and each note's versions.
+    // A team's knowledge: notes by topic, one note with its versions, and the topics' lists.
     TeamKnowledge: { screen: TeamKnowledgeScreen, options: { title: "Knowledge" } },
-    TeamTopic: { screen: TeamTopicScreen, options: { title: "" } },
     TeamTopicForm: { screen: TeamTopicFormScreen, options: { title: "New topic" } },
     TeamTopicAccess: { screen: TeamTopicAccessScreen, options: { title: "Access" } },
     TeamNote: { screen: TeamNoteScreen, options: { title: "" } },
-    TeamNoteEdit: { screen: TeamNoteEditScreen, options: { title: "Note" } },
-    TeamNoteHistory: { screen: TeamNoteHistoryScreen, options: { title: "History" } },
     TeamSearch: { screen: TeamSearchScreen, options: { title: "Search" } },
     TeamNotices: { screen: TeamNoticesScreen, options: { title: "Notices" } },
     // A team's own settings group, from its section's menu or Settings.
@@ -406,6 +448,7 @@ const RootStack = createNativeStackNavigator({
     TeamGroup: { screen: TeamGroupScreen, options: { title: "Group" } },
     TeamNewGroup: { screen: TeamNewGroupScreen, options: { title: "New group" } },
     TeamInvites: { screen: TeamInvitesScreen, options: { title: "Invite people" } },
+    TeamPartners: { screen: TeamPartnerSettingsScreen, options: { title: "Partner teams" } },
     // Create a team or join with an invite, from the drawer and Settings.
     Teams: { screen: TeamsScreen, options: { headerLargeTitle: true, title: "Teams" } },
     CreateTeam: {
@@ -495,6 +538,7 @@ const RootStack = createNativeStackNavigator({
       },
     },
     SettingsAccount: { screen: SettingsAccountScreen, options: { title: "Account" } },
+    YourName: { screen: YourNameScreen, options: { title: "Your name" } },
     SettingsSessionDetail: {
       screen: SettingsSessionDetailScreen,
       options: { title: "Signed-in device" },
@@ -591,7 +635,7 @@ const RootStack = createNativeStackNavigator({
       screen: AgentAuthorizationScreen,
       options: ({ navigation }) => ({
         ...headerActions({ left: { label: "Cancel", onPress: () => navigation.goBack() } }),
-        presentation: "modal",
+        presentation: screenPresentations.AgentAuthorization,
         title: "Connect an agent",
       }),
     },
@@ -609,7 +653,7 @@ const RootStack = createNativeStackNavigator({
       screen: NotificationsIntroScreen,
       options: {
         headerShown: false,
-        presentation: "formSheet",
+        presentation: screenPresentations.NotificationsIntro,
         sheetAllowedDetents: "fitToContents",
         sheetGrabberVisible: true,
         title: "Notifications",
@@ -668,21 +712,6 @@ const RootStack = createNativeStackNavigator({
   },
 });
 
-/**
- * A drawer place other than Home. It has the Menu where Back would be, so the
- * edge swipe belongs to the drawer rather than to a pop, and it fades in rather
- * than sliding: it is a place beside Home, not a step deeper into it. Android's
- * Back still returns to Home.
- */
-function destinationOptions(): NativeStackNavigationOptions {
-  return {
-    animation: "fade",
-    gestureEnabled: false,
-    headerBackVisible: false,
-    headerLargeTitle: true,
-  };
-}
-
 type OpensteerRootParamList = {
   readonly TeamChannel: TeamChannelRoute;
   readonly TeamThread: TeamThreadRoute;
@@ -692,23 +721,11 @@ type OpensteerRootParamList = {
   readonly TeamInstructions: { readonly teamId: string; readonly channelId: string };
   readonly TeamFiles: { readonly teamId: string; readonly channelId: string };
   readonly TeamPinned: { readonly teamId: string; readonly channelId: string };
-  readonly TeamKnowledge: { readonly teamId: string };
-  readonly TeamTopic: { readonly teamId: string; readonly topicId: string };
+  readonly TeamKnowledge: { readonly teamId: string; readonly topicId?: string | undefined };
   /** A new topic, or the named one's name and description. */
   readonly TeamTopicForm: { readonly teamId: string; readonly topicId?: string | undefined };
   readonly TeamTopicAccess: { readonly teamId: string; readonly topicId: string };
   readonly TeamNote: { readonly teamId: string; readonly topicId: string; readonly noteId: string };
-  /** A new note in the topic, or a change to the named one. */
-  readonly TeamNoteEdit: {
-    readonly teamId: string;
-    readonly topicId: string;
-    readonly noteId?: string | undefined;
-  };
-  readonly TeamNoteHistory: {
-    readonly teamId: string;
-    readonly topicId: string;
-    readonly noteId: string;
-  };
   readonly TeamSearch: { readonly teamId: string; readonly channelId?: string | undefined };
   readonly TeamNotices: { readonly teamId: string };
   readonly TeamSettings: { readonly teamId: string };
@@ -717,6 +734,7 @@ type OpensteerRootParamList = {
   readonly TeamGroup: { readonly teamId: string; readonly groupId: string };
   readonly TeamNewGroup: { readonly teamId: string };
   readonly TeamInvites: { readonly teamId: string };
+  readonly TeamPartners: { readonly teamId: string };
   readonly Teams: undefined;
   readonly CreateTeam: undefined;
   readonly TeamSetup: { readonly hostedTeamId: string };
@@ -728,11 +746,12 @@ type OpensteerRootParamList = {
   readonly TeamNewMessage: { readonly teamId: string };
   readonly TeamAudit: { readonly teamId: string };
   /** A team page link the person opened or pasted, or none for the paste field. */
-  readonly JoinTeam: { readonly link?: string | undefined } | undefined;
+  readonly JoinTeam:
+    | { readonly link?: string | undefined; readonly externalIntent?: number | undefined }
+    | undefined;
   readonly ConnectOpensteer: { readonly teamId: string };
   readonly DoneTasks: { readonly deploymentId: string };
   readonly QuietlyMoved: { readonly deploymentId: string };
-  readonly TeamHome: { readonly teamId: string };
   readonly AddDeployment: undefined;
   readonly SetUpPhone: { readonly deploymentId: string };
   readonly AgentAuthorization: { readonly deploymentId: string; readonly requestId: string };
@@ -754,7 +773,11 @@ type OpensteerRootParamList = {
     readonly threadId: string;
     /** The reply's turn, by its key. Absent, the reply under way or else the latest. */
     readonly turnKey?: string | undefined;
+    /** A Run a link named, found once the transcript around its first message is loaded. */
+    readonly runId?: string | undefined;
+    readonly anchorMessageId?: string | undefined;
   };
+  readonly FileViewer: FileViewerParams;
   readonly Deployments: undefined;
   readonly DeploymentSwitcher: undefined;
   readonly Home: { readonly deploymentId: string };
@@ -770,6 +793,7 @@ type OpensteerRootParamList = {
   readonly SettingsAiSharing: undefined;
   readonly SettingsGeneral: { readonly deploymentId: string };
   readonly SettingsAccount: { readonly deploymentId: string };
+  readonly YourName: YourNameParams;
   readonly SettingsSessionDetail: { readonly deploymentId: string; readonly sessionId: string };
   readonly SettingsDevices: { readonly deploymentId: string };
   readonly SettingsMessaging: { readonly deploymentId: string };
@@ -785,6 +809,7 @@ type OpensteerRootParamList = {
   readonly Settings: undefined;
   readonly Plugins: { readonly deploymentId: string };
   readonly Tabs: { readonly deploymentId: string };
+  readonly Apps: { readonly deploymentId: string };
   readonly TaskSearch: { readonly deploymentId: string };
   readonly Thread: {
     readonly deploymentId: string;
@@ -795,8 +820,6 @@ type OpensteerRootParamList = {
      */
     readonly messageId?: string | undefined;
     readonly requestId?: string;
-    /** Set when New task just made this task and this screen replaces it. */
-    readonly started?: boolean;
     readonly threadId: string;
   };
   readonly ThreadAround: {
@@ -806,6 +829,11 @@ type OpensteerRootParamList = {
     readonly threadId: string;
   };
   readonly RunningNow: { readonly deploymentId: string; readonly threadId: string };
+  readonly MessageHistory: {
+    readonly deploymentId: string;
+    readonly messageId: string;
+    readonly threadId: string;
+  };
   readonly Subagent: {
     readonly deploymentId: string;
     readonly nodeId: string;
@@ -813,6 +841,8 @@ type OpensteerRootParamList = {
   };
   readonly RequestSheet: {
     readonly deploymentId: string;
+    /** Opened from a link: a settled Request is shown as it ended rather than closed. */
+    readonly opened?: "reference";
     readonly full?: boolean;
     readonly reason?: boolean;
     readonly requestId: string;
@@ -827,11 +857,11 @@ type OpensteerRootParamList = {
     readonly nodeId?: string;
     readonly threadId: string;
   };
-  readonly WorkspaceBrowser: SurfacesRoute;
+  readonly OpeningTab: OpeningTabRoute;
+  readonly WorkspaceBrowser: TabRoute;
   readonly BrowserTabs: {
     readonly deploymentId: string;
-    readonly sessionId: string;
-    readonly tabId: string;
+    readonly tabId: TabId;
     readonly threadId?: string;
   };
 };

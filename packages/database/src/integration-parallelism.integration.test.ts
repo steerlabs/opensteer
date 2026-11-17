@@ -225,6 +225,8 @@ export default { ...config, test: { ...config.test, globalSetup: [${JSON.stringi
         "OPENSTEER_STATE_IMPORT_E2E_ARTIFACT_DIR",
         "OPENSTEER_PASSKEY_POLICY_E2E_ARTIFACT_DIR",
         "OPENSTEER_CDP_BOUNDARY_E2E_ARTIFACT_DIR",
+        "OPENSTEER_BROWSER_CLEANUP_E2E_ARTIFACT_DIR",
+        "OPENSTEER_EDITING_HOST_EVIDENCE_DIR",
       ].map((key) => [key, undefined]),
     );
     const runs = await Promise.all(
@@ -247,7 +249,7 @@ export default { ...config, test: { ...config.test, globalSetup: [${JSON.stringi
         paths.push(...Object.values(receipt));
       }
     }
-    expect(paths).toHaveLength(36);
+    expect(paths).toHaveLength(44);
     expect(new Set(paths).size).toBe(paths.length);
   });
 

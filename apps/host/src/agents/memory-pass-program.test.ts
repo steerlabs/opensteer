@@ -136,10 +136,10 @@ it.each(["memory-light", "memory-nightly"] as const)(
       }
       expect(calls).toHaveLength(4);
       expect(calls[0]).toEqual({
-        name: "thread_send",
+        name: "opensteer_task_send",
         arguments: {
           delivery: "queue",
-          threadId,
+          taskId: threadId,
           message: `${role === "memory-light" ? "Light" : "Nightly"} pass due (2026-11-03T09:30:00Z). Load opensteer:memory and follow its ${role === "memory-light" ? "light-pass" : "nightly"} reference.`,
         },
       });

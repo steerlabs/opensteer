@@ -10,6 +10,8 @@ import {
   requestReasonMaxLength,
   requestIsAgentAnswerable,
   RequestKindSchema,
+  requestFormAnswersProblem,
+  type RequestFormField,
 } from "./index.js";
 
 const createdAt = "2026-08-22T12:00:00.000Z";
@@ -27,6 +29,7 @@ describe("agent answer classification", () => {
     "device.access": false,
     "computer.app.access": false,
     "integration.input": false,
+    "person.question": false,
   };
   it("deliberately classifies every Request kind", () => {
     expect(Object.keys(decisions).sort()).toEqual([...RequestKindSchema.options].sort());
@@ -37,7 +40,9 @@ describe("agent answer classification", () => {
           presentation: {
             kind: "form",
             title: "Question",
-            fields: [{ id: "answer", prompt: "Which?", multiSelect: false, secret: false }],
+            fields: [
+              { id: "answer", prompt: "Which?", custom: false, multiSelect: false, secret: false },
+            ],
           },
         }),
       ).toBe(decisions[kind]);
@@ -49,7 +54,9 @@ describe("agent answer classification", () => {
       presentation: {
         kind: "form" as const,
         title: "Question",
-        fields: [{ id: "answer", prompt: "Which?", multiSelect: false, secret: true }],
+        fields: [
+          { id: "answer", prompt: "Which?", custom: false, multiSelect: false, secret: true },
+        ],
       },
     };
     expect(requestIsAgentAnswerable(question)).toBe(false);
@@ -63,6 +70,57 @@ describe("agent answer classification", () => {
         originatingNodeId: createId("executionNode"),
       }),
     ).toBe(false);
+  });
+});
+
+describe("question answers", () => {
+  const choice = (overrides: Partial<RequestFormField> = {}): RequestFormField => ({
+    choices: [
+      { label: "Batches", value: "Batches" },
+      { label: "All at once", value: "All at once" },
+    ],
+    custom: false,
+    id: "q",
+    multiSelect: false,
+    prompt: "How?",
+    secret: false,
+    ...overrides,
+  });
+
+  it("takes an offered choice, and a typed answer only where the person may type", () => {
+    expect(requestFormAnswersProblem([choice()], { q: ["Batches"] })).toBeNull();
+    expect(requestFormAnswersProblem([choice()], { q: ["Tonight"] })).toBe(
+      "How? is not one of the offered choices",
+    );
+    expect(requestFormAnswersProblem([choice({ custom: true })], { q: ["Tonight"] })).toBeNull();
+  });
+
+  it("lets a typed answer stand alone, never beside choices or blank", () => {
+    const field = choice({ custom: true, multiSelect: true });
+    expect(requestFormAnswersProblem([field], { q: ["Batches", "Tonight"] })).toBe(
+      "How? needs one typed answer",
+    );
+    expect(requestFormAnswersProblem([field], { q: ["  "] })).toBe("How? needs one typed answer");
+    expect(requestFormAnswersProblem([field], { q: ["Batches", "All at once"] })).toBeNull();
+  });
+
+  it("holds single choice to one, refuses repeats, gaps and questions it never asked", () => {
+    expect(requestFormAnswersProblem([choice()], { q: ["Batches", "All at once"] })).toBe(
+      "How? takes exactly one choice",
+    );
+    expect(
+      requestFormAnswersProblem([choice({ multiSelect: true })], { q: ["Batches", "Batches"] }),
+    ).toBe("How? repeats a choice");
+    expect(requestFormAnswersProblem([choice()], {})).toBe("How? is not answered");
+    expect(requestFormAnswersProblem([choice()], { q: ["Batches"], other: ["x"] })).toBe(
+      "other is not one of its questions",
+    );
+  });
+
+  it("types an open question's answer", () => {
+    const open = choice({ choices: undefined });
+    expect(requestFormAnswersProblem([open], { q: ["Tuesday"] })).toBeNull();
+    expect(requestFormAnswersProblem([open], { q: [""] })).toBe("How? needs one typed answer");
   });
 });
 
@@ -200,6 +258,7 @@ describe("Request contracts", () => {
         fields: [
           {
             id: "token",
+            custom: false,
             multiSelect: false,
             prompt: "Token",
             secret: true,

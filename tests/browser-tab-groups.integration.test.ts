@@ -1,1760 +1,211 @@
-import { browserRows } from "../apps/host/src/browser/browser-rows.test-support.js";
-import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
-  hostApiVersion,
-  hostApiVersionHeader,
-} from "../packages/deployment-authority/src/index.js";
-/**
- * Failure journeys, written before the backend:
- * - Failed Runtime disposal can become false close success; dead memberships can exhaust limits.
- * - Grouped lineages older than the bootstrap window can vanish.
- * - Organization can accidentally change session authority, cookies, bindings or CDP visibility.
- * - Owner layouts can leak across people sharing the same Guest tab.
- * - A bootstrap-sized read can hide old lineages; partial group reads can leak unreachable members.
- * - The catalog's coalescing timer can make a just-opened surface impossible to group.
- * - Retried organization can duplicate groups; repeated close can affect unlisted tabs or call the browser again.
- * - Restart/restore can lose membership, wake siblings, move a person's view or omit the Run hold.
- * - Tab reads can lose profile/Guest identity when a lineage sleeps or starts restoring, or wake it.
- * - Regroup, last-member close and restore can invert locks or resurrect tabs.
- * Evidence includes source SHA, inputs, outputs and assertions outside the checkout.
- */
-import { execFileSync } from "node:child_process";
-import { createPublicKey, randomBytes, randomUUID, type KeyObject } from "node:crypto";
-import { once } from "node:events";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
-import {
-  startVerticalStack,
-  type VerticalStack,
-} from "../apps/host/src/agents/vertical-stack.test-support.js";
-import { BrowserTabGroupService } from "../apps/host/src/browser/browser-tab-group-service.js";
-import { WebSocket } from "../apps/host/src/browser/browser-watch-e2e.test-support.js";
-import type { CoreCommand } from "../apps/host/src/server/host-api-handlers.js";
-import { SurfaceLedger } from "../packages/browser-runtime-core/src/browser/surface-ledger.js";
-import {
-  BrowserRuntime,
-  BrowserRuntimeServer,
-  Ed25519AttachTicketVerifier,
-  defaultAttachTicketReplayLedgerPath,
-  sessionFilesRoot,
-} from "../packages/browser-runtime-core/src/index.js";
-import { createHttpHostApiClient } from "../packages/client/src/host/host-api-client.js";
-import {
-  ModelSelectionSchema,
   createId,
-  resolveBrowserTabOrder,
+  DeviceIdSchema,
+  WindowIdSchema,
+  type App,
+  type Tab,
+  type TabLayout,
 } from "../packages/core/src/index.js";
-import {
-  BrowserTabGroupStore,
-  PersonalTabStore,
-  createDatabase,
-} from "../packages/database/src/index.js";
-import { pauseAfterLock } from "../packages/database/src/lock-race.test-support.js";
-import { CodexHarnessDriver } from "../packages/harness-codex/src/codex-driver.js";
-import {
-  HarnessRegistry,
-  isolatedServiceHarnessRuntimeBoundary,
-} from "../packages/harness/src/index.js";
-import { RealtimeHub } from "../packages/orchestration/src/index.js";
-import {
-  BrowserServerMessageSchema,
-  BrowserSurfaceIdSchema,
-  BrowserTabLayoutSchema,
-  BrowserTabReadResultSchema,
-  BrowserTabWriteResultSchema,
-} from "../packages/protocol/src/index.js";
-
-const executablePath = [
-  process.env.OPENSTEER_CHROMIUM_EXECUTABLE,
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-  "/usr/bin/chromium",
-].find((candidate): candidate is string => Boolean(candidate && existsSync(candidate)));
-const integration =
-  process.env.OPENSTEER_TEST_DATABASE_URL && executablePath ? describe : describe.skip;
-const evidenceDir =
-  process.env.OPENSTEER_TAB_GROUPS_EVIDENCE_DIR ??
-  path.join(tmpdir(), `opensteer-tab-groups-${process.pid}`);
-const cleanup: Array<() => Promise<unknown>> = [];
-const evidence: Array<Record<string, unknown>> = [];
-afterEach(async (context) => {
-  const failures: unknown[] = [];
-  for (const close of cleanup.splice(0).reverse()) {
-    try {
-      await close();
-    } catch (error) {
-      failures.push(String(error));
-    }
-  }
-  await mkdir(evidenceDir, { recursive: true });
-  await writeFile(
-    path.join(evidenceDir, `${randomUUID()}.json`),
-    JSON.stringify(
-      {
-        gitSha: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
-        journey: context.task.name,
-        result: context.task.result,
-        evidence: evidence.splice(0),
-        cleanupFailures: failures,
-      },
-      null,
-      2,
-    ),
-  );
-  expect(failures).toEqual([]);
-}, 90_000);
-
-async function deployment() {
-  const root = await mkdtemp(path.join(tmpdir(), "opensteer-tab-groups-browser-"));
-  cleanup.push(() => rm(root, { force: true, recursive: true }));
-  const keys = new Map<string, KeyObject>();
-  const bridgeToken = randomBytes(32).toString("base64url");
-  const runtime = new BrowserRuntime({
-    localProfiles: { root },
-    runtimeId: "tab-groups-e2e",
-    launcher: new PlaywrightChromiumLauncher({
-      chromiumSandbox: false,
-      executablePath: executablePath!,
-      headless: true,
-    }),
-    sessionFilesRoot: sessionFilesRoot(root),
-    ticketVerifier: await Ed25519AttachTicketVerifier.create({
-      replayLedgerPath: defaultAttachTicketReplayLedgerPath(root),
-      resolvePublicKey: (id) => keys.get(id) ?? null,
-    }),
-  });
-  const server = new BrowserRuntimeServer({
-    host: "127.0.0.1",
-    port: 0,
-    runtime,
-    relayBridge: {
-      token: bridgeToken,
-      updateAttachKeys: (entries) => {
-        keys.clear();
-        for (const entry of entries) keys.set(entry.keyId, createPublicKey(entry.publicKeyPem));
-      },
-    },
-  });
-  const address = await server.start();
-  cleanup.push(() => server.close());
-  let boots = 0;
-  const harnesses = () => {
-    // A restarted Runner's engine reports its models late, as a busy machine's
-    // does, so readiness after a restart has to come from the new boot.
-    const restarted = boots++ > 0;
-    const harnesses = new HarnessRegistry();
-    harnesses.registerDriver(
-      new CodexHarnessDriver({
-        launch: {
-          executable: process.execPath,
-          arguments: [
-            fileURLToPath(
-              new URL(
-                "../packages/harness-codex/src/test-fixtures/fake-codex-app-server.mjs",
-                import.meta.url,
-              ),
-            ),
-            "--scenario=browser-tab-groups",
-            "--unique-threads",
-            ...(restarted ? ["--model-list-delay-ms=2000"] : []),
-          ],
-        },
-      }),
-    );
-    return harnesses;
-  };
-  const stack = await startVerticalStack({
-    databaseUrl: process.env.OPENSTEER_TEST_DATABASE_URL!,
-    browser: {
-      bridgeToken,
-      runtimeId: "tab-groups-e2e",
-      url: new URL(`http://${address.host}:${address.port}/`),
-    },
-    browserHarnessExecutable: fileURLToPath(
-      new URL("../apps/runner/browser-harness/browser-harness.mjs", import.meta.url),
-    ),
-    harnesses,
-    harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-    harnessInstance: { config: {}, driverKind: "codex", sourceId: "openai", stateKind: "isolated" },
-    catalogTimeoutMs: 15_000,
-    runTimeoutMs: 90_000,
-  });
-  cleanup.push(() => stack.close());
-  cleanup.push(() => server.close());
-  await expect
-    .poll(
-      async () => {
-        const r = await stack.api["bootstrap.get"]({});
-        return r.ok && r.data.browser.available;
-      },
-      { timeout: 30_000 },
-    )
-    .toBe(true);
-  return stack;
-}
-async function command(stack: VerticalStack, input: CoreCommand) {
-  const result = await stack.api["commands.dispatch"](input);
-  evidence.push({ input, result });
-  if (!result.ok) throw new Error(result.error.message);
-  return result.data;
-}
-async function bootstrap(stack: VerticalStack) {
-  const result = await stack.api["bootstrap.get"]({});
-  if (!result.ok) throw new Error(result.error.message);
-  evidence.push({ layout: result.data.browser.tabGroups });
-  const owner = await stack.host.store.firstUser();
-  if (!owner) throw new Error("Missing owner");
-  return { ...result.data.browser, ...(await browserRows(stack.host.browser, owner.id)) };
-}
-async function open(stack: VerticalStack) {
-  const result = await command(stack, {
-    type: "browser.tab.open",
-    identity: { kind: "guest" },
-    idempotencyKey: randomUUID(),
-  });
-  if (result.type !== "browser.tab.open") throw new Error("Wrong tab-open result");
-  return result;
-}
-
-async function resolvedOrder(stack: VerticalStack) {
-  const browser = await bootstrap(stack);
-  const layout = browser.tabGroups!;
-  return resolveBrowserTabOrder(
-    layout.order,
-    browser.browserTabs!.structure().map((key) => ({ ...key, id: key.tabId })),
-    new Map(layout.groups.flatMap((group) => group.tabIds.map((id) => [id, group.id]))),
-  );
-}
-
-integration("personal tab order", () => {
-  it("places recorded link children after their opener and after its group without materializing reads", async () => {
-    const stack = await deployment();
-    const a = await open(stack);
-    const b = await open(stack);
-    const db = stack.host.store.database;
-    const owner = await db.selectFrom("users").select("id").executeTakeFirstOrThrow();
-    const recorder = new PersonalTabStore(db);
-    const child = () => ({
-      id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
-      title: "Link",
-      url: "about:blank",
-      order: 1,
-      openerId: a.tabId,
-    });
-    const c = child();
-    const d = child();
-    await recorder.recordChanges(a.sessionId, [c, d], []);
-    expect(await resolvedOrder(stack)).toEqual([a.tabId, c.id, d.id, b.tabId]);
-    expect((await bootstrap(stack)).tabGroups?.order).toEqual([]);
-    const group = await command(stack, {
-      type: "tabs.group",
-      tabIds: [a.tabId, b.tabId],
-      idempotencyKey: randomUUID(),
-    });
-    if (group.type !== "tabs.group") throw new Error("Wrong group result");
-    const e = child();
-    await recorder.recordChanges(a.sessionId, [e], []);
-    expect(await resolvedOrder(stack)).toEqual([a.tabId, b.tabId, c.id, d.id, e.id]);
-    expect(
-      (await recorder.read(owner.id, a.sessionId))?.tabs?.every((tab) =>
-        Number.isFinite(Date.parse(tab.createdAt!)),
-      ),
-    ).toBe(true);
-    expect((await new BrowserTabGroupStore(db).layout(owner.id)).order).toEqual(group.layout.order);
-    evidence.push({
-      assertions: [
-        "link children keep recording order",
-        "loose child follows opener group",
-        "lineage timestamps are ISO",
-        "reads never write",
-      ],
-    });
-  }, 120_000);
-
-  it("serializes two clients and an agent, publishing each owner's layout through the existing notice", async () => {
-    const stack = await deployment();
-    const a = await open(stack);
-    const b = await open(stack);
-    const c = await open(stack);
-    const d = await open(stack);
-    const secondClient = createHttpHostApiClient({
-      baseUrl: stack.hostOrigin,
-      fetch: (input, init) => {
-        const headers = new Headers(init?.headers);
-        headers.set("cookie", stack.sessionCookie);
-        headers.set("origin", stack.hostOrigin.origin);
-        return fetch(input, { ...init, headers });
-      },
-      onAuthenticationRequired: () => undefined,
-    });
-    const notices: unknown[][] = [];
-    const publish = vi.spyOn(RealtimeHub.prototype, "publishBrowserSessionsChanged");
-    const outcomes = await Promise.all([
-      command(stack, {
-        type: "tabs.move",
-        item: { tabIds: [b.tabId] },
-        to: { groupId: null, before: { tabId: a.tabId } },
-        idempotencyKey: randomUUID(),
-      }),
-      secondClient["commands.dispatch"]({
-        type: "tabs.move",
-        item: { tabIds: [d.tabId] },
-        to: { groupId: null, before: { tabId: c.tabId } },
-        idempotencyKey: randomUUID(),
-      }),
-      agent(stack, {
-        calls: [
-          {
-            name: "browser_tab_write",
-            input: { action: "move", tabIds: [c.tabId], before: a.tabId },
-          },
-        ],
-      }),
-    ]);
-    expect(outcomes[1]).toMatchObject({ ok: true });
-    expect(outcomes[2].report.calls[0]).toMatchObject({ result: { action: "move" } });
-    expect(await resolvedOrder(stack)).toEqual([b.tabId, c.tabId, a.tabId, d.tabId]);
-    const one = await bootstrap(stack);
-    const two = await secondClient["bootstrap.get"]({});
-    expect(two).toMatchObject({ ok: true, data: { browser: { tabGroups: one.tabGroups } } });
-    expect(one.tabGroups?.revision).toBe(3);
-    notices.push(...publish.mock.calls);
-    expect(notices.length).toBeGreaterThanOrEqual(3);
-    evidence.push({
-      notices,
-      assertions: [
-        "two clients and agent moves apply",
-        "revisions increase",
-        "session notices invalidate both clients",
-        "clients converge",
-      ],
-    });
-  }, 120_000);
-
-  it("serializes group moves after a source or anchor closes", async () => {
-    const stack = await deployment();
-    const db = stack.host.store.database;
-    const owner = await db.selectFrom("users").select("id").executeTakeFirstOrThrow();
-    for (const closed of ["source", "anchor"] as const) {
-      const a = await open(stack);
-      const b = await open(stack);
-      const grouped = await new BrowserTabGroupStore(db).group(owner.id, {
-        tabIds: [a.tabId],
-        idempotencyKey: randomUUID(),
-      });
-      const barrier = pauseAfterLock(
-        db,
-        (node) => /"name":"personal_?tabs"/iu.test(node) && node.includes("ForNoKeyUpdate"),
-      );
-      const closing = new PersonalTabStore(barrier.database).close(
-        owner.id,
-        closed === "source" ? a.tabId : b.tabId,
-      );
-      let outcome: Promise<unknown>;
-      try {
-        await withTimeout(barrier.reached, 5_000, {
-          timeoutError: () => new Error("Tab close never reached its personal transaction fence"),
-        });
-        outcome = new BrowserTabGroupStore(db)
-          .move(owner.id, {
-            item: { groupId: grouped.groupId },
-            to: { groupId: null, before: { tabId: b.tabId } },
-            idempotencyKey: randomUUID(),
-          })
-          .then(
-            (layout) => ({ layout }),
-            (error: unknown) => ({ error }),
-          );
-      } finally {
-        barrier.release();
-        await closing;
-      }
-      expect(await outcome).toMatchObject({
-        error: { code: closed === "source" ? "not_found" : "conflict" },
-      });
-      evidence.push({
-        closed,
-        outcome: await outcome,
-        assertions: [
-          "closed source never resurrects",
-          "closed anchor never changes destination",
-          "move observes the committed close after the personal event fence",
-        ],
-      });
-    }
-  }, 120_000);
-
-  it("keeps exactly 10,000 saved positions and refuses an oversized materialization without changing it", async () => {
-    const stack = await deployment();
-    const a = await open(stack);
-    const db = stack.host.store.database;
-    const owner = await db.selectFrom("users").select("id").executeTakeFirstOrThrow();
-    const seed = (id: string, order: number) => ({
-      id,
-      order,
-      groupId: a.sessionId,
-      sessionId: a.sessionId,
-      title: "Saved",
-      url: "about:blank",
-      state: "suspended" as const,
-      openerId: null,
-    });
-    for (let start = 1; start <= 9999; start += 1000)
-      await db
-        .insertInto("personalTabs")
-        .values(
-          Array.from({ length: Math.min(1000, 10000 - start) }, (_, index) =>
-            seed(`surface_cap_${start + index}`, start + index),
-          ),
-        )
-        .execute();
-    const groups = new BrowserTabGroupStore(db);
-    const first = await groups.move(owner.id, {
-      item: { tabIds: [a.tabId] },
-      to: { groupId: null, before: null },
-      idempotencyKey: randomUUID(),
-    });
-    expect(first.order).toHaveLength(10000);
-    await db.insertInto("personalTabs").values(seed("surface_cap_extra", 10000)).execute();
-    await expect(
-      groups.move(owner.id, {
-        item: { tabIds: [a.tabId] },
-        to: { groupId: null, before: null },
-        idempotencyKey: randomUUID(),
-      }),
-    ).rejects.toMatchObject({
-      code: "conflict",
-      message:
-        "Close some tabs to keep organizing; Opensteer keeps the order of up to 10,000 tabs.",
-    });
-    expect(await groups.layout(owner.id)).toEqual(first);
-    await db
-      .updateTable("personalTabs")
-      .set({ closedAt: new Date() })
-      .where("id", "=", "surface_cap_1")
+import { createBrowserSessionId } from "../packages/protocol/src/index.js";
+import { KeyedStreamReceiver } from "../packages/protocol/src/keyed-stream.js";
+import { tabDatabaseFixture } from "../apps/host/src/tabs/tab-service.integration.test-support.js";
+import { TabService } from "../apps/host/src/tabs/tab-service.js";
+import type {
+  NativeTabTargetsPort,
+  NativeTargetAcquiredHandler,
+} from "../apps/host/src/tabs/ports.js";
+import type { RunToolScope } from "../apps/host/src/agents/run-tool-tokens.js";
+import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+const integration = describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL);
+integration("mixed workspace layout", () => {
+  it("keeps the same page/window/phone/app group and a held-tab closure on a second client reconnect", async () => {
+    const f = await tabDatabaseFixture();
+    const taskId = createId("thread"),
+      windowId = WindowIdSchema.parse(`win_${randomUUID()}`);
+    const app: App = {
+      appId: `app_${randomUUID()}`,
+      name: "Report",
+      kind: "html",
+      state: "running",
+      computerId: f.runnerId,
+      taskId: null,
+      version: 1,
+      server: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    await f.database
+      .insertInto("apps")
+      .values({
+        id: app.appId,
+        ownerId: f.ownerId,
+        computerId: f.runnerId,
+        name: app.name,
+        threadId: null,
+        runId: null,
+        creationKey: null,
+        latestVersion: 1,
+      })
       .execute();
-    await groups.prune();
-    expect((await groups.layout(owner.id)).order).not.toContain("surface_cap_1");
-    expect(
-      (
-        await groups.move(owner.id, {
-          item: { tabIds: [a.tabId] },
-          to: { groupId: null, before: null },
-          idempotencyKey: randomUUID(),
-        })
-      ).order,
-    ).toHaveLength(10000);
-    evidence.push({
-      assertions: [
-        "cap accepts 10000",
-        "cap refuses 10001 atomically",
-        "read remains bounded",
-        "prune drops closed IDs",
-        "closing restores capacity",
-      ],
-    });
-  }, 120_000);
-
-  it("materializes moves and previous-release grouping commands in the person's order", async () => {
-    const stack = await deployment();
-    const a = await open(stack);
-    const b = await open(stack);
-    const c = await open(stack);
-    const d = await open(stack);
-    expect((await bootstrap(stack)).tabGroups?.order).toEqual([]);
-    expect(await resolvedOrder(stack)).toEqual([a.tabId, b.tabId, c.tabId, d.tabId]);
-    expect(BrowserTabLayoutSchema.parse({ revision: 0, groups: [] })).toEqual({
-      revision: 0,
-      groups: [],
-    });
-    const move = async (
-      item: Extract<CoreCommand, { type: "tabs.move" }>["item"],
-      to: Extract<CoreCommand, { type: "tabs.move" }>["to"],
-    ) => {
-      const result = await command(stack, {
-        type: "tabs.move",
-        item,
-        to,
-        idempotencyKey: randomUUID(),
-      });
-      if (result.type !== "tabs.move") throw new Error("Wrong move result");
-      return result.layout;
-    };
-    const first = await move({ tabIds: [d.tabId] }, { groupId: null, before: { tabId: a.tabId } });
-    expect(first.order).toEqual([d.tabId, a.tabId, b.tabId, c.tabId]);
-    expect(
-      (await move({ tabIds: [d.tabId] }, { groupId: null, before: { tabId: a.tabId } })).revision,
-    ).toBe(first.revision);
-    const g = await command(stack, {
-      type: "tabs.group",
-      tabIds: [a.tabId, c.tabId],
-      title: "Research",
-      idempotencyKey: randomUUID(),
-    });
-    if (g.type !== "tabs.group") throw new Error("Wrong group result");
-    expect(g.layout.order).toEqual([d.tabId, a.tabId, c.tabId, b.tabId]);
-    expect(
-      (await move({ tabIds: [b.tabId] }, { groupId: null, before: { groupId: g.groupId } })).order,
-    ).toEqual([d.tabId, b.tabId, a.tabId, c.tabId]);
-    await command(stack, {
-      type: "tabGroup.update",
-      groupId: g.groupId,
-      collapsed: true,
-      idempotencyKey: randomUUID(),
-    });
-    expect(
-      (await move({ tabIds: [b.tabId] }, { groupId: g.groupId, before: { tabId: c.tabId } })).order,
-    ).toEqual([d.tabId, a.tabId, b.tabId, c.tabId]);
-    expect(
-      (await move({ tabIds: [d.tabId] }, { groupId: g.groupId, before: null })).groups[0]
-        ?.collapsed,
-    ).toBe(true);
-    expect(
-      (await move({ tabIds: [c.tabId, a.tabId] }, { groupId: null, before: null })).order,
-    ).toEqual([b.tabId, d.tabId, a.tabId, c.tabId]);
-    expect((await move({ groupId: g.groupId }, { groupId: null, before: null })).order).toEqual([
-      a.tabId,
-      c.tabId,
-      b.tabId,
-      d.tabId,
-    ]);
-    const n = await command(stack, {
-      type: "tabs.group",
-      tabIds: [a.tabId, c.tabId],
-      idempotencyKey: randomUUID(),
-    });
-    if (n.type !== "tabs.group") throw new Error("Wrong group result");
-    expect(
-      (await move({ groupId: g.groupId }, { groupId: null, before: { groupId: n.groupId } })).order,
-    ).toEqual([b.tabId, d.tabId, a.tabId, c.tabId]);
-    await move({ groupId: g.groupId }, { groupId: null, before: null });
-    expect(
-      (await move({ tabIds: [c.tabId] }, { groupId: g.groupId, before: { tabId: b.tabId } })).order,
-    ).toEqual([a.tabId, c.tabId, b.tabId, d.tabId]);
-    expect((await move({ tabIds: [c.tabId] }, { groupId: n.groupId, before: null })).order).toEqual(
-      [a.tabId, c.tabId, b.tabId, d.tabId],
-    );
-    await command(stack, {
-      type: "tabs.ungroup",
-      tabIds: [a.tabId, c.tabId],
-      idempotencyKey: randomUUID(),
-    });
-    const nonSibling = await stack.api["commands.dispatch"]({
-      type: "tabs.move",
-      item: { tabIds: [a.tabId] },
-      to: { groupId: null, before: { tabId: b.tabId } },
-      idempotencyKey: randomUUID(),
-    });
-    expect(nonSibling).toMatchObject({ ok: false, error: { code: "conflict" } });
-    const refused = await stack.api["commands.dispatch"]({
-      type: "tabs.move",
-      item: { groupId: g.groupId },
-      to: { groupId: g.groupId, before: null },
-      idempotencyKey: randomUUID(),
-    });
-    expect(refused).toMatchObject({ ok: false, error: { code: "bad_request" } });
-    const self = await stack.api["commands.dispatch"]({
-      type: "tabs.move",
-      item: { tabIds: [a.tabId] },
-      to: { groupId: null, before: { tabId: a.tabId } },
-      idempotencyKey: randomUUID(),
-    });
-    expect(self).toMatchObject({ ok: false, error: { code: "bad_request" } });
-    await command(stack, {
-      type: "tabs.ungroup",
-      tabIds: [b.tabId],
-      idempotencyKey: randomUUID(),
-    });
-    expect(await resolvedOrder(stack)).toEqual([a.tabId, c.tabId, d.tabId, b.tabId]);
-    await command(stack, {
-      type: "tabs.group",
-      tabIds: [c.tabId],
-      groupId: g.groupId,
-      idempotencyKey: randomUUID(),
-    });
-    expect(await resolvedOrder(stack)).toEqual([a.tabId, d.tabId, c.tabId, b.tabId]);
-    await command(stack, {
-      type: "tabs.ungroup",
-      tabIds: [d.tabId, c.tabId],
-      idempotencyKey: randomUUID(),
-    });
-    expect(await resolvedOrder(stack)).toEqual([a.tabId, d.tabId, c.tabId, b.tabId]);
-    await command(stack, {
-      type: "tabs.close",
-      tabIds: [b.tabId],
-      idempotencyKey: randomUUID(),
-    });
-    const stale = await stack.api["commands.dispatch"]({
-      type: "tabs.move",
-      item: { tabIds: [a.tabId] },
-      to: { groupId: null, before: { tabId: b.tabId } },
-      idempotencyKey: randomUUID(),
-    });
-    expect(stale).toMatchObject({ ok: false, error: { code: "conflict" } });
-    expect((await move({ tabIds: [a.tabId] }, { groupId: null, before: null })).order).toEqual([
-      d.tabId,
-      c.tabId,
-      a.tabId,
-    ]);
-    const e = await open(stack);
-    expect(await resolvedOrder(stack)).toEqual([d.tabId, c.tabId, a.tabId, e.tabId]);
-    evidence.push({
-      assertions: [
-        "fresh recording order",
-        "new tabs append",
-        "saved order on writes",
-        "natural idempotency",
-        "group contiguity",
-        "old commands preserve order",
-        "closed anchor conflict",
-        "legacy layout parses",
-      ],
-    });
-  }, 120_000);
-});
-
-integration("personal tab groups through a real deployment", () => {
-  it("groups across identities, updates, ungroups and closes exactly the requested durable tabs", async () => {
-    const stack = await deployment();
-    const first = await open(stack);
-    const second = await command(stack, {
-      type: "browser.tab.open",
-      sessionId: first.sessionId,
-      idempotencyKey: randomUUID(),
-    });
-    if (second.type !== "browser.tab.open") throw new Error("Wrong tab-open result");
-    const profile = await command(stack, {
-      type: "browser.profile.create",
-      input: { name: "Research" },
-      idempotencyKey: randomUUID(),
-    });
-    if (profile.type !== "browser.profile.create") throw new Error("Wrong profile result");
-    const third = await command(stack, {
-      type: "browser.tab.open",
-      identity: { kind: "profile", profileId: profile.profile.id },
-      idempotencyKey: randomUUID(),
-    });
-    if (third.type !== "browser.tab.open") throw new Error("Wrong tab-open result");
-    const owner = await stack.host.store.database
-      .selectFrom("users")
-      .select("id")
-      .executeTakeFirstOrThrow();
-    const cookie = {
-      domain: "example.test",
-      name: "research-login",
-      value: "unchanged",
-      path: "/",
-      expires: -1,
-      httpOnly: true,
-      secure: true,
-      sameSite: "Lax" as const,
-    };
-    expect(
-      await stack.host.browser.applySiteCookies(third.sessionId, "https://example.test", [cookie]),
-    ).toBe("applied");
-    const beforeCatalog = await browserRows(stack.host.browser, owner.id, first.sessionId);
-    const grouped = await command(stack, {
-      type: "tabs.group",
-      tabIds: [first.tabId, third.tabId],
-      title: "Research",
-      idempotencyKey: randomUUID(),
-    });
-    if (grouped.type !== "tabs.group") throw new Error("Wrong grouping result");
-    expect(
-      (await browserRows(stack.host.browser, owner.id, first.sessionId)).tabs.map((t) => t.id),
-    ).toEqual(beforeCatalog.tabs.map((t) => t.id));
-    await expect(
-      command(stack, {
-        type: "tabs.group",
-        groupId: grouped.groupId,
-        tabIds: [first.tabId],
-        title: "Invalid join",
-        idempotencyKey: randomUUID(),
+    let agentHoldingPhone = true;
+    let acquired: NativeTargetAcquiredHandler | undefined;
+    const native: NativeTabTargetsPort = {
+      resolveWindow: async () => ({
+        windowId,
+        app: { bundleId: "test.editor", displayName: "Editor", teamId: null },
+        appName: "Editor",
+        bundleId: "test.editor",
+        title: "Plan",
       }),
-    ).rejects.toThrow("Joining groupId");
-    expect(grouped.layout.groups).toEqual([
-      {
-        id: grouped.groupId,
-        title: "Research",
-        color: "grey",
-        collapsed: false,
-        tabIds: expect.arrayContaining([first.tabId, third.tabId]),
+      windowState: async () => ({ state: "asleep", usedBy: [] }),
+      phoneState: async () => ({ state: "open", usedBy: agentHoldingPhone ? [{ taskId }] : [] }),
+      openOwnerView: async () => {
+        throw new Error("Unexpected viewer activation");
       },
-    ]);
-    const updated = await command(stack, {
-      type: "tabGroup.update",
-      groupId: grouped.groupId,
-      title: "Compare",
-      color: "cyan",
-      collapsed: true,
-      idempotencyKey: randomUUID(),
-    });
-    expect(updated).toMatchObject({
-      layout: { groups: [{ title: "Compare", color: "cyan", collapsed: true }] },
-    });
-    expect(await bootstrap(stack)).toMatchObject({
-      tabGroupsVersion: 1,
-      tabGroups: { revision: 2 },
-      browserSessions: expect.arrayContaining([
-        expect.objectContaining({ id: first.sessionId }),
-        expect.objectContaining({ id: third.sessionId }),
-      ]),
-    });
-    await command(stack, {
-      type: "tabs.ungroup",
-      tabIds: [third.tabId],
-      idempotencyKey: randomUUID(),
-    });
-    expect(
-      ((store) => store.structure().map((key) => store.tab(key.groupId, key.tabId)!))(
-        (await bootstrap(stack)).browserTabs!,
-      ),
-    ).toContainEqual(expect.objectContaining({ id: third.tabId, state: "live" }));
-    const closed = await command(stack, {
-      type: "tabs.close",
-      tabIds: [first.tabId],
-      idempotencyKey: randomUUID(),
-    });
-    expect(closed).toMatchObject({ closed: [first.tabId], failed: [] });
-    const after = await bootstrap(stack);
-    expect(after.tabGroups?.groups).toEqual([]);
-    expect(
-      ((store) => store.structure().map((key) => store.tab(key.groupId, key.tabId)!))(
-        after.browserTabs!,
-      ).map((t) => t.id),
-    ).toEqual(expect.arrayContaining([second.tabId, third.tabId]));
-    evidence.push({
-      assertions: [
-        "cross-identity membership",
-        "bootstrap layout",
-        "ungroup keeps tab live",
-        "exact close",
-        "last closed member hides group",
-        "session bindings unchanged",
-        "cookies unchanged",
-        "CDP visibility unchanged",
-      ],
-    });
-  }, 120_000);
-});
-
-async function agent(stack: VerticalStack, plan: Record<string, unknown>) {
-  const threadId = await stack.createThread({
-    title: "Organize research",
-    idempotencyKey: randomUUID(),
-    modelSelection: ModelSelectionSchema.parse({
-      modelId: "gpt-5.6-sol",
-      providerId: "openai",
-      options: {},
-    }),
-  });
-  const turn = await stack.sendMessage({
-    threadId,
-
-    text: `TAB_GROUP_JOURNEY:${JSON.stringify(plan)}`,
-  });
-  const report: unknown = JSON.parse(turn.assistantText);
-  evidence.push({ toolPlan: plan, report, runId: turn.runId, threadId });
-  return {
-    report: report as {
-      pages: unknown[];
-      calls: Array<{ result?: unknown; error?: string }>;
-      immediate?: { tabId: string; first: unknown; replay: unknown };
-      attached?: { sessions: Array<{ id: string; attached: boolean }> };
-    },
-    turn,
-    threadId,
-  };
-}
-integration("agent organization and durable ownership", () => {
-  it("reads profile and Guest identity for open, asleep and opening tabs without waking them", async () => {
-    const stack = await deployment();
-    const guest = await open(stack);
-    const profile = await command(stack, {
-      type: "browser.profile.create",
-      input: { name: "Tab identity" },
-      idempotencyKey: randomUUID(),
-    });
-    if (profile.type !== "browser.profile.create") throw new Error("Wrong profile result");
-    const saved = await command(stack, {
-      type: "browser.tab.open",
-      identity: { kind: "profile", profileId: profile.profile.id },
-      idempotencyKey: randomUUID(),
-    });
-    if (saved.type !== "browser.tab.open") throw new Error("Wrong tab-open result");
-    const inventory = () =>
-      stack.host.store.database.selectFrom("personalTabs").selectAll().orderBy("id").execute();
-    const sessions = () =>
-      stack.host.store.database
-        .selectFrom("browserSessions")
-        .select(["id", "state", "profileId"])
-        .orderBy("id")
-        .execute();
-    for (const state of ["open", "asleep", "opening"] as const) {
-      if (state === "asleep") {
-        await stack.restartHost();
-        await stack.restartRunner();
-        await expect
-          .poll(
-            async () => {
-              const result = await stack.api["bootstrap.get"]({});
-              return result.ok && result.data.browser.available;
-            },
-            { timeout: 30_000 },
-          )
-          .toBe(true);
-      } else if (state === "opening") {
-        // Hold both durable rows at the restore boundary without starting a browser.
-        const tabs = new PersonalTabStore(stack.host.store.database);
-        await tabs.bind(guest.sessionId, guest.sessionId, guest.tabId);
-        await tabs.bind(saved.sessionId, saved.sessionId, saved.tabId);
-      }
-      await stack.host.browser.flushPendingTabDescriptors();
-      const beforeTabs = await inventory();
-      const beforeSessions = await sessions();
-      const read = await agent(stack, {
-        calls: [{ name: "browser_tab_read", input: {} }],
-      });
-      expect(read.report.calls).toHaveLength(1);
-      expect(read.report.calls[0]?.error).toBeUndefined();
-      const result = BrowserTabReadResultSchema.parse(read.report.calls[0]?.result);
-      expect(result.tabs).toHaveLength(2);
-      for (const [opened, profileId] of [
-        [guest, null],
-        [saved, profile.profile.id],
-      ] as const) {
-        expect(result.tabs.find((tab) => tab.tabId === opened.tabId)).toEqual({
-          tabId: opened.tabId,
-          title: expect.any(String),
-          site: expect.any(String),
-          state,
-          sessionId: state === "open" ? opened.sessionId : null,
-          profileId,
-          groupId: null,
-          position: opened.tabId === guest.tabId ? 0 : 1,
-          usedByThisTask: false,
-          usedByOtherTask: false,
-        });
-      }
-      expect(await inventory()).toEqual(beforeTabs);
-      expect(await sessions()).toEqual(beforeSessions);
-      if (state !== "open")
-        expect(
-          (await bootstrap(stack)).browserSessions
-            .map((session) => ({
-              id: session.id,
-              state: session.state,
-              tabIds: (session.browserTabs?.sessionTabs(session?.id) ?? [])
-                .filter((tab) => tab.documentId !== null)
-                .map((tab) => tab.id),
-            }))
-            .sort((a, b) => a.id.localeCompare(b.id)),
-        ).toEqual(
-          [guest, saved]
-            .map((opened) => ({ id: opened.sessionId, state: "closed", tabIds: [] }))
-            .sort((a, b) => a.id.localeCompare(b.id)),
-        );
-      evidence.push({
-        state,
-        result,
-        beforeTabs,
-        beforeSessions,
-        assertions: [
-          "profile-backed tab reports its profile ID and Guest reports null",
-          "reading preserves saved tab state and session records",
-          "reading sleeping and opening tabs starts no browser session",
-        ],
-      });
-    }
-  }, 150_000);
-
-  it("reads beyond the bootstrap window, groups a new surface immediately and replays safely", async () => {
-    const stack = await deployment();
-    const opened = await open(stack);
-    const db = stack.host.store.database;
-    const session = await db
-      .selectFrom("browserSessions")
-      .selectAll()
-      .where("id", "=", opened.sessionId)
-      .executeTakeFirstOrThrow();
-    const owner = await db.selectFrom("users").select("id").executeTakeFirstOrThrow();
-    const outside = await command(stack, {
-      type: "browser.session.start",
-
-      input: { fresh: true, reuseExisting: false },
-      idempotencyKey: randomUUID(),
-    });
-    if (outside.type !== "browser.session.start") throw new Error("Wrong session result");
-    const outsideTab = await command(stack, {
-      type: "browser.tab.open",
-      sessionId: outside.session.id,
-      idempotencyKey: randomUUID(),
-    });
-    if (outsideTab.type !== "browser.tab.open") throw new Error("Wrong tab result");
-    const mixed = await command(stack, {
-      type: "tabs.group",
-      tabIds: [opened.tabId, outsideTab.tabId],
-      title: "Private mixed purpose",
-      idempotencyKey: randomUUID(),
-    });
-    if (mixed.type !== "tabs.group") throw new Error("Wrong group result");
-    const { createBrowserSessionId, BrowserSurfaceIdSchema } =
-      await import("../packages/protocol/src/browser.js");
-    const seedIds: string[] = [];
-    for (let index = 0; index < 105; index++) {
-      const id = createBrowserSessionId();
-      await stack.host.store.createBrowserSession({
-        id,
-        runnerId: session.runnerId,
-
-        profileId: null,
-        ownerId: owner.id,
-        origin: "agent",
-        runtimeId: session.runtimeId,
-        placementKey: `seed-${index}`,
-      });
-      const tabId = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
-      seedIds.push(tabId);
-      await new PersonalTabStore(db).recordChanges(
-        id,
-        [
-          {
+      closeOwnerViews: async () => {},
+      onTargetAcquired: (handler) => {
+        acquired = handler;
+        return () => {
+          acquired = undefined;
+        };
+      },
+    };
+    const tabs = new TabService({
+      store: f.tabs,
+      devices: f.store,
+      nativeTargets: native,
+      apps: { get: async () => app },
+      computer: async () => ({ name: "Computer", connected: true, removed: false }),
+      canRead: async (actor, row) =>
+        row.ownerId ===
+        (actor.kind === "person"
+          ? actor.ownerId
+          : actor.kind === "run"
+            ? actor.claims.requestedBy
+            : actor.caller.userId),
+      canReadTask: async () => true,
+      authorize: async () => {},
+      authorizeMembership: async () => {},
+      onError: (error) => {
+        throw error;
+      },
+      pages: {
+        state: async () => ({ state: "open", usedBy: [] }),
+        bind: async () => {
+          throw new Error("Unexpected page bind");
+        },
+        activate: async () => {
+          throw new Error("Unexpected page viewer");
+        },
+        closeViewers: async () => {},
+        open: async (actor, target) => {
+          const sessionId = createBrowserSessionId(),
+            id = createId("run");
+          const { TabIdSchema } = await import("../packages/core/src/index.js");
+          const tabId = TabIdSchema.parse(`surface_${id}`);
+          await f.store.createBrowserSession({
+            id: sessionId,
+            runnerId: f.runnerId,
+            ownerId: f.ownerId,
+            origin: "agent",
+            opener: { kind: "person", userId: f.ownerId },
+            placementKey: "fixture",
+            runtimeId: "fixture",
+            profileId: null,
+          });
+          return {
             id: tabId,
-            title: `Seed ${index}`,
-            url: "https://example.test/private/path?token=secret",
-            order: 0,
-            openerId: null,
-          },
-        ],
-        [],
-      );
-      await new PersonalTabStore(db).suspend(id);
-      await db
-        .updateTable("browserSessions")
-        .set({ state: "closed" })
-        .where("id", "=", id)
-        .execute();
-    }
-    const main = await agent(stack, { paginate: true, immediate: true });
-    const pages = main.report.pages.map((p) => BrowserTabReadResultSchema.parse(p));
-    expect(pages.length).toBeGreaterThan(1);
-    const allIds = pages.flatMap((p) => p.tabs.map((t) => t.tabId));
-    const positions = pages.flatMap((p) => p.tabs.map((t) => t.position!));
-    expect([...positions].sort((a, b) => a - b)).toEqual(
-      Array.from({ length: allIds.length }, (_, index) => index),
-    );
-    expect(new Set(allIds).size).toBe(allIds.length);
-    expect(allIds).toEqual(expect.arrayContaining(seedIds));
-    expect(JSON.stringify(pages)).not.toContain("token=secret");
-    expect(pages[0]?.groups).toContainEqual(
-      expect.objectContaining({ id: mixed.groupId, createdBy: "person" }),
-    );
-    expect(main.report.immediate?.first).toEqual(main.report.immediate?.replay);
-    expect(pages[0]?.groups).toContainEqual(
-      expect.objectContaining({ createdBy: "this-task", tabCount: 1 }),
-    );
-    expect(pages[0]?.groups.every((g) => !("tabIds" in g))).toBe(true);
-    expect(pages.flatMap((p) => p.tabs)).toContainEqual(
-      expect.objectContaining({ tabId: main.report.immediate?.tabId, usedByThisTask: true }),
-    );
-    expect(
-      new Set((await new BrowserTabGroupStore(db).layout(owner.id)).groups.map((g) => g.id)).size,
-    ).toBe(2);
-    const otherTask = await agent(stack, { paginate: true });
-    expect(
-      otherTask.report.pages
-        .map((p) => BrowserTabReadResultSchema.parse(p))
-        .flatMap((p) => p.groups),
-    ).toContainEqual(expect.objectContaining({ createdBy: "another-task", tabCount: 1 }));
-    expect(await new PersonalTabStore(db).get(owner.id, outsideTab.tabId)).not.toBeNull();
-    const moves = await agent(stack, {
-      calls: [
-        {
-          name: "browser_tab_write",
-          input: {
-            action: "move",
-            tabIds: [outsideTab.tabId],
-            toGroupId: mixed.groupId,
-            before: opened.tabId,
-          },
+            ownerId: f.ownerId,
+            kind: "page",
+            computerId: DeviceIdSchema.parse(f.runnerId),
+            title: "Page",
+            url: target.url,
+            openedBy: actor.kind === "run" ? { taskId: actor.claims.threadId } : "person",
+            pageBinding: { lineageId: sessionId, sessionId, surfaceId: tabId },
+          };
         },
-        { name: "browser_tab_write", input: { action: "move", groupId: mixed.groupId } },
-        { name: "browser_tab_write", input: { action: "move", tabIds: [outsideTab.tabId] } },
-        {
-          name: "browser_tab_write",
-          input: { action: "move", tabIds: [outsideTab.tabId], before: mixed.groupId },
-        },
-      ],
-    });
-    expect(moves.report.calls).toHaveLength(4);
-    expect(
-      moves.report.calls.every(
-        (call) => !call.error && BrowserTabWriteResultSchema.parse(call.result).action === "move",
-      ),
-    ).toBe(true);
-    const scopedMove = await agent(stack, {
-      calls: [
-        {
-          name: "browser_tab_write",
-          input: { action: "move", tabIds: [outsideTab.tabId], before: seedIds[0] },
-        },
-      ],
-    });
-    expect(scopedMove.report.calls[0]).toMatchObject({ result: { action: "move" } });
-    expect([...(await new BrowserTabGroupStore(db).layout(owner.id)).order!].sort()).toEqual(
-      [...allIds].sort(),
-    );
-    evidence.push({
-      assertions: [
-        "pagination beyond 100 lineages",
-        "no duplicate tabs",
-        "site only",
-        "immediate newTab grouping",
-        "idempotent tool replay",
-      ],
-    });
-  }, 180_000);
-
-  it("refuses a second person and serializes regroup against close, pruning and deletion", async () => {
-    const stack = await deployment();
-    const first = await open(stack);
-    const second = await command(stack, {
-      type: "browser.tab.open",
-      sessionId: first.sessionId,
-      idempotencyKey: randomUUID(),
-    });
-    if (second.type !== "browser.tab.open") throw new Error("Wrong tab result");
-    const db = stack.host.store.database;
-    const owner = await db.selectFrom("users").select("id").executeTakeFirstOrThrow();
-    const person = await stack.host.store.createUser("Second reader");
-    const groups = new BrowserTabGroupStore(db);
-    const groupService = new BrowserTabGroupService({
-      groups,
-      browser: stack.host.browser,
-      publish: () => undefined,
-    });
-    const one = await groups.group(owner.id, {
-      tabIds: [first.tabId],
-      title: "My research",
-      idempotencyKey: "personal",
-    });
-    await expect(
-      groupService.group(
-        { kind: "person", ownerId: person },
-        {
-          tabIds: [first.tabId],
-          title: "Other person's layout",
-          idempotencyKey: "other",
-        },
-      ),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    const movedOne = await groups.move(owner.id, {
-      item: { tabIds: [second.tabId] },
-      to: { groupId: null, before: { groupId: one.groupId } },
-      idempotencyKey: randomUUID(),
-    });
-    expect(movedOne.order).toEqual([second.tabId, first.tabId]);
-    expect(await groups.layout(person)).toEqual({ revision: 0, groups: [], order: [] });
-    const named = await db
-      .selectNoFrom((eb) => eb.fn<string>("current_database", []).as("name"))
-      .executeTakeFirstOrThrow();
-    const url = new URL(process.env.OPENSTEER_TEST_DATABASE_URL!);
-    url.pathname = `/${named.name}`;
-    url.searchParams.delete("options");
-    const smallPool = createDatabase({ connectionString: url.href, maxConnections: 1 });
-    cleanup.push(() => smallPool.destroy());
-    const service = new BrowserTabGroupService({
-      groups: new BrowserTabGroupStore(smallPool),
-      browser: stack.host.browser,
-      publish: () => undefined,
-    });
-    const threadId = await stack.createThread({
-      title: "Organize saved tabs",
-      modelSelection: ModelSelectionSchema.parse({
-        modelId: "gpt-5.6-sol",
-        providerId: "openai",
-        options: {},
-      }),
-    });
-    const actor = {
-      kind: "agent" as const,
-      ownerId: owner.id,
-
-      threadId,
-      agentBindingId: `thread:${threadId}`,
-    };
-    await Promise.all(
-      Array.from({ length: 4 }, () =>
-        service.group(actor, {
-          tabIds: [first.tabId],
-          groupId: one.groupId,
-          idempotencyKey: randomUUID(),
-        }),
-      ),
-    );
-    expect((await groups.layout(owner.id)).groups.map((g) => g.title)).toEqual(["My research"]);
-    const replay = await groups.group(owner.id, {
-      tabIds: [first.tabId],
-      title: "My research",
-      idempotencyKey: "personal",
-    });
-    expect(replay.layout.revision).toBe(movedOne.revision);
-    const regroupLocked = Promise.withResolvers<void>();
-    const releaseRegroup = Promise.withResolvers<void>();
-    const regroup = groups.group(
-      owner.id,
-      {
-        tabIds: [second.tabId],
-        groupId: one.groupId,
-        idempotencyKey: randomUUID(),
       },
-      async () => {
-        regroupLocked.resolve();
-        await releaseRegroup.promise;
-      },
-    );
-    await regroupLocked.promise;
-    const closing = stack.host.browser.closePersonalTab(owner.id, first.tabId);
-    releaseRegroup.resolve();
-    await Promise.all([regroup, closing]);
-    expect((await groups.layout(owner.id)).groups[0]?.tabIds).toEqual([second.tabId]);
-    expect((await new PersonalTabStore(db).get(owner.id, second.tabId))?.closedAt).toBeNull();
-
-    const third = await command(stack, {
-      type: "browser.tab.open",
-      sessionId: first.sessionId,
-      idempotencyKey: randomUUID(),
     });
-    if (third.type !== "browser.tab.open") throw new Error("Wrong tab result");
-    const closingGroup = await groups.group(owner.id, {
-      tabIds: [third.tabId],
-      title: "Closing",
-      idempotencyKey: randomUUID(),
-    });
-    const barrier = pauseAfterLock(
-      db,
-      (node) => /"name":"personal_?tabs"/iu.test(node) && node.includes("ForNoKeyUpdate"),
-    );
-    const closingThird = new PersonalTabStore(barrier.database).close(owner.id, third.tabId);
-    let lateOutcome: Promise<unknown>;
+    const actor = { kind: "person", ownerId: f.ownerId } as const;
     try {
-      await withTimeout(barrier.reached, 5_000, {
-        timeoutError: () => new Error("Group close never reached its personal transaction fence"),
+      const opened = await Promise.all([
+        tabs.open(actor, { kind: "page", guest: true, url: "https://example.com" }, "page"),
+        tabs.open(
+          actor,
+          { kind: "window", computerId: DeviceIdSchema.parse(f.runnerId), windowId },
+          "window",
+        ),
+        tabs.open(actor, { kind: "phone", computerId: f.runnerId }, "phone"),
+        tabs.open(actor, { kind: "app", appId: app.appId }, "app"),
+      ]);
+      const ids = opened.map((result) => result.tab.tabId);
+      const grouped = await tabs.organize(
+        actor,
+        { tabIds: ids, group: { name: "Project", color: "green" } },
+        "organize",
+      );
+      expect(grouped.groups[0]?.tabIds).toEqual(ids);
+      const first = new KeyedStreamReceiver<Tab, { layout: TabLayout }, "tabId">({ key: "tabId" });
+      const subscription = tabs.streams.subscribe(f.ownerId, async (message) => {
+        first.apply(message.stream);
       });
-      lateOutcome = groups
-        .group(owner.id, {
-          tabIds: [second.tabId],
-          groupId: closingGroup.groupId,
-          idempotencyKey: randomUUID(),
-        })
-        .then(
-          (result) => ({ result }),
-          (error: unknown) => ({ error }),
-        );
+      await subscription.ready;
+      const phoneId = ids[2]!;
+      const claims = {
+        requestedBy: f.ownerId,
+        threadId: taskId,
+        runId: createId("run"),
+        bindingGeneration: 1,
+      } as RunToolScope;
+      const acquisition = {
+        ownerId: f.ownerId,
+        runClaims: claims,
+        kind: "phone" as const,
+        computerId: f.runnerId,
+        key: "acquisition",
+        membershipRevision: (await f.tabs.snapshot(f.ownerId)).layout.revision,
+      };
+      expect(await acquired!(acquisition)).toBe(phoneId);
+      expect(first.rows.get(phoneId)?.usedBy).toEqual([{ taskId }]);
+      expect(await tabs.close(actor, [phoneId], "close-held-phone")).toEqual({
+        closed: [phoneId],
+        failed: [],
+      });
+      await subscription.flush();
+      expect(first.rows.has(phoneId)).toBe(false);
+      expect(agentHoldingPhone).toBe(true);
+      const bootstrap = await tabs.bootstrap(f.ownerId, 65536);
+      const second = new KeyedStreamReceiver<Tab, { layout: TabLayout }, "tabId">({ key: "tabId" });
+      second.seed(bootstrap.tabs, { layout: bootstrap.layout });
+      const reconnect = tabs.streams.subscribe(
+        f.ownerId,
+        async (message) => {
+          second.apply(message.stream);
+        },
+        bootstrap.tabs,
+      );
+      await reconnect.ready;
+      expect([...second.rows.keys()]).toEqual([...first.rows.keys()]);
+      expect(second.meta).toEqual(first.meta);
+      expect(bootstrap.layout.items[0]).toMatchObject({
+        kind: "group",
+        group: { tabIds: ids.filter((id) => id !== phoneId) },
+      });
+      await expect(acquired!(acquisition)).rejects.toMatchObject({ code: "not_found" });
+      await expect(tabs.authorizeShow(claims, phoneId)).rejects.toMatchObject({
+        code: "not_found",
+      });
+      agentHoldingPhone = false;
+      tabs.changed(f.ownerId);
+      await subscription.flush();
+      await reconnect.flush();
+      expect(first.rows.has(phoneId)).toBe(false);
+      expect(second.rows.has(phoneId)).toBe(false);
+      subscription.close();
+      reconnect.close();
     } finally {
-      barrier.release();
-      await closingThird;
+      tabs.dispose();
     }
-    expect(await lateOutcome).toMatchObject({ error: { code: "not_found" } });
-    expect((await groups.layout(owner.id)).groups[0]?.tabIds).toEqual([second.tabId]);
-
-    const temporary = await groups.group(owner.id, {
-      tabIds: [second.tabId],
-      title: "Temporary",
-      idempotencyKey: randomUUID(),
-    });
-    await groups.ungroup(owner.id, { tabIds: [second.tabId], idempotencyKey: randomUUID() });
-    expect((await groups.layout(owner.id)).groups).toEqual([]);
-    expect(
-      await db
-        .selectFrom("browserTabGroups")
-        .selectAll()
-        .where("id", "=", temporary.groupId)
-        .execute(),
-    ).toEqual([]);
-    evidence.push({
-      layouts: [one, replay],
-      assertions: [
-        "another person cannot read or write the owner layout",
-        "replay does not bump revision",
-        "regroup/close race preserves added tab",
-        "empty group deletion",
-      ],
-    });
-  }, 120_000);
-
-  it("keeps collapsed groups across restart and restores one sleeping member attached to the Run", async () => {
-    const stack = await deployment();
-    const first = await open(stack);
-    const second = await command(stack, {
-      type: "browser.tab.open",
-      sessionId: first.sessionId,
-      idempotencyKey: randomUUID(),
-    });
-    if (second.type !== "browser.tab.open") throw new Error("Wrong tab result");
-    const grouped = await command(stack, {
-      type: "tabs.group",
-      tabIds: [first.tabId, second.tabId],
-      title: "Return later",
-      idempotencyKey: randomUUID(),
-    });
-    if (grouped.type !== "tabs.group") throw new Error("Wrong group result");
-    await command(stack, {
-      type: "tabGroup.update",
-      groupId: grouped.groupId,
-      collapsed: true,
-      idempotencyKey: randomUUID(),
-    });
-    await command(stack, {
-      type: "tabs.move",
-      item: { tabIds: [second.tabId] },
-      to: { groupId: grouped.groupId, before: { tabId: first.tabId } },
-      idempotencyKey: randomUUID(),
-    });
-    await stack.restartHost();
-    await expect
-      .poll(
-        async () => {
-          const r = await stack.api["bootstrap.get"]({});
-          return r.ok && r.data.browser.available;
-        },
-        { timeout: 30_000 },
-      )
-      .toBe(true);
-    await stack.restartRunner();
-    const before = await bootstrap(stack);
-    expect(before.tabGroups?.order).toEqual([second.tabId, first.tabId]);
-    expect(before.tabGroups?.groups).toContainEqual(
-      expect.objectContaining({
-        id: grouped.groupId,
-        collapsed: true,
-        tabIds: expect.arrayContaining([first.tabId, second.tabId]),
-      }),
-    );
-    const personBrowser = await open(stack);
-    const view = new WebSocket(
-      new URL(`/v1/browser-sessions/${personBrowser.sessionId}/connect`, stack.hostOrigin),
-      {
-        headers: {
-          cookie: stack.sessionCookie,
-          origin: stack.hostOrigin.origin,
-          [hostApiVersionHeader]: String(hostApiVersion),
-        },
-      },
-    );
-    cleanup.push(async () => {
-      if (view.readyState !== WebSocket.CLOSED) {
-        const closed = once(view, "close");
-        view.terminate();
-        await closed;
-      }
-    });
-    const activeSeen: string[] = [];
-    view.once("open", () =>
-      view.send(
-        JSON.stringify({ type: "stream.subscribe", surfaceId: personBrowser.tabId, frames: false }),
-      ),
-    );
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error("The person's browser did not publish its target.")),
-        10_000,
-      );
-      view.once("error", (error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
-      view.on("message", (raw, binary) => {
-        if (binary) return;
-        const message = BrowserServerMessageSchema.parse(JSON.parse(raw.toString()));
-        if (message.type !== "browser.surface") return;
-        activeSeen.push(message.surfaceId);
-        if (message.surfaceId === personBrowser.tabId && message.surface) {
-          clearTimeout(timer);
-          resolve();
-        }
-      });
-    });
-    const restored = await agent(stack, {
-      calls: [{ name: "browser_tab_write", input: { action: "restore", tabIds: [first.tabId] } }],
-      paginate: true,
-    });
-    const write = BrowserTabWriteResultSchema.parse(restored.report.calls[0]?.result);
-    expect(write.restored).toHaveLength(1);
-    const sessionId = write.restored![0]!.sessionId;
-    expect(restored.report.attached?.sessions).toContainEqual(
-      expect.objectContaining({ id: sessionId, attached: true }),
-    );
-    const db = stack.host.store.database;
-    expect(
-      await db
-        .selectFrom("browserSessionUses")
-        .selectAll()
-        .where("sessionId", "=", sessionId)
-        .where("runId", "=", restored.turn.runId)
-        .execute(),
-    ).not.toEqual([]);
-    const after = await bootstrap(stack);
-    expect(after.tabGroups?.order).toEqual([second.tabId, first.tabId]);
-    const tabs = ((store) => store.structure().map((key) => store.tab(key.groupId, key.tabId)!))(
-      after.browserTabs!,
-    );
-    expect(tabs).toContainEqual(expect.objectContaining({ id: first.tabId, state: "live" }));
-    expect(tabs).toContainEqual(expect.objectContaining({ id: second.tabId, state: "suspended" }));
-    expect(activeSeen.every((id) => id === activeSeen[0])).toBe(true);
-    expect(after.tabGroups?.groups[0]?.tabIds).toEqual(
-      expect.arrayContaining([first.tabId, second.tabId]),
-    );
-    evidence.push({
-      assertions: [
-        "restart preserves collapsed membership",
-        "restore wakes exactly one sibling",
-        "returned session attached to Run",
-        "restore preserves membership",
-        "person view stays unchanged",
-      ],
-    });
-  }, 150_000);
-});
-
-integration("tab group deletion and response bounds", () => {
-  it("retries failed Runtime disposal after the durable close marker committed", async () => {
-    const stack = await deployment();
-    const first = await open(stack);
-    const second = await command(stack, {
-      type: "browser.tab.open",
-      sessionId: first.sessionId,
-      idempotencyKey: randomUUID(),
-    });
-    if (second.type !== "browser.tab.open") throw new Error("Wrong tab result");
-    const owner = await stack.host.store.database
-      .selectFrom("users")
-      .select("id")
-      .executeTakeFirstOrThrow();
-    const dispose = vi
-      .spyOn(SurfaceLedger.prototype, "closeSurface")
-      .mockRejectedValueOnce(new Error("Too many pending CDP requests"));
-    const input = {
-      type: "tabs.close" as const,
-      tabIds: [first.tabId],
-      idempotencyKey: randomUUID(),
-    };
-    const failed = await command(stack, input);
-    expect(failed).toMatchObject({ closed: [], failed: [{ tabId: first.tabId }] });
-    expect(
-      (
-        await stack.host.store.database
-          .selectFrom("personalTabs")
-          .select("closedAt")
-          .where("id", "=", first.tabId)
-          .executeTakeFirstOrThrow()
-      ).closedAt,
-    ).not.toBeNull();
-    expect(
-      (await browserRows(stack.host.browser, owner.id, first.sessionId)).tabs.map((tab) => tab.id),
-    ).toContain(first.tabId);
-    dispose.mockRestore();
-    expect(await command(stack, input)).toMatchObject({ closed: [first.tabId], failed: [] });
-    const remaining = (await browserRows(stack.host.browser, owner.id, first.sessionId)).tabs.map(
-      (tab) => tab.id,
-    );
-    expect(remaining).not.toContain(first.tabId);
-    expect(remaining).toContain(second.tabId);
-    expect(await command(stack, input)).toMatchObject({ closed: [first.tabId], failed: [] });
-    evidence.push({
-      assertions: [
-        "durable close can precede failed disposal",
-        "retry disposes the still-live page",
-        "retry of an unbound surface succeeds",
-        "unlisted sibling stays alive",
-      ],
-    });
-  }, 120_000);
-
-  it("reclaims closed memberships before enforcing either limit and during pruning", async () => {
-    const stack = await deployment();
-    const first = await open(stack);
-    const second = await command(stack, {
-      type: "browser.tab.open",
-      sessionId: first.sessionId,
-      idempotencyKey: randomUUID(),
-    });
-    if (second.type !== "browser.tab.open") throw new Error("Wrong tab result");
-    const db = stack.host.store.database;
-    const owner = await db.selectFrom("users").select("id").executeTakeFirstOrThrow();
-    const initial = await command(stack, {
-      type: "tabs.group",
-      tabIds: [first.tabId],
-      title: "Live",
-      idempotencyKey: randomUUID(),
-    });
-    if (initial.type !== "tabs.group") throw new Error("Wrong group result");
-    const { BrowserSurfaceIdSchema } = await import("../packages/protocol/src/browser.js");
-    const closed = Array.from({ length: 698 }, (_, order) => ({
-      id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
-      groupId: first.sessionId,
-      sessionId: first.sessionId,
-      title: "Closed",
-      url: "about:blank",
-      order: order + 2,
-      state: "suspended" as const,
-      openerId: null,
-      closedAt: new Date(),
-    }));
-    await db.insertInto("personalTabs").values(closed).execute();
-    const deadGroups = Array.from({ length: 199 }, () => ({
-      id: createId("browserTabGroup"),
-      ownerId: owner.id,
-      title: "Gone",
-      color: "grey" as const,
-    }));
-    await db.insertInto("browserTabGroups").values(deadGroups).execute();
-    await db
-      .insertInto("browserTabGroupMembers")
-      .values(
-        closed.map((tab, index) => ({
-          ownerId: owner.id,
-          tabId: tab.id,
-          groupId: index < 499 ? initial.groupId : deadGroups[index - 499]!.id,
-        })),
-      )
-      .execute();
-    const joined = await command(stack, {
-      type: "tabs.group",
-      groupId: initial.groupId,
-      tabIds: [second.tabId],
-      idempotencyKey: randomUUID(),
-    });
-    expect(joined).toMatchObject({
-      layout: {
-        groups: [
-          { id: initial.groupId, tabIds: expect.arrayContaining([first.tabId, second.tabId]) },
-        ],
-      },
-    });
-    const created = await command(stack, {
-      type: "tabs.group",
-      tabIds: [second.tabId],
-      title: "Room again",
-      idempotencyKey: randomUUID(),
-    });
-    if (created.type !== "tabs.group") throw new Error("Wrong group result");
-    expect(created.layout.groups).toHaveLength(2);
-    expect(
-      await db
-        .selectFrom("browserTabGroupMembers")
-        .select("tabId")
-        .where(
-          "tabId",
-          "in",
-          closed.map((tab) => tab.id),
-        )
-        .execute(),
-    ).toEqual([]);
-    await command(stack, {
-      type: "tabs.close",
-      tabIds: [first.tabId],
-      idempotencyKey: randomUUID(),
-    });
-    await new BrowserTabGroupStore(db).prune();
-    expect(
-      await db
-        .selectFrom("browserTabGroups")
-        .select("id")
-        .where("id", "=", initial.groupId)
-        .execute(),
-    ).toEqual([]);
-    expect(
-      (await new BrowserTabGroupStore(db).layout(owner.id)).groups.map((group) => group.id),
-    ).toEqual([created.groupId]);
-    evidence.push({
-      assertions: [
-        "closed members do not consume 500-tab capacity",
-        "dead groups do not consume 200-group capacity",
-        "prune removes closed memberships and empty groups",
-      ],
-    });
-  }, 120_000);
-
-  it("keeps old grouped and ungrouped lineages in the whole inventory", async () => {
-    const stack = await deployment();
-    const first = await open(stack);
-    const db = stack.host.store.database;
-    const original = await db
-      .selectFrom("browserSessions")
-      .selectAll()
-      .where("id", "=", first.sessionId)
-      .executeTakeFirstOrThrow();
-    const { createBrowserSessionId, BrowserSurfaceIdSchema } =
-      await import("../packages/protocol/src/browser.js");
-    for (let index = 0; index < 101; index++) {
-      const id = createBrowserSessionId();
-      await db
-        .insertInto("browserSessions")
-        .values({
-          ...original,
-          id,
-          tabGroupId: id,
-          state: "closed",
-          createdAt: new Date(original.createdAt.getTime() + index + 1),
-        })
-        .execute();
-      await db
-        .insertInto("personalTabs")
-        .values({
-          id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
-          groupId: id,
-          sessionId: id,
-          title: "Newer",
-          url: "about:blank",
-          order: 0,
-          state: "suspended",
-          openerId: null,
-        })
-        .execute();
-    }
-    expect((await bootstrap(stack)).browserTabs!.groups().ids.includes(first.sessionId)).toBe(true);
-    await command(stack, {
-      type: "tabs.group",
-      tabIds: [first.tabId],
-      title: "Older work",
-      idempotencyKey: randomUUID(),
-    });
-    const inventory = await bootstrap(stack);
-    expect(inventory.browserTabs!.groups().ids).toHaveLength(102);
-    expect(
-      ((store) => store.structure().map((key) => store.tab(key.groupId, key.tabId)!))(
-        inventory.browserTabs!,
-      ).map((tab) => tab.id),
-    ).toContain(first.tabId);
-    evidence.push({
-      assertions: [
-        "grouped and ungrouped lineages remain visible past 100",
-        "the source inventory is whole",
-      ],
-    });
-  }, 120_000);
-
-  it("reads all 200 group summaries inside the tool response budget", async () => {
-    const stack = await deployment();
-    const opened = await open(stack);
-    const db = stack.host.store.database;
-    const owner = await db.selectFrom("users").select("id").executeTakeFirstOrThrow();
-    const original = await db
-      .selectFrom("browserSessions")
-      .selectAll()
-      .where("id", "=", opened.sessionId)
-      .executeTakeFirstOrThrow();
-    const { createBrowserSessionId, BrowserSurfaceIdSchema, BrowserTabGroupIdSchema } =
-      await import("../packages/protocol/src/browser.js");
-    for (let index = 0; index < 200; index++) {
-      const lineageId = createBrowserSessionId();
-      await db
-        .insertInto("browserSessions")
-        .values({
-          ...original,
-          id: lineageId,
-          tabGroupId: lineageId,
-          state: "closed",
-        })
-        .execute();
-      const groupId = BrowserTabGroupIdSchema.parse(`btg_${randomUUID()}`);
-      await db
-        .insertInto("browserTabGroups")
-        .values({
-          id: groupId,
-          ownerId: owner.id,
-          title: "\u0001".repeat(80),
-          color: "blue",
-          createdByThreadId: null,
-        })
-        .execute();
-      const tabIds = Array.from({ length: 50 }, () =>
-        BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
-      );
-      await db
-        .insertInto("personalTabs")
-        .values(
-          tabIds.map((id, order) => ({
-            id,
-            order,
-            groupId: lineageId,
-            sessionId: lineageId,
-            title: "Saved",
-            url: "https://example.test/private",
-            state: "suspended" as const,
-            openerId: null,
-          })),
-        )
-        .execute();
-      await db
-        .insertInto("browserTabGroupMembers")
-        .values(tabIds.map((tabId) => ({ ownerId: owner.id, groupId, tabId })))
-        .execute();
-    }
-    const read = await agent(stack, {
-      calls: [{ name: "browser_tab_read", input: {} }],
-    });
-    const result = BrowserTabReadResultSchema.parse(read.report.calls[0]?.result);
-    expect(result.groups).toHaveLength(200);
-    await expect(
-      command(stack, {
-        type: "tabs.group",
-        tabIds: [opened.tabId],
-        title: "Over the limit",
-        idempotencyKey: randomUUID(),
-      }),
-    ).rejects.toThrow("200 tab groups");
-    expect(result.groups.every((g) => g.tabCount === 50 && !("tabIds" in g))).toBe(true);
-    const bytes = Buffer.byteLength(JSON.stringify(result));
-    const { agentToolPayloadMaxSerializedBytes } =
-      await import("../packages/protocol/src/index.js");
-    expect(bytes).toBeLessThan(agentToolPayloadMaxSerializedBytes);
-    evidence.push({
-      bytes,
-      groups: result.groups.length,
-      assertions: [
-        "200 groups with 10000 members fit one tool response",
-        "group members stay paginated",
-      ],
-    });
-  }, 180_000);
-});
-
-integration("naturally idempotent tab operations", () => {
-  it("repeats organization and exact tab closure across a Host restart", async () => {
-    const stack = await deployment();
-    const first = await open(stack);
-    const second = await command(stack, {
-      type: "browser.tab.open",
-      sessionId: first.sessionId,
-      idempotencyKey: randomUUID(),
-    });
-    if (second.type !== "browser.tab.open") throw new Error("Wrong tab result");
-    const third = await command(stack, {
-      type: "browser.tab.open",
-      sessionId: first.sessionId,
-      idempotencyKey: randomUUID(),
-    });
-    if (third.type !== "browser.tab.open") throw new Error("Wrong tab result");
-    const groupInput = {
-      type: "tabs.group" as const,
-      tabIds: [first.tabId],
-      title: "Temporary",
-      idempotencyKey: randomUUID(),
-    };
-    const grouped = await command(stack, groupInput);
-    if (grouped.type !== "tabs.group") throw new Error("Wrong group result");
-    expect(await command(stack, groupInput)).toEqual(grouped);
-    expect(
-      await command(stack, {
-        type: "tabs.group",
-        tabIds: [first.tabId],
-        groupId: grouped.groupId,
-        idempotencyKey: randomUUID(),
-      }),
-    ).toEqual(grouped);
-    expect(grouped.layout.groups).toHaveLength(1);
-    const updateInput = {
-      type: "tabGroup.update" as const,
-      groupId: grouped.groupId,
-      title: "Renamed",
-      color: "purple" as const,
-      collapsed: true,
-      idempotencyKey: randomUUID(),
-    };
-    const updated = await command(stack, updateInput);
-    expect(await command(stack, updateInput)).toEqual(updated);
-    expect(await command(stack, { ...updateInput, idempotencyKey: randomUUID() })).toEqual(updated);
-    const ungroupInput = {
-      type: "tabs.ungroup" as const,
-      tabIds: [first.tabId],
-      idempotencyKey: groupInput.idempotencyKey,
-    };
-    const ungrouped = await command(stack, ungroupInput);
-    expect(await command(stack, ungroupInput)).toEqual(ungrouped);
-    expect(await command(stack, { ...ungroupInput, idempotencyKey: randomUUID() })).toEqual(
-      ungrouped,
-    );
-    expect(await command(stack, groupInput)).toMatchObject({
-      groupId: grouped.groupId,
-      layout: { groups: [expect.objectContaining({ id: grouped.groupId, tabIds: [first.tabId] })] },
-    });
-    const closeInput = {
-      type: "tabs.close" as const,
-      tabIds: [first.tabId, second.tabId],
-      idempotencyKey: randomUUID(),
-    };
-    const closeTab = vi.spyOn(stack.host.browser, "closePersonalTab");
-    const closed = await command(stack, closeInput);
-    expect(closed).toMatchObject({ closed: [first.tabId, second.tabId], failed: [] });
-    expect(closeTab).toHaveBeenCalledTimes(2);
-    expect(await command(stack, closeInput)).toEqual(closed);
-    expect(await command(stack, { ...closeInput, idempotencyKey: randomUUID() })).toEqual(closed);
-    expect(closeTab).toHaveBeenCalledTimes(6);
-    closeTab.mockRestore();
-    expect(await command(stack, { ...ungroupInput, tabIds: [third.tabId] })).toMatchObject({
-      layout: { groups: [] },
-    });
-    const owner = await stack.host.store.database
-      .selectFrom("users")
-      .select("id")
-      .executeTakeFirstOrThrow();
-    const tabs = new PersonalTabStore(stack.host.store.database);
-    expect((await tabs.get(owner.id, third.tabId))?.closedAt).toBeNull();
-    expect(
-      (await new BrowserTabGroupStore(stack.host.store.database).layout(owner.id)).groups,
-    ).toEqual([]);
-    await stack.restartHost();
-    const restartedClose = vi.spyOn(stack.host.browser, "closePersonalTab");
-    expect(await command(stack, closeInput)).toEqual(closed);
-    expect(restartedClose).toHaveBeenCalledTimes(2);
-    expect(
-      (await new PersonalTabStore(stack.host.store.database).get(owner.id, third.tabId))?.closedAt,
-    ).toBeNull();
-    restartedClose.mockRestore();
-    await stack.restartRunner();
-    const inputs = [
-      {
-        requestId: 9005,
-        name: "browser_tab_write",
-        input: { action: "group", tabIds: [third.tabId], title: "Transient" },
-      },
-      {
-        requestId: 9006,
-        name: "browser_tab_write",
-        input: { action: "ungroup", tabIds: [third.tabId] },
-      },
-      {
-        requestId: 9007,
-        name: "browser_tab_write",
-        input: { action: "close", tabIds: [third.tabId] },
-      },
-    ];
-    const agentClose = vi.spyOn(stack.host.browser, "closePersonalTab");
-    const throughTools = await agent(stack, {
-      calls: inputs.flatMap((input) => [input, input]),
-    });
-    expect(throughTools.report.calls).toHaveLength(6);
-    expect(throughTools.report.calls.every((c) => c.error === undefined)).toBe(true);
-    for (let i = 0; i < 6; i += 2)
-      expect(throughTools.report.calls[i + 1]).toEqual(throughTools.report.calls[i]);
-    expect(agentClose).toHaveBeenCalledTimes(2);
-    agentClose.mockRestore();
-    evidence.push({
-      assertions: [
-        "retry creates no second group",
-        "already-member group, identical update and absent membership are no-ops",
-        "retry after emptying may recreate the deterministic group",
-        "repeated close redisposes the same explicit tabs",
-        "unlisted tab stays open",
-        "repeated close after Host restart",
-        "real MCP duplicate calls are naturally idempotent",
-      ],
-    });
-  }, 150_000);
+  });
 });

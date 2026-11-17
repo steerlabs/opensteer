@@ -1,6 +1,6 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
-  BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
   createId,
   createToolArguments,
@@ -570,6 +570,8 @@ describe("conversation Activity", () => {
     const chosen = conversationActivityTurn(groups, { key: "turn:run:run-a", kind: "turn" });
     expect(chosen?.steps.map(({ id }) => id)).toEqual([firstThought.id, firstLookup.id]);
     expect(chosen?.turn.reply).toBe(firstReply);
+    expect(conversationActivityTurn(groups, { kind: "run", runId: "run-a" })).toEqual(chosen);
+    expect(conversationActivityTurn(groups, { kind: "run", runId: "missing-run" })).toBeNull();
     expect(conversationActivityTurn(groups, { key: "turn:gone", kind: "turn" })).toBeNull();
     expect(conversationActivityTurn([], { kind: "latest" })).toBeNull();
   });
@@ -806,14 +808,6 @@ describe("Opensteer's own steps", () => {
   const opensteer = (name: string, args: Record<string, unknown> = {}) =>
     toolPresentation(tool({ arguments: args, tool: { name, namespace: "opensteer" } }));
 
-  it.each([
-    ["thread_delegate", "delegate_task"],
-    ["thread_message", "thread_send"],
-    ["request_list", "pending_request"],
-  ])("keeps stored %s calls readable after the %s cutover", (old, current) => {
-    expect(opensteer(old, { title: "Review" })).toEqual(opensteer(current, { title: "Review" }));
-  });
-
   it.each(["opensteer", "opensteer.integrations", "mcp:opensteer_integrations"])(
     "keeps integration summaries and model-only details consistent in %s",
     (namespace) => {
@@ -860,18 +854,16 @@ describe("Opensteer's own steps", () => {
   });
 
   it("say what an action did, not which tool did it", () => {
-    expect(opensteer("browser_tab_write", { action: "restore", tabIds: ["t1"] })).toMatchObject({
-      activeLabel: "Restoring tabs",
-      hint: "",
-      label: "Restored tabs",
-    });
-    expect(opensteer("thread_update", { action: "rename", title: "Tonight" })).toMatchObject({
+    expect(opensteer("opensteer_task_update", { title: "Tonight" })).toMatchObject({
       hint: "Tonight",
       hintKind: "prose",
       label: "Renamed a task",
     });
-    expect(opensteer("trigger_write", { action: "pause_all" }).label).toBe("Changed an automation");
-    expect(opensteer("thread_send").label).toBe("Sent a message");
+    expect(opensteer("opensteer_task_update", { done: false }).label).toBe("Reopened a task");
+    expect(opensteer("opensteer_automation_control", { action: "pause_all" }).label).toBe(
+      "Changed an automation",
+    );
+    expect(opensteer("opensteer_task_send").label).toBe("Sent to a task");
   });
 });
 
@@ -945,9 +937,9 @@ describe("passwordsSetupOffer", () => {
       arguments: { site },
       output: { text: JSON.stringify(result) },
       runId,
-      tool: { name: "sign_in", namespace: "opensteer" },
+      tool: { name: "saved_login_request", namespace: "opensteer" },
     });
-  const notSetUp = { passwords: "not-set-up", site, status: "not-signed-in" };
+  const notSetUp = { reason: "passwords-not-set-up", site, status: "unavailable" };
   const offer = (entries: Parameters<typeof groupTranscriptEntries>[0]) =>
     passwordsSetupOffer(groupTranscriptEntries(entries))?.site ?? null;
 
@@ -958,7 +950,7 @@ describe("passwordsSetupOffer", () => {
         tool({
           arguments: { site },
           output: { text: JSON.stringify(result) },
-          tool: { name: "use_card", namespace: "opensteer" },
+          tool: { name: "card_request", namespace: "opensteer" },
         });
       const unavailable = card({ status: "unavailable", site, reason });
       const ready = card({
@@ -982,23 +974,9 @@ describe("passwordsSetupOffer", () => {
     },
   );
 
-  it("offers Passwords once the agent stops, from any result that found it not set up", () => {
+  it("offers Passwords once the agent stops, from a saved login that found it not set up", () => {
     expect(offer([signIn(notSetUp), message(), run()])).toBe(site);
     expect(offer([signIn(notSetUp), run({ status: "running" })])).toBeNull();
-    expect(
-      offer([
-        signIn({
-          passwords: "not-set-up",
-          replayed: false,
-          requestId: createId("request"),
-          status: "pending",
-        }),
-        run(),
-      ]),
-    ).toBe(site);
-    expect(
-      offer([signIn({ reason: "passwords-not-set-up", site, status: "unavailable" }), run()]),
-    ).toBe(site);
   });
 
   it("keeps the offer through a turn the Host resumed, until the person speaks", () => {
@@ -1011,28 +989,27 @@ describe("passwordsSetupOffer", () => {
     expect(offer([...first, input({ runId: null }), ...resumed])).toBeNull();
   });
 
-  it("lets a Chrome Request's ending overrule its pending, and a repeat change nothing", () => {
-    const pending = (extra: object) =>
-      signIn({ replayed: false, requestId: createId("request"), status: "pending", ...extra });
-    const replay = signIn({ replayed: true, requestId: createId("request"), status: "pending" });
-    const ended = (extra: object) => request({ requestKind: "browser.sign-in", ...extra });
-    expect(offer([pending({ passwords: "not-set-up" }), replay, run()])).toBe(site);
-    expect(offer([pending({ passwords: "not-set-up" }), ended({}), run()])).toBeNull();
-    expect(
-      offer([pending({}), ended({ passwordsOffer: { need: "not-set-up", site } }), run()]),
-    ).toBe(site);
-  });
-
-  it("leaves it to the latest sign-in, and never offers what Passwords can't do", () => {
-    const signedIn = { profileName: null, site, sourceName: "Work", status: "applied" };
-    expect(offer([signIn(notSetUp), signIn(signedIn), run()])).toBeNull();
-    expect(offer([signIn({ site, status: "not-signed-in" }), run()])).toBeNull();
+  it("leaves it to the latest saved login, and a repeat changes nothing", () => {
+    const requestId = createId("request");
+    const ready = { status: "ready", site, loginRef: `lgn_${"0".repeat(32)}`, account: "t•••" };
+    const replay = signIn({ status: "pending", site, requestId, replayed: true });
+    expect(offer([signIn(notSetUp), replay, run()])).toBe(site);
+    expect(offer([signIn(notSetUp), signIn(ready), run()])).toBeNull();
     expect(offer([signIn({ reason: "busy", site, status: "unavailable" }), run()])).toBeNull();
   });
 
+  it("never offers Passwords from copied Chrome cookies", () => {
+    const chrome = tool({
+      arguments: { site },
+      output: {
+        text: JSON.stringify({ reason: "chrome-signed-out", site, status: "unavailable" }),
+      },
+      tool: { name: "chrome_cookies_request", namespace: "opensteer" },
+    });
+    expect(offer([chrome, run()])).toBeNull();
+  });
+
   it.each([
-    [{ passwords: "no-login", site, status: "not-signed-in" }, "no-login"],
-    [{ passwords: "off", site, status: "not-signed-in" }, "off"],
     [{ reason: "no-saved-login", site, status: "unavailable" }, "no-login"],
     [{ reason: "passwords-off", site, status: "unavailable" }, "off"],
   ])("offers what Passwords still needs, once set up: %j", (result, need) => {
@@ -1045,18 +1022,22 @@ describe("passwordsSetupOffer", () => {
 });
 
 /*
- * How a `sign_in` step could mislead the reader:
- * - a failed, declined, unavailable or not-signed-in result reads as done
- *   (a check, tone done, or "Done");
- * - a result the client cannot read, or an error, reads as signed in;
- * - a code the agent is fetching reads as a failure, or as signed in;
- * - a pending result reads as signed in, or loses what it waits for;
+ * How a sign-in step could mislead the reader:
+ * - a declined or unavailable result reads as done (a check, tone done, or "Done");
+ * - copied cookies read as a confirmed sign-in;
+ * - a result the client cannot read, or an error, reads as done;
+ * - a pending result reads as done;
  * - its words differ from the Request card's for the same outcome.
  */
-describe.each(["sign_in", "browser_sign_in"])("a %s step", (name) => {
-  const signIn = (result: unknown, overrides: Partial<ToolEntry> = {}) =>
+describe("sign-in steps", () => {
+  const githubSite = "https://github.com";
+  const step = (
+    name: "saved_login_request" | "chrome_cookies_request",
+    result: unknown,
+    overrides: Partial<ToolEntry> = {},
+  ) =>
     tool({
-      arguments: { reason: "Download the invoice", sessionId: "bss_1", site: "https://github.com" },
+      arguments: { reason: "Download the invoice", sessionId: "bss_1", site: githubSite },
       output: { text: JSON.stringify(result) },
       tool: { name, namespace: "opensteer" },
       ...overrides,
@@ -1066,141 +1047,124 @@ describe.each(["sign_in", "browser_sign_in"])("a %s step", (name) => {
     return { detail, icon, label, status: toolStatusLabel(entry), tone };
   };
 
-  it("says it signed in only when it did", () => {
+  it("says a saved login is ready, and copied cookies only as copied", () => {
     expect(
-      head(signIn({ method: "saved-password", site: "https://github.com", status: "signed-in" })),
+      head(
+        step("saved_login_request", {
+          status: "ready",
+          site: githubSite,
+          loginRef: `lgn_${"0".repeat(32)}`,
+          account: "t•••@github.com",
+        }),
+      ),
     ).toEqual({
-      detail: "With your saved password",
+      detail: "As t•••@github.com",
       icon: "check-circle",
-      label: "Signed in to github.com",
+      label: "Ready to sign in to github.com",
       status: "Done",
       tone: "done",
     });
     expect(
-      head(signIn({ method: "person", site: "https://github.com", status: "signed-in" })),
-    ).toMatchObject({ icon: "check-circle", label: "You signed in to github.com", tone: "done" });
-    expect(
       head(
-        signIn({
-          profileName: null,
-          site: "https://github.com",
+        step("chrome_cookies_request", {
+          status: "copied",
+          site: githubSite,
           sourceName: "Work",
-          status: "applied",
-        }),
-      ),
-    ).toMatchObject({ detail: "From Work", label: "Signed in to github.com", tone: "done" });
-  });
-
-  it.each([
-    [
-      { reason: "wrong-password", site: "https://github.com", status: "failed" },
-      "github.com didn’t accept the saved password",
-    ],
-    [
-      { reason: "unsupported-page", site: "https://github.com", status: "failed" },
-      "Opensteer couldn’t find where to sign in on github.com",
-    ],
-    [
-      { reason: "needs-approval", site: "https://github.com", status: "unavailable" },
-      "A task or automation can’t ask you to allow a sign-in",
-    ],
-    [
-      { reason: "no-code-expected", site: "https://github.com", status: "unavailable" },
-      "No sign-in was waiting for a code",
-    ],
-    [
-      { reason: "needs-fresh-session", site: "https://github.com", status: "unavailable" },
-      "This needs a new browser session. Ask your agent to open one and try again",
-    ],
-    [
-      { reason: "session-closed", site: "https://github.com", status: "unavailable" },
-      "The agent’s browser closed",
-    ],
-    [
-      { site: "https://github.com", status: "not-signed-in" },
-      "Chrome isn’t signed in to github.com",
-    ],
-  ])("never reads %o as done", (result, detail) => {
-    expect(head(signIn(result))).toEqual({
-      detail,
-      icon: "alert-circle",
-      label: "Couldn’t sign in to github.com",
-      status: "Didn’t sign in",
-      tone: "stopped",
-    });
-  });
-
-  it("says a decline as the card does", () => {
-    expect(head(signIn({ requestId: createId("request"), status: "declined" }))).toMatchObject({
-      icon: "alert-circle",
-      label: "Not allowed",
-      status: "Didn’t sign in",
-      tone: "stopped",
-    });
-  });
-
-  it("says a code the agent is fetching, and what a pending sign-in waits for", () => {
-    expect(
-      head(
-        signIn({
-          expiresAt: "2026-10-13T12:05:00.000Z",
-          site: "https://github.com",
-          status: "needs-code",
+          profileName: null,
         }),
       ),
     ).toMatchObject({
-      icon: "browser",
-      label: "github.com sent a code; the agent is getting it",
-      status: "Done",
+      detail: "From Work",
+      label: "Copied your Chrome sign-in for github.com",
       tone: "done",
-    });
-    const requestId = createId("request");
-    expect(
-      head(signIn({ replayed: false, requestId, status: "pending", waitingFor: "approval" })),
-    ).toMatchObject({ icon: "browser", label: "Asked you to sign in to github.com" });
-    expect(
-      head(signIn({ replayed: false, requestId, status: "pending", waitingFor: "person" })),
-    ).toMatchObject({ label: "github.com needs you to finish signing in" });
-    expect(
-      head(signIn({ replayed: true, requestId, status: "pending", waitingFor: "code" })),
-    ).toMatchObject({ label: "github.com needs you to finish signing in" });
-    expect(head(signIn({ requestId, status: "resolved" }))).toMatchObject({
-      detail: "Already answered",
-      label: "Asked to sign in to github.com",
     });
   });
 
   it.each([
-    { code: "123456", site: "https://github.com", reason: "Read the invoice" },
-    '{"site":"https://github.com","code":"123456"}',
-    '{"site":"https://github.com","code":"123',
-  ])("masks a one-time code in displayed step arguments: %o", (arguments_) => {
-    const entry = signIn({ status: "needs-code" }, { arguments: arguments_ });
-    const body = toolBody(entry);
-    expect(body.argumentsText).not.toContain("123");
-    expect(body.argumentsText).toContain("[hidden]");
-    expect(entry.arguments).toEqual(arguments_);
+    [
+      "saved_login_request",
+      { reason: "needs-approval", site: githubSite, status: "unavailable" },
+      "Couldn’t use a saved login for github.com",
+      "A task or automation can’t ask you to allow a sign-in",
+    ],
+    [
+      "saved_login_request",
+      { reason: "session-closed", site: githubSite, status: "unavailable" },
+      "Couldn’t use a saved login for github.com",
+      "The agent’s browser closed",
+    ],
+    [
+      "chrome_cookies_request",
+      { reason: "chrome-signed-out", site: githubSite, status: "unavailable" },
+      "Couldn’t copy your Chrome sign-in for github.com",
+      "Chrome isn’t signed in to github.com",
+    ],
+  ] as const)("never reads %s %o as done", (name, result, label, detail) => {
+    expect(head(step(name, result))).toEqual({
+      detail,
+      icon: "alert-circle",
+      label,
+      status: "Didn’t sign in",
+      tone: "stopped",
+    });
   });
 
-  it("never reads unreadable output, an error or a stopped call as signed in", () => {
-    expect(head(signIn({ site: "https://github.com", status: "signed-in" }))).toMatchObject({
+  it("says a decline as the card does, and a pending call as waiting", () => {
+    const requestId = createId("request");
+    for (const name of ["saved_login_request", "chrome_cookies_request"] as const)
+      expect(head(step(name, { requestId, site: githubSite, status: "declined" }))).toMatchObject({
+        icon: "alert-circle",
+        label: "Not allowed",
+        status: "Didn’t sign in",
+        tone: "stopped",
+      });
+    expect(
+      head(
+        step("saved_login_request", {
+          replayed: false,
+          requestId,
+          site: githubSite,
+          status: "pending",
+        }),
+      ),
+    ).toMatchObject({ icon: "browser", label: "Asked to use your saved login for github.com" });
+    expect(
+      head(
+        step("chrome_cookies_request", {
+          replayed: false,
+          requestId,
+          site: githubSite,
+          status: "pending",
+        }),
+      ),
+    ).toMatchObject({ icon: "browser", label: "Asked to copy your Chrome sign-in for github.com" });
+  });
+
+  it("never reads unreadable output, an error or a running call as done", () => {
+    expect(
+      head(step("saved_login_request", { site: githubSite, status: "signed-in" })),
+    ).toMatchObject({
       icon: "browser",
       label: "Tried to sign in to github.com",
     });
     expect(
-      head(signIn("signed in", { output: { text: "Signed in to github.com" } })),
-    ).toMatchObject({ icon: "browser", label: "Tried to sign in to github.com" });
-    expect(
       head(
-        signIn(
-          { method: "saved-password", site: "https://github.com", status: "signed-in" },
+        step(
+          "saved_login_request",
+          { status: "ready", site: githubSite, loginRef: `lgn_${"0".repeat(32)}`, account: "t" },
           { isError: true, state: "failed" },
         ),
       ),
     ).toMatchObject({ label: "Tried to sign in to github.com", tone: "error" });
     expect(
-      head(signIn(null, { completedAt: null, output: undefined, state: "running" })),
-    ).toMatchObject({ label: "Signing in to github.com", tone: "running" });
+      head(
+        step("chrome_cookies_request", null, {
+          completedAt: null,
+          output: undefined,
+          state: "running",
+        }),
+      ),
+    ).toMatchObject({ label: "Copying your Chrome sign-in for github.com", tone: "running" });
   });
 });
 
@@ -1713,7 +1677,11 @@ describe("a Computer use turn", () => {
       'Clicked "Save"',
     ]);
 
-    const mini = { ...mockComputerUseSlack, computer: "Mac mini", runnerId: createId("runner") };
+    const mini = {
+      ...mockComputerUseSlack,
+      computer: "Mac mini",
+      runnerId: DeviceIdSchema.parse(createId("runner")),
+    };
     const twoMacs = workRows([
       computerStep("observe"),
       computerStep("act"),
@@ -1746,7 +1714,7 @@ describe("a Computer use turn", () => {
 });
 
 describe("Computer use on a phone", () => {
-  const pixel = { computer: "Pixel 7", runnerId: createId("runner") };
+  const pixel = { computer: "Pixel 7", runnerId: DeviceIdSchema.parse(createId("runner")) };
   const observation =
     "Observation 4cf039beba5b8d92 of Pixel 7 — 12 elements. Screenshot 1080×2400 px; all coordinates are screenshot pixels.";
   function phoneStep(
@@ -1870,7 +1838,7 @@ describe("Computer use on a phone", () => {
   });
 
   it("keeps phones with the same name and a Mac in the same turn apart", () => {
-    const other = { ...pixel, runnerId: createId("runner") };
+    const other = { ...pixel, runnerId: DeviceIdSchema.parse(createId("runner")) };
     const entries = [
       phoneStep("observe"),
       phoneStep("act"),
@@ -1905,27 +1873,33 @@ describe("integration gateway steps", () => {
   } satisfies Partial<ToolEntry>;
 
   it.each([
-    { arguments: capturedRequest.arguments, target: "integration access" },
+    {
+      arguments: capturedRequest.arguments,
+      name: "integration_request",
+      target: "integration access",
+    },
     {
       arguments: { catalog: "google-gmail", reason: "Read the requested email." },
+      name: "integration_request",
       target: "integration access",
     },
     {
       arguments: {
         app: "com.tinyspeck.slackmacgap",
-        kind: "computer-app",
         reason: "Read the requested Slack message.",
       },
-      target: "app access on a Mac",
+      name: "app_access_request",
+      target: "app access",
     },
     {
-      arguments: { kind: "computer-app", reason: "Read the requested app." },
-      target: "app access on a Mac",
+      arguments: { computerId: "runner_1", reason: "Read the requested app." },
+      name: "app_access_request",
+      target: "app access",
     },
   ])(
     "labels a request for $target without naming its argument target",
-    ({ arguments: args, target }) => {
-      const entry = gateway("integration_request", { ...capturedRequest, arguments: args });
+    ({ arguments: args, name, target }) => {
+      const entry = gateway(name, { ...capturedRequest, arguments: args });
       const reason = args.reason;
       expect(toolPresentation(entry)).toMatchObject({
         activeLabel: `Requesting ${target}`,
@@ -2059,7 +2033,7 @@ describe("Host-authored computer operations", () => {
     });
     const outer = tool({
       createdAt: at(0),
-      tool: { name: "computer", namespace: "opensteer.integrations" },
+      tool: { name: "computer_use", namespace: "opensteer" },
       arguments: { code: "await app('Notes').window().click(1)" },
     });
     expect(toolPresentation(operation).kind).toBe("computer");
@@ -2506,19 +2480,16 @@ it("observes an addressed message beyond the active Run's intermediate message",
 
 describe("page stops", () => {
   const browser = (text: string, overrides: Partial<ToolEntry> = {}) =>
-    command(`"$OPENSTEER_BROWSER_HARNESS" --session "$SESSION_ID" ${text}`, overrides);
+    command(`"$OPENSTEER_BROWSER_HARNESS" --tab "$TAB_ID" ${text}`, overrides);
   const stop = (id: string, tab = "A"): PlaceEntry => ({
     kind: "place",
     id,
     runId: "run-a",
     createdAt: at(1),
     title: tab,
-    site: null,
-    place: {
-      kind: "browser",
-      sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000001"),
-      surfaceId: BrowserSurfaceIdSchema.parse(tab),
-    },
+    // A page has a site; only a window or phone place has none.
+    site: tab.includes(".") ? `https://${tab}` : `https://${tab.toLowerCase()}.example`,
+    tabId: BrowserSurfaceIdSchema.parse(tab),
   });
   it("groups commands across every A to B to A to B stop", () => {
     const a = stop("first"),
@@ -2537,7 +2508,7 @@ describe("page stops", () => {
         entries,
         places: [a, b],
         currentPlace: last,
-        head: { label: "Used A and B", detail: "4 steps" },
+        head: { label: "Used a.example and b.example", detail: "4 steps" },
       },
     ]);
     const turn = turns([run(), a])[0]!;
@@ -2548,7 +2519,7 @@ describe("page stops", () => {
     const literal = (text: string) =>
       browser(text, {
         arguments: {
-          command: `"$OPENSTEER_BROWSER_HARNESS" --session bsn_00000000-0000-4000-8000-000000000001 ${text}`,
+          command: `"$OPENSTEER_BROWSER_HARNESS" --tab A ${text}`,
         },
       });
     const first = literal("one"),
@@ -2757,14 +2728,15 @@ describe("page stops", () => {
       work.map((entry) => entry.id).sort(),
     );
   });
-  it("keeps browser sessions separate and recognizes PowerShell harness commands", () => {
-    const first = command('"$OPENSTEER_BROWSER_HARNESS" --session session-a evaluate');
-    const second = command('& $env:OPENSTEER_BROWSER_HARNESS --session "session-b" evaluate');
-    expect(workRows([first, second, first])).toHaveLength(3);
-    const marker = stop("other-session");
+  it("groups consecutive harness commands across tabs and recognizes PowerShell", () => {
+    const first = command('"$OPENSTEER_BROWSER_HARNESS" --tab tab-a evaluate');
+    const second = command('& $env:OPENSTEER_BROWSER_HARNESS --tab "tab-b" evaluate');
+    expect(workRows([first, second, first])).toMatchObject([
+      { group: "browser", entries: [first, second, first] },
+    ]);
+    const marker = stop("entered-before");
     expect(workRows([marker, first])).toMatchObject([
-      { group: "browser", places: [], head: { label: "Used the browser" } },
-      { kind: "place", entry: marker },
+      { group: "browser", places: [marker], entries: [marker, first] },
     ]);
     expect(toolPresentation(second)).toMatchObject({ kind: "browser", hint: "Browser page work" });
     expect(workRows([stop("pending"), command("echo hello")])).toMatchObject([
@@ -2820,6 +2792,17 @@ it("keeps a delivery-only turn visible after a Run ends without a reply", () => 
       teamMessageId: null,
       reason: "Channel unavailable",
     },
+  });
+  expect(
+    conversationRows(groupTranscriptEntries([entry]), { live: false, atComputer: () => false }),
+  ).toHaveLength(1);
+});
+
+it("keeps completed maintenance visible as a summary even without a message or work", () => {
+  const entry = run({
+    status: "completed",
+    replyMessageId: null,
+    compaction: { status: "created", reason: "idle" },
   });
   expect(
     conversationRows(groupTranscriptEntries([entry]), { live: false, atComputer: () => false }),

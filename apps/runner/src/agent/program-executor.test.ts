@@ -59,7 +59,7 @@ describe("TriggerProgramExecutor", () => {
       const message = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
         id?: number;
         method: string;
-        params?: { name?: string };
+        params?: { name?: string; arguments?: { message?: string } };
       };
       requests.push({
         method: message.method,
@@ -83,6 +83,27 @@ describe("TriggerProgramExecutor", () => {
       }
       if (message.method === "notifications/initialized") {
         response.writeHead(202).end();
+        return;
+      }
+      if (message.params?.arguments?.message === "skipped") {
+        const failure = {
+          error: {
+            code: "conflict",
+            message: "Opensteer skipped this memory pass wake.",
+            next: null,
+          },
+        };
+        response.end(
+          JSON.stringify({
+            id: message.id,
+            jsonrpc: "2.0",
+            result: {
+              isError: true,
+              structuredContent: failure,
+              content: [{ type: "text", text: JSON.stringify(failure) }],
+            },
+          }),
+        );
         return;
       }
       response.end(
@@ -120,12 +141,16 @@ describe("TriggerProgramExecutor", () => {
           console.log("price", event.payload.price);
           const response = await fetch(${JSON.stringify(`http://127.0.0.1:${address.port}/data`)});
           if (!response.ok) throw new Error("fetch failed");
-          const delivered = await opensteer.callTool("thread_send", { message: "done" });
+          const delivered = await opensteer.callTool("opensteer_task_send", { message: "done" });
           const integrationDelivered = await opensteer.callTool(
             "integration_tool",
             { value: 42 },
           );
+          let refusal=null;
+          try {await opensteer.callTool("opensteer_task_send",{message:"skipped"});}
+          catch(error){refusal=error instanceof Error?error.message:"not an Error";}
           return {
+            refusal,
             credentialsFile: existsSync(
               ".opensteer/private/" + event.id + "/credentials.json",
             ),
@@ -171,15 +196,17 @@ describe("TriggerProgramExecutor", () => {
           hasCredentials: false,
           integrationDelivered: { delivered: true },
           price: 42,
+          refusal: "Opensteer skipped this memory pass wake.",
         },
         status: "succeeded",
         stdout: "price 42\n",
       });
       expect(requests.filter(({ method }) => method === "tools/call")).toEqual([
-        { method: "tools/call", name: "thread_send" },
+        { method: "tools/call", name: "opensteer_task_send" },
         { method: "tools/call", name: "integration_tool" },
+        { method: "tools/call", name: "opensteer_task_send" },
       ]);
-      expect(requests.filter(({ method }) => method === "DELETE")).toHaveLength(2);
+      expect(requests.filter(({ method }) => method === "DELETE")).toHaveLength(3);
       expect(toolRequests.length).toBeGreaterThan(0);
       expect(
         toolRequests.every(
@@ -614,7 +641,7 @@ function triggerContext(input: { readonly mcpUrl?: string; readonly source: stri
 
     mcp: { token: "test-token", url: input.mcpUrl ?? "http://127.0.0.1:1/mcp" },
     occurrenceId,
-    program: { toolContractVersion: 3, language: "typescript", source: input.source },
+    program: { toolContractVersion: 4, language: "typescript", source: input.source },
     revisionId,
     triggerId,
   });

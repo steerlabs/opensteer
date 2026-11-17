@@ -1,9 +1,12 @@
-import { memo, useMemo, type ComponentProps } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import { createContext, memo, useContext, useMemo, type ComponentProps } from "react";
+import ReactMarkdown, { type Components, type UrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ExternalLink } from "../external-link.js";
+import { classifyHref } from "@opensteer/core";
 import { Icon, type IconName } from "../icon.js";
+import { remarkChipPunctuation } from "../references/chip-punctuation.js";
+import { TeamMessageLink } from "../references/reference-link.js";
 import { attachmentDetail, isInlineImage } from "../attachments/attachment-parts.js";
+import { useImageActions } from "../image-actions.js";
 import { MentionChip } from "./team-marks.js";
 import type { FileView, MentionView } from "./team-models.js";
 
@@ -83,10 +86,8 @@ function escape(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-function BodyLink({ children, href }: ComponentProps<"a">) {
-  if (!href || !/^https?:\/\//iu.test(href)) return <span>{children}</span>;
-  return <ExternalLink href={href}>{children}</ExternalLink>;
-}
+/** A link keeps a destination only when it is one Opensteer can open; the link decides how. */
+const urlTransform: UrlTransform = (url) => (classifyHref(url).kind === "none" ? "" : url);
 
 /** Images in a message body are never fetched; a file is attached instead. */
 function BodyImage({ alt }: ComponentProps<"img">) {
@@ -111,12 +112,12 @@ export const MessageBody = memo(function MessageBody({
     [mentions],
   );
   const plugins = useMemo(
-    () => [remarkGfm, remarkTeamText(new Set(byHandle.keys()), highlight)],
+    () => [remarkGfm, remarkChipPunctuation, remarkTeamText(new Set(byHandle.keys()), highlight)],
     [byHandle, highlight],
   );
   const components = useMemo<Components>(
     () => ({
-      a: BodyLink,
+      a: TeamMessageLink,
       img: BodyImage,
       data: ({ value }) => {
         const mention = typeof value === "string" ? byHandle.get(value) : undefined;
@@ -127,7 +128,7 @@ export const MessageBody = memo(function MessageBody({
   );
   return (
     <div className="md-prose team-body">
-      <ReactMarkdown components={components} remarkPlugins={plugins}>
+      <ReactMarkdown components={components} remarkPlugins={plugins} urlTransform={urlTransform}>
         {text}
       </ReactMarkdown>
     </div>
@@ -154,14 +155,7 @@ export function MessageFiles({
         <ul aria-label="Images" className="team-files__images">
           {images.map((file) => (
             <li key={file.id}>
-              <button
-                aria-label={`Open ${file.name}`}
-                className="team-image"
-                onClick={() => onOpen?.(file)}
-                type="button"
-              >
-                <img alt="" decoding="async" loading="lazy" src={file.previewUrl ?? undefined} />
-              </button>
+              <TeamImage file={file} onOpen={onOpen} />
             </li>
           ))}
         </ul>
@@ -176,6 +170,34 @@ export function MessageFiles({
         </ul>
       ) : null}
     </div>
+  );
+}
+
+/** Reads a team file's original, where this screen can. */
+export const TeamFileReadContext = createContext<((file: FileView) => Promise<File>) | null>(null);
+
+function TeamImage({
+  file,
+  onOpen,
+}: {
+  readonly file: FileView;
+  readonly onOpen?: ((file: FileView) => void) | undefined;
+}) {
+  const read = useContext(TeamFileReadContext);
+  const actions = useImageActions(useMemo(() => (read ? () => read(file) : null), [file, read]));
+  return (
+    <>
+      <button
+        aria-label={`Open ${file.name}`}
+        className="team-image"
+        onClick={() => onOpen?.(file)}
+        type="button"
+        {...actions.target}
+      >
+        <img alt="" decoding="async" loading="lazy" src={file.previewUrl ?? undefined} />
+      </button>
+      {actions.menu}
+    </>
   );
 }
 

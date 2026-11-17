@@ -3,6 +3,7 @@ import {
   BrowserRuntimeServerMessageSchema,
   BrowserSessionIdSchema,
   type BrowserAttachPublicKey,
+  type BrowserRuntimeServerMessage,
 } from "@opensteer/protocol";
 import {
   allClosed,
@@ -22,7 +23,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
-import { pageViewport, type PageGeometry } from "./browser/backend.js";
+import { pageViewport, type EngineClipboardItem, type PageGeometry } from "./browser/backend.js";
+import { gate } from "@opensteer/shared/test-support/observation";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { BrowserRuntime } from "./runtime.js";
 import { BrowserRuntimeServer } from "./server.js";
 import {
@@ -37,6 +40,95 @@ import {
 } from "./test-support/fakes.js";
 
 describe("BrowserRuntimeServer", () => {
+  it("delivers paste parts queued during attachment before waiting for the paste", async () => {
+    const ready = gate({ label: "browser attachment handoff", deadlineMs: 2_000 });
+    const page = new FakePage();
+    let pasted: readonly EngineClipboardItem[] | null = null;
+    const browser = Object.assign(new FakeLaunchedBrowser(new FakeContext([page])), {
+      clipboard: {
+        open: async (_page: unknown, input: typeof pasted) => {
+          pasted = input;
+          return { close: async () => null };
+        },
+      },
+    });
+    const runtime = new BrowserRuntime({
+      launcher: new FakeLauncher(browser),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(validClaims({ editingVersion: 2, clipboard: true })),
+    });
+    const attach = runtime.attach.bind(runtime);
+    const messages: BrowserRuntimeServerMessage[] = [];
+    vi.spyOn(runtime, "attach").mockImplementation(async (ticket, sink, options) => {
+      const attached = await attach(
+        ticket,
+        {
+          sendFrame: (frame) => sink.sendFrame(frame),
+          sendServer: (message) => {
+            messages.push(message);
+            return sink.sendServer(message);
+          },
+        },
+        options,
+      );
+      await ready.enter();
+      return attached;
+    });
+    const server = new BrowserRuntimeServer({ port: 0, runtime });
+    let socket: WebSocket | undefined;
+    try {
+      const address = await server.start();
+      socket = new WebSocket(`ws://${address.host}:${address.port}/v1/browser`, {
+        headers: { authorization: "Bearer abc.def.ghi" },
+      });
+      await withTimeout(once(socket, "open"), 1_000, {
+        timeoutError: () => new Error("Paste viewer never connected"),
+      });
+      await ready.entered;
+      const surfaceId = committedBrowserTabs(messages).rows.keys().next().value;
+      expect(surfaceId).toBeDefined();
+      const operationId = randomUUID();
+      const result = Promise.withResolvers<unknown>();
+      socket.on("message", (raw, binary) => {
+        if (binary) return;
+        const message = BrowserRuntimeServerMessageSchema.parse(JSON.parse(raw.toString()));
+        if (message.type === "clipboard.result" && message.operationId === operationId)
+          result.resolve(message);
+      });
+      socket.send(
+        JSON.stringify({
+          type: "clipboard.paste-data",
+          surfaceId,
+          operationId,
+          items: [{ type: "text/plain", size: 5 }],
+        }),
+      );
+      socket.send(
+        JSON.stringify({
+          type: "clipboard.part",
+          part: { operationId, index: 0, data: Buffer.from("paste").toString("base64") },
+        }),
+      );
+      const queued = once(socket, "pong");
+      socket.ping();
+      await withTimeout(queued, 1_000, {
+        timeoutError: () => new Error("Queued paste frames never reached the server"),
+      });
+      ready.release();
+      await expect(
+        withTimeout(result.promise, 1_000, {
+          timeoutError: () => new Error("The queued paste never received its parts"),
+        }),
+      ).resolves.toMatchObject({ outcome: "pasted", operationId, surfaceId });
+      expect(pasted).toEqual([{ type: "text/plain", bytes: Buffer.from("paste") }]);
+    } finally {
+      ready.release();
+      socket?.terminate();
+      await server.close();
+    }
+  });
+
   it("negotiates initial-page readiness through the authenticated bridge", async () => {
     const claims = validClaims({
       initialNavigation: { operationKey: "initial-test", url: "https://example.test/" },

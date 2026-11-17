@@ -38,6 +38,80 @@ vi.mock("./chromium-clipboard.js", () => ({
   },
 }));
 
+it.each(["ready", "acquiring"] as const)(
+  "retires a %s private CDP before awaiting native close and fences new attachments",
+  async (state) => {
+    const f = await nativeCloseFixture();
+    const retired = Promise.withResolvers<void>();
+    const nativeClose = Promise.withResolvers<void>();
+    const events = new EventEmitter();
+    let physicallyClosed = false;
+    const page = Object.assign(events, {
+      isClosed: () => physicallyClosed,
+      close: vi.fn(async () => {
+        await retired.promise;
+        await nativeClose.promise;
+        physicallyClosed = true;
+        events.emit("close");
+      }),
+    });
+    const session = Object.assign(new EventEmitter(), {
+      send: vi.fn(async () => ({})),
+      detach: vi.fn(async () => retired.resolve()),
+    });
+    const acquired = Promise.withResolvers<typeof session>();
+    let attaching: Promise<import("@opensteer/browser-runtime-core").CdpSession> | undefined;
+    let closing: Promise<void> | undefined;
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      vi.spyOn(f.context, "pages").mockReturnValue([page as unknown as Page]);
+      f.context.newCDPSession.mockReturnValue(acquired.promise);
+      if (state === "ready") acquired.resolve(session);
+      const handle = launched.context.pages()[0]!;
+      attaching = handle.cdp();
+      void attaching.catch(() => undefined);
+      const channel = state === "ready" ? await attaching : undefined;
+      vi.useFakeTimers();
+      closing = handle.close();
+      await vi.advanceTimersByTimeAsync(0);
+      if (state === "acquiring") {
+        expect(
+          page.close,
+          "Native close must not join an unready CDP acquisition",
+        ).toHaveBeenCalledOnce();
+        acquired.resolve(session);
+        await vi.advanceTimersByTimeAsync(0);
+        await expect(attaching).rejects.toThrow(/clos/i);
+      }
+      expect(
+        session.detach,
+        "Native close cannot finish until its private CDP is retired",
+      ).toHaveBeenCalledOnce();
+      expect(handle.isClosed(), "A closing page must refuse new work").toBe(true);
+      await expect(handle.cdp()).rejects.toThrow(/clos/i);
+      await expect(handle.agentCdp()).rejects.toThrow(/clos/i);
+      if (channel) await expect(channel.send("Runtime.evaluate")).rejects.toThrow(/closed/i);
+      const duplicate = handle.close();
+      nativeClose.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      await closing;
+      await duplicate;
+      expect(page.close).toHaveBeenCalledOnce();
+      expect(f.context.newCDPSession).toHaveBeenCalledOnce();
+    } finally {
+      acquired.resolve(session);
+      retired.resolve();
+      nativeClose.resolve();
+      await closing;
+      vi.useRealTimers();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  },
+);
+
 describe("Chromium child environment", () => {
   it("keeps only required headless Linux variables", () => {
     const environment = createChromiumChildEnvironment(
@@ -195,6 +269,7 @@ describe("Chromium child environment", () => {
         close: vi.fn().mockResolvedValue(undefined),
         newBrowserCDPSession: vi.fn().mockResolvedValue(browserCdp),
         newContext: vi.fn().mockResolvedValue(context),
+        version: () => "151.0.7922.34",
       } as unknown as Browser;
       const browserServer = {
         kill: vi.fn().mockResolvedValue(undefined),
@@ -237,9 +312,7 @@ describe("Chromium child environment", () => {
       expect(launcher.passkeys).toBe(provider && supportsSecurity ? 1 : undefined);
       expect(context.addInitScript).toHaveBeenCalledWith({
         content:
-          provider && supportsSecurity
-            ? expect.stringContaining("opensteerPasskey_")
-            : browserPagePolicyScript,
+          provider && supportsSecurity ? expect.stringContaining("b_") : browserPagePolicyScript,
       });
       if (provider && supportsSecurity) {
         const platform = await launched.context.pages()[0]!.cdp();
@@ -260,15 +333,40 @@ describe("Chromium child environment", () => {
       expect(launchOptions?.env).not.toHaveProperty("AWS_SECRET_ACCESS_KEY");
       expect(browser.newContext).toHaveBeenCalledWith(
         expect.objectContaining({
+          userAgent: expect.stringContaining("Chrome/151.0.0.0"),
           // The Runtime's ledger alone sizes pages.
           viewport: null,
         }),
+      );
+      // Playwright derives metadata from the UA string (frozen platform
+      // version, wrong architecture); each page is overridden with metadata
+      // built from the real system.
+      const pageHandler = (context.on as ReturnType<typeof vi.fn>).mock.calls.find(
+        ([event]) => event === "page",
+      )?.[1] as ((page: unknown) => void) | undefined;
+      expect(pageHandler).toBeDefined();
+      pageHandler!({ on: vi.fn() });
+      await vi.waitFor(() =>
+        expect(tabSession.send).toHaveBeenCalledWith(
+          "Emulation.setUserAgentOverride",
+          expect.objectContaining({
+            userAgent: expect.stringContaining("Chrome/151.0.0.0"),
+            userAgentMetadata: expect.objectContaining({
+              brands: [
+                { brand: "Chromium", version: "151" },
+                { brand: "Not=A?Brand", version: "99" },
+              ],
+            }),
+          }),
+        ),
       );
 
       await expect(
         launched.cdp.send("Target.createTarget", { url: "https://example.com/" }),
       ).resolves.toEqual({ targetId: "agent-tab" });
-      expect(context.newPage).toHaveBeenCalledTimes(provider ? 3 : 2);
+      // One extra page is the throwaway context that reads the engine's own
+      // high-entropy identity before the Guest context is created.
+      expect(context.newPage).toHaveBeenCalledTimes(provider ? 4 : 3);
       await vi.waitFor(() =>
         expect(tabSession.send).toHaveBeenCalledWith("Page.navigate", {
           url: "https://example.com/",
@@ -470,6 +568,27 @@ describe("native Chromium profiles", () => {
       await reopened.close();
     } finally {
       vi.useRealTimers();
+      f.exit();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("detaches the browser CDP before starting native protocol shutdown", async () => {
+    const f = await nativeCloseFixture();
+    const detached = Promise.withResolvers<void>();
+    try {
+      const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      const closingCdp = vi
+        .spyOn(launched.cdp as typeof launched.cdp & { close(): Promise<void> }, "close")
+        .mockImplementationOnce(() => detached.promise);
+      const closing = launched.close();
+      await vi.waitFor(() => expect(closingCdp).toHaveBeenCalledOnce());
+      expect(f.context.close).not.toHaveBeenCalled();
+      detached.resolve();
+      await closing;
+      expect(f.context.close).toHaveBeenCalledOnce();
+    } finally {
+      detached.resolve();
       f.exit();
       await rm(f.directory, { recursive: true, force: true });
     }

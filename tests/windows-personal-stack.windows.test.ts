@@ -506,13 +506,21 @@ describe("the personal stack from source", () => {
       ? `set "GREETING=hello from cmd" && node server.cjs`
       : `export GREETING="hello from cmd" && node server.cjs`;
     await turn(
-      `${toolCall("app_publish", { path: "server app", start, title: "Greeting" })} [[reply Published.]]`,
+      `${toolCall("app_publish", { path: "server app", start, name: "Greeting" })} [[reply Published.]]`,
       "Published.",
     );
     const { events } = await rpc("thread.events.list", { threadId });
     const published = events.find((event) => event.type === "app.published");
     if (published?.type !== "app.published") throw new Error("The task never published its app");
     const appId = published.data.appId;
+    const { apps } = await rpc("apps.list", {});
+    const app = apps.find((app) => app.appId === appId);
+    expect(app).toMatchObject({ name: "Greeting", kind: "server", state: "running" });
+    const localUrl = new URL(app!.localUrl!);
+    expect(localUrl.hostname).toBe("127.0.0.1");
+    expect(Number(localUrl.port)).toBeGreaterThanOrEqual(49_152);
+    expect(Number(localUrl.port)).toBeLessThanOrEqual(65_535);
+    expect((await rpc("tabs.state", {})).tabs).toEqual([]);
 
     // The app is reached through the Host, which tunnels to the Runner's loopback server.
     const view = await rpc("apps.view", { appId, theme: "light" });
@@ -532,7 +540,7 @@ describe("the personal stack from source", () => {
       input: {
         anchorThreadId: threadId,
         name: "Doubler",
-        program: { language: "typescript", source: automationSource, toolContractVersion: 3 },
+        program: { language: "typescript", source: automationSource, toolContractVersion: 4 },
         source: { kind: "webhook" },
       },
       type: "trigger.create",
@@ -562,7 +570,7 @@ describe("the personal stack from source", () => {
 
     // Publishing a page in its place stops the server and everything it started.
     await turn(
-      `${toolCall("app_publish", { appId, path: "server app/index.html", title: "Greeting" })} [[reply Replaced.]]`,
+      `${toolCall("app_publish", { appId, path: "server app/index.html", name: "Greeting" })} [[reply Replaced.]]`,
       "Replaced.",
     );
     await vi.waitFor(

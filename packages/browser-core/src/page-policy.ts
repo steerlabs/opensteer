@@ -12,13 +12,14 @@ export type BrowserPagePolicyConfig =
 export function installBrowserPagePolicy(config?: BrowserPagePolicyConfig): void {
   if (!config) {
     if (typeof CredentialsContainer === "undefined") return;
+    // With the Blink WebAuth feature disabled, the native methods pend
+    // instead of rejecting public-key requests, so refuse them here with a
+    // named wrapper: a Proxy would stringify as an anonymous function.
     for (const method of ["create", "get"] as const) {
       const native = CredentialsContainer.prototype[method];
-      CredentialsContainer.prototype[method] = new Proxy(native, {
-        apply(target, thisArgument, argumentList) {
-          const options = argumentList[0];
-          // Matches how the browser reads its options dictionary: any object,
-          // functions included, and an undefined member counts as absent.
+      const wrapper = {
+        [method](...args: unknown[]) {
+          const options = args[0];
           const dictionary =
             (typeof options === "object" && options !== null) || typeof options === "function";
           if (dictionary && (options as { publicKey?: unknown }).publicKey !== undefined) {
@@ -26,15 +27,16 @@ export function installBrowserPagePolicy(config?: BrowserPagePolicyConfig): void
               new DOMException("Passkeys aren't available in this browser.", "NotAllowedError"),
             );
           }
-          return Reflect.apply(target, thisArgument, argumentList);
+          return Reflect.apply(native, this, args);
         },
-      });
+      }[method];
+      CredentialsContainer.prototype[method] = wrapper as typeof native;
     }
     return;
   }
   if (!globalThis.isSecureContext || typeof CredentialsContainer === "undefined") return;
   const prototype = CredentialsContainer.prototype;
-  const marker = Symbol.for("opensteer.passkeyProvider");
+  const marker = Symbol.for("passkeyProvider");
   if (Object.hasOwn(prototype, marker)) return;
   Object.defineProperty(prototype, marker, { value: true });
   const credentials = navigator.credentials;

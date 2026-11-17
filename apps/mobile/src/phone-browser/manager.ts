@@ -165,6 +165,8 @@ export class PhoneBrowserManager {
   #abort = new AbortController();
   #cancelLease: (() => void) | null = null;
   #foreground = false;
+  #lifecycle: Promise<void> = Promise.resolve();
+  #transitions = 0;
   #disposed = false;
   #visible: string | null = null;
   #covered: { tabId: string; owner: CoveredOwner | null } | null = null;
@@ -259,15 +261,35 @@ export class PhoneBrowserManager {
     };
   }
 
-  async setForeground(active: boolean): Promise<void> {
-    if (this.#disposed || this.#foreground === active) return;
+  /**
+   * Leaving fences at once. Native hears each transition in the order asked,
+   * and a connection that arrives meanwhile waits for it, since fencing would
+   * refuse a pending activation. Asked again for the state it is moving to, it
+   * joins that transition; an activation native refused is not kept as forward.
+   */
+  setForeground(active: boolean): Promise<void> {
+    if (this.#disposed || this.#foreground === active) return this.#lifecycle;
     this.#foreground = active;
+    const asked = ++this.#transitions;
+    let departed: Promise<void> | undefined;
     if (!active) {
-      if (this.#connection) this.#retiredConnections.add(connectionKey(this.#connection.fence));
-      await this.#invalidate("inactive");
-      this.#connection = null;
+      const leaving = this.#connection;
+      if (leaving) this.#retiredConnections.add(connectionKey(leaving.fence));
+      departed = this.#invalidate("inactive").then(() => {
+        if (this.#connection === leaving) this.#connection = null;
+      });
     }
-    await this.#native.setForeground({ epoch: this.#epoch, active });
+    const transition = this.#lifecycle.then(async () => {
+      await departed;
+      try {
+        await this.#native.setForeground({ epoch: this.#epoch, active });
+      } catch (error) {
+        if (active && asked === this.#transitions) this.#foreground = false;
+        throw error;
+      }
+    });
+    this.#lifecycle = transition.catch(() => undefined);
+    return transition;
   }
 
   async presentTab(admission: PhonePresentationAdmission, hostId: string): Promise<void> {
@@ -366,6 +388,8 @@ export class PhoneBrowserManager {
   async handleEvent(event: PhoneBrowserNativeEvent): Promise<void> {
     if (this.#disposed) return;
     if (event.type === "connection") {
+      await this.#lifecycle;
+      if (this.#disposed) return;
       if (event.state === "offline") {
         if (!this.#connection || !sameRunnerAuxiliaryFence(this.#connection.fence, event.fence))
           return;
@@ -835,8 +859,7 @@ export class PhoneBrowserManager {
         this.#createTab(
           session,
           session.initialId,
-          claims.initialNavigation?.url ??
-            (identity.kind === "profile-local" ? identity.readyUrl : "about:blank"),
+          claims.initialNavigation?.url ?? "about:blank",
           claims.viewport,
           claims.initialNavigation?.navigationId,
         ),
@@ -1287,8 +1310,12 @@ export class PhoneBrowserManager {
         )
           throw new PhoneBrowserError("stale-geometry", "The page geometry changed.");
         if (action.type === "surface.resume" || action.type === "surface.attach") {
+          const reloaded = !isLive(tab);
           await this.#claimCovered(tab, { channel, attachmentId: message.attachmentId });
-          result = { type: action.type, binding: actionBinding(tab) };
+          result =
+            action.type === "surface.resume"
+              ? { type: action.type, binding: actionBinding(tab), dialog: tab.dialog, reloaded }
+              : { type: action.type, binding: actionBinding(tab) };
         } else if (action.type === "surface.close") {
           await this.#closeTab(session, tab);
           result = { type: "surface.close", outcome: "closed" };

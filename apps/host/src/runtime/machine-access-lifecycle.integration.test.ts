@@ -116,9 +116,10 @@ integration("Machine access session lifecycle", () => {
         run.machineAccess?.machines.find((machine) => machine.runnerId === target.runnerId)
           ?.fullDiskAccess,
       ).toBe(false);
-      const held = callMcpTool(host.origin, run.toolsToken, "machine_full_disk_access_request", {
+      const held = callMcpTool(host.origin, run.toolsToken, "computer_access_request", {
         operationKey: crypto.randomUUID(),
-        computer: "test-mac",
+        computerId: target.runnerId,
+        access: "full_disk_access",
         reason: "Read Mail",
       });
       const requestId = await heldRequest(host, run.runId);
@@ -199,9 +200,10 @@ integration("Machine access session lifecycle", () => {
         key: "fda-relaunch-run",
         title: "Read Mail",
       });
-      const held = callMcpTool(host.origin, run.toolsToken, "machine_full_disk_access_request", {
+      const held = callMcpTool(host.origin, run.toolsToken, "computer_access_request", {
         operationKey: crypto.randomUUID(),
-        computer: "test-mac",
+        computerId: target.runnerId,
+        access: "full_disk_access",
         reason: "Read Mail",
       });
       const requestId = await heldRequest(host, run.runId);
@@ -443,7 +445,7 @@ integration("Machine access session lifecycle", () => {
     const denied = await runShim(launch, "ssh", [alias, "true"]);
     expect(denied.code).toBe(255);
     expect(denied.stderr).toContain(
-      `device-access-off: machineId=${target.runnerId}, capability=files.`,
+      `device-access-off: computerId=${target.runnerId}, capability=files.`,
     );
     expect(denied.stderr).toContain("Files and commands are off on Example Mac.");
     // A refusal reserves nothing, so no row was ever written for it.

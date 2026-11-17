@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
-import { TeamChannelIdSchema, OpensteerError } from "@opensteer/core";
+import { TeamChannelIdSchema, OpensteerError, createId } from "@opensteer/core";
 import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
 import {
   click,
+  client,
   element,
   mount,
   settle,
@@ -13,8 +14,14 @@ import {
   teamSession,
   write,
 } from "../components/workspace/workspace.interaction.test-support.js";
+import { seedMockTeamAsk } from "./mock-team-ask.js";
+import {
+  composerText,
+  textareaView,
+  typeInto,
+} from "../components/composer-editor.test-support.js";
 
-const field = () => element<HTMLTextAreaElement>(".team-composer__input");
+const field = () => textareaView(element<HTMLElement>(".team-composer__input"));
 const rowsSaying = (text: string) =>
   [...document.querySelectorAll<HTMLElement>(".channel .tmsg")].filter((row) =>
     row.textContent?.includes(text),
@@ -22,8 +29,8 @@ const rowsSaying = (text: string) =>
 
 async function openChannel() {
   await mount("/", { team: true });
-  await click(element('.side-switch__option:not([data-value="tasks"])'));
-  await click(element(".team-row__main"));
+  await click(element('.side-switch [role="radio"]:not([data-value="tasks"])'));
+  await click(element(".team-row[data-channel-id] .team-row__main"));
   await settle();
 }
 
@@ -34,6 +41,49 @@ async function send(text: string) {
 }
 
 describe("sending in a channel", () => {
+  it("writes a knowledge topic and a note the team lists for this reader as links", async () => {
+    await openChannel();
+    const topicId = teamHost!.knowledge.starterTopicId,
+      noteId = createId("knowledgeNote");
+    teamHost!.knowledge.addVersion({
+      noteId,
+      topicId,
+      title: "Refunds policy",
+      body: "Ask Maya.",
+      writer: { kind: "human", userId: teamHost!.userId, name: "Me" },
+    });
+    const pickRow = async (name: string) => {
+      const row = await act(() =>
+        vi.waitFor(
+          () => {
+            const found = [
+              ...document.querySelectorAll<HTMLElement>(".channel .at-list [role='option']"),
+            ].find((option) => option.querySelector(".at-list__name")?.textContent === name);
+            if (!found) throw new Error(`The @ list never offered ${name}`);
+            return found;
+          },
+          { timeout: 2_000 },
+        ),
+      );
+      await act(async () => {
+        row.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      });
+    };
+    typeInto(field().element, "@Refunds");
+    await pickRow("Refunds policy");
+    expect(field().value).toMatch(
+      new RegExp(
+        `^\\[Refunds policy\\]\\(https?://[^)]+/knowledge/${topicId}\\?note=${noteId}\\) $`,
+        "u",
+      ),
+    );
+    typeInto(field().element, "@Gener");
+    await pickRow("General");
+    expect(field().value).toMatch(
+      new RegExp(`\\) \\[General\\]\\(https?://[^)]+/knowledge/${topicId}\\) $`, "u"),
+    );
+  });
+
   it("shows a message whose answer was lost once, and still once after reconnecting", async () => {
     await openChannel();
     const stored = teamHost!.messages.size;
@@ -94,7 +144,7 @@ describe("sending in a channel", () => {
         { timeout: 1000 },
       );
     });
-    const threadField = element<HTMLTextAreaElement>(".thread-pane .team-composer__input");
+    const threadField = element<HTMLElement>(".thread-pane .team-composer__input");
     await write(threadField, "Thread draft");
     await act(async () => goTo!(path));
     expect(field().value).toBe("Channel draft");
@@ -108,9 +158,7 @@ describe("sending in a channel", () => {
     await act(async () => {
       await vi.waitFor(
         () =>
-          expect(element<HTMLTextAreaElement>(".thread-pane .team-composer__input").value).toBe(
-            "Thread draft",
-          ),
+          expect(composerText(element(".thread-pane .team-composer__input"))).toBe("Thread draft"),
         { timeout: 1000 },
       );
     });
@@ -242,5 +290,51 @@ describe("sending in a channel", () => {
     });
     expect(field().value).toBe("Revised unsent message");
     expect(host.messages.size).toBe(0);
+  });
+});
+
+describe("an ask to my agent in a channel", () => {
+  it("is answered under the ask for the words as sent, and once its copy is edited, in the task", async () => {
+    await openChannel();
+    const entry = seedMockTeamAsk(teamHost!);
+    await act(async () => client.mockTeamAsk(entry));
+    await settle(50);
+    const ask = () => rowsSaying("launch checklist")[0]!;
+    expect(ask().querySelector(".ask-split")).not.toBeNull();
+
+    // Edited in its task, chat no longer approves: it sends the person to what they changed.
+    const listed = client
+      .getSnapshot()
+      .needsYou?.entries.find(
+        (row) => row.kind === "team-ask" && row.requestId === entry.requestId,
+      );
+    if (listed?.kind !== "team-ask" || !listed.task) throw new Error("The ask has no task");
+    const { messageId, threadId } = listed.task;
+    await act(async () => {
+      const editor = await client.editWaitingMessage(threadId, messageId);
+      await editor.save(
+        [{ text: "What’s still open on the launch checklist?", type: "text" }],
+        editor.revision,
+      );
+    });
+    await settle(50);
+    expect(ask().querySelector(".ask-split")).toBeNull();
+    await click(ask().querySelector<HTMLButtonElement>(".team-ask-review")!);
+    expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
+  });
+
+  it("approves the version shown when answered from chat", async () => {
+    await openChannel();
+    const entry = seedMockTeamAsk(teamHost!);
+    await act(async () => client.mockTeamAsk(entry));
+    await settle(50);
+    const decide = vi.spyOn(client, "decideTeamAsk");
+    await click(rowsSaying("launch checklist")[0]!.querySelector(".ask-split__go")!);
+    expect(decide).toHaveBeenCalledWith({
+      decision: "approve",
+      expectedRevision: 0,
+      requestId: entry.requestId,
+      teamId: entry.teamId,
+    });
   });
 });

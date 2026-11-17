@@ -280,7 +280,9 @@ integration("Warm engines", () => {
       const turns = (await captured(captureFile)).filter(
         (line) =>
           line.method === "turn/start" &&
-          line.params?.additionalContext?.opensteer_skills !== undefined,
+          Object.keys(line.params?.additionalContext ?? {}).some((key) =>
+            key.startsWith("opensteer_skills_"),
+          ),
       );
       expect(turns).toHaveLength(3);
       expect(JSON.stringify(turns[0])).toContain("a6-private-skill");
@@ -687,11 +689,10 @@ integration("Warm engines", () => {
       const first = await run(active, threadId, "First question");
       await active.updateThreadExecution(
         threadId,
+        // Codex applies effort on each turn; speed is part of the loaded thread's configuration.
         ModelSelectionSchema.parse({
           ...selection,
-          options: {
-            effort: "high",
-          },
+          options: { ...selection.options, speed: "priority" },
         }),
       );
       const second = await run(active, threadId, "Second question");
@@ -997,9 +998,7 @@ integration("Warm engines", () => {
 /** What the fake engines recorded: each turn's process, its token, each cleanup. */
 interface Captured {
   readonly params?: {
-    readonly additionalContext?: {
-      readonly opensteer_skills?: unknown;
-    };
+    readonly additionalContext?: Readonly<Record<string, unknown>>;
   };
   readonly backgroundTerminalsCleaned?: string;
   /** A request the driver sent the app server. */

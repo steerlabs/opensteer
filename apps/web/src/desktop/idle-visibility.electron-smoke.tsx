@@ -3,11 +3,17 @@ import { MemoryRouter } from "react-router";
 import { HttpHostClient } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { placeList } from "@opensteer/client/host";
+import { useRunPlacePicture } from "@opensteer/client/react";
+import { createId } from "@opensteer/core";
 import { browserClientLifecycle } from "../host/browser-lifecycle.js";
 import { pageVisible } from "../page-visibility.js";
 import { Viewfinder } from "../components/workspace/viewfinder.js";
+import {
+  RunPlacePictureScope,
+  useDisplayDecoding,
+} from "../components/workspace/run-place-picture.js";
 import { OwnerView } from "../components/workspace/owner-view.js";
-import { ownerViewDestination } from "@opensteer/client/host";
+import { approvedAppTarget } from "@opensteer/client/host";
 import { WorkspaceProvider } from "../components/workspace/workspace-context.js";
 import { useWorkspaceNavigation } from "../components/workspace/navigation.js";
 import { TabCloserProvider } from "../components/workspace/tab-closer.js";
@@ -47,25 +53,33 @@ const smoke = {
       (entry) => entry.target.kind === "app",
     );
     if (!approved) throw Error("No fixture app is approved.");
-    const view = await owner.openComputerView(approved.machineId, approved.target);
-    const destination = ownerViewDestination(view);
-    if (destination.kind !== "app") throw Error("Expected a Mac owner view.");
-    const ownerDestination = destination;
+    const windowTab = await owner.openTab(approvedAppTarget(approved));
+    const viewer = await owner.activateTab(windowTab.tabId);
+    if (viewer.kind !== "window") throw Error("Expected a Mac owner view.");
+    const view = viewer.view;
     const snapshot = owner.getSnapshot();
-    const finderPlace = placeList(snapshot).find((place) => place.destination.kind === "browser");
+    const finderPlace = placeList(snapshot).find((place) => place.kind === "page");
     const finderThread = snapshot.threads.find((thread) => thread.purpose === "task");
-    if (!finderPlace || finderPlace.destination.kind !== "browser" || !finderThread)
-      throw Error("No fixture browser viewfinder exists.");
+    if (!finderPlace || !finderThread) throw Error("No fixture browser viewfinder exists.");
+    const pageViewer = await owner.activateTab(finderPlace.tab.tabId);
+    if (pageViewer.kind !== "page") throw Error("Expected a page viewer.");
     const finder = {
       place: {
         placeKey: finderPlace.key,
-        kind: "browser" as const,
+        kind: "page" as const,
         destination: finderPlace.destination,
+        pageSession: pageViewer.sessionId,
         title: finderPlace.title,
         site: finderPlace.site,
       },
+      runId: createId("run"),
       threadId: finderThread.id,
     };
+    owner.enterPlace(finder.runId, finder.threadId, {
+      place: { kind: "browser", sessionId: pageViewer.sessionId, surfaceId: finderPlace.tab.tabId },
+      title: finderPlace.title,
+      site: finderPlace.site,
+    });
     const retainWatch = owner.retainBrowserWatch;
     Object.defineProperty(owner, "retainBrowserWatch", {
       value: (...args: Parameters<typeof retainWatch>) => {
@@ -121,6 +135,27 @@ const smoke = {
         return dispatch(...args);
       },
     });
+    function Finder() {
+      const decoding = useDisplayDecoding(true);
+      const picture = useRunPlacePicture(
+        owner,
+        finder.threadId,
+        finder.runId,
+        true,
+        decoding !== null,
+      );
+      return (
+        <RunPlacePictureScope
+          decoding={decoding}
+          enabled
+          hostClient={owner}
+          picture={picture}
+          threadId={finder.threadId}
+        >
+          <Viewfinder hostClient={owner} place={finder.place} threadId={finder.threadId} />
+        </RunPlacePictureScope>
+      );
+    }
     function Owner() {
       const snapshot = owner.getSnapshot();
       const nav = useWorkspaceNavigation({
@@ -130,14 +165,19 @@ const smoke = {
       return (
         <WorkspaceProvider attention={0} nav={nav} openDrawer={() => undefined}>
           <TabCloserProvider hostClient={owner}>
-            <Viewfinder hostClient={owner} place={finder.place} threadId={finder.threadId} />
+            <Finder />
             <OwnerView
-              destination={ownerDestination}
+              machineId={view.machineId}
               marks={null}
               hostClient={owner}
               hostConnected
               leading={null}
+              onReopen={async () => {
+                await owner.activateTab(windowTab.tabId);
+              }}
+              phone={false}
               place={null}
+              source={{ kind: "owner-view", viewId: view.viewId, generation: view.generation }}
               trailing={null}
             />
           </TabCloserProvider>

@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
-import type { TeamMember } from "@opensteer/protocol";
+import { teamPeopleDirectory } from "@opensteer/client/team";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import type { NeedsYouPage, TeamMember } from "@opensteer/protocol";
 import type { TeamSessionClient, TeamSessionSnapshot } from "@opensteer/client/team";
 import { useTeamAttachment, useTeamSession, type TeamAttachment } from "./team-attachments.js";
 import { useTeamMembers, type PeopleState } from "./team-people.js";
 import type { TeamWords } from "./team-view-models.js";
+import { useOptionalShell } from "../components/app-shell.js";
 
 /** One team, as a screen in it needs it: the session, its members and this viewer's words. */
 export interface TeamView {
@@ -21,17 +23,24 @@ export function useTeamView(teamId: string | undefined, previews: ReadonlyMap<st
   const team = useTeamAttachment(teamId);
   const client = team?.client ?? null;
   const snapshot = useTeamSession(client);
-  const { members, status: people } = useTeamMembers(
-    client,
-    snapshot?.sidebar?.accessRevision ?? null,
-  );
+  const sidebar = snapshot?.sidebar;
+  const { members, status: people } = useTeamMembers(client, sidebar?.accessRevision ?? null);
   const linkPresence = snapshot?.channel?.linkPresence;
+  const needsYou = usePersonalNeedsYou();
+  const attachedTeamId = team?.teamId;
   const words = useMemo<TeamWords | null>(() => {
     const member = snapshot?.bootstrap?.member;
     if (!member) return null;
     return {
+      ...(attachedTeamId ? { asks: { needsYou, teamId: attachedTeamId } } : {}),
       viewerUserId: member.userId,
-      members: members.size > 0 ? members : new Map([[member.userId, member]]),
+      members: teamPeopleDirectory(
+        members.size > 0 ? members.values() : [member],
+        snapshot.channel
+          ? snapshot.peopleByChannel?.[snapshot.channel.scope.channelId]
+          : snapshot.people,
+        snapshot.channel ? snapshot.handlesByChannel?.[snapshot.channel.scope.channelId] : {},
+      ),
       linkOnline: new Map((linkPresence ?? []).map((row) => [row.ownerUserId, row.online])),
       previews,
       managedChannels: new Set(
@@ -51,8 +60,14 @@ export function useTeamView(teamId: string | undefined, previews: ReadonlyMap<st
   }, [
     linkPresence,
     members,
+    needsYou,
+    attachedTeamId,
     previews,
     snapshot?.bootstrap?.member,
+    snapshot?.people,
+    snapshot?.peopleByChannel,
+    snapshot?.handlesByChannel,
+    snapshot?.channel?.scope.channelId,
     snapshot?.sidebar,
     snapshot?.channel?.channel,
     snapshot?.thread?.channel,
@@ -62,11 +77,27 @@ export function useTeamView(teamId: string | undefined, previews: ReadonlyMap<st
     team,
     client,
     snapshot,
-    members: words.members,
+    members:
+      members.size > 0
+        ? members
+        : new Map([[snapshot.bootstrap!.member.userId, snapshot.bootstrap!.member]]),
     people,
     me: snapshot.bootstrap?.member ?? null,
     words,
   } satisfies TeamView;
+}
+
+/**
+ * What waits on the viewer in their own Opensteer, beside which a team screen
+ * is open; null where the team is opened on its own.
+ */
+function usePersonalNeedsYou(): NeedsYouPage | null {
+  const hostClient = useOptionalShell()?.hostClient ?? null;
+  const subscribe = useCallback(
+    (listener: () => void) => hostClient?.subscribe(listener) ?? (() => undefined),
+    [hostClient],
+  );
+  return useSyncExternalStore(subscribe, () => hostClient?.getSnapshot().needsYou ?? null);
 }
 
 /** A team read that runs once per key; its answer, its failure, and a way to read again. */

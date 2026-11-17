@@ -366,33 +366,6 @@ describe("RequestCard", () => {
     );
   });
 
-  it("sends a lone choice as the form it answers", async () => {
-    const question = {
-      choices: [
-        { label: "Tomorrow", value: "tomorrow" },
-        { label: "Not yet", value: "later" },
-      ],
-      id: "when",
-      multiSelect: false,
-      prompt: "Post it today?",
-      secret: false,
-    };
-    const request = approval({
-      kind: "harness.input",
-      payload: { kind: "harness.input" },
-      presentation: { fields: [question], kind: "form", title: "A question" },
-    });
-    const dispatch = await render(surfaceOf(request));
-    settleArrival();
-    expect(text()).toContain("Post it today?");
-    await press("Not yet");
-    expect(dispatch).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        response: { answers: { when: ["later"] }, kind: "form" },
-      }),
-    );
-  });
-
   it("keeps a title that explains the question in view", async () => {
     const request = approval({
       kind: "harness.input",
@@ -403,17 +376,18 @@ describe("RequestCard", () => {
         title: "Choose where to deploy",
       },
     });
-    await render(surfaceOf(request));
+    // A question only its asker can answer is read here; the asker answers in their composer.
+    await render(surfaceOf(request, "requester"));
     expect(text()).toContain("Choose where to deploy");
     expect(text()).toContain("Which branch?");
   });
 
-  it("opens the sheet for an open question no composer is there to take", async () => {
+  it("opens the sheet for a form that collects a secret", async () => {
     const request = approval({
       kind: "harness.input",
       payload: { kind: "harness.input" },
       presentation: {
-        fields: [{ id: "q", multiSelect: false, prompt: "Which branch?", secret: false }],
+        fields: [{ id: "q", multiSelect: false, prompt: "Which token?", secret: true }],
         kind: "form",
         title: "A question",
       },

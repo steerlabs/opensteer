@@ -8,8 +8,11 @@ import {
 import { randomUUID } from "expo-crypto";
 import { Directory, File, Paths } from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
-import * as Sharing from "expo-sharing";
+import { shareFileBytes } from "./share-file-bytes.js";
 import type { HostClient } from "@opensteer/client/host";
+import { discardPastedImage } from "../../modules/composer-editor/files.js";
+
+export { discardPastedImage };
 
 import type {
   AttachmentDraftScope,
@@ -153,6 +156,18 @@ export async function pickChatPhoto(
   );
 }
 
+/** A pasted image arrives as a temporary file; it is moved into the draft's private storage. */
+export async function importPastedImage(
+  scope: LocalAttachmentDraftScope,
+  image: { readonly uri: string; readonly mediaType: string; readonly name: string },
+): Promise<PickedAttachmentSource> {
+  try {
+    return await copyToPrivateDraft(image.uri, image, scope);
+  } finally {
+    discardPastedImage(image.uri);
+  }
+}
+
 /** A saved draft URI is opened only within the current authenticated scope. */
 function scopedChatDraftFile(scope: LocalAttachmentDraftScope, localUri: string): File {
   const directory = draftDirectory(scope);
@@ -238,12 +253,7 @@ export async function shareChatAttachment(
   name: string,
 ): Promise<void> {
   const blob = await client.readAttachment(attachmentId);
-  const safeName = name.replace(/[\\/\p{Cc}]/gu, "_").slice(0, 160) || "attachment";
-  const file = new File(Paths.cache, `${randomUUID()}-${safeName}`);
-  try {
-    await file.write(new Uint8Array(await blob.arrayBuffer()));
-    await Sharing.shareAsync(file.uri, { mimeType: blob.type || "application/octet-stream" });
-  } finally {
-    if (file.exists) file.delete();
-  }
+  await shareFileBytes(new Uint8Array(await blob.arrayBuffer()), name, blob.type);
 }
+
+export { shareFileBytes } from "./share-file-bytes.js";

@@ -202,8 +202,6 @@ it("does not offer another person's computer or an unowned helper as a browser h
           capabilities: sql`'[]'::jsonb`,
           allowedModules: sql`'["browser"]'::jsonb`,
           moduleDescriptors: sql`'{}'::jsonb`,
-          accessPolicy: sql`'{}'::jsonb`,
-          accessPolicyRevision: 1,
           connectionGeneration: 1,
           maxConcurrentRuns: 1,
         })

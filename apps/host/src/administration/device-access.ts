@@ -1,4 +1,4 @@
-import { OpensteerError, type RunnerId } from "@opensteer/core";
+import { OpensteerError, type DeviceId } from "@opensteer/core";
 import type { DatabaseSchema } from "@opensteer/database";
 import { deviceAccess } from "@opensteer/protocol";
 import type { Kysely } from "kysely";
@@ -6,11 +6,11 @@ import type { Kysely } from "kysely";
 export type DeviceCapability = "browser" | "apps" | "files";
 export class DeviceAccessRefusal extends OpensteerError {
   override readonly reason: "device-access-off" | "device-offline";
-  readonly machineId: RunnerId;
+  readonly machineId: DeviceId;
   readonly capability: DeviceCapability;
   constructor(
     reason: "device-access-off" | "device-offline",
-    machineId: RunnerId,
+    machineId: DeviceId,
     capability: DeviceCapability,
   ) {
     super({
@@ -19,7 +19,7 @@ export class DeviceAccessRefusal extends OpensteerError {
       message:
         reason === "device-offline"
           ? "Device is offline. Do not request access."
-          : `${capability} is off. Use device_access_request if needed.`,
+          : `${capability} is off. Use computer_access_request if needed.`,
       details: { machineId, capability },
     });
     this.reason = reason;
@@ -29,17 +29,17 @@ export class DeviceAccessRefusal extends OpensteerError {
 }
 export async function requireDeviceAccess(
   database: Kysely<DatabaseSchema>,
-  machineId: RunnerId,
+  machineId: DeviceId,
   capability: DeviceCapability,
   online: boolean,
 ): Promise<void> {
   const runner = await database
-    .selectFrom("runners")
-    .select(["accessPolicy", "revokedAt"])
+    .selectFrom("devices")
+    .select(["accessPolicy", "removedAt"])
     .where("id", "=", machineId)
     .executeTakeFirst();
-  if (!runner || runner.revokedAt)
-    throw new OpensteerError({ code: "not_found", message: "Active device not found" });
+  if (!runner || runner.removedAt)
+    throw new OpensteerError({ code: "not_found", message: "Active computer not found" });
   if (!online) throw new DeviceAccessRefusal("device-offline", machineId, capability);
   if (!deviceAccess(runner.accessPolicy)[capability])
     throw new DeviceAccessRefusal("device-access-off", machineId, capability);

@@ -1,0 +1,531 @@
+/* QuickBooks Desktop for Mac (Mac Plus 2024), the Invoices window in the light appearance, at its real sizes */
+.qb {
+  display: flex;
+  flex-direction: column;
+  background: #ececec;
+  color: #1d1d1f;
+  font: 13px/1.25 var(--mac-font);
+  letter-spacing: -0.08px;
+}
+.qb svg {
+  display: block;
+  overflow: visible;
+  flex: none;
+}
+.qb-head {
+  position: relative;
+  height: 80px;
+  border-bottom: 1px solid #c2c2c2;
+  background: #ededed;
+  flex: none;
+}
+.qb-head > .tl {
+  position: absolute;
+  left: 13px;
+  top: 8px;
+}
+.qb-head > b {
+  position: absolute;
+  inset: 0 0 auto;
+  color: #3b3b3d;
+  font-weight: 600;
+  line-height: 28px;
+  text-align: center;
+}
+.qb-tool {
+  position: absolute;
+  top: 31px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.qb-tool > span {
+  margin-top: 4px;
+  color: #4a4a4c;
+  font-size: 11px;
+  line-height: 13px;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+.qb-tool.is-off > span {
+  color: #aeaeb0;
+}
+.qb-pair {
+  display: flex;
+}
+.qb-pair span {
+  width: 38px;
+  text-align: center;
+}
+.qb-seg {
+  display: flex;
+  height: 24px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: linear-gradient(#fff, #fafafa);
+  box-shadow:
+    0 0 0 0.5px rgb(0 0 0 / 20%),
+    0 0.5px 1.5px rgb(0 0 0 / 12%);
+}
+.qb-tool.is-off .qb-seg {
+  box-shadow:
+    0 0 0 0.5px rgb(0 0 0 / 12%),
+    0 0.5px 1px rgb(0 0 0 / 6%);
+}
+.qb-seg > i {
+  display: grid;
+  place-items: center;
+  width: 38px;
+}
+.qb-seg > i + i {
+  box-shadow: inset 0.5px 0 0 rgb(0 0 0 / 16%);
+}
+.qb-seg > i.is-on {
+  background: #dcdcde;
+}
+.qb-pop {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px 0 10px;
+  color: #262628;
+  white-space: nowrap;
+}
+.qb-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.qb-list {
+  position: relative;
+  width: 231px;
+  border-right: 1px solid #c9c9c9;
+  background: #fff;
+  overflow: hidden;
+  flex: none;
+}
+.qb-list-hd {
+  position: relative;
+  height: 56px;
+  border-bottom: 1px solid #d6d6d6;
+}
+.qb-search {
+  position: absolute;
+  left: 12px;
+  top: 11px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 207px;
+  height: 22px;
+  padding-left: 7px;
+  border-radius: 6px;
+  color: #a3a3a6;
+  box-shadow:
+    inset 0 0 0 0.5px rgb(0 0 0 / 24%),
+    inset 0 0.5px 1px rgb(0 0 0 / 6%);
+  box-sizing: border-box;
+}
+.qb-sort {
+  position: absolute;
+  left: 13px;
+  top: 39px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #3a3a3c;
+  font-size: 12px;
+  font-weight: 600;
+}
+.qb-create {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 43px;
+  padding-left: 14px;
+  border-bottom: 1px solid #e2e2e2;
+  font-weight: 600;
+}
+.qb-row {
+  height: 43px;
+  padding: 6px 12px 0 14px;
+  border-bottom: 1px solid #e5e5e5;
+  box-sizing: border-box;
+  font-variant-numeric: tabular-nums;
+}
+.qb-row > div {
+  display: flex;
+  justify-content: space-between;
+  white-space: nowrap;
+}
+.qb-row b {
+  font-weight: 600;
+  line-height: 16px;
+}
+.qb-row span {
+  margin-top: 2px;
+  color: #3c3c3e;
+  font-size: 12px;
+  line-height: 15px;
+}
+.qb-row--new {
+  display: none;
+}
+.grp[data-qb-saved] .qb-row--new {
+  display: block;
+}
+.grp:not([data-qb-new]) .qb-row--old,
+.grp[data-qb-saved] .qb-row--new {
+  border-bottom-color: #2465d6;
+  background: #2465d6;
+  color: #fff;
+}
+.grp:not([data-qb-new]) .qb-row--old span,
+.grp[data-qb-saved] .qb-row--new span {
+  color: #fff;
+}
+.qb-lbar {
+  position: absolute;
+  inset: auto 0 0;
+  display: flex;
+  align-items: center;
+  height: 21px;
+  border-top: 1px solid #cfcfcf;
+  background: #f4f4f4;
+}
+.qb-lbar i {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 21px;
+  border-right: 1px solid #dcdcdc;
+}
+.qb-lbar span {
+  flex: 1;
+}
+.qb-lbar b {
+  display: grid;
+  place-items: center;
+  width: 22px;
+}
+.qb-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.qb-band {
+  position: relative;
+  height: 56px;
+  border-bottom: 1px solid #d0d0d0;
+  background: #fff;
+  flex: none;
+}
+.qb-combo {
+  position: absolute;
+  left: 29px;
+  top: 17px;
+  width: 300px;
+  height: 22px;
+  padding: 0 26px 0 8px;
+  border-radius: 5px;
+  background: #fff;
+  line-height: 22px;
+  white-space: nowrap;
+  overflow: hidden;
+  box-sizing: border-box;
+  box-shadow:
+    0 0 0 0.5px rgb(0 0 0 / 22%),
+    0 0.5px 1.5px rgb(0 0 0 / 14%);
+}
+.grp[data-qb-focus] .qb-combo {
+  box-shadow:
+    0 0 0 0.5px rgb(0 0 0 / 22%),
+    0 0 0 3.5px rgb(31 111 229 / 45%);
+}
+.qb-arrows {
+  position: absolute;
+  right: 3px;
+  top: 3px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: #1f6fe5;
+}
+.qb-typed {
+  display: none;
+}
+.grp[data-qb-new] .qb-typed {
+  display: inline;
+}
+.qb-typed:empty::before {
+  content: "Customer:Job / Group";
+  color: #a6a6aa;
+}
+.qb-canvas {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #e3e3e5;
+}
+.qb-paper {
+  position: absolute;
+  left: 29px;
+  top: 18px;
+  width: 880px;
+  height: 436px;
+  background: #fff;
+  box-shadow:
+    0 0 0 0.5px rgb(0 0 0 / 10%),
+    0 1px 3px rgb(0 0 0 / 16%),
+    0 4px 14px rgb(0 0 0 / 8%);
+}
+.qb-h1 {
+  position: absolute;
+  left: 22px;
+  top: 14px;
+  color: #111;
+  font-size: 26px;
+  line-height: 32px;
+  letter-spacing: -0.3px;
+}
+.qb-box {
+  position: absolute;
+  border: 1px solid #a9a9ab;
+  background: #fff;
+}
+.qb-box-h {
+  height: 17px;
+  border-bottom: 1px solid #c4c4c6;
+  color: #262628;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+  white-space: nowrap;
+}
+.qb-box-h.is-left {
+  padding-left: 4px;
+  text-align: left;
+}
+.qb-box-v {
+  position: relative;
+  height: 20px;
+  line-height: 20px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+}
+.qb-box-v.is-left {
+  padding-left: 5px;
+  text-align: left;
+}
+.qb-dd {
+  position: absolute;
+  right: 0;
+  top: 0;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 20px;
+  border-left: 1px solid #d0d0d2;
+}
+.qb-addr {
+  padding: 3px 6px;
+  line-height: 17px;
+  white-space: nowrap;
+}
+.qb-addr > div {
+  height: 17px;
+}
+.qb-tbl {
+  position: absolute;
+  left: 22px;
+  top: 204px;
+  width: 836px;
+  border: 1px solid #a9a9ab;
+}
+.qb-tr {
+  display: flex;
+  height: 20px;
+}
+.qb-tr.alt {
+  background: #f2f5f9;
+}
+.qb-tr > span {
+  height: 100%;
+  padding: 0 5px;
+  border-right: 1px solid #cdcdd0;
+  line-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  box-sizing: border-box;
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+.qb-tr > span:last-child {
+  border-right: 0;
+}
+.qb-tr.hd {
+  height: 18px;
+  border-bottom: 1px solid #b9b9bb;
+}
+.qb-tr.hd > span {
+  border-right-color: #c4c4c6;
+  color: #262628;
+  font-size: 12px;
+  line-height: 17px;
+  text-align: center;
+}
+.qb .c-item {
+  width: 150px;
+}
+.qb .c-desc {
+  width: 414px;
+}
+.qb .c-qty {
+  width: 80px;
+}
+.qb .c-rate {
+  width: 84px;
+}
+.qb .c-amt {
+  width: 106px;
+}
+.qb-tr:not(.hd) > .c-qty,
+.qb-tr:not(.hd) > .c-rate,
+.qb-tr:not(.hd) > .c-amt {
+  text-align: right;
+}
+.qb-msg {
+  position: absolute;
+  left: 22px;
+  top: 396px;
+  width: 344px;
+  height: 22px;
+  padding-left: 5px;
+  border: 1px solid #a9a9ab;
+  line-height: 20px;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+.qb-total-l,
+.qb-total-v {
+  position: absolute;
+  top: 399px;
+  line-height: 17px;
+}
+.qb-total-l {
+  left: 658px;
+  color: #262628;
+}
+.qb-total-v {
+  left: 752px;
+  width: 101px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.qb-bbar {
+  position: relative;
+  height: 71px;
+  border-top: 1px solid #cacaca;
+  background: #ececec;
+  flex: none;
+}
+.qb-bal {
+  position: absolute;
+  right: 30px;
+  top: 9px;
+  color: #6e6e73;
+  line-height: 17px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.qb-bal b {
+  margin-left: 4px;
+  color: #1d1d1f;
+  font-weight: 600;
+}
+.qb-memo {
+  position: absolute;
+  left: 29px;
+  top: 38px;
+  width: 652px;
+  height: 22px;
+  padding-left: 6px;
+  background: #fff;
+  line-height: 22px;
+  white-space: nowrap;
+  overflow: hidden;
+  box-sizing: border-box;
+  box-shadow:
+    inset 0 0 0 0.5px rgb(0 0 0 / 26%),
+    inset 0 0.5px 1px rgb(0 0 0 / 6%);
+}
+.qb-ph {
+  display: none;
+  color: #a6a6aa;
+}
+.grp[data-qb-new]:not([data-qb-line]) .qb-ph {
+  display: inline;
+}
+.qb-help,
+.qb-btn {
+  position: absolute;
+  top: 38px;
+  height: 22px;
+  background: #fff;
+  line-height: 22px;
+  text-align: center;
+  box-shadow:
+    0 0 0 0.5px rgb(0 0 0 / 22%),
+    0 0.5px 1.5px rgb(0 0 0 / 16%);
+}
+.qb-help {
+  left: 693px;
+  width: 22px;
+  border-radius: 50%;
+  color: #4a4a4c;
+  font-size: 14px;
+  font-weight: 500;
+}
+.qb-btn {
+  width: 84px;
+  border-radius: 5px;
+}
+.qb-btn--save {
+  background: linear-gradient(#3b87f7, #1c6ee6);
+  color: #fff;
+  font-weight: 500;
+  box-shadow:
+    0 0 0 0.5px rgb(10 70 170 / 55%),
+    0 0.5px 1.5px rgb(0 0 0 / 18%);
+}
+.grp[data-qb-over-save] .qb-btn--save {
+  background: linear-gradient(#1a61cf, #1556bd);
+}
+.qb-create {
+  transition: background 120ms;
+}
+.grp[data-qb-over-create] .qb-create {
+  background: #e3e9f3;
+}
+
+/* A field shows Halcyon's saved invoice; a new one starts with today's date and the next number, then takes Brightline's header, then its line */
+.qn,
+.qh,
+.ql,
+.qz {
+  display: none;
+}
+.grp[data-qb-new] .qo {
+  display: none;
+}
+.grp[data-qb-new] .qn,
+.grp[data-qb-cust] .qh,
+.grp[data-qb-line] .ql,
+.grp[data-qb-new]:not([data-qb-line]) .qz {
+  display: inline;
+}

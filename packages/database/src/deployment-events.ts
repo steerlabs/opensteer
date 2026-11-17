@@ -39,11 +39,17 @@ export async function appendHostDeploymentEvent(
   const createdAt = new Date();
   if (input.type === "thread.state-changed") {
     const row = await transaction
-      .selectNoFrom(latestRunCompletion(sql`${input.threadId}`).as("completedAt"))
+      .selectFrom("threads")
+      .select(["updatedAt", latestRunCompletion(sql`${input.threadId}`).as("completedAt")])
+      .where("id", "=", input.threadId)
       .executeTakeFirstOrThrow();
     input = {
       ...input,
-      data: { ...input.data, latestRunCompletedAt: row.completedAt?.toISOString() ?? null },
+      data: {
+        ...input.data,
+        updatedAt: row.updatedAt.toISOString(),
+        latestRunCompletedAt: row.completedAt?.toISOString() ?? null,
+      },
     };
   }
   // Replay needs the excluded count at this sequence, even after its Requests settle.
@@ -75,11 +81,11 @@ export async function appendHostDeploymentEvent(
       sequence: state.sequence,
       eventId: event.eventId,
       nodeDetailId: nodeDetailEventNodeId(event) ?? null,
-      threadId: event.threadId,
+      threadId: event.type === "task.removed" ? null : event.threadId,
       runId: event.runId,
       environmentId: event.environmentId,
       type: event.type,
-      data: sql`${JSON.stringify(event.data)}::jsonb`,
+      data: sql`${JSON.stringify(event.type === "task.removed" ? { threadId: event.threadId } : event.data)}::jsonb`,
       runnerId: null,
       runnerBootId: null,
       runnerBindingGeneration: null,
@@ -94,12 +100,13 @@ export async function appendHostDeploymentEvent(
 export function eventFromRow(row: DeploymentEventRow): AgentEvent {
   return AgentEventSchema.parse({
     createdAt: row.createdAt.toISOString(),
-    data: row.data,
+    data: row.type === "task.removed" ? {} : row.data,
     environmentId: row.environmentId,
     eventId: row.eventId,
     runId: row.runId,
     sequence: row.sequence,
-    threadId: row.threadId,
+    threadId:
+      row.type === "task.removed" ? (row.data as { threadId: string }).threadId : row.threadId,
     type: row.type,
   });
 }

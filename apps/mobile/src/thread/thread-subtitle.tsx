@@ -1,6 +1,7 @@
 import { Pressable, StyleSheet, View, type StyleProp, type TextStyle } from "react-native";
 import { taskMark, type ThreadSummary } from "@opensteer/client/host";
 import { color, headerFontScaleLimit, space, touchTarget } from "../theme.js";
+import { BarControl } from "../ui/bar-control.js";
 import { barNameFloor } from "../ui/bar-title.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
@@ -100,11 +101,13 @@ export function ThreadSubtitle(props: {
         </AppText>
       )}
       {props.onRetry ? (
-        <Pressable accessibilityRole="button" onPress={props.onRetry} style={styles.retry}>
-          <AppText role="caption" tone="soft">
-            Retry
-          </AppText>
-        </Pressable>
+        <BarControl>
+          <Pressable accessibilityRole="button" onPress={props.onRetry} style={styles.retry}>
+            <AppText role="caption" tone="soft">
+              Retry
+            </AppText>
+          </Pressable>
+        </BarControl>
       ) : null}
     </View>
   );

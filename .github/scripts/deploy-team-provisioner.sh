@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # Rolls the hosted-team provisioner to one release; it then rolls each team to that release's
-# team Host and gateway images, one team at a time.
-# Usage: deploy-team-provisioner.sh <provisioner@sha256:…> <team-host@sha256:…> <team-gateway@sha256:…> <source-sha>
+# team Host image, one team at a time.
+# Usage: deploy-team-provisioner.sh <provisioner@sha256:…> <team-host@sha256:…> <source-sha>
 set -euo pipefail
 
 provisioner=$1
 host=$2
-gateway=$3
-source=$4
+source=$3
 namespace=opensteer-teams
-for image in "$provisioner" "$host" "$gateway"; do
+for image in "$provisioner" "$host"; do
   [[ $image =~ ^[a-z0-9./_:-]+@sha256:[0-9a-f]{64}$ ]] || { echo "Image must be pinned by digest: $image" >&2; exit 1; }
 done
 [[ $source =~ ^[0-9a-f]{40}$ ]] || { echo "Source must be a full commit SHA: $source" >&2; exit 1; }
@@ -30,10 +29,11 @@ fi
 root=$(git rev-parse --show-toplevel)
 kubectl kustomize "$root/deploy/team-provisioner" |
   sed -e "s|@PROVISIONER_IMAGE@|$provisioner|g" -e "s|@TEAM_HOST_IMAGE@|$host|g" \
-    -e "s|@TEAM_GATEWAY_IMAGE@|$gateway|g" -e "s|@SOURCE_REVISION@|$source|g" |
+    -e "s|@SOURCE_REVISION@|$source|g" |
   kubectl apply -f -
 
 if ! kubectl -n "$namespace" rollout status deployment/team-provisioner --timeout=10m; then
-  kubectl -n "$namespace" rollout undo deployment/team-provisioner
+  # A reconcile pass may already have migrated teams; restoring old images is unsafe.
+  echo "Provisioner readiness failed; holding $source for a forward fix." >&2
   exit 1
 fi

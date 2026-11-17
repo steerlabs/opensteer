@@ -6,10 +6,12 @@ metadata:
   annotations:
     iam.gke.io/gcp-service-account: opensteer-account@opensteer-staging.iam.gserviceaccount.com
 ---
+# Rename this class whenever its secret list changes: new pods keep receiving the
+# old file set under a reused name, and the rollout fails on the missing file.
 apiVersion: secrets-store.csi.x-k8s.io/v1
 kind: SecretProviderClass
 metadata:
-  name: account-runtime-v10
+  name: account-runtime-v11
   namespace: opensteer-system
 spec:
   provider: gke
@@ -19,6 +21,8 @@ spec:
         path: "account-auth"
       - resourceName: "projects/opensteer-staging/secrets/opensteer-account-runtime/versions/10"
         path: "account-runtime.json"
+      - resourceName: "projects/opensteer-staging/secrets/opensteer-account-app-review/versions/1"
+        path: "account-app-review"
 ---
 apiVersion: v1
 kind: Service
@@ -158,6 +162,11 @@ spec:
                 readFileSync("/var/run/opensteer-raw/account-auth"),
                 { mode: 0o600 }
               );
+              writeFileSync(
+                "/var/run/opensteer-runtime/secrets/OPENSTEER_APP_REVIEW_PASSWORD",
+                readFileSync("/var/run/opensteer-raw/account-app-review"),
+                { mode: 0o600 }
+              );
           resources:
             requests: { cpu: 100m, memory: 128Mi }
             limits: { cpu: 100m, memory: 128Mi }
@@ -174,6 +183,10 @@ spec:
           envFrom:
             - configMapRef: { name: account-env }
           env:
+            - {
+                name: OPENSTEER_APP_REVIEW_PASSWORD_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_APP_REVIEW_PASSWORD,
+              }
             - {
                 name: OPENSTEER_CONTROL_PLANE_AUTH_SECRET_FILE,
                 value: /var/run/opensteer-runtime/secrets/OPENSTEER_CONTROL_PLANE_AUTH_SECRET,
@@ -298,7 +311,7 @@ spec:
           csi:
             driver: secrets-store-gke.csi.k8s.io
             readOnly: true
-            volumeAttributes: { secretProviderClass: account-runtime-v10 }
+            volumeAttributes: { secretProviderClass: account-runtime-v11 }
         - { name: runtime-secrets, emptyDir: {} }
         - { name: tmp, emptyDir: {} }
 ---

@@ -1,5 +1,5 @@
 import { StreamedContextMenu } from "./browser/streamed-context-menu.js";
-import type { DisplayClientDiagnostic } from "@opensteer/protocol";
+import type { DisplayClientDiagnostic, PhoneDisplayView } from "@opensteer/protocol";
 import { reportDisplayDiagnostic, displayDiagnosticSource } from "../display-diagnostics.js";
 import {
   useCallback,
@@ -21,9 +21,12 @@ import {
   computerDisplayScope,
   computerDisplayAuthorityKey,
   computerDisplayStatus,
+  phoneViewerNavigation,
+  phoneViewerPower,
   sharedDisplayStreams,
   type DisplayLease,
   type DisplaySnapshot,
+  type PhoneNavigationTo,
 } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
 import {
@@ -32,7 +35,7 @@ import {
   type RemoteCaretPosition,
 } from "./remote-editing/remote-editing-proxy.js";
 import type { EditingContext } from "@opensteer/protocol/editing";
-import { Icon } from "./icon.js";
+import { Icon, type IconName } from "./icon.js";
 import {
   PhoneDisplayInput,
   committedInput,
@@ -44,7 +47,6 @@ import {
 } from "./phone-display-input.js";
 import {
   knownPhoneDisplayDecoding,
-  hidesPhoneDisplayPicture,
   phoneDisplayDecoding,
   retainPhoneDisplayPicture,
   type PhoneDisplayPicture,
@@ -115,10 +117,8 @@ export function useComputerDisplay({
   source,
   streamable,
   macWindow,
-  preserveLastFrame = false,
   machineId,
 }: {
-  readonly preserveLastFrame?: boolean;
   readonly machineId?: string | null;
   readonly enabled: boolean;
   readonly disabledReason?: DisplayClientDiagnostic["reason"] | undefined;
@@ -158,45 +158,33 @@ export function useComputerDisplay({
     readonly lease: DisplayLease;
     readonly media: PhoneDisplayPicture;
     readonly editing: DisplayEditingSession;
-    readonly retained: PhoneDisplayPictureState | null;
   } | null>(null);
   const [input, setInput] = useState<PhoneDisplayInput | null>(null);
   // Bumped when the Host invalidates this scope, so a scope that comes back
   // unchanged in the same batch still gets a fresh socket.
   const [generation, setGeneration] = useState(0);
   const sourceKey = source ? JSON.stringify(source) : null;
-  const pictureKey =
-    preserveLastFrame && source?.kind === "task-session"
-      ? JSON.stringify([machineId, source.appKey ?? "main"])
-      : sourceKey;
   const pictureOwner = useRef<{
     hostClient: HostClient;
     scope: string | null;
-    authorityKey: string | null;
-    pictureKey: string | null;
+    sourceKey: string | null;
   } | null>(null);
   useLayoutEffect(() => {
     const previous = pictureOwner.current;
     if (
       previous &&
       (previous.hostClient !== hostClient ||
-        (preserveLastFrame ? previous.authorityKey !== authorityKey : previous.scope !== scope) ||
-        previous.pictureKey !== pictureKey)
-    ) {
+        previous.scope !== scope ||
+        previous.sourceKey !== sourceKey)
+    )
       held?.media.clear();
-      setHeld((current) => (current?.retained ? { ...current, retained: null } : current));
-    }
-    pictureOwner.current = { hostClient, scope, pictureKey, authorityKey };
-  }, [hostClient, scope, pictureKey, held?.media, authorityKey, preserveLastFrame]);
+    pictureOwner.current = { hostClient, scope, sourceKey };
+  }, [hostClient, scope, sourceKey, held?.media]);
   useLayoutEffect(() => {
     if (!held) return;
     const check = () => {
-      if (
-        computerDisplayAuthorityKey(hostClient.getSnapshot(), source, machineId) !== authorityKey
-      ) {
+      if (computerDisplayAuthorityKey(hostClient.getSnapshot(), source, machineId) !== authorityKey)
         held.media.clear();
-        setHeld((current) => (current?.retained ? { ...current, retained: null } : current));
-      }
     };
     check();
     return hostClient.subscribe(check);
@@ -257,7 +245,6 @@ export function useComputerDisplay({
     hostClient,
     scope,
     sourceKey,
-    pictureKey,
   });
   useLayoutEffect(() => {
     diagnosticInputs.current = {
@@ -266,7 +253,6 @@ export function useComputerDisplay({
       hostClient,
       scope,
       sourceKey,
-      pictureKey,
     };
   });
   const mounted = useRef(false);
@@ -288,29 +274,12 @@ export function useComputerDisplay({
       ...displayDiagnosticSource(source),
     });
     const editing = new DisplayEditingSession(current);
-    setHeld((previous) => ({
-      lease: current,
-      media: shared.picture,
-      editing,
-      retained:
-        preserveLastFrame && previous
-          ? previous.media.getSnapshot().shown
-            ? previous.media.getSnapshot()
-            : previous.retained
-          : null,
-    }));
+    setHeld({ lease: current, media: shared.picture, editing });
     let invalidated = false;
     // The old login's socket closes with the Host's change, not React's next effect.
     const unsubscribe = hostClient.subscribe(() => {
       if (invalidated || computerDisplayScope(hostClient.getSnapshot(), source) === scope) return;
       invalidated = true;
-      if (
-        preserveLastFrame &&
-        computerDisplayAuthorityKey(hostClient.getSnapshot(), source, machineId) === authorityKey
-      ) {
-        setGeneration((value) => value + 1);
-        return;
-      }
       shared.picture.clear();
       streams.invalidate(
         (candidate) =>
@@ -338,19 +307,8 @@ export function useComputerDisplay({
       editing.dispose();
       current.resetInput();
       current.release();
-      const preserve =
-        preserveLastFrame &&
-        mounted.current &&
-        next.hostClient === hostClient &&
-        next.pictureKey === pictureKey &&
-        authorityKey !== null &&
-        computerDisplayAuthorityKey(hostClient.getSnapshot(), source, machineId) === authorityKey;
-      shared.release(preserve);
-      if (!preserve) {
-        if (preserveLastFrame)
-          setHeld((held) => (held?.retained ? { ...held, retained: null } : held));
-        else setHeld(null);
-      }
+      shared.release();
+      setHeld(null);
     };
   }, [
     decoding,
@@ -362,20 +320,11 @@ export function useComputerDisplay({
     source?.kind === "task-session" ? source.sessionId : source?.viewId,
     source?.kind === "owner-view" ? source.generation : (source?.appKey ?? null),
     streamable,
-    preserveLastFrame,
-    machineId,
     authorityKey,
   ]);
 
   const display = snapshot ?? idleSnapshot;
-  const media =
-    pictureState?.shown || !held?.retained || hidesPhoneDisplayPicture(display)
-      ? (pictureState ?? idlePicture)
-      : { ...held.retained, stale: true };
-  useEffect(() => {
-    if (pictureState?.shown || hidesPhoneDisplayPicture(display))
-      setHeld((current) => (current?.retained ? { ...current, retained: null } : current));
-  }, [pictureState?.shown, display]);
+  const media = pictureState ?? idlePicture;
   const streamGeneration = Math.max(display.display?.generation ?? 0, media.generation);
   useEffect(() => {
     input?.geometryChanged(streamGeneration);
@@ -396,7 +345,7 @@ export function useComputerDisplay({
     const timer = setTimeout(() => setStartingSlow(true), 5_000);
     return () => clearTimeout(timer);
   }, [enabled, awaiting]);
-  const shown = !preserveLastFrame && media.stale && startingSlow ? null : media.shown;
+  const shown = media.stale && startingSlow ? null : media.shown;
   const geometry =
     shown &&
     !media.stale &&
@@ -860,21 +809,35 @@ function drawnPicture(canvas: HTMLCanvasElement) {
   });
 }
 
-const navigation = [
-  { to: "back", label: "Back", icon: "chevron-left" },
-  { to: "home", label: "Home", icon: "home" },
-  { to: "recents", label: "Recent apps", icon: "recents" },
-] as const;
+const navLabels: Partial<Record<PhoneNavigationTo, string>> = {
+  back: "Back",
+  home: "Home",
+  recents: "Recent apps",
+};
+const navIcons: Readonly<Record<PhoneNavigationTo, IconName>> = {
+  back: "chevron-left",
+  home: "home",
+  recents: "recents",
+  notifications: "bell",
+};
 
-/** The phone’s navigation whenever shared input is available. */
-export function PhoneControlBar({ display }: { readonly display: ComputerDisplayView }) {
+/** The phone’s navigation and power, as far as the Host says this phone has them. */
+export function PhoneControlBar({
+  display,
+  phone,
+}: {
+  readonly display: ComputerDisplayView;
+  readonly phone: PhoneDisplayView | null;
+}) {
   const input =
     display.snapshot.input === "available" && display.geometry !== null ? display.input : null;
+  const navigation = phoneViewerNavigation(phone);
+  const screenOff = display.snapshot.display?.state === "screen-off";
   const powerAvailable =
     !display.viewportEnabled &&
     display.snapshot.power === "available" &&
-    (display.snapshot.display?.state === "live" ||
-      display.snapshot.display?.state === "screen-off");
+    (display.snapshot.display?.state === "live" || screenOff) &&
+    phoneViewerPower(phone, screenOff ? "wake" : "lock");
   if ((!input || display.viewportEnabled) && !display.receipt && !powerAvailable) return null;
   return (
     <div className="phone-display__control surface-row">
@@ -894,21 +857,24 @@ export function PhoneControlBar({ display }: { readonly display: ComputerDisplay
           {display.snapshot.display?.state === "screen-off" ? "Wake phone" : "Lock phone"}
         </button>
       ) : null}
-      {input && !display.viewportEnabled ? (
+      {input && !display.viewportEnabled && navigation.length > 0 ? (
         <span className="phone-display__nav">
-          {navigation.map(({ icon, label, to }) => (
-            <button
-              aria-label={label}
-              className="icon-btn"
-              disabled={display.snapshot.display?.state !== "live"}
-              key={to}
-              onClick={() => input.nav(display.generation, to)}
-              title={label}
-              type="button"
-            >
-              <Icon name={icon} />
-            </button>
-          ))}
+          {navigation.map(({ label: advertised, to }) => {
+            const label = navLabels[to] ?? advertised;
+            return (
+              <button
+                aria-label={label}
+                className="icon-btn"
+                disabled={display.snapshot.display?.state !== "live"}
+                key={to}
+                onClick={() => input.nav(display.generation, to)}
+                title={label}
+                type="button"
+              >
+                <Icon name={navIcons[to]} />
+              </button>
+            );
+          })}
         </span>
       ) : null}
     </div>

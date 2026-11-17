@@ -100,10 +100,14 @@ export class TeamLinkBinary {
 
   async #channel(
     source: TeamSource,
-    userId: Parameters<TeamAccessResolver["channel"]>[1]["userId"],
+    userId: Parameters<TeamAccessResolver["peerChannel"]>[1]["userId"],
   ) {
     return this.endpoint.options.links.database.transaction().execute(async (tx) => {
-      const rights = await this.resolver.channel(tx, { kind: "agent", userId }, source.channelId);
+      const rights = await this.resolver.peerChannel(
+        tx,
+        { kind: "agent", userId },
+        source.channelId,
+      );
       if (!rights.read || rights.peopleOnly) throw linkError();
       return true;
     });
@@ -113,7 +117,7 @@ export class TeamLinkBinary {
     checkTeamVersion(raw["x-opensteer-team-api-version"]);
     const { link, requestId, actor, runId, operationId } = await this.#authority(raw);
     const headers = TeamBinaryDownloadHeadersSchema.parse(raw);
-    const revision = this.endpoint.options.access.revision;
+    const revision = await this.endpoint.options.access.current();
     const controller = new AbortController();
     const combined = AbortSignal.any([signal, controller.signal]);
     let unregister = this.endpoint.options.lifetimes.register({
@@ -198,7 +202,7 @@ export class TeamLinkBinary {
     const metadata = TeamBinaryUploadMetadataSchema.parse(
       JSON.parse(headers["x-opensteer-team-upload"]),
     );
-    const revision = this.endpoint.options.access.revision;
+    const revision = await this.endpoint.options.access.current();
     const controller = new AbortController();
     const combined = AbortSignal.any([signal, controller.signal]);
     const unregister = this.endpoint.options.lifetimes.register({

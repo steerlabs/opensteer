@@ -1,6 +1,11 @@
+import websocket from "@fastify/websocket";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import Fastify, { type FastifyInstance } from "fastify";
+import { once } from "node:events";
 import { createServer, request, Agent, type Server } from "node:http";
+import { connect, type Socket } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { drainConnectionsWithin } from "./connection-drain.js";
+import { closeWebSocketsWithin, drainConnectionsWithin } from "./connection-drain.js";
 
 /*
  * Ways a closing server can hold its process open:
@@ -75,5 +80,56 @@ describe("closing a server with connections in use", () => {
 
     expect(elapsed).toBeLessThan(2_000);
     await expect(unanswered).resolves.toBe("cut off");
+  });
+});
+
+describe("closing the Host's WebSockets", () => {
+  const sockets: Socket[] = [];
+  const apps: FastifyInstance[] = [];
+  afterEach(async () => {
+    // A reset, as a plain end would leave a socket the Host failed to end half open.
+    for (const socket of sockets.splice(0)) socket.resetAndDestroy();
+    await Promise.all(apps.splice(0).map((app) => app.close()));
+  });
+
+  /** Opens a raw connection, asks to upgrade, and resolves with the start of the answer. */
+  async function upgrade(port: number): Promise<{ answer: string; socket: Socket }> {
+    const socket = connect(port, "127.0.0.1");
+    sockets.push(socket);
+    socket.write(
+      "GET /socket HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n" +
+        "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+    );
+    const [chunk] = (await withTimeout(once(socket, "data"), 2_000, {
+      timeoutError: () => new Error("The upgrade was never answered"),
+    })) as [Buffer];
+    return { answer: chunk.toString("latin1"), socket };
+  }
+
+  it("refuses and ends an upgrade that arrives while the Host is closing", async () => {
+    const app = Fastify();
+    apps.push(app);
+    // A grace far past the test: only the silent peer leaving ends the WebSocket close.
+    await app.register(websocket, { preClose: closeWebSocketsWithin(60_000, 5_000) });
+    app.get("/socket", { websocket: true }, () => undefined);
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("The Host did not bind");
+    // A peer that never answers the close frame keeps the Host closing until it leaves.
+    const silent = await upgrade(address.port);
+    expect(silent.answer).toMatch(/^HTTP\/1\.1 101 /);
+    const told = once(silent.socket, "data");
+    const closing = app.close();
+    await withTimeout(told, 2_000, {
+      timeoutError: () => new Error("The open WebSocket was never told the Host is closing"),
+    });
+
+    const late = await upgrade(address.port);
+
+    expect(late.answer).toMatch(/^HTTP\/1\.1 503 /);
+    silent.socket.resetAndDestroy();
+    await withTimeout(closing, 2_000, {
+      timeoutError: () => new Error("The Host's HTTP server never closed"),
+    });
   });
 });

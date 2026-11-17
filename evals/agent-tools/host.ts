@@ -8,7 +8,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  type CallToolResult,
+} from "@modelcontextprotocol/sdk/types.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createId, refused, ThreadSchema } from "@opensteer/core";
 import { agentToolFailureResult, agentToolRecordResult, agentTools } from "@opensteer/agent-tools";
@@ -19,6 +23,8 @@ import type { RunToolScope } from "../../apps/host/src/agents/run-tool-tokens.js
 
 import { type EvalCase } from "./cases.js";
 import { partialMatch, gradeToolBoundary, type Check, type RecordedCall } from "./grader.js";
+import { TabFixture, tabFixtureTools } from "./tab-fixture.js";
+import { BrowserFixtureSchema } from "./cases.js";
 
 // These are test doubles, never a real Host store, grant, credential or integration.
 // Every tool call traverses the production MCP service's input and access checks
@@ -44,7 +50,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     runId: createId("run"),
     runnerBootId: "eval",
     runnerId: createId("runner"),
-    threadId: createId("thread"),
+    threadId: testCase.tasks.find((entry) => entry.self)?.task.id ?? createId("thread"),
     exp: Math.floor(Date.now() / 1000) + 3600,
     iat: Math.floor(Date.now() / 1000),
     iss: "opensteer-host" as const,
@@ -60,7 +66,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   const thread = ThreadSchema.parse({
     ...scope,
     id: scope.threadId,
-    accessMode: "full-access",
+    accessMode: testCase.accessMode,
     continuationIdentity: null,
     createdAt: new Date().toISOString(),
     createdBy: scope.requestedBy,
@@ -79,64 +85,88 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     title: "Eval",
     updatedAt: new Date().toISOString(),
   });
-  // Trigger actions expand and validate in their production handler before the
+  // Automation tools expand and validate in their production handler before the
   // fixture replaces the backend.
   const triggers = new TriggerToolHandlers({ manage: async () => unavailable() });
   const handlers: AgentToolHandlers = {
-    settings_read: async () => unavailable(),
-    settings_write: async () => unavailable(),
+    opensteer_ai_account_list: async () => unavailable(),
+    opensteer_ai_account_update: async () => unavailable(),
+    opensteer_defaults_read: async () => unavailable(),
+    opensteer_defaults_update: async () => unavailable(),
     computer_list: async () => unavailable(),
-    computer_write: async () => unavailable(),
-    integration_manage: async () => unavailable(),
-    channel_manage: async () => unavailable(),
-    plugin_manage: async () => unavailable(),
-    browser_profile_write: async () => unavailable(),
+    computer_update: async () => unavailable(),
+    computer_remove: async () => unavailable(),
+    computer_use: async () => unavailable(),
+    computer_access_request: async () => unavailable(),
+    integration_list: async () => unavailable(),
+    integration_remove: async () => unavailable(),
+    opensteer_messaging_bridge_list: async () => unavailable(),
+    opensteer_messaging_bridge_update: async () => unavailable(),
+    opensteer_messaging_bridge_remove: async () => unavailable(),
+    opensteer_plugin_list: async () => unavailable(),
+    opensteer_plugin_install: async () => unavailable(),
+    opensteer_plugin_update: async () => unavailable(),
+    opensteer_plugin_remove: async () => unavailable(),
+    browser_profile_update: async () => unavailable(),
+    browser_profile_remove: async () => unavailable(),
     app_publish: async () => unavailable(),
     app_list: async () => unavailable(),
-    app_fetch: async () => unavailable(),
-    plugin_install: async () => unavailable(),
-    orchestrator_capabilities: async () => unavailable(),
-    environment_list: async () => unavailable(),
-    thread_read: async () => unavailable(),
-    thread_list: async () => unavailable(),
-    delegate_task: async () => unavailable(),
-    thread_send: async () => unavailable(),
-    thread_interrupt: async () => unavailable(),
-    thread_update: async () => unavailable(),
-    thread_wait: async () => unavailable(),
-    thread_configure: async () => unavailable(),
-    thread_queue: async () => unavailable(),
-    task_status: async () => unavailable(),
-    task_cancel: async () => unavailable(),
-    person_message: async () => unavailable(),
-    person_show: async () => unavailable(),
-    pending_request: async () => unavailable(),
-    request_withdraw: async () => unavailable(),
+    app_start: async () => unavailable(),
+    app_stop: async () => unavailable(),
+    app_delete: async () => unavailable(),
+    tab_list: async () => unavailable(),
+    tab_open: async () => unavailable(),
+    tab_close: async () => unavailable(),
+    tab_organize: async () => unavailable(),
+    tab_group_update: async () => unavailable(),
+    opensteer_task_list: async () => unavailable(),
+    opensteer_task_read: async () => unavailable(),
+    opensteer_task_create: async () => unavailable(),
+    opensteer_task_delegate: async () => unavailable(),
+    opensteer_task_send: async () => unavailable(),
+    opensteer_task_wait: async () => unavailable(),
+    opensteer_task_interrupt: async () => unavailable(),
+    opensteer_task_resume: async () => unavailable(),
+    opensteer_task_queue: async () => unavailable(),
+    opensteer_task_update: async () => unavailable(),
+    opensteer_task_configure: async () => unavailable(),
+    opensteer_delegation_status: async () => unavailable(),
+    opensteer_delegation_wait: async () => unavailable(),
+    opensteer_delegation_cancel: async () => unavailable(),
+    opensteer_subagent_read: async () => unavailable(),
+    opensteer_subagent_stop: async () => unavailable(),
+    ask_person: async () => unavailable(),
+    send_to_person: async () => unavailable(),
+    show_to_person: async () => unavailable(),
+    opensteer_request_list: async () => unavailable(),
+    opensteer_request_read: async () => unavailable(),
+    opensteer_request_answer: async () => unavailable(),
+    opensteer_request_withdraw: async () => unavailable(),
     browser_profile_list: async () => unavailable(),
-    sign_in: async () => unavailable(),
-    use_card: async () => unavailable(),
+    saved_login_request: async () => unavailable(),
+    chrome_cookies_request: async () => unavailable(),
+    card_request: async () => unavailable(),
     browser_profile_request: async () => unavailable(),
-    device_access_request: async () => unavailable(),
-    machine_full_disk_access_request: async () => unavailable(),
-    browser_tab_read: async () => unavailable(),
-    browser_tab_write: async () => unavailable(),
-    browser_session_list: async () => unavailable(),
-    browser_session_open: async () => unavailable(),
-    browser_session_close: async () => unavailable(),
-    trigger_read: (call) => triggers.trigger_read(call),
-    trigger_write: (call) => triggers.trigger_write(call),
+    opensteer_automation_list: (call) => triggers.read(call),
+    opensteer_automation_read: (call) => triggers.read(call),
+    opensteer_automation_create: (call) => triggers.write(call),
+    opensteer_automation_update: (call) => triggers.write(call),
+    opensteer_automation_control: (call) => triggers.write(call),
     integration_search: async () => unavailable(),
     integration_describe: async () => unavailable(),
     integration_call: async () => unavailable(),
-    computer: async () => unavailable(),
     integration_request: async () => unavailable(),
-    integration_propose: async () => unavailable(),
-    team_read: async () => unavailable(),
-    team_search: async () => unavailable(),
-    team_post: async () => unavailable(),
-    knowledge_topics: async () => unavailable(),
-    knowledge_read: async () => unavailable(),
-    knowledge_write: async () => unavailable(),
+    app_access_request: async () => unavailable(),
+    custom_integration_request: async () => unavailable(),
+    opensteer_team_read: async () => unavailable(),
+    opensteer_team_file_download: async () => unavailable(),
+    opensteer_team_search: async () => unavailable(),
+    opensteer_team_post: async () => unavailable(),
+    opensteer_knowledge_topic_list: async () => unavailable(),
+    opensteer_knowledge_search: async () => unavailable(),
+    opensteer_knowledge_read: async () => unavailable(),
+    opensteer_knowledge_save: async () => unavailable(),
+    opensteer_knowledge_remove: async () => unavailable(),
   };
   const agent = new OpensteerMcpService({
     teamsAvailable: async () => testCase.teamBound || testCase.knowledge,
@@ -171,12 +201,14 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
       getThreadForOwner: async (id) => ({ ...thread, id }),
     },
   });
+  const tabs = new TabFixture(testCase.browser ?? BrowserFixtureSchema.parse({}), scope.threadId);
+  const appServers = await startAppServers(testCase.appServers, calls);
+  const mocks = withFixtureUrls(testCase.mocks, appServers.urls, workspace) as EvalCase["mocks"];
   const sessions: { server: Server; transport: StreamableHTTPServerTransport }[] = [];
   const clients: Client[] = [];
   const activeCalls = new Map<string, number>();
   const mockOffsets = new Map<string, number>();
-  const triggerWrites = new Map<string, unknown>();
-  const triggerSources = new Map<string, unknown>();
+  const automationWrites = new Map<string, unknown>();
   const endpoints = new Map<
     string,
     {
@@ -230,6 +262,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
       ...clients.map((client) => client.close()),
       ...sessions.map(({ server }) => server.close()),
       agent.close(),
+      appServers.close(),
     ]);
     await closeHttpServerNow(http);
     const failures = closed.filter((result) => result.status === "rejected");
@@ -251,6 +284,157 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
       const { tools } = await client.listTools();
       const instructions = client.getInstructions() ?? "";
       endpoints.set(name, { client, tools, instructions });
+      // MCP calls and Browser Harness opensteer.callTool both arrive here, as in production.
+      const dispatch = async (
+        name: string,
+        args: Record<string, unknown>,
+        index: number,
+      ): Promise<CallToolResult> => {
+        const original = await client.callTool({ name, arguments: args });
+        const definition = agentTools
+          .filter((tool) => tool.callers.some((kind) => kind === testCase.caller))
+          .find((tool) => tool.name === name);
+        const valid =
+          !!definition &&
+          definition.input.safeParse(args).success &&
+          (original.isError !== true ||
+            (isRecord(original.structuredContent) &&
+              isRecord(original.structuredContent.error) &&
+              original.structuredContent.error.message === validated));
+        calls[index] = { at: calls[index]?.at ?? Date.now(), tool: name, args, valid };
+        if (!valid) return original as CallToolResult;
+        let result = Object.hasOwn(mocks, name)
+          ? mocks[name]
+          : tabFixtureTools.has(name)
+            ? undefined
+            : (taskFixtureResult(testCase, name, args, scope.threadId) ?? defaultResult(name));
+        if (
+          result !== null &&
+          typeof result === "object" &&
+          !Array.isArray(result) &&
+          "$responses" in result &&
+          Array.isArray(result.$responses)
+        ) {
+          const offset = mockOffsets.get(name) ?? 0;
+          mockOffsets.set(name, offset + 1);
+          result =
+            offset < result.$responses.length
+              ? result.$responses[offset]
+              : { $error: "Case mock response sequence exhausted" };
+        }
+        if (isRecord(result) && Array.isArray(result.$byArgs)) {
+          const entry = result.$byArgs.find(
+            (candidate) => isRecord(candidate) && partialMatch(args, candidate.args),
+          );
+          result = isRecord(entry)
+            ? entry.result
+            : { $error: "No case mock matches these arguments" };
+        }
+        if (isRecord(result) && typeof result.$error === "string") {
+          calls[index] = {
+            at: calls[index]?.at ?? Date.now(),
+            tool: name,
+            args,
+            valid,
+            result,
+          };
+          return agentToolFailureResult({
+            code: typeof result.$code === "string" ? result.$code : "invalid_input",
+            message: result.$error,
+            next: typeof result.$next === "string" ? result.$next : null,
+          });
+        }
+        if (result === undefined) {
+          const answered = tabs.call(name, args);
+          calls[index] = {
+            at: calls[index]?.at ?? Date.now(),
+            tool: name,
+            args,
+            valid,
+            result: "result" in answered ? answered.result : answered,
+          };
+          return "result" in answered
+            ? agentToolRecordResult(answered.result)
+            : agentToolFailureResult(answered.error);
+        }
+        // Keep successful automation changes readable; fixed fixture timestamps otherwise
+        // contradict the real Run clock and provoke spurious repair attempts.
+        if (
+          automationWriteTools.has(name) &&
+          isRecord(result) &&
+          isRecord(result.automation) &&
+          typeof result.automation.id === "string"
+        ) {
+          const automationId = result.automation.id;
+          let automation = result.automation;
+          if (
+            name === "opensteer_automation_create" &&
+            isRecord(args.source) &&
+            typeof args.source.at === "string"
+          )
+            automation = { ...automation, nextFireAt: new Date(args.source.at).toISOString() };
+          result = { ...result, automation };
+          automationWrites.set(automationId, automation);
+        }
+        if (name === "opensteer_automation_read" && isRecord(result)) {
+          if (isRecord(result.automation) && typeof result.automation.id === "string") {
+            const automationId = result.automation.id;
+            result = {
+              ...result,
+              automation: automationWrites.get(automationId) ?? result.automation,
+            };
+          }
+        }
+        if (
+          name === "opensteer_automation_list" &&
+          isRecord(result) &&
+          Array.isArray(result.automations)
+        )
+          result = {
+            ...result,
+            automations: result.automations.map((automation) =>
+              isRecord(automation) && typeof automation.id === "string"
+                ? (automationWrites.get(automation.id) ?? automation)
+                : automation,
+            ),
+          };
+        const output = definition.output.safeParse(result);
+        if (!output.success) {
+          const message = `${testCase.id}: invalid mock output for ${name}: ${output.error.message}`;
+          calls[index] = {
+            at: calls[index]?.at ?? Date.now(),
+            tool: name,
+            args,
+            valid: false,
+            result: { error: message },
+          };
+          return agentToolFailureResult({ code: "invalid_mock_output", message });
+        }
+        result = output.data;
+        calls[index] = { at: calls[index]?.at ?? Date.now(), tool: name, args, valid, result };
+        if (name === "integration_describe" || !isRecord(result)) {
+          return { content: [{ type: "text", text: JSON.stringify(result) }] };
+        }
+        return agentToolRecordResult(result);
+      };
+      routes.set("/harness/tools", async (_req, res, body) => {
+        const request = z.looseObject({ name: z.string(), input: z.unknown() }).parse(body);
+        const args = isRecord(request.input) ? request.input : {};
+        if (workspace)
+          boundaryChecks.push(
+            ...(await gradeToolBoundary(
+              testCase.expect,
+              calls,
+              { tool: request.name, args },
+              workspace,
+            )),
+          );
+        const index = calls.push({ at: Date.now(), tool: request.name, args, valid: false }) - 1;
+        const result = await dispatch(request.name, args, index);
+        res
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify(harnessToolValue(result)));
+      });
       routes.set(`/${name}`, async (req, res, body) => {
         let session = sessions.find(
           ({ transport }) => transport.sessionId === req.headers["mcp-session-id"],
@@ -266,108 +450,9 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
           });
           server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
           server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-            const args = request.params.arguments ?? {};
-            const name = request.params.name;
             const index = activeCalls.get(`${extra.sessionId}:${String(extra.requestId)}`);
             if (index === undefined) throw new Error("MCP call was not recorded at ingress");
-            const original = await client.callTool({ name, arguments: args });
-            const definition = agentTools
-              .filter((tool) => tool.callers.some((kind) => kind === testCase.caller))
-              .find((tool) => tool.name === name);
-            const valid =
-              !!definition &&
-              definition.input.safeParse(args).success &&
-              (original.isError !== true ||
-                (Array.isArray(original.content) &&
-                  original.content.some(
-                    (block) => isRecord(block) && block.type === "text" && block.text === validated,
-                  )));
-            calls[index] = { tool: name, args, valid };
-            if (!valid) return original;
-            let result = Object.hasOwn(testCase.mocks, name)
-              ? testCase.mocks[name]
-              : defaultResult(name);
-            if (
-              result !== null &&
-              typeof result === "object" &&
-              !Array.isArray(result) &&
-              "$responses" in result &&
-              Array.isArray(result.$responses)
-            ) {
-              const offset = mockOffsets.get(name) ?? 0;
-              mockOffsets.set(name, offset + 1);
-              result =
-                offset < result.$responses.length
-                  ? result.$responses[offset]
-                  : { status: "unavailable", message: "Case mock response sequence exhausted" };
-            }
-            if (isRecord(result) && Array.isArray(result.$byArgs)) {
-              const entry = result.$byArgs.find(
-                (candidate) => isRecord(candidate) && partialMatch(args, candidate.args),
-              );
-              result = isRecord(entry)
-                ? entry.result
-                : { status: "unavailable", message: "No case mock matches these arguments" };
-            }
-            if (isRecord(result) && typeof result.$error === "string") {
-              calls[index] = { tool: name, args, valid, result };
-              return agentToolFailureResult({
-                code: "bad_request",
-                message: result.$error,
-                retryable: false,
-              });
-            }
-            // Keep successful Trigger mutations readable; fixed fixture timestamps otherwise
-            // contradict the real Run clock and provoke spurious repair attempts.
-            if (name === "trigger_write" && isRecord(result) && typeof result.id === "string") {
-              const triggerId = result.id;
-              if (
-                args.action === "create" &&
-                isRecord(args.source) &&
-                typeof args.source.at === "string"
-              )
-                result = { ...result, nextFireAt: new Date(args.source.at).toISOString() };
-              triggerWrites.set(triggerId, result);
-              if (
-                args.action === "update" &&
-                isRecord(args.source) &&
-                args.source.kind === "schedule" &&
-                typeof args.source.cron === "string"
-              )
-                triggerSources.set(triggerId, {
-                  kind: "schedule",
-                  schedule: {
-                    kind: "cron",
-                    expression: args.source.cron,
-                    timezone: args.source.timezone,
-                  },
-                });
-            }
-            if (name === "trigger_read" && isRecord(result)) {
-              if (isRecord(result.trigger) && typeof result.trigger.id === "string") {
-                const triggerId = result.trigger.id;
-                result = {
-                  ...result,
-                  trigger: triggerWrites.get(triggerId) ?? result.trigger,
-                  ...(isRecord(result.revision) && triggerSources.has(triggerId)
-                    ? { revision: { ...result.revision, source: triggerSources.get(triggerId) } }
-                    : {}),
-                };
-              } else if (Array.isArray(result.triggers))
-                result = {
-                  ...result,
-                  triggers: result.triggers.map((trigger) =>
-                    isRecord(trigger) && typeof trigger.id === "string"
-                      ? (triggerWrites.get(trigger.id) ?? trigger)
-                      : trigger,
-                  ),
-                };
-            }
-            calls[index] = { tool: name, args, valid, result };
-            if (name === "integration_describe" || !isRecord(result)) {
-              return { content: [{ type: "text", text: JSON.stringify(result) }] };
-            }
-            return agentToolRecordResult(result);
+            return dispatch(request.params.name, request.params.arguments ?? {}, index);
           });
           await server.connect(transport as unknown as Transport);
           session = { server, transport };
@@ -391,6 +476,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
             );
           activeCalls.set(callKey, calls.length);
           calls.push({
+            at: Date.now(),
             tool: params.success ? params.data.name : "<invalid-name>",
             args: params.success
               ? Object.hasOwn(params.data, "arguments")
@@ -407,31 +493,195 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
         }
       });
     }
-    return { calls, boundaryChecks, scope, secret, url, endpoints, close };
+    return { calls, boundaryChecks, scope, secret, url, endpoints, tabs, close };
   } catch (error) {
     await close();
     throw error;
   }
 }
 
+const automationWriteTools = new Set([
+  "opensteer_automation_create",
+  "opensteer_automation_update",
+  "opensteer_automation_control",
+]);
+
+function taskFixtureResult(
+  testCase: EvalCase,
+  name: string,
+  args: Record<string, unknown>,
+  selfId: string,
+): unknown {
+  if (!testCase.tasks.length) return undefined;
+  const offset = typeof args.cursor === "string" ? Number(args.cursor) : 0;
+  const page = <T>(items: T[], limit: number) => ({
+    items: items.slice(offset, offset + limit),
+    hasMore: offset + limit < items.length,
+    nextCursor: offset + limit < items.length ? String(offset + limit) : null,
+  });
+  if (name === "opensteer_task_list") {
+    const since = typeof args.changedSince === "string" ? Date.parse(args.changedSince) : null;
+    const tasks = testCase.tasks
+      .flatMap(({ task, items }) => {
+        if (args.parentTaskId && task.parentTaskId !== args.parentTaskId) return [];
+        if (
+          typeof args.query === "string" &&
+          !task.title?.toLowerCase().includes(args.query.toLowerCase())
+        )
+          return [];
+        const messages = items
+          .filter(
+            (item) =>
+              item.type === "message" &&
+              item.status === "published" &&
+              (since === null || Date.parse(item.createdAt) > since),
+          )
+          .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+        if (since !== null && !messages.length) return [];
+        return [
+          {
+            id: task.id,
+            link: task.link,
+            title: task.title,
+            status: task.status,
+            doneAt: task.doneAt,
+            parentTaskId: task.parentTaskId,
+            pendingRequests: task.pendingRequests,
+            delegationId: null,
+            taskStatus: null,
+            updatedAt: task.updatedAt,
+            ...(since !== null
+              ? {
+                  newMessages: messages.length,
+                  firstNewAt: messages.at(-1)!.createdAt,
+                }
+              : {}),
+          },
+        ];
+      })
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    const result = page(tasks, typeof args.limit === "number" ? args.limit : 25);
+    return { tasks: result.items, hasMore: result.hasMore, nextCursor: result.nextCursor };
+  }
+  if (name === "opensteer_task_read") {
+    const history = testCase.tasks.find(({ task }) => task.id === (args.taskId ?? selfId));
+    if (!history) return undefined;
+    const items = history.items
+      .filter(
+        (item) =>
+          (args.view === "activity" || (item.type === "message" && item.status === "published")) &&
+          (!args.itemId || args.itemId === item.itemId) &&
+          (typeof args.query !== "string" ||
+            item.text?.toLowerCase().includes(args.query.toLowerCase())),
+      )
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    const result = page(items, typeof args.limit === "number" ? args.limit : 20);
+    return { task: history.task, recentRuns: [], recentPlaces: [], ...result };
+  }
+  return undefined;
+}
+
 function defaultResult(name: string): unknown {
   switch (name) {
     case "integration_search":
-      return { operations: [], integrations: [], catalog: [], total: 0 };
-    case "thread_list":
-      return { threads: [], hasMore: false, nextBefore: null };
-    case "pending_request":
+      return { operations: [], results: [], catalog: [], total: 0, nextCursor: null };
+    case "opensteer_task_list":
+      return { tasks: [], hasMore: false, nextCursor: null };
+    case "opensteer_request_list":
       return { requests: [] };
     case "browser_profile_list":
-      return { profiles: [] };
-    case "browser_session_list":
-      return { sessions: [] };
-    case "trigger_read":
-      return { triggers: [] };
+      return { profiles: [], sites: [] };
+    case "opensteer_automation_list":
+      return { automations: [] };
     default:
       return {
         status: "unavailable",
         message: "No matching fixture is configured for this operation. No resource was created.",
       };
   }
+}
+
+/** What `opensteer.callTool` resolves to: the tool's output, or `{error}` exactly as MCP sends it. */
+function harnessToolValue(result: CallToolResult): unknown {
+  if (result.structuredContent) return result.structuredContent;
+  const text = result.content.find((block) => block.type === "text")?.text ?? "";
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return result.isError
+      ? { error: { code: "internal_error", message: text, next: null } }
+      : { text };
+  }
+}
+
+/**
+ * Real loopback listeners for server-app fixtures, so an agent's curl or fetch to a
+ * localUrl actually happens and is graded as `harness:http`.
+ */
+async function startAppServers(
+  servers: EvalCase["appServers"],
+  calls: RecordedCall[],
+): Promise<{ urls: Map<string, string>; close: () => Promise<void> }> {
+  const listeners = await Promise.all(
+    Object.entries(servers).map(async ([app, routes]) => {
+      const server = createServer((req, res) => {
+        const path = new URL(req.url ?? "/", "http://app").pathname;
+        const route = `${req.method ?? "GET"} ${path}`;
+        calls.push({
+          at: Date.now(),
+          tool: "harness:http",
+          args: { app, method: req.method ?? "GET", path },
+          valid: true,
+        });
+        req.resume();
+        const answer = Object.hasOwn(routes, route) ? routes[route] : undefined;
+        const status =
+          isRecord(answer) && typeof answer.$status === "number"
+            ? answer.$status
+            : answer === undefined
+              ? 404
+              : 200;
+        const body =
+          answer === undefined
+            ? { error: `No route ${route}` }
+            : isRecord(answer) && "$body" in answer
+              ? answer.$body
+              : answer;
+        res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+      });
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("No app fixture listener");
+      return { app, server, url: `http://127.0.0.1:${address.port}` };
+    }),
+  );
+  return {
+    urls: new Map(listeners.map(({ app, url }) => [app, url])),
+    close: async () => {
+      await Promise.all(listeners.map(({ server }) => closeHttpServerNow(server)));
+    },
+  };
+}
+
+/** Mocks may name a live fixture: {{appServer:<name>}} for its URL, {{agentHome}} for the workspace. */
+function withFixtureUrls(
+  value: unknown,
+  urls: ReadonlyMap<string, string>,
+  agentHome: string | undefined,
+): unknown {
+  if (typeof value === "string")
+    return value
+      .replace(/\{\{appServer:([a-z0-9-]+)\}\}/gu, (_, app: string) => {
+        const url = urls.get(app);
+        if (!url) throw new Error(`No app server fixture named ${app}`);
+        return url;
+      })
+      .replace(/\{\{agentHome\}\}/gu, () => agentHome ?? "/eval/agent-home");
+  if (Array.isArray(value)) return value.map((item) => withFixtureUrls(item, urls, agentHome));
+  if (isRecord(value))
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, withFixtureUrls(item, urls, agentHome)]),
+    );
+  return value;
 }

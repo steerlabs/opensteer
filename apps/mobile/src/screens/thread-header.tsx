@@ -1,27 +1,49 @@
 import { useHostSelector, useRunPageView } from "@opensteer/client/react";
-import { runPageOpened, type HostClient, type SurfaceDestination } from "@opensteer/client/host";
+import {
+  conversationThreadIds,
+  listedRowThreadId,
+  runPageOpened,
+  type HostClient,
+  type TabDestination,
+} from "@opensteer/client/host";
 import { StackActions, useNavigation } from "@react-navigation/native";
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { Platform, StyleSheet, View, type LayoutChangeEvent } from "react-native";
 import { headerFontScaleLimit, space } from "../theme.js";
 import {
   AroundButton,
+  aroundBarItem,
   aroundHeaderOptions,
   barOverContentOptions,
   type AroundWidths,
 } from "../thread/around-button.js";
-import { aroundGlanceSelector, sameAroundGlance } from "../thread/around-model.js";
+import {
+  aroundGlanceSelector,
+  sameAroundGlance,
+  type AroundGlance,
+} from "../thread/around-model.js";
 import { FoldedPage, foldedPageWidth } from "../thread/folded-page.js";
-import { surfaceRoute } from "../browser/surface-route.js";
+import { useOpenPlace } from "../tabs/viewer-open.js";
 import { sameThreadHeader, type ThreadHeaderState } from "../thread/thread-pane.js";
 import { TaskStateIndicator } from "../thread/task-status.js";
 import type { NativeMenuOption } from "../thread/composer-menu.js";
+import { openTopLevel } from "../top-level.js";
 import { ThreadMenu } from "../thread/thread-menu.js";
 import { ThreadName, ThreadSubtitle } from "../thread/thread-subtitle.js";
 import { AppText } from "../ui/primitives.js";
 import { barGlassInset, barTitleWidth, barYield, useBarTitleRoom } from "../ui/bar-title.js";
 import { GlassSurface, useLiquidGlass } from "../ui/glass.js";
 import { useHostUserId } from "../ui/mobile-client-context.js";
+import { useVerticalBar } from "../ui/vertical-bar.js";
+import { nativeHeaderItem } from "../ui/header-item.js";
 
 interface ScopedHeader {
   readonly header: ThreadHeaderState;
@@ -155,6 +177,42 @@ export function useThreadHeader(props: {
   }, [deploymentId, fallbackTitle, glass, header, hostClient, navigation, threadId, savedSubtitle]);
 }
 
+/**
+ * The glance with its working count kept current: an agent starting or
+ * stopping in a tab changes the Host's per-tab activity, not the snapshot.
+ */
+function useWorkingGlance(
+  hostClient: HostClient,
+  threadId: string,
+  glance: AroundGlance | null,
+): AroundGlance | null {
+  const keys = glance?.placeKeys ?? noKeys;
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      const releases = keys.map((key) => hostClient.subscribePlaceActivity(key, listener));
+      return () => {
+        for (const release of releases) release();
+      };
+    },
+    [hostClient, keys],
+  );
+  const read = useCallback(() => {
+    const threads = conversationThreadIds(hostClient.getSnapshot(), threadId);
+    return keys.filter((key) =>
+      hostClient.placeActivity(key).some((record) => threads.has(record.threadId)),
+    ).length;
+  }, [hostClient, keys, threadId]);
+  const working = useSyncExternalStore(subscribe, read, read);
+  return useMemo(
+    () =>
+      glance === null || glance.placesWorking === working
+        ? glance
+        : { ...glance, placesWorking: working },
+    [glance, working],
+  );
+}
+const noKeys: readonly string[] = [];
+
 /** The standalone screen's title: the pill, and Around beside it in the bar. */
 function ThreadTitle(
   props: ThreadHeaderState & {
@@ -165,14 +223,24 @@ function ThreadTitle(
   },
 ): ReactNode {
   const navigation = useNavigation();
-  const selectAround = useMemo(() => aroundGlanceSelector(props.threadId), [props.threadId]);
-  const glance = useHostSelector(props.hostClient, selectAround, sameAroundGlance);
+  const selectAround = useMemo(
+    () => aroundGlanceSelector(props.threadId, props.hostClient.placeActivity),
+    [props.hostClient, props.threadId],
+  );
+  const glance = useWorkingGlance(
+    props.hostClient,
+    props.threadId,
+    useHostSelector(props.hostClient, selectAround, sameAroundGlance),
+  );
   // A folded page stands beside Around; the title takes what they leave, and
   // when that is short of its name, Around gives up parts until it is not.
   const [page, updatePage] = useRunPageView(props.hostClient, props.threadId);
   const foldedRunId = page.shown === "folded" ? page.runId : null;
   const room = page.room;
-  const hasEnd = glance !== null || foldedRunId !== null;
+  // Beside a vertical bar, Around is a plain item there; only a folded page stays in the row.
+  const verticalBar = useVerticalBar();
+  const aroundInRow = glance !== null && !verticalBar;
+  const hasEnd = aroundInRow || foldedRunId !== null;
   const glass = useLiquidGlass();
   const [around, setAround] = useState<AroundWidths | null>(null);
   const [need, setNeed] = useState<number | null>(null);
@@ -190,7 +258,7 @@ function ThreadTitle(
   const barRoom = useBarTitleRoom();
   const besideAround =
     (hasEnd && glass ? 2 * barGlassInset : 0) + (foldedRunId === null ? 0 : foldedPageWidth);
-  const measured = glance === null ? null : around;
+  const measured = aroundInRow ? around : null;
   const yielded =
     measured === null || need === null
       ? 0
@@ -208,7 +276,9 @@ function ThreadTitle(
         : measured.freed.slice(0, yielded).reduce((left, freed) => left - freed, measured.width)),
   );
   const { deploymentId, hostClient, threadId } = props;
+  const openPlace = useOpenPlace(deploymentId, threadId);
   useLayoutEffect(() => {
+    const openAround = () => navigation.navigate("ThreadAround", { deploymentId, threadId });
     navigation.setOptions(
       aroundHeaderOptions(
         !hasEnd ? null : (
@@ -216,18 +286,11 @@ function ThreadTitle(
             {foldedRunId === null ? null : (
               <FoldedPage
                 hostClient={hostClient}
-                onOpen={(destination: SurfaceDestination) =>
-                  navigation.dispatch(
-                    StackActions.push(
-                      "WorkspaceBrowser",
-                      surfaceRoute(deploymentId, threadId, destination),
-                    ),
-                  )
-                }
+                onOpen={(destination: TabDestination) => openPlace(destination)}
                 onUnfold={() =>
                   updatePage((value) => ({
                     ...value,
-                    memory: runPageOpened(foldedRunId),
+                    memory: runPageOpened(foldedRunId, value.memory),
                   }))
                 }
                 room={room}
@@ -235,19 +298,21 @@ function ThreadTitle(
                 threadId={threadId}
               />
             )}
-            {glance === null ? null : (
+            {!aroundInRow || glance === null ? null : (
               <AroundButton
                 glance={glance}
                 onWidths={onAroundWidths}
                 yielded={yielded}
-                onPress={() => navigation.navigate("ThreadAround", { deploymentId, threadId })}
+                onPress={openAround}
               />
             )}
           </View>
         ),
+        verticalBar && glance !== null ? nativeHeaderItem(aroundBarItem(glance, openAround)) : null,
       ),
     );
   }, [
+    aroundInRow,
     deploymentId,
     foldedRunId,
     glance,
@@ -255,15 +320,35 @@ function ThreadTitle(
     hostClient,
     navigation,
     onAroundWidths,
+    openPlace,
     room,
     threadId,
     updatePage,
+    verticalBar,
     yielded,
   ]);
+  // Done on the task in view moves on to the next one, while it is still in view.
+  const onMarkedDone = (next: string | null) => {
+    const state = navigation.getState();
+    if (
+      state === undefined ||
+      !navigation.isFocused() ||
+      listedRowThreadId(hostClient.getSnapshot(), threadId) !== threadId
+    )
+      return;
+    const action = openTopLevel(
+      state,
+      next === null
+        ? { name: "Home", params: { deploymentId } }
+        : { name: "Thread", params: { deploymentId, threadId: next } },
+    );
+    if (action !== null) navigation.dispatch(action);
+  };
   return (
     <ThreadTitlePill
       {...props}
       maxWidth={maxWidth}
+      onMarkedDone={onMarkedDone}
       onNeed={setNeed}
       onFind={() => navigation.navigate("ThreadFind", { deploymentId, threadId })}
     />
@@ -288,6 +373,7 @@ export function ThreadTitlePill(
     readonly hostClient: HostClient;
     readonly maxWidth: number;
     readonly onFind: () => void;
+    readonly onMarkedDone?: (next: string | null) => void;
     /** Hears how wide the title has to be to say the name whole, or to its floor. */
     readonly onNeed?: (width: number) => void;
     readonly onOpenThread: (threadId: string) => void;
@@ -329,6 +415,7 @@ export function ThreadTitlePill(
       hostClient={props.hostClient}
       maxWidth={maxWidth}
       onFind={props.onFind}
+      {...(props.onMarkedDone ? { onMarkedDone: props.onMarkedDone } : {})}
       onOpenThread={props.onOpenThread}
       placeName={props.placeName}
       task={props.task}

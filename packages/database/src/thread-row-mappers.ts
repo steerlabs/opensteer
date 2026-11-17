@@ -1,11 +1,13 @@
 import {
   AssignmentSchema,
+  MessageOriginSchema,
   MessageSchema,
   RunSchema,
   ThreadInputSchema,
   ThreadRunQueueEntrySchema,
   ThreadSchema,
   type CausalChainId,
+  type MessageOrigin,
   type Assignment,
   type AssignmentId,
   type EnvironmentId,
@@ -120,11 +122,33 @@ function threadValueFromRow(row: ThreadReadRow) {
     updatedAt: row.updatedAt.toISOString(),
   };
 }
+export function messageEditFromRow(row: Selectable<MessageTable>) {
+  return row.revision > 0 && row.editedAt
+    ? {
+        revision: row.revision,
+        editedAt: row.editedAt.toISOString(),
+        ...(row.author.kind === "team-member" ? { ownerEdited: true as const } : {}),
+      }
+    : undefined;
+}
+
+export function messageViewFromRow(row: Selectable<MessageTable>) {
+  const edit = messageEditFromRow(row);
+  return { ...messageFromRow(row), ...(edit ? { edit } : {}) };
+}
+
 export function messageFromRow(row: Selectable<MessageTable>): Message {
   return MessageSchema.parse(messageValueFromRow(row));
 }
 export function messagesFromRows(rows: readonly Selectable<MessageTable>[]): Message[] {
   return MessageSchema.array().parse(rows.map(messageValueFromRow));
+}
+/** Where a person sent a message from; absent for other authors and older apps. */
+export function messageOriginFromRow(
+  row: Pick<Selectable<MessageTable>, "origin">,
+): MessageOrigin | undefined {
+  const parsed = MessageOriginSchema.safeParse(row.origin);
+  return parsed.success ? parsed.data : undefined;
 }
 function messageValueFromRow(row: Selectable<MessageTable>) {
   return {
@@ -132,6 +156,9 @@ function messageValueFromRow(row: Selectable<MessageTable>) {
       ? {
           quote: row.quote,
         }
+      : {}),
+    ...(row.revision > 0 && row.author.kind === "team-member"
+      ? { ownerEdited: true as const }
       : {}),
     author: row.author,
     content: row.content,
@@ -200,6 +227,7 @@ export const runDeliverySelection = sql<import("@opensteer/core").TeamRunDeliver
     and (p.answer_payload is not null or p.publication_state in ('accepted','blocked'))
 )`.as("delivery");
 export function runFromRow(row: {
+  readonly maintenance?: import("@opensteer/core").RunMaintenance | null;
   readonly delivery?: import("@opensteer/core").TeamRunDelivery | null;
   readonly accessMode: ThreadAccessMode;
   readonly activationInputId: MessageId;
@@ -229,6 +257,7 @@ export function runFromRow(row: {
 }): Run {
   const usage = runUsageFromRow(row);
   return RunSchema.parse({
+    ...(row.maintenance ? { maintenance: row.maintenance } : {}),
     delivery: row.delivery ?? null,
     accessMode: row.accessMode,
     activationInputId: row.activationInputId,
@@ -328,6 +357,7 @@ export function runUsageFromRow(row: {
   };
 }
 type ThreadRunQueueReadRow = {
+  readonly maintenance?: import("@opensteer/core").RunMaintenance | null;
   readonly createdAt: Date;
   readonly id: RunId;
   readonly status: string;
@@ -344,6 +374,7 @@ export function threadRunQueueEntriesFromRows(
 }
 function threadRunQueueValueFromRow(row: ThreadRunQueueReadRow) {
   return {
+    ...(row.maintenance ? { maintenance: row.maintenance } : {}),
     createdAt: row.createdAt.toISOString(),
     id: row.id,
     status: row.status,

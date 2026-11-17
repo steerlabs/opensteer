@@ -1,5 +1,3 @@
-import type { editAutomaticRole } from "@opensteer/client/host";
-import type { AutomaticModelConfig, AutomaticModelRole, HarnessInstanceId } from "@opensteer/core";
 import type { AutomaticModelsView } from "@opensteer/protocol";
 import type { DeploymentUpdateModel } from "./use-deployment-update.js";
 import type {
@@ -8,20 +6,10 @@ import type {
   PasswordsSettingsModel,
 } from "./settings-model.js";
 
-/** Which models do Opensteer's own small jobs; null settings while loading. */
-export interface AutomaticModelsForm {
-  readonly supported: boolean;
+/** What runs Opensteer's own background jobs, from settings.json; null view while loading. */
+export interface BackgroundModelsForm {
   readonly view: AutomaticModelsView | null;
   readonly error: string | null;
-  readonly pending: boolean;
-  readonly explanation: boolean;
-  readonly dismiss: () => void;
-  readonly save: (make: () => AutomaticModelConfig) => void;
-  readonly edit: (
-    role: AutomaticModelRole,
-    action: Parameters<typeof editAutomaticRole>[2],
-  ) => void;
-  readonly toggle: (id: HarnessInstanceId) => void;
 }
 
 export interface AiAccountAction {
@@ -100,13 +88,14 @@ export interface QuietTasksSetting {
 }
 
 export interface SettingsFormProps extends SettingsFormActionHandlers {
+  readonly idleCompaction?: import("@opensteer/client/react").IdleCompactionSettings;
   readonly page?: SettingsPage;
   readonly deployment: DeploymentSettingsModel;
   /** Null when there is no open Deployment, or its Host refuses this person. */
   readonly desktopUpdate: DeploymentUpdateModel | null;
   readonly engineUpdates?: readonly EngineUpdateRow[] | undefined;
-  /** Null while no Deployment is open. */
-  readonly automatic?: AutomaticModelsForm | null | undefined;
+  /** Null while no Deployment is open or its Host cannot say. */
+  readonly backgroundModels?: BackgroundModelsForm | null | undefined;
   readonly aiAccounts?: AiAccountsForm | null | undefined;
   readonly notificationError: string | null;
   /** Null in a build without an Account service, which nothing can notify. */

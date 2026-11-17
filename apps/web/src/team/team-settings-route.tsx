@@ -1,3 +1,5 @@
+import { TeamPaneGate } from "./team-pane-gate.js";
+import { TeamPartnerSettingsPage } from "./team-partner-settings.js";
 import { useLayoutEffect, useRef, useState } from "react";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 import {
@@ -22,6 +24,7 @@ import { GroupsAdmin, PeopleAdmin, type TeamRole } from "../components/team/team
 import { PeopleOnlyBadge } from "../components/team/team-marks.js";
 import { useToast } from "../components/toast.js";
 import { actionErrorMessage } from "../ui-utils.js";
+import { AccountNameRow } from "../components/settings/sections/owner-name.js";
 import { useTeams } from "./team-attachments.js";
 import {
   InvitePanel,
@@ -51,6 +54,15 @@ const adminPages = ["people", "groups", "invites", "channels", "audit"] as const
 
 /** Settings → a team: everyone's profile and notifications; admins' people, groups, invites, channels and audit log. */
 export function TeamSettingsRoute() {
+  const { teamId = "" } = useParams();
+  return (
+    <TeamPaneGate teamId={teamId}>
+      <TeamSettingsContent />
+    </TeamPaneGate>
+  );
+}
+
+function TeamSettingsContent() {
   const { teamId = "", page = "profile" } = useParams();
   const view = useTeamView(teamId, noPreviews);
   const can = view?.snapshot.bootstrap?.can;
@@ -61,16 +73,18 @@ export function TeamSettingsRoute() {
   const name = view.snapshot.bootstrap?.teamName ?? view.team.name;
   const nav = (
     <nav aria-label={`${name} settings`} className="team-settings-nav" ref={navRef}>
-      {(["profile", "notifications", ...(admin ? adminPages : [])] as const).map((key) => (
-        <Link
-          aria-current={key === page ? "page" : undefined}
-          className="team-settings-nav__link"
-          key={key}
-          to={`/settings/teams/${encodeURIComponent(teamId)}/${key}`}
-        >
-          {key[0]!.toUpperCase() + key.slice(1)}
-        </Link>
-      ))}
+      {(["profile", "notifications", "partners", ...(admin ? adminPages : [])] as const).map(
+        (key) => (
+          <Link
+            aria-current={key === page ? "page" : undefined}
+            className="team-settings-nav__link"
+            key={key}
+            to={`/settings/teams/${encodeURIComponent(teamId)}/${key}`}
+          >
+            {key === "partners" ? "Partner teams" : key[0]!.toUpperCase() + key.slice(1)}
+          </Link>
+        ),
+      )}
       <Link
         className="team-settings-nav__link"
         to={`/teams/${encodeURIComponent(teamId)}/knowledge`}
@@ -80,7 +94,9 @@ export function TeamSettingsRoute() {
     </nav>
   );
   const body =
-    page === "people" && can?.manageMembers ? (
+    page === "partners" ? (
+      <TeamPartnerSettingsPage client={view.client} key={view.team.teamId} />
+    ) : page === "people" && can?.manageMembers ? (
       <PeoplePage view={view} />
     ) : page === "groups" && can?.manageGroups ? (
       <GroupsPage view={view} />
@@ -112,7 +128,7 @@ function useReport() {
 }
 
 function ProfilePage({ view }: { readonly view: TeamView }) {
-  const { coordination, leave } = useTeams();
+  const { coordination, leave, profiles } = useTeams();
   const { openDelete, openTransfer } = useTeamDialogs();
   const navigate = useNavigate();
   const report = useReport();
@@ -135,10 +151,21 @@ function ProfilePage({ view }: { readonly view: TeamView }) {
   return (
     <>
       <SettingsGroup heading="Your profile" headingId="team-profile">
-        <SettingsRow
-          detail={`@${me.handle} · your agent is @${me.handle}-agent`}
-          title={me.displayName}
-        />
+        {profiles ? (
+          // The name is the person's own, kept in their Account; the team only shows it.
+          <>
+            <AccountNameRow />
+            <SettingsRow
+              detail={`Your agent is @${me.handle}-agent. Handles stay the same when you rename.`}
+              title={`@${me.handle}`}
+            />
+          </>
+        ) : (
+          <SettingsRow
+            detail={`@${me.handle} · your agent is @${me.handle}-agent. Change your name in the Opensteer app under Settings → Account.`}
+            title={me.displayName}
+          />
+        )}
         <SettingsRow
           action={
             line === "none" || line === "failed" ? (

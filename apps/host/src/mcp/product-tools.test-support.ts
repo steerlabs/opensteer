@@ -1,17 +1,16 @@
 import {
-  thread_read,
-  thread_list,
-  delegate_task,
-  thread_update,
-  thread_interrupt,
-  task_cancel,
+  opensteer_task_read,
+  opensteer_task_list,
+  opensteer_task_delegate,
+  opensteer_task_update,
+  opensteer_task_interrupt,
+  opensteer_delegation_cancel,
+  computer_access_request,
 } from "@opensteer/agent-tools/tools";
 import {
-  BrowserProfileListOutputSchema,
   ThreadReadOutputSchema,
   ThreadListOutputSchema,
   TaskSchema,
-  OrchestratorCapabilitiesSchema,
   ThreadMessageOutputSchema,
   ThreadUpdateOutputSchema,
   ThreadInterruptOutputSchema,
@@ -22,10 +21,8 @@ import {
   createId,
   OpensteerError,
   AssignmentIdSchema,
-  BrowserAccessSuggestionSchema,
   BrowserProfileIdSchema,
   EnvironmentIdSchema,
-  HarnessInstanceIdSchema,
   MessageContentSchema,
   MessageIdSchema,
   PersonMessageSchema,
@@ -42,18 +39,9 @@ import {
 } from "@opensteer/core";
 import { TriggerControlInputSchema } from "@opensteer/triggers";
 import { z } from "zod";
-import { AgentBrowserSignInResultSchema } from "@opensteer/protocol";
-import {
-  AgentBrowserSessionSummarySchema,
-  BrowserSessionIdSchema,
-  BrowserTabReadInputSchema,
-  BrowserTabReadResultSchema,
-  BrowserTabWriteInputSchema,
-  BrowserTabWriteResultSchema,
-} from "@opensteer/protocol";
+import { AgentBrowserSessionSummarySchema, BrowserSessionIdSchema } from "@opensteer/protocol";
 import { DurableWindowCursorSchema, DurableWindowSchema } from "@opensteer/protocol";
 import { agentToolPayloadMaxSerializedBytes } from "@opensteer/protocol";
-import { MachineAliasSchema } from "@opensteer/protocol";
 
 const AgentDurableWindowSchema = z.strictObject(DurableWindowSchema.shape);
 const AgentBrowserSessionSummaryStrictSchema = z.strictObject({
@@ -64,38 +52,11 @@ const AgentBrowserSessionSummaryStrictSchema = z.strictObject({
 const requestBase = {
   requestId: z.uuid(),
 } as const;
-const EnvironmentListInputSchema = z
-  .strictObject({
-    query: z
-      .string()
-      .trim()
-      .max(256)
-      .transform((query) => query || undefined)
-      .optional(),
-    harnessInstanceId: HarnessInstanceIdSchema.optional(),
-    cursor: z.string().min(1).max(2_048).optional(),
-    environmentCursor: EnvironmentIdSchema.optional(),
-    harnessCursor: HarnessInstanceIdSchema.optional(),
-  })
-  .superRefine((input, context) => {
-    if (input.cursor && !input.harnessInstanceId)
-      context.addIssue({ code: "custom", message: "cursor requires harnessInstanceId" });
-    if (input.harnessInstanceId && (input.environmentCursor || input.harnessCursor))
-      context.addIssue({
-        code: "custom",
-        message: "Focus cannot be combined with directory cursors",
-      });
-  });
-
 const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
-  EnvironmentListInputSchema.safeExtend({
-    ...requestBase,
-    type: z.literal("environment.list"),
-  }),
-  thread_read.input.safeExtend({ ...requestBase, type: z.literal("thread.read") }),
-  thread_list.input.safeExtend({ ...requestBase, type: z.literal("thread.list") }),
-  delegate_task.input.safeExtend({ ...requestBase, type: z.literal("thread.delegate") }),
-  task_cancel.input.safeExtend({ ...requestBase, type: z.literal("task.cancel") }),
+  opensteer_task_read.input.safeExtend({ ...requestBase, type: z.literal("thread.read") }),
+  opensteer_task_list.input.safeExtend({ ...requestBase, type: z.literal("thread.list") }),
+  opensteer_task_delegate.input.safeExtend({ ...requestBase, type: z.literal("thread.delegate") }),
+  opensteer_delegation_cancel.input.safeExtend({ ...requestBase, type: z.literal("task.cancel") }),
   z.strictObject({
     ...requestBase,
     content: MessageContentSchema,
@@ -116,12 +77,12 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...requestBase,
-    input: thread_update.input,
+    input: opensteer_task_update.input,
     type: z.literal("thread.update"),
   }),
   z.strictObject({
     ...requestBase,
-    input: thread_interrupt.input,
+    input: opensteer_task_interrupt.input,
     type: z.literal("thread.interrupt"),
   }),
   z.strictObject({
@@ -135,44 +96,11 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
     targetRequestId: RequestIdSchema,
     type: z.literal("request.withdraw"),
   }),
-  z.strictObject({
+  computer_access_request.input.safeExtend({
     ...requestBase,
-    type: z.literal("browser.profile.list"),
+    type: z.literal("computer.access.request"),
   }),
-  z.strictObject({
-    ...requestBase,
-    reason: z.string().trim().min(1).max(500),
-    sessionId: BrowserSessionIdSchema.optional(),
-    site: z.string().trim().min(1).max(2_048),
-    type: z.literal("sign-in"),
-  }),
-  z.strictObject({
-    ...requestBase,
-    reason: z.string().trim().min(1).max(500),
-    suggestion: BrowserAccessSuggestionSchema,
-    type: z.literal("browser.profile.request"),
-  }),
-  /**
-   * The computer is named by the alias the Run's machine-access note listed,
-   * which is the only name the agent ever sees for it; the Host resolves the
-   * alias against the same reachable set the note was rendered from.
-   */
-  z.strictObject({
-    ...requestBase,
-    computer: MachineAliasSchema,
-    reason: z.string().trim().min(1).max(500),
-    type: z.literal("machine.full-disk-access.request"),
-  }),
-  z.strictObject({
-    ...requestBase,
-    input: BrowserTabReadInputSchema,
-    type: z.literal("browser.tab.read"),
-  }),
-  z.strictObject({
-    ...requestBase,
-    input: BrowserTabWriteInputSchema,
-    type: z.literal("browser.tab.write"),
-  }),
+
   z.strictObject({ ...requestBase, type: z.literal("browser.session.list") }),
   z.strictObject({
     ...requestBase,
@@ -221,14 +149,13 @@ const RequestCreationResultSchema = z.strictObject({
 });
 
 const ProductToolResultUnionSchema = z.discriminatedUnion("type", [
-  OrchestratorCapabilitiesSchema.extend({
+  ThreadReadOutputSchema.safeExtend({
     ...responseBase,
-    type: z.literal("environment.list.result"),
+    type: z.literal("thread.read.result"),
   }),
-  ThreadReadOutputSchema.safeExtend({ ...responseBase, type: z.literal("thread.read.result") }),
   z.strictObject({
     ...responseBase,
-    result: TaskSchema.extend({ assignmentId: AssignmentIdSchema, runId: RunIdSchema }),
+    result: TaskSchema.extend({ delegationId: AssignmentIdSchema, runId: RunIdSchema }),
     type: z.literal("thread.delegate.result"),
   }),
   TaskSchema.safeExtend({ ...responseBase, type: z.literal("task.cancel.result") }),
@@ -267,23 +194,8 @@ const ProductToolResultUnionSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...responseBase,
-    profiles: BrowserProfileListOutputSchema.shape.profiles,
-    type: z.literal("browser.profile.list.result"),
-  }),
-  z.strictObject({
-    ...responseBase,
-    result: AgentBrowserSignInResultSchema,
-    type: z.literal("sign-in.result"),
-  }),
-  z.strictObject({
-    ...responseBase,
-    result: RequestCreationResultSchema.extend({ kind: z.literal("browser.access") }),
-    type: z.literal("browser.profile.request.result"),
-  }),
-  z.strictObject({
-    ...responseBase,
-    result: RequestCreationResultSchema.extend({ kind: z.literal("machine.full-disk-access") }),
-    type: z.literal("machine.full-disk-access.request.result"),
+    result: RequestCreationResultSchema,
+    type: z.literal("computer.access.request.result"),
   }),
   z.strictObject({
     ...responseBase,
@@ -296,16 +208,7 @@ const ProductToolResultUnionSchema = z.discriminatedUnion("type", [
     sessions: z.array(AgentBrowserSessionSummaryStrictSchema).max(100),
     type: z.literal("browser.session.list.result"),
   }),
-  z.strictObject({
-    ...responseBase,
-    result: BrowserTabReadResultSchema,
-    type: z.literal("browser.tab.read.result"),
-  }),
-  z.strictObject({
-    ...responseBase,
-    result: BrowserTabWriteResultSchema,
-    type: z.literal("browser.tab.write.result"),
-  }),
+
   z.strictObject({
     ...responseBase,
     sessionId: BrowserSessionIdSchema.nullable(),
@@ -390,6 +293,7 @@ export class ProductToolsTestClient {
       realtime: { observe: () => () => {}, sendToUsers: () => {} },
       browser: unavailableDefaults as never,
       browserSources: unavailableDefaults as never,
+      savedLogins: unavailableDefaults as never,
       deviceAccess: unavailableDefaults as never,
       machineFullDiskAccess: unavailableDefaults as never,
       canRunHarness: () => true,
@@ -409,6 +313,7 @@ export class ProductToolsTestClient {
       },
     );
     const handlers = agentToolHandlers({
+      tabs: unavailable as never,
       administration: new Proxy(
         {},
         {
@@ -449,15 +354,23 @@ export class ProductToolsTestClient {
   async handle(token: string, value: unknown): Promise<ProductToolResult> {
     const request = ProductToolRequestSchema.parse(value);
     let name: string = request.type.replaceAll(".", "_").replaceAll("-", "_");
-    if (request.type === "thread.delegate") name = "delegate_task";
-    if (request.type === "thread.message") name = "thread_send";
-    if (request.type === "request.list") name = "pending_request";
-    if (request.type === "environment.list") name = "orchestrator_capabilities";
+    const taskNames: Record<string, string> = {
+      "thread.read": "opensteer_task_read",
+      "thread.list": "opensteer_task_list",
+      "thread.interrupt": "opensteer_task_interrupt",
+      "thread.update": "opensteer_task_update",
+      "task.cancel": "opensteer_delegation_cancel",
+      "person.message": "send_to_person",
+      "person.show": "show_to_person",
+      "request.withdraw": "opensteer_request_withdraw",
+    };
+    name = taskNames[request.type] ?? name;
+    if (request.type === "thread.delegate") name = "opensteer_task_delegate";
+    if (request.type === "thread.message") name = "opensteer_task_send";
+    if (request.type === "request.list") name = "opensteer_request_list";
     const { type: _type, requestId, ...rest } = request;
     let input: Record<string, unknown> = rest;
     if (request.type === "thread.update" || request.type === "thread.interrupt")
-      input = request.input;
-    if (request.type === "browser.tab.read" || request.type === "browser.tab.write")
       input = request.input;
     if (request.type === "request.withdraw") input = { requestId: request.targetRequestId };
     if (request.type === "thread.message") {
@@ -465,7 +378,7 @@ export class ProductToolsTestClient {
         throw new OpensteerError({
           code: "bad_request",
           message:
-            "A message from an agent cannot include a place reference. Forward selected references with delegate_task places",
+            "A message from an agent cannot include a place reference. Forward selected references with opensteer_task_delegate places",
         });
       input = {
         ...rest,
@@ -474,7 +387,18 @@ export class ProductToolsTestClient {
       delete input.content;
     }
     if (request.type === "trigger.control") {
-      name = request.tool.replaceAll(".", "_");
+      name = (
+        {
+          list: "opensteer_automation_list",
+          get: "opensteer_automation_read",
+          create: "opensteer_automation_create",
+          update: "opensteer_automation_update",
+          set_status: "opensteer_automation_control",
+          set_next_fire: "opensteer_automation_control",
+          run: "opensteer_automation_control",
+          cancel: "opensteer_automation_control",
+        } as const
+      )[request.input.operation];
       const { operation, ...fields } = request.input;
       input = { ...fields, action: operation };
       delete input.idempotencyKey;
@@ -489,6 +413,32 @@ export class ProductToolsTestClient {
         };
       }
     }
+    if (request.type === "thread.message") {
+      input.taskId = input.threadId;
+      delete input.threadId;
+    }
+    if (request.type === "trigger.control") {
+      if ("triggerId" in input) {
+        input.automationId = input.triggerId;
+        delete input.triggerId;
+      }
+      if ("anchorThreadId" in input) {
+        input.taskId = input.anchorThreadId;
+        delete input.anchorThreadId;
+      }
+      if (input.action === "set_status") {
+        input.action =
+          input.status === "active" ? "resume" : input.status === "paused" ? "pause" : "archive";
+        delete input.status;
+      } else if (input.action === "set_next_fire") input.action = "reschedule";
+      else if (input.action === "run") input.action = "run_now";
+      else if (input.action === "cancel") input.action = "cancel_pending";
+      else delete input.action;
+    }
+    if (request.type === "request.list")
+      input = { limit: request.limit, ...(request.before ? { cursor: request.before } : {}) };
+    if (request.type === "person.show" && "threadId" in request.target)
+      input = { target: { taskId: request.target.threadId } };
     const result = await this.service.callTool(token, name, input, { operationKey: requestId });
     if (typeof result === "string") throw new Error(`${name} returned text, not a record`);
     let fields: Record<string, unknown> = result;
@@ -496,9 +446,7 @@ export class ProductToolsTestClient {
       [
         "thread.delegate",
         "thread.message",
-        "sign-in",
-        "browser.profile.request",
-        "machine.full-disk-access.request",
+        "computer.access.request",
         "trigger.control",
         "browser.tab.read",
         "browser.tab.write",
@@ -523,15 +471,15 @@ export class WatchToolsTestClient extends ProductToolsTestClient {
 export async function readToolRecords(
   store: import("@opensteer/database").OpensteerStore,
   result: {
-    readonly threadId?: import("@opensteer/core").ThreadId;
+    readonly taskId?: import("@opensteer/core").ThreadId;
     readonly runId: import("@opensteer/core").RunId | null;
     readonly messageId?: import("@opensteer/core").MessageId;
-    readonly assignmentId?: import("@opensteer/core").AssignmentId | null;
+    readonly delegationId?: import("@opensteer/core").AssignmentId | null;
   },
 ) {
   const { messageFromRow, runFromRow, threadFromRow, threadInputFromRow } =
     await import("@opensteer/database/test-support/store");
-  const assignment = result.assignmentId ? await store.getAssignment(result.assignmentId) : null;
+  const assignment = result.delegationId ? await store.getAssignment(result.delegationId) : null;
   const messageId = result.messageId ?? assignment?.initialInputMessageId;
   const messageRow = messageId
     ? await store.database
@@ -548,7 +496,7 @@ export async function readToolRecords(
           .orderBy("messages.sequence", "asc")
           .executeTakeFirst()
       : undefined;
-  const threadId = result.threadId ?? messageRow?.threadId;
+  const threadId = result.taskId ?? messageRow?.threadId;
   if (!threadId) throw new Error("Tool result has no persisted Thread");
   const threadRow = await store.database
     .selectFrom("threads")

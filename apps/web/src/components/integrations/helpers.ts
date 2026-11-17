@@ -1,8 +1,10 @@
+import type {
+  IntegrationDashboard,
+  IntegrationConnectionSummary,
+} from "@opensteer/client/integrations";
 import { agentProposedText } from "@opensteer/core";
 import type { IntegrationDefinitionSummaryView } from "@opensteer/integration-core/adapter";
 import {
-  type IntegrationConnectionSummary,
-  type IntegrationDashboard,
   type IntegrationPlatformDashboardView,
   type IntegrationProvider,
   type IntegrationServerSummary,

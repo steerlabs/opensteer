@@ -1,3 +1,5 @@
+import { integrationBlocked } from "../integrations/integration-blocked.js";
+import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { createHash } from "node:crypto";
 import { BrowserRequestOutcomeSchema, OpensteerError, type Request } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
@@ -8,7 +10,6 @@ import {
 } from "@opensteer/integration-core";
 import type { CommandService } from "@opensteer/orchestration";
 import {
-  androidPhoneDefinitionId,
   PasswordSignInRequestResponseSchema,
   type PasswordSignInRequestResponse,
 } from "@opensteer/protocol";
@@ -17,7 +18,6 @@ import { CoalescedWake } from "@opensteer/shared/coalescedWake";
 import { z } from "zod";
 import type { PasswordSignInContinuationState } from "../browser/password-sign-in-service.js";
 import type { ComputerAppApprovalService } from "../integrations/computer-app-approval-service.js";
-import { computerToolRefs } from "../integrations/computer-use-discovery.js";
 import type { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
 const defaultIntervalMs = 5_000;
 const cancelledContinuationReason = "Continuation delivery was cancelled by Thread input admission";
@@ -37,7 +37,7 @@ type ThreadInputDisposition = Awaited<
  */
 export type IntegrationInventorySource = Pick<
   IntegrationPlatformService,
-  "listDiscoveryInventory" | "listCallableTools"
+  "listDiscoveryInventory" | "listCallableTools" | "computerAccess"
 > &
   Pick<ComputerAppApprovalService, "computerUseMachines" | "computerUsePhones">;
 type IntegrationInventoryEntry = Awaited<
@@ -171,7 +171,7 @@ export class ContinuationService {
         } catch (error) {
           this.#onError(error);
           messages.push(
-            `Request ${request.id} settled as ${request.status}. pending_request shows status, not the answer.`,
+            `Request ${request.id} settled as ${request.status}. opensteer_request_answer shows status, not the answer.`,
           );
         }
       }
@@ -302,7 +302,7 @@ export async function continuationMessage(
   loginRef?: string,
 ): Promise<string> {
   if (request.mode === "durable" && request.status === "cancelled") {
-    return `Request ${request.id} was cancelled (${request.cancellationReason}). The requested resource or authority is no longer available. Continue without it; pending_request shows status, not the answer.`;
+    return `Request ${request.id} was cancelled (${request.cancellationReason}). The requested resource or authority is no longer available. Continue without it; opensteer_request_answer shows status, not the answer.`;
   }
   if (
     request.mode !== "durable" ||
@@ -310,17 +310,26 @@ export async function continuationMessage(
   ) {
     throw new Error("The Request continuation outbox contains an ineligible Request");
   }
+  let computerFacts: ReturnType<IntegrationInventorySource["computerAccess"]> | undefined;
+  const computerAccess = () =>
+    (computerFacts ??= integrations.computerAccess({
+      ownerUserId: request.requestedBy,
+      threadId: request.originatingThreadId,
+      ...(request.originatingRunId ? { runId: request.originatingRunId } : {}),
+    }));
   switch (request.kind) {
     case "device.access": {
       if (request.payload.kind !== "device.access")
         throw new Error("Device access Request payload is invalid");
       const { machineId, machineName, access } = request.payload;
       return request.status === "fulfilled"
-        ? `Request ${request.id} was fulfilled. ${access} access is now on for ${machineName} (${machineId}). This continuation Run rebuilds device routes. Per-app, profile or OS authorization may still be needed. Continue the task using this Run's inventory.`
+        ? `Request ${request.id} was fulfilled. ${access} access is now on for ${machineName} (${machineId}). This continuation Run rebuilds computer routes. Per-app, profile or OS authorization may still be needed. Continue the task using this Run's inventory.`
         : `Request ${request.id} was declined (Not now). Continue without ${access} on ${machineName} (${machineId}); do not request it again in this task.`;
     }
     case "integration.input":
       throw new Error("Device input returns inside its tool call and cannot have a continuation");
+    case "person.question":
+      return personQuestionContinuation(request);
     case "machine.full-disk-access": {
       if (request.payload.kind !== "machine.full-disk-access")
         throw new Error("macOS Full Disk Access Request payload is invalid");
@@ -338,33 +347,24 @@ export async function continuationMessage(
       if (!outcome.success)
         return `Request ${request.id} was fulfilled. Browser profile access is now available; browser_profile_list shows the profiles your Opensteer can use. Continue the task.`;
       const { id: profileId, name } = outcome.data.profile;
-      return `Request ${request.id} was fulfilled. The person chose browser profile ${JSON.stringify(name)} (${profileId}); use it for this task even if you suggested another. Open it with browser_session_open and profileId ${profileId}, then continue the task.`;
+      return `Request ${request.id} was fulfilled. The person chose browser profile ${JSON.stringify(name)} (${profileId}); use it for this task even if you suggested another. Open a tab with Browser Harness newTab(url, { profile: "${profileId}" }), then continue the task.`;
     }
     case "browser.sign-in": {
       if (request.payload.kind !== "browser.sign-in")
         throw new Error("Browser sign-in Request payload is invalid");
-      const { sessionId, site } = request.payload;
+      const { site } = request.payload;
       if (request.status === "declined")
-        return `Request ${request.id} to reuse the user's Chrome sign-in was declined by the user. Continue without signing in to ${site} and do not ask for it again unless the user asks.`;
+        return `Request ${request.id} to copy the user's Chrome cookies for ${site} was declined. Continue without them and do not ask again unless the user asks.`;
       const response = BrowserSignInRequestResponseSchema.parse(
         request.response.kind === "external" ? request.response.value : undefined,
       );
       switch (response.outcome) {
         case "applied":
-          return `Request ${request.id} was fulfilled. Signed in to ${site} with ${response.sourceName} in Browser Session ${sessionId}. Reload the page and confirm the account before continuing.`;
-        case "not-signed-in": {
-          const passwords =
-            response.passwords === "not-set-up"
-              ? ", or to set up Opensteer Passwords on their Mac so agents can sign in for them (Opensteer shows them where under your reply)"
-              : response.passwords === "no-login"
-                ? ", or to add this login in Opensteer Passwords"
-                : response.passwords === "off"
-                  ? ", or to turn agent sign-ins back on in the Passwords window"
-                  : "";
-          return `Request ${request.id} ended without signing in: Chrome is connected but not signed in to ${site}, so there is no Chrome sign-in to reuse. The user did not decline. Ask them to sign in to ${site} themselves in Browser Session ${sessionId}${passwords}, then call sign_in again.`;
-        }
+          return `Request ${request.id} was fulfilled: copied ${response.sourceName}'s cookies for ${site} into the browser tab. Reload the page and check the account; the site may still refuse copied cookies.`;
+        case "not-signed-in":
+          return `Request ${request.id} ended: no connected Chrome is signed in to ${site}, so nothing was copied. The user did not decline.`;
         case "session-closed":
-          return `Request ${request.id} was fulfilled. The user allowed ${site}. Your Browser Session had closed; call sign_in again in your current session.`;
+          return `Request ${request.id} was allowed, but the browser tab had closed. Call chrome_cookies_request again with your current tabId.`;
       }
     }
     case "browser.password-sign-in": {
@@ -375,23 +375,21 @@ export async function continuationMessage(
       const response = PasswordSignInRequestResponseSchema.parse(
         request.response.kind === "external" ? request.response.value : undefined,
       );
-      {
-        const { site, computerName } = request.payload;
-        if (request.payload.credential === "card") {
-          const action =
-            response.outcome === "authorized" && loginRef
-              ? `Focus each required checkout field and call fillCard("${loginRef}", field). Never read back, print, log, copy or save card values. This approval covers filling only; the person's request must cover any purchase.`
-              : "The card use ended. Call use_card again only if the task still requires it.";
-          return `Request ${request.id} for card use on ${site} ended. ${action}`;
-        }
-        if (response.outcome === "authorized") {
-          const action = loginRef
-            ? `Use saved login ${loginRef} for ${site} as ${response.account}: in the genuine phone/Mac app, type {loginRef: "${loginRef}", field: "username" | "password" | "code"}; in a browser, focus each field and use Browser Harness fillLogin("${loginRef}", field). Submit and verify the signed-in account. Never reveal or read back saved fields.`
-            : `The saved login for ${site} ended. Call sign_in again.`;
-          return `Request ${request.id} was approved. ${action} If the reference expires, call sign_in again.`;
-        }
-        return `Request ${request.id} was fulfilled. ${passwordSignInContinuation({ site, computerName }, response)}`;
+      const { site, computerName } = request.payload;
+      if (request.payload.credential === "card") {
+        const action =
+          response.outcome === "authorized" && loginRef
+            ? `Focus each required checkout field and call fillCard("${loginRef}", field). Never read back, print, log, copy or save card values. This approval covers filling only; the person's request must cover any purchase.`
+            : "The card use ended. Call card_request again only if the task still requires it.";
+        return `Request ${request.id} for card use on ${site} ended. ${action}`;
       }
+      if (response.outcome === "authorized") {
+        const action = loginRef
+          ? `Saved login ${loginRef} for ${site} is ready as ${response.account}: in a browser, focus each field and call fillLogin("${loginRef}", field); in a genuine phone or Mac app, type {loginRef: "${loginRef}", field}. Fields are "username", "password" and "code". Submit and check the account. Never reveal or read back saved fields.`
+          : `The saved login for ${site} ended. Call saved_login_request again if the task still needs it.`;
+        return `Request ${request.id} was approved. ${action}`;
+      }
+      return `Request ${request.id} ended. ${passwordSignInContinuation({ site, computerName }, response)}`;
     }
     case "integration.access": {
       if (request.status === "declined") {
@@ -443,24 +441,31 @@ export async function continuationMessage(
       ) {
         const connectionId =
           request.response.kind === "external" ? request.response.value?.connectionId : undefined;
-        const machines = await integrations.computerUseMachines(request.requestedBy);
+        const machines = (await computerAccess()).machines;
         for (const machine of machines) {
           const app = machine.apps.find(({ connectionId: id }) => id === connectionId);
           if (app)
-            return computerAppContinuation(request, integrations, machine.name, app.name, app);
+            return computerAppContinuation(
+              request,
+              await computerAccess(),
+              machine.name,
+              app.name,
+              app,
+            );
         }
       }
       if (
         entry.installation.sourceKind === "built-in" &&
-        CatalogProvenanceSchema.safeParse(entry.installation.provenance).data?.definitionId ===
-          androidPhoneDefinitionId
+        isPhoneDisplayDefinitionId(
+          CatalogProvenanceSchema.safeParse(entry.installation.provenance).data?.definitionId,
+        )
       ) {
         const connectionId =
           request.response.kind === "external" ? request.response.value?.connectionId : undefined;
-        const phone = (await integrations.computerUsePhones(request.requestedBy)).find(
+        const phone = (await computerAccess()).phones.find(
           ({ connection }) => connection !== null && connection.connectionId === connectionId,
         );
-        if (phone) return phoneContinuation(request, integrations, phone);
+        if (phone) return phoneContinuation(request, await computerAccess(), phone);
       }
       if (!target.success) {
         return `${receipt} The fulfilled connection was not recorded; its current state is unverified.`;
@@ -473,11 +478,9 @@ export async function continuationMessage(
         case "ready":
           return `${receipt} Its ${access} access is active.`;
         case "needs-grant":
-          return `${receipt} Your Opensteer still holds no access grant${detailClause(state.detail)}.`;
         case "needs-account":
-          return `${receipt} The fulfilled target is not usable${detailClause(state.detail)}.`;
         case "blocked":
-          return `${receipt} The integration is not usable: ${state.detail ?? "the integration is unavailable"}.`;
+          return `${receipt} ${state.detail} ${state.remedy}`;
       }
     }
     case "integration.install": {
@@ -501,11 +504,9 @@ export async function continuationMessage(
         case "ready":
           return `Request ${request.id} was fulfilled. ${entry.installation.title} is installed and ready. Call integration_search now to pick up its tools and continue the task.`;
         case "needs-grant":
-          return `Request ${request.id} was fulfilled. ${entry.installation.title} is installed and its account connection works, but your Opensteer holds no access grant yet${detailClause(state.detail)}. Call integration_search now, then call integration_request with this integration and the access class the task needs.`;
         case "needs-account":
-          return `Request ${request.id} was fulfilled. ${entry.installation.title} is installed but has no connected account${detailClause(state.detail)}. Call integration_request now for the account connection, then continue the task.`;
         case "blocked":
-          return `Request ${request.id} was fulfilled, but ${entry.installation.title} installed in an unusable state: ${state.detail ?? "the integration is unavailable"}. ${state.remedy}`;
+          return `Request ${request.id} was fulfilled. ${state.detail} ${state.remedy}`;
       }
     }
     case "computer.app.access": {
@@ -514,26 +515,26 @@ export async function continuationMessage(
       const payload = request.payload;
       if (payload.app === null) {
         // A phone is asked for whole, so its continuation names the phone.
-        const phone = (await integrations.computerUsePhones(request.requestedBy)).find(
-          ({ runnerId }) => runnerId === payload.runnerId,
+        const phone = (await computerAccess()).phones.find(
+          ({ deviceId }) => deviceId === payload.deviceId,
         );
         if (request.status === "declined")
           return `Request ${request.id} was declined by the user. Continue the task without ${phone?.name ?? "that phone"} and do not request it again unless the user asks.`;
         return phone
-          ? phoneContinuation(request, integrations, phone)
+          ? phoneContinuation(request, await computerAccess(), phone)
           : `Request ${request.id} was fulfilled, but that phone is no longer available to this task. Continue without it.`;
       }
       const asked = payload.app;
       const { displayName } = asked;
-      const machines = await integrations.computerUseMachines(request.requestedBy);
-      const machine = machines.find(({ runnerId }) => runnerId === payload.runnerId);
+      const machines = (await computerAccess()).machines;
+      const machine = machines.find(({ deviceId }) => deviceId === payload.deviceId);
       const mac = machine?.name ?? "that Mac";
       if (request.status === "declined")
         return `Request ${request.id} was declined by the user. Continue the task without ${displayName} on ${mac} and do not request it again unless the user asks.`;
       const app = machine?.apps.find(
         ({ bundleId }) => bundleId.toLowerCase() === asked.bundleId.toLowerCase(),
       );
-      return computerAppContinuation(request, integrations, mac, displayName, app);
+      return computerAppContinuation(request, await computerAccess(), mac, displayName, app);
     }
     case "harness.approval":
     case "harness.input":
@@ -542,44 +543,43 @@ export async function continuationMessage(
 }
 async function computerAppContinuation(
   request: Request,
-  integrations: IntegrationInventorySource,
+  access: Awaited<ReturnType<IntegrationInventorySource["computerAccess"]>>,
   mac: string,
   displayName: string,
   app:
     | Awaited<ReturnType<IntegrationInventorySource["computerUseMachines"]>>[number]["apps"][number]
     | undefined,
 ): Promise<string> {
-  const unavailable = `Request ${request.id} was fulfilled, but ${displayName} on ${mac} is no longer available to this task. Continue without it.`;
-  if (!app || app.status === "blocked") return unavailable;
-  const refs = computerToolRefs(
-    await integrations.listCallableTools({
-      ownerUserId: request.requestedBy,
-      threadId: request.originatingThreadId,
-    }),
-    app.connectionId,
+  const machine = access.machines.find(
+    (machine) =>
+      machine.name === mac &&
+      machine.apps.some((entry) => entry.connectionId === app?.connectionId),
   );
-  if (!refs.observe) return unavailable;
-  return `Request ${request.id} was fulfilled. ${displayName} on ${mac} is ready. Use app(${JSON.stringify(displayName)}, {computer: ${JSON.stringify(mac)}}) in the computer tool. Continue.`;
+  if (!machine || !app)
+    return `Request ${request.id} was fulfilled, but ${displayName} on ${mac} is unavailable. Use integration_search {query:"Computer use"} to find current targets.`;
+  const result = access.app(machine, { displayName: app.name, bundleId: app.bundleId });
+  return `Request ${request.id} was fulfilled. ${
+    result.blocked
+      ? `${result.blocked.message} ${result.blocked.next}`
+      : `${displayName} on ${mac} is ready. Use app(${JSON.stringify(displayName)}, {computer:${JSON.stringify(mac)}}) in computer_use.`
+  }`;
 }
-
-/** A fulfilled ask names the phone exactly as the computer library accepts it. */
 async function phoneContinuation(
   request: Request,
-  integrations: IntegrationInventorySource,
+  access: Awaited<ReturnType<IntegrationInventorySource["computerAccess"]>>,
   phone: Awaited<ReturnType<IntegrationInventorySource["computerUsePhones"]>>[number],
 ): Promise<string> {
-  const unavailable = `Request ${request.id} was fulfilled, but ${phone.name} is no longer available to this task. Continue without it.`;
-  if (!phone.connection) return unavailable;
-  const refs = computerToolRefs(
-    await integrations.listCallableTools({
-      ownerUserId: request.requestedBy,
-      threadId: request.originatingThreadId,
-    }),
-    phone.connection.connectionId,
-  );
-  if (!refs.observe) return unavailable;
-  return `Request ${request.id} was fulfilled. ${phone.name} is ready. Use phone(${JSON.stringify(phone.name)}) in the computer tool. Release it when you are done so another task can use it. Continue.`;
+  const current = access.phones.find((entry) => entry.deviceId === phone.deviceId);
+  const result = current ? access.phone(current) : null;
+  return `Request ${request.id} was fulfilled. ${
+    !result
+      ? `${phone.name} is unavailable. Use integration_search {query:"Phone display"} to find current targets.`
+      : result.blocked
+        ? `${result.blocked.message} ${result.blocked.next}`
+        : `${phone.name} is ready. Use phone(${JSON.stringify(phone.deviceId)}) in computer_use.`
+  }`;
 }
+
 function inventoryFor(
   request: Request,
   integrations: IntegrationInventorySource,
@@ -620,16 +620,11 @@ function installedFromManifest(
     ProposalProvenanceSchema.safeParse(provenance).data?.artifactDigest === manifest.proposal.digest
   );
 }
-type IntegrationState =
-  | {
-      readonly detail: string | null;
-      readonly disposition: "needs-account" | "needs-grant" | "ready";
-    }
-  | {
-      readonly detail: string | null;
-      readonly disposition: "blocked";
-      readonly remedy: string;
-    };
+type IntegrationState = {
+  readonly detail: string | null;
+  readonly disposition: "needs-account" | "needs-grant" | "ready" | "blocked";
+  readonly remedy: string;
+};
 
 /**
  * Access continuations scope inventory to the fulfilled connection and access,
@@ -655,60 +650,33 @@ function integrationState(
         !server || (server.connectionRequirement.kind === "none") === (target.connectionId === null)
       );
     })
-    .map(readinessState);
+    .map((readiness) => readinessState(readiness, entry.installation.name));
   return (
     states.find(({ disposition }) => disposition === "ready") ??
     states.find(({ disposition }) => disposition === "needs-grant") ??
     states.find(({ disposition }) => disposition === "needs-account") ??
     states[0] ?? {
-      detail: target
-        ? "the fulfilled target has no matching server"
-        : "the installation exposes no servers",
+      detail: `${entry.installation.name} ${target ? "has no matching server for the fulfilled target" : "exposes no servers"}.`,
       disposition: "blocked",
       remedy:
         "An administrator must repair the installation. Continue without it and tell the user.",
     }
   );
 }
-function readinessState(readiness: IntegrationReadiness): IntegrationState {
-  const detail = readiness.detail ? readiness.detail.slice(0, 240) : null;
-  switch (readiness.code) {
-    // A ready server has nothing left to explain, so any detail it still
-    // carries is stale and would only mislead.
-    case "READY":
-      return {
-        detail: null,
-        disposition: "ready",
-      };
-    case "ACCESS_GRANT_REQUIRED":
-      return {
-        detail,
-        disposition: "needs-grant",
-      };
-    case "USER_AUTHORIZATION_REQUIRED":
-    case "REAUTHORIZATION_REQUIRED":
-      return {
-        detail,
-        disposition: "needs-account",
-      };
-    case "ADMIN_CONFIGURATION_REQUIRED":
-      return {
-        detail,
-        disposition: "blocked",
-        remedy:
-          "Request access through integration_request; the connection UI offers supported personal-app setup and identifies any administrator prerequisite.",
-      };
-    case "INTEGRATION_UNAVAILABLE":
-      return {
-        detail,
-        disposition: "blocked",
-        remedy:
-          "Requesting it again will not help. Continue without it and tell the user what that detail says.",
-      };
-  }
-}
-function detailClause(detail: string | null): string {
-  return detail ? ` (${detail})` : "";
+function readinessState(readiness: IntegrationReadiness, integration: string): IntegrationState {
+  const blocked = integrationBlocked(readiness, integration);
+  return blocked
+    ? {
+        disposition:
+          blocked.code === "access_required"
+            ? "needs-grant"
+            : blocked.code === "sign_in_required" || blocked.code === "reauthorization_required"
+              ? "needs-account"
+              : "blocked",
+        detail: blocked.message,
+        remedy: blocked.next,
+      }
+    : { disposition: "ready", detail: null, remedy: "" };
 }
 function isPermanentContinuationFailure(error: unknown): boolean {
   return error instanceof OpensteerError && !error.retryable;
@@ -720,56 +688,46 @@ function continuationFailureReason(error: unknown): string {
 
 /** What the agent is told; it never learns a password, a username or a cookie. */
 function passwordSignInContinuation(
-  payload: {
-    readonly computerName: string;
-    readonly sessionId?: string | undefined;
-    readonly site: string;
-  },
-  response: PasswordSignInRequestResponse,
+  payload: { readonly computerName: string; readonly site: string },
+  response: Exclude<PasswordSignInRequestResponse, { outcome: "authorized" }>,
 ): string {
-  const { computerName, sessionId, site } = payload;
+  const { computerName, site } = payload;
   switch (response.outcome) {
-    case "authorized":
-      return "Call sign_in again. If fillLogin answers expired, call sign_in again.";
-    case "signed-in":
-      return response.method === "saved-password"
-        ? `Signed in to ${site} with the user's saved password in Browser Session ${sessionId}. Reload the page and confirm the account before continuing.`
-        : `The user signed in to ${site} themselves, and the sign-in was handed to Browser Session ${sessionId}. Reload the page and confirm the account before continuing.`;
     case "expired":
-      return `Nobody answered on ${computerName} within an hour, so ${site} was not signed in. Continue without signing in. If the task still needs it, call sign_in again.`;
+      return `Nobody answered on ${computerName} within an hour, so no saved login for ${site} was released. Call saved_login_request again if the task still needs it.`;
     case "unavailable":
       switch (response.reason) {
         case "no-saved-login":
-          return `There is no saved login for ${site}. Ask the user to sign in in the visible tab or save the login in Opensteer Passwords, then call sign_in again.`;
+          return `Opensteer Passwords on ${computerName} has no login for ${site}.`;
         case "passwords-off":
-          return `Opensteer Passwords is turned off on ${computerName}, so ${site} was not signed in. Continue without signing in unless the user turns it on.`;
+          return `Agent sign-ins are turned off in Opensteer Passwords on ${computerName}.`;
         case "not-set-up":
-          return `Opensteer Passwords is not set up on ${computerName}, so ${site} was not signed in. Continue without signing in unless the user sets it up.`;
+          return `Opensteer Passwords is not set up on ${computerName}.`;
         case "not-responding":
-          return `Opensteer Passwords did not respond on ${computerName}, so ${site} was not signed in. Continue without signing in. If the task still needs it later, call sign_in again.`;
+          return `Opensteer Passwords did not respond on ${computerName}. Call saved_login_request again later if the task still needs ${site}.`;
       }
-    case "outcome-unknown":
-      return `Opensteer couldn't confirm the sign-in to ${site}, so it closed Browser Session ${sessionId}. If the task still needs ${site}, open a fresh session with browser_session_open and call sign_in there.`;
     case "interrupted":
-      return `The sign-in to ${site} stopped on ${computerName} before anything was handed to Browser Session ${sessionId}. If the task still needs it, call sign_in again.`;
+      return `The saved-login release for ${site} stopped on ${computerName} before anything was released. Call saved_login_request again if the task still needs it.`;
     case "session-closed":
-      return `Browser Session ${sessionId} closed before the sign-in to ${site} finished. If the task still needs it, open a fresh session with browser_session_open and call sign_in there.`;
-    case "failed":
-      switch (response.reason) {
-        case "needs-sign-in-page":
-          return `Open the sign-in form for ${site} in Browser Session ${sessionId}, then call sign_in again. No approval was requested and no credential was released.`;
-        case "wrong-password":
-          return `${site} rejected the saved password. Tell the user the saved password for ${site} needs updating in Opensteer Passwords before calling sign_in again.`;
-        case "unsupported-page":
-          return `Opensteer couldn't sign in to ${site} on this page and the user didn't finish it. Continue without signing in, and ask the user only if the task requires it.`;
-        case "blocked-destination":
-          return `The ${site} sign-in page tried to reach a blocked address, so nothing was sent. Do not retry; tell the user.`;
-        case "cleanup-failed":
-          return `Opensteer could not clear its private sign-in for ${site}, so it handed nothing over. If the task still needs it later, call sign_in again.`;
-        case "busy":
-          return `Another sign-in was already running in this browser. Wait for it to finish; if the task still needs ${site}, call sign_in again.`;
-        case "needs-fresh-session":
-          return `Saved-password sign-ins work only in a fresh Browser Session. Open one with browser_session_open and fresh: true, then call sign_in there.`;
-      }
+      return `The browser tab closed before the saved login for ${site} was released.`;
   }
+}
+
+/** What the person said to a question the agent asked, beside each question as they saw it. */
+export function personQuestionContinuation(request: Request): string {
+  const { presentation, response } = request;
+  const title = JSON.stringify(presentation.title);
+  if (request.status === "declined")
+    return `The person dismissed your question ${title} without answering (Request ${request.id}). Take that as no; do not ask it again unless something changed.`;
+  if (presentation.kind !== "form" || response?.kind !== "form")
+    throw new Error("A person question is answered with its form");
+  const answers = presentation.fields.map((field) => {
+    const answer = (response.answers[field.id] ?? []).map((value) => JSON.stringify(value));
+    return `- ${field.prompt}\n  Answer: ${answer.join(", ")}`;
+  });
+  return [
+    `The person answered your question ${title} (Request ${request.id}):`,
+    ...answers,
+    "Continue with what they said.",
+  ].join("\n");
 }

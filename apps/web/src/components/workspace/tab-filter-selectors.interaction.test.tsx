@@ -4,30 +4,42 @@ import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import { useTabDeviceChoice, useTabFilterMatches } from "@opensteer/client/react";
-import type { HostClient, HostSnapshot, TabDeviceChoice } from "@opensteer/client/host";
-import { BrowserSurfaceIdSchema, ThreadIdSchema } from "@opensteer/core";
+import {
+  TabStore,
+  type HostClient,
+  type HostSnapshot,
+  type TabDeviceChoice,
+} from "@opensteer/client/host";
+import { DeviceIdSchema, TabIdSchema, ThreadIdSchema } from "@opensteer/core";
+import { tabFixture } from "@opensteer/client/test-support";
 import * as tabList from "../../../../../packages/client/src/host/tab-list.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-it("derives tab matches and device counts only when their inputs change", () => {
+it("derives tab matches and device counts only when the tab list changes", () => {
   const mock = new MockHostClient({ latencyMs: 0 });
-  let snapshot = mock.getSnapshot();
-  const store = mock.browserTabs;
-  const first = store.structure()[0]!;
-  const template = store.tab(first.groupId, first.tabId)!;
-  const rows = Array.from({ length: 10_000 }, (_, i) => ({
-    ...template,
-    id: BrowserSurfaceIdSchema.parse(`filter-${i}`),
-    order: i,
-    openerId: null,
-    occupants: [],
+  const base = mock.getSnapshot();
+  // Spread over two computers, so the device choice has something to choose between.
+  const computers = base.machines.slice(0, 2).map((machine) => ({
+    computerId: DeviceIdSchema.parse(machine.id),
+    name: machine.name,
   }));
-  store.applyTabs(first.groupId, { op: "begin", generation: "filter" });
-  store.applyTabs(first.groupId, { op: "rows", rows });
-  store.applyTabs(first.groupId, { op: "end", revision: 0, count: rows.length, meta: {} });
+  const rows = Array.from({ length: 1200 }, (_, i) =>
+    tabFixture({ tabId: TabIdSchema.parse(`filter-${i}`), computer: computers[i % 2]! }),
+  );
+  const store = new TabStore();
+  store.apply({ op: "begin", generation: "filter" });
+  store.apply({ op: "rows", rows });
+  store.apply({
+    op: "end",
+    revision: 0,
+    count: rows.length,
+    meta: {
+      layout: { revision: 1, items: rows.map((row) => ({ kind: "tab", tabId: row.tabId })) },
+    },
+  });
+  let snapshot: HostSnapshot = { ...base, tabs: store };
   const listeners = new Set<() => void>();
   const client = {
-    browserTabs: store,
     getSnapshot: () => snapshot,
     subscribe: (listener: () => void) => {
       listeners.add(listener);
@@ -62,42 +74,40 @@ it("derives tab matches and device counts only when their inputs change", () => 
     expect(counts).not.toHaveBeenCalled();
     expect(matching).not.toHaveBeenCalled();
     expect(matches).toBe(before);
-    store.applyTabs(first.groupId, {
+    // A title arriving changes no match and no count.
+    store.apply({
       op: "change",
       generation: "filter",
       base: 0,
       revision: 1,
-      update: [{ id: rows[0]!.id, title: "New title" }],
+      update: [{ tabId: rows[1]!.tabId, title: "Renamed" }],
     });
     publish({ ...snapshot });
     expect(counts).not.toHaveBeenCalled();
     expect(matching).not.toHaveBeenCalled();
-    const occupant = {
-      threadId: ThreadIdSchema.parse(snapshot.threads[0]!.id),
-      holding: true,
-      acting: false,
-      lastActiveAt: "2026-11-01T00:00:00.000Z",
-    };
-    store.applyTabs(first.groupId, {
+    expect(matches).toBe(before);
+    store.apply({
       op: "change",
       generation: "filter",
       base: 1,
       revision: 2,
-      update: [{ id: rows[0]!.id, occupants: [occupant] }],
+      update: [
+        { tabId: rows[0]!.tabId, usedBy: [{ taskId: ThreadIdSchema.parse(base.threads[0]!.id) }] },
+      ],
     });
     publish({ ...snapshot });
-    expect(matches).toContain(`browser:${first.sessionId}:${rows[0]!.id}`);
+    expect(matches).toContain(rows[0]!.tabId);
     expect(counts).toHaveBeenCalledOnce();
     expect(choice!.devices.reduce((total, device) => total + device.count, 0)).toBeGreaterThan(0);
-    store.applyTabs(first.groupId, {
+    store.apply({
       op: "change",
       generation: "filter",
       base: 2,
       revision: 3,
-      remove: [rows[0]!.id],
+      remove: [rows[0]!.tabId],
     });
     publish({ ...snapshot });
-    expect(matches).not.toContain(`browser:${first.sessionId}:${rows[0]!.id}`);
+    expect(matches).not.toContain(rows[0]!.tabId);
   } finally {
     act(() => root.unmount());
     counts.mockRestore();

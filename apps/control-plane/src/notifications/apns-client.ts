@@ -11,6 +11,7 @@ import type { PushDeliveryResult } from "./push-result.js";
  */
 const providerTokenLifetimeMilliseconds = 50 * 60 * 1_000;
 const maximumResponseBytes = 8 * 1_024;
+const apnsPayloadLimitBytes = 4_096;
 
 const apnsOrigins = {
   production: "https://api.push.apple.com",
@@ -83,19 +84,29 @@ export class ApnsClient {
     readonly message: NotificationMessage;
     readonly token: string;
   }): Promise<PushDeliveryResult> {
+    const payload = (data: NotificationMessage["data"]): string =>
+      JSON.stringify({
+        ...data,
+        // Expo reads remote content.data from body; the extension reads the root.
+        body: { deepLink: data.deepLink },
+        aps: {
+          alert: { body: input.message.body, title: input.message.title },
+          sound: "default",
+          "thread-id": `${data.deploymentId}:${data.threadId ?? data.channelId ?? data.noticeId ?? ""}`,
+          ...(data.preview ? { "mutable-content": 1 } : {}),
+        },
+      });
+    let body = payload(input.message.data);
+    if (Buffer.byteLength(body, "utf8") > apnsPayloadLimitBytes) {
+      // The destination outranks private preview text: the generic alert still opens it.
+      const { preview: _preview, ...withoutPreview } = input.message.data;
+      body = payload(withoutPreview);
+    }
     let response: ApnsTransportResponse;
     try {
       response = await this.#transport({
         origin: apnsOrigins[input.apsEnvironment],
-        body: JSON.stringify({
-          ...input.message.data,
-          aps: {
-            alert: { body: input.message.body, title: input.message.title },
-            sound: "default",
-            "thread-id": `${input.message.data.deploymentId}:${input.message.data.channelId ?? input.message.data.threadId ?? input.message.data.teamId}`,
-            ...(input.message.data.preview ? { "mutable-content": 1 } : {}),
-          },
-        }),
+        body,
         headers: {
           authorization: `bearer ${await this.#token()}`,
           "apns-collapse-id": input.collapseKey,

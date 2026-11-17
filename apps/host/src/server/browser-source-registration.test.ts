@@ -36,6 +36,7 @@ describe("what the Host signs for a Chrome connection", () => {
         canonicalOrigin,
         currentRoute: async () => route,
         deploymentName: async () => "Tim's Mac",
+        passwords: {} as never,
         personal: true,
         revalidateSession: async () => {},
         service: {

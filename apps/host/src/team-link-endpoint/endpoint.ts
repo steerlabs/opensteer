@@ -1,3 +1,7 @@
+import { sql } from "kysely";
+import { randomUUID } from "node:crypto";
+import type { TeamBus } from "@opensteer/database/team-bus";
+import { withTeamPeerVersion } from "@opensteer/database/team-access";
 import {
   OpensteerError,
   type TeamSource,
@@ -31,13 +35,18 @@ import { boundTeamReadPage } from "./read-page.js";
 import { TeamKnowledgeFailure } from "../knowledge/team-knowledge.js";
 import type { TeamAccessResolver, TeamAccessLockPort } from "../team/access-port.js";
 
+const defaultReturnWindowSize = 200;
+
 export interface TeamLinkEndpointOptions {
+  readonly bus?: TeamBus;
+  readonly processId?: string;
   readonly links: TeamEndpointLinks;
   readonly requests: TeamRequestStorePort;
   readonly data: TeamMachineDataPort;
   readonly access: TeamAccessLockPort;
   readonly lifetimes: TeamLinkLifetimes;
   readonly resolver: TeamAccessResolver;
+  readonly returnWindowSize?: number;
   readonly onPresence?: (ownerUserId: UserId, online: boolean) => void;
 }
 interface MachineResult {
@@ -56,19 +65,47 @@ export class TeamLinkEndpoint {
     Set<{
       ownerUserId: UserId;
       online: boolean;
+      epoch(): string | undefined;
+      close(): void;
+      refresh(): Promise<void>;
       deliver(): Promise<void>;
       cancel(id: TeamAgentRequestId): void;
     }>
   >();
+  readonly #off: (() => void)[] = [];
+  readonly #processId = randomUUID();
+  /** Database work started from events; close waits for it so the pool outlives it. */
+  readonly #work = new Set<Promise<unknown>>();
+  #track(work: Promise<unknown>) {
+    const tracked = work.catch(() => {});
+    this.#work.add(tracked);
+    void tracked.finally(() => this.#work.delete(tracked));
+  }
   constructor(options: TeamLinkEndpointOptions) {
     this.options = options;
+    if (options.bus)
+      this.#off.push(
+        options.bus.on((event) => {
+          if (event.kind === "link")
+            for (const socket of this.#sockets.get(event.linkId) ?? [])
+              if (socket.epoch() && BigInt(socket.epoch()!) < BigInt(event.epoch)) socket.close();
+          // Only that link's sockets: deliver what is pending and cancel what they hold that ended.
+          if (event.kind === "request")
+            for (const socket of this.#sockets.get(event.linkId) ?? [])
+              this.#track(socket.refresh());
+        }),
+      );
   }
 
   async attach(socket: WebSocket, linkId: TeamLinkId): Promise<void> {
     const { links, requests, access, lifetimes } = this.options;
     const link = await links.assertActive(linkId);
+    const returnWindowSize = this.options.returnWindowSize ?? defaultReturnWindowSize;
+    const refillThreshold = Math.floor(returnWindowSize / 2);
     let active = true;
     let hello = false;
+    let epoch: string | undefined;
+    let peerVersion = 0;
     let work = Promise.resolve();
     let queued = 0;
     const offline = () => {
@@ -78,7 +115,13 @@ export class TeamLinkEndpoint {
       if (count) this.#online.set(link.ownerUserId, count);
       else {
         this.#online.delete(link.ownerUserId);
-        this.options.onPresence?.(link.ownerUserId, false);
+        if (epoch)
+          this.#track(
+            links
+              .disconnected(linkId, epoch)
+              .then(() => this.options.onPresence?.(link.ownerUserId, false)),
+          );
+        else this.options.onPresence?.(link.ownerUserId, false);
       }
     };
     const close = (revoked = false) => {
@@ -94,6 +137,7 @@ export class TeamLinkEndpoint {
       linkId,
       userId: link.ownerUserId,
       channelIds: [],
+      socket: true,
       cancel: close,
     });
     const write = (frame: TeamLinkServerFrame) => {
@@ -104,54 +148,122 @@ export class TeamLinkEndpoint {
       socket.send(encoded);
     };
     const send = async (frame: TeamLinkServerFrame) => {
-      const revision = access.revision;
+      const revision = await access.current();
       await links.assertActive(linkId);
+      if (epoch) await links.assertEpoch(linkId, epoch);
       await access.handoff(
         revision,
         async () => {
           await links.assertActive(linkId);
+          if (epoch) await links.assertEpoch(linkId, epoch);
           return true;
         },
         () => write(frame),
       );
     };
+    let delivery: Promise<void> | undefined;
+    let deliveryRequested = false;
+    const delivered = new Set<TeamAgentRequestId>();
+    let refreshing: Promise<void> | undefined;
+    let refreshAgain = false;
+    const inFlightReturns = new Set<TeamAgentRequestId>();
+    let returnBacklog = false;
     const subscriber = {
       ownerUserId: link.ownerUserId,
       online: false,
-      deliver: async () => {
-        if (!hello || !active) return;
-        const revision = access.revision;
-        const pending = await requests.pending(linkId);
-        const batches: (typeof pending)[number][][] = [];
-        let batch: (typeof pending)[number][] = [];
-        for (const request of pending) {
-          const next = [...batch, request];
-          if (
-            batch.length &&
-            Buffer.byteLength(JSON.stringify({ type: "requests", requests: next })) >
-              teamLinkMaxFrameBytes
-          ) {
-            batches.push(batch);
-            batch = [];
+      epoch: () => epoch,
+      close: () => close(),
+      // One pass at a time per socket; an event during a pass schedules exactly one more.
+      refresh: () => {
+        refreshAgain = true;
+        return (refreshing ??= (async () => {
+          try {
+            while (refreshAgain) {
+              refreshAgain = false;
+              if (delivered.size) {
+                const rows = await links.database
+                  .selectFrom("teamAgentRequests")
+                  .select(["id", "state"])
+                  .where("id", "in", [...delivered])
+                  .execute();
+                for (const row of rows)
+                  if (!["queued", "working", "needs_you", "awaiting_approval"].includes(row.state))
+                    subscriber.cancel(row.id);
+              }
+              await subscriber.deliver();
+            }
+          } finally {
+            refreshing = undefined;
           }
-          batch.push(request);
-        }
-        if (batch.length) batches.push(batch);
-        for (const batch of batches) {
-          await access.handoff(
-            revision,
-            async () => {
-              const current = await requests.pending(linkId);
-              return batch.every((item) =>
-                current.some((entry) => entry.request.id === item.request.id),
+        })());
+      },
+      deliver: (refill = false) => {
+        if (!refill) deliveryRequested = true;
+        if (delivery) return delivery;
+        delivery = withTeamPeerVersion(peerVersion, () =>
+          Promise.resolve().then(async () => {
+            try {
+              do {
+                deliveryRequested = false;
+                if (!hello || !active) return;
+                if (epoch) await links.assertEpoch(linkId, epoch);
+                const capacity = returnWindowSize - inFlightReturns.size;
+                if (!capacity) return;
+                const revision = await access.current();
+                const pending = await requests.pending(linkId, [...delivered], capacity);
+                returnBacklog = pending.length === capacity;
+                const batches: (typeof pending)[number][][] = [];
+                let batch: (typeof pending)[number][] = [];
+                for (const request of pending) {
+                  const next = [...batch, request];
+                  if (
+                    batch.length &&
+                    (batch.length === 32 ||
+                      Buffer.byteLength(JSON.stringify({ type: "requests", requests: next })) >
+                        teamLinkMaxFrameBytes)
+                  ) {
+                    batches.push(batch);
+                    batch = [];
+                  }
+                  batch.push(request);
+                }
+                if (batch.length) batches.push(batch);
+                for (const batch of batches) {
+                  await access.handoff(
+                    revision,
+                    async () => {
+                      if (epoch) await links.assertEpoch(linkId, epoch);
+                      const current = await requests.pending(linkId, [...delivered], capacity);
+                      return batch.every((item) =>
+                        current.some((entry) => entry.request.id === item.request.id),
+                      );
+                    },
+                    () => {
+                      write({ type: "requests", requests: batch });
+                      for (const item of batch) {
+                        delivered.add(item.request.id);
+                        if (item.request.kind === "return") inFlightReturns.add(item.request.id);
+                      }
+                    },
+                  );
+                }
+              } while (
+                deliveryRequested ||
+                (returnBacklog && inFlightReturns.size <= refillThreshold)
               );
-            },
-            () => write({ type: "requests", requests: batch }),
-          );
-        }
+            } finally {
+              delivery = undefined;
+            }
+          }),
+        );
+        return delivery;
       },
       cancel: (requestId: TeamAgentRequestId) => {
-        void send({ type: "cancel", requestId }).catch(() => close());
+        delivered.delete(requestId);
+        inFlightReturns.delete(requestId);
+        void send({ type: "cancel", requestId })
+          .then(() => subscriber.deliver())
+          .catch(() => close());
       },
     };
     const sockets = this.#sockets.get(linkId) ?? new Set();
@@ -161,6 +273,7 @@ export class TeamLinkEndpoint {
       active = false;
       offline();
       unregister();
+      if (epoch) this.#track(links.disconnected(linkId, epoch));
       sockets.delete(subscriber);
       if (!sockets.size) this.#sockets.delete(linkId);
     });
@@ -183,12 +296,15 @@ export class TeamLinkEndpoint {
           const frame = readTeamFrame(TeamLinkClientFrameViewSchema, raw);
           if (!frame) return;
           await links.assertActive(linkId);
+          if (epoch) await links.assertEpoch(linkId, epoch);
           if (frame.type === "hello") {
             if (hello) throw linkError("bad_request");
             checkTeamVersion(String(frame.teamApiVersion));
+            peerVersion = frame.teamApiVersion;
+            epoch = await links.hello(linkId, this.options.processId ?? this.#processId);
             hello = true;
             clearTimeout(deadline);
-            await links.seen(linkId);
+            await links.seen(linkId, epoch!);
             await send({
               type: "ready",
               teamApiVersion,
@@ -204,19 +320,33 @@ export class TeamLinkEndpoint {
             // Personal reconciles these even when they are absent from pending().
             for (const terminal of frame.terminalRequests) {
               if (terminal.terminalState && terminal.publicationState === "pending")
-                await requests.receipt(linkId, terminal.requestId);
+                await access.withLinkEpoch(linkId, epoch!, () =>
+                  requests.receipt(linkId, terminal.requestId),
+                );
             }
             await subscriber.deliver();
           } else if (!hello) {
             throw linkError("bad_request");
           } else if (frame.type === "ping") {
-            await links.seen(linkId);
+            await links.seen(linkId, epoch!);
             await send({ type: "pong" });
           } else {
             try {
-              await this.call(linkId, frame, (result) =>
-                write({ type: "result", id: frame.id, result }),
+              const result = await withTeamPeerVersion(peerVersion, () =>
+                access.withLinkEpoch(linkId, epoch!, () =>
+                  this.call(linkId, frame, (result) => {
+                    write({ type: "result", id: frame.id, result });
+                    return result;
+                  }),
+                ),
               );
+              if (result.kind === "accepted" && result.request.kind === "return") {
+                delivered.delete(result.request.id);
+                inFlightReturns.delete(result.request.id);
+                // A page read must not hold up acknowledgments for the current window.
+                if (returnBacklog && inFlightReturns.size <= refillThreshold)
+                  void subscriber.deliver(true).catch(() => close());
+              }
             } catch (error) {
               await send({
                 type: "error",
@@ -235,7 +365,9 @@ export class TeamLinkEndpoint {
                   message:
                     error instanceof TeamKnowledgeFailure
                       ? [error.message, error.next].filter(Boolean).join("\n").slice(0, 2000)
-                      : "Team request is unavailable",
+                      : error instanceof OpensteerError && error.reason === "api-version-mismatch"
+                        ? error.message
+                        : "Team request is unavailable",
                   retryable:
                     !(error instanceof OpensteerError) ||
                     error.retryable ||
@@ -244,8 +376,11 @@ export class TeamLinkEndpoint {
               });
             }
           }
-        } catch {
-          close();
+        } catch (error) {
+          close(
+            error instanceof OpensteerError &&
+              (error.code === "unauthorized" || error.reason === "api-version-mismatch"),
+          );
         } finally {
           queued--;
         }
@@ -257,8 +392,27 @@ export class TeamLinkEndpoint {
     await Promise.all([...(this.#sockets.get(linkId) ?? [])].map((socket) => socket.deliver()));
   }
 
-  isOnline(ownerUserId: UserId): boolean {
-    return this.#online.has(ownerUserId);
+  isOnline(ownerUserId: UserId): Promise<boolean> {
+    return this.options.links.isOnline(ownerUserId);
+  }
+  async resync() {
+    for (const sockets of this.#sockets.values())
+      for (const socket of sockets) await socket.refresh();
+  }
+  /** A planned stop: link sockets reconnect to another copy while transfers finish. */
+  relocate() {
+    this.options.lifetimes.closeSockets();
+  }
+  closeAll(code = 1012) {
+    this.options.lifetimes.closeAll(code);
+  }
+  async close() {
+    for (const off of this.#off) off();
+    this.closeAll();
+    while (this.#work.size) await Promise.all(this.#work);
+    await sql`delete from team_link_connections where process_id=${this.options.processId ?? this.#processId}`.execute(
+      this.options.links.database,
+    );
   }
 
   cancel(linkId: TeamLinkId, requestId: TeamAgentRequestId): void {
@@ -277,7 +431,7 @@ export class TeamLinkEndpoint {
     deliver?: (result: TeamLinkResult) => Value,
   ): Promise<Value | TeamLinkResult> {
     const { links, requests, access } = this.options;
-    const revision = access.revision;
+    const revision = await access.current();
     const link = await links.assertActive(linkId);
     const buffered = await this.#perform(linkId, frame);
     const result = TeamLinkResultSchema.parse(buffered.result);
@@ -296,14 +450,14 @@ export class TeamLinkEndpoint {
         "requestId" in frame &&
         frame.requestId
       ) {
-        if (["receipt", "status"].includes(frame.type))
+        if (["accept", "receipt", "status"].includes(frame.type))
           await requests.receipt(linkId, frame.requestId);
         else await requests.authorize(linkId, frame.requestId, "read");
       }
       if (result.kind === "channels")
         await links.database.transaction().execute(async (tx) => {
           for (const channel of result.result.channels) {
-            const rights = await this.options.resolver.channel(
+            const rights = await this.options.resolver.peerChannel(
               tx,
               { kind: "agent", userId: link.ownerUserId },
               channel.id,
@@ -327,7 +481,7 @@ export class TeamLinkEndpoint {
 
   async #source(userId: TeamActor["userId"], source: TeamSource): Promise<void> {
     await this.options.links.database.transaction().execute(async (tx) => {
-      const rights = await this.options.resolver.channel(
+      const rights = await this.options.resolver.peerChannel(
         tx,
         { kind: "agent", userId },
         source.channelId,
@@ -349,7 +503,10 @@ export class TeamLinkEndpoint {
       };
     if (frame.type === "accept")
       return {
-        result: { kind: "accepted", request: await requests.accept(linkId, frame.requestId) },
+        result: {
+          kind: "accepted",
+          request: await requests.accept(linkId, frame.requestId, frame.decision),
+        },
       };
     // Knowledge acts as the link's owner and records its own audit.
     if (isKnowledgeCall(frame)) return data.knowledge(linkId, link.ownerUserId, frame);
@@ -357,6 +514,12 @@ export class TeamLinkEndpoint {
     try {
       let result: TeamLinkResult;
       switch (frame.type) {
+        case "reconcile":
+          result = {
+            kind: "reconciled",
+            requests: [...(await requests.reconcile(linkId, frame.requestIds))],
+          };
+          break;
         case "channels":
           result = { kind: "channels", result: await data.channels(actor, linkId, frame) };
           break;
@@ -367,15 +530,18 @@ export class TeamLinkEndpoint {
           await requests.status(linkId, frame.requestId, frame);
           result = { kind: "ok" };
           break;
-        case "post":
+        case "post": {
+          const posted = await requests.post(linkId, {
+            ...frame,
+            publication: frame.publication ?? false,
+          });
           result = {
             kind: "receipt",
-            messageId: await requests.post(linkId, {
-              ...frame,
-              publication: frame.publication ?? false,
-            }),
+            messageId: posted.messageId,
+            ...(posted.askOutcomes.length ? { askOutcomes: [...posted.askOutcomes] } : {}),
           };
           break;
+        }
         case "read":
           result = {
             kind: "read",

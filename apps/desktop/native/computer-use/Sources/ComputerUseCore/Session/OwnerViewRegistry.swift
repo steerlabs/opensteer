@@ -8,7 +8,7 @@ final class OwnerViewRegistry {
     let generation: Int
     let connectionID: Int
     let app: AppIdentity
-    let requestedWindowID: UInt32?
+    let requestedWindowID: String?
     let captureTargetId = UUID().uuidString
     let videoLease: MacVideoLease
     var expiresAt: TimeInterval
@@ -20,7 +20,7 @@ final class OwnerViewRegistry {
     var windowSummary: Wire.ViewStateResult.OwnerWindowSummary?
     let cancellation = SessionCancellation()
 
-    init(id: String, generation: Int, expiresAt: TimeInterval, app: AppIdentity, connectionID: Int, requestedWindowID: UInt32?)
+    init(id: String, generation: Int, expiresAt: TimeInterval, app: AppIdentity, connectionID: Int, requestedWindowID: String?)
     {
       self.id = id
       self.generation = generation
@@ -36,7 +36,7 @@ final class OwnerViewRegistry {
 
   func open(
     id: String, generation: Int, leaseDurationMs: Int, app: AppIdentity, connectionID: Int,
-    windowID: UInt32? = nil,
+    windowID: String? = nil,
     now: TimeInterval = ProcessInfo.processInfo.systemUptime
   ) throws -> View {
     prune(now: now)

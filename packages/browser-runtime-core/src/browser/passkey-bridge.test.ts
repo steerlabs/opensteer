@@ -395,7 +395,7 @@ it("preserves the authenticator's signed client data and pins the reply callback
   f.call();
   await f.flush();
   const expression = f.replies[0]!.expression;
-  expect(expression).toMatch(/^this\["opensteerReply_[a-f0-9]{64}"\]/u);
+  expect(expression).toMatch(/^this\["r_[a-f0-9]{64}"\]/u);
   expect(expression).not.toContain("reply-slot");
   expect(expression).toContain('"clientDataJSON":"CQg"');
   f.bridge.close();

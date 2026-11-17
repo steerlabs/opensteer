@@ -299,7 +299,15 @@ describe("DeploymentAccessService", () => {
       statusInfo: { reason: null, status: "starting" },
     });
 
-    fixture.emitPersonal({ ...readyPersonalStatus, deploymentId: local.id });
+    fixture.emitPersonal({
+      ...readyPersonalStatus,
+      deploymentId: local.id,
+      components: {
+        ...readyPersonalStatus.components,
+        runner: { state: "starting", version: null },
+        browser: { state: "starting", version: null },
+      },
+    });
     await settle();
 
     expect(fixture.establish).toHaveBeenCalledOnce();
@@ -339,7 +347,7 @@ describe("DeploymentAccessService", () => {
     await settle();
 
     expect(fixture.establish).toHaveBeenCalledOnce();
-    expect(fixture.establish).toHaveBeenLastCalledWith(remote.id);
+    expect(fixture.establish).toHaveBeenLastCalledWith(remote.id, false);
 
     fixture.emitPersonal({ ...readyPersonalStatus, deploymentId: local.id });
     await settle();
@@ -388,7 +396,7 @@ describe("DeploymentAccessService", () => {
     finishClose?.();
     await selecting;
     expect(fixture.establish).toHaveBeenCalledOnce();
-    expect(fixture.establish).toHaveBeenCalledWith(remote.id);
+    expect(fixture.establish).toHaveBeenCalledWith(remote.id, true);
     service.dispose();
   });
 
@@ -694,6 +702,7 @@ describe("DeploymentAccessService", () => {
 
     expect(fixture.ports.hostSession.closeCurrent).toHaveBeenCalled();
     expect(fixture.establish).toHaveBeenCalledTimes(2);
+    expect(fixture.establish).toHaveBeenLastCalledWith(target.id, false);
     expect(service.snapshot().deployments[0]?.status).toBe("connected");
     service.dispose();
   });
@@ -772,6 +781,39 @@ describe("DeploymentAccessService", () => {
     });
     await expect(service.createPersonalDeployment()).rejects.toThrow("not available");
     service.dispose();
+  });
+
+  it("starts a setup again that failed before its Deployment was listed, and only then", async () => {
+    const failed = {
+      ...personalStatus,
+      canStart: true,
+      deploymentId: createId("deployment"),
+      issue: {
+        code: "database-unavailable" as const,
+        component: "postgresql" as const,
+        detail: "Another app is using port 5432. Quit it, then try again.",
+        repairAction: "restart-opensteer" as const,
+      },
+      state: "repair-required" as const,
+      step: null,
+    };
+    const fixture = fakePorts({ personal: failed });
+    const service = new DeploymentAccessService(fixture.ports);
+    await service.initialize();
+    // Nothing is listed to retry through, so setting up again is the way on.
+    await expect(service.createPersonalDeployment()).resolves.toBeUndefined();
+    expect(fixture.ports.personal.start).toHaveBeenCalledOnce();
+    service.dispose();
+
+    const listed = fakePorts({
+      deployments: [deployment({ id: failed.deploymentId, onThisComputer: true })],
+      personal: failed,
+    });
+    const listedService = new DeploymentAccessService(listed.ports);
+    await listedService.initialize();
+    await expect(listedService.createPersonalDeployment()).rejects.toThrow("not available");
+    expect(listed.ports.personal.start).not.toHaveBeenCalled();
+    listedService.dispose();
   });
 
   it("finishes an activating Account link instead of refusing the affordance it advertises", async () => {
@@ -1002,6 +1044,62 @@ describe("DeploymentAccessService", () => {
       fixture.emitAccount(expiredAccount());
       await settle();
       expect(service.snapshot().deployments.map(({ name }) => name)).toEqual(["Lab server"]);
+      service.dispose();
+    });
+
+    it("keeps an Account place this Mac joined listed and openable after the sign-in ends, until the Mac leaves it", async () => {
+      const mac = otherMac({ livenessExpiresAt: liveLease });
+      const other = deployment({ name: "Team server", source: "account" });
+      const fixture = fakePorts({ deployments: [mac, other], joined: [mac.id] });
+      fixture.currentState.mockResolvedValueOnce(expiredAccount());
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+
+      expect(service.snapshot().deployments.map(({ name }) => name)).toEqual(["Studio Mac"]);
+      expect(service.snapshot().deployments[0]?.statusInfo.label).toBe("Sign in again");
+      await service.select(mac.id);
+      expect(fixture.select).toHaveBeenCalledWith(mac.id);
+      expect(fixture.establish).not.toHaveBeenCalled();
+
+      fixture.emitCatalog({ deployments: [mac, other], selectedDeploymentId: null });
+      fixture.emitJoined([]);
+      await settle();
+      expect(service.snapshot().deployments).toEqual([]);
+      service.dispose();
+    });
+
+    it("never lets startup's read of what this Mac joined undo a newer one", async () => {
+      const mac = otherMac({ livenessExpiresAt: liveLease });
+      const fixture = fakePorts({ deployments: [mac] });
+      const catalog = deferred<CatalogProjection>();
+      vi.mocked(fixture.ports.catalog.read).mockReturnValueOnce(catalog.promise);
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      const initialized = service.initialize();
+      await settle();
+      fixture.emitJoined([mac.id]);
+      await settle();
+      catalog.resolve({ deployments: [mac], revision: 1, selectedDeploymentId: null });
+      await initialized;
+
+      expect(service.snapshot().deployments.map(({ name }) => name)).toEqual(["Studio Mac"]);
+      service.dispose();
+    });
+
+    it("won't offer to start an Opensteer until it can read what this Mac joined", async () => {
+      const fixture = fakePorts();
+      vi.spyOn(fixture.ports.devices, "joinedDeploymentIds").mockRejectedValueOnce(
+        new Error("This Mac's device membership file is incompatible or corrupt."),
+      );
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+      expect(service.snapshot().personalSetup).toMatchObject({
+        canStart: false,
+        state: "repair-required",
+      });
+
+      fixture.emitJoined([]);
+      await settle();
+      expect(service.snapshot().personalSetup).toMatchObject({ canStart: true, state: "stopped" });
       service.dispose();
     });
 
@@ -1362,7 +1460,7 @@ describe("DeploymentAccessService", () => {
         expect(service.snapshot().deployments[0]?.availableActions).toEqual(["select"]);
         await service.select(lab.id);
         expect(fixture.select).toHaveBeenCalledWith(lab.id);
-        expect(fixture.establish).toHaveBeenCalledWith(lab.id);
+        expect(fixture.establish).toHaveBeenCalledWith(lab.id, true);
         service.dispose();
       },
     );
@@ -1470,9 +1568,12 @@ function fakePorts(
     readonly deployments?: CatalogProjection["deployments"];
     readonly directoryUnavailable?: readonly DeploymentAccessUnavailable[];
     readonly personal?: DeploymentAccessPorts["personal"]["status"];
+    readonly joined?: readonly string[];
     readonly selectedDeploymentId?: string;
   } = {},
 ) {
+  let joined: ReadonlySet<string> = new Set(options.joined ?? []);
+  const devicesListeners = new Set<() => void>();
   const clock = { now: Date.parse("2026-10-20T20:00:00.000Z") };
   const network = { online: true };
   const probe = vi.fn(
@@ -1547,6 +1648,13 @@ function fakePorts(
         return () => catalogListeners.delete(listener);
       },
     },
+    devices: {
+      joinedDeploymentIds: async () => joined,
+      subscribe: (listener) => {
+        devicesListeners.add(listener);
+        return () => devicesListeners.delete(listener);
+      },
+    },
     direct: {
       addRoute: vi.fn(async () => catalog),
       connect: vi.fn(async () => catalog),
@@ -1601,6 +1709,10 @@ function fakePorts(
     emitCatalog(next: Omit<CatalogProjection, "revision">) {
       projection = { ...next, revision: projection.revision + 1 };
       for (const listener of catalogListeners) listener();
+    },
+    emitJoined(ids: readonly string[]) {
+      joined = new Set(ids);
+      for (const listener of devicesListeners) listener();
     },
     emitHostSession(observation: HostSessionObservation) {
       for (const listener of hostSessionListeners) listener(observation);

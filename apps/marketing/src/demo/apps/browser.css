@@ -83,7 +83,7 @@
   height: 16px;
   flex: none;
 }
-.br-bar > svg:nth-of-type(2) {
+.br-bar > svg:first-of-type {
   opacity: 0.4;
 }
 .br-omni {

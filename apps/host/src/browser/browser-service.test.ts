@@ -1,3 +1,5 @@
+import { RunnerIdSchema, type DeviceId } from "@opensteer/core";
+import { DeviceIdSchema } from "@opensteer/core";
 import { DeviceAccessRefusal } from "../administration/device-access.js";
 import { BrowserRuntime } from "@opensteer/browser-runtime-core";
 import {
@@ -32,7 +34,8 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import type { BrowserHistoryStore, PersonalTabStore } from "@opensteer/database";
+import type { BrowserHistoryStore, TabStore, TabRecord, TabWrite } from "@opensteer/database";
+import { databaseOperation } from "@opensteer/database";
 import {
   BrowserAttachTicketClaimsSchema,
   browserCaptureMaxTargets,
@@ -195,6 +198,13 @@ function nativeProfileOptions() {
         listPendingBrowserProfileDeletions: async () => [],
         getBrowserProfileStorage: async (id: BrowserProfileId) =>
           bindings.get(id) ?? { kind: "unbound" },
+        acknowledgeBrowserProfileReady: async (
+          binding: import("@opensteer/protocol").LocalProfileBinding,
+        ) => {
+          const storage = bindings.get(binding.profileId);
+          if (storage?.kind !== "local") throw new Error("Native profile was not bound.");
+          bindings.set(binding.profileId, { ...storage, initialized: true });
+        },
         bindBrowserProfile: async (binding: import("@opensteer/protocol").LocalProfileBinding) => {
           const storage = { kind: "local" as const, binding, initialized: false };
           bindings.set(binding.profileId, storage);
@@ -521,7 +531,7 @@ describe("BrowserService", () => {
         })),
       });
       await vi.waitFor(() =>
-        expect(service.clientStreams.source.ports.live(first.sessionId)?.records.size).toBe(count),
+        expect(service.pageInventory(first.sessionId)?.records.size).toBe(count),
       );
       const results = [open(), open()];
       for (const result of results) void result.catch(() => undefined);
@@ -616,6 +626,59 @@ describe("BrowserService", () => {
     });
     expect((await repository.listBrowserSessions(ownerId))[0]?.state).toBe("failed");
   });
+
+  it.each(["profile", "session"] as const)(
+    "bounds a first open's ready writes when the open has no deadline (%s row held)",
+    async (held) => {
+      const keys = generateKeyPairSync("ed25519");
+      const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+      const ownerId = createId("user");
+      const repository = new MemoryBrowserRepository(ownerId);
+      const profile = repository.addHostedProfile("Locked");
+      const options = nativeProfileOptions();
+      const blocked = Promise.withResolvers<void>();
+      // Like the store's lock wait, the write ends only when its database deadline cancels it.
+      const lockWait = () => {
+        blocked.resolve();
+        const signal = databaseOperation()?.signal;
+        return new Promise<never>((_, reject) =>
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true }),
+        );
+      };
+      if (held === "profile")
+        vi.spyOn(options.localProfiles, "acknowledgeReady").mockImplementation(lockWait);
+      else {
+        const transition = repository.transitionBrowserSession.bind(repository);
+        vi.spyOn(repository, "transitionBrowserSession").mockImplementation((input) =>
+          input.state === "ready" ? lockWait() : transition(input),
+        );
+      }
+      const service = new BrowserService({
+        ...options,
+        ...profileStateOptions,
+        repository,
+        connectTimeoutMs: 500,
+        signer: new BrowserAttachTicketSigner({
+          keyId: "host-primary",
+          privateKey: keys.privateKey,
+        }),
+        targetResolver: runnerTarget({ url: runtime.url }),
+      });
+      cleanups.push(() => service.close());
+      const opening = service.start({ ownerId, profileId: profile.id });
+      void opening.catch(() => undefined);
+      await withTimeout(blocked.promise, 2_000, {
+        timeoutError: () => new Error("The first open never reached its ready writes."),
+      });
+      expect((await repository.listBrowserSessions(ownerId))[0]?.state).toBe("starting");
+      await expect(
+        withTimeout(opening, 2_000, {
+          timeoutError: () => new Error("A held row lock kept the open pending."),
+        }),
+      ).rejects.toMatchObject({ code: "runner_offline" });
+      expect((await repository.listBrowserSessions(ownerId))[0]?.state).toBe("failed");
+    },
+  );
 
   it("keeps native profiles on their computer, refuses old runtimes and omits saved site data", async () => {
     const keys = generateKeyPairSync("ed25519");
@@ -730,7 +793,7 @@ describe("BrowserService", () => {
       const attachment = await service.attach(ownerId, opened.session.id, peer, consumerOptions());
       const favicon = "data:image/png;base64,AAAA";
       const snapshot = async (documentId: string, withIcon: boolean) => {
-        const previous = vi.spyOn(service.clientStreams.source, "markTabs");
+        const previous = vi.spyOn(service, "tabInventoryChanged");
         runtime.publishTabs({
           surfaces: [
             {
@@ -797,7 +860,7 @@ describe("BrowserService", () => {
         });
       }
       const retained = retainIcon.mock.calls.length;
-      const previous = vi.spyOn(service.clientStreams.source, "markTabs");
+      const previous = vi.spyOn(service, "tabInventoryChanged");
       runtime.publishTabs({
         surfaces: [
           {
@@ -863,7 +926,7 @@ describe("BrowserService", () => {
       );
       const command = await runtime.nextCommand();
       const snapshot = async (title: string) => {
-        const previous = vi.spyOn(service.clientStreams.source, "markTabs");
+        const previous = vi.spyOn(service, "tabInventoryChanged");
         runtime.publishTabs({
           surfaces: [
             {
@@ -1064,7 +1127,7 @@ describe("BrowserService", () => {
     const iconA = "data:image/png;base64,AAAA",
       iconB = "data:image/png;base64,BBBB";
     const snapshot = async (documentId: string | null, extra: Record<string, unknown> = {}) => {
-      const previous = vi.spyOn(service.clientStreams.source, "markTabs");
+      const previous = vi.spyOn(service, "tabInventoryChanged");
       const { navigationId, ...surfaceExtra } = extra;
       runtime.publishTabs({
         surfaces:
@@ -1211,7 +1274,7 @@ describe("BrowserService", () => {
       runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
       await action;
       const snapshot = async (documentId: string, url: string, navigationId?: unknown) => {
-        const previous = vi.spyOn(service.clientStreams.source, "markTabs");
+        const previous = vi.spyOn(service, "tabInventoryChanged");
         runtime.publishTabs({
           surfaces: [
             {
@@ -1281,7 +1344,7 @@ describe("BrowserService", () => {
       };
       const opening = service.openTab(ownerId, input);
       const command = await runtime.nextCommand();
-      const previous = vi.spyOn(service.clientStreams.source, "markTabs");
+      const previous = vi.spyOn(service, "tabInventoryChanged");
       runtime.publishTabs({
         surfaces: [
           {
@@ -1366,7 +1429,7 @@ describe("BrowserService", () => {
         false,
       );
       expect(await runtime.nextCommand()).not.toHaveProperty("navigationId");
-      const previous = vi.spyOn(service.clientStreams.source, "markTabs");
+      const previous = vi.spyOn(service, "tabInventoryChanged");
       runtime.publishTabs({
         surfaces: [
           {
@@ -2233,74 +2296,44 @@ describe("BrowserService", () => {
     attachment.close();
   });
 
-  it("disposes a committed durable close by exact ID without a stale public inventory precondition", async () => {
-    const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
-      targetedStreaming: true,
-    });
-    const ownerId = createId("user");
-
-    const repository = new MemoryBrowserRepository(ownerId);
-    let sessionId: BrowserSessionId;
-    const groupId = createBrowserSessionId();
-    const tabId = BrowserSurfaceIdSchema.parse("page-1");
-    const close = vi.fn(async () => ({ groupId }));
-    const onSessionsChanged = vi.fn();
-    const service = new BrowserService({
-      ...nativeProfileOptions(),
-      ...profileStateOptions,
-      onSessionsChanged,
+  it("removes a closed page's person viewers without closing its physical target", async () => {
+    const keys = generateKeyPairSync("ed25519"),
+      runtime = await startFakeRuntime(keys.publicKey, "host-primary", { targetedStreaming: true }),
+      ownerId = createId("user"),
+      repository = new MemoryBrowserRepository(ownerId),
+      memory = memoryTabs();
+    const service = freshService({
+      keys,
+      runtime,
       repository,
-      connectTimeoutMs: 2000,
-      signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
-      targetResolver: runnerTarget({ url: runtime.url }),
-      personalTabs: {
-        groupIds: async () => [],
-        openTabs: async () => [],
-        close,
-        session: async () => repository.session(sessionId),
-        lineageForSession: async () => groupId,
-        read: async (_ownerId: UserId, id: BrowserSessionId | readonly BrowserSessionId[]) =>
-          Array.isArray(id) ? [] : { id: groupId, tabs: [] },
-        suspend: async () => undefined,
-      } as unknown as PersonalTabStore,
+      tabs: memory.store,
+      tabRestoreVersion: true,
+      targetControl: true,
     });
-    cleanups.push(() => service.close());
-    sessionId = (await service.start({ fresh: true, ownerId })).session.id;
-    const closing = service.closePersonalTab(ownerId, tabId);
-    const settled = closing.then(
-      () => "closed",
-      () => "rejected",
+    const descriptor = await service.pageTabs.open(
+      { kind: "person", ownerId },
+      { kind: "page", guest: true, url: "about:blank" },
+      "open",
     );
-    const command = await runtime.nextCommand();
-    expect(close).toHaveBeenCalledOnce();
-    const cdp = command as {
-      requestId: string;
-      command: { method: string; parameters: { durable?: boolean } };
-    };
-    if (!cdp.command.parameters.durable) {
-      runtime.sendServer({
-        type: "cdp.error",
-        requestId: cdp.requestId,
-        error: { code: "conflict", message: "The browser inventory changed." },
-      });
-    } else {
-      runtime.publishTabs({ inventoryRevision: 2, surfaces: [] });
-      runtime.sendServer({
-        type: "cdp.result",
-        requestId: cdp.requestId,
-        result: { outcome: "tab-closed" },
-      });
-    }
-    expect(await settled).toBe("closed");
-    expect(cdp.command).toMatchObject({
-      method: browserHostMethods.closeTab,
-      parameters: { surfaceId: tabId, durable: true },
-    });
-    expect((await browserRows(service, ownerId, sessionId)).tabs).toEqual([]);
-    expect(onSessionsChanged.mock.calls.some(([, , source]) => source === "browser.tabs")).toBe(
+    await memory.add(descriptor);
+    const row = memory.rows.get(descriptor.id)!;
+    const peer = new RecordingPeer("viewer");
+    const view = await service.attach(ownerId, row.pageBinding!.sessionId, peer, consumerOptions());
+    await view.handle(
+      Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: row.id, frames: false })),
       false,
     );
+    await service.pageTabs.closeViewers(ownerId, row);
+    expect(
+      runtime
+        .receivedCommands()
+        .filter(
+          (command) =>
+            command.type === "cdp.command" &&
+            Reflect.get(command.command as object, "method") === "Opensteer.closeTab",
+        ),
+    ).toEqual([]);
+    expect(service.pageInventory(row.pageBinding!.sessionId)?.records.has(row.id)).toBe(true);
   });
   it("publishes a page's own title for the same document while its untitled read is still answering", async () => {
     const keys = generateKeyPairSync("ed25519");
@@ -2458,7 +2491,7 @@ describe("BrowserService", () => {
       const opened = await service.start({ fresh: true, ownerId });
       expect(runtime.lastClaims()?.navigationVersion).toBe(capable ? 1 : undefined);
       expect(opened.session.navigationVersion).toBe(capable ? 1 : undefined);
-      expect(service.clientStreams.source.ports.live(opened.session.id)?.navigation).toBe(capable);
+      expect(service.pageInventory(opened.session.id)?.navigation).toBe(capable);
       expect((await browserRows(service, ownerId, opened.session.id)).tabs[0]).toMatchObject(
         capable ? { canGoBack: false, canGoForward: false } : {},
       );
@@ -2543,26 +2576,13 @@ describe("BrowserService", () => {
           privateKey: keys.privateKey,
         }),
         targetResolver: runnerTarget({ url: runtime.url, tabRestoreVersion: capable }),
-        personalTabs: {
-          read: async () => [],
-          openTabs: async () => [],
-          list: async () => [],
-          groupIds: async () => [],
-          recordChanges: async (sessionId: BrowserSessionId) => ({
-            groupId: sessionId,
-            changed: true,
-            rows: [],
-            closedIds: [],
-          }),
-          suspend: async () => undefined,
-        } as unknown as PersonalTabStore,
       });
       cleanups.push(() => service.close());
       const opened = await service.start({ fresh: true, ownerId });
       expect(runtime.lastClaims()?.tabRestoreVersion).toBe(capable ? 1 : undefined);
       expect(opened.session.tabRestoreVersion).toBe(capable ? 1 : undefined);
-      const bootstrap = await service.bootstrap(ownerId);
-      expect(bootstrap.tabRestoreVersion).toBe(1);
+      const bootstrap = await service.workspaceBootstrap(ownerId);
+      expect(bootstrap).not.toHaveProperty("tabs");
       if (capable) {
         runtime.publishTabs({
           surfaces: [
@@ -2644,9 +2664,9 @@ describe("BrowserService", () => {
       ],
     });
     await vi.waitFor(() =>
-      expect(
-        service.clientStreams.source.ports.live(opened.session.id)?.records.get("page-2")?.title,
-      ).toBe("Private sibling"),
+      expect(service.pageInventory(opened.session.id)?.records.get("page-2")?.title).toBe(
+        "Private sibling",
+      ),
     );
     expect(updates()).toHaveLength(1);
     const sibling = {
@@ -2661,9 +2681,9 @@ describe("BrowserService", () => {
     );
     runtime.publishTabs({ surfaces: [own, sibling, ...neighbors] });
     await vi.waitFor(() =>
-      expect(
-        service.clientStreams.source.ports.live(opened.session.id)?.records.get("page-2")?.title,
-      ).toBe("Changed sibling"),
+      expect(service.pageInventory(opened.session.id)?.records.get("page-2")?.title).toBe(
+        "Changed sibling",
+      ),
     );
     expect(peer.textFrames).toHaveLength(siblingFrames);
     expect(updates()).toHaveLength(1);
@@ -2760,9 +2780,7 @@ describe("BrowserService", () => {
     const sibling = { id: "page-2", title: "Sibling" };
     runtime.publishTabs({ surfaces: [own, sibling] });
     await vi.waitFor(() =>
-      expect(
-        service.clientStreams.source.ports.live(opened.session.id)?.records.has("page-2"),
-      ).toBe(true),
+      expect(service.pageInventory(opened.session.id)?.records.has("page-2")).toBe(true),
     );
     const peer = new RecordingPeer("return-picture");
     const viewer = await service.attach(ownerId, opened.session.id, peer, consumerOptions());
@@ -2789,10 +2807,9 @@ describe("BrowserService", () => {
     await select("page-2", "page-1");
     runtime.publishTabs({ surfaces: [{ ...own, documentId: "document-2" }, sibling] });
     await vi.waitFor(() =>
-      expect(
-        service.clientStreams.source.ports.live(opened.session.id)?.records.get("page-1")
-          ?.documentId,
-      ).toBe("document-2"),
+      expect(service.pageInventory(opened.session.id)?.records.get("page-1")?.documentId).toBe(
+        "document-2",
+      ),
     );
     await select("page-1", "page-2");
     expect(peer.binaryFrames).toHaveLength(2);
@@ -2825,6 +2842,8 @@ describe("BrowserService", () => {
       geometryRevision: 1,
       loading: false,
       navigationFailed: false,
+      canGoBack: false,
+      canGoForward: false,
       sizedByAgent: false,
     };
     try {
@@ -2876,9 +2895,7 @@ describe("BrowserService", () => {
     }));
     runtime.publishTabs({ surfaces });
     await vi.waitFor(() =>
-      expect(
-        service.clientStreams.source.ports.live(opened.session.id)?.records.has("page-2"),
-      ).toBe(true),
+      expect(service.pageInventory(opened.session.id)?.records.has("page-2")).toBe(true),
     );
     const surfaceId = surfaces.at(-1)!.id;
     await native.handle(
@@ -2948,9 +2965,7 @@ describe("BrowserService", () => {
     runtime.sendServer({ type: "browser.dialog.changed", surfaceId: "page-2", dialog });
     runtime.publishTabs({ surfaces });
     await vi.waitFor(() =>
-      expect(
-        service.clientStreams.source.ports.live(opened.session.id)?.records.has("page-2"),
-      ).toBe(true),
+      expect(service.pageInventory(opened.session.id)?.records.has("page-2")).toBe(true),
     );
     await send({ type: "stream.subscribe", surfaceId: "page-2", frames: false });
     expect(await runtime.nextCommand()).toEqual({
@@ -3036,7 +3051,7 @@ describe("BrowserService", () => {
     await vi.waitFor(
       () =>
         expect(
-          service.clientStreams.source.ports.live(opened.session.id)?.records.get("page-2")?.state,
+          service.pageInventory(opened.session.id)?.records.get("page-2")?.state,
           "The Host never received the suspended tab row",
         ).toBe("suspended"),
       { timeout: 1_000 },
@@ -3349,11 +3364,9 @@ describe("BrowserService", () => {
         url: `https://example.com/${"x".repeat(10000)}?private=value`,
       })),
     });
-    await vi.waitFor(() =>
-      expect(service.clientStreams.source.ports.live(opened.session.id)?.records.size).toBe(64),
-    );
-    const catalog = await service.bootstrap(ownerId);
-    expect(service.clientStreams.source.ports.live(opened.session.id)?.page).toEqual({
+    await vi.waitFor(() => expect(service.pageInventory(opened.session.id)?.records.size).toBe(64));
+    const catalog = await service.workspaceBootstrap(ownerId);
+    expect(service.pageInventory(opened.session.id)?.page).toEqual({
       title: "A".repeat(256),
       url: "https://example.com",
     });
@@ -3467,7 +3480,7 @@ describe("BrowserService", () => {
     return {
       ...f,
       onError,
-      record: vi.spyOn(f.backing, "recordRunPlace"),
+      record: vi.spyOn(f.backing, "recordRunTabPlace"),
       activity: async (surfaceId: string) => {
         f.runtime.sendServer({
           type: "browser.activity",
@@ -3498,10 +3511,7 @@ describe("BrowserService", () => {
     expect(usage.mock.calls.map(([input]) => input.tabId)).toEqual(["page-1", "page-2", "page-3"]);
     clock.advanceBy(1000);
     await f.drain();
-    expect(f.record.mock.calls.map(([input]) => input.data.place)).toEqual([
-      expect.objectContaining({ surfaceId: "page-1" }),
-      expect.objectContaining({ surfaceId: "page-3" }),
-    ]);
+    expect(f.record.mock.calls.map(([input]) => input.data.tabId)).toEqual(["page-1", "page-3"]);
     expect(usage.mock.calls.map(([input]) => input.tabId)).toEqual([
       "page-1",
       "page-2",
@@ -3549,26 +3559,26 @@ describe("BrowserService", () => {
     const actor = f.audience[0]!;
     const native = {
       ...actor,
-      place: { kind: "app" as const, machineId: createId("runner"), appKey: "com.apple.Notes" },
+      tabId: BrowserSurfaceIdSchema.parse("native-tab"),
       title: "Notes",
       at: Date.now(),
       ended: false,
     };
     await f.activity("page-1");
     clock.advanceBy(1000);
-    f.service.beginRunPlace(
+    f.service.beginRunTabPlace(
       native.runId,
       native.generation,
-    )({ place: native.place, title: native.title, site: null });
-    f.service.noteNativeActivity(native);
+    )({ tabId: native.tabId, title: native.title, site: null });
+    f.service.noteTabActivity(native);
     clock.advanceBy(1000);
     await f.activity("page-1");
-    f.service.noteNativeActivity({ ...native, ended: true });
+    f.service.noteTabActivity({ ...native, ended: true });
     await f.drain();
-    expect(f.record.mock.calls.map(([input]) => input.data.place.kind)).toEqual([
-      "browser",
-      "app",
-      "browser",
+    expect(f.record.mock.calls.map(([input]) => input.data.tabId)).toEqual([
+      "page-1",
+      "native-tab",
+      "page-1",
     ]);
   });
 
@@ -3618,7 +3628,7 @@ describe("BrowserService", () => {
     await f.activity("page-1");
     await f.drain();
     expect(f.record.mock.calls.at(-1)?.[0]).toMatchObject({
-      data: { place: { surfaceId: "page-1" }, site: null },
+      data: { tabId: "page-1", site: null },
     });
   });
 
@@ -3632,7 +3642,7 @@ describe("BrowserService", () => {
     expect(f.record).toHaveBeenCalledTimes(2);
     expect(f.record.mock.calls[1]?.[0]).toMatchObject({
       runId: f.audience[0]!.runId,
-      data: { place: { surfaceId: "page-2" } },
+      data: { tabId: "page-2" },
     });
     expect(
       await f.backing.listActiveBrowserSessionsForAgentBinding(f.authority.agentBindingId),
@@ -3726,7 +3736,7 @@ describe("BrowserService", () => {
       expect(f.onError).toHaveBeenCalledWith(failure);
       expect(f.record).toHaveBeenCalledTimes(2);
       expect(f.record.mock.calls[1]?.[0]).toMatchObject({
-        data: { place: { surfaceId: "page-2" } },
+        data: { tabId: "page-2" },
       });
     } finally {
       pending.resolve(undefined);
@@ -4167,7 +4177,7 @@ describe("BrowserService", () => {
     });
 
     runtime.sendFrame(browserFrame(1));
-    const recordsBeforePublish = vi.spyOn(service.clientStreams.source, "markTabs");
+    const recordsBeforePublish = vi.spyOn(service, "tabInventoryChanged");
     runtime.publishTabs({
       surfaces: [
         {
@@ -4256,7 +4266,7 @@ describe("BrowserService", () => {
     runtime.sendFrame(browserFrame(3));
     runtime.sendFrame(browserFrame(4));
     runtime.sendFrame(browserFrame(5));
-    const textFrameCount = vi.spyOn(service.clientStreams.source, "markTabs");
+    const textFrameCount = vi.spyOn(service, "tabInventoryChanged");
     runtime.publishTabs({
       surfaces: [
         {
@@ -4314,9 +4324,7 @@ describe("BrowserService", () => {
         { id: "page-2", active: true, title: "Account", url: "https://account.example/current" },
       ],
     });
-    await vi.waitFor(() =>
-      expect(service.clientStreams.source.ports.live(started.session.id)?.records.size).toBe(2),
-    );
+    await vi.waitFor(() => expect(service.pageInventory(started.session.id)?.records.size).toBe(2));
     const dialog = {
       id: "00000000-0000-4000-8000-0000000000d1",
       message: "Continue?",
@@ -4795,7 +4803,7 @@ describe("BrowserService", () => {
       signer: new BrowserAttachTicketSigner({ keyId: "host-v1", privateKey: keys.privateKey }),
     });
 
-    const bootstrap = await service.bootstrap(ownerId);
+    const bootstrap = await service.workspaceBootstrap(ownerId);
     expect(bootstrap.profiles).toHaveLength(128);
     expect(bootstrap).not.toHaveProperty("sessions");
     expect(bootstrap).not.toHaveProperty("personalTabs");
@@ -4810,7 +4818,7 @@ describe("BrowserService", () => {
       repository: new MaximumBrowserCatalogRepository(ownerId, 129),
       signer: new BrowserAttachTicketSigner({ keyId: "host-v1", privateKey: keys.privateKey }),
     });
-    await expect(overflow.bootstrap(ownerId)).rejects.toMatchObject({ code: "conflict" });
+    await expect(overflow.workspaceBootstrap(ownerId)).rejects.toMatchObject({ code: "conflict" });
   });
 
   it("requires profile ownership before raw CDP reaches a Runtime", async () => {
@@ -4930,11 +4938,11 @@ describe("BrowserService", () => {
     ).rejects.toMatchObject({
       code: "conflict",
       // The refusal names the candidates, because the agent's only way out of
-      // it is to call again with one of these environmentIds.
+      // it is to call again with one of these computers.
       message:
-        "Choose which connected computer should run this browser session: " +
-        `Computer ${first.runnerId} (environmentId ${environmentId}), ` +
-        `Computer ${second.runnerId} (environmentId ${environmentId}).`,
+        "Choose which connected computer should run this browser: " +
+        `Computer ${first.runnerId} (computerId ${first.runnerId}), ` +
+        `Computer ${second.runnerId} (computerId ${second.runnerId}).`,
     });
     expect(runtime.connectionCount()).toBe(0);
   });
@@ -4947,9 +4955,8 @@ describe("BrowserService", () => {
     const ownerId = createId("user");
 
     const runEnvironmentId = createId("environment");
-    const chosenEnvironmentId = createId("environment");
     const here = testRunner({ environmentIds: [runEnvironmentId] });
-    const there = testRunner({ environmentIds: [chosenEnvironmentId] });
+    const there = testRunner({ environmentIds: [createId("environment")] });
     const service = placementService({
       keys,
       ownerId,
@@ -4959,7 +4966,7 @@ describe("BrowserService", () => {
 
     const opened = await service.openAgentSession({
       agentBindingId: "run:chosen-machine",
-      chosenEnvironmentId,
+      chosenRunnerId: there.runnerId,
       environmentId: runEnvironmentId,
       fresh: true,
       ownerId,
@@ -4970,7 +4977,7 @@ describe("BrowserService", () => {
     // not the one already attached.
     const back = await service.openAgentSession({
       agentBindingId: "run:chosen-machine",
-      chosenEnvironmentId: runEnvironmentId,
+      chosenRunnerId: here.runnerId,
       environmentId: runEnvironmentId,
       fresh: true,
       ownerId,
@@ -4998,7 +5005,7 @@ describe("BrowserService", () => {
     await expect(
       service.openAgentSession({
         agentBindingId: "run:headless-machine",
-        chosenEnvironmentId: createId("environment"),
+        chosenRunnerId: createId("runner"),
         fresh: true,
         ownerId,
       }),
@@ -5006,21 +5013,20 @@ describe("BrowserService", () => {
       code: "bad_request",
       message:
         "That computer does not run a connected browser. These do: " +
-        `Computer ${withBrowser.runnerId} (environmentId ${browserEnvironmentId}).`,
+        `Computer ${withBrowser.runnerId} (computerId ${withBrowser.runnerId}).`,
     });
     expect(runtime.connectionCount()).toBe(0);
 
     await expect(
       service.openAgentSession({
         agentBindingId: "run:headless-machine",
-        chosenEnvironmentId: browserEnvironmentId,
+        chosenRunnerId: withBrowser.runnerId,
         ownerId,
         sessionId: createBrowserSessionId(),
       }),
     ).rejects.toMatchObject({
       code: "bad_request",
-      message:
-        "An existing Browser Session already runs on a computer, so attaching to it cannot choose one.",
+      message: "An existing tab already belongs to a computer, so selecting it cannot choose one.",
     });
   });
 
@@ -5042,6 +5048,32 @@ describe("BrowserService", () => {
       session: { placement: { kind: "runner", runnerId: runner.runnerId } },
     });
     expect(runtime.connectionCount()).toBe(1);
+  });
+
+  it("opens an agent Guest on a connected browser while the hosting computer is still away", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const ownerId = createId("user");
+    const main = testRunner({});
+    const laptop = testRunner({ agents: false });
+    const repository = new MemoryBrowserRepository(ownerId);
+    repository.mainRunnerId = main.runnerId;
+    const service = placementService({
+      keys,
+      ownerId,
+      repository,
+      runtime,
+      runners: [laptop],
+      personal: true,
+      awaitsBrowsers: true,
+    });
+    await expect(
+      service.openAgentSession({ agentBindingId: "run:guest", ownerId, fresh: true }),
+    ).resolves.toMatchObject({
+      session: { placement: { kind: "runner", runnerId: laptop.runnerId } },
+    });
   });
 
   it.each(["person", "agent"] as const)(
@@ -5074,7 +5106,7 @@ describe("BrowserService", () => {
               ownerId,
 
               profileId: profile.id,
-              chosenEnvironmentId: environmentId,
+              chosenRunnerId: agent.runnerId,
             })
           : await service.openTab(ownerId, {
               type: "browser.tab.open",
@@ -5275,7 +5307,7 @@ describe("BrowserService", () => {
     });
     await service.initialize();
 
-    expect((await service.bootstrap(ownerId)).placements).toEqual([
+    expect((await service.workspaceBootstrap(ownerId)).placements).toEqual([
       expect.objectContaining({
         available: false,
         runnerId: outdated.runnerId,
@@ -5337,7 +5369,7 @@ describe("BrowserService", () => {
     expect(reused.session.id).toBe(initial.session.id);
     const profileOpen = await service.openAgentSession({
       agentBindingId: "run:profile-affinity",
-      chosenEnvironmentId: environmentId,
+      chosenRunnerId: bound.runnerId,
       environmentId,
       ownerId,
       profileId: profile.id,
@@ -5582,7 +5614,12 @@ it("serializes an agent attachment with Browser-off and fences it before the off
           timeoutError: () => new Error("agent admission was not released"),
         });
       }
-      if (off) throw new DeviceAccessRefusal("device-access-off", runnerId, "browser");
+      if (off)
+        throw new DeviceAccessRefusal(
+          "device-access-off",
+          DeviceIdSchema.parse(runnerId),
+          "browser",
+        );
     },
   });
   const person = await service.start({ fresh: true, ownerId });
@@ -5641,11 +5678,16 @@ function freshService(options: {
   readonly onDeploymentEvent?: (event: AgentEvent) => void;
   readonly repository: MemoryBrowserRepository;
   readonly runtime: { readonly url: URL };
-  readonly personalTabs?: PersonalTabStore;
+  readonly tabs?: TabStore;
 }): BrowserService {
   const service = new BrowserService({
     ...(options.requireAgentAccess ? { requireAgentAccess: options.requireAgentAccess } : {}),
-    ...(options.personalTabs ? { personalTabs: options.personalTabs } : {}),
+    ...(options.tabs
+      ? {
+          tabs: options.tabs,
+          tabPlaces: { write: async () => undefined, publish: () => {}, notice: () => {} },
+        }
+      : {}),
     ...nativeProfileOptions(),
     passkeys: options.passkeysEnabled === true,
     personal: options.personal === true,
@@ -5711,6 +5753,8 @@ function testRunner(input: {
 
 function placementService(options: {
   readonly personal?: boolean;
+  /** Admission waits that never settle: an open that waits on an absent computer hangs. */
+  readonly awaitsBrowsers?: boolean;
   readonly keys: { readonly privateKey: KeyObject };
   readonly ownerId: UserId;
   readonly repository?: MemoryBrowserRepository;
@@ -5721,6 +5765,7 @@ function placementService(options: {
   // tests are about, not what happens after the browser answers.
   const relay = runnerTarget({ url: options.runtime.url });
   const targetResolver: BrowserRuntimeTargetResolver = {
+    ...(options.awaitsBrowsers ? { waitForTarget: () => new Promise<void>(() => undefined) } : {}),
     placements: () =>
       options.runners.map((runner) => ({
         agents: runner.agents === true,
@@ -5840,8 +5885,19 @@ async function attachedSessionIds(
 }
 
 class MemoryBrowserRepository implements BrowserSessionRepository {
+  async requireSelfDeviceId(runnerId: RunnerId) {
+    return DeviceIdSchema.parse(runnerId);
+  }
+  async requireDeviceSelfRunnerId(deviceId: DeviceId) {
+    return RunnerIdSchema.parse(deviceId);
+  }
+
   async resolveResourceAccess() {
-    return { specialistAllowed: true };
+    return {
+      specialistAllowed: true,
+      access: "read-write" as const,
+      runAccess: "read-write" as const,
+    };
   }
   mainRunnerId: RunnerId | undefined;
   rememberedPlacement: RunnerId | null = null;
@@ -5886,7 +5942,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     return null;
   }
 
-  async listBrowserSessionViewers() {
+  async listBrowserSessionViewers(): Promise<{ userIds: UserId[] } | null> {
     return null;
   }
   async resolvePlaceActors() {
@@ -5910,7 +5966,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     return this.#credit(input.sessionId, input.threadId, "person", input.tabId ?? null, input.page);
   }
 
-  async recordRunPlace(): Promise<AgentEvent | undefined> {
+  async recordRunTabPlace(): Promise<AgentEvent | undefined> {
     return undefined;
   }
 
@@ -7420,90 +7476,127 @@ it("routes ephemeral autofill only to its opted-in controlling consumer and stam
   );
 });
 
-it("records a retired Guest closed, saves its tabs and closes viewers gracefully", async () => {
-  const keys = generateKeyPairSync("ed25519");
-  const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-  const ownerId = createId("user");
-  const repository = new MemoryBrowserRepository(ownerId);
-  const saved = new Set(["page-1"]);
-  const suspend = vi.fn(async () => undefined);
-  const recordChanges = vi.fn(
-    async (sessionId: BrowserSessionId, _descriptors: unknown, closed: readonly string[]) => {
-      for (const id of closed) saved.delete(id);
-      return { groupId: sessionId, changed: false, rows: [], closedIds: [...closed] };
-    },
-  );
+it("keeps workspace descriptors after a runtime retires and closes viewers gracefully", async () => {
+  const keys = generateKeyPairSync("ed25519"),
+    runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
+    ownerId = createId("user"),
+    repository = new MemoryBrowserRepository(ownerId),
+    memory = memoryTabs();
   const service = freshService({
     keys,
     repository,
     runtime,
-    personalTabs: new Proxy(
-      { suspend, recordChanges },
-      {
-        get: (store, key) =>
-          key === "suspend"
-            ? store.suspend
-            : key === "recordChanges"
-              ? store.recordChanges
-              : async () => undefined,
-      },
-    ) as unknown as PersonalTabStore,
+    tabs: memory.store,
+    tabRestoreVersion: true,
   });
-  const opened = await service.start({ fresh: true, ownerId });
-  const peer = new RecordingPeer("retired-viewer");
-  await service.attach(ownerId, opened.session.id, peer, consumerOptions());
+  const descriptor = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "retire",
+  );
+  await memory.add(descriptor);
+  const peer = new RecordingPeer("retired");
+  await service.attach(ownerId, descriptor.pageBinding!.sessionId, peer, consumerOptions());
   runtime.sendServer({ type: "browser.status", state: "closed", reason: "retired" });
   await vi.waitFor(
-    async () => {
+    () =>
       expect(
-        (await repository.getBrowserSessionForOwner(opened.session.id, ownerId))?.state,
-        "Retired session never closed",
-      ).toBe("closed");
-      expect(suspend).toHaveBeenCalledWith(opened.session.id);
-    },
+        repository.session(descriptor.pageBinding!.sessionId)?.state,
+        "Runtime never retired",
+      ).toBe("closed"),
     { timeout: 1000 },
   );
+  expect(memory.rows.get(descriptor.id)?.closedAt).toBeNull();
   expect(peer.closed?.code).toBe(1000);
-  expect(saved).toEqual(new Set(["page-1"]));
 });
+
+it.each(["generation admission", "a concurrent durable open"])(
+  "retains descriptors received before %s",
+  async (race) => {
+    const keys = generateKeyPairSync("ed25519"),
+      runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
+      ownerId = createId("user"),
+      repository = new MemoryBrowserRepository(ownerId),
+      memory = memoryTabs(),
+      service = freshService({
+        keys,
+        runtime,
+        repository,
+        tabs: memory.store,
+        tabRestoreVersion: true,
+      });
+    const initial = await service.pageTabs.open(
+      { kind: "person", ownerId },
+      { kind: "page", guest: true, url: "about:blank" },
+      "initial",
+    );
+    await memory.add(initial);
+    vi.spyOn(repository, "listBrowserSessionViewers").mockResolvedValue({ userIds: [ownerId] });
+    await service.pageTabs.admitted!(initial);
+    const id = BrowserSurfaceIdSchema.parse("new-page");
+    const write: TabWrite = {
+      ...initial,
+      id,
+      title: "New tab",
+      pageBinding: { ...initial.pageBinding!, surfaceId: id },
+    };
+    await memory.add(write);
+    if (race === "a concurrent durable open") {
+      vi.spyOn(memory.store, "get").mockResolvedValueOnce(null);
+      vi.spyOn(memory.store, "open").mockResolvedValueOnce({
+        tabIds: [id],
+        layout: { revision: 1, items: [{ kind: "tab", tabId: id }] },
+      });
+    }
+    runtime.publishTabs({ surfaces: [{ id, active: true, title: "Ready page" }] });
+    await vi.waitFor(() =>
+      expect(service.pageInventory(initial.pageBinding!.sessionId)?.records.get(id)?.title).toBe(
+        "Ready page",
+      ),
+    );
+    await service.flushPendingTabDescriptors();
+    if (race === "generation admission") {
+      expect(memory.rows.get(id)?.title).toBe("New tab");
+      await service.pageTabs.admitted!(write);
+    }
+    expect(memory.rows.get(id)?.title).toBe("Ready page");
+  },
+);
 
 it("closes durable rows only on a change removal, never an interrupted or committed snapshot", async () => {
   const keys = generateKeyPairSync("ed25519");
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
   const ownerId = createId("user");
   const repository = new MemoryBrowserRepository(ownerId);
-  const recordChanges = vi.fn(async (sessionId: BrowserSessionId) => ({
-    groupId: sessionId,
-    changed: true,
-    rows: [],
-    closedIds: [],
-  }));
+  const memory = memoryTabs();
+  const recordChanges = memory.close;
+  vi.spyOn(repository, "listBrowserSessionViewers").mockResolvedValue({ userIds: [ownerId] });
   const service = new BrowserService({
     ...nativeProfileOptions(),
     ...profileStateOptions,
     repository,
     signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
     targetResolver: runnerTarget({ url: runtime.url, tabRestoreVersion: true }),
-    personalTabs: {
-      groupIds: async () => [],
-      read: async () => [],
-      openTabs: async () => [],
-      recordChanges,
-      suspend: async () => undefined,
-    } as unknown as PersonalTabStore,
+    tabs: memory.store,
+    tabPlaces: { write: async () => undefined, publish: () => {}, notice: () => {} },
   });
   cleanups.push(() => service.close());
-  const opened = await service.start({ fresh: true, ownerId });
+  const descriptor = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "snapshot",
+  );
+  await memory.add(descriptor);
+  const opened = { session: { id: descriptor.pageBinding!.sessionId } };
   recordChanges.mockClear();
   runtime.sendServer({ type: "browser.tabs", stream: { op: "begin", generation: "resnapshot" } });
   runtime.sendServer({
     type: "browser.tabs",
     stream: { op: "end", revision: 7, count: 0, meta: { activeId: null, inventoryRevision: 1 } },
   });
-  await vi.waitFor(
-    async () => expect((await browserRows(service, ownerId, opened.session.id)).tabs).toEqual([]),
-    { timeout: 1000 },
-  );
+  await vi.waitFor(() => expect(service.pageInventory(opened.session.id)?.records.size).toBe(0), {
+    timeout: 1000,
+  });
   await service.flushPendingTabDescriptors();
   expect(recordChanges).not.toHaveBeenCalled();
   const row = BrowserTabRecordSchema.parse({
@@ -7553,11 +7646,15 @@ it("closes durable rows only on a change removal, never an interrupted or commit
     stream: { op: "change", generation: "recovered", base: 0, revision: 1, remove: [row.id] },
   });
   await vi.waitFor(
-    async () => expect((await browserRows(service, ownerId, opened.session.id)).tabs).toEqual([]),
+    async () => {
+      await service.flushPendingTabDescriptors();
+      expect(memory.rows.get(row.id)?.closedAt).toBeInstanceOf(Date);
+    },
     { timeout: 1000 },
   );
   await service.flushPendingTabDescriptors();
-  expect(recordChanges).toHaveBeenCalledExactlyOnceWith(opened.session.id, [], [row.id]);
+  expect(recordChanges).toHaveBeenCalledOnce();
+  expect(memory.rows.get(row.id)?.closedAt).toBeInstanceOf(Date);
 });
 
 it("resynchronizes an initial tab gap before announcing readiness", async () => {
@@ -8084,77 +8181,197 @@ it("publishes a passkey offer as a pin until the ceremony is cancelled", async (
   viewer.close();
 });
 
-it("agent restore resumes its exact suspended tab in the existing session", async () => {
-  const keys = generateKeyPairSync("ed25519");
-  const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-  const ownerId = createId("user");
-  const repository = new MemoryBrowserRepository(ownerId);
-  const tabId = BrowserSurfaceIdSchema.parse("page-1");
-  let sessionId: BrowserSessionId;
-  const personalTabs = {
-    get: async () => ({ id: tabId, groupId: sessionId, url: "about:blank", favicon: null }),
-    session: async () => repository.session(sessionId),
-    read: async (_owner: UserId, id: BrowserSessionId | readonly BrowserSessionId[]) =>
-      Array.isArray(id) ? [] : { id: sessionId, latestSessionId: sessionId, tabs: [] },
-    recordChanges: async (id: BrowserSessionId) => ({
-      groupId: id,
-      changed: false,
-      rows: [],
-      closedIds: [],
-    }),
-    groupIds: async () => [],
-    openTabs: async () => [],
-    lineageForSession: async (id: BrowserSessionId) => id,
-    suspend: async () => undefined,
-  } as unknown as PersonalTabStore;
-  const service = freshService({
-    keys,
-    runtime,
-    repository,
-    surfaceState: true,
-    tabRestoreVersion: true,
-    personalTabs,
-  });
-  sessionId = (await service.start({ ownerId, fresh: true })).session.id;
+it("person activation resumes the exact suspended workspace tab in its existing session", async () => {
+  const keys = generateKeyPairSync("ed25519"),
+    runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
+    ownerId = createId("user"),
+    repository = new MemoryBrowserRepository(ownerId),
+    memory = memoryTabs(),
+    service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      surfaceState: true,
+      tabRestoreVersion: true,
+    });
+  const descriptor = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "sleep",
+  );
+  await memory.add(descriptor);
+  const row = memory.rows.get(descriptor.id)!,
+    sessionId = row.pageBinding!.sessionId;
   runtime.publishTabs({
-    surfaces: [{ id: tabId, state: "suspended", active: true, title: "Sleeping" }],
+    surfaces: [{ id: row.id, state: "suspended", active: true, title: "Sleeping" }],
   });
-  await vi.waitFor(() => expect(service.tabStateOf(sessionId, tabId)).toBe("suspended"));
-  const before = runtime.receivedCommands().length;
-  const restored = service.restoreAgentPersonalTab(
-    { ownerId, agentBindingId: "restoring-run" },
-    tabId,
-  );
-  await vi.waitFor(() =>
-    expect(
-      runtime
-        .receivedCommands()
-        .slice(before)
-        .find((m) => m.type === "cdp.command"),
-    ).toBeDefined(),
-  );
-  const command = runtime
-    .receivedCommands()
-    .slice(before)
-    .find((m) => m.type === "cdp.command")!;
+  await vi.waitFor(() => expect(service.tabStateOf(sessionId, row.id)).toBe("suspended"));
+  const activated = service.pageTabs.activate(ownerId, row, "activate");
+  let command = await runtime.nextCommand();
+  while (command.type !== "cdp.command") command = await runtime.nextCommand();
   expect(command.command).toEqual({
     method: "Opensteer.resumeTab",
-    parameters: { surfaceId: tabId },
+    parameters: { surfaceId: row.id },
   });
   runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
-  expect(await restored).toEqual({ tabId, sessionId });
-  expect(await repository.countBrowserSessionAttachments(sessionId)).toBe(1);
-  const lastState = () =>
-    runtime.receivedCommands().findLast((message) => message.type === "session.state");
-  expect(lastState()).toMatchObject({ personUsed: [] });
-  runtime.publishTabs({ surfaces: [{ id: tabId, state: "live", active: true, title: "Awake" }] });
-  await vi.waitFor(() => expect(service.tabStateOf(sessionId, tabId)).toBe("live"));
-  await service.activatePersonalTab(ownerId, tabId);
-  await vi.waitFor(() => expect(lastState()).toMatchObject({ personUsed: [tabId] }), {
-    timeout: 1000,
-  });
-  runtime.publishTabs({ surfaces: [] });
-  await vi.waitFor(() => expect(service.tabStateOf(sessionId, tabId)).toBeUndefined(), {
-    timeout: 1000,
-  });
+  expect(await activated).toEqual({ kind: "page", sessionId, surfaceId: row.id });
 });
+
+function memoryTabs() {
+  const rows = new Map<string, TabRecord>();
+  const add = async (write: TabWrite) => {
+    const row = {
+      url: null,
+      profileId: null,
+      profileName: null,
+      appId: null,
+      windowId: null,
+      windowApp: null,
+      pageBinding: null,
+      favicon: null,
+      iconRef: null,
+      openerTabId: null,
+      generation: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      closedAt: null,
+      closedPosition: null,
+      ...write,
+    } as TabRecord;
+    rows.set(row.id, row);
+    return row;
+  };
+  const close = vi.fn(async (_owner: UserId, ids: readonly string[]) => {
+    for (const id of ids) {
+      const row = rows.get(id);
+      if (row) row.closedAt = new Date();
+    }
+    return { closed: ids, failed: [] };
+  });
+  const store = {
+    get: async (_owner: UserId, id: string, closed = false) => {
+      const row = rows.get(id);
+      return row && (closed || !row.closedAt) ? row : null;
+    },
+    snapshot: async () => ({
+      rows: [...rows.values()].filter((row) => !row.closedAt),
+      layout: { revision: 1, items: [] },
+    }),
+    open: add,
+    updatePage: async (
+      _owner: UserId,
+      id: string,
+      _generation: number,
+      _binding: unknown,
+      descriptor: object,
+    ) => {
+      Object.assign(rows.get(id) ?? {}, descriptor);
+    },
+    close,
+  } as unknown as TabStore;
+  return { rows, store, add, close };
+}
+
+it.each(["register", "inventory", "revoke", "offline", "expire", "close"] as const)(
+  "handles a browser opening during startup: %s",
+  async (outcome) => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const relay = runnerTarget({ url: runtime.url });
+    if (outcome !== "offline" && outcome !== "inventory") repository.mainRunnerId = relay.runnerId;
+    let available = false;
+    const waiters = new Set<() => void>();
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const service = new BrowserService({
+      ...nativeProfileOptions(),
+      ...profileStateOptions,
+      personal: true,
+      repository,
+      signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
+      targetResolver: {
+        pendingAdmission: () => outcome === "inventory",
+        placements: () => (available ? relay.placements() : []),
+        resolve: (placement) => (available ? relay.resolve(placement) : undefined),
+        waitForTarget: (_runnerId, signal) =>
+          new Promise<void>((resolve, reject) => {
+            const done = () => {
+              waiters.delete(done);
+              signal.removeEventListener("abort", abort);
+              resolve();
+            };
+            const abort = () => {
+              waiters.delete(done);
+              signal.removeEventListener("abort", abort);
+              reject(signal.reason);
+            };
+            waiters.add(done);
+            signal.addEventListener("abort", abort, { once: true });
+            entered();
+          }),
+      },
+    });
+    cleanups.push(() => service.close());
+    const command = {
+      type: "browser.tab.open" as const,
+      idempotencyKey: randomUUID(),
+      identity: { kind: "guest" as const },
+      ...(outcome === "offline" || outcome === "inventory"
+        ? { placement: { kind: "runner" as const, runnerId: relay.runnerId } }
+        : {}),
+    };
+    if (outcome === "expire") vi.useFakeTimers();
+    try {
+      const opening = service.openTab(ownerId, command);
+      const settled = opening.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      if (outcome === "offline") {
+        expect(await settled).toMatchObject({ error: { reason: "browser-placement-unavailable" } });
+      } else {
+        await withTimeout(
+          Promise.race([
+            waiting,
+            settled.then(() => {
+              throw new Error("Open refused before admission");
+            }),
+          ]),
+          1_000,
+          { timeoutError: () => new Error("Open never waited for browser admission") },
+        );
+        if (outcome === "revoke") {
+          eligibleRunners.delete(relay.runnerId);
+          available = true;
+          for (const done of waiters) done();
+          expect(await settled).toMatchObject({
+            error: { reason: "browser-placement-unavailable" },
+          });
+          expect(await repository.listBrowserSessions(ownerId)).toHaveLength(0);
+        } else if (outcome === "register" || outcome === "inventory") {
+          const duplicate = service.openTab(ownerId, command);
+          available = true;
+          for (const done of waiters) done();
+          const result = await opening;
+          expect(await duplicate).toEqual(result);
+          expect(await repository.listBrowserSessions(ownerId)).toHaveLength(1);
+          expect(repository.tabOpens.size).toBe(1);
+        } else if (outcome === "close") {
+          await service.close();
+          expect(await settled).toMatchObject({ error: { code: "runner_offline" } });
+        } else {
+          await vi.advanceTimersByTimeAsync(18_000);
+          expect(await settled).toMatchObject({ error: { reason: "browser-open.timeout" } });
+        }
+      }
+      expect(waiters.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);

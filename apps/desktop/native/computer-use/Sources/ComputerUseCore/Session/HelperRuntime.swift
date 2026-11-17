@@ -300,6 +300,9 @@ public final class HelperRuntime {
       }
     } catch let error as HelperError {
       connection.send(response: .failure(id: envelope.id, error: error))
+    } catch let error as OwnerViewWindow.Failure {
+      connection.send(response: .failure(id: envelope.id, error: HelperError(.staleObservation,
+        error.reason == "window-identity-lost" ? "This window's identity is no longer available." : "Window closed")))
     } catch {
       connection.send(
         response: .failure(
@@ -427,15 +430,39 @@ public final class HelperRuntime {
       let record = try await catalog.verifiedRecord(for: params.app)
       return Wire.OwnerWindowsResult(
         windows: try await SessionWindows.ownerWindows(record: record, budget: budget).windows)
+    case "window.resolve":
+      let params = try envelope.decodeParams(Wire.WindowResolveParams.self, method: method)
+      if let id = params.windowId {
+        guard (try? Self.requireUnlocked()) != nil else {
+          return Wire.WindowResolveResult(windowId: nil, app: nil, title: nil, unavailableReason: "locked")
+        }
+        do {
+          let app = try await WindowIdentities.app(id)
+          let verdict = AppPolicy.verdict(for: app.bundleId)
+          guard verdict.allowed else { throw HelperError(.appNotAllowed, verdict.reason) }
+          _ = try await catalog.verifiedRecord(for: app)
+          return try await Self.queryTabWindow(id: id, app: app)
+        } catch let error as OwnerViewWindow.Failure {
+          return Wire.WindowResolveResult(windowId: nil, app: nil, title: nil, unavailableReason: error.reason)
+        } catch let error as HelperError where error == SessionWindows.closed {
+          return Wire.WindowResolveResult(windowId: nil, app: nil, title: nil, unavailableReason: "window-closed")
+        }
+      }
+      guard let app = params.app else { throw HelperError(.failed, "Name an exact window or approved app.") }
+      let verdict = AppPolicy.verdict(for: app.bundleId)
+      guard verdict.allowed else { throw HelperError(.appNotAllowed, verdict.reason) }
+      try Self.requireUnlocked()
+      let record = try await catalog.verifiedRecord(for: app)
+      return try await Self.resolveTabWindow(record: record, budget: budget)
     case "session.windows", "session.bind":
       let requested: SessionApp
       let sessionID: String
-      let window: CGWindowID?
+      let window: String?
       if method == "session.bind" {
         let params = try envelope.decodeParams(Wire.BindParams.self, method: method)
         requested = params.app
         sessionID = params.sessionId
-        window = params.window
+        window = params.windowId
       } else {
         let params = try envelope.decodeParams(Wire.WindowsParams.self, method: method)
         requested = params.app
@@ -448,7 +475,7 @@ public final class HelperRuntime {
       let cancellation = opened.cancellation
       let inventory = try await SessionWindows.windows(
         app: state, monitor: monitor, budget: budget,
-        check: { try cancellation.check() },
+        check: { try cancellation.check() }, launching: window == nil,
         processAcquired: { pid in
           try await MainActor.run {
             try Self.validateObservationCommit(
@@ -838,6 +865,26 @@ public final class HelperRuntime {
 
   // MARK: - Observe and act
 
+  @WorkActor
+  private static func queryTabWindow(id: String, app: AppIdentity) throws -> Wire.WindowResolveResult {
+    let live = try WindowIdentities.resolve(id)
+    let state = try live.read()
+    return Wire.WindowResolveResult(windowId: id, app: app,
+      title: ActionDescription.clip(AXValueReader.copyString(live.element, kAXTitleAttribute) ?? "", to: 1024),
+      unavailableReason: state.minimized ? "minimized" : nil)
+  }
+
+  @WorkActor
+  private static func resolveTabWindow(record: AppBundleRecord, budget: WorkBudget) async throws -> Wire.WindowResolveResult {
+    let state = AppSessionState(identity: record.identity, path: record.path)
+    let monitor = WindowMonitor()
+    defer { monitor.stop() }
+    _ = try await SessionWindows.windows(app: state, monitor: monitor, budget: budget)
+    let window = try SessionWindows.bind(app: state, window: nil, monitor: monitor)
+    return Wire.WindowResolveResult(windowId: window.windowId, app: record.identity,
+      title: window.title, unavailableReason: window.minimized ? "minimized" : nil)
+  }
+
   private func ownerView(
     method: String, params: Wire.ViewParams, connection: IPCConnection, budget: WorkBudget
   ) async throws -> any Encodable {
@@ -876,7 +923,7 @@ public final class HelperRuntime {
       let view = try ownerViews.open(
         id: params.viewId, generation: params.generation, leaseDurationMs: params.leaseDurationMs,
         app: target.app,
-        connectionID: connection.id, windowID: target.window)
+        connectionID: connection.id, windowID: target.windowId)
       if view.prepared { return opened(view) }
       view.prepared = true
       let record = try await catalog.verifiedRecord(for: target.app)
@@ -888,10 +935,11 @@ public final class HelperRuntime {
       let cancellation = view.cancellation
       do {
         let binding = try await OwnerViewWindow.open(
-          record: record, windowID: target.window, cancellation: cancellation, budget: budget)
+          record: record, windowID: target.windowId, cancellation: cancellation, budget: budget)
+        let summary = try await binding.summary()
         view.window = binding
         view.target = binding.target
-        view.windowSummary = await binding.summary()
+        view.windowSummary = summary
       } catch let error as OwnerViewWindow.Failure {
         view.unavailableReason = error.reason
       } catch let error as HelperError {

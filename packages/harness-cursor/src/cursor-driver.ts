@@ -1,4 +1,5 @@
-import { backgroundLightModels } from "@opensteer/core";
+import { toolOutputWithImages } from "@opensteer/harness";
+import { backgroundLightModels, imageGenerationToolName } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
 import { stat, mkdir, copyFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
@@ -10,7 +11,7 @@ import {
   createId,
   harnessCatalogEntry,
   harnessUsageLimitFailureCode,
-  normalizeToolOutput,
+  ToolOutputSchema,
   type HarnessInstanceId,
   type PendingRequest,
   type RequestId,
@@ -955,7 +956,14 @@ class CursorHarnessSession implements HarnessSession {
           active.startedToolArguments.delete(callId);
           active.completedToolCalls.add(callId);
           this.#publish({
-            data: { callId, isError: call.isError, output: normalizeToolOutput(call.output) },
+            data: {
+              callId,
+              isError: call.isError,
+              output:
+                call.identity.name === imageGenerationToolName
+                  ? ToolOutputSchema.parse(call.output)
+                  : toolOutputWithImages(call.output, this.#context.imageStore),
+            },
             type: "tool.completed",
           });
         }
@@ -1173,9 +1181,9 @@ class CursorHarnessSession implements HarnessSession {
 
   /**
    * Every instruction travels on the turn, because a `--plugin-dir`'s `rules/`
-   * never reached the model in print mode and because the machine-access
-   * notice changes from Run to Run and must be in front of the model on a
-   * resumed conversation too (`HarnessAdapter`, X9).
+   * never reached the model in print mode, the machine-access notice changes
+   * from Run to Run (`HarnessAdapter`, X9), and print mode reports no
+   * compaction, so no earlier delivery can be assumed to survive.
    */
   #turnPrompt(
     inputs: readonly HarnessInput[],

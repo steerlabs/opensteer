@@ -1,135 +1,40 @@
-import {
-  computerAppIdentityKey,
-  type ComputerAppIdentity,
-  type ComputerView,
-  type MachineSummary,
-} from "@opensteer/protocol";
-import { canWatchComputer } from "../integrations/computer-use.js";
-import { browserIdentity, type PlaceBrowserIdentity } from "./start-page-model.js";
-import { browserTabTitle } from "./browser-presentation.js";
-import type { BrowserPageContentPart } from "@opensteer/core";
+import { TabIdSchema, type BrowserPageContentPart, type TabId } from "@opensteer/core";
+import { computerAppIdentityKey, type ComputerAppIdentity } from "@opensteer/protocol";
 import type { Turn } from "./agent-activity-model.js";
-import type {
-  BrowserSessionSummary,
-  BrowserSessionUseSummary,
-  HostSnapshot,
-  PlaceEntry,
-} from "./client.js";
-import { phoneTabOpen } from "./phone-tab.js";
-import { runPlaceDestination } from "./run-place.js";
+import type { BrowserSessionUseSummary, HostSnapshot, PlaceEntry } from "./client.js";
+import { placeList, placeOf, type PlaceItem } from "./places.js";
 import { mergeTaskEntries } from "./task-entries.js";
 import { threadsWaitingOnReader } from "./waiting-requests.js";
 
-/** One page a conversation used, with its exact tab and browsing identity. */
-export interface BrowserSurfaceItem {
-  readonly kind: "browser";
-  readonly key: string;
-  readonly session: BrowserSessionSummary;
-  readonly tabId: string;
-  readonly occupants: readonly import("@opensteer/protocol").PlaceOccupant[];
-  readonly identity: PlaceBrowserIdentity;
-  readonly acting: boolean;
-  readonly title: string;
-  /** The page's host name, or null before a page has an address. */
-  readonly site: string | null;
-  /** The shown page's site icon, while this client watches the browser and the page has one. */
-  readonly favicon: string | null;
-  readonly openedAt: string;
+/** Where navigation goes: one tab in the person's list, by its stable ID. */
+export interface TabDestination {
+  readonly kind: "tab";
+  readonly tabId: TabId;
 }
 
-/** One app on one Mac, however many of the conversation's Runs used it. */
-export interface AppSurfaceItem {
-  readonly kind: "app";
-  readonly key: string;
-  readonly app: ComputerAppIdentity;
-  readonly appKey: string;
-  readonly machine: MachineSummary;
-  readonly computerSessionId: string;
-  /** The conversation whose Run holds the session (a delegated task's own conversation). */
-  readonly threadId: string;
-  readonly acting: boolean;
-  readonly openedAt: string;
-}
-
-/** A phone's whole display, once per machine even when several Runs hold it. */
-export interface PhoneSurfaceItem {
-  readonly kind: "phone";
-  readonly key: string;
-  readonly machine: MachineSummary;
-  readonly computerSessionId: string;
-  readonly threadId: string;
-  readonly acting: boolean;
-  readonly openedAt: string;
-}
-
-export type SurfaceItem = BrowserSurfaceItem | AppSurfaceItem | PhoneSurfaceItem;
-
-/** Exactly what a link or a tile opens. Nothing else chooses a surface. */
+/** Exactly which native picture a display socket reads: the person's own view, or a task's session. */
 export type NativeViewerSource =
   | { readonly kind: "task-session"; readonly sessionId: string; readonly appKey?: string }
   | { readonly kind: "owner-view"; readonly viewId: string; readonly generation: number };
-type NativeDestinationSource<Source extends NativeViewerSource> = Source extends {
-  kind: "task-session";
-}
-  ? { readonly computerSessionId: string; readonly source?: Source }
-  : { readonly computerSessionId?: never; readonly source: Source };
 
-export type SurfaceDestination<
-  Source extends NativeViewerSource = Extract<NativeViewerSource, { kind: "task-session" }>,
-> =
-  | { readonly kind: "browser"; readonly sessionId: string; readonly tabId: string }
-  | ({
-      readonly kind: "app";
-      readonly appKey: string;
-      readonly windowId?: number;
-      readonly machineId: string;
-    } & NativeDestinationSource<Source>)
-  /** A phone is its own address: its tab shows whichever live view it has. */
-  | { readonly kind: "phone"; readonly machineId: string };
-export type PersonalSurfaceDestination =
-  | SurfaceDestination<NativeViewerSource>
-  | { readonly kind: "opensteer-app"; readonly appId: string };
-export function nativeViewerSource(
-  destination: Extract<PersonalSurfaceDestination, { kind: "app" }>,
-): NativeViewerSource {
-  if (destination.source) return destination.source;
-  return { kind: "task-session", sessionId: destination.computerSessionId! };
-}
+/** A tab a conversation, or work it handed out, is using now. */
+export type SurfaceItem = PlaceItem & { readonly acting: boolean };
 
-/** Where a person's own view of an app or phone is shown: its exact generation, never a task's session. */
-export function ownerViewDestination(view: ComputerView): PersonalSurfaceDestination {
-  const source = { kind: "owner-view" as const, viewId: view.viewId, generation: view.generation };
-  return view.target.kind === "app"
-    ? {
-        kind: "app",
-        machineId: view.machineId,
-        appKey: computerAppIdentityKey(view.target.app),
-        ...(view.window ? { windowId: view.window.id } : {}),
-        source,
-      }
-    : { kind: "phone", machineId: view.machineId };
-}
-
-const conversationSurfaceKeys = [
-  "assignments",
-  "browserSessions",
-  "browserTabs",
-  "browserUses",
-  "browserProfiles",
-  "connection",
-  "machines",
-] as const;
 export type ConversationSurfaceSource = Pick<
   HostSnapshot,
-  (typeof conversationSurfaceKeys)[number]
+  "assignments" | "tabs" | "browserProfiles" | "connection"
 >;
-
-/** Exactly the state a conversation's surface grid draws. */
+/** Exactly the state a conversation's surface grid draws, besides the tab rows themselves. */
 export function sameConversationSurfaceSource(
   previous: ConversationSurfaceSource,
   next: ConversationSurfaceSource,
 ): boolean {
-  return conversationSurfaceKeys.every((key) => previous[key] === next[key]);
+  return (
+    previous.assignments === next.assignments &&
+    previous.tabs === next.tabs &&
+    previous.browserProfiles === next.browserProfiles &&
+    previous.connection === next.connection
+  );
 }
 
 const liveWorkKeys = ["tasks", "activeTasks", "waitingRequests"] as const;
@@ -141,24 +46,6 @@ export function sameLiveWorkSource(previous: LiveWorkSource, next: LiveWorkSourc
     sameConversationSurfaceSource(previous, next) &&
     liveWorkKeys.every((key) => previous[key] === next[key])
   );
-}
-
-const openBrowserStates = new Set<BrowserSessionSummary["state"]>(["starting", "ready", "closing"]);
-
-/**
- * The most recently active tab, from its authorized occupants rather than
- * session-wide presence or historical Run usage.
- */
-export function browserActingTabId(session: BrowserSessionSummary): string | null {
-  if (session.state !== "ready") return null;
-  let latest: { readonly at: string; readonly tabId: string } | null = null;
-  for (const tab of session.browserTabs?.sessionTabs(session.id) ?? []) {
-    for (const occupant of tab.occupants) {
-      if (occupant.acting && (latest === null || occupant.lastActiveAt > latest.at))
-        latest = { at: occupant.lastActiveAt, tabId: tab.id };
-    }
-  }
-  return latest?.tabId ?? null;
 }
 
 /** A page's site as a person reads it: its host, without the "www." that says nothing. */
@@ -173,20 +60,6 @@ function hostName(url: string): string | null {
   } catch {
     return null;
   }
-}
-
-/**
- * A browser belongs to a conversation because the Host recorded that
- * conversation using it. The catalog names those conversations for every
- * browser, whether or not this client has opened them; a usage read of a
- * conversation can say so before the catalog is read again.
- */
-function browserUsedBy(
-  session: BrowserSessionSummary,
-  usedSessions: ReadonlySet<string>,
-  threadId: string,
-): boolean {
-  return session.threadIds?.includes(threadId) === true || usedSessions.has(session.id);
 }
 
 /**
@@ -218,253 +91,91 @@ export function conversationThreadIds(
 }
 
 /**
- * Every browser, Mac app and phone a conversation is using, including work its tasks
- * do, in the order each first appeared. A browser belongs to a conversation
- * because the Host recorded that conversation using it — a task's use credits
- * the conversations that asked for it at that time; Mac apps because a Run of
- * the conversation, or of work it handed out, holds them now.
+ * Every tab a conversation is using now, including work its tasks do, in the
+ * person's layout order. A tab belongs to a conversation while the Host lists
+ * one of those tasks in its usedBy.
  */
 export function conversationSurfaces(
   snapshot: ConversationSurfaceSource,
   threadId: string,
 ): SurfaceItem[] {
-  const usedSessions = new Set(
-    snapshot.browserUses.filter((use) => use.threadId === threadId).map((use) => use.sessionId),
-  );
-  const browsers = snapshot.browserSessions
-    .filter(
-      (session) =>
-        openBrowserStates.has(session.state) && browserUsedBy(session, usedSessions, threadId),
-    )
-    .flatMap((session) => browserItems(session, snapshot.browserProfiles));
   const threads = conversationThreadIds(snapshot, threadId);
-  return [...browsers, ...computerItems(snapshot, (session) => threads.has(session.threadId))].sort(
-    stableOrder,
-  );
+  return placeList(snapshot)
+    .filter((place) => place.tab.usedBy.some((holder) => threads.has(holder.taskId)))
+    .map(surfaceItem);
+}
+const surfaceItems = new WeakMap<PlaceItem, SurfaceItem>();
+function surfaceItem(place: PlaceItem): SurfaceItem {
+  let item = surfaceItems.get(place);
+  if (!item) surfaceItems.set(place, (item = { ...place, acting: false }));
+  return item;
 }
 
-function browserItems(
-  session: BrowserSessionSummary,
-  profiles: HostSnapshot["browserProfiles"],
-): BrowserSurfaceItem[] {
-  const store = session.browserTabs;
-  const tabs = (store?.sessionStructure(session.id) ?? []).map((key) =>
-    store!.tab(key.groupId, key.tabId)!,
-  );
-  const identity = browserIdentity(session.profileId, profiles);
-  const actingTabId = browserActingTabId(session);
-  const items: BrowserSurfaceItem[] = [];
-  for (const tab of tabs) {
-    const live = session.browserTabs?.surface(session.id, tab.id);
-    items.push({
-      acting: actingTabId === tab.id,
-      favicon: live?.favicon ?? null,
-      identity,
-      key: `browser:${session.id}:${tab.id}`,
-      kind: "browser",
-      openedAt: session.createdAt ?? "",
-      session,
-      tabId: tab.id,
-      occupants: tab.occupants,
-      site: hostName(tab.site),
-      title: browserTabTitle({ title: tab.title, url: tab.site }),
-    });
-  }
-  return items;
-}
-
-/**
- * One tile per phone or app per Mac. When two Runs hold the same app, the one acting
- * in it now wins, then the newest: a person watching Notes sees Notes as it is.
- */
-function computerItems(
-  snapshot: Pick<HostSnapshot, "connection"> & { readonly machines: readonly MachineSummary[] },
-  include: (session: { readonly runId: string; readonly threadId: string }) => boolean,
-): (AppSurfaceItem | PhoneSurfaceItem)[] {
-  if (snapshot.connection !== "connected") return [];
-  const byApp = new Map<string, AppSurfaceItem | PhoneSurfaceItem>();
-  for (const machine of snapshot.machines) {
-    if (!canWatchComputer(machine)) continue;
-    for (const session of machine.computerUse?.sessions ?? []) {
-      if (!include(session)) continue;
-      if (session.display) {
-        const item: PhoneSurfaceItem = {
-          acting: session.actingDisplay === true,
-          computerSessionId: session.sessionId,
-          key: `phone:${machine.id}`,
-          kind: "phone",
-          machine,
-          openedAt: session.openedAt,
-          threadId: session.threadId,
-        };
-        const held = byApp.get(item.key);
-        if (!held || item.openedAt > held.openedAt) byApp.set(item.key, item);
-        continue;
-      }
-      const acting = new Set(session.actingAppKeys ?? []);
-      for (const app of session.apps) {
-        const appKey = computerAppIdentityKey(app);
-        const item: AppSurfaceItem = {
-          acting: acting.has(appKey),
-          app,
-          appKey,
-          computerSessionId: session.sessionId,
-          key: `app:${machine.id}:${appKey}`,
-          kind: "app",
-          machine,
-          openedAt: session.openedAt,
-          threadId: session.threadId,
-        };
-        const held = byApp.get(item.key);
-        if (
-          !held ||
-          (item.acting && !held.acting) ||
-          (item.acting === held.acting && item.openedAt > held.openedAt)
-        ) {
-          byApp.set(item.key, item);
-        }
-      }
-    }
-  }
-  return [...byApp.values()];
-}
-
-function stableOrder(left: SurfaceItem, right: SurfaceItem): number {
-  const leftKey = left.kind === "browser" ? `browser:${left.session.id}` : left.key;
-  const rightKey = right.kind === "browser" ? `browser:${right.session.id}` : right.key;
-  return left.openedAt.localeCompare(right.openedAt) || leftKey.localeCompare(rightKey);
-}
-
-export type TaskSurfaceDestination = Extract<
-  SurfaceDestination,
-  { kind: "browser" | "phone" } | { computerSessionId: string }
->;
-export function surfaceDestination(item: SurfaceItem): TaskSurfaceDestination {
-  if (item.kind === "browser")
-    return { kind: "browser", sessionId: item.session.id, tabId: item.tabId };
-  if (item.kind === "phone") return { kind: "phone", machineId: item.machine.id };
-  return {
-    appKey: item.appKey,
-    computerSessionId: item.computerSessionId,
-    kind: "app",
-    machineId: item.machine.id,
-  };
-}
-
-/** A page a reply's Runs used, kept even after its browser ended. */
+/** A page a reply's Runs used, kept even after its tab closed. */
 export interface RunPage {
   readonly key: string;
-  readonly destination: Extract<SurfaceDestination, { readonly kind: "browser" }>;
+  readonly destination: TabDestination;
   readonly title: string;
   readonly site: string | null;
-  /** The page or its browser is gone; the link still names it but cannot open it. */
+  /** The tab is gone from the person's list; the link still names it but cannot open it. */
   readonly ended: boolean;
-  /** An agent is at work in this very tab now, not merely somewhere in its browser. */
   readonly acting: boolean;
-  /** The open tab's site icon, while its browser has one for it. */
   readonly favicon: string | null;
 }
+type TabSource = Pick<HostSnapshot, "tabs" | "browserProfiles">;
+function liveTab(source: TabSource, tabId: string): PlaceItem | null {
+  const tab = source.tabs.get(tabId as TabId);
+  return tab ? placeOf(tab, source.browserProfiles) : null;
+}
 
-/**
- * Each page the given Runs used, one per browser tab, in the order they were
- * first used. Only exact page uses count. The authoritative tab catalog names
- * open pages; missing or ended pages keep that use's recorded title and site.
- */
+/** Each page the given Runs used, one per tab, in the order they were first used. */
 export function runPages(
   uses: readonly BrowserSessionUseSummary[],
-  sessions: readonly BrowserSessionSummary[],
+  source: TabSource,
   runIds: readonly string[],
 ): RunPage[] {
-  return usedPages(uses, sessions, runIds).map(({ firstUsedAt: _firstUsedAt, ...page }) => page);
+  return usedPages(uses, source, runIds).map(({ firstUsedAt: _firstUsedAt, ...page }) => page);
 }
 
-/**
- * Where a Run entered a browser tab, as the reader can use it now: that exact
- * tab while it is open, named as it was when the Run entered it.
- */
-export function placePage(
-  entry: PlaceEntry,
-  sessions: readonly BrowserSessionSummary[],
-  threadId: string | null,
-): RunPage | null {
-  if (entry.place.kind !== "browser") return null;
-  const { sessionId, surfaceId: tabId } = entry.place;
-  const session = sessions.find((candidate) => candidate.id === sessionId);
-  const { acting, ended, favicon } = session
-    ? pageState(session, tabId, entry.runId, threadId)
-    : { acting: false, ended: true, favicon: null };
+/** Where a Run entered a tab: that exact tab while it is listed, named as it was then. */
+export function placePage(entry: PlaceEntry, source: TabSource): RunPage {
+  const place = liveTab(source, entry.tabId);
   const site = entry.site ? pageSiteLabel(entry.site) : null;
   return {
-    acting,
-    destination: { kind: "browser", sessionId, tabId },
-    ended,
-    favicon,
-    key: `${sessionId}:${tabId}`,
-    site,
-    title: entry.title.trim() || site || "Page",
-  };
-}
-
-/** A tab as a Run's page: whether it is gone, its icon, and whether the Run's agent acts there now. */
-function pageState(
-  session: BrowserSessionSummary,
-  tabId: string,
-  runId: string,
-  threadId: string | null,
-): { readonly acting: boolean; readonly ended: boolean; readonly favicon: string | null } {
-  const open = openBrowserStates.has(session.state);
-  const store = session.browserTabs;
-  const tab = open ? store?.sessionTab(session.id, tabId) : undefined;
-  // A live browser's catalog lists every tab it has, so one missing from it was closed.
-  const ended = !open || (store?.sessionList(session.id).whole === true && !tab);
-  return {
-    acting:
-      session.state === "ready" &&
-      session.attachedRunIds.includes(runId) &&
-      tab?.occupants.some((occupant) => occupant.threadId === threadId && occupant.acting) === true,
-    ended,
-    favicon: ended ? null : (store?.surface(session.id, tabId)?.favicon ?? null),
+    acting: false,
+    destination: { kind: "tab", tabId: entry.tabId },
+    ended: place === null,
+    favicon: null,
+    key: entry.tabId,
+    site: place?.site ?? site,
+    title: place?.title ?? (entry.title.trim() || site || "Tab"),
   };
 }
 
 function usedPages(
   uses: readonly BrowserSessionUseSummary[],
-  sessions: readonly BrowserSessionSummary[],
+  source: TabSource,
   runIds: readonly string[],
 ): (RunPage & { readonly firstUsedAt: string })[] {
   const runs = new Set(runIds);
-  const byId = new Map(sessions.map((session) => [session.id, session]));
   const pages = new Map<string, RunPage & { readonly firstUsedAt: string }>();
   for (const use of uses) {
     if (use.runId === null || !runs.has(use.runId) || !use.tabId) continue;
-    const { sessionId, tabId } = use;
-    const session = byId.get(sessionId);
-    const store = session?.browserTabs;
-    const key = `${sessionId}:${tabId}`;
-    const tab =
-      session && openBrowserStates.has(session.state)
-        ? store?.sessionTab(sessionId, tabId)
-        : undefined;
-    const { acting, ended, favicon } = session
-      ? pageState(session, tabId, use.runId, use.threadId)
-      : { acting: false, ended: true, favicon: null };
-    const held = pages.get(key);
-    if (held && held.firstUsedAt <= use.firstUsedAt) {
-      if (acting) pages.set(key, { ...held, acting: true });
-      continue;
-    }
+    const tabId = TabIdSchema.parse(use.tabId);
+    const held = pages.get(tabId);
+    if (held && held.firstUsedAt <= use.firstUsedAt) continue;
+    const place = liveTab(source, tabId);
     const recordedSite = use.pageSite ? hostName(use.pageSite) : null;
-    const site = tab ? hostName(tab.site) : recordedSite;
-    const title = (tab?.title.trim() || null) ?? (use.pageTitle?.trim() || null) ?? site ?? "Page";
-    pages.set(key, {
-      acting: acting || held?.acting === true,
-      destination: { kind: "browser", sessionId, tabId },
-      ended,
-      favicon,
+    const site = place?.site ?? recordedSite;
+    pages.set(tabId, {
+      acting: false,
+      destination: { kind: "tab", tabId },
+      ended: place === null,
+      favicon: null,
       firstUsedAt: use.firstUsedAt,
-      key,
+      key: tabId,
       site,
-      title,
+      title: place?.title ?? (use.pageTitle?.trim() || null) ?? site ?? "Page",
     });
   }
   return [...pages.values()].sort(
@@ -475,30 +186,41 @@ function usedPages(
 
 /**
  * The pages a person included with a message, as chips: the tab's current
- * title while its browser is open, else what the person saw when they sent it.
+ * title while it is listed, else what the person saw when they sent it.
  */
 export function messagePages(
   pages: readonly BrowserPageContentPart[],
-  sessions: readonly BrowserSessionSummary[],
+  source: TabSource,
 ): RunPage[] {
   return pages.map((page) => {
-    const session = sessions.find((candidate) => candidate.id === page.sessionId);
-    const ended = !session || !openBrowserStates.has(session.state);
-    const tab = ended ? undefined : session?.browserTabs?.surface(session.id, page.tabId);
-    const row = ended ? undefined : session?.browserTabs?.sessionTab(session.id, page.tabId);
+    const place = liveTab(source, page.tabId);
     return {
       acting: false,
-      destination: { kind: "browser", sessionId: page.sessionId, tabId: page.tabId },
-      ended,
-      favicon: tab?.favicon ?? null,
-      key: `${page.sessionId}:${page.tabId}`,
-      site: hostName(tab?.url ?? row?.site ?? page.url),
-      title:
-        (tab ? browserTabTitle(tab) : row?.title.trim() || page.title.trim()) ||
-        hostName(page.url) ||
-        "Page",
+      destination: { kind: "tab", tabId: page.tabId },
+      ended: place === null,
+      favicon: null,
+      key: page.tabId,
+      site: place?.site ?? hostName(page.url),
+      title: place?.title ?? (page.title.trim() || hostName(page.url) || "Page"),
     };
   });
+}
+
+/** The first listed window tab of this app on this computer, or the computer's phone tab. */
+function nativeTab(
+  source: TabSource,
+  match: { readonly computerId: string } & (
+    { readonly kind: "window"; readonly bundleId: string } | { readonly kind: "phone" }
+  ),
+): PlaceItem | null {
+  return (
+    placeList(source).find(
+      (place) =>
+        place.kind === match.kind &&
+        place.device.machineId === match.computerId &&
+        (match.kind === "phone" || place.tab.bundleId === match.bundleId),
+    ) ?? null
+  );
 }
 
 /** A Mac app a reply's steps worked in, kept after the agent is done with it. */
@@ -506,25 +228,19 @@ export interface TurnApp {
   readonly key: string;
   readonly app: ComputerAppIdentity;
   readonly title: string;
-  /** Null once the Run no longer holds the app: the chip only names it. */
-  readonly destination: Extract<SurfaceDestination, { readonly kind: "app" }> | null;
+  /** Its window tab while one is listed; else the chip only names it. */
+  readonly destination: TabDestination | null;
   readonly ended: boolean;
   readonly acting: boolean;
   /** The reply's first step in the app. */
   readonly firstUsedAt: string;
 }
 
-/**
- * The Mac apps a reply's steps worked in, one per app per Mac, from the steps
- * themselves. An app opens while the reply's Run still holds it.
- */
-export function turnApps(
-  turn: Pick<Turn, "runId" | "work">,
-  machines: readonly MachineSummary[],
-): TurnApp[] {
+/** The Mac apps a reply's steps worked in, one per app per Mac, from the steps themselves. */
+export function turnApps(turn: Pick<Turn, "runId" | "work">, source: TabSource): TurnApp[] {
   const apps = new Map<string, TurnApp>();
   for (const entry of turn.work) {
-    if (entry.kind !== "tool" || entry.tool?.name === "computer") continue;
+    if (entry.kind !== "tool" || entry.tool?.name === "computer_use") continue;
     const place = entry.integration?.computerApp;
     if (!place) continue;
     const app: ComputerAppIdentity = {
@@ -532,8 +248,7 @@ export function turnApps(
       displayName: place.app,
       teamId: null,
     };
-    const appKey = computerAppIdentityKey(app);
-    const key = `app:${place.runnerId}:${appKey}`;
+    const key = `app:${place.runnerId}:${computerAppIdentityKey(app)}`;
     const held = apps.get(key);
     if (held) {
       // Subagents' steps follow the reply's own, so the earliest one is looked for.
@@ -541,23 +256,16 @@ export function turnApps(
         apps.set(key, { ...held, firstUsedAt: entry.createdAt });
       continue;
     }
-    const machine = machines.find((candidate) => candidate.id === place.runnerId);
-    const session =
-      machine && canWatchComputer(machine)
-        ? machine.computerUse?.sessions.find(
-            (candidate) =>
-              candidate.runId === entry.runId &&
-              candidate.apps.some((held) => computerAppIdentityKey(held) === appKey),
-          )
-        : undefined;
+    const tab = nativeTab(source, {
+      kind: "window",
+      computerId: place.runnerId,
+      bundleId: place.bundleId,
+    });
     apps.set(key, {
-      acting: session?.actingAppKeys?.includes(appKey) === true,
+      acting: false,
       app,
-      destination:
-        session && machine
-          ? { appKey, computerSessionId: session.sessionId, kind: "app", machineId: machine.id }
-          : null,
-      ended: session === undefined,
+      destination: tab?.destination ?? null,
+      ended: tab === null,
       firstUsedAt: entry.createdAt,
       key,
       title: place.app,
@@ -570,7 +278,7 @@ export function turnApps(
 export interface TurnPhone {
   readonly key: string;
   readonly title: string;
-  readonly destination: Extract<SurfaceDestination, { readonly kind: "phone" }> | null;
+  readonly destination: TabDestination | null;
   readonly ended: boolean;
   readonly acting: boolean;
   /** The reply's first step on the phone. */
@@ -578,13 +286,10 @@ export interface TurnPhone {
 }
 
 /** Phones named by the reply's own and delegated steps, one per computer. */
-export function turnPhones(
-  turn: Pick<Turn, "runId" | "work">,
-  machines: readonly MachineSummary[],
-): TurnPhone[] {
+export function turnPhones(turn: Pick<Turn, "runId" | "work">, source: TabSource): TurnPhone[] {
   const phones = new Map<string, TurnPhone>();
   for (const entry of turn.work) {
-    if (entry.kind !== "tool" || entry.tool?.name === "computer" || !entry.integration?.phone)
+    if (entry.kind !== "tool" || entry.tool?.name === "computer_use" || !entry.integration?.phone)
       continue;
     const place = entry.integration.phone;
     const key = `phone:${place.runnerId}`;
@@ -594,18 +299,11 @@ export function turnPhones(
         phones.set(key, { ...held, firstUsedAt: entry.createdAt });
       continue;
     }
-    const machine = machines.find((candidate) => candidate.id === place.runnerId);
-    const session =
-      machine && canWatchComputer(machine)
-        ? machine.computerUse?.sessions.find(
-            (candidate) => candidate.runId === entry.runId && candidate.display,
-          )
-        : undefined;
-    const open = machine !== undefined && phoneTabOpen(machine);
+    const tab = nativeTab(source, { kind: "phone", computerId: place.runnerId });
     phones.set(key, {
-      acting: session?.actingDisplay === true,
-      destination: open ? { kind: "phone", machineId: machine.id } : null,
-      ended: !open,
+      acting: false,
+      destination: tab?.destination ?? null,
+      ended: tab === null,
       firstUsedAt: entry.createdAt,
       key,
       title: place.computer,
@@ -614,58 +312,42 @@ export function turnPhones(
   return [...phones.values()];
 }
 
-/** One place a reply's Run used: a browser page, a phone or a Mac app. */
+/** One place a reply's Run used: a page, a phone or a Mac app window. */
 export type ReplyPlace =
   | { readonly kind: "page"; readonly page: RunPage }
   | { readonly kind: "phone"; readonly phone: TurnPhone }
   | { readonly kind: "app"; readonly app: TurnApp };
 
-/** A recorded stop stays readable even after its native session or browser leaves. */
-export function placeReply(
-  entry: PlaceEntry,
-  sessions: readonly BrowserSessionSummary[],
-  machines: readonly MachineSummary[],
-  threadId: string | null,
-): ReplyPlace {
-  const place = entry.place;
-  if (place.kind === "browser")
-    return { kind: "page", page: placePage(entry, sessions, threadId)! };
-  const destination = runPlaceDestination({ runId: entry.runId, data: entry }, { machines });
-  if (place.kind === "app") {
-    const machine = machines.find((machine) => machine.id === place.machineId);
-    const session = machine?.computerUse?.sessions.find((session) => session.runId === entry.runId);
-    const app = session?.apps.find((app) => computerAppIdentityKey(app) === place.appKey) ?? {
-      bundleId: place.appKey,
-      displayName: entry.title,
-      teamId: null,
-    };
+/** A recorded stop stays readable even after its tab closes. */
+export function placeReply(entry: PlaceEntry, source: TabSource): ReplyPlace {
+  const place = liveTab(source, entry.tabId);
+  const destination: TabDestination = { kind: "tab", tabId: entry.tabId };
+  if (place?.kind === "window")
     return {
       kind: "app",
       app: {
-        key: `app:${place.machineId}:${place.appKey}`,
+        key: entry.tabId,
         title: entry.title,
-        app,
+        app: { bundleId: place.tab.bundleId ?? "", displayName: place.title, teamId: null },
         firstUsedAt: entry.createdAt,
-        destination: destination?.kind === "app" ? destination : null,
-        ended: destination === null,
-        acting: session?.actingAppKeys?.includes(place.appKey) === true,
+        destination,
+        ended: false,
+        acting: false,
       },
     };
-  }
-  const session = machines
-    .find((machine) => machine.id === place.machineId)
-    ?.computerUse?.sessions.find((session) => session.runId === entry.runId && session.display);
-  return {
-    kind: "phone",
-    phone: {
-      key: `phone:${place.machineId}${place.display === "main" ? "" : `:${place.display}`}`,
-      title: entry.title,
-      firstUsedAt: entry.createdAt,
-      destination: destination?.kind === "phone" ? destination : null,
-      ended: destination === null,
-      acting: session?.actingDisplay === true,
-    },
-  };
+  if (place?.kind === "phone")
+    return {
+      kind: "phone",
+      phone: {
+        key: entry.tabId,
+        title: entry.title,
+        firstUsedAt: entry.createdAt,
+        destination,
+        ended: false,
+        acting: false,
+      },
+    };
+  return { kind: "page", page: placePage(entry, source) };
 }
 
 /**
@@ -675,64 +357,45 @@ export function placeReply(
 export function replyPlaces(
   turn: Pick<Turn, "runId" | "work">,
   uses: readonly BrowserSessionUseSummary[],
-  sessions: readonly BrowserSessionSummary[],
-  machines: readonly MachineSummary[],
+  source: TabSource,
 ): ReplyPlace[] {
   const used: { readonly at: string; readonly place: ReplyPlace }[] = [
-    ...(turn.runId ? usedPages(uses, sessions, [turn.runId]) : []).map(
+    ...(turn.runId ? usedPages(uses, source, [turn.runId]) : []).map(
       ({ firstUsedAt, ...page }) => ({
         at: firstUsedAt,
         place: { kind: "page" as const, page },
       }),
     ),
-    ...turnPhones(turn, machines).map((phone) => ({
+    ...turnPhones(turn, source).map((phone) => ({
       at: phone.firstUsedAt,
       place: { kind: "phone" as const, phone },
     })),
-    ...turnApps(turn, machines).map((app) => ({
+    ...turnApps(turn, source).map((app) => ({
       at: app.firstUsedAt,
       place: { kind: "app" as const, app },
     })),
   ];
   for (const entry of turn.work)
     if (entry.kind === "place")
-      used.push({ at: entry.createdAt, place: placeReply(entry, sessions, machines, null) });
+      used.push({ at: entry.createdAt, place: placeReply(entry, source) });
   const unique = new Map<string, ReplyPlace>();
   for (const { place } of used.sort((left, right) => Date.parse(left.at) - Date.parse(right.at))) {
-    const key =
+    const destination =
       place.kind === "page"
-        ? `page:${place.page.key}`
+        ? place.page.destination
+        : place.kind === "app"
+          ? place.app.destination
+          : place.phone.destination;
+    const key =
+      destination?.tabId ??
+      (place.kind === "page"
+        ? place.page.key
         : place.kind === "app"
           ? place.app.key
-          : place.phone.key;
+          : place.phone.key);
     if (!unique.has(key)) unique.set(key, place);
   }
   return [...unique.values()];
-}
-
-/**
- * The Mac apps the given Runs hold now, one per app per Mac. A Mac session
- * lasts only while its Run uses the Mac, so a finished reply names none.
- */
-export function runApps(
-  snapshot: Pick<HostSnapshot, "connection"> & { readonly machines: readonly MachineSummary[] },
-  runIds: readonly string[],
-): AppSurfaceItem[] {
-  const runs = new Set(runIds);
-  return computerItems(snapshot, (session) => runs.has(session.runId))
-    .filter((item): item is AppSurfaceItem => item.kind === "app")
-    .sort(stableOrder);
-}
-
-/** Whole phone displays the given Runs hold now, one per phone. */
-export function runPhones(
-  snapshot: Pick<HostSnapshot, "connection"> & { readonly machines: readonly MachineSummary[] },
-  runIds: readonly string[],
-): PhoneSurfaceItem[] {
-  const runs = new Set(runIds);
-  return computerItems(snapshot, (session) => runs.has(session.runId))
-    .filter((item): item is PhoneSurfaceItem => item.kind === "phone")
-    .sort(stableOrder);
 }
 
 export type LiveWorkState = "needs-you" | "working" | "waiting" | "idle";
@@ -812,16 +475,15 @@ export function liveWork(
         right.updatedAt.localeCompare(left.updatedAt),
     )
     .map(({ updatedAt: _updatedAt, ...group }): LiveWorkGroup => group);
-  const unlisted = snapshot.browserSessions
-    .filter((session) => openBrowserStates.has(session.state))
-    .flatMap((session) => browserItems(session, snapshot.browserProfiles))
-    .filter((item) => !claimed.has(item.key))
-    .map((item): LiveWorkGroup => ({
+  // A tab in use by work this client has not read still appears, so nothing is out of reach.
+  const unlisted = placeList(snapshot)
+    .filter((place) => place.tab.usedBy.length > 0 && !claimed.has(place.key))
+    .map((place): LiveWorkGroup => ({
       state: "idle",
       statusLine: null,
-      surfaces: [item],
-      threadId: item.session.threadIds?.[0] ?? null,
-      title: item.title,
+      surfaces: [surfaceItem(place)],
+      threadId: place.tab.usedBy[0]!.taskId,
+      title: place.title,
     }));
   return [...listed, ...unlisted];
 }
@@ -836,8 +498,8 @@ function statusLine(
   if (state === "waiting") return "Waiting on someone";
   if (state === "idle") return null;
   const acting = surfaces.find((item) => item.acting);
-  if (acting?.kind === "browser") return acting.site ? `On ${acting.site}` : `In ${acting.title}`;
-  if (acting?.kind === "app") return `Using ${acting.app.displayName}`;
+  if (acting?.kind === "page") return acting.site ? `On ${acting.site}` : `In ${acting.title}`;
+  if (acting?.kind === "window") return `Using ${acting.tab.appName ?? acting.title}`;
   return options.composingLabel?.(threadId) ?? "Working";
 }
 

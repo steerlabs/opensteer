@@ -1,5 +1,14 @@
 import { VoiceDock, VoiceMic } from "../voice/controls.js";
 import { useVoiceAvailable } from "../voice/use-voice-value.js";
+import type { ComposerEditorHandle } from "@opensteer/client/references";
+import { ComposerEditor } from "../ui/composer-editor.js";
+import {
+  activeReferenceQuery,
+  ComposerReferencePicker,
+  insertReference,
+  personalReferenceSections,
+  startReference,
+} from "../ui/composer-reference-picker.js";
 import {
   accountGettingReady,
   accessModeConflict,
@@ -11,21 +20,19 @@ import {
   threadPlacementOptions,
   usageLimitNotice,
   type ExecutionSelection,
+  type HostClient,
   type HostSnapshot,
   type ThreadPlacementOption,
 } from "@opensteer/client/host";
-import type { BrowserPageContentPart, ThreadAccessMode } from "@opensteer/core";
+import {
+  attachmentMaxBytes,
+  type BrowserPageContentPart,
+  type ThreadAccessMode,
+} from "@opensteer/core";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useIsFocused } from "@react-navigation/native";
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
-import {
-  Pressable,
-  StyleSheet,
-  TextInput,
-  type TextInputInstance,
-  useWindowDimensions,
-  View,
-} from "react-native";
+import { Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 import type {
   PendingCommand,
   PendingThreadStart,
@@ -39,7 +46,7 @@ import {
 } from "../platform/attachment-draft-files.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "../theme.js";
 import { ComposerAction } from "../ui/composer-action.js";
-import { AppText, SecondaryButton } from "../ui/primitives.js";
+import { AppText } from "../ui/primitives.js";
 import { useContentInsets, usePaneInView } from "../ui/pane.js";
 import { useGutter, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
@@ -272,9 +279,10 @@ export async function handOverFirstMessage(input: {
   /**
    * Leave the source screen. Called once the destination holds the message
    * and before the source's copy is cleared: cleared first, the source would
-   * draw its empty starter again for a frame on the way out.
+   * draw its empty starter again for a frame on the way out. It may wait for
+   * the source to finish showing what was sent before it leaves.
    */
-  readonly onReady: () => void;
+  readonly onReady: () => void | Promise<void>;
   readonly threadId: string;
   readonly userId: string;
 }): Promise<PendingCommand> {
@@ -297,7 +305,7 @@ export async function handOverFirstMessage(input: {
   // and only the Thread's copies of the files are referenced from here on.
   const owed = drafts.readPending(deploymentId, userId, threadId);
   if (owed === null) throw new Error("Your message was not saved on this phone.");
-  input.onReady();
+  await input.onReady();
   const cleared = await drafts.clearPending(
     deploymentId,
     userId,
@@ -345,7 +353,9 @@ export function FirstMessageComposer(props: {
   readonly children: ReactNode;
   readonly held: boolean;
   readonly execution: FirstMessageExecution;
-  readonly inputRef: RefObject<TextInputInstance | null>;
+  /** Where the references an `@` offers come from. */
+  readonly hostClient: HostClient;
+  readonly inputRef: RefObject<ComposerEditorHandle | null>;
   readonly onChangeText: (text: string) => void;
   readonly onChooseAI: (pickerAttemptId?: string, conversation?: boolean) => void;
   readonly onSend: (selection: ExecutionSelection | null) => void;
@@ -366,6 +376,8 @@ export function FirstMessageComposer(props: {
    * clear of the keyboard.
    */
   readonly underHeader: boolean;
+  /** The message is sent: what scrolls is the task it starts, not the invitation. */
+  readonly started?: boolean;
   /** Home's composer: with nothing written, its circle starts Voice. */
   readonly voice?: boolean;
   /** Whose dismissals of a usage-limit line apply here. */
@@ -529,7 +541,10 @@ export function FirstMessageComposer(props: {
     { icon: "gearshape", id: "model", label: "Choose AI…", onPress: chooseManually },
   ];
   const fieldMaxHeight =
-    type.body.lineHeight * 6 * Math.min(fontScale, controlFontScaleLimit) + space[8] * 2;
+    type.body.lineHeight * 6 * Math.min(fontScale, controlFontScaleLimit) + space[6] * 2;
+  const [caret, setCaret] = useState(props.text.length);
+  const [fieldFocused, setFieldFocused] = useState(false);
+  const referenceQuery = fieldFocused && !held ? activeReferenceQuery(props.text, caret) : null;
 
   return (
     <ComposerDockLayout
@@ -594,6 +609,18 @@ export function FirstMessageComposer(props: {
               {blocker.reason}
             </AppText>
           )}
+          {referenceQuery === null ? null : (
+            <ComposerReferencePicker
+              onPick={(row) =>
+                insertReference(props.inputRef.current, referenceQuery, caret, row.markdown)
+              }
+              sections={personalReferenceSections(
+                props.hostClient.getSnapshot(),
+                referenceQuery.query,
+                null,
+              )}
+            />
+          )}
           <VoiceDock />
           <ComposerBar
             accessory={
@@ -624,7 +651,8 @@ export function FirstMessageComposer(props: {
                 <VoiceMic disabled={held} face="disc" />
               ) : (
                 <ComposerAction
-                  busy={sending}
+                  // What was sent already shows it is on its way; the circle does not repeat it.
+                  busy={false}
                   disabled={!actionable}
                   kind="send"
                   label={
@@ -643,33 +671,46 @@ export function FirstMessageComposer(props: {
                 onPress={() => props.inputRef.current?.focus()}
                 style={styles.lane}
               >
-                <TextInput
+                <ComposerEditor
                   accessibilityLabel="Message"
-                  autoFocus={props.autoFocus}
-                  cursorColor={color.ember}
+                  autoFocus={props.autoFocus ?? false}
                   editable={!held}
-                  maxFontSizeMultiplier={controlFontScaleLimit}
-                  multiline
+                  maxHeight={fieldMaxHeight}
+                  maxImageBytes={attachmentMaxBytes}
+                  onBlur={() => setFieldFocused(false)}
                   onChangeText={changeText}
+                  onFocus={() => setFieldFocused(true)}
+                  onPasteImages={(pasted) => void staged.paste(pasted)}
+                  onSelectionChange={(next) => setCaret(next.start)}
+                  paddingVertical={space[6]}
                   placeholder={page === null ? props.placeholder : "Ask about this page…"}
-                  placeholderTextColor={color.muted}
                   ref={props.inputRef}
-                  selectionColor={color.ember}
-                  style={[styles.input, { maxHeight: fieldMaxHeight }]}
+                  scope="personal"
                   value={props.text}
                 />
               </Pressable>
             }
             leading={
-              <NativeMenu
-                accessibilityHint="Attach files or choose which AI this starts on"
-                accessibilityLabel="Message actions"
-                onPresent={noop}
-                onSettle={noop}
-                options={menuOptions}
-              >
-                <ComposerGlyph icon="plus" />
-              </NativeMenu>
+              <View style={styles.leading}>
+                <NativeMenu
+                  accessibilityHint="Attach files or choose which AI this starts on"
+                  accessibilityLabel="Message actions"
+                  onPresent={noop}
+                  onSettle={noop}
+                  options={menuOptions}
+                >
+                  <ComposerGlyph icon="plus" />
+                </NativeMenu>
+                <Pressable
+                  accessibilityHint="Puts a link to a task, automation or computer in your message"
+                  accessibilityLabel="Add a reference"
+                  accessibilityRole="button"
+                  disabled={held}
+                  onPress={() => startReference(props.inputRef.current)}
+                >
+                  <ComposerGlyph icon="at" muted={held} />
+                </Pressable>
+              </View>
             }
             shape="rounded"
           />
@@ -694,7 +735,9 @@ export function FirstMessageComposer(props: {
               paddingBottom: clearance + space[24],
               paddingLeft: gutter + insets.left,
               paddingRight: gutter + insets.right,
-              paddingTop: (props.underHeader ? headerHeight : 0) + space[24],
+              // Once sent, it starts where the task's transcript starts.
+              paddingTop:
+                (props.underHeader ? headerHeight : 0) + (props.started ? space[8] : space[24]),
             },
           ]}
           keyboardDismissMode="interactive"
@@ -756,37 +799,6 @@ export function FirstMessageExamples(props: {
   );
 }
 
-/**
- * The message already handed to the Host under a key it may have accepted. It
- * is never re-keyed and never edited; only Send again sends it, as it was.
- */
-export function FirstMessageHeld(props: {
-  /** Null where sending it again would need a decision first. */
-  readonly onRetry: (() => void) | null;
-  readonly sending: boolean;
-  readonly status: string;
-  readonly text: string;
-}): ReactNode {
-  return (
-    <View style={styles.held}>
-      {props.text === "" ? null : <AppText role="secondary">{props.text}</AppText>}
-      <View style={styles.heldFoot}>
-        <AppText role="caption" style={styles.grow} tone="muted">
-          {props.sending ? "Sending…" : props.status}
-        </AppText>
-        {props.onRetry === null ? null : (
-          <SecondaryButton
-            compact
-            disabled={props.sending}
-            label="Send again"
-            onPress={props.onRetry}
-          />
-        )}
-      </View>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   content: { flexGrow: 1, gap: space[16] },
   example: {
@@ -801,22 +813,7 @@ const styles = StyleSheet.create({
   },
   examples: { gap: space[10] },
   grow: { flex: 1 },
-  held: {
-    backgroundColor: color.surface,
-    borderRadius: radius.md,
-    gap: space[8],
-    padding: space[12],
-  },
-  heldFoot: { alignItems: "center", flexDirection: "row", gap: space[12] },
-  input: {
-    color: color.text,
-    fontSize: type.body.fontSize,
-    fontWeight: type.body.fontWeight,
-    includeFontPadding: false,
-    paddingHorizontal: 0,
-    paddingVertical: space[8],
-    textAlignVertical: "top",
-  },
+  leading: { flexDirection: "row" },
   // A generous start: the invitation sits in the upper third, where the eye
   // lands, and the composer stays where every later message is written.
   invitation: { gap: space[10], paddingTop: space[32] },

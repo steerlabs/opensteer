@@ -1,3 +1,8 @@
+import {
+  DeviceIdSchema,
+  isPhoneDisplayDefinitionId,
+  PhoneDisplayDefinitionIdSchema,
+} from "./devices.js";
 import { z } from "zod";
 import { BrowserSiteSchema } from "./browser-sources.js";
 import { ComputerAppIdentitySchema } from "./computer-app.js";
@@ -36,6 +41,7 @@ export const RequestKindSchema = z.enum([
   "device.access",
   "computer.app.access",
   "integration.input",
+  "person.question",
 ]);
 type RequestKind = z.infer<typeof RequestKindSchema>;
 
@@ -116,6 +122,11 @@ const RequestFormChoiceViewSchema = z.object(requestFormChoiceShape);
 
 const requestFormFieldShape = {
   choices: z.array(RequestFormChoiceSchema).max(100).optional(),
+  /**
+   * The person may type their own answer instead of choosing. A field without
+   * choices is always typed, so this only changes one that offers them.
+   */
+  custom: z.boolean().default(false),
   id: RequestIdentifierSchema,
   label: z.string().trim().min(1).max(requestLabelMaxLength).optional(),
   multiSelect: z.boolean().default(false),
@@ -134,6 +145,43 @@ export const RequestFormAnswersSchema = z.record(
   z.array(z.string().max(100_000)).max(100),
 );
 export type RequestFormAnswers = z.infer<typeof RequestFormAnswersSchema>;
+
+/**
+ * Why one field's answer would be refused, or null when it fits. A typed
+ * answer stands alone: it replaces the choices rather than joining them.
+ */
+export function requestFieldAnswerProblem(
+  field: Pick<RequestFormField, "choices" | "custom" | "multiSelect">,
+  values: readonly string[],
+): string | null {
+  if (values.length === 0) return "is not answered";
+  const offered = field.choices?.map((choice) => choice.value);
+  const typed = offered === undefined || values.some((value) => !offered.includes(value));
+  if (typed) {
+    if (offered !== undefined && !field.custom) return "is not one of the offered choices";
+    return values.length === 1 && values[0]!.trim() !== "" ? null : "needs one typed answer";
+  }
+  if (!field.multiSelect && values.length !== 1) return "takes exactly one choice";
+  return new Set(values).size === values.length ? null : "repeats a choice";
+}
+
+/** Why answers don't fit a form's fields, or null when every field has exactly its answer. */
+export function requestFormAnswersProblem(
+  fields: readonly RequestFormField[],
+  answers: RequestFormAnswers,
+): string | null {
+  const ids = new Set(fields.map(({ id }) => id));
+  const extra = Object.keys(answers).find((id) => !ids.has(id));
+  if (extra !== undefined) return `${extra} is not one of its questions`;
+  for (const field of fields) {
+    const problem = requestFieldAnswerProblem(
+      field,
+      Object.hasOwn(answers, field.id) ? answers[field.id]! : [],
+    );
+    if (problem !== null) return `${field.label ?? field.prompt} ${problem}`;
+  }
+  return null;
+}
 
 /**
  * Set when the title names something an agent proposed, such as an integration
@@ -328,7 +376,7 @@ const requestPayloadVariants = [
    */
   z.strictObject({
     kind: z.literal("machine.full-disk-access"),
-    machineId: RunnerIdSchema,
+    machineId: DeviceIdSchema,
     machineName: z.string().trim().min(1).max(160),
     reason: RequestReasonSchema,
   }),
@@ -370,14 +418,14 @@ const requestPayloadVariants = [
     .strictObject({
       access: z.enum(["read", "read-write"]),
       app: z.strictObject(computerAppIdentityShape).nullable(),
-      definitionId: z.enum(["macos-app", "android-phone"]),
+      definitionId: z.union([z.literal("macos-app"), PhoneDisplayDefinitionIdSchema]),
       kind: z.literal("computer.app.access"),
       reason: RequestReasonSchema,
-      runnerId: RunnerIdSchema,
+      deviceId: DeviceIdSchema,
       setupRequestId: z.uuid(),
     })
     .superRefine((payload, context) => {
-      if ((payload.app === null) !== (payload.definitionId === "android-phone")) {
+      if ((payload.app === null) !== isPhoneDisplayDefinitionId(payload.definitionId)) {
         context.addIssue({
           code: "custom",
           message: "A Mac app access request names its app; a phone access request names none",
@@ -397,14 +445,32 @@ const requestPayloadVariants = [
   }),
   z.strictObject({
     kind: z.literal("device.access"),
-    machineId: RunnerIdSchema,
+    machineId: DeviceIdSchema,
     machineName: z.string().trim().min(1).max(160),
     access: z.enum(["browser", "apps", "files"]),
     reason: RequestReasonSchema,
   }),
+  /**
+   * An agent asked the person something with `ask_person`. Its questions are
+   * the form's fields; the answer wakes the task that asked, however late.
+   */
+  z.strictObject({ kind: z.literal("person.question") }),
 ] as const;
-export const RequestPayloadSchema = z.discriminatedUnion("kind", requestPayloadVariants);
-const RequestPayloadViewSchema = z.discriminatedUnion("kind", [
+const canonicalRequestPayloadSchema = z.discriminatedUnion("kind", requestPayloadVariants);
+export const LegacyComputerAppAccessPayloadSchema = z
+  .strictObject({ ...requestPayloadVariants[8].shape, runnerId: RunnerIdSchema })
+  .omit({ deviceId: true });
+function normalizeLegacyComputerAccess(value: unknown) {
+  const legacy = LegacyComputerAppAccessPayloadSchema.safeParse(value);
+  if (!legacy.success) return value;
+  const { runnerId, ...payload } = legacy.data;
+  return { ...payload, deviceId: DeviceIdSchema.parse(runnerId) };
+}
+export const RequestPayloadSchema = z.preprocess(
+  normalizeLegacyComputerAccess,
+  canonicalRequestPayloadSchema,
+);
+const canonicalRequestPayloadViewSchema = z.discriminatedUnion("kind", [
   z.object(requestPayloadVariants[0].shape),
   z.object(requestPayloadVariants[1].shape),
   z.object({
@@ -422,7 +488,12 @@ const RequestPayloadViewSchema = z.discriminatedUnion("kind", [
   }),
   z.object(requestPayloadVariants[9].shape),
   z.object(requestPayloadVariants[10].shape),
+  z.object(requestPayloadVariants[11].shape),
 ]);
+const RequestPayloadViewSchema = z.preprocess(
+  normalizeLegacyComputerAccess,
+  canonicalRequestPayloadViewSchema,
+);
 export type RequestPayload = z.infer<typeof RequestPayloadSchema>;
 
 export const RequestSettlementProvenanceSchema = z.strictObject({
@@ -746,6 +817,8 @@ export function requestIsAgentAnswerable(
     "device.access": false,
     "computer.app.access": false,
     "integration.input": false,
+    // It asks the person by name; another agent answering would be a guess.
+    "person.question": false,
   };
   return ordinary[request.kind] && !request.originatingNodeId && !hasSecretRequestFields(request);
 }

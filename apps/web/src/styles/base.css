@@ -964,6 +964,7 @@ svg.icon {
 
   input:not(.switch, [type="checkbox"], [type="radio"]),
   textarea:not(.remote-keyboard-input, .browser-keyboard-input, .phone-display__keyboard),
+  .composer-editor > .composer-editor__field,
   select {
     min-height: var(--touch-target);
     /* Below 16px, mobile Safari zooms the page to the field. */

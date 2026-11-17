@@ -5,6 +5,7 @@ import type { PersonalTeamRequestsStore } from "@opensteer/database/personal-tea
 import type { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import { TeamRunTools } from "./tools.js";
 import { PersonalTeamRequests } from "./requests.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { TeamLinkCallInput, TeamLinkResult } from "../team-link-endpoint/contracts.js";
 
 function fixture() {
@@ -22,6 +23,7 @@ function fixture() {
     },
   });
   let row = PersonalTeamRequestSchema.parse({
+    kind: "self",
     teamId: source.teamId,
     requestId: createId("teamAgentRequest"),
     triggerMessageId: "2",
@@ -45,12 +47,25 @@ function fixture() {
   let offline = false;
   const calls: TeamLinkCallInput[] = [];
   const requests = {
+    post: vi.fn(async () => undefined),
+    pendingPosts: async () => [],
+    recordPost: vi.fn(),
     async forRun() {
       return structuredClone(row);
     },
     async get() {
       return structuredClone(row);
     },
+    async mirror() {
+      return structuredClone(row);
+    },
+    async terminalAsksPendingCleanup() {
+      return [];
+    },
+    async mirrors() {
+      return [structuredClone(row)];
+    },
+    async remote() {},
     async forTeam() {
       return [structuredClone(row)];
     },
@@ -92,6 +107,14 @@ function fixture() {
     calls.push(input);
     if (offline) throw new OpensteerError({ code: "runner_offline", message: "Offline" });
     if (denied) throw new OpensteerError({ code: "forbidden", message: "people-only" });
+    if (input.type === "reconcile")
+      return {
+        kind: "reconciled",
+        requests: input.requestIds.map((requestId) => ({
+          requestId,
+          request: { id: requestId, kind: "self", state: "working" },
+        })),
+      } as TeamLinkResult;
     if (input.type === "receipt") return { kind: "receipt", messageId: remote };
     if (input.type === "read") return { kind: "read", result: { source } } as TeamLinkResult;
     if (input.type === "post") {
@@ -106,9 +129,27 @@ function fixture() {
     }
     return { kind: "ok" };
   };
-  const admission = { admitTeamRequest: vi.fn(), cancelTeamRequest: vi.fn() };
+  const admission = {
+    admitTeamReturn: vi.fn(),
+    admitTeamRequest: vi.fn(),
+    releaseTeamAsk: vi.fn(),
+    cancelTeamRequest: vi.fn(async (input: { reason?: string }) => {
+      row = {
+        ...row,
+        terminalState: row.terminalState ?? "cancelled",
+        ...(row.publicationState !== "accepted"
+          ? {
+              publicationState: "blocked",
+              blockedReason: input.reason ?? "The team request was cancelled.",
+            }
+          : {}),
+      };
+    }),
+  };
   const publisher = new PersonalTeamRequests({
-    links: {} as PersonalTeamLinksStore,
+    links: {
+      get: async () => ({ id: "local", remoteLinkId: createId("teamLink"), state: "active" }),
+    } as unknown as PersonalTeamLinksStore,
     requests: requests as unknown as PersonalTeamRequestsStore,
     admission,
     runs: { outcome: async () => outcome },
@@ -119,7 +160,9 @@ function fixture() {
     requests,
     publisher,
     tools: new TeamRunTools(
-      {} as PersonalTeamLinksStore,
+      {
+        get: async () => ({ id: "local", remoteLinkId: createId("teamLink"), state: "active" }),
+      } as unknown as PersonalTeamLinksStore,
       requests as unknown as PersonalTeamRequestsStore,
       () => ({ call }),
     ),
@@ -148,7 +191,63 @@ function fixture() {
   };
 }
 
+it("drains a retry's request lookup before stopping", async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  const lookup = Promise.withResolvers<[]>();
+  let reading = false;
+  const publisher = new PersonalTeamRequests({
+    ...f.publisher.options,
+    requests: {
+      ...f.publisher.options.requests,
+      decide: async () => ({ ...f.row(), kind: "ask", localDecision: "approve" }),
+      mirror: async () => {
+        throw new OpensteerError({ code: "timeout", message: "Decision unavailable" });
+      },
+      mirrors: () => {
+        reading = true;
+        return lookup.promise;
+      },
+    } as unknown as PersonalTeamRequestsStore,
+  });
+  let stopping: Promise<void> | undefined;
+  try {
+    await expect(
+      publisher.decide(createId("user"), f.source.teamId, f.row().requestId, "approve"),
+    ).rejects.toMatchObject({ code: "timeout" });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(reading).toBe(true);
+    let stopped = false;
+    stopping = publisher.stop().then(() => {
+      stopped = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(stopped, "stop returned while the retry was still reading the database").toBe(false);
+    lookup.resolve([]);
+    vi.useRealTimers();
+    await withTimeout(stopping, 1_000, {
+      timeoutError: () => new Error("Request lookup did not drain on stop"),
+    });
+  } finally {
+    lookup.resolve([]);
+    vi.useRealTimers();
+    await withTimeout(Promise.all([stopping, publisher.stop()]), 1_000, {
+      timeoutError: () => new Error("Request retry did not stop during cleanup"),
+    });
+  }
+});
+
 describe("durable team publication", () => {
+  it("strips local image embeds before validating and freezing a final team answer", async () => {
+    const f = fixture();
+    f.outcome.finalMessage =
+      "Answer" + (" ![chart](/private/" + "x".repeat(400) + ".png)").repeat(50);
+    await f.publisher.reconcileOne(f.row());
+    expect(f.row()).toMatchObject({
+      publicationState: "accepted",
+      answerPayload: { bodyMarkdown: "Answer" + " chart".repeat(50), attachmentIds: [] },
+    });
+  });
   it("publishes the final answer after a definitively rejected tool post", async () => {
     const f = fixture();
     await expect(

@@ -23,7 +23,7 @@ import VideoToolbox
 
   private static func capture(bound: SessionWindow, observation: Observation, out: URL,
                               recover: Bool, peer: VideoPeer) async throws {
-    let producer = try await peer.start(app: observation.app, window: bound.windowID)
+    let producer = try await peer.start(app: observation.app, window: try WindowIdentities.retain(bound.liveness, app: observation.app))
     defer { producer.stop() }
     let binding = producer.binding
     let owner = binding.window
@@ -223,13 +223,13 @@ import VideoToolbox
     catch { media.close(); control.close(); throw error }
   }
 
-  func start(app: AppIdentity, window: CGWindowID) async throws -> MacWindowVideoProducer {
+  func start(app: AppIdentity, window: String) async throws -> MacWindowVideoProducer {
     let identity = try JSONSerialization.jsonObject(with: JSONCoding.encoder.encode(app))
     let view = "cvw_" + UUID().uuidString.lowercased()
     let source: [String: Any] = ["kind": "owner-view", "viewId": view, "generation": 1]
     try await control.hello(videoProfile: true)
     _ = try await control.request("view.open", ["viewId": view, "generation": 1,
-      "leaseDurationMs": 300_000, "target": ["kind": "app", "app": identity, "window": window]])
+      "leaseDurationMs": 300_000, "target": ["kind": "app", "app": identity, "windowId": window]])
     let resolved = try await control.request("display.resolve", ["source": source])
     let target = try (resolved["target"] as? [String: Any]).unwrap("video target")
     let id = "dsp_" + UUID().uuidString.lowercased()

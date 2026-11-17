@@ -8,10 +8,22 @@ import { expect, it } from "vitest";
 import { parseCases } from "./cases.js";
 import { startFakeHost } from "./host.js";
 
-it("returns a native runtime update refusal as an MCP tool error after validation", async () => {
+it("returns a fixture refusal as an MCP tool error after validation", async () => {
   const testCase = parseCases(
-    await readFile(new URL("./cases/browser.ndjson", import.meta.url), "utf8"),
-  ).find((testCase) => testCase.id === "native-runtime-update-refusal")!;
+    JSON.stringify({
+      id: "mock-error",
+      area: "transport",
+      kind: "guard",
+      profile: "task",
+      source: { commit: "a".repeat(40), note: "Mock errors retain production input validation" },
+      turns: ["Inspect availability"],
+      mocks: {
+        integration_search: { $error: "Service is offline." },
+        saved_login_request: { status: "pending" },
+      },
+      expect: { calls: [{ tool: "integration_search", args: { query: "mail" } }] },
+    }),
+  )[0]!;
   const host = await startFakeHost(testCase);
   const client = new Client({ name: "eval-profile-refusal", version: "1" });
   try {
@@ -24,11 +36,20 @@ it("returns a native runtime update refusal as an MCP tool error after validatio
     const result = await client.callTool({ name: call.tool, arguments: call.args });
     expect(result).toMatchObject({
       isError: true,
-      content: [{ type: "text", text: "Update this computer to open this profile." }],
+      structuredContent: {
+        error: { code: "invalid_input", message: "Service is offline.", next: null },
+      },
     });
-    expect(host.calls).toEqual([
-      { ...call, valid: true, result: { $error: "Update this computer to open this profile." } },
+    expect(host.calls).toMatchObject([
+      { ...call, valid: true, result: { $error: "Service is offline." } },
     ]);
+    const badOutput = await client.callTool({
+      name: "saved_login_request",
+      arguments: { tabId: "sign-in-tab", site: "https://example.com", reason: "Sign in" },
+    });
+    expect(badOutput.isError).toBe(true);
+    expect(JSON.stringify(badOutput)).toContain("invalid mock output for saved_login_request");
+    expect(host.calls.at(-1)?.valid).toBe(false);
     const invalid = await client.callTool({ name: call.tool, arguments: { unexpected: true } });
     expect(invalid.isError).toBe(true);
     expect(invalid.content).not.toEqual(result.content);
@@ -50,9 +71,34 @@ it("serves the production inventory and validates mocked calls through real MCP 
       profile: "task",
       turns: ["hi"],
       mocks: {
-        integration_search: { $responses: [{ marker: "first" }, { marker: "second" }] },
-        trigger_read: {
-          $byArgs: [{ args: { systemRole: "memory-light" }, result: { marker: "light" } }],
+        integration_search: {
+          $responses: [
+            {
+              operations: [],
+              results: [],
+              catalog: [],
+              total: 0,
+              nextCursor: null,
+              guidance: { catalog: "first" },
+              stale: "must be stripped",
+            },
+            {
+              operations: [],
+              results: [],
+              catalog: [],
+              total: 0,
+              nextCursor: null,
+              guidance: { catalog: "second" },
+            },
+          ],
+        },
+        opensteer_automation_list: {
+          $byArgs: [
+            {
+              args: { systemRole: "memory-light" },
+              result: { automations: [], replayed: true },
+            },
+          ],
         },
       },
       expect: {},
@@ -70,7 +116,9 @@ it("serves the production inventory and validates mocked calls through real MCP 
         }) as unknown as Transport,
       );
       expect((await client.listTools()).tools).toEqual(host.endpoints.get(name)?.tools);
-      expect(host.endpoints.get(name)?.tools.some(({ name }) => name === "computer")).toBe(true);
+      expect(host.endpoints.get(name)?.tools.some(({ name }) => name === "computer_use")).toBe(
+        true,
+      );
       expect(host.endpoints.get(name)?.tools.some(({ name }) => name === "integration_call")).toBe(
         true,
       );
@@ -80,6 +128,7 @@ it("serves the production inventory and validates mocked calls through real MCP 
       });
       expect(valid.isError).not.toBe(true);
       expect(JSON.stringify(valid)).toContain("first");
+      expect(JSON.stringify(valid)).not.toContain("must be stripped");
       const invalid = await client.callTool({
         name: "integration_search",
         arguments: { unexpected: true },
@@ -93,9 +142,11 @@ it("serves the production inventory and validates mocked calls through real MCP 
     }
     expect(host.endpoints.size).toBe(1);
     const byArgs = async (args: Record<string, unknown>) =>
-      JSON.stringify(await clients[0]!.callTool({ name: "trigger_read", arguments: args }));
-    expect(await byArgs({ action: "list", systemRole: "memory-light" })).toContain("light");
-    expect(await byArgs({ action: "list" })).toContain("No case mock matches these arguments");
+      JSON.stringify(
+        await clients[0]!.callTool({ name: "opensteer_automation_list", arguments: args }),
+      );
+    expect(await byArgs({ systemRole: "memory-light" })).toContain('"replayed":true');
+    expect(await byArgs({})).toContain("No case mock matches these arguments");
     expect(host.calls.map((call) => call.valid)).toEqual([true, false, true, true, true]);
     const out = await mkdtemp(join(tmpdir(), "opensteer-eval-mcp-evidence-"));
     await writeFile(
@@ -120,13 +171,16 @@ it("serves the production inventory and validates mocked calls through real MCP 
 }, 30_000);
 
 it("validates prompt overhaul case inputs and mocked positive calls with production boundaries", async () => {
-  for (const file of ["integrations", "triggers", "browser"]) {
+  // The prompt overhaul and the tabs/apps overhaul.
+  const commits = [
+    "b0efe75413a275f2e4a5cb06d1606fae7cd96713",
+    "0c9e437c0ae12ad1e3ea45f9730996a73d0ce511",
+  ];
+  for (const file of ["integrations", "triggers", "browser", "apps", "computer-use"]) {
     const cases = parseCases(
       await readFile(new URL(`./cases/${file}.ndjson`, import.meta.url), "utf8"),
     );
-    for (const c of cases.filter(
-      (c) => c.source.commit === "b0efe75413a275f2e4a5cb06d1606fae7cd96713",
-    )) {
+    for (const c of cases.filter((c) => commits.includes(c.source.commit))) {
       const host = await startFakeHost(c);
       const clients: Client[] = [];
       try {
@@ -143,7 +197,7 @@ it("validates prompt overhaul case inputs and mocked positive calls with product
             }) as unknown as Transport,
           );
           const args =
-            required.tool === "computer"
+            required.tool === "computer_use"
               ? { code: 'return await app("Notes")' }
               : required.tool === "integration_call"
                 ? { ...required.args, arguments: {} }
@@ -153,11 +207,16 @@ it("validates prompt overhaul case inputs and mocked positive calls with product
           await client.callTool({
             name: required.tool,
             arguments:
-              required.tool === "sign_in"
+              required.tool === "saved_login_request" ||
+              required.tool === "chrome_cookies_request" ||
+              required.tool === "app_access_request"
                 ? { ...args, reason: "Check the assigned account" }
                 : args,
           });
-          expect(host.calls.at(-1)?.valid, `${c.id}: ${required.tool} args`).toBe(true);
+          expect(
+            host.calls.at(-1)?.valid,
+            `${c.id}: ${required.tool} args ${JSON.stringify(host.calls.at(-1)?.result)}`,
+          ).toBe(true);
         }
       } finally {
         await Promise.allSettled(clients.map((c) => c.close()));
@@ -181,7 +240,7 @@ it("validates the new surface cases with each caller's production inventory", as
         }) as unknown as Transport,
       );
       const names = (await client.listTools()).tools.map((t) => t.name);
-      expect(names).toContain("thread_wait");
+      expect(names).toContain("opensteer_task_wait");
       expect(!!client.getInstructions()).toBe(c.caller === "connection");
       for (const required of c.expect.calls) {
         expect(names, c.id).toContain(required.tool);
@@ -189,17 +248,25 @@ it("validates the new surface cases with each caller's production inventory", as
           name: required.tool,
           arguments: {
             ...required.args,
-            ...(["integration_request", "sign_in"].includes(required.tool)
+            ...(["integration_request", "saved_login_request", "chrome_cookies_request"].includes(
+              required.tool,
+            )
               ? { reason: "Complete the account check" }
               : {}),
-            ...(required.tool === "delegate_task" ? { task: "Compare vendors" } : {}),
+            ...(["opensteer_task_delegate", "opensteer_task_create"].includes(required.tool)
+              ? { message: "Compare vendors" }
+              : {}),
+            // A new group's color is the agent's choice; the case leaves it open.
+            ...(required.tool === "tab_organize"
+              ? { group: { color: "blue", ...(required.args.group as object) } }
+              : {}),
           },
         });
         expect(host.calls.at(-1)?.valid, `${c.id}: ${required.tool}`).toBe(true);
       }
       if (c.caller === "connection") {
         const result = await client.callTool({
-          name: "sign_in",
+          name: "saved_login_request",
           arguments: { site: "example.com", reason: "Check account" },
         });
         expect(result.isError).toBe(true);
@@ -223,7 +290,11 @@ it("preserves production action validation before consuming mocks", async () => 
       purpose: "task",
       turns: ["hi"],
       expect: {},
-      mocks: { trigger_write: { marker: "admitted" }, trigger_read: { marker: "admitted" } },
+      mocks: {
+        opensteer_automation_create: { replayed: true },
+        opensteer_automation_control: { marker: "admitted" },
+        opensteer_automation_read: { marker: "admitted" },
+      },
     }),
   )[0]!;
   const host = await startFakeHost(testCase);
@@ -235,22 +306,25 @@ it("preserves production action validation before consuming mocks", async () => 
       }) as unknown as Transport,
     );
     for (const [name, args] of [
-      ["trigger_write", { action: "create" }],
-      ["trigger_write", { action: "set_status", status: "paused" }],
+      ["opensteer_automation_create", {}],
+      ["opensteer_automation_control", { action: "pause" }],
       [
-        "trigger_write",
-        { action: "run", triggerId: "trg_00000000-0000-4000-8000-000000000011", name: "stray" },
-      ],
-      ["trigger_read", { action: "get" }],
-      [
-        "delegate_task",
+        "opensteer_automation_control",
         {
-          task: "Two destinations",
-          harnessInstanceId: "hin_00000000-0000-4000-8000-000000000001",
-          threadId: "thr_00000000-0000-4000-8000-000000000001",
+          action: "run_now",
+          automationId: "trg_00000000-0000-4000-8000-000000000011",
+          name: "stray",
         },
       ],
-      ["browser_session_open", { fresh: true, sessionId: "existing" }],
+      ["opensteer_automation_read", {}],
+      [
+        "opensteer_task_delegate",
+        {
+          message: "Two destinations",
+          aiAccountId: "hin_00000000-0000-4000-8000-000000000001",
+          taskId: "thr_00000000-0000-4000-8000-000000000001",
+        },
+      ],
     ] as const) {
       const result = await client.callTool({ name, arguments: args });
       expect(result.isError).toBe(true);
@@ -258,20 +332,19 @@ it("preserves production action validation before consuming mocks", async () => 
       expect(host.calls.at(-1)?.valid).toBe(false);
     }
     const result = await client.callTool({
-      name: "trigger_write",
+      name: "opensteer_automation_create",
       arguments: {
-        action: "create",
-        anchorThreadId: "thr_00000000-0000-4000-8000-000000000011",
+        taskId: "thr_00000000-0000-4000-8000-000000000011",
         name: "Light memory pass",
         source: { kind: "schedule", cron: "*/30 8-22 * * *", timezone: "America/New_York" },
         program: {
           language: "javascript",
-          toolContractVersion: 3,
+          toolContractVersion: 4,
           source: "export default async function () {}",
         },
       },
     });
-    expect(JSON.stringify(result)).toContain("admitted");
+    expect(result).toMatchObject({ structuredContent: { replayed: true } });
     expect(host.calls.at(-1)?.valid).toBe(true);
   } finally {
     await client.close();
@@ -312,12 +385,12 @@ it("retains ingress file failures even if the agent recreates memory before late
         requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
       }) as unknown as Transport,
     );
-    const pause = c.expect.calls.find((call) => call.tool === "trigger_write")!;
+    const pause = c.expect.calls.find((call) => call.tool === "opensteer_automation_control")!;
     await client.callTool({ name: pause.tool, arguments: pause.args });
     expect(host.boundaryChecks.some((check) => !check.pass)).toBe(true);
     await mkdir(join(workspace, "memory"));
     await client.callTool({ name: pause.tool, arguments: pause.args });
-    expect(host.calls.at(-1)?.result).toMatchObject({ status: "paused" });
+    expect(host.calls.at(-1)?.result).toMatchObject({ automation: { status: "paused" } });
     expect(host.boundaryChecks.some((check) => !check.pass)).toBe(true);
   } finally {
     await client.close();
@@ -326,7 +399,7 @@ it("retains ingress file failures even if the agent recreates memory before late
   }
 });
 
-it("reads back successful Trigger writes and the requested one-shot time", async () => {
+it("reads back successful automation changes and the requested one-shot time", async () => {
   const c = parseCases(
     await readFile(new URL("./cases/memory.ndjson", import.meta.url), "utf8"),
   ).find((c) => c.id === "memory-stop-while-running")!;
@@ -339,69 +412,35 @@ it("reads back successful Trigger writes and the requested one-shot time", async
       }) as unknown as Transport,
     );
     const pause = c.expect.calls.find(
-      (call) => call.tool === "trigger_write" && call.args.status === "paused",
+      (call) => call.tool === "opensteer_automation_control" && call.args.action === "pause",
     )!;
     await client.callTool({ name: pause.tool, arguments: pause.args });
     await client.callTool({
-      name: "trigger_read",
-      arguments: { action: "get", triggerId: pause.args.triggerId },
+      name: "opensteer_automation_read",
+      arguments: { automationId: pause.args.automationId },
     });
     expect(host.calls.at(-1)?.result).toMatchObject({
-      trigger: { status: "paused", nextFireAt: null },
+      automation: { status: "paused", nextFireAt: null },
     });
     await client.callTool({
-      name: "trigger_write",
+      name: "opensteer_automation_create",
       arguments: {
-        action: "create",
         name: "Reminder: finish deleting memory",
         source: { kind: "schedule", at: "2027-01-01T09:05:00-05:00" },
         program: {
           language: "typescript",
-          toolContractVersion: 3,
+          toolContractVersion: 4,
           source: "export default async function () {}",
         },
       },
     });
-    const created = host.calls.at(-1)?.result;
-    expect(created).toMatchObject({ nextFireAt: "2027-01-01T14:05:00.000Z" });
+    const created = host.calls.at(-1)?.result as { automation: unknown };
+    expect(created).toMatchObject({ automation: { nextFireAt: "2027-01-01T14:05:00.000Z" } });
     await client.callTool({
-      name: "trigger_read",
-      arguments: { action: "get", triggerId: "trg_00000000-0000-4000-8000-000000000099" },
+      name: "opensteer_automation_read",
+      arguments: { automationId: "trg_00000000-0000-4000-8000-000000000099" },
     });
-    expect(host.calls.at(-1)?.result).toMatchObject({ trigger: created });
-  } finally {
-    await client.close();
-    await host.close();
-  }
-});
-
-it("reads back a source-only schedule change while retaining the person's pause", async () => {
-  const c = parseCases(
-    await readFile(new URL("./cases/memory.ndjson", import.meta.url), "utf8"),
-  ).find((c) => c.id === "memory-nightly-tunes-paused-light")!;
-  const host = await startFakeHost(c);
-  const client = new Client({ name: "eval-trigger-source", version: "1" });
-  try {
-    await client.connect(
-      new StreamableHTTPClientTransport(new URL("/agent", host.url), {
-        requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
-      }) as unknown as Transport,
-    );
-    const update = c.expect.calls[0]!;
-    await client.callTool({ name: update.tool, arguments: update.args });
-    await client.callTool({
-      name: "trigger_read",
-      arguments: { action: "get", triggerId: update.args.triggerId },
-    });
-    expect(host.calls.at(-1)?.result).toMatchObject({
-      trigger: { status: "paused", nextFireAt: null },
-      revision: {
-        source: {
-          kind: "schedule",
-          schedule: { kind: "cron", expression: "0 9 * * 1-5", timezone: "America/New_York" },
-        },
-      },
-    });
+    expect(host.calls.at(-1)?.result).toMatchObject({ automation: created.automation });
   } finally {
     await client.close();
     await host.close();
@@ -430,5 +469,116 @@ it("validates subagent read and stop cases with the production tool schemas", as
       await client.close();
       await host.close();
     }
+  }
+});
+
+it("discovers changed tasks from message times and reads own handoffs and team audiences", async () => {
+  const taskId = "thr_00000000-0000-4000-8000-000000000021";
+  const workerId = "thr_00000000-0000-4000-8000-000000000011";
+  const teamSource = {
+    teamId: "dep_00000000-0000-4000-8000-000000000001",
+    channelId: "tch_00000000-0000-4000-8000-000000000001",
+    threadRootId: "1",
+    messageId: "2",
+    audience: {
+      teamName: "Eval team",
+      channelName: "leadership",
+      channelKind: "private",
+      memberCount: 3,
+      peopleOnly: false,
+    },
+  };
+  const task = (id: string, title: string) => ({
+    id,
+    title,
+    status: "idle",
+    purpose: "task",
+    teamOrigin: null,
+    aiAccountId: "hin_00000000-0000-4000-8000-000000000001",
+    modelSelection: { providerId: "openai", modelId: "eval", options: {} },
+    accessMode: "full-access",
+    parentTaskId: null,
+    pendingRequests: 0,
+    inputQueuePaused: false,
+    doneAt: null,
+    createdAt: "2026-11-15T15:00:00Z",
+    updatedAt: "2026-11-16T16:00:00Z",
+  });
+  const item = (text: string, createdAt: string) => ({
+    itemId: text,
+    type: "message",
+    status: "published",
+    runId: null,
+    title: null,
+    text,
+    textTruncated: false,
+    nextTextOffset: null,
+    createdAt,
+  });
+  const c = parseCases(
+    JSON.stringify({
+      id: "task-history-fixture",
+      area: "transport",
+      kind: "guard",
+      profile: "task",
+      source: { commit: "a".repeat(40), note: "Passes find their own changed messages" },
+      turns: ["Read new work"],
+      expect: {},
+      tasks: [
+        {
+          task: task(workerId, "Light pass"),
+          self: true,
+          items: [item("Handoff: Gmail through msg-X", "2026-11-16T15:30:00Z")],
+        },
+        {
+          task: task(taskId, "Voice"),
+          items: [
+            item("Old", "2026-11-16T14:00:00Z"),
+            item("Boundary", "2026-11-16T15:30:00Z"),
+            { ...item("New", "2026-11-16T15:45:00Z"), teamSource },
+            item("Newest", "2026-11-16T15:50:00Z"),
+          ],
+        },
+      ],
+    }),
+  )[0]!;
+  const host = await startFakeHost(c);
+  const client = new Client({ name: "eval-task-history", version: "1" });
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("/agent", host.url), {
+        requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+      }) as unknown as Transport,
+    );
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const result = await client.callTool({ name, arguments: args });
+      expect(result.isError).not.toBe(true);
+      return result.structuredContent;
+    };
+    expect(
+      await call("opensteer_task_list", { changedSince: "2026-11-16T15:30:00Z" }),
+    ).toMatchObject({
+      tasks: [{ id: taskId, newMessages: 2, firstNewAt: "2026-11-16T15:45:00Z" }],
+      hasMore: false,
+    });
+    expect(
+      await call("opensteer_task_list", { changedSince: "2026-11-16T15:50:00Z" }),
+    ).toMatchObject({ tasks: [] });
+    expect(await call("opensteer_task_read", {})).toMatchObject({
+      task: { id: workerId },
+      items: [{ text: "Handoff: Gmail through msg-X" }],
+    });
+    expect(await call("opensteer_task_read", { taskId, limit: 2 })).toMatchObject({
+      items: [{ text: "Newest" }, { text: "New", teamSource }],
+      hasMore: true,
+      nextCursor: "2",
+    });
+    expect(await call("opensteer_task_read", { taskId, limit: 2, cursor: "2" })).toMatchObject({
+      items: [{ text: "Boundary" }, { text: "Old" }],
+      hasMore: false,
+    });
+  } finally {
+    await client.close();
+    await host.close();
   }
 });

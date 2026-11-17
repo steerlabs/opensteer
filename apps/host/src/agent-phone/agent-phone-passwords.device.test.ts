@@ -342,7 +342,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
             expect(observation.treeText).toMatch(/password/iu);
             return;
           }
-          const ready = await signInGateway.call("sign_in", {
+          const ready = await signInGateway.call("saved_login_request", {
             site,
             reason: "Sign in to the synthetic phone app",
           });
@@ -380,7 +380,11 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
             return;
           }
           const { loginRef } = z
-            .object({ status: z.literal("ready"), loginRef: z.string() })
+            .object({
+              status: z.literal("fulfilled"),
+              loginStatus: z.literal("ready"),
+              loginRef: z.string(),
+            })
             .parse(ready.structuredContent);
           const authorize = authority.commands.findLast((c) => c.type === "login.authorize");
           if (authorize?.type !== "login.authorize") throw new Error("Missing authorization");
@@ -465,13 +469,17 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
               token: foreign.toolsToken,
             });
             gateways.push(foreignSignIn);
-            const foreignReady = await foreignSignIn.call("sign_in", {
+            const foreignReady = await foreignSignIn.call("saved_login_request", {
               site,
               reason: "Authorize this saved login in the other task",
             });
             results.push(foreignReady);
             const foreignLogin = z
-              .object({ status: z.literal("ready"), loginRef: z.string() })
+              .object({
+                status: z.literal("fulfilled"),
+                loginStatus: z.literal("ready"),
+                loginRef: z.string(),
+              })
               .parse(foreignReady.structuredContent);
             expect(foreign.threadId).not.toBe(run.threadId);
             // The current task cannot spend another task’s saved-login lease.

@@ -127,7 +127,6 @@ vi.mock("@react-navigation/native", () => ({
 vi.mock("../ui/foreground.js", () => ({ useAppForeground: () => harness.foreground }));
 vi.mock("../navigation-header.js", () => ({
   headerActions: (actions: object) => actions,
-  useSidebarMenu: () => undefined,
 }));
 vi.mock("./deployment-gate.js", () => ({
   DeploymentGate: () => <p>No Host</p>,

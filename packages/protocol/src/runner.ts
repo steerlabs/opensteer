@@ -1,8 +1,17 @@
+import {
+  HostAppRequestSchema,
+  HostAppsSyncSchema,
+  RunnerAppResultSchema,
+  RunnerAppStateSchema,
+  RunnerAppsSyncResultSchema,
+} from "./apps.js";
+import { RunMaintenanceSchema } from "@opensteer/core";
 export { TeamTurnContextSchema, type TeamTurnContext } from "@opensteer/core";
 import { DelegationModelChoiceSchema } from "@opensteer/core";
 import { ComputerFolderSchema } from "@opensteer/core";
 import { RunnerSkillMetadataReportSchema } from "./runner-skill-metadata.js";
-import { HostAppRequestSchema, RunnerAppResultSchema } from "./apps.js";
+import { RunnerSettingsReportSchema } from "./runner-agent-home-settings.js";
+
 import { HostRunFileRequestSchema, RunnerRunFileResultSchema } from "./run-files.js";
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
 import {
@@ -22,6 +31,7 @@ import {
   MessageContentSchema,
   MessageIdSchema,
   MessageKindSchema,
+  MessageOriginSchema,
   MessageQuoteSchema,
   MessageSchema,
   ModelIdSchema,
@@ -139,6 +149,8 @@ export const executionLeaseMsSchema = z.number().int().min(10_000).max(3_600_000
 const capabilityTokenSchema = z.string().min(1).max(4_096);
 
 export const RunExecutionContextSchema = z.strictObject({
+  maintenance: RunMaintenanceSchema.optional(),
+  maintenanceExpiresAt: z.number().int().nonnegative().optional(),
   teamTurnContext: TeamTurnContextSchema.nullable().default(null),
   personalContext: z.boolean(),
   accessMode: ThreadAccessModeSchema,
@@ -190,21 +202,8 @@ export const RunExecutionContextSchema = z.strictObject({
   providerSessionReference: z.string().min(1).max(2_048).nullable(),
   machineAccess: MachineAccessRunContextSchema,
   requestedBy: UserIdSchema,
-  /**
-   * The zone the requester's client last reported, null when none has. Checked
-   * for shape, not against this runtime's `Intl`: a Runner whose time zone
-   * data predates a name the Host accepted would otherwise refuse the whole
-   * command and drop its connection, rather than run without the local time.
-   */
-  requesterTimeZone: z
-    .string()
-    .trim()
-    .min(1)
-    .max(64)
-    .regex(/^[A-Za-z0-9_+:/-]+$/u)
-    .nullable()
-    // A Host that predates the field sends none, and its Runs still run.
-    .default(null),
+  /** Sent by Hosts from before `message-origin-v1`; unused. */
+  requesterTimeZone: z.string().max(64).nullable().optional(),
   runId: RunIdSchema,
   threadId: ThreadIdSchema,
   taskPurpose: TaskPurposeSchema,
@@ -235,7 +234,11 @@ export const HarnessInputSchema = z
     createdAt: IsoDateTimeSchema,
     kind: MessageKindSchema.exclude(["assistant"]),
     messageId: MessageIdSchema,
+    /** Sent only to a Runner advertising `message-origin-v1`. */
+    origin: MessageOriginSchema.optional(),
     quote: MessageQuoteSchema.optional(),
+    /** A teammate's ask whose words the owner edited before approving it. */
+    ownerEdited: z.literal(true).optional(),
   })
   .superRefine((input, context) => {
     if (!messageAuthorCanWriteKind(input.author, input.kind)) {
@@ -428,6 +431,8 @@ export const PendingAgentEventSchema = z
     pendingEventVariant("run.interrupted"),
     pendingEventVariant("run.started"),
     pendingEventVariant("run.status"),
+    pendingEventVariant("run.context-measured"),
+    pendingEventVariant("run.compaction"),
     pendingEventVariant("run.usage"),
     pendingEventVariant("run.phase"),
     pendingEventVariant("node.started"),
@@ -1337,105 +1342,116 @@ export type RunnerMessagingModule = z.infer<typeof RunnerMessagingModuleSchema>;
 export const runnerIntegrationsProtocolVersion = 6;
 export const androidIntegrationsProtocolVersion = 4;
 
-export const RunnerIntegrationsModuleSchema = z.object({
-  /** Absent on Runners whose apps cannot move files for an operation. */
-  appFiles: z
-    .number()
-    .int()
-    .positive()
-    .transform((v) => (v === 1 ? (1 as const) : undefined))
-    .optional(),
-  cardUse: z
-    .number()
-    .int()
-    .positive()
-    .transform((v) => (v === 1 ? (1 as const) : undefined))
-    .optional(),
-  /** Deletes a removed plugin's data on request; older Runners keep it until they update. */
-  pluginDataRemoval: z
-    .number()
-    .int()
-    .positive()
-    .transform((v) => (v === 1 ? (1 as const) : undefined))
-    .optional(),
-  computerUseVersion: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 2 ? (2 as const) : undefined))
-    .optional(),
-  /** Ciphertext may reach the executor only when every Mac hop supports this version. */
-  loginText: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 1 ? (1 as const) : undefined))
-    .optional(),
-  /** Only the Personal desktop's live vault authority supplies this control path. */
-  passwordSignIn: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 2 ? (2 as const) : undefined))
-    .optional(),
-  ownerViewVersion: z.number().int().positive().max(1000).optional(),
-  /**
-   * The person's input into exact Mac app windows, shared with the agent's
-   * actions. Only version 2 is understood; the exclusive version 1 is disabled.
-   */
-  macOwnerInputVersion: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 2 ? version : undefined))
-    .optional(),
-  macWindowVideoVersion: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 1 ? version : undefined))
-    .optional(),
-  /** Selected-text Cut; requires integrations.editing and Host display.start confirmation. */
-  displayCut: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 1 ? version : undefined))
-    .optional(),
-  /** Android display editing. A Host confirms support on display.start before new frames flow. */
-  editing: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 1 ? version : undefined))
-    .optional(),
-  /**
-   * Android accepts the person's display input alongside the agent's acts,
-   * with no Take over. A Host confirms it on display.start before sending input.
-   */
-  sharedInput: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 1 ? version : undefined))
-    .optional(),
-  /** Shared encoder cap for Mac and Android, confirmed by the Host on display.start. */
-  displayProfile: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 1 ? version : undefined))
-    .optional(),
-  phoneOwnerControl: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 1 ? version : undefined))
-    .optional(),
-  platform: ComputerAppPlatformSchema,
-  // Android, Mac and iPhone have independent protocol versions.
-  protocolVersion: z.number().int().positive().optional(),
-});
+export const RunnerIntegrationsModuleSchema = z
+  .object({
+    screenDrivers: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? (1 as const) : undefined))
+      .optional(),
+    /** Absent on Runners whose apps cannot move files for an operation. */
+    appFiles: z
+      .number()
+      .int()
+      .positive()
+      .transform((v) => (v === 1 ? (1 as const) : undefined))
+      .optional(),
+    cardUse: z
+      .number()
+      .int()
+      .positive()
+      .transform((v) => (v === 1 ? (1 as const) : undefined))
+      .optional(),
+    /** Deletes a removed plugin's data on request; older Runners keep it until they update. */
+    pluginDataRemoval: z
+      .number()
+      .int()
+      .positive()
+      .transform((v) => (v === 1 ? (1 as const) : undefined))
+      .optional(),
+    computerUseVersion: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 2 ? (2 as const) : undefined))
+      .optional(),
+    /** Ciphertext may reach the executor only when every Mac hop supports this version. */
+    loginText: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? (1 as const) : undefined))
+      .optional(),
+    /** Only the Personal desktop's live vault authority supplies this control path. */
+    passwordSignIn: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 2 ? (2 as const) : undefined))
+      .optional(),
+    ownerViewVersion: z.number().int().positive().max(1000).optional(),
+    /**
+     * The person's input into exact Mac app windows, shared with the agent's
+     * actions. Only version 2 is understood; the exclusive version 1 is disabled.
+     */
+    macOwnerInputVersion: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 2 ? version : undefined))
+      .optional(),
+    macWindowVideoVersion: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
+    /** Selected-text Cut; requires integrations.editing and Host display.start confirmation. */
+    displayCut: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
+    /** Android display editing. A Host confirms support on display.start before new frames flow. */
+    editing: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
+    /**
+     * Android accepts the person's display input alongside the agent's acts,
+     * with no Take over. A Host confirms it on display.start before sending input.
+     */
+    sharedInput: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
+    /** Shared encoder cap for Mac and Android, confirmed by the Host on display.start. */
+    displayProfile: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
+    phoneOwnerControl: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
+    platform: ComputerAppPlatformSchema,
+    // Android, Mac and iPhone have independent protocol versions.
+    protocolVersion: z.number().int().positive().optional(),
+  })
+  .refine(
+    (module) => module.screenDrivers === undefined || module.platform === "darwin",
+    "Only Mac integrations can serve screen drivers",
+  );
 export type RunnerIntegrationsModule = z.infer<typeof RunnerIntegrationsModuleSchema>;
 
 /**
@@ -1445,6 +1461,14 @@ export type RunnerIntegrationsModule = z.infer<typeof RunnerIntegrationsModuleSc
  */
 export const agentPhoneOutdatedReason =
   "This phone's Opensteer app is out of date. Plug the phone into a computer and add it again to update it.";
+
+export function runnerSupportsScreenDrivers(module: RunnerIntegrationsModule | undefined): boolean {
+  return (
+    module?.platform === "darwin" &&
+    module.protocolVersion === runnerIntegrationsProtocolVersion &&
+    module.screenDrivers === 1
+  );
+}
 
 export function runnerSupportsComputerUse(module: RunnerIntegrationsModule | undefined): boolean {
   return (
@@ -1722,7 +1746,10 @@ export const RunnerBackgroundTextResultSchema = z.strictObject({
 export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
   RunnerBackgroundTextResultSchema,
   RunnerSkillMetadataReportSchema,
+  RunnerSettingsReportSchema,
   RunnerAppResultSchema,
+  RunnerAppStateSchema,
+  RunnerAppsSyncResultSchema,
   RunnerRunFileResultSchema,
   z.strictObject({
     ...fencedMessageBase,
@@ -1927,6 +1954,7 @@ export type RunnerToHostMessage = z.infer<typeof RunnerToHostMessageSchema>;
 export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
   HostBackgroundTextSchema,
   RunnerChallengeSchema,
+  HostAppsSyncSchema,
   ...HostAppRequestSchema.options,
   ...HostRunFileRequestSchema.options,
   z.strictObject({
@@ -1939,6 +1967,8 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
     connectionLeaseExpiresAt: IsoDateTimeSchema,
     environmentIds: z.array(EnvironmentIdSchema).max(100),
     heartbeatIntervalMs: z.number().int().min(1_000).max(300_000),
+    /** The hosting computer's Agent home, sent only to a Runner advertising `agent-home-settings-v1`. */
+    agentHome: ComputerFolderSchema.optional(),
     serverTime: IsoDateTimeSchema,
     type: z.literal("host.welcome"),
   }),

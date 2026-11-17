@@ -24,7 +24,7 @@ const { startPhase, timePhase } = require("../../../scripts/release-phase-timing
 async function verifyPackagedDesktop(context) {
   globalThis.opensteerCollectTiming?.();
   await timePhase("package.after-pack", () => verifyPackagedDesktopContents(context));
-  globalThis.opensteerSignTiming = startPhase("package.sign");
+  globalThis.opensteerSignTiming = startPhase("package.sign-and-notarize");
 }
 async function verifyPackagedDesktopContents(context) {
   const resources = resourcesDirectory(context);
@@ -73,6 +73,16 @@ async function verifyPackagedDesktopContents(context) {
   verifyPersonalRuntime(resources, context.electronPlatformName);
   verifyAgentPhone(resources, isDesktopRelease());
   if (context.electronPlatformName === "darwin") {
+    require("./iphone-bridge-release.cjs").verifyIphoneBridgeRelease(
+      join(resources, "iphone-bridge"),
+      {
+        architecture: JSON.parse(
+          regularFile(join(resources, "personal-runtime", "release.json")).content.toString("utf8"),
+        ).architecture,
+        release: isDesktopRelease(),
+        teamId: process.env.OPENSTEER_APPLE_TEAM_ID,
+      },
+    );
     const passkeys = require("./passkeys-signing.cjs");
     passkeys.verifyPasskeyAddon(
       join(resources, "../.."),

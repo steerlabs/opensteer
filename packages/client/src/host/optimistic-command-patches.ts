@@ -1,4 +1,9 @@
-import type { ThreadInputQueue } from "@opensteer/core";
+import type {
+  MessageEdit,
+  MessageView,
+  ThreadInputEditLeaseView,
+  ThreadInputQueue,
+} from "@opensteer/core";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import type {
   BrowserProfileDeletionSummary,
@@ -12,9 +17,10 @@ import type {
   TaskListState,
   ThreadSummary,
 } from "./client.js";
-import { isTerminalRunEntryStatus, upsertEntry } from "./transcript.js";
+import { settleTeamAsk } from "./needs-you.js";
+import { isTerminalRunEntryStatus, upsertEntry, withEditedMessage } from "./transcript.js";
 
-import type { ThreadName } from "./thread-state.js";
+import type { ThreadView } from "./thread-state.js";
 
 type CommandType = HostApiCommandInput["type"];
 type ThreadInputQueueItem = ThreadInputQueue["items"][number];
@@ -67,6 +73,32 @@ type OptimisticCommandPatch =
       readonly type: Extract<CommandType, "thread.input.cancel">;
       /** When the Host recorded the withdrawal; the marker stands at that moment. */
       readonly withdrawnAt: string;
+    }
+  | {
+      readonly edit: MessageEdit;
+      readonly leaseId?: string;
+      readonly message: MessageView;
+      readonly threadId: string;
+      readonly type: Extract<CommandType, "thread.input.edit">;
+    }
+  | {
+      readonly lease: ThreadInputEditLeaseView;
+      readonly messageId: string;
+      readonly threadId: string;
+      readonly type: Extract<CommandType, "thread.input.lease.take">;
+    }
+  | {
+      /** The lease this device ended, or undefined for a release of whichever lease held it. */
+      readonly leaseId: string | undefined;
+      readonly messageId: string;
+      readonly threadId: string;
+      readonly type: Extract<CommandType, "thread.input.lease.release">;
+    }
+  | {
+      readonly decision: "approve" | "decline";
+      readonly requestId: string;
+      readonly teamId: string;
+      readonly type: Extract<CommandType, "teams.ask.decide">;
     }
   | {
       readonly runId: string;
@@ -155,8 +187,19 @@ export const optimisticCommandPatches = {
       transcripts: { ...snapshot.transcripts, [thread.id]: snapshot.transcripts[thread.id] ?? [] },
     };
   },
+  "teams.ask.decide": answerTeamAsk,
   "thread.execution.update": replaceThread,
   "thread.input.cancel": withdrawQueuedInput,
+  "thread.input.edit": (snapshot, { edit, leaseId, message, threadId }) =>
+    withEditedWaitingMessage(snapshot, threadId, message, edit, undefined, leaseId),
+  "thread.input.lease.take": (snapshot, { lease, messageId, threadId }) => ({
+    ...snapshot,
+    inputQueues: withEditLease(snapshot.inputQueues, threadId, messageId, lease),
+  }),
+  "thread.input.lease.release": (snapshot, { leaseId, messageId, threadId }) => ({
+    ...snapshot,
+    inputQueues: withEditLease(snapshot.inputQueues, threadId, messageId, null, leaseId),
+  }),
   "thread.input.steer": dropQueuedInput,
   "thread.inputQueue.resume": replaceThread,
   "thread.sendMessage": patchSentMessage,
@@ -200,7 +243,15 @@ export function applyOptimisticCommandPatch(
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "thread.execution.update":
       return optimisticCommandPatches[patch.type](snapshot, patch);
+    case "teams.ask.decide":
+      return optimisticCommandPatches[patch.type](snapshot, patch);
     case "thread.input.cancel":
+      return optimisticCommandPatches[patch.type](snapshot, patch);
+    case "thread.input.edit":
+      return optimisticCommandPatches[patch.type](snapshot, patch);
+    case "thread.input.lease.take":
+      return optimisticCommandPatches[patch.type](snapshot, patch);
+    case "thread.input.lease.release":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "thread.input.steer":
       return optimisticCommandPatches[patch.type](snapshot, patch);
@@ -347,25 +398,22 @@ function upsertBrowserProfile(
   };
 }
 
-/** Names, symbols and shared Done follow every held copy without replacing activity or reply previews. */
-export function withThreadNames(
+/** A thread's state follows every held copy of it without replacing activity or reply previews. */
+export function withThreadState(
   snapshot: HostSnapshot,
-  nameOf: (thread: ThreadSummary) => ThreadName,
+  viewOf: (thread: ThreadSummary) => ThreadView,
 ): HostSnapshot {
-  const threadName = <T extends ThreadSummary>(thread: T): T => {
-    const name = nameOf(thread);
-    return name.title === thread.title &&
-      name.icon === thread.icon &&
-      (name.lastVisitedAt === undefined || name.lastVisitedAt === thread.lastVisitedAt) &&
-      (name.latestRunCompletedAt === undefined ||
-        name.latestRunCompletedAt === thread.latestRunCompletedAt) &&
-      (name.doneAt === undefined || name.doneAt === thread.doneAt)
+  const threadState = <T extends ThreadSummary>(thread: T): T => {
+    const view = viewOf(thread);
+    return (Object.keys(view) as (keyof ThreadView)[]).every(
+      (key) => view[key] === undefined || view[key] === thread[key],
+    )
       ? thread
-      : { ...thread, ...name };
+      : { ...thread, ...view };
   };
   const entries = (held: readonly TaskEntry[]): readonly TaskEntry[] => {
     const updated = held.map((entry) => {
-      const thread = threadName(entry.thread);
+      const thread = threadState(entry.thread);
       return thread === entry.thread ? entry : { ...entry, thread };
     });
     return updated.every((entry, index) => entry === held[index]) ? held : updated;
@@ -374,9 +422,12 @@ export function withThreadNames(
     const updated = entries(held.entries);
     return updated === held.entries ? held : { ...held, entries: updated };
   };
-  const threads = snapshot.threads.map(threadName);
+  const threads = snapshot.threads.map(threadState);
   const tasks = snapshot.tasks ? taskList(snapshot.tasks) : null;
   const activeTasks = entries(snapshot.activeTasks);
+  const doneTasks = Object.fromEntries(
+    Object.entries(snapshot.doneTasks).map(([key, held]) => [key, taskList(held)]),
+  );
   const assignments = Object.fromEntries(
     Object.entries(snapshot.assignments).map(([id, assignment]) => {
       const held = threads.find(({ id }) => id === assignment.workerThread.id);
@@ -403,6 +454,9 @@ export function withThreadNames(
       : assignments,
     tasks,
     activeTasks,
+    doneTasks: Object.entries(doneTasks).every(([key, held]) => held === snapshot.doneTasks[key])
+      ? snapshot.doneTasks
+      : doneTasks,
   };
 }
 
@@ -499,6 +553,150 @@ function dropQueuedInput(
       ...snapshot.inputQueues,
       [threadId]: { ...queue, items: queue.items.filter((item) => item.message.id !== messageId) },
     },
+  };
+}
+
+/** The queue with one waiting message changed in place; the same object when it holds none. */
+function patchQueueItem(
+  inputQueues: HostSnapshot["inputQueues"],
+  threadId: string,
+  matches: (item: ThreadInputQueueItem) => boolean,
+  patch: (item: ThreadInputQueueItem) => ThreadInputQueueItem | null,
+): HostSnapshot["inputQueues"] {
+  const queue = inputQueues[threadId];
+  const held = queue?.items.find(matches);
+  if (!queue || !held) return inputQueues;
+  const next = patch(held);
+  if (next === held) return inputQueues;
+  return {
+    ...inputQueues,
+    [threadId]: {
+      ...queue,
+      items: next
+        ? queue.items.map((item) => (item === held ? next : item))
+        : queue.items.filter((item) => item !== held),
+    },
+  };
+}
+
+/**
+ * Sets who holds a waiting message's edit lease. A release names the lease it
+ * ended, so it never clears a lease another device has taken since.
+ */
+export function withEditLease(
+  inputQueues: HostSnapshot["inputQueues"],
+  threadId: string,
+  messageId: string,
+  lease: ThreadInputEditLeaseView | null,
+  releasing?: string,
+): HostSnapshot["inputQueues"] {
+  return patchQueueItem(
+    inputQueues,
+    threadId,
+    (item) => item.message.id === messageId,
+    (item) =>
+      item.lease?.leaseId === lease?.leaseId ||
+      (lease === null && releasing !== undefined && item.lease?.leaseId !== releasing)
+        ? item
+        : { ...item, lease },
+  );
+}
+
+/**
+ * A saved edit replaces the waiting message where it stands, in the queue and
+ * in the conversation, and ends the lease it was made under. `input` is the
+ * Host's projection when it sent one.
+ */
+export function withEditedWaitingMessage(
+  snapshot: HostSnapshot,
+  threadId: string,
+  message: MessageView,
+  edit: MessageEdit | undefined,
+  input?: ThreadInputQueueItem["input"],
+  leaseId?: string,
+): HostSnapshot {
+  const transcript = snapshot.transcripts[threadId];
+  const stale = (held: MessageView) =>
+    edit !== undefined && (held.edit?.revision ?? 0) > edit.revision;
+  const needsYou = snapshot.needsYou;
+  const asks =
+    edit !== undefined &&
+    needsYou?.entries.some(
+      (entry) => entry.kind === "team-ask" && entry.task?.messageId === message.id,
+    );
+  return {
+    ...snapshot,
+    // An ask's Needs-you entry names the version an approval from it acts on.
+    ...(needsYou && asks && edit
+      ? {
+          needsYou: {
+            ...needsYou,
+            entries: needsYou.entries.map((entry) =>
+              entry.kind === "team-ask" &&
+              entry.task?.messageId === message.id &&
+              entry.task.revision < edit.revision
+                ? { ...entry, task: { ...entry.task, revision: edit.revision } }
+                : entry,
+            ),
+          },
+        }
+      : {}),
+    inputQueues: patchQueueItem(
+      snapshot.inputQueues,
+      threadId,
+      (item) => item.message.id === message.id,
+      (item) => {
+        if (stale(item.message)) return item;
+        const mark = edit ?? item.message.edit;
+        return {
+          ...item,
+          ...(input ? { input } : {}),
+          // A person's save ends the lease it was made under; a Host rewrite leaves it.
+          lease: edit && item.lease?.leaseId === leaseId ? null : item.lease,
+          message: { ...message, ...(mark ? { edit: mark } : {}) },
+        };
+      },
+    ),
+    ...(transcript
+      ? {
+          transcripts: {
+            ...snapshot.transcripts,
+            [threadId]: withEditedMessage(transcript, message, edit),
+          },
+        }
+      : {}),
+  };
+}
+
+/**
+ * An answered ask leaves Needs you at once. Declined, it leaves its task's
+ * waiting list; approved, it stays there as approving, no longer editable,
+ * until the team confirms and the Host moves it into line.
+ */
+function answerTeamAsk(
+  snapshot: HostSnapshot,
+  patch: {
+    readonly decision: "approve" | "decline";
+    readonly requestId: string;
+    readonly teamId: string;
+  },
+): HostSnapshot {
+  let inputQueues = snapshot.inputQueues;
+  for (const threadId of Object.keys(inputQueues)) {
+    inputQueues = patchQueueItem(
+      inputQueues,
+      threadId,
+      (item) =>
+        item.input.state === "awaiting-approval" &&
+        item.input.teamRequestId === patch.requestId &&
+        item.input.teamSource?.teamId === patch.teamId,
+      (item) => (patch.decision === "decline" ? null : { ...item, canEdit: false, lease: null }),
+    );
+  }
+  return {
+    ...snapshot,
+    inputQueues,
+    needsYou: settleTeamAsk(snapshot.needsYou, patch.teamId, patch.requestId),
   };
 }
 

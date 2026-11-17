@@ -1,7 +1,20 @@
+import { DEVICE_DRIVERS_SQL, deviceDriversMigrationName } from "./device-model-migration.js";
+export { deviceDriversMigrationName } from "./device-model-migration.js";
+import { TABS_AND_APPS_SQL, tabsAndAppsMigrationName } from "./tabs-apps-migration.js";
+export { tabsAndAppsMigrationName } from "./tabs-apps-migration.js";
+import { localMachineOwnerEmail } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { Migrator, type MigrationProvider, type MigrationResultSet } from "kysely/migration";
+import { migrateTeamAgentAsks } from "./team-agent-asks-migration.js";
 import { migrateTeamAgents } from "./team-agent-migration.js";
+import { migrateTeamSharedAgents } from "./team-shared-agents-migration.js";
+import { migrateTeamChannelShares } from "./team-shares-migration.js";
+import { migrateTeamShareFiles } from "./team-share-files-migration.js";
+import { migrateTeamShareFileCache } from "./team-share-file-cache-migration.js";
+import { migrateTeamPartnerLinks } from "./team-partner-links-migration.js";
+import { migrateTeamPrincipals } from "./team-principals-migration.js";
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
+import { TEAM_COPIES_SQL, teamCopiesMigrationName } from "./team-copies-migration.js";
 import { TEAM_KNOWLEDGE_NOTES_SQL } from "./team-knowledge-schema.js";
 import type { DatabaseSchema } from "./schema.js";
 
@@ -17,10 +30,62 @@ alter table team_invites add column sealed_verifier bytea;
 create unique index team_invites_current on team_invites((true)) where sealed_verifier is not null and revoked_at is null;
 `;
 
+/**
+ * Waiting messages a person edits in place, under a device's edit lease, with
+ * every version kept; teammates' asks admitted on arrival behind an approval
+ * gate bound to the revision approved. Asks approved before this migration
+ * were already running or done, so they count as released at their decision.
+ */
+const WAITING_INPUT_EDITS_SQL = `
+alter table messages
+  add column revision integer not null default 0 check (revision >= 0),
+  add column edited_at timestamptz,
+  add constraint messages_edit check ((revision = 0) = (edited_at is null));
+create table message_revisions (
+  message_id text not null references messages(id) on delete cascade,
+  revision integer not null check (revision >= 0),
+  content jsonb not null,
+  author jsonb not null,
+  device_label text,
+  created_at timestamptz not null,
+  primary key (message_id, revision)
+);
+alter table thread_inputs
+  add column edit_lease_id text,
+  add column edit_lease_session_id text,
+  add column edit_lease_device_label text,
+  add column edit_lease_expires_at timestamptz,
+  add constraint thread_inputs_edit_lease check (
+    (edit_lease_id is null) = (edit_lease_expires_at is null)
+    and (edit_lease_id is null) = (edit_lease_device_label is null)
+    and (edit_lease_id is null) = (edit_lease_session_id is null));
+create index thread_inputs_edit_lease_expiry on thread_inputs(edit_lease_expires_at) where edit_lease_id is not null;
+create index thread_inputs_awaiting_approval on thread_inputs(thread_id, created_at, message_id) where state = 'awaiting-approval';
+create or replace view thread_work_inputs as select * from thread_inputs where policy in ('queue','steer');
+alter table threads add column team_ask_origin boolean not null default false;
+alter table personal_team_requests
+  add column approved_revision integer check (approved_revision >= 0),
+  add column released_at timestamptz,
+  add constraint personal_team_requests_release check (
+    (approved_revision is null or (kind = 'ask' and local_decision = 'approve'))
+    and (released_at is null or approved_revision is not null));
+update personal_team_requests set approved_revision = 0,
+  released_at = case when local_task_id is not null then decision_at else null end
+  where kind = 'ask' and local_decision = 'approve';
+`;
+export const waitingInputEditsMigrationName = "0024_waiting_input_edits";
 export const personalTeamBaselineName = "0002_personal_team_baseline";
 export const threadVisitsMigrationName = "0004_thread_visits";
 export const teamKnowledgeNotesMigrationName = "0006_team_knowledge_notes";
 export const teamAgentMigrationName = "0011_team_agent_contracts";
+export const teamAgentAsksMigrationName = "0012_team_agent_asks";
+export const teamPrincipalsMigrationName = "0015_team_principals";
+export const teamPartnerLinksMigrationName = "0016_team_partner_links";
+export const agentHomeSettingsMigrationName = "0023_agent_home_settings";
+const messageOriginMigrationName = "0027_message_origin";
+const MESSAGE_ORIGIN_SQL = `
+alter table messages add column origin jsonb;
+`;
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
@@ -128,6 +193,136 @@ export function migrationProvider(): MigrationProvider {
           },
         },
         [teamAgentMigrationName]: { up: migrateTeamAgents },
+        [teamAgentAsksMigrationName]: { up: migrateTeamAgentAsks },
+        "0013_personal_team_posts": {
+          async up(database) {
+            await sql`create table personal_team_posts (
+              team_deployment_id text not null references personal_team_links(team_deployment_id) on delete cascade,
+              client_message_id uuid not null,
+              local_link_id text not null,
+              remote_link_id text not null,
+              run_id text not null references runs(id) on delete cascade,
+              message_id bigint,
+              channel_id text not null,
+              thread_root_id bigint,
+              target_bindings jsonb not null,
+              mentioned_agent_handles text[] not null,
+              body_markdown text not null,
+              attachment_ids jsonb not null,
+              request_id text,
+              created_at timestamptz not null default now(),
+              primary key(team_deployment_id, client_message_id)
+            );
+            create index personal_team_posts_expiry on personal_team_posts(created_at);
+            create unique index personal_team_returns_post_target on personal_team_requests (
+              team_deployment_id, (return_payload->>'triggerClientMessageId'), (return_payload->'author'->>'handle')
+            ) where return_admission = 'admitted' and return_payload->>'triggerClientMessageId' is not null`.execute(
+              database,
+            );
+          },
+        },
+        "0014_claude_idle_compaction": {
+          async up(database) {
+            await sql`
+              alter table personal_settings add column idle_compaction_policy jsonb not null default '{"mode":"onReturn"}'::jsonb;
+              alter table provider_sessions add column context_snapshot jsonb null;
+              alter table runs add column maintenance jsonb null;
+              create unique index runs_compaction_source_idx on runs (
+                thread_id, (maintenance->>'providerSessionId'), (maintenance->>'sourceRunId')
+              ) where maintenance is not null;
+            `.execute(database);
+          },
+        },
+        [teamPrincipalsMigrationName]: { up: migrateTeamPrincipals },
+        [teamPartnerLinksMigrationName]: { up: migrateTeamPartnerLinks },
+        "0017_team_channel_shares": { up: migrateTeamChannelShares },
+        "0018_team_share_files": { up: migrateTeamShareFiles },
+        "0019_team_shared_agents": { up: migrateTeamSharedAgents },
+        "0020_team_share_file_cache": { up: migrateTeamShareFileCache },
+        "0021_team_share_relay_policy": {
+          async up(database) {
+            await sql`alter table team_shares add column policy_revision bigint not null default 0;
+              alter table team_share_relays add column pending_bodies text[] not null default '{}'`.execute(
+              database,
+            );
+          },
+        },
+        // A personal owner's name is theirs to set; a team keeps the newest Account revision of each
+        // member's. The seeded placeholder owner keeps no name, so its computer's name can fill it.
+        "0022_person_names": {
+          async up(database) {
+            await sql`alter table personal_settings
+                add column owner_name text,
+                add column owner_name_set_at timestamptz,
+                add column owner_name_revision bigint check (owner_name_revision >= 1),
+                add column owner_name_account jsonb,
+                add constraint personal_settings_owner_name_source
+                  check ((owner_name_revision is null) = (owner_name_account is null)),
+                add constraint personal_settings_owner_name_account_named
+                  check (owner_name_account is null or owner_name is not null);
+              update personal_settings
+                set owner_name = users.display_name, owner_name_set_at = now()
+                from users
+                where users.id = personal_settings.owner_id
+                  and users.email <> ${sql.lit(localMachineOwnerEmail)};
+              alter table users add column name_revision bigint not null default 0
+                check (name_revision >= 0)`.execute(database);
+          },
+        },
+        [agentHomeSettingsMigrationName]: {
+          /**
+           * Background model choices moved to settings.json in Agent home; nothing carries over.
+           * Only databases created before this migration have the column: the baseline no longer does.
+           */
+          async up(database) {
+            await sql`alter table personal_settings drop column if exists background_model_preferences;
+              create table agent_home_settings (
+                computer_id text not null primary key references runners(id) on delete cascade,
+                environment_id text not null references execution_environments(id) on delete cascade,
+                boot_id text not null,
+                connection_generation bigint not null,
+                connection_id text not null,
+                connection_lease_id text not null,
+                read_sequence bigint not null,
+                read_at timestamptz not null,
+                file_status text not null check(file_status in ('valid','missing','invalid')),
+                file_error jsonb,
+                settings jsonb not null
+              )`.execute(database);
+          },
+        },
+        [waitingInputEditsMigrationName]: {
+          async up(database) {
+            await sql.raw(WAITING_INPUT_EDITS_SQL).execute(database);
+          },
+        },
+        [teamCopiesMigrationName]: {
+          async up(database) {
+            await sql.raw(TEAM_COPIES_SQL).execute(database);
+          },
+        },
+        [tabsAndAppsMigrationName]: {
+          async up(database) {
+            await sql.raw(TABS_AND_APPS_SQL).execute(database);
+          },
+        },
+        [messageOriginMigrationName]: {
+          async up(database) {
+            await sql.raw(MESSAGE_ORIGIN_SQL).execute(database);
+          },
+        },
+        [deviceDriversMigrationName]: {
+          async up(database) {
+            await sql.raw(DEVICE_DRIVERS_SQL).execute(database);
+          },
+        },
+        // opensteer_task_list's changedSince reads only messages written or delivered after it.
+        "0029_changed_since_indexes": {
+          async up(database) {
+            await sql`create index messages_created_at on messages(created_at);
+              create index thread_inputs_updated_at on thread_inputs(updated_at)`.execute(database);
+          },
+        },
       };
     },
   };

@@ -1,14 +1,12 @@
-import { ExecutionPreferencesSchema } from "@opensteer/core";
 import {
-  automaticAccountEligibility,
-  automaticModelDefaults,
-  automaticModelWants,
-  modelLabLabels,
+  backgroundModelWants,
+  excludedBackgroundAccounts,
+  ExecutionPreferencesSchema,
   resolveModelCandidates,
+  type AgentHomeSettings,
   type AuthorizedModelAccountSnapshot,
-  type AutomaticModelConfig,
+  type BackgroundModelRole,
   type EnvironmentId,
-  type HarnessInstanceId,
   type ModelRunEligibility,
   type ModelUsageFact,
   type ModelWant,
@@ -20,15 +18,11 @@ import {
 } from "@opensteer/core";
 import type { HarnessInstanceRecord, OpensteerStore } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
-import {
-  automaticModelCatalogView,
-  type AutomaticModelsView,
-  type HarnessInstanceCatalog,
-} from "@opensteer/protocol";
+import type { AutomaticModelsView, HarnessInstanceCatalog } from "@opensteer/protocol";
 export interface AutomaticModelDependencies {
   readonly store: Pick<
     OpensteerStore,
-    | "getAutomaticModelConfig"
+    | "getAgentHomeSettings"
     | "listEnvironmentsForUser"
     | "listHarnessInstances"
     | "listHarnessCatalogs"
@@ -181,68 +175,68 @@ export async function readAuthorizedModelAccounts(
 }
 export interface AutomaticModelRequest {
   readonly userId: UserId;
-  readonly wants: (config: AutomaticModelConfig) => readonly ModelWant[];
+  readonly wants: (settings: AgentHomeSettings) => readonly ModelWant[];
   readonly original?: OriginalModelSelection | undefined;
   readonly canRun: ModelRunPredicate;
 }
 export interface AutomaticModelResolution extends AuthorizedModelAccounts {
-  readonly config: AutomaticModelConfig;
+  readonly settings: AgentHomeSettings;
   readonly candidates: readonly ResolvedModelCandidate[];
   readonly skipped: readonly SkippedModelCandidate[];
 }
-function readAutomaticModelInputs(dependencies: AutomaticModelDependencies, userId: UserId) {
-  return Promise.all([
-    dependencies.store.getAutomaticModelConfig(userId),
-    readAuthorizedModelAccounts(dependencies, userId),
-  ]);
-}
 function resolveWithin(
-  config: AutomaticModelConfig,
+  settings: AgentHomeSettings,
   snapshot: AuthorizedModelAccounts,
   request: Omit<AutomaticModelRequest, "userId">,
 ): AutomaticModelResolution {
   const resolved = resolveModelCandidates({
-    wants: request.wants(config),
+    wants: request.wants(settings),
     ...(request.original
       ? {
           original: request.original,
         }
       : {}),
     accounts: snapshot.accounts,
-    excludedAccounts: config.excludedAccounts,
+    excludedAccounts: excludedBackgroundAccounts(settings),
     canRun: request.canRun,
     now: Date.now(),
   });
   return {
     ...snapshot,
-    config,
+    settings,
     ...resolved,
   };
 }
 
-/** Every automatic site resolves through here: the person's config over their own accounts. */
+/** Every automatic site resolves through here: the person's settings.json over their own accounts. */
 export async function resolveAutomaticModels(
   dependencies: AutomaticModelDependencies,
   request: AutomaticModelRequest,
 ): Promise<AutomaticModelResolution> {
-  const [config, snapshot] = await readAutomaticModelInputs(dependencies, request.userId);
-  return resolveWithin(config, snapshot, request);
+  const [{ settings }, snapshot] = await Promise.all([
+    dependencies.store.getAgentHomeSettings(request.userId),
+    readAuthorizedModelAccounts(dependencies, request.userId),
+  ]);
+  return resolveWithin(settings, snapshot, request);
 }
 
 /**
- * Settings' view for one person. Light is the general preference: naming and
- * memory each add their own requirements when they run. Deep runs only memory,
- * so it previews within Main's computer and access mode, ending with Chat.
+ * What runs each background job now, as Settings shows it. Naming needs
+ * background text on the account's computer; memory runs on the hosting
+ * computer in the person's access mode, and nightly memory ends with Chat's model.
  */
 export async function readAutomaticModelPreview(
   dependencies: AutomaticModelDependencies & {
     readonly store: Pick<OpensteerStore, "database">;
-    readonly runners: Pick<Runners, "canRunHarness" | "harnessAccessModes">;
+    readonly runners: Pick<
+      Runners,
+      "canRunHarness" | "harnessAccessModes" | "identityForEnvironment"
+    >;
   },
   userId: UserId,
 ): Promise<AutomaticModelsView> {
   const { store, runners } = dependencies;
-  const settings = await store.database
+  const personal = await store.database
     .selectFrom("personalSettings")
     .select(["agentHomeComputerId", "executionPreferences"])
     .where("ownerId", "=", userId)
@@ -250,131 +244,45 @@ export async function readAutomaticModelPreview(
   const environment = await store.database
     .selectFrom("executionEnvironments")
     .select("id")
-    .where("runnerId", "=", settings.agentHomeComputerId)
+    .where("runnerId", "=", personal.agentHomeComputerId)
     .executeTakeFirstOrThrow();
-  const preferences = ExecutionPreferencesSchema.parse(settings.executionPreferences);
-  const memory = {
-    canRun: personalExecution(runners, {
-      environmentId: environment.id,
-      accessMode: preferences.accessMode,
-    }),
-    original: preferences.history[0],
-  };
-  const [config, snapshot] = await readAutomaticModelInputs(dependencies, userId);
-  const light = resolveWithin(config, snapshot, {
-    wants: (current) => automaticModelWants(current, "light"),
-    canRun: () => ok,
+  const preferences = ExecutionPreferencesSchema.parse(personal.executionPreferences);
+  const memory = personalExecution(runners, {
+    environmentId: environment.id,
+    accessMode: preferences.accessMode,
   });
-  const deep = resolveWithin(config, snapshot, {
-    wants: (current) => automaticModelWants(current, "deep"),
-    ...memory,
-  });
-  const { accounts, harnesses, environments } = snapshot;
-  const names = (environmentId?: EnvironmentId, harnessInstanceId?: HarnessInstanceId) => {
-    const account = accounts.find(
-      (candidate) =>
-        candidate.environmentId === environmentId &&
-        candidate.harnessInstanceId === harnessInstanceId,
-    );
-    const harness = harnesses.find((candidate) => candidate.id === harnessInstanceId);
-    const environment = environments.find((candidate) => candidate.id === environmentId);
-    return account && harness && environment
-      ? {
-          account,
-          accountDisplayName: harness.name,
-          computerDisplayName: environment.name,
-        }
-      : undefined;
-  };
-  const modelNames = (
-    account: HostModelAccount | undefined,
-    modelId: string,
-    providerId?: string,
+  const [{ settings, file }, snapshot] = await Promise.all([
+    store.getAgentHomeSettings(userId),
+    readAuthorizedModelAccounts(dependencies, userId),
+  ]);
+  const inUse = (
+    role: BackgroundModelRole,
+    request: Omit<AutomaticModelRequest, "userId" | "wants">,
   ) => {
-    const model = account?.catalog?.models.find(
-      (candidate) =>
-        candidate.modelId === modelId &&
-        (providerId === undefined || candidate.providerId === providerId),
-    );
-    const lab = providerId ?? model?.providerId;
+    const chosen = resolveWithin(settings, snapshot, {
+      ...request,
+      wants: (current) => backgroundModelWants(current, role),
+    }).candidates[0];
+    if (!chosen) return null;
+    const { modelId, providerId } = chosen.storedModelSelection;
+    const harness = snapshot.harnesses.find(({ id }) => id === chosen.harnessInstanceId);
+    const computer = snapshot.environments.find(({ id }) => id === chosen.environmentId);
     return {
-      ...(lab
-        ? {
-            providerDisplayName: modelLabLabels[lab] ?? lab,
-          }
-        : {}),
-      modelDisplayName: model?.displayName ?? modelId,
+      harnessInstanceId: chosen.harnessInstanceId,
+      accountDisplayName: harness?.name ?? "AI account",
+      computerDisplayName: computer?.name ?? "Computer",
+      modelDisplayName:
+        chosen.account.catalog?.models.find(
+          (model) => model.modelId === modelId && model.providerId === providerId,
+        )?.displayName ?? modelId,
+      usageLimited: chosen.usageLimited,
     };
   };
-  const preview = ({ candidates, skipped }: AutomaticModelResolution) => ({
-    candidates: candidates.map(
-      ({ account: _snapshot, runModelSelection: _run, storedModelSelection, ...candidate }) => {
-        const { account, ...own } = names(candidate.environmentId, candidate.harnessInstanceId)!;
-        const { providerId, modelId } = storedModelSelection;
-        return {
-          ...candidate,
-          ...own,
-          modelSelection: storedModelSelection,
-          providerDisplayName: modelLabLabels[providerId] ?? providerId,
-          modelDisplayName: modelNames(account, modelId, providerId).modelDisplayName,
-        };
-      },
-    ),
-    skipped: skipped.map((skip) => {
-      const own = names(skip.environmentId, skip.harnessInstanceId);
-      if (!own) return skip;
-      const { account, ...display } = own;
-      const want = skip.want;
-      return {
-        ...skip,
-        ...display,
-        // A catalog-light rank or an engine-only want names no model of its own.
-        ...(want === null
-          ? {}
-          : "model" in want
-            ? modelNames(account, want.model)
-            : "kind" in want && want.kind === "model"
-              ? modelNames(account, want.modelId, want.providerId)
-              : {}),
-      };
-    }),
-  });
   return {
-    config,
-    maintainedDefaults: {
-      light: [...automaticModelDefaults.light],
-      deep: [...automaticModelDefaults.deep],
-    },
-    accounts: accounts.map((account) => {
-      const eligibility = automaticAccountEligibility(account, {
-        excludedAccounts: config.excludedAccounts,
-        canRun: () => ok,
-      });
-      const { accountDisplayName, computerDisplayName } = names(
-        account.environmentId,
-        account.harnessInstanceId,
-      )!;
-      return {
-        harnessInstanceId: account.harnessInstanceId,
-        environmentId: account.environmentId,
-        accountDisplayName,
-        computerDisplayName,
-        driverKind: account.driverKind,
-        harnessRevision: account.harnessRevision,
-        sourceId: account.sourceId,
-        isDefault: account.isDefault,
-        enabled: account.enabled,
-        removed: account.removed,
-        available: account.available,
-        catalog: automaticModelCatalogView(account.catalog),
-        eligible: eligibility.ok,
-        reason: eligibility.ok ? null : eligibility.reason,
-      };
-    }),
-    light: {
-      label: "General preference",
-      ...preview(light),
-    },
-    deep: preview(deep),
+    file,
+    excludedAccounts: [...excludedBackgroundAccounts(settings)],
+    naming: inUse("naming", { canRun: backgroundTextSupport(runners) }),
+    light: inUse("light", { canRun: memory }),
+    deep: inUse("deep", { canRun: memory, original: preferences.history[0] }),
   };
 }

@@ -50,12 +50,17 @@ import { nativePictureView } from "../computers/phone-display-native.js";
 import { browserPictureFence, useNativeBrowserPicture } from "./native-browser-picture.js";
 
 export interface BrowserStreamProps {
-  /** True only while this viewer is focused, visible, and in the foreground. */
+  /** On screen in the foreground: pictures flow while it is. */
   readonly active: boolean;
+  /**
+   * An interactive view off screen keeps its viewer, without pictures, and its
+   * last picture, so it shows again at once without asking the Host anew.
+   */
+  readonly held?: boolean;
   readonly hostClient: Pick<
     HostClient,
     | "browserPresentationDeadline"
-    | "browserTabs"
+    | "getSnapshot"
     | "markBrowserPagePresented"
     | "acceptBrowserWatchFrame"
     | "browserFrames"
@@ -88,8 +93,13 @@ export interface BrowserStreamProps {
   readonly session: Pick<BrowserSessionSummary, "id" | "state">;
   /** Passive Run preview: retain the last presented picture of each recently visited tab. */
   readonly preserveLastFrame?: boolean;
-  /** Original Run session identity when its tab is rebound to a replacement session. */
+  /** What a preview stays one picture for while its tab is rebound to another session. */
   readonly previewSessionId?: string;
+  /**
+   * The Run place's picture owner holds this tab's watch: the view only draws
+   * what arrives, with no lease or words of its own; its caller shows the state.
+   */
+  readonly sharedWatch?: boolean;
   readonly style?: StyleProp<ViewStyle>;
   /**
    * How far this phone has pinched the picture in. A drag is measured on the
@@ -160,6 +170,8 @@ function BrowserStreamView({
   dragSelect = false,
   onDragEnd,
   preserveLastFrame = false,
+  sharedWatch = false,
+  held = false,
   tabId,
   documentId,
   zoom,
@@ -178,6 +190,9 @@ function BrowserStreamView({
     requestedActive && ready && interactive,
   );
   const active = requestedActive && !presentationError;
+  const kept = interactive && held;
+  // What is drawn: the live picture, or the last one while the view is kept off screen.
+  const drawn = active || kept;
   const preserve = preserveLastFrame && !interactive;
   const frames = interactive ? hostClient.browserFrames : hostClient.browserWatchFrames;
   // Fixed for the binary's lifetime, so one presenter owns this view's receipts.
@@ -193,7 +208,7 @@ function BrowserStreamView({
       [frames, session.id, tabId],
     ),
   );
-  const received = useBrowserFrame(frames, session.id, tabId, active && !native);
+  const received = useBrowserFrame(frames, session.id, tabId, drawn && !native);
   const [slots, setSlots] = useState<FrameSlots>(emptySlots);
   const slotsRef = useRef(slots);
   slotsRef.current = slots;
@@ -210,26 +225,42 @@ function BrowserStreamView({
   const feedError = feed.status === "unavailable" ? feed.error : null;
 
   // A Watch of a sleeping tab shows its last picture: watching it would wake it.
-  const awake = useBrowserTabAwake(hostClient, session.id, tabId);
-  useEffect(
-    () =>
-      active
-        ? interactive
-          ? hostClient.retainBrowserViewer(session.id, tabId, {
+  const awake = useBrowserTabAwake(hostClient, tabId);
+  // The client bounds how many browser targets it holds; past that it refuses, and says so.
+  const [leaseError, setLeaseError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!active || (sharedWatch && !interactive)) return;
+    try {
+      const release = interactive
+        ? hostClient.retainBrowserViewer(session.id, tabId, {
+            captureRegion: true,
+            rasterDemand: true,
+            frameWindow: native,
+          })
+        : awake
+          ? hostClient.retainBrowserWatch(session.id, tabId, {
               captureRegion: true,
               rasterDemand: true,
               frameWindow: native,
             })
-          : awake
-            ? hostClient.retainBrowserWatch(session.id, tabId, {
-                captureRegion: true,
-                rasterDemand: true,
-                frameWindow: native,
-              })
-            : undefined
-        : undefined,
-    [active, attempt, awake, hostClient, interactive, native, session.id, tabId],
-  );
+          : undefined;
+      setLeaseError(null);
+      return release;
+    } catch (error) {
+      setLeaseError(error instanceof Error ? error.message : "This page can’t be shown.");
+      return;
+    }
+  }, [active, attempt, awake, hostClient, interactive, native, session.id, sharedWatch, tabId]);
+  // Held apart from the picture, so the picture coming and going reuses this socket.
+  useEffect(() => {
+    if (!kept) return;
+    try {
+      return hostClient.retainBrowserViewer(session.id, tabId, { picture: false });
+    } catch {
+      // A Host without pictureless control reconnects when the picture returns.
+      return;
+    }
+  }, [hostClient, kept, session.id, tabId]);
 
   const finish = useCallback(
     (delivery: BrowserFrameView) => {
@@ -241,7 +272,7 @@ function BrowserStreamView({
   );
   const picture = useNativeBrowserPicture({
     enabled: native,
-    visible: active && ready,
+    visible: drawn && ready,
     frames,
     sessionId: session.id,
     tabId,
@@ -269,7 +300,7 @@ function BrowserStreamView({
   // hidden in render below.
   useLayoutEffect(() => {
     if (native) return;
-    if (!active || !ready || (frame === null && !preserve)) {
+    if (!drawn || !ready || (frame === null && !preserve)) {
       const decoding = slotsRef.current.decoding;
       if (decoding) decoding.settle();
       const discarded = received ?? frames.get(session.id, tabId);
@@ -299,7 +330,7 @@ function BrowserStreamView({
           : null,
     }));
   }, [
-    active,
+    drawn,
     finish,
     frame,
     frames,
@@ -316,9 +347,9 @@ function BrowserStreamView({
   // flight at a time, the feed's value once the slot frees is the latest.
   const decodingBusy = slots.decoding !== null;
   useEffect(() => {
-    if (native || !active || !ready || frame === null || decodingBusy) return;
+    if (native || !drawn || !ready || frame === null || decodingBusy) return;
     const next = nextMobileBrowserDecode({
-      active,
+      active: drawn,
       activeSurfaceId: frame.header.surfaceId,
       frame,
       inFlightFrameKey: null,
@@ -333,7 +364,7 @@ function BrowserStreamView({
       // Too large to convert here: dropped, so the feed can move on.
       finish(frame);
     }
-  }, [active, decodingBusy, finish, frame, frames, invalidation, native, ready]);
+  }, [drawn, decodingBusy, finish, frame, frames, invalidation, native, ready]);
 
   const loaded = (slot: FrameSlot) => {
     if (slotsRef.current.decoding !== slot) return;
@@ -359,7 +390,7 @@ function BrowserStreamView({
   };
 
   // Hidden in the render that loses the feed's picture, not an effect later.
-  const visible = active && ready && (frame !== null || preserve);
+  const visible = drawn && ready && (frame !== null || preserve);
   const displayedSlot =
     visible &&
     !native &&
@@ -372,7 +403,11 @@ function BrowserStreamView({
     ? picture.drawn && { source: picture.drawn }
     : displayedSlot;
   const cached =
-    preserve && active && ready ? getBrowserLastPicture(frames, session.id, tabId) : null;
+    preserve && active && ready
+      ? (getBrowserLastPicture(frames, session.id, tabId) ??
+        // The owner counts a picture the opened page kept as this tab's too.
+        (sharedWatch ? getBrowserLastPicture(hostClient.browserFrames, session.id, tabId) : null))
+      : null;
   const restored = liveDisplayed === null ? cached : null;
   const displayed = liveDisplayed ?? (restored ? { source: restored.frame } : null);
   const cacheInvalidation = useRef(invalidation);
@@ -692,10 +727,12 @@ function BrowserStreamView({
     if (shownWidth !== null && shownHeight !== null)
       onPageSize?.({ height: shownHeight, width: shownWidth });
   }, [onPageSize, shownHeight, shownWidth]);
-  if (!requestedActive) return null;
-  const words =
-    presentationError ??
-    (displayed === null ? streamLabel(session.state, feedState, feedError) : null);
+  if (!requestedActive && !kept) return null;
+  const words = sharedWatch
+    ? null
+    : (presentationError ??
+      leaseError ??
+      (displayed === null ? streamLabel(session.state, feedState, feedError) : null));
 
   return (
     <View
@@ -744,6 +781,7 @@ function BrowserStreamView({
             accessibilityLabel={liveDisplayed === null ? undefined : label}
             importantForAccessibility={liveDisplayed === null ? "no-hide-descendants" : "auto"}
             onCleared={picture.cleared}
+            onShown={picture.shownAgain}
             ref={picture.view}
             style={styles.image}
           />
@@ -881,7 +919,7 @@ function BrowserStreamView({
           <Text numberOfLines={3} style={styles.label}>
             {words}
           </Text>
-          {feedError !== null || presentationError !== null ? (
+          {feedError !== null || presentationError !== null || leaseError !== null ? (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Try again"

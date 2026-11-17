@@ -1,18 +1,27 @@
 import { HostVersionMismatchError } from "@opensteer/client/connections";
 import { HostClientRequestError, unwrapRpcResult } from "@opensteer/client/host";
 import { DeploymentIdSchema } from "@opensteer/core";
-import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import * as Linking from "expo-linking";
 import { useEffect, useState, type ReactNode } from "react";
 import { AppState, StyleSheet, TextInput, View } from "react-native";
+import { teamPlaceTarget } from "../links.js";
+import { useAppLinks } from "../ui/app-links-context.js";
+import { enterSide } from "../navigation-ref.js";
 import type { RootParamList } from "../navigation.js";
 import { color, radius, space, type } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { ConnectOpensteerBody, JoinSheetBody, type ConnectView, type InviteView } from "./join.js";
 import type { TeamTileView } from "./team-models.js";
-import { readTeamLinkIntent, teamFailure, type TeamLinkIntent } from "./mobile-teams.js";
+import {
+  readTeamLinkIntent,
+  TeamAccessError,
+  teamFailure,
+  type TeamLinkIntent,
+} from "./mobile-teams.js";
+import { readFailure, UnavailableState } from "../ui/unavailable-state.js";
 import { useCoordinatorSnapshot, useMobileTeams, useTeam, useTeamEntry } from "./team-context.js";
 import { openTeamGeneral } from "./mobile-team-entry.js";
 
@@ -27,9 +36,13 @@ const downloadPage = "https://opensteer.com/download";
  * Opensteer. Without a link it is the paste field Settings and Welcome open.
  */
 export function JoinTeamScreen(
-  props: StaticScreenProps<{ readonly link?: string | undefined } | undefined>,
+  props: StaticScreenProps<
+    { readonly link?: string | undefined; readonly externalIntent?: number | undefined } | undefined
+  >,
 ): ReactNode {
   const [link, setLink] = useState<string | null>(props.route.params?.link ?? null);
+  const externalIntent =
+    link === props.route.params?.link ? props.route.params?.externalIntent : undefined;
   if (link === null) return <PasteLink onLink={setLink} />;
   const intent = readTeamLinkIntent(link);
   if (intent === null)
@@ -39,7 +52,7 @@ export function JoinTeamScreen(
         onLink={setLink}
       />
     );
-  return <FollowLink intent={intent} key={link} link={link} />;
+  return <FollowLink externalIntent={externalIntent} intent={intent} key={link} link={link} />;
 }
 
 function PasteLink(props: {
@@ -88,11 +101,15 @@ function PasteLink(props: {
   );
 }
 
-function FollowLink(props: { readonly intent: TeamLinkIntent; readonly link: string }): ReactNode {
+function FollowLink(props: {
+  readonly externalIntent: number | undefined;
+  readonly intent: TeamLinkIntent;
+  readonly link: string;
+}): ReactNode {
   const { intent } = props;
   if (intent.kind === "invite") return <Invite intent={intent} link={props.link} />;
   if (intent.kind === "agent-link") return <AgentLink intent={intent} />;
-  return <OpenPlace intent={intent} />;
+  return <OpenPlace externalIntent={props.externalIntent} intent={intent} />;
 }
 
 /**
@@ -224,66 +241,68 @@ function inviteFailure(error: unknown, host: string, team: TeamTileView): Invite
   };
 }
 
-/** A channel or message link: opened once the team says the reader may see it. */
+/** A team page, opened once the team says the reader may see it. */
 function OpenPlace(props: {
-  readonly intent: Extract<TeamLinkIntent, { kind: "open" }>;
+  readonly externalIntent: number | undefined;
+  readonly intent: Exclude<TeamLinkIntent, { kind: "invite" | "agent-link" }>;
 }): ReactNode {
-  const { intent } = props;
+  const { externalIntent, intent } = props;
   const navigation = useNavigation<Navigation>();
   const teams = useMobileTeams();
-  const team = teams.teamAt(intent.origin);
-  const [failure, setFailure] = useState<string | null>(
-    team === null
-      ? "That link is for a team this phone isn't in. Ask someone in it for an invite link."
-      : null,
-  );
+  const { captureNavigationIntent } = useAppLinks();
+  const [failure, setFailure] = useState<"unavailable" | "offline" | null>(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    if (team === null) return;
-    let current = true;
-    void teams.destination(team.teamId, intent.channelId, intent.messageId).then(
-      (destination) => {
-        if (!current) return;
-        navigation.goBack();
-        navigation.dispatch(
-          StackActions.push(
-            destination.kind === "thread" ? "TeamThread" : "TeamChannel",
-            destination.kind === "thread"
-              ? {
-                  teamId: team.teamId,
-                  channelId: destination.channelId,
-                  rootId: destination.rootId,
-                  ...(destination.replyId === null ? {} : { replyId: destination.replyId }),
-                }
-              : {
-                  teamId: team.teamId,
-                  channelId: destination.channelId,
-                  ...(destination.messageId === null ? {} : { messageId: destination.messageId }),
-                },
-          ),
-        );
-      },
-      () => current && setFailure("You don't have access to this."),
+    let mounted = true;
+    const intentCurrent = captureNavigationIntent(externalIntent);
+    // A newer link that doesn't replace the stack (a Connect code) must not leave this sheet spinning.
+    const current = (): boolean => {
+      if (!mounted) return false;
+      if (intentCurrent()) return true;
+      mounted = false;
+      navigation.goBack();
+      return false;
+    };
+    setFailure(null);
+    const open = async () => {
+      const located = await teams.locate(intent.origin);
+      if (!current()) return;
+      let teamId: string;
+      if (located.kind === "held") {
+        teamId = located.team.teamId;
+        if (located.team.state === "signed-out")
+          await teams.signIn(await teams.verifyTeam(intent.origin), null);
+      } else {
+        await teams.signIn(located.verified, null);
+        teamId = located.verified.discovery.deploymentId;
+      }
+      if (!current()) return;
+      enterSide(teamPlaceTarget(teamId, intent));
+    };
+    void open().catch(
+      (error: unknown) =>
+        current() &&
+        setFailure(
+          !(error instanceof TeamAccessError) && readFailure(error) === "offline"
+            ? "offline"
+            : "unavailable",
+        ),
     );
     return () => {
-      current = false;
+      mounted = false;
     };
-  }, [intent.channelId, intent.messageId, navigation, team, teams]);
-  return (
+  }, [attempt, captureNavigationIntent, externalIntent, intent, navigation, teams]);
+  return failure === null ? (
     <View style={styles.sheet}>
-      {failure === null ? (
-        <AppText role="secondary" tone="muted">
-          Opening…
-        </AppText>
-      ) : (
-        <>
-          <AppText role="title">That link could not be opened</AppText>
-          <AppText role="secondary" tone="muted">
-            {failure}
-          </AppText>
-          <SecondaryButton label="OK" onPress={() => navigation.goBack()} />
-        </>
-      )}
+      <AppText role="secondary" tone="muted">
+        Opening…
+      </AppText>
     </View>
+  ) : (
+    <UnavailableState
+      onBack={() => navigation.goBack()}
+      onRetry={failure === "offline" ? () => setAttempt((count) => count + 1) : undefined}
+    />
   );
 }
 

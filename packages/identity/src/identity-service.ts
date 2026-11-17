@@ -26,6 +26,7 @@ import {
   UserIdSchema,
   createId,
   normalizeIdentityEmail,
+  personNameFromSignIn,
   sameStringSet,
   type AuthSessionSummary,
   type AuthSessionId,
@@ -43,6 +44,7 @@ import {
   identityPasswordMaxLength,
   identityPasswordMinLength,
 } from "@opensteer/core";
+import { personProfileReceiptClaim } from "@opensteer/control-plane-protocol";
 import type { DatabaseSchema } from "@opensteer/database";
 import { describeSessionDevice } from "./session-device.js";
 import { refuseEntry } from "./team-admission.js";
@@ -157,26 +159,6 @@ export function deriveLocalSetupToken(secret: string): string {
   return createHmac("sha256", secret).update("opensteer-local-setup-token-v1").digest("base64url");
 }
 
-/**
- * Asking a new account to invent a display name adds a required field that
- * carries no information the email address does not already carry. Derive one
- * and let the person change it if they care.
- */
-function displayNameFromEmail(email: string): string {
-  const localPart = email.slice(0, email.lastIndexOf("@"));
-  const cleaned = localPart
-    .replace(/[._-]+/g, " ")
-    .replace(/\d+/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (cleaned === "") return email.slice(0, 120);
-  return cleaned
-    .split(" ")
-    .map((word) => word.charAt(0).toLocaleUpperCase() + word.slice(1))
-    .join(" ")
-    .slice(0, 120);
-}
-
 export class IdentityService {
   readonly #admissionLifetimeMilliseconds: number;
   #auth: OpensteerAuth;
@@ -221,10 +203,16 @@ export class IdentityService {
     if (!team)
       throw new OpensteerError({ code: "not_found", message: "Team setup is unavailable" });
     const { provider, receipt } = await team.completeAdoption(null, grant, bundle, hostedBootstrap);
+    await this.reloadAccountProvider(provider);
+    return { completed: true as const, ...(receipt ? { receipt } : {}) };
+  }
+
+  async reloadAccountProvider(
+    provider: NonNullable<IdentityServiceOptions["oidcProviders"]>[number],
+  ) {
     this.#options = { ...this.#options, oidcProviders: [provider] };
     this.#auth = this.#createAuth();
     await this.#ensureNativeOAuthClients();
-    return { completed: true as const, ...(receipt ? { receipt } : {}) };
   }
 
   async initialize(): Promise<void> {
@@ -1738,7 +1726,7 @@ export class IdentityService {
     if (this.#options.signupPolicy !== "open") {
       await this.#reserveSignupAdmission(headers, email);
     }
-    const displayName = input.displayName?.trim() || displayNameFromEmail(email);
+    const displayName = personNameFromSignIn(input.displayName, email);
     const response = await this.#auth.handler(
       new Request(new URL(`${internalAuthPath}/sign-up/email`, this.#options.publicOrigin), {
         body: JSON.stringify({ email, name: displayName, password: input.password }),
@@ -2716,10 +2704,27 @@ function createOpensteerAuth(
                   issuer: provider.issuer,
                   pkce: true,
                   scopes: ["openid", "email", "profile"],
+                  ...(options.team
+                    ? { mapping: { extraFields: { profileReceipt: personProfileReceiptClaim } } }
+                    : {}),
                 },
                 providerId: oidcIdentityProviderId(provider),
               })),
               disableImplicitSignUp: options.signupPolicy !== "open",
+              ...(options.team
+                ? {
+                    // A team takes each member's Account name at every browser sign-in. Best
+                    // effort: a failure keeps the old name and never blocks signing in.
+                    provisionUserOnEveryLogin: true,
+                    provisionUser: async ({ user, userInfo }) => {
+                      const receipt = userInfo.profileReceipt;
+                      if (typeof receipt !== "string" || !options.team) return;
+                      await options.team
+                        .applyProfile(UserIdSchema.parse(user.id), receipt)
+                        .catch(() => false);
+                    },
+                  }
+                : {}),
               domainVerification: { enabled: false },
               modelName: "authSsoProviders",
               organizationProvisioning: { disabled: true },

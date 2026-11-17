@@ -1,5 +1,7 @@
 import {
+  AccountProfileSchema,
   ControlPlaneAccountIdSchema,
+  UpdateAccountProfileResponseSchema,
   type ControlPlaneAccountId,
 } from "@opensteer/control-plane-protocol";
 import {
@@ -198,6 +200,7 @@ export class MockTeamWorld {
       },
       capabilities: [
         "team-session-exchange-v1",
+        "team-native-browser-return-v1",
         "team-reusable-invites-v1",
         "team-invite-native-continuation-v1",
       ],
@@ -235,7 +238,19 @@ export class MockTeamWorld {
     });
   }
 
+  #profile = { name: "Alex", revision: 1 };
   readonly account: AccountTeamsClient = {
+    // A preview has no Account to sign with; the receipt only has to look like one.
+    profile: async () =>
+      AccountProfileSchema.parse({ ...this.#profile, receipt: mockProfileReceipt }),
+    updateProfile: async (request) => {
+      const applied = request.expectedRevision === this.#profile.revision;
+      if (applied) this.#profile = { name: request.name, revision: this.#profile.revision + 1 };
+      return UpdateAccountProfileResponseSchema.parse({
+        applied,
+        profile: { ...this.#profile, receipt: mockProfileReceipt },
+      });
+    },
     hostedTeamAvailability: async (slug): Promise<HostedTeamAvailability> => {
       if (reservedHostedTeamSlugs.has(slug)) return { available: false, reason: "reserved" };
       if (!HostedTeamSlugSchema.safeParse(slug).success)
@@ -469,3 +484,5 @@ export class MockTeamWorld {
     },
   };
 }
+
+const mockProfileReceipt = `${"e".repeat(36)}.${"e".repeat(40)}.${"e".repeat(43)}`;

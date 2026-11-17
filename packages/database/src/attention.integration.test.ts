@@ -59,7 +59,7 @@ describeStore("personal computer attention", (it) => {
         data: { status: "completed" },
       }),
     });
-    await f.store.createThread({
+    const { thread: newest } = await f.store.createThread({
       createdBy: task.userId,
       environmentId: task.environmentId,
       harnessInstanceId: task.harnessInstance.id,
@@ -67,6 +67,11 @@ describeStore("personal computer attention", (it) => {
       title: "Newest task",
       idempotencyKey: "newest-task",
     });
+    await f.database
+      .updateTable("threads")
+      .set({ updatedAt: new Date(new Date(newest.updatedAt).getTime() - 1) })
+      .where("id", "=", task.thread.id)
+      .execute();
     const page = await f.store.ownerThreadPageForOwner({ ownerId: task.userId, maxItems: 1 });
     expect(page.threads.map((thread) => thread.id)).not.toContain(task.thread.id);
     await f.database

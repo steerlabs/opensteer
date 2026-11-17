@@ -1,29 +1,22 @@
 import type { HostSnapshot } from "@opensteer/client/host";
-import {
-  requestOptionDeclines,
-  type Request,
-  type RequestFormField,
-  type RequestOption,
-} from "@opensteer/core";
+import { requestOptionDeclines, type Request, type RequestOption } from "@opensteer/core";
 import { Alert } from "react-native";
 import type { NativeMenuOption } from "./composer-menu.js";
-import { requestFieldMode } from "./request-form-model.js";
 
 /** The most answers a card holds before the choice belongs in a sheet. */
 const cardAnswerLimit = 4;
 /** Longer than this, or more of it, and a row of pills would wrap into a block. */
 const pillLabelLimit = 16;
 const pillTotalLimit = 30;
-/** Past this a question takes over the composer rather than sitting above its field. */
-const composerQuestionLength = 160;
 
 /**
  * How a Request can be answered from its card, decided from what it asks and
  * never from where it is shown. Everything else opens the sheet.
  *
  * `approve` is a yes and a no with any other answers behind a menu. `choose`
- * and its two looks are answers where a tap sends. `type` is one open question
- * the composer can take. `sheet` is anything that has to be read or filled in.
+ * and its two looks are answers where a tap sends. `sheet` is anything that has
+ * to be read or filled in. A question an agent asks has its own card
+ * (`question-card.tsx`); a form here is a secret or a plugin's input.
  */
 export type RequestCardAnswers =
   | {
@@ -41,7 +34,6 @@ export type RequestCardAnswers =
       readonly look: "pills" | "rows";
       readonly options: readonly CardChoice[];
     }
-  | { readonly kind: "type"; readonly field: RequestFormField }
   | { readonly kind: "sheet"; readonly label: "Answer" | "Review" }
   | { readonly kind: "none" };
 
@@ -57,34 +49,7 @@ export function requestCardAnswers(request: Request, denied: boolean): RequestCa
   if (presentation.kind === "external") {
     return externalAnswerable(request) ? { kind: "sheet", label: "Review" } : { kind: "none" };
   }
-  if (presentation.kind === "form") {
-    const [field, ...others] = presentation.fields;
-    // A plugin's answer never reaches the agent, and the sheet is what says so.
-    if (field === undefined || others.length > 0 || payload.kind === "integration.input") {
-      return { kind: "sheet", label: "Answer" };
-    }
-    const mode = requestFieldMode(field);
-    // The composer holds a question and nothing else, so anything more needs the card.
-    if (
-      mode === "text" &&
-      !field.secret &&
-      (presentation.detail ?? "") === "" &&
-      presentation.agentProposed !== true &&
-      presentation.title.length + field.prompt.length <= composerQuestionLength
-    ) {
-      return { kind: "type", field };
-    }
-    if (mode === "one" && (field.choices?.length ?? 0) <= cardAnswerLimit) {
-      return choose(
-        (field.choices ?? []).map(({ description, label, value }) => ({
-          description,
-          id: value,
-          label,
-        })),
-      );
-    }
-    return { kind: "sheet", label: "Answer" };
-  }
+  if (presentation.kind === "form") return { kind: "sheet", label: "Answer" };
   // Installing is a decision about a manifest the card has no room to show.
   if (payload.kind === "integration.install") return { kind: "sheet", label: "Review" };
   const allow = presentation.options.find(
@@ -163,6 +128,21 @@ export function requestCardHeading(
   return title === untitledForm
     ? { context: null, question: prompt }
     : { context: prompt, question: title };
+}
+
+/**
+ * A question's heading, and its prompt beneath when that says something more.
+ * Under the generic title engines give a form, the question in view is the heading.
+ */
+export function questionHeading(
+  title: string,
+  prompt: string,
+): { readonly heading: string; readonly prompt: string | null } {
+  const asked = prompt.trim();
+  if (asked === "" || asked === title) return { heading: title, prompt: null };
+  return title === untitledForm
+    ? { heading: asked, prompt: null }
+    : { heading: title, prompt: asked };
 }
 
 /**

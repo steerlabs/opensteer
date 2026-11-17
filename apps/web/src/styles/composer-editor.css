@@ -1,0 +1,107 @@
+/* Tiptap's mount point. The editable element inside is the whole box, as a
+   textarea is: every press on it places the caret. */
+.composer-editor {
+  display: contents;
+}
+
+/* The field grows with its words up to its own max-height, then scrolls. */
+.composer-editor__field {
+  position: relative;
+  box-sizing: border-box;
+  min-height: 1lh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  outline: none;
+  cursor: text;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.composer-editor__field p {
+  margin: 0;
+}
+
+/* Sits where the first line does, inside whatever padding the field has. */
+.composer-editor__field[data-empty]::before {
+  position: absolute;
+  inset-inline: 0;
+  box-sizing: border-box;
+  padding-inline: inherit;
+  overflow: hidden;
+  color: var(--muted-dim);
+  content: attr(data-placeholder);
+  pointer-events: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-editor__field[contenteditable="false"] {
+  cursor: default;
+}
+
+/* A reference in the words: the transcript's chip (`.ref-chip`), one atom the
+   caret steps over. */
+.composer-token {
+  cursor: default;
+  user-select: none;
+}
+
+.composer-token.is-selected,
+.is-in-selection > .composer-token {
+  border-color: var(--ember);
+  box-shadow: var(--ring-ember);
+}
+
+/* The `@` list's groups, in the place picker's rows. */
+.mention-list__heading {
+  padding: var(--space-6) var(--space-8) var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.mention-list__heading:not(:first-child) {
+  margin-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+
+.mention-list .reference-pick > .icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--text-soft);
+}
+
+/* A waiting message edited in place: the field grows with its words inside
+   the bubble or card, which keep their own size limits. */
+.waiting-edit__entry {
+  position: relative;
+  min-width: 2ch;
+}
+
+.waiting-edit__field {
+  min-width: 0;
+  caret-color: var(--ember);
+}
+
+@media (any-pointer: coarse) {
+  .waiting-edit--card .waiting-edit__field {
+    font-size: var(--text-input);
+    line-height: 1.4;
+  }
+}
+
+/* A team page in the team composer's `@` list. */
+.at-list__glyph {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  color: var(--text-soft);
+}
+
+.at-list__glyph > .icon {
+  width: 16px;
+  height: 16px;
+}

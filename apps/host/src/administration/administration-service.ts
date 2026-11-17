@@ -1,4 +1,5 @@
 import { removeDevice } from "./device-removal.js";
+import { DeviceDriverService } from "./device-driver-service.js";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { createHash } from "node:crypto";
 import { type AdministrationCommandIdentity, requirePersonalOwner } from "@opensteer/database";
@@ -6,7 +7,8 @@ import { z } from "zod";
 import {
   EnvironmentIdSchema,
   OpensteerError,
-  RunnerIdSchema,
+  DeviceIdSchema,
+  type AuthSessionId,
   type EnvironmentId,
 } from "@opensteer/core";
 import {
@@ -30,6 +32,7 @@ export type AdministrationCaller =
   | AgentCaller
   | ({
       readonly kind: "person";
+      readonly sessionId?: AuthSessionId;
     } & AdministrationActor);
 export type AdministrationDependencies = Pick<
   HostServerDependencies,
@@ -44,7 +47,10 @@ export type AdministrationDependencies = Pick<
   | "runners"
   | "channels"
   | "realtime"
+  | "ownerProfile"
+  | "deviceDrivers"
 > & {
+  readonly reconcileIdleCompaction?: () => Promise<void>;
   readonly publishDeploymentEvent: (event: import("@opensteer/core").AgentEvent) => void;
   readonly integrations: Pick<
     HostServerDependencies["integrations"],
@@ -54,14 +60,17 @@ export type AdministrationDependencies = Pick<
 const coreTypes = [
   "viewer.timeZone.update",
   "viewer.quietTasks.update",
+  "viewer.name.update",
+  "settings.idleCompaction.set",
   "execution.preferences.remember",
-  "automaticModels.set",
   "harness.model.configure",
   "harness.rename",
   "harness.enabled.set",
   "harness.default.set",
   "machine.revoke",
   "machine.rename",
+  "iphone.screen.attach",
+  "iphone.screen.detach",
   "machine.access.session.stop",
   "browser.profile.rename",
   "browser.profile.delete",
@@ -109,11 +118,19 @@ export class AdministrationService {
   async authorize(caller: AdministrationCaller, command: AdministrationCommand) {
     await requirePersonalOwner(this.dependencies.store.database, caller.userId);
     if (caller.kind === "person") return;
-    if (command.type.startsWith("automaticModels."))
+    if (command.type === "iphone.screen.attach" || command.type === "iphone.screen.detach")
       throw new OpensteerError({
         code: "forbidden",
-        message: "Automatic model preferences require the person",
+        message: "Screen driver setup requires the owner's signed-in session.",
       });
+    if (command.type === "settings.idleCompaction.set")
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Claude compaction preferences require the person",
+      });
+    // A name is what others see; it changes only when the person saves it.
+    if (command.type === "viewer.name.update")
+      throw new OpensteerError({ code: "forbidden", message: "Changing your name requires you" });
     settings(caller, []);
   }
   async admitHarnessManagement(actor: AdministrationActor, environmentIdInput: string) {
@@ -165,10 +182,9 @@ export class AdministrationService {
     const result = await this.#execute(caller, actor, command, administration, afterResponse);
     if (
       command.type.startsWith("harness.") ||
-      command.type.startsWith("automaticModels.") ||
       command.type === "execution.preferences.remember" ||
-      command.type === "viewer.timeZone.update" ||
       command.type === "viewer.quietTasks.update" ||
+      command.type === "settings.idleCompaction.set" ||
       command.type === "browser.site.remove"
     )
       notifyMachinesChanged(this.dependencies.realtime, "unspecified");
@@ -326,6 +342,14 @@ export class AdministrationService {
           type: command.type,
         };
 
+      case "settings.idleCompaction.set": {
+        const policy = await dependencies.store.notificationState.setIdleCompactionPolicy({
+          policy: command.policy,
+          userId,
+        });
+        await dependencies.reconcileIdleCompaction?.();
+        return { type: command.type, policy };
+      }
       case "viewer.quietTasks.update":
         return {
           quietTaskDays: await dependencies.store.notificationState.setQuietTaskDays({
@@ -335,22 +359,24 @@ export class AdministrationService {
           }),
           type: command.type,
         };
-      case "viewer.timeZone.update":
+      case "viewer.name.update": {
+        if (!dependencies.ownerProfile)
+          throw new OpensteerError({
+            code: "not_found",
+            message: "This Opensteer has no owner name",
+          });
         return {
-          timeZone: await dependencies.store.notificationState.setTimeZone({
-            administration,
-            timeZone: command.timeZone,
+          ...(await dependencies.ownerProfile.update(
             userId,
-          }),
+            command.name,
+            command.expectedVersion,
+          )),
           type: command.type,
-        };
-
-      case "automaticModels.set": {
-        return {
-          type: command.type,
-          config: await dependencies.store.setAutomaticModelConfig(userId, command.config),
         };
       }
+      case "viewer.timeZone.update":
+        return { timeZone: command.timeZone, type: command.type };
+
       case "execution.preferences.remember": {
         // A preference is a hint the Host re-validates when a Thread actually
         // starts, so the model is deliberately not checked against a catalog
@@ -515,9 +541,10 @@ export class AdministrationService {
         };
       }
       case "machine.revoke": {
+        const deviceId = DeviceIdSchema.parse(command.machineId);
         await removeDevice(
           dependencies,
-          RunnerIdSchema.parse(command.machineId),
+          deviceId,
           userId,
           { administration, allowDeployment: true },
           afterResponse,
@@ -527,20 +554,35 @@ export class AdministrationService {
         };
       }
       case "machine.rename": {
-        const allowDeployment = true;
-        await dependencies.store.renameRunner(
-          RunnerIdSchema.parse(command.machineId),
+        await dependencies.store.renameDevice(
+          DeviceIdSchema.parse(command.machineId),
           userId,
           command.name,
-          {
-            allowDeployment,
-            administration,
-          },
+          administration ? { administration } : {},
         );
         notifyMachinesChanged(dependencies.realtime, "machine.command");
         return {
           type: command.type,
         };
+      }
+      case "iphone.screen.attach":
+      case "iphone.screen.detach": {
+        if (caller.kind !== "person" || !caller.sessionId)
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "Screen driver setup requires the owner's signed-in session.",
+          });
+        if (!dependencies.deviceDrivers)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Device driver management is unavailable.",
+          });
+        const result = await new DeviceDriverService(
+          dependencies.store,
+          dependencies.deviceDrivers,
+        ).execute({ userId, sessionId: caller.sessionId }, command);
+        notifyMachinesChanged(dependencies.realtime, "machine.command");
+        return hostApi["commands.dispatch"].success.parse(result);
       }
       case "machine.access.session.stop": {
         // The full row resolves and authorizes the Stop even for an ended

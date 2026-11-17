@@ -1,3 +1,4 @@
+import type { AuthSessionId } from "@opensteer/core";
 import {
   threadAccessModeAtMost,
   DEFAULT_THREAD_ACCESS_MODE,
@@ -217,6 +218,7 @@ export class ThreadService {
                 quotedMessageId: command.quotedMessageId,
               }
             : {}),
+          ...(command.compaction ? { compaction: command.compaction } : {}),
           content: command.content,
           idempotencyKey: command.idempotencyKey,
           policy: command.delivery ?? "queue",
@@ -226,6 +228,7 @@ export class ThreadService {
             actor.kind === "person"
               ? {
                   kind: "human",
+                  ...(command.origin ? { origin: command.origin } : {}),
                 }
               : messageSource(actor, command.idempotencyKey),
           threadId: command.threadId,
@@ -328,6 +331,67 @@ export class ThreadService {
         })
       : this.options.commands.enqueueThreadInput(request);
   }
+  async edit(
+    actor: ThreadActor,
+    command: Command<"thread.input.edit">,
+    session: { readonly id: AuthSessionId; readonly deviceLabel: string },
+  ) {
+    if (actor.kind !== "person")
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Only the owner can edit waiting inputs.",
+      });
+    const result = await this.options.commands.editThreadInput({
+      ...command,
+      requestedBy: actor.userId,
+      sessionId: session.id,
+      deviceLabel: session.deviceLabel,
+    });
+    return { message: result.message, edit: result.edit };
+  }
+  async lease(
+    actor: ThreadActor,
+    command: Command<
+      "thread.input.lease.take" | "thread.input.lease.renew" | "thread.input.lease.release"
+    >,
+    session: { readonly id: AuthSessionId; readonly deviceLabel: string },
+  ) {
+    if (actor.kind !== "person")
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Only the owner can edit waiting inputs.",
+      });
+    const identity = {
+      threadId: command.threadId,
+      messageId: command.messageId,
+      requestedBy: actor.userId,
+      sessionId: session.id,
+      deviceLabel: session.deviceLabel,
+    };
+    switch (command.type) {
+      case "thread.input.lease.take": {
+        const result = await this.options.commands.takeThreadInputLease({
+          ...identity,
+          leaseId: command.leaseId,
+          takeOver: command.takeOver,
+        });
+        return { type: command.type, lease: result.lease, revision: result.revision };
+      }
+      case "thread.input.lease.renew": {
+        const result = await this.options.commands.renewThreadInputLease({
+          ...identity,
+          leaseId: command.leaseId,
+        });
+        return { type: command.type, lease: result.lease };
+      }
+      case "thread.input.lease.release":
+        await this.options.commands.releaseThreadInputLease({
+          ...identity,
+          ...(command.leaseId ? { leaseId: command.leaseId } : {}),
+        });
+        return { type: command.type };
+    }
+  }
   async resume(actor: ThreadActor, command: Command<"thread.inputQueue.resume">) {
     if (actor.kind !== "person") await this.assertTarget(actor, command.threadId);
     const result = await this.options.commands.resumeThreadInputQueue({
@@ -344,10 +408,15 @@ export class ThreadService {
       asOfSequence: result.asOfSequence,
     };
   }
-  async steer(actor: ThreadActor, command: Command<"thread.input.steer">) {
+  async steer(
+    actor: ThreadActor,
+    command: Command<"thread.input.steer">,
+    sessionId?: AuthSessionId,
+  ) {
     await this.assertTarget(actor, command.threadId);
     const result = await this.options.commands.steerThreadInput({
       ...command,
+      ...(sessionId ? { sessionId } : {}),
       requestedBy: actor.userId,
       ...(actor.kind === "person"
         ? {}
@@ -359,10 +428,15 @@ export class ThreadService {
       input: result.input,
     };
   }
-  async cancel(actor: ThreadActor, command: Command<"thread.input.cancel">) {
+  async cancel(
+    actor: ThreadActor,
+    command: Command<"thread.input.cancel">,
+    sessionId?: AuthSessionId,
+  ) {
     if (actor.kind !== "person") await this.assertTarget(actor, command.threadId);
     const result = await this.options.commands.cancelThreadInput({
       ...command,
+      ...(sessionId ? { sessionId } : {}),
       requestedBy: actor.userId,
       ...(actor.kind === "person"
         ? {}
@@ -374,10 +448,11 @@ export class ThreadService {
       input: result.input,
     };
   }
-  async move(actor: ThreadActor, command: Command<"thread.input.move">) {
+  async move(actor: ThreadActor, command: Command<"thread.input.move">, sessionId?: AuthSessionId) {
     if (actor.kind !== "person") await this.assertTarget(actor, command.threadId);
     await this.options.commands.moveThreadInput({
       ...command,
+      ...(sessionId ? { sessionId } : {}),
       requestedBy: actor.userId,
       ...(actor.kind === "person"
         ? {}

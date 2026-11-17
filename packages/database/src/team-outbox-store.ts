@@ -18,10 +18,10 @@ export interface TeamPushDelivery {
 }
 export class TeamOutboxStore {
   readonly access: TeamAccessStore;
-  readonly visible: (userId: UserId, channelId: TeamChannelId) => boolean;
+  readonly visible: (userId: UserId, channelId: TeamChannelId) => boolean | Promise<boolean>;
   constructor(
     access: TeamAccessStore,
-    visible: (userId: UserId, channelId: TeamChannelId) => boolean = () => false,
+    visible: (userId: UserId, channelId: TeamChannelId) => boolean | Promise<boolean> = () => false,
   ) {
     this.access = access;
     this.visible = visible;
@@ -107,7 +107,7 @@ export class TeamOutboxStore {
         kind = "team-notice";
       } else if (message && channel) {
         if (
-          this.visible(account.userId, channel.id) ||
+          (await this.visible(account.userId, channel.id)) ||
           !(await this.access.channel(t, { kind: "human", userId: account.userId }, channel.id))
             .read
         )

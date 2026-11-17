@@ -3,7 +3,9 @@ import {
   heldThread,
   reviewHostAction,
   sameTaskRow,
+  taskAfter,
   taskDoneConfirmation,
+  taskList,
   taskUnderWay,
   taskMark,
   taskMarkQuiet,
@@ -285,19 +287,29 @@ function sameTaskRowProps(left: TaskRowProps, right: TaskRowProps): boolean {
 /**
  * Sets a task aside in Done or brings it back, saying so to a screen reader,
  * whose row has just left from under it. The Host's answer moves the row; a
- * refusal is said where the reader is.
+ * refusal is said where the reader is. Once it is Done, `advance` hears the
+ * task that followed it in the list as it stood when confirmed.
  */
-export function setTaskDone(hostClient: HostClient, threadId: string, done: boolean): void {
+export function setTaskDone(
+  hostClient: HostClient,
+  threadId: string,
+  done: boolean,
+  advance?: (next: string | null) => void,
+): void {
   const review = reviewHostAction(hostClient, { kind: "task-done", threadId, done });
   if (!review) return;
   const thread = heldThread(hostClient.getSnapshot(), threadId);
-  const confirm = () =>
+  const confirm = () => {
+    const next = advance ? taskAfter(taskList(hostClient.getSnapshot()), threadId) : null;
     void review.confirm().then(
       (changed) => {
-        if (changed) AccessibilityInfo.announceForAccessibility(done ? "Marked Done" : "Reopened");
+        if (!changed) return;
+        AccessibilityInfo.announceForAccessibility(done ? "Marked Done" : "Reopened");
+        if (done) advance?.(next);
       },
       (error: unknown) => Alert.alert("Task not changed", operationDetail(error, "Try again.")),
     );
+  };
   if (done && thread && taskUnderWay(thread)) {
     Alert.alert(
       "Stop and mark Done?",

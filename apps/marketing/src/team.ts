@@ -25,14 +25,14 @@ const AGENT_POST = `<div class="tm tm--agent">${mark(LEO, true)}<div class="tm__
   <div class="tcard" data-state="done">
     <div class="tcard__top"><span class="tcard__spin"></span><b>Done</b><span class="tcard__meta">4 steps · 1m 12s</span><span class="tcard__open">Open task</span></div>
   </div>
-  <div class="tm__text tm__answer">Refunded the duplicate $480.00 on invoice 2291. It's within policy: duplicates under $1,000 don't need finance.<span class="tsource">${icon("t-doc")}Refund policy</span></div></div></div>`;
+  <div class="tm__text tm__answer">Submitted LUMEN-0142 for $9,300.00 against PO 4500018871 in Halcyon's Coupa portal. The hours match SAP, and the $150 rate matches their contract.<span class="tsource">${icon("t-doc")}Client contracts</span></div></div></div>`;
 
 const channel = (name: string, extra = ""): string =>
   `<div class="tw-row${extra}"><span class="tw-hash">#</span>${name}</div>`;
 
 const TOPICS = [
-  { name: "Refund policy", about: "How we refund and when", who: "Everyone", leo: true },
-  { name: "Pricing", about: "Plans, discounts, exceptions", who: "Sales, Support", leo: true },
+  { name: "Billing policy", about: "Rates, terms and approvals", who: "Everyone", leo: true },
+  { name: "Client contracts", about: "SOWs, POs and portals", who: "Finance, Leads", leo: true },
   { name: "Salaries", about: "Pay bands and offers", who: "Maya, Priya", leo: false },
 ] as const;
 
@@ -40,21 +40,21 @@ const WINDOW = `<div class="tw">
   <aside class="tw-side">
     <div class="tw-lights"><i></i><i></i><i></i></div>
     <div class="tw-brand"><b>Opensteer</b><span>${icon("i-mic")}${icon("m-search")}${icon("m-plus")}</span></div>
-    <div class="tw-switch"><span class="tw-seg">Tasks</span><span class="tw-seg is-on"><span class="tw-team">A</span>Acme</span></div>
+    <div class="tw-switch"><span class="tw-seg">Tasks</span><span class="tw-seg is-on"><span class="tw-team">L</span>Lumen</span></div>
     <div class="tw-label">Channels</div>
     ${channel("announcements")}
     ${channel("general")}
-    ${channel("launch", " is-unread")}
-    ${channel("support", " is-on")}
+    ${channel("brightline", " is-unread")}
+    ${channel("billing", " is-on")}
     <div class="tw-row"><span class="tw-hash">${icon("i-lock")}</span>leadership</div>
     <div class="tw-label">Direct messages</div>
     <div class="tw-row is-unread">${mark(MAYA)}Maya Chen<span class="tw-count">1</span></div>
     <div class="tw-row">${mark(PRIYA)}Priya Shah</div>
-    <div class="tw-foot"><b>Leo's MacBook</b><span><i></i>Connected · Acme</span></div>
+    <div class="tw-foot"><b>Leo's MacBook</b><span><i></i>Connected · Lumen</span></div>
   </aside>
   <div class="tw-main">
-    <header class="tw-head"><b>Thread</b><span># support</span><span class="tw-people">${mark(MAYA)}${mark(LEO)}${mark(PRIYA)}<em>14</em></span></header>
-    <div class="tw-feed">${message(MAYA, "2:36 PM", "Northwind says they were charged twice for invoice 2291. Can someone take a look?")}${message(LEO, "2:41 PM", `${chip("My agent")} check Stripe and refund the duplicate if it's within policy`)}${AGENT_POST}</div>
+    <header class="tw-head"><b>Thread</b><span># billing</span><span class="tw-people">${mark(MAYA)}${mark(LEO)}${mark(PRIYA)}<em>14</em></span></header>
+    <div class="tw-feed">${message(MAYA, "2:36 PM", "Halcyon's AP says invoices have to go through their Coupa portal now, not email. Can someone send October's?")}${message(LEO, "2:41 PM", `${chip("My agent")} submit LUMEN-0142 in Halcyon's portal if it matches the PO`)}${AGENT_POST}</div>
     <div class="tw-compose">
       <div class="tw-input"></div>
       <div class="tw-tools"><span>@</span><span class="tw-ask"><span class="orb"></span>Ask my agent</span><span class="tw-send">${icon("i-up")}</span></div>
@@ -68,7 +68,7 @@ const WINDOW = `<div class="tw">
   </aside>
 </div>`;
 
-/** One #support thread in the team view, beside the team's knowledge: who can read each topic, and so whose agents can. */
+/** One #billing thread in the team view, beside the team's knowledge: who can read each topic, and so whose agents can. */
 export function mountTeam(): void {
   const root = byId("teamStage");
   root.innerHTML = WINDOW;

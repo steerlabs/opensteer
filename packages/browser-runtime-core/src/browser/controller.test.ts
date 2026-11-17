@@ -111,6 +111,24 @@ describe("BrowserController", () => {
       );
     };
     try {
+      const live = ledger.snapshot();
+      const updates = sink.messages.filter((message) => message.type === "browser.tabs").length;
+      expect(await command(browserHostMethods.resumeTab, { surfaceId: id })).toMatchObject({
+        type: "cdp.result",
+        result: {
+          surfaceId: id,
+          targetId,
+          reloaded: false,
+          dialog: null,
+          userActivity: null,
+          pageResize: null,
+        },
+      });
+      expect(ledger.snapshot()).toEqual(live);
+      expect(sink.messages.filter((message) => message.type === "browser.tabs")).toHaveLength(
+        updates,
+      );
+      expect(create).not.toHaveBeenCalled();
       await ledger.sleep(id, () => null);
       expect(await command("Target.attachToTarget", { targetId, flatten: true })).toMatchObject({
         type: "cdp.error",
@@ -413,6 +431,59 @@ describe("BrowserController", () => {
       await ledger.close();
     }
   });
+  it.each(["agent", "person"] as const)(
+    "credits the person only for a page they opened: %s",
+    async (creationOrigin) => {
+      const claims = validClaims();
+      const url = "https://example.test/opened";
+      const controller = new BrowserController({
+        cdpRouter,
+        claims,
+        files,
+        ledger,
+        replaceSiteCookies,
+        platform: "darwin",
+        signIns: noSignIns(),
+        sink,
+        verifyOpenAuthority: async () => ({
+          ...claims,
+          creationOrigin,
+          initialNavigation: { operationKey: `open-${creationOrigin}`, url },
+        }),
+      });
+      try {
+        await controller.start();
+        const requestId = randomUUID();
+        await controller.handle({
+          type: "cdp.command",
+          requestId,
+          command: {
+            method: browserHostMethods.openTab,
+            parameters: {
+              idempotencyKey: `open-${creationOrigin}`,
+              operationAuthority: "signed",
+              url,
+            },
+          },
+        });
+        const result = sink.messages.find(
+          (message) => message.type === "cdp.result" && message.requestId === requestId,
+        );
+        const tabId = (result as { result: { tabId: string } } | undefined)?.result.tabId;
+        const record = [...ledger.policyRecords()].find((entry) => entry.id === tabId);
+        expect(record).toMatchObject({
+          origin: creationOrigin,
+          personUsed: creationOrigin === "person",
+        });
+        expect(record?.userActivity?.kind).toBe(
+          creationOrigin === "person" ? "navigation" : undefined,
+        );
+      } finally {
+        await controller.close();
+        await ledger.close();
+      }
+    },
+  );
   it("commits a tab before its open result and its removal before its close result", async () => {
     [...ledger.policyRecords()][0]!.favicon = "data:image/png;base64,AAAA";
     const controller = createController();

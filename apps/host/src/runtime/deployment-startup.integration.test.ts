@@ -7,6 +7,7 @@ import { parseHostConfig } from "@opensteer/config";
 import {
   hostApiVersion,
   hostApiVersionHeader,
+  minimumHostApiVersion,
   teamApiVersion,
   teamApiVersionHeader,
 } from "@opensteer/deployment-authority";
@@ -134,7 +135,7 @@ it.each(["personal", "team"] as const)(
       expect(descriptor.statusCode).toBe(200);
       expect(descriptor.json()).toMatchObject({
         kind,
-        apiVersion: kind === "team" ? teamApiVersion : hostApiVersion,
+        apiVersion: kind === "team" ? teamApiVersion : minimumHostApiVersion,
         authority: { document: { deploymentShape: { kind } } },
       });
       for (const version of [kind === "team" ? "0" : "999", "1&opensteer_api_version=1"]) {
@@ -204,7 +205,7 @@ it.each(["personal", "team"] as const)(
           url: "/v1/rpc/commands.dispatch",
           headers: {
             "content-type": "application/json",
-            [hostApiVersionHeader]: String(hostApiVersion - 1),
+            [hostApiVersionHeader]: String(minimumHostApiVersion - 1),
           },
           payload: "{invalid",
         });

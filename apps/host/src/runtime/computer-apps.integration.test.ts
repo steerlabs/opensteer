@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { startHeldRequest } from "../integrations/held-request.test-support.js";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
@@ -32,7 +33,7 @@ import {
   requestComputerAppSetup,
   setComputerApp,
   toolText,
-  toolReadiness,
+  toolBlocked,
 } from "./computer-apps.test-support.js";
 import {
   connectCallerMachine,
@@ -203,7 +204,7 @@ integration("computer apps", () => {
       connection: await host.store.database
         .selectFrom("integrationConnections")
         .select("id")
-        .where("runnerId", "=", computer.runnerId)
+        .where("deviceId", "=", await host.store.requireSelfDeviceId(computer.runnerId))
         .where("integrationDefinitionId", "=", "apple-messages")
         .where("status", "=", "connected")
         .executeTakeFirstOrThrow(),
@@ -256,7 +257,7 @@ integration("computer apps", () => {
       account: "Studio Mac",
       connectionId: enabled.connection.id,
     });
-    expect(toolReadiness(readSearch, "query_messages").code).toBe("READY");
+    expect(toolBlocked(readSearch, "query_messages")).toBeUndefined();
     expect(operations(readSearch).some(({ name }) => name === "send_message")).toBe(false);
     await expect(
       gateway.call("integration_call", {
@@ -335,8 +336,16 @@ integration("computer apps", () => {
       arguments: { text: "again", to: { address: "friend@example.test" } },
       ...sendOperation.address,
     });
-    expect(toolText(narrowed)).toContain("Studio Mac allows reading only");
-    expect(toolText(narrowed)).toContain('access "read-write"');
+    expect(narrowed).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: "access_denied",
+          message:
+            'Studio Mac allows reading only. Ask for read-write to send: call integration_request with integration "apple-messages" and access "read-write"; do not retry this call until it is fulfilled.',
+        },
+      },
+    });
 
     const widenSetup = await requestComputerAppSetup(
       host,
@@ -358,9 +367,9 @@ integration("computer apps", () => {
       timeoutError: () => new Error("Apps-off write was not admitted"),
     });
     const beforeSwitch = await host.store.database
-      .selectFrom("runners")
+      .selectFrom("devices")
       .select(["accessPolicy", "accessPolicyRevision"])
-      .where("id", "=", computer.runnerId)
+      .where("id", "=", DeviceIdSchema.parse(computer.runnerId))
       .executeTakeFirstOrThrow();
     const updateSwitch = (apps: boolean, revision: number, key: string) =>
       testRpcData(
@@ -386,7 +395,10 @@ integration("computer apps", () => {
     expect(offRefusal).toMatchObject({
       isError: true,
       structuredContent: {
-        error: { reason: "device-access-off", machineId: computer.runnerId, capability: "apps" },
+        error: {
+          code: "access_denied",
+          next: expect.stringContaining(`computerId=${computer.runnerId}, access=apps`),
+        },
       },
     });
     const connectionAfterOff = await host.store.database
@@ -409,14 +421,16 @@ integration("computer apps", () => {
     );
 
     const offline = await gateway.call("integration_search", { query: "Messages" });
-    expect(toolReadiness(offline, "query_messages")).toMatchObject({
-      code: "INTEGRATION_UNAVAILABLE",
-      detail: "Opensteer's integrations service is unavailable on Studio Mac.",
+    expect(toolBlocked(offline, "query_messages")).toMatchObject({
+      code: "unavailable",
+      message:
+        "apple-messages is unavailable: Opensteer's integrations service is unavailable on Studio Mac.",
+      next: "Continue without it and tell the person what the message says.",
     });
     await computer.reconnectModule();
     await waitForCondition(async () => {
       const searched = await gateway.call("integration_search", { query: "Messages" });
-      return toolReadiness(searched, "query_messages").code === "READY";
+      return toolBlocked(searched, "query_messages") === undefined;
     });
 
     await testRpcData(
@@ -612,7 +626,7 @@ integration("computer apps", () => {
     const searched = await gateway.call("integration_search", { query: "Messages" });
     const list = operation(searched, "query_messages");
     expect(list).toMatchObject({ account: "Studio Mac", connectionId: enabled.connection.id });
-    expect(toolReadiness(searched, "query_messages").code).toBe("READY");
+    expect(toolBlocked(searched, "query_messages")).toBeUndefined();
     await expect(
       gateway.call("integration_call", { arguments: { sql: "SELECT 1" }, ...list.address }),
     ).resolves.toMatchObject({ columns: ["guid"], rows: [["chat-1"]], truncated: false });
@@ -709,23 +723,26 @@ integration("computer apps", () => {
       // 1. Full access not yet allowed.
       await waitForCondition(async () => {
         const searched = await gateway.call("integration_search", { query: "Calendar" });
-        return toolReadiness(searched, "list_events").code === "INTEGRATION_UNAVAILABLE";
+        return toolBlocked(searched, "list_events")?.code === "unavailable";
       });
-      const blocked = toolReadiness(
+      const blocked = toolBlocked(
         await gateway.call("integration_search", { query: "Calendar" }),
         "list_events",
       );
       record("calendar before its grant", blocked);
-      expect(blocked.detail).toBe(
-        "Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.",
-      );
+      expect(blocked).toEqual({
+        code: "unavailable",
+        message:
+          "apple-calendar is unavailable: Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.",
+        next: "Continue without it and tell the person what the message says.",
+      });
 
       // 2. The person allows it on the Mac.
       helper.grants.calendars = "granted";
       helper.grants.reminders = "granted";
       await waitForCondition(async () => {
         const searched = await gateway.call("integration_search", { query: "Calendar" });
-        return toolReadiness(searched, "list_events").code === "READY";
+        return toolBlocked(searched, "list_events") === undefined;
       });
       const calendarSearch = await gateway.call("integration_search", { query: "Calendar" });
       record(

@@ -69,6 +69,8 @@ it("ignores messages without opt-in, clears on disconnect and scopes requests to
     geometryRevision: 1,
     loading: false,
     navigationFailed: false,
+    canGoBack: false,
+    canGoForward: false,
     sizedByAgent: false,
   });
   store.receive("session", "tab", {

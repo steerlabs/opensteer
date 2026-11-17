@@ -9,17 +9,19 @@ Use a fitting integration for service account and API work, including built-in c
 
 Select accounts by `connectionId`, never display name. Search shows each operation's `input`, so call it directly with its `name` and the `connectionId` as `account`. The Host checks the current account and grant at execution.
 
-Credentials belong in the Request UI. Except for SMS/email codes for a sign-in the person asked for (see boundaries), never collect or retrieve service secrets yourself, and never bypass denied access with another account or transport. Mac apps and Android phones use `app()` and `phone()` in the `computer` tool (opensteer:computer-use), never with `integration_call`.
+Credentials belong in the Request UI. Except for SMS/email codes for a sign-in the person asked for (see boundaries), never collect or retrieve service secrets yourself, and never bypass denied access with another account or transport. Mac apps and Android phones use `app()` and `phone()` in `computer_use` (opensteer:computer-use), never with `integration_call`.
 
-Use `integration_manage` to list, disconnect, uninstall or revoke grants directly within
-full-access. `channel_manage` lists/revokes bindings or pauses/resumes existing
-connections. These tools cannot create accounts, enter credentials or grant access.
+`integration_list` lists connected accounts, installations and grants. With full access,
+`integration_remove` disconnects an account, uninstalls an integration or revokes a grant directly.
+`opensteer_messaging_bridge_list`, `opensteer_messaging_bridge_update` and
+`opensteer_messaging_bridge_remove` list, pause or resume, and remove messaging bridges. These tools
+cannot create accounts, enter credentials or grant access.
 
 Read only the reference needed for the work:
 
-- [Discovery](references/discovery.md) when finding operations or interpreting readiness and paging.
+- [Discovery](references/discovery.md) when finding operations or interpreting blockers and paging.
 - [Operations](references/operations.md) when an operation needs more detail than search shows, or repairing a schema or account error.
 - [Requests](references/requests.md) when connecting, installing or requesting access.
 - [Proposals](references/proposals.md) when the catalog has no fitting integration.
-- [Boundaries](references/boundaries.md) when handling credentials, computer-hosted services or Trigger access.
+- [Boundaries](references/boundaries.md) when handling credentials, computer-hosted services or automation access.
 - [Apple Messages](references/apple-messages.md) before querying, exporting or sending in Messages.

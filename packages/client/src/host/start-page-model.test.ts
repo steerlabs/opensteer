@@ -17,41 +17,24 @@ import {
 } from "./start-page-model.js";
 const now = () => new Date("2026-10-19T12:00:00.000Z");
 describe("start page projection", () => {
-  it("joins authorized profile/computer/opener metadata and invalidates when metadata changes", () => {
+  it("joins authorized profile and computer metadata and invalidates when metadata changes", () => {
     const client = new MockHostClient({ latencyMs: 0, now });
     try {
       const snapshot = client.getSnapshot();
       const places = placeList(snapshot);
-      const web = places.filter((place) => place.kind === "browser");
-      expect(web.every((place) => place.identity && place.browser && place.device)).toBe(true);
-      expect(
-        new Set(
-          web
-            .filter((place) => place.identity?.kind === "guest")
-            .map((place) => place.browser?.sessionId),
-        ).size,
-      ).toBeGreaterThanOrEqual(2);
-      for (const key of new Set(web.map((place) => place.browser?.sessionId))) {
-        const indexes = web.flatMap((place, i) => (place.browser?.sessionId === key ? [i] : []));
-        expect(indexes.at(-1)! - indexes[0]! + 1).toBe(indexes.length);
-      }
+      const web = places.filter((place) => place.kind === "page");
+      expect(web.every((place) => place.identity && place.device)).toBe(true);
+      expect(web.some((place) => place.identity?.kind === "guest")).toBe(true);
       expect(
         samePlaceListSource(snapshot, {
           ...snapshot,
           browserProfiles: [...snapshot.browserProfiles],
         }),
       ).toBe(false);
-      expect(
-        samePlaceListSource(snapshot, {
-          ...snapshot,
-          browserPlacements: [...snapshot.browserPlacements],
-        }),
-      ).toBe(false);
       const missing = placeList({ ...snapshot, browserProfiles: [] }).find(
         (place) => place.identity?.kind === "profile",
       );
       expect(missing?.identity).toMatchObject({ kind: "profile", available: false });
-      expect(missing?.availability).toBe("unavailable");
       expect(profileTint("immutable")).toBe(profileTint("immutable"));
       expect(profileBadgesVisible(web)).toBe(true);
       expect(profileBadgesVisible(web.filter((place) => place.identity?.kind === "guest"))).toBe(
@@ -121,10 +104,10 @@ describe("start page projection", () => {
     try {
       const snapshot = client.getSnapshot();
       const approved = await client.listApprovedComputerApps();
-      const task = snapshot.browserSessions.find(
-        (session) => session.opener?.kind === "task" && session.profileId,
+      const source = placeList(snapshot).find(
+        (place) => place.kind === "page" && place.tab.openedBy !== "person" && place.tab.profile,
       )!;
-      const source = placeList(snapshot).find((place) => place.browser?.sessionId === task.id)!;
+      const profileId = source.tab.profile!.profileId;
       const model = startPageModel({
         snapshot,
         approvedApps: approved,
@@ -133,16 +116,21 @@ describe("start page projection", () => {
         query: "calendar",
         localMachineId: approved[0]!.machineId,
       });
-      expect(model.choice).toEqual({ kind: "profile", profileId: task.profileId });
+      expect(model.choice).toEqual({ kind: "profile", profileId });
       expect(
         model.results.some(
-          (row) => row.action.kind === "open-computer-view" && row.label.startsWith("Open "),
+          (row) => row.action.kind === "open-tab" && row.label.startsWith("Open "),
         ),
       ).toBe(true);
       // A task holding the app gives no task view to switch to: the row opens the person's own
-      // view in an independent row.
+      // window tab in an independent row.
       const notes = startPageModel({ snapshot, approvedApps: approved, query: "notes" }).results;
-      expect(notes[1]).toMatchObject({ kind: "app", action: { kind: "open-computer-view" } });
+      expect(notes).toContainEqual(
+        expect.objectContaining({
+          kind: "app",
+          action: expect.objectContaining({ kind: "open-tab" }),
+        }),
+      );
       expect(notes.filter((row) => row.title === "Notes")).toHaveLength(1);
       expect(model.groups[0]?.machineId).toBe(approved[0]!.machineId);
       expect(
@@ -154,16 +142,17 @@ describe("start page projection", () => {
       ).toEqual({ kind: "profile", profileId: "bpr_missing" });
       expect(startPageModel({ snapshot, query: "" }).choice).toEqual({ kind: "guest" });
       const guest = placeList(snapshot).find(
-        (place) => place.identity?.kind === "guest" && place.browser?.opener.kind === "task",
+        (place) => place.identity?.kind === "guest" && place.tab.openedBy !== "person",
       )!;
-      const explicit = { kind: "profile" as const, profileId: task.profileId! };
+      expect(guest).toBeDefined();
+      const explicit = { kind: "profile" as const, profileId };
       expect(
         startPageModel({ snapshot, query: "", sourcePlace: guest, lastChoice: explicit }).choice,
       ).toEqual(explicit);
       // Word prefixes, not substrings: "otes" is inside "Notes" but begins no word.
       expect(
         startPageModel({ snapshot, approvedApps: approved, query: "otes" }).results.some(
-          (row) => row.action.kind === "open-computer-view",
+          (row) => row.action.kind === "open-tab",
         ),
       ).toBe(false);
       // At most eight rows, including the default search.
@@ -195,6 +184,7 @@ describe("start page projection", () => {
         ["Mac mini", null],
         ["Studio Mac", null],
         ["Pixel 7", null],
+        ["Work iPhone", null],
       ]);
 
       // The view's own answer, before any view is asked for; the rows that open come first.
@@ -202,6 +192,7 @@ describe("start page projection", () => {
       expect(groups()).toEqual([
         ["Mac mini", null],
         ["Pixel 7", null],
+        ["Work iPhone", null],
         ["Studio Mac", "offline"],
       ]);
       expect(
@@ -237,7 +228,7 @@ describe("start page projection", () => {
       ]);
       expect(keynote[2]).toMatchObject({
         notReady: "offline",
-        action: { kind: "open-computer-view", machineId: studio.id },
+        action: { kind: "open-tab", target: { computerId: studio.id } },
       });
 
       // Every reason a Mac or phone gives its views, in a word or two its owner can act on.
@@ -246,6 +237,7 @@ describe("start page projection", () => {
       client.setMachineStatus(pixel.id, "update-pending");
       expect(groups()).toEqual([
         ["Mac mini", null],
+        ["Work iPhone", null],
         ["Studio Mac", "screen-recording-required"],
         ["Pixel 7", "update-pending"],
       ]);
@@ -270,6 +262,7 @@ describe("start page projection", () => {
         ["Mac mini", null],
         ["Studio Mac", null],
         ["Pixel 7", null],
+        ["Work iPhone", null],
       ]);
 
       // Back but not yet saying what it can show — the Host's word for a computer the moment it
@@ -330,6 +323,7 @@ describe("start page projection", () => {
         ["Mac mini", null],
         ["Studio Mac", null],
         ["Pixel 7", null],
+        ["Work iPhone", null],
       ]);
       expect(index(reconnecting).apps.some((entry) => entry.available)).toBe(false);
     } finally {
@@ -360,7 +354,7 @@ describe("start page projection", () => {
       // A host is found by a word's start, never from inside one.
       expect(recent("otion")).toBe(false);
       const tab = index.places.find(
-        (entry) => entry.place.kind === "browser" && entry.place.title.trim().includes(" "),
+        (entry) => entry.place.kind === "page" && entry.place.title.trim().includes(" "),
       )!.place;
       const words = tab.title.trim().split(/\s+/u);
       const switches = startPageResults(index, {

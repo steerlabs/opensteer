@@ -1,10 +1,6 @@
+import { DeviceIdSchema } from "@opensteer/core";
+import { BrowserSurfaceIdSchema, TeamMessageIdSchema } from "@opensteer/core";
 import {
-  BrowserSessionIdSchema,
-  BrowserSurfaceIdSchema,
-  TeamMessageIdSchema,
-} from "@opensteer/core";
-import {
-  RunnerIdSchema,
   SequenceSchema,
   createId,
   type AgentEventView as AgentEvent,
@@ -121,11 +117,7 @@ it("keeps one app card at its latest publication, including across history pages
     event("app.published", { appId, version, title: `Budget ${version}` });
   const first = publish(1);
   const between = event("place.entered", {
-    place: {
-      kind: "browser",
-      sessionId: BrowserSessionIdSchema.parse("bsn_11111111-1111-4111-8111-111111111111"),
-      surfaceId: BrowserSurfaceIdSchema.parse("tab-between"),
-    },
+    tabId: BrowserSurfaceIdSchema.parse("tab-between"),
     title: "Between",
     site: "https://example.com",
   });
@@ -317,7 +309,7 @@ describe("foldTranscriptEvent", () => {
         app: "Slack",
         bundleId: "com.tinyspeck.slackmacgap",
         computer: "Alex's Mac",
-        runnerId: createId("runner"),
+        runnerId: DeviceIdSchema.parse(createId("runner")),
       },
       effect: "write" as const,
       integration: "Computer use",
@@ -554,7 +546,7 @@ describe("foldTranscriptEvent", () => {
       mode: "durable",
       payload: {
         kind: "machine.full-disk-access",
-        machineId: RunnerIdSchema.parse(createId("runner")),
+        machineId: DeviceIdSchema.parse(createId("runner")),
         machineName: "Mac mini",
         reason: "Messages and Mail are needed for the inbox sweep",
       },
@@ -589,7 +581,7 @@ describe("foldTranscriptEvent", () => {
         access: "read",
         app: null,
         definitionId: "android-phone",
-        runnerId: RunnerIdSchema.parse(createId("runner")),
+        deviceId: DeviceIdSchema.parse(createId("runner")),
         setupRequestId: "setup",
 
         reason: "Read the screen",
@@ -1363,8 +1355,10 @@ describe("visibleTranscript", () => {
   function queued(id: typeof queuedId): ThreadInputQueue["items"][number] {
     return {
       canCancel: true,
+      canEdit: true,
       canMove: true,
       canSteer: true,
+      lease: null,
       input: {
         teamRequestId: null,
         teamSource: null,
@@ -1470,8 +1464,10 @@ describe("a conversation's waiting messages", () => {
         ),
       queued: (): ThreadInputQueue["items"][number] => ({
         canCancel: true,
+        canEdit: true,
         canMove: true,
         canSteer: false,
+        lease: null,
         input,
         message,
       }),
@@ -1514,6 +1510,50 @@ describe("a conversation's waiting messages", () => {
     { replyMessageId: replyId, status: "completed" },
     { runId: firstRun },
   );
+
+  it("redraws an edited waiting message where it stands, and the Run that takes it keeps the edit", () => {
+    const first = sent("Check Thursday", "1");
+    const second = sent("And Friday?", "2");
+    const edit = { editedAt: now, ownerEdited: true as const, revision: 1 };
+    const content = [{ text: "Check Thursday afternoon", type: "text" as const }];
+    const updated = event(
+      "message.updated",
+      { edit, input: first.input, message: { ...first.message, content } },
+      { runId: null },
+    );
+    const entries = fold([first.created, second.created, updated]);
+    expect(entries.map((entry) => entry.id)).toEqual([first.id, second.id]);
+    expect(entries[0]).toMatchObject({ body: "Check Thursday afternoon", edit, runId: null });
+    // An edit never draws a message this page does not hold.
+    expect(fold([updated])).toEqual([]);
+    // A gated ask waits like any queued message; it has not failed to send.
+    const gated = foldTranscriptEvent(
+      entries,
+      event(
+        "thread-input.updated",
+        { input: { ...second.input, state: "awaiting-approval" } },
+        { runId: null },
+      ),
+    );
+    expect(gated.find((entry) => entry.id === second.id)).not.toHaveProperty("delivery");
+    const placed = foldTranscriptEvent(
+      entries,
+      event(
+        "message.placed",
+        {
+          edit,
+          message: {
+            ...first.message,
+            content,
+            runId: firstRun,
+            sequence: SequenceSchema.parse("3"),
+          },
+        },
+        { runId: firstRun },
+      ),
+    );
+    expect(placed.at(-1)).toMatchObject({ edit, id: first.id, runId: firstRun });
+  });
 
   it("draws a person's waiting message as a sent bubble after everything else, once", () => {
     const followUp = sent("And Friday?", "2");
@@ -1872,19 +1912,12 @@ it("keeps addressed publication separate from a live final reply across page mer
 describe("durable place markers", () => {
   it("keeps point markers in order and deduplicates replay and overlapping history pages", () => {
     const data = {
-      place: {
-        kind: "browser" as const,
-        sessionId: BrowserSessionIdSchema.parse("bsn_11111111-1111-4111-8111-111111111111"),
-        surfaceId: BrowserSurfaceIdSchema.parse("tab-1"),
-      },
+      tabId: BrowserSurfaceIdSchema.parse("tab-1"),
       title: "Page",
       site: "https://example.com",
     };
     const a = event("place.entered", data);
-    const b = event("place.entered", {
-      ...data,
-      place: { ...data.place, surfaceId: BrowserSurfaceIdSchema.parse("tab-2") },
-    });
+    const b = event("place.entered", { ...data, tabId: BrowserSurfaceIdSchema.parse("tab-2") });
     const c = event("place.entered", data);
     const entries = fold([a, b, c]);
     expect(entries.map(({ id }) => id)).toEqual([a, b, c].map(({ eventId }) => `place:${eventId}`));
@@ -1905,15 +1938,11 @@ describe("a Chrome sign-in's receipt", () => {
       status: "fulfilled",
     } as Extract<Request, { status: "fulfilled" }>);
 
-  it("says what Passwords lacks only when it ended with Passwords able to help", () => {
-    expect(ended({ outcome: "not-signed-in", passwords: "no-login" }).passwordsOffer).toEqual({
-      need: "no-login",
-      site,
-    });
-    expect(ended({ outcome: "not-signed-in" }).passwordsOffer).toBeUndefined();
-    expect(
-      ended({ outcome: "applied", profileName: null, sourceName: "Work" }).passwordsOffer,
-    ).toBeUndefined();
+  it("says what reached the browser, never that the site accepted it", () => {
+    expect(ended({ outcome: "not-signed-in" }).outcome).toBe("Chrome not signed in");
+    expect(ended({ outcome: "applied", profileName: null, sourceName: "Work" }).outcome).toBe(
+      "Copied Chrome sign-in for brex.com",
+    );
   });
 });
 
@@ -1989,7 +2018,7 @@ it("projects history without changing stored output and keeps whole live output 
   const { previewToolOutput } = await import("@opensteer/core");
   const text = `Looked at Notes\nObservation a of Notes — 10 elements. Screenshot a\n${"🙂".repeat(4000)}`;
   const completed = event("tool.completed", { callId: "lazy", isError: false, output: { text } });
-  const projected = previewToolOutput(completed);
+  const projected = previewToolOutput(completed) as AgentEvent;
   expect(completed.data.output.text).toBe(text);
   expect(projected.type === "tool.completed" && projected.data.outputPreview).toEqual({
     bytes: new TextEncoder().encode(text).byteLength,
@@ -2010,3 +2039,56 @@ it("projects history without changing stored output and keeps whole live output 
     outputPreview: { cut: true },
   });
 });
+
+it("folds native compaction activity into the Run and preserves it through completion", () => {
+  const entries = fold([
+    event("run.compaction", { status: "running", reason: "automatic" }),
+    event("run.compaction", { status: "created", reason: "automatic" }),
+    event("run.completed", { status: "completed", replyMessageId: null }),
+  ]);
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({
+    kind: "run",
+    status: "completed",
+    compaction: { status: "created", reason: "automatic" },
+  });
+});
+
+it.each(["completed", "failed", "interrupted"] as const)(
+  "folds maintenance into one %s marker",
+  (status) => {
+    const maintenance = {
+      kind: "claude-compaction",
+      reason: "idle",
+      sourceRunId: createId("run"),
+      providerSessionId: createId("providerSession"),
+    } as const;
+    const entries = fold([
+      event("run.queued", {
+        run: { id: runId, threadId, createdAt: now, runOrdinal: 1, status: "queued", maintenance },
+      }),
+      event("run.status", { status: "running" }),
+      ...(status === "completed"
+        ? [event("run.completed", { status: "completed", replyMessageId: null })]
+        : status === "interrupted"
+          ? [event("run.interrupted", { status: "interrupted" })]
+          : [
+              event("run.failed", {
+                status: "failed",
+                code: "test",
+                message: "Failed",
+                retryable: false,
+              }),
+            ]),
+    ]);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: "run",
+      compaction: {
+        reason: "idle",
+        status:
+          status === "completed" ? "created" : status === "interrupted" ? "stopped" : "failed",
+      },
+    });
+  },
+);

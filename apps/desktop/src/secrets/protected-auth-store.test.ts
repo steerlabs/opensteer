@@ -2,6 +2,7 @@ import { lstat, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
+import { z } from "zod";
 import { afterEach, describe, expect, it } from "vitest";
 import { HostCredentialSchema, ProtectedAuthStateSchema } from "@opensteer/client/auth";
 import {
@@ -18,6 +19,32 @@ afterEach(async () => {
 });
 
 describe("DesktopProtectedAuthStore", () => {
+  it("writes credentials readable by the origin/main strict version-two schema", async () => {
+    const directory = await temporaryDirectory();
+    const cryptography = fakeCryptography();
+    const store = new DesktopProtectedAuthStore({ cryptography, dataDirectory: directory });
+    const host = { ...hostCredential(), accountIdentity: null };
+    await store.setAccount(accountCredential());
+    await store.setHost(host);
+    await store.setTeamSignOutSuppression(host.deploymentId, true);
+    const envelope = JSON.parse(await readFile(store.filePath, "utf8"));
+    const plaintext = await cryptography.decryptStringAsync(
+      Buffer.from(envelope.ciphertext, "base64"),
+    );
+    // origin/main's schema: strict at both the state and credential levels.
+    const previous = z.strictObject({
+      account: ProtectedAuthStateSchema.shape.account,
+      hosts: z.array(HostCredentialSchema.omit({ accountIdentity: true })).max(100),
+      schemaVersion: z.literal(2),
+    });
+    expect(previous.parse(JSON.parse(plaintext.result)).account).not.toBeNull();
+    expect((await store.load()).hosts).toEqual([host]);
+    await rm(`${store.filePath}.teams`);
+    const upgraded = await store.load();
+    expect(upgraded.account).not.toBeNull();
+    expect(upgraded.hosts[0]?.accountIdentity).toBeUndefined();
+  });
+
   it("persists only OS-encrypted Account and per-Deployment credentials", async () => {
     const directory = await temporaryDirectory();
     const cryptography = fakeCryptography();

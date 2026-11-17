@@ -2,11 +2,13 @@ import {
   isPlaceContentPart,
   placeContentLabel,
   requestTitleText,
+  formatReferenceLink,
   type AssignmentSummary,
   type Message,
   type Request,
+  type TeamSource,
 } from "@opensteer/core";
-import type { ThreadItem } from "@opensteer/agent-tools/outputs";
+import { toolMessageAuthor, type ThreadItem } from "@opensteer/agent-tools/outputs";
 import type { AgentThreadActivityItem } from "@opensteer/database";
 
 /** With a message's other parts, this keeps one item inside the agent output limit. */
@@ -27,7 +29,12 @@ export function itemText(text: string | null, maxChars: number, offset = 0) {
   const textTruncated = next < points.length;
   return { text: value, textTruncated, nextTextOffset: textTruncated ? next : null };
 }
-export function messageItem(message: Message, maxChars: number, offset = 0): ThreadItem {
+export function messageItem(
+  message: Message,
+  maxChars: number,
+  offset = 0,
+  teamSource?: TeamSource,
+): ThreadItem {
   const text = message.content
     .map((part) =>
       part.type === "text"
@@ -40,22 +47,29 @@ export function messageItem(message: Message, maxChars: number, offset = 0): Thr
   const places = message.content.filter(isPlaceContentPart);
   return {
     itemId: message.id,
+    link: formatReferenceLink(message.id, "Message"),
     type: "message",
     status: "published",
     runId: message.runId,
-    author: message.author,
+    author: toolMessageAuthor(message.author),
     title: null,
     ...itemText(text, maxChars, offset),
     ...(places.length ? { places } : {}),
+    ...(teamSource ? { teamSource } : {}),
     createdAt: message.createdAt,
   };
 }
 type ActivityEvent = Exclude<AgentThreadActivityItem, { type: "message" }>;
 type ToolStarted = Extract<ActivityEvent, { type: "tool.started" }>;
 
-/** Their text can hold a sign-in, a card, a webhook secret or typed values. Engines spell names their own way. */
+/**
+ * Their text can hold a sign-in, a card, a webhook secret or typed values. Engines spell names their
+ * own way, and stored history keeps the names tools had when it was recorded.
+ */
 export function withheldTool(name: string): boolean {
-  return /(?:^|[_\s.:/-])(?:sign_in|use_card|trigger_write|computer)(?:$|[\s.(])/u.test(name);
+  return /(?:^|[_\s.:/-])(?:saved_login_request|chrome_cookies_request|card_request|opensteer_automation_create|opensteer_automation_update|computer_use|use_saved_login|copy_chrome_cookies|use_card|trigger_write|computer)(?:$|[\s.(])/u.test(
+    name,
+  );
 }
 
 /** What a reader may see of one event; the caller has already dropped what it may not see at all. */
@@ -112,6 +126,7 @@ export function activityItem(
       : facts.maxChars;
   return {
     itemId: event.sequence,
+    ...(facts.request ? { link: formatReferenceLink(facts.request.id, title ?? "Request") } : {}),
     type: event.type,
     status,
     runId: event.runId,
@@ -124,6 +139,7 @@ export function activityItem(
 export function taskItem(summary: AssignmentSummary, result: string | null) {
   return {
     assignmentId: summary.id,
+    link: formatReferenceLink(summary.workerThread.id, summary.workerThread.title),
     threadId: summary.workerThread.id,
     runId: summary.currentRunId,
     runStatus: summary.currentRunStatus,

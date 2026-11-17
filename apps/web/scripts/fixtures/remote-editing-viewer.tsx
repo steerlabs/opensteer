@@ -122,7 +122,8 @@ const session = client
 if (!session)
   throw new Error("Provide a ready, disposable browser session for the viewer journey.");
 const surfaceId = BrowserSurfaceIdSchema.parse(
-  query.get("surface") ?? session.browserTabs?.sessionList(session.id).ids[0],
+  query.get("surface") ??
+    [...client.getSnapshot().tabs.rows.values()].find((tab) => tab.kind === "page")?.tabId,
 );
 let customMenu = false,
   pageWrite = false;
@@ -225,7 +226,7 @@ const render = () =>
       }
       occluded={false}
       onOpenLink={(url) => {
-        void client.openBrowserTab(session.id, { url }).then(() => openedLinks.push(url));
+        void client.openTab({ kind: "page", url, guest: true }).then(() => openedLinks.push(url));
       }}
       onCommand={(command) => {
         if (mode === "mock") {

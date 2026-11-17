@@ -1,11 +1,4 @@
-import {
-  heldThread,
-  taskCanBeDone,
-  taskMark,
-  taskDoneConfirmation,
-  taskUnderWay,
-  threadMark,
-} from "@opensteer/client/host";
+import { heldThread, taskCanBeDone, taskMark, threadMark } from "@opensteer/client/host";
 import { TaskIconEditor } from "../task-icon-editor.js";
 import { ThreadTitleEditor } from "../thread-title-editor.js";
 import { useHostSelector } from "@opensteer/client/react";
@@ -370,20 +363,12 @@ function TaskActions({
   if (!stoppable && !canBeDone && onRename === null && onChangeIcon === null) return null;
   if (review) {
     return (
-      <div
-        className="conversation-menu__confirm"
-        role="group"
-        aria-label={review.action.kind === "task-done" ? "Stop and mark Done?" : `Stop ${title}?`}
-      >
-        <p className="task-stop__question">
-          {review.action.kind === "task-done" ? "Stop and mark Done?" : `Stop “${title}”?`}
-        </p>
+      <div className="conversation-menu__confirm" role="group" aria-label={`Stop ${title}?`}>
+        <p className="task-stop__question">Stop “{title}”?</p>
         <p className="task-stop__detail">
-          {review.action.kind === "task-done"
-            ? taskDoneConfirmation
-            : review.action.kind === "stop-assignment" && assignment
-              ? `It stops for good, and ${assignmentRequester(assignment, snapshot)} is told. Nothing it already did is undone.`
-              : "Its run stops now and it waits for you. Nothing it already did is undone."}
+          {review.action.kind === "stop-assignment" && assignment
+            ? `It stops for good, and ${assignmentRequester(assignment, snapshot)} is told. Nothing it already did is undone.`
+            : "Its run stops now and it waits for you. Nothing it already did is undone."}
         </p>
         <div className="task-stop__actions">
           <button autoFocus className="btn btn--small btn--ghost" onClick={dismiss} type="button">
@@ -398,7 +383,7 @@ function TaskActions({
             }}
             type="button"
           >
-            {review.action.kind === "task-done" ? "Mark Done" : "Stop task"}
+            Stop task
           </button>
         </div>
       </div>
@@ -463,12 +448,8 @@ function TaskActions({
         <button
           className="picker__row"
           onClick={() => {
-            if (!isDone && held !== null && taskUnderWay(held))
-              ask({ kind: "task-done", threadId, done: true });
-            else {
-              onDone();
-              setTaskDone(threadId, !isDone);
-            }
+            onDone();
+            setTaskDone(threadId, !isDone);
           }}
           type="button"
         >

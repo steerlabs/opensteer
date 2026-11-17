@@ -1,3 +1,8 @@
+import { createBrowserSessionId, BrowserSurfaceIdSchema } from "@opensteer/protocol";
+import {
+  BrowserActionRequestSchema,
+  BrowserActionResponseSchema,
+} from "@opensteer/protocol/browser-actions";
 import { SessionCdpRouter, type CdpParameters } from "@opensteer/browser-core";
 import {
   BrowserController,
@@ -54,10 +59,10 @@ interface CommandTrace {
 }
 type Kit = Awaited<ReturnType<typeof startActionJourney>>;
 
-async function startActionJourney(id: string, report: Record<string, unknown>) {
+export async function startActionJourney(id: string, report: Record<string, unknown>) {
   const site = await serveHarnessActionsFixture();
   cleanup.push(() => site.close());
-  const claims = validClaims();
+  const claims = { ...validClaims(), sessionId: createBrowserSessionId() };
   const browser = await new TestChromiumLauncher({
     executablePath,
     chromiumSandbox: false,
@@ -186,14 +191,14 @@ async function startActionJourney(id: string, report: Record<string, unknown>) {
   ) => {
     const record: Record<string, unknown> = {
       program,
-      args: ["--session", claims.sessionId, ...(options.inventory ? [] : ["--tab", targetId])],
+      args: options.inventory ? [] : ["--tab", options.tab ?? surfaceId],
     };
     runs.push(record);
     try {
       const result = await runHarness(
         bridge.url,
         claims.sessionId,
-        options.inventory ? undefined : (options.tab ?? targetId),
+        options.inventory ? undefined : (options.tab ?? surfaceId),
         programAssertions + program,
         {
           timeoutMs: options.timeoutMs ?? 15_000,
@@ -365,4 +370,169 @@ export function expectGroupsReleasedBeforeDetach(kit: Kit): string[] {
     expect(releases[0]!.finished!, key).toBeLessThanOrEqual(detach!.at);
   }
   return [...groups.keys()];
+}
+
+/** Two real Chromium browsers plus `phones` fake phone browsers, each its own session. */
+export async function startTabJourney({ phones: phoneCount = 1 } = {}) {
+  const first = await startActionJourney("20", {});
+  const second = await startActionJourney("20", {});
+  const kits = [first, second];
+  const calls: Array<{ path: string; input: Record<string, unknown> }> = [];
+  const opened: string[] = [];
+  const closed = new Set<string>();
+  const phones = Array.from({ length: phoneCount }, () => {
+    const id = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
+    return {
+      id,
+      session: createBrowserSessionId(),
+      binding: {
+        surfaceId: id,
+        documentId: "phone-doc",
+        geometryRevision: 1,
+        title: "Phone",
+        url: "https://phone.test/",
+        state: "live",
+      },
+    };
+  });
+  const phoneId = phones[0]!.id;
+  // A page read on the first phone waits here while held.
+  let heldQuery: { entered: () => void; released: Promise<void> } | null = null;
+  const bridge = await startHarnessBridge(
+    async (method, parameters, sessionId, browserSessionId) => {
+      const kit = kits.find((candidate) => candidate.claims.sessionId === browserSessionId);
+      if (!kit) throw new Error("Wrong browser binding");
+      await kit.hooks.before?.(method, parameters, sessionId);
+      const result = await sendAsAgent(
+        (message) => kit.controller.handle(message),
+        kit.sink.messages,
+        method,
+        parameters,
+        sessionId,
+      );
+      await kit.hooks.after?.(method, parameters);
+      return result;
+    },
+    undefined,
+    {
+      agent: async (path, input) => {
+        calls.push({ path, input });
+        if (path !== "pages/bind" || typeof input.tabId !== "string" || closed.has(input.tabId))
+          throw new Error("Tab unavailable");
+        const phone = phones.find((candidate) => candidate.id === input.tabId);
+        if (phone)
+          return { tabId: phone.id, sessionId: phone.session, backend: "actions", reloaded: false };
+        const kit = kits.find((candidate) =>
+          candidate.ledger.snapshot().some((tab) => tab.id === input.tabId),
+        );
+        if (!kit) throw new Error("Tab unavailable");
+        return {
+          tabId: input.tabId,
+          sessionId: kit.claims.sessionId,
+          backend: "cdp",
+          reloaded: false,
+        };
+      },
+      tools: async (request) => {
+        const name = String(request.name);
+        const input = request.input as Record<string, unknown>;
+        calls.push({ path: name, input });
+        const tabs = () =>
+          [
+            ...kits.flatMap((kit) =>
+              kit.ledger.snapshot().map((tab) => ({
+                tabId: tab.id,
+                title: tab.title,
+                kind: "page",
+                state: tab.state === "suspended" ? "asleep" : "open",
+              })),
+            ),
+            ...phones.map((phone) => ({
+              tabId: phone.id,
+              title: "Phone",
+              kind: "page",
+              state: "open",
+            })),
+          ].filter((tab) => !closed.has(tab.tabId));
+        if (name === "tab_list")
+          return {
+            tabs: tabs().filter((tab) => !input.query || tab.title.includes(String(input.query))),
+            groups: [],
+            nextCursor: null,
+          };
+        if (name === "tab_open") {
+          const target = input.target as { url: string; guest?: boolean };
+          const kit = target.guest ? first : second;
+          const created = await kit.ledger.openSurface();
+          if (target.url !== "about:blank")
+            await kit.ledger.binding(created.id)!.cdp.send("Page.navigate", { url: target.url });
+          opened.push(created.id);
+          return { tab: tabs().find((tab) => tab.tabId === created.id) };
+        }
+        if (name === "tab_close") {
+          const tabIds = input.tabIds as string[];
+          for (const id of tabIds) closed.add(id);
+          return { closed: tabIds, failed: [] };
+        }
+        if (name === "tab_organize")
+          return {
+            tabs: tabs().filter((tab) => (input.tabIds as string[]).includes(tab.tabId)),
+            groups: [],
+          };
+        throw new Error(`Unknown tool ${name}`);
+      },
+      actions: async (raw) => {
+        const message = BrowserActionRequestSchema.parse(raw);
+        const type = message.action.type;
+        const phone = phones.find((candidate) => candidate.session === message.sessionId);
+        if (!phone) throw new Error("Wrong phone binding");
+        const phoneBinding = phone.binding;
+        if (type === "dom.query" && phone === phones[0] && heldQuery) {
+          heldQuery.entered();
+          await heldQuery.released;
+        }
+        const response = BrowserActionResponseSchema.parse({
+          id: message.id,
+          result:
+            type === "session.tabs"
+              ? { type, tabs: [phoneBinding], nextCursor: null }
+              : type === "surface.resume"
+                ? { type, binding: phoneBinding, dialog: null, reloaded: false }
+                : type === "page.info"
+                  ? {
+                      type,
+                      binding: phoneBinding,
+                      loading: false,
+                      navigationFailed: false,
+                      sizedByAgent: false,
+                      dialog: null,
+                    }
+                  : type === "dom.query"
+                    ? { type, value: "Phone text" }
+                    : { type, outcome: "acted", trusted: false },
+        });
+        if (!("result" in response)) throw new Error("Action fixture returned an error");
+        return response.result;
+      },
+    },
+  );
+  cleanup.push(() => bridge.close());
+  return {
+    first,
+    second,
+    calls,
+    opened,
+    closed,
+    phoneId,
+    phoneIds: phones.map((phone) => phone.id),
+    /** Holds the first phone's next page reads until `release`. */
+    holdPhoneQuery: () => {
+      const entered = Promise.withResolvers<void>();
+      const released = Promise.withResolvers<void>();
+      heldQuery = { entered: () => entered.resolve(), released: released.promise };
+      return { entered: entered.promise, release: () => released.resolve() };
+    },
+    run: (program: string, tab?: string) =>
+      runHarness(bridge.url, first.claims.sessionId, tab, programAssertions + program),
+  };
 }

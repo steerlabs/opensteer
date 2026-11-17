@@ -1,23 +1,47 @@
 import { expect, it } from "vitest";
 import { CompiledQuery, sql, type CompiledQuery as Query } from "kysely";
 import { teamMessageViews } from "../packages/database/src/team-chat-store.js";
-import { startTeamSystem } from "./team-system.test-support.js";
-import { perfChannels, perfHistory } from "./team-performance.test-support.js";
+import { createId } from "../packages/core/src/index.js";
+import { createTeamFixture } from "../packages/database/src/team-fixture.test-support.js";
 
 it("hydrates a page of reply summaries without scanning unrelated history", async () => {
-  const team = await startTeamSystem();
+  const team = await createTeamFixture();
   try {
-    const owner = await team.setup(),
-      [channel] = await perfChannels(team, owner, 1);
-    await perfHistory(team, owner, [channel!], 100000);
+    const owner = team.userId,
+      channel = createId("teamChannel");
+    await team.database
+      .insertInto("teamChannels")
+      .values({
+        id: channel,
+        kind: "public",
+        name: "history",
+        normalizedName: "history",
+        createdBy: owner,
+        peopleOnly: false,
+        instructionsMarkdown: "",
+      })
+      .execute();
+    // The seed already knows the channel ordinals; avoid 120,000 trigger lookups.
+    await sql`insert into team_messages(channel_id,author_user_id,author_kind,client_message_id,body_markdown,plain_text,change_seq,created_seq)
+      select ${channel},${owner},'human',gen_random_uuid(),'root','root',n,n from generate_series(1,100000) n`.execute(
+      team.database,
+    );
     const root = await team.database
       .selectFrom("teamMessages")
       .select("id")
       .orderBy("id")
+      .limit(1)
       .executeTakeFirstOrThrow();
-    await sql`insert into team_messages(channel_id,thread_root_id,author_user_id,author_kind,client_message_id,body_markdown,plain_text,change_seq) select ${channel},${root.id},${owner},'human',gen_random_uuid(),'reply','reply',100000+n from generate_series(1,20000) n`.execute(
+    await sql`insert into team_messages(channel_id,thread_root_id,author_user_id,author_kind,client_message_id,body_markdown,plain_text,change_seq,created_seq) select ${channel},${root.id},${owner},'human',gen_random_uuid(),'reply','reply',100000+n,100000+n from generate_series(1,20000) n`.execute(
       team.database,
     );
+    expect(
+      (
+        await sql<{ count: number }>`select count(*)::int as count from team_messages`.execute(
+          team.database,
+        )
+      ).rows[0]!.count,
+    ).toBe(120000);
     await sql`analyze team_messages`.execute(team.database);
     const rows = await team.database
       .selectFrom("teamMessages")

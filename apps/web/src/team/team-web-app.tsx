@@ -1,20 +1,30 @@
 import { useEffect, useMemo, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useParams } from "react-router";
-import { parseTeamPageLink, teamPageAppLink, type TeamPageLink } from "@opensteer/core";
+import {
+  parseTeamPageLink,
+  teamPageAppLink,
+  teamPageUrl,
+  type TeamPageLink,
+} from "@opensteer/core";
 import { createHttpHostApiClient } from "@opensteer/client/host";
 import {
+  bootstrapMembershipRefused,
   teamApiVersion,
   teamApiVersionHeader,
   type TeamBootstrapSchema,
 } from "@opensteer/protocol";
 import type { z } from "zod";
+import { startHostOidcSignIn } from "../account/host-oidc.js";
+import { NativeOAuthConsent, useNativeOAuthQuery } from "../account/native-oauth-consent.js";
+import { consumeOAuthErrorQuery } from "../account/auth-error-query.js";
 import { Icon } from "../components/icon.js";
 import { ErrorNotice, OnboardingCard } from "../components/onboarding-card.js";
 import { ToastProvider } from "../components/toast.js";
 import { useWorkspaceNavigation } from "../components/workspace/navigation.js";
 import { WorkspaceProvider } from "../components/workspace/workspace-context.js";
 import { TeamsProvider, createTeamWebAttachment, type TeamAttachment } from "./team-attachments.js";
-import { channelPath, teamPath } from "./team-paths.js";
+import { channelPath, teamPath, teamPagePath } from "./team-paths.js";
+import { TeamPaneGate } from "./team-pane-gate.js";
 import { TeamRoutes } from "./team-routes.js";
 import { TeamDialogsProvider } from "./hosted-teams.js";
 import { TeamSettingsRoute } from "./team-settings-route.js";
@@ -25,14 +35,23 @@ type Entry =
   | { readonly kind: "loading" }
   | { readonly kind: "signed-out"; readonly setUp: boolean }
   | { readonly kind: "ready"; readonly bootstrap: TeamBootstrap }
-  | { readonly kind: "failed"; readonly message: string };
+  | { readonly kind: "failed"; readonly message: string }
+  | { readonly kind: "not-member" };
 
 const versionHeaders = { [teamApiVersionHeader]: String(teamApiVersion) };
 
-/** The channel or message a shared link on this origin names, if the address is one. */
-function sharedLink(): TeamPageLink | null {
-  const link = parseTeamPageLink(window.location.href);
-  return link && link.target.kind !== "invite" ? link : null;
+const teamPageReturnKey = "opensteer.team-page-return";
+
+/** The requested team page, including a same-tab continuation after signing in at the root. */
+function sharedLink(): { link: TeamPageLink | null; continued: boolean } {
+  const current = parseTeamPageLink(window.location.href);
+  if (current && current.target.kind !== "invite") return { link: current, continued: false };
+  const saved =
+    window.location.pathname === "/" ? window.sessionStorage.getItem(teamPageReturnKey) : null;
+  const link = saved === null ? null : parseTeamPageLink(saved);
+  return link && link.origin === window.location.origin && link.target.kind !== "invite"
+    ? { link, continued: true }
+    : { link: null, continued: false };
 }
 
 async function readEntry(): Promise<Entry> {
@@ -47,6 +66,7 @@ async function readEntry(): Promise<Entry> {
   });
   const result = await rpc["team.bootstrap.get"]({});
   if (result.ok) return { kind: "ready", bootstrap: result.data };
+  if (bootstrapMembershipRefused(result.error)) return { kind: "not-member" };
   if (!signedOut) return { kind: "failed", message: result.error.message };
   const state = await fetch("/v1/team/setup/state", { headers: versionHeaders });
   const setUp = state.ok && ((await state.json()) as { complete?: unknown }).complete === true;
@@ -59,14 +79,48 @@ async function readEntry(): Promise<Entry> {
  * the team.
  */
 export function TeamWebApp() {
+  const nativeOAuthQuery = useNativeOAuthQuery();
+  const [authorizationError] = useState(() =>
+    consumeOAuthErrorQuery(window.location, (url) => window.history.replaceState(null, "", url)),
+  );
+  const rpc = useMemo(
+    () =>
+      createHttpHostApiClient({
+        baseUrl: new URL(window.location.origin),
+        fetch: globalThis.fetch.bind(globalThis),
+        kind: "team",
+        onAuthenticationRequired: () => undefined,
+      }),
+    [],
+  );
   const [entry, setEntry] = useState<Entry>({ kind: "loading" });
   useEffect(() => {
     void readEntry()
       .then(setEntry)
       .catch(() => setEntry({ kind: "failed", message: "The team server can’t be reached." }));
   }, []);
-  const [link] = useState(sharedLink);
-  const [continued, setContinued] = useState(false);
+  const [page] = useState(sharedLink);
+  const { link } = page;
+  const [continued, setContinued] = useState(page.continued);
+  useEffect(() => {
+    if (page.continued) window.sessionStorage.removeItem(teamPageReturnKey);
+  }, [page]);
+  if (authorizationError)
+    return (
+      <OnboardingCard
+        title="Sign-in didn’t finish"
+        description="If you started in the Opensteer app, start sign-in again there."
+      >
+        <ErrorNotice message={authorizationError.description ?? authorizationError.error} />
+        <div className="onboarding__actions">
+          <button className="btn" onClick={() => window.location.assign("/")} type="button">
+            Sign in again
+          </button>
+        </div>
+      </OnboardingCard>
+    );
+  if (entry.kind === "ready" && nativeOAuthQuery)
+    return <NativeOAuthConsent oauthQuery={nativeOAuthQuery} rpc={rpc} />;
   if (entry.kind === "loading") return null;
   if (link && !continued)
     return (
@@ -76,7 +130,21 @@ export function TeamWebApp() {
         signedIn={entry.kind === "ready"}
       />
     );
-  if (entry.kind === "signed-out") return <TeamSignIn setUp={entry.setUp} />;
+  if (entry.kind === "signed-out")
+    return <TeamSignIn setUp={entry.setUp} oauthQuery={nativeOAuthQuery} rpc={rpc} page={link} />;
+  if (entry.kind === "not-member")
+    return (
+      <OnboardingCard
+        title="You aren’t in this team"
+        description="Ask a team member for a new invite, then open it here."
+      >
+        <div className="onboarding__actions">
+          <button className="btn" onClick={() => window.location.reload()} type="button">
+            Try again
+          </button>
+        </div>
+      </OnboardingCard>
+    );
   if (entry.kind === "failed")
     return (
       <OnboardingCard title="This team can’t open">
@@ -103,7 +171,15 @@ function SharedLinkLanding({
   return (
     <OnboardingCard
       description="Open it in the Opensteer app, where your own agent can help with it, or read it here."
-      title={link.target.kind === "message" ? "A message from your team" : "A channel in your team"}
+      title={
+        link.target.kind === "message"
+          ? "A message from your team"
+          : link.target.kind === "thread"
+            ? "A thread in your team"
+            : link.target.kind === "knowledge-topic" || link.target.kind === "knowledge-note"
+              ? "Knowledge from your team"
+              : "A channel in your team"
+      }
     >
       <div className="onboarding__actions">
         <a className="btn btn--primary" href={teamPageAppLink(link, "desktop")}>
@@ -117,7 +193,17 @@ function SharedLinkLanding({
   );
 }
 
-function TeamSignIn({ setUp }: { readonly setUp: boolean }) {
+function TeamSignIn({
+  page,
+  setUp,
+  oauthQuery,
+  rpc,
+}: {
+  readonly page: TeamPageLink | null;
+  readonly setUp: boolean;
+  readonly oauthQuery: string | null;
+  readonly rpc: ReturnType<typeof createHttpHostApiClient>;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (!setUp)
@@ -131,19 +217,21 @@ function TeamSignIn({ setUp }: { readonly setUp: boolean }) {
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch("/v1/team/setup/sign-in", {
-        body: "{}",
-        headers: { ...versionHeaders, "content-type": "application/json" },
-        method: "POST",
-        redirect: "error",
+      if (page) window.sessionStorage.setItem(teamPageReturnKey, teamPageUrl(page));
+      await startHostOidcSignIn({
+        desktopBridge: null,
+        deploymentId: null,
+        hostClient: { rpc },
+        navigate: (url) => window.location.assign(url),
+        oauthQuery,
+        providerId: "opensteer-account",
       });
-      if (!response.ok) throw new Error("Sign-in couldn’t start.");
-      const { redirectUrl } = (await response.json()) as { redirectUrl?: unknown };
-      if (typeof redirectUrl !== "string") throw new Error("Sign-in couldn’t start.");
-      window.location.assign(redirectUrl);
     } catch (failure) {
+      window.sessionStorage.removeItem(teamPageReturnKey);
       setBusy(false);
-      setError(failure instanceof Error ? failure.message : "Sign-in couldn’t start.");
+      setError(
+        `${failure instanceof Error ? failure.message : "Sign-in couldn’t start."}${oauthQuery ? " Close this browser and start sign-in again in the Opensteer app." : ""}`,
+      );
     }
   };
   return (
@@ -184,9 +272,7 @@ function TeamWebSession({
   const first = bootstrap.sidebar.channels[0]?.channel.id ?? null;
   const landing =
     link && link.target.kind !== "invite"
-      ? channelPath(bootstrap.teamId, link.target.channelId, {
-          messageId: link.target.kind === "message" ? link.target.messageId : null,
-        })
+      ? teamPagePath(bootstrap.teamId, link.target)
       : first
         ? channelPath(bootstrap.teamId, first)
         : teamPath(bootstrap.teamId, "browse");
@@ -219,17 +305,7 @@ function TeamWebShell({
     team.client!.subscribe,
     () => team.client!.getSnapshot().ended,
   );
-  if (ended)
-    return (
-      <OnboardingCard
-        title={ended === "removed" ? `You’re no longer in ${team.name}` : "Sign in to your team"}
-        description="Your saved team content has been cleared from this browser."
-      >
-        <button className="btn" onClick={() => window.location.reload()} type="button">
-          Sign in
-        </button>
-      </OnboardingCard>
-    );
+  if (ended) return <TeamPaneGate teamId={team.teamId}>{null}</TeamPaneGate>;
   const close = () => setDrawerOpen(false);
   return (
     <WorkspaceProvider attention={0} nav={nav} openDrawer={() => setDrawerOpen(true)}>

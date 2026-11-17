@@ -6,7 +6,7 @@ import {
   testReadyHarnessCatalog,
   testRunnerDescriptor,
 } from "@opensteer/database/test-support/store";
-import { readPersonalResources } from "../browser/personal-snapshot.js";
+import { readEmptyPersonalResources } from "@opensteer/database/test-support/store";
 import {
   AgentEventSchema,
   createId,
@@ -67,7 +67,7 @@ integration.sequential("Thread title lifecycle", () => {
     maxConnections: 6,
   });
   const store = new OpensteerStore(database, {
-    readPersonalResources: (input) => readPersonalResources(input, () => []),
+    readPersonalResources: readEmptyPersonalResources,
   });
   const published: AgentEvent[] = [];
   const commands = new CommandService({
@@ -586,7 +586,7 @@ integration.sequential("Thread title lifecycle", () => {
         name: "Title automation",
         program: {
           language: "javascript",
-          toolContractVersion: 3,
+          toolContractVersion: 4,
           source: "export default async () => null",
         },
         source:
@@ -609,7 +609,7 @@ integration.sequential("Thread title lifecycle", () => {
         iss: "opensteer-host" as const,
         jti: randomUUID(),
         environmentId: f.environmentId,
-        toolContractVersion: 3 as const,
+        toolContractVersion: 4 as const,
         triggerId: created.trigger.id,
       };
       let handle: (value: unknown) => ReturnType<TriggerToolsTestClient["handle"]>;
@@ -691,7 +691,7 @@ integration.sequential("Thread title lifecycle", () => {
               }
             : {}),
           type: "thread.delegate",
-          task,
+          message: task,
           ...(title === undefined
             ? {}
             : {
@@ -720,13 +720,13 @@ integration.sequential("Thread title lifecycle", () => {
         expect(await handle(retry)).toMatchObject({
           type: "thread.delegate.result",
           result: {
-            threadId: worker.id,
-            assignmentId: response.result.assignmentId,
+            taskId: worker.id,
+            delegationId: response.result.delegationId,
           },
         });
         for (const changed of [
           {
-            task: task + " changed",
+            message: task + " changed",
           },
           {
             title: "Changed explicit name",

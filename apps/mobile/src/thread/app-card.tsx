@@ -1,14 +1,17 @@
 import { contactSupport } from "../report-mail.js";
+import type { AppEntry, HostClient } from "@opensteer/client/host";
+import { AppIdSchema, type TabId } from "@opensteer/core";
 import {
-  isAppTabOpen,
-  type AppEntry,
-  type HostClient,
-  type HostSnapshot,
-} from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
-import { memo, useCallback, useContext, useState, type ReactNode } from "react";
+  memo,
+  useCallback,
+  useContext,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { opensteerAppGlyph } from "../browser/agent-surface.js";
+import { useOperation } from "../tabs/use-tabs.js";
 import { color, radius, space } from "../theme.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
@@ -18,8 +21,9 @@ import { TranscriptAppTabsContext } from "./surface-chips.js";
 
 /**
  * A published app in its conversation. It runs here until it is opened as a
- * tab; while the tab is open the tab is its one live copy, and this says where
- * it went. Closing the tab brings it back.
+ * tab; while its tab is open the tab is its one live copy, and this says
+ * where it went. Closing the tab brings it back. Publishing never opens a
+ * tab: only Open does.
  */
 export const AppCard = memo(function AppCard({ entry }: { readonly entry: AppEntry }): ReactNode {
   const client = useContext(TranscriptHostClientContext);
@@ -31,28 +35,36 @@ function Card(props: { readonly client: HostClient; readonly entry: AppEntry }):
   const { appId } = entry;
   const tabs = useContext(TranscriptAppTabsContext);
   const [title, setTitle] = useState(entry.title);
-  const [failure, setFailure] = useState<string | null>(null);
-  const tabOpen = useHostSelector(
-    client,
-    useCallback((snapshot: HostSnapshot) => isAppTabOpen(snapshot, appId), [appId]),
+  const operation = useOperation();
+  const model = client.getSnapshot().tabs;
+  // The app's one tab, while it is in the list: only the list's membership changes it.
+  const readTab = useCallback((): TabId | null => {
+    for (const tab of model.rows.values())
+      if (tab.kind === "app" && tab.appId === appId) return tab.tabId;
+    return null;
+  }, [appId, model]);
+  const subscribe = useCallback(
+    (listener: () => void) => model.subscribeStructure(listener),
+    [model],
   );
-  const open = () => {
-    setFailure(null);
-    // Its first step is local, so the tab exists before the page below looks for it.
-    const opening = client.openAppTab(appId);
-    tabs?.open(appId);
-    void opening.catch((error: unknown) => {
-      tabs?.leave(appId);
-      setFailure(error instanceof Error ? error.message : "Try again in a moment.");
-    });
-  };
-  if (tabOpen)
+  const tabId = useSyncExternalStore(subscribe, readTab, readTab);
+  const open = () =>
+    void operation.run(
+      async () => {
+        const parsed = AppIdSchema.safeParse(appId);
+        if (!parsed.success) throw new Error("This app can no longer be opened.");
+        return (await client.openTab({ appId: parsed.data, kind: "app" })).tabId;
+      },
+      "Try again in a moment.",
+      (opened) => tabs?.show(opened),
+    );
+  if (tabId !== null)
     return (
       <Pressable
         accessibilityHint="Goes to this app’s tab"
         accessibilityLabel={`${title}, open in Tabs`}
         accessibilityRole="button"
-        onPress={() => tabs?.open(appId)}
+        onPress={() => tabs?.show(tabId)}
         style={({ pressed }) => [styles.card, styles.tabRow, pressed && styles.pressed]}
       >
         <View style={styles.glyph}>
@@ -84,17 +96,21 @@ function Card(props: { readonly client: HostClient; readonly entry: AppEntry }):
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Open ${title}`}
+          accessibilityState={{ busy: operation.busy, disabled: operation.busy }}
+          disabled={operation.busy}
           onPress={open}
           hitSlop={8}
         >
-          <AppText>Open</AppText>
+          <AppText tone={operation.busy ? "muted" : "default"}>
+            {operation.busy ? "Opening…" : "Open"}
+          </AppText>
         </Pressable>
       </View>
-      {failure === null ? null : (
+      {operation.failure === null ? null : (
         <View style={styles.failure}>
           <Notice
             action={{ label: "Try again", onPress: open }}
-            detail={failure}
+            detail={operation.failure}
             title="This app could not open as a tab"
           />
         </View>

@@ -20,7 +20,7 @@ describe("teamMessage", () => {
     ).toBe("@tim-agent check order 4411");
   });
 
-  it("names people and other people's agents as references, never asking them", () => {
+  it("resolves people and agent handles for the Host", () => {
     const message = teamMessage(
       { body: "@maya can @maya-agent look? cc @nobody", toMyAgent: false },
       me,

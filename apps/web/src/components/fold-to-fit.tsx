@@ -1,6 +1,6 @@
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import { useLayoutEffect, useRef, type ReactNode } from "react";
-import { textWidth } from "./text-width.js";
+import { canvasFont, textWidth } from "./text-width.js";
 
 /** The field moves above the toolbar before its controls give up their labels. */
 export const composerFold = {
@@ -148,7 +148,7 @@ function textRoom(part: HTMLElement): number | null {
   if (!text) return null;
   if (text.includes("\n")) return wholeLine;
   const style = getComputedStyle(part);
-  const width = textWidth(style.font, text);
+  const width = textWidth(canvasFont(style), text);
   if (width === null) return null;
   const edges = [
     style.paddingLeft,

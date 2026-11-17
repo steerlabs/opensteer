@@ -1,4 +1,4 @@
-export type AgentId = "support" | "engineer" | "sales";
+export type AgentId = "billing" | "engineer" | "legal";
 
 export interface Engine {
   readonly name: string;
@@ -28,12 +28,12 @@ export interface Agent {
 }
 
 export const AGENTS: Record<AgentId, Agent> = {
-  support: { id: "support", name: "Support", color: "#e6beb0", glyph: "t-support", engine: 0 },
+  billing: { id: "billing", name: "Billing", color: "#e6beb0", glyph: "t-billing", engine: 0 },
   engineer: { id: "engineer", name: "Engineer", color: "#71c6a5", glyph: "t-engineer", engine: 1 },
-  sales: { id: "sales", name: "Sales", color: "#84b5e0", glyph: "t-sales", engine: 3 },
+  legal: { id: "legal", name: "Legal", color: "#84b5e0", glyph: "t-legal", engine: 3 },
 };
 
-export const ORDER: readonly AgentId[] = ["support", "engineer", "sales"];
+export const ORDER: readonly AgentId[] = ["billing", "engineer", "legal"];
 
 export function engineOf(id: AgentId): Engine {
   const engine = ENGINES[AGENTS[id].engine];

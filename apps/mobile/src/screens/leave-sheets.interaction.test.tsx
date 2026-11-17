@@ -11,10 +11,11 @@ import { homeDraftId } from "../home/home-draft.js";
 const state = vi.hoisted(() => ({
   dispatch: vi.fn(),
   drafts: null as import("../client/thread-drafts.js").ThreadDraftStore | null,
-  routes: [] as { name: string }[],
+  routes: [] as { name: string; params?: object }[],
 }));
 
 vi.mock("@react-navigation/native", () => ({
+  CommonActions: { reset: (payload: object) => ({ payload, type: "RESET" }) },
   StackActions: {
     pop: (count: number) => ({ count, type: "POP" }),
     popTo: (name: string, params: object) => ({ name, params, type: "POP_TO" }),
@@ -71,5 +72,61 @@ describe("a new task started from Settings", () => {
 
     expect(drafts.readDraft("deployment-a", "user-a", home)?.text).toBe("Fix my Kitchen speaker");
     expect(state.dispatch.mock.calls).toEqual([[{ type: "POP_TO_TOP" }]]);
+  });
+});
+
+describe("a task opened from Settings", () => {
+  it("closes Settings and everything opened inside it, back to the screen it was opened over", async () => {
+    // Settings opened over one automation, with a page of its own pushed inside it.
+    state.routes = [
+      { name: "Home" },
+      { name: "Schedules" },
+      { name: "Schedule" },
+      { name: "Settings" },
+      { name: "SettingsDevices" },
+    ];
+    let leave: ReturnType<typeof useLeaveSheets> | null = null;
+    function Probe(): ReactNode {
+      leave = useLeaveSheets("deployment-a", host);
+      return null;
+    }
+    root = createRoot(document.body.appendChild(document.createElement("div")));
+    await act(async () => root!.render(<Probe />));
+
+    act(() => leave!.openThread("thread-b"));
+
+    expect(state.dispatch.mock.calls).toEqual([
+      [{ count: 2, type: "POP" }],
+      [
+        {
+          name: "Thread",
+          params: { deploymentId: "deployment-a", threadId: "thread-b" },
+          type: "PUSH",
+        },
+      ],
+    ]);
+  });
+
+  it("leaves a team's history alone when the task opens over its screens", async () => {
+    const home = { name: "Home", params: { deploymentId: "deployment-a" } };
+    const channel = { name: "TeamChannel", params: { teamId: "team-a", channelId: "general" } };
+    state.routes = [home, channel, { name: "Settings" }, { name: "SettingsDevices" }];
+    let leave: ReturnType<typeof useLeaveSheets> | null = null;
+    function Probe(): ReactNode {
+      leave = useLeaveSheets("deployment-a", host);
+      return null;
+    }
+    root = createRoot(document.body.appendChild(document.createElement("div")));
+    await act(async () => root!.render(<Probe />));
+
+    act(() => leave!.openThread("thread-b"));
+
+    const thread = {
+      name: "Thread",
+      params: { deploymentId: "deployment-a", threadId: "thread-b" },
+    };
+    expect(state.dispatch.mock.calls).toEqual([
+      [{ payload: { index: 1, routes: [home, thread] }, type: "RESET" }],
+    ]);
   });
 });

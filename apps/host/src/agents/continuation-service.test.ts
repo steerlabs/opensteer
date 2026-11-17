@@ -1,3 +1,7 @@
+import { gatherComputerAccess } from "../integrations/computer-access.js";
+import type { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
+import { integrationBlocked } from "../integrations/integration-blocked.js";
+import { DeviceIdSchema } from "@opensteer/core";
 import type { BrowserSignInRequestResponse } from "@opensteer/protocol/browser-sources";
 import { createBrowserSessionId } from "@opensteer/protocol";
 import { createHash } from "node:crypto";
@@ -44,12 +48,15 @@ describe("ContinuationService", () => {
     await fixture.service.close();
     expect(fixture.enqueueThreadInput).toHaveBeenCalledOnce();
     expect(fixture.enqueueThreadInput.mock.calls[0]![0].content[0].text).toContain(
-      "rebuilds device routes",
+      "rebuilds computer routes",
     );
     expect(
       await continuationMessage(fulfilled, {
         listDiscoveryInventory: async () => [],
         listCallableTools: async () => [],
+        computerAccess: async () => {
+          throw new Error("No computer access fixture");
+        },
         computerUseMachines: async () => [],
         computerUsePhones: async () => [],
       }),
@@ -63,6 +70,9 @@ describe("ContinuationService", () => {
       await continuationMessage(declined, {
         listDiscoveryInventory: async () => [],
         listCallableTools: async () => [],
+        computerAccess: async () => {
+          throw new Error("No computer access fixture");
+        },
         computerUseMachines: async () => [],
         computerUsePhones: async () => [],
       }),
@@ -195,7 +205,7 @@ describe("ContinuationService", () => {
     expect(input.content[0].text).toContain(first.id);
     expect(input.content[0].text).toContain(second.id);
     expect(input.content[0].text).toContain(broken.id);
-    expect(input.content[0].text).toContain("pending_request");
+    expect(input.content[0].text).toContain("opensteer_request_answer");
     expect(fixture.recordContinuationAttempt).toHaveBeenCalledTimes(3);
   });
 
@@ -311,7 +321,7 @@ describe("ContinuationService", () => {
   it("settles a permanently unreachable originating Thread", async () => {
     const failure = new OpensteerError({
       code: "conflict",
-      message: "Archived threads cannot run",
+      message: "Archived tasks cannot run",
     });
     const request = fulfilledRequest("browser.access");
     const fixture = makeService([request], {
@@ -320,7 +330,7 @@ describe("ContinuationService", () => {
     fixture.service.notify();
     await fixture.service.close();
     expect(fixture.recordContinuationAttempt).toHaveBeenCalledWith({
-      reason: "Archived threads cannot run",
+      reason: "Archived tasks cannot run",
       requestId: request.id,
       status: "undeliverable",
     });
@@ -348,30 +358,105 @@ describe("ContinuationService", () => {
   });
 });
 describe("continuationMessage", () => {
-  it.each([
-    ["not-set-up", "set up Opensteer Passwords"],
-    ["no-login", "add this login in Opensteer Passwords"],
-    ["off", "turn agent sign-ins back on"],
-    [undefined, null],
-  ] as const)(
-    "offers Passwords a sign-in Chrome couldn't serve as %s allows",
-    async (state, offer) => {
-      const message = await continuationMessage(
-        browserSignInRequest({
-          outcome: "not-signed-in",
-          ...(state === undefined
-            ? {}
-            : {
-                passwords: state,
-              }),
-        }),
-        inventory(),
-      );
-      expect(message).toContain("did not decline");
-      if (offer === null) expect(message).not.toContain("Passwords");
-      else expect(message).toContain(offer);
-    },
-  );
+  it("derives a held continuation as the originating Run, without exposing other task titles", async () => {
+    const request = computerAppAccessRequest("fulfilled");
+    const own = await continuationMessage(request, withMacs(true, request.originatingRunId!));
+    expect(own).toContain("Notes on Alex's Mac is ready.");
+    const other = await continuationMessage(request, withMacs(true, createId("run")));
+    expect(other).toContain("in use by another task");
+    expect(other).not.toContain("Private holder title");
+  });
+  it("tells the agent each answer to its question, chosen or typed", async () => {
+    const question = PendingRequestSchema.parse({
+      callId: crypto.randomUUID(),
+      cancellationReason: null,
+      createdAt: now,
+      id: createId("request"),
+      kind: "person.question",
+      mode: "durable",
+      originatingOccurrenceId: null,
+      originatingRunId: createId("run"),
+      originatingThreadId: threadId,
+      payload: { kind: "person.question" },
+      presentation: {
+        kind: "form",
+        title: "Reply to Sarah?",
+        fields: [
+          {
+            choices: [
+              { label: "Send it", value: "Send it" },
+              { label: "Not yet", value: "Not yet" },
+            ],
+            custom: true,
+            id: "question_1",
+            multiSelect: false,
+            prompt: "Send this reply?",
+            secret: false,
+          },
+          {
+            custom: true,
+            id: "question_2",
+            multiSelect: false,
+            prompt: "Anything to add?",
+            secret: false,
+          },
+        ],
+      },
+      requestedBy: ownerId,
+      requiredActor: "requester",
+      resolvedAt: null,
+      resolvedBy: null,
+      response: null,
+      status: "pending",
+    });
+    const settled = { resolvedAt: now, resolvedBy: ownerId };
+    const inventory = {
+      listDiscoveryInventory: async () => [],
+      listCallableTools: async () => [],
+      computerAccess: async () => {
+        throw new Error("No computer access fixture");
+      },
+      computerUseMachines: async () => [],
+      computerUsePhones: async () => [],
+    };
+    const answered = RequestSchema.parse({
+      ...question,
+      ...settled,
+      status: "fulfilled",
+      response: {
+        kind: "form",
+        answers: { question_1: ["Wait until Friday"], question_2: ["Thank her"] },
+      },
+    });
+    expect(await continuationMessage(answered, inventory)).toBe(
+      [
+        `The person answered your question "Reply to Sarah?" (Request ${question.id}):`,
+        "- Send this reply?",
+        '  Answer: "Wait until Friday"',
+        "- Anything to add?",
+        '  Answer: "Thank her"',
+        "Continue with what they said.",
+      ].join("\n"),
+    );
+    const dismissed = RequestSchema.parse({
+      ...question,
+      ...settled,
+      status: "declined",
+      response: { kind: "external", value: { decision: "declined" } },
+    });
+    expect(await continuationMessage(dismissed, inventory)).toContain(
+      'dismissed your question "Reply to Sarah?" without answering',
+    );
+  });
+
+  it("says a Chrome Request found nothing to copy without steering the agent", async () => {
+    const message = await continuationMessage(
+      browserSignInRequest({ outcome: "not-signed-in" }),
+      inventory(),
+    );
+    expect(message).toContain("did not decline");
+    expect(message).toContain("nothing was copied");
+  });
   it.each(["browser.access"] as const)(
     "names the exact Host-recorded profile for %s",
     async (kind) => {
@@ -391,7 +476,7 @@ describe("continuationMessage", () => {
       });
       expect(await continuationMessage(request, inventory())).toBe(
         kind === "browser.access"
-          ? String.raw`Request ${request.id} was fulfilled. The person chose browser profile "Owner \"renamed\" work" (${profile.id}); use it for this task even if you suggested another. Open it with browser_session_open and profileId ${profile.id}, then continue the task.`
+          ? String.raw`Request ${request.id} was fulfilled. The person chose browser profile "Owner \"renamed\" work" (${profile.id}); use it for this task even if you suggested another. Open a tab with Browser Harness newTab(url, { profile: "${profile.id}" }), then continue the task.`
           : `Request ${request.id} is historical. Open a named browser profile before signing in, or ask for one with browser_profile_request; Guest sign-ins cannot be saved.`,
       );
     },
@@ -435,18 +520,6 @@ describe("continuationMessage", () => {
       outcome: "unavailable",
       reason: "not-responding",
     },
-    {
-      outcome: "failed",
-      reason: "wrong-password",
-    },
-    {
-      outcome: "failed",
-      reason: "cleanup-failed",
-    },
-    {
-      outcome: "failed",
-      reason: "busy",
-    },
   ])("describes a recoverable Passwords result honestly: %o", async (value) => {
     const request = RequestSchema.parse({
       ...fulfilledRequest("browser.access"),
@@ -472,7 +545,7 @@ describe("continuationMessage", () => {
     expect(message).not.toContain("open a fresh Browser Session");
     expect(message).not.toContain("because Opensteer Passwords stopped answering");
     expect(message).not.toContain("the user did not sign in another way");
-    expect(message).toContain("sign_in");
+    expect(message).toContain("saved_login_request again");
   });
   it("uses the live personal ref on every surface without inventing a session", async () => {
     const request = RequestSchema.parse({
@@ -503,12 +576,12 @@ describe("continuationMessage", () => {
     expect(message).toContain("type");
     expect(message).toContain("fillLogin");
     expect(message).not.toContain("Browser Session undefined");
-    expect(await continuationMessage(request, inventory())).toContain("sign_in again");
+    expect(await continuationMessage(request, inventory())).toContain("saved_login_request again");
   });
   it("does not claim access when the Mac has been removed", async () => {
     await expect(
       continuationMessage(computerAppAccessRequest("fulfilled"), withMacs(false)),
-    ).resolves.toContain("is no longer available to this task. Continue without it.");
+    ).resolves.toContain('is unavailable. Use integration_search {query:"Computer use"}');
   });
   it("reports a ready installation and points the agent at integration_search", async () => {
     const request = fulfilledRequest("integration.install");
@@ -536,9 +609,7 @@ describe("continuationMessage", () => {
           }),
         ),
       ),
-    ).toBe(
-      `Request ${request.id} was fulfilled. Gmail is installed and its account connection works, but your Opensteer holds no access grant yet. Call integration_search now, then call integration_request with this integration and the access class the task needs.`,
-    );
+    ).toBe(`Request ${request.id} was fulfilled. ${blockedText("ACCESS_GRANT_REQUIRED")}`);
   });
   it("reports a missing personal grant after fulfillment", async () => {
     const request = fulfilledRequest("integration.access");
@@ -553,7 +624,7 @@ describe("continuationMessage", () => {
         ),
       ),
     ).toBe(
-      `Request ${request.id} was fulfilled. Gmail read access was granted for connectionless operations. Your Opensteer still holds no access grant (No personal grant).`,
+      `Request ${request.id} was fulfilled. Gmail read access was granted for connectionless operations. ${blockedText("ACCESS_GRANT_REQUIRED")}`,
     );
   });
   it("sends the agent to integration_request when the installation has no account", async () => {
@@ -568,9 +639,7 @@ describe("continuationMessage", () => {
           }),
         ),
       ),
-    ).toBe(
-      `Request ${request.id} was fulfilled. Gmail is installed but has no connected account (No Google account). Call integration_request now for the account connection, then continue the task.`,
-    );
+    ).toBe(`Request ${request.id} was fulfilled. ${blockedText("USER_AUTHORIZATION_REQUIRED")}`);
   });
   it("reports the statusDetail of an installation that landed unusable", async () => {
     const request = fulfilledRequest("integration.install");
@@ -586,7 +655,7 @@ describe("continuationMessage", () => {
         ),
       ),
     ).toBe(
-      `Request ${request.id} was fulfilled, but Gmail installed in an unusable state: The OpenAPI document could not be compiled. Requesting it again will not help. Continue without it and tell the user what that detail says.`,
+      `Request ${request.id} was fulfilled. ${blockedText("INTEGRATION_UNAVAILABLE", "The OpenAPI document could not be compiled")}`,
     );
   });
   it("directs a misconfigured provider through the agent-owned setup request", async () => {
@@ -601,9 +670,7 @@ describe("continuationMessage", () => {
           }),
         ),
       ),
-    ).toBe(
-      `Request ${request.id} was fulfilled, but Gmail installed in an unusable state: No Google application. Request access through integration_request; the connection UI offers supported personal-app setup and identifies any administrator prerequisite.`,
-    );
+    ).toBe(`Request ${request.id} was fulfilled. ${blockedText("ADMIN_CONFIGURATION_REQUIRED")}`);
   });
   it("never claims an installation that the inventory does not hold", async () => {
     const request = fulfilledRequest("integration.install");
@@ -657,7 +724,7 @@ describe("continuationMessage", () => {
         ),
       ),
     ).toBe(
-      `Request ${request.id} was fulfilled, but Gmail installed in an unusable state: the installation exposes no servers. An administrator must repair the installation. Continue without it and tell the user.`,
+      `Request ${request.id} was fulfilled. google-gmail exposes no servers. An administrator must repair the installation. Continue without it and tell the user.`,
     );
   });
   it("names the connected account once the access grant is verified", async () => {
@@ -692,7 +759,7 @@ describe("continuationMessage", () => {
         ),
       ),
     ).toBe(
-      `Request ${request.id} was fulfilled. Gmail read access was granted for connectionless operations. The fulfilled target is not usable (Missing gmail.modify).`,
+      `Request ${request.id} was fulfilled. Gmail read access was granted for connectionless operations. ${blockedText("REAUTHORIZATION_REQUIRED")}`,
     );
   });
   it("never claims access to an installation that has left the inventory", async () => {
@@ -705,6 +772,9 @@ describe("continuationMessage", () => {
 function inventory(...entries: readonly InventoryEntry[]): IntegrationInventorySource {
   return {
     listDiscoveryInventory: async () => [...entries],
+    computerAccess: async () => {
+      throw new Error("No computer access fixture");
+    },
     computerUseMachines: async () => [],
     computerUsePhones: async () => [],
     listCallableTools: async () => [],
@@ -783,9 +853,44 @@ function computerAppAccessRequest(status: "declined" | "fulfilled") {
     status,
   });
 }
-function withMacs(named: boolean): IntegrationInventorySource {
+function withMacs(
+  named: boolean,
+  holdingRunId?: Request["originatingRunId"],
+): IntegrationInventorySource {
   return {
     ...inventory(),
+    async computerAccess(input, run) {
+      return gatherComputerAccess(
+        {
+          computerAppApprovals: {
+            computerUseInventory: async () => ({
+              machines: await this.computerUseMachines(input.ownerUserId),
+              phones: await this.computerUsePhones(input.ownerUserId),
+            }),
+            computerAppHolders: () =>
+              new Map(
+                holdingRunId
+                  ? [
+                      [
+                        "com.apple.notes",
+                        { runId: holdingRunId, threadTitle: "Private holder title" },
+                      ],
+                    ]
+                  : [],
+              ),
+          },
+          store: {
+            listDeviceComputerAppSetupRequests: async () => [],
+            requests: { listPendingIntegrationAccessRequests: async () => [] },
+          },
+          listCallableTools: this.listCallableTools,
+          computerToolEnabled: () => true,
+          computerUseVersion: () => 2,
+        } as unknown as IntegrationPlatformService,
+        input,
+        run,
+      );
+    },
     computerUseMachines: async () =>
       named
         ? [
@@ -803,7 +908,8 @@ function withMacs(named: boolean): IntegrationInventorySource {
                   connectionId: macConnectionId,
                 },
               ],
-              runnerId: macRunnerId,
+              deviceId: DeviceIdSchema.parse(macRunnerId),
+              definitionId: "macos-app",
             },
           ]
         : [],
@@ -1077,4 +1183,10 @@ function payloadFor(
         reason: "Read Mail",
       };
   }
+}
+
+function blockedText(code: IntegrationReadiness["code"], detail?: string) {
+  const current = entry({ code, ...(detail === undefined ? {} : { detail }) });
+  const blocked = integrationBlocked(current.readiness.servers[0], current.installation.name)!;
+  return `${blocked.message} ${blocked.next}`;
 }

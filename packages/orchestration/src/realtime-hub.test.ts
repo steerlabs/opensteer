@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import {
   SequenceSchema,
   createId,
@@ -33,7 +34,7 @@ describe("snapshot-before-live synchronization", () => {
         originatingThreadId: base.threadId,
         payload: {
           kind: "device.access" as const,
-          machineId: createId("runner"),
+          machineId: DeviceIdSchema.parse(createId("runner")),
           machineName: "Laptop",
           access: "browser" as const,
           reason: "Read the task",
@@ -259,11 +260,7 @@ describe("snapshot-before-live synchronization", () => {
           type: "place.entered",
           runId: createId("run"),
           data: {
-            place: {
-              kind: "browser",
-              sessionId: "bsn_11111111-1111-4111-8111-111111111111",
-              surfaceId: "A",
-            },
+            tabId: "A",
             title: "Page",
             site: null,
           },
@@ -1458,13 +1455,11 @@ function snapshot(deploymentId: DeploymentId, value: string): DeploymentSnapshot
     tasks: { recent: tasks, active: tasks, done: tasks },
     needsYou: { count: 0, entries: [], window },
     resources: {
-      appTabs: [],
+      tabs: { tabs: [], layout: { revision: 0, items: [] }, complete: true },
       browser: {
         available: false,
         placements: [],
         profiles: [],
-        groups: { rows: [], complete: true },
-        tabs: [],
       },
     },
   };

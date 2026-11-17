@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { DeviceId } from "./devices.js";
 
 const idPrefixes = {
   teamNotice: "tnt",
@@ -16,10 +17,14 @@ const idPrefixes = {
   browserProfile: "bpr",
   browserSource: "bsr",
   browserTabGroup: "btg",
+  tab: "tab",
+  tabGroup: "tgp",
+  window: "win",
   causalChain: "cch",
   command: "cmd",
   credential: "cred",
   deployment: "dep",
+  device: "dev",
   delegation: "dlg",
   environment: "env",
   event: "evt",
@@ -120,11 +125,15 @@ export interface IdByKind {
   readonly authVerification: AuthVerificationId;
   readonly browserProfile: BrowserProfileId;
   readonly browserTabGroup: BrowserTabGroupId;
+  readonly tab: TabId;
+  readonly tabGroup: TabGroupId;
+  readonly window: WindowId;
   readonly browserSource: BrowserSourceId;
   readonly causalChain: CausalChainId;
   readonly command: CommandId;
   readonly credential: CredentialId;
   readonly deployment: DeploymentId;
+  readonly device: DeviceId;
   readonly delegation: DelegationId;
   readonly environment: EnvironmentId;
   readonly event: EventId;
@@ -154,7 +163,7 @@ export interface IdByKind {
 
 const uuidPattern = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 
-export function idSchema<K extends IdKind>(kind: K): z.ZodType<IdByKind[K]> {
+export function idSchema<K extends IdKind>(kind: K): z.ZodType<IdByKind[K], string> {
   return z
     .string()
     .regex(new RegExp(`^${idPrefixes[kind]}_${uuidPattern}$`, "i"))
@@ -244,3 +253,16 @@ export const TeamMessageIdSchema = z
   .refine((value) => value.length < 19 || value <= "9223372036854775807")
   .brand<"TeamMessageId">();
 export type TeamMessageId = z.infer<typeof TeamMessageIdSchema>;
+
+export const TabIdSchema = BrowserSurfaceIdSchema;
+export type TabId = BrowserSurfaceId;
+export const TabGroupIdSchema = z
+  .string()
+  .regex(/^tgp_[0-9a-f-]{36}$/u)
+  .brand<"TabGroupId">();
+export type TabGroupId = z.infer<typeof TabGroupIdSchema>;
+export const WindowIdSchema = z
+  .string()
+  .regex(/^win_[0-9a-f-]{36}$/u)
+  .brand<"WindowId">();
+export type WindowId = z.infer<typeof WindowIdSchema>;

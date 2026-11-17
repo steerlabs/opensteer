@@ -26,6 +26,8 @@ import { TeamAccessStore } from "@opensteer/database/team-access";
 import { TeamChatStore } from "@opensteer/database/team-chat";
 import { TeamGroupsStore } from "@opensteer/database/team-groups";
 import { TeamMembersStore } from "@opensteer/database/team-members";
+import { teamPrincipalProfiles } from "@opensteer/database/team-principals";
+import { seedRemoteTeamContent } from "@opensteer/database/test-support/team-principals";
 import { TeamInvitesStore } from "@opensteer/database/team-invites";
 import { TeamRequestsStore } from "@opensteer/database/team-requests";
 import { TeamOutboxStore, type TeamPushDelivery } from "@opensteer/database/team-outbox";
@@ -78,16 +80,33 @@ describe("team transaction authority", () => {
     );
     return id;
   }
-  function send(
+  async function send(
     channelId: Parameters<TeamChatStore["send"]>[1]["channelId"],
     body = "hello",
     actor = owner,
     mentions: Parameters<TeamChatStore["send"]>[1]["mentions"] = [],
     root: Parameters<TeamChatStore["send"]>[1]["threadRootId"] = null,
   ) {
+    const targets = mentions.length
+      ? await fixture.database
+          .selectFrom("teamMembers")
+          .select(["userId", "handle"])
+          .where(
+            "userId",
+            "in",
+            mentions.map((m) => m.userId),
+          )
+          .execute()
+      : [];
+    const prefix = mentions
+      .map(
+        (m) =>
+          `@${targets.find((r) => r.userId === m.userId)!.handle}${m.kind === "agent" ? "-agent" : ""}`,
+      )
+      .join(" ");
     return chat.send(actor, {
       channelId,
-      bodyMarkdown: body,
+      bodyMarkdown: prefix ? `${prefix} ${body}` : body,
       clientMessageId: randomUUID(),
       threadRootId: root,
       mentions,
@@ -139,6 +158,103 @@ describe("team transaction authority", () => {
       },
     );
   }
+  it("keeps remote attribution through content reads without admitting remote people", async () => {
+    const c = await channel();
+    const seeded = await seedRemoteTeamContent(fixture, c.id);
+    const { remote, root, reply, local, blobId } = seeded;
+    const expected = { id: root.id, authorUserId: remote.id, pinned: true };
+    expect((await chat.page(owner, c.id)).messages).toContainEqual(
+      expect.objectContaining(expected),
+    );
+    const thread = (await chat.page(owner, c.id, { direction: "newest" }, root.id)).messages;
+    expect(thread).toHaveLength(2);
+    expect(thread[0]).toMatchObject({ ...expected, replySummary: { repliers: [remote.id] } });
+    expect(thread[1]).toMatchObject({ id: reply.id, authorUserId: remote.id });
+    expect(await chat.message(owner, c.id, root.id)).toMatchObject(expected);
+    const checked = await chat.check(owner, c.id, [root.clientMessageId, local.clientMessageId]);
+    expect(checked.messages).toHaveLength(1);
+    expect(checked.messages[0]).toMatchObject({
+      id: local.id,
+      mentions: [{ userId: remote.id, kind: "person" }],
+    });
+    expect(
+      (await chat.search(owner, { query: "Principal", authorUserId: remote.id })).results,
+    ).toHaveLength(2);
+    const sidebar = await chat.directory(owner, undefined, true);
+    expect(sidebar.channels[0]).toMatchObject({
+      channel: { latestMessageId: reply.id },
+      mentionCount: 1,
+    });
+    const scope = { kind: "channel" as const, channelId: c.id };
+    const snapshot = await chat.resume(owner, {
+      subscriptionId: "principals",
+      generation: 1,
+      scope,
+      sinceSeq: null,
+    });
+    expect(snapshot.type === "snapshot" && snapshot.messages).toContainEqual(
+      expect.objectContaining(expected),
+    );
+    const resumed = await chat.resume(owner, {
+      subscriptionId: "principals",
+      generation: 1,
+      scope,
+      sinceSeq: "1" as import("@opensteer/core").Sequence,
+    });
+    expect(resumed.type === "resumed" && resumed.changedRows).toContainEqual(
+      expect.objectContaining(expected),
+    );
+    const profiles = await teamPrincipalProfiles(fixture.database)
+      .where("p.id", "in", [remote.id, owner.userId])
+      .execute();
+    expect(profiles).toContainEqual(
+      expect.objectContaining({
+        id: remote.id,
+        displayName: "Remote Alex",
+        handle: "alex",
+        memberUserId: null,
+        image: null,
+      }),
+    );
+    expect((await new TeamMembersStore(access).page(owner)).members.map((m) => m.userId)).toEqual([
+      owner.userId,
+    ]);
+    expect(
+      await fixture.database.transaction().execute((t) => chat.source(t, owner, c.id, root.id)),
+    ).toMatchObject({ audience: { memberCount: 1 } });
+    await expect(chat.page({ kind: "human", userId: remote.id }, c.id)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+
+    const service = await services();
+    try {
+      expect(await service.read(owner, "team.mentions.page", { channelId: c.id })).toMatchObject({
+        messages: [expected],
+      });
+      expect(await service.read(owner, "team.pins.page", { channelId: c.id })).toMatchObject({
+        messages: [expected],
+      });
+      expect(await service.read(owner, "team.files.page", { channelId: c.id })).toMatchObject({
+        files: [{ messageId: root.id, file: { id: blobId } }],
+      });
+    } finally {
+      await service.close();
+    }
+    await sql`insert into account_directory_provider(singleton_key,provider_id,issuer) values('opensteer-account','principal-test','https://account.invalid')`.execute(
+      fixture.database,
+    );
+    await sql`insert into auth_accounts(id,user_id,provider_id,account_id) values(${createId("authAccount")},${owner.userId},'principal-test','local-account')`.execute(
+      fixture.database,
+    );
+    await sql`insert into team_outbox(kind,channel_id,message_id) values('message',${c.id},${root.id})`.execute(
+      fixture.database,
+    );
+    const deliveries: TeamPushDelivery[] = [];
+    await new TeamOutboxStore(access).drain(async (delivery) => {
+      deliveries.push(delivery);
+    });
+    expect(deliveries.map((delivery) => delivery.userId)).toEqual([owner.userId]);
+  });
   it("counts all authorized unread mentions independently of sidebar pages and changed channel filters", async () => {
     const reader = await person("MentionReader");
     const channels = await Promise.all(
@@ -389,6 +505,31 @@ describe("team transaction authority", () => {
     await expect(chat.setAccess(admin, dm.id, access.revision, [])).rejects.toThrow();
     await expect(chat.addDmPeople(admin, dm.id, [admin.userId], true)).rejects.toThrow();
   });
+  it("keeps reference labels and sanitation adjacency out of agent admission on send and edit", async () => {
+    const c = await channel();
+    const l = await link();
+    const member = await fixture.database
+      .selectFrom("teamMembers")
+      .select("handle")
+      .where("userId", "=", owner.userId)
+      .executeTakeFirstOrThrow();
+    const handle = `@${member.handle}-agent`;
+    const body = `[see ${handle}](https://team.example/c/${c.id}) [word ](opensteer:future)${handle}`;
+    const sent = await send(c.id, body);
+    expect(sent.message.mentions).toEqual([]);
+    expect(await requests.pending(l)).toHaveLength(0);
+    await chat.editOrDelete(owner, c.id, sent.message.id, {
+      bodyMarkdown: body,
+      mentions: [{ kind: "agent", userId: owner.userId }],
+    });
+    expect((await chat.message(owner, c.id, sent.message.id)).mentions).toEqual([]);
+    expect(await requests.pending(l)).toHaveLength(0);
+    const asked = await send(c.id, `${handle} Please check`);
+    expect(asked.message.mentions).toEqual([{ kind: "agent", userId: owner.userId }]);
+    expect(asked.wake).toBe("queued");
+    expect(await requests.pending(l)).toHaveLength(1);
+  });
+
   it("admits only human own-agent mentions, only once, with an active link; edits never wake", async () => {
     const c = await channel();
     const events: { kind: string; state: string | undefined }[] = [];
@@ -555,15 +696,17 @@ describe("team transaction authority", () => {
       const replyId =
         claim === "none"
           ? null
-          : await requests.post(l, { ...post, publication: claim === "publication" });
+          : (await requests.post(l, { ...post, publication: claim === "publication" })).messageId;
       if (claim !== "none") {
         expect(
-          await requests.post(l, {
-            ...post,
-            clientMessageId: randomUUID(),
-            publication: true,
-            bodyMarkdown: "automatic final",
-          }),
+          (
+            await requests.post(l, {
+              ...post,
+              clientMessageId: randomUUID(),
+              publication: true,
+              bodyMarkdown: "automatic final",
+            })
+          ).messageId,
         ).toBe(replyId);
       }
       expect(await requests.receipt(l, request.id)).toBe(replyId);
@@ -607,7 +750,9 @@ describe("team transaction authority", () => {
     const context = await requests.context(l, request.id);
     expect(context).not.toHaveProperty("messages");
     expect(context.instructionsRevision).toBe(c.instructionsRevision);
-    expect((await requests.pending(l))[0]?.bodyMarkdown).toBe(root.message.bodyMarkdown);
+    expect((await requests.pending(l)).find((r) => r.request.id === request.id)?.bodyMarkdown).toBe(
+      root.message.bodyMarkdown,
+    );
     expect(context.request.triggerMessageId).toBe(root.message.id);
   });
 
@@ -733,13 +878,13 @@ describe("team transaction authority", () => {
       await expect(textUpload(team.files, owner, c.id)).rejects.toMatchObject({
         reason: "team-storage-full",
       });
-      expect(await readdir(join(dataDirectory, "team-files"))).toContain(file.id);
+      expect(await storedFile(dataDirectory, file.id)).toBe(true);
       await team.dispatch(owner, {
         type: "team.message.delete",
         channelId: c.id,
         messageId: (sent as { message: { id: TeamMessageId } }).message.id,
       });
-      expect(await readdir(join(dataDirectory, "team-files"))).not.toContain(file.id);
+      expect(await storedFile(dataDirectory, file.id)).toBe(false);
       await expect(textUpload(team.files, owner, c.id)).resolves.toMatchObject({
         sizeBytes: 36,
       });
@@ -804,10 +949,10 @@ describe("team transaction authority", () => {
           .where("id", "=", file.id)
           .executeTakeFirst(),
       ).resolves.toEqual({ state: "ready" });
-      expect(await readdir(join(directory, "team-files"))).toContain(file.id);
+      expect(await storedFile(directory, file.id)).toBe(true);
     } finally {
       release.resolve();
-      files.close();
+      await files.close();
       await rm(directory, { recursive: true, force: true });
     }
   });
@@ -824,20 +969,24 @@ describe("team transaction authority", () => {
       const unsent = await textUpload(files, member, c.id);
       const kept = await textUpload(files, owner, c.id);
       await new TeamMembersStore(access).change(owner, member.userId, "remove");
+      await expect(
+        fixture.database.transaction().execute((t) => access.member(t, member.userId)),
+      ).rejects.toMatchObject({ code: "forbidden", reason: "removed" });
       await files.collectGarbage();
       const remaining = await fixture.database.selectFrom("teamBlobs").select("id").execute();
       expect(remaining.map((row) => row.id)).toEqual([kept.id]);
-      const stored = await readdir(join(directory, "team-files"));
-      expect(stored).not.toContain(unsent.id);
-      expect(stored).toContain(kept.id);
+      expect(await storedFile(directory, unsent.id)).toBe(false);
+      expect(await storedFile(directory, kept.id)).toBe(true);
     } finally {
-      files.close();
+      await files.close();
       await rm(directory, { recursive: true, force: true });
     }
   });
   it("consumes a one-use invite atomically and never revives an old membership generation", async () => {
-    const member = await person("Invitee");
-    await fixture.database.deleteFrom("teamMembers").where("userId", "=", member.userId).execute();
+    const member = { userId: createId("user") };
+    await sql`insert into users(id,display_name,email,email_verified) values(${member.userId},'Invitee','invitee@example.invalid',true)`.execute(
+      fixture.database,
+    );
     const invites = new TeamInvitesStore(access, "https://team.example.invalid");
     const created = await invites.create(owner, createId("teamInvite"));
     const url = new URL(created.url);
@@ -1161,7 +1310,7 @@ describe("team transaction authority", () => {
     expect((await send(c.id, "people only", owner, [], first.message.id)).wake).toBe("people-only");
   });
 
-  it("keeps other-agent references inert and leaves refused rate-limit asks as stored messages", async () => {
+  it("refuses agents without posting access and leaves rate-limit messages stored", async () => {
     const member = await person("Mentioned");
     const c = await channel();
     await chat.setAccess(owner, c.id, access.revision, [
@@ -1386,7 +1535,7 @@ describe("team transaction authority", () => {
         channelId: c.id,
         threadRootId: null,
         clientMessageId: randomUUID(),
-        bodyMarkdown: "ask",
+        bodyMarkdown: "@maya-agent ask",
         mentions: [{ kind: "agent", userId: owner.userId }],
         attachmentIds: [file.id],
       });
@@ -1464,7 +1613,7 @@ describe("team transaction authority", () => {
       ).toBe(false);
     } finally {
       blocked.resolve();
-      files.close();
+      await files.close();
       await rm(directory, { recursive: true, force: true });
     }
   });
@@ -1679,3 +1828,10 @@ describe("team transaction authority", () => {
     }
   });
 });
+
+/** Uploads are published under an immutable key that starts with the file's id. */
+async function storedFile(directory: string, id: string) {
+  return (await readdir(join(directory, "team-files"))).some(
+    (name) => name === id || name.startsWith(`${id}-`),
+  );
+}

@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import {
   createPendingSendStore,
+  HostClientRequestError,
   messageDraftParts,
   type PendingSendCommand,
   type PendingSendScope,
@@ -41,6 +42,7 @@ export function sendMessageCommand(
         ...submission.attachments,
       ],
     ),
+    ...(submission.compaction ? { compaction: submission.compaction } : {}),
     delivery: "queue",
     idempotencyKey: submission.idempotencyKey,
     // Only the source id travels: the Host looks the quoted message up under
@@ -51,15 +53,16 @@ export function sendMessageCommand(
   };
 }
 
+/** Where this Thread keeps a message until the Host answers it, or why nothing can be sent. */
+export type PendingSendsState = { readonly sends: PendingSends } | { readonly unavailable: string };
+
 /**
  * This Thread's unacknowledged message, kept in the browser's storage under
  * the deployment and user it is sent as. A message is never sent without being
  * kept first, so where the scope is unknown or storage is refused this says
  * why instead, and nothing is sent.
  */
-export function usePendingSends(
-  scope: PendingSendScope | null,
-): { readonly sends: PendingSends } | { readonly unavailable: string } {
+export function usePendingSends(scope: PendingSendScope | null): PendingSendsState {
   const deploymentId = scope?.deploymentId ?? "";
   const threadId = scope?.threadId ?? "";
   const userId = scope?.userId ?? "";
@@ -94,6 +97,23 @@ export function claimFirstMessage(scope: PendingSendScope, submission: PendingSu
   createPendingSendStore(storage).claim(scope, sendMessageCommand(scope.threadId, submission));
 }
 
+/** The Host may or may not have taken it: the answer was lost, not a refusal. */
+export function unanswered(error: unknown): boolean {
+  return !(error instanceof HostClientRequestError) || error.status >= 500 || error.status === 408;
+}
+
+/**
+ * The Host has answered, so the record has done its job. Failing to erase it
+ * leaves a replay of an answered key, which the Host answers the same way.
+ */
+export function forgetPending(pendingSends: PendingSends | null, idempotencyKey: string): void {
+  try {
+    pendingSends?.clear(idempotencyKey);
+  } catch {
+    // The answer stands either way; see above.
+  }
+}
+
 /** Whether a message can be kept here at all; checked before anything is created for one. */
 export function pendingStorageAvailable(): boolean {
   return browserStorage() !== null;
@@ -103,6 +123,7 @@ function pendingSubmission(command: PendingSendCommand): PendingSubmission {
   return {
     attachments: artifactParts(command.content),
     body: messageText(command.content),
+    ...(command.compaction ? { compaction: command.compaction } : {}),
     // The accepted content, exactly: a retry after a reload sends the same message.
     content: command.content.map((part) => ContentPartSchema.parse(part)),
     ...placeParts(command.content),

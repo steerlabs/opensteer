@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect } from "react";
 import type { DeploymentAccessSnapshot, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
+import type { ComputerFactsStore } from "./computer-facts.js";
 
 /**
  * Everything a list of places needs, provided once by the Desktop shell to
@@ -9,6 +10,8 @@ import type { DeploymentAccessSnapshot, OpensteerDesktopBridge } from "@openstee
  */
 export interface DesktopPlaces {
   readonly bridge: OpensteerDesktopBridge;
+  /** What each computer last said about itself, kept between one list's opening and the next. */
+  readonly facts: ComputerFactsStore;
   /** Opens the screen that adds a computer or server. */
   readonly onAddPlace: () => void;
   readonly snapshot: DeploymentAccessSnapshot;

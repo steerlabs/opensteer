@@ -1,13 +1,10 @@
 import { ComputerViewRetainers } from "./computer-view-retention.js";
-import {
-  ComputerViewTargetSchema,
-  type ComputerView,
-  type HostApiClient,
-} from "@opensteer/protocol";
+import { ComputerViewSchema, type ComputerView, type HostApiClient } from "@opensteer/protocol";
 import { HostClientRequestError, type HostClient } from "./client.js";
 import { unwrapRpcResult } from "./host-session-client.js";
 
 /**
+ * A person's view opens only through tab.activate; this keeps its lease.
  * Both network and mock clients use the command boundary, including explicit
  * retry keys. `authority` is the signed-in viewer's generation: an answer
  * asked for by a viewer who has since left is refused, never adopted.
@@ -21,7 +18,6 @@ export function computerViewMethods(
   left: (viewId: string, generation: number) => void = () => undefined,
 ): Pick<
   HostClient,
-  | "openComputerView"
   | "closeComputerView"
   | "renewComputerView"
   | "listApprovedComputerApps"
@@ -41,14 +37,11 @@ export function computerViewMethods(
     const started = authority();
     const result = unwrapRpcResult(await rpc["commands.dispatch"](command));
     requireAuthority(started);
-    if (
-      result.type !== "computer.view.open" &&
-      result.type !== "computer.view.close" &&
-      result.type !== "computer.view.renew"
-    )
+    if (result.type !== "computer.view.close" && result.type !== "computer.view.renew")
       throw Error("Unexpected computer view result.");
-    accept(result.view);
-    return result.view;
+    const view = ComputerViewSchema.parse(result.view);
+    accept(view);
+    return view;
   };
   const requireWindows = () => {
     if (!windowsSupported())
@@ -89,15 +82,6 @@ export function computerViewMethods(
     setConnected: (connected) => retainers.setConnected(connected),
     retainComputerView: (viewId, generation, options = {}) =>
       retainers.retain(viewId, generation, options.visible ?? true),
-    openComputerView: (machineId, target, options = {}) => {
-      if (target.kind === "app" && target.window !== undefined) requireWindows();
-      return mutate({
-        type: "computer.view.open",
-        machineId,
-        target: ComputerViewTargetSchema.parse(target),
-        idempotencyKey: options.idempotencyKey ?? `view-open:${crypto.randomUUID()}`,
-      });
-    },
     closeComputerView: (viewId, generation, options = {}) =>
       mutate({
         type: "computer.view.close",

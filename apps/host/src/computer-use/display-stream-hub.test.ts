@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { DisplayStreams } from "@opensteer/client/integrations";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { on, once } from "node:events";
@@ -1621,7 +1622,7 @@ describe("phone display Host sockets", () => {
       const authorization = vi.spyOn(f.hub, "authorize").mockImplementationOnce(async () => {
         try {
           await blocked;
-          return f.runnerId;
+          return { deviceId: DeviceIdSchema.parse(f.runnerId) };
         } finally {
           settled = true;
         }

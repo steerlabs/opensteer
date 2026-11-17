@@ -1,3 +1,6 @@
+import { lockThreadProviderSessions } from "./run-projection-locks.js";
+import { markThreadStatePending } from "./thread-state-pending.js";
+import { compactionReturnHint } from "./compaction-eligibility.js";
 import { projectDeviceAccessAssignment } from "@opensteer/protocol";
 import {
   lockDeploymentEvents,
@@ -83,6 +86,7 @@ import {
 } from "./run-tool-admission.js";
 import { type DurableWindow } from "@opensteer/protocol";
 import { type Transaction, type Kysely, sql } from "kysely";
+import { publishedMessagePredicate } from "./message-visibility.js";
 import {
   findCommandByIdempotency,
   idempotencyConflict,
@@ -132,6 +136,7 @@ import {
   drainAssignmentReturn as drainAssignmentReturnInStore,
   ensureQueuedRun,
   enqueueThreadInputInTransaction,
+  lockThreadInputIdempotency,
   steerThreadInputInTransaction,
   cancelThreadInputInTransaction,
   moveThreadInputInTransaction,
@@ -177,7 +182,15 @@ export interface ThreadUpdateResult {
  */
 export type ThreadInputSource =
   | {
+      readonly kind: "team-member";
+      readonly teamId: import("@opensteer/core").DeploymentId;
+      readonly requestId: import("@opensteer/core").TeamAgentRequestId;
+      readonly resumeRunId?: RunId;
+    }
+  | {
       readonly kind: "human";
+      /** Facts for the agent only: never part of the request's idempotency fingerprint. */
+      readonly origin?: import("@opensteer/core").MessageOrigin;
     }
   | {
       readonly kind: "connection";
@@ -221,6 +234,9 @@ export type ThreadInputSource =
       readonly principalId: string;
     };
 export interface EnqueueThreadInputRequest {
+  readonly compaction?: import("@opensteer/core").CompactionSendChoice;
+  readonly maintenance?: import("@opensteer/core").RunMaintenance;
+  readonly maintenanceNowMs?: number;
   readonly freshContext?: boolean;
   readonly teamRequest?: {
     readonly id: import("@opensteer/core").TeamAgentRequestId;
@@ -263,6 +279,7 @@ export interface EnqueuedThreadInput {
   readonly wasDuplicate: boolean;
 }
 export interface SteerThreadInputRequest {
+  readonly sessionId?: import("@opensteer/core").AuthSessionId;
   readonly authority?: ThreadCallerAuthority;
   readonly threadId: ThreadId;
   readonly messageId: MessageId;
@@ -271,6 +288,7 @@ export interface SteerThreadInputRequest {
   readonly idempotencyKey: string;
 }
 export interface CancelThreadInputRequest {
+  readonly sessionId?: import("@opensteer/core").AuthSessionId;
   readonly authority?: ThreadCallerAuthority;
   readonly threadId: ThreadId;
   readonly messageId: MessageId;
@@ -283,11 +301,13 @@ export interface CancelThreadInputRequest {
  * nothing a delivery would: no command, no disposition, no Run.
  */
 export interface CancelledThreadInput {
+  readonly revokedGrants?: readonly RevokedRunGrant[];
   readonly events: readonly AgentEvent[];
   readonly input: ThreadInput;
   readonly wasDuplicate: boolean;
 }
 export interface MoveThreadInputRequest {
+  readonly sessionId?: import("@opensteer/core").AuthSessionId;
   readonly authority?: ThreadCallerAuthority;
   /** The waiting message to stand in front of, or null for the back of the queue. */
   readonly beforeMessageId: MessageId | null;
@@ -297,6 +317,7 @@ export interface MoveThreadInputRequest {
   readonly threadId: ThreadId;
 }
 export interface MovedThreadInput {
+  readonly revokedGrants?: readonly RevokedRunGrant[];
   readonly events: readonly AgentEvent[];
   readonly wasDuplicate: boolean;
 }
@@ -385,6 +406,8 @@ interface AgentThreadListEntry {
   readonly status: ThreadRow["status"];
   readonly title: string;
   readonly updatedAt: string;
+  readonly newMessages?: number;
+  readonly firstNewAt?: string;
 }
 export interface AgentThreadListPage {
   readonly threads: readonly AgentThreadListEntry[];
@@ -799,13 +822,16 @@ export async function agentThreadPageForOwner(
     readonly scope: AgentThreadListScope;
     readonly scopeId: string;
     readonly parentThreadId?: ThreadId;
+    readonly changedSince?: Date;
   },
 ): Promise<AgentThreadListPage> {
   const maxItems = boundedWindowLimit(input.maxItems, 50);
   const maxBytes = boundedWindowBytes(input.maxBytes, 192 * 1_024);
-  const anchor = input.before
-    ? decodeWindowCursor(input.before, "agent-thread", input.scopeId)
-    : null;
+  const since = input.changedSince ?? null;
+  // A changed page orders by new messages, so its cursor is bound to that order and that time.
+  const cursorKind = since ? "agent-thread-changed" : "agent-thread";
+  const cursorScope = since ? `${input.scopeId}@${since.toISOString()}` : input.scopeId;
+  const anchor = input.before ? decodeWindowCursor(input.before, cursorKind, cursorScope) : null;
   const pattern = input.query === undefined ? null : `%${escapeLikePattern(input.query)}%`;
   const scope = input.scope;
   return withPersonalReadTransaction(
@@ -822,7 +848,13 @@ export async function agentThreadPageForOwner(
                 .executeTakeFirstOrThrow()
             ).lineageRootThreadId
           : null;
-      let base = transaction.selectFrom("threads");
+      let base = transaction
+        .selectFrom("threads")
+        .$if(since !== null, (query) =>
+          query.innerJoin(changedThreads(transaction, since!).as("changed"), (join) =>
+            join.onRef("changed.threadId", "=", "threads.id"),
+          ),
+        );
       if (input.parentThreadId) {
         base = base.where((eb) =>
           eb.or([
@@ -844,7 +876,11 @@ export async function agentThreadPageForOwner(
         base = base.where(sql<boolean>`threads.title ilike ${pattern} escape '\\'`);
       }
       let page = base;
-      if (anchor) {
+      if (anchor && since) {
+        page = page.where(
+          sql<boolean>`(changed.last_new_at, threads.id) < (${anchor.timestamp}, ${ThreadIdSchema.parse(anchor.id)})`,
+        );
+      } else if (anchor) {
         page = page.where((expressions) =>
           expressions.or([
             expressions("threads.updatedAt", "<", anchor.timestamp),
@@ -898,23 +934,36 @@ export async function agentThreadPageForOwner(
             threadProviderSessionSelection,
             threadContinuationIdentitySelection,
           ])
-          .orderBy("threads.updatedAt", "desc")
+          .$if(since !== null, (query) =>
+            query.select([
+              sql<string>`changed.new_messages`.as("newMessages"),
+              sql<Date>`changed.first_new_at`.as("firstNewAt"),
+              sql<Date>`changed.last_new_at`.as("lastNewAt"),
+            ]),
+          )
+          .orderBy(since ? sql`changed.last_new_at` : sql.ref("threads.updatedAt"), "desc")
           .orderBy("threads.id", "desc")
           .limit(maxItems + 1)
           .execute(),
         base.select(({ fn }) => fn.countAll<string>().as("count")).executeTakeFirstOrThrow(),
       ]);
       const window = boundedSerializedPrefix(
-        rows.slice(0, maxItems).map((row) => ({
+        rows.slice(0, maxItems).map(({ newMessages, firstNewAt, lastNewAt: _, ...row }) => ({
           ...row,
           updatedAt: row.updatedAt.toISOString(),
           doneAt: row.doneAt?.toISOString() ?? null,
+          ...(newMessages !== undefined && firstNewAt !== undefined
+            ? { newMessages: Number(newMessages), firstNewAt: firstNewAt.toISOString() }
+            : {}),
         })),
         maxItems,
         maxBytes,
       );
       const hasMore = rows.length > window.items.length;
       const oldest = window.items.at(-1);
+      const oldestOrder = since
+        ? rows[window.items.length - 1]?.lastNewAt?.toISOString()
+        : oldest?.updatedAt;
       return {
         threads: window.items,
         window: {
@@ -922,8 +971,8 @@ export async function agentThreadPageForOwner(
           hasMore,
           itemCount: window.items.length,
           nextBefore:
-            hasMore && oldest
-              ? encodeWindowCursor("agent-thread", input.scopeId, oldest.updatedAt, oldest.id)
+            hasMore && oldest && oldestOrder
+              ? encodeWindowCursor(cursorKind, cursorScope, oldestOrder, oldest.id)
               : null,
           totalItems: safeCount(countRow.count),
         },
@@ -931,6 +980,43 @@ export async function agentThreadPageForOwner(
     },
     "repeatable read",
   );
+}
+/**
+ * Tasks with messages opensteer_task_read shows that are newer than `since`. A message is dated
+ * by its creation, or a queued input by its delivery. The union lets both indexes bound the read.
+ */
+function changedThreads(transaction: Transaction<DatabaseSchema>, since: Date) {
+  const changedAt = sql<Date>`coalesce(thread_inputs.updated_at, messages.created_at)`;
+  // Milliseconds, as cursors carry; the bound itself compares at full precision.
+  const dated = sql<Date>`date_trunc('milliseconds', ${changedAt})`;
+  return transaction
+    .selectFrom("messages")
+    .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
+    .select(({ fn }) => [
+      "messages.threadId",
+      fn.countAll<string>().as("newMessages"),
+      // The oldest new message's own time, where opensteer_task_read's history shows it.
+      sql<Date>`min(messages.created_at)`.as("firstNewAt"),
+      sql<Date>`max(${dated})`.as("lastNewAt"),
+    ])
+    .where(
+      "messages.id",
+      "in",
+      transaction
+        .selectFrom("messages")
+        .select("id")
+        .where("createdAt", ">", since)
+        .union(
+          transaction
+            .selectFrom("threadInputs")
+            .select("messageId as id")
+            .where("updatedAt", ">", since),
+        ),
+    )
+    .where("messages.kind", "!=", "continuation")
+    .where(publishedMessagePredicate("threadInputs"))
+    .where(changedAt, ">", since)
+    .groupBy("messages.threadId");
 }
 export async function getThreadForOwner(
   database: Kysely<DatabaseSchema>,
@@ -951,7 +1037,9 @@ export async function getThreadForOwner(
     .where("threads.id", "=", threadId)
     .where("threads.createdBy", "=", ownerId)
     .executeTakeFirst();
-  return row ? threadFromRow(row) : null;
+  return row
+    ? { ...threadFromRow(row), returnHint: await compactionReturnHint(database, threadId) }
+    : null;
 }
 export function admitRunToolCall(
   database: Kysely<DatabaseSchema>,
@@ -1000,7 +1088,10 @@ export async function readThreadForOwner(
         .execute();
       return {
         messages: messagesFromRows(messageRows.reverse()),
-        thread: threadFromRow(threadRow),
+        thread: {
+          ...threadFromRow(threadRow),
+          returnHint: await compactionReturnHint(transaction, threadId),
+        },
       };
     },
     "repeatable read",
@@ -1308,7 +1399,7 @@ export async function updateThreadExecutionSelection(
         transaction,
         current.environmentId,
         input.requestedBy,
-        "Only the execution owner can change this Thread's AI engine",
+        "Only the execution owner can change this task's AI account",
       );
       return {
         asOfSequence: await deploymentHead(transaction),
@@ -1324,7 +1415,7 @@ export async function updateThreadExecutionSelection(
     if (!observed)
       throw new OpensteerError({
         code: "not_found",
-        message: "Thread not found",
+        message: "Task not found",
       });
     await requirePersonalOwner(transaction, input.requestedBy);
     const requestedHarness = await transaction
@@ -1356,7 +1447,7 @@ export async function updateThreadExecutionSelection(
       transaction,
       thread.environmentId,
       input.requestedBy,
-      "Only the execution owner can change this Thread's AI engine",
+      "Only the execution owner can change this task's AI account",
     );
     const activeRun = await transaction
       .selectFrom("runs")
@@ -1374,7 +1465,7 @@ export async function updateThreadExecutionSelection(
     if (requestedHarness.environmentId !== thread.environmentId) {
       throw new OpensteerError({
         code: "bad_request",
-        message: "AI engine belongs to a different execution environment",
+        message: "AI account belongs to a different computer",
       });
     }
     if (requestedHarness.driverKind !== continuationIdentity.driverKind) {
@@ -1384,13 +1475,9 @@ export async function updateThreadExecutionSelection(
       });
     }
     const selected =
-      (await transaction
-        .selectFrom("providerSessions")
-        .selectAll()
-        .where("threadId", "=", thread.id)
-        .where("active", "=", true)
-        .forNoKeyUpdate()
-        .executeTakeFirst()) ?? null;
+      (await lockThreadProviderSessions(transaction, thread.id)).find(
+        (session) => session.active,
+      ) ?? null;
     const compatible =
       selected !== null &&
       (selected.continuationIdentity
@@ -1410,6 +1497,17 @@ export async function updateThreadExecutionSelection(
         code: "conflict",
         message: "The selected provider session changed before this AI engine update",
       });
+    }
+    const selectionChanged =
+      thread.harnessInstanceId !== input.harnessInstanceId ||
+      !isDeepStrictEqual(thread.modelSelection, modelSelection);
+    if (selectionChanged) {
+      await transaction
+        .updateTable("providerSessions")
+        .set({ contextSnapshot: null })
+        .where("threadId", "=", thread.id)
+        .execute();
+      await markThreadStatePending(transaction, thread.id);
     }
     let providerSessionId = selected?.id ?? null;
     if (compatible && selected && input.continuation === undefined) {
@@ -1464,12 +1562,15 @@ export async function updateThreadExecutionSelection(
       .where("id", "=", thread.id)
       .returningAll()
       .executeTakeFirstOrThrow();
-    const parsedThread = threadFromRow({
-      ...thread,
-      ...row,
-      continuationIdentity,
-      providerSessionId,
-    });
+    const parsedThread = {
+      ...threadFromRow({
+        ...thread,
+        ...row,
+        continuationIdentity,
+        providerSessionId,
+      }),
+      returnHint: await compactionReturnHint(transaction, thread.id),
+    };
     await transaction
       .insertInto("commands")
       .values({
@@ -1530,7 +1631,7 @@ export async function resumeThreadInputQueue(
     if (!observed)
       throw new OpensteerError({
         code: "not_found",
-        message: "Thread not found",
+        message: "Task not found",
       });
     await lockThreadRow(transaction, input.threadId);
     const thread = await transaction
@@ -1553,7 +1654,7 @@ export async function resumeThreadInputQueue(
     if (thread.status === "archived")
       throw new OpensteerError({
         code: "conflict",
-        message: "Archived threads cannot run",
+        message: "Archived tasks cannot run",
       });
     const payload = {
       type: "thread.inputQueue.resume",
@@ -1681,7 +1782,7 @@ export async function renameThread(
       if (!destination)
         throw new OpensteerError({
           code: "not_found",
-          message: "Thread not found",
+          message: "Task not found",
         });
       const thread = await transaction
         .selectFrom("threads")
@@ -1699,7 +1800,7 @@ export async function renameThread(
       if (!thread)
         throw new OpensteerError({
           code: "not_found",
-          message: "Thread not found",
+          message: "Task not found",
         });
       await requireThreadWriteAuthority(transaction, thread, input, "rename");
       if (existing)
@@ -1821,7 +1922,7 @@ export async function setThreadIcon(
       if (!destination)
         throw new OpensteerError({
           code: "not_found",
-          message: "Thread not found",
+          message: "Task not found",
         });
       const thread = await transaction
         .selectFrom("threads")
@@ -1839,7 +1940,7 @@ export async function setThreadIcon(
       if (!thread)
         throw new OpensteerError({
           code: "not_found",
-          message: "Thread not found",
+          message: "Task not found",
         });
       await requireThreadWriteAuthority(transaction, thread, input, "set_icon");
       if (existing)
@@ -2038,7 +2139,7 @@ export async function updateThreadAccessMode(
     if (!observed)
       throw new OpensteerError({
         code: "not_found",
-        message: "Thread not found",
+        message: "Task not found",
       });
     await requirePersonalOwner(transaction, input.requestedBy);
     const thread = await transaction
@@ -2058,7 +2159,7 @@ export async function updateThreadAccessMode(
       transaction,
       thread.environmentId,
       input.requestedBy,
-      "Only the execution owner can change this Thread's access mode",
+      "Only the execution owner can change this task's access mode",
     );
     if (thread.accessMode === accessMode)
       return {
@@ -2125,7 +2226,7 @@ export async function enqueueThreadInput(
   input: EnqueueThreadInputRequest,
 ): Promise<EnqueuedThreadInput> {
   return withPersonalTransaction(database, async (transaction) => {
-    await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
+    await lockThreadInputIdempotency(transaction, input);
     await lockThreadCaller(transaction, input.authority);
     const result = await enqueueThreadInputInTransaction(transaction, input);
     await assertThreadCaller(transaction, input.authority, {

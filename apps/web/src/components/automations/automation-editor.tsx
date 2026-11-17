@@ -30,7 +30,6 @@ interface Draft {
   scheduleKind: "at" | "cron";
   source: string;
   timezone: string;
-  toolContractVersion: TriggerProgram["toolContractVersion"];
 }
 
 /**
@@ -113,7 +112,7 @@ function EditorForm({ editing }: { readonly editing: TriggerDetail }) {
       const program: TriggerProgram = {
         language: draft.language,
         source: draft.source,
-        toolContractVersion: draft.toolContractVersion,
+        toolContractVersion: 4,
       };
       await hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`trigger-update:${editing.trigger.id}`),
@@ -335,7 +334,6 @@ function draftFrom(detail: TriggerDetail): Draft {
     scheduleKind: schedule?.kind ?? "cron",
     source: detail.revision.program.source,
     timezone: schedule?.kind === "cron" ? schedule.timezone : browserTimeZone(),
-    toolContractVersion: detail.revision.program.toolContractVersion,
   };
 }
 

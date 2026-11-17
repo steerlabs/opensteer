@@ -428,6 +428,7 @@ function acquire(
   mode: RowLockMode,
   statement: string,
   origin: StatementOrigin,
+  checkResourceOrder = true,
 ): void {
   const identity = resource + ":" + key;
   const held = state.held.get(identity);
@@ -444,43 +445,14 @@ function acquire(
     },
     statementId: state.statementId,
   };
-  // Record before enforcing: a rejected edge must remain visible in diagnostics.
-  for (const prior of state.held.values()) {
-    if (prior.resource === resource) continue;
-    // Row IDs remain tracked individually for ordering and upgrades. Graph
-    // edges describe statement acquisitions, with representative row keys;
-    // repeating the same edge for every pair of rows adds no lock constraint.
-    const signature = JSON.stringify([
-      prior.statementId,
-      prior.resource,
-      prior.mode,
-      resource,
-      mode,
-    ]);
-    if (state.statementEdges.has(signature)) continue;
-    state.statementEdges.add(signature);
-    const edge: LockOrderEdge = {
-      type: "edge",
-      database: state.database,
-      from: prior.resource,
-      to: resource,
-      heldMode: prior.mode,
-      requestedMode: mode,
-      heldKey: prior.key,
-      requestedKey: key,
-      statement,
-      previous: prior.statement,
-      stack: current.stack,
-      previousStack: prior.stack,
-    };
-    recordedLockOrderEdges.push(edge);
-    if (process.env.OPENSTEER_LOCK_ORDER_TRACE && traceEdge(edge))
-      appendFileSync(process.env.OPENSTEER_LOCK_ORDER_TRACE, JSON.stringify(edge) + "\n");
-  }
   const rank = databaseLockRank(resource);
-  if (rank < 0) violation(`unranked resource ${resource}`, state.high, current);
-  for (const prior of state.held.values())
-    if (rank < databaseLockRank(prior.resource) && rowLockModesConflict(prior.mode, mode)) {
+  if (checkResourceOrder) {
+    // Record before enforcing: a rejected edge must remain visible in diagnostics.
+    for (const prior of state.held.values()) {
+      if (prior.resource === resource) continue;
+      // Row IDs remain tracked individually for ordering and upgrades. Graph
+      // edges describe statement acquisitions, with representative row keys;
+      // repeating the same edge for every pair of rows adds no lock constraint.
       const signature = JSON.stringify([
         prior.statementId,
         prior.resource,
@@ -488,11 +460,42 @@ function acquire(
         resource,
         mode,
       ]);
-      if (!state.statementViolations.has(signature)) {
-        state.statementViolations.add(signature);
-        violation(`${prior.resource} -> ${resource}`, prior, current);
-      }
+      if (state.statementEdges.has(signature)) continue;
+      state.statementEdges.add(signature);
+      const edge: LockOrderEdge = {
+        type: "edge",
+        database: state.database,
+        from: prior.resource,
+        to: resource,
+        heldMode: prior.mode,
+        requestedMode: mode,
+        heldKey: prior.key,
+        requestedKey: key,
+        statement,
+        previous: prior.statement,
+        stack: current.stack,
+        previousStack: prior.stack,
+      };
+      recordedLockOrderEdges.push(edge);
+      if (process.env.OPENSTEER_LOCK_ORDER_TRACE && traceEdge(edge))
+        appendFileSync(process.env.OPENSTEER_LOCK_ORDER_TRACE, JSON.stringify(edge) + "\n");
     }
+    if (rank < 0) violation(`unranked resource ${resource}`, state.high, current);
+    for (const prior of state.held.values())
+      if (rank < databaseLockRank(prior.resource) && rowLockModesConflict(prior.mode, mode)) {
+        const signature = JSON.stringify([
+          prior.statementId,
+          prior.resource,
+          prior.mode,
+          resource,
+          mode,
+        ]);
+        if (!state.statementViolations.has(signature)) {
+          state.statementViolations.add(signature);
+          violation(`${prior.resource} -> ${resource}`, prior, current);
+        }
+      }
+  }
   const previousKey = state.last.get(resource);
   if (!held && previousKey && key < previousKey)
     for (const prior of state.held.values())
@@ -913,7 +916,15 @@ async function checked(
   }
   if (op === "commit" || (op === "rollback" && !/rollback\s+to/iu.test(sql))) {
     try {
-      if (op === "commit" && !state.migration && state.deferredTables.length)
+      // Without an xid, no row change could have queued a deferred trigger.
+      // Probing their tables anyway can deadlock a reader against fixture TRUNCATE.
+      if (
+        op === "commit" &&
+        !state.migration &&
+        state.deferredTables.length &&
+        (await raw(client, "select pg_current_xact_id_if_assigned() is not null as assigned"))
+          .rows[0]!.assigned
+      )
         await checked(
           client,
           {
@@ -1078,8 +1089,12 @@ async function checked(
         statement: sql,
         stack: origin.stack,
       });
-    for (const [key, mode] of existing.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
-      acquire(state, table, key, mode, sql, origin);
+    const checkedModes = new Set<RowLockMode>();
+    for (const [key, mode] of existing.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+      // This table's new rows cannot change the other resources held by the transaction.
+      acquire(state, table, key, mode, sql, origin, !checkedModes.has(mode));
+      checkedModes.add(mode);
+    }
   }
   if (mutation) {
     for (const row of result.rows) delete row.__opensteer_lock_key;

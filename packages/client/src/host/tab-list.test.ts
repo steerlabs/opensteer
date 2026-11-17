@@ -27,7 +27,7 @@ const nameOf = (id: string) => machines.find((value) => value.id === id)?.name ?
 const place = (
   key: string,
   device: string | null,
-  kind: PlaceItem["kind"] = "browser",
+  kind: PlaceItem["kind"] = "page",
   busy = false,
 ): PlaceItem =>
   ({
@@ -39,11 +39,11 @@ const place = (
   }) as unknown as PlaceItem;
 
 const places = [
-  place("a", "mini", "browser", true),
+  place("a", "mini", "page", true),
   place("b", "studio"),
-  place("c", "studio", "app", true),
+  place("c", "studio", "window", true),
   place("phone", "pixel", "phone"),
-  place("budget", null, "opensteer-app"),
+  place("budget", null, "app"),
 ];
 
 describe("the device each row names", () => {

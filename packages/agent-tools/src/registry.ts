@@ -25,6 +25,7 @@ export interface AgentToolSpec<
   Output extends z.ZodType = z.ZodType,
 > {
   readonly access: AgentToolAccess;
+  readonly capability?: keyof RunToolCapabilities;
   /** A call that only reads, so it needs read access whatever the tool's own. */
   readsOnly?(input: z.output<Input>): boolean;
   /** Present for the lifetime of a task bound to a team thread. */
@@ -38,6 +39,11 @@ export interface AgentToolSpec<
   readonly destructive?: true;
   readonly input: Input;
   readonly name: Name;
+  /**
+   * Opens a durable or live Request for the person. Its call is held for their
+   * answer in a foreground Run and returns pending everywhere else.
+   */
+  readonly opensRequest?: true;
   /** Reaches outside Opensteer, such as a third-party service or a page. */
   readonly openWorld?: true;
   readonly output: Output;
@@ -72,4 +78,11 @@ export function agentToolAnnotations(spec: AnyAgentToolSpec): AgentToolAnnotatio
     readOnlyHint: spec.access === "read",
     title: spec.title,
   };
+}
+
+export interface RunToolCapabilities {
+  readonly tabs: boolean;
+  readonly pages: boolean;
+  readonly computerUse: boolean;
+  readonly apps: boolean;
 }

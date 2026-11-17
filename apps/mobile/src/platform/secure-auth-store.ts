@@ -1,6 +1,7 @@
 import { DeploymentIdSchema, type DeploymentId } from "@opensteer/core";
 import {
   AccountCredentialSchema,
+  LegacyHostCredentialSchema,
   HostCredentialSchema,
   emptyProtectedAuthState,
   type AccountCredential,
@@ -14,6 +15,9 @@ import type { SecureRecordStore } from "./secure-record-store.js";
 const accountRecord = "account";
 const hostIndexRecord = "hosts";
 const hostRecord = (deploymentId: DeploymentId): string => `host.${deploymentId}`;
+
+const HostBindingSchema = HostCredentialSchema.pick({ refreshToken: true, accountIdentity: true });
+const hostBindingRecord = (id: DeploymentId): string => `${hostRecord(id)}.binding`;
 
 const HostIndexSchema = DeploymentIdSchema.array().max(100);
 
@@ -54,8 +58,19 @@ export function createSecureAuthStore(records: SecureRecordStore): ProtectedAuth
     for (const deploymentId of await readHostIndex()) {
       const stored = await records.read(hostRecord(deploymentId));
       if (stored === null) continue;
-      const parsed = HostCredentialSchema.safeParse(safeJson(stored));
-      if (parsed.success && parsed.data.deploymentId === deploymentId) hosts.push(parsed.data);
+      const parsed = LegacyHostCredentialSchema.safeParse(safeJson(stored));
+      if (parsed.success && parsed.data.deploymentId === deploymentId) {
+        const metadata = HostBindingSchema.safeParse(
+          safeJson((await records.read(hostBindingRecord(deploymentId))) ?? "null"),
+        ).data;
+        hosts.push({
+          ...parsed.data,
+          ...(metadata?.refreshToken === parsed.data.refreshToken &&
+          metadata?.accountIdentity !== undefined
+            ? { accountIdentity: metadata.accountIdentity }
+            : {}),
+        });
+      }
     }
     return hosts;
   };
@@ -64,6 +79,7 @@ export function createSecureAuthStore(records: SecureRecordStore): ProtectedAuth
     ...emptyProtectedAuthState(),
     account: await readAccount(),
     hosts: [...(await readHosts())],
+    signedOutTeams: HostIndexSchema.parse(safeJson((await records.read("signedOutTeams")) ?? "[]")),
   });
 
   /**
@@ -83,13 +99,28 @@ export function createSecureAuthStore(records: SecureRecordStore): ProtectedAuth
           hostIndexRecord,
           JSON.stringify(previous.filter((deploymentId) => !ids.has(deploymentId))),
         );
-        for (const deploymentId of dropped) await records.remove(hostRecord(deploymentId));
+        for (const deploymentId of dropped) {
+          await records.remove(hostBindingRecord(deploymentId));
+          await records.remove(hostRecord(deploymentId));
+        }
       }
       return load();
     });
 
   return {
     assertAvailable: () => records.assertAvailable(),
+    setTeamSignOutSuppression: (deploymentId, suppressed) =>
+      mutations.run(async () => {
+        const current = await load();
+        await records.write(
+          "signedOutTeams",
+          JSON.stringify([
+            ...(current.signedOutTeams ?? []).filter((id) => id !== deploymentId),
+            ...(suppressed ? [deploymentId] : []),
+          ]),
+        );
+        return load();
+      }),
 
     clearAccount: () =>
       mutations.run(async () => {
@@ -124,7 +155,22 @@ export function createSecureAuthStore(records: SecureRecordStore): ProtectedAuth
         // leaves a record nothing points at, which the next mutation's index
         // write adopts or the next removal ignores. The other way round leaves
         // the index promising a credential that was never stored.
-        await records.write(hostRecord(parsed.deploymentId), JSON.stringify(parsed));
+        await records.write(
+          hostBindingRecord(parsed.deploymentId),
+          JSON.stringify(
+            HostBindingSchema.parse({
+              refreshToken: parsed.refreshToken,
+              ...(parsed.accountIdentity === undefined
+                ? {}
+                : { accountIdentity: parsed.accountIdentity }),
+            }),
+          ),
+        );
+        const { accountIdentity: _binding, ...legacy } = parsed;
+        await records.write(
+          hostRecord(parsed.deploymentId),
+          JSON.stringify(LegacyHostCredentialSchema.parse(legacy)),
+        );
         const index = await readHostIndex();
         if (!index.includes(parsed.deploymentId)) {
           await records.write(hostIndexRecord, JSON.stringify([...index, parsed.deploymentId]));

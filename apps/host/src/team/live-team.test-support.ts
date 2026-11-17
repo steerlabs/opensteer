@@ -160,7 +160,7 @@ export async function createLiveTeamFixture() {
       channelId: channel.id,
       threadRootId: null,
       clientMessageId: randomUUID(),
-      bodyMarkdown: "Help",
+      bodyMarkdown: "@reviewmember-agent Help",
       mentions: [{ kind: "agent", userId: memberId }],
       attachmentIds: [],
     });

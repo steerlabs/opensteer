@@ -1,6 +1,10 @@
+import { buildMobileTabDeepLink, parseMobileTabDeepLink } from "./deep-links.js";
+import { TabIdSchema } from "./ids.js";
 import { describe, expect, it } from "vitest";
 import {
   buildMobilePairingDeepLink,
+  buildMobileNeedsYouDeepLink,
+  parseMobileNeedsYouDeepLink,
   buildMobileThreadDeepLink,
   parseMobileOpenDeepLink,
   parseMobilePairingDeepLink,
@@ -133,4 +137,29 @@ describe("codes scanned from a computer", () => {
   ])("is not an Opensteer code: %s", (value) => {
     expect(parseMobileSetupCode(value, portal)).toBeNull();
   });
+});
+
+it("accepts only a taskless personal Needs you destination", () => {
+  const link = buildMobileNeedsYouDeepLink(deploymentId);
+  expect(parseMobileNeedsYouDeepLink(link)).toEqual({ deploymentId });
+  for (const invalid of [
+    `${link}?approve=true`,
+    `${link}#decision`,
+    `${link}/extra`,
+    link.replace("needs-you", "threads"),
+    link.replace(deploymentId, "unknown"),
+    link.replace(":/", "://attacker.invalid/"),
+  ])
+    expect(parseMobileNeedsYouDeepLink(invalid)).toBeNull();
+});
+
+it("round trips a stable tab destination without route credentials or runtime IDs", () => {
+  const deploymentId = createId("deployment");
+  for (const value of ["a/b ?#🦊", "..", "x".repeat(512)]) {
+    const tabId = TabIdSchema.parse(value);
+    const link = buildMobileTabDeepLink({ deploymentId, tabId });
+    expect(parseMobileTabDeepLink(link)).toEqual({ deploymentId, tabId });
+    for (const suffix of ["?token=secret", "#fragment"])
+      expect(parseMobileTabDeepLink(link + suffix)).toBeNull();
+  }
 });

@@ -1,3 +1,4 @@
+import { machineSelfRunnerId } from "./device-projection.js";
 import { parseNavigationInput, webSearchUrl, type NavigationInput } from "./navigation-input.js";
 import {
   computerAppIdentityKey,
@@ -13,9 +14,10 @@ import { deviceElsewhere, type DeviceElsewhere } from "../computers/computers.js
 import type { HostSnapshot } from "./client.js";
 import type { BrowserHistoryEntry } from "@opensteer/protocol";
 import { placeList, placeSearchFields, type PlaceItem } from "./places.js";
-import { browserTabStrip } from "./browser-tab-strip.js";
+import { tabGroupOf } from "./tab-strip.js";
+import type { TabTarget } from "@opensteer/core";
 import { matchSearch, rankSearch, searchQuery, searchText, type SearchField } from "./search.js";
-import type { PersonalSurfaceDestination as SurfaceDestination } from "./surfaces.js";
+import type { TabDestination } from "./surfaces.js";
 
 export type BrowserIdentityChoice =
   { readonly kind: "profile"; readonly profileId: string } | { readonly kind: "guest" };
@@ -67,7 +69,7 @@ export function profileBadgesVisible(places: readonly Pick<PlaceItem, "identity"
 export type StartPageAction =
   | {
       readonly kind: "switch-to-place";
-      readonly destination: SurfaceDestination;
+      readonly destination: TabDestination;
       readonly placeKey: string;
     }
   | {
@@ -83,9 +85,9 @@ export type StartPageAction =
       readonly placement?: BrowserPlacementSelector;
     }
   | {
-      readonly kind: "open-computer-view";
-      readonly machineId: ApprovedComputerApp["machineId"];
-      readonly target: ApprovedComputerApp["target"];
+      /** An approved app's window or a phone, opened as a tab. */
+      readonly kind: "open-tab";
+      readonly target: TabTarget;
     };
 export interface StartPageResult {
   readonly key: string;
@@ -168,7 +170,7 @@ export function startPageChoice(input: {
   const source = input.sourcePlace?.identity;
   return source?.kind === "profile"
     ? { kind: "profile", profileId: source.profileId }
-    : source?.kind === "guest" && input.sourcePlace?.browser?.opener.kind === "you"
+    : source?.kind === "guest" && input.sourcePlace?.tab.openedBy === "person"
       ? { kind: "guest" }
       : (input.lastChoice ?? { kind: "guest" });
 }
@@ -231,12 +233,14 @@ export function startPageIndex(input: {
           null)
         : null;
     const home =
-      homeId === null ? undefined : snapshot.machines.find((machine) => machine.id === homeId);
+      homeId === null
+        ? undefined
+        : snapshot.machines.find((machine) => machineSelfRunnerId(machine) === homeId);
     const away = home && home.status !== "online" ? home.name : null;
     return {
       identity,
       presentation,
-      device: deviceElsewhere(snapshot.machines, homeId, input.localMachineId ?? null),
+      device: deviceElsewhere(snapshot.machines, home?.id ?? null, input.localMachineId ?? null),
       away,
       // A profile with a home opens only there; Guest and a profile with no
       // home yet open wherever the Host places them.
@@ -282,22 +286,15 @@ export function startPageIndex(input: {
       a.machineId.localeCompare(b.machineId),
   );
   const listed = input.places ?? placeList(snapshot);
-  const groupTitles = new Map<string, string>();
-  for (const row of browserTabStrip(listed, snapshot.browserTabGroups).web)
-    if (row.kind === "group")
-      for (const place of row.places) groupTitles.set(place.key, row.group.title);
   // A tab is found here by what finds it in the sidebar.
   const places = listed.map((place) => {
-    const destination = place.destination;
     return {
       place,
-      fillText:
-        destination.kind === "browser"
-          ? (snapshot.browserTabs?.surface(destination.sessionId, destination.tabId)?.url ??
-            place.site ??
-            place.title)
-          : place.title,
-      fields: placeSearchFields(place, groupTitles.get(place.key) ?? null),
+      fillText: place.kind === "page" ? (place.tab.url ?? place.site ?? place.title) : place.title,
+      fields: placeSearchFields(
+        place,
+        tabGroupOf(snapshot.tabs.layout, place.tab.tabId)?.name ?? null,
+      ),
     };
   });
   const apps = groups.flatMap((group) =>
@@ -427,28 +424,15 @@ export function startPageResults(
       ? { score: 100, ranges: [], hint: null }
       : matchSearch(entry.fields, words);
   })) {
-    if (input.includeApps === false && place.kind !== "browser") continue;
-    // A task's hold on an approved app is not the person's view of it: its app row opens one.
-    if (
-      place.kind !== "browser" &&
-      !place.ownerView &&
-      index.apps.some(
-        ({ app }) =>
-          app.machineId === place.device?.machineId &&
-          (app.target.kind === "app" && place.icon.kind === "app"
-            ? computerAppIdentityKey(app.target.app) === computerAppIdentityKey(place.icon.app)
-            : app.target.kind === "phone" && place.kind === "phone"),
-      )
-    )
-      continue;
+    if (input.includeApps === false && place.kind !== "page") continue;
     shownKeys.add(place.key);
     results.push({
       key: place.key,
       kind: "tab",
       title: place.title,
       fillText,
-      detail: place.kind === "browser" ? fillText : (place.device?.name ?? null),
-      label: place.kind === "browser" ? "Switch to tab" : "Switch to view",
+      detail: place.kind === "page" ? fillText : place.device.name,
+      label: "Switch to tab",
       available: place.availability !== "unavailable",
       action: { kind: "switch-to-place", destination: place.destination, placeKey: place.key },
       place,
@@ -473,9 +457,8 @@ export function startPageResults(
             : `Open ${app.app.name} · ${app.group.label}`,
         available: app.available,
         action: {
-          kind: "open-computer-view",
-          machineId: app.app.machineId,
-          target: app.app.target,
+          kind: "open-tab",
+          target: approvedAppTarget(app.app),
         },
         app: app.app,
         ...(readiness ? { notReady: readiness } : {}),
@@ -496,6 +479,15 @@ export function startPageResults(
       return true;
     })
     .slice(0, startPageResultLimit);
+}
+
+/** Opening an approved app binds one of its windows; a phone opens its one tab. */
+export function approvedAppTarget(app: ApprovedComputerApp): TabTarget {
+  return (
+    app.target.kind === "phone"
+      ? { kind: "phone", computerId: app.machineId }
+      : { kind: "window", computerId: app.machineId, bundleId: app.target.app.bundleId }
+  ) as TabTarget;
 }
 
 export function sameIdentity(a: BrowserIdentityChoice, b: BrowserIdentityChoice): boolean {

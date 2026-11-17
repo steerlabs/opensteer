@@ -221,6 +221,28 @@ async function main() {
   }
   emit({ message: { content: [{ text: prompt, type: "text" }], role: "user" }, type: "user" });
 
+  if (scenario === "tool-image-output") {
+    const args = { name: "probe", providerIdentifier: "probe", toolName: "probe", args: {} };
+    emit({
+      type: "tool_call",
+      subtype: "started",
+      call_id: "image-1",
+      tool_call: { mcpToolCall: { args } },
+    });
+    emit({
+      type: "tool_call",
+      subtype: "completed",
+      call_id: "image-1",
+      tool_call: {
+        mcpToolCall: {
+          args,
+          result: {
+            success: { content: [{ type: "image", mimeType: "image/png", data: "iVBORw0KGgoA" }] },
+          },
+        },
+      },
+    });
+  }
   if (scenario === "huge-line") {
     process.stdout.write(
       `${JSON.stringify({ text: "x".repeat(200_000), type: "thinking", subtype: "delta" })}\n`,
@@ -476,6 +498,28 @@ async function main() {
         },
       },
       type: "tool_call",
+    });
+  } else if (scenario === "image-completed" || scenario === "image-failed") {
+    const args = { prompt: "A tree", filePath: "/tmp/tree.jpg" };
+    emit({
+      type: "tool_call",
+      subtype: "started",
+      call_id: "image-call",
+      tool_call: { generateImageToolCall: { args } },
+    });
+    emit({
+      type: "tool_call",
+      subtype: "completed",
+      call_id: "image-call",
+      tool_call: {
+        generateImageToolCall: {
+          args,
+          result:
+            scenario === "image-completed"
+              ? { success: {} }
+              : { error: { message: "Renderer failed" } },
+        },
+      },
     });
   } else if (scenario === "unknown-tool") {
     emit({

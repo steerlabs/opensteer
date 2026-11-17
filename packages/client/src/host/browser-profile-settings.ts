@@ -1,3 +1,4 @@
+import { machineSelfRunnerId } from "./device-projection.js";
 import {
   computerGlyph,
   deviceElsewhere,
@@ -23,7 +24,7 @@ export interface BrowserProfileSettingsRow {
 }
 
 export type BrowserProfileSettingsSource = PlaceListSource &
-  Pick<HostSnapshot, "browserProfileHomes">;
+  Pick<HostSnapshot, "browserProfileHomes" | "machines">;
 
 export function browserProfileSettingsRows(
   snapshot: BrowserProfileSettingsSource,
@@ -35,7 +36,14 @@ export function browserProfileSettingsRows(
     .map((profile) => ({
       profile,
       identity: browserIdentity(profile.id, snapshot.browserProfiles),
-      device: deviceElsewhere(snapshot.machines, profile.homeRunnerId, hereId),
+      device: deviceElsewhere(
+        snapshot.machines,
+        snapshot.machines.find(
+          (machine) =>
+            profile.homeRunnerId !== null && machineSelfRunnerId(machine) === profile.homeRunnerId,
+        )?.id ?? null,
+        hereId,
+      ),
       // An older Host says nothing of homes, so its profiles are not "unopened".
       unopened: profile.homeRunnerId === null && snapshot.browserProfileHomes !== undefined,
       tabs: places.filter(
@@ -67,22 +75,29 @@ export interface ProfileHomeChoice {
  * would put it instead: the computer that agent works on, else the main one.
  */
 export function profileHomeChoice(
-  snapshot: Pick<HostSnapshot, "browserProfileHomes" | "deploymentShape" | "can" | "machines">,
+  snapshot: Pick<HostSnapshot, "browserProfileHomes" | "machines">,
   hereId: string | null,
   asking?: { readonly runnerId: string | null },
 ): ProfileHomeChoice | null {
   const homes = snapshot.browserProfileHomes ?? [];
+  const hereMachine = snapshot.machines.find(({ id }) => id === hereId);
+  const hereRunnerId = hereMachine ? machineSelfRunnerId(hereMachine) : null;
   const options = orderDevices(
-    snapshot.machines
-      .filter(({ id }) => homes.includes(id))
-      .map((machine) => ({
-        glyph: computerGlyph(machine),
-        here: machine.id === hereId,
-        id: machine.id,
-        name: machine.name,
-        main: hostsDeployment(machine),
-      })),
-    hereId,
+    snapshot.machines.flatMap((machine) => {
+      const runnerId = machineSelfRunnerId(machine);
+      return runnerId && homes.includes(runnerId)
+        ? [
+            {
+              glyph: computerGlyph(machine),
+              here: machine.id === hereId,
+              id: runnerId,
+              name: machine.name,
+              main: hostsDeployment(machine),
+            },
+          ]
+        : [];
+    }),
+    hereRunnerId,
   );
   if (options.length < 2) return null;
   const initial =
@@ -114,8 +129,8 @@ export function browserProfileDeletionRows(
 ): { readonly profileId: string; readonly status: string }[] {
   return (snapshot.browserProfileDeletions ?? []).map((deletion) => {
     const computer =
-      snapshot.machines.find((machine) => machine.id === deletion.computerId)?.name ??
-      "its computer";
+      snapshot.machines.find((machine) => machineSelfRunnerId(machine) === deletion.computerId)
+        ?.name ?? "its computer";
     return {
       profileId: deletion.profileId,
       status:

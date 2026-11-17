@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import { ModelSelectionSchema } from "@opensteer/core";
 import { caseChain, copyWorkspace } from "./chains.js";
-import { parseCases } from "./cases.js";
+import { caseAtTime, parseCases } from "./cases.js";
 import { grade, gradeWorkspaceFiles, gradeToolBoundary, type Check } from "./grader.js";
 import {
   compareBaseline,
@@ -46,7 +46,6 @@ if (parsed.values.help) {
   await main();
 }
 async function main() {
-  provideBuiltProcessSupervisor(process.env, checkout);
   const engine: Engine = z.enum(["claude", "codex"]).parse(parsed.values.engine);
   const concurrency = integer.max(16).parse(parsed.values.concurrency);
   const samples =
@@ -76,6 +75,7 @@ async function main() {
     console.log(`Validated ${cases.length} cases for ${engine}`);
     return;
   }
+  provideBuiltProcessSupervisor(process.env, checkout);
   const { engineVersion, prepareEngine, runEngine } = await import("./engine.js");
   const { startFakeHost } = await import("./host.js");
   let output = resolve(
@@ -228,7 +228,8 @@ async function main() {
             try {
               root = await mkdtemp(join(tmpdir(), "opensteer-eval-sample-"));
               let previousWorkspace: string | undefined;
-              for (const [stageIndex, stage] of caseChain(c, corpus).entries()) {
+              for (const [stageIndex, sourceStage] of caseChain(c, corpus).entries()) {
+                const stage = caseAtTime(sourceStage, Date.now());
                 const stageRoot = join(root, String(stageIndex));
                 await mkdir(stageRoot);
                 const p = await prepareEngine(stageRoot, engine, stop.signal, inspected.models);

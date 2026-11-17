@@ -34,7 +34,7 @@ export async function requireMachineAccessManagement(
 ): Promise<void> {
   const ownership = await store.effectiveMachineOwner(runnerId);
   if (!ownership)
-    throw new OpensteerError({ code: "not_found", message: "Active Runner not found" });
+    throw new OpensteerError({ code: "not_found", message: "Active computer not found" });
   if (machineIsManagedBy(ownership, actor.userId)) {
     return;
   }

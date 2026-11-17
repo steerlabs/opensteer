@@ -1,4 +1,6 @@
+import { createToolImageStore } from "@opensteer/harness";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   ModelSelectionSchema,
   OpensteerError,
@@ -6,6 +8,7 @@ import {
   type HarnessInstanceId,
 } from "@opensteer/core";
 import {
+  Deferred,
   nativeUserHarnessRuntimeBoundary,
   spawnSupervised,
   type HarnessEvent,
@@ -26,6 +29,7 @@ import {
 import type {
   AcpHarnessOptions,
   AcpPermissionRequest,
+  AcpPromptBlock,
   AcpProtocolClient,
   AcpProtocolHandlers,
 } from "./index.js";
@@ -37,6 +41,180 @@ afterEach(async () => {
   await Promise.allSettled(
     directories.splice(0).map((path) => rm(path, { force: true, recursive: true })),
   );
+});
+
+describe("ACP guidance delivery", () => {
+  it("delivers once, resends changed guidance, and preserves per-Run facts across reuse", async () => {
+    const f = await setup("replay");
+    const session = await f.adapter.startSession(f.context);
+    try {
+      // A person's text never reaches the engine as a native command that could change its authority.
+      await session.execute(f.turn("/always-approve on"));
+      const [lead] = f.prompts[0] as readonly AcpPromptBlock[];
+      expect(lead?.type === "text" && lead.text.trimStart().startsWith("/")).toBe(false);
+      expect(JSON.stringify(f.prompts[0])).toContain("Opensteer guide.");
+      expect(await session.releaseForReuse?.()).toBe(true);
+      session.rebind?.({ ...f.context, machineAccessNotice: "Computer changed" });
+      await session.execute(f.turn("second"));
+      expect(JSON.stringify(f.prompts[1])).not.toContain("Opensteer guide.");
+      expect(JSON.stringify(f.prompts[1])).toContain("Computer changed");
+      session.rebind?.({ ...f.context, platformGuide: "Changed guide" });
+      await session.execute(f.turn("third"));
+      expect(JSON.stringify(f.prompts[2])).toContain("Changed guide");
+    } finally {
+      await f.adapter.close();
+    }
+  });
+
+  it("reinjects after root compaction, ignores duplicate completions and child compactions", async () => {
+    const f = await setup("replay");
+    const session = await f.adapter.startSession(f.context);
+    const compact = (sessionId: string, compactionId: string) =>
+      f.update(sessionId, {
+        sessionUpdate: "compaction_update",
+        status: "completed",
+        compactionId,
+      });
+    try {
+      await session.execute(f.turn("first"));
+      compact("child-session", "child");
+      await session.execute(f.turn("second"));
+      expect(JSON.stringify(f.prompts[1])).not.toContain("Opensteer guide.");
+      compact("new-session", "root");
+      await session.execute(f.turn("third"));
+      expect(JSON.stringify(f.prompts[2])).toContain("Opensteer guide.");
+      compact("new-session", "root");
+      await session.execute(f.turn("fourth"));
+      expect(JSON.stringify(f.prompts[3])).not.toContain("Opensteer guide.");
+    } finally {
+      await f.adapter.close();
+    }
+  });
+
+  it.each(["cancelled", "refusal", "error", "throw"])(
+    "does not record %s outcomes",
+    async (reason) => {
+      const f = await setup("replay");
+      f.promptOutcome = reason;
+      const session = await f.adapter.startSession(f.context);
+      try {
+        await session.execute(f.turn("first"));
+        f.promptOutcome = "end_turn";
+        await session.execute(f.turn("second"));
+        expect(JSON.stringify(f.prompts[1])).toContain("Opensteer guide.");
+      } finally {
+        await f.adapter.close();
+      }
+    },
+  );
+
+  it("observes compaction during preparation and preserves compaction during an RPC", async () => {
+    const f = await setup("replay");
+    const session = await f.adapter.startSession(f.context);
+    const compact = (id: string) =>
+      f.update("new-session", {
+        sessionUpdate: "compaction_update",
+        status: "completed",
+        compactionId: id,
+      });
+    try {
+      await session.execute(f.turn("first"));
+      f.prepare = () => {
+        f.prepare = undefined;
+        compact("preparing");
+      };
+      await session.execute(f.turn("second"));
+      expect(JSON.stringify(f.prompts[1])).toContain("Opensteer guide.");
+      compact("before-rpc");
+      f.duringPrompt = () => {
+        f.duringPrompt = undefined;
+        compact("running");
+      };
+      await session.execute(f.turn("third"));
+      await session.execute(f.turn("fourth"));
+      expect(JSON.stringify(f.prompts[3])).toContain("Opensteer guide.");
+      await session.execute(f.turn("fifth"));
+      expect(JSON.stringify(f.prompts[4])).not.toContain("Opensteer guide.");
+    } finally {
+      await f.adapter.close();
+    }
+  });
+
+  it.each(["permission", "persistent-permission"] as const)(
+    "keeps %s approval authority within its Run",
+    async (scenario) => {
+      const f = await setup(scenario);
+      const session = await f.adapter.startSession(f.context);
+      const observed = observe(session.events);
+      try {
+        const execution = session.execute(f.turn("ask"));
+        await vi.waitFor(() =>
+          expect(observed.events.some((event) => event.type === "request.opened")).toBe(true),
+        );
+        expect(await session.releaseForReuse?.()).toBe(false);
+        expect(() => session.rebind?.(f.context)).toThrow("during a Run");
+        const request = observed.events.find((event) => event.type === "request.opened");
+        if (request?.type !== "request.opened") throw new Error("ACP approval never arrived");
+        await session.resolveRequest(request.data.request.id, {
+          kind: "choice",
+          optionId: "allow",
+        });
+        await execution;
+        expect(await session.releaseForReuse?.()).toBe(scenario === "permission");
+      } finally {
+        await f.adapter.close();
+        await observed.done;
+      }
+      expect(await session.releaseForReuse?.()).toBe(false);
+    },
+  );
+
+  it("ignores a replaced runtime's late prompt settlement", async () => {
+    const f = await setup("replay");
+    const first = await f.adapter.startSession(f.context);
+    const started = new Deferred<void>();
+    const gate = new Deferred<void>();
+    f.duringPrompt = async () => {
+      started.resolve();
+      await gate.promise;
+    };
+    const execution = first.execute(f.turn("first"));
+    try {
+      await withTimeout(started.promise, 1_000, {
+        timeoutError: () => new Error("First prompt never started"),
+      });
+      await first.stop();
+      f.duringPrompt = undefined;
+      const next = await f.adapter.resumeSession("new-session", {
+        ...f.context,
+        platformGuide: "Replacement guide",
+      });
+      await next.execute(f.turn("replacement"));
+      expect(JSON.stringify(f.prompts[0])).toContain("Replacement guide");
+      gate.resolve();
+      await execution;
+      await next.execute(f.turn("continue"));
+      expect(JSON.stringify(f.prompts[2])).not.toContain("Replacement guide");
+    } finally {
+      gate.resolve();
+      await execution;
+      await f.adapter.close();
+    }
+  });
+
+  it("resets delivery when a new process resumes the same native session", async () => {
+    const f = await setup("replay");
+    const first = await f.adapter.startSession(f.context);
+    await first.execute(f.turn("first"));
+    await first.stop();
+    const next = await f.adapter.resumeSession("new-session", f.context);
+    try {
+      await next.execute(f.turn("second"));
+      expect(JSON.stringify(f.prompts[1])).toContain("Opensteer guide.");
+    } finally {
+      await f.adapter.close();
+    }
+  });
 });
 
 describe("ACP lifecycle", () => {
@@ -391,6 +569,7 @@ type Scenario =
   | "held-interruption"
   | "held-prompt-error"
   | "held-assistant-deadline"
+  | "persistent-permission"
   | "permission"
   | "child-permission"
   | "prompt-error"
@@ -412,6 +591,11 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
   const heldAssistantReached = new Promise<void>((resolve) => {
     notifyHeldAssistantReached = resolve;
   });
+  const controls: {
+    promptOutcome: string;
+    prepare?: (() => void) | undefined;
+    duringPrompt?: (() => void | Promise<void>) | undefined;
+  } = { promptOutcome: "end_turn" };
   const options: AcpHarnessOptions = {
     capabilities: {
       approvals: true,
@@ -425,6 +609,10 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
     },
     engineLabel: "Test ACP",
     hooks: {
+      rewritePromptText: (text) => {
+        controls.prepare?.();
+        return text;
+      },
       classifyError: (error) =>
         error instanceof OpensteerError
           ? error
@@ -525,7 +713,7 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
     readonly process: SupervisedProcess;
   }): AcpProtocolClient => {
     handlers = input.handlers;
-    return fakeClient(
+    const client = fakeClient(
       scenario,
       input.handlers,
       (choice) => selectedPermissions.push(choice),
@@ -533,6 +721,20 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
       notifyHeldAssistantReached,
       prompts,
     );
+    return {
+      ...client,
+      prompt: async (...args) => {
+        await controls.duringPrompt?.();
+        if (controls.promptOutcome === "throw") {
+          prompts.push(args[1]);
+          throw new Error("prompt failed");
+        }
+        const result = await client.prompt(...args);
+        return controls.promptOutcome === "end_turn"
+          ? result
+          : { stopReason: controls.promptOutcome };
+      },
+    };
   };
   const adapter = new AcpHarnessAdapter(
     instanceId,
@@ -545,10 +747,10 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
   const context: HarnessSessionContext = {
     accessMode: "full-access",
     agentTools: {
-      tools: ["thread_read", "integration_call", "computer"],
+      tools: ["opensteer_task_read", "integration_call", "computer_use"],
       toolsRevision: "test-tools-v1",
       instructions: "Host Opensteer instructions",
-      skills: ["opensteer:threads"],
+      skills: ["opensteer:tasks"],
       token: "agent-token",
       url: "https://host/mcp",
     },
@@ -586,6 +788,25 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
   };
   expect(handlers).toBeUndefined();
   return {
+    get promptOutcome() {
+      return controls.promptOutcome;
+    },
+    set promptOutcome(value: string) {
+      controls.promptOutcome = value;
+    },
+    get prepare() {
+      return controls.prepare;
+    },
+    set prepare(value: (() => void) | undefined) {
+      controls.prepare = value;
+    },
+    get duringPrompt() {
+      return controls.duringPrompt;
+    },
+    set duringPrompt(value: (() => void | Promise<void>) | undefined) {
+      controls.duringPrompt = value;
+    },
+    update: (sessionId: string, update: unknown) => handlers!.update(sessionId, update),
     adapter,
     context,
     heldAssistantReached,
@@ -596,8 +817,8 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
         context: {
           assignment: null,
           teamTurnContext: null,
-          requesterTimeZone: null,
           threadState: { previousAssignment: null, previousRun: null },
+          startedAt: "2026-08-22T00:00:00.000Z",
         },
         environment,
         inputs: [
@@ -745,13 +966,21 @@ function fakeClient(
         });
         throw new Error("prompt RPC failed");
       }
-      if (scenario === "permission" || scenario === "child-permission") {
+      if (
+        scenario === "permission" ||
+        scenario === "persistent-permission" ||
+        scenario === "child-permission"
+      ) {
         if (scenario === "child-permission")
           handlers.update("new-session", { sessionUpdate: "child-started" });
         const choice = await handlers.permission(
           {
             options: [
-              { id: "allow", kind: "allow_once", label: "Allow" },
+              {
+                id: "allow",
+                kind: scenario === "persistent-permission" ? "allow_always" : "allow_once",
+                label: "Allow",
+              },
               { id: "reject", kind: "reject_once", label: "Reject" },
             ],
             sessionId: scenario === "child-permission" ? "child-session" : "new-session",
@@ -919,4 +1148,50 @@ it("delivers distinct plugin and loose skill identities through ACP for Grok and
     expect(payload).toContain(skill.path);
   }
   await fixture.adapter.close();
+});
+
+it("retains ACP tool-result image content", async () => {
+  const f = await setup("replay");
+  const session = await f.adapter.startSession({
+    ...f.context,
+    imageStore: createToolImageStore(f.context.threadStateDirectory),
+  });
+  const events: HarnessEvent[] = [];
+  const consume = (async () => {
+    for await (const event of session.events) events.push(event);
+  })();
+  f.duringPrompt = () => {
+    f.update("new-session", {
+      sessionUpdate: "tool_call",
+      toolCallId: "image-1",
+      name: "probe",
+      status: "in_progress",
+    });
+    f.update("new-session", {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "image-1",
+      status: "completed",
+      rawOutput: "Image ready",
+      content: [
+        {
+          type: "content",
+          content: { type: "image", mimeType: "image/png", data: "iVBORw0KGgoA" },
+        },
+      ],
+    });
+  };
+  try {
+    await session.execute(f.turn("Show an image"));
+    await session.stop();
+    await consume;
+    expect(events.find((e) => e.type === "tool.completed")).toMatchObject({
+      data: {
+        output: { images: [{ mediaType: "image/png", path: expect.stringMatching(/\.png$/) }] },
+      },
+    });
+    expect(JSON.stringify(events)).not.toContain("iVBORw0KGgoA");
+  } finally {
+    await session.stop();
+    await f.adapter.close();
+  }
 });

@@ -16,7 +16,7 @@ import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useState } from "react";
 import { AppState, Platform, Text, View } from "react-native";
 import { z } from "zod";
-import { MacAppPreview, MacAppView } from "../src/computers/mac-app-view.js";
+import { ComputerDisplay, ComputerTaskView } from "../src/computers/phone-display.js";
 import { openReactNativeSocket } from "../src/platform/react-native-socket.js";
 
 // Separate Metro entry for the device suite; the shipping entry never imports it.
@@ -240,11 +240,12 @@ function Journey() {
                     }}
                     style={{ flex: 1 }}
                   >
-                    <MacAppView
+                    <ComputerTaskView
                       active
-                      destination={{ kind: "phone", machineId: connection.target.machineId }}
+                      appKey={null}
+                      computerSessionId={connection.target.computerSessionId}
                       hostClient={connection.client}
-                      onClosed={() => undefined}
+                      machineId={connection.target.machineId}
                       onTyping={() => undefined}
                     />
                   </View>
@@ -256,7 +257,7 @@ function Journey() {
                     }}
                     style={{ height: "70%", marginTop: 50 }}
                   >
-                    <MacAppPreview
+                    <ComputerDisplay
                       active
                       machineId={connection.target.machineId}
                       phone
@@ -264,7 +265,6 @@ function Journey() {
                         kind: "task-session",
                         sessionId: connection.target.computerSessionId,
                       }}
-                      appName="Display fixture"
                       label="Live phone tile"
                       hostClient={connection.client}
                       onPageSize={(size) => {

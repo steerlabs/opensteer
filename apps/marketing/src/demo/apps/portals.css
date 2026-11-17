@@ -1,0 +1,400 @@
+/* Coupa Supplier Portal (2025 navigation) and ADP Workforce Now's employee home, at their real sizes.
+   Their web fonts aren't shipped here; Arial and the system face stand in. */
+.cp,
+.adp {
+  height: 100%;
+  overflow: hidden;
+  background: #fff;
+  letter-spacing: 0;
+}
+.cp svg,
+.adp svg {
+  display: inline-block;
+  flex: none;
+}
+.cp {
+  color: #333;
+  font:
+    14px/1.35 Arial,
+    Helvetica,
+    sans-serif;
+}
+.cp-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 52px;
+  padding: 0 14px;
+  color: #333;
+  font-size: 14px;
+  white-space: nowrap;
+}
+.cp-top img {
+  margin-right: auto;
+}
+.cp-top i {
+  width: 1px;
+  height: 16px;
+  background: #ccc;
+}
+.cp-top svg {
+  width: 8px;
+  height: 5px;
+  margin-left: 2px;
+  vertical-align: 2px;
+}
+.cp-user,
+.cp-help {
+  color: #0095dd;
+}
+.cp-top b {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 4px;
+  border-radius: 6px;
+  background: #e2140b;
+  color: #fff;
+  font-size: 12px;
+}
+.cp-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 40px;
+  padding: 0 18px;
+  border-bottom: 4px solid #268ecd;
+  font-size: 14px;
+  white-space: nowrap;
+}
+.cp-nav span {
+  padding: 4px 13px;
+  border-radius: 999px;
+}
+.cp-nav .is-on {
+  background: #268ecd;
+  color: #fff;
+}
+.cp-home svg {
+  width: 22px;
+  height: 20px;
+  color: #444;
+  vertical-align: -3px;
+}
+.cp-sub {
+  display: flex;
+  gap: 30px;
+  height: 36px;
+  padding: 0 46px;
+  background: #eff0f1;
+  line-height: 36px;
+}
+.cp-sub .is-on {
+  color: #f46a1f;
+  text-decoration: underline;
+  text-underline-offset: 6px;
+}
+.cp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 26px 22px 0;
+}
+.cp-co {
+  color: #5a6b80;
+  font-size: 22px;
+  font-weight: 400;
+}
+.cp-head label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.cp-select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 180px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid #b9bec5;
+  border-radius: 3px;
+  background: #fff;
+  color: #333;
+  box-sizing: border-box;
+}
+.cp-select svg {
+  width: 9px;
+  height: 6px;
+}
+.cp-h1 {
+  margin: 18px 0 14px 98px;
+  font-size: 28px;
+  font-weight: 400;
+}
+.cp-tip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0 22px 14px 98px;
+  padding: 7px;
+  border: 1px solid #e3e3e3;
+  font-size: 16px;
+}
+.cp-coins {
+  width: 22px;
+  height: 14px;
+}
+.cp-table {
+  width: calc(100% - 120px);
+  margin-left: 98px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.cp-bar td {
+  height: 36px;
+  padding: 0 8px;
+  background: #268ecd;
+  color: #fff;
+  font-weight: 700;
+  text-align: right;
+}
+.cp-bar td > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 10px;
+  vertical-align: middle;
+}
+.cp-bar .cp-select {
+  font-weight: 400;
+}
+.cp-search {
+  justify-content: space-between;
+  width: 150px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 3px;
+  background: #fff;
+  color: #999;
+  font-weight: 400;
+}
+.cp-search svg {
+  width: 14px;
+  height: 14px;
+  color: #268ecd;
+}
+.cp-table th {
+  height: 30px;
+  padding: 0 6px;
+  border-bottom: 1px solid #ccc;
+  text-align: left;
+  white-space: nowrap;
+}
+.cp-table td:not([colspan]) {
+  height: 34px;
+  padding: 0 6px;
+  border-bottom: 1px solid #e3e3e3;
+  white-space: nowrap;
+}
+.cp-table .cp-num {
+  text-align: right;
+}
+.cp-lnk {
+  color: #0095dd;
+}
+
+.adp {
+  background: #f7f6f4;
+  color: #1a1a1a;
+  font: 14px/1.3 var(--mac-font);
+}
+.adp-top {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 64px;
+  padding: 0 20px 0 16px;
+  background: #121c4e;
+  color: #fff;
+  white-space: nowrap;
+}
+.adp-top img {
+  width: 44px;
+  height: auto;
+}
+.adp-top > i {
+  width: 1px;
+  height: 22px;
+  margin-left: -6px;
+  background: rgb(255 255 255 / 45%);
+}
+.adp-top b {
+  margin-right: auto;
+  font:
+    600 30px/1 Georgia,
+    "Times New Roman",
+    serif;
+  letter-spacing: -0.3px;
+}
+.adp-search {
+  position: absolute;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  width: 270px;
+  height: 34px;
+  margin-left: -80px;
+  padding-left: 14px;
+  border-radius: 999px;
+  background: #414971;
+  box-sizing: border-box;
+}
+.adp-search svg {
+  width: 15px;
+  height: 15px;
+}
+.adp-ico {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+}
+.adp-ico svg {
+  width: 17px;
+  height: 17px;
+}
+.adp-me {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin-left: 8px;
+  border-radius: 50%;
+  background: #d8e5f9;
+  color: #121c4e;
+  font-size: 15px;
+  font-weight: 700;
+}
+.adp-nav {
+  display: flex;
+  height: 44px;
+  padding: 0 4px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 12%);
+  white-space: nowrap;
+}
+.adp-nav span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 22px;
+  color: #444;
+  font-size: 14px;
+}
+.adp-nav svg {
+  width: 8px;
+  height: 5px;
+}
+.adp-nav .is-on {
+  color: #1a1a1a;
+  font-weight: 600;
+  box-shadow: inset 0 -3px #476bc3;
+}
+.adp-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 22px;
+  padding: 36px 24px;
+}
+.adp-card {
+  height: 250px;
+  padding: 18px 16px;
+  border: 1px solid #d6d6d6;
+  background: #fff;
+  box-sizing: border-box;
+}
+.adp-card h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 500;
+}
+.adp-card p {
+  margin: 60px 0 0;
+  font-size: 14px;
+  text-align: center;
+}
+.adp-acts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-around;
+  gap: 16px 4px;
+  margin-top: 26px;
+}
+.adp-act {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 30%;
+  color: #2e4ba8;
+  font-size: 14px;
+  line-height: 1.15;
+  text-align: center;
+}
+.adp-act i {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #2e4ba8;
+}
+.adp-pay {
+  position: relative;
+  margin-top: 16px;
+  font-size: 12px;
+}
+.adp-show {
+  position: absolute;
+  right: 0;
+  top: 0;
+  color: #2e4ba8;
+  font-size: 14px;
+}
+.adp-donut {
+  position: absolute;
+  left: 8px;
+  top: 30px;
+  width: 104px;
+  height: 104px;
+  border-radius: 50%;
+  background: conic-gradient(#9c9c9c 0 33%, #bdbdbd 0);
+  -webkit-mask: radial-gradient(circle, transparent 28px, #000 29px);
+  mask: radial-gradient(circle, transparent 28px, #000 29px);
+}
+.adp-pay dl {
+  margin: 30px 0 0 140px;
+}
+.adp-pay dt {
+  font-size: 10px;
+}
+.adp-pay dd {
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+.adp-links {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 26px;
+}
+.adp-links span {
+  padding: 10px;
+  background: #f5f5f5;
+  color: #2e4ba8;
+  font-weight: 600;
+}

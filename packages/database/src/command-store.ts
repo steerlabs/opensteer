@@ -1,6 +1,10 @@
 import { runDeliverySelection } from "./thread-row-mappers.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { lockDeploymentEvents, withPersonalTransaction } from "./personal-transaction.js";
+import {
+  inheritExecutionClock,
+  lockDeploymentEvents,
+  withPersonalTransaction,
+} from "./personal-transaction.js";
 import { failNodeStop } from "./node-control.js";
 import {
   assertThreadCaller,
@@ -48,10 +52,12 @@ import {
   UserIdSchema,
   RequestResponseSchema,
   hasSecretRequestFields,
+  requestFormAnswersProblem,
   requestOptionDeclines,
   createId,
   type EnvironmentId,
   type Message,
+  type MessageOrigin,
   type Run,
 } from "@opensteer/core";
 import { type InsertObject, type Transaction, sql, type Kysely } from "kysely";
@@ -84,7 +90,12 @@ import { projectThreadState } from "./thread-status.js";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { assignmentActivityEventsForRun } from "./assignment-store.js";
 import { cancelPending, requestFromRow } from "./request-store.js";
-import { threadInputFromRow, messageFromRow, runFromRow } from "./thread-row-mappers.js";
+import {
+  threadInputFromRow,
+  messageFromRow,
+  messageOriginFromRow,
+  runFromRow,
+} from "./thread-row-mappers.js";
 import { isDeepStrictEqual } from "node:util";
 import { endStoppedUnconfirmedRun, finalizeRunTransaction } from "./run-finalization.js";
 
@@ -529,10 +540,12 @@ async function succeedCommandInTransaction(
         .where("status", "=", "waiting")
         .executeTakeFirst();
       if (resumed.numUpdatedRows === 1n) {
+        // The resumed state is projected before a hand-off can restart the attempt:
+        // thread state ranks ahead of run attempts, and a restart leaves the Run running.
+        events.push(...(await projectThreadState(transaction, observed.threadId)));
         const handed = await deliverConversationInputsInTransaction(transaction, observed.runId);
         events.push(...handed.events);
         revokedGrants = handed.revokedGrants;
-        events.push(...(await projectThreadState(transaction, observed.threadId)));
       }
     }
     events.push(...(await assignmentActivityEventsForRun(transaction, observed.runId)));
@@ -642,49 +655,14 @@ export function assertRequestResponse(
       message: "Request does not accept a form",
     });
   }
-  const fields = new Map(request.presentation.fields.map((field) => [field.id, field]));
-  if (Object.keys(response.answers).length !== fields.size) {
+  if (!allowSecrets && request.presentation.fields.some((field) => field.secret)) {
     throw new OpensteerError({
       code: "bad_request",
-      message: "Every requested field must be answered exactly once",
+      message: "Secret answers require the live response channel",
     });
   }
-  for (const [fieldId, answers] of Object.entries(response.answers)) {
-    const field = fields.get(fieldId);
-    if (!field) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: `Unknown form field ${fieldId}`,
-      });
-    }
-    if (field.secret && !allowSecrets) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "Secret answers require the live response channel",
-      });
-    }
-    if (answers.length === 0) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: `Form field ${fieldId} requires an answer`,
-      });
-    }
-    if (!field.multiSelect && answers.length > 1) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: `Form field ${fieldId} accepts only one answer`,
-      });
-    }
-    if (
-      field.choices &&
-      answers.some((answer) => !field.choices?.some((choice) => choice.value === answer))
-    ) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: `Form field ${fieldId} contains an unsupported choice`,
-      });
-    }
-  }
+  const problem = requestFormAnswersProblem(request.presentation.fields, response.answers);
+  if (problem !== null) throw new OpensteerError({ code: "bad_request", message: problem });
 }
 function redactSecretRequestAnswers(request: Request, response: RequestResponse): RequestResponse {
   if (request.presentation.kind !== "form" || response.kind !== "form") return response;
@@ -1224,6 +1202,7 @@ export async function dispatchRequestResponse(
   try {
     // Non-retrying: the Runner send/acknowledgement gate cannot safely be replayed.
     const events = await database.transaction().execute(async (transaction) => {
+      inheritExecutionClock(database, transaction);
       await lockDeploymentEvents(transaction);
       const observed = await transaction
         .selectFrom("commands")
@@ -1362,6 +1341,7 @@ export async function dispatchChannelCommand(
   try {
     // Non-retrying: the Runner send/acknowledgement gate cannot safely be replayed.
     const events = await database.transaction().execute(async (transaction) => {
+      inheritExecutionClock(database, transaction);
       await lockDeploymentEvents(transaction);
       const observed = await transaction
         .selectFrom("commands")
@@ -1508,6 +1488,7 @@ export async function loadSteerDispatchInput(
   commandId: CommandRow["id"],
 ): Promise<{
   readonly message: Message;
+  readonly origin: MessageOrigin | undefined;
   readonly run: Run;
   readonly runId: RunId;
   readonly threadId: ThreadId;
@@ -1535,6 +1516,7 @@ export async function loadSteerDispatchInput(
     .executeTakeFirstOrThrow();
   return {
     message: messageFromRow(row),
+    origin: messageOriginFromRow(row),
     run: runFromRow(runRow),
     runId: row.targetRunId,
     threadId: row.targetThreadId,

@@ -1,3 +1,4 @@
+import { compactionIsEligible } from "./compaction-eligibility.js";
 import { runDeliverySelection } from "./thread-row-mappers.js";
 import { freshContextBoundary } from "./fresh-context.js";
 import { runAllowsPersonalContext } from "./run-personal-context.js";
@@ -22,6 +23,7 @@ import {
   type RunnerId,
   nonTerminalRunStatuses,
   type MessageId,
+  type MessageOrigin,
   MessageIdSchema,
   type UserId,
   type ProviderContinuationIdentity,
@@ -47,6 +49,7 @@ import {
   threadExecutionIsAvailableToUser,
 } from "./store-primitives.js";
 import {
+  messageOriginFromRow,
   messagesFromRows,
   threadPendingRequestsSelection,
   threadVisitSelection,
@@ -90,6 +93,7 @@ export interface RunDispatchContext {
   } | null;
   readonly historyWindow: RunHistoryWindow;
   readonly inputs: readonly Message[];
+  readonly inputOrigins: ReadonlyMap<MessageId, MessageOrigin>;
   readonly reports: {
     readonly messages: readonly Message[];
     readonly omittedCount: number;
@@ -520,6 +524,12 @@ export async function loadRunDispatchContext(
       itemCount: historyWindow.items.length,
     },
     inputs: messagesFromRows(inputRows),
+    inputOrigins: new Map(
+      inputRows.flatMap((row) => {
+        const origin = messageOriginFromRow(row);
+        return origin ? [[row.id, origin] as const] : [];
+      }),
+    ),
     reports: !includeContext
       ? {
           messages: [],
@@ -573,6 +583,7 @@ export async function acquireExecutionBinding(
       .selectFrom("runs")
       .innerJoin("threads", "threads.id", "runs.threadId")
       .select([
+        "runs.maintenance",
         "runs.environmentId",
         "runs.harnessInstanceId",
         "runs.modelSelection",
@@ -692,6 +703,17 @@ export async function acquireExecutionBinding(
         message: "Run's selected provider session is no longer current",
       });
     }
+    if (
+      run.maintenance &&
+      !(await compactionIsEligible(
+        transaction,
+        input.threadId,
+        run.maintenance,
+        Date.now(),
+        input.runId,
+      ))
+    )
+      throw new OpensteerError({ code: "conflict", message: "Compaction is no longer eligible" });
     const personalContext = await runAllowsPersonalContext(transaction, input.runId);
     if (
       (input.personalContext !== undefined && input.personalContext !== personalContext) ||
@@ -1117,11 +1139,13 @@ export async function getThreadNamingInput(database: Kysely<DatabaseSchema>, thr
           .where((eb) =>
             eb.or([
               eb("threadInputs.state", "is", null),
-              eb("threadInputs.state", "!=", "cancelled"),
+              eb("threadInputs.state", "not in", ["cancelled", "awaiting-approval"]),
             ]),
           )
           .where("kind", "=", "input")
-          .where(sql<boolean>`author->>'kind' in ('human', 'agent', 'trigger', 'watch')`)
+          .where(
+            sql<boolean>`(author->>'kind' in ('human', 'agent', 'trigger', 'watch') or (author->>'kind' = 'team-member' and exists (select 1 from personal_team_requests p where p.local_input_id = messages.id and p.kind = 'ask' and p.released_at is not null)))`,
+          )
           .orderBy("messages.sequence", "asc")
           .limit(1)
           .executeTakeFirst()

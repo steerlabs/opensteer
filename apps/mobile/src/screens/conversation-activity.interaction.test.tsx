@@ -1,7 +1,6 @@
 // @vitest-environment happy-dom
 
 import type {
-  BrowserSessionSummary,
   HostClient,
   HostSnapshot,
   MessageEntry,
@@ -11,8 +10,8 @@ import type {
   TranscriptEntry,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import { createId, RunIdSchema, ThreadIdSchema } from "@opensteer/core";
-import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
+import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
+import { createId, RunIdSchema, TabIdSchema, ThreadIdSchema } from "@opensteer/core";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -81,6 +80,7 @@ vi.mock("@react-navigation/native", () => ({
   useIsFocused: () => true,
   useNavigation: () => ({
     dispatch: harness.dispatch,
+    getState: () => ({ index: 0, routes: [] }),
     goBack: harness.goBack,
     navigate: harness.navigate,
     setOptions: harness.setOptions,
@@ -115,7 +115,12 @@ vi.mock("../ui/primitives.js", () => ({
       {props.action ? <button onClick={props.action.onPress}>{props.action.label}</button> : null}
     </div>
   ),
-  SecondaryButton: () => null,
+  PrimaryButton: (props: { readonly label: string; readonly onPress: () => void }) => (
+    <button onClick={props.onPress}>{props.label}</button>
+  ),
+  SecondaryButton: (props: { readonly label: string; readonly onPress: () => void }) => (
+    <button onClick={props.onPress}>{props.label}</button>
+  ),
   StatusDot: () => null,
   TypingDots: () => null,
   monoFontFamily: "monospace",
@@ -342,34 +347,15 @@ describe("Run details", () => {
   });
 
   it("opens the exact browser tab used by this reply even when another tab is viewed", () => {
-    const browser = {
-      access: "read-write",
-      attachedRunIds: [],
-      dialog: null,
-      error: null,
-      id: "exact-browser",
-      origin: "agent",
-      placement: { kind: "runner", runnerId: "runner" },
-      profileId: null,
-      runtimeId: "runtime",
-      state: "ready",
-      tabs: [
-        {
-          active: true,
-          id: BrowserSurfaceIdSchema.parse("viewed-tab"),
-          title: "Other page",
-          url: "https://other.test",
-        },
-        {
-          active: false,
-          id: BrowserSurfaceIdSchema.parse("used-tab"),
-          title: "Research",
-          url: "https://research.test",
-        },
-      ],
-      viewerError: null,
-      viewerState: "synchronized",
-    } as BrowserSessionSummary;
+    // The page this reply used, beside another the person is looking at.
+    const tabs = tabStoreFixture([
+      tabFixture({ tabId: TabIdSchema.parse("viewed-tab"), title: "Other page" }),
+      tabFixture({
+        tabId: TabIdSchema.parse("used-tab"),
+        title: "Research",
+        url: "https://research.test/",
+      }),
+    ]);
     const browserUses = [
       {
         sessionId: "exact-browser",
@@ -382,19 +368,14 @@ describe("Run details", () => {
         pageSite: "https://research.test",
       },
     ];
-    fakeHost({ ...snapshotWith(answered), browserSessions: [browser], browserUses });
+    fakeHost({ ...snapshotWith(answered), tabs, browserUses });
     const sheet = activity(`turn:run:${runA}`);
     press(sheet, "Research, research.test");
     // The sheet closes first, so the page opens over the conversation rather than inside it.
     expect(harness.goBack).toHaveBeenCalledOnce();
     expect(harness.dispatch).toHaveBeenCalledWith({
       name: "WorkspaceBrowser",
-      params: {
-        deploymentId,
-        sessionId: "exact-browser",
-        tabId: "used-tab",
-        threadId: taskId,
-      },
+      params: { deploymentId, tabId: "used-tab", threadId: taskId },
       type: "PUSH",
     });
   });
@@ -487,5 +468,50 @@ describe("Run details", () => {
 
     expect(sheet.textContent).toContain("Nothing yet");
     expect(sheet.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("finds a Run a link named in history, loading the conversation around it first", async () => {
+    // The conversation holds only its newest reply; the linked Run is older than what is loaded.
+    const host = fakeHost(snapshotWith(replying.slice(answered.length)));
+    let loaded = () => undefined as void;
+    const around = vi.fn(
+      (_threadId: string, _messageId: string) => new Promise<void>((resolve) => (loaded = resolve)),
+    );
+    Object.assign(host.client, {
+      loadTranscriptAround: around,
+      observeThread: () => () => undefined,
+    });
+    const sheet = render(
+      <ConversationActivityScreen
+        route={{
+          params: { anchorMessageId: askA.id, deploymentId, runId: runA, threadId: taskId },
+        }}
+      />,
+    );
+    expect(around).toHaveBeenCalledWith(taskId, askA.id);
+    expect(sheet.textContent).toContain("Loading");
+    host.move(snapshotWith(replying));
+    await act(async () => loaded());
+    expect(sheet.textContent).toContain(noteA.body);
+    expect(sheet.textContent).not.toContain(preambleB.body);
+  });
+
+  it("says a linked Run isn't available once the Host has nothing around it", async () => {
+    const host = fakeHost(snapshotWith(replying.slice(answered.length)));
+    Object.assign(host.client, {
+      loadTranscriptAround: async () => undefined,
+      observeThread: () => () => undefined,
+    });
+    const sheet = render(
+      <ConversationActivityScreen
+        route={{
+          params: { anchorMessageId: askA.id, deploymentId, runId: runA, threadId: taskId },
+        }}
+      />,
+    );
+    await act(async () => undefined);
+    expect(sheet.textContent).toContain("This isn't available");
+    press(sheet, "Back");
+    expect(harness.goBack).toHaveBeenCalledOnce();
   });
 });

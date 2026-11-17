@@ -1,9 +1,18 @@
+import { projectMachines } from "../../runtime/machines.js";
 import { deviceAccessStates } from "@opensteer/database";
-import { harnessView } from "../../administration/authority.js";
-import { OpensteerError, type UserId } from "@opensteer/core";
+import type { z } from "zod";
+import {
+  OpensteerError,
+  formatReferenceLink,
+  DeviceIdSchema,
+  type ExecutionPreferencesViewSchema,
+  type EnvironmentId,
+  type HarnessInstanceId,
+  type UserId,
+} from "@opensteer/core";
 import type { IntegrationConnectionSummary } from "@opensteer/integration-core";
-import { hostApi } from "@opensteer/protocol";
-import * as specs from "@opensteer/agent-tools/tools";
+import { isPhoneDisplayDefinitionId } from "@opensteer/core";
+import { RunnerModuleNameSchema, hostApi } from "@opensteer/protocol";
 import {
   AdministrationService,
   isAdministrationCommand,
@@ -11,12 +20,32 @@ import {
 } from "../../administration/administration-service.js";
 import { isIntegrationAdministrationCommand } from "../../integrations/integration-administration.js";
 import type { AgentCaller } from "../agent-caller.js";
-import { operationId } from "../operations.js";
-import { settings } from "../tool-access.js";
+import { computerIds } from "../computer-ids.js";
+import { operationId, requireRun } from "../operations.js";
+import type { RunToolScope } from "../../agents/run-tool-tokens.js";
 import type { ToolCall, AgentToolHandlers } from "./types.js";
 
-type AdministrationToolName = (typeof specs.administrationTools)[number]["name"];
+type AdministrationToolName =
+  | "opensteer_ai_account_update"
+  | "opensteer_defaults_read"
+  | "opensteer_defaults_update"
+  | "computer_list"
+  | "computer_update"
+  | "computer_remove"
+  | "browser_profile_list"
+  | "browser_profile_update"
+  | "browser_profile_remove"
+  | "integration_list"
+  | "integration_remove"
+  | "opensteer_messaging_bridge_list"
+  | "opensteer_messaging_bridge_update"
+  | "opensteer_messaging_bridge_remove"
+  | "opensteer_plugin_list"
+  | "opensteer_plugin_install"
+  | "opensteer_plugin_update"
+  | "opensteer_plugin_remove";
 export type AdministrationHandlers = Pick<AgentToolHandlers, AdministrationToolName>;
+
 function command(value: Record<string, unknown>): AdministrationCommand {
   const parsed = hostApi["commands.dispatch"].payload.parse(value);
   if (
@@ -32,12 +61,15 @@ function command(value: Record<string, unknown>): AdministrationCommand {
 export class AdministrationToolHandlers {
   readonly service: AdministrationService;
   readonly listConnections: (userId: UserId) => Promise<readonly IntegrationConnectionSummary[]>;
+  readonly canExecute: (environmentId: EnvironmentId) => boolean;
   constructor(
     service: AdministrationService,
     listConnections: (userId: UserId) => Promise<readonly IntegrationConnectionSummary[]>,
+    canExecute: (environmentId: EnvironmentId) => boolean,
   ) {
     this.service = service;
     this.listConnections = listConnections;
+    this.canExecute = canExecute;
   }
   #write(
     call: { caller: AgentCaller; operationKey: string },
@@ -49,236 +81,370 @@ export class AdministrationToolHandlers {
       idempotencyKey: operationId(call.caller, call.operationKey, tool),
     });
   }
-  settingsCommand(c: ToolCall<"settings_write">) {
+  async #account(userId: UserId, aiAccountId: HarnessInstanceId) {
+    const [account] = await this.service.dependencies.store.listAgentHarnessInstancesForUser(
+      userId,
+      { id: aiAccountId, includeDisabled: true, limit: 1 },
+    );
+    if (!account)
+      throw new OpensteerError({ code: "not_found", message: "That AI account is unavailable" });
+    return account;
+  }
+  async aiAccountCommand(c: ToolCall<"opensteer_ai_account_update">) {
     const i = c.input;
-    const common = { environmentId: i.environmentId, harnessInstanceId: i.harnessInstanceId };
+    const account = await this.#account(c.caller.userId, i.aiAccountId);
+    const common = { environmentId: account.environmentId, harnessInstanceId: account.id };
+    const tool = "opensteer_ai_account_update";
     switch (i.action) {
-      case "set_default":
-        return this.#write(c, "settings_write", { ...common, type: "harness.default.set" });
-      case "configure_model":
-        return this.#write(c, "settings_write", {
-          ...common,
-          type: "harness.model.configure",
-          nativeModelId: i.nativeModelId,
-          settings: i.settings,
-        });
-      case "set_enabled":
-        return this.#write(c, "settings_write", {
+      case "rename":
+        return this.#write(c, tool, { ...common, type: "harness.rename", name: i.name });
+      case "enable":
+      case "disable":
+        return this.#write(c, tool, {
           ...common,
           type: "harness.enabled.set",
-          enabled: i.enabled,
+          enabled: i.action === "enable",
         });
-      case "rename":
-        return this.#write(c, "settings_write", {
+      case "set_default":
+        return this.#write(c, tool, { ...common, type: "harness.default.set" });
+      case "set_model_limits": {
+        const [catalog] = await this.service.dependencies.store.listHarnessCatalogs(
+          [account.environmentId],
+          [account.id],
+        );
+        const listed = catalog?.catalog.models.find(
+          ({ modelId }) => modelId === i.modelLimits?.modelId,
+        );
+        return this.#write(c, tool, {
           ...common,
-          type: "harness.rename",
-          name: i.name,
+          type: "harness.model.configure",
+          nativeModelId: listed?.nativeModelId ?? i.modelLimits?.modelId,
+          settings: i.modelLimits?.limits,
         });
-      case "remember_execution":
-        return this.#write(c, "settings_write", {
-          type: "execution.preferences.remember",
-          selection: i.selection,
-          accessMode: i.accessMode,
-        });
-      case "set_time_zone":
-        return this.#write(c, "settings_write", {
-          type: "viewer.timeZone.update",
-          timeZone: i.timeZone,
-        });
+      }
     }
   }
-  computerCommand(c: ToolCall<"computer_write">) {
+  async defaultsCommands(c: ToolCall<"opensteer_defaults_update">) {
+    const { selection, accessMode } = c.input;
+    const account = selection
+      ? await this.#account(c.caller.userId, selection.aiAccountId)
+      : undefined;
+    if (!account && !accessMode) return [];
+    return [
+      this.#write(c, "opensteer_defaults_update", {
+        type: "execution.preferences.remember",
+        ...(accessMode ? { accessMode } : {}),
+        ...(account && selection
+          ? {
+              selection: {
+                environmentId: account.environmentId,
+                harnessInstanceId: account.id,
+                modelSelection: selection.model,
+              },
+            }
+          : {}),
+      }),
+    ];
+  }
+  computerCommand(c: ToolCall<"computer_update"> | ToolCall<"computer_remove">) {
     const i = c.input;
-    switch (i.action) {
-      case "rename":
-        return this.#write(c, "computer_write", {
-          type: "machine.rename",
-          machineId: i.machineId,
-          name: i.name,
-        });
-      case "revoke":
-        return this.#write(c, "computer_write", { type: "machine.revoke", machineId: i.machineId });
-      case "stop_session":
-        return this.#write(c, "computer_write", {
+    if (!("target" in i))
+      return this.#write(c, "computer_update", {
+        type: "machine.rename",
+        machineId: i.computerId,
+        name: i.name,
+      });
+    return i.target === "computer"
+      ? this.#write(c, "computer_remove", { type: "machine.revoke", machineId: i.computerId })
+      : this.#write(c, "computer_remove", {
           type: "machine.access.session.stop",
           sessionId: i.sessionId,
         });
+  }
+  browserCommand(c: ToolCall<"browser_profile_update"> | ToolCall<"browser_profile_remove">) {
+    const i = c.input;
+    if (!("target" in i))
+      return this.#write(c, "browser_profile_update", {
+        type: "browser.profile.rename",
+        profileId: i.profileId,
+        name: i.name,
+      });
+    const tool = "browser_profile_remove";
+    switch (i.target) {
+      case "profile":
+        return this.#write(c, tool, { type: "browser.profile.delete", profileId: i.profileId });
+      case "history":
+        return this.#write(c, tool, { type: "browser.history.clear", profileId: i.profileId });
+      case "history_url":
+        return this.#write(c, tool, {
+          type: "browser.history.remove",
+          profileId: i.profileId,
+          url: i.url,
+        });
+      case "site":
+        return this.#write(c, tool, { type: "browser.site.remove", site: i.site });
     }
   }
-  async integrationCommand(c: ToolCall<"integration_manage">) {
+  async integrationCommand(c: ToolCall<"integration_remove">) {
     const i = c.input;
-    switch (i.action) {
-      case "list":
-        return null;
-      case "disconnect": {
+    const tool = "integration_remove";
+    switch (i.target) {
+      case "account": {
         const kind = i.connectionId
           ? await this.service.dependencies.integrations.platform.store.getConnectionKind({
               connectionId: i.connectionId,
               ownerUserId: c.caller.userId,
             })
           : null;
-        return this.#write(c, "integration_manage", {
+        return this.#write(c, tool, {
           type: kind === "mcp-oauth" ? "integration.mcp.disconnect" : "integration.disconnect",
           connectionId: i.connectionId,
         });
       }
-      case "uninstall":
-        return this.#write(c, "integration_manage", {
+      case "integration":
+        return this.#write(c, tool, {
           type: "integration.uninstall",
           installationId: i.installationId,
         });
-      case "revoke_grant":
-        return this.#write(c, "integration_manage", {
-          type: "integration.grant.revoke",
-          grantId: i.grantId,
-        });
+      case "grant":
+        return this.#write(c, tool, { type: "integration.grant.revoke", grantId: i.grantId });
     }
   }
-  channelCommand(c: ToolCall<"channel_manage">) {
+  bridgeCommand(
+    c:
+      ToolCall<"opensteer_messaging_bridge_update"> | ToolCall<"opensteer_messaging_bridge_remove">,
+  ) {
     const i = c.input;
-    switch (i.action) {
-      case "list":
-        return null;
-      case "revoke_binding":
-        return this.#write(c, "channel_manage", {
+    return "routeId" in i
+      ? this.#write(c, "opensteer_messaging_bridge_remove", {
           type: "channel.binding.revoke",
-          bindingId: i.bindingId,
-        });
-      case "pause":
-      case "resume":
-        return this.#write(c, "channel_manage", {
+          bindingId: i.routeId,
+        })
+      : this.#write(c, "opensteer_messaging_bridge_update", {
           type: "channel.connection.status.set",
-          connectionId: i.connectionId,
-          status: i.action === "pause" ? "paused" : "connected",
+          connectionId: i.bridgeId,
+          status: i.paused ? "paused" : "connected",
         });
-    }
   }
-  pluginCommand(c: ToolCall<"plugin_manage">) {
+  pluginCommand(
+    c:
+      | ToolCall<"opensteer_plugin_install">
+      | ToolCall<"opensteer_plugin_update">
+      | ToolCall<"opensteer_plugin_remove">,
+  ) {
     const i = c.input;
-    switch (i.action) {
-      case "list":
-        return null;
-      case "update":
-        return this.#write(c, "plugin_manage", {
-          type: "plugin.update",
-          pluginId: i.pluginId,
-          input: { directory: i.directory, ...(i.runnerId ? { runnerId: i.runnerId } : {}) },
-        });
-      case "enable":
-      case "disable":
-        return this.#write(c, "plugin_manage", {
-          type: "plugin.activation.set",
-          pluginId: i.pluginId,
-          active: i.action === "enable",
-        });
-      case "remove":
-        return this.#write(c, "plugin_manage", { type: "plugin.remove", pluginId: i.pluginId });
-      case "remove_specialist":
-        return this.#write(c, "plugin_manage", {
+    if ("directory" in i)
+      return this.#write(c, "opensteer_plugin_install", {
+        type: "plugin.update",
+        pluginId: i.pluginId,
+        input: { directory: i.directory, ...(i.computerId ? { runnerId: i.computerId } : {}) },
+      });
+    if ("enabled" in i)
+      return this.#write(c, "opensteer_plugin_update", {
+        type: "plugin.activation.set",
+        pluginId: i.pluginId,
+        active: i.enabled,
+      });
+    return i.target === "plugin"
+      ? this.#write(c, "opensteer_plugin_remove", { type: "plugin.remove", pluginId: i.pluginId })
+      : this.#write(c, "opensteer_plugin_remove", {
           type: "specialist.remove",
           specialistId: i.specialistId,
         });
-    }
-  }
-  browserCommand(c: ToolCall<"browser_profile_write">) {
-    const i = c.input;
-    switch (i.action) {
-      case "list":
-        return null;
-      case "rename":
-        return this.#write(c, "browser_profile_write", {
-          type: "browser.profile.rename",
-          profileId: i.profileId,
-          name: i.name,
-        });
-      case "delete":
-        return this.#write(c, "browser_profile_write", {
-          type: "browser.profile.delete",
-          profileId: i.profileId,
-        });
-      case "clear_history":
-        return this.#write(c, "browser_profile_write", {
-          type: "browser.history.clear",
-          profileId: i.profileId,
-        });
-      case "remove_history":
-        return this.#write(c, "browser_profile_write", {
-          type: "browser.history.remove",
-          profileId: i.profileId,
-          url: i.url,
-        });
-      case "remove_site":
-        return this.#write(c, "browser_profile_write", {
-          type: "browser.site.remove",
-          site: i.site,
-        });
-    }
   }
   async execute(caller: AgentCaller, command: AdministrationCommand) {
     return { ...(await this.service.execute(caller, command)), ok: true as const };
   }
-  async settings_read({ caller }: ToolCall<"settings_read">) {
+  async opensteer_defaults_read({ caller }: ToolCall<"opensteer_defaults_read">) {
     const store = this.service.dependencies.store;
-    const environments = await store.listEnvironmentsForUser(caller.userId);
-    const [instances, preferences, timeZone] = await Promise.all([
-      store.listHarnessInstances({ environmentIds: environments.map(({ id }) => id) }),
+    await this.service.actor(caller);
+    const [preferences, owner] = await Promise.all([
       store.getExecutionPreferences(caller.userId),
-      store.notificationState.timeZoneFor(caller.userId),
+      store.ownerProfile.read(),
     ]);
-    return {
-      harnesses: instances.map(harnessView),
-      preferences,
-      timeZone,
-    };
+    return { ...defaultsView(preferences), ownerName: owner?.name ?? null };
+  }
+  async opensteer_defaults_update(c: ToolCall<"opensteer_defaults_update">) {
+    let changed: Record<string, unknown> = { ok: true };
+    for (const next of await this.defaultsCommands(c)) {
+      const output = await this.service.execute(c.caller, next);
+      if (output.type === "execution.preferences.remember")
+        changed = { ...changed, ...defaultsView(output.preferences) };
+    }
+    return changed;
   }
   async computer_list({ caller, input }: ToolCall<"computer_list">) {
     const { store, runners } = this.service.dependencies;
     await this.service.actor(caller);
-    const page = await store.listRunners({
-      ...(input.after ? { after: input.after } : {}),
-      ownerId: caller.userId,
-      includeDeployment: true,
-      includeOtherOwners: false,
-      limit: 100,
+    const after = input.cursor === undefined ? undefined : DeviceIdSchema.safeParse(input.cursor);
+    if (after && !after.success)
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "cursor is not from computer_list. Start again without it.",
+      });
+    const [page, drivers, computers] = await Promise.all([
+      store.listDevices({
+        ...(after?.data ? { after: after.data } : {}),
+        ownerId: caller.userId,
+        includeDeployment: true,
+        limit: 100,
+      }),
+      store.listDeviceDrivers({ includeDetached: true }),
+      computerIds(store, caller.userId),
+    ]);
+    const pageDeviceIds = new Set(page.devices.map((device) => device.id));
+    const runnerIds = [
+      ...new Set(
+        drivers
+          .filter((driver) => pageDeviceIds.has(driver.deviceId))
+          .map((driver) => driver.runnerId),
+      ),
+    ];
+    const runnerPages = [];
+    for (let offset = 0; offset < runnerIds.length; offset += 100) {
+      runnerPages.push(
+        await store.listRunners({
+          ids: runnerIds.slice(offset, offset + 100),
+          ownerId: caller.userId,
+          includeDeployment: true,
+          includeOtherOwners: false,
+          limit: 100,
+        }),
+      );
+    }
+    const pageRunners = runnerPages.flatMap((page) => page.runners);
+    const byRunner = new Map(pageRunners.map((runner) => [runner.id, runner]));
+    const connections = await this.service.dependencies.integrations.platform.deviceConnections(
+      caller.userId,
+    );
+    const hub = this.service.dependencies.computerApps;
+    const summaries = projectMachines({
+      deploymentOwnsMainComputer: true,
+      pendingRunners: [],
+      access: new Map(),
+      apps: new Map(page.devices.map((device) => [device.id, hub.status(device.id) ?? []])),
+      threadsByEnvironment: new Map(),
+      runners: pageRunners.map((runner) => ({
+        ...runner,
+        modules: runner.moduleDescriptors,
+        ownerName: null,
+        connected: runners.isRunnerConnected(runner.id),
+        readiness: new Map(
+          RunnerModuleNameSchema.options.flatMap((module) => {
+            const readiness = runners.moduleReadiness(runner.id, module);
+            return readiness === undefined
+              ? []
+              : [[module, { readiness, checkedAt: null, detail: null }] as const];
+          }),
+        ),
+        runtimeVersion: null,
+        ownedByViewer: true,
+      })),
+      devices: page.devices.map((device) => ({
+        device,
+        selfRunnerId:
+          drivers.find(
+            (binding) =>
+              binding.deviceId === device.id && binding.role === "self" && !binding.detachedAt,
+          )?.runnerId ?? null,
+        drivers: drivers
+          .filter((binding) => binding.deviceId === device.id)
+          .map((binding) => ({
+            role: binding.role,
+            runnerId: binding.runnerId,
+            generation: binding.generation,
+            attached: binding.detachedAt === null,
+            runnerName: byRunner.get(binding.runnerId)?.name ?? "Computer",
+          })),
+        screenConnected: hub.attached(device.id),
+        screenStatus: hub.deviceStatus(device.id),
+        phoneAccess:
+          connections.find(
+            (entry) =>
+              entry.computer?.deviceId === device.id &&
+              entry.status !== "revoked" &&
+              !entry.computer.blockedAt &&
+              isPhoneDisplayDefinitionId(entry.definitionId),
+          )?.computer?.access ?? null,
+      })),
     });
     return {
       nextCursor: page.nextCursor,
-      machines: await Promise.all(
-        page.runners
-          .filter((runner) => runner.kind !== "managed")
-          .map(async (runner) => {
-            return {
-              id: runner.id,
-              name: runner.name,
-              connected: runners.isRunnerConnected(runner.id),
-              revoked: runner.revokedAt !== null,
-              access: deviceAccessStates(
-                runner.accessPolicy,
+      computers: await Promise.all(
+        page.devices.map(async (device) => {
+          const self = drivers.find(
+            (driver) =>
+              driver.deviceId === device.id && driver.role === "self" && !driver.detachedAt,
+          );
+          const runner = self ? byRunner.get(self.runnerId) : undefined;
+          const environmentId = self ? computers.environmentId(self.runnerId) : undefined;
+          const summary = summaries.find((row) => row.id === device.id);
+          const access = runner
+            ? deviceAccessStates(
+                device.accessPolicy,
                 runner.allowedModules,
                 runner.moduleDescriptors,
-                runner.kind === "main" && runner.ownerKind === "deployment",
-              ),
-              sessions: await store.listActiveShellSessions(runner.id),
-            };
-          }),
+                device.kind === "home",
+              )
+            : {
+                browser: "unsupported" as const,
+                files: "unsupported" as const,
+                apps: device.accessPolicy.apps ? ("enabled" as const) : ("disabled" as const),
+              };
+          return {
+            computerId: device.id,
+            ...(self ? { link: formatReferenceLink(self.runnerId, device.name) } : {}),
+            name: device.name,
+            kind: device.kind,
+            selfRunnerId: self?.runnerId ?? null,
+            drivers: drivers
+              .filter((driver) => driver.deviceId === device.id)
+              .map((driver) => ({
+                role: driver.role,
+                runnerId: driver.runnerId,
+                generation: driver.generation,
+                attached: driver.detachedAt === null,
+                runnerName: byRunner.get(driver.runnerId)?.name ?? "Computer",
+              })),
+            online: summary?.status === "online",
+            hosting: environmentId !== undefined,
+            canRunTasks: environmentId !== undefined && this.canExecute(environmentId),
+            capabilities: runner?.capabilities ?? [],
+            deviceCapabilities: summary?.capabilities,
+            ...(summary?.phoneDisplay ? { phoneDisplay: summary.phoneDisplay } : {}),
+            revoked: device.removedAt !== null,
+            access,
+            sessions: self ? await store.listActiveShellSessions(self.runnerId) : [],
+          };
+        }),
       ),
     };
   }
-  async authorizeList(caller: AgentCaller) {
-    settings(caller, []);
+  async browser_profile_list({ caller }: ToolCall<"browser_profile_list">) {
     await this.service.actor(caller);
+    const { browser, browserSources } = this.service.dependencies;
+    const [profiles, sources] = await Promise.all([
+      browser.listAgentProfiles(caller.userId),
+      browserSources.listState({ ownerId: caller.userId }),
+    ]);
+    return {
+      profiles: profiles.map(({ home, ...profile }) => ({
+        ...profile,
+        home: home && { computerId: home.runnerId, name: home.name, reachable: home.reachable },
+      })),
+      sites: sources.sites,
+    };
   }
-  async integration_list(c: ToolCall<"integration_manage">) {
-    await this.authorizeList(c.caller);
+  async integration_list({ caller }: ToolCall<"integration_list">) {
+    await this.service.actor(caller);
     const platform = this.service.dependencies.integrations.platform;
     const [grants, connections, oauth, installations] = await Promise.all([
-      platform.store.listGrants({ ownerUserId: c.caller.userId }),
-      this.listConnections(c.caller.userId),
-      platform.store.listMcpOAuthConnections(c.caller.userId),
+      platform.store.listGrants({ ownerUserId: caller.userId }),
+      this.listConnections(caller.userId),
+      platform.store.listMcpOAuthConnections(caller.userId),
       platform.store.listInstallations(),
     ]);
     return {
-      ok: true as const,
       grants,
       installations,
       connections: [
@@ -287,32 +453,60 @@ export class AdministrationToolHandlers {
       ],
     };
   }
-  async channel_list(c: ToolCall<"channel_manage">) {
-    await this.authorizeList(c.caller);
-    const dashboard = await this.service.dependencies.channels.service.dashboard(c.caller.userId);
-    return { ok: true as const, connections: dashboard.connections, bindings: dashboard.bindings };
+  async opensteer_messaging_bridge_list({ caller }: ToolCall<"opensteer_messaging_bridge_list">) {
+    await this.service.actor(caller);
+    const dashboard = await this.service.dependencies.channels.service.dashboard(caller.userId);
+    return {
+      bridges: dashboard.connections.map((connection) => {
+        const accounts = new Set(
+          dashboard.accounts
+            .filter((account) => account.connectionId === connection.id)
+            .map(({ id }) => id),
+        );
+        return {
+          bridgeId: connection.id,
+          name: connection.displayName,
+          provider: connection.provider,
+          status: connection.status,
+          routes: dashboard.bindings
+            .filter((binding) => accounts.has(binding.accountId))
+            .map(({ id, status }) => ({ routeId: id, status })),
+        };
+      }),
+    };
   }
-  async browser_list(c: ToolCall<"browser_profile_write">) {
-    await this.authorizeList(c.caller);
-    const { browser, browserSources } = this.service.dependencies;
-    const [profiles, sources] = await Promise.all([
-      browser.listProfiles(c.caller.userId),
-      browserSources.listState({ ownerId: c.caller.userId }),
-    ]);
-    return { ok: true as const, profiles, sites: sources.sites };
-  }
-  async plugin_list(c: ToolCall<"plugin_manage">) {
-    await this.authorizeList(c.caller);
+  async opensteer_plugin_list({ caller }: ToolCall<"opensteer_plugin_list">) {
+    await this.service.actor(caller);
     const { integrations } = this.service.dependencies;
     return {
-      ok: true as const,
-      plugins: await integrations.platform.store.plugins.listForUser(c.caller.userId),
-      specialists: await integrations.platform.store.specialists.summaries(c.caller.userId),
+      plugins: await integrations.platform.store.plugins.listForUser(caller.userId),
+      specialists: await integrations.platform.store.specialists.summaries(caller.userId),
     };
   }
 }
+function defaultsView(preferences: z.output<typeof ExecutionPreferencesViewSchema>) {
+  const latest = preferences.history[0];
+  return {
+    accessMode: preferences.accessMode,
+    selection: latest
+      ? {
+          aiAccountId: latest.harnessInstanceId,
+          model: {
+            modelId: latest.modelSelection.modelId,
+            providerId: latest.modelSelection.providerId,
+            options: latest.modelSelection.options,
+          },
+        }
+      : null,
+  };
+}
 export function administrationToolHandlers(
   admin: AdministrationToolHandlers,
+  /** Installs a plugin folder from the Run's Agent home. */
+  installFromAgentHome: (
+    scope: RunToolScope,
+    directory: string,
+  ) => Promise<Record<string, unknown>>,
 ): AdministrationHandlers {
   const mutation = <Name extends AdministrationToolName>(
     parse: (call: ToolCall<Name>) => AdministrationCommand | Promise<AdministrationCommand>,
@@ -322,61 +516,45 @@ export function administrationToolHandlers(
         admin.service.authorize(call.caller, await parse(call)),
     });
   return {
-    settings_write: mutation((c) => admin.settingsCommand(c)),
-    computer_write: mutation((c) => admin.computerCommand(c)),
-    browser_profile_write: Object.assign(
-      async (c: ToolCall<"browser_profile_write">) =>
-        c.input.action === "list"
-          ? await admin.browser_list(c)
-          : await admin.execute(c.caller, admin.browserCommand(c)!),
+    opensteer_ai_account_update: mutation((c) => admin.aiAccountCommand(c)),
+    opensteer_defaults_read: (c) => admin.opensteer_defaults_read(c),
+    opensteer_defaults_update: Object.assign(
+      async (c: ToolCall<"opensteer_defaults_update">) => await admin.opensteer_defaults_update(c),
       {
-        authorize: async (c: ToolCall<"browser_profile_write">) => {
-          const command = admin.browserCommand(c);
-          if (command) await admin.service.authorize(c.caller, command);
-          else await admin.authorizeList(c.caller);
+        authorize: async (c: ToolCall<"opensteer_defaults_update">) => {
+          for (const next of await admin.defaultsCommands(c))
+            await admin.service.authorize(c.caller, next);
         },
       },
     ),
-    settings_read: (c) => admin.settings_read(c),
-    computer_list: async (c) => await admin.computer_list(c),
-    integration_manage: Object.assign(
-      async (c: ToolCall<"integration_manage">) =>
-        c.input.action === "list"
-          ? await admin.integration_list(c)
-          : await admin.execute(c.caller, (await admin.integrationCommand(c))!),
+    computer_list: (c) => admin.computer_list(c),
+    computer_update: mutation((c) => admin.computerCommand(c)),
+    computer_remove: mutation((c) => admin.computerCommand(c)),
+    browser_profile_list: (c) => admin.browser_profile_list(c),
+    browser_profile_update: mutation((c) => admin.browserCommand(c)),
+    browser_profile_remove: mutation((c) => admin.browserCommand(c)),
+    integration_list: (c) => admin.integration_list(c),
+    integration_remove: mutation((c) => admin.integrationCommand(c)),
+    opensteer_messaging_bridge_list: (c) => admin.opensteer_messaging_bridge_list(c),
+    opensteer_messaging_bridge_update: mutation((c) => admin.bridgeCommand(c)),
+    opensteer_messaging_bridge_remove: mutation((c) => admin.bridgeCommand(c)),
+    opensteer_plugin_list: (c) => admin.opensteer_plugin_list(c),
+    opensteer_plugin_install: Object.assign(
+      async (c: ToolCall<"opensteer_plugin_install">) =>
+        c.input.pluginId === undefined
+          ? await installFromAgentHome(requireRun(c.caller).claims, c.input.directory)
+          : {
+              ...(await admin.execute(c.caller, admin.pluginCommand(c))),
+              pluginId: c.input.pluginId,
+            },
       {
-        authorize: async (c: ToolCall<"integration_manage">) => {
-          const command = await admin.integrationCommand(c);
-          if (command) await admin.service.authorize(c.caller, command);
-          else await admin.authorizeList(c.caller);
+        authorize: async (c: ToolCall<"opensteer_plugin_install">) => {
+          if (c.input.pluginId === undefined) requireRun(c.caller);
+          else await admin.service.authorize(c.caller, admin.pluginCommand(c));
         },
       },
     ),
-    channel_manage: Object.assign(
-      async (c: ToolCall<"channel_manage">) =>
-        c.input.action === "list"
-          ? await admin.channel_list(c)
-          : await admin.execute(c.caller, admin.channelCommand(c)!),
-      {
-        authorize: async (c: ToolCall<"channel_manage">) => {
-          const command = admin.channelCommand(c);
-          if (command) await admin.service.authorize(c.caller, command);
-          else await admin.authorizeList(c.caller);
-        },
-      },
-    ),
-    plugin_manage: Object.assign(
-      async (c: ToolCall<"plugin_manage">) =>
-        c.input.action === "list"
-          ? await admin.plugin_list(c)
-          : await admin.execute(c.caller, admin.pluginCommand(c)!),
-      {
-        authorize: async (c: ToolCall<"plugin_manage">) => {
-          const command = admin.pluginCommand(c);
-          if (command) await admin.service.authorize(c.caller, command);
-          else await admin.authorizeList(c.caller);
-        },
-      },
-    ),
+    opensteer_plugin_update: mutation((c) => admin.pluginCommand(c)),
+    opensteer_plugin_remove: mutation((c) => admin.pluginCommand(c)),
   };
 }

@@ -1,6 +1,7 @@
-import { createId, emptyExecutionPreferences, type Thread } from "@opensteer/core";
-import { IntegrationConnectionAuthStore } from "@opensteer/database";
+import { createId, DeviceIdSchema, emptyExecutionPreferences, type Thread } from "@opensteer/core";
+import { IntegrationConnectionAuthStore, type OpensteerStore } from "@opensteer/database";
 import { createIntegrationId } from "@opensteer/integration-core";
+import { machineAccessPolicyDefault } from "@opensteer/protocol";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   AdministrationService,
@@ -32,6 +33,7 @@ function fixture() {
     machineId = createId("runner"),
     profileId = createId("browserProfile"),
     grantId = crypto.randomUUID();
+  const deviceId = DeviceIdSchema.parse(machineId);
   const connectionId = createIntegrationId("connection");
   const harness = {
     id: harnessInstanceId,
@@ -78,12 +80,16 @@ function fixture() {
     },
     revokeGrant: vi.fn(),
     uninstallIntegration: vi.fn(),
+    deviceConnections: vi.fn(async () => []),
   };
   const store = {
     database: owner.database,
     replayAdministrationCommand: vi.fn(async () => undefined),
 
-    listEnvironmentsForUser: vi.fn(async () => [{ id: environmentId, kind: "local" }]),
+    listEnvironmentsForUser: vi.fn(async () => [
+      { id: environmentId, kind: "local", runnerId: machineId },
+    ]),
+    listAgentHarnessInstancesForUser: vi.fn(async () => [harness]),
     listHarnessInstances: vi.fn(async () => [harness]),
     getHarnessInstance: vi.fn(async () => harness),
     updateHarnessInstance: vi.fn(async () => harness),
@@ -92,14 +98,39 @@ function fixture() {
       ...emptyExecutionPreferences,
       accessMode: "approval-required",
     })),
+    listDevices: vi.fn<OpensteerStore["listDevices"]>(async () => ({
+      devices: [
+        {
+          id: deviceId,
+          deploymentId: owner.deployment.id,
+          name: "Mac",
+          kind: "home",
+          platform: "macos",
+          form: "desktop",
+          ownerKind: "user",
+          ownerUserId: userId,
+          accessPolicy: machineAccessPolicyDefault,
+          accessPolicyRevision: 1,
+          removedAt: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ],
+      nextCursor: null,
+    })),
+    listDeviceDrivers: vi.fn<OpensteerStore["listDeviceDrivers"]>(async () => [
+      { deviceId, runnerId: machineId, role: "self", generation: 1, detachedAt: null },
+    ]),
     listRunners: vi.fn(async () => ({
       runners: [
         {
           id: machineId,
           name: "Mac",
+          lastSeenAt: null,
           revokedAt: null,
           kind: "local",
           ownerKind: "user",
+          capabilities: ["shell"],
           accessPolicy: { reach: "nobody", commands: false, forwarding: false, shares: [] },
           allowedModules: [],
           moduleDescriptors: {},
@@ -110,11 +141,12 @@ function fixture() {
     effectiveMachineOwner: vi.fn(async () => ({ effectiveOwner: userId })),
     listActiveShellSessions: vi.fn(async () => []),
 
-    renameRunner: vi.fn(),
+    renameDevice: vi.fn<OpensteerStore["renameDevice"]>(),
     notificationState: {
       timeZoneFor: vi.fn(async () => null),
       setTimeZone: vi.fn(async () => "UTC"),
     },
+    ownerProfile: { read: vi.fn(async () => ({ ownerId: userId, name: "Ada", account: null })) },
   };
   const deps = {
     store,
@@ -126,17 +158,32 @@ function fixture() {
     channels: {
       service: {
         setConnectionStatus: vi.fn(),
-        dashboard: vi.fn(async () => ({ connections: [], bindings: [] })),
+        dashboard: vi.fn(async () => ({ connections: [], accounts: [], bindings: [] })),
       },
     },
     browser: {
       renameProfile: vi.fn(async () => ({ id: profileId, name: "Work", token: "secret" })),
+      listAgentProfiles: vi.fn(async () => [{ id: profileId, name: "Work", home: null }]),
     },
-    runners: { isRunnerConnected: vi.fn(() => true) },
+    browserSources: { listState: vi.fn(async () => ({ sources: [], sites: [] })) },
+    runners: {
+      isRunnerConnected: vi.fn(() => true),
+      moduleReadiness: vi.fn(() => undefined),
+    },
+    computerApps: {
+      status: vi.fn(() => []),
+      attached: vi.fn(() => false),
+      deviceStatus: vi.fn(() => null),
+    },
   };
   const service = new AdministrationService(deps as unknown as AdministrationDependencies, vi.fn());
   const handlers = administrationToolHandlers(
-    new AdministrationToolHandlers(service, async () => []),
+    new AdministrationToolHandlers(
+      service,
+      async () => [],
+      (id) => id === environmentId,
+    ),
+    vi.fn(),
   );
   const mcp = new OpensteerMcpService({
     callers: { authenticate: async () => caller },
@@ -145,14 +192,16 @@ function fixture() {
     store: {} as never,
   });
   const inputs = {
-    settings_write: { action: "rename", environmentId, harnessInstanceId, name: "Engine" },
-    computer_write: { action: "rename", machineId, name: "Mac" },
-    integration_manage: { action: "disconnect", connectionId },
-    channel_manage: { action: "pause", connectionId },
-    plugin_manage: { action: "enable", pluginId: "p" },
-    browser_profile_write: { action: "rename", profileId, name: "Work" },
-    settings_read: {},
-    computer_list: {},
+    opensteer_ai_account_update: {
+      aiAccountId: harnessInstanceId,
+      action: "rename",
+      name: "Engine",
+    },
+    computer_update: { computerId: machineId, name: "Mac" },
+    integration_remove: { target: "account", connectionId },
+    opensteer_messaging_bridge_update: { bridgeId: connectionId, paused: true },
+    opensteer_plugin_update: { pluginId: "p", enabled: true },
+    browser_profile_update: { profileId, name: "Work" },
   };
   return {
     mcp,
@@ -162,6 +211,7 @@ function fixture() {
     profileId,
     grantId,
     userId,
+    machineId,
     caller: () => caller,
     setCaller: (value: AgentCaller) => {
       caller = value;
@@ -169,12 +219,20 @@ function fixture() {
   };
 }
 const mutations = [
-  "settings_write",
-  "computer_write",
-  "integration_manage",
-  "channel_manage",
-  "plugin_manage",
-  "browser_profile_write",
+  "opensteer_ai_account_update",
+  "computer_update",
+  "integration_remove",
+  "opensteer_messaging_bridge_update",
+  "opensteer_plugin_update",
+  "browser_profile_update",
+] as const;
+const reads = [
+  "opensteer_defaults_read",
+  "computer_list",
+  "browser_profile_list",
+  "integration_list",
+  "opensteer_messaging_bridge_list",
+  "opensteer_plugin_list",
 ] as const;
 describe("administration through the MCP service", () => {
   it.each(mutations)("executes %s and refuses the same action below full-access", async (name) => {
@@ -187,20 +245,25 @@ describe("administration through the MCP service", () => {
       f.mcp.callTool("token", name, f.inputs[name], { operationKey: "write" }),
     ).rejects.toThrow("Changing settings requires full-access");
   });
-  it.each(["settings_read", "computer_list"] as const)(
-    "allows %s without full-access",
-    async (name) => {
-      const f = fixture();
-      f.setCaller({ ...f.caller(), accessMode: "approval-required" });
-      expect(await f.mcp.callTool("token", name, {}, { operationKey: "read" })).toBeDefined();
-    },
-  );
+  it.each(reads)("allows %s without full-access", async (name) => {
+    const f = fixture();
+    f.setCaller({ ...f.caller(), accessMode: "approval-required" });
+    expect(await f.mcp.callTool("token", name, {}, { operationKey: "read" })).toBeDefined();
+  });
+  it("names the hosting computer once, by the same ID as its tools", async () => {
+    const f = fixture();
+    expect(
+      await f.mcp.callTool("token", "computer_list", {}, { operationKey: "computers" }),
+    ).toMatchObject({
+      computers: [{ computerId: f.machineId, hosting: true, canRunTasks: true }],
+    });
+  });
   it("remembers an access preference without changing the caller's authority", async () => {
     const f = fixture();
     await f.mcp.callTool(
       "token",
-      "settings_write",
-      { action: "remember_execution", accessMode: "approval-required" },
+      "opensteer_defaults_update",
+      { accessMode: "approval-required" },
       { operationKey: "preference" },
     );
     expect(f.deps.store.rememberExecutionChoice).toHaveBeenCalledWith(
@@ -215,8 +278,8 @@ describe("administration through the MCP service", () => {
     await expect(
       f.mcp.callTool(
         "token",
-        "settings_write",
-        { action: "remember_execution", accessMode: "full-access" },
+        "opensteer_defaults_update",
+        { accessMode: "full-access" },
         { operationKey: "raise" },
       ),
     ).rejects.toThrow("Changing settings requires full-access");
@@ -225,9 +288,9 @@ describe("administration through the MCP service", () => {
   it("strips config, tokens and nested plugin launch details", async () => {
     const f = fixture();
     for (const [name, input] of [
-      ["settings_read", {}],
-      ["plugin_manage", { action: "list" }],
-      ["browser_profile_write", f.inputs.browser_profile_write],
+      ["opensteer_defaults_read", {}],
+      ["opensteer_plugin_list", {}],
+      ["browser_profile_update", f.inputs.browser_profile_update],
     ] as const) {
       expect(
         JSON.stringify(await f.mcp.callTool("token", name, input, { operationKey: name })),
@@ -236,7 +299,7 @@ describe("administration through the MCP service", () => {
   });
   it("lists specialists without refreshing or binding resources", async () => {
     const f = fixture();
-    await f.mcp.callTool("token", "plugin_manage", { action: "list" }, { operationKey: "list" });
+    await f.mcp.callTool("token", "opensteer_plugin_list", {}, { operationKey: "list" });
     expect(f.deps.integrations.platform.store.specialists.list).not.toHaveBeenCalled();
     expect(f.deps.integrations.platform.store.specialists.summaries).toHaveBeenCalledOnce();
   });
@@ -244,18 +307,20 @@ describe("administration through the MCP service", () => {
     const f = fixture();
     const base = f.caller();
     f.setCaller({ ...base, kind: "run", thread: {} as Thread, claims: {} as never });
-    await f.mcp.callTool("token", "computer_write", f.inputs.computer_write, {
+    await f.mcp.callTool("token", "computer_update", f.inputs.computer_update, {
       operationKey: "run",
     });
-    expect(f.deps.store.renameRunner).toHaveBeenCalledOnce();
+    expect(f.deps.store.renameDevice).toHaveBeenCalledOnce();
   });
   it("rechecks the access ceiling before reading an administration replay", async () => {
     const f = fixture();
     f.setCaller({ ...f.caller(), accessMode: "approval-required" });
     await expect(
-      f.mcp.callTool("token", "computer_write", f.inputs.computer_write, { operationKey: "once" }),
+      f.mcp.callTool("token", "computer_update", f.inputs.computer_update, {
+        operationKey: "once",
+      }),
     ).rejects.toThrow("Changing settings requires full-access");
     expect(f.deps.store.replayAdministrationCommand).not.toHaveBeenCalled();
-    expect(f.deps.store.renameRunner).not.toHaveBeenCalled();
+    expect(f.deps.store.renameDevice).not.toHaveBeenCalled();
   });
 });

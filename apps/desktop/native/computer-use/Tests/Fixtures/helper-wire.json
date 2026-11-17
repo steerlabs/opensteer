@@ -538,7 +538,7 @@
           }
         },
         "sessionId" : "cus_4a7c2f18-9b3e-4d61-8a02-5f6c1d9e0b74",
-        "window" : 42
+        "windowId" : "win_00000000-0000-4000-8000-000000000042"
       },
       "timeoutMs" : 30000
     },
@@ -597,7 +597,7 @@
             "teamId" : null
           },
           "kind" : "app",
-          "window" : 42
+          "windowId" : "win_00000000-0000-4000-8000-000000000042"
         },
         "viewId" : "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
       },
@@ -612,6 +612,14 @@
           "displayName" : "Notes",
           "teamId" : null
         }
+      },
+      "timeoutMs" : 30000
+    },
+    "window.resolve" : {
+      "id" : 25,
+      "method" : "window.resolve",
+      "params" : {
+        "windowId" : "win_00000000-0000-4000-8000-000000000042"
       },
       "timeoutMs" : 30000
     }
@@ -814,13 +822,13 @@
           "x" : 240,
           "y" : 118
         },
-        "id" : 42,
         "main" : true,
         "minimized" : false,
         "modal" : false,
         "onScreen" : true,
         "ref" : "window-1",
-        "title" : "Shopping list"
+        "title" : "Shopping list",
+        "windowId" : "win_00000000-0000-4000-8000-000000000042"
       }
     },
     "session.close" : {
@@ -860,10 +868,10 @@
             "x" : 240,
             "y" : 118
           },
-          "id" : 42,
           "ref" : "window-1",
           "scale" : 1.4355555555555555,
-          "title" : "Shopping list"
+          "title" : "Shopping list",
+          "windowId" : "win_00000000-0000-4000-8000-000000000042"
         },
         "windows" : [
           {
@@ -875,13 +883,13 @@
               "x" : 240,
               "y" : 118
             },
-            "id" : 42,
             "main" : true,
             "minimized" : false,
             "modal" : false,
             "onScreen" : true,
             "ref" : "window-1",
-            "title" : "Shopping list"
+            "title" : "Shopping list",
+            "windowId" : "win_00000000-0000-4000-8000-000000000042"
           }
         ]
       }
@@ -900,13 +908,13 @@
             "x" : 240,
             "y" : 118
           },
-          "id" : 42,
           "main" : true,
           "minimized" : false,
           "modal" : false,
           "onScreen" : true,
           "ref" : "window-1",
-          "title" : "Shopping list"
+          "title" : "Shopping list",
+          "windowId" : "win_00000000-0000-4000-8000-000000000042"
         }
       ]
     },
@@ -928,8 +936,8 @@
       "state" : "ready",
       "viewId" : "cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       "window" : {
-        "id" : 42,
-        "title" : "Shopping list"
+        "title" : "Shopping list",
+        "windowId" : "win_00000000-0000-4000-8000-000000000042"
       }
     },
     "view.renew" : {
@@ -941,14 +949,22 @@
     "view.windows" : {
       "windows" : [
         {
-          "focused" : true,
-          "id" : 42,
-          "main" : true,
           "minimized" : false,
           "onScreen" : true,
-          "title" : "Shopping list"
+          "title" : "Shopping list",
+          "windowId" : "win_00000000-0000-4000-8000-000000000042"
         }
       ]
+    },
+    "window.resolve" : {
+      "app" : {
+        "bundleId" : "com.apple.Notes",
+        "displayName" : "Notes",
+        "teamId" : null
+      },
+      "title" : "Shopping list",
+      "unavailableReason" : null,
+      "windowId" : "win_00000000-0000-4000-8000-000000000042"
     }
   }
 }

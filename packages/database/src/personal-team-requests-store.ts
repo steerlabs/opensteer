@@ -1,4 +1,13 @@
 import {
+  lockInputQueueProjection,
+  liveInputLease,
+  clearInputLease,
+  leaseChangedEvent,
+} from "./waiting-inputs.js";
+import { executionDate } from "./personal-transaction.js";
+import { threadInputFromRow } from "./thread-row-mappers.js";
+import { isDeepStrictEqual } from "node:util";
+import {
   MessageIdSchema,
   type AgentEvent,
   type TeamRunDelivery,
@@ -10,10 +19,19 @@ import {
   type TeamTaskOrigin,
   type TeamMessageId,
   type UserId,
+  type TeamAgentRequestState,
+  type TeamAskDecision,
+  type TeamAskOutcome,
 } from "@opensteer/core";
-import { PersonalTeamRequestSchema, type PersonalTeamRequest } from "@opensteer/protocol";
-import { sql, type Kysely, type Selectable } from "kysely";
+import {
+  PersonalTeamRequestSchema,
+  PersonalTeamRequestMirrorSchema,
+  type PersonalTeamRequestMirror,
+  type PersonalTeamRequest,
+} from "@opensteer/protocol";
+import { sql, type Insertable, type Kysely, type Selectable } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
+import { personalTeamReturnPost } from "./personal-team-return-provenance.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { appendHostDeploymentEvent, eventFromRow } from "./deployment-events.js";
@@ -32,6 +50,441 @@ export class PersonalTeamRequestsStore {
     this.#onDeliveryEvent = onDeliveryEvent;
   }
 
+  async prunePosts() {
+    await this.database
+      .deleteFrom("personalTeamPosts")
+      .where("createdAt", "<=", new Date(Date.now() - 14 * 86400000))
+      .execute();
+  }
+
+  async pendingPosts(teamId: DeploymentId) {
+    await this.prunePosts();
+    return this.database
+      .selectFrom("personalTeamPosts")
+      .selectAll()
+      .where("teamDeploymentId", "=", teamId)
+      .where("messageId", "is", null)
+      .execute();
+  }
+
+  async forgetPost(teamId: DeploymentId, clientMessageId: string, localLinkId: string) {
+    await this.database
+      .deleteFrom("personalTeamPosts")
+      .where("teamDeploymentId", "=", teamId)
+      .where("clientMessageId", "=", clientMessageId)
+      .where("localLinkId", "=", localLinkId)
+      .execute();
+  }
+
+  post(teamId: DeploymentId, clientMessageId: string) {
+    return this.database
+      .selectFrom("personalTeamPosts")
+      .selectAll()
+      .where("teamDeploymentId", "=", teamId)
+      .where("clientMessageId", "=", clientMessageId)
+      .executeTakeFirst();
+  }
+
+  async recordPost(
+    input: Omit<Insertable<DatabaseSchema["personalTeamPosts"]>, "targetBindings"> & {
+      readonly askOutcomes?: readonly TeamAskOutcome[] | undefined;
+    },
+  ) {
+    const { askOutcomes, ...post } = input;
+    const targetBindings = (askOutcomes ?? []).flatMap((ask) =>
+      ask.outcome === "queued" &&
+      ask.handle &&
+      ask.requestId &&
+      input.mentionedAgentHandles.includes(`${ask.handle}-agent`)
+        ? [{ ownerUserId: ask.ownerUserId, handle: ask.handle, requestId: ask.requestId }]
+        : [],
+    );
+    await this.prunePosts();
+    await withPersonalTransaction(this.database, async (tx) => {
+      await tx
+        .insertInto("personalTeamPosts")
+        .values({
+          ...post,
+          targetBindings: sql`${JSON.stringify(targetBindings)}::jsonb`,
+          attachmentIds: sql`${JSON.stringify(input.attachmentIds)}::jsonb`,
+        })
+        .onConflict((conflict) =>
+          conflict.columns(["teamDeploymentId", "clientMessageId"]).doNothing(),
+        )
+        .execute();
+      const saved = await tx
+        .selectFrom("personalTeamPosts")
+        .selectAll()
+        .where("teamDeploymentId", "=", input.teamDeploymentId)
+        .where("clientMessageId", "=", input.clientMessageId)
+        .executeTakeFirstOrThrow();
+      if (
+        saved.localLinkId !== input.localLinkId ||
+        saved.remoteLinkId !== input.remoteLinkId ||
+        saved.runId !== input.runId ||
+        saved.channelId !== input.channelId ||
+        saved.threadRootId !== input.threadRootId ||
+        saved.requestId !== input.requestId ||
+        saved.bodyMarkdown !== input.bodyMarkdown ||
+        JSON.stringify(saved.attachmentIds) !== JSON.stringify(input.attachmentIds) ||
+        JSON.stringify(saved.mentionedAgentHandles) !==
+          JSON.stringify(input.mentionedAgentHandles) ||
+        (saved.messageId !== null &&
+          input.messageId !== null &&
+          saved.messageId !== input.messageId)
+      )
+        throw new OpensteerError({ code: "conflict", message: "Team post identity changed." });
+      if (input.messageId !== null) {
+        if (!targetBindings.length) {
+          await tx
+            .deleteFrom("personalTeamPosts")
+            .where("teamDeploymentId", "=", input.teamDeploymentId)
+            .where("clientMessageId", "=", input.clientMessageId)
+            .execute();
+        } else
+          await tx
+            .updateTable("personalTeamPosts")
+            .set({
+              messageId: input.messageId,
+              targetBindings: sql`${JSON.stringify(targetBindings)}::jsonb`,
+            })
+            .where("teamDeploymentId", "=", input.teamDeploymentId)
+            .where("clientMessageId", "=", input.clientMessageId)
+            .where("messageId", "is", null)
+            .execute();
+      }
+    });
+  }
+
+  async mirror(teamId: DeploymentId, requestId: TeamAgentRequestId) {
+    const row = await this.database
+      .selectFrom("personalTeamRequests")
+      .selectAll()
+      .where("teamDeploymentId", "=", teamId)
+      .where("requestId", "=", requestId)
+      .executeTakeFirst();
+    return row ? personalTeamRequestMirrorFromRow(row) : null;
+  }
+
+  async terminalAsksPendingCleanup(teamId?: DeploymentId) {
+    let query = this.database
+      .selectFrom("personalTeamRequests")
+      .innerJoin("threadInputs", "threadInputs.messageId", "personalTeamRequests.localInputId")
+      .selectAll("personalTeamRequests")
+      .where("personalTeamRequests.kind", "=", "ask")
+      .where("personalTeamRequests.terminalState", "is not", null)
+      .where("threadInputs.state", "=", "awaiting-approval");
+    if (teamId) query = query.where("personalTeamRequests.teamDeploymentId", "=", teamId);
+    return (await query.execute()).map(personalTeamRequestMirrorFromRow);
+  }
+
+  async mirrors(teamId: DeploymentId) {
+    await this.pruneReturns(teamId);
+    const rows = await this.database
+      .selectFrom("personalTeamRequests")
+      .selectAll()
+      .where("teamDeploymentId", "=", teamId)
+      .where((eb) =>
+        eb.or([
+          eb("terminalState", "is", null),
+          eb("publicationState", "=", "pending"),
+          eb.and([
+            eb("kind", "=", "return"),
+            eb("remoteState", "in", ["queued", "working", "needs_you"]),
+          ]),
+        ]),
+      )
+      .orderBy("createdAt")
+      .orderBy("requestId")
+      .execute();
+    return rows.map(personalTeamRequestMirrorFromRow);
+  }
+
+  async pruneReturns(teamId: DeploymentId) {
+    await this.database
+      .deleteFrom("personalTeamRequests")
+      .where("teamDeploymentId", "=", teamId)
+      .where("kind", "=", "return")
+      .where((eb) =>
+        eb.or([
+          eb("createdAt", "<=", new Date(Date.now() - 14 * 86400000)),
+          eb("finishedAt", "<=", new Date(Date.now() - 14 * 86400000)),
+          eb(
+            "requestId",
+            "in",
+            eb
+              .selectFrom("personalTeamRequests")
+              .select("requestId")
+              .where("teamDeploymentId", "=", teamId)
+              .where("kind", "=", "return")
+              .where("terminalState", "is not", null)
+              .orderBy("createdAt", "desc")
+              .orderBy("requestId", "desc")
+              .offset(128),
+          ),
+        ]),
+      )
+      .execute();
+  }
+
+  async observe(
+    input: PersonalTeamRequestMirror & { readonly createdAt: string },
+  ): Promise<boolean> {
+    await this.pruneReturns(input.teamId);
+    const rejected =
+      input.kind === "return" && !(await personalTeamReturnPost(this.database, input));
+    const returnPayload =
+      rejected && input.returnPayload
+        ? { ...input.returnPayload, bodyMarkdown: null, attachments: [] }
+        : input.returnPayload;
+    const saved = await this.database
+      .insertInto("personalTeamRequests")
+      .values({
+        teamDeploymentId: input.teamId,
+        requestId: input.requestId,
+        kind: input.kind,
+        remoteState: input.remoteState,
+        presentation: input.presentation,
+        returnPayload,
+        consentExpiresAt: input.consentExpiresAt,
+        localDecision: null,
+        decisionAt: null,
+        returnAdmission: rejected ? "undeliverable" : null,
+        triggerMessageId: input.triggerMessageId,
+        localTaskId: null,
+        localInputId: null,
+        runId: null,
+        source: input.source,
+        publicationState: rejected ? "blocked" : "pending",
+        terminalState: rejected ? "done" : null,
+        acceptedMessageId: null,
+        createdAt: input.kind === "return" ? new Date() : input.createdAt,
+        finishedAt: rejected ? new Date() : null,
+      })
+      .onConflict((conflict) => conflict.doNothing())
+      .returning("requestId")
+      .executeTakeFirst();
+    const current = await this.mirror(input.teamId, input.requestId);
+    if (
+      !current ||
+      current.kind !== input.kind ||
+      current.triggerMessageId !== input.triggerMessageId ||
+      !isDeepStrictEqual(current.presentation, input.presentation) ||
+      !isDeepStrictEqual(
+        current.returnPayload,
+        current.terminalState && input.returnPayload
+          ? { ...input.returnPayload, bodyMarkdown: null, attachments: [] }
+          : input.returnPayload,
+      )
+    )
+      throw new OpensteerError({ code: "conflict", message: "Team request presentation changed" });
+    await this.pruneReturns(input.teamId);
+    return Boolean(saved);
+  }
+
+  async admissionBlocked(teamId: DeploymentId, requestId: TeamAgentRequestId, reason: string) {
+    await withPersonalTransaction(this.database, (tx) =>
+      tx
+        .updateTable("personalTeamRequests")
+        .set({ blockedReason: reason.slice(0, 500) })
+        .where("teamDeploymentId", "=", teamId)
+        .where("requestId", "=", requestId)
+        .where("localTaskId", "is", null)
+        .where("terminalState", "is", null)
+        .execute(),
+    );
+  }
+  async expiredUndecidedAsks() {
+    const rows = await this.database
+      .selectFrom("personalTeamRequests")
+      .selectAll()
+      .where("kind", "=", "ask")
+      .where("localDecision", "is", null)
+      .where("terminalState", "is", null)
+      .where("consentExpiresAt", "<=", executionDate(this.database))
+      .orderBy("teamDeploymentId")
+      .orderBy("requestId")
+      .limit(100)
+      .execute();
+    return rows.map(personalTeamRequestMirrorFromRow);
+  }
+  async decide(
+    ownerId: UserId,
+    teamId: DeploymentId,
+    requestId: TeamAgentRequestId,
+    decision: TeamAskDecision,
+    expectedRevision?: number,
+    sessionId?: import("@opensteer/core").AuthSessionId,
+  ) {
+    const result = await withPersonalTransaction(this.database, async (tx) => {
+      const events: AgentEvent[] = [];
+      await requirePersonalOwner(tx, ownerId);
+      const observed = await tx
+        .selectFrom("personalTeamRequests")
+        .selectAll()
+        .where("teamDeploymentId", "=", teamId)
+        .where("requestId", "=", requestId)
+        .executeTakeFirst();
+      const thread = observed?.localTaskId
+        ? await lockInputQueueProjection(tx, observed.localTaskId)
+        : null;
+      const row = await tx
+        .selectFrom("personalTeamRequests")
+        .selectAll()
+        .where("teamDeploymentId", "=", teamId)
+        .where("requestId", "=", requestId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!row || row.kind !== "ask")
+        throw new OpensteerError({ code: "not_found", message: "Pending team ask not found." });
+      if (row.terminalState === "failed" && !row.releasedAt) {
+        if (decision !== "decline")
+          throw new OpensteerError({
+            code: "conflict",
+            message: row.blockedReason ?? "This team ask has ended.",
+          });
+        const saved = await tx
+          .updateTable("personalTeamRequests")
+          .set({ blockedReason: null })
+          .where("teamDeploymentId", "=", teamId)
+          .where("requestId", "=", requestId)
+          .returningAll()
+          .executeTakeFirstOrThrow();
+        return { mirror: personalTeamRequestMirrorFromRow(saved), events };
+      }
+      if (decision === "approve" && expectedRevision === undefined)
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Approval requires the reviewed revision.",
+        });
+      if (row.localDecision) {
+        if (
+          row.localDecision !== decision ||
+          (decision === "approve" && row.approvedRevision !== expectedRevision)
+        )
+          throw new OpensteerError({
+            code: "conflict",
+            message: "This team ask was already decided on another device.",
+          });
+        return { mirror: personalTeamRequestMirrorFromRow(row), events };
+      }
+      if (
+        row.remoteState !== "awaiting_approval" ||
+        row.terminalState ||
+        !row.consentExpiresAt ||
+        row.consentExpiresAt <= executionDate(tx)
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          message: "This team ask is no longer awaiting approval.",
+        });
+      let approvedRevision: number | null = null;
+      if (decision === "approve") {
+        if (!thread || !row.localInputId || expectedRevision === undefined)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Review the admitted ask before approving it.",
+          });
+        const inbox = await tx
+          .selectFrom("threadInputs")
+          .selectAll()
+          .where("messageId", "=", row.localInputId)
+          .executeTakeFirstOrThrow();
+        const message = await tx
+          .selectFrom("messages")
+          .selectAll()
+          .where("id", "=", row.localInputId)
+          .executeTakeFirstOrThrow();
+        const lease = liveInputLease(tx, inbox);
+        if (inbox.state !== "awaiting-approval" || message.revision !== expectedRevision)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "This ask changed. Review its current revision.",
+          });
+        if (lease && inbox.editLeaseSessionId !== sessionId)
+          throw new OpensteerError({
+            code: "conflict",
+            message: `Being edited on ${lease.deviceLabel}.`,
+          });
+        approvedRevision = message.revision;
+        if (inbox.editLeaseId) {
+          await tx
+            .updateTable("threadInputs")
+            .set(clearInputLease)
+            .where("messageId", "=", inbox.messageId)
+            .execute();
+          events.push(await leaseChangedEvent(tx, thread, inbox.messageId, null));
+        }
+      }
+      const saved = await tx
+        .updateTable("personalTeamRequests")
+        .set({ localDecision: decision, decisionAt: executionDate(tx), approvedRevision })
+        .where("teamDeploymentId", "=", teamId)
+        .where("requestId", "=", requestId)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      // A decided ask can no longer be edited or decided again, even while the team is unreachable;
+      // every device reading the task's queue learns that now, not when the team answers.
+      const input =
+        thread && row.localInputId
+          ? await tx
+              .selectFrom("threadInputs")
+              .selectAll()
+              .where("messageId", "=", row.localInputId)
+              .executeTakeFirst()
+          : undefined;
+      if (thread && input)
+        events.push(
+          await appendHostDeploymentEvent(tx, {
+            data: { input: threadInputFromRow(input) },
+            environmentId: thread.environmentId,
+            runId: null,
+            threadId: thread.id,
+            type: "thread-input.updated",
+          }),
+        );
+      return { mirror: personalTeamRequestMirrorFromRow(saved), events };
+    });
+    for (const event of result.events) this.#onDeliveryEvent?.(event);
+    return result.mirror;
+  }
+
+  async failDecision(
+    teamId: DeploymentId,
+    requestId: TeamAgentRequestId,
+    reason: string,
+  ): Promise<void> {
+    await withPersonalTransaction(this.database, async (tx) => {
+      await tx
+        .updateTable("personalTeamRequests")
+        .set({
+          terminalState: "failed",
+          publicationState: "blocked",
+          blockedReason: reason,
+          finishedAt: new Date(),
+        })
+        .where("teamDeploymentId", "=", teamId)
+        .where("requestId", "=", requestId)
+        .where("kind", "=", "ask")
+        .where("releasedAt", "is", null)
+        .where("terminalState", "is", null)
+        .execute();
+    });
+  }
+
+  async remote(
+    teamId: DeploymentId,
+    requestId: TeamAgentRequestId,
+    remoteState: TeamAgentRequestState,
+  ) {
+    await this.database
+      .updateTable("personalTeamRequests")
+      .set({ remoteState })
+      .where("teamDeploymentId", "=", teamId)
+      .where("requestId", "=", requestId)
+      .execute();
+  }
+
   async get(
     teamId: DeploymentId,
     requestId: TeamAgentRequestId,
@@ -39,6 +492,8 @@ export class PersonalTeamRequestsStore {
     const row = await this.database
       .selectFrom("personalTeamRequests")
       .selectAll()
+      .where("localTaskId", "is not", null)
+      .where("localInputId", "is not", null)
       .where("teamDeploymentId", "=", teamId)
       .where("requestId", "=", requestId)
       .executeTakeFirst();
@@ -51,6 +506,14 @@ export class PersonalTeamRequestsStore {
       .values({
         teamDeploymentId: input.teamId,
         requestId: input.requestId,
+        kind: input.kind,
+        remoteState: input.remoteState,
+        presentation: input.presentation,
+        returnPayload: input.returnPayload,
+        consentExpiresAt: input.consentExpiresAt,
+        localDecision: input.localDecision,
+        decisionAt: input.decisionAt,
+        returnAdmission: input.returnAdmission,
         triggerMessageId: input.triggerMessageId,
         localTaskId: input.taskId,
         localInputId: MessageIdSchema.parse(input.inputId),
@@ -85,6 +548,8 @@ export class PersonalTeamRequestsStore {
     const rows = await this.database
       .selectFrom("personalTeamRequests")
       .selectAll()
+      .where("localTaskId", "is not", null)
+      .where("localInputId", "is not", null)
       .where("teamDeploymentId", "=", teamId)
       .where((eb) =>
         eb.or([eb("publicationState", "=", "pending"), eb("terminalState", "is", null)]),
@@ -105,6 +570,8 @@ export class PersonalTeamRequestsStore {
     const row = await this.database
       .selectFrom("personalTeamRequests")
       .selectAll()
+      .where("localTaskId", "is not", null)
+      .where("localInputId", "is not", null)
       .where("teamDeploymentId", "=", run.replyTarget.teamId)
       .where("requestId", "=", run.replyTarget.requestId)
       .where("localTaskId", "=", run.threadId)
@@ -118,13 +585,21 @@ export class PersonalTeamRequestsStore {
     runId: RunId | null,
     state: NonNullable<PersonalTeamRequest["terminalState"]>,
   ): Promise<void> {
-    await this.database
-      .updateTable("personalTeamRequests")
-      .set({ runId, terminalState: state, finishedAt: new Date().toISOString() })
-      .where("teamDeploymentId", "=", teamId)
-      .where("requestId", "=", requestId)
-      .where("terminalState", "is", null)
-      .execute();
+    await withPersonalTransaction(this.database, async (tx) => {
+      await tx
+        .updateTable("personalTeamRequests")
+        .set({
+          runId,
+          terminalState: state,
+          returnPayload: sql`case when kind = 'return' then return_payload || '{"bodyMarkdown":null,"attachments":[]}'::jsonb else return_payload end`,
+          finishedAt: new Date().toISOString(),
+          publicationState: sql`case when kind = 'ask' and released_at is null then 'blocked' when local_task_id is null then 'blocked' else publication_state end`,
+        })
+        .where("teamDeploymentId", "=", teamId)
+        .where("requestId", "=", requestId)
+        .where("terminalState", "is", null)
+        .execute();
+    });
   }
 
   async freeze(
@@ -205,6 +680,11 @@ export class PersonalTeamRequestsStore {
         .where("teamDeploymentId", "=", teamId)
         .where("requestId", "=", requestId)
         .executeTakeFirstOrThrow();
+      if (!observed.localTaskId || !observed.localInputId)
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Team request has no admitted input",
+        });
       const run = await tx
         .selectFrom("runs")
         .select(["id", "threadId", "environmentId"])
@@ -312,22 +792,38 @@ export class PersonalTeamRequestsStore {
   }
 
   #view(row: Selectable<DatabaseSchema["personalTeamRequests"]>): PersonalTeamRequest {
-    return PersonalTeamRequestSchema.parse({
-      teamId: row.teamDeploymentId,
-      requestId: row.requestId,
-      triggerMessageId: row.triggerMessageId,
-      taskId: row.localTaskId,
-      inputId: row.localInputId,
-      runId: row.runId,
-      publicationState: row.publicationState,
-      terminalState: row.terminalState,
-      replyMessageId: row.acceptedMessageId,
-      source: row.source,
-      answerMessageId: row.answerMessageId,
-      answerPayload: row.answerPayload,
-      clientMessageId: row.clientMessageId,
-      deliveryVia: row.deliveryVia,
-      blockedReason: row.blockedReason,
-    });
+    return PersonalTeamRequestSchema.parse(personalTeamRequestMirrorFromRow(row));
   }
+}
+
+export function personalTeamRequestMirrorFromRow(
+  row: Selectable<DatabaseSchema["personalTeamRequests"]>,
+): PersonalTeamRequestMirror {
+  return PersonalTeamRequestMirrorSchema.parse({
+    teamId: row.teamDeploymentId,
+    requestId: row.requestId,
+    kind: row.kind,
+    remoteState: row.remoteState,
+    presentation: row.presentation,
+    returnPayload: row.returnPayload,
+    consentExpiresAt: row.consentExpiresAt?.toISOString() ?? null,
+    localDecision: row.localDecision,
+    decisionAt: row.decisionAt?.toISOString() ?? null,
+    approvedRevision: row.approvedRevision,
+    releasedAt: row.releasedAt?.toISOString() ?? null,
+    returnAdmission: row.returnAdmission,
+    triggerMessageId: row.triggerMessageId,
+    taskId: row.localTaskId,
+    inputId: row.localInputId,
+    runId: row.runId,
+    publicationState: row.publicationState,
+    terminalState: row.terminalState,
+    replyMessageId: row.acceptedMessageId,
+    source: row.source,
+    answerMessageId: row.answerMessageId,
+    answerPayload: row.answerPayload,
+    clientMessageId: row.clientMessageId,
+    deliveryVia: row.deliveryVia,
+    blockedReason: row.blockedReason,
+  });
 }

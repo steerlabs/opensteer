@@ -365,9 +365,10 @@
 }
 
 /* Where a pointer can hover, the status stands under each message alone and
-   its actions join it on hover or focus; a touch screen always shows them. */
+   its actions join it on hover or focus; a touch screen always shows them.
+   Anything that is a decision, a way out or a notice is always shown. */
 @media (hover: hover) {
-  .queued__row .queued__action {
+  .queued__row--reveal .queued__action {
     opacity: 0;
     transition:
       opacity var(--duration-fast) var(--ease-out),
@@ -375,13 +376,13 @@
       color var(--duration-fast) var(--ease-out);
   }
 
-  .queued__item:hover .queued__action,
-  .queued__item:focus-within .queued__action {
+  .queued__item:hover .queued__row--reveal .queued__action,
+  .queued__item:focus-within .queued__row--reveal .queued__action {
     opacity: 1;
   }
 
-  .queued__item:hover .queued__action:disabled,
-  .queued__item:focus-within .queued__action:disabled {
+  .queued__item:hover .queued__row--reveal .queued__action:disabled,
+  .queued__item:focus-within .queued__row--reveal .queued__action:disabled {
     opacity: 0.5;
   }
 }
@@ -393,6 +394,313 @@
 
 .queued__more[aria-expanded="true"] svg {
   transform: rotate(180deg);
+}
+
+/* The words are the way in: they take a text cursor, and the dashed edge
+   firms up under the pointer. */
+.queued__item--editable .msg--queued .message-fold {
+  cursor: text;
+}
+
+.queued__item--editable .msg--queued .msg--user,
+.queued__item--editable .msg--queued > .input-card {
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.queued__item--editable:hover .msg--queued .msg--user,
+.queued__item--editable:hover .msg--queued > .input-card {
+  border-color: color-mix(in srgb, var(--muted) 85%, transparent);
+}
+
+/* ---- Editing in place ----
+
+   The same bubble or card, where it stood; only its edge changes, solid in
+   the accent while this device holds the message. */
+.waiting-edit__bubble {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-width: 0;
+  max-width: 84%;
+  margin: var(--space-8) 0 var(--space-2);
+  padding: var(--bubble-padding);
+  border-radius: var(--bubble-radius);
+  border-end-end-radius: var(--radius-xs);
+  font-size: var(--text-2xl);
+  line-height: var(--bubble-line);
+}
+
+.waiting-edit__bubble,
+.waiting-edit--card > .input-card {
+  /* The queued edge's own mix, in the accent. */
+  border: 1px solid color-mix(in srgb, var(--ember) 55%, transparent);
+  background: color-mix(in srgb, var(--ember) 5%, transparent);
+  box-shadow: var(--ring-ember);
+  color: var(--text);
+}
+
+/* What it carries beside its words, each with a way to take it off. */
+.waiting-edit__parts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+.waiting-edit__part {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  max-width: 100%;
+  height: var(--control-height-sm);
+  padding-left: var(--space-8);
+  border-radius: var(--radius-xs);
+  background-color: var(--fill-quiet);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  line-height: 1;
+}
+
+.waiting-edit__part > svg {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--muted);
+}
+
+.waiting-edit__part-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.waiting-edit__part-remove {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+}
+
+.waiting-edit__part-remove:hover {
+  color: var(--text);
+  background-color: var(--fill-quiet);
+}
+
+.waiting-edit__part-remove svg {
+  width: 11px;
+  height: 11px;
+}
+
+.waiting-edit__hint,
+.waiting-edit__notice {
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-6);
+  padding-right: var(--space-4);
+}
+
+.waiting-edit__keys {
+  display: inline-flex;
+  gap: var(--space-4);
+}
+
+.waiting-edit__touch {
+  display: none;
+}
+
+/* Without a keyboard to hint at, the keys become buttons. */
+@media (hover: none) {
+  .waiting-edit__keys {
+    display: none;
+  }
+
+  .waiting-edit__touch {
+    display: inline-flex;
+    gap: var(--space-2);
+  }
+}
+
+.waiting-edit__notice {
+  gap: var(--space-2);
+}
+
+.waiting-edit__notice-text {
+  padding-right: var(--space-4);
+  color: var(--text-soft);
+}
+
+/* Below 16px, mobile Safari zooms the page to a field; the copy follows. */
+@media (any-pointer: coarse) {
+  .waiting-edit__bubble {
+    font-size: var(--text-input);
+    line-height: 1.4;
+  }
+}
+
+.waiting__sep {
+  color: var(--muted-dim);
+}
+
+/* "Edited": after the status, quieter than it, and it opens the history. */
+.waiting__edited {
+  display: inline-flex;
+  align-items: center;
+  height: var(--control-height-sm);
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-xs);
+  color: var(--muted-dim);
+  font-size: var(--text-sm);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.waiting__edited:hover,
+.waiting__edited[aria-expanded="true"] {
+  color: var(--text-soft);
+  background-color: var(--fill-quiet);
+}
+
+/* Beside a sent message's copy mark, at its height. */
+.reply__marks .waiting__edited {
+  height: 24px;
+}
+
+/* Inside a card's sender line it reads as the end of that sentence. */
+.input-card__action .waiting__edited {
+  height: auto;
+  margin: 0 calc(-1 * var(--space-4));
+  color: inherit;
+  font-size: inherit;
+}
+
+/* ---- A teammate's ask, awaiting its answer ----
+
+   One line under the card: where the answer goes and who reads it, then
+   Decline and Answer. A narrow column puts the line above the buttons. */
+.waiting-ask {
+  flex-wrap: wrap;
+  gap: 0 var(--space-2);
+}
+
+.waiting-ask__line {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+  padding-right: var(--space-6);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.waiting-ask__dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--amber);
+}
+
+.waiting-ask__line[data-approving] .waiting-ask__dot {
+  animation: waiting-pulse 1.1s var(--ease-out) infinite alternate;
+}
+
+@keyframes waiting-pulse {
+  to {
+    opacity: 0.35;
+  }
+}
+
+.waiting-ask__actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.waiting-ask__answer {
+  margin-left: var(--space-2);
+}
+
+/* ---- A message's versions ---- */
+.revisions {
+  width: min(340px, calc(100vw - 20px));
+}
+
+.revisions__title {
+  margin: 0;
+  padding: var(--space-6) var(--space-8) var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+/* Every version reads in full, so the list scrolls rather than any version being cut short. */
+.revisions__list {
+  display: flex;
+  flex-direction: column;
+  max-height: min(60vh, 440px);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+
+.revisions__row {
+  padding: var(--space-8);
+}
+
+.revisions__row + .revisions__row {
+  border-top: 1px solid var(--line);
+}
+
+.revisions__meta {
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.revisions__who {
+  color: var(--text-soft);
+  font-weight: var(--weight-medium);
+}
+
+.revisions__text {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-lg);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.revisions__row[data-current] .revisions__text {
+  color: var(--text);
+}
+
+.revisions__note {
+  margin: 0;
+  padding: var(--space-6) var(--space-8);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.revisions__more {
+  height: var(--control-height-sm);
+  padding: 0 var(--space-8);
+  border-radius: var(--radius-xs);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.revisions__more:hover {
+  color: var(--text);
+  background-color: var(--fill-quiet);
 }
 
 /* A message that joined the turn under way says so above it, quietly. */
@@ -417,7 +725,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .queued__item {
+  .queued__item,
+  .waiting-ask__line[data-approving] .waiting-ask__dot {
     animation: none;
   }
 }

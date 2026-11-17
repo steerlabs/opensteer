@@ -1,3 +1,4 @@
+export * from "./thread-output-images.js";
 export * from "./account-directory-store.js";
 export * from "./run-tool-admission.js";
 export * from "./attachment-store.js";
@@ -14,20 +15,24 @@ export * from "./integration-platform-store.js";
 export * from "./integration-store.js";
 export * from "./migrations.js";
 export * from "./notification-state.js";
+export * from "./owner-profile-store.js";
 export * from "./notification-store.js";
 export * from "./request-store.js";
+export * from "./reference-store.js";
 export * from "./schema.js";
 export * from "./store.js";
 export * from "./trigger-store.js";
-
-export * from "./browser-tab-group-store.js";
 
 export { BrowserHistoryStore } from "./browser-history-store.js";
 export * from "./browser-profile-storage-store.js";
 export * from "./notification-preview-key-store.js";
 export type { PersonMessageInput, PersonMessageResult } from "./person-message-store.js";
 
-export { withDatabaseOperationSignal, withoutDatabaseOperationSignal } from "./operation-budget.js";
+export {
+  databaseOperation,
+  withDatabaseOperationSignal,
+  withoutDatabaseOperationSignal,
+} from "./operation-budget.js";
 
 export * from "./resource-access.js";
 
@@ -36,6 +41,7 @@ export { readIntegrationAccountBinding } from "./integration-account-binding.js"
 
 export { requestSettlementActor } from "./request-settlement.js";
 export * from "./memory-pass-store.js";
+export * from "./message-team-sources.js";
 
 export * from "./agent-connection-store.js";
 
@@ -51,7 +57,6 @@ export {
 
 export * from "./plugin-settings-store.js";
 export * from "./administration-command.js";
-export * from "./background-model-store.js";
 export * from "./personal-desktop-update-store.js";
 
 export * from "./agent-thread-history.js";
@@ -66,14 +71,20 @@ export { deliverTaskQuestionNotice, cancelSettledTaskQuestionNotice } from "./th
 
 export * from "./private-resource-store.js";
 
-export * from "./personal-tab-store.js";
+export * from "./tab-store.js";
+export * from "./agent-tool-activity-store.js";
 
 export {
   reportAgentHomeSkills,
   agentHomeSkillInventory,
 } from "./agent-home-skill-inventory-store.js";
+export {
+  reportAgentHomeSettings,
+  type AgentHomeSettingsState,
+} from "./agent-home-settings-store.js";
 
 export * from "./team-access-store.js";
+export * from "./team-bus.js";
 export * from "./team-members-store.js";
 export * from "./team-groups-store.js";
 export * from "./team-invites-store.js";
@@ -101,3 +112,17 @@ export { eventFromRow } from "./deployment-events.js";
 export { systemPrincipalId } from "./store-primitives.js";
 
 export * from "./device-store.js";
+
+export type {
+  DatabaseSchema,
+  PersonalTabTable,
+  TabLayoutTable,
+  AppTable,
+  AppServerTable,
+} from "./schema.js";
+
+export * from "./device-inventory-store.js";
+export * from "./device-driver-store.js";
+export { deviceOwnershipIn } from "./machine-ownership.js";
+
+export type { DeviceRemovalEffects } from "./device-removal-store.js";

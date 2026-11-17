@@ -1,12 +1,11 @@
 import {
-  browserTabStrip,
+  tabGroupOf,
   matchSearch,
   placeSearchFields,
   rankSearch,
   searchQuery,
   taskMark,
   threadSearchFields,
-  type BrowserTabStrip,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
@@ -17,12 +16,12 @@ import {
   type TaskRow,
 } from "@opensteer/client/host";
 import {
-  useBrowserGroups,
-  useHostSelector,
+  useTabLayout,
+  useTabsSyncing,
   usePlaceList,
   useSyncingPlaceholder,
 } from "@opensteer/client/react";
-import type { BrowserTabGroup } from "@opensteer/protocol";
+import type { TabGroup, TabLayout } from "@opensteer/core";
 import { LoadingRows } from "./loading-rows.js";
 import {
   useEffect,
@@ -70,7 +69,7 @@ type Result =
       readonly kind: "tab";
       readonly key: string;
       readonly place: PlaceItem;
-      readonly group: BrowserTabGroup | null;
+      readonly group: TabGroup | null;
       readonly fields: readonly SearchField[];
       readonly match: SearchMatch;
     };
@@ -136,16 +135,15 @@ export function SidebarSearch({
   const { attention, snapshot, tasks } = sources;
   // Tabs are read live, and only while there is a query: the lists underneath arrange slots.
   const places = usePlaceList(hostClient, showing);
-  const layout = useHostSelector(hostClient, selectLayout);
-  const strip = browserTabStrip(places, layout);
-  const groupList = useBrowserGroups(hostClient);
+  const layout = useTabLayout(hostClient);
+  const syncing = useTabsSyncing(hostClient);
   // Tabs still syncing never say they hold nothing; past a moment, their skeleton shows.
-  const tabsSyncing = groupList.syncing && places.length === 0;
-  const loadingTabs = useSyncingPlaceholder(showing && groupList.syncing, places.length);
+  const tabsSyncing = syncing && places.length === 0;
+  const loadingTabs = useSyncingPlaceholder(showing && syncing, places.length);
   // Prepared once each time what it reads changes, and only while there is a query.
   const index = useMemo(
-    () => (showing ? searchIndex(tasks, attention, snapshot, strip) : null),
-    [showing, tasks, attention, snapshot, strip],
+    () => (showing ? searchIndex(tasks, attention, snapshot, places, layout) : null),
+    [showing, tasks, attention, snapshot, places, layout],
   );
   const groups = useMemo(() => (index ? rankedGroups(index, words) : []), [index, words]);
   const results = groups.flat();
@@ -340,13 +338,11 @@ export function SidebarSearch({
   );
 }
 
-const selectLayout = (snapshot: HostSnapshot) => snapshot.browserTabGroups;
-
 interface Index {
   readonly tasks: readonly Found<{ readonly row: TaskRow; readonly ask: string | null }>[];
   readonly tabs: readonly Found<{
     readonly place: PlaceItem;
-    readonly group: BrowserTabGroup | null;
+    readonly group: TabGroup | null;
   }>[];
 }
 
@@ -354,21 +350,20 @@ function searchIndex(
   tasks: readonly TaskRow[],
   attention: ReadonlyMap<string, TaskAttention>,
   snapshot: Pick<HostSnapshot, "tasks">,
-  strip: BrowserTabStrip,
+  places: readonly PlaceItem[],
+  layout: TabLayout,
 ): Index {
   const threads = new Map(snapshot.tasks?.entries.map(({ thread }) => [thread.id, thread]));
   const tabs: Index["tabs"][number][] = [];
-  const add = (place: PlaceItem, group: BrowserTabGroup | null) =>
+  // Every tab, a folded group's too, in the list's order.
+  for (const place of places) {
+    const group = tabGroupOf(layout, place.key);
     tabs.push({
       key: `tab:${place.key}`,
       item: { place, group },
-      fields: placeSearchFields(place, group?.title ?? null),
+      fields: placeSearchFields(place, group?.name ?? null),
     });
-  // Every tab, a folded group's too, in the list's order.
-  for (const row of strip.web)
-    if (row.kind === "place") add(row.place, null);
-    else for (const place of row.places) add(place, row.group);
-  for (const place of strip.native) add(place, null);
+  }
   return {
     tasks: tasks.map((row) => {
       const thread = threads.get(row.threadId);
@@ -450,7 +445,7 @@ function rowInList(result: Result): HTMLElement | null {
     ) ??
     (result.group
       ? lists.querySelector<HTMLElement>(
-          `[data-motion-key="${CSS.escape(result.group.id)}"] .side-tab-group__main`,
+          `[data-motion-key="${CSS.escape(result.group.groupId)}"] .side-tab-group__main`,
         )
       : null)
   );

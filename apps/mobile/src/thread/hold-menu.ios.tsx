@@ -1,10 +1,11 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import { ContextMenu } from "../../modules/context-menu/index.js";
 import {
   LinkHoldContext,
   useConversationLinks,
   type LinkAction,
+  type HeldLink,
   type LinkHold,
 } from "./link-context.js";
 import type { HoldMenuProps } from "./hold-menu.js";
@@ -22,15 +23,15 @@ import type { HoldMenuProps } from "./hold-menu.js";
 export function HoldMenu(props: HoldMenuProps): ReactNode {
   const { onAction } = props;
   const links = useConversationLinks();
-  const [pressed, setPressed] = useState<{ readonly url: string; readonly at: number } | null>(
+  const [pressed, setPressed] = useState<{ readonly link: HeldLink; readonly at: number } | null>(
     null,
   );
   const hold = useMemo(
-    (): LinkHold => ({ press: (url, at) => setPressed({ url, at }), hold: noop }),
+    (): LinkHold => ({ press: (link, at) => setPressed({ link, at }), hold: noop }),
     [],
   );
   const linkActions = useMemo(
-    () => (pressed && links ? links.menu(pressed.url) : []),
+    () => (pressed && links ? links.menu(pressed.link) : []),
     [links, pressed],
   );
   const actions: readonly LinkAction[] = linkActions.length > 0 ? linkActions : props.actions;
@@ -39,7 +40,7 @@ export function HoldMenu(props: HoldMenuProps): ReactNode {
     [actions],
   );
   const act = (id: string): void => {
-    if (pressed && links && linkActions.length > 0) links.act(pressed.url, id);
+    if (pressed && links && linkActions.length > 0) links.act(pressed.link, id);
     else onAction(id);
   };
   return (
@@ -59,7 +60,14 @@ export function HoldMenu(props: HoldMenuProps): ReactNode {
         }}
       >
         <LinkHoldContext.Provider value={links ? hold : null}>
-          {props.children}
+          {props.onPress === undefined ? (
+            props.children
+          ) : (
+            // The system's hold cancels this touch, so a hold never also taps.
+            <Pressable accessible={false} onPress={props.onPress}>
+              {props.children}
+            </Pressable>
+          )}
         </LinkHoldContext.Provider>
       </View>
       {props.actions.length === 0 ? null : (

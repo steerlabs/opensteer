@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { IdleCompactionPolicySchema } from "./idle-compaction.js";
 import {
   DeploymentIdSchema,
   RunnerIdSchema,
@@ -25,6 +26,7 @@ export const ComputerFolderSchema = z.strictObject({
 });
 export type ComputerFolder = z.infer<typeof ComputerFolderSchema>;
 export const PersonalSettingsSchema = z.strictObject({
+  idleCompactionPolicy: IdleCompactionPolicySchema.optional(),
   ownerId: UserIdSchema,
   agentHome: ComputerFolderSchema,
   voiceThreadId: ThreadIdSchema.nullable(),

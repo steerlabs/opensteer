@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { createId } from "@opensteer/core";
 import { createBrowserSessionId, hostApi } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
@@ -94,12 +95,17 @@ it("recovers all place parts in order and retains the exact pending submission",
     { type: "text", text: "Read all of these" },
     {
       type: "computer-app",
-      machineId: createId("runner"),
+      machineId: DeviceIdSchema.parse(createId("runner")),
       app: { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null },
       name: "Mac",
     },
     browserPagePart(page()),
-    { type: "phone", machineId: createId("runner"), display: "main", name: "Pixel" },
+    {
+      type: "phone",
+      machineId: DeviceIdSchema.parse(createId("runner")),
+      display: "main",
+      name: "Pixel",
+    },
   ] as const;
   const submission = { ...command(), content: [...content] };
   const storage = memoryStorage();

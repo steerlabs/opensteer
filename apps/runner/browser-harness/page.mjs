@@ -1021,8 +1021,8 @@ export function createPage(environment) {
             });
             if (result.errorText) throw new Error(result.errorText);
           }
-          const document = await operation.document();
-          if (!(await evaluate(operation, document, () => document.readyState === "complete")))
+          const root = await operation.document();
+          if (!(await evaluate(operation, root, () => document.readyState === "complete")))
             throw new RetryError("document.readyState is not complete");
           return null;
         });
@@ -1062,7 +1062,7 @@ export function createPage(environment) {
       },
       ariaSnapshot: () => page.locator("body").ariaSnapshot(),
     },
-    "Use locator(), getByRole(), getByText(), getByLabel(), evaluate() or cdp(). For history use cdp('Page.reload'); frames and networkidle are not supported.",
+    "Use locator(), getByRole(), getByText(), getByLabel(), evaluate() or cdp(). For history and frames use cdp(); use page.waitForNetworkIdle() to observe network idle.",
   );
   return {
     page,

@@ -8,5 +8,9 @@ export default defineConfig(
       // One schema registry per process: bundled copies fail instanceof checks.
       "zod",
     ],
+    optional: [
+      // pg falls back to the JavaScript client when the native binding is absent.
+      "pg-native",
+    ],
   }),
 );

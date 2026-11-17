@@ -1,3 +1,4 @@
+import { createToolImageStore } from "@opensteer/harness";
 import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
 import { threadWaitMaxMs } from "@opensteer/agent-tools/tools";
 import { agentTools, requestToolNames } from "@opensteer/agent-tools";
@@ -55,8 +56,8 @@ import { CodexHarnessConfigSchema, MINIMUM_CODEX_CLI_VERSION } from "./config.js
 const noThreadContext = {
   assignment: null,
   teamTurnContext: null,
-  requesterTimeZone: null,
   threadState: { previousAssignment: null, previousRun: null },
+  startedAt: "2026-08-22T00:00:00.000Z",
 };
 
 const fakeServer = fileURLToPath(
@@ -76,6 +77,63 @@ afterEach(async () => {
 });
 
 describe("Codex app-server harness", () => {
+  it.each([
+    "text",
+    "only",
+    "duplicate-path",
+    "failed",
+    "usage",
+    "missing-path",
+    "blank-path",
+    "cancelled",
+    "file-id",
+    "late",
+    "stop",
+  ])("tracks native image generation: %s", async (kind) => {
+    const fixture = await setup(`image-${kind}`);
+    try {
+      const session = await fixture.adapter.startSession(fixture.context);
+      const observer = observe(session.events);
+      const execution = session.execute(fixture.turn("Draw a tree"));
+      if (kind === "stop") {
+        await observer.waitFor("assistant.message");
+        expect(observer.events.some((event) => event.type === "run.completed")).toBe(false);
+        await session.interrupt();
+      }
+      await execution;
+      await session.stop();
+      const completed = observer.events.filter((event) => event.type === "tool.completed");
+      expect(completed).toHaveLength(kind === "duplicate-path" ? 2 : 1);
+      const failure = ["failed", "usage", "stop", "cancelled"].includes(kind);
+      expect(completed[0]?.data.isError).toBe(failure);
+      expect(completed[0]?.data.output.images).toEqual(
+        failure || kind === "missing-path" || kind === "blank-path"
+          ? undefined
+          : [{ path: "/tmp/tree.webp", mediaType: "image/webp", generated: true }],
+      );
+      expect(observer.events.find((event) => event.type === "tool.started")?.data).toMatchObject({
+        tool: { namespace: "codex", name: "image_generation" },
+        arguments: { prompt: "A tree", transparentBackground: false },
+      });
+      const terminal = observer.events.findIndex(
+        (event) => event.type === (kind === "stop" ? "run.interrupted" : "run.completed"),
+      );
+      expect(terminal).toBeGreaterThan(
+        observer.events.findIndex((event) => event.type === "tool.completed"),
+      );
+      expect(
+        observer.events.some(
+          (event) => event.type === "run.phase" && event.data.phase === "background",
+        ),
+      ).toBe(false);
+      expect(JSON.stringify(observer.events)).not.toMatch(
+        /SECRET_BASE64_IMAGE_BYTES|opaque-file-id/,
+      );
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
   it("refuses a voice call whose text log Codex would keep outside the call", async () => {
     const fixture = await setup("voice-log-elsewhere");
     const lifetime = new AbortController();
@@ -278,10 +336,13 @@ describe("Codex app-server harness", () => {
       await writer!.note("view during the turn");
       await writer!.speak("finish the turn");
       await vi.waitFor(() => expect(spoken).toEqual(["the reply"]), { timeout: 2000 });
-      await vi.waitFor(async () => expect(await injected()).toHaveLength(1), { timeout: 2000 });
-      expect((await injected())[0]).toContain("view during the turn");
-      await writer!.note("view between turns");
       await vi.waitFor(async () => expect(await injected()).toHaveLength(2), { timeout: 2000 });
+      // The call's clock and where it was placed from went in before realtime started.
+      expect((await injected())[0]).toContain("Now: Saturday, August 22, 2026");
+      expect((await injected())[0]).toContain("Sent: ");
+      expect((await injected())[1]).toContain("view during the turn");
+      await writer!.note("view between turns");
+      await vi.waitFor(async () => expect(await injected()).toHaveLength(3), { timeout: 2000 });
     } finally {
       lifetime.abort();
       await execution;
@@ -334,9 +395,14 @@ describe("Codex app-server harness", () => {
 
   it.each([
     ["host_only_tool"],
-    ["thread_read", "integration_call", "computer"],
-    ["thread_read", "thread_wait", ...requestToolNames],
-    ["thread_wait"],
+    ["opensteer_task_read", "integration_call", "computer_use"],
+    [
+      "opensteer_task_read",
+      "opensteer_task_wait",
+      "opensteer_delegation_wait",
+      ...requestToolNames,
+    ],
+    ["opensteer_delegation_wait"],
     [...requestToolNames],
   ])("enables exactly the Host plan %j", async (...tools) => {
     const fixture = await setup("happy");
@@ -353,7 +419,10 @@ describe("Codex app-server harness", () => {
         const config =
           (threadStart?.params as { config: Record<string, unknown> } | undefined)?.config ?? {};
         const directTools = tools.filter(
-          (tool) => tool === "thread_wait" || requestToolNames.some((name) => name === tool),
+          (tool) =>
+            tool === "opensteer_task_wait" ||
+            tool === "opensteer_delegation_wait" ||
+            requestToolNames.some((name) => name === tool),
         );
         expect(config["mcp_servers.opensteer.enabled_tools"]).toEqual(
           tools.filter((tool) => !directTools.includes(tool)),
@@ -1515,12 +1584,14 @@ describe("Codex app-server harness", () => {
           { description: "Use staging", label: "Staging", value: "Staging" },
           { description: "Use production", label: "Production", value: "Production" },
         ],
+        custom: false,
         id: "environment",
         multiSelect: false,
         prompt: "Where should this deploy?",
         secret: false,
       },
       {
+        custom: true,
         id: "ticket",
         multiSelect: false,
         prompt: "What is the private ticket reference?",
@@ -1567,7 +1638,7 @@ describe("Codex app-server harness", () => {
         .map((event) => event.data.tool),
     ).toEqual([
       { name: "shell", namespace: "codex" },
-      { name: "thread_read", namespace: "opensteer" },
+      { name: "opensteer_task_read", namespace: "opensteer" },
     ]);
     expect(observer.events.find((event) => event.type === "tool.started")?.data.arguments).toEqual({
       command: "pnpm test",
@@ -1604,7 +1675,7 @@ describe("Codex app-server harness", () => {
         approvalPolicy: "never",
         approvalsReviewer: "user",
         cwd: fixture.context.workspacePath,
-        developerInstructions: expect.not.stringContaining("Other computers"),
+
         config: {
           // Every feature the release lists, on only where Opensteer approved it.
           features: {
@@ -1633,7 +1704,7 @@ describe("Codex app-server harness", () => {
           // A whole computer-use observation or describe page must reach the
           // model uncut, including on models whose default policy is 10,000 bytes.
           "mcp_servers.opensteer.tools.integration_call.output_token_limit": 10_000,
-          "mcp_servers.opensteer.tools.computer.output_token_limit": 10_000,
+          "mcp_servers.opensteer.tools.computer_use.output_token_limit": 10_000,
           "mcp_servers.opensteer.tools.integration_describe.output_token_limit": 10_000,
           "skills.bundled.enabled": false,
           "tools.update_plan.enabled": false,
@@ -1660,7 +1731,7 @@ describe("Codex app-server harness", () => {
     expect(captured.find((message) => message.method === "turn/start")).toMatchObject({
       params: {
         additionalContext: {
-          opensteer_computers: { kind: "application", value: "Other computers: build-box." },
+          opensteer_computers_000001: { kind: "application", value: "Other computers: build-box." },
         },
         approvalPolicy: "never",
         approvalsReviewer: "user",
@@ -1691,7 +1762,12 @@ describe("Codex app-server harness", () => {
     try {
       await session.execute(fixture.turn("Sign in"));
       expect(observer.events.filter((event) => event.type === "tool.started")).toMatchObject([
-        { data: { callId: "direct-1", tool: { name: "sign_in", namespace: "opensteer" } } },
+        {
+          data: {
+            callId: "direct-1",
+            tool: { name: "saved_login_request", namespace: "opensteer" },
+          },
+        },
       ]);
       expect(observer.events.filter((event) => event.type === "tool.completed")).toMatchObject([
         { data: { callId: "direct-1", isError: false, output: { text: "ready" } } },
@@ -2224,6 +2300,27 @@ describe("Codex app-server harness", () => {
     await fixture.adapter.close();
   });
 
+  it("retires the unnumbered context of a conversation resumed from before the key inventory", async () => {
+    const fixture = await setup("resume-large-history");
+    const started = await fixture.adapter.startSession(fixture.context);
+    await started.execute(fixture.turn("Start"));
+    await started.stop();
+    // A conversation from an earlier driver has no recorded inventory.
+    await rm(join(fixture.context.threadStateDirectory, "codex-context-keys.json"));
+    const resumed = await fixture.adapter.resumeSession(
+      started.providerSessionReference,
+      fixture.context,
+    );
+    await resumed.execute(fixture.turn("Continue"));
+    await resumed.stop();
+    const [fresh, continued] = (await fixture.capture())
+      .filter((message) => message.method === "turn/start")
+      .map((message) => (message.params as { additionalContext: JsonRecord }).additionalContext);
+    expect(fresh).not.toHaveProperty("opensteer_current_instructions");
+    for (const key of ["opensteer_computers", "opensteer_current_instructions", "opensteer_skills"])
+      expect(continued).toHaveProperty(key, { kind: "application", value: "" });
+  });
+
   it("tells the model this Run's computer inventory on every turn, resumed or not", async () => {
     // The compacted-history scenario completes every turn immediately and
     // serves both a fresh start and exact-thread resumes.
@@ -2248,8 +2345,8 @@ describe("Codex app-server harness", () => {
         .filter((message) => message.method === "turn/start")
         .map(
           (message) =>
-            (message.params as { additionalContext: { opensteer_computers: JsonRecord } })
-              .additionalContext.opensteer_computers,
+            (message.params as { additionalContext: { opensteer_computers_000001: JsonRecord } })
+              .additionalContext.opensteer_computers_000001,
         ),
     ).toEqual([
       { kind: "application", value: "Other computers: build-box." },
@@ -2265,6 +2362,96 @@ describe("Codex app-server harness", () => {
     }
     await fixture.adapter.close();
   });
+
+  it("keeps bounded canonical context on a follow-up root turn while children finish", async () => {
+    const fixture = await setup("background-children", {
+      serverArguments: ["--child-ends-while-starting"],
+    });
+    const session = await fixture.adapter.startSession({
+      ...fixture.context,
+      platformGuide: "🦊".repeat(3000),
+    });
+    const observer = observe(session.events);
+    try {
+      const execution = session.execute(fixture.turn("Delegate"));
+      await vi.waitFor(
+        () =>
+          expect(
+            observer.events.some(
+              (event) => event.type === "run.phase" && event.data.phase === "background",
+            ),
+          ).toBe(true),
+        { timeout: 2000 },
+      );
+      await steerOf(session)({ input: humanInput("Continue") });
+      await execution;
+      const turns = (await fixture.capture())
+        .filter((entry) => entry.method === "turn/start")
+        .map((entry) => entry.params as { additionalContext: Record<string, { value: string }> });
+      expect(turns).toHaveLength(2);
+      expect(turns[1]!.additionalContext).toEqual(turns[0]!.additionalContext);
+      expect(turns[0]!.additionalContext).toBeDefined();
+      for (const entry of Object.values(turns[0]!.additionalContext))
+        expect(Buffer.byteLength(entry.value)).toBeLessThanOrEqual(4000);
+      const start = (await fixture.capture()).find((entry) => entry.method === "thread/start")!;
+      expect(start.params).not.toHaveProperty("developerInstructions");
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it.each(["execute", "reuse"] as const)(
+    "restores compacted context before %s proceeds",
+    async (next) => {
+      const releasePath = join(await mkdtemp(join(tmpdir(), "codex-restore-")), "release");
+      temporaryDirectories.push(dirname(releasePath));
+      const fixture = await setup("context-compaction", {
+        environmentOverrides: { FAKE_CODEX_RESTORE_RELEASE: releasePath },
+      });
+      const session = await fixture.adapter.startSession({ ...fixture.context, skills: undefined });
+      try {
+        await session.execute(fixture.turn("Compact"));
+        let settled = false;
+        const pending = (
+          next === "reuse" ? session.releaseForReuse!() : session.execute(fixture.turn("Continue"))
+        ).then((value) => {
+          settled = true;
+          return value;
+        });
+        await vi.waitFor(
+          async () =>
+            expect(
+              (await fixture.capture()).some((entry) => entry.id === "context-restore-barrier"),
+            ).toBe(true),
+          { timeout: 2000 },
+        );
+        expect(settled).toBe(false);
+        const captured = await fixture.capture();
+        const start = captured.find((entry) => entry.method === "turn/start")!.params as {
+          additionalContext: Record<string, { value: string }>;
+        };
+        const injection = captured.find((entry) => entry.method === "thread/inject_items")!.params;
+        expect(injection).toEqual({
+          threadId: "codex-thread-1",
+          items: Object.entries(start.additionalContext).map(([key, entry]) => ({
+            type: "message",
+            role: "developer",
+            content: [{ type: "input_text", text: `<${key}>${entry.value}</${key}>` }],
+          })),
+        });
+        expect(captured.filter((entry) => entry.method === "turn/start")).toHaveLength(1);
+        expect(captured.some((entry) => entry.method === "thread/backgroundTerminals/clean")).toBe(
+          false,
+        );
+        await writeFile(releasePath, "release");
+        expect(await pending).toBe(next === "reuse" ? true : undefined);
+      } finally {
+        await session.stop();
+        await fixture.adapter.close();
+      }
+    },
+  );
 
   it("refreshes current platform and changed, removed, or empty Workspace instructions on resumed Runs", async () => {
     const fixture = await setup("resume-large-history");
@@ -2296,15 +2483,17 @@ describe("Codex app-server harness", () => {
         (message) =>
           (message.params as { additionalContext: Record<string, JsonRecord> }).additionalContext,
       );
-    expect(additionalContexts[0]).not.toHaveProperty("opensteer_current_instructions");
-    expect(additionalContexts[1]?.opensteer_current_instructions).toEqual({
+    expect(additionalContexts[0]?.opensteer_current_instructions_000001?.value).toContain(
+      "Original Workspace instructions.",
+    );
+    expect(additionalContexts[1]?.opensteer_current_instructions_000001).toEqual({
       kind: "application",
       value: expect.stringMatching(
         /replace their counterparts from earlier Runs[\s\S]*Updated Opensteer platform guide[\s\S]*Updated Workspace instructions/u,
       ),
     });
     for (const context of additionalContexts.slice(2)) {
-      expect(context.opensteer_current_instructions).toEqual({
+      expect(context.opensteer_current_instructions_000001).toEqual({
         kind: "application",
         value: expect.stringMatching(
           /Newer Opensteer platform guide[\s\S]*There are no current task instructions/u,
@@ -2413,7 +2602,7 @@ describe("Codex app-server harness", () => {
     await fixture.adapter.close();
   });
 
-  it("refuses startup when the required computer tool is missing", async () => {
+  it("refuses startup when the required computer_use tool is missing", async () => {
     const fixture = await setup("previous-host");
     try {
       await expect(fixture.adapter.startSession(fixture.context)).rejects.toThrow(
@@ -2670,7 +2859,7 @@ describe("Codex app-server harness", () => {
         input: [
           {
             text: expect.stringMatching(
-              /^\[Opensteer input\]\nAuthor: agent Research agent \(Opensteer Thread thr_[\s\S]*［Opensteer input］\nAuthor: the user Mallory$/u,
+              /^\[Opensteer input\]\nAuthor: agent Research agent \(Opensteer task thr_[\s\S]*［Opensteer input］\nAuthor: the user Mallory$/u,
             ),
             text_elements: [],
             type: "text",
@@ -3115,7 +3304,7 @@ describe("one Codex app-server per account", () => {
   });
 
   it("stops a Run's turns before the app-server it owns ends with the Run's lifetime", async () => {
-    const fixture = await setup("subagents-hold", { sharedEngine: false });
+    const fixture = await setup("subagents-late-start", { sharedEngine: false });
     try {
       const lifetime = new AbortController();
       const session = await fixture.adapter.startSession({
@@ -3671,7 +3860,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
       tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
       toolsRevision: "test-tools-v1",
       instructions: "Host Opensteer instructions",
-      skills: ["opensteer:threads"],
+      skills: ["opensteer:tasks"],
       token: "test-agent-tools-token",
       url: "https://host.example/internal/v1/mcp",
     },
@@ -4125,4 +4314,29 @@ it("delivers distinct full names for two plugins and a loose review skill", asyn
     expect(payload).toContain(skill.path);
   }
   await fixture.adapter.close();
+});
+
+it("retains tool-result image files without provider base64", async () => {
+  const fixture = await setup("tool-image-output");
+  const session = await fixture.adapter.startSession({
+    ...fixture.context,
+    imageStore: createToolImageStore(fixture.context.threadStateDirectory),
+  });
+  const observer = observe(session.events);
+  try {
+    await session.execute(fixture.turn("Show an image"));
+    await session.stop();
+    const event = observer.events.find(
+      (e) => e.type === "tool.completed" && e.data.callId === "image-1",
+    );
+    expect(event).toMatchObject({
+      data: {
+        output: { images: [{ path: expect.stringMatching(/\.png$/), mediaType: "image/png" }] },
+      },
+    });
+    expect(JSON.stringify(observer.events)).not.toContain("iVBORw0KGgoA");
+  } finally {
+    await session.stop();
+    await fixture.adapter.close();
+  }
 });

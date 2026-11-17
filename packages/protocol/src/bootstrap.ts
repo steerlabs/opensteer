@@ -1,9 +1,9 @@
-import { PersonalSettingsSchema } from "@opensteer/core";
-import { AuthSessionIdSchema, QuietTaskDaysSchema } from "@opensteer/core";
+import { MachineSummarySchema } from "./machines.js";
+import { HostedBrowserBootstrapSchema } from "./browser.js";
+import { TabBootstrapSchema } from "./tabs.js";
+import { IdleCompactionPolicyViewSchema, PersonalSettingsSchema } from "@opensteer/core";
+import { AuthSessionIdSchema, PersonNameSchema, QuietTaskDaysSchema } from "@opensteer/core";
 import {
-  AppIdSchema,
-  AppTitleSchema,
-  ThreadIdSchema,
   AuthenticatedUserSchema,
   DeploymentIdSchema,
   ExecutionEnvironmentKindSchema,
@@ -14,14 +14,12 @@ import {
 } from "@opensteer/core";
 import { z } from "zod";
 import { ThreadPlaceReferenceSchema } from "./places.js";
-import { HostedBrowserBootstrapSchema } from "./browser.js";
 
 import {
   HarnessModelSettingsMapViewSchema,
   HarnessInstanceCatalogViewSchema,
   RunnerHarnessDriverViewSchema,
 } from "./runner.js";
-import { MachineSummarySchema } from "./machines.js";
 
 export const HostEnvironmentStatusSchema = z.enum(["connected", "disconnected"]);
 export type HostEnvironmentStatus = z.infer<typeof HostEnvironmentStatusSchema>;
@@ -73,24 +71,31 @@ export const IdentityConfigViewSchema = z.object({
   oidcProviders: z.array(z.object(IdentityConfigSchema.shape.oidcProviders.element.shape)).max(16),
 });
 
-export const AppTabSchema = z.object({
-  appId: AppIdSchema,
-  title: AppTitleSchema,
-  threadId: ThreadIdSchema,
-
-  openedAt: z.iso.datetime({ offset: true }),
-  latestVersion: z.number().int().positive(),
+/**
+ * The personal owner's name: null shows as "You". While `accountBacked`, the linked Opensteer
+ * Account owns it and a name is required.
+ */
+export const OwnerProfileViewSchema = z.object({
+  name: PersonNameSchema.nullable(),
+  accountBacked: z.boolean(),
+  /** Opaque, while `accountBacked`: the Account and revision of `name`. An edit sends the one it began from. */
+  version: z.string().min(1).max(256).nullable(),
 });
-export const AppTabsSchema = z.array(AppTabSchema).max(500);
-export type AppTab = z.infer<typeof AppTabSchema>;
+export type OwnerProfileView = z.infer<typeof OwnerProfileViewSchema>;
 
 export const HostBootstrapSchema = z.object({
+  /**
+   * The personal API version this caller is served. A Host from before the
+   * window omits it: it admits a caller only at the caller's minimum.
+   */
+  apiVersion: z.number().int().positive().optional(),
   deploymentId: DeploymentIdSchema,
   sessionId: AuthSessionIdSchema,
   personalSettings: z
     .object({
       ...PersonalSettingsSchema.shape,
       agentHome: z.object(PersonalSettingsSchema.shape.agentHome.shape),
+      idleCompactionPolicy: IdleCompactionPolicyViewSchema.optional(),
     })
     .nullable(),
   can: z.object({
@@ -99,15 +104,19 @@ export const HostBootstrapSchema = z.object({
     manageComputers: z.boolean(),
     managePrivateResources: z.boolean(),
   }),
-  appTabs: AppTabsSchema,
+  tabs: TabBootstrapSchema,
   browser: HostedBrowserBootstrapSchema,
   latestPlaces: z.array(ThreadPlaceReferenceSchema).max(4096),
   environments: z.array(HostBootstrapEnvironmentSchema).max(400),
   executionPreferences: ExecutionPreferencesViewSchema,
   quietTaskDays: QuietTaskDaysSchema,
+  /** Absent from Hosts before `viewer.name.update`; its presence is the capability. */
+  ownerProfile: OwnerProfileViewSchema.optional(),
   harnesses: z.array(HostBootstrapHarnessSchema).max(400),
   identityConfig: IdentityConfigViewSchema,
   machines: z.array(MachineSummarySchema).max(400),
   sessionSurface: z.enum(["canonical", "personal-remote"]),
   user: AuthenticatedUserViewSchema,
 });
+
+export type HostBootstrap = z.infer<typeof HostBootstrapSchema>;

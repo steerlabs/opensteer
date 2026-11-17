@@ -119,7 +119,7 @@ export const antigravityHarnessCapabilities: HarnessCapabilities = Object.freeze
   steering: false,
   toolCalls: true,
   userInput: true,
-  warmReuse: false,
+  warmReuse: true,
 });
 
 export interface AntigravityHarnessDriverOptions {

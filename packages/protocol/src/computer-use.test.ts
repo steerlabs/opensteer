@@ -1,3 +1,4 @@
+import { TabCommandSchema } from "./tabs.js";
 import { computerUseBridgePasswordsResults } from "./computer-use.js";
 import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
@@ -36,11 +37,7 @@ import {
   computerUseScreenshotMaxPixels,
   computerUseTreeMaxBytes,
 } from "./computer-use.js";
-import {
-  ComputerViewOpenCommandSchema,
-  ComputerViewSchema,
-  macOwnerViewVersion,
-} from "./computer-view.js";
+import { ComputerViewSchema, macOwnerViewVersion } from "./computer-view.js";
 import { macWindowVideoParams } from "./mac-window-video.js";
 import { runnerSupportsComputerUse } from "./runner.js";
 import {
@@ -73,7 +70,7 @@ const observation = {
   truncated: false,
   window: {
     ref: "window-1",
-    id: 42,
+    windowId: "win_00000000-0000-4000-8000-000000000042",
     frame: { height: 600, width: 900, x: 120, y: 80 },
     scale: 2,
     title: "Notes",
@@ -662,7 +659,7 @@ describe("computer use discovery and approval push", () => {
 describe("window-addressed computer use", () => {
   const window = {
     ref: "window-1",
-    id: 42,
+    windowId: "win_00000000-0000-4000-8000-000000000042",
     title: "Notes",
     focused: true,
     main: true,
@@ -683,12 +680,18 @@ describe("window-addressed computer use", () => {
       { extra: true },
     ])
       expect(WindowInfoSchema.safeParse({ ...window, ...patch }).success).toBe(false);
-    const { ref: _ref, frame: _frame, modal: _modal, current: _current, ...owner } = window;
+    const owner = {
+      windowId: window.windowId,
+      title: window.title,
+      minimized: window.minimized,
+      onScreen: window.onScreen,
+    };
     expect(OwnerWindowInfoSchema.parse(owner)).toEqual(owner);
     expect(OwnerWindowInfoSchema.safeParse({ ...owner, ref: window.ref }).success).toBe(false);
     expect(
-      computerUseHelperResults["session.windows"].safeParse({ windows: Array(65).fill(window) })
-        .success,
+      computerUseHelperResults["session.windows"].safeParse({
+        windows: Array(65).fill(window),
+      }).success,
     ).toBe(false);
     expect(
       ComputerUseObservationSchema.safeParse({
@@ -706,15 +709,18 @@ describe("window-addressed computer use", () => {
       sessionId,
       app: target,
     });
-    for (const selected of [null, 42])
+    for (const selected of [null, "win_00000000-0000-4000-8000-000000000042"])
       expect(
-        ComputerUseSessionBindParamsSchema.parse({ sessionId, app: target, window: selected })
-          .window,
+        ComputerUseSessionBindParamsSchema.parse({ sessionId, app: target, windowId: selected })
+          .windowId,
       ).toBe(selected);
     for (const selected of [undefined, -1, 1.5, "window-1"])
       expect(
-        ComputerUseSessionBindParamsSchema.safeParse({ sessionId, app: target, window: selected })
-          .success,
+        ComputerUseSessionBindParamsSchema.safeParse({
+          sessionId,
+          app: target,
+          window: selected,
+        }).success,
       ).toBe(false);
     expect(computerUseHelperResults["session.bind"].parse({ window })).toEqual({ window });
     expect(computerUseHelperResults["session.windows"].parse({ windows: [window] })).toEqual({
@@ -727,15 +733,18 @@ describe("owner window compatibility", () => {
   it("requires version 3 for exact-window opens and keeps response readers tolerant", () => {
     expect(macOwnerViewVersion).toBe(3);
     const command = {
-      type: "computer.view.open",
-      machineId: fence.runnerId,
-      target: { kind: "app", app: identity, window: 42 },
+      type: "tab.open",
+      target: {
+        kind: "window",
+        computerId: fence.runnerId,
+        windowId: "win_00000000-0000-4000-8000-000000000042",
+      },
       idempotencyKey: "open-window",
     };
-    expect(ComputerViewOpenCommandSchema.parse(command)).toEqual(command);
+    expect(TabCommandSchema.parse(command)).toEqual(command);
     for (const window of [-1, 1.5, "42"])
       expect(
-        ComputerViewOpenCommandSchema.safeParse({
+        TabCommandSchema.safeParse({
           ...command,
           target: { ...command.target, window },
         }).success,
@@ -743,18 +752,21 @@ describe("owner window compatibility", () => {
     const view = {
       connectionId: "connection",
       machineId: fence.runnerId,
-      target: command.target,
+      target: { kind: "app", app: identity, windowId: command.target.windowId },
       viewId: "cvw_00000000-0000-4000-8000-000000000001",
       generation: 1,
       state: "ready",
-      window: { id: 42, title: "Notes", future: true },
+      window: { windowId: command.target.windowId, title: "Notes", future: true },
       openedAt: "2026-10-26T00:00:00.000Z",
       expiresAt: "2026-10-26T00:10:00.000Z",
       unavailableReason: null,
       future: true,
     };
-    expect(ComputerViewSchema.parse(view).window).toEqual({ id: 42, title: "Notes" });
-    expect(ComputerViewSchema.parse({ ...view, window: undefined }).window).toBeNull();
+    expect(ComputerViewSchema.parse(view).window).toEqual({
+      windowId: command.target.windowId,
+      title: "Notes",
+    });
+    expect(ComputerViewSchema.parse({ ...view, window: null }).window).toBeNull();
     expect(
       runnerSupportsComputerUse({ platform: "darwin", protocolVersion: 6, computerUseVersion: 2 }),
     ).toBe(true);

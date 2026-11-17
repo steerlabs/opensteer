@@ -1,4 +1,4 @@
-import { DeviceRefusalContextSchema } from "@opensteer/protocol";
+import { ComputerUseTabRequestSchema, DeviceRefusalContextSchema } from "@opensteer/protocol";
 import { utf8Prefix } from "@opensteer/core";
 import { z } from "zod";
 
@@ -28,25 +28,33 @@ export const ReplContentSchema = z.discriminatedUnion("type", [
   }),
 ]);
 export type ReplContent = z.infer<typeof ReplContentSchema>;
-export const ReplRequestSchema = z.object({
-  operation: z.enum([
-    "apps",
-    "phones",
-    "windows",
-    "bind",
-    "observe",
-    "click",
-    "type",
-    "key",
-    "setValue",
-    "scroll",
-    "act",
-    "release",
-    "sleep",
-  ]),
-  target: z.string().max(256).nullable(),
-  args: z.record(z.string(), z.json()),
-});
+export const ReplRequestSchema = z
+  .object({
+    operation: z.enum([
+      "apps",
+      "phones",
+      "installedApps",
+      "tab",
+      "windows",
+      "bind",
+      "observe",
+      "click",
+      "type",
+      "key",
+      "setValue",
+      "scroll",
+      "act",
+      "release",
+      "sleep",
+    ]),
+    target: z.string().max(256).nullable(),
+    args: z.record(z.string(), z.json()),
+  })
+  .superRefine((request, context) => {
+    if (request.operation !== "tab") return;
+    const parsed = ComputerUseTabRequestSchema.safeParse(request);
+    if (!parsed.success) for (const issue of parsed.error.issues) context.addIssue({ ...issue });
+  });
 export type ReplRequest = z.infer<typeof ReplRequestSchema>;
 export const ReplReplySchema = z.object({
   value: z.json(),
@@ -58,6 +66,7 @@ export const ReplFailureSchema = z.object({
   capability: DeviceRefusalContextSchema.shape.capability.optional(),
   code: z.string(),
   message: z.string(),
+  next: z.string().nullable().optional(),
   performed: z.array(z.string()).default([]),
 });
 export type ReplFailure = z.infer<typeof ReplFailureSchema>;
@@ -68,6 +77,7 @@ export function boundedReplFailure(error: ReplFailure): ReplFailure {
     ...(error.capability ? { capability: error.capability } : {}),
     code: utf8Prefix(error.code, 128),
     message: utf8Prefix(error.message, 8192),
+    ...(error.next ? { next: utf8Prefix(error.next, 2000) } : {}),
     performed: error.performed.slice(0, 160).map((receipt) => utf8Prefix(receipt, 2048)),
   };
 }

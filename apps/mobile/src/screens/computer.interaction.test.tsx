@@ -4,21 +4,15 @@ import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { ComputerScreen } from "./computer.js";
 
+const phoneId = vi.hoisted(() => "dev_00000000-0000-4000-8000-00000000000b");
 const state = vi.hoisted(() => ({
   dispatch: vi.fn(),
-  cancelAutoWake: vi.fn(),
-  close: vi.fn(async () => ({})),
   focused: true,
-  open: vi.fn(async () => ({
-    viewId: "phone-view",
-    generation: 2,
-    machineId: "phone",
-    target: { kind: "phone", display: "main" },
-  })),
+  openTab: vi.fn(async () => ({ tabId: "tab_phone" })),
   snapshot: {
     machines: [
       {
-        id: "phone",
+        id: phoneId,
         name: "My phone",
         status: "online",
         platform: "android",
@@ -30,11 +24,7 @@ const state = vi.hoisted(() => ({
 }));
 const host = {
   getSnapshot: () => state.snapshot,
-  listApprovedComputerApps: async () => [
-    { machineId: "phone", target: { kind: "phone", display: "main" } },
-  ],
-  openComputerView: state.open,
-  closeComputerView: state.close,
+  openTab: state.openTab,
 };
 vi.mock("@opensteer/client/host", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@opensteer/client/host")>()),
@@ -61,8 +51,8 @@ vi.mock("@opensteer/client/react", () => ({
 vi.mock("@opensteer/client/integrations", () => ({
   isIphone: () => false,
   computerUseView: () => null,
-  phoneUseView: () => ({ access: "read-write", state: { kind: "ready" } }),
-  sharedDisplayStreams: () => ({ cancelAutoWake: state.cancelAutoWake }),
+  phoneScreenMac: () => null,
+  phoneUseView: () => ({ access: null, canView: true, state: { kind: "ready" } }),
 }));
 vi.mock("@opensteer/client/computers", () => ({
   computerRole: () => null,
@@ -105,6 +95,7 @@ vi.mock("../ui/primitives.js", () => ({
   ),
 }));
 vi.mock("../ui/sheet.js", () => ({ Sheet: () => null }));
+vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("../ui/screen.js", () => ({
   Screen: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   useListContentInsets: () => ({}),
@@ -112,60 +103,44 @@ vi.mock("../ui/screen.js", () => ({
 }));
 vi.mock("../client/mobile-client.js", () => ({ operationDetail: () => "Failed" }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-it("opens the approved phone as an independent workspace owner view", async () => {
+it("opens a screen-only phone when the Host allows viewing, independently of agent access", async () => {
   const container = document.createElement("div");
   const root = createRoot(container);
   try {
     await act(async () =>
       root.render(
-        <ComputerScreen route={{ params: { deploymentId: "deployment", machineId: "phone" } }} />,
+        <ComputerScreen route={{ params: { deploymentId: "deployment", machineId: phoneId } }} />,
       ),
     );
     const button = container.querySelector("button");
     expect(button?.textContent).toBe("Open phone");
     await act(async () => button!.click());
-    expect(state.open).toHaveBeenCalledWith("phone", { kind: "phone", display: "main" });
+    expect(state.openTab).toHaveBeenCalledWith({ computerId: phoneId, kind: "phone" });
     expect(state.dispatch).toHaveBeenCalledWith({
       name: "WorkspaceBrowser",
-      params: {
-        deploymentId: "deployment",
-        scope: "tabs",
-        phone: true,
-        machineId: "phone",
-      },
+      params: { deploymentId: "deployment", tabId: "tab_phone" },
     });
   } finally {
     await act(async () => root.unmount());
   }
 });
 
-it("cancels the Open wake when the person leaves before the phone opens", async () => {
+it("shows nothing to a person who left before the phone's tab opened", async () => {
   state.dispatch.mockClear();
-  state.open.mockImplementationOnce(async () => {
+  state.openTab.mockImplementationOnce(async () => {
     state.focused = false;
-    return {
-      viewId: "phone-view",
-      generation: 3,
-      machineId: "phone",
-      target: { kind: "phone", display: "main" },
-    };
+    return { tabId: "tab_phone" };
   });
   const container = document.createElement("div");
   const root = createRoot(container);
   try {
     await act(async () =>
       root.render(
-        <ComputerScreen route={{ params: { deploymentId: "deployment", machineId: "phone" } }} />,
+        <ComputerScreen route={{ params: { deploymentId: "deployment", machineId: phoneId } }} />,
       ),
     );
     await act(async () => container.querySelector("button")!.click());
     expect(state.dispatch).not.toHaveBeenCalled();
-    expect(state.cancelAutoWake).toHaveBeenCalledWith({
-      kind: "owner-view",
-      viewId: "phone-view",
-      generation: 3,
-    });
-    expect(state.close).not.toHaveBeenCalled();
   } finally {
     state.focused = true;
     await act(async () => root.unmount());

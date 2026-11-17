@@ -1,3 +1,4 @@
+import { ToolFailureSchema } from "@opensteer/core";
 import { startHeldRequest } from "./held-request.test-support.js";
 /**
  * Real Host RPC, integration MCP, PostgreSQL and a local HTTP upstream prove
@@ -132,7 +133,7 @@ integration("API-key reconnect incident", () => {
       // The agent proposes the API with an unpinned access Request. Installing
       // it leaves that same Request pending until the owner connects a key.
       const proposing = await startHeldRequest(host, run.runId, () =>
-        gateway.call("integration_propose", {
+        gateway.call("custom_integration_request", {
           access: "read",
           description: "Voice AI agents that answer and place phone calls.",
           kind: "openapi",
@@ -223,9 +224,13 @@ integration("API-key reconnect incident", () => {
         ...assistant.address,
       });
       expect(refused.isError).toBe(true);
-      expect(toolText(refused)).toBe(
-        '"Vapi API" account authorization is required. Search again for current readiness and call integration_request if this task still needs access.',
-      );
+      const failure = ToolFailureSchema.parse(JSON.parse(toolText(refused))).error;
+      expect(failure).toMatchObject({
+        code: "reauthorization_required",
+        next: expect.stringContaining(aId),
+      });
+      const rediscovered = await gateway.call("integration_search", { query: "Vapi API" });
+      expect(JSON.stringify(rediscovered)).toContain(JSON.stringify(failure));
       expect(upstream.received.at(-1)).toMatchObject({
         authorization: "Bearer …1001",
         path: "/assistant",
@@ -633,7 +638,8 @@ integration("API-key reconnect incident", () => {
         .executeTakeFirstOrThrow();
       const unusable = JSON.stringify(delayedMessage.content);
       expect(unusable).toContain(aId);
-      expect(unusable).toContain("not usable");
+      expect(unusable).toContain("requires reauthorization");
+      expect(unusable).toContain("integration_request");
       expect(unusable).not.toContain("access is active");
       expect(
         operations(await gateway.call("integration_search", { query: "Vapi API" })).map(
@@ -699,7 +705,8 @@ integration("API-key reconnect incident", () => {
         })
         .executeTakeFirstOrThrow();
       const mixedText = JSON.stringify(mixedMessage.content);
-      expect(mixedText).toContain("not usable");
+      expect(mixedText).toContain("Target server unavailable");
+      expect(mixedText).toContain("Continue without it");
       expect(mixedText).not.toContain("access is active");
       record("fulfilled server X cannot borrow working server Y readiness", {
         serverX: serverX.id,

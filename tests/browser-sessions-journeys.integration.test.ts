@@ -14,7 +14,7 @@ import { agentJourney, startBrowserService } from "./browser-sessions.test-suppo
  * and real Chromium relayed over the Runner's browser bridge. A scripted
  * engine plays the agent, using only what the tools and the skill give it.
  *
- * It opens two sessions and drives them by ID side by side, uploads the photo
+ * It finds and switches tabs across two browsers, reuses Guest and profile browsers, uploads the photo
  * attached to the chat through a file input and a file chooser, and reads the
  * message every mistake produces. On a granted profile it learns access is
  * already there, signs a site in, and the profile keeps that sign-in across a

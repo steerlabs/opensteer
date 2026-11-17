@@ -1,4 +1,6 @@
 export const hostInternalRoutePaths = {
+  agentTools: "/internal/v1/agent-tools/call",
+  browserAgentPages: "/internal/v1/browser-agent/pages/bind",
   appTunnel: "/internal/v1/apps/tunnel",
   /** Runners that predate session addressing: follows the Run's latest session. */
   browserCdp: "/internal/v1/browser-cdp",

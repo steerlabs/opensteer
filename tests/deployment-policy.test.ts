@@ -33,6 +33,39 @@ const clientPolicyDerivations: Record<string, { count: number; reason: string }>
   },
 };
 const exceptions: Record<string, { counts: Record<string, number>; reason: string }> = {
+  "apps/mobile/src/screens/apps.tsx": {
+    counts: { "app.kind": 1 },
+    reason:
+      "The app content kind selects HTML or server lifecycle controls, not Deployment policy.",
+  },
+  "apps/web/src/components/apps/apps-page.tsx": {
+    counts: { "deleting.kind": 1, "app.kind": 1 },
+    reason:
+      "The app content kind selects server deletion copy and lifecycle controls, not Deployment policy.",
+  },
+  "apps/mobile/src/markdown/reference-link.tsx": {
+    counts: { "navigation?.context.kind": 2, "navigation.context.kind": 2, "context.kind": 2 },
+    reason:
+      "A reference's render scope says whether words sit in personal or team text, not Deployment policy.",
+  },
+  "apps/web/src/components/composer-editor-document.ts": {
+    counts: { "attrs.kind": 1 },
+    reason: "A composer token's kind says which link form it holds, not a Deployment kind.",
+  },
+  "apps/web/src/components/references/reference-scope.tsx": {
+    counts: { "scope?.context.kind": 1 },
+    reason:
+      "A reference's render scope says whether words sit in personal or team text, not Deployment policy.",
+  },
+  "apps/web/src/references-visual.tsx": {
+    counts: { scenario: 1 },
+    reason: "A visual fixture scenario chooses which captured surface to draw.",
+  },
+  "packages/client/src/references/composer.ts": {
+    counts: { "options?.scope": 1, kind: 1 },
+    reason:
+      "A composer's scope and token kind decide which links become chips, not Deployment policy.",
+  },
   "apps/host/src/runtime/machines.ts": {
     counts: { "runner.device?.form": 1 },
     reason: "The runner hardware form labels a headless device, not a Deployment.",
@@ -94,9 +127,9 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     reason:
       "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
   },
-  "apps/host/src/browser/browser-source-service.ts": {
+  "apps/host/src/browser/saved-logins.ts": {
     counts: {
-      "prior.payload.scope": 2,
+      "prior.payload.scope": 1,
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
@@ -121,6 +154,7 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   "apps/host/src/server/host-api-registration.ts": {
     counts: {
       "options.kind": 2,
+      kind: 3,
     },
     reason:
       "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
@@ -133,6 +167,14 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason:
       "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
+  },
+  "apps/host/src/team-partners/identity.ts": {
+    counts: {
+      "document.deploymentShape.kind": 1,
+      "descriptor.kind": 1,
+    },
+    reason:
+      "Partner links pin the peer's signed identity as a team before any partner frame is accepted.",
   },
   "apps/host/src/team-links/service.ts": {
     counts: {
@@ -147,9 +189,9 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The service validates its durable Personal or team authority before acting.",
   },
-  "apps/mobile/src/app.tsx": {
+  "apps/mobile/src/navigation-state.ts": {
     counts: {
-      "outcome.kind": 2,
+      "outcome.kind": 1,
     },
     reason: "Navigation selects a verified team deep-link destination rather than a Personal task.",
   },
@@ -174,17 +216,13 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   },
   "apps/mobile/src/client/mobile-client.ts": {
     counts: {
+      kind: 1,
       "connection.kind": 4,
       "connection?.kind": 1,
       "connection.authority.document.deploymentShape.kind": 1,
     },
-    reason: "Credential and attention reads distinguish personal computers from team sessions.",
-  },
-  "apps/mobile/src/notifications/notification-routing.ts": {
-    counts: {
-      "destination.kind": 2,
-    },
-    reason: "A team notice destination is distinct from the currently visible Personal task.",
+    reason:
+      "Credential and attention reads distinguish personal computers from team sessions; only team credentials follow the Account identity.",
   },
   "apps/mobile/src/screens/add-deployment.tsx": {
     counts: {
@@ -272,7 +310,7 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   },
   "packages/client/src/auth/native-oauth.ts": {
     counts: {
-      "connection.kind": 5,
+      "connection.kind": 4,
     },
     reason:
       "The boundary distinguishes team data from personal resource scope, and only team Hosts take an Account-vouched session exchange.",
@@ -319,11 +357,19 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   },
   "packages/client/src/connections/host-transport.ts": {
     counts: {
+      "options.expectedKind": 1,
       "this.#expectedKind": 1,
       deploymentKind: 1,
     },
     reason:
-      "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
+      "Transport pins deployment kind and negotiates the independent protocol before admitting a request; only team requests belong to an Account's team runtime.",
+  },
+  "packages/client/src/connections/host-attachment-fence.ts": {
+    counts: {
+      "connection.kind": 1,
+    },
+    reason:
+      "Only a team credential is bound to the Account's team runtime, so only it is fenced by an Account change.",
   },
   "packages/client/src/connections/private-deployment-connection.ts": {
     counts: {
@@ -333,7 +379,7 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   },
   "packages/client/src/host/host-api-client.ts": {
     counts: {
-      "options.kind": 2,
+      "options.kind": 1,
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
@@ -387,6 +433,10 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
+  "packages/database/src/device-inventory-store.ts": {
+    counts: { "device?.form": 1 },
+    reason: "Classifying a Runner’s physical server form is not a Deployment-kind decision.",
+  },
   "packages/database/src/runner-store.ts": {
     counts: {
       "deployment.deploymentShape.kind": 1,
@@ -396,11 +446,11 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   },
   "packages/deployment-authority/src/authority.ts": {
     counts: {
-      kind: 3,
+      kind: 5,
       "parsed.data.kind": 1,
     },
     reason:
-      "Transport pins deployment kind and negotiates the independent protocol before admitting a request; only team peers negotiate a version window.",
+      "Transport pins deployment kind and negotiates the independent protocol before admitting a request; personal and team peers each negotiate their own version window.",
   },
   "packages/control-plane-protocol/src/hosted-teams.ts": {
     counts: {
@@ -494,6 +544,34 @@ const sqlExceptions: Record<
   },
 };
 
+const policyFiles = execFileSync(
+  "git",
+  [
+    "ls-files",
+    "--cached",
+    "--others",
+    "--exclude-standard",
+    "--",
+    "*.ts",
+    "*.tsx",
+    "*.js",
+    "*.mjs",
+  ],
+  { cwd: repositoryRoot, encoding: "utf8" },
+)
+  .trim()
+  .split("\n")
+  .filter(
+    (file) =>
+      /^(apps|packages|scripts)\//u.test(file) &&
+      !file.includes(".test.") &&
+      !file.includes(".test-support.") &&
+      !file.includes("/test-support/") &&
+      !file.includes("/test-fixtures/") &&
+      existsSync(path.join(repositoryRoot, file)) &&
+      file !== "packages/core/src/deployment-policy.ts",
+  );
+
 describe("deployment policy boundary", () => {
   it("requires a named exception for a new SQL migration decision", () => {
     const current = readFileSync(
@@ -557,36 +635,10 @@ describe("deployment policy boundary", () => {
   it("does not build a syntax tree without a possible kind comparison", () => {
     expect(kindComparisons("fixture.ts", 'const kind: = "personal";')).toEqual([]);
   });
-  it("is a tripwire for ordinary Deployment-kind comparisons outside named exceptions", () => {
-    const files = execFileSync(
-      "git",
-      [
-        "ls-files",
-        "--cached",
-        "--others",
-        "--exclude-standard",
-        "--",
-        "*.ts",
-        "*.tsx",
-        "*.js",
-        "*.mjs",
-      ],
-      { cwd: repositoryRoot, encoding: "utf8" },
-    )
-      .trim()
-      .split("\n")
-      .filter(
-        (file) =>
-          /^(apps|packages|scripts)\//u.test(file) &&
-          !file.includes(".test.") &&
-          !file.includes(".test-support.") &&
-          !file.includes("/test-support/") &&
-          !file.includes("/test-fixtures/") &&
-          existsSync(path.join(repositoryRoot, file)),
-      );
-    const violations: string[] = [];
-    for (const file of files) {
-      if (file === "packages/core/src/deployment-policy.ts") continue;
+  it.each(policyFiles)(
+    "is a tripwire for ordinary Deployment-kind comparisons outside named exceptions: %s",
+    (file) => {
+      const violations: string[] = [];
       const text = readFileSync(path.join(repositoryRoot, file), "utf8");
       if (/^(?:apps\/(?:web|mobile|desktop)\/src|packages\/client\/src)\//u.test(file)) {
         const expected = clientPolicyDerivations[file]?.count ?? 0;
@@ -613,9 +665,9 @@ describe("deployment policy boundary", () => {
         violations.push(
           `${file}: expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`,
         );
-    }
-    expect(violations).toEqual([]);
-  });
+      expect(violations).toEqual([]);
+    },
+  );
 
   it("finds direct, aliased, reversed and switch comparisons without matching comments", () => {
     expect(

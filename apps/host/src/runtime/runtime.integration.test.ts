@@ -510,6 +510,19 @@ integration("Host vertical slice", () => {
         headers: authorization(accessToken),
       },
     );
+    expect(bootstrap.tabs).toEqual({
+      tabs: [],
+      layout: { revision: 0, items: [] },
+      complete: true,
+    });
+    expect(
+      await testRpcData(
+        `http://127.0.0.1:${hostPort}`,
+        "tabs.state",
+        {},
+        { headers: authorization(accessToken) },
+      ),
+    ).toEqual(bootstrap.tabs);
     expect(bootstrap.environments).toEqual([]);
     expect(bootstrap.personalSettings).toBeNull();
     expect(bootstrap.can).toMatchObject({ createTasks: false, useVoice: false });
@@ -1832,6 +1845,7 @@ integration("Host vertical slice", () => {
         )
       ).rows,
     ).toEqual([]);
+    const firstRepair = await runtime.store.getThreadForOwner(idleThread.id, ownerId);
     await runtime.store.database
       .updateTable("threads")
       .set({ pendingRequestCount: 9 })
@@ -1848,15 +1862,19 @@ integration("Host vertical slice", () => {
       },
       { timeout: 5000 },
     );
+    const secondRepair = await runtime.store.getThreadForOwner(idleThread.id, ownerId);
     const repaired = await runtime.store.database
       .selectFrom("deploymentEvents")
       .select("data")
       .where("threadId", "=", idleThread.id)
       .where("type", "=", "thread.state-changed")
+      .orderBy("sequence", "asc")
       .execute();
     expect(repaired).toEqual([
       {
         data: {
+          updatedAt: firstRepair!.updatedAt,
+          returnHint: null,
           latestRunCompletedAt: null,
           pendingRequests: 0,
           inputQueuePaused: false,
@@ -1869,6 +1887,8 @@ integration("Host vertical slice", () => {
       },
       {
         data: {
+          updatedAt: secondRepair!.updatedAt,
+          returnHint: null,
           latestRunCompletedAt: null,
           pendingRequests: 0,
           inputQueuePaused: false,
@@ -2121,6 +2141,14 @@ integration("Host vertical slice", () => {
           activated: true,
           deploymentId: activationExpectation.deploymentId,
           linkGeneration: activationExpectation.linkGeneration,
+        });
+      }
+      if (url.href === `${accountIssuer.origin}/v1/host/owner-profile`) {
+        expect(init?.method).toBe("GET");
+        return Response.json({
+          name: "Ada Lovelace",
+          revision: 2,
+          receipt: `${"a".repeat(24)}.${"b".repeat(24)}.${"c".repeat(24)}`,
         });
       }
       throw new Error(`Unexpected Personal Account request: ${url.href}`);
@@ -2945,8 +2973,22 @@ integration("Host vertical slice", () => {
       .setJti(`ahs_${crypto.randomUUID()}`)
       .setSubject(accountId)
       .sign(accountSigningKeys.privateKey);
-    // JWKS, activation, and the identity publication that activation ends with.
-    expect(personalAccountGrantFetch).toHaveBeenCalledTimes(3);
+    // Linking adopts the Account's name as the owner's.
+    await vi.waitFor(
+      async () =>
+        expect(
+          (
+            await runtime!.store.database
+              .selectFrom("personalSettings")
+              .select("ownerName")
+              .executeTakeFirstOrThrow()
+          ).ownerName,
+          "The owner never took the linked Account's name",
+        ).toBe("Ada Lovelace"),
+      { timeout: 5_000 },
+    );
+    // JWKS, activation, the identity publication that activation ends with, and the owner's name.
+    expect(personalAccountGrantFetch).toHaveBeenCalledTimes(4);
     expect(hostAuthorityPublications).toHaveLength(1);
     const connectDisabled = await fetch(`${origin}/v1/personal-remote-access`, {
       body: JSON.stringify({ mode: "off", routeOrigin: null, schemaVersion: 1 }),

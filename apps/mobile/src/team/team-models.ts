@@ -7,6 +7,8 @@
  * component only lays out what it is handed.
  */
 
+import type { TeamAskOwnerControl } from "@opensteer/client/team";
+
 /** A team's square mark: its initial on its own colour. */
 export interface TeamTileView {
   readonly id: string;
@@ -16,6 +18,7 @@ export interface TeamTileView {
 }
 
 export interface PersonView {
+  readonly externalTeam?: string;
   readonly id: string;
   readonly name: string;
   /** Unique per team, set at join and never edited: "maya". */
@@ -43,6 +46,7 @@ export type FaceView =
  * (`@maya`, `@maya-agent`) and drawn with the reader's own words.
  */
 export interface MentionView {
+  readonly externalTeam?: string;
   readonly handle: string;
   /** "@My agent", "@Maya's agent", "@Maya Chen". */
   readonly label: string;
@@ -81,6 +85,7 @@ export interface StagedAttachmentView {
 }
 
 export type SendState =
+  | { readonly kind: "retryable"; readonly reason: string }
   | { readonly kind: "sent" }
   /** Not confirmed after a moment: "Sending…" takes the time's place. */
   | { readonly kind: "sending" }
@@ -103,7 +108,19 @@ export type MessageAuthor =
   | { readonly kind: "person"; readonly person: PersonView; readonly mine: boolean }
   | { readonly kind: "agent"; readonly agent: AgentView };
 
+/**
+ * Where an ask of someone's agent stands, under the message that asked. The
+ * owner gets a control in place of "Waiting for <them>": answer from chat, or
+ * open the task when they already edited its copy there.
+ */
+export interface AskStatusView {
+  readonly id: string;
+  readonly label: string;
+  readonly control: TeamAskOwnerControl;
+}
+
 export interface MessageView {
+  readonly askStatuses?: readonly AskStatusView[];
   readonly id: string;
   /** Bumps on every edit, pin or summary change; a row redraws only when this does. */
   readonly version: number;
@@ -204,6 +221,8 @@ export type TimelineItem =
 export type ChannelKind = "public" | "private" | "dm" | "group-dm";
 
 export interface ChannelHeaderView {
+  readonly shareLabel?: string;
+  readonly shareDetail?: string;
   readonly id: string;
   readonly kind: ChannelKind;
   /** "support", or the person's name in a DM, or "Leo, Priya". */
@@ -253,6 +272,7 @@ export interface ConnectionBannerView {
 
 /** One channel row in the drawer. */
 export interface ChannelRowView {
+  readonly shared?: boolean;
   readonly id: string;
   readonly kind: "public" | "private";
   readonly name: string;
@@ -273,12 +293,6 @@ export interface DmRowView {
 
 export interface TeamDrawerSectionView {
   readonly team: TeamTileView;
-  readonly folded: boolean;
-  /** Mentions of the reader across the team, shown on a folded header. */
-  readonly mentionTotal: number;
-  readonly unread: boolean;
-  /** `removed` keeps one row until it is taken out of the drawer. */
-  readonly state: "live" | "offline" | "update-app" | "update-server" | "removed";
   readonly channels: readonly ChannelRowView[];
   readonly dms: readonly DmRowView[];
 }

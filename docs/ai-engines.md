@@ -19,9 +19,21 @@ Work the person did not place by hand uses the shared
 eligibility decide; cached usage exhaustion only affects ordering. The Host computes eligibility
 for the viewer, and an unbound preference never reaches an `openai-compatible` endpoint.
 
+The person's choices live in `settings.json` in Agent home
+([schema](../packages/core/src/background-models.ts)); their agent edits it with file tools and
+nothing else writes it. Agent home belongs to the hosting computer, so its Runner reports the file
+and the Host keeps the last valid version: a broken file changes nothing, shows in Settings and
+reaches the agent's next Run. The recommended order always follows each role's list, so a stale or
+mistyped choice never strands naming or memory.
+
 Selection happens before admission and freezes the endpoint for accepted work. Account changes
 must not silently redirect it. Naming can advance after a contained generation failure; memory and
 specialists never replay accepted or uncertain work on another account.
+
+Claude context measurements describe the latest main-thread request, separately from billed
+Run usage, which includes native child work. Cache expiry starts at the reported request send
+time, or at `message_start` minus reported time to first token. Missing timing or cache-write
+TTL remains unknown; mixed five-minute and one-hour writes use the earliest expiry.
 
 ## What a driver declares
 
@@ -58,8 +70,9 @@ failure, so its driver classifies from them and drops the echoed reply.
 
 Report usage before terminal events, even on interruption. Costs are list-price arithmetic, not
 subscription charges; never invent prices or show an unknown zero price as free. Root usage includes
-native subagents. Codex reports cumulative thread totals across warm Runs and resume, so count only
-growth for this Run's turns, without recharging history after compaction resets.
+native subagents. Codex and Claude report cumulative totals across warm Runs (Codex also across
+resume), so count only growth for this Run's turns, without recharging history after compaction
+resets.
 
 What a native subagent says, thinks and calls is reported against its node through
 [`SubagentNodes`](../packages/harness/src/subagent-nodes.ts), never as the Run's own. An event a
@@ -159,10 +172,23 @@ in every access mode.
 Skills have unique full names (`plugin:skill`, or bare for loose folder skills); duplicates fail
 the Run, and no layer shadows another. Instructions supplement the engine's system prompt and never
 confer Host authority. Cross-tool routing stays in the Run guide so Claude can choose tools before
-loading deferred schemas. On Codex resume, send current instructions through keyed turn context,
-since startup instructions do not refresh an existing conversation
-([skill-catalog.ts](../packages/harness/src/skill-catalog.ts)). ACP engines differ in resume and
-cancellation, so each driver declares its own rather than inferring it from the ACP version.
+loading deferred schemas. ACP engines differ in resume and cancellation, so each driver declares
+its own rather than inferring it from the ACP version.
+
+Providers cache the prompt as an exact prefix (tools, then system text, then history), so tool
+lists and system or developer text must be byte-identical from Run to Run; anything that changes
+per Run (time, computers, team source, reports) travels with the turn. A person's app and time
+zone belong to the message they sent (`origin`), never to the person, so devices in different zones
+never overwrite each other, and a stored input renders the same header bytes whenever it is
+replayed. Codex gets application context as keyed turn values, each under its silent 1,000-token
+truncation, and never retracts a dropped key, so the driver keeps every emitted key beside the
+conversation and empties retired ones
+([additional-context.ts](../packages/harness-codex/src/additional-context.ts)); compaction drops
+those values without Codex resending them, so they are reinjected after the turn completes, never
+during it. Engines without a resumable system channel send stable guidance once per engine process
+and again after a change or completed compaction
+([guidance-delivery.ts](../packages/harness/src/guidance-delivery.ts)). Cursor's print mode reports
+no compaction, so its guidance rides every turn.
 
 ## Thread names and symbols
 

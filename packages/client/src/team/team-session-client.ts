@@ -1,9 +1,15 @@
+import { mergeTeamPeople, type TeamRemotePeople } from "./shared-channels.js";
+import type { TeamRuntimeOwner } from "./team-runtime-owner.js";
+import type { AccountProfileRelay } from "./account-profile-relay.js";
+import { bootstrapMembershipRefused, teamEntryRefusalOutcome } from "@opensteer/protocol";
 import type { TeamFileUpload } from "./files.js";
 import {
+  compareSequence,
   OpensteerError,
   type TeamChannelId,
   type TeamMessageId,
   type UserId,
+  type TeamAskOutcome,
 } from "@opensteer/core";
 import { teamApiVersion } from "@opensteer/deployment-authority";
 import {
@@ -14,7 +20,9 @@ import {
   type HostApiClient,
   type HostApiCommandInput,
   type TeamMessage,
+  type TeamChannel,
   type TeamAgentRecipient,
+  type TeamMember,
 } from "@opensteer/protocol";
 import type { z } from "zod";
 import type {
@@ -49,25 +57,45 @@ type TeamBootstrap = z.infer<typeof TeamBootstrapSchema>;
 type SearchInput = z.infer<typeof TeamSearchInputSchema>;
 type SearchPage = z.infer<typeof TeamSearchPageSchema>;
 export interface TeamSessionSnapshot {
+  readonly people?: TeamRemotePeople;
+  readonly peopleByChannel?: Readonly<Record<string, TeamRemotePeople>>;
+  readonly handlesByChannel?: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  readonly sendErrors?: Readonly<Record<string, unknown>>;
   readonly agentRecipients: readonly TeamAgentRecipient[];
   readonly bootstrap: TeamBootstrap | null;
   readonly sidebar: TeamSidebar | null;
   readonly channel: TeamTimeline | null;
   readonly thread: TeamTimeline | null;
+  /** The socket's state; `offline` between a close and the next attempt, however brief. */
   readonly connection: "offline" | "connecting" | "connected";
+  /**
+   * Nothing reaches the team: out of reach for longer than a server swap takes, or
+   * disconnected on purpose. What "Can't reach" and waiting sends read.
+   */
+  readonly unreachable: boolean;
+  /** Set while the team refuses this app's protocol version, until a check succeeds. */
+  readonly versionRefusal: TeamVersionRefusal | null;
+  /** Moves on each reconnect after a close; views without a live stream read again. */
+  readonly resumedGeneration: number;
   readonly pending: readonly PendingTeamSend[];
   readonly drafts: Readonly<Record<string, string>>;
   readonly typing: Readonly<Record<string, readonly string[]>>;
   readonly presence: Readonly<Record<string, boolean>>;
   readonly search: SearchPage | null;
+  readonly sendNotices: Readonly<Record<string, readonly TeamAskOutcome[]>>;
   readonly error: string | null;
+  readonly refusalReason?: string | undefined;
   readonly ended: "removed" | "sign-in" | "viewer-changed" | null;
   readonly contentGeneration: number;
+  /** Members renamed since the directory was read; readers lay these over it. */
+  readonly memberUpdates?: Readonly<Record<string, TeamMember>>;
 }
 export interface TeamSessionOptions {
+  readonly owner?: TeamRuntimeOwner;
   readonly scope: TeamCacheScope;
   readonly rpc: HostApiClient;
   readonly persistence: TeamPersistence;
+  /** Upgrade-only state, adopted after authenticated bootstrap confirms this viewer. */
   readonly connect: () => WebSocketClient;
   readonly readFile?: (
     file: z.infer<typeof TeamFileSchema>,
@@ -75,9 +103,11 @@ export interface TeamSessionOptions {
     signal?: AbortSignal,
   ) => Promise<Blob>;
   readonly uploadFile?: (input: TeamFileUpload) => Promise<z.infer<typeof TeamFileSchema>>;
-  readonly notify?: (entry: TeamSidebar["channels"][number]) => void;
+  readonly notify?: (entry: TeamSidebar["channels"][number], current: () => boolean) => void;
   /** Spreads reconnects; tests pin it. */
   readonly random?: () => number;
+  /** The signed-in person's Account name, relayed when this team's copy is older. */
+  readonly profiles?: AccountProfileRelay;
 }
 function refusedSend(error: unknown): error is OpensteerError {
   return (
@@ -88,23 +118,54 @@ function refusedSend(error: unknown): error is OpensteerError {
 }
 
 const healthyConnectionMs = 30_000;
+/** Longer than a planned server swap, so a swap never reads as out of reach. */
+const unreachableAfterMs = 5_000;
+/** WebSocket close codes the team server sends: a planned restart, or a refusal. */
+const restartingCloseCode = 1012;
+const refusedCloseCode = 1008;
+const memberNamesBound = 1_000;
+
+export type TeamVersionRefusal = "update-app" | "update-server";
+/** Which side must update, from a refusal's `reason`. */
+export function teamVersionRefusal(reason: string | null | undefined): TeamVersionRefusal | null {
+  if (reason === "host-too-old") return "update-server";
+  return ["client-too-old", "unsupported-version", "api-version-mismatch"].includes(reason ?? "")
+    ? "update-app"
+    : null;
+}
 
 export class TeamSessionClient {
   readonly rpc: HostApiClient;
+  readonly owner: TeamRuntimeOwner | undefined;
+  readonly #controller = new AbortController();
+  readonly signal: AbortSignal;
+  readonly #releaseOwner: (() => void) | undefined;
   readonly #options: TeamSessionOptions;
+  /** Who this session reads as; unlike the bootstrap, it survives the session ending. */
+  get scope(): TeamCacheScope {
+    return this.#options.scope;
+  }
   readonly #listeners = new Set<() => void>();
   #snapshot: TeamSessionSnapshot = {
+    people: {},
+    peopleByChannel: {},
+    handlesByChannel: {},
+    sendErrors: {},
     agentRecipients: [],
     bootstrap: null,
     sidebar: null,
     channel: null,
     thread: null,
     connection: "offline",
+    unreachable: false,
+    versionRefusal: null,
+    resumedGeneration: 0,
     pending: [],
     drafts: {},
     typing: {},
     presence: {},
     search: null,
+    sendNotices: {},
     error: null,
     ended: null,
     contentGeneration: 0,
@@ -116,6 +177,11 @@ export class TeamSessionClient {
   #persist: Promise<void> = Promise.resolve();
   #reconnecting: Promise<void> | null = null;
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  #unreachableTimer: ReturnType<typeof setTimeout> | null = null;
+  #opened = false;
+  /** The names revision last caught up to (null: read again); renames in between arrive as frames. */
+  #namesRevision: string | null | undefined;
+  #namesRead = 0;
   #connected = false;
   #removed = false;
   #removal: Promise<void> | null = null;
@@ -135,8 +201,41 @@ export class TeamSessionClient {
   #searchInput: SearchInput | null = null;
   #searchMore: Promise<void> | null = null;
   constructor(options: TeamSessionOptions) {
+    this.owner = options.owner;
+    this.signal = options.owner
+      ? AbortSignal.any([options.owner.signal, this.#controller.signal])
+      : this.#controller.signal;
     this.#options = options;
-    this.rpc = options.rpc;
+    this.rpc = options.owner ? options.owner.rpc(options.rpc) : options.rpc;
+    this.#releaseOwner = options.owner?.own(() => this.dispose());
+    this.#releaseProfiles = options.profiles?.subscribe(() => void this.#relayProfile());
+  }
+  readonly #releaseProfiles: (() => void) | undefined;
+  /** A bootstrap read before a rename frame arrived never puts the viewer's old name back. */
+  #withNewerOwnName(bootstrap: TeamBootstrap): TeamBootstrap {
+    const update = this.#snapshot.memberUpdates?.[bootstrap.member.userId];
+    if (!update || (update.nameRevision ?? 0) <= (bootstrap.member.nameRevision ?? 0))
+      return bootstrap;
+    return {
+      ...bootstrap,
+      member: {
+        ...bootstrap.member,
+        displayName: update.displayName,
+        nameRevision: update.nameRevision,
+      },
+    };
+  }
+  /** Best effort: a team that misses it gets the name at the next attach or sign-in. */
+  async #relayProfile(): Promise<void> {
+    const member = this.#snapshot.bootstrap?.member;
+    if (!member || !this.#options.profiles || this.#removed || this.#disposed) return;
+    await this.#options.profiles
+      .relay({
+        nameRevision: member.nameRevision,
+        apply: (receipt) =>
+          this.rpc["commands.dispatch"]({ type: "team.member.profile.apply", receipt }),
+      })
+      .catch(() => undefined);
   }
   readonly getSnapshot = (): TeamSessionSnapshot => this.#snapshot;
   readonly subscribe = (listener: () => void): (() => void) => {
@@ -147,6 +246,25 @@ export class TeamSessionClient {
     this.#snapshot = { ...this.#snapshot, ...patch };
     for (const listener of this.#listeners) listener();
   }
+  #peoplePatch(
+    people: TeamRemotePeople | undefined,
+    channelId: TeamChannelId,
+    channel?: TeamChannel,
+  ) {
+    const handles = { ...this.#snapshot.handlesByChannel?.[channelId] };
+    if (channel) {
+      delete handles[this.scope.userId];
+      if (channel.share?.viewerHandle) handles[this.scope.userId] = channel.share.viewerHandle;
+    }
+    return {
+      handlesByChannel: { ...this.#snapshot.handlesByChannel, [channelId]: handles },
+      people: mergeTeamPeople(this.#snapshot.people ?? {}, people),
+      peopleByChannel: {
+        ...this.#snapshot.peopleByChannel,
+        [channelId]: mergeTeamPeople(this.#snapshot.peopleByChannel?.[channelId] ?? {}, people),
+      },
+    };
+  }
   async load(connect = true): Promise<void> {
     if (this.#removed || this.#disposed) return;
     if (!this.#loading) {
@@ -155,7 +273,7 @@ export class TeamSessionClient {
       this.#loading = (async () => {
         const [saved, bootstrap] = await Promise.all([
           this.#options.persistence.load(this.#options.scope),
-          this.rpc["team.bootstrap.get"]({}).then(unwrapRpcResult),
+          this.#bootstrap(),
         ]);
         if (lifetime !== this.#lifetime) return;
         if (
@@ -177,8 +295,9 @@ export class TeamSessionClient {
                   ]),
                 ).values(),
               ];
+        this.#namesRevision ??= bootstrap.sidebar.namesRevision;
         this.#update({
-          bootstrap,
+          bootstrap: this.#withNewerOwnName(bootstrap),
           sidebar: monotonicTeamSidebar(this.#snapshot.sidebar, bootstrap.sidebar),
           drafts:
             revision === this.#stateRevision
@@ -200,18 +319,33 @@ export class TeamSessionClient {
     }
     await this.#loading;
     if (connect) this.connect();
+    void this.#relayProfile();
   }
   connect(): void {
     if (this.#removed || this.#disposed || this.#socket) return;
+    // From rest (first connect, or after disconnecting) the deadline starts with this attempt.
+    const resting = !this.#connected;
+    if (resting) this.#startUnreachable(true);
     this.#connected = true;
-    this.#update({ connection: "connecting", error: null });
+    this.#update({
+      connection: "connecting",
+      error: null,
+      ...(resting ? { unreachable: false } : {}),
+    });
     const socket = this.#options.connect();
     this.#socket = socket;
     let openedAt: number | undefined;
     socket.addEventListener("open", () => {
       if (this.#socket !== socket) return;
       openedAt = Date.now();
-      this.#update({ connection: "connected" });
+      this.#clearUnreachable();
+      const resumed = this.#opened;
+      this.#opened = true;
+      this.#update({
+        connection: "connected",
+        unreachable: false,
+        ...(resumed ? { resumedGeneration: this.#snapshot.resumedGeneration + 1 } : {}),
+      });
       this.#subscribe(null);
       if (this.#snapshot.channel) this.#subscribe(this.#snapshot.channel);
       if (this.#snapshot.thread) this.#subscribe(this.#snapshot.thread);
@@ -237,28 +371,59 @@ export class TeamSessionClient {
         closed();
       }
     });
-    const closed = () => {
+    const closed = (code?: number) => {
       if (this.#socket !== socket) return;
       this.#socket = null;
       this.#connectionGeneration++;
       this.#update({ connection: "offline", typing: {}, presence: {} });
       if (!this.#connected || this.#removed) return;
+      this.#startUnreachable();
       // A socket that opens and fails at once keeps backing off.
       if (openedAt !== undefined && Date.now() - openedAt >= healthyConnectionMs) this.#attempt = 0;
-      this.#reconnectLater();
+      if (code === refusedCloseCode) this.#recheck();
+      else this.#reconnectLater(code !== restartingCloseCode);
     };
-    socket.addEventListener("close", closed);
+    socket.addEventListener("close", (event) => closed(event.code));
     socket.addEventListener("error", () => {
       socket.close();
       closed();
+    });
+  }
+  /** One deadline from the first attempt or close; failed attempts after it never push it back. */
+  #startUnreachable(fresh = false): void {
+    if (!fresh && (this.#unreachableTimer || this.#snapshot.unreachable)) return;
+    this.#clearUnreachable();
+    this.#unreachableTimer = setTimeout(() => {
+      this.#unreachableTimer = null;
+      this.#update({ unreachable: true });
+    }, unreachableAfterMs);
+  }
+  #clearUnreachable(): void {
+    if (this.#unreachableTimer) clearTimeout(this.#unreachableTimer);
+    this.#unreachableTimer = null;
+  }
+  /** A refused socket: ask now why, so a revocation or version refusal shows at once. */
+  #recheck(): void {
+    const generation = this.#connectionGeneration;
+    void this.#revalidate().then((revalidated) => {
+      if (
+        generation !== this.#connectionGeneration ||
+        !this.#connected ||
+        this.#removed ||
+        this.#disposed
+      )
+        return;
+      // Still backed off: a server that keeps refusing the socket is not asked in a tight loop.
+      this.#reconnectLater(!revalidated);
     });
   }
   /**
    * Jittered, and before revalidating: a restarted team server must not receive
    * every member's bootstrap and socket in the same instant. A failed
    * revalidation waits for the next step rather than opening a doomed socket.
+   * A planned restart skips the check: nothing about the viewer changed.
    */
-  #reconnectLater(): void {
+  #reconnectLater(revalidate = true): void {
     const generation = this.#connectionGeneration;
     const current = () =>
       generation === this.#connectionGeneration &&
@@ -269,6 +434,10 @@ export class TeamSessionClient {
     this.#reconnectTimer = setTimeout(
       () => {
         this.#reconnectTimer = null;
+        if (!revalidate) {
+          if (current()) this.connect();
+          return;
+        }
         void this.#revalidate().then((revalidated) => {
           if (!current()) return;
           if (revalidated) this.connect();
@@ -278,16 +447,34 @@ export class TeamSessionClient {
       (ceiling * (1 + (this.#options.random ?? Math.random)())) / 2,
     );
   }
+  async #bootstrap() {
+    try {
+      return await this.rpc["team.bootstrap.get"]({}).then(unwrapRpcResult);
+    } catch (error) {
+      if (error instanceof OpensteerError && !error.reason && bootstrapMembershipRefused(error))
+        await this.remove("removed");
+      throw error;
+    }
+  }
   async #authorizationFailure(error: unknown): Promise<void> {
     if (!(error instanceof OpensteerError)) return;
-    if (error.code === "unauthorized") await this.remove("sign-in");
-    else if (error.code === "forbidden" || error.code === "not_found") await this.remove("removed");
+    const versionRefusal = teamVersionRefusal(error.reason);
+    if (versionRefusal) {
+      this.#update({ versionRefusal });
+      return;
+    }
+    const refusal = teamEntryRefusalOutcome(error.reason);
+    if (refusal === "retryable") return;
+    if (refusal === "membership") {
+      this.#update({ refusalReason: error.reason });
+      await this.remove("removed");
+    } else if (error.code === "unauthorized") await this.remove("sign-in");
   }
   /** Whether the viewer still belongs here; a failed check settles false. */
   async #revalidate(): Promise<boolean> {
     const lifetime = this.#lifetime;
     try {
-      const bootstrap = await this.rpc["team.bootstrap.get"]({}).then(unwrapRpcResult);
+      const bootstrap = await this.#bootstrap();
       if (lifetime !== this.#lifetime) return false;
       if (
         bootstrap.teamId !== this.#options.scope.teamDeploymentId ||
@@ -333,11 +520,16 @@ export class TeamSessionClient {
           }
         }
       }
-      if (lifetime === this.#lifetime)
+      if (lifetime === this.#lifetime) {
         this.#update({
-          bootstrap,
+          bootstrap: this.#withNewerOwnName(bootstrap),
           sidebar: monotonicTeamSidebar(this.#snapshot.sidebar, bootstrap.sidebar),
+          versionRefusal: null,
         });
+        this.#catchUpNames(bootstrap.sidebar.namesRevision);
+        // A relay that failed or was missed while away is tried again.
+        void this.#relayProfile();
+      }
       return true;
     } catch (error) {
       if (lifetime === this.#lifetime) await this.#authorizationFailure(error);
@@ -391,7 +583,8 @@ export class TeamSessionClient {
     const thread = rootId
       ? emptyTeamTimeline("thread", ++this.#generation, { kind: "thread", channelId, rootId })
       : null;
-    this.#update({ thread });
+    // A thread's failure is read while it waits for its root, so a new one starts clear.
+    this.#update(thread ? { thread, error: null } : { thread });
     if (thread) {
       this.#subscribe(thread);
       const lifetime = this.#lifetime;
@@ -455,7 +648,10 @@ export class TeamSessionClient {
     const current = this.#snapshot[view];
     if (lifetime !== this.#lifetime || !current || selected.generation !== current.generation)
       return;
-    this.#update({ [view]: reduceTeamPage(current, result, selected.generation, direction) });
+    this.#update({
+      ...this.#peoplePatch(result.people, selected.scope.channelId, result.channel),
+      [view]: reduceTeamPage(current, result, selected.generation, direction),
+    });
   }
   async landMessage(
     channelId: TeamChannelId,
@@ -519,8 +715,47 @@ export class TeamSessionClient {
       selected.generation,
       "after",
     );
-    this.#update({ [view]: { ...next, hasMore: before.hasMore, anchorId: message.id } });
+    this.#update({
+      ...this.#peoplePatch(
+        mergeTeamPeople(mergeTeamPeople(message.people ?? {}, before.people), after.people),
+        channelId,
+        after.channel,
+      ),
+      [view]: { ...next, hasMore: before.hasMore, anchorId: message.id },
+    });
     return message;
+  }
+  async pinnedMessages(channelId: TeamChannelId) {
+    if (this.#removed || this.#disposed) throw new Error("Team session ended.");
+    const lifetime = this.#lifetime,
+      content = this.#contentGeneration;
+    const page = unwrapRpcResult(await this.rpc["team.pins.page"]({ channelId }));
+    if (lifetime !== this.#lifetime || content !== this.#contentGeneration)
+      throw new Error("Team access changed.");
+    this.#update({ ...this.#peoplePatch(page.people, channelId) });
+    return page;
+  }
+  async shareParticipants(input: {
+    readonly channelId: TeamChannelId;
+    readonly after?: string;
+    readonly query?: string;
+  }) {
+    if (this.#removed || this.#disposed) return null;
+    const lifetime = this.#lifetime,
+      content = this.#contentGeneration;
+    const page = unwrapRpcResult(await this.rpc["team.share.participants.get"](input));
+    if (lifetime !== this.#lifetime || content !== this.#contentGeneration) return null;
+    this.#update({
+      ...this.#peoplePatch(page.people, input.channelId),
+      handlesByChannel: {
+        ...this.#snapshot.handlesByChannel,
+        [input.channelId]: {
+          ...this.#snapshot.handlesByChannel?.[input.channelId],
+          ...Object.fromEntries(page.participants.map((person) => [person.userId, person.handle])),
+        },
+      },
+    });
+    return page;
   }
   async setAgentRecipient(
     channelId: TeamChannelId,
@@ -560,13 +795,19 @@ export class TeamSessionClient {
       case "team.agent.recipient":
         this.#applyRecipients([frame.recipient]);
         break;
+      case "team.member.updated":
+        this.#applyNames([frame.member]);
+        break;
       case "team.cut": {
         const view = frame.cut.scope.kind === "channel" ? "channel" : "thread";
         const held = this.#snapshot[view];
         if (!held) return;
         const next = reduceTeamCut(held, frame.cut);
         if (next !== held) {
-          this.#update({ [view]: next });
+          this.#update({
+            ...this.#peoplePatch(frame.cut.people, frame.cut.scope.channelId, frame.cut.channel),
+            [view]: next,
+          });
           this.#applyRecipients(frame.cut.agentRecipients);
           if (
             frame.cut.type === "snapshot" &&
@@ -577,9 +818,18 @@ export class TeamSessionClient {
         }
         break;
       }
-      case "team.sidebar":
+      case "team.sidebar": {
+        // Sent as a socket subscribes, so it also tells what moved while it was away.
+        const held = this.#snapshot.sidebar;
+        if (held && compareSequence(frame.sidebar.accessRevision, held.accessRevision) > 0)
+          this.receive({
+            type: "team.access.changed",
+            accessRevision: frame.sidebar.accessRevision,
+          });
         this.#applySidebar(frame.sidebar);
+        this.#catchUpNames(frame.sidebar.namesRevision);
         break;
+      }
       case "team.sidebar.dirty":
         void this.#refreshSidebarRows(frame.channelIds).catch(() => undefined);
         break;
@@ -589,6 +839,9 @@ export class TeamSessionClient {
         const channel = this.#snapshot.channel,
           thread = this.#snapshot.thread;
         this.#update({
+          people: {},
+          peopleByChannel: {},
+          handlesByChannel: {},
           agentRecipients: [],
           sidebar: null,
           channel: channel ? emptyTeamTimeline("channel", ++this.#generation, channel.scope) : null,
@@ -637,6 +890,58 @@ export class TeamSessionClient {
         break;
     }
   }
+  /** Renames commit and publish independently, so an older one can arrive last. */
+  #applyNames(members: readonly TeamMember[]): void {
+    let updates = this.#snapshot.memberUpdates;
+    for (const member of members) {
+      const held = updates?.[member.userId];
+      if ((member.nameRevision ?? 0) <= (held?.nameRevision ?? 0)) continue;
+      updates = { ...updates, [member.userId]: member };
+    }
+    if (updates === this.#snapshot.memberUpdates || !updates) return;
+    const bootstrap = this.#snapshot.bootstrap;
+    const self = bootstrap ? updates[bootstrap.member.userId] : undefined;
+    this.#update({
+      memberUpdates: updates,
+      ...(bootstrap && self && (self.nameRevision ?? 0) > (bootstrap.member.nameRevision ?? 0)
+        ? {
+            bootstrap: {
+              ...bootstrap,
+              member: {
+                ...bootstrap.member,
+                displayName: self.displayName,
+                nameRevision: self.nameRevision,
+              },
+            },
+          }
+        : {}),
+    });
+  }
+  /** Renames made while away were never announced to this session: read the names again. */
+  #catchUpNames(namesRevision: string | undefined): void {
+    if (namesRevision === undefined || namesRevision === this.#namesRevision) return;
+    const first = this.#namesRevision === undefined;
+    this.#namesRevision = namesRevision;
+    if (first) return;
+    const lifetime = this.#lifetime,
+      read = ++this.#namesRead;
+    void (async () => {
+      const members: TeamMember[] = [];
+      let after: UserId | undefined;
+      do {
+        const page = await this.rpc["team.members.list"](after ? { after } : {}).then(
+          unwrapRpcResult,
+        );
+        if (lifetime !== this.#lifetime || read !== this.#namesRead) return;
+        members.push(...page.members);
+        after = page.hasMore ? page.members.at(-1)?.userId : undefined;
+      } while (after && members.length < memberNamesBound);
+      this.#applyNames(members);
+    })().catch(() => {
+      // The next catch-up reads them; a held revision would otherwise hide the miss.
+      if (read === this.#namesRead) this.#namesRevision = null;
+    });
+  }
   #applySidebar(sidebar: TeamSidebar, replace = false, notify = true): void {
     const previous = this.#snapshot.sidebar;
     const last = sidebar.channels.at(-1)?.channel.id;
@@ -656,6 +961,7 @@ export class TeamSessionClient {
     if (notify && previous) this.#notifySidebar(previous, next);
   }
   #notifySidebar(previous: TeamSidebar, next: TeamSidebar): void {
+    const lifetime = this.#lifetime;
     for (const entry of next.channels) {
       const held = previous.channels.find((row) => row.channel.id === entry.channel.id);
       const notify =
@@ -670,7 +976,10 @@ export class TeamSessionClient {
             ? 1
             : -1) > 0)
       )
-        this.#options.notify?.(entry);
+        this.#options.notify?.(
+          entry,
+          () => !this.#disposed && !this.#removed && lifetime === this.#lifetime,
+        );
     }
   }
   async #refreshSidebarRows(channelIds: readonly TeamChannelId[]): Promise<void> {
@@ -797,7 +1106,18 @@ export class TeamSessionClient {
       createdAt: new Date().toISOString(),
       failure: null,
     };
-    this.#update({ pending: [...this.#snapshot.pending, pending] });
+    const noticeKey = teamScopeKey(
+      pending.command.threadRootId
+        ? {
+            kind: "thread",
+            channelId: pending.command.channelId,
+            rootId: pending.command.threadRootId,
+          }
+        : { kind: "channel", channelId: pending.command.channelId },
+    );
+    const sendNotices = { ...this.#snapshot.sendNotices };
+    delete sendNotices[noticeKey];
+    this.#update({ sendNotices, pending: [...this.#snapshot.pending, pending] });
     try {
       await this.#save();
     } catch (error) {
@@ -814,7 +1134,10 @@ export class TeamSessionClient {
   }
   async discardPending(clientMessageId: string): Promise<void> {
     if (this.#removed || this.#disposed) return;
+    const errors = { ...this.#snapshot.sendErrors };
+    delete errors[clientMessageId];
     this.#update({
+      sendErrors: errors,
       pending: this.#snapshot.pending.filter(
         (row) => row.command.clientMessageId !== clientMessageId,
       ),
@@ -848,13 +1171,33 @@ export class TeamSessionClient {
     await this.#save();
   }
   async #transmit(pending: PendingTeamSend, lifetime: number): Promise<void> {
+    const errors = { ...this.#snapshot.sendErrors };
+    delete errors[pending.command.clientMessageId];
+    this.#update({ sendErrors: errors });
     try {
       const result = await this.rpc["commands.dispatch"](pending.command).then(unwrapRpcResult);
       if (lifetime !== this.#lifetime || result.type !== "team.message.send") return;
+      const key = teamScopeKey(
+        pending.command.threadRootId
+          ? {
+              kind: "thread",
+              channelId: pending.command.channelId,
+              rootId: pending.command.threadRootId,
+            }
+          : { kind: "channel", channelId: pending.command.channelId },
+      );
+      const refusals = result.askOutcomes.filter((outcome) => outcome.outcome !== "queued");
+      if (refusals.length)
+        this.#update({ sendNotices: { ...this.#snapshot.sendNotices, [key]: refusals } });
       await this.#confirm([result.message]);
     } catch (error) {
       if (lifetime !== this.#lifetime) return;
-      if (!refusedSend(error)) throw error;
+      if (!refusedSend(error)) {
+        this.#update({
+          sendErrors: { ...this.#snapshot.sendErrors, [pending.command.clientMessageId]: error },
+        });
+        throw error;
+      }
       await this.#fail([pending], error);
     }
   }
@@ -867,7 +1210,10 @@ export class TeamSessionClient {
         )
         .map((message) => message.clientMessageId),
     );
+    const errors = { ...this.#snapshot.sendErrors };
+    for (const id of confirmed) delete errors[id];
     this.#update({
+      sendErrors: errors,
       pending: this.#snapshot.pending.filter(
         (send) => !confirmed.has(send.command.clientMessageId),
       ),
@@ -958,7 +1304,7 @@ export class TeamSessionClient {
     this.#update({ search: null });
     const search = await this.rpc["team.search"]({ input }).then(unwrapRpcResult);
     if (generation === this.#searchGeneration && lifetime === this.#lifetime)
-      this.#update({ search });
+      this.#update({ people: mergeTeamPeople(this.#snapshot.people ?? {}, search.people), search });
   }
   loadMoreSearch(): Promise<void> {
     if (this.#searchMore) return this.#searchMore;
@@ -977,7 +1323,10 @@ export class TeamSessionClient {
           (row, index, rows) =>
             rows.findIndex((other) => other.message.id === row.message.id) === index,
         );
-        this.#update({ search: { ...page, results } });
+        this.#update({
+          people: mergeTeamPeople(this.#snapshot.people ?? {}, page.people),
+          search: { ...page, results },
+        });
       })
       .finally(() => {
         if (this.#searchMore === operation) this.#searchMore = null;
@@ -999,13 +1348,18 @@ export class TeamSessionClient {
     if (!this.#options.readFile) throw new Error("The platform has no team file transport.");
     const lifetime = this.#lifetime,
       contentGeneration = this.#contentGeneration;
-    const blob = await this.#options.readFile(file, part, signal);
+    const blob = await this.#options.readFile(
+      file,
+      part,
+      signal ? AbortSignal.any([signal, this.signal]) : this.signal,
+    );
     if (blob.size > (open ? teamUploadMaxBytes : teamPreviewMaxBytes))
       throw new Error("Team file exceeds its byte bound.");
     if (
       lifetime !== this.#lifetime ||
       contentGeneration !== this.#contentGeneration ||
-      this.#removed
+      this.#removed ||
+      this.#disposed
     )
       return null;
     if (blob.size <= 32 * 1024 * 1024) {
@@ -1025,7 +1379,10 @@ export class TeamSessionClient {
     if (!this.#options.uploadFile) throw new Error("The platform has no team upload transport.");
     const lifetime = this.#lifetime,
       generation = this.#contentGeneration;
-    const file = await this.#options.uploadFile(input);
+    const file = await this.#options.uploadFile({
+      ...input,
+      signal: input.signal ? AbortSignal.any([input.signal, this.signal]) : this.signal,
+    });
     if (lifetime !== this.#lifetime || generation !== this.#contentGeneration)
       throw new Error("Team access changed during the upload.");
     return file;
@@ -1055,17 +1412,21 @@ export class TeamSessionClient {
     this.#connected = false;
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = null;
+    this.#clearUnreachable();
     const socket = this.#socket;
     this.#socket = null;
     socket?.close();
-    this.#update({ connection: "offline", typing: {}, presence: {} });
+    this.#update({ connection: "offline", unreachable: true, typing: {}, presence: {} });
   }
   remove(ended: TeamSessionSnapshot["ended"] = "removed"): Promise<void> {
     if (this.#removal) return this.#removal;
     this.#removal = this.#persist
       .catch(() => undefined)
-      .then(() => this.#options.persistence.remove(this.#options.scope));
+      .then(() =>
+        ended === "sign-in" ? undefined : this.#options.persistence.remove(this.#options.scope),
+      );
     this.#removed = true;
+    this.#controller.abort(new Error("Team session ended."));
     this.#lifetime++;
     this.disconnect();
     this.#files.clear();
@@ -1074,12 +1435,17 @@ export class TeamSessionClient {
     this.#searchMore = null;
     this.#typingAt.clear();
     this.#update({
+      people: {},
+      peopleByChannel: {},
+      handlesByChannel: {},
+      sendErrors: {},
       agentRecipients: [],
       bootstrap: null,
       sidebar: null,
       channel: null,
       thread: null,
       pending: [],
+      sendNotices: {},
       drafts: {},
       search: null,
       ended,
@@ -1088,9 +1454,11 @@ export class TeamSessionClient {
     return this.#removal;
   }
   dispose(): void {
+    if (this.#disposed) return;
+    void this.remove("sign-in");
     this.#disposed = true;
-    this.#lifetime++;
-    this.disconnect();
+    this.#releaseOwner?.();
+    this.#releaseProfiles?.();
     this.#listeners.clear();
   }
 }

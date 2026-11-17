@@ -548,11 +548,12 @@
 }
 
 /* Tasks and Tabs each scroll on their own, so both headings (and their + and
-   count) stay in reach at any height. Tabs is its own panel and owns its
-   height (`--side-tabs-height`, the person's or this default): it shows
-   fewer rows only when it has fewer, and gives way only to the floor of the
-   pane above. The pane above (Tasks, Done or a team) takes the rest, so
-   switching it never moves Tabs. Neither drops below its first three rows. */
+   count) stay in reach at any height. Tabs owns its height: until the
+   person sizes it, it fits its rows up to this default; once they do
+   (`--side-tabs-height`), it keeps that height whatever it holds. It gives
+   way only to the floor of the pane above. The pane above (Tasks, Done or a
+   team) takes the rest, so switching it never moves Tabs. Neither drops
+   below its first three rows. */
 .side-section {
   --side-floor-rows: 0;
   display: flex;
@@ -573,13 +574,17 @@
   flex: 1 1 0;
 }
 
+/* Tabs rises from the footer's line with a sheet's rim, rounded and lit
+   along its top and open at its foot. It has no fill of its own. */
 .side-section--tabs {
   flex: 0 1 var(--side-tabs-height, calc(var(--side-head) + 6 * var(--side-pitch)));
-  max-height: max-content;
-  margin: var(--space-4) var(--space-6) var(--space-6);
-  padding: 0 var(--space-2) var(--space-2);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
+  max-height: var(--side-tabs-height, max-content);
+  margin: var(--space-4) var(--space-6) 0;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--rim-sheet);
+  border-bottom: 0;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  box-shadow: var(--edge-sheet);
 }
 
 /* The line along Tabs' top takes no height of its own: its grip reaches a
@@ -821,19 +826,10 @@ button.side-needs:hover {
   scrollbar-width: thin;
 }
 
-/* Rows land whole: the lists snap to row tops, and their script ends each
-   window at a row's foot — by its height when the layout changes, by
-   `--side-cut` inside the section when a scroll comes to rest. */
-.side-section--tasks .side-list {
-  --side-cut: 0px;
-  align-self: start;
-  height: calc(100% - var(--side-cut));
-  max-height: 100%;
-  scroll-snap-type: y mandatory;
-}
-
-/* Tabs' list runs to its panel's edge: a row in part under it says there is
-   more. */
+/* Tasks scrolls freely: its rows differ in height (an ask line, a day), so no
+   snap could land on them without moving the list after the person lets go.
+   Tabs' list snaps its rows to its top and runs to its sheet's foot: a row in
+   part under it says there is more. */
 .side-section--tabs .side-list {
   height: 100%;
   border-bottom-width: 0;
@@ -874,6 +870,11 @@ button.side-needs:hover {
 
 [data-scroll-edges][data-more-below] {
   border-bottom-color: var(--line);
+}
+
+/* Tabs' rim already marks the foot of the pane above it. */
+.side-section--tasks [data-scroll-edges][data-more-below] {
+  border-bottom-color: transparent;
 }
 
 [data-scroll-edges]:is(:hover, :focus-within, [data-scrolling]) {
@@ -1147,6 +1148,11 @@ button.side-needs:hover {
 
 .side-task.has-ask .task-mark {
   margin-top: 1px;
+}
+
+.side-task__dismiss {
+  flex: none;
+  margin-right: var(--space-6);
 }
 
 .side-task__text {
@@ -1780,8 +1786,18 @@ button.side-needs:hover {
   display: block;
 }
 
-.viewfinder__native .computer-watch--compact {
+/* A Mac app or phone, drawn whole inside whatever frame shows it. */
+.place-canvas {
+  display: block;
+  width: 100%;
   height: 100%;
+  object-fit: contain;
+}
+
+/* Pixels the conversation no longer counts never stay on screen. */
+.place-canvas--hidden,
+.place-picture--gone {
+  visibility: hidden;
 }
 
 /* ---- The live place, above the conversation ----
@@ -1852,6 +1868,11 @@ button.side-needs:hover {
   opacity: 0.85;
 }
 
+/* Folded here, the row is the head's picture moved down: it ends on a rule like the handle. */
+.run-page--folded {
+  border-bottom: 1px solid var(--line);
+}
+
 .run-page__view--row {
   justify-content: flex-start;
   gap: var(--space-10);
@@ -1884,10 +1905,16 @@ button.side-needs:hover {
   position: absolute;
   inset: 0;
   display: block;
+  transition:
+    opacity var(--duration-med) var(--ease-out),
+    filter var(--duration-med) var(--ease-out);
 }
 
-.run-page__picture--still {
-  opacity: 0.45;
+/* A kept picture holds the page's place and size and only steps back, so the
+   page never jumps while the place reconnects or sleeps. */
+.run-page__view--stale .run-page__picture {
+  opacity: 0.72;
+  filter: saturate(0.6);
 }
 
 .run-page__words {
@@ -1955,6 +1982,10 @@ button.side-needs:hover {
   .run-page,
   .run-page__view--page .run-page__frame {
     animation: none;
+  }
+
+  .run-page__picture {
+    transition: none;
   }
 }
 

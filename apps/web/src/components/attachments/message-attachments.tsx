@@ -1,30 +1,19 @@
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type RefObject,
-} from "react";
-import type { ArtifactContentPart } from "@opensteer/core";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { AttachmentIdSchema, type ArtifactContentPart } from "@opensteer/core";
 import type { HostClient } from "@opensteer/client/host";
 import { actionErrorMessage } from "../../ui-utils.js";
-import { Dialog } from "../dialog.js";
+import { saveFile } from "../file-actions.js";
 import { Icon } from "../icon.js";
 import { attachmentDetail, isInlineImage } from "./attachment-parts.js";
+import { useImageActions } from "../image-actions.js";
+import { isPersonalScope, useReferenceScope } from "../references/reference-scope.js";
+import { useNearViewport } from "../use-near-viewport.js";
 
 /**
  * The HostClient available to transcript content. Without one, attachments
  * show as names and apps are unavailable.
  */
 export const TranscriptHostClientContext = createContext<HostClient | null>(null);
-
-/**
- * How long a download's object URL outlives the click. The browser copies the
- * bytes when it starts the download, but not synchronously in every engine.
- */
-const downloadUrlLifetimeMs = 30_000;
 
 /** The files a message carries, in the order they were sent. */
 export function MessageAttachments({
@@ -59,8 +48,15 @@ function ImageAttachment({
   const frameRef = useRef<HTMLButtonElement | null>(null);
   const near = useNearViewport(frameRef);
   const image = useAttachmentImage(client, part, near);
-  const [open, setOpen] = useState(false);
-  const titleId = useId();
+  const scope = useReferenceScope();
+  const attachmentId = AttachmentIdSchema.safeParse(part.artifactId);
+  const { artifactId, mediaType, name } = part;
+  const read = useMemo(
+    () => async () =>
+      new File([await client.readAttachment(artifactId)], name, { type: mediaType }),
+    [artifactId, client, mediaType, name],
+  );
+  const actions = useImageActions(read);
 
   if (image.failed) {
     return <FileAttachment client={client} note="Preview unavailable" part={part} />;
@@ -70,10 +66,17 @@ function ImageAttachment({
       <button
         aria-label={`Open ${part.name}`}
         className="message-attachment message-attachment--image"
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          if (isPersonalScope(scope) && attachmentId.success)
+            void scope.navigation.openReference({
+              kind: "attachment",
+              attachmentId: attachmentId.data,
+            });
+        }}
         ref={frameRef}
         title={part.name}
         type="button"
+        {...actions.target}
       >
         {image.url ? (
           <img alt="" src={image.url} />
@@ -83,23 +86,7 @@ function ImageAttachment({
           </span>
         )}
       </button>
-      {open ? (
-        <Dialog
-          footer={<DownloadButton client={client} part={part} />}
-          labelledBy={titleId}
-          onClose={() => setOpen(false)}
-          title={part.name}
-          wide
-        >
-          <div className="attachment-preview">
-            {image.url ? (
-              <img alt={part.name} src={image.url} />
-            ) : (
-              <span className="spinner" role="status" aria-label="Loading image" />
-            )}
-          </div>
-        </Dialog>
-      ) : null}
+      {actions.menu}
     </>
   );
 }
@@ -151,29 +138,6 @@ function FileAttachment({
           {error}
         </p>
       ) : null}
-    </>
-  );
-}
-
-function DownloadButton({
-  client,
-  part,
-}: {
-  readonly client: HostClient;
-  readonly part: ArtifactContentPart;
-}) {
-  const { download, error, pending } = useDownload(client, part);
-  return (
-    <>
-      {error ? (
-        <span className="form-actions__error" role="alert">
-          {error}
-        </span>
-      ) : null}
-      <button className="btn" disabled={pending} onClick={download ?? undefined} type="button">
-        <Icon name="download" />
-        {pending ? "Downloading…" : "Download"}
-      </button>
     </>
   );
 }
@@ -243,17 +207,7 @@ function useDownload(
     setError(null);
     void client
       .readAttachment(part.artifactId)
-      .then((bytes) => {
-        // Saved, never opened in place: an opaque type keeps the browser from
-        // rendering whatever the bytes claim to be.
-        const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = part.name;
-        anchor.rel = "noopener";
-        anchor.click();
-        window.setTimeout(() => URL.revokeObjectURL(url), downloadUrlLifetimeMs);
-      })
+      .then((bytes) => saveFile(bytes, part.name))
       .catch((reason: unknown) => {
         if (mounted.current) setError(actionErrorMessage(reason));
       })
@@ -262,22 +216,4 @@ function useDownload(
       });
   };
   return { download, error, pending };
-}
-
-/** True once the element comes within a screen of view, and from then on. */
-function useNearViewport(ref: RefObject<HTMLElement | null>): boolean {
-  const [near, setNear] = useState(() => typeof IntersectionObserver === "undefined");
-  useEffect(() => {
-    const element = ref.current;
-    if (near || !element) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) setNear(true);
-      },
-      { rootMargin: "100% 0px" },
-    );
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [near, ref]);
-  return near;
 }

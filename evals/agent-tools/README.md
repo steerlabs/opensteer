@@ -35,13 +35,37 @@ fixture label and selects no tools or authority.
 
 - Every turn runs a new Run in the same native session; only the last turn is graded.
 - In call expectations, `*` matches every Opensteer tool and `a|b` accepts either name across
-  a rename.
+  a rename. `withoutKeys` on a required call rules out arguments such as `taskId` when a worker
+  must read its own history. `callsArgMatch` matches a string or the JSON of an argument object.
 - Mocks are keyed by bare tool name. `{"$responses": [...]}` answers successive calls,
   `{"$byArgs": [{"args": partial, "result": response}]}` answers the first partial match, and
-  `{"$error": "message"}` returns an MCP tool error, recorded as that call's result. An exhausted or unmatched mock returns an
-  explicit unavailable result. Calls reach a mock only after the production MCP service's
-  input and access checks, so semantic errors stay errors even when the flat schema accepts
-  the arguments.
+  `{"$error": "message"}` returns an MCP tool error (`$code` and `$next` fill its `{code, message,
+next}`), recorded as that call's result. An exhausted or unmatched mock returns an explicit
+  unavailable result. Calls reach a mock only after the production MCP service's input and access
+  checks, so semantic errors stay errors even when the flat schema accepts the arguments.
+- `timeAnchor` shifts a case's ISO instants onto the actual Run clock, preserving their intervals,
+  for scenarios such as a meeting happening now. Date-only facts are unchanged.
+- `tasks` supplies timestamped published messages as `{task, items, self?}` using the production
+  task-detail and item shapes. `self: true` identifies this Run's task, including prior handoffs.
+  Unmocked task list/read calls filter `changedSince`, report `newMessages`/`firstNewAt`, page newest
+  first and preserve `teamSource`; explicit mocks still win.
+- `accessMode` and `capabilities` shape the Run as the Host plans it: a missing capability
+  removes its tools, guide section and skill, and `pages: false` makes Browser Harness refuse
+  with the limited-access error.
+- `browser` supplies the person's tabs of every kind (`page`, `window`, `phone`, `app`), groups,
+  profiles, `windows`, `phones` and `apps` that `tab_open` can bind, `offlineComputers`,
+  `accessRequiredComputers` and `personActiveTab`. Unmocked `tab_*` tools and `show_to_person`
+  answer from that state, and every case receives a fake `OPENSTEER_BROWSER_HARNESS` sharing it:
+  scripts run in a bounded VM with `openPage(tabId)` handles, `--tab`, and
+  `opensteer.callTool`, which reaches the fake Host like an MCP call. Tab state survives scripts
+  and turns; variables do not. Only the last turn's calls are graded.
+  `expect.harness: [{call: "openPage", args: {tabId: "receipt"}}]` matches partial normalized
+  arguments, including failed attempts. `notHarness` accepts helper names or partial call
+  objects, including failed attempts. `order`, `minCalls`, and `maxCalls` accept
+  `harness:<helper>` alongside tool names; ordinary tool wildcards keep their meaning.
+- `appServers` starts a real loopback server per name, answering `"METHOD /path"` with its JSON
+  (`$status` and `$body` set a non-200 reply). Mocks say `{{appServer:<name>}}` for its URL and
+  `{{agentHome}}` for the Agent home path; each request is graded as `harness:http`.
 - `expect.files` runs before cleanup. A missing path fails a positive match and passes a
   prohibition; a symlink makes the sample incomplete; `.eval-*` directories are never read.
 - `after` chains a case onto an earlier one, moving the producer's actual Agent home files into

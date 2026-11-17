@@ -7,6 +7,7 @@ import {
 } from "@opensteer/control-plane-protocol";
 import {
   buildMobileThreadDeepLink,
+  buildMobileNeedsYouDeepLink,
   DeploymentIdSchema,
   MessageIdSchema,
   RequestIdSchema,
@@ -123,7 +124,8 @@ export function notificationMessage(input: {
       },
     };
   }
-  const threadId = ThreadIdSchema.parse(input.threadId);
+  const needsYou = input.kind === "request-opened" && input.threadId === null;
+  const threadId = needsYou ? null : ThreadIdSchema.parse(input.threadId);
   const requestId =
     phrase.anchor !== "request" || input.requestId === null
       ? null
@@ -135,7 +137,10 @@ export function notificationMessage(input: {
   return {
     body: phrase.body,
     data: {
-      deepLink: buildMobileThreadDeepLink({ deploymentId, messageId, requestId, threadId }),
+      deepLink:
+        threadId === null
+          ? buildMobileNeedsYouDeepLink(deploymentId)
+          : buildMobileThreadDeepLink({ deploymentId, messageId, requestId, threadId }),
       deploymentId,
       ...(input.preview
         ? {
@@ -153,7 +158,7 @@ export function notificationMessage(input: {
       kind: input.kind,
       ...(messageId === null ? {} : { messageId }),
       ...(requestId === null ? {} : { requestId }),
-      threadId,
+      ...(threadId ? { threadId } : {}),
     },
     title: phrase.title,
   };

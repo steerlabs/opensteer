@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter, useNavigate } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import { placeList, type HostSnapshot, type PlaceItem } from "@opensteer/client/host";
+import { placeList, type HostSnapshot } from "@opensteer/client/host";
 
 import { type WorkspaceNavigation } from "./navigation.js";
 import { WorkspaceLayout } from "./workspace-layout.js";
@@ -166,27 +166,6 @@ describe("the dock's slide always settles", () => {
   });
 });
 
-it("dismisses a close review when another client closes its target", async () => {
-  await mount("/");
-  const session = client
-    .getSnapshot()
-    .browserSessions.find(
-      (candidate) =>
-        candidate.state === "ready" &&
-        candidate.attachedRunIds.length > 0 &&
-        (candidate.browserTabs?.sessionTabs(candidate?.id) ?? []).length,
-    )!;
-  const tab = (session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!;
-  await click(element(`[data-place-key="browser:${session.id}:${tab.id}"] .side-tab__close`));
-  expect(document.querySelector(".dialog")).not.toBeNull();
-  await act(async () =>
-    client.closeBrowserTab(session.id, tab.id, session.browserTabs!.inventory(session?.id)!),
-  );
-  await settle(100);
-  expect(document.querySelector(".dialog")).toBeNull();
-  expect(document.querySelector(".toast--error")).toBeNull();
-});
-
 describe("a reply's live picture belongs to its working Run", () => {
   /** The thread's one live picture folded into its header. */
   const pictures = () => [
@@ -197,7 +176,7 @@ describe("a reply's live picture belongs to its working Run", () => {
     [...row.querySelectorAll(".surface-chip__title")].map((title) => title.textContent);
   const browserPlaces = () =>
     placeList(client.getSnapshot()).filter(
-      (item) => item.kind === "browser" && item.availability === "ready",
+      (item) => item.kind === "page" && item.availability === "ready",
     );
   /** Waits for the render that shows this Run place. */
   async function pictureShows(key: string) {
@@ -218,15 +197,6 @@ describe("a reply's live picture belongs to its working Run", () => {
     await pictureShows(place.key);
     return { home, place };
   }
-  function tabOf(place: PlaceItem) {
-    const { destination } = place;
-    if (destination.kind !== "browser" || !destination.tabId) throw Error("Not a tab");
-    const session = client
-      .getSnapshot()
-      .browserSessions.find((candidate) => candidate.id === destination.sessionId)!;
-    return { session, tabId: destination.tabId };
-  }
-
   it("keeps another working Run's page out of this conversation's live spot", async () => {
     await mount(`/tasks/${task}`);
     const { place } = await workingIn("Coffee shortlist");
@@ -242,23 +212,6 @@ describe("a reply's live picture belongs to its working Run", () => {
     expect(picture()?.dataset.placeKey).not.toBe(place.key);
     await act(async () => goTo!(`/tasks/${task}`));
     await pictureShows(place.key);
-  });
-
-  it("a page whose browser ended keeps the Run card until the Run ends", async () => {
-    await mount(`/tasks/${task}`);
-    const { place } = await workingIn("Coffee shortlist");
-    const { session } = tabOf(place);
-    await act(async () => {
-      await client
-        .dispatch({
-          type: "browser.session.close",
-          sessionId: session.id,
-          idempotencyKey: `end-browser:${session.id}`,
-        })
-        .catch(() => undefined);
-    });
-    expect(picture()?.dataset.placeKey).toBe(place.key);
-    expect(picture()?.querySelector(".live-dot")).toBeNull();
   });
 
   it("a finished reply's page never follows the conversation afterwards", async () => {
@@ -332,10 +285,7 @@ describe("a reply's live picture belongs to its working Run", () => {
   it("closing its page keeps the card, then Run end hands off to its muted chip", async () => {
     await mount(`/tasks/${task}`);
     const { home, place } = await workingIn("Coffee shortlist");
-    const { session, tabId } = tabOf(place);
-    await act(async () =>
-      client.closeBrowserTab(session.id, tabId, session.browserTabs!.inventory(session?.id)!),
-    );
+    await act(async () => client.closeTabs([place.key]));
     expect(picture()?.dataset.placeKey).toBe(place.key);
     await act(async () => client.stopRun(home));
     expect(picture()).toBeNull();
@@ -374,17 +324,10 @@ describe("a reply's live picture belongs to its working Run", () => {
     expect(chipTitles(row)).toContain(place.title);
   });
 
-  it("a tab closed in a browser that stays open keeps its card and later mutes its chip", async () => {
+  it("a closed tab keeps its card and later mutes its chip", async () => {
     await mount(`/tasks/${task}`);
     const { home, place } = await workingIn("Your reading list");
-    const { session, tabId } = tabOf(place);
-    expect((session.browserTabs?.sessionTabs(session?.id) ?? []).length).toBeGreaterThan(1);
-    await act(async () =>
-      client.closeBrowserTab(session.id, tabId, session.browserTabs!.inventory(session?.id)!),
-    );
-    expect(
-      client.getSnapshot().browserSessions.find((candidate) => candidate.id === session.id)?.state,
-    ).toBe("ready");
+    await act(async () => client.closeTabs([place.key]));
     expect(picture()?.dataset.placeKey).toBe(place.key);
     await act(async () => client.stopRun(home));
     expect(picture()).toBeNull();
@@ -409,10 +352,7 @@ describe("a reply's live picture belongs to its working Run", () => {
     const next = browserPlaces().find((item) => item.title === "Coffee shortlist")!;
     await act(async () => client.actInPlace(home, next.key));
     expect(picture()!.dataset.placeKey).toBe(next.key);
-    const { session, tabId } = tabOf(held);
-    await act(async () =>
-      client.closeBrowserTab(session.id, tabId, session.browserTabs!.inventory(session?.id)!),
-    );
+    await act(async () => client.closeTabs([held.key]));
     // Closing another page does not change this Run's current place.
     expect(picture()!.dataset.placeKey).toBe(next.key);
   });
@@ -497,7 +437,7 @@ describe("task titles", () => {
         return timeout(callback, milliseconds, ...args);
       });
       const message = "Prepare a launch plan for the new mobile application with milestones";
-      await write(element<HTMLTextAreaElement>("[data-composer-input]"), message);
+      await write(element<HTMLElement>("[data-composer-input]"), message);
       await click(element(".composer__send"));
       for (let tries = 0; tries < 40 && !history.at(-1)!.path.startsWith("/tasks/"); tries += 1)
         await settle(25);
@@ -666,6 +606,33 @@ describe("a conversation's page above it at phone width", () => {
         return size(this, key);
       });
   }
+  /** A phone's visual viewport, which an on-screen keyboard shortens. */
+  const keyboard = {
+    viewport: null as (EventTarget & { height: number }) | null,
+    install() {
+      this.viewport = Object.assign(new EventTarget(), {
+        height: window.innerHeight,
+        offsetTop: 0,
+        scale: 1,
+      });
+      Object.defineProperty(window, "visualViewport", {
+        configurable: true,
+        value: this.viewport,
+      });
+    },
+    open() {
+      this.viewport!.height = window.innerHeight - 300;
+      this.viewport!.dispatchEvent(new Event("resize"));
+    },
+    close() {
+      this.viewport!.height = window.innerHeight;
+      this.viewport!.dispatchEvent(new Event("resize"));
+    },
+    remove() {
+      Reflect.deleteProperty(window, "visualViewport");
+      this.viewport = null;
+    },
+  };
   async function opened() {
     await mount(`/tasks/${waiting}`, { width: 390 });
     phoneGeometry();
@@ -673,7 +640,7 @@ describe("a conversation's page above it at phone width", () => {
   }
   function browserPlace(title: string) {
     return placeList(client.getSnapshot()).find(
-      (item) => item.kind === "browser" && item.availability === "ready" && item.title === title,
+      (item) => item.kind === "page" && item.availability === "ready" && item.title === title,
     )!;
   }
   async function acts(title = "Coffee shortlist") {
@@ -688,6 +655,8 @@ describe("a conversation's page above it at phone width", () => {
 
   it("opens on the first action, folds into the head, unfolds, shows the full tab and ends with the Run", async () => {
     await opened();
+    // A hardware keyboard takes no room: writing in a narrow window still lets it open.
+    await act(async () => element<HTMLElement>(".composer-dock [data-composer-input]").focus());
     const place = await acts();
     expect(page()).not.toBeNull();
     expect(folded(), "The head kept a picture of the open page").toBeNull();
@@ -716,9 +685,8 @@ describe("a conversation's page above it at phone width", () => {
     expect(page() ?? folded(), "The page outlived its Run").toBeNull();
   });
 
-  it("a head with no room for the folded picture leaves the page its row, and Find under the name", async () => {
-    // A bar so narrow that only its sidebar button and name fit: whatever else
-    // is still drawn at its end runs past it.
+  /** A bar so narrow that only its sidebar button and name fit: whatever else is still drawn at its end runs past it. */
+  function narrowBar() {
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
       this: Element,
     ) {
@@ -729,6 +697,10 @@ describe("a conversation's page above it at phone width", () => {
         : 0;
       return DOMRect.fromRect({ x: 0, y: 0, width: 160 + end, height: 44 });
     });
+  }
+
+  it("a head with no room for the folded picture leaves the page its row, and Find under the name", async () => {
+    narrowBar();
     await opened();
     const place = await acts();
     await click(element(".run-page__handle"));
@@ -753,6 +725,46 @@ describe("a conversation's page above it at phone width", () => {
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
   });
 
+  it("wider than a phone, a head with no room for the picture shows the place as its row", async () => {
+    narrowBar();
+    await mount(`/tasks/${waiting}`);
+    // A transcript that scrolls, so the reader is at its foot when the tab opens.
+    phoneGeometry();
+    const place = browserPlace("Coffee shortlist");
+    await act(async () => client.actInPlace(waiting, place.key));
+    await vi.waitFor(
+      () => expect(folded()?.closest("[data-yielded]"), "The head kept the picture").not.toBeNull(),
+      { timeout: 1500 },
+    );
+    const row = element(".run-page__view--row");
+    expect(document.querySelector(".run-page__handle")).toBeNull();
+    // The conversation still holds the picture the row shows.
+    await vi.waitFor(() => expect(row.querySelector(".viewfinder__glyph")).toBeNull(), {
+      timeout: 1500,
+    });
+    await click(row);
+    expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
+  });
+
+  it("on a touch screen, a keyboard put away without leaving the field lets the page open", async () => {
+    keyboard.install();
+    try {
+      await mount(`/tasks/${waiting}`, { width: 390, touch: true });
+      phoneGeometry();
+      await act(async () => element<HTMLElement>(".composer-dock [data-composer-input]").focus());
+      await act(async () => keyboard.open());
+      // Android's Back puts the keyboard away and leaves the field focused.
+      await act(async () => keyboard.close());
+      await acts();
+      await vi.waitFor(
+        () => expect(page(), "The page waited for a keyboard that had gone").not.toBeNull(),
+        { timeout: 1500 },
+      );
+    } finally {
+      keyboard.remove();
+    }
+  });
+
   it.each([
     [
       "reading back",
@@ -768,9 +780,12 @@ describe("a conversation's page above it at phone width", () => {
       },
     ],
     [
+      // On a phone: the field takes focus and the on-screen keyboard takes room.
+      // A hardware keyboard takes none, so focus alone never folds the page.
       "typing",
       async () => {
-        await act(async () => element<HTMLTextAreaElement>(".composer-dock textarea").focus());
+        await act(async () => element<HTMLElement>(".composer-dock [data-composer-input]").focus());
+        await act(async () => keyboard.open());
       },
     ],
     [
@@ -783,6 +798,7 @@ describe("a conversation's page above it at phone width", () => {
       },
     ],
   ])("starts folded while the reader is %s", async (_case, moment) => {
+    keyboard.install();
     await opened();
     try {
       await moment();
@@ -793,6 +809,78 @@ describe("a conversation's page above it at phone width", () => {
       expect(page(), "The reader could not open it themselves").not.toBeNull();
     } finally {
       Reflect.deleteProperty(navigator, "connection");
+      keyboard.remove();
     }
+  });
+});
+
+describe("a conversation's foot", () => {
+  const task = "thr_00000000-0000-4000-8000-000000000902";
+  /**
+   * The transcript scrolls a 400px window of `content`, clamped as a browser
+   * clamps it; the rest of the layout is not measured.
+   */
+  function transcriptGeometry(geometry: { content: number }) {
+    const tops = new WeakMap<Element, number>();
+    const max = () => geometry.content - 400;
+    const size = (element: Element, key: "clientHeight" | "scrollHeight") =>
+      element.classList.contains("transcript-scroll")
+        ? { clientHeight: 400, scrollHeight: geometry.content }[key]
+        : 0;
+    for (const key of ["clientHeight", "scrollHeight"] as const)
+      vi.spyOn(HTMLElement.prototype, key, "get").mockImplementation(function (this: HTMLElement) {
+        return size(this, key);
+      });
+    vi.spyOn(Element.prototype, "scrollTop", "get").mockImplementation(function (this: Element) {
+      return Math.min(tops.get(this) ?? 0, Math.max(0, max()));
+    });
+    vi.spyOn(Element.prototype, "scrollTop", "set").mockImplementation(function (
+      this: Element,
+      top: number,
+    ) {
+      tops.set(this, Math.max(0, Math.min(top, max())));
+    });
+  }
+  const scrollTo = (scroller: HTMLElement, top: number) =>
+    act(async () => {
+      scroller.scrollTop = top;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+  const arrives = (body: string) =>
+    act(async () => {
+      await client.dispatch({
+        type: "thread.sendMessage",
+        threadId: task,
+        content: [{ type: "text", text: body }],
+        delivery: "queue",
+        idempotencyKey: `foot-${body}`,
+      });
+    });
+
+  it("lets go at the reader's first scroll up, however near the foot, and never pulls them back", async () => {
+    await mount(`/tasks/${task}`);
+    const geometry = { content: 2000 };
+    transcriptGeometry(geometry);
+    const scroller = element<HTMLElement>(".transcript-scroll");
+    // The first scroll after a resize only takes the new geometry in; the second reaches the foot.
+    for (const _ of [1, 2]) await scrollTo(scroller, 1600);
+    geometry.content = 2100;
+    await arrives("The first reply");
+    expect(scroller.scrollTop, "A reader at the foot was not kept there").toBe(1700);
+
+    await scrollTo(scroller, 1670);
+    geometry.content = 2200;
+    await arrives("The second reply");
+    expect(scroller.scrollTop, "A reader 30px up was pulled back to the foot").toBe(1670);
+    expect(element(".transcript__jump")).not.toBeNull();
+
+    // Back at the foot, they follow again; a scroll up landing with new content is still theirs.
+    await scrollTo(scroller, 1800);
+    geometry.content = 2300;
+    await arrives("The third reply");
+    expect(scroller.scrollTop).toBe(1900);
+    geometry.content = 2400;
+    await scrollTo(scroller, 1850);
+    expect(scroller.scrollTop, "A scroll up beside a reflow was taken for the reflow").toBe(1850);
   });
 });

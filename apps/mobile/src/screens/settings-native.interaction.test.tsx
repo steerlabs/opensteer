@@ -3,7 +3,7 @@ import { act, useId, useEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import { hostApi, type HostApiCommandInput } from "@opensteer/protocol";
+import { hostApi } from "@opensteer/protocol";
 import type { HostClient } from "@opensteer/client/host";
 import type { NativeSettingsPageProps, NativeSettingsRow } from "./native-settings-page.types.js";
 const state = vi.hoisted(() => ({
@@ -167,7 +167,7 @@ it.each(["ios", "android"])("offers secure Messaging setup and linking on %s", a
   );
   expect(fields.length).toBe(2);
   for (const field of fields) await input(field.label, "secret");
-  const commands: HostApiCommandInput[] = [];
+  const commands: Parameters<HostClient["dispatch"]>[0][] = [];
   vi.spyOn(host, "dispatch").mockImplementation(async (command) => {
     commands.push(command);
     throw new Error("Hold setup");
@@ -301,7 +301,7 @@ it.each(["ios", "android"])(
       }),
     });
     await press("Refresh");
-    const commands: HostApiCommandInput[] = [];
+    const commands: Parameters<HostClient["dispatch"]>[0][] = [];
     vi.spyOn(host, "dispatch").mockImplementation(async (command) => {
       commands.push(command);
       throw new Error("Keep the current state");

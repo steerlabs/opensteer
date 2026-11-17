@@ -5,7 +5,11 @@ import {
   TeamMessageIdSchema,
   createId,
 } from "@opensteer/core";
-import { TeamConsistentCutSchema, type TeamConsistentCut } from "@opensteer/protocol";
+import {
+  TeamEntryRefusalReasonSchema,
+  TeamConsistentCutSchema,
+  type TeamConsistentCut,
+} from "@opensteer/protocol";
 import {
   MockTeamHost,
   mockTeamId,
@@ -14,6 +18,8 @@ import {
   type MockTeamSocket,
 } from "./mock-team-host.js";
 import { TeamSessionClient } from "./team-session-client.js";
+import { teamScopeKey } from "./reducers.js";
+import { teamAskRefusalNotice } from "./ask-status.js";
 import { createMemoryTeamPersistence } from "./persistence.js";
 import {
   emptyTeamTimeline,
@@ -36,6 +42,207 @@ function fixture() {
   return { host, persistence, client };
 }
 describe("team synchronization", () => {
+  it("keeps a sent message confirmed while showing scoped agent refusals", async () => {
+    const f = fixture();
+    const read = f.host.read.bind(f.host);
+    const target = createId("user");
+    vi.spyOn(f.host, "read").mockImplementation(async (name, input) => {
+      const result = await read(name, input);
+      if (name === "commands.dispatch" && (input as { type: string }).type === "team.message.send")
+        return {
+          ...(result as object),
+          askOutcomes: [{ ownerUserId: target, outcome: "no-link" }],
+        };
+      return result;
+    });
+    try {
+      await f.client.load();
+      await vi.waitFor(
+        () =>
+          expect(f.client.getSnapshot().connection, "Team session never connected").toBe(
+            "connected",
+          ),
+        {
+          timeout: 1000,
+        },
+      );
+      await f.client.send({
+        channelId: mockTeamChannelId,
+        threadRootId: null,
+        bodyMarkdown: "@maya-agent help",
+        mentions: [],
+        attachmentIds: [],
+      });
+      await vi.waitFor(
+        () =>
+          expect(
+            f.client.getSnapshot().sendNotices[teamScopeKey(channelScope)],
+            "Agent refusal never reached the composer",
+          ).toEqual([{ ownerUserId: target, outcome: "no-link" }]),
+        { timeout: 1000 },
+      );
+      expect(f.client.getSnapshot().pending).toEqual([]);
+      expect(
+        [...f.host.messages.values()].some(
+          (message) => message.bodyMarkdown === "@maya-agent help",
+        ),
+      ).toBe(true);
+      expect(
+        teamAskRefusalNotice(
+          f.client.getSnapshot().sendNotices[teamScopeKey(channelScope)]!,
+          () => "Maya",
+        ),
+      ).toContain("Maya’s agent");
+      expect(teamAskRefusalNotice([], () => "Maya")).toBeNull();
+      await f.client.remove();
+      expect(f.client.getSnapshot().sendNotices).toEqual({});
+    } finally {
+      f.client.dispose();
+      f.host.dispose();
+    }
+  });
+
+  it.each(["Active team membership required", "Team session generation changed"])(
+    "removes the partition for an older server's bootstrap refusal: %s",
+    async (message) => {
+      const code = "forbidden";
+      const host = new MockTeamHost();
+      const persistence = createMemoryTeamPersistence();
+      const client = new TeamSessionClient({
+        scope,
+        persistence,
+        connect: host.connect,
+        rpc: new Proxy(host.rpc, {
+          get(target, key, receiver) {
+            if (key === "team.bootstrap.get")
+              return async () => ({
+                ok: false,
+                error: { code, message, retryable: false },
+              });
+            return Reflect.get(target, key, receiver);
+          },
+        }),
+      });
+      try {
+        await client.setDraft(channelScope, "Draft");
+        await expect(client.load(false)).rejects.toMatchObject({ code });
+        expect(client.getSnapshot().ended).toBe("removed");
+        expect(await persistence.load(scope)).toBeNull();
+      } finally {
+        client.dispose();
+        host.dispose();
+      }
+    },
+  );
+
+  it.each([...TeamEntryRefusalReasonSchema.options, "removed"])(
+    "preserves the partition unless %s is membership refusal",
+    async (reason) => {
+      const host = new MockTeamHost(),
+        persistence = createMemoryTeamPersistence();
+      let refuse = false;
+      const client = new TeamSessionClient({
+        scope,
+        persistence,
+        connect: host.connect,
+        rpc: new Proxy(host.rpc, {
+          get(target, key, receiver) {
+            if (key === "team.bootstrap.get" && refuse)
+              return async () => ({
+                ok: false,
+                error: {
+                  code:
+                    reason === "removed" || reason.startsWith("assertion-")
+                      ? "unauthorized"
+                      : "forbidden",
+                  reason,
+                  message: reason,
+                  retryable: false,
+                },
+              });
+            return Reflect.get(target, key, receiver);
+          },
+        }),
+      });
+      try {
+        await client.setDraft(channelScope, "Draft");
+        await client.send({
+          channelId: mockTeamChannelId,
+          threadRootId: null,
+          bodyMarkdown: "Pending",
+          mentions: [],
+          attachmentIds: [],
+        });
+        const before = await persistence.load(scope);
+        refuse = true;
+        await expect(client.load(false)).rejects.toMatchObject({ reason });
+        if (reason === "not-a-member" || reason === "removed")
+          expect(await persistence.load(scope)).toBeNull();
+        else expect(await persistence.load(scope)).toEqual(before);
+      } finally {
+        client.dispose();
+        host.dispose();
+      }
+    },
+  );
+
+  it("preserves not-a-member through live session teardown", async () => {
+    const host = new MockTeamHost();
+    let removed = false;
+    const client = new TeamSessionClient({
+      scope,
+      persistence: createMemoryTeamPersistence(),
+      connect: host.connect,
+      rpc: new Proxy(host.rpc, {
+        get(target, key, receiver) {
+          if (key === "team.bootstrap.get" && removed)
+            return async () => ({
+              ok: false,
+              error: {
+                code: "forbidden",
+                reason: "not-a-member",
+                message: "Ask for an invite",
+                retryable: false,
+              },
+            });
+          return Reflect.get(target, key, receiver);
+        },
+      }),
+    });
+    try {
+      await client.load(false);
+      removed = true;
+      await expect(client.load(false)).rejects.toMatchObject({ reason: "not-a-member" });
+      expect(client.getSnapshot()).toMatchObject({
+        ended: "removed",
+        refusalReason: "not-a-member",
+      });
+    } finally {
+      client.dispose();
+      host.dispose();
+    }
+  });
+
+  it("says why a thread could not open, and a newly selected thread starts without that failure", async () => {
+    const f = fixture();
+    try {
+      await f.client.load();
+      await vi.waitFor(() => expect(f.client.getSnapshot().connection).toBe("connected"), {
+        timeout: 1000,
+      });
+      f.client.selectThread(mockTeamChannelId, TeamMessageIdSchema.parse("404"));
+      await vi.waitFor(() => expect(f.client.getSnapshot().error).toBe("Unknown message."), {
+        timeout: 1000,
+      });
+      const root = f.host.post({ channelId: mockTeamChannelId, bodyMarkdown: "root" });
+      f.client.selectThread(mockTeamChannelId, root.id);
+      expect(f.client.getSnapshot().error).toBeNull();
+    } finally {
+      f.client.dispose();
+      f.host.dispose();
+    }
+  });
+
   it("reconciles recipient state across devices, snapshot and resume without inferring from requests", async () => {
     const f = fixture();
     const rootId = TeamMessageIdSchema.parse("1");
@@ -177,10 +384,16 @@ describe("team synchronization", () => {
             channel: expect.objectContaining({ id: target }),
             unread: true,
           }),
+          expect.any(Function),
         ),
       );
-      expect(host.calls.slice(before)).toEqual(["team.sidebar.get"]);
+      const current = notify.mock.calls[0]![1] as () => boolean;
+      expect(current()).toBe(true);
       expect(client.getSnapshot().sidebar?.nextCursor).toBe(cursor);
+      client.dispose();
+      expect(current()).toBe(false);
+      expect(host.calls.slice(before)).toEqual(["team.sidebar.get"]);
+      expect(client.getSnapshot().sidebar).toBeNull();
     } finally {
       client.dispose();
       host.dispose();
@@ -385,6 +598,258 @@ describe("team synchronization", () => {
       client.dispose();
       host.dispose();
       vi.useRealTimers();
+    }
+  });
+});
+
+describe("member names", () => {
+  it("moves a name only forward and never takes role or state from a rename", async () => {
+    const f = fixture();
+    await f.client.load(false);
+    const self = f.client.getSnapshot().bootstrap!.member;
+    const renamed = (displayName: string, nameRevision: number) => ({
+      ...self,
+      role: "member" as const,
+      state: "removed" as const,
+      displayName,
+      nameRevision,
+    });
+    f.client.receive({ type: "team.member.updated", member: renamed("Maya Chen", 5) });
+    // Renames publish after independent commits, so an older one can arrive last.
+    f.client.receive({ type: "team.member.updated", member: renamed("Maya", 4) });
+    const snapshot = f.client.getSnapshot();
+    expect(snapshot.memberUpdates?.[self.userId]).toMatchObject({
+      displayName: "Maya Chen",
+      nameRevision: 5,
+    });
+    expect(snapshot.bootstrap!.member).toEqual({
+      ...self,
+      displayName: "Maya Chen",
+      nameRevision: 5,
+    });
+  });
+});
+
+describe("a team server swap", () => {
+  function swapFixture() {
+    vi.useFakeTimers();
+    const host = new MockTeamHost(),
+      persistence = createMemoryTeamPersistence(),
+      sockets: MockTeamSocket[] = [];
+    let failing = false;
+    let refusal: { code: string; reason: string } | null = null;
+    const client = new TeamSessionClient({
+      scope,
+      persistence,
+      connect: () => {
+        const socket = host.connect();
+        sockets.push(socket);
+        if (failing) {
+          // Never opens: the server is out of reach.
+          socket.readyState = 2;
+          queueMicrotask(() => socket.close(1006));
+        }
+        return socket;
+      },
+      rpc: new Proxy(host.rpc, {
+        get(target, key, receiver) {
+          if (key === "team.bootstrap.get" && refusal) {
+            const { code, reason } = refusal;
+            return async () => {
+              host.calls.push(key);
+              return { ok: false, error: { code, reason, message: "Refused", retryable: false } };
+            };
+          }
+          return Reflect.get(target, key, receiver);
+        },
+      }),
+      random: () => 0.5,
+    });
+    const bootstraps = () => host.calls.filter((name) => name === "team.bootstrap.get").length;
+    return {
+      host,
+      persistence,
+      sockets,
+      client,
+      bootstraps,
+      fail: (value: boolean) => (failing = value),
+      refuse: (value: { code: string; reason: string } | null) => (refusal = value),
+      dispose: () => {
+        client.dispose();
+        host.dispose();
+        vi.useRealTimers();
+      },
+    };
+  }
+
+  it("reads as out of reach once, five seconds after the first close, until a socket opens", async () => {
+    const f = swapFixture();
+    try {
+      await f.client.load();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.client.getSnapshot()).toMatchObject({
+        connection: "connected",
+        resumedGeneration: 0,
+      });
+
+      f.sockets.at(-1)!.close(1012);
+      expect(f.client.getSnapshot()).toMatchObject({ connection: "offline", unreachable: false });
+      await vi.advanceTimersByTimeAsync(225);
+      expect(f.client.getSnapshot()).toMatchObject({
+        connection: "connected",
+        unreachable: false,
+        resumedGeneration: 1,
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(f.client.getSnapshot().unreachable, "A finished swap still read as out of reach").toBe(
+        false,
+      );
+
+      f.fail(true);
+      const before = f.sockets.length;
+      f.sockets.at(-1)!.close(1006);
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(f.sockets.length - before, "Failed attempts never retried").toBeGreaterThanOrEqual(3);
+      expect(f.client.getSnapshot().unreachable).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f.client.getSnapshot().unreachable).toBe(true);
+      expect(f.client.getSnapshot().resumedGeneration).toBe(1);
+
+      f.fail(false);
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(f.client.getSnapshot()).toMatchObject({
+        connection: "connected",
+        unreachable: false,
+        resumedGeneration: 2,
+      });
+
+      // Disconnected on purpose, nothing reaches the team until connecting again.
+      f.client.disconnect();
+      expect(f.client.getSnapshot().unreachable).toBe(true);
+      f.client.connect();
+      expect(f.client.getSnapshot().unreachable).toBe(false);
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it("reconnects from a planned restart without asking who the viewer is", async () => {
+    const f = swapFixture();
+    try {
+      await f.client.load();
+      await vi.advanceTimersByTimeAsync(0);
+      const asked = f.bootstraps(),
+        opened = f.sockets.length;
+      f.sockets.at(-1)!.close(1012);
+      await vi.advanceTimersByTimeAsync(224);
+      expect(f.sockets).toHaveLength(opened);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f.sockets).toHaveLength(opened + 1);
+      expect(f.bootstraps()).toBe(asked);
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it("asks at once why a socket was refused and ends a removed viewer's session", async () => {
+    const f = swapFixture();
+    try {
+      await f.client.load();
+      await vi.advanceTimersByTimeAsync(0);
+      await f.client.setDraft(channelScope, "Draft");
+      const asked = f.bootstraps();
+      f.sockets.at(-1)!.close(1008);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.bootstraps(), "A refused socket waited before revalidating").toBe(asked + 1);
+      expect(f.client.getSnapshot().connection).toBe("offline");
+
+      await vi.advanceTimersByTimeAsync(225);
+      expect(f.client.getSnapshot().connection).toBe("connected");
+      f.refuse({ code: "forbidden", reason: "removed" });
+      f.sockets.at(-1)!.close(1008);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.client.getSnapshot()).toMatchObject({ ended: "removed", refusalReason: "removed" });
+      expect(await f.persistence.load(scope)).toBeNull();
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it.each([
+    ["api-version-mismatch", "update-app"],
+    ["client-too-old", "update-app"],
+    ["host-too-old", "update-server"],
+  ] as const)(
+    "shows a %s refusal at once, keeps drafts, and clears it once the team accepts",
+    async (reason, shown) => {
+      const f = swapFixture();
+      try {
+        await f.client.load();
+        await vi.advanceTimersByTimeAsync(0);
+        await f.client.setDraft(channelScope, "Draft");
+        f.refuse({ code: "conflict", reason });
+        f.sockets.at(-1)!.close(1008);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(f.client.getSnapshot()).toMatchObject({
+          versionRefusal: shown,
+          unreachable: false,
+          ended: null,
+        });
+        expect(f.client.getSnapshot().drafts[teamScopeKey(channelScope)]).toBe("Draft");
+        expect(await f.persistence.load(scope)).not.toBeNull();
+
+        f.refuse(null);
+        await vi.advanceTimersByTimeAsync(12_000);
+        expect(f.client.getSnapshot()).toMatchObject({
+          versionRefusal: null,
+          connection: "connected",
+        });
+      } finally {
+        f.dispose();
+      }
+    },
+  );
+
+  it("rereads member names that moved while the socket was away", async () => {
+    const f = swapFixture();
+    try {
+      await f.client.load();
+      await vi.advanceTimersByTimeAsync(0);
+      const lists = () => f.host.calls.filter((name) => name === "team.members.list").length;
+      expect(lists(), "A first connect reread the directory").toBe(0);
+      const self = f.client.getSnapshot().bootstrap!.member;
+      f.host.members[0] = { ...self, displayName: "Maya Chen", nameRevision: 3 };
+      f.sockets.at(-1)!.close(1012);
+      await vi.advanceTimersByTimeAsync(225);
+      expect(lists()).toBe(1);
+      expect(f.client.getSnapshot().memberUpdates?.[self.userId]).toMatchObject({
+        displayName: "Maya Chen",
+        nameRevision: 3,
+      });
+      expect(f.client.getSnapshot().bootstrap!.member.displayName).toBe("Maya Chen");
+
+      f.sockets.at(-1)!.close(1012);
+      await vi.advanceTimersByTimeAsync(450);
+      expect(f.client.getSnapshot().connection).toBe("connected");
+      expect(lists(), "Unmoved names were read again").toBe(1);
+
+      // A reread that fails is tried at the next catch-up even though the revision is unchanged.
+      const read = f.host.read.bind(f.host);
+      const failing = vi.spyOn(f.host, "read").mockImplementation(async (name, input) => {
+        if (name === "team.members.list") throw new Error("Unavailable");
+        return read(name, input);
+      });
+      f.host.members[0] = { ...self, displayName: "Maya C.", nameRevision: 4 };
+      f.sockets.at(-1)!.close(1012);
+      await vi.advanceTimersByTimeAsync(900);
+      expect(lists()).toBe(2);
+      failing.mockRestore();
+      f.sockets.at(-1)!.close(1012);
+      await vi.advanceTimersByTimeAsync(1_800);
+      expect(lists()).toBe(3);
+      expect(f.client.getSnapshot().bootstrap!.member.displayName).toBe("Maya C.");
+    } finally {
+      f.dispose();
     }
   });
 });

@@ -1,58 +1,43 @@
-import type { HostClient, SurfaceModel } from "@opensteer/client/host";
+import { questionTakesTyping, type HostClient, type SurfaceModel } from "@opensteer/client/host";
 import type { ReactNode } from "react";
 import { StyleSheet, TextInput, View } from "react-native";
 import { color, controlFontScaleLimit, space, type } from "../theme.js";
 import { ComposerAction } from "../ui/composer-action.js";
-import { AppText } from "../ui/primitives.js";
 import { ComposerBar, composerLaneHeight } from "./composer-bar.js";
-import {
-  requestAnswerMaxLength,
-  requestDraftValues,
-  withRequestDraftValues,
-} from "./request-form-model.js";
-import { updateRequestSession } from "./request-session.js";
+import { requestAnswerMaxLength } from "./request-form-model.js";
 import type { ThreadMutationGate } from "./thread-mutation-gate.js";
-import { useRequestResponse } from "./use-request-response.js";
+import { useQuestionAnswering } from "./use-question-answering.js";
 
 /**
- * One open question, answered in the bar where a person already types. Its words
- * go to the agent and never join the Thread's draft, so what was being written
- * before the question came is still there after it.
+ * The composer while a question is open: what is typed here is the answer to
+ * the question in view on the card above, never a message, so the Thread's
+ * draft is exactly where it was when the question has gone.
  */
 export function AnswerBar(props: {
   readonly canRespond: boolean;
   readonly canStartResponse: () => boolean;
-  readonly fieldId: string;
   readonly gate: ThreadMutationGate;
   readonly hostClient: HostClient;
   /** Null when no Run is holding this question open to stop. */
   readonly onStop: (() => void) | null;
-  /** What else the Request's title says, beside the question itself. */
-  readonly context: string | null;
-  readonly question: string;
   readonly stopBusy: boolean;
   readonly stopLabel: string;
   readonly surface: SurfaceModel;
 }): ReactNode {
-  const responder = useRequestResponse({
+  const question = useQuestionAnswering({
     canRespond: props.canRespond,
     canStartResponse: props.canStartResponse,
     gate: props.gate,
     hostClient: props.hostClient,
     surface: props.surface,
   });
+  const { draft, field, finishes, responder, step } = question;
   const { session } = responder;
-  const { fieldId } = props;
-  const answer = requestDraftValues(session.answers, fieldId)[0] ?? "";
-  const change = (value: string): void =>
-    updateRequestSession(session, {
-      answers: withRequestDraftValues(session.answers, fieldId, value === "" ? [] : [value]),
-    });
-  const blank = answer.trim() === "";
+  const typing = questionTakesTyping(field);
   return (
     <ComposerBar
       action={
-        blank && props.onStop !== null ? (
+        step.kind === "blocked" && draft.typed.trim() === "" && props.onStop !== null ? (
           <ComposerAction
             busy={props.stopBusy}
             disabled={props.stopBusy || !props.canRespond}
@@ -63,46 +48,34 @@ export function AnswerBar(props: {
         ) : (
           <ComposerAction
             busy={session.pendingId === "form"}
-            disabled={blank || !props.canRespond || session.pendingId !== null}
-            kind="send"
-            label="Send answer"
-            onPress={() =>
-              void responder.submit({ answers: { [fieldId]: [answer] }, kind: "form" }, "form")
-            }
+            disabled={step.kind === "blocked" || !props.canRespond || session.pendingId !== null}
+            kind={finishes ? "send" : "next"}
+            label={finishes ? "Answer" : "Next"}
+            onPress={question.advance}
           />
         )
-      }
-      caption={
-        <View style={styles.caption}>
-          <AppText role="secondaryMedium">{props.question}</AppText>
-          {props.context === null ? null : (
-            <AppText role="caption" tone="soft">
-              {props.context}
-            </AppText>
-          )}
-          {session.failure === null ? null : (
-            <AppText role="caption" tone="danger">
-              {session.failure}
-            </AppText>
-          )}
-        </View>
       }
       field={
         <View style={styles.lane}>
           <TextInput
-            accessibilityLabel={
-              props.context === null ? props.question : `${props.question} ${props.context}`
-            }
+            accessibilityLabel={field.prompt === "" ? "Your answer" : field.prompt}
             cursorColor={color.ember}
+            editable={typing && props.canRespond && session.pendingId === null}
             maxFontSizeMultiplier={controlFontScaleLimit}
             maxLength={requestAnswerMaxLength}
             multiline
-            onChangeText={change}
-            placeholder="Answer…"
+            onChangeText={question.type}
+            placeholder={
+              !typing
+                ? "Choose an answer above"
+                : (field.choices?.length ?? 0) === 0
+                  ? "Type your answer…"
+                  : "Type your own answer…"
+            }
             placeholderTextColor={color.muted}
             selectionColor={color.ember}
             style={styles.input}
-            value={answer}
+            value={draft.typed}
           />
         </View>
       }
@@ -112,7 +85,6 @@ export function AnswerBar(props: {
 }
 
 const styles = StyleSheet.create({
-  caption: { gap: space[2] },
   input: {
     color: color.text,
     fontSize: type.body.fontSize,

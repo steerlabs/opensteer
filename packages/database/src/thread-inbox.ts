@@ -1,3 +1,15 @@
+import { executionDate } from "./personal-transaction.js";
+import {
+  liveInputLease,
+  inputEditEligibility,
+  inputLeaseBarrier,
+  assertInputLease,
+  lockInputQueueProjection,
+  advanceThreadQueue,
+  clearInputLease,
+  leaseChangedEvent,
+} from "./waiting-inputs.js";
+import { compactionIsEligible } from "./compaction-eligibility.js";
 import { freshContextBoundary } from "./fresh-context.js";
 import { threadAllowsPersonalContext } from "./run-personal-context.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
@@ -93,6 +105,8 @@ import type {
 } from "./schema.js";
 import {
   messageFromRow,
+  messageViewFromRow,
+  messageEditFromRow,
   runFromRow,
   threadFromRow,
   threadPendingRequestsSelection,
@@ -218,7 +232,7 @@ export async function readThreadInputQueue(
   if (!thread)
     throw new OpensteerError({
       code: "not_found",
-      message: "Thread not found",
+      message: "Task not found",
     });
   const runs = await transaction
     .selectFrom("runs")
@@ -250,6 +264,16 @@ export async function readThreadInputQueue(
           )
           .execute();
   const byId = new Map(messages.map((message) => [message.id, message]));
+  const editEligibility = new Map<MessageId, boolean>();
+  for (const row of rows) {
+    const message = byId.get(row.messageId);
+    editEligibility.set(
+      row.messageId,
+      !request.authority &&
+        Boolean(message) &&
+        (await inputEditEligibility(transaction, thread, row, message!, request.requestedBy)),
+    );
+  }
   return {
     threadId: thread.id,
     paused: thread.inputQueuePaused,
@@ -257,10 +281,14 @@ export async function readThreadInputQueue(
     items: rows.map((row) => {
       const message = byId.get(row.messageId);
       if (!message) throw new Error("Pending input lost its message");
-      const own = canManageQueuedInput(row, request);
+      const own =
+        row.state === "pending" && !row.teamRequestId && canManageQueuedInput(row, request);
+      const eligible = editEligibility.get(row.messageId) === true;
       return {
-        message: messageFromRow(message),
+        message: messageViewFromRow(message),
         input: threadInputFromRow(row),
+        canEdit: eligible,
+        lease: liveInputLease(transaction, row),
         canCancel: own && thread.status !== "archived",
         canMove: own && thread.status !== "archived",
         canSteer: Boolean(
@@ -284,6 +312,12 @@ async function steerRoute(
   transaction: Transaction<DatabaseSchema>,
   runId: RunId,
 ): Promise<SteeringMode | null> {
+  const run = await transaction
+    .selectFrom("runs")
+    .select("maintenance")
+    .where("id", "=", runId)
+    .executeTakeFirst();
+  if (run?.maintenance) return null;
   const replacement = await pendingReplacementAttempt(transaction, runId);
   if (replacement?.reason === "recovery") return null;
   if (replacement) {
@@ -437,7 +471,12 @@ async function claimFollowUps(
     .where("threadId", "=", thread.id)
     .where("state", "=", "pending")
     .where("policy", "=", "queue")
-    .where("freshContext", "=", true)
+    .where((eb) =>
+      eb.or([
+        eb("freshContext", "=", true),
+        eb("editLeaseExpiresAt", ">", executionDate(transaction)),
+      ]),
+    )
     .orderBy("queueRank", "asc")
     .limit(1)
     .executeTakeFirst();
@@ -895,7 +934,7 @@ export async function steerThreadInputInTransaction(
       code: "conflict",
       message: "The target Run is no longer available",
     });
-  await lockThreadRow(transaction, request.threadId);
+  await lockInputQueueProjection(transaction, request.threadId);
   await requirePersonalOwner(transaction, request.requestedBy);
   const thread = await transaction
     .selectFrom("threads")
@@ -937,6 +976,7 @@ export async function steerThreadInputInTransaction(
       throw idempotencyConflict(request.idempotencyKey);
     return replayThreadInput(transaction, row);
   }
+  assertInputLease(transaction, row, row.editLeaseId ?? undefined, request.sessionId);
   if (row.freshContext)
     throw new OpensteerError({
       code: "bad_request",
@@ -1015,9 +1055,13 @@ export async function steerThreadInputInTransaction(
     })
     .returningAll()
     .executeTakeFirstOrThrow();
+  const leaseEvent = row.editLeaseId
+    ? await leaseChangedEvent(transaction, thread, row.messageId, null)
+    : null;
   const promoted = await transaction
     .updateTable("threadInputs")
     .set({
+      ...clearInputLease,
       state: "claimed",
       runId: run.id,
       steerCommandId: command.id,
@@ -1047,7 +1091,7 @@ export async function steerThreadInputInTransaction(
   const revokedGrants = route === "restart" ? await supersedeForRestart(transaction, run.id) : [];
   return {
     ...(await replayThreadInput(transaction, promoted)),
-    events: [placed, event],
+    events: [...(leaseEvent ? [leaseEvent] : []), placed, event],
     revokedGrants,
     wasDuplicate: false,
   };
@@ -1074,9 +1118,9 @@ export async function moveThreadInputInTransaction(
   if (!observed)
     throw new OpensteerError({
       code: "not_found",
-      message: "Thread not found",
+      message: "Task not found",
     });
-  await lockThreadRow(transaction, request.threadId);
+  await lockInputQueueProjection(transaction, request.threadId);
   const thread = await transaction
     .selectFrom("threads")
     .selectAll()
@@ -1112,12 +1156,15 @@ export async function moveThreadInputInTransaction(
       wasDuplicate: true,
     };
   }
+  assertInputLease(transaction, row, row.editLeaseId ?? undefined, request.sessionId);
   if (thread.status === "archived")
     throw new OpensteerError({
       code: "conflict",
-      message: "Archived threads cannot run",
+      message: "Archived tasks cannot run",
     });
-  const waiting = await waitingThreadInputs(transaction, thread.id);
+  const waiting = (await waitingThreadInputs(transaction, thread.id)).filter(
+    (row) => row.state === "pending",
+  );
   const moving = waiting.find((input) => input.messageId === request.messageId);
   const before =
     request.beforeMessageId === null
@@ -1180,8 +1227,10 @@ export async function moveThreadInputInTransaction(
     threadId: thread.id,
     type: "thread.input-queue-updated",
   });
+  const advanced = await advanceThreadQueue(transaction, thread);
   return {
-    events: [event],
+    ...advanced,
+    events: [event, ...advanced.events],
     wasDuplicate: false,
   };
 }
@@ -1205,9 +1254,9 @@ export async function cancelThreadInputInTransaction(
   if (!observed)
     throw new OpensteerError({
       code: "not_found",
-      message: "Thread not found",
+      message: "Task not found",
     });
-  await lockThreadRow(transaction, request.threadId);
+  await lockInputQueueProjection(transaction, request.threadId);
   const thread = await transaction
     .selectFrom("threads")
     .selectAll()
@@ -1244,10 +1293,11 @@ export async function cancelThreadInputInTransaction(
       wasDuplicate: true,
     };
   }
+  assertInputLease(transaction, row, row.editLeaseId ?? undefined, request.sessionId);
   if (thread.status === "archived")
     throw new OpensteerError({
       code: "conflict",
-      message: "Archived threads cannot run",
+      message: "Archived tasks cannot run",
     });
   const reserved = await transaction
     .selectFrom("runs")
@@ -1283,6 +1333,7 @@ export async function cancelThreadInputInTransaction(
   const cancelled = await transaction
     .updateTable("threadInputs")
     .set({
+      ...clearInputLease,
       cancelReason: "withdrawn",
       state: "cancelled",
       updatedAt: new Date(),
@@ -1300,8 +1351,10 @@ export async function cancelThreadInputInTransaction(
     threadId: thread.id,
     type: "thread-input.updated",
   });
+  const advanced = await advanceThreadQueue(transaction, thread);
   return {
-    events: [event],
+    ...advanced,
+    events: [event, ...advanced.events],
     input,
     wasDuplicate: false,
   };
@@ -1324,7 +1377,7 @@ export async function claimRunInputBatch(
   if (thread.inputQueuePaused)
     throw new OpensteerError({
       code: "conflict",
-      message: "The Thread work queue is paused",
+      message: "The task queue is paused",
     });
   if (run.reportContext !== null) return [];
   const seed = await transaction
@@ -1341,6 +1394,41 @@ export async function claimRunInputBatch(
     });
 
   const events: AgentEvent[] = [];
+  if (run.maintenance) {
+    if (run.providerSessionId !== run.maintenance.providerSessionId || seed.freshContext)
+      throw new OpensteerError({ code: "conflict", message: "Compaction session changed" });
+    const session = await transaction
+      .selectFrom("providerSessions")
+      .select(["active", "providerSessionReference"])
+      .where("id", "=", run.maintenance.providerSessionId)
+      .executeTakeFirst();
+    if (!session?.active || !session.providerSessionReference)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Compaction requires its existing native session",
+      });
+    const claimed = await transaction
+      .updateTable("threadInputs")
+      .set({ runId, state: "claimed", updatedAt: new Date() })
+      .where("messageId", "=", seed.messageId)
+      .where("state", "=", "pending")
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    await transaction
+      .updateTable("messages")
+      .set({ runId })
+      .where("id", "=", seed.messageId)
+      .execute();
+    await transaction
+      .updateTable("runs")
+      .set({
+        initialContext: null,
+        reportContext: jsonValue({ messageIds: [], omittedCount: 0, throughSequence: null }),
+      })
+      .where("id", "=", runId)
+      .execute();
+    return [await inputUpdatedEvent(transaction, thread, claimed)];
+  }
   if (seed.freshContext) {
     const providerSessionId = await ensureSelectedProviderSession(transaction, thread, {
       freshRunId: run.id,
@@ -1585,7 +1673,11 @@ export async function claimConversationBatch(
     .selectAll()
     .where("id", "=", run.threadId)
     .executeTakeFirstOrThrow();
-  if (capacity <= 0 || !(await conversationalReply(transaction, thread, run.replyTarget)))
+  if (
+    run.maintenance ||
+    capacity <= 0 ||
+    !(await conversationalReply(transaction, thread, run.replyTarget))
+  )
     return [];
   return (
     await claimFollowUps(transaction, run, thread, {
@@ -2090,14 +2182,17 @@ async function lockThreadInputPreconditions(
     .selectFrom("runs")
     .select("id")
     .where("threadId", "=", input.threadId)
-    .where("status", "=", "running")
+    .where("status", "in", nonTerminalRunStatuses)
+    .where((eb) => eb.or([eb("status", "=", "running"), eb("maintenance", "is not", null)]))
     .executeTakeFirst();
   const sourceRunId =
     input.source.kind === "agent"
       ? input.source.runId
-      : input.source.kind === "platform"
-        ? input.source.sourceRunId
-        : null;
+      : input.source.kind === "team-member"
+        ? (input.source.resumeRunId ?? null)
+        : input.source.kind === "platform"
+          ? input.source.sourceRunId
+          : null;
   const runIds = [
     ...new Set([active?.id, sourceRunId].filter((id): id is RunId => Boolean(id))),
   ].sort();
@@ -2139,6 +2234,34 @@ async function lockThreadInputPreconditions(
     .where("id", "=", input.threadId)
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow();
+  if (input.source.kind === "team-member" && input.source.resumeRunId) {
+    const run = await transaction
+      .selectFrom("runs")
+      .select(["threadId", "requestedBy", "assignmentId"])
+      .where("id", "=", input.source.resumeRunId)
+      .executeTakeFirst();
+    const assignment = run?.assignmentId
+      ? await transaction
+          .selectFrom("delegations")
+          .select("status")
+          .where("id", "=", run.assignmentId)
+          .executeTakeFirst()
+      : null;
+    if (
+      !run ||
+      run.threadId !== thread.id ||
+      run.requestedBy !== input.requestedBy ||
+      thread.createdBy !== input.requestedBy ||
+      thread.doneAt ||
+      thread.status === "archived" ||
+      (run.assignmentId && assignment?.status !== "open")
+    )
+      throw new OpensteerError({
+        code: "conflict",
+        reason: teamReturnUndeliverableReason,
+        message: "Team return is undeliverable.",
+      });
+  }
   if (input.source.kind === "platform" && input.source.cause === taskQuestionCause) {
     const question = await taskQuestionNoticeSource(
       transaction,
@@ -2208,7 +2331,7 @@ interface ResolvedThreadInputFacts {
   readonly memoryPass?: true;
 }
 
-async function assertThreadInputCapacity(
+export async function assertThreadInputCapacity(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
   contentBytes: number,
@@ -2223,7 +2346,7 @@ async function assertThreadInputCapacity(
       sql<string>`coalesce(sum(octet_length(messages.content::text)), 0)`.as("bytes"),
     ])
     .where("threadInputs.threadId", "=", threadId)
-    .where("threadInputs.state", "in", ["pending", "claimed", "unknown"])
+    .where("threadInputs.state", "in", ["awaiting-approval", "pending", "claimed", "unknown"])
     .where("threadInputs.policy", policy === "report" ? "=" : "!=", "report")
     .$if(replacingMessageId !== undefined, (query) =>
       query.where("threadInputs.messageId", "!=", replacingMessageId!),
@@ -2238,18 +2361,25 @@ async function assertThreadInputCapacity(
   if (safeCount(pendingUsage.count) >= maxEntries) {
     throw new OpensteerError({
       code: "resource_exhausted",
-      message: `A Thread can hold at most ${maxEntries} undelivered ${policy === "report" ? "reports" : "work inputs"}`,
+      message: `A task can hold at most ${maxEntries} undelivered ${policy === "report" ? "reports" : "work inputs"}`,
     });
   }
   if (safeCount(pendingUsage.bytes) + contentBytes > maxBytes) {
     throw new OpensteerError({
       code: "resource_exhausted",
-      message: "The Thread inbox reached its durable byte limit",
+      message: "The task inbox reached its durable byte limit",
     });
   }
 }
 function normalizedThreadInputSource(source: ThreadInputSource): ThreadInputSource {
   switch (source.kind) {
+    case "team-member":
+      return {
+        kind: "team-member",
+        teamId: source.teamId,
+        requestId: source.requestId,
+        ...(source.resumeRunId ? { resumeRunId: source.resumeRunId } : {}),
+      };
     case "human":
       return {
         kind: "human",
@@ -2335,7 +2465,7 @@ export function deliverTaskQuestionNotice(
       content: [
         {
           type: "text",
-          text: `Task ${JSON.stringify(source.workerTitle)} (${source.request.originatingThreadId}) asked ${JSON.stringify(requestTitleText(source.request.presentation))}. Read it with pending_request action read, requestId ${requestId}. Answer with action respond when the answer follows from the task or the person's instructions, or leave it for the person.`,
+          text: `Task ${JSON.stringify(source.workerTitle)} (${source.request.originatingThreadId}) asked ${JSON.stringify(requestTitleText(source.request.presentation))}. Read it with opensteer_request_read, requestId ${requestId}. Answer with opensteer_request_answer when the answer follows from the task or the person's instructions, or leave it for the person.`,
         },
       ],
     };
@@ -2417,9 +2547,26 @@ export function cancelSettledTaskQuestionNotice(
     return events;
   });
 }
+export async function lockThreadInputIdempotency(
+  transaction: Transaction<DatabaseSchema>,
+  request: Pick<
+    EnqueueThreadInputRequest,
+    "requestedBy" | "idempotencyKey" | "compaction" | "source"
+  >,
+): Promise<void> {
+  const idempotencyKeys = [request.idempotencyKey];
+  if (request.compaction === "compactFirst" && request.source.kind === "human")
+    idempotencyKeys.push(
+      `compact-send:${createHash("sha256").update(request.idempotencyKey).digest("hex")}`,
+    );
+  for (const key of idempotencyKeys.sort())
+    await lockCommandIdempotency(transaction, request.requestedBy, key);
+}
+
 export async function enqueueThreadInputInTransaction(
   transaction: Transaction<DatabaseSchema>,
   request: EnqueueThreadInputRequest,
+  prepared?: Awaited<ReturnType<typeof lockThreadInputPreconditions>>,
 ): Promise<EnqueuedThreadInput> {
   let content = ContentPartSchema.array().min(1).parse(request.content);
   if (
@@ -2438,7 +2585,10 @@ export async function enqueueThreadInputInTransaction(
       code: "bad_request",
       message: "freshContext requires queue delivery.",
     });
-  if (request.teamRequest && (policy !== "queue" || request.source.kind !== "human"))
+  if (
+    request.teamRequest &&
+    (policy !== "queue" || !["human", "team-member"].includes(request.source.kind))
+  )
     throw new OpensteerError({
       code: "bad_request",
       message: "A team request must be its own queued input.",
@@ -2455,6 +2605,7 @@ export async function enqueueThreadInputInTransaction(
             }
           : {
               content,
+              ...(request.compaction ? { compaction: request.compaction } : {}),
               policy,
               ...(request.freshContext ? { freshContext: true } : {}),
               source: normalizedThreadInputSource(request.source),
@@ -2474,7 +2625,7 @@ export async function enqueueThreadInputInTransaction(
       "utf8",
     )
     .digest("base64url");
-  await lockCommandIdempotency(transaction, request.requestedBy, request.idempotencyKey);
+  await lockThreadInputIdempotency(transaction, request);
   const existing = await transaction
     .selectFrom("threadInputs")
     .selectAll()
@@ -2487,17 +2638,97 @@ export async function enqueueThreadInputInTransaction(
     }
     return replayThreadInput(transaction, existing);
   }
-  const preconditions = await lockThreadInputPreconditions(transaction, request);
+  const preconditions = prepared ?? (await lockThreadInputPreconditions(transaction, request));
   const { executionValid, prelockedActiveRunId } = preconditions;
   let thread = preconditions.thread;
+  if (
+    request.maintenance &&
+    !(await compactionIsEligible(
+      transaction,
+      thread.id,
+      request.maintenance,
+      request.maintenanceNowMs ?? Date.now(),
+    ))
+  )
+    throw new OpensteerError({ code: "conflict", message: "Compaction is no longer eligible" });
   const messageId = createId("message");
+  const compactionEvents: AgentEvent[] = [];
+  if (
+    request.compaction === "compactFirst" &&
+    request.source.kind === "human" &&
+    policy === "queue" &&
+    !request.freshContext
+  ) {
+    const session = await transaction
+      .selectFrom("providerSessions")
+      .selectAll()
+      .where("threadId", "=", thread.id)
+      .where("active", "=", true)
+      .executeTakeFirst();
+    if (session?.contextSnapshot) {
+      const maintenance = {
+        kind: "claude-compaction",
+        reason: "before-send",
+        providerSessionId: session.id,
+        sourceRunId: session.contextSnapshot.sourceRunId,
+        pairedInputId: messageId,
+      } as const;
+      if (await compactionIsEligible(transaction, thread.id, maintenance, Date.now())) {
+        const admitted = await enqueueThreadInputInTransaction(
+          transaction,
+          {
+            threadId: thread.id,
+            requestedBy: request.requestedBy,
+            maintenance,
+            idempotencyKey: `compact-send:${createHash("sha256").update(request.idempotencyKey).digest("hex")}`,
+            policy: "queue",
+            content: [{ type: "text", text: "/compact" }],
+            source: {
+              kind: "platform",
+              cause: "claude-compaction",
+              sourceRunId: maintenance.sourceRunId,
+            },
+          },
+          preconditions,
+        );
+        compactionEvents.push(...admitted.events);
+        thread = {
+          ...thread,
+          nextMessageSequence: String(BigInt(thread.nextMessageSequence) + 1n),
+        };
+      }
+    }
+  }
   const facts = await resolveThreadInputFacts(transaction, {
     messageId,
     requestedBy: request.requestedBy,
     source: request.source,
     targetThread: thread,
   });
-  const passEvents: AgentEvent[] = [];
+  const passEvents: AgentEvent[] = [...compactionEvents];
+  if (request.source.kind === "human" && policy !== "report" && prelockedActiveRunId) {
+    const prior = await transaction
+      .selectFrom("runs")
+      .select(["id", "status", "maintenance", "bindingGeneration"])
+      .where("id", "=", prelockedActiveRunId)
+      .executeTakeFirst();
+    if (
+      prior?.maintenance?.reason === "idle" &&
+      (prior.status === "queued" ||
+        (prior.status === "starting" && prior.bindingGeneration === null))
+    )
+      passEvents.push(
+        ...(await finalizeRunTransaction(transaction, {
+          runId: prior.id,
+          status: "interrupted",
+          source: "host",
+          links: threadPathLinks,
+          queuedInputCancellation: "seed-input",
+          completedAt: new Date(),
+        })),
+      );
+  }
+
   if (thread.doneAt && request.policy !== "report") {
     // Writing to a Done task reopens it for whoever could reopen it by hand.
     const reopens =
@@ -2570,14 +2801,16 @@ export async function enqueueThreadInputInTransaction(
   if (request.requireUnassigned && activeAssignment)
     throw new OpensteerError({
       code: "conflict",
-      message: "Thread already has an open Assignment",
+      message: "Task already has an open delegation",
     });
   const sourceRunId =
     request.source.kind === "agent"
       ? request.source.runId
-      : request.source.kind === "platform"
-        ? request.source.sourceRunId
-        : null;
+      : request.source.kind === "team-member"
+        ? (request.source.resumeRunId ?? null)
+        : request.source.kind === "platform"
+          ? request.source.sourceRunId
+          : null;
   const sourceRun = sourceRunId
     ? await transaction
         .selectFrom("runs")
@@ -2617,7 +2850,7 @@ export async function enqueueThreadInputInTransaction(
     if (sourceAssignment.status !== "open") {
       throw new OpensteerError({
         code: "conflict",
-        message: "Source Assignment is terminal",
+        message: "Source delegation is finished",
       });
     }
   }
@@ -2628,7 +2861,7 @@ export async function enqueueThreadInputInTransaction(
   ) {
     throw new OpensteerError({
       code: "conflict",
-      message: "Continuation belongs to an older Assignment",
+      message: "Continuation belongs to an older delegation",
     });
   }
   // Input into a Thread with open work joins that work; otherwise it is unbound.
@@ -2661,6 +2894,7 @@ export async function enqueueThreadInputInTransaction(
   // way: the message is accepted like any other, then handed over by the one
   // operation every moment of readiness shares.
   const conversational =
+    !activeRun?.maintenance &&
     !request.freshContext &&
     (await conversationalReply(transaction, thread, facts.replyTarget)) &&
     policy === "queue" &&
@@ -2671,15 +2905,18 @@ export async function enqueueThreadInputInTransaction(
   // message from its own requester, on the same engine and model, as a new
   // turn; anything else waits behind it.
   const joinsBackground =
+    !activeRun?.maintenance &&
     !request.freshContext &&
     request.source.kind !== "channel" &&
+    request.source.kind !== "team-member" &&
     !request.teamRequest &&
     activeRun?.replyTarget?.kind !== "team-thread" &&
     !conversational &&
     policy === "queue" &&
     activeRun?.phase === "background" &&
     activeRun.harnessInstanceId === thread.harnessInstanceId &&
-    isDeepStrictEqual(activeRun.modelSelection, thread.modelSelection);
+    isDeepStrictEqual(activeRun.modelSelection, thread.modelSelection) &&
+    !(await inputLeaseBarrier(transaction, thread.id, thread.nextMessageSequence));
   const route =
     (policy === "steer" || joinsBackground) &&
     !thread.inputQueuePaused &&
@@ -2756,6 +2993,10 @@ export async function enqueueThreadInputInTransaction(
       content: jsonValue(content),
       id: messageId,
       kind: facts.kind,
+      origin:
+        request.source.kind === "human" && request.source.origin
+          ? jsonValue(request.source.origin)
+          : null,
       runId: steerRun?.id ?? null,
       sequence: thread.nextMessageSequence,
       threadId: thread.id,
@@ -2799,6 +3040,15 @@ export async function enqueueThreadInputInTransaction(
       .returningAll()
       .executeTakeFirstOrThrow();
   }
+  const askGate = request.teamRequest
+    ? await transaction
+        .selectFrom("personalTeamRequests")
+        .select(["kind", "releasedAt"])
+        .where("teamDeploymentId", "=", request.teamRequest.source.teamId)
+        .where("requestId", "=", request.teamRequest.id)
+        .executeTakeFirst()
+    : null;
+  const gated = askGate?.kind === "ask" && !askGate.releasedAt;
   const inputRow = await transaction
     .insertInto("threadInputs")
     .values({
@@ -2839,7 +3089,13 @@ export async function enqueueThreadInputInTransaction(
       requestFingerprint,
       ...(request.freshContext ? { freshContext: true } : {}),
       runId: steerRun?.id ?? null,
-      state: executionValid ? (steer ? "claimed" : "pending") : "cancelled",
+      state: executionValid
+        ? gated
+          ? "awaiting-approval"
+          : steer
+            ? "claimed"
+            : "pending"
+        : "cancelled",
       steerCommandId,
       threadId: thread.id,
       updatedAt: new Date(),
@@ -2851,7 +3107,7 @@ export async function enqueueThreadInputInTransaction(
     .updateTable("threads")
     .set({
       nextMessageSequence: sql`next_message_sequence + 1`,
-      updatedAt: admittedAt,
+      ...(request.maintenance ? {} : { updatedAt: admittedAt }),
       ...(facts.author.kind === "human" && policy !== "report" && executionValid
         ? {
             askedAt: admittedAt,
@@ -2942,7 +3198,13 @@ export async function enqueueThreadInputInTransaction(
     }
   }
   const queued =
-    executionValid && policy === "queue" ? await ensureQueuedRun(transaction, thread) : null;
+    executionValid && policy === "queue"
+      ? await ensureQueuedRun(
+          transaction,
+          thread,
+          request.maintenance ? { maintenance: request.maintenance } : {},
+        )
+      : null;
   // Only a live Run stops the account's endpoint moving, so a waiting input can't keep this fence.
   if (request.expectedHarnessRevision !== undefined && !queued?.run)
     throw new OpensteerError({
@@ -2967,7 +3229,13 @@ export async function enqueueThreadInputInTransaction(
         : finalInput.state === "cancelled"
           ? "cancelled"
           : "pending",
-    events: [...passEvents, messageEvent, ...handed.events, ...(queued?.events ?? [])],
+    events: [
+      ...passEvents,
+      messageEvent,
+      ...handed.events,
+      ...(queued?.events ?? []),
+      ...(gated ? await projectThreadState(transaction, thread.id) : []),
+    ],
     input: finalInput,
     message,
     revokedGrants: handed.revokedGrants,
@@ -2978,6 +3246,7 @@ export async function enqueueThreadInputInTransaction(
 
 /** The platform cause an automation that stopped working is told to its Thread with. */
 export const automationStoppedCause = "automation-stopped";
+export const teamReturnUndeliverableReason = "team-return-undeliverable";
 async function resolveThreadInputFacts(
   transaction: Transaction<DatabaseSchema>,
   input: {
@@ -2988,6 +3257,73 @@ async function resolveThreadInputFacts(
   },
 ): Promise<ResolvedThreadInputFacts> {
   const { source } = input;
+  if (source.kind === "team-member") {
+    await requirePersonalOwner(transaction, input.requestedBy);
+    const mirror = await transaction
+      .selectFrom("personalTeamRequests")
+      .selectAll()
+      .where("teamDeploymentId", "=", source.teamId)
+      .where("requestId", "=", source.requestId)
+      .executeTakeFirstOrThrow();
+    const asker =
+      mirror.kind === "ask" &&
+      mirror.localDecision !== "decline" &&
+      !mirror.terminalState &&
+      mirror.consentExpiresAt !== null &&
+      (mirror.localDecision === "approve" || mirror.consentExpiresAt > executionDate(transaction))
+        ? mirror.presentation?.asker
+        : mirror.kind === "return"
+          ? mirror.returnPayload?.author
+          : null;
+    if (!asker)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Team input has no approved author.",
+      });
+    const resume = source.resumeRunId
+      ? await transaction
+          .selectFrom("runs")
+          .select(["causalChainId", "threadId", "requestedBy"])
+          .where("id", "=", source.resumeRunId)
+          .executeTakeFirst()
+      : null;
+    if (
+      mirror.kind === "return" &&
+      (!resume ||
+        mirror.returnPayload?.resumeRunId !== source.resumeRunId ||
+        resume.threadId !== input.targetThread.id ||
+        resume.requestedBy !== input.requestedBy)
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Team return does not belong to this task.",
+      });
+    const principal = await transaction
+      .selectFrom("principals")
+      .select("id")
+      .where("kind", "=", "user")
+      .where("userId", "=", input.requestedBy)
+      .executeTakeFirstOrThrow();
+    return {
+      actorPrincipalId: principal.id,
+      author: MessageAuthorSchema.parse({
+        kind: "team-member",
+        teamId: source.teamId,
+        teamUserId: asker.teamUserId,
+        displayName: asker.displayName,
+        actor: asker.actor,
+      }),
+      authoritySource: {
+        kind: "team-request",
+        teamId: source.teamId,
+        requestId: source.requestId,
+        userId: input.requestedBy,
+      },
+      causalChainId: resume?.causalChainId ?? null,
+      kind: "input",
+      replyTarget: null,
+    };
+  }
   if (source.kind === "channel") requireBoundedIdentity(source.ingressId, "Channel ingress", 255);
   if (source.kind === "human" || source.kind === "channel") {
     const channelSource =
@@ -3242,7 +3578,7 @@ async function resolveThreadInputFacts(
     if (!origin || origin.createdBy !== input.requestedBy || origin.status !== "running") {
       throw new OpensteerError({
         code: "forbidden",
-        message: "Trigger source is invalid",
+        message: "Automation source is invalid",
       });
     }
     if (origin.systemRole && origin.anchorThreadId === input.targetThread.id) {
@@ -3259,7 +3595,7 @@ async function resolveThreadInputFacts(
           .select("messageId")
           .where("threadId", "=", worker.id)
           .where("policy", "!=", "report")
-          .where("state", "in", ["pending", "claimed", "unknown"])
+          .where("state", "in", ["awaiting-approval", "pending", "claimed", "unknown"])
           .executeTakeFirst(),
       ]);
       if (
@@ -3475,7 +3811,7 @@ export async function ensureSelectedProviderSession(
     if (selected.harnessInstanceId !== thread.harnessInstanceId) {
       throw new OpensteerError({
         code: "conflict",
-        message: "Selected provider session does not match the Thread's AI engine",
+        message: "Selected provider session does not match the task's AI account",
       });
     }
     if (
@@ -3544,6 +3880,7 @@ export async function ensureQueuedRun(
   thread: ThreadRow,
   options: {
     readonly onInvalidSelection?: "throw" | "defer";
+    readonly maintenance?: import("@opensteer/core").RunMaintenance;
   } = {},
 ): Promise<{
   readonly command: CommandRow | null;
@@ -3631,7 +3968,7 @@ export async function ensureQueuedRun(
         };
       throw new OpensteerError({
         code: "conflict",
-        message: "This Thread has no selected provider session; choose an AI engine to continue",
+        message: "This task has no selected provider session; choose an AI account to continue",
       });
     }
   }
@@ -3654,7 +3991,7 @@ export async function ensureQueuedRun(
       .where("threadInputs.state", "=", "pending")
       .orderBy("threadInputs.queueRank", "asc")
       .executeTakeFirst();
-    if (!candidate)
+    if (!candidate || (await inputLeaseBarrier(transaction, thread.id, candidate.queueRank)))
       return {
         command: null,
         events,
@@ -3835,14 +4172,21 @@ export async function ensureQueuedRun(
       events,
       run: null,
     };
-  const selectedSession = await ensureSelectedProviderSession(transaction, thread, {
-    personalContext: await threadAllowsPersonalContext(transaction, thread.id, thread.createdBy),
-  });
+  const selectedSession = options.maintenance
+    ? options.maintenance.providerSessionId
+    : await ensureSelectedProviderSession(transaction, thread, {
+        personalContext: await threadAllowsPersonalContext(
+          transaction,
+          thread.id,
+          thread.createdBy,
+        ),
+      });
   const runId = createId("run");
   const runRow = await transaction
     .insertInto("runs")
     .values({
       accessMode: thread.accessMode,
+      ...(options.maintenance ? { maintenance: options.maintenance } : {}),
       activationInputId: seed.messageId,
       assignmentId: seed.assignmentId,
       actorPrincipalId: seed.actorPrincipalId,
@@ -3894,7 +4238,7 @@ export async function ensureQueuedRun(
     .updateTable("threads")
     .set((expression) => ({
       nextRunOrdinal: expression("nextRunOrdinal", "+", 1),
-      updatedAt: new Date(),
+      ...(options.maintenance ? {} : { updatedAt: new Date() }),
     }))
     .where("id", "=", thread.id)
     .executeTakeFirstOrThrow();
@@ -3940,7 +4284,7 @@ async function waitingThreadInputs(
     .selectAll()
     .where("threadId", "=", threadId)
     .where("policy", "=", "queue")
-    .where("state", "=", "pending")
+    .where("state", "in", ["pending", "awaiting-approval"])
     .where(({ not, exists, selectFrom }) =>
       not(
         exists(
@@ -3951,6 +4295,7 @@ async function waitingThreadInputs(
         ),
       ),
     )
+    .orderBy(sql`case when state = 'awaiting-approval' then 1 else 0 end`)
     .orderBy("queueRank", "asc")
     .limit(threadInputMaxPendingEntries)
     .execute();
@@ -3998,6 +4343,7 @@ async function placeQueuedMessage(
   return appendHostDeploymentEvent(transaction, {
     data: {
       message: messageFromRow(placed),
+      ...(messageEditFromRow(placed) ? { edit: messageEditFromRow(placed) } : {}),
     },
     environmentId: thread.environmentId,
     runId,
@@ -4212,9 +4558,9 @@ function assignmentReturnContent(
   maxBytes = assignmentReturnMaxBytes,
 ) {
   const entries = members.map((member) => ({
-    header: `Task ${member.status}: ${member.title}\nTask Thread: ${member.childThreadId} · Assignment: ${member.id}`,
+    header: `Task ${member.status}: ${member.title}\nTask: ${member.childThreadId} · Delegation: ${member.id}`,
     result: member.status === "cancelled" ? "" : (member.resultText ?? ""),
-    pointer: `\n\n[Result shortened. Read the rest with task_status (assignmentId: ${member.id}) or thread_read (threadId: ${member.childThreadId}).]`,
+    pointer: `\n\n[Result shortened. Read the rest with opensteer_delegation_status (delegationId: ${member.id}) or opensteer_task_read (taskId: ${member.childThreadId}).]`,
   }));
   const content = (results: readonly string[]) => [
     {
@@ -4347,7 +4693,7 @@ async function rewriteAssignmentReturn(
       environmentId: parent.environmentId,
       runId: null,
       threadId: input.threadId,
-      type: "message.created",
+      type: "message.updated",
     }),
   );
   return events;
@@ -4636,7 +4982,7 @@ async function assignmentResultReader(
   if (!locked)
     throw new OpensteerError({
       code: "forbidden",
-      message: "Assignment is unavailable",
+      message: "Delegation is unavailable",
     });
   const { assignment } = locked;
   const authority = input.authority;
@@ -4653,7 +4999,7 @@ async function assignmentResultReader(
   )
     throw new OpensteerError({
       code: "forbidden",
-      message: "Assignment is unavailable",
+      message: "Delegation is unavailable",
     });
   const requester = await transaction
     .selectFrom("runs")
@@ -5251,7 +5597,7 @@ export async function delegateThreadInTransaction(
   if (input.threadId && !observedTarget) {
     throw new OpensteerError({
       code: "not_found",
-      message: "Target work Thread not found",
+      message: "Target task not found",
     });
   }
   if (
@@ -5266,7 +5612,7 @@ export async function delegateThreadInTransaction(
   ) {
     throw new OpensteerError({
       code: "conflict",
-      message: "Target work Thread is not available for this Assignment",
+      message: "Target task is not available for this delegation",
     });
   }
   let parentRunReplyTarget: ReplyTarget | null = null;
@@ -5291,7 +5637,7 @@ export async function delegateThreadInTransaction(
       !parentRun ||
       parentRun.threadId !== input.origin.parentThreadId ||
       parentRun.requestedBy !== input.createdBy ||
-      !["running", "waiting"].includes(parentRun.status)
+      !["starting", "running", "waiting"].includes(parentRun.status)
     ) {
       throw new OpensteerError({
         code: "forbidden",
@@ -5327,7 +5673,7 @@ export async function delegateThreadInTransaction(
     ) {
       throw new OpensteerError({
         code: "forbidden",
-        message: "Parent Trigger is invalid",
+        message: "Parent automation is invalid",
       });
     }
     parentTriggerId = occurrence.triggerId;
@@ -5386,7 +5732,7 @@ export async function delegateThreadInTransaction(
   if (!parent) {
     throw new OpensteerError({
       code: "conflict",
-      message: "Parent Thread changed during delegation",
+      message: "Parent task changed during delegation",
     });
   }
   // The task's first input re-reads its Trigger under lock. Taking that lock
@@ -5458,7 +5804,7 @@ export async function delegateThreadInTransaction(
     if (parentAssignment.status !== "open") {
       throw new OpensteerError({
         code: "conflict",
-        message: "Parent Assignment is terminal",
+        message: "Parent delegation is finished",
       });
     }
   }
@@ -5507,13 +5853,13 @@ export async function delegateThreadInTransaction(
         details: {
           assignmentId: open.id,
         },
-        message: `Thread ${threadId} is still working on task ${open.id}. Send corrections with thread_send, or cancel that task with task_cancel before giving the Thread new work.`,
+        message: `Task ${threadId} is still working on delegation ${open.id}. Send corrections with opensteer_task_send, or cancel that delegation with opensteer_delegation_cancel before giving the task new work.`,
       });
     }
     if (busy || queuedInput) {
       throw new OpensteerError({
         code: "conflict",
-        message: "Target work Thread is still busy",
+        message: "Target task is still busy",
       });
     }
   }

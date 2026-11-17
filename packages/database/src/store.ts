@@ -1,8 +1,14 @@
+import { removeDevice } from "./device-removal-store.js";
+import * as deviceInventoryStore from "./device-inventory-store.js";
+import * as deviceDriverStore from "./device-driver-store.js";
+import * as waitingInputs from "./waiting-inputs.js";
+import { setExecutionClock } from "./personal-transaction.js";
 import { bindDeviceSession, revokeDeviceSession, leaveDevice } from "./device-store.js";
 import { enqueueNodeStop } from "./node-control.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
-import * as backgroundModelStore from "./background-model-store.js";
+import { readAgentHomeSettings } from "./agent-home-settings-store.js";
 import * as voiceStore from "./voice-store.js";
+import { messageTeamSources } from "./message-team-sources.js";
 
 import {
   replayAdministrationCommand,
@@ -124,6 +130,7 @@ import {
   type ShellSessionRecord,
 } from "./machine-store.js";
 import { NotificationStateStore } from "./notification-state.js";
+import { OwnerProfileStore } from "./owner-profile-store.js";
 import {
   publishPersonMessage,
   type PersonMessageInput,
@@ -195,6 +202,7 @@ export class OpensteerStore {
   readonly #readPersonalResources: snapshotStore.PersonalSnapshotResourcesReader | undefined;
   readonly requests: RequestStore;
   readonly notificationState: NotificationStateStore;
+  readonly ownerProfile: OwnerProfileStore;
   readonly browserHistory: BrowserHistoryStore;
   constructor(
     database: Kysely<DatabaseSchema>,
@@ -208,8 +216,10 @@ export class OpensteerStore {
     this.#readPersonalResources = options.readPersonalResources;
     this.#links = options.links ?? threadPathLinks;
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
+    setExecutionClock(database, this.#executionNow);
     this.requests = new RequestStore(database, this.#links, this.#executionNow);
     this.notificationState = new NotificationStateStore(database);
+    this.ownerProfile = new OwnerProfileStore(database);
     this.browserHistory = new BrowserHistoryStore(database);
   }
 
@@ -324,6 +334,7 @@ export class OpensteerStore {
   }
 
   async listRunners(input: {
+    readonly ids?: readonly RunnerId[];
     readonly after?: RunnerId;
     readonly includeDeployment: boolean;
     readonly includeOtherOwners?: boolean;
@@ -344,6 +355,8 @@ export class OpensteerStore {
       readonly allowOtherOwners?: boolean;
     } = {},
   ): Promise<{
+    readonly removedDeviceIds: readonly import("@opensteer/core").DeviceId[];
+    readonly detachedDeviceBindings: readonly import("@opensteer/core").DeviceDriverIdentity[];
     readonly endedSessionIds: readonly import("@opensteer/core").AuthSessionId[];
     readonly deletedBrowserProfiles: readonly {
       readonly id: BrowserProfileId;
@@ -357,6 +370,54 @@ export class OpensteerStore {
   }> {
     return runnerStore.revokeRunner(this.#database, this.#links, runnerId, ownerId, options);
   }
+  async removeDevice(
+    deviceId: import("@opensteer/core").DeviceId,
+    ownerId: UserId,
+    options: Parameters<typeof removeDevice>[4] = {},
+  ) {
+    return removeDevice(this.#database, this.#links, deviceId, ownerId, options);
+  }
+  async requireDeviceSelfRunnerId(
+    input: Parameters<typeof deviceInventoryStore.requireDeviceSelfRunnerId>[1],
+  ) {
+    return deviceInventoryStore.requireDeviceSelfRunnerId(this.#database, input);
+  }
+  async renameDevice(
+    deviceId: import("@opensteer/core").DeviceId,
+    ownerId: UserId,
+    name: string,
+    options: Parameters<typeof deviceInventoryStore.renameDevice>[4] = {},
+  ) {
+    return deviceInventoryStore.renameDevice(this.#database, deviceId, ownerId, name, options);
+  }
+  async getDevice(input: Parameters<typeof deviceInventoryStore.getDevice>[1]) {
+    return deviceInventoryStore.getDevice(this.#database, input);
+  }
+  async listDevices(input: Parameters<typeof deviceInventoryStore.listDevices>[1]) {
+    return deviceInventoryStore.listDevices(this.#database, input);
+  }
+  async getSelfDeviceId(input: Parameters<typeof deviceInventoryStore.getSelfDeviceId>[1]) {
+    return deviceInventoryStore.getSelfDeviceId(this.#database, input);
+  }
+  async requireSelfDeviceId(input: Parameters<typeof deviceInventoryStore.requireSelfDeviceId>[1]) {
+    return deviceInventoryStore.requireSelfDeviceId(this.#database, input);
+  }
+  async getDeviceSelfRunnerId(
+    input: Parameters<typeof deviceInventoryStore.getDeviceSelfRunnerId>[1],
+  ) {
+    return deviceInventoryStore.getDeviceSelfRunnerId(this.#database, input);
+  }
+  async listDeviceDrivers(
+    input: Parameters<typeof deviceInventoryStore.listDeviceDrivers>[1] = {},
+  ) {
+    return deviceInventoryStore.listDeviceDrivers(this.#database, input);
+  }
+  async attachIphoneScreen(input: Parameters<typeof deviceDriverStore.attachIphoneScreen>[1]) {
+    return deviceDriverStore.attachIphoneScreen(this.#database, input);
+  }
+  async detachIphoneScreen(input: Parameters<typeof deviceDriverStore.detachIphoneScreen>[1]) {
+    return deviceDriverStore.detachIphoneScreen(this.#database, input);
+  }
   async bindDeviceSession(input: Parameters<typeof bindDeviceSession>[1]) {
     return bindDeviceSession(this.#database, input);
   }
@@ -365,12 +426,6 @@ export class OpensteerStore {
   }
   async leaveDevice(input: Parameters<typeof leaveDevice>[2]) {
     return leaveDevice(this.#database, this.#links, input);
-  }
-  async openPhoneTab(runnerId: RunnerId): Promise<boolean> {
-    return runnerStore.openPhoneTab(this.#database, runnerId);
-  }
-  async closePhoneTab(runnerId: RunnerId): Promise<void> {
-    return runnerStore.closePhoneTab(this.#database, runnerId);
   }
   async renameRunner(
     runnerId: RunnerId,
@@ -382,6 +437,11 @@ export class OpensteerStore {
     } = {},
   ): Promise<void> {
     return runnerStore.renameRunner(this.#database, runnerId, ownerId, name, options);
+  }
+  async updateDeviceAccessPolicy(
+    input: Parameters<typeof machineStore.updateDeviceAccessPolicy>[1],
+  ) {
+    return machineStore.updateDeviceAccessPolicy(this.#database, input);
   }
   async updateMachineAccessPolicy(input: {
     readonly allowDeployment: boolean;
@@ -411,6 +471,9 @@ export class OpensteerStore {
       }
   > {
     return machineStore.updateMachineAccessPolicy(this.#database, input);
+  }
+  async effectiveDeviceOwners(ids: Parameters<typeof machineStore.effectiveDeviceOwners>[1]) {
+    return machineStore.effectiveDeviceOwners(this.#database, ids);
   }
   async effectiveMachineOwner(runnerId: RunnerId): Promise<MachineOwnershipRecord | null> {
     return machineStore.effectiveMachineOwner(this.#database, runnerId);
@@ -704,8 +767,8 @@ export class OpensteerStore {
   async resolvePlaceActor(input: { readonly agentBindingId: string; readonly ownerId: UserId }) {
     return browserSessionStore.resolvePlaceActor(this.#database, input);
   }
-  recordRunPlace(input: Parameters<typeof browserSessionStore.recordRunPlace>[1]) {
-    return browserSessionStore.recordRunPlace(this.#database, input);
+  recordRunTabPlace(input: Parameters<typeof browserSessionStore.recordRunTabPlace>[1]) {
+    return browserSessionStore.recordRunTabPlace(this.#database, input);
   }
   latestRunPlace(runId: RunId) {
     return browserSessionStore.latestRunPlace(this.#database, runId);
@@ -935,15 +998,9 @@ export class OpensteerStore {
   ): Promise<HarnessInstanceCatalog | null> {
     return harnessStore.getHarnessCatalog(this.#database, environmentId, harnessInstanceId);
   }
-  async getAutomaticModelConfig(userId: UserId) {
-    return backgroundModelStore.getAutomaticModelConfig(this.#database, userId);
-  }
-  /** Person-only: agents and filesystem JSON never change automatic-model eligibility. */
-  async setAutomaticModelConfig(
-    userId: UserId,
-    config: import("@opensteer/core").AutomaticModelConfig,
-  ) {
-    return backgroundModelStore.setAutomaticModelConfig(this.#database, userId, config);
+  /** The last valid settings.json in Agent home, and the file's current status. */
+  async getAgentHomeSettings(userId: UserId) {
+    return readAgentHomeSettings(this.#database, userId);
   }
   async getExecutionPreferences(userId: UserId): Promise<ExecutionPreferences> {
     return harnessStore.getExecutionPreferences(this.#database, userId);
@@ -1079,6 +1136,7 @@ export class OpensteerStore {
     readonly scope: AgentThreadListScope;
     readonly scopeId: string;
     readonly parentThreadId?: ThreadId;
+    readonly changedSince?: Date;
   }): Promise<AgentThreadListPage> {
     return threadStore.agentThreadPageForOwner(this.#database, input);
   }
@@ -1253,14 +1311,38 @@ export class OpensteerStore {
   async enqueueThreadInput(input: EnqueueThreadInputRequest): Promise<EnqueuedThreadInput> {
     return this.#announceRevokedGrants(await threadStore.enqueueThreadInput(this.#database, input));
   }
+  takeThreadInputLease(input: Parameters<typeof waitingInputs.takeThreadInputLease>[1]) {
+    return waitingInputs.takeThreadInputLease(this.#database, input);
+  }
+  renewThreadInputLease(input: Parameters<typeof waitingInputs.renewThreadInputLease>[1]) {
+    return waitingInputs.renewThreadInputLease(this.#database, input);
+  }
+  async releaseThreadInputLease(
+    input: Parameters<typeof waitingInputs.releaseThreadInputLease>[1],
+  ) {
+    return this.#announceRevokedGrants(
+      await waitingInputs.releaseThreadInputLease(this.#database, input),
+    );
+  }
+  async editThreadInput(input: Parameters<typeof waitingInputs.editThreadInput>[1]) {
+    return this.#announceRevokedGrants(await waitingInputs.editThreadInput(this.#database, input));
+  }
+  listMessageRevisions(input: Parameters<typeof waitingInputs.listMessageRevisions>[1]) {
+    return waitingInputs.listMessageRevisions(this.#database, input);
+  }
+  async expireThreadInputLeases() {
+    return this.#announceRevokedGrants(await waitingInputs.expireThreadInputLeases(this.#database));
+  }
   async steerThreadInput(input: SteerThreadInputRequest): Promise<EnqueuedThreadInput> {
     return this.#announceRevokedGrants(await threadStore.steerThreadInput(this.#database, input));
   }
   async cancelThreadInput(input: CancelThreadInputRequest): Promise<CancelledThreadInput> {
-    return threadStore.cancelThreadInput(this.#database, input);
+    const result = await threadStore.cancelThreadInput(this.#database, input);
+    return this.#announceRevokedGrants({ ...result, revokedGrants: result.revokedGrants ?? [] });
   }
   async moveThreadInput(input: MoveThreadInputRequest): Promise<MovedThreadInput> {
-    return threadStore.moveThreadInput(this.#database, input);
+    const result = await threadStore.moveThreadInput(this.#database, input);
+    return this.#announceRevokedGrants({ ...result, revokedGrants: result.revokedGrants ?? [] });
   }
   async getThreadInputQueue(input: {
     readonly authority?: import("./thread-caller.js").ThreadCallerAuthority;
@@ -1342,6 +1424,7 @@ export class OpensteerStore {
   }
   async loadSteerDispatchInput(commandId: CommandRow["id"]): Promise<{
     readonly message: Message;
+    readonly origin: import("@opensteer/core").MessageOrigin | undefined;
     readonly run: Run;
     readonly runId: RunId;
     readonly threadId: ThreadId;
@@ -1502,14 +1585,14 @@ export class OpensteerStore {
   }
   async recordComputerUseStop(input: {
     readonly runId: RunId;
-    readonly runnerId: RunnerId;
+    readonly deviceId: import("@opensteer/core").DeviceId;
   }): Promise<void> {
     return computerUseStore.recordComputerUseStop(this.#database, input);
   }
   async activeComputerUseStops(): Promise<
     readonly {
       readonly runId: RunId;
-      readonly runnerId: RunnerId;
+      readonly deviceId: import("@opensteer/core").DeviceId;
     }[]
   > {
     return computerUseStore.activeComputerUseStops(this.#database);
@@ -1620,6 +1703,9 @@ export class OpensteerStore {
   }
   async threadMessagePageForOwner(input: ThreadHistoryQuery): Promise<ThreadMessagePage | null> {
     return snapshotStore.threadMessagePageForOwner(this.#database, input);
+  }
+  messageTeamSources(threadId: ThreadId, messageIds: readonly MessageId[]) {
+    return messageTeamSources(this.#database, threadId, messageIds);
   }
   toolOutputForOwner(input: Parameters<typeof snapshotStore.toolOutputForOwner>[1]) {
     return snapshotStore.toolOutputForOwner(this.#database, input);

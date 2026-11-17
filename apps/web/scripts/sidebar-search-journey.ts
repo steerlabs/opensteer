@@ -11,6 +11,8 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import type { BrowserContext, Page } from "playwright-core";
+import type { TabId } from "@opensteer/core";
+import type { MockHostClient } from "@opensteer/client/mock";
 import { expectThat, finishJourney, journeyChecks, openMockWeb } from "./mock-web-journey.js";
 
 const artifactDirectory = path.resolve(
@@ -217,11 +219,10 @@ async function closeTabs(page: Page, titles: readonly string[]) {
       window,
       "opensteerMock",
     ) as import("@opensteer/client/host").HostClient;
-    const store = client.browserTabs;
-    const tabs = store.structure().map((key) => store.tab(key.groupId, key.tabId)!);
-    const ids = wanted.map((title) => tabs.find((tab) => tab.title === title)?.id);
+    const tabs = [...client.getSnapshot().tabs.rows.values()];
+    const ids = wanted.map((title) => tabs.find((tab) => tab.title === title)?.tabId);
     if (ids.some((id) => !id)) throw new Error(`No tab titled ${wanted.join(", ")}`);
-    await client.closePersonalTabs(ids as string[]);
+    await client.closeTabs(ids as NonNullable<(typeof ids)[number]>[]);
   }, titles);
 }
 
@@ -340,19 +341,18 @@ try {
   );
 
   await check("a folded group's tabs are found, by title and by the group's name", async () => {
+    // The world's own group stays open; only the group made here folds.
+    const openMembers = await page.evaluate(
+      () => document.querySelectorAll(".sidebar__lists .side-tab--grouped").length,
+    );
     const groupId = await page.evaluate(async () => {
-      const client = Reflect.get(window, "opensteerMock") as {
-        groupBrowserTabs(
-          tabIds: string[],
-          target: { title: string; color: string },
-        ): Promise<string>;
-        updateBrowserTabGroup(id: string, update: { collapsed: boolean }): Promise<void>;
-      };
-      const id = await client.groupBrowserTabs(["mock-tab-0-3", "mock-tab-0-4"], {
-        title: "Weekend plans",
-        color: "blue",
+      const client = Reflect.get(window, "opensteerMock") as MockHostClient;
+      const { groups } = await client.organizeTabs({
+        tabIds: ["mock-tab-0-3", "mock-tab-0-4"] as TabId[],
+        group: { name: "Weekend plans", color: "blue" },
       });
-      await client.updateBrowserTabGroup(id, { collapsed: true });
+      const id = groups.find((group) => group.name === "Weekend plans")!.groupId;
+      await client.updateTabGroup({ groupId: id, collapsed: true });
       return id;
     });
     await page.keyboard.press("Escape");
@@ -363,7 +363,11 @@ try {
     const byGroup = await search(page, "weekend plans");
     await shot(page, "03-group.png");
     const byTitle = await search(page, "lisbon");
-    expectThat({ folded }, folded === 0, "the group did not fold its tabs in the list");
+    expectThat(
+      { folded, openMembers },
+      folded === openMembers,
+      "the group did not fold its tabs in the list",
+    );
     expectThat(
       { byGroup },
       byGroup.options
@@ -458,7 +462,7 @@ try {
     expectThat(
       { found, opened },
       found.options[0]?.title === "Hyatt Seoul booking" &&
-        opened.path.startsWith("/threads/") &&
+        opened.path.startsWith("/tasks/") &&
         opened.row?.startsWith("Hyatt Seoul booking") === true,
       "Enter did not open the task's conversation",
     );
@@ -496,9 +500,7 @@ try {
       }));
       expectThat(
         { done, at, opened },
-        at >= 0 &&
-          opened.path === `/threads/${done.threadId}` &&
-          opened.focus === "Search tasks and tabs",
+        at >= 0 && opened.path === `/tasks/${done.threadId}` && opened.focus === "Search",
         "the Done task did not open, or the keyboard was lost",
       );
       return { done, opened };
@@ -557,10 +559,8 @@ try {
     await page.keyboard.press("ArrowDown");
     const before = await results(page);
     await page.evaluate(async () => {
-      const client = Reflect.get(window, "opensteerMock") as {
-        closePersonalTabs(ids: string[]): Promise<unknown>;
-      };
-      await client.closePersonalTabs(["mock-tab-1-1"]);
+      const client = Reflect.get(window, "opensteerMock") as MockHostClient;
+      await client.closeTabs(["mock-tab-1-1" as TabId]);
     });
     await page.waitForTimeout(500);
     const after = await results(page);
@@ -726,7 +726,7 @@ try {
           { afterSearch, afterDrawer },
           afterSearch.drawer &&
             !afterSearch.search &&
-            afterSearch.focus === "Search tasks and tabs" &&
+            afterSearch.focus === "Search" &&
             !afterDrawer,
           "Escape did not close search first, keyboard in the drawer, then the drawer",
         );

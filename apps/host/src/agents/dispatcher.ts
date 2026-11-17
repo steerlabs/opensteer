@@ -1,3 +1,5 @@
+import { runHasBrowserPages } from "./browser-capability.js";
+import { promptCacheExpiresAt } from "@opensteer/core";
 import { dispatchNodeStop, NodeStopAuthoritySchema } from "@opensteer/database";
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import { SpecialistStore } from "@opensteer/database";
@@ -56,6 +58,7 @@ import type { EgressService } from "../server/egress-service.js";
 import { computeMachineAccess } from "../shell/machine-access-run-context.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
 import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
+import { isExecutableTriggerProgram, TRIGGER_PROGRAM_VERSION_REFUSAL } from "@opensteer/triggers";
 import type { RunToolTokenService } from "./run-tool-tokens.js";
 import {
   harnessInspectionDefinition,
@@ -128,6 +131,7 @@ export type TeamRequestContextLoader = (
   signal: AbortSignal,
 ) => Promise<{
   readonly instructionsMarkdown: string;
+  readonly asker?: Pick<import("@opensteer/core").TeamAsker, "displayName" | "actor"> | null;
   readonly source: import("@opensteer/core").TeamSource;
   readonly instructionsRevision: import("@opensteer/core").Sequence;
 }>;
@@ -260,6 +264,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       context.run.replyTarget?.kind === "team-thread"
         ? {
             kind: "team",
+            asker: null,
             ...(await this.#teamRequestContext(
               {
                 runId: context.run.id,
@@ -299,6 +304,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     // for rather than taken for one that cannot run this engine.
     const identity = this.#runners.identityForEnvironment(command.environmentId);
     if (!identity) throw new CommandDispatchError("Runner is offline", "retry");
+    if (context.run.maintenance && !identity.capabilities.includes("claude-compaction-v1"))
+      throw new CommandDispatchError("Update this Runner to support Claude compaction.", "failed");
     if (context.voiceCall && !identity.capabilities.includes("voice-run-v1"))
       throw new OpensteerError({
         code: "conflict",
@@ -320,12 +327,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     if (!identity.capabilities.includes("thread-state-v1")) {
       throw new CommandDispatchError(
         "Update this Runner so agents can see how earlier Runs and tasks ended.",
-        "failed",
-      );
-    }
-    if (!identity.capabilities.includes("requester-time-zone-v1")) {
-      throw new CommandDispatchError(
-        "Update this Runner so agents know the person's time zone.",
         "failed",
       );
     }
@@ -573,10 +574,19 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       runId: context.run.id,
       viewerId: command.requestedBy,
     });
-    const requesterTimeZone = await this.#store.notificationState.timeZoneFor(
-      context.run.requestedBy,
-    );
+    const readsOrigin = identity.capabilities.includes("message-origin-v1");
+    const settingsFile = context.personalContext
+      ? (await this.#store.getAgentHomeSettings(context.run.requestedBy)).file
+      : null;
     const toolsPlan = agentToolsPlanForRun({
+      capabilities: {
+        tabs: context.personalContext,
+        pages:
+          context.personalContext && runHasBrowserPages(harness.driverKind, context.run.accessMode),
+        computerUse: context.personalContext && identity.modules.agents?.computerTool === 1,
+        apps: context.personalContext,
+      },
+      settingsError: settingsFile?.error,
       voiceCall: Boolean(context.voiceCall),
       token: toolsToken,
       url: this.#agentToolsUrl,
@@ -586,9 +596,25 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       knowledge,
       accessMode: context.thread.accessMode,
     });
+    const maintenanceSnapshot = context.run.maintenance
+      ? await this.#store.database
+          .selectFrom("providerSessions")
+          .select("contextSnapshot")
+          .where("id", "=", context.run.maintenance.providerSessionId)
+          .executeTakeFirst()
+      : null;
+    const maintenanceExpiresAt = maintenanceSnapshot?.contextSnapshot
+      ? promptCacheExpiresAt(maintenanceSnapshot.contextSnapshot)
+      : null;
     const runnerCommandFor = (machineAccess: MachineAccessRunContext): RunnerCommand => ({
       commandId: command.id,
       context: {
+        ...(context.run.maintenance
+          ? {
+              maintenance: context.run.maintenance,
+              ...(maintenanceExpiresAt === null ? {} : { maintenanceExpiresAt }),
+            }
+          : {}),
         ...(context.voiceCall
           ? {
               voiceCall: context.voiceCall,
@@ -682,7 +708,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         providerSessionStateLayout: context.providerSessionStateLayout,
         providerSessionReference: binding.providerSessionReference,
         requestedBy: context.run.requestedBy,
-        requesterTimeZone,
         runId: context.run.id,
         threadId: context.thread.id,
         machineAccess,
@@ -692,10 +717,14 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       inputs: context.inputs.map((message) =>
         HarnessInputSchema.parse({
           author: message.author,
+          ...(message.ownerEdited ? { ownerEdited: true } : {}),
           content: message.content,
           createdAt: message.createdAt,
           kind: message.kind,
           messageId: message.id,
+          ...(readsOrigin && context.inputOrigins.has(message.id)
+            ? { origin: context.inputOrigins.get(message.id) }
+            : {}),
           ...(message.quote
             ? {
                 quote: message.quote,
@@ -707,6 +736,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         messages: context.reports.messages.map((message) =>
           HarnessInputSchema.parse({
             author: message.author,
+            ...(message.ownerEdited ? { ownerEdited: true } : {}),
             content: message.content,
             createdAt: message.createdAt,
             kind: message.kind,
@@ -813,6 +843,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       runnerId: identity.runnerId,
     });
     this.#onTriggerChanged();
+    const program = context.revision.program;
+    if (!isExecutableTriggerProgram(program)) {
+      throw new CommandDispatchError(TRIGGER_PROGRAM_VERSION_REFUSAL, "failed");
+    }
     const capabilityToken = this.#triggerControlTokens.issue({
       environmentId: context.anchorThread.environmentId,
       executionGeneration,
@@ -821,7 +855,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       runnerBootId: identity.bootId,
       runnerId: identity.runnerId,
       threadId: context.anchorThread.id,
-      toolContractVersion: context.revision.program.toolContractVersion,
+      toolContractVersion: program.toolContractVersion,
     });
     const hasBrowser = await this.#browser.hasBrowserProfiles(context.trigger.createdBy);
     const runnerCommand: RunnerCommand = {
@@ -841,7 +875,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           url: this.#agentToolsUrl,
         },
         occurrenceId: context.occurrence.id,
-        program: context.revision.program,
+        program,
         revisionId: context.revision.id,
         triggerId: context.trigger.id,
       },
@@ -978,10 +1012,17 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           ...base,
           input: HarnessInputSchema.parse({
             author: steer.message.author,
+            ...(steer.message.ownerEdited ? { ownerEdited: true } : {}),
             content: steer.message.content,
             createdAt: steer.message.createdAt,
             kind: steer.message.kind,
             messageId: steer.message.id,
+            ...(steer.origin &&
+            this.#runners
+              .identityForEnvironment(steer.run.environmentId)
+              ?.capabilities.includes("message-origin-v1")
+              ? { origin: steer.origin }
+              : {}),
             ...(steer.message.quote
               ? {
                   quote: steer.message.quote,

@@ -27,6 +27,7 @@ it.each([
             "tasks.list",
             "thread.events.list",
             "thread.assignments.list",
+            "thread.requests.list",
           ].some((name) => url.pathname === `/v1/rpc/${name}`)
         )
           inputs.push({
@@ -78,6 +79,11 @@ it.each([
         release();
       }
       const supported = renders && (capabilities?.includes("devices-v1") ?? false);
+      // A link names a device Request directly; it is read as every other Request read is.
+      expect(await client.readRequest(request.originatingThreadId, request.id)).toEqual(
+        supported ? expect.objectContaining({ id: request.id, kind: "device.access" }) : null,
+      );
+      expect(inputs.some(({ name }) => name === "thread.requests.list")).toBe(true);
       for (const { input } of inputs) {
         if (supported) expect(input).toHaveProperty("deviceAccessRequests", "include");
         else expect(input).not.toHaveProperty("deviceAccessRequests");
@@ -93,7 +99,9 @@ it.each([
       expect(
         client
           .getSnapshot()
-          .needsYou!.entries.some(({ request }) => request.kind === "device.access"),
+          .needsYou!.entries.some(
+            (entry) => entry.kind === "request" && entry.request.kind === "device.access",
+          ),
       ).toBe(supported);
     } finally {
       client.dispose();

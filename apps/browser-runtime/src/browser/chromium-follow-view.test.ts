@@ -904,14 +904,24 @@ describe("real Chromium pages follow the person's view", () => {
     );
     cleanup.push(() => bridge.close());
     const program = "console.log(JSON.stringify(await pageInfo()))";
-    const told = await runHarness(bridge.url, session.claims.sessionId, targetId, program);
+    const told = await runHarness(
+      bridge.url,
+      session.claims.sessionId,
+      session.rootSurfaceId,
+      program,
+    );
     expect(told.stderr).toMatch(
       /^\[opensteer\] The person resized this page to 980×660 \d+s ago\. Look at the page again before continuing\.\n$/u,
     );
     expect(JSON.parse(told.stdout)).toMatchObject({
       pageResize: { width: 980, height: 660, sinceLastAgentCommand: true },
     });
-    const toldAgain = await runHarness(bridge.url, session.claims.sessionId, targetId, program);
+    const toldAgain = await runHarness(
+      bridge.url,
+      session.claims.sessionId,
+      session.rootSurfaceId,
+      program,
+    );
     expect(toldAgain.stderr).toBe("");
 
     // A fit that takes away the agent's size is a change the agent hears of,
@@ -933,11 +943,21 @@ describe("real Chromium pages follow the person's view", () => {
       sinceLastAgentCommand: true,
       width: 980,
     });
-    const toldFit = await runHarness(bridge.url, session.claims.sessionId, targetId, program);
+    const toldFit = await runHarness(
+      bridge.url,
+      session.claims.sessionId,
+      session.rootSurfaceId,
+      program,
+    );
     expect(toldFit.stderr).toMatch(
       /^\[opensteer\] The person fit this page to their view \(980×660\) \d+s ago, removing the size an agent set\. Look at the page again before continuing\.\n$/u,
     );
-    const toldFitAgain = await runHarness(bridge.url, session.claims.sessionId, targetId, program);
+    const toldFitAgain = await runHarness(
+      bridge.url,
+      session.claims.sessionId,
+      session.rootSurfaceId,
+      program,
+    );
     expect(toldFitAgain.stderr).toBe("");
     // A fit with no agent size over the page, at the size it shows, is no news.
     await session.fit(root, { width: 980, height: 660 });
@@ -1253,39 +1273,124 @@ describe("real Chromium pages follow the person's view", () => {
   }, 60_000);
 
   it("ignores a size the view sends for a tab that just closed", async () => {
-    const session = await startFollowSession();
+    const trace: Record<string, unknown>[] = [];
+    followReport.closingTabTrace = trace;
+    let failureState: (() => unknown) | undefined;
+    const record = (step: string, facts: Record<string, unknown> = {}) =>
+      trace.push({ at: performance.now(), step, ...facts });
+    const step = async <T>(name: string, operation: Promise<T>) => {
+      record(`${name}:started`);
+      try {
+        const result = await withTimeout(operation, 5_000, {
+          timeoutError: () => new Error(`Closing-tab size scenario stalled at ${name}`),
+        });
+        record(`${name}:finished`);
+        return result;
+      } catch (error) {
+        record(`${name}:failed`, { error: String(error), state: failureState?.() });
+        throw error;
+      }
+    };
+    const session = await step("session startup", startFollowSession());
+    failureState = () => ({ surfaces: session.ledger.snapshot() });
+    const closeSurface = session.ledger.closeSurface.bind(session.ledger);
+    vi.spyOn(session.ledger, "closeSurface").mockImplementation(async (id) => {
+      record("ledger close:started", { surfaceId: id });
+      try {
+        await closeSurface(id);
+        record("ledger close:finished", { surfaceId: id });
+      } catch (error) {
+        record("ledger close:failed", { surfaceId: id, error: String(error) });
+        throw error;
+      }
+    });
     const root = session.rootSurfaceId;
-    await session.controller.handle({ type: "stream.subscribe" });
+    await step("stream subscription", session.controller.handle({ type: "stream.subscribe" }));
 
     // The view keeps sending its size for a tab it just closed.
-    await session.controller.handle({
-      type: "surface.open",
-      url: `${session.origin}/plain`,
-    });
-    const closing = session.ledger.active();
-    if (!closing || closing.surface.id === root) throw new Error("Missing the tab to close");
-    await Promise.all([
-      session.follow(closing.surface.id, { width: 900, height: 650 }),
+    await step(
+      "person tab open",
       session.controller.handle({
-        surfaceId: closing.surface.id,
-        type: "surface.close",
-      }),
-      session.follow(closing.surface.id, { width: 880, height: 640 }),
-      session.follow(closing.surface.id, { width: 860, height: 630 }),
-    ]);
-    await session.follow(closing.surface.id, { width: 840, height: 620 });
-    const agentClosed = asRecord(
-      await session.agent("Target.createTarget", {
+        type: "surface.open",
         url: `${session.origin}/plain`,
       }),
     );
+    const closing = session.ledger.active();
+    if (!closing || closing.surface.id === root) throw new Error("Missing the tab to close");
+    await Promise.all([
+      step("first size", session.follow(closing.surface.id, { width: 900, height: 650 })),
+      step(
+        "person tab close",
+        session.controller.handle({
+          surfaceId: closing.surface.id,
+          type: "surface.close",
+        }),
+      ),
+      step("second size", session.follow(closing.surface.id, { width: 880, height: 640 })),
+      step("third size", session.follow(closing.surface.id, { width: 860, height: 630 })),
+    ]);
+    await step(
+      "closed person tab size",
+      session.follow(closing.surface.id, { width: 840, height: 620 }),
+    );
+    const agentClosed = asRecord(
+      await step(
+        "agent tab open",
+        session.agent("Target.createTarget", {
+          url: `${session.origin}/plain`,
+        }),
+      ),
+    );
     const agentClosedSurface = session.ledger.surfaceIdForTarget(String(agentClosed.targetId));
     if (!agentClosedSurface) throw new Error("Missing the agent's tab");
-    await session.agent("Target.closeTarget", {
-      targetId: agentClosed.targetId,
+    const binding = session.ledger.binding(agentClosedSurface);
+    if (!binding) throw new Error("Missing the agent's page binding");
+    failureState = () => ({
+      surfaces: session.ledger.snapshot(),
+      agentPageClosed: binding.page.isClosed(),
     });
-    await session.follow(agentClosedSurface, { width: 820, height: 610 });
-    await delay(200, browserTestSignal());
+    const closePage = binding.page.close.bind(binding.page);
+    vi.spyOn(binding.page, "close").mockImplementation(async () => {
+      record("agent page close:started", { closed: binding.page.isClosed() });
+      try {
+        await closePage();
+        record("agent page close:finished", { closed: binding.page.isClosed() });
+      } catch (error) {
+        record("agent page close:failed", { error: String(error) });
+        throw error;
+      }
+    });
+    const pageClosed = () => record("agent page closed event");
+    binding.page.onClose(pageClosed);
+    cleanup.push(async () => binding.page.offClose(pageClosed));
+    const detach = binding.cdp.detach.bind(binding.cdp);
+    vi.spyOn(binding.cdp, "detach").mockImplementation(async () => {
+      record("agent page detach:started");
+      await detach();
+      record("agent page detach:finished");
+    });
+    await step(
+      "agent tab close",
+      session.agent("Target.closeTarget", {
+        targetId: agentClosed.targetId,
+      }),
+    );
+    await step(
+      "closed agent tab size",
+      session.follow(agentClosedSurface, { width: 820, height: 610 }),
+    );
+    await step(
+      "closed tab removal",
+      waitForLedgerState(
+        session.ledger,
+        () =>
+          !session.ledger
+            .snapshot()
+            .some(
+              (surface) => surface.id === closing.surface.id || surface.id === agentClosedSurface,
+            ),
+      ),
+    );
     expect(session.errors()).toEqual([]);
     expect(session.ledger.snapshot().map((surface) => surface.id)).not.toContain(
       closing.surface.id,
@@ -2493,8 +2598,8 @@ describe("real Chromium pages follow the person's view", () => {
     const harnessStale = await runHarness(
       bridge.url,
       session.claims.sessionId,
-      targetId,
-      'await currentTab(); await cdp("Page.handleJavaScriptDialog", { accept: true });',
+      session.rootSurfaceId,
+      `await currentTab(); await cdp("Page.handleJavaScriptDialog", { accept: true, dialogId: ${JSON.stringify(first.id)} });`,
     ).then(
       () => "answered",
       (error: unknown) => String(error),
@@ -2624,7 +2729,7 @@ describe("real Chromium pages follow the person's view", () => {
     );
     cleanup.push(() => bridge.close());
     const harness = (program: string) =>
-      runHarness(bridge.url, session.claims.sessionId, targetId, program).then(
+      runHarness(bridge.url, session.claims.sessionId, session.rootSurfaceId, program).then(
         (output) => ({ ...output, exitCode: 0 }),
         (error: unknown) => ({
           exitCode: 1,
@@ -2726,7 +2831,7 @@ console.log(JSON.stringify(await js("window.answers")));`);
     expect(laterRuns.answerRun.stdout).toEqual([
       expect.objectContaining({
         dialog: { id: expect.any(String), message: "Delete this listing?", type: "confirm" },
-        targetId,
+        tabId: root,
       }),
       [true, true],
     ]);

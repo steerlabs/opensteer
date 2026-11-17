@@ -24,8 +24,9 @@ export const healthySocketMs = 30_000;
  * what it carried.
  */
 export type RealtimeFrameLoss =
+  | "apps"
   | "bootstrap"
-  | "browser-stream"
+  | "tabs"
   | "browser-history"
   | "browser-usage"
   | "machines"
@@ -52,9 +53,9 @@ const realtimeFrameLosses = {
   "host.connections-changed": "snapshot",
   "host.plugins-changed": "snapshot",
 
-  "host.browser-groups": "browser-stream",
-  "host.browser-tabs": "browser-stream",
-  "host.app-tabs-changed": "bootstrap",
+  // A gap in the keyed stream asks the Host for a fresh one.
+  "host.tabs": "tabs",
+  "host.apps.changed": "apps",
   "host.browser-sessions-changed": "bootstrap",
   "host.computer-presence": "bootstrap",
   "host.computer-view.changed": "bootstrap",

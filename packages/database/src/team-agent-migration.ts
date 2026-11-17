@@ -121,7 +121,7 @@ export async function migrateTeamAgents(database: Kysely<unknown>): Promise<void
         type: "text",
         text:
           trigger ??
-          "[Team request: the original trigger text is unavailable. Read the source message with team_read.]",
+          "[Team request: the original trigger text is unavailable. Read the source message with opensteer_team_read.]",
       },
       ...content.filter((part) => part.type !== "text"),
     ];

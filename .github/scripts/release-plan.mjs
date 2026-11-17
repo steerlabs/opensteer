@@ -153,7 +153,7 @@ function requireSourceChecks(source, { git, pages, newest }) {
   const latest = runs[0];
   if (!latest || latest.status !== "completed") throw new SourceChecksPending(source);
   if (latest.conclusion === "cancelled" && Number.isSafeInteger(latest.id)) {
-    // Pending main runs coalesce. Only a later main push can retire this source;
+    // Only a later main push can retire a cancelled source (including legacy coalesced runs);
     // cancellation alone must never qualify or silently discard a release.
     git("fetch", "origin", "main", "--no-tags");
     const main = git("rev-list", "refs/remotes/origin/main").split("\n");

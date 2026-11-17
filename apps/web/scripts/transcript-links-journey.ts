@@ -4,7 +4,8 @@
  * it, driven in headless Chromium with real clicks.
  *
  * Ways this journey can fail, each checked below:
- *  1. A file-path link replaces the app document or opens a page.
+ *  1. An absolute file link replaces the app document, opens a page, or fails
+ *     to open the in-app file viewer.
  *  2. A relative file link navigates instead of staying words.
  *  3. A plain HTTPS click fails to open exactly one tab beside the task
  *     at the exact address, loses the conversation, or opens a device page.
@@ -114,15 +115,17 @@ try {
   await check("an absolute file link keeps the app on its task", async () => {
     const { document, reply } = await open(storageTaskPath, sourcesReplyText);
     const label = reply.getByText("mount-sequence.png", { exact: true });
-    const isLink = await label.evaluate((element) => element.closest("a") !== null);
+    const isChip = await label.evaluate((element) => element.closest(".ref-chip") !== null);
     await label.scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(artifactDirectory, "task-reply.png") });
     const before = requests.length;
     const opened = await clickWithoutOpening(page, label);
+    const viewer = page.locator(".file-viewer");
+    await viewer.waitFor();
     const after = await documentState(page, document);
     const navigations = appNavigations(requests.slice(before));
     await page.screenshot({ path: path.join(artifactDirectory, "task-after-click.png") });
-    const observed = { after, isLink, navigations, opened };
+    const observed = { after, isChip, navigations, opened, viewer: await viewer.isVisible() };
     expectThat(observed, navigations.length === 0, "the click navigated the app's document");
     expectThat(
       observed,
@@ -130,7 +133,10 @@ try {
       "the app document changed",
     );
     expectThat(observed, after.rendered, "the app is no longer on screen");
-    expectThat(observed, !isLink && !opened, "a file path was offered as a link");
+    expectThat(observed, isChip && !opened, "a file link opened a page instead of the viewer");
+    expectThat(observed, observed.viewer, "the file viewer did not open in the app");
+    await page.keyboard.press("Escape");
+    await viewer.waitFor({ state: "detached" });
     return observed;
   });
 
@@ -212,7 +218,7 @@ try {
         )!;
         expectThat({ covered }, !!covered, "the mock has no other profile tab to cover");
         profileId = covered.profileId!;
-        coveredKey = `browser:${covered.sessionId}:${covered.id}`;
+        coveredKey = covered.id;
         await page.locator(`.side-tab[data-place-key="${coveredKey}"] .side-tab__main`).click();
       }
       const beforeTabs = await mockTabs(page);
@@ -227,21 +233,12 @@ try {
         await reply.getByRole("link", { name: label, exact: true }).click();
         await page.waitForFunction(
           (url) => {
-            const params = new URLSearchParams(location.search);
-            const snapshot = (Reflect.get(window, "opensteerMock") as MockHostClient).getSnapshot();
-            return snapshot.browserSessions.some(
-              (session) =>
-                session.id === params.get("browser") &&
-                snapshot
-                  .browserTabs!.sessionTabs(session.id)
-                  .some(
-                    (tab) =>
-                      tab.id === params.get("browserTab") &&
-                      (Reflect.get(window, "opensteerMock") as MockHostClient).browserViewerSurface(
-                        session.id,
-                        tab.id,
-                      )?.url === url,
-                  ),
+            const tabId = new URLSearchParams(location.search).get("tab");
+            const client = Reflect.get(window, "opensteerMock") as MockHostClient;
+            const viewer = tabId ? client.tabViewer(tabId) : null;
+            return (
+              viewer?.kind === "page" &&
+              client.browserViewerSurface(viewer.sessionId, tabId!)?.url === url
             );
           },
           expected,
@@ -286,9 +283,7 @@ try {
         );
         expectThat(
           observed,
-          shown === `browser:${added[0]!.sessionId}:${added[0]!.id}` &&
-            address === expected &&
-            conversation,
+          shown === added[0]!.id && address === expected && conversation,
           "the tab or conversation is not shown",
         );
         await page.screenshot({
@@ -302,7 +297,7 @@ try {
         await reply.waitFor();
         const back = await documentState(page, document);
         await page.goForward();
-        await page.waitForURL((url) => url.searchParams.get("browserTab") === added[0]!.id);
+        await page.waitForURL((url) => url.searchParams.get("tab") === added[0]!.id);
         await page.locator(".browser-stage").waitFor();
         const forward = await documentState(page, document);
         const historyTabs = await mockTabs(page);
@@ -381,11 +376,9 @@ try {
         .getByRole("alert")
         .filter({ hasText: "Which computer" })
         .waitFor({ timeout: 5_000 });
-      const refusedAddress = await page
-        .locator(".browser-address .browser-address__display")
-        .getAttribute("aria-label");
+      const refusedAddress = await page.locator(".start-page__input").inputValue();
       const consumed = await page.evaluate(() => history.state.usr);
-      const chips = await page.getByRole("button", { name: /^Open on /u }).allTextContents();
+      const chips = await page.locator(".start-page__refusal button").allTextContents();
       const refusalCount = (await mockTabs(page)).length;
       const pendingUrl = page.url();
       await page.goBack();
@@ -393,18 +386,17 @@ try {
       await reply.waitFor();
       await page.goForward();
       await page.waitForURL(pendingUrl);
-      await page.getByRole("alert").filter({ hasText: "Which computer" }).waitFor();
+      await page.locator(".start-page__input").waitFor();
+      const forwardAddress = await page.locator(".start-page__input").inputValue();
       const historyTabs = await mockTabs(page);
       expectThat(
-        { beforeTabs, historyTabs },
-        JSON.stringify(historyTabs) === JSON.stringify(beforeTabs),
-        "Back/Forward retried the refused opening",
+        { beforeTabs, historyTabs, forwardAddress },
+        JSON.stringify(historyTabs) === JSON.stringify(beforeTabs) && forwardAddress === https,
+        "Back/Forward retried the refused opening, or lost its address",
       );
-      // A choice on the pending tab completes that same address.
-      await page
-        .getByRole("button", { name: /^Open on /u })
-        .first()
-        .click();
+      // Asking again explains again, and a computer chosen there completes that same address.
+      await page.locator(".start-page__input").press("Enter");
+      await page.locator(".start-page__refusal button").first().click();
       await page.locator(".browser-address input").waitFor();
       const chosenTabs = await mockTabs(page);
       expectThat(
@@ -449,10 +441,7 @@ try {
         "history or reload reran the refused arrival",
       );
       await page.locator(".start-page__input").press("Enter");
-      await page
-        .getByRole("button", { name: /^Open on /u })
-        .first()
-        .click();
+      await page.locator(".start-page__refusal button").first().click();
       await page.locator(".browser-address input").waitFor();
       const tabs = await mockTabs(page);
       expectThat(
@@ -479,24 +468,27 @@ try {
     return observed;
   });
 
-  await check("images an agent names are never fetched, and keep their words", async () => {
-    const before = requests.length;
-    const { reply } = await open(storageTaskPath, sourcesReplyText);
-    const fetched = requests
-      .slice(before)
-      .filter(({ url }) => /mount-sequence|grant-flow/u.test(url));
-    const observed = {
-      fetched,
-      images: await reply.locator("img").count(),
-      nestedLinks: await reply.locator("a a").count(),
-      text: await reply.innerText(),
-    };
-    expectThat(observed, fetched.length === 0, "an agent's image was fetched");
-    expectThat(observed, observed.images === 0, "an agent's image was rendered");
-    expectThat(observed, observed.nestedLinks === 0, "a linked image nests links");
-    expectThat(observed, observed.text.includes("Mount sequence"), "an image lost its words");
-    return observed;
-  });
+  await check(
+    "internet images are never fetched; an unavailable image keeps its words",
+    async () => {
+      const before = requests.length;
+      const { reply } = await open(storageTaskPath, sourcesReplyText);
+      const fetched = requests
+        .slice(before)
+        .filter(({ url }) => /mount-sequence|grant-flow/u.test(url));
+      const observed = {
+        fetched,
+        images: await reply.locator("img").count(),
+        nestedLinks: await reply.locator("a a").count(),
+        text: await reply.innerText(),
+      };
+      expectThat(observed, fetched.length === 0, "an agent's image was fetched");
+      expectThat(observed, observed.images === 0, "an agent's image was rendered");
+      expectThat(observed, observed.nestedLinks === 0, "a linked image nests links");
+      expectThat(observed, observed.text.includes("Mount sequence"), "an image lost its words");
+      return observed;
+    },
+  );
   await context.close();
 } catch (error) {
   abort(error);
@@ -561,19 +553,21 @@ async function clickWithoutOpening(page: Page, target: Locator): Promise<boolean
 
 async function mockTabs(page: Page) {
   return page.evaluate(() => {
-    const snapshot = (Reflect.get(window, "opensteerMock") as MockHostClient).getSnapshot();
-    return snapshot.browserSessions.flatMap((session) =>
-      snapshot.browserTabs!.sessionTabs(session.id).map((tab) => ({
-        id: tab.id,
-        sessionId: session.id,
-        profileId: session.profileId,
-        url:
-          (Reflect.get(window, "opensteerMock") as MockHostClient).browserViewerSurface(
-            session.id,
-            tab.id,
-          )?.url ?? tab.site,
-      })),
-    );
+    const client = Reflect.get(window, "opensteerMock") as MockHostClient;
+    return [...client.getSnapshot().tabs.rows.values()]
+      .filter((tab) => tab.kind === "page")
+      .map((tab) => {
+        const viewer = client.tabViewer(tab.tabId);
+        const sessionId = viewer?.kind === "page" ? (viewer.sessionId as string) : null;
+        return {
+          id: tab.tabId as string,
+          sessionId,
+          profileId: tab.profile?.profileId ?? null,
+          url:
+            (sessionId ? client.browserViewerSurface(sessionId, tab.tabId)?.url : undefined) ??
+            tab.url,
+        };
+      });
   });
 }
 

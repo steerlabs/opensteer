@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
+import { BrowserSurfaceIdSchema, type TabViewer } from "@opensteer/protocol";
 import type { BrowserFrameStore, BrowserFrameView } from "./client.js";
-import type { PlaceItem } from "./places.js";
 import {
   browserTabPicture,
   getBrowserLastPicture,
-  keepBrowserLastPictures,
+  reconcileBrowserLastPictures,
   rememberBrowserLastPicture,
 } from "./browser-last-picture.js";
 
@@ -91,41 +90,66 @@ describe("last presented browser pictures", () => {
         throw new Error("A row asked for pictures.");
       },
     });
-    const client = { browserWatchFrames: watch.frames, browserFrames: control.frames };
-    expect(browserTabPicture(client, "session", tab(1))).toMatchObject({ width: 1, height: 1 });
-    expect(browserTabPicture(client, "session", tab(9))?.uri).toBe("data:image/jpeg;base64,CQ==");
-    expect(browserTabPicture(client, "session", tab(10))).toBeNull();
+    const tabViewer = (tabId: string) =>
+      ({ kind: "page", sessionId: "session", surfaceId: tabId }) as TabViewer;
+    const client = { browserWatchFrames: watch.frames, browserFrames: control.frames, tabViewer };
+    expect(browserTabPicture(client, tab(1))).toMatchObject({ width: 1, height: 1 });
+    expect(browserTabPicture(client, tab(9))?.uri).toBe("data:image/jpeg;base64,CQ==");
+    expect(browserTabPicture(client, tab(10))).toBeNull();
+    // Only the page this device's viewer of the tab bound has a picture to show.
+    expect(browserTabPicture({ ...client, tabViewer: () => null }, tab(1))).toBeNull();
+    const rebound = (tabId: string) =>
+      ({ kind: "page", sessionId: "restored", surfaceId: tabId }) as TabViewer;
+    expect(browserTabPicture({ ...client, tabViewer: rebound }, tab(1))).toBeNull();
     expect(
       browserTabPicture(
-        { browserWatchFrames: spy(watch.frames), browserFrames: spy(control.frames) },
-        "session",
+        { browserWatchFrames: spy(watch.frames), browserFrames: spy(control.frames), tabViewer },
         tab(10),
       ),
     ).toBeNull();
     expect(asked).toEqual([]);
     // Asking left tab 1 the oldest, so it is the one a new picture replaces.
     watch.remember(tab(11));
-    expect(browserTabPicture(client, "session", tab(1))).toBeNull();
+    expect(browserTabPicture(client, tab(1))).toBeNull();
   });
 
   it("forgets a picture once its tab closes or loads another page", () => {
     const { frames, remember, listeners } = setup();
-    const place = (n: number, documentId: string | null) =>
-      ({
-        destination: { kind: "browser", sessionId: "session", tabId: tab(n) },
-        browser: { sessionId: "session", documentId },
-      }) as unknown as PlaceItem;
-    keepBrowserLastPictures(frames, [place(1, "d1"), place(2, "d2")]);
+    const keep = (documents: Readonly<Record<string, string | null>>) =>
+      reconcileBrowserLastPictures(frames, (_sessionId, tabId) => documents[tabId]);
+    keep({ [tab(1)]: "d1", [tab(2)]: "d2" });
     remember(tab(1));
     remember(tab(2));
-    keepBrowserLastPictures(frames, [place(1, "d1"), place(2, "d2")]);
+    keep({ [tab(1)]: "d1", [tab(2)]: "d2" });
     expect(getBrowserLastPicture(frames, "session", tab(1))).not.toBeNull();
-    keepBrowserLastPictures(frames, [place(1, "d1b"), place(2, "d2")]);
+    keep({ [tab(1)]: null, [tab(2)]: "d2" });
+    expect(getBrowserLastPicture(frames, "session", tab(1))).not.toBeNull();
+    keep({ [tab(1)]: "d1b", [tab(2)]: "d2" });
     expect(getBrowserLastPicture(frames, "session", tab(1))).toBeNull();
     expect(listeners.get(`session:${tab(1)}`)?.size).toBe(0);
-    keepBrowserLastPictures(frames, [place(1, "d1b")]);
+    keep({ [tab(1)]: "d1b" });
     expect(getBrowserLastPicture(frames, "session", tab(2))).toBeNull();
     expect(listeners.get(`session:${tab(2)}`)?.size).toBe(0);
+  });
+
+  it("moves only an authorized same-reader picture to an explicit replacement binding", () => {
+    const { frames, remember, revoke, listeners } = setup();
+    const first = remember(tab(1));
+    remember(tab(2));
+    revoke(tab(2));
+    const document = (session: string) => (session === "replacement" ? null : undefined);
+    const binding = () => "replacement";
+    const otherReader = setup().frames;
+    reconcileBrowserLastPictures(frames, document, binding);
+    reconcileBrowserLastPictures(otherReader, document, binding);
+    expect(getBrowserLastPicture(otherReader, "replacement", tab(1))).toBeNull();
+    expect(getBrowserLastPicture(frames, "replacement", tab(2))).toBeNull();
+    expect(getBrowserLastPicture(frames, "replacement", tab(1))?.frame).toBe(first);
+    expect(listeners.get(`session:${tab(1)}`)?.size).toBe(0);
+    revoke(tab(1));
+    expect(getBrowserLastPicture(frames, "replacement", tab(1))?.frame).toBe(first);
+    revoke(tab(1), "replacement");
+    expect(getBrowserLastPicture(frames, "replacement", tab(1))).toBeNull();
   });
 
   it("forgets a closed or revoked tab even without a mounted presenter and isolates readers and sessions", () => {

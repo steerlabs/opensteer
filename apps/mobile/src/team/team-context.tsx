@@ -1,3 +1,4 @@
+import { teamPeopleDirectory } from "@opensteer/client/team";
 import type {
   AccountTeamsClient,
   TeamConnectionIntent,
@@ -14,13 +15,12 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
 import type { MobileTeam, MobileTeams, MobileTeamsSnapshot } from "./mobile-teams.js";
-import { memberDirectory, type MemberDirectory } from "./team-views.js";
+import type { MemberDirectory } from "./team-views.js";
 
 const MobileTeamsContext = createContext<MobileTeams | null>(null);
 
@@ -78,16 +78,21 @@ export function useTeamsSnapshot(): MobileTeamsSnapshot {
 }
 
 export function useTeam(teamId: string): MobileTeam | null {
-  return useTeamsSnapshot().teams.find((team) => team.teamId === teamId) ?? null;
+  const snapshot = useTeamsSnapshot();
+  return [...snapshot.teams, ...snapshot.unlinked].find((team) => team.teamId === teamId) ?? null;
 }
 
 const emptySnapshot: TeamSessionSnapshot = {
+  sendNotices: {},
   agentRecipients: [],
   bootstrap: null,
   sidebar: null,
   channel: null,
   thread: null,
   connection: "offline",
+  unreachable: false,
+  versionRefusal: null,
+  resumedGeneration: 0,
   pending: [],
   drafts: {},
   typing: {},
@@ -137,7 +142,10 @@ export function useTeamSession(teamId: string): {
 }
 
 /** The team's people, for names, faces, handles and the @ list. */
-export function useTeamMembers(teamId: string): {
+export function useTeamMembers(
+  teamId: string,
+  channelId?: string,
+): {
   readonly members: readonly TeamMember[];
   readonly directory: MemberDirectory;
   /** Whether `members` has been read yet, so an empty list can be told from one not read. */
@@ -154,9 +162,21 @@ export function useTeamMembers(teamId: string): {
     readonly failure: string | null;
   }>({ members: [], status: "reading", failure: null });
   const [generation, setGeneration] = useState(0);
+  const session = useTeam(teamId)?.session ?? null;
+  const subscribePeople = useCallback(
+    (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
+    [session],
+  );
+  // The list is read again once the team's access has moved since it was read, even while this
+  // screen was away. Renames arrive as the session's member updates, laid over it below.
+  const readDirectoryKey = useCallback(() => {
+    const sidebar = session?.getSnapshot().sidebar;
+    return sidebar?.accessRevision ?? null;
+  }, [session]);
+  const directoryKey = useSyncExternalStore(subscribePeople, readDirectoryKey, readDirectoryKey);
   useEffect(() => {
     let current = true;
-    void teams.members(teamId).then(
+    void teams.members(teamId, directoryKey).then(
       (people) => current && setRead({ members: people, status: "read", failure: null }),
       (error: unknown) =>
         current &&
@@ -169,14 +189,42 @@ export function useTeamMembers(teamId: string): {
     return () => {
       current = false;
     };
-  }, [generation, teamId, teams]);
+  }, [directoryKey, generation, teamId, teams]);
   const reload = useCallback(() => {
     teams.forgetMembers(teamId);
     setGeneration((next) => next + 1);
   }, [teamId, teams]);
-  const directory = useMemo(() => memberDirectory(read.members), [read.members]);
+  const readPeople = useCallback(() => {
+    const snapshot = session?.getSnapshot();
+    return channelId ? snapshot?.peopleByChannel?.[channelId] : snapshot?.people;
+  }, [session, channelId]);
+  const remotePeople = useSyncExternalStore(subscribePeople, readPeople, readPeople);
+  const readHandles = useCallback(
+    () => (channelId ? session?.getSnapshot().handlesByChannel?.[channelId] : undefined),
+    [session, channelId],
+  );
+  const handles = useSyncExternalStore(subscribePeople, readHandles, readHandles);
+  // Renames announced since the list was read: only the name moves, and only forward.
+  const readUpdates = useCallback(() => session?.getSnapshot().memberUpdates, [session]);
+  const updates = useSyncExternalStore(subscribePeople, readUpdates, readUpdates);
+  const members = useMemo(
+    () =>
+      updates
+        ? read.members.map((member) => {
+            const renamed = updates[member.userId];
+            return renamed && (renamed.nameRevision ?? 0) > (member.nameRevision ?? 0)
+              ? { ...member, displayName: renamed.displayName, nameRevision: renamed.nameRevision }
+              : member;
+          })
+        : read.members,
+    [read.members, updates],
+  );
+  const directory = useMemo(
+    () => teamPeopleDirectory(members, remotePeople, handles),
+    [members, remotePeople, handles],
+  );
   return {
-    members: read.members,
+    members,
     directory,
     status: read.status,
     failure: read.failure,
@@ -194,32 +242,50 @@ export function useTeamPreviews(
   messages: readonly TeamMessage[],
 ): ReadonlyMap<string, string> {
   const [previews, setPreviews] = useState<ReadonlyMap<string, string>>(new Map());
-  const asked = useRef(new Set<string>());
+  const lifetime = useMemo(() => ({ current: true, asked: new Set<string>() }), [session]);
+  useEffect(() => {
+    lifetime.current = true;
+    setPreviews(new Map());
+    return () => {
+      lifetime.current = false;
+    };
+  }, [lifetime]);
   useEffect(() => {
     if (session === null) return;
     for (const message of messages) {
       for (const file of message.attachments) {
-        if (file.preview === null || asked.current.has(file.id)) continue;
-        asked.current.add(file.id);
+        if (file.preview === null || lifetime.asked.has(file.id)) continue;
+        lifetime.asked.add(file.id);
         void session
           .file(file)
-          .then((blob) => (blob === null ? null : dataUri(blob)))
+          .then((blob) => (blob === null ? null : dataUri(blob, session.signal)))
           .then(
             (uri) => {
-              if (uri !== null) setPreviews((held) => new Map(held).set(file.id, uri));
+              if (lifetime.current && !session.signal.aborted && uri !== null)
+                setPreviews((held) => new Map(held).set(file.id, uri));
             },
-            () => asked.current.delete(file.id),
+            () => lifetime.asked.delete(file.id),
           );
       }
     }
-  }, [messages, session]);
-  return previews;
+  }, [messages, session, lifetime]);
+  return session?.signal.aborted ? new Map() : previews;
 }
 
 /** A Blob the platform made, as something an Image can draw. */
-export function dataUri(blob: Blob): Promise<string> {
+export function dataUri(blob: Blob, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
+    const abort = () => {
+      reader.abort();
+      reject(signal?.reason);
+    };
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    signal?.addEventListener("abort", abort, { once: true });
+    reader.onloadend = () => signal?.removeEventListener("abort", abort);
     reader.onerror = () => reject(new Error("The file could not be read."));
     reader.onload = () =>
       typeof reader.result === "string"

@@ -3,20 +3,31 @@ import type { ThreadSummary } from "./client.js";
 
 const unloadedThreadLimit = 4096;
 
-export type ThreadName = Pick<ThreadSummary, "title" | "icon"> &
-  Partial<Pick<ThreadSummary, "doneAt" | "doneReason" | "latestRunCompletedAt" | "lastVisitedAt">>;
+export type ThreadView = Pick<ThreadSummary, "title" | "icon"> &
+  Partial<
+    Pick<
+      ThreadSummary,
+      | "doneAt"
+      | "doneReason"
+      | "latestRunCompletedAt"
+      | "lastVisitedAt"
+      | "status"
+      | "inputQueuePaused"
+      | "returnHint"
+    >
+  >;
 
-type ThreadState = Pick<
+type ThreadState = { returnHint?: ThreadSummary["returnHint"] } & Pick<
   ThreadSummary,
   "status" | "inputQueuePaused" | "pendingRequests" | "updatedAt"
 > & {
-  readonly doneAt?: ThreadSummary["doneAt"] | undefined;
-  readonly doneReason?: ThreadSummary["doneReason"] | undefined;
-  readonly title?: string | undefined;
-  readonly icon?: ThreadSummary["icon"] | undefined;
-  readonly latestRunCompletedAt?: string | null | undefined;
-  readonly stateSequence: Sequence;
-};
+    readonly doneAt?: ThreadSummary["doneAt"] | undefined;
+    readonly doneReason?: ThreadSummary["doneReason"] | undefined;
+    readonly title?: string | undefined;
+    readonly icon?: ThreadSummary["icon"] | undefined;
+    readonly latestRunCompletedAt?: string | null | undefined;
+    readonly stateSequence: Sequence;
+  };
 
 export class ThreadStateProjection {
   readonly #loaded = new Map<string, ThreadState>();
@@ -50,7 +61,7 @@ export class ThreadStateProjection {
     this.#accept(event.threadId, {
       ...state,
       stateSequence: event.sequence,
-      updatedAt: event.createdAt,
+      updatedAt: state.updatedAt ?? event.createdAt,
     });
     return true;
   }
@@ -76,6 +87,7 @@ export class ThreadStateProjection {
     this.#loaded.set(summary.id, { ...state, updatedAt });
     return {
       ...summary,
+      returnHint: state.returnHint === undefined ? summary.returnHint : state.returnHint,
       doneAt: state.doneAt,
       doneReason: state.doneReason ?? null,
       title: state.title,
@@ -91,7 +103,8 @@ export class ThreadStateProjection {
     };
   }
 
-  name(thread: ThreadSummary): ThreadName {
+  /** The newest accepted state, for every held copy of the thread: page entries carry it too. */
+  view(thread: ThreadSummary): ThreadView {
     const state = this.#loaded.get(thread.id) ?? this.#unloaded.get(thread.id);
     return {
       doneAt: state?.doneAt === undefined ? thread.doneAt : state.doneAt,
@@ -102,6 +115,12 @@ export class ThreadStateProjection {
           : state.latestRunCompletedAt,
       title: state?.title ?? thread.title,
       icon: state?.icon === undefined ? thread.icon : state.icon,
+      // A page counts only the Requests its reader may see, so the count stays the page's.
+      ...(state && {
+        status: state.status,
+        inputQueuePaused: state.inputQueuePaused,
+        returnHint: state.returnHint === undefined ? thread.returnHint : state.returnHint,
+      }),
     };
   }
 
@@ -138,6 +157,7 @@ export class ThreadStateProjection {
         incoming.latestRunCompletedAt === undefined
           ? previous?.latestRunCompletedAt
           : incoming.latestRunCompletedAt,
+      returnHint: incoming.returnHint === undefined ? previous?.returnHint : incoming.returnHint,
       status: incoming.status,
       inputQueuePaused: incoming.inputQueuePaused,
       pendingRequests: incoming.pendingRequests,

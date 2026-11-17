@@ -93,8 +93,8 @@ const testAgentSkills = {
     "opensteer:computer-use": "/runner/agent-skills/skills/computer-use",
     "opensteer:computers": "/runner/agent-skills/skills/computers",
     "opensteer:devices": "/runner/agent-skills/skills/devices",
-    "opensteer:threads": "/runner/agent-skills/skills/threads",
-    "opensteer:triggers": "/runner/agent-skills/skills/triggers",
+    "opensteer:tasks": "/runner/agent-skills/skills/tasks",
+    "opensteer:automations": "/runner/agent-skills/skills/automations",
   },
   rootPath: "/runner/agent-skills",
 } as const;
@@ -3922,7 +3922,7 @@ describe("RunnerRuntime", () => {
     const stateRoot = join(temporaryRoot, "private", "harness-state");
     await writeWorkspaceSkill(workspacePath, "release-notes");
     await writeWorkspaceSkill(workspacePath, "research");
-    await writeWorkspaceSkill(workspacePath, "opensteer:threads");
+    await writeWorkspaceSkill(workspacePath, "opensteer:tasks");
     const pluginRoot = join(stateRoot, "plugins", "a".repeat(64));
     await mkdir(pluginRoot, { recursive: true });
     await writeFile(
@@ -4099,15 +4099,15 @@ describe("RunnerRuntime", () => {
           },
           {
             plugin: "opensteer",
-            localName: "threads",
-            fullName: "opensteer:threads",
-            path: "/runner/agent-skills/skills/threads",
+            localName: "tasks",
+            fullName: "opensteer:tasks",
+            path: "/runner/agent-skills/skills/tasks",
           },
           {
             plugin: "opensteer",
-            localName: "triggers",
-            fullName: "opensteer:triggers",
-            path: "/runner/agent-skills/skills/triggers",
+            localName: "automations",
+            fullName: "opensteer:automations",
+            path: "/runner/agent-skills/skills/automations",
           },
           {
             plugin: "example",
@@ -4136,7 +4136,7 @@ describe("RunnerRuntime", () => {
         ].filter((skill) => !disabled || skill.fullName !== "research"),
       );
       expect(logged).toEqual([
-        "Agent home skill opensteer:threads was skipped: the directory name is not a valid skill name",
+        "Agent home skill opensteer:tasks was skipped: the directory name is not a valid skill name",
       ]);
     } finally {
       await runtime.close();
@@ -4863,6 +4863,7 @@ describe("RunnerRuntime", () => {
         presentation: {
           fields: [
             {
+              custom: false,
               choices: [{ description: choiceText, label: choiceText, value: "yes" }],
               id: "confirmation",
               label,
@@ -4962,7 +4963,7 @@ describe("RunnerRuntime", () => {
     expect(events.at(-1)?.type).toBe("run.interrupted");
   });
 
-  it("hands the engine the requester's time zone the Host stated for the Run", async () => {
+  it("runs a Run from an older Host that still states a requester time zone", async () => {
     const session = new RecordingHarnessSession();
     const driver = new FakeHarnessDriver("recording-driver", () => session);
     const registry = new HarnessRegistry();
@@ -4982,8 +4983,8 @@ describe("RunnerRuntime", () => {
       expect(session.turns[0]?.context).toEqual({
         teamTurnContext: null,
         assignment: null,
-        requesterTimeZone: "America/New_York",
         threadState: { previousAssignment: null, previousRun: null },
+        startedAt: expect.any(String),
       });
     } finally {
       await runtime.close();
@@ -5508,6 +5509,7 @@ class InteractiveHarnessSession implements HarnessSession {
           presentation: {
             fields: [
               {
+                custom: false,
                 id: "confirmation",
                 multiSelect: false,
                 prompt: "Continue?",
@@ -6001,8 +6003,8 @@ function executeCommand(
           "opensteer:computer-use",
           "opensteer:browser",
           "opensteer:computers",
-          "opensteer:threads",
-          "opensteer:triggers",
+          "opensteer:tasks",
+          "opensteer:automations",
         ],
         token: "opaque-agent-tools-token",
         url: "https://host.example/internal/v1/mcp",
@@ -6047,7 +6049,6 @@ function executeCommand(
       providerSessionStateLayout: "thread",
       providerSessionReference: null,
       requestedBy: createId("user"),
-      requesterTimeZone: null,
       runId: createId("run"),
       threadId: createId("thread"),
       taskPurpose: "task",
@@ -6100,7 +6101,7 @@ function triggerCommand(
       mcp: { token: "trigger-mcp-token", url: "https://host.example/internal/v1/mcp" },
       occurrenceId,
       program: {
-        toolContractVersion: 3,
+        toolContractVersion: 4,
         language: "javascript",
         source: "export default async () => null",
       },

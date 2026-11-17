@@ -1,3 +1,4 @@
+import type { HostAppsSync, RunnerAppsSyncResult, RunnerAppState } from "@opensteer/protocol";
 import type { z } from "zod";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { throwIfAborted } from "@opensteer/shared/throwIfAborted";
@@ -181,6 +182,7 @@ type RunnerHarnessInstallation = Extract<
   }
 >;
 export interface RunnerRegistryHooks {
+  onAppState?(identity: RunnerIdentity, state: RunnerAppState): void;
   authorize(identity: RunnerIdentity): Promise<void>;
   /** Persist the Runner receipt before any causally later event is admitted. */
   onCommandAccepted?(identity: RunnerIdentity, receipt: RunnerCommandAccepted): Promise<void>;
@@ -205,6 +207,12 @@ export interface RunnerRegistryHooks {
     identity: RunnerIdentity,
     report: import("@opensteer/protocol").RunnerSkillMetadataReport,
   ): Promise<void>;
+  onSettingsReport?(
+    identity: RunnerIdentity,
+    report: import("@opensteer/protocol").RunnerSettingsReport,
+  ): Promise<void>;
+  /** The Agent home this Runner hosts, which its welcome names so it reports settings.json at once. */
+  agentHome?(identity: RunnerIdentity): Promise<import("@opensteer/core").ComputerFolder | null>;
   /**
    * Fires once the connection is live and reachable, which `authorize` cannot
    * do: authorization runs before the connection is inserted, so nothing it
@@ -391,6 +399,10 @@ interface RunnerConnection {
   readonly pendingBackgroundText: Map<string, PendingBackgroundText>;
   readonly pendingModelServers: Map<string, PendingModelServers>;
   readonly pendingTriggerPrograms: Map<TriggerOccurrenceId, PendingTriggerProgram>;
+  readonly pendingAppSyncs: Map<
+    string,
+    { resolve: (result: RunnerAppsSyncResult) => void; reject: (error: unknown) => void }
+  >;
   readonly pendingApps: Map<
     string,
     {
@@ -565,6 +577,7 @@ export class RunnerRegistry {
       });
     }
     await this.#runHook(() => this.#hooks.authorize(identity));
+    const agentHome = await this.#runHook(() => this.#hooks.agentHome?.(identity));
     this.#assertOpen();
     if (this.#revokedRunnerIds.has(identity.runnerId)) {
       throw new OpensteerError({
@@ -633,6 +646,7 @@ export class RunnerRegistry {
       pendingBackgroundText: new Map(),
       pendingTriggerPrograms: new Map(),
       pendingApps: new Map(),
+      pendingAppSyncs: new Map(),
       pendingRunFiles: new Map(),
       ownedRunIds: new Set(),
       ownedRunBindings: new Map(),
@@ -659,6 +673,7 @@ export class RunnerRegistry {
         // Several renewals fit in one execution lease, so one lost heartbeat
         // never costs a Run its lease.
         heartbeatIntervalMs: Math.min(15_000, Math.floor(this.#executionLeaseMs / 4)),
+        ...(agentHome ? { agentHome } : {}),
         serverTime: new Date(now).toISOString(),
         type: "host.welcome",
       });
@@ -1511,64 +1526,69 @@ export class RunnerRegistry {
    * The request is fenced to the folder's connected computer and app version;
    * the answer must echo that fence.
    */
+  appConnection(
+    computerId: RunnerId,
+  ): { connectionId: RunnerConnectionId; signal: AbortSignal } | undefined {
+    const connection = this.#byRunner.get(computerId);
+    return connection
+      ? {
+          connectionId: connection.identity.connectionId,
+          signal: connection.disconnected.controller.signal,
+        }
+      : undefined;
+  }
   async requestApp(
-    environmentId: EnvironmentId,
+    computerId: RunnerId,
+    connectionId: RunnerConnectionId,
     request: DistributiveOmit<HostAppRequest, "fence">,
     signal: AbortSignal,
   ): Promise<RunnerAppResult> {
-    const connection = this.#byEnvironment.get(environmentId);
-    if (!connection || request.spec.folder.computerId !== connection.identity.runnerId)
+    const connection = this.#appConnection(computerId, connectionId);
+    const appId = "spec" in request ? request.spec.appId : request.appId;
+    const generation =
+      "spec" in request
+        ? request.spec.generation
+        : "generation" in request
+          ? request.generation
+          : 1;
+    if ("spec" in request && request.spec.folder.computerId !== computerId)
       throw new OpensteerError({
-        code: "folder_unavailable",
-        message: "The app's hosting computer is not connected",
+        code: "bad_request",
+        message: "App folder belongs to another computer.",
       });
-    const fence: z.infer<typeof TaskRuntimeFenceSchema> = {
-      ...connection.identity.fence,
-      environmentId,
-      bindingGeneration: request.spec.version,
-    };
+    const fence = this.#appFence(connection, generation);
     const pending = deferred<RunnerAppResult>();
     connection.pendingApps.set(request.requestId, {
-      appId: request.spec.appId,
+      appId,
       resolve: pending.resolve,
       reject: pending.reject,
     });
-    let canceled = false;
     const cancel = () => {
-      if (canceled) return;
-      canceled = true;
       void connection.peer
-        .send({
-          type: "host.app.cancel",
-          requestId: request.requestId,
-          spec: request.spec,
-          fence,
-        })
+        .send({ type: "host.app.cancel", requestId: request.requestId, appId, fence })
         .catch(() => undefined);
     };
-    signal.addEventListener("abort", cancel, {
-      once: true,
-    });
+    signal.addEventListener("abort", cancel, { once: true });
     try {
       signal.throwIfAborted();
-      await connection.peer.send({
-        ...request,
-        fence,
-      });
+      await connection.peer.send({ ...request, fence });
       const result = await withDeadline(
         pending.promise,
         30_000,
         signal,
         "App server did not answer in time",
       );
+      this.#appConnection(computerId, connectionId);
       if (
         !sameRunnerConnectionFence(result.fence, fence) ||
-        result.fence.bindingGeneration !== fence.bindingGeneration ||
-        result.fence.environmentId !== environmentId
+        result.fence.environmentId !== fence.environmentId ||
+        result.fence.bindingGeneration !== generation ||
+        result.appId !== appId ||
+        result.generation !== generation
       )
         throw new OpensteerError({
           code: "conflict",
-          message: "App response belongs to another connection or app version",
+          message: "App response belongs to another connection or generation.",
         });
       return result;
     } catch (error) {
@@ -1578,6 +1598,58 @@ export class RunnerRegistry {
       signal.removeEventListener("abort", cancel);
       connection.pendingApps.delete(request.requestId);
     }
+  }
+  async syncApps(
+    computerId: RunnerId,
+    connectionId: RunnerConnectionId,
+    request: Omit<HostAppsSync, "fence">,
+    signal: AbortSignal,
+  ): Promise<RunnerAppsSyncResult> {
+    const connection = this.#appConnection(computerId, connectionId),
+      fence = this.#appFence(connection, 1),
+      pending = deferred<RunnerAppsSyncResult>();
+    connection.pendingAppSyncs.set(request.requestId, pending);
+    try {
+      signal.throwIfAborted();
+      await connection.peer.send({ ...request, fence });
+      const result = await withDeadline(
+        pending.promise,
+        60_000,
+        signal,
+        "App reconciliation did not answer in time",
+      );
+      this.#appConnection(computerId, connectionId);
+      if (
+        !sameRunnerConnectionFence(result.fence, fence) ||
+        result.fence.environmentId !== fence.environmentId ||
+        result.fence.bindingGeneration !== 1
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          message: "App reconciliation belongs to another connection.",
+        });
+      return result;
+    } finally {
+      connection.pendingAppSyncs.delete(request.requestId);
+    }
+  }
+  #appConnection(computerId: RunnerId, connectionId: RunnerConnectionId): RunnerConnection {
+    const connection = this.#byRunner.get(computerId);
+    if (!connection || connection.identity.connectionId !== connectionId)
+      throw new OpensteerError({
+        code: "runner_offline",
+        message: "The app's computer is offline.",
+      });
+    return connection;
+  }
+  #appFence(
+    connection: RunnerConnection,
+    bindingGeneration: number,
+  ): z.infer<typeof TaskRuntimeFenceSchema> {
+    const environmentId = connection.identity.environmentIds[0];
+    if (!environmentId)
+      throw new OpensteerError({ code: "conflict", message: "This computer cannot host apps." });
+    return { ...connection.identity.fence, environmentId, bindingGeneration };
   }
 
   /**
@@ -1659,12 +1731,6 @@ export class RunnerRegistry {
       signal.removeEventListener("abort", cancel);
       connection.pendingRunFiles.delete(requestId);
     }
-  }
-  appConnectionSignal(environmentId: EnvironmentId, connectionId: RunnerConnectionId): AbortSignal {
-    const connection = this.#byEnvironment.get(environmentId);
-    return connection?.identity.connectionId === connectionId
-      ? connection.disconnected.controller.signal
-      : AbortSignal.abort(new Error("App connection was lost"));
   }
   /** One ephemeral request, bound to this exact authenticated connection until its deadline. */
   async backgroundText(
@@ -1990,6 +2056,9 @@ export class RunnerRegistry {
     switch (message.type) {
       case "runner.skills.report":
         await this.#runHook(() => this.#hooks.onSkillReport?.(connection.identity, message));
+        break;
+      case "runner.settings.report":
+        await this.#runHook(() => this.#hooks.onSettingsReport?.(connection.identity, message));
         break;
       case "runner.auxiliary.ticket-request":
         await this.#runHook(async () => {
@@ -2346,6 +2415,12 @@ export class RunnerRegistry {
           );
         break;
       }
+      case "runner.app.state":
+        this.#hooks.onAppState?.(connection.identity, message);
+        break;
+      case "runner.apps.sync.result":
+        connection.pendingAppSyncs.get(message.requestId)?.resolve(message);
+        break;
       case "runner.app.result": {
         const pending = connection.pendingApps.get(message.requestId);
         if (pending && pending.appId !== message.appId)
@@ -2656,6 +2731,8 @@ export class RunnerRegistry {
     connection.pendingBackgroundText.clear();
     connection.pendingTriggerPrograms.clear();
     connection.pendingApps.clear();
+    for (const pending of connection.pendingAppSyncs.values()) pending.reject(error);
+    connection.pendingAppSyncs.clear();
     connection.pendingRunFiles.clear();
     connection.ownedRunIds.clear();
     connection.ownedRunBindings.clear();

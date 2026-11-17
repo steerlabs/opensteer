@@ -1,4 +1,11 @@
 import type {
+  DeviceId,
+  DeviceKind,
+  DevicePlatform,
+  DeviceForm,
+  DeviceDriverRole,
+} from "@opensteer/core";
+import type {
   Sequence,
   KnowledgeNoteId,
   KnowledgeTopicId,
@@ -13,12 +20,16 @@ import type {
   TeamBlobId,
   TeamNoticeId,
   TeamAgentRequestState,
+  TeamAgentRequestKind,
+  TeamAskPresentation,
+  TeamAskDecision,
+  TeamAgentReturnPayload,
+  TeamReturnAdmission,
   TeamChannelKind,
   TeamHandle,
 } from "@opensteer/core";
 import type { TeamStatusStepSchema } from "@opensteer/core";
 import type { z } from "zod";
-import type { AutomaticModelConfig } from "@opensteer/core";
 import type { ThreadCallerAuthority } from "./thread-caller.js";
 
 import type {
@@ -46,8 +57,6 @@ import type {
   AuthVerificationId,
   BrowserProfileId,
   BrowserSourceId,
-  BrowserTabGroupColor,
-  BrowserTabGroupId,
   CausalChainId,
   CommandId,
   CredentialId,
@@ -128,7 +137,7 @@ import type {
   ShellCloseReason,
   ShellSessionId,
 } from "@opensteer/protocol";
-import type { TriggerProgram, TriggerProgramEvent, TriggerSource } from "@opensteer/triggers";
+import type { StoredTriggerProgram, TriggerProgramEvent, TriggerSource } from "@opensteer/triggers";
 import type { ColumnType, Generated, Selectable } from "kysely";
 
 export type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>;
@@ -158,8 +167,8 @@ export interface UserTable {
   image: string | null;
 
   disabledAt: NullableTimestamp;
-  /** The IANA zone this person's clients last reported; null until one does. */
-  /** Days untouched before this person's tasks move to Done; 0 never. */
+  /** On a team, the Account revision of `displayName`; 0 until one is verified. */
+  nameRevision: Generated<string>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -193,7 +202,7 @@ export interface NotificationPreviewKeyTable {
 }
 
 export interface AuthSessionTable {
-  deviceId: Generated<RunnerId | null>;
+  deviceId: Generated<DeviceId | null>;
   memberGeneration: ColumnType<string | null, string | null | undefined, string | null>;
   id: AuthSessionId;
   userId: UserId;
@@ -555,10 +564,6 @@ interface RunnerTable {
   allowedModules: JsonColumn<readonly RunnerModuleName[]>;
   /** The last advertisement, module by module, exactly as it was signed. */
   moduleDescriptors: JsonColumn<RunnerModules>;
-  /** What this computer permits callers reaching it from other computers. */
-  accessPolicy: JsonColumn<MachineAccessPolicy>;
-  /** Bumped by every successful policy write, including one of equal value. */
-  accessPolicyRevision: number;
   /** What the computer says it is, from its last signed hello; null until it says. */
   device: JsonColumn<RunnerDevice | null>;
   connectionGeneration: ColumnType<string, number | string, number | string>;
@@ -567,8 +572,6 @@ interface RunnerTable {
   enrolledAt: Timestamp;
   lastSeenAt: NullableTimestamp;
   revokedAt: NullableTimestamp;
-  /** An Agent Phone's tab: open from its first use until its owner closes it. */
-  tabOpenedAt: NullableTimestamp;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -737,6 +740,8 @@ export interface ThreadTable {
   createdByPrincipalId: PrincipalId;
   nextMessageSequence: Generated<string>;
   nextRunOrdinal: Generated<number>;
+  /** Admission of a teammate's ask created it; it is removed if only declined asks ever reached it. */
+  teamAskOrigin: Generated<boolean>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -752,6 +757,21 @@ export interface MessageTable {
   kind: MessageKind;
   actorPrincipalId: PrincipalId;
   content: JsonColumn<readonly unknown[]>;
+  /** Where a person sent it from; null for every other author and older apps. */
+  origin: Generated<import("@opensteer/core").MessageOrigin | null>;
+  /** Edits a person made while it waited; `content` is always the latest. */
+  revision: Generated<number>;
+  editedAt: Generated<Date | null>;
+  createdAt: Timestamp;
+}
+
+/** Every version of an edited message, revision 0 being the original. Append-only. */
+export interface MessageRevisionTable {
+  messageId: MessageId;
+  revision: number;
+  content: JsonColumn<readonly unknown[]>;
+  author: JsonColumn<MessageAuthor>;
+  deviceLabel: string | null;
   createdAt: Timestamp;
 }
 
@@ -798,6 +818,11 @@ export interface ThreadInputTable {
   state: ThreadInputState;
   steerCommandId: CommandId | null;
   threadId: ThreadId;
+  /** A device's edit lease; all three are set together. Expired leases count as absent. */
+  editLeaseId: Generated<string | null>;
+  editLeaseSessionId: Generated<AuthSessionId | null>;
+  editLeaseDeviceLabel: Generated<string | null>;
+  editLeaseExpiresAt: Generated<Date | null>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -829,6 +854,7 @@ export interface RunInitialContext {
 }
 
 export interface RunTable {
+  maintenance: Generated<import("@opensteer/core").RunMaintenance | null>;
   personWaited: Generated<boolean>;
   doneWhenFinished: Generated<boolean>;
   assignmentId: Generated<AssignmentId | null>;
@@ -1064,7 +1090,7 @@ interface RequestCallJoinTable {
   originatingRunId: RunId;
   callId: string;
   requestId: RequestId;
-  createdAt: Generated<Timestamp>;
+  createdAt: Timestamp;
 }
 
 interface RequestContinuationTable {
@@ -1104,7 +1130,7 @@ interface TriggerRevisionTable {
   triggerId: TriggerId;
   ordinal: number;
   source: JsonColumn<TriggerSource>;
-  program: JsonColumn<TriggerProgram>;
+  program: JsonColumn<StoredTriggerProgram>;
   createdBy: UserId;
   createdByThreadId: ThreadId | null;
   createdAt: Timestamp;
@@ -1165,6 +1191,7 @@ export interface TriggerOccurrenceTable {
 }
 
 export interface ProviderSessionTable {
+  contextSnapshot: Generated<import("@opensteer/core").ProviderContextSnapshot | null>;
   personalContext: Generated<boolean>;
   active: boolean;
   stateLayout: "thread" | "session";
@@ -1395,25 +1422,6 @@ interface BrowserHistoryIconTable {
   favicon: string;
 }
 
-interface PersonalTabTable {
-  id: string;
-  createdAt: Timestamp;
-  groupId: BrowserSessionId;
-  sessionId: BrowserSessionId;
-  title: string;
-  url: string;
-  favicon: Generated<string | null>;
-  iconRef: Generated<string | null>;
-  order: number;
-  openerId: string | null;
-  state: "suspended" | "restoring" | "live";
-  closedBy: Generated<UserId | null>;
-  closedAfterTabId: Generated<string | null>;
-  closedTabGroupId: Generated<BrowserTabGroupId | null>;
-  reopenedAt: Generated<Date | null>;
-  closedAt: NullableTimestamp;
-}
-
 interface BrowserSessionTable {
   tabGroupId: BrowserSessionId;
   tabRevision: Generated<number>;
@@ -1559,12 +1567,9 @@ export interface IntegrationConnectionTable {
   capabilities: JsonColumn<readonly string[]>;
   grantedScopes: JsonColumn<readonly string[]>;
   integrationDefinitionId: string | null;
-  /**
-   * For a channel connection, the messaging service currently assigned to it
-   * and therefore allowed to move. For a computer connection, its permanent
-   * placement, which never changes.
-   */
+  /** Channel assignment, also retained for previous Hosts reading self-backed computer targets. */
   runnerId: RunnerId | null;
+  deviceId: Generated<DeviceId | null>;
   /**
    * For a channel whose transport runs on a computer, the app connection it is
    * a use of — iMessage of that Mac's `apple-messages` — which it never
@@ -1870,18 +1875,20 @@ interface ChannelLinkCodeTable {
 
 interface ComputerUsePolicyTable {
   deploymentId: DeploymentId;
-  runnerId: RunnerId;
+  /** Legacy storage name retained while the previous Host runs. */
+  runnerId: DeviceId;
   ownerUserId: UserId;
   appApproval: "ask" | "automatic";
   revision: number;
   updatedAt: Timestamp;
 }
 
-/** A person's Stop for one Run on one Mac; it lasts as long as the Run. */
+/** A person's Stop for one Run on one Device; it lasts as long as the Run. */
 interface ComputerUseStopTable {
   runId: RunId;
-  runnerId: RunnerId;
-  stoppedAt: Generated<Timestamp>;
+  /** Legacy storage name retained while the previous Host runs. */
+  runnerId: DeviceId;
+  stoppedAt: Timestamp;
 }
 
 interface ComputerAppSetupRequestTable {
@@ -1894,7 +1901,8 @@ interface ComputerAppSetupRequestTable {
   id: string;
   deploymentId: DeploymentId;
   ownerUserId: UserId;
-  runnerId: RunnerId;
+  /** Legacy storage name retained while the previous Host runs. */
+  runnerId: DeviceId;
   definitionId: string;
   definitionDigest: string;
   access: "read" | "read-write";
@@ -1907,17 +1915,6 @@ interface ComputerAppSetupRequestTable {
   expiresAt: Timestamp;
 }
 
-export interface AppTable {
-  tabOpenedAt: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
-  id: string;
-
-  threadId: ThreadId;
-  runId: RunId;
-  title: string;
-  latestVersion: number;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
 export interface AppVersionTable {
   appId: string;
   version: number;
@@ -1945,6 +1942,8 @@ export interface AgentConnectionTable {
 }
 
 export interface DatabaseSchema {
+  devices: DeviceTable;
+  deviceDrivers: DeviceDriverTable;
   deviceSetupRetirements: { runnerId: RunnerId; publicKeyPem: string };
   agentHomeSkillInventory: {
     computerId: RunnerId;
@@ -1959,7 +1958,35 @@ export interface DatabaseSchema {
     scanStatus: "complete" | "failed";
     metadata: JsonColumn<readonly { fullName: string; description: string; digest: string }[]>;
   };
+  agentHomeSettings: {
+    computerId: RunnerId;
+    environmentId: EnvironmentId;
+    bootId: string;
+    connectionGeneration: number;
+    connectionId: string;
+    connectionLeaseId: string;
+    readSequence: number;
+    readAt: Timestamp;
+    fileStatus: "valid" | "missing" | "invalid";
+    fileError: JsonColumn<import("@opensteer/protocol").AgentHomeSettingsError> | null;
+    settings: JsonColumn<import("@opensteer/core").AgentHomeSettings>;
+  };
   teamMembers: TeamMemberTable;
+  teamPrincipals: TeamPrincipalTable;
+  teamSharingSettings: {
+    singletonKey: "team";
+    policy: "off" | "admins" | "members-propose" | "members";
+  };
+  teamPartnerInvites: {
+    id: string;
+    verifierHash: string;
+    createdBy: UserId;
+    createdAt: Timestamp;
+    expiresAt: Timestamp;
+    consumedAt: NullableTimestamp;
+    revokedAt: NullableTimestamp;
+  };
+  teamPartnerLinks: TeamPartnerLinkTable;
   teamAccessState: TeamAccessStateTable;
   teamGroups: TeamGroupTable;
   teamGroupPeople: TeamGroupPersonTable;
@@ -1971,6 +1998,14 @@ export interface DatabaseSchema {
   teamChannels: TeamChannelTable;
   teamChannelMembers: TeamChannelMemberTable;
   teamChannelMemberState: TeamChannelMemberStateTable;
+  teamShares: TeamShareTable;
+  teamShareAsks: TeamShareAskTable;
+  teamRequestStatuses: TeamAgentRequestTable & {
+    pendingRemote: boolean;
+    askRefusal: "people-only" | "no-access" | "no-link" | "rate-limited" | null;
+  };
+  teamShareParticipants: TeamShareParticipantTable;
+  teamShareRelays: TeamShareRelayTable;
   teamMessages: TeamMessageTable;
   teamMentions: TeamMentionTable;
   teamMessagePins: TeamMessagePinTable;
@@ -1983,7 +2018,64 @@ export interface DatabaseSchema {
   teamOutbox: TeamOutboxTable;
   teamLinks: TeamLinkTable;
   teamAgentRequests: TeamAgentRequestTable;
+  teamAccessChanges: {
+    revision: string;
+    effects: JsonColumn<unknown>;
+    createdAt: Generated<Date>;
+  };
+  teamPresence: {
+    connectionId: string;
+    processId: string;
+    userId: UserId;
+    visible: boolean;
+    channelIds: ColumnType<TeamChannelId[], TeamChannelId[] | undefined, TeamChannelId[]>;
+    seenAt: Timestamp;
+  };
+  teamLinkConnections: {
+    linkId: TeamLinkId;
+    epoch: string;
+    processId: string;
+    seenAt: Timestamp;
+  };
+  teamPartnerCalls: {
+    id: string;
+    linkId: string;
+    operation: JsonColumn<unknown>;
+    state: "queued" | "claimed" | "done" | "failed";
+    claimedBy: string | null;
+    result: JsonColumn<unknown> | null;
+    error: JsonColumn<unknown> | null;
+    createdAt: Generated<Date>;
+    expiresAt: Timestamp;
+  };
+  teamInstallation: {
+    singletonKey: "team";
+    sealedAccountBundle: Buffer;
+    updatedAt: Generated<Date>;
+  };
   personalTeamLinks: PersonalTeamLinkTable;
+  personalTeamPosts: {
+    teamDeploymentId: DeploymentId;
+    clientMessageId: string;
+    localLinkId: string;
+    remoteLinkId: TeamLinkId;
+    runId: RunId;
+    messageId: TeamMessageId | null;
+    channelId: TeamChannelId;
+    threadRootId: TeamMessageId | null;
+    targetBindings: JsonColumn<
+      readonly {
+        readonly ownerUserId: UserId;
+        readonly handle: string;
+        readonly requestId: TeamAgentRequestId;
+      }[]
+    >;
+    mentionedAgentHandles: readonly string[];
+    bodyMarkdown: string;
+    attachmentIds: JsonColumn<readonly TeamBlobId[]>;
+    requestId: TeamAgentRequestId | null;
+    createdAt: Timestamp;
+  };
   personalTeamRequests: PersonalTeamRequestTable;
   teamAgentRecipients: TeamAgentRecipientTable;
 
@@ -1992,6 +2084,7 @@ export interface DatabaseSchema {
 
   agentConnections: AgentConnectionTable;
   apps: AppTable;
+  appServers: AppServerTable;
   appVersions: AppVersionTable;
   attachments: AttachmentTable;
   computerUsePolicies: ComputerUsePolicyTable;
@@ -2069,6 +2162,7 @@ export interface DatabaseSchema {
   threadStatePending: { threadId: ThreadId; requestedAt: Timestamp };
   threads: ThreadTable;
   messages: MessageTable;
+  messageRevisions: MessageRevisionTable;
   threadInputs: ThreadInputTable;
   threadWorkInputs: ThreadInputTable;
   causalChains: CausalChainTable;
@@ -2106,23 +2200,7 @@ export interface DatabaseSchema {
   browserHistoryIcons: BrowserHistoryIconTable;
   browserSessions: BrowserSessionTable;
   personalTabs: PersonalTabTable;
-  browserTabLayouts: {
-    ownerId: UserId;
-    revision: Generated<string | number | bigint>;
-    tabOrder: ColumnType<string[] | null, string[] | null | undefined, string[] | null>;
-  };
-  browserTabGroups: {
-    id: BrowserTabGroupId;
-    ownerId: UserId;
-    title: string;
-    color: BrowserTabGroupColor;
-    collapsed: Generated<boolean>;
-    // Provenance outlives the creating Thread, as a browser session's opener does.
-    createdByThreadId: ThreadId | null;
-    createdAt: Timestamp;
-    updatedAt: Timestamp;
-  };
-  browserTabGroupMembers: { ownerId: UserId; tabId: string; groupId: BrowserTabGroupId };
+  tabLayouts: TabLayoutTable;
   browserTabOpens: {
     ownerId: UserId;
     idempotencyKey: string;
@@ -2175,7 +2253,7 @@ export interface DatabaseSchema {
   runnerPluginDataRemovals: {
     runnerId: RunnerId;
     pluginId: string;
-    createdAt: Generated<Timestamp>;
+    createdAt: Timestamp;
   };
   specialists: {
     removedAt: Generated<Date | null>;
@@ -2223,15 +2301,25 @@ export type PendingCommandRow = CommandRow & {
 export type DeploymentEventRow = Selectable<DeploymentEventTable>;
 
 export interface PersonalSettingsTable {
+  idleCompactionPolicy: Generated<import("@opensteer/core").IdleCompactionPolicy>;
   singletonKey: "personal";
   ownerId: UserId;
   agentHomeComputerId: RunnerId;
   agentHomePath: string;
   voiceThreadId: ThreadId | null;
-  timeZone: string | null;
   quietTaskDays: QuietTaskDays;
   executionPreferences: JsonColumn<ExecutionPreferences>;
-  backgroundModelPreferences: JsonColumn<AutomaticModelConfig>;
+  /** The owner's own name, or null for "You"; see `owner-profile-store.ts`. */
+  ownerName: Generated<string | null>;
+  /** When anyone first chose or adopted a name; the computer's name seeds only before. */
+  ownerNameSetAt: Generated<Date | null>;
+  /** The Account revision and binding while the name is the linked Account's. */
+  ownerNameRevision: Generated<string | null>;
+  ownerNameAccount: ColumnType<
+    { readonly issuer: string; readonly subject: string } | null,
+    { readonly issuer: string; readonly subject: string } | null | undefined,
+    { readonly issuer: string; readonly subject: string } | null
+  >;
 }
 export interface DeploymentEventStateTable {
   deploymentId: DeploymentId;
@@ -2246,6 +2334,16 @@ export interface TeamMemberTable {
   joinedAt: Timestamp;
   changedAt: Timestamp;
   changedBy: UserId | null;
+}
+export interface TeamPrincipalTable {
+  id: UserId;
+  homeTeamId: DeploymentId;
+  homeUserId: string;
+  memberUserId: UserId | null;
+  displayName: string | null;
+  handle: TeamHandle | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
 }
 export interface TeamAccessStateTable {
   singletonKey: "team";
@@ -2337,6 +2435,7 @@ export interface TeamChannelTable {
   dmKey: string | null;
 }
 export interface TeamChannelMemberTable {
+  memberUserId: ColumnType<UserId | null, never, never>;
   channelId: TeamChannelId;
   subjectKind: "person" | "group";
   subjectId: string;
@@ -2353,6 +2452,9 @@ export interface TeamChannelMemberStateTable {
   updatedAt: Timestamp;
 }
 export interface TeamMessageTable {
+  publicId: Generated<string>;
+  createdSeq: Generated<string>;
+  ownerChangeSeq: Generated<string | null>;
   agentLinkId: Generated<TeamLinkId | null>;
   personalDeploymentId: Generated<DeploymentId | null>;
   callerRunId: Generated<RunId | null>;
@@ -2386,6 +2488,11 @@ export interface TeamMessagePinTable {
   pinnedAt: Timestamp;
 }
 export interface TeamBlobTable {
+  cacheOriginalReserved: Generated<boolean>;
+  cachePreviewReserved: Generated<boolean>;
+  publicId: Generated<string>;
+  remoteShareId: Generated<string | null>;
+  previewSha256: Generated<string | null>;
   agentLinkId: Generated<TeamLinkId | null>;
   personalDeploymentId: Generated<DeploymentId | null>;
   callerRunId: Generated<RunId | null>;
@@ -2410,6 +2517,10 @@ export interface TeamBlobTable {
   createdAt: Timestamp;
   expiresAt: Timestamp;
   completedAt: NullableTimestamp;
+  generation: Generated<string | null>;
+  previewGeneration: Generated<string | null>;
+  uploadLease: Generated<string | null>;
+  uploadLeaseExpiresAt: Generated<Date | null>;
 }
 export interface TeamMessageAttachmentTable {
   messageId: TeamMessageId;
@@ -2430,6 +2541,7 @@ export interface TeamTopicTable {
   accessRevision: Generated<string>;
 }
 export interface TeamTopicGrantTable {
+  memberUserId: ColumnType<UserId | null, never, never>;
   topicId: KnowledgeTopicId;
   subjectKind: "person" | "group" | "everyone";
   /** A user or group id; "team" for everyone. */
@@ -2481,8 +2593,23 @@ export interface TeamLinkTable {
   lastSeenAt: NullableTimestamp;
   createdAt: Timestamp;
   revokedAt: NullableTimestamp;
+  connectionEpoch: Generated<string>;
 }
 export interface TeamAgentRequestTable {
+  shareId: Generated<string | null>;
+  targetAgentHandle: Generated<string | null>;
+  kind: Generated<TeamAgentRequestKind>;
+  presentation: ColumnType<
+    TeamAskPresentation | null,
+    TeamAskPresentation | null | undefined,
+    TeamAskPresentation | null
+  >;
+  returnPayload: ColumnType<
+    TeamAgentReturnPayload | null,
+    TeamAgentReturnPayload | null | undefined,
+    TeamAgentReturnPayload | null
+  >;
+  consentExpiresAt: NullableTimestamp;
   id: TeamAgentRequestId;
   ownerUserId: UserId;
   channelId: TeamChannelId;
@@ -2519,9 +2646,29 @@ export interface TeamAgentRecipientTable {
   channelId: TeamChannelId;
   rootId: TeamMessageId;
   enabled: boolean;
-  updatedAt: Generated<Timestamp>;
+  updatedAt: Timestamp;
 }
 export interface PersonalTeamRequestTable {
+  kind: Generated<TeamAgentRequestKind>;
+  remoteState: Generated<TeamAgentRequestState>;
+  presentation: ColumnType<
+    TeamAskPresentation | null,
+    TeamAskPresentation | null | undefined,
+    TeamAskPresentation | null
+  >;
+  returnPayload: ColumnType<
+    TeamAgentReturnPayload | null,
+    TeamAgentReturnPayload | null | undefined,
+    TeamAgentReturnPayload | null
+  >;
+  consentExpiresAt: NullableTimestamp;
+  localDecision: Generated<TeamAskDecision | null>;
+  decisionAt: NullableTimestamp;
+  /** The revision of the task's copy the owner approved; only that revision may be released. */
+  approvedRevision: Generated<number | null>;
+  /** When an approved ask's input joined its queue. Never set for an ask that did not run. */
+  releasedAt: Generated<Date | null>;
+  returnAdmission: Generated<TeamReturnAdmission | null>;
   answerMessageId: Generated<MessageId | null>;
   answerPayload: ColumnType<
     { readonly bodyMarkdown: string; readonly attachmentIds: readonly TeamBlobId[] } | null,
@@ -2536,8 +2683,8 @@ export interface PersonalTeamRequestTable {
   teamDeploymentId: DeploymentId;
   requestId: TeamAgentRequestId;
   triggerMessageId: TeamMessageId;
-  localTaskId: ThreadId;
-  localInputId: MessageId;
+  localTaskId: ThreadId | null;
+  localInputId: MessageId | null;
   runId: RunId | null;
   publicationState: "pending" | "accepted" | "blocked";
   terminalState: "done" | "failed" | "stopped" | "cancelled" | null;
@@ -2546,4 +2693,169 @@ export interface PersonalTeamRequestTable {
   source: JsonColumn<TeamSource>;
   createdAt: Timestamp;
   finishedAt: NullableTimestamp;
+}
+
+export interface TeamPartnerLinkTable {
+  id: string;
+  partnerTeamId: DeploymentId;
+  partnerOrigin: string;
+  partnerHostKeyFingerprint: string;
+  partnerHostInstanceId: HostInstanceId;
+  partnerAuthority: JsonColumn<import("@opensteer/protocol").TeamPartnerAuthority>;
+  partnerName: string;
+  role: "dialer" | "listener";
+  state: "pending" | "active" | "revoked";
+  localApproved: boolean;
+  partnerApproved: boolean;
+  createdBy: UserId;
+  approvedBy: UserId | null;
+  createdAt: Timestamp;
+  approvedAt: NullableTimestamp;
+  lastSeenAt: NullableTimestamp;
+  lastError: "identity-mismatch" | "unsupported-partner-version" | "unreachable" | null;
+  revokedAt: NullableTimestamp;
+  revokedBy: "local" | "partner" | null;
+  sealedOffer: Generated<Buffer | null>;
+}
+
+export interface TeamShareTable {
+  policyRevision: Generated<string>;
+  agentsEnabled: Generated<boolean>;
+  historyFromShareId: string | null;
+  syncError: Generated<"update-required" | null>;
+  storedRows: Generated<number>;
+  storedBytes: Generated<string>;
+  id: string;
+  channelId: TeamChannelId | null;
+  partnerLinkId: string;
+  role: "owner" | "follower";
+  state: "offered" | "active" | "ended";
+  generation: number;
+  name: string;
+  peopleOnly: boolean;
+  offeredBy: UserId | null;
+  acceptedBy: UserId | null;
+  localApproved: boolean;
+  cursor: Generated<string>;
+  creationCursor: Generated<string>;
+  cursorPublicId: Generated<string>;
+  ready: Generated<boolean>;
+  createdAt: Timestamp;
+  endedAt: NullableTimestamp;
+}
+export interface TeamShareParticipantTable {
+  blocked: Generated<boolean>;
+  shareId: string;
+  principalId: UserId;
+  handle: TeamHandle;
+  level: "read" | "post";
+  state: "active" | "removed";
+}
+export interface TeamShareRelayTable {
+  pendingBodies: Generated<string[]>;
+  attachmentPublicIds: Generated<string[]>;
+  agentTargets: ColumnType<readonly UserId[], readonly UserId[] | undefined, readonly UserId[]>;
+  publication: Generated<boolean>;
+  admitted: Generated<boolean>;
+  agentLinkId: Generated<TeamLinkId | null>;
+  personalDeploymentId: Generated<DeploymentId | null>;
+  callerRunId: Generated<RunId | null>;
+  shareId: string;
+  authorUserId: UserId;
+  authorKind: "human" | "agent";
+  clientMessageId: string;
+  bodyMarkdown: string;
+  threadRootPublicId: string | null;
+  publicId: string | null;
+}
+
+export interface TeamShareAskTable {
+  id: TeamAgentRequestId;
+  shareId: string;
+  channelId: TeamChannelId;
+  triggerMessageId: TeamMessageId;
+  threadRootId: TeamMessageId;
+  targetPrincipalId: UserId;
+  targetAgentHandle: string;
+  localRequestId: TeamAgentRequestId | null;
+  status: JsonColumn<import("@opensteer/protocol").TeamShareAskStatus | null>;
+  outcome: TeamAgentReturnPayload["outcome"] | null;
+  replyMessageId: TeamMessageId | null;
+  createdAt: Timestamp;
+  changeSeq: string;
+}
+
+export interface PersonalTabTable {
+  id: import("@opensteer/core").TabId;
+  ownerId: UserId;
+  kind: import("@opensteer/core").TabKind;
+  computerId: DeviceId;
+  title: string;
+  url: string | null;
+  profileId: BrowserProfileId | null;
+  profileName: string | null;
+  appId: import("@opensteer/core").AppId | null;
+  windowId: import("@opensteer/core").WindowId | null;
+  windowApp: JsonColumn<ComputerAppIdentity | null>;
+  pageBinding: JsonColumn<import("@opensteer/core").PageBinding | null>;
+  favicon: string | null;
+  iconRef: string | null;
+  openerTabId: import("@opensteer/core").TabId | null;
+  openedBy: JsonColumn<import("@opensteer/core").TabOpenedBy>;
+  generation: Generated<number>;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  closedAt: NullableTimestamp;
+  closedPosition: JsonColumn<import("@opensteer/core").ClosedPosition | null>;
+}
+export interface TabLayoutTable {
+  ownerId: UserId;
+  revision: Generated<number>;
+  items: JsonColumn<import("@opensteer/core").TabLayout["items"]>;
+}
+export interface AppTable {
+  id: import("@opensteer/core").AppId;
+  ownerId: UserId;
+  computerId: RunnerId;
+  threadId: ThreadId | null;
+  runId: RunId | null;
+  name: string;
+  creationKey: string | null;
+  latestVersion: Generated<number>;
+  deleting: Generated<boolean>;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+export interface AppServerTable {
+  appId: import("@opensteer/core").AppId;
+  computerId: RunnerId;
+  port: number;
+  desiredState: "running" | "stopped";
+  generation: Generated<number>;
+  lastError: string | null;
+}
+
+export interface DeviceTable {
+  id: DeviceId;
+  deploymentId: DeploymentId;
+  ownerKind: "deployment" | "user";
+  ownerUserId: UserId | null;
+  name: string;
+  kind: DeviceKind;
+  platform: DevicePlatform | null;
+  form: DeviceForm | null;
+  accessPolicy: JsonColumn<MachineAccessPolicy>;
+  accessPolicyRevision: Generated<number>;
+  removedAt: NullableTimestamp;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+export interface DeviceDriverTable {
+  deviceId: DeviceId;
+  role: DeviceDriverRole;
+  runnerId: RunnerId;
+  generation: ColumnType<string, number | string, number | string>;
+  detachedAt: NullableTimestamp;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
 }

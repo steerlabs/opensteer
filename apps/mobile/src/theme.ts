@@ -155,7 +155,7 @@ const light = "#ffffff";
 const shade = "#000000";
 
 /** sRGB, like the web's color-mix: changing the palette changes every material. */
-function mix(from: string, toward: string, weight: number): string {
+export function mix(from: string, toward: string, weight: number): string {
   return `#${[1, 3, 5]
     .map((offset) =>
       Math.round(

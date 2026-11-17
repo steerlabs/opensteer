@@ -1,7 +1,12 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "./mock-host-client.js";
 import { unwrapRpcResult } from "../host/host-session-client.js";
-import { BrowserSurfaceIdSchema } from "@opensteer/core";
+import {
+  BrowserProfileIdSchema,
+  RunnerIdSchema,
+  type BrowserProfileId,
+  type RunnerId,
+} from "@opensteer/core";
 
 let client: MockHostClient | undefined;
 afterEach(() => {
@@ -14,34 +19,51 @@ function setup(now?: () => Date) {
   const session = client
     .getSnapshot()
     .browserSessions.find((session) => session.profileId && session.opener?.kind === "you")!;
-  return { client, session, profileId: session.profileId! };
+  return { client, session, profileId: BrowserProfileIdSchema.parse(session.profileId) };
+}
+/** Opens a page tab the way a person does and returns the browser session showing it. */
+async function openPage(
+  client: MockHostClient,
+  target: { profileId: BrowserProfileId } | { guest: true; computerId: RunnerId },
+  url = "https://history.example/start",
+  idempotencyKey: string = crypto.randomUUID(),
+  typed = false,
+) {
+  const opened = await client.dispatch({
+    type: "tab.open",
+    target: { kind: "page", url, ...target },
+    ...(typed ? { typed: true as const } : {}),
+    idempotencyKey,
+  });
+  if (opened.type !== "tab.open") throw new Error("Expected an opened tab");
+  const viewer = await client.activateTab(opened.tab.tabId);
+  if (viewer.kind !== "page") throw new Error("Expected a page viewer");
+  return { tabId: viewer.surfaceId, sessionId: viewer.sessionId };
 }
 it("records committed opens once, navigation typed intent, and retained favicons after tabs close", async () => {
   vi.useFakeTimers();
-  const { client, session, profileId } = setup();
-  const input = {
-    url: "https://history.example/first",
-    typed: true,
-    idempotencyKey: "history-open",
-  };
-  const opened = await client.openBrowserTab(session.id, input);
-  await client.openBrowserTab(session.id, input);
+  const { client, profileId } = setup();
+  const input = { url: "https://history.example/first" };
+  const opened = await openPage(client, { profileId }, input.url, "history-open", true);
+  await openPage(client, { profileId }, input.url, "history-open", true);
   let history = unwrapRpcResult(await client.rpc["browser.history.get"]({ profileId }));
+  // Opening a tab is one visit, typed when the person typed its address in a new tab.
   expect(history.entries).toMatchObject([{ url: input.url, typedCount: 1, visitCount: 1 }]);
-  client.sendBrowserCommand(session.id, {
+  client.sendBrowserCommand(opened.sessionId, {
     type: "navigation.go",
     surfaceId: opened.tabId,
     url: "https://history.example/second",
+    typed: true,
   });
   await vi.advanceTimersByTimeAsync(900);
   history = unwrapRpcResult(await client.rpc["browser.history.get"]({ profileId }));
   expect(history.entries.map((entry) => [entry.url, entry.typedCount])).toEqual([
-    ["https://history.example/second", 0],
+    ["https://history.example/second", 1],
     [input.url, 1],
   ]);
   const iconRef = history.icons[0]!.iconRef;
   expect(iconRef).toMatch(/^[a-f\d]{64}$/u);
-  await client.closeBrowserTab(session.id, opened.tabId, client.browserTabs.inventory(session.id)!);
+  await client.closeTabs([opened.tabId]);
   const icons = unwrapRpcResult(
     await client.rpc["browser.history.icons.get"]({ profileId, iconRefs: [iconRef] }),
   );
@@ -62,11 +84,11 @@ it("records committed opens once, navigation typed intent, and retained favicons
 });
 it("bounds history at 300 entries and 90 days; deleted profiles, signed-out viewers and Guest retain none", async () => {
   let now = new Date("2026-10-30T12:00:00.000Z");
-  const { client, session, profileId } = setup(() => now);
-  const opened = await client.openBrowserTab(session.id);
+  const { client, profileId } = setup(() => now);
+  const opened = await openPage(client, { profileId });
   for (let i = 0; i < 310; i++) {
     now = new Date(now.getTime() + 1);
-    client.sendBrowserCommand(session.id, {
+    client.sendBrowserCommand(opened.sessionId, {
       type: "navigation.go",
       surfaceId: opened.tabId,
       url: `https://history.example/${i}`,
@@ -80,13 +102,14 @@ it("bounds history at 300 entries and 90 days; deleted profiles, signed-out view
   expect(history.entries.at(-1)?.url).toBe("https://history.example/10");
   now = new Date(now.getTime() + 90 * 86_400_000);
   expect(await read()).toEqual({ entries: [], icons: [] });
-  const guest = await client.openBrowserTab(
-    { identity: { kind: "guest" }, placement: session.placement },
-    { url: "https://guest.example/" },
+  const guest = await openPage(
+    client,
+    { guest: true, computerId: RunnerIdSchema.parse("rnr_11111111-1111-4111-8111-111111111111") },
+    "https://guest.example/",
   );
   client.sendBrowserCommand(guest.sessionId, {
     type: "navigation.go",
-    surfaceId: BrowserSurfaceIdSchema.parse(guest.tabId),
+    surfaceId: guest.tabId,
     url: "https://guest.example/path",
     typed: true,
   });
@@ -95,7 +118,7 @@ it("bounds history at 300 entries and 90 days; deleted profiles, signed-out view
     profileId: "bpr_99999999-9999-4999-8999-999999999999",
   });
   expect(missing).toMatchObject({ ok: false, error: { code: "not_found" } });
-  await client.openBrowserTab(session.id, { url: "https://delete.example/" });
+  await openPage(client, { profileId }, "https://delete.example/");
   await client.browserHistory.load(profileId);
   await client.dispatch({
     type: "browser.profile.delete",
@@ -115,12 +138,12 @@ it("bounds history at 300 entries and 90 days; deleted profiles, signed-out view
 });
 
 it("revalidates visible history after mock visits and direct history commands", async () => {
-  const { client, session, profileId } = setup();
+  const { client, profileId } = setup();
   const unsubscribe = client.browserHistory.subscribe(vi.fn());
   try {
     await client.browserHistory.load(profileId);
     const url = "https://live-history.example/path";
-    await client.openBrowserTab(session.id, { url });
+    await openPage(client, { profileId }, url);
     await vi.waitFor(() =>
       expect(client.browserHistory.entries(profileId)).toMatchObject([{ url }]),
     );
@@ -131,7 +154,7 @@ it("revalidates visible history after mock visits and direct history commands", 
       idempotencyKey: "live-remove",
     });
     await vi.waitFor(() => expect(client.browserHistory.entries(profileId)).toEqual([]));
-    await client.openBrowserTab(session.id, { url });
+    await openPage(client, { profileId }, url);
     await vi.waitFor(() =>
       expect(client.browserHistory.entries(profileId)).toMatchObject([{ url }]),
     );

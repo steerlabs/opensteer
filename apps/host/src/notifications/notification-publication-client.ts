@@ -1,3 +1,5 @@
+import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
+import { notificationTitleMaxCharacters, notificationBodyMaxCharacters } from "@opensteer/core";
 import {
   HostNotificationPublicationResponseSchema,
   HostNotificationPublicationSchema,
@@ -7,7 +9,7 @@ import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import type { NotificationPublication } from "@opensteer/database";
 import type { DeploymentId, HostInstanceId } from "@opensteer/core";
 import { z } from "zod";
-import { buildMobileThreadDeepLink } from "@opensteer/core";
+import { buildMobileThreadDeepLink, buildMobileNeedsYouDeepLink } from "@opensteer/core";
 import type { NotificationPreviewService } from "./notification-preview-service.js";
 import { sealNotificationPreview } from "./notification-preview.js";
 const maximumResponseBytes = 4 * 1_024;
@@ -72,12 +74,15 @@ export class NotificationPublicationClient {
         status: "no-target",
       };
     input.signal.throwIfAborted();
-    const deepLink = buildMobileThreadDeepLink({
-      deploymentId: this.#deploymentId,
-      threadId: entry.threadId,
-      messageId: entry.kind === "reply-published" ? entry.messageId : null,
-      requestId: entry.kind === "request-opened" ? entry.requestId : null,
-    });
+    const deepLink =
+      entry.threadId === null
+        ? buildMobileNeedsYouDeepLink(this.#deploymentId)
+        : buildMobileThreadDeepLink({
+            deploymentId: this.#deploymentId,
+            threadId: entry.threadId,
+            messageId: entry.kind === "reply-published" ? entry.messageId : null,
+            requestId: entry.kind === "request-opened" ? entry.requestId : null,
+          });
     const keys = (await this.#previews?.keys(entry.userId, input.recipientAccountIds)) ?? [];
     const previews = keys.map((key) => ({
       accountId: key.accountId,
@@ -86,8 +91,9 @@ export class NotificationPublicationClient {
         key: key.key,
         plaintext: {
           version: 1,
-          title: entry.title,
-          body: entry.body,
+          title: plainTextExcerpt(entry.title, notificationTitleMaxCharacters) ?? "Opensteer",
+          body:
+            plainTextExcerpt(entry.body, notificationBodyMaxCharacters) ?? "Opensteer needs you.",
         },
         context: {
           deploymentId: this.#deploymentId,

@@ -85,6 +85,11 @@ export interface HarnessCapabilities {
    * stream closed, so the Runner waits for that event instead of stopping it.
    */
   readonly warmReuse?: boolean;
+  /** The model selection a reused engine applies itself on its next turn; the rest restarts it. */
+  readonly warmSelection?: {
+    readonly model?: boolean;
+    readonly options: readonly string[];
+  };
 }
 
 /**
@@ -224,6 +229,8 @@ export type HarnessDurableEventType = Extract<
   | "run.phase"
   | "run.started"
   | "run.status"
+  | "run.context-measured"
+  | "run.compaction"
   | "run.usage"
   | "tool.completed"
   | "tool.started"
@@ -282,6 +289,7 @@ export interface HarnessVoiceCall {
 }
 
 export interface HarnessSessionContext {
+  readonly imageStore?: import("./output-images.js").ToolImageStore;
   readonly voiceCall?: HarnessVoiceCall;
   /** Model-visible, verified per-Thread attachment directory, outside private state. */
   readonly attachmentDirectory?: string;
@@ -386,23 +394,23 @@ export interface HarnessSkill {
 
 export function durableHistoryWindowNotice(context: HarnessSessionContext): string | undefined {
   if (!context.historyWindow.hasEarlier) return undefined;
-  return `Opensteer supplied the most recent ${context.historyWindow.itemCount} durable messages (${context.historyWindow.byteCount} serialized bytes) to this session. Earlier messages remain canonical on the Host and can be retrieved with thread_read.`;
+  return "Opensteer supplied a recent window of durable messages to this session. Earlier messages remain canonical on the Host and can be retrieved with opensteer_task_read.";
 }
 
 /**
  * What the Host stated about a Run's Thread when it dispatched the Run: the
- * task the Run belongs to, the requester's time zone, and what the engine's
- * own history cannot show.
+ * task the Run belongs to and what the engine's own history cannot show.
  */
 export interface HarnessRunContext {
   readonly teamTurnContext: TeamTurnContext | null;
   readonly assignment: AssignmentRunContext | null;
-  /** An IANA name as the Host accepted it, which this Runner may not know. */
-  readonly requesterTimeZone: string | null;
   readonly threadState: RunThreadState;
+  /** When this computer started the Run; every rendering of its context reads this, never the clock. */
+  readonly startedAt: string;
 }
 
 export interface HarnessRunInput {
+  readonly maintenance?: import("@opensteer/core").RunMaintenance;
   readonly attachments?: ReadonlyMap<string, ResolvedAttachment>;
   readonly context: HarnessRunContext;
   readonly environment: Readonly<Record<string, string>>;

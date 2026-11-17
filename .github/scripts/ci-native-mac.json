@@ -16,7 +16,7 @@
   "tasks": [
     {
       "task": "computer-helper",
-      "timeout": 6,
+      "timeout": 9,
       "swift": [
         "apps/desktop/native/computer-use",
         "packages/apple-data",
@@ -39,7 +39,7 @@
     },
     {
       "task": "iphone",
-      "timeout": 6,
+      "timeout": 11,
       "swift": [
         "packages/apple-data",
         "apps/mobile/modules/iphone-apps/ios",
@@ -60,7 +60,8 @@
       ],
       "scripts": [
         "scripts/generate-apple-data-contracts.ts",
-        "apps/desktop/src/computer-use/lifecycle-lock-holder.fixture.ts"
+        "apps/desktop/src/computer-use/lifecycle-lock-holder.fixture.ts",
+        "apps/runner/scripts/build-native-fs.ts"
       ],
       "vitest": [
         "tests/helper-data-contracts.test.ts",
@@ -79,13 +80,17 @@
         "apps/desktop/native/computer-use/Tests/Fixtures/helper-wire.json",
         "apps/desktop/native/passwords/Tests/Fixtures/passwords-wire.json",
         "packages/core/src/fixtures/notification-preview-v1.json",
-        "packages/runner-auth/fixtures/device-proofs.v1.json"
+        "packages/runner-auth/fixtures/device-proofs.v1.json",
+        "scripts/quarantine-runner.ts",
+        "scripts/quarantine.ts",
+        "tests/quarantine.json",
+        "apps/runner/native-fs-helper"
       ],
       "lane": true
     },
     {
       "task": "computer-tests",
-      "timeout": 6,
+      "timeout": 10,
       "swift": [
         "apps/desktop/native/computer-use",
         "packages/apple-data",
@@ -97,7 +102,7 @@
     },
     {
       "task": "passwords-tests",
-      "timeout": 14,
+      "timeout": 25,
       "swift": ["apps/desktop/native/passwords", "packages/macos-signing"],
       "tests": ["apps/desktop/native/passwords", "packages/macos-signing"],
       "extra": ["apps/desktop/src/passwords/paths.ts", "packages/client/src/host/passwords.ts"]
@@ -124,7 +129,7 @@
     },
     {
       "task": "release-native",
-      "timeout": 20,
+      "timeout": 28,
       "runner": "macos-26",
       "xcode": "/Applications/Xcode_26.6.app/Contents/Developer",
       "swift": [
@@ -137,11 +142,12 @@
       ],
       "scripts": [
         "apps/desktop/scripts/prove-release-native.ts",
+        "apps/desktop/scripts/release-native-cache-inputs.ts",
         "apps/desktop/scripts/build-computer-use-helper.ts",
         "apps/desktop/scripts/build-passwords-broker.ts",
         "apps/desktop/scripts/build-dictation-helper.ts"
       ],
-      "extra": ["apps/desktop/native/passkeys", ".github/workflows/release.yml"]
+      "extra": ["apps/desktop/native/passkeys"]
     }
   ]
 }

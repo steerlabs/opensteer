@@ -3,10 +3,13 @@
  * records onto these; the components never read a client or a route.
  */
 
+import type { TeamAskOwnerControl } from "@opensteer/client/team";
+
 export type Presence = "active" | "away";
 
 /** A member as the viewer sees them. */
 export interface PersonView {
+  readonly externalTeam?: string;
   readonly id: string;
   readonly name: string;
   /** Unique per team, without "@"; their agent's handle is `<handle>-agent`. */
@@ -32,9 +35,10 @@ export type AuthorView =
 /**
  * A structured mention, in the words this viewer reads: their own agent is
  * "My agent", someone else's is "Maya's agent". `agent` is an ask its owner
- * made; `agent-reference` names someone else's agent and wakes nothing.
+ * made; `agent-reference` names someone else's agent and asks its owner.
  */
 export interface MentionView {
+  readonly externalTeam?: string;
   readonly handle: string;
   readonly label: string;
   readonly tone: "you" | "person" | "agent" | "agent-reference";
@@ -51,6 +55,7 @@ export interface FileView {
 
 /** A message the server has not confirmed, or refused. */
 export type SendStateView =
+  | { readonly kind: "retryable"; readonly reason: string }
   | { readonly kind: "sending" }
   | { readonly kind: "queued" }
   | { readonly kind: "failed"; readonly reason: string };
@@ -126,7 +131,16 @@ export interface AgentRequestView {
     | { readonly kind: "cannot-post" };
 }
 
+/** A teammate's ask under its message: the line everyone reads, or its owner's way to answer. */
+export interface AskStatusView {
+  readonly id: string;
+  readonly label: string;
+  /** Only the owner's, in place of "Waiting for <them>" (`teamAskOwnerControl`). */
+  readonly control?: Exclude<TeamAskOwnerControl, { readonly kind: "none" }>;
+}
+
 export interface MessageView {
+  readonly askStatuses?: readonly AskStatusView[];
   readonly id: string;
   readonly author: AuthorView;
   readonly at: string;
@@ -169,6 +183,8 @@ export interface ChannelInstructionsView {
 }
 
 export interface ChannelView {
+  readonly shareLabel?: string;
+  readonly shareDetail?: string;
   readonly id: string;
   readonly kind: ChannelKind;
   /** A channel's name without "#"; for a DM, the other people's names. */
@@ -193,6 +209,7 @@ export type ChannelTab = "messages" | "files" | "pinned";
 
 /** A channel or DM row in the sidebar. Unread is a dot of weight; only mentions are counted. */
 export interface ChannelRowView {
+  readonly shared?: boolean;
   readonly id: string;
   readonly kind: ChannelKind;
   readonly name: string;

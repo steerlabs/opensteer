@@ -1,7 +1,16 @@
+import { personalRouteInvalid } from "../side-memory-validity.js";
+import { sideMemory } from "../side-memory.js";
 import { layoutRoute } from "../navigation-presentations.js";
-import type { PersonalSurfaceDestination } from "@opensteer/client/host";
-import { CommonActions, StackActions, type NavigationAction } from "@react-navigation/native";
+import type { TabId } from "@opensteer/core";
+import { StackActions, type NavigationAction } from "@react-navigation/native";
 import { isRecord } from "@opensteer/shared/isRecord";
+import {
+  openTopLevel,
+  sidebarSwipes,
+  topLevelRoute,
+  type StackView,
+  type TopLevelTarget,
+} from "../top-level.js";
 import {
   useCallback,
   useEffect,
@@ -15,7 +24,6 @@ import {
   AccessibilityInfo,
   BackHandler,
   I18nManager,
-  Keyboard,
   Platform,
   StyleSheet,
   useWindowDimensions,
@@ -23,6 +31,7 @@ import {
   type HostInstance,
   type LayoutChangeEvent,
 } from "react-native";
+import { dismissKeyboard } from "../ui/composer-editor.js";
 import ReanimatedDrawerLayout, {
   DrawerKeyboardDismissMode,
   DrawerLockMode,
@@ -38,7 +47,8 @@ import {
   useReservedRegionsReady,
 } from "react-native-reserved-regions";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { paramsDestination, tabsRoute } from "../browser/surface-route.js";
+import { useVerticalBar } from "../ui/vertical-bar.js";
+import { paramsTabId, tabRoute } from "../browser/surface-route.js";
 import {
   deriveShell,
   edgesAround,
@@ -56,6 +66,7 @@ import {
   SidebarControlContext,
   SidebarDockedContext,
   SidebarVisibleContext,
+  sidebarRef,
   type SidebarControl,
 } from "./sidebar-context.js";
 import {
@@ -64,14 +75,18 @@ import {
   type SidebarActions,
   type SidebarDestination,
 } from "./sidebar-panel.js";
+import { chooseSide, type SidebarSides } from "@opensteer/client/team";
+import { sideOfScreen, type SidebarSide } from "./sidebar-side.js";
+import type { TeamPlace } from "./team-side.js";
 
 /**
  * The sidebar around the app's one native stack.
  *
  * It is the stack's own `layout`, so it wraps the navigator in place: there is
- * still exactly one navigator, one history and one `navigationRef`, and every
- * destination the sidebar offers is an ordinary route pushed over Home. Native
- * sheets present above it, because UIKit presents them from the stack itself.
+ * still exactly one navigator and one `navigationRef`. The active side
+ * resumes its route chain over the same mounted Home.
+ * Native sheets present above it, because UIKit presents them from the stack
+ * itself.
  *
  * Where the window has room, the sidebar docks as a column beside the stack,
  * so a task, a team or a destination is always one press from another; there is
@@ -84,37 +99,43 @@ import {
  * and unfolding keep every screen, draft, scroll position and stream exactly
  * where it was.
  *
- * The drawer can be dragged open only from Home, Tabs and
- * Automations — the screens that carry the Menu and have no Back of their own —
- * so it never competes with a task's edge-swipe back or a sheet's gestures.
+ * The drawer can be dragged open only from the top-level screen — the one
+ * that carries the Menu and has no Back of its own — so it never competes with
+ * a drill-in's swipe back or a sheet's gestures.
  */
 /** The narrowest drawer worth opening: past a fold nearer than this it may cross it. */
 const sidebarMinimumWidth = 260;
 
+/** The top-level screens the sidebar marks as current by name rather than by a row of their own. */
 const destinations: ReadonlySet<string> = new Set<SidebarDestination>([
+  "Apps",
   "Home",
   "Schedules",
   "Tabs",
+]);
+
+/** Team places a team's side presents over the screen in front rather than making top-level. */
+const presentedTeamPlaces: ReadonlySet<TeamPlace["name"]> = new Set([
+  "TeamInvites",
+  "TeamNewChannel",
+  "TeamNewMessage",
+  "TeamSettings",
 ]);
 
 /**
  * Each platform's own sidebar. iOS moves the screen aside to show what is
  * beside it, the way its conversation apps do, and dims what stays in view;
  * Android lays Material's modal drawer over the screen under a heavier scrim.
+ * Beside iPhone Duo's vertical bar iOS lays the list over the screen too:
+ * UIKit pins that bar, and the screen's bar items in it, to the window, so a
+ * screen moved under it strands its Menu a drawer's width from the bar.
  */
-const sidebarMotion =
-  Platform.OS === "ios"
-    ? { overlayColor: "rgba(0, 0, 0, 0.45)", type: DrawerType.SLIDE }
-    : { overlayColor: "rgba(0, 0, 0, 0.62)", type: DrawerType.FRONT };
-
-/** As much of the stack's state as the sidebar reads. */
-interface StackView {
-  readonly index: number;
-  readonly routes: readonly {
-    readonly key: string;
-    readonly name: string;
-    readonly params?: object | undefined;
-  }[];
+function sidebarMotion(verticalBar: boolean): { overlayColor: string; type: DrawerType } {
+  if (Platform.OS !== "ios") return { overlayColor: "rgba(0, 0, 0, 0.62)", type: DrawerType.FRONT };
+  return {
+    overlayColor: "rgba(0, 0, 0, 0.45)",
+    type: verticalBar ? DrawerType.FRONT : DrawerType.SLIDE,
+  };
 }
 
 interface ShellProps {
@@ -150,6 +171,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   // The shell surface's own safe area: a conversation is judged on the room it
   // has once the notch or bar at its edge is taken out.
   const insets = useSafeAreaInsets();
+  const motion = sidebarMotion(useVerticalBar());
   // Where the reader had scrolled the task list. The drawer and the docked
   // column are different views of it, and the shell outlives both, so a fold
   // that swaps one for the other returns the list where it was.
@@ -174,23 +196,67 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
       ? base.params["deploymentId"]
       : null;
   const focused = layoutRoute(props.state);
+  // The sidebar marks the top-level screen, not whatever is drilled into over
+  // it: a subagent opened from a task leaves that task the one marked open.
+  const topLevel = topLevelRoute(props.state);
   const destination =
-    deploymentId !== null && focused !== undefined && destinations.has(focused.name)
-      ? (focused.name as SidebarDestination)
+    deploymentId !== null && topLevel !== undefined && destinations.has(topLevel.name)
+      ? (topLevel.name as SidebarDestination)
       : null;
-  const focusedParams = isRecord(focused?.params) ? focused.params : null;
+  const topParams = isRecord(topLevel?.params) ? topLevel.params : null;
   const selectedThreadId =
-    focused?.name === "Thread" && typeof focusedParams?.["threadId"] === "string"
-      ? focusedParams["threadId"]
+    topLevel?.name === "Thread" && typeof topParams?.["threadId"] === "string"
+      ? topParams["threadId"]
       : null;
-  const openTeamId = typeof focusedParams?.["teamId"] === "string" ? focusedParams["teamId"] : null;
+  const openTeamId = typeof topParams?.["teamId"] === "string" ? topParams["teamId"] : null;
+  // The screen in front, sheets included: Find over a task is not the task.
+  const front = props.state.routes[props.state.index];
+  const frontParams = isRecord(front?.params) ? front.params : null;
+  const viewedThreadId =
+    front?.name === "Thread" && typeof frontParams?.["threadId"] === "string"
+      ? frontParams["threadId"]
+      : null;
+  const channelRoute = props.state.routes
+    .slice(0, props.state.index + 1)
+    .findLast((route) => route.name === "TeamChannel");
+  const channelParams = isRecord(channelRoute?.params) ? channelRoute.params : null;
+  const openChannelId =
+    channelRoute?.name === "TeamChannel" && typeof channelParams?.["channelId"] === "string"
+      ? channelParams["channelId"]
+      : null;
+  // The side follows the screen in front each time that changes, including back
+  // to one shown before; in between, only the person moves it. Kept here, so the
+  // drawer and the column agree. The panel shows Tasks for a team it no longer lists.
+  const frontSide = sideOfScreen(topLevel);
+  const [sides, setSides] = useState<SidebarSides>(() =>
+    chooseSide({ side: "tasks", recent: null }, frontSide ?? "tasks"),
+  );
+  const setSide = useCallback(
+    (side: SidebarSide) => setSides((held) => chooseSide(held, side)),
+    [],
+  );
+  const frontKey = topLevel?.key ?? null;
+  const [sideFront, setSideFront] = useState(frontKey);
+  if (sideFront !== frontKey) {
+    setSideFront(frontKey);
+    if (frontSide !== null) setSides((held) => chooseSide(held, frontSide));
+  }
+  const switchSide = useCallback(
+    (next: SidebarSide) => {
+      setSide(next);
+      const action = sideMemory.resume(latest.current, next);
+      if (action !== null) props.navigation.dispatch(action);
+    },
+    [props.navigation],
+  );
+  const swipes = sidebarSwipes(focused, props.state);
   // The exact tab, app or phone in front, as its route names it; held while
   // the route's params are, so the panel is not redrawn for the same one.
   const pageParams = focused?.name === "WorkspaceBrowser" ? focused.params : undefined;
-  const pageDestination = useMemo(() => paramsDestination(pageParams), [pageParams]);
+  const pageTabId = useMemo(() => paramsTabId(pageParams), [pageParams]);
   // However it was reached, a page in front arranges itself and whoever is
   // beside it around the folds it can use, in the sidebar's room too.
-  const page = pageDestination !== null;
+  const page = pageTabId !== null;
 
   // The arrangement room last chose, held across renders so a width hovering
   // on the threshold does not flip it. A page borrows the sidebar's room
@@ -253,28 +319,47 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     surfaceRegions(props.bounds, regions).occlusions,
   );
 
-  const close = useCallback(() => drawer.current?.closeDrawer(), []);
+  // A choice closes the drawer and the screen it changes closes it again; a
+  // second close would restart the spring from rest, so the slide would stall.
+  const closing = useRef(false);
+  const close = useCallback(() => {
+    if (!visibleRef.current || closing.current) return;
+    closing.current = true;
+    drawer.current?.closeDrawer();
+  }, []);
   const open = useCallback((from?: HostInstance | null) => {
     // Docked, the sidebar is already beside the screen: the keyboard and the
     // draft's focus stay where they are.
     if (dockedRef.current) return;
     // The keyboard would otherwise stay up over the drawer. The draft is the
     // composer's and is untouched; only the field loses focus.
-    Keyboard.dismiss();
+    dismissKeyboard();
     trigger.current = from ?? null;
     restoreFocus.current = true;
+    closing.current = false;
     drawer.current?.openDrawer();
   }, []);
   const control = useMemo<SidebarControl>(() => ({ close, open }), [close, open]);
+  useEffect(() => {
+    sidebarRef.current = control;
+    return () => {
+      if (sidebarRef.current === control) sidebarRef.current = null;
+    };
+  }, [control]);
 
   const onDrawerStateChanged = useCallback((state: DrawerState, willShow: boolean) => {
+    if (state === DrawerState.IDLE || willShow) closing.current = false;
     // A drag reports `willShow` as false while it is still deciding, so any
     // movement counts as covering the screen until the drawer settles.
     const next = state === DrawerState.IDLE ? willShow : true;
     if (visibleRef.current === next) return;
     visibleRef.current = next;
     setVisible(next);
-    if (next) return;
+    // The drawer's own drag dismissal reaches only React Native's text inputs, not the composer's.
+    if (next) {
+      dismissKeyboard();
+      return;
+    }
     const from = trigger.current;
     trigger.current = null;
     if (restoreFocus.current && from !== null)
@@ -290,8 +375,20 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   const hostClient = useSelectedHostClient();
   const readerId = useHostUserId(hostClient);
   useEffect(() => {
-    if (visibleRef.current) drawer.current?.closeDrawer();
-  }, [deploymentId, docked, focusedKey, hostClient, readerId]);
+    if (hostClient === null) return;
+    const reconcile = (): void => {
+      const snapshot = hostClient.getSnapshot();
+      const action = sideMemory.trim(latest.current, (route) =>
+        personalRouteInvalid(route, snapshot),
+      );
+      if (action !== null) props.navigation.dispatch(action);
+    };
+    reconcile();
+    return hostClient.subscribe(reconcile);
+  }, [hostClient, props.navigation]);
+  useEffect(() => {
+    close();
+  }, [close, deploymentId, docked, focusedKey, hostClient, readerId]);
   // Another Deployment's list starts at its top.
   useEffect(() => {
     scrollMemory.offset = 0;
@@ -301,44 +398,24 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   useEffect(() => {
     if (!visible) return;
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
-      drawer.current?.closeDrawer();
+      close();
       return true;
     });
     return () => subscription.remove();
-  }, [visible]);
+  }, [close, visible]);
 
   const leave = useCallback(() => {
     restoreFocus.current = false;
-    drawer.current?.closeDrawer();
-  }, []);
+    close();
+  }, [close]);
 
   const actions = useMemo<SidebarActions>(() => {
     const navigation = props.navigation;
-    /**
-     * Goes to a place the drawer offers. From Home or another drawer place —
-     * the only screens the drawer opens over — a task, tab or team is pushed,
-     * so Back returns there. A docked drawer is beside every other screen, so
-     * from anywhere else the choice returns to Home's level first: Home's own
-     * route stays, so the mounted Home keeps its draft, and the stack never
-     * grows by moving around the drawer.
-     */
-    const go = (name: string, params: object, replaceDestination: boolean): void => {
-      const state = latest.current;
-      const home = state.routes[0];
-      const current = state.routes[state.index];
-      if (home === undefined || home.name !== "Home") return;
-      if (current === undefined || state.index === 0) {
-        navigation.dispatch(StackActions.push(name, params));
-        return;
-      }
-      if (destinations.has(current.name)) {
-        navigation.dispatch(
-          replaceDestination ? StackActions.replace(name, params) : StackActions.push(name, params),
-        );
-        return;
-      }
-      const reset = CommonActions.reset({ index: 1, routes: [home, { name, params }] });
-      navigation.dispatch({ payload: reset.payload ?? {}, type: reset.type });
+    /** An explicit row replaces its own side over the mounted Home. */
+    const go = (target: TopLevelTarget): void => {
+      leave();
+      const action = openTopLevel(latest.current, target);
+      if (action !== null) navigation.dispatch(action);
     };
     const homeDeployment = (): string | null => {
       const home = latest.current.routes[0];
@@ -348,83 +425,48 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
         ? home.params["deploymentId"]
         : null;
     };
-    const show = (target: SidebarDestination): void => {
-      leave();
-      const state = latest.current;
+    /** One of the Deployment's own lists, which name nothing but the Deployment. */
+    const show = (name: SidebarDestination | "DoneTasks" | "TaskSearch"): void => {
       const deployment = homeDeployment();
-      if (deployment === null) return;
-      if (target === "Home") {
-        if (state.index > 0) navigation.dispatch(StackActions.popToTop());
-        return;
-      }
-      const params = { deploymentId: deployment };
-      if (same(target, params)) return;
-      // Home stays mounted underneath, untouched, so its draft is exactly
-      // where it was. One destination replaces another in place.
-      go(target, params, true);
+      if (deployment === null) return leave();
+      go({ name, params: { deploymentId: deployment } });
     };
-    const same = (name: string, params: Record<string, unknown>): boolean => {
-      const current = latest.current.routes[latest.current.index];
-      return (
-        current?.name === name &&
-        isRecord(current.params) &&
-        Object.entries(params).every(([key, value]) => current.params?.[key as never] === value)
-      );
+    const present = (action: NavigationAction): void => {
+      leave();
+      navigation.dispatch(action);
     };
     return {
       close,
       onHome: () => show("Home"),
-      onOpenDone: (targetDeploymentId) => {
-        leave();
-        if (same("DoneTasks", { deploymentId: targetDeploymentId })) return;
-        go("DoneTasks", { deploymentId: targetDeploymentId }, false);
-      },
-      onOpenQuietlyMoved: (targetDeploymentId) => {
-        leave();
-        navigation.dispatch(
-          StackActions.push("QuietlyMoved", { deploymentId: targetDeploymentId }),
-        );
-      },
-      onOpenPlace: (destination: PersonalSurfaceDestination) => {
-        leave();
+      onOpenDone: () => show("DoneTasks"),
+      onOpenQuietlyMoved: (targetDeploymentId) =>
+        present(StackActions.push("QuietlyMoved", { deploymentId: targetDeploymentId })),
+      onOpenTab: (tabId: TabId) => {
         const deployment = homeDeployment();
-        if (deployment === null) return;
+        if (deployment === null) return leave();
         // Exactly the tab, alone: who opened it, or who is in front, is not
         // whom it talks to.
-        go("WorkspaceBrowser", tabsRoute(deployment, destination), false);
+        go({ name: "WorkspaceBrowser", params: tabRoute(deployment, tabId) });
       },
-      onOpenTask: (targetDeploymentId, threadId, requestId) => {
-        leave();
-        const params = {
-          deploymentId: targetDeploymentId,
-          threadId,
-          ...(requestId === undefined ? {} : { requestId }),
-        };
-        if (same("Thread", params)) return;
-        go("Thread", params, false);
-      },
-      onOpenTeam: (teamId) => {
-        leave();
-        if (same("TeamHome", { teamId })) return;
-        go("TeamHome", { teamId }, false);
-      },
-      onTeams: () => {
-        leave();
-        if (latest.current.routes[latest.current.index]?.name === "Teams") return;
-        go("Teams", {}, false);
-      },
-      onTeamSetup: (hostedTeamId) => {
-        leave();
-        navigation.dispatch(StackActions.push("TeamSetup", { hostedTeamId }));
-      },
-      onSearch: (targetDeploymentId) => {
-        leave();
-        go("TaskSearch", { deploymentId: targetDeploymentId }, false);
-      },
-      onSettings: () => {
-        leave();
-        navigation.dispatch(StackActions.push("Settings"));
-      },
+      onApps: () => show("Apps"),
+      onOpenNeedsYou: (targetDeploymentId) =>
+        go({ name: "NeedsYou", params: { deploymentId: targetDeploymentId } }),
+      onOpenTask: (targetDeploymentId, threadId, requestId) =>
+        go({
+          name: "Thread",
+          params: {
+            deploymentId: targetDeploymentId,
+            threadId,
+            ...(requestId === undefined ? {} : { requestId }),
+          },
+        }),
+      onOpenTeamPlace: (place) =>
+        presentedTeamPlaces.has(place.name)
+          ? present(StackActions.push(place.name, place.params))
+          : go(place),
+      onTeamSetup: (hostedTeamId) => present(StackActions.push("TeamSetup", { hostedTeamId })),
+      onSearch: () => show("TaskSearch"),
+      onSettings: () => present(StackActions.push("Settings")),
       onSchedules: () => show("Schedules"),
       onTabs: () => show("Tabs"),
     };
@@ -437,17 +479,16 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
           <ReanimatedDrawerLayout
             drawerBackgroundColor="transparent"
             drawerLockMode={
-              destination === null || docked
-                ? DrawerLockMode.LOCKED_CLOSED
-                : DrawerLockMode.UNLOCKED
+              swipes && !docked ? DrawerLockMode.UNLOCKED : DrawerLockMode.LOCKED_CLOSED
             }
-            drawerPosition={DrawerPosition.LEFT}
-            drawerType={sidebarMotion.type}
+            // The leading edge, where the column docks and iOS's own swipe starts.
+            drawerPosition={rtl ? DrawerPosition.RIGHT : DrawerPosition.LEFT}
+            drawerType={motion.type}
             drawerWidth={drawerWidth}
             edgeWidth={28}
             keyboardDismissMode={DrawerKeyboardDismissMode.ON_DRAG}
             onDrawerStateChanged={onDrawerStateChanged}
-            overlayColor={sidebarMotion.overlayColor}
+            overlayColor={motion.overlayColor}
             ref={drawer}
             renderNavigationView={() =>
               docked ? null : (
@@ -460,8 +501,13 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                   docked={false}
                   scroll={scrollMemory}
                   shelves={shelfMemory}
+                  onSide={switchSide}
+                  openChannelId={openChannelId}
                   openTeamId={openTeamId}
                   selectedThreadId={selectedThreadId}
+                  selectedTabId={pageTabId}
+                  viewedThreadId={viewedThreadId}
+                  sides={sides}
                   visible={visible}
                 />
               )
@@ -498,8 +544,13 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                       docked
                       scroll={scrollMemory}
                       shelves={shelfMemory}
+                      onSide={switchSide}
+                      openChannelId={openChannelId}
                       openTeamId={openTeamId}
                       selectedThreadId={selectedThreadId}
+                      selectedTabId={pageTabId}
+                      viewedThreadId={viewedThreadId}
+                      sides={sides}
                       visible
                     />
                   </Pane>

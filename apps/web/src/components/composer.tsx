@@ -1,3 +1,4 @@
+import { compactionOfferText } from "@opensteer/client/host";
 import {
   dictationLabels,
   dictationView,
@@ -16,9 +17,7 @@ import {
   useMemo,
   useRef,
   useState,
-  type ClipboardEvent,
   type DragEvent,
-  type KeyboardEvent,
   type ReactNode,
 } from "react";
 import {
@@ -27,22 +26,17 @@ import {
   type ContentPart,
   type PlaceContentPart,
 } from "@opensteer/core";
-import {
-  HostClientRequestError,
-  mutationIdempotencyKey,
-  type HostClient,
-  type PlaceItem,
-} from "@opensteer/client/host";
+import { mutationIdempotencyKey, type HostClient, type PlaceItem } from "@opensteer/client/host";
+import { collectComposerTokens, type ComposerSnapshot } from "@opensteer/client/references";
 import { AttachmentTray } from "./attachments/attachment-tray.js";
-import type { ComposerContext, ContextChip } from "./workspace/composer-context.js";
 import {
-  AttachMenu,
-  MentionList,
-  caretLeft,
-  mentionListHeight,
-  mentionRoom,
-  pickablePlaces,
-} from "./workspace/place-picker.js";
+  ComposerEditor,
+  type ComposerChange,
+  type ComposerEditorControl,
+} from "./composer-editor.js";
+import { useReferencePicker, type ComposerLinkCandidate } from "./composer-reference-picker.js";
+import type { ComposerContext, ContextChip } from "./workspace/composer-context.js";
+import { AttachMenu, pickablePlaces } from "./workspace/place-picker.js";
 import { PlaceMark } from "./workspace/place-mark.js";
 import { useFocusRescue } from "./workspace/occupant-marks.js";
 import {
@@ -50,9 +44,10 @@ import {
   type AttachmentTarget,
 } from "./attachments/use-staged-attachments.js";
 import { composerDrafts, type ReturnedToDraft } from "./composer-drafts.js";
+import { forgetPending, unanswered } from "./pending-sends.js";
 import { composerFold, FoldRow, FoldToFit } from "./fold-to-fit.js";
 import { Icon } from "./icon.js";
-import { textWidth } from "./text-width.js";
+import { canvasFont, textWidth } from "./text-width.js";
 
 /**
  * A message this one answers, named by its exact source id. The excerpt and
@@ -70,6 +65,7 @@ export interface ComposerQuote {
 
 /** What a send carries beside its words. */
 export interface ComposerSubmission {
+  readonly compaction?: import("@opensteer/core").CompactionSendChoice;
   /** The places the message includes — pages, Mac apps, phones — as the draft held them. */
   readonly places: readonly PlaceContentPart[];
   /** Exact accepted command content, only when a saved send is sent again. */
@@ -89,6 +85,7 @@ export interface ComposerSubmission {
  * same message, or it is a second one.
  */
 export interface PendingSubmission {
+  readonly compaction?: import("@opensteer/core").CompactionSendChoice;
   readonly places?: readonly PlaceContentPart[];
   /** Exact accepted command content, only when a saved send is sent again. */
   readonly content?: readonly ContentPart[];
@@ -128,6 +125,7 @@ export interface ComposerRestore {
 }
 
 interface ComposerProps {
+  compactionOffer?: { visible: boolean; dismiss: () => void };
   dictationScope?: string;
   hidden?: boolean;
   variant?: "conversation" | "work";
@@ -136,6 +134,11 @@ interface ComposerProps {
    * the send button stays away until there is something to send with.
    */
   settingsRequired?: boolean;
+  /**
+   * References `@` can write into the words, for a query; each is inserted as
+   * its Markdown link. Without it `@` offers places only.
+   */
+  references?: ((query: string) => readonly ComposerLinkCandidate[]) | null | undefined;
   /** Where attached files are uploaded; without it the composer takes words only. */
   attachments?: AttachmentTarget | null | undefined;
   autoFocus?: boolean;
@@ -150,10 +153,10 @@ interface ComposerProps {
   /** Chat's voice button, beside Send. */
   voice?: ReactNode;
   /**
-   * Published so a surface that took the keyboard away — the AI picker's
-   * review, a Find panel — can give it back to the words being written.
+   * The editable field, published so a surface that took the keyboard away —
+   * the AI picker's review, a Find panel — can give it back to the words.
    */
-  inputRef?: React.RefObject<HTMLTextAreaElement | null> | undefined;
+  inputRef?: React.RefObject<HTMLElement | null> | undefined;
   /**
    * Where this draft is kept. Fixed for the life of a composer: a parent that
    * shows another draft mounts another composer, and its place context with it.
@@ -223,6 +226,7 @@ export function Composer({
   attachments = null,
   autoFocus,
   placeContext = null,
+  references = null,
   disabled = false,
   readOnly = false,
   footerExtras,
@@ -232,6 +236,7 @@ export function Composer({
   onHoldingChange,
   onEscape,
   onSend,
+  compactionOffer,
   onStop,
   pendingSends = null,
   placeholder,
@@ -256,9 +261,9 @@ export function Composer({
   latestDraft.current = draft;
   const ownerDraft = useMemo(() => ({ text: "" }), [owner]);
   ownerDraft.text = draft;
-  const pendingSelection = useRef<DictationSelection | null>(null);
-  const [selectionVersion, setSelectionVersion] = useState(0);
   const baseSelection = useRef<DictationSelection | null>(null);
+  /** The words as they were under a dictation preview, to come back to if it is cancelled. */
+  const dictationBase = useRef<ComposerSnapshot | null>(null);
   const waitingSend = useRef(false);
   const currentOwner = useRef(owner);
   currentOwner.current = owner;
@@ -272,15 +277,6 @@ export function Composer({
   const [quote, setQuote] = useState<ComposerQuote | null>(saved?.quote ?? null);
   const context = placeContext?.context ?? null;
   const freezeContext = useEffectEvent(() => context?.freeze());
-  // `@` typed at a word start: where it began, what follows it, the row chosen.
-  const [mention, setMention] = useState<{
-    readonly active: number;
-    /** No room for the list above the words: it opens below them. */
-    readonly below: boolean;
-    readonly left: number;
-    readonly query: string;
-    readonly start: number;
-  } | null>(null);
   const [attachOpen, setAttachOpen] = useState(false);
   const attachRef = useRef<HTMLButtonElement | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -300,44 +296,55 @@ export function Composer({
       mounted.current = false;
     };
   }, []);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const editorRef = useRef<ComposerEditorControl | null>(null);
+  /** The editable element: where focus goes back to. */
+  const fieldRef = useRef<HTMLElement | null>(null);
   const microphoneRef = useRef<HTMLButtonElement | null>(null);
-  // A saved draft is opened to be finished, so writing continues where it ends.
-  const continuesDraft = useRef(autoFocus === true);
-  useLayoutEffect(() => {
-    const textarea = textareaRef.current;
-    if (continuesDraft.current && textarea)
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-  }, []);
   useLayoutEffect(() => {
     const mic = microphoneRef.current;
-    if (mic?.disabled && document.activeElement === mic) textareaRef.current?.focus();
+    if (mic?.disabled && document.activeElement === mic) editorRef.current?.focus();
   }, [view.phase, view.blocked, disabled, readOnly]);
   const displayedText = preview?.text ?? draft;
   const adoptEdit = (value: string) => {
     latestDraft.current = value;
     setDraft(value);
+    // Words typed over a dictation preview keep it: it is no longer something to undo.
+    dictationBase.current = null;
     if (dictating) dictation?.release(owner);
     else if (view.notice) dictation?.dismissNotice();
   };
+  // Dictation shows its words as they come, outside the undo history, with the
+  // caret after them; the caret is the person's again until the words change.
+  // Cancelling puts back exactly what was there.
+  const latestPreview = useRef(preview);
+  latestPreview.current = preview;
+  const previewText = preview?.text ?? null;
+  useLayoutEffect(() => {
+    const editor = editorRef.current;
+    const shown = latestPreview.current;
+    if (!editor) return;
+    if (shown) {
+      dictationBase.current ??= editor.readSnapshot();
+      editor.preview({ ...dictationBase.current, text: shown.text, selection: shown.selection });
+      return;
+    }
+    const base = dictationBase.current;
+    dictationBase.current = null;
+    if (base) editor.restore(base);
+  }, [previewText]);
+  const readSelection = (): DictationSelection =>
+    editorRef.current?.readSnapshot().selection ?? {
+      start: latestDraft.current.length,
+      end: latestDraft.current.length,
+    };
   const startDictation = () => {
     if (!dictation || dictation.getSnapshot().phase !== "idle") return;
     performance.mark("dictation-press");
-    const field = textareaRef.current;
-    baseSelection.current = {
-      start: field?.selectionStart ?? draft.length,
-      end: field?.selectionEnd ?? draft.length,
-    };
-    field?.focus();
+    baseSelection.current = readSelection();
+    editorRef.current?.focus();
     dictation.start({
       owner,
-      read: () => ({
-        text: ownerDraft.text,
-        selection: {
-          start: textareaRef.current?.selectionStart ?? latestDraft.current.length,
-          end: textareaRef.current?.selectionEnd ?? latestDraft.current.length,
-        },
-      }),
+      read: () => ({ text: ownerDraft.text, selection: readSelection() }),
       commit: (text, selection) => {
         const before = ownerDraft.text;
         ownerDraft.text = text;
@@ -353,21 +360,36 @@ export function Composer({
         }
         if (currentOwner.current !== owner) return;
         latestDraft.current = text;
-        pendingSelection.current = selection;
-        setSelectionVersion((version) => version + 1);
-        setDraft(text);
+        const editor = editorRef.current;
+        const base = dictationBase.current;
+        dictationBase.current = null;
+        if (!editor) {
+          setDraft(text);
+          return;
+        }
+        // The words that were there, then one undoable step to the dictated text.
+        if (base) editor.restore(base);
+        editor.replace({ start: 0, end: base?.text.length ?? before.length }, text, {
+          historyGroup: "dictation",
+        });
+        editor.setSelection(selection);
       },
     });
   };
   const cancelDictation = () => {
-    textareaRef.current?.focus();
+    editorRef.current?.focus();
     if (view.phase === "downloading") {
       dictation?.cancel(owner);
       return;
     }
-    pendingSelection.current = baseSelection.current;
+    const selection = baseSelection.current;
     dictation?.cancel(owner);
-    setSelectionVersion((version) => version + 1);
+    if (selection) {
+      const base = dictationBase.current;
+      dictationBase.current = null;
+      if (base) editorRef.current?.restore({ ...base, selection });
+      else editorRef.current?.setSelection(selection);
+    }
   };
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const appliedRestore = useRef<ComposerRestore | null>(null);
@@ -387,38 +409,6 @@ export function Composer({
   const pending = current.value;
   const unreadable = current.unreadable;
 
-  const resize = useCallback(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    // An empty field is one line tall: a placeholder is never something to grow for.
-    if (textarea.value === "") {
-      textarea.style.removeProperty("height");
-      return;
-    }
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 240)}px`;
-  }, []);
-
-  useLayoutEffect(() => {
-    const selection = preview?.selection ?? pendingSelection.current;
-    if (selection) textareaRef.current?.setSelectionRange(selection.start, selection.end);
-    pendingSelection.current = null;
-    resize();
-  }, [displayedText, selectionVersion, resize]);
-
-  // The words re-wrap whenever the field's width changes — a pane resized, the
-  // field moving above the controls — not only when they are edited.
-  useLayoutEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea || typeof ResizeObserver === "undefined") return;
-    let width = textarea.clientWidth;
-    return observeResize([textarea], () => {
-      if (textarea.clientWidth === width) return;
-      width = textarea.clientWidth;
-      resize();
-    });
-  }, [resize]);
-
   useEffect(() => {
     if (!restore || appliedRestore.current === restore) return;
     appliedRestore.current = restore;
@@ -434,10 +424,11 @@ export function Composer({
     // standing above the field; only an explicit null takes it away.
     if (restore.quote !== undefined) setQuote(restore.quote);
     const frame = requestAnimationFrame(() => {
-      const textarea = textareaRef.current;
-      if (!textarea) return;
-      textarea.focus();
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      const editor = editorRef.current;
+      if (!editor) return;
+      editor.focus();
+      const end = editor.readSnapshot().text.length;
+      editor.setSelection({ start: end, end });
     });
     return () => cancelAnimationFrame(frame);
   }, [context, restore, restoreAttachments]);
@@ -526,6 +517,7 @@ export function Composer({
     setError(null);
     try {
       await onSend(submission.body, {
+        ...(submission.compaction ? { compaction: submission.compaction } : {}),
         attachments: submission.attachments,
         places: submission.places ?? [],
         ...(submission.content ? { content: submission.content } : {}),
@@ -536,7 +528,7 @@ export function Composer({
       forgetPending(owner, submission.idempotencyKey);
       hold(null);
       staged.release(carried);
-      textareaRef.current?.focus();
+      editorRef.current?.focus();
     } catch (sendError) {
       if (owner && unanswered(sendError)) {
         // Held as sent. Only "Send again" sends it, under the same key.
@@ -589,7 +581,10 @@ export function Composer({
     }
   };
 
-  const submit = async (text = latestDraft.current) => {
+  const submit = async (
+    text = latestDraft.current,
+    choice?: import("@opensteer/core").CompactionSendChoice,
+  ) => {
     const body = text.trim();
     const carried = staged.items;
     if (disabled || readOnly || submittingRef.current || !canSend) return;
@@ -600,6 +595,7 @@ export function Composer({
     const carriedQuote = quote;
     const places = context?.parts() ?? [];
     const submission: PendingSubmission = {
+      ...(choice || compactionOffer?.visible ? { compaction: choice ?? "compactFirst" } : {}),
       attachments: parts,
       body,
       ...(places.length > 0 ? { places } : {}),
@@ -612,6 +608,7 @@ export function Composer({
       setError(claimError instanceof Error ? claimError.message : "The message was not kept.");
       return;
     }
+    if (choice === "keepFullHistory") compactionOffer?.dismiss();
     attempted.current = submission.idempotencyKey;
     const ids = carried.map((item) => item.localId);
     setSending(new Set(ids));
@@ -619,7 +616,7 @@ export function Composer({
     // its own places. Nothing the send answers later reaches back into it.
     setDraft("");
     setQuote(null);
-    setMention(null);
+    picker.close();
     context?.reset();
     if (draftKey) composerDrafts.update(draftKey, { places: [], quote: null, text: "" });
     await deliver(submission, false, ids, carriedQuote);
@@ -627,12 +624,18 @@ export function Composer({
 
   const latestSubmit = useRef(submit);
   latestSubmit.current = submit;
-  const finishAndSend = async () => {
+  const finishAndSend = async (choice?: import("@opensteer/core").CompactionSendChoice) => {
     if (waitingSend.current) return;
     waitingSend.current = true;
     try {
       if (!dictating) {
-        await latestSubmit.current();
+        // What the field holds now, including input the browser has not yet reported.
+        const editor = editorRef.current;
+        const typed = editor
+          ? await editor.flushPendingInput(editor.readSnapshot().generation).catch(() => null)
+          : null;
+        if (typed?.composing) return;
+        await latestSubmit.current(typed?.text ?? latestDraft.current, choice);
         return;
       }
       const finish = dictation ? await dictation.stop(owner) : { kind: "idle" as const };
@@ -644,7 +647,10 @@ export function Composer({
         finish.kind === "aborted"
       )
         return;
-      await latestSubmit.current(finish.kind === "committed" ? finish.text : latestDraft.current);
+      await latestSubmit.current(
+        finish.kind === "committed" ? finish.text : latestDraft.current,
+        choice,
+      );
     } finally {
       waitingSend.current = false;
     }
@@ -691,100 +697,63 @@ export function Composer({
   }, [onStop, stopping, disabled, readOnly]);
 
   const allPlaces = context?.places ?? noPlaces;
-  const mentionPlaces = mention ? pickablePlaces(allPlaces, mention.query) : [];
-
-  /** The "@query" before the caret, when it starts a word and holds no space. */
-  const readMention = (textarea: HTMLTextAreaElement) => {
-    if (!placeContext) return;
-    const caret = textarea.selectionStart;
-    const before = textarea.value.slice(0, caret);
-    const at = before.lastIndexOf("@");
-    const query = at === -1 ? "" : before.slice(at + 1);
-    if (at === -1 || /\s/u.test(query) || (at > 0 && !/\s/u.test(before.charAt(at - 1)))) {
-      setMention(null);
-      return;
-    }
-    // The list opens at the "@", kept inside the box it opens from.
-    const frame = textarea.offsetParent instanceof HTMLElement ? textarea.offsetParent : null;
-    const room = frame?.clientWidth ?? 300;
-    const left = Math.max(0, Math.min(caretLeft(textarea, at), room - Math.min(300, room)));
-    const space = frame ? mentionRoom(frame) : null;
-    setMention((current) => ({
-      active: current?.start === at ? Math.min(current.active, 99) : 0,
-      below: space !== null && space.above < mentionListHeight && space.below > space.above,
-      left,
-      query,
-      start: at,
-    }));
-  };
+  const picker = useReferencePicker({
+    editor: editorRef,
+    field: fieldRef,
+    hostClient: placeContext?.hostClient ?? null,
+    links: references,
+    places: placeContext ? (query) => pickablePlaces(allPlaces, query) : null,
+    onPick: (row) => {
+      context?.freeze();
+      if (row.kind === "place") pickPlace(row.place);
+    },
+  });
 
   const pickPlace = (place: PlaceItem) => {
     if (!context) return;
     void context.add(place);
-    textareaRef.current?.focus();
+    editorRef.current?.focus();
   };
 
-  const pickMention = (place: PlaceItem) => {
-    const textarea = textareaRef.current;
-    if (!mention || !textarea) return;
-    // The "@" and what followed it were only how the place was found.
-    const end = mention.start + 1 + mention.query.length;
-    const next = draft.slice(0, mention.start) + draft.slice(end);
-    setDraft(next);
-    setMention(null);
-    pickPlace(place);
-    requestAnimationFrame(() => textarea.setSelectionRange(mention.start, mention.start));
-  };
-
-  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.nativeEvent.isComposing) return;
-    if (mention && mentionPlaces.length > 0 && !event.nativeEvent.isComposing) {
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
-        const step = event.key === "ArrowDown" ? 1 : -1;
-        setMention({
-          ...mention,
-          active: (mention.active + step + mentionPlaces.length) % mentionPlaces.length,
-        });
-        return;
-      }
-      if (event.key === "Enter" || event.key === "Tab") {
-        event.preventDefault();
-        const place = mentionPlaces[mention.active] ?? mentionPlaces[0];
-        if (place) pickMention(place);
-        return;
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        setMention(null);
-        return;
-      }
-    }
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-      event.preventDefault();
+  const handleKeyDown = (event: KeyboardEvent): boolean => {
+    if (picker.keyDown(event)) return true;
+    if (event.key === "Enter" && !event.shiftKey) {
       void finishAndSend();
-    } else if (event.key === "Escape" && dictating && !event.nativeEvent.isComposing) {
-      event.preventDefault();
+      return true;
+    }
+    if (event.key === "Escape" && dictating) {
       event.stopPropagation();
       void dictation?.stop(owner);
-    } else if (event.key === "Escape" && onEscape) {
-      event.preventDefault();
-      onEscape();
+      return true;
     }
+    if (event.key === "Escape" && onEscape) {
+      onEscape();
+      return true;
+    }
+    return false;
   };
 
-  const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    if (attachments === null) return;
-    const files = [...event.clipboardData.files];
-    if (files.length === 0) return;
+  const handlePaste = (event: ClipboardEvent): boolean => {
+    if (attachments === null) return false;
+    const files = [...(event.clipboardData?.files ?? [])];
+    if (files.length === 0) return false;
     // A copied file also puts its name on the clipboard as text; the file is
     // what was meant.
-    event.preventDefault();
     if (acceptsFiles) {
       context?.freeze();
       staged.add(files);
     }
+    return true;
+  };
+
+  const handleChange = (text: string, change: ComposerChange) => {
+    if (change === "api") {
+      latestDraft.current = text;
+      setDraft(text);
+      return;
+    }
+    adoptEdit(text);
+    context?.freeze();
   };
 
   const carriesFiles = (event: DragEvent<HTMLDivElement>) =>
@@ -817,11 +786,11 @@ export function Composer({
 
   const removeAttachment = (localId: string) => {
     staged.remove(localId);
-    textareaRef.current?.focus();
+    editorRef.current?.focus();
   };
 
   const fittedPlaceholder = useFittedPlaceholder(
-    textareaRef,
+    fieldRef,
     recipient,
     contextThing(chips),
     placeholder,
@@ -920,53 +889,45 @@ export function Composer({
         <Icon name="microphone" />
       </button>
     ) : null;
-  const mentionList =
-    mention && placeContext ? (
-      <MentionList
-        active={mention.active}
-        below={mention.below}
-        hostClient={placeContext.hostClient}
-        left={mention.left}
-        onPick={pickMention}
-        places={mentionPlaces}
-      />
-    ) : null;
+  const picks = placeContext !== null || references !== null;
+  const shown = useMemo(() => shownText(displayedText), [displayedText]);
   const field = (
-    <textarea
-      ref={(element) => {
-        textareaRef.current = element;
+    <ComposerEditor
+      autoFocus={autoFocus === true}
+      className="composer__input"
+      fieldAttributes={{
+        "aria-label": "Message",
+        "aria-autocomplete": picks ? "list" : undefined,
+        "aria-controls": picker.expanded ? "composer-mention-list" : undefined,
+        "aria-expanded": picks ? String(picker.expanded) : undefined,
+        "data-composer-input": "",
+        "data-fold": variant === "conversation" ? String(composerFold.field) : undefined,
+        // Beside its controls, the field needs room for what it shows on one
+        // line: its plain placeholder, or the words being written. Without that
+        // room it moves above the controls rather than be squeezed. The "about
+        // this page" form shows only where it fits; the attached page says the same.
+        "data-fold-text":
+          variant === "conversation"
+            ? shown || placeholderFloor(recipient, placeholder)
+            : undefined,
+      }}
+      fieldRef={(element) => {
+        fieldRef.current = element;
         if (inputRef) inputRef.current = element;
       }}
-      autoFocus={autoFocus}
-      aria-label="Message"
-      className="composer__input"
-      data-fold={variant === "conversation" ? composerFold.field : undefined}
-      // Beside its controls, the field needs room for what it shows on one
-      // line: its plain placeholder, or the words being written. Without that
-      // room it moves above the controls rather than be squeezed. The "about
-      // this page" form shows only where it fits; the attached page says the same.
-      data-fold-text={
-        variant === "conversation"
-          ? displayedText || placeholderFloor(recipient, placeholder)
-          : undefined
+      onBlur={picker.close}
+      onChange={handleChange}
+      onCompositionStart={() =>
+        adoptEdit(editorRef.current?.readSnapshot().text ?? latestDraft.current)
       }
-      data-composer-input=""
-      readOnly={readOnly}
-      aria-autocomplete={placeContext ? "list" : undefined}
-      aria-controls={mention && mentionPlaces.length > 0 ? "composer-mention-list" : undefined}
-      aria-expanded={placeContext ? mention !== null && mentionPlaces.length > 0 : undefined}
-      onBlur={() => setMention(null)}
-      onChange={(event) => {
-        adoptEdit(event.target.value);
-        context?.freeze();
-        readMention(event.target);
-      }}
-      onCompositionStart={(event) => adoptEdit(event.currentTarget.value)}
       onKeyDown={handleKeyDown}
       onPaste={handlePaste}
+      onSelectionChange={picker.read}
       placeholder={fittedPlaceholder}
-      rows={1}
-      value={displayedText}
+      readOnly={readOnly}
+      ref={editorRef}
+      scope="personal"
+      value={draft}
     />
   );
   // One toolbar on every composer: Attach, the AI's settings (or dictation's
@@ -979,7 +940,7 @@ export function Composer({
           view={view}
           onCancel={cancelDictation}
           onStop={() => void dictation.stop(owner)}
-          returnFocusTo={textareaRef}
+          returnFocusTo={fieldRef}
         />
       ) : (
         <>
@@ -995,17 +956,22 @@ export function Composer({
           disabled={stopping || disabled || readOnly}
           label={stopLabel}
           onStop={() => void stop()}
-          returnFocusTo={textareaRef}
+          returnFocusTo={fieldRef}
         />
       ) : null}
       {showSend ? (
         <button
-          aria-label={queues ? "Queue message" : sendLabel}
+          aria-label={
+            compactionOffer?.visible ? "Summarize and send" : queues ? "Queue message" : sendLabel
+          }
           aria-describedby={blockedBy ? blockedById : undefined}
           className="composer__send"
           disabled={!canSend}
           onClick={() => void finishAndSend()}
-          title={blockedBy ?? (queues ? "Queue message" : sendLabel)}
+          title={
+            blockedBy ??
+            (compactionOffer?.visible ? "Summarize and send" : queues ? "Queue message" : sendLabel)
+          }
           type="button"
         >
           <Icon name="send" />
@@ -1029,11 +995,11 @@ export function Composer({
         .filter(Boolean)
         .join(" ")}
       onKeyDown={(event) => {
-        if (event.defaultPrevented || event.nativeEvent.isComposing || mention) return;
+        if (event.defaultPrevented || event.nativeEvent.isComposing || picker.open) return;
         if (event.key === "Escape" && dictating) {
           event.preventDefault();
           event.stopPropagation();
-          textareaRef.current?.focus();
+          editorRef.current?.focus();
           void dictation?.stop(owner);
         }
       }}
@@ -1047,8 +1013,29 @@ export function Composer({
           controller={dictation}
           snapshot={speech}
           owner={owner}
-          returnFocusTo={textareaRef}
+          returnFocusTo={fieldRef}
         />
+      ) : null}
+      {compactionOffer?.visible ? (
+        <div className="composer__notice" role="status">
+          <p>{compactionOfferText}</p>
+          <button
+            className="btn btn--small btn--primary"
+            type="button"
+            disabled={!canSend}
+            onClick={() => void finishAndSend("compactFirst")}
+          >
+            Summarize and send
+          </button>
+          <button
+            className="btn btn--small"
+            type="button"
+            disabled={!canSend}
+            onClick={() => void finishAndSend("keepFullHistory")}
+          >
+            Send with full history
+          </button>
+        </div>
       ) : null}
       {sendBlocked !== null && !settingsRequired ? (
         <p className="composer__notice" role="status">
@@ -1087,7 +1074,7 @@ export function Composer({
             className="icon-btn icon-btn--small"
             onClick={() => {
               setQuote(null);
-              textareaRef.current?.focus();
+              editorRef.current?.focus();
             }}
             title="Remove quote"
             type="button"
@@ -1125,7 +1112,7 @@ export function Composer({
           hostClient={placeContext.hostClient}
           onRemove={(key) => {
             context.remove(key);
-            textareaRef.current?.focus();
+            editorRef.current?.focus();
           }}
         />
       ) : null}
@@ -1140,13 +1127,13 @@ export function Composer({
         // shows fits there whole; otherwise it is the first thing the line
         // gives up, and takes the whole width above the controls.
         <FoldToFit className="composer__entry">
-          {mentionList}
+          {picker.list}
           {field}
           <div className="composer__footer">{footer}</div>
         </FoldToFit>
       ) : (
         <div className="composer__entry">
-          {mentionList}
+          {picker.list}
           {field}
           <FoldToFit className="composer__footer">{footer}</FoldToFit>
         </div>
@@ -1168,7 +1155,7 @@ function StopButton({
   readonly disabled: boolean;
   readonly label: string;
   readonly onStop: () => void;
-  readonly returnFocusTo: { readonly current: HTMLTextAreaElement | null };
+  readonly returnFocusTo: { readonly current: HTMLElement | null };
 }) {
   const ref = useRef<HTMLButtonElement | null>(null);
   const fallback = useRef(() => returnFocusTo.current);
@@ -1186,6 +1173,18 @@ function StopButton({
       <Icon name="stop" />
     </button>
   );
+}
+
+/** The words as the field shows them, each reference as its label: what the line must fit. */
+function shownText(text: string): string {
+  if (!text.includes("](")) return text;
+  let shown = "";
+  let at = 0;
+  for (const token of collectComposerTokens(text, { commitTrailing: true })) {
+    shown += `${text.slice(at, token.start)}${token.label}  `;
+    at = token.end;
+  }
+  return shown + text.slice(at);
 }
 
 /** What the draft's first place is, for the field to ask about. */
@@ -1220,7 +1219,7 @@ function placeholderFloor(recipient: ComposerRecipient | null, placeholder: stri
  * same way. With no room for even that, no placeholder at all.
  */
 function useFittedPlaceholder(
-  textareaRef: { readonly current: HTMLTextAreaElement | null },
+  fieldRef: { readonly current: HTMLElement | null },
   recipient: ComposerRecipient | null,
   thing: "app" | "page" | "phone" | null,
   fallback: string,
@@ -1229,22 +1228,21 @@ function useFittedPlaceholder(
   const lead = recipient?.lead ?? null;
   const name = recipient?.name ?? null;
   useLayoutEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
+    const field = fieldRef.current;
+    if (!field) return;
     const measure = (fresh: boolean) => {
       // A field that is not laid out (hidden, or a test DOM) has no room to
       // measure, which is not the same as having none.
-      if (textarea.getClientRects().length === 0) {
+      if (field.getClientRects().length === 0) {
         setRoom(null);
         return;
       }
-      const style = getComputedStyle(textarea);
+      const style = getComputedStyle(field);
+      const font = canvasFont(style);
       const width =
-        textarea.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        field.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
       setRoom((current) =>
-        !fresh && current?.font === style.font && current.width === width
-          ? current
-          : { font: style.font, width },
+        !fresh && current?.font === font && current.width === width ? current : { font, width },
       );
     };
     measure(false);
@@ -1254,14 +1252,12 @@ function useFittedPlaceholder(
     const fonts = "fonts" in document ? document.fonts : null;
     fonts?.addEventListener("loadingdone", remeasure);
     const stopResize =
-      typeof ResizeObserver === "undefined"
-        ? null
-        : observeResize([textarea], () => measure(false));
+      typeof ResizeObserver === "undefined" ? null : observeResize([field], () => measure(false));
     return () => {
       fonts?.removeEventListener("loadingdone", remeasure);
       stopResize?.();
     };
-  }, [textareaRef]);
+  }, [fieldRef]);
   return useMemo(() => {
     const fits = (text: string) => {
       if (!room) return true;
@@ -1403,21 +1399,4 @@ function readHeld(pendingSends: PendingSends | null): {
       value: null,
     };
   }
-}
-
-/**
- * The Host has answered, so the record has done its job. Failing to erase it
- * leaves a replay of an answered key, which the Host answers the same way.
- */
-function forgetPending(pendingSends: PendingSends | null, idempotencyKey: string): void {
-  try {
-    pendingSends?.clear(idempotencyKey);
-  } catch {
-    // The answer stands either way; see above.
-  }
-}
-
-/** The Host may or may not have taken it: the answer was lost, not a refusal. */
-function unanswered(error: unknown): boolean {
-  return !(error instanceof HostClientRequestError) || error.status >= 500 || error.status === 408;
 }

@@ -4,6 +4,7 @@ import { toWebHeaders } from "../identity/auth.js";
 import { bindAnonymousClientAddress } from "../identity/anonymous-client-address.js";
 import {
   HostApiErrorSchema,
+  assertDeviceWireInput,
   hostApi,
   type HostApiHandlers,
   type HostApiScope,
@@ -11,12 +12,16 @@ import {
   type RpcDeclaration,
   type RpcResult,
 } from "@opensteer/protocol";
-import { OpensteerError, unsupportedVersionReason } from "@opensteer/core";
+import { deploymentPolicy, OpensteerError, unsupportedVersionReason } from "@opensteer/core";
 import { attachmentMaxBytes } from "@opensteer/core";
 import {
+  apiCurrentQueryParameter,
   apiNegotiation,
   apiVersionHeader,
   apiVersionQueryParameter,
+  hostApiCurrentHeader,
+  minimumHostApiVersion,
+  negotiatedHostApiVersion,
   statesApiVersion,
 } from "@opensteer/deployment-authority";
 import type { DeploymentKind } from "@opensteer/core";
@@ -55,6 +60,12 @@ export const hostApiScopes = {
   "team.agent.requests.get": "session",
   "team.agent.recipient.get": "session",
   "team.links.list": "session",
+  "team.share.participants.get": "session",
+  "team.shares.list": "session",
+  "team.partners.list": "session",
+  "team.partner.invite.preview": "session",
+  "team.partner.invites.list": "session",
+  "team.sharing.policy.get": "session",
   "teams.links.list": "session",
   "teams.threadTask.get": "session",
   "teams.replyTask.get": "session",
@@ -70,6 +81,9 @@ export const hostApiScopes = {
   "browser.history.get": "session",
   "browser.history.icons.get": "session",
   "agentPhone.target.get": "session",
+  "tabs.get": "session",
+  "tabs.state": "session",
+  "apps.list": "session",
   "apps.get": "session",
   "apps.view": "mutation",
   "attachment.upload": "mutation",
@@ -130,15 +144,20 @@ export const hostApiScopes = {
   "tasks.list": "session",
   "run.attempts.list": "session",
   "sessions.list": "session",
+  "asset.urls": "session",
+  "file.open": "session",
+  "file.content": "session",
   "tool.output.get": "session",
   "thread.events.list": "session",
   "node.events.list": "session",
   "thread.assignments.list": "session",
   "thread.browserUsage.get": "session",
   "thread.inputQueue.get": "session",
+  "thread.message.revisions.list": "session",
   "thread.live.get": "session",
   "thread.messages.list": "session",
   "thread.requests.list": "session",
+  "references.resolve": "session",
   "triggers.get": "session",
   "triggers.list": "session",
 } satisfies Record<keyof typeof hostApi, HostApiScope>;
@@ -171,78 +190,78 @@ function registerHostApiMember<Name extends keyof typeof hostApi>(
   const declaration = hostApi[name];
   const binaryRequest = "binaryRequest" in declaration && declaration.binaryRequest === true;
   app.route({
-    onRequest: async (request, reply) => {
-      try {
-        if (options.kind === "team") assertTeamApiVersion(toWebHeaders(request.headers));
-        else requireNegotiatedVersion(request);
-        await rejectDuplicateCredentialHeaders(request);
-      } catch (error) {
-        const normalized = normalizeHostError(error);
-        return reply
-          .status(normalized.status)
-          .header("cache-control", "no-store")
-          .send({ ok: false, error: normalized.error });
-      }
+    // Every refusal, from the version gate and body parsing through
+    // authentication to the handler, is a result of the call in the envelope
+    // the client parses, never the root handler's different shape.
+    errorHandler: (error, request, reply) => {
+      const normalized = normalizeHostError(error);
+      if (normalized.status >= 500) request.log.error({ err: error }, "rpc failed");
+      else if (normalized.error.reason)
+        // Reasons are stable codes; messages and payloads can carry addresses.
+        request.log.info(
+          {
+            rpc: name,
+            code: normalized.error.code,
+            reason: normalized.error.reason,
+            cause: refusalCause(error),
+          },
+          "rpc refused",
+        );
+      void reply
+        .status(normalized.status)
+        .header("cache-control", "no-store")
+        .send({
+          error: HostApiErrorSchema.parse(normalized.error),
+          ok: false,
+        });
+    },
+    onRequest: async (request) => {
+      if (options.kind === "team") assertTeamApiVersion(toWebHeaders(request.headers));
+      else requireNegotiatedVersion(request);
+      await rejectDuplicateCredentialHeaders(request);
     },
     handler: async (request, reply) => {
-      // Authentication and origin refusals are results of the call like any
-      // other, so they are raised inside the envelope the client parses rather
-      // than escaping to the global handler, which answers in a different shape.
-      try {
-        if (options.dispatch && (name.startsWith("team.") || name === "commands.dispatch")) {
-          const raw =
-            declaration.method === "POST"
-              ? request.body
-              : JSON.parse(
-                  z.strictObject({ input: z.string().max(262144) }).parse(request.query).input,
-                );
-          const data = declaration.success.parse(
-            await options.dispatch(name, raw, request),
-          ) as z.output<(typeof declaration)["success"]>;
-          return sendResult(declaration, { ok: true, data }, request, reply);
-        }
-        const scope =
-          name in hostApiScopes ? hostApiScopes[name as keyof typeof hostApiScopes] : "session";
-        const authenticated = await authenticateScope(authenticator, scope, request);
-        if (binaryRequest && request.headers["content-type"] !== "application/octet-stream") {
-          throw new OpensteerError({
-            code: "bad_request",
-            message: "Attachment upload requires application/octet-stream",
-          });
-        }
-        const context = createContext(authenticated, request, reply, binaryRequest);
-        bindAnonymousClientAddress(context, request);
-        const input = rpcInput(declaration, request);
-        const handler = handlers[name];
-        if (!handler)
-          throw new OpensteerError({
-            code: "not_found",
-            message: "Procedure unavailable on this Host",
-          });
-        const output = await handler(input, context);
-        return sendResult(declaration, output, request, reply);
-      } catch (error) {
-        const normalized = normalizeHostError(error);
-        if (normalized.status >= 500) request.log.error({ err: error }, "rpc failed");
-        else if (normalized.error.reason)
-          // Reasons are stable codes; messages and payloads can carry addresses.
-          request.log.info(
-            {
-              rpc: name,
-              code: normalized.error.code,
-              reason: normalized.error.reason,
-              cause: refusalCause(error),
-            },
-            "rpc refused",
-          );
-        return reply
-          .status(normalized.status)
-          .header("cache-control", "no-store")
-          .send({
-            error: HostApiErrorSchema.parse(normalized.error),
-            ok: false,
-          });
+      if (options.dispatch && (name.startsWith("team.") || name === "commands.dispatch")) {
+        const raw =
+          declaration.method === "POST"
+            ? request.body
+            : JSON.parse(
+                z.strictObject({ input: z.string().max(262144) }).parse(request.query).input,
+              );
+        const data = declaration.success.parse(
+          await options.dispatch(name, raw, request),
+        ) as z.output<(typeof declaration)["success"]>;
+        return sendResult(declaration, { ok: true, data }, request, reply);
       }
+      const scope =
+        name in hostApiScopes ? hostApiScopes[name as keyof typeof hostApiScopes] : "session";
+      const authenticated = await authenticateScope(authenticator, scope, request);
+      if (binaryRequest && request.headers["content-type"] !== "application/octet-stream") {
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Attachment upload requires application/octet-stream",
+        });
+      }
+      const context = createContext(authenticated, request, reply, binaryRequest);
+      bindAnonymousClientAddress(context, request);
+      const input = rpcInput(declaration, request, options.kind);
+      const handler = handlers[name];
+      if (!handler)
+        throw new OpensteerError({
+          code: "not_found",
+          message: "Procedure unavailable on this Host",
+        });
+      await options.admit?.(name, input, context);
+      const output = await handler(input, context);
+      if (output.ok && options.projectResponse && !declaration.stream) {
+        return sendResult(
+          declaration,
+          { ok: true, data: await options.projectResponse(name, output.data, context) },
+          request,
+          reply,
+        );
+      }
+      return sendResult(declaration, output, request, reply);
     },
     method: declaration.method,
     ...(declaration.method === "POST"
@@ -260,17 +279,20 @@ function refusalCause(error: unknown): string | undefined {
 function rpcInput<Declaration extends RpcDeclaration>(
   declaration: Declaration,
   request: FastifyRequest,
+  kind: DeploymentKind,
 ): z.output<Declaration["payload"]> {
-  if (declaration.method === "POST" && !declaration.binaryRequest) {
-    return declaration.payload.parse(request.body) as z.output<Declaration["payload"]>;
-  }
-  const query = z.strictObject({ input: z.string().max(262_144) }).parse(request.query);
-  return declaration.payload.parse(JSON.parse(query.input)) as z.output<Declaration["payload"]>;
+  const raw: unknown =
+    declaration.method === "POST" && !declaration.binaryRequest
+      ? request.body
+      : JSON.parse(z.strictObject({ input: z.string().max(262_144) }).parse(request.query).input);
+  if (deploymentPolicy({ kind }).services.personal)
+    assertDeviceWireInput(raw, negotiatedHostApiVersion(request.headers)!);
+  return declaration.payload.parse(raw) as z.output<Declaration["payload"]>;
 }
 
 function sendResult<Declaration extends RpcDeclaration>(
   declaration: Declaration,
-  output: RpcResult<z.output<Declaration["success"]>, z.output<Declaration["error"]>>,
+  output: RpcResult<unknown, z.output<Declaration["error"]>>,
   request: FastifyRequest,
   reply: FastifyReply,
 ) {
@@ -325,14 +347,12 @@ function isUnchanged(request: FastifyRequest, reply: FastifyReply): boolean {
 }
 
 /**
- * The epoch gate, run before anything else this route does.
+ * The version gate, run before anything else this route does.
  *
  * It precedes authentication, the origin comparison and the payload parse on
- * purpose: a caller on another epoch may be sending a payload whose fields no
- * longer mean what this tree thinks they mean, so no part of it is dispatched.
- * A missing header is the same refusal as a wrong one — every client that
- * reaches this Host ships the header, because the Host serves its own web
- * bundle and the Desktop ships with the Host.
+ * purpose: a caller outside this Host's window may be sending a payload whose
+ * fields no longer mean what this tree thinks they mean, so no part of it is
+ * dispatched. A missing version is refused like one outside the window.
  */
 export function requireNegotiatedVersion(
   request: FastifyRequest,
@@ -340,12 +360,17 @@ export function requireNegotiatedVersion(
 ): void {
   if (statesApiVersion(request.headers, kind)) return;
   const stated = request.headers[apiVersionHeader(kind)];
+  const current = kind === "personal" ? request.headers[hostApiCurrentHeader] : undefined;
+  const serves =
+    kind === "personal"
+      ? `Opensteer protocol ${minimumHostApiVersion} through ${apiNegotiation(kind).apiVersion}`
+      : `Opensteer protocol ${apiNegotiation(kind).apiVersion}`;
   throw new OpensteerError({
     code: "bad_request",
     message:
       typeof stated === "string"
-        ? `This deployment speaks Opensteer protocol ${apiNegotiation(kind).apiVersion}; the caller stated ${stated}.`
-        : `This deployment speaks Opensteer protocol ${apiNegotiation(kind).apiVersion} and the caller stated none.`,
+        ? `This deployment serves ${serves}; the caller stated ${stated}${typeof current === "string" ? ` through ${current}` : ""}.`
+        : `This deployment serves ${serves} and the caller stated none.`,
     reason: unsupportedVersionReason,
   });
 }
@@ -395,6 +420,16 @@ function createContext(
 
 export interface HostApiRegistrationOptions {
   readonly kind: DeploymentKind;
+  readonly admit?: (
+    name: keyof typeof hostApi,
+    input: unknown,
+    context: HostApiServerContext,
+  ) => Promise<void>;
+  readonly projectResponse?: (
+    name: keyof typeof hostApi,
+    data: unknown,
+    context: HostApiServerContext,
+  ) => Promise<unknown>;
   readonly dispatch?: (
     name: keyof typeof hostApi,
     raw: unknown,
@@ -404,14 +439,18 @@ export interface HostApiRegistrationOptions {
 
 export function carryWebSocketVersion(request: FastifyRequest, kind: DeploymentKind): void {
   if (request.headers.upgrade?.toLowerCase() !== "websocket") return;
-  const versions = new URL(request.url, "http://localhost").searchParams.getAll(
-    apiVersionQueryParameter,
-  );
-  if (!versions.length) return;
-  const header = apiVersionHeader(kind),
-    held = request.headers[header];
-  request.headers[header] =
-    versions.length === 1 && (held === undefined || held === versions[0]) ? versions[0] : "invalid";
+  const query = new URL(request.url, "http://localhost").searchParams;
+  const carry = (parameter: string, header: string) => {
+    const versions = query.getAll(parameter);
+    if (!versions.length) return;
+    const held = request.headers[header];
+    request.headers[header] =
+      versions.length === 1 && (held === undefined || held === versions[0])
+        ? versions[0]
+        : "invalid";
+  };
+  carry(apiVersionQueryParameter, apiVersionHeader(kind));
+  if (kind === "personal") carry(apiCurrentQueryParameter, hostApiCurrentHeader);
 }
 
 /**

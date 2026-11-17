@@ -13,7 +13,12 @@ import {
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
-import { DesktopApp, desktopAccessPresentationFromSnapshot } from "./desktop-app.js";
+import {
+  DesktopApp,
+  chooserNotice,
+  desktopAccessPresentationFromSnapshot,
+  placeAwaitingSignIn,
+} from "./desktop-app.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -133,6 +138,7 @@ it("carries setup from creating this computer straight into the app it opens", a
     personalSetup: personalStatus({
       canStart: true,
       deploymentId: null,
+      name: "Studio Mac",
       state: "stopped",
       step: null,
     }),
@@ -162,44 +168,72 @@ it("carries setup from creating this computer straight into the app it opens", a
   const root = createRoot(container);
   await act(async () => root.render(<DesktopApp bridge={bridge} />));
   await vi.waitFor(() => expect(container.textContent).toContain("Welcome to Opensteer"));
+  expect(container.textContent).toContain("Studio Mac");
 
-  const setUp = [...container.querySelectorAll("button")].find((candidate) =>
-    candidate.textContent?.startsWith("Set up Opensteer on this Mac"),
-  );
-  await act(async () => setUp?.click());
-  expect(createPersonalDeployment).toHaveBeenCalledOnce();
-
-  await act(async () =>
-    emit(
-      snapshot({
-        account: { available: false, status: "signed-out" },
-        personalSetup: personalStatus({ step: "starting-host" }),
-        revision: 2,
-      }),
-    ),
-  );
-  await vi.waitFor(() => expect(container.textContent).toContain("Setting up Opensteer"));
-  expect(container.textContent).toContain("Starting Opensteer");
-
-  // Ready, and the app is still attaching: the same setup screen stays up
-  // rather than a separate loading screen.
-  const personal = DesktopDeploymentSummarySchema.parse({
-    ...deployment,
-    activeOrigin: "http://127.0.0.1:45000",
-    canonicalOrigin: "http://127.0.0.1:45000",
-    kind: "personal",
-    name: "Studio Mac",
-    onThisComputer: true,
-    routes: [{ kind: "canonical", origin: "http://127.0.0.1:45000", selected: true }],
+  // The name is chosen before setup creates anything, and setup is created with it.
+  const button = (label: string) =>
+    [...container.querySelectorAll("button")].find((candidate) =>
+      candidate.textContent?.startsWith(label),
+    )!;
+  await act(async () => button("Rename").click());
+  const field = container.querySelector<HTMLInputElement>("#desktop-entry-name")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+      field,
+      "Workshop",
+    );
+    field.dispatchEvent(new Event("input", { bubbles: true }));
   });
+  await act(async () => field.form!.requestSubmit());
+  expect(container.textContent).toContain("Workshop");
+  await act(async () => button("Start Opensteer on this").click());
+  expect(createPersonalDeployment).toHaveBeenCalledExactlyOnceWith({ name: "Workshop" });
+
+  // What the supervisor sends: the Deployment's id from the first step, long
+  // before the list has it, and then listed before it attaches. Neither may
+  // bring back the screens from before setup began.
+  const personalId = createId("deployment");
+  const steps = [
+    { deployments: [], step: "checking-computer" as const },
+    { deployments: [], step: "starting-host" as const },
+    {
+      deployments: [{ ...accessDeployment("idle"), ...personalSummary(personalId) }],
+      step: "preparing-agent-home" as const,
+    },
+  ];
+  for (const [index, { deployments, step }] of steps.entries()) {
+    await act(async () =>
+      emit(
+        snapshot({
+          account: { available: false, status: "signed-out" },
+          deployments,
+          personalSetup: personalStatus({ deploymentId: personalId, name: "Workshop", step }),
+          revision: index + 2,
+          selectedDeploymentId: deployments.length ? personalId : null,
+        }),
+      ),
+    );
+    await vi.waitFor(() => expect(container.textContent).toContain("Starting Opensteer on this "));
+    expect(container.textContent).toContain("Workshop");
+    expect(container.textContent).not.toContain("Welcome to Opensteer");
+    expect(container.textContent).not.toContain("Open your Opensteer");
+  }
+
+  // Ready, and the app is still attaching: setup's own frame stays up rather
+  // than a separate loading screen.
   await act(async () =>
     emit(
       snapshot({
         account: { available: false, status: "signed-out" },
-        deployments: [{ ...accessDeployment("connecting"), ...personal }],
-        personalSetup: personalStatus({ deploymentId: personal.id, state: "ready", step: "ready" }),
-        revision: 3,
-        selectedDeploymentId: personal.id,
+        deployments: [{ ...accessDeployment("connecting"), ...personalSummary(personalId) }],
+        personalSetup: personalStatus({
+          deploymentId: personalId,
+          name: "Workshop",
+          state: "ready",
+          step: "ready",
+        }),
+        revision: 10,
+        selectedDeploymentId: personalId,
       }),
     ),
   );
@@ -209,6 +243,135 @@ it("carries setup from creating this computer straight into the app it opens", a
   await act(async () => root.unmount());
   container.remove();
 });
+
+it.each([
+  ["listed", () => ({ deployments: [{ ...accessDeployment("idle"), name: "Studio" }] })],
+  [
+    "listed but unavailable",
+    () => ({
+      deployments: [{ ...accessDeployment("idle"), kind: "team" as const, name: "Lab" }],
+      unavailable: [
+        {
+          accountAccess: "owner" as const,
+          deploymentId: createId("deployment"),
+          name: "Studio",
+          reason: "host-too-old" as const,
+        },
+      ],
+    }),
+  ],
+])(
+  "asks before starting a separate Opensteer when the person already has one %s",
+  async (_, rows) => {
+    const access = snapshot({
+      ...rows(),
+      personalSetup: personalStatus({ canStart: true, state: "stopped", step: null }),
+    });
+    const createPersonalDeployment = vi.fn(async () => undefined);
+    const bridge = {
+      checkDeployments: async () => undefined,
+      createPersonalDeployment,
+      getDeploymentAccessSnapshot: async () => access,
+      onHostWebSocketEvent: () => () => undefined,
+      onDeploymentAccessSnapshotChanged: () => () => undefined,
+      onNotificationActivated: () => () => undefined,
+      onLocalExecutionStatusChanged: () => () => undefined,
+    } as unknown as OpensteerDesktopBridge;
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const button = (label: string) =>
+      [...document.querySelectorAll("button")].find((candidate) =>
+        candidate.textContent?.startsWith(label),
+      );
+    try {
+      await act(async () => root.render(<DesktopApp bridge={bridge} />));
+      await vi.waitFor(() => expect(container.textContent).toContain("Studio"));
+      expect(button("Start Opensteer on")).toBeUndefined();
+
+      await act(async () => button("Start a separate Opensteer on this")!.click());
+      expect(document.body.textContent).toContain("Nothing from Studio comes with it.");
+      await act(async () => button("Cancel")!.click());
+      expect(createPersonalDeployment).not.toHaveBeenCalled();
+
+      await act(async () => button("Start a separate Opensteer on this")!.click());
+      await act(async () => button("Start separate Opensteer")!.click());
+      expect(createPersonalDeployment).toHaveBeenCalledExactlyOnceWith({});
+
+      // A list that couldn't be read may hold one too: nothing offers Start until it's read.
+      await act(async () => root.unmount());
+      const failed = snapshot({
+        ...access,
+        directoryFailure: { code: "directory-unavailable", detail: "Offline.", retryable: true },
+      });
+      const again = createRoot(container);
+      await act(async () =>
+        again.render(
+          <DesktopApp bridge={{ ...bridge, getDeploymentAccessSnapshot: async () => failed }} />,
+        ),
+      );
+      await vi.waitFor(() => expect(container.textContent).toContain("Studio"));
+      expect(button("Start")).toBeUndefined();
+      await act(async () => again.unmount());
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
+  },
+);
+
+it("asks a Mac that joined an Opensteer to sign in again, then reopens that one", async () => {
+  const joined: DeploymentAccessDeployment = {
+    ...accessDeployment("idle"),
+    name: "Studio",
+    source: "account",
+  };
+  const access = snapshot({ deployments: [joined] });
+  const calls: string[] = [];
+  const bridge = {
+    cancel: async () => undefined,
+    checkDeployments: async () => undefined,
+    select: async ({ deploymentId }: { deploymentId: string }) => {
+      calls.push(`select ${deploymentId}`);
+    },
+    signIn: async () => {
+      calls.push("sign in");
+    },
+  };
+
+  const notice = chooserNotice(placeAwaitingSignIn(access), access, bridge);
+  expect(notice?.title).toBe("Sign in again to keep using Studio");
+  await notice?.action?.run();
+  expect(calls).toEqual([`select ${joined.id}`, "sign in"]);
+
+  // While the browser sign-in is out, there is always a way to stop waiting.
+  const authorizing = {
+    ...access,
+    account: { ...access.account, status: "authorizing" as const },
+  };
+  expect(chooserNotice(placeAwaitingSignIn(authorizing), authorizing, bridge)?.action?.label).toBe(
+    "Cancel",
+  );
+
+  // Signed in, or with another place already on screen, there is nothing to reopen.
+  expect(placeAwaitingSignIn({ ...access, selectedDeploymentId: joined.id })).toBeUndefined();
+  expect(
+    placeAwaitingSignIn({ ...access, account: { ...access.account, status: "signed-in" } }),
+  ).toBeUndefined();
+});
+
+function personalSummary(id: string) {
+  return DesktopDeploymentSummarySchema.parse({
+    ...deployment,
+    activeOrigin: "http://127.0.0.1:45000",
+    canonicalOrigin: "http://127.0.0.1:45000",
+    id,
+    kind: "personal",
+    name: "Workshop",
+    onThisComputer: true,
+    routes: [{ kind: "canonical", origin: "http://127.0.0.1:45000", selected: true }],
+  });
+}
 
 function personalStatus(
   overrides: Partial<DesktopPersonalDeploymentStatus> = {},
@@ -267,6 +430,33 @@ describe("Desktop snapshot presentation", () => {
     // With nothing open, the list of places (or, when there are none, the
     // welcome that shows in its place) is where a person starts.
     expect(desktopAccessPresentationFromSnapshot(snapshot())).toBe("picker");
+    // A setup that failed before its Deployment was listed keeps its own
+    // screen, with its reason and Try again; Welcome could not retry it.
+    const unlisted = personalStatus({
+      canStart: true,
+      deploymentId: createId("deployment"),
+      issue: {
+        code: "database-unavailable",
+        component: "postgresql",
+        detail: "Another app is using port 5432. Quit it, then try again.",
+        repairAction: "restart-opensteer",
+      },
+      state: "repair-required",
+      step: null,
+    });
+    expect(desktopAccessPresentationFromSnapshot(snapshot({ personalSetup: unlisted }))).toBe(
+      "personal",
+    );
+    // Once listed, the list's own retry and cancel apply, as for any place.
+    expect(
+      desktopAccessPresentationFromSnapshot(
+        snapshot({
+          deployments: [{ ...accessDeployment("idle"), id: unlisted.deploymentId! }],
+          personalSetup: unlisted,
+          selectedDeploymentId: unlisted.deploymentId!,
+        }),
+      ),
+    ).toBe("picker");
     expect(
       desktopAccessPresentationFromSnapshot(
         snapshot({

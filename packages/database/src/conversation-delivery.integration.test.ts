@@ -705,6 +705,99 @@ integration.sequential("conversation delivery", () => {
 
   /** The person answers on the approval card and the Runner accepts it. */
 
+  it("stops dispatch follow-up batching at an edit lease", async ({ storeFixture }) => {
+    const { fixture, send, store, claimAndBind, input } = storeFixture;
+    const f = await fixture("dispatch-edit-barrier");
+    const seed = await send(f, "dispatch-seed");
+    const before = await send(f, "dispatch-before");
+    const held = await send(f, "dispatch-held");
+    const after = await send(f, "dispatch-after");
+    await store.takeThreadInputLease({
+      threadId: f.thread.id,
+      messageId: held.message.id,
+      requestedBy: f.ownerId,
+      sessionId: createId("authSession"),
+      deviceLabel: "Phone",
+      leaseId: "dispatch-held",
+      takeOver: false,
+    });
+    await claimAndBind(f, seed.run!.id);
+    expect(
+      (await store.loadRunDispatchContext(seed.command!.id)).inputs.map((message) => message.id),
+    ).toEqual([seed.message.id, before.message.id]);
+    expect((await input(held.message.id)).state).toBe("pending");
+    expect((await input(after.message.id)).state).toBe("pending");
+  });
+
+  for (const steering of [true, false])
+    it(`keeps auto hand-off and replacement batches behind the edit lease (${steering})`, async ({
+      storeFixture,
+    }) => {
+      const {
+        fixture,
+        running,
+        openApproval,
+        send,
+        store,
+        answer,
+        input,
+        emit,
+        runRow,
+        executeCommand,
+      } = storeFixture;
+      const f = await fixture(`handoff-edit-barrier-${steering}`, { steering });
+      const runId = await running(f);
+      const binding = (await runRow(runId)).bindingGeneration!;
+      const request = await openApproval(f, runId);
+      const before = await send(f, "handoff-before");
+      const held = await send(f, "handoff-held");
+      const after = await send(f, "handoff-after");
+      await store.takeThreadInputLease({
+        threadId: f.thread.id,
+        messageId: held.message.id,
+        requestedBy: f.ownerId,
+        sessionId: createId("authSession"),
+        deviceLabel: "Phone",
+        leaseId: "handoff-held",
+        takeOver: false,
+      });
+      await answer(f, runId, request.id, "handoff-answer");
+      expect((await input(before.message.id)).state).toBe("claimed");
+      expect((await input(held.message.id)).state).toBe("pending");
+      expect((await input(after.message.id)).state).toBe("pending");
+      if (!steering) {
+        await emit(f, runId, "run.interrupted", { status: "interrupted" }, binding);
+        const replacement = await executeCommand(runId);
+        expect(await store.claimCommand(replacement.id, "edit-replacement")).not.toBeNull();
+        expect(
+          (await store.loadRunDispatchContext(replacement.id)).inputs.map((message) => message.id),
+        ).toEqual([before.message.id]);
+      }
+    });
+
+  it("does not join background work past a held message", async ({ storeFixture }) => {
+    const { fixture, running, openApproval, send, store, answer, emit, input } = storeFixture;
+    const f = await fixture("background-edit-barrier", { purpose: "task" });
+    const runId = await running(f);
+    const request = await openApproval(f, runId);
+    const held = await send(f, "background-held");
+    await store.takeThreadInputLease({
+      threadId: f.thread.id,
+      messageId: held.message.id,
+      requestedBy: f.ownerId,
+      sessionId: createId("authSession"),
+      deviceLabel: "Phone",
+      leaseId: "background-held",
+      takeOver: false,
+    });
+    await answer(f, runId, request.id, "background-answer");
+    await emit(f, runId, "run.phase", { phase: "background" });
+    const after = await send(f, "background-after");
+    expect(after.disposition).toBe("pending");
+    expect((await input(held.message.id)).state).toBe("pending");
+    expect((await input(after.message.id)).state).toBe("pending");
+  });
+
   it("stamps Host and Runner lifecycle context after a human joins an automatic wake", async ({
     storeFixture,
   }) => {

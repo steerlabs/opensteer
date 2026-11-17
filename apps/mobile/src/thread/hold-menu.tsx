@@ -6,13 +6,17 @@ import {
   LinkHoldContext,
   useConversationLinks,
   type LinkAction,
+  type HeldLink,
   type LinkHold,
 } from "./link-context.js";
 
 export interface HoldMenuProps {
+  readonly accessibilityLabel?: string;
   readonly actions: readonly LinkAction[];
   readonly children: ReactNode;
   readonly onAction: (id: string) => void;
+  /** A tap, where the bubble does something of its own, such as open to be edited. */
+  readonly onPress?: (() => void) | undefined;
   /** The corner the lifted view is cut to, on a platform that lifts it. */
   readonly previewRadius: number;
   readonly previewBottomEndRadius?: number | undefined;
@@ -29,7 +33,7 @@ export function HoldMenu(props: HoldMenuProps): ReactNode {
   const { onAction } = props;
   const links = useConversationLinks();
   const menu = useRef<MenuComponentRef>(null);
-  const [held, setHeld] = useState<{ readonly url: string | null } | null>(null);
+  const [held, setHeld] = useState<{ readonly link: HeldLink | null } | null>(null);
   // Android selects the word under a held link in selectable words, and keeps its bar after
   // the link's menu closes; drawn again, the words drop that selection.
   const [linkHolds, setLinkHolds] = useState(0);
@@ -39,27 +43,29 @@ export function HoldMenu(props: HoldMenuProps): ReactNode {
   const linkHold = useMemo(
     (): LinkHold => ({
       press: noop,
-      hold: (url) => {
-        if (links === null || links.menu(url).length === 0) return;
+      hold: (link) => {
+        if (links === null || links.menu(link).length === 0) return;
         void Haptics.selectionAsync();
-        setHeld({ url });
+        setHeld({ link });
         setLinkHolds((count) => count + 1);
       },
     }),
     [links],
   );
-  const url = held?.url ?? null;
-  const actions = url !== null && links ? links.menu(url) : props.actions;
+  const link = held?.link ?? null;
+  const actions = link !== null && links ? links.menu(link) : props.actions;
   return (
     <Pressable
+      accessibilityLabel={props.accessibilityLabel}
       accessibilityActions={props.actions.map(({ id, title }) => ({ name: id, label: title }))}
       android_disableSound
       delayLongPress={300}
       onAccessibilityAction={(event) => onAction(event.nativeEvent.actionName)}
+      onPress={props.onPress}
       onLongPress={() => {
         if (props.actions.length === 0) return;
         void Haptics.selectionAsync();
-        setHeld({ url: null });
+        setHeld({ link: null });
       }}
       style={({ pressed }) => [props.style, pressed && props.actions.length > 0 && styles.pressed]}
     >
@@ -72,7 +78,7 @@ export function HoldMenu(props: HoldMenuProps): ReactNode {
           colorScheme="dark"
           onCloseMenu={() => setHeld(null)}
           onPressAction={({ nativeEvent }) => {
-            if (url !== null && links) links.act(url, nativeEvent.event);
+            if (link !== null && links) links.act(link, nativeEvent.event);
             else onAction(nativeEvent.event);
           }}
           ref={menu}

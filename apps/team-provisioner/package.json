@@ -12,12 +12,17 @@
   },
   "dependencies": {
     "@opensteer/control-plane-protocol": "workspace:*",
-    "zod": "catalog:"
+    "zod": "catalog:",
+    "pg": "catalog:",
+    "@google-cloud/storage": "catalog:",
+    "google-auth-library": "catalog:",
+    "@opensteer/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "@types/pg": "catalog:"
   }
 }

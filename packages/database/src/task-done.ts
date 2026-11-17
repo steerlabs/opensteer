@@ -252,7 +252,7 @@ export async function setThreadDone(
       if (!observed)
         throw new OpensteerError({
           code: "not_found",
-          message: "Thread not found",
+          message: "Task not found",
         });
       await lockThreadChannelAuthorities(transaction, scope.threadIds);
       // Active bindings must not rotate into this set while scope is checked.
@@ -387,6 +387,7 @@ export async function setThreadDone(
                 .set({
                   doneAt: null,
                   doneReason: null,
+                  updatedAt: now,
                 })
                 .where("id", "=", row.id)
                 .execute();

@@ -19,7 +19,6 @@ import {
   operation,
   startFakeDesktop,
   toolText,
-  toolReadiness,
 } from "./computer-apps.test-support.js";
 import {
   connectCallerMachine,
@@ -83,8 +82,8 @@ integration("MCP servers on a computer", () => {
       closers.unshift(() => caller.close());
       const desktop = await startFakeDesktop();
       closers.unshift(() => desktop.close());
-      const prepare = (dataDirectory: string) => {
-        const prepared = prepareIntegrationsModule({
+      const prepare = async (dataDirectory: string) => {
+        const prepared = await prepareIntegrationsModule({
           computerUseBridge: { token: desktop.token, url: desktop.url },
           dataDirectory,
           platform: "darwin",
@@ -97,7 +96,7 @@ integration("MCP servers on a computer", () => {
         return { computerUse, localMcp, providers: prepared.providers };
       };
       const runnerData = join(work, "runner");
-      const mac = prepare(runnerData);
+      const mac = await prepare(runnerData);
       const computer = await connectComputerAppMachine(host, mac.providers, {
         desktop: { computerUse: mac.computerUse, localMcp: mac.localMcp },
       });
@@ -127,6 +126,15 @@ integration("MCP servers on a computer", () => {
       const asked = await waitingRequest(host, server.id);
       expect(asked.server?.launch).toEqual(launch);
       expect(asked.definitionDigest).toBe(localMcpLaunchDigest(launch));
+      const persistedTarget = await host.store.database
+        .selectFrom("computerAppSetupRequests")
+        .select("runnerId as deviceId")
+        .where("id", "=", asked.id)
+        .executeTakeFirstOrThrow();
+      expect(persistedTarget.deviceId).toBe(
+        await host.store.requireSelfDeviceId(computer.runnerId),
+      );
+
       const summaries = await testRpcData(
         host.origin,
         "integration.computer.setup.list",
@@ -244,7 +252,10 @@ integration("MCP servers on a computer", () => {
           ...operation(await search(), name).address,
         });
       await waitForCondition(
-        async () => toolReadiness(await search(), "echo").code === "READY",
+        async () =>
+          ((await search()).operations as { name: string }[]).some(
+            ({ name }) => name.split("@")[0] === "echo",
+          ),
         30_000,
       );
       expect(said(await call("echo", { text: "hello" }))).toBe("echo: hello");
@@ -306,12 +317,20 @@ integration("MCP servers on a computer", () => {
       if (running === null) throw new Error("The server is running");
       await computer.disconnectModule();
       await waitForCondition(async () => !alive(running), 15_000);
-      const offline = toolReadiness(await search(), "echo");
-      expect(offline.code).toBe("INTEGRATION_UNAVAILABLE");
-      expect(offline.detail).toContain("Studio Mac");
+      const offline = (await search()).results as {
+        tools?: { name: string; blocked: { code: string; message: string } }[];
+      }[];
+      const blocked = offline
+        .flatMap(({ tools }) => tools ?? [])
+        .find(({ name }) => name === "echo")?.blocked;
+      expect(blocked?.code).toBe("unavailable");
+      expect(blocked?.message).toContain("Studio Mac");
       await computer.reconnectModule();
       await waitForCondition(
-        async () => toolReadiness(await search(), "echo").code === "READY",
+        async () =>
+          ((await search()).operations as { name: string }[]).some(
+            ({ name }) => name.split("@")[0] === "echo",
+          ),
         30_000,
       );
       expect(said(await call("echo", { text: "back" }))).toBe("echo: back");
@@ -319,7 +338,7 @@ integration("MCP servers on a computer", () => {
 
       // Host-held exact-launch consent survives a fresh Runner instance.
       await computer.disconnectModule();
-      const restarted = prepare(join(work, "restarted-runner"));
+      const restarted = await prepare(join(work, "restarted-runner"));
       await computer.reconnectModule({
         computerUse: restarted.computerUse,
         localMcp: restarted.localMcp,
@@ -459,7 +478,7 @@ integration("MCP servers on a computer", () => {
         });
       const desktop = await startFakeDesktop();
       closers.unshift(() => desktop.close());
-      const prepared = prepareIntegrationsModule({
+      const prepared = await prepareIntegrationsModule({
         computerUseBridge: { token: desktop.token, url: desktop.url },
         dataDirectory: join(work, "runner"),
         platform: "darwin",

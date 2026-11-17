@@ -143,6 +143,7 @@ const deviceGlyphs: Readonly<Record<string, { readonly color: string; readonly d
   "apple-location": glyphs.location,
   "computer-use": glyphs.computer,
   "iphone-location": glyphs.location,
+  "iphone-screen": glyphs.computer,
   "macos-app": glyphs.computer,
 };
 

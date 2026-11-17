@@ -29,9 +29,9 @@ import type { WebSocketClient } from "../packages/client/src/host/host-session-c
 import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { freePort } from "../packages/shared/src/loopbackPort.test-support.js";
 import { sql } from "kysely";
-import { createHostRuntime } from "../apps/host/src/runtime/runtime.js";
+import { createHostRuntime, type HostRuntimeOptions } from "../apps/host/src/runtime/runtime.js";
 
-export async function startTeamSystem(name = "Acme") {
+export async function startTeamSystem(name = "Acme", options: HostRuntimeOptions = {}) {
   console.info("team-system: cloning");
   const clone = await cloneTestDatabase("host");
   const directory = await mkdtemp(join(tmpdir(), "team-system-"));
@@ -56,6 +56,7 @@ export async function startTeamSystem(name = "Acme") {
           OPENSTEER_BIND_ADDRESS: "127.0.0.1",
           OPENSTEER_PORT: String(port),
         }),
+        options,
       );
       return { host, close: () => host.close() };
     });

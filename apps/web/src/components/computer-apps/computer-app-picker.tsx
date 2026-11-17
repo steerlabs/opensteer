@@ -1,6 +1,6 @@
+import type { IntegrationConnectionSummary } from "@opensteer/client/integrations";
 import type {
   IntegrationAccess,
-  IntegrationConnectionSummary,
   IntegrationDefinitionSummaryView,
 } from "@opensteer/integration-core";
 import type { MachineSummary } from "@opensteer/protocol";

@@ -6,6 +6,9 @@ import "./connection.js";
 import { createHash } from "node:crypto";
 import {
   placeContentLabel,
+  createId,
+  type DeploymentId,
+  type TeamAgentRequestId,
   ContentPartSchema,
   notificationBodyMaxCharacters,
   notificationPushWindowMilliseconds,
@@ -47,7 +50,8 @@ export interface NotificationPublication {
   readonly requestId: RequestId | null;
   readonly runId: RunId | null;
   readonly sequence: string;
-  readonly threadId: ThreadId;
+  readonly threadId: ThreadId | null;
+  readonly teamAsk?: { readonly teamId: DeploymentId; readonly requestId: TeamAgentRequestId };
   readonly userId: UserId;
 }
 
@@ -106,6 +110,65 @@ export class NotificationStore {
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
   }
+  async teamAsk(
+    teamId: DeploymentId,
+    requestId: TeamAgentRequestId,
+  ): Promise<NotificationPublication | null> {
+    const row = await this.#database
+      .selectFrom("personalTeamRequests")
+      .selectAll()
+      .where("teamDeploymentId", "=", teamId)
+      .where("requestId", "=", requestId)
+      .where(
+        "teamDeploymentId",
+        "in",
+        this.#database
+          .selectFrom("personalTeamLinks")
+          .select("teamDeploymentId")
+          .where("state", "in", ["active", "unreachable"]),
+      )
+      .executeTakeFirst();
+    if (
+      !row ||
+      row.kind !== "ask" ||
+      row.localDecision ||
+      row.terminalState ||
+      row.remoteState !== "awaiting_approval" ||
+      !row.presentation ||
+      !row.consentExpiresAt ||
+      row.consentExpiresAt <= this.#now()
+    )
+      return null;
+    const settings = await personalSettings(this.#database);
+    const state = await this.#database
+      .selectFrom("deploymentEventState")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    const digest = createHash("sha256").update(`${teamId}:${requestId}`).digest("hex");
+    return {
+      id: NotificationIdSchema.parse(
+        `ntf_${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`,
+      ),
+      eventId: createId("event"),
+      sequence: String(state.sequence),
+      kind: "request-opened",
+      userId: settings.ownerId,
+      threadId: row.localTaskId,
+      requestId: null,
+      runId: null,
+      messageId: row.localInputId,
+      title: "Your agent was asked",
+      body:
+        plainTextExcerpt(
+          `${row.presentation.asker.displayName}${row.presentation.asker.actor === "agent" ? "'s agent" : ""} asks in ${row.presentation.audience.channelName}.`,
+          notificationBodyMaxCharacters,
+        ) ?? "Your agent was asked",
+      occurredAt: this.#now(),
+      expiresAt: new Date(this.#now().getTime() + notificationPushWindowMilliseconds),
+      teamAsk: { teamId, requestId },
+    };
+  }
+
   async decide(event: AgentEvent): Promise<readonly DecidedNotification[]> {
     if (!mayNotify(event)) return [];
     return withPersonalReadTransaction(this.#database, async (transaction) =>
@@ -174,6 +237,10 @@ export class NotificationStore {
     if (!recipient) return "Recipient can no longer open this Thread";
     switch (entry.kind) {
       case "request-opened": {
+        if (entry.teamAsk) {
+          const current = await this.teamAsk(entry.teamAsk.teamId, entry.teamAsk.requestId);
+          return current ? null : "Team ask no longer needs a decision";
+        }
         if (!entry.requestId) return "Notification names no Request";
         const request = await this.#database
           .selectFrom("requests")
@@ -433,6 +500,7 @@ async function personAnswered(
       and input.author->>'kind' = 'human')`.as("personInput"),
     )
     .where("runs.id", "=", event.runId)
+    .where("runs.maintenance", "is", null)
     .where("runs.threadId", "=", event.threadId)
     .where("users.disabledAt", "is", null)
     .executeTakeFirst();

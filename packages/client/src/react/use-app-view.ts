@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { HostClient } from "../host/client.js";
-import type { OpensteerApp } from "@opensteer/core";
 import { isAppOriginUrl, type AppTheme } from "@opensteer/shared/appFrame";
 const noSubscription = () => () => undefined;
 
@@ -26,7 +25,7 @@ export function useAppView(
   );
   const [result, setResult] = useState<{
     key: object;
-    view?: { app: OpensteerApp; url: string };
+    view?: { title: string; url: string };
     failed?: boolean;
   } | null>(null);
   useEffect(() => {

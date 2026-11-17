@@ -78,8 +78,6 @@ export interface PiExtensionToolDefinition {
 export interface PiExtensionPlan {
   readonly gate: PiAccessModeGate;
   readonly handshakeNonce: string;
-  /** Re-stated on every turn of a resumed conversation through `before_agent_start`. */
-  readonly machineAccessNotice: string;
   /** Every built-in Pi tool this driver was written against; anything else is blocked. */
   readonly knownTools: readonly string[];
   readonly tools: readonly PiExtensionToolDefinition[];
@@ -100,10 +98,6 @@ export interface PiExtensionPlan {
  *    asking the driver, which holds the MCP connections. The file therefore
  *    carries no bearer token and imports no modules, so it also works in the
  *    bundled Personal runtime without a resolvable node_modules tree.
- *  - `before_agent_start` re-states the machine-access notice on every turn,
- *    including the first turn of a resumed conversation, because Pi renders the
- *    system prompt once per turn from live inputs and persists none of it
- *    (pi-facts §7).
  */
 export function piExtensionSource(plan: PiExtensionPlan): string {
   const config = {
@@ -111,7 +105,6 @@ export function piExtensionSource(plan: PiExtensionPlan): string {
     handshakeNonce: plan.handshakeNonce,
     handshakePrefix: piHandshakePrefix,
     knownTools: [...plan.knownTools],
-    machineAccessNotice: plan.machineAccessNotice,
     tools: plan.tools.map((tool) => ({
       description: tool.description,
       inputSchema: tool.inputSchema,
@@ -184,10 +177,6 @@ export default function (pi) {
       "info",
     );
   });
-
-  pi.on("before_agent_start", (event) => ({
-    systemPrompt: \`\${event.systemPrompt}\\n\\n\${CONFIG.machineAccessNotice}\`,
-  }));
 
   pi.on("tool_call", async (event, ctx) => {
     const toolName = event.toolName;

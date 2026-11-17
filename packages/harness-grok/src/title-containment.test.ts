@@ -211,8 +211,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         context: {
           assignment: null,
           teamTurnContext: null,
-          requesterTimeZone: null,
           threadState: { previousAssignment: null, previousRun: null },
+          startedAt: "2026-08-22T00:00:00.000Z",
         },
         environment: context.environment,
         inputs: [],
@@ -463,10 +463,10 @@ function sessionContext(
   return {
     accessMode: "approval-required",
     agentTools: {
-      tools: ["thread_read", "integration_call", "computer"],
+      tools: ["opensteer_task_read", "integration_call", "computer_use"],
       toolsRevision: "test-tools-v1",
       instructions: "Host Opensteer instructions",
-      skills: ["opensteer:threads"],
+      skills: ["opensteer:tasks"],
       token: "agent",
       url: "https://host/mcp",
     },

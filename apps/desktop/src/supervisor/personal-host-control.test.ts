@@ -564,7 +564,7 @@ function hostBootstrap(
       voiceThreadId: null,
     },
     can: { createTasks: true, useVoice: true, manageComputers: true, managePrivateResources: true },
-    appTabs: [],
+    tabs: { tabs: [], layout: { revision: 0, items: [], groups: [] }, complete: true },
     browser: {
       available: true,
       placements: overrides.placements ?? [],

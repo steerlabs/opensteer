@@ -1,11 +1,11 @@
 import { ComputerViewRefSchema } from "./computer-view-requests.js";
 import { z } from "zod";
 import {
-  ComputerViewRecordSchema,
   ComputerViewWindowSchema,
+  ComputerViewRecordSchema,
   ComputerViewTargetSchema,
   ComputerAppIdentityViewSchema,
-  RunnerIdSchema,
+  DeviceIdSchema,
 } from "@opensteer/core";
 export * from "./computer-view-requests.js";
 
@@ -43,29 +43,27 @@ export function computerOwnerViewSupported(
 }
 export const computerViewMaxPerOwner = 64;
 export const computerViewIdleMs = { app: 10 * 60_000, phone: 3 * 60_000 } as const;
+
+/** Owner-only projection: never carries the owner's identity or a native capture handle. */
+
 export const ComputerViewTargetViewSchema = z.discriminatedUnion("kind", [
   z.object({ ...ComputerViewTargetSchema.options[0].shape, app: ComputerAppIdentityViewSchema }),
   z.object(ComputerViewTargetSchema.options[1].shape),
 ]);
-/** Owner-only projection: never carries the owner's identity or a native capture handle. */
 export const ComputerViewSchema = z
   .object({
-    ...z.object(ComputerViewRecordSchema.shape).omit({ ownerUserId: true, captureTargetId: true })
-      .shape,
+    ...ComputerViewRecordSchema.shape,
     target: ComputerViewTargetViewSchema,
+    window: ComputerViewWindowSchema.nullable(),
   })
+  .omit({ ownerUserId: true, captureTargetId: true })
   .refine(
     (view) => view.state !== "ready" || view.unavailableReason === null,
     "A ready view has no refusal.",
   );
 export type ComputerView = z.infer<typeof ComputerViewSchema>;
 const idempotencyKey = z.string().min(1).max(255);
-export const ComputerViewOpenCommandSchema = z.strictObject({
-  type: z.literal("computer.view.open"),
-  machineId: RunnerIdSchema,
-  target: ComputerViewTargetSchema,
-  idempotencyKey,
-});
+
 export const ComputerViewCloseCommandSchema = ComputerViewRefSchema.extend({
   type: z.literal("computer.view.close"),
   idempotencyKey,
@@ -74,13 +72,10 @@ export const ComputerViewRenewCommandSchema = ComputerViewRefSchema.extend({
   type: z.literal("computer.view.renew"),
   idempotencyKey,
 });
-export type ComputerViewOpenCommand = z.infer<typeof ComputerViewOpenCommandSchema>;
+
 export type ComputerViewCloseCommand = z.infer<typeof ComputerViewCloseCommandSchema>;
 export type ComputerViewRenewCommand = z.infer<typeof ComputerViewRenewCommandSchema>;
-export const ComputerViewOpenResultSchema = z.object({
-  type: z.literal("computer.view.open"),
-  view: ComputerViewSchema,
-});
+
 export const ComputerViewCloseResultSchema = z.object({
   type: z.literal("computer.view.close"),
   view: ComputerViewSchema,
@@ -104,6 +99,30 @@ export const ComputerViewRefusalReasonSchema = z.enum([
   "computer-view-limit",
 ]);
 export type ComputerViewRefusalReason = z.infer<typeof ComputerViewRefusalReasonSchema>;
+
+export const ComputerViewRemovedSchema = z.object({
+  type: z.literal("host.computer-view.removed"),
+  ...ComputerViewRefSchema.shape,
+  machineId: DeviceIdSchema,
+  reason: z.enum(["closed", "expired", "revoked", "disconnected", "host-restarted"]),
+});
+/** Joins existing connected, unblocked, owner-approved connections to device identities and icons. */
+export const ApprovedComputerAppSchema = z.object({
+  connectionId: z.string().min(1).max(255),
+  machineId: DeviceIdSchema,
+  target: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("app"), app: ComputerAppIdentityViewSchema }),
+    z.object({ kind: z.literal("phone"), display: z.string().min(1).max(255) }),
+  ]),
+  name: z.string().min(1).max(512),
+  iconPng: z
+    .string()
+    .min(1)
+    .max(256 * 1024)
+    .nullable(),
+});
+export type ApprovedComputerApp = z.infer<typeof ApprovedComputerAppSchema>;
+
 export const ComputerViewNativeResultSchema = z.union([
   z.object({
     ...ComputerViewRefSchema.shape,
@@ -114,28 +133,8 @@ export const ComputerViewNativeResultSchema = z.union([
   ComputerViewNativeUnavailableSchema,
 ]);
 export type ComputerViewNativeResult = z.infer<typeof ComputerViewNativeResultSchema>;
+
 export const ComputerViewChangedSchema = z.object({
   type: z.literal("host.computer-view.changed"),
   view: ComputerViewSchema,
 });
-export const ComputerViewRemovedSchema = z.object({
-  type: z.literal("host.computer-view.removed"),
-  ...ComputerViewRefSchema.shape,
-  machineId: RunnerIdSchema,
-  reason: z.enum(["closed", "expired", "revoked", "disconnected", "host-restarted"]),
-  /** The phone's tab went with it, so no client mistakes this for a tab left without a view. */
-  tabClosed: z.literal(true).optional(),
-});
-/** Joins existing connected, unblocked, owner-approved connections to device identities and icons. */
-export const ApprovedComputerAppSchema = z.object({
-  connectionId: z.string().min(1).max(255),
-  machineId: RunnerIdSchema,
-  target: ComputerViewTargetViewSchema,
-  name: z.string().min(1).max(512),
-  iconPng: z
-    .string()
-    .min(1)
-    .max(256 * 1024)
-    .nullable(),
-});
-export type ApprovedComputerApp = z.infer<typeof ApprovedComputerAppSchema>;

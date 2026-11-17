@@ -54,6 +54,36 @@ describe("trajectory grading failure modes", () => {
     expect(checks.every((c) => c.pass)).toBe(false);
     expect(checks.filter((c) => !c.pass)).toHaveLength(3);
   });
+  it("matches source checkpoints in integration argument objects", () => {
+    const c = parseCases(
+      line({
+        expect: {
+          callsArgMatch: [
+            {
+              tool: "integration_call",
+              path: ["arguments"],
+              pattern: "msg-X|2026-11-16T14:30",
+            },
+          ],
+        },
+      }),
+    )[0]!;
+    for (const args of [{ afterId: "msg-X" }, { query: "after:2026-11-16T14:30:00Z" }])
+      expect(
+        grade(
+          c.expect,
+          [{ tool: "integration_call", args: { arguments: args }, valid: true }],
+          "",
+        ).every((c) => c.pass),
+      ).toBe(true);
+    expect(
+      grade(
+        c.expect,
+        [{ tool: "integration_call", args: { arguments: { since: "yesterday" } }, valid: true }],
+        "",
+      ).every((c) => c.pass),
+    ).toBe(false);
+  });
   it("orders repeated occurrences and enforces counts and final text", () => {
     const c = parseCases(
       line({
@@ -125,7 +155,7 @@ it("silence rejects any assistant text and unknown forbidden tools, after an ear
     line({
       expect: {
         noAssistantText: true,
-        notCalls: ["person_message", "person_notify"],
+        notCalls: ["send_to_person", "opensteer_task_send"],
         earlierTextMust: ["42"],
       },
     }),
@@ -135,7 +165,7 @@ it("silence rejects any assistant text and unknown forbidden tools, after an ear
   expect(grade(c.expect, [], "", "", "").every((c) => c.pass)).toBe(false);
   expect(grade(c.expect, [], "", "Nothing new", "42 services").every((c) => c.pass)).toBe(false);
   expect(
-    grade(c.expect, [{ tool: "person_notify", args: {}, valid: false }], "", "", "42").every(
+    grade(c.expect, [{ tool: "send_to_person", args: {}, valid: false }], "", "", "42").every(
       (c) => c.pass,
     ),
   ).toBe(false);
@@ -165,18 +195,20 @@ it("forbids partial arguments even on invalid attempts without banning other act
   const e = parseCases(
     line({
       expect: {
-        notCallsWithArgs: [{ tool: "trigger_write", args: { action: "run", nested: { id: 1 } } }],
+        notCallsWithArgs: [
+          { tool: "opensteer_automation_control", args: { action: "run_now", nested: { id: 1 } } },
+        ],
       },
     }),
   )[0]!.expect;
   const call = {
-    tool: "trigger_write",
+    tool: "opensteer_automation_control",
     valid: false,
-    args: { action: "run", nested: { id: 1, extra: true } },
+    args: { action: "run_now", nested: { id: 1, extra: true } },
   };
   expect(grade(e, [call], "").find((c) => c.name.startsWith("notCallsWithArgs"))?.pass).toBe(false);
   expect(
-    grade(e, [{ ...call, valid: true, args: { action: "get" } }], "").every((c) => c.pass),
+    grade(e, [{ ...call, valid: true, args: { action: "pause" } }], "").every((c) => c.pass),
   ).toBe(true);
 });
 
@@ -184,11 +216,11 @@ it("checks the first tool attempt's string argument, not a later repair", () => 
   const e = parseCases(
     line({
       expect: {
-        callsArgMatch: [{ tool: "computer", path: ["code"], pattern: "app\\(", first: true }],
+        callsArgMatch: [{ tool: "computer_use", path: ["code"], pattern: "app\\(", first: true }],
       },
     }),
   )[0]!.expect;
-  const call = (code: unknown, valid = true) => ({ tool: "computer", args: { code }, valid });
+  const call = (code: unknown, valid = true) => ({ tool: "computer_use", args: { code }, valid });
   expect(grade(e, [call('await app("Notes")')], "").every((c) => c.pass)).toBe(true);
   for (const calls of [
     [call('win.type("x")'), call('app("Notes")')],
@@ -205,7 +237,7 @@ it("requires a resumed computer call to bind a fresh window or phone before acti
   );
   const e = cases.find((c) => c.id === "resumed-computer-reopens")!.expect;
   const pass = (code: string) =>
-    grade(e, [{ tool: "computer", args: { code }, valid: true }], "").every((c) => c.pass);
+    grade(e, [{ tool: "computer_use", args: { code }, valid: true }], "").every((c) => c.pass);
   expect(pass('const win = await (await app("Notes")).window(); await win.observe();')).toBe(true);
   expect(pass('const p = await phone("Eval phone"); await p.observe();')).toBe(true);
   expect(pass('await app("Notes"); await globalThis.win.type("Reviewed");')).toBe(false);
@@ -297,16 +329,16 @@ it("rejects renewed phone input after a rejected PIN while allowing observation 
       expect: {
         notCallsArgMatch: [
           {
-            tool: "computer",
+            tool: "computer_use",
             path: ["code"],
             pattern: "\\.(?:type|tap|act)\\s*\\(",
-            after: { tool: "computer", result: { output: "PIN rejected" } },
+            after: { tool: "computer_use", result: { output: "PIN rejected" } },
           },
         ],
       },
     }),
   )[0]!.expect;
-  const call = (code: string) => ({ tool: "computer", args: { code }, valid: true });
+  const call = (code: string) => ({ tool: "computer_use", args: { code }, valid: true });
   const rejected = { ...call('await p.type("4821")'), result: { output: "PIN rejected" } };
   const safe = [call("await p.observe()"), rejected, call("await p.observe(); await p.release()")];
   expect(grade(expectations, safe, "The PIN was rejected.").every((c) => c.pass)).toBe(true);
@@ -318,4 +350,63 @@ it("rejects renewed phone input after a rejected PIN while allowing observation 
   ])
     expect(grade(expectations, [...safe, call(code)], "").every((c) => c.pass)).toBe(false);
   expect(grade(expectations, [], "").every((c) => c.pass)).toBe(false);
+  const anywhere = parseCases(
+    line({
+      expect: {
+        notCallsArgMatch: [{ tool: "computer_use", path: ["code"], pattern: "482193" }],
+      },
+    }),
+  )[0]!.expect;
+  expect(grade(anywhere, [], "").every((c) => c.pass)).toBe(true);
+  expect(grade(anywhere, safe, "").every((c) => c.pass)).toBe(true);
+  expect(grade(anywhere, [call('await p.type("482193")'), ...safe], "").every((c) => c.pass)).toBe(
+    false,
+  );
+});
+
+it("grades Harness calls separately from tool wildcards and orders them with tools", () => {
+  const e = parseCases(
+    line({
+      expect: {
+        harness: [{ call: "switchTab", args: { tabId: "work" } }],
+        notHarness: ["newTab", { call: "gotoUrl", args: { url: "https://wrong.test" } }],
+        order: ["harness:switchTab", "sign_in", "harness:fillLogin"],
+        maxCalls: { "harness:switchTab": 1 },
+        notCalls: ["computer_use"],
+        calls: [{ tool: "sign_in", args: { tabId: "work" } }],
+      },
+    }),
+  )[0]!.expect;
+  const calls = [
+    { tool: "harness:switchTab", args: { tabId: "work" }, valid: true },
+    { tool: "sign_in", args: { tabId: "work", site: "example.test" }, valid: true },
+    { tool: "harness:fillLogin", args: { loginRef: "sealed" }, valid: true },
+  ];
+  expect(grade(e, calls, "").every((c) => c.pass)).toBe(true);
+  for (const broken of [
+    calls.slice(1),
+    [calls[1]!, calls[0]!, calls[2]!],
+    [...calls, { tool: "harness:newTab", args: {}, valid: false }],
+    [...calls, calls[0]!],
+  ])
+    expect(grade(e, broken, "").every((c) => c.pass)).toBe(false);
+  const onlyTools = parseCases(line({ expect: { notCalls: ["*"] } }))[0]!.expect;
+  expect(grade(onlyTools, [calls[0]!], "").every((c) => c.pass)).toBe(true);
+});
+
+it("keeps tool order wildcards separate and can require an offline helper attempt", () => {
+  const call = { tool: "harness:switchTab", args: { tabId: "offline" }, valid: false };
+  const e = parseCases(
+    line({
+      expect: {
+        harness: [{ call: "switchTab", args: { tabId: "offline" } }],
+        order: ["harness:switchTab", "computer_access_request"],
+      },
+    }),
+  )[0]!.expect;
+  const calls = [call, { tool: "computer_access_request", args: {}, valid: true }];
+  expect(grade(e, calls, "").every((c) => c.pass)).toBe(true);
+  const wildcard = parseCases(line({ expect: { order: ["*", "computer_access_request"] } }))[0]!
+    .expect;
+  expect(grade(wildcard, calls, "").every((c) => c.pass)).toBe(false);
 });

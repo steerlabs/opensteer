@@ -1,6 +1,6 @@
 import { DeviceRefusalContextSchema } from "@opensteer/protocol";
 import type { AgentToolAccess, AgentToolFailure } from "@opensteer/agent-tools";
-import { OpensteerError } from "@opensteer/core";
+import { ToolBlockedError, OpensteerError } from "@opensteer/core";
 import { formatIssues } from "@opensteer/shared/validationIssues";
 import { z } from "zod";
 import { ComputerMcpSessionError } from "../computer-apps/computer-app-hub.js";
@@ -15,6 +15,13 @@ export const internalToolFailureCode = "internal";
  * retry is safe follows the tool: the Host never repeats an uncertain effect.
  */
 export function agentToolFailure(error: unknown, access: AgentToolAccess): AgentToolFailure {
+  if (error instanceof ToolBlockedError) return error.blocked;
+  if (error instanceof Error && error.name === "AbortError")
+    return {
+      code: "outcome_unknown",
+      message: "The tool call was cancelled; its outcome is unknown.",
+      next: "Observe before repeating an effectful call.",
+    };
   if (error instanceof z.ZodError) {
     return {
       code: "bad_request",
@@ -28,7 +35,7 @@ export function agentToolFailure(error: unknown, access: AgentToolAccess): Agent
         ? DeviceRefusalContextSchema.safeParse(error.details).data
         : undefined;
     return {
-      ...device,
+      ...(device ? { computerId: device.machineId, capability: device.capability } : {}),
       code: error.code,
       message: error.message,
       next: error.next,

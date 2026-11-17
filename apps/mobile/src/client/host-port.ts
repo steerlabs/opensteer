@@ -19,7 +19,7 @@ import {
   type HostCapabilityReader,
   type BrowserPreferencesStorage,
 } from "@opensteer/client/host";
-import { DeploymentIdSchema, type DeploymentId } from "@opensteer/core";
+import { DeploymentIdSchema, type DeploymentId, type MessageOrigin } from "@opensteer/core";
 import type { HostCapability } from "@opensteer/deployment-authority";
 import { isSameHost } from "@opensteer/deployment-authority";
 import {
@@ -62,6 +62,7 @@ export type HostEpochAgreement =
 export interface MobileHostPort {
   readonly credentials: DeploymentCredentials;
   attach(input: {
+    readonly assetRoute?: import("@opensteer/client/host").AssetRoute;
     readonly authorization: HostAuthorization;
     readonly capabilities: readonly HostCapability[] | null | HostCapabilityReader;
     readonly connection: DeploymentConnection;
@@ -89,6 +90,7 @@ export function createNetworkHostPort(options: {
   readonly fetch: HostFetch;
   readonly lifecycle: ClientLifecycle;
   readonly now: () => Date;
+  readonly origin: Omit<MessageOrigin, "timeZone">;
   readonly openWebSocket: (
     url: string,
     headers: Readonly<Record<string, string>>,
@@ -102,7 +104,10 @@ export function createNetworkHostPort(options: {
       const credentials = createDeploymentCredentials({ now: options.now, oauth, sessions });
       return new DesktopUpdatesService({
         catalog,
-        credentials: { authorizationHeader: (connection) => credentials.authorization(connection) },
+        credentials: {
+          teamRuntime: () => oauth.teamRuntime(),
+          authorizationHeader: (connection) => credentials.authorization(connection),
+        },
         deploymentId,
         localRuntime: { current: async () => null },
         network: maintenanceNetwork,
@@ -127,7 +132,7 @@ export function createNetworkHostPort(options: {
       });
     },
 
-    attach({ authorization, capabilities, connection, origin }): HostClient {
+    attach({ authorization, capabilities, connection, origin, assetRoute }): HostClient {
       const network = createHostNetwork({
         authorization,
         fetch: options.fetch,
@@ -137,6 +142,7 @@ export function createNetworkHostPort(options: {
         openWebSocket: options.openWebSocket,
       });
       const client = new HttpHostClient({
+        ...(assetRoute ? { assetRoute } : {}),
         deviceAccessRequests: "include",
         baseUrl: origin,
         ...(options.browserPreferencesStorage
@@ -145,6 +151,7 @@ export function createNetworkHostPort(options: {
         capabilities,
         fetch: network.fetch,
         lifecycle: options.lifecycle,
+        origin: options.origin,
         webSocketFactory: network.webSocketFactory,
       });
       registerPhoneEnrollmentHost(client, {

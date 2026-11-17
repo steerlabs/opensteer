@@ -3,17 +3,15 @@ import ApplicationServices
 import CoreGraphics
 
 public struct OwnerWindowInfo: Encodable, Sendable {
-  let id: CGWindowID
+  let windowId: String
   let title: String
-  let focused: Bool
-  let main: Bool
   let minimized: Bool
   let onScreen: Bool
 }
 
 public struct WindowInfo: Encodable, Sendable {
   let ref: String
-  let id: CGWindowID
+  let windowId: String
   let title: String
   let focused: Bool
   let main: Bool
@@ -26,11 +24,11 @@ public struct WindowInfo: Encodable, Sendable {
 
 public struct WindowBlocker: Encodable, Sendable, Equatable {
   enum Kind: String, Encodable, Sendable { case dialog, menu }
-  let id: CGWindowID
+  let windowId: String
   let title: String
   let kind: Kind
   var refusal: HelperError {
-    HelperError(.unsupported, "\"\(title)\" (window \(id)) blocks this app; use that window.")
+    HelperError(.unsupported, "\"\(title)\" blocks this app; use that window.")
   }
 }
 
@@ -62,7 +60,7 @@ final class SessionWindow {
 /// token and process incarnation, never a numeric id alone, identify a ref.
 @WorkActor
 enum SessionWindows {
-  nonisolated static let closed = HelperError(.staleObservation, "That window is closed.")
+  nonisolated static let closed = HelperError(.staleObservation, "Window closed")
 
   /// Attaches the app's process. With `launching`, an app that is not running,
   /// or runs with no window, is opened in the background (`AppLaunch`);
@@ -226,7 +224,7 @@ enum SessionWindows {
         processIdentifier: process.processIdentifier, windowID: id, window: element)
       result.append(
         WindowInfo(
-          ref: bound.ref, id: id,
+          ref: bound.ref, windowId: try WindowIdentities.retain(bound.liveness, app: app.identity),
           title: ActionDescription.clip(AXValueReader.copyString(element, kAXTitleAttribute) ?? "", to: 1024),
           focused: focused.map { CFEqual($0, element) } ?? false,
           main: main.map { CFEqual($0, element) } ?? false,
@@ -242,7 +240,7 @@ enum SessionWindows {
       else { continue }
       result.append(
         WindowInfo(
-          ref: bound.ref, id: bound.windowID,
+          ref: bound.ref, windowId: try WindowIdentities.retain(bound.liveness, app: app.identity),
           title: ActionDescription.clip(
             AXValueReader.copyString(bound.element, kAXTitleAttribute) ?? "", to: 1024),
           focused: focused.map { CFEqual($0, bound.element) } ?? false,
@@ -256,19 +254,27 @@ enum SessionWindows {
     return result
   }
 
-  static func bind(app: AppSessionState, window: CGWindowID?, monitor: WindowMonitor, check: () throws -> Void = {}) throws
+  static func bind(app: AppSessionState, window: String?, monitor: WindowMonitor, check: () throws -> Void = {}) throws
     -> WindowInfo
   {
+    if let window {
+      let identity = try WindowIdentities.resolve(window)
+      guard identity.process == app.verified else { throw closed }
+      if !app.windows.values.contains(where: { CFEqual($0.element, identity.element) }) {
+        let bound = SessionWindow(process: identity.process, element: identity.element, windowID: identity.windowID)
+        app.windows[bound.ref] = bound
+      }
+    }
     let inventory = try inventory(app: app, monitor: monitor, check: check)
     let selected =
-      window.flatMap { id in inventory.first { $0.id == id } }
+      window.flatMap { id in inventory.first { $0.windowId == id } }
       ?? (window == nil
         ? inventory.first(where: \.current) ?? inventory.first(where: \.focused)
           ?? inventory.first(where: \.main) ?? inventory.first : nil)
     guard let selected, let bound = app.windows[selected.ref], !bound.closed else { throw closed }
     app.currentWindow = bound
     return WindowInfo(
-      ref: selected.ref, id: selected.id, title: selected.title, focused: selected.focused,
+      ref: selected.ref, windowId: selected.windowId, title: selected.title, focused: selected.focused,
       main: selected.main, minimized: selected.minimized, onScreen: selected.onScreen,
       modal: selected.modal,
       current: true, frame: selected.frame)
@@ -344,8 +350,7 @@ enum SessionWindows {
     return OwnerWindowList(
       windows: listed.map {
         OwnerWindowInfo(
-          id: $0.id, title: $0.title, focused: $0.focused, main: $0.main,
-          minimized: $0.minimized, onScreen: $0.onScreen)
+          windowId: $0.windowId, title: $0.title, minimized: $0.minimized, onScreen: $0.onScreen)
       }, unverified: report.unverified, reason: report.reason)
   }
 }

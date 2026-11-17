@@ -1,7 +1,6 @@
 import { createSettingsReadHandlers } from "./settings-read-handlers.js";
 import type { ComputerViewService } from "../computer-use/computer-view-service.js";
-import type { PhoneTabs } from "../computer-use/phone-tabs.js";
-import { OpensteerError, RunnerIdSchema } from "@opensteer/core";
+import { OpensteerError, DeviceIdSchema, RunnerIdSchema } from "@opensteer/core";
 import { requireSession } from "../integrations/integration-rpc-context.js";
 import {
   hostApi,
@@ -75,6 +74,12 @@ export function createHostApiHandlers(
   coreHandlers: Pick<
     HostApiHandlers,
     | "agentPhone.target.get"
+    | "apps.list"
+    | "apps.get"
+    | "tabs.get"
+    | "tabs.state"
+    | "machines.list"
+    | "bootstrap.get"
     | "assignment.get"
     | "thread.assignments.list"
     | "browser.searchSuggestions.get"
@@ -83,7 +88,6 @@ export function createHostApiHandlers(
     | "browser.history.get"
     | "browser.history.icons.get"
     | "thread.browserUsage.get"
-    | "apps.get"
     | "apps.view"
     | "attachment.get"
     | "attachment.upload"
@@ -93,7 +97,6 @@ export function createHostApiHandlers(
     | "teams.links.list"
     | "teams.threadTask.get"
     | "teams.replyTask.get"
-    | "bootstrap.get"
     | "harness.authentication.get"
     | "automaticModels.get"
     | "harness.catalog.refresh"
@@ -105,24 +108,27 @@ export function createHostApiHandlers(
     | "voice.say"
     | "voice.stop"
     | "machine.access.history"
-    | "machines.list"
     | "requests.list"
     | "run.attempts.list"
     | "tasks.list"
     | "thread.events.list"
     | "node.events.list"
+    | "asset.urls"
+    | "file.open"
+    | "file.content"
     | "tool.output.get"
     | "thread.messages.list"
     | "thread.inputQueue.get"
+    | "thread.message.revisions.list"
     | "thread.live.get"
     | "thread.requests.list"
+    | "references.resolve"
   >,
   handleCoreCommand: (
     command: CoreCommand,
     context: HostApiServerContext,
   ) => Promise<HostApiCommandOutput>,
   computerViews?: ComputerViewService,
-  phoneTabs?: PhoneTabs,
 ): Omit<
   HostApiHandlers,
   | "personal.remoteAccess.get"
@@ -147,7 +153,7 @@ export function createHostApiHandlers(
     "plugins.detail.get": async (input, context) => {
       const machines = await coreHandlers["machines.list"]({}, context);
       if (!machines.ok) return machines;
-      const detail = await integrationPlatform.platform.store.settings.detail(
+      const detail = await integrationPlatform.platform.store.settings.deviceDetail(
         requireSession(context).user.id,
         input.target,
         new Set(machines.data.machines.filter((m) => m.status === "online").map((m) => m.id)),
@@ -155,7 +161,9 @@ export function createHostApiHandlers(
       detail.row = listedPluginRow(detail.row);
       const runnerIds = new Set<string>([
         ...detail.devices.map((d) => d.runnerId),
-        ...detail.accounts.flatMap((account) => (account.runnerId ? [account.runnerId] : [])),
+        ...detail.accounts.flatMap<string>((account) =>
+          account.deviceId ? [account.deviceId] : account.runnerId ? [account.runnerId] : [],
+        ),
       ]);
       if (runnerIds.size) {
         for (const machine of machines.data.machines.filter((entry) => runnerIds.has(entry.id))) {
@@ -179,14 +187,32 @@ export function createHostApiHandlers(
           }
         }
         detail.devices = machines.data.machines
-          .filter((machine) => runnerIds.has(machine.id))
+          .filter((machine) => runnerIds.has(machine.id) && machine.selfRunnerId !== null)
           .map((machine) => ({
-            runnerId: RunnerIdSchema.parse(machine.id),
+            runnerId: machine.selfRunnerId ?? RunnerIdSchema.parse(machine.id),
             name: machine.name.slice(0, 120),
             status: machine.status,
           }));
       }
-      return rpcSuccess(hostApi["plugins.detail.get"].success.parse(detail));
+      return rpcSuccess(
+        hostApi["plugins.detail.get"].success.parse({
+          ...detail,
+          accounts: detail.accounts.map((account) => ({
+            ...account,
+            runnerId: account.deviceId
+              ? (machines.data.machines.find((machine) => machine.id === account.deviceId)
+                  ?.selfRunnerId ?? null)
+              : account.runnerId,
+          })),
+          deviceTargets: machines.data.machines
+            .filter((machine) => runnerIds.has(machine.id) && machine.status !== "pending")
+            .map((machine) => ({
+              deviceId: DeviceIdSchema.parse(machine.id),
+              name: machine.name.slice(0, 120),
+              status: machine.status,
+            })),
+        }),
+      );
     },
     ...createSettingsReadHandlers({
       otherDevices: (owner, machines) =>
@@ -229,11 +255,7 @@ export function createHostApiHandlers(
           code: "forbidden",
           message: "Team commands require a team Host",
         });
-      if (
-        command.type === "computer.view.open" ||
-        command.type === "computer.view.close" ||
-        command.type === "computer.view.renew"
-      ) {
+      if (command.type === "computer.view.close" || command.type === "computer.view.renew") {
         const owner = requireSession(context).user.id;
         if (!computerViews)
           throw new OpensteerError({
@@ -247,15 +269,6 @@ export function createHostApiHandlers(
             view: await computerViews.command(owner, command),
           }),
         );
-      }
-      if (command.type === "phone.tab.close") {
-        if (!phoneTabs)
-          throw new OpensteerError({
-            code: "conflict",
-            message: "This Host does not keep phone tabs.",
-          });
-        await phoneTabs.close(requireSession(context).user.id, command.machineId);
-        return rpcSuccess(hostApi["commands.dispatch"].success.parse({ type: command.type }));
       }
       if (isBrowserSourceCommand(command)) {
         return rpcSuccess(
@@ -300,6 +313,12 @@ export function createHostApiHandlers(
     },
   } satisfies Omit<
     HostApiHandlers,
+    | "machines.list"
+    | "bootstrap.get"
+    | "tabs.get"
+    | "tabs.state"
+    | "apps.list"
+    | "apps.get"
     | "personal.remoteAccess.get"
     | "connections.list"
     | "connections.authorization.get"

@@ -1,16 +1,18 @@
-import { seedBrowserSession } from "@opensteer/client/test-support";
-import { aiSharingTestPermission } from "../../test-support/ai-sharing.js";
-import { seedBrowserSnapshot } from "@opensteer/client/test-support";
+import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 
+import { aiSharingTestPermission } from "../../test-support/ai-sharing.js";
 import { idleVoiceSnapshot, type VoiceSnapshot } from "@opensteer/client/voice";
 import { DictationController } from "@opensteer/client/dictation";
 import type { DictationEvent, DictationPort } from "@opensteer/protocol/dictation";
 import {
+  BrowserWatchStore,
   formatClockTime,
   HostClientRequestError,
+  PlaceActivityStore,
+  placeList,
   RunPlaceStore,
-  type BrowserFrameView,
+  reconcileBrowserLastPictures,
   type HostClient,
   type HostSnapshot,
   type MessageEntry,
@@ -21,22 +23,31 @@ import {
   type TranscriptEntry,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import { conversationHistoryHost, MemoryPrivateFilesystem } from "@opensteer/client/test-support";
+import {
+  conversationHistoryHost,
+  MemoryPrivateFilesystem,
+  tabFixture,
+  tabStoreFixture,
+} from "@opensteer/client/test-support";
 import {
   AssignmentSummarySchema,
   BrowserPageContentPartSchema,
   createId,
-  PlaceEnteredEventViewSchema,
   RunIdSchema,
+  TabIdSchema,
+  PlaceEnteredEventViewSchema,
   ThreadIdSchema,
   voiceCallSeed,
   type Request,
+  type TabId,
   type ThreadInputQueue,
 } from "@opensteer/core";
 import {
   ComputerUseSessionIdSchema,
+  createBrowserSessionId,
   type ComputerUseSessionSummary,
   type MachineSummary,
+  type TabViewer,
 } from "@opensteer/protocol";
 import { act, useState, type ReactElement, type ReactNode, type Ref } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -52,6 +63,7 @@ import { homeDraftId } from "../home/home-draft.js";
 import { VoiceContext } from "@opensteer/client/react";
 import type { VoiceControls } from "@opensteer/client/voice";
 import { VoiceOverlay } from "../voice/controls.js";
+import { composerEditorFake } from "../ui/composer-editor.fake.js";
 
 /*
  * One conversation on the phone, drawn by the real pane, transcript, composer
@@ -84,6 +96,10 @@ import { VoiceOverlay } from "../voice/controls.js";
 const harness = vi.hoisted(() => ({
   paneRenders: 0,
   nativeRenders: 0,
+  /** What the last drawn computer screen tells its Run place's picture owner. */
+  displayReport: null as
+    | null
+    | ((report: { kind: "drawn"; width: number; height: number } | { kind: "cleared" }) => void),
   currentRoute: { name: "Thread" } as { name: string; params?: object },
   appListeners: new Set<(state: string) => void>(),
   headerWrites: 0,
@@ -93,9 +109,9 @@ const harness = vi.hoisted(() => ({
   drafts: null as ThreadDraftStore | null,
   activeHost: null as HostClient | null,
   focusCleanups: new Set<() => void>(),
-  select: null as
-    null | ((event: { nativeEvent: { selection: { start: number; end: number } } }) => void),
   navigate: vi.fn(),
+  /** The screen's navigation events, as the native stack would deliver them. */
+  navigationListeners: new Map<string, Set<() => void>>(),
   /** The composer's field letting go of the keyboard. */
   blur: vi.fn(),
   dispatch: vi.fn(),
@@ -131,10 +147,12 @@ const harness = vi.hoisted(() => ({
   },
 }));
 
-const selectionCalls: { text: string | undefined; start: number; end: number }[] = [];
+const selectionCalls = composerEditorFake.calls;
+composerEditorFake.blur = () => harness.blur();
 let dictation = new DictationController({ port: null, createId: () => crypto.randomUUID() });
 vi.mock("./settings/engine-mark.js", () => ({ EngineMark: () => null }));
 vi.mock("../voice/cursor-mark.js", () => ({ PillMic: () => null, VoiceCursor: () => null }));
+vi.mock("../ui/composer-editor.js", () => import("../ui/composer-editor.fake.js"));
 vi.mock("react-native-webview", () => ({ WebView: () => null }));
 vi.mock("react-native-keyboard-controller", () => ({
   KeyboardChatScrollView: () => null,
@@ -198,6 +216,7 @@ vi.mock("react-native", async () => {
     ),
     Keyboard: {
       addListener: () => ({ remove: () => undefined }),
+      dismiss: vi.fn(),
       isVisible: () => false,
       metrics: () => undefined,
     },
@@ -255,12 +274,9 @@ vi.mock("react-native", async () => {
       readonly placeholder?: string;
       readonly value?: string;
     }) => {
-      harness.select = props.onSelectionChange ?? null;
       React.useImperativeHandle(props.ref, () => ({
         blur: harness.blur,
         focus: () => undefined,
-        setSelection: (start: number, end: number) =>
-          selectionCalls.push({ text: props.value, start, end }),
       }));
       return (
         <textarea
@@ -373,9 +389,16 @@ vi.mock("@react-navigation/elements", () => ({
 vi.mock("@react-navigation/native", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
   const navigation = {
+    addListener: (event: string, listener: () => void) => {
+      const listeners = harness.navigationListeners.get(event) ?? new Set();
+      listeners.add(listener);
+      harness.navigationListeners.set(event, listeners);
+      return () => listeners.delete(listener);
+    },
     dispatch: harness.dispatch,
     // The conversation is the screen in front: a chip opens over it.
     getState: () => ({ index: 0, routes: [harness.currentRoute] }),
+    isFocused: () => harness.focused,
     navigate: harness.navigate,
     setOptions: (options: Record<string, unknown>) => {
       harness.headerWrites += 1;
@@ -438,10 +461,18 @@ vi.mock("@expo/ui/community/menu", () => ({
     </div>
   ),
 }));
-vi.mock("../computers/phone-display-native.js", () => ({ nativePictureView: () => null }));
+vi.mock("../computers/phone-display-native.js", () => ({
+  macWindowVideoSupported: () => true,
+  nativePictureView: () => null,
+}));
 vi.mock("../computers/phone-display.js", () => ({
-  ComputerDisplay: (props: { active: boolean; source: object }) => {
+  ComputerDisplay: (props: {
+    active: boolean;
+    source: object;
+    runPlace?: { report: NonNullable<typeof harness.displayReport> };
+  }) => {
     harness.nativeRenders++;
+    harness.displayReport = props.runPlace?.report ?? null;
     return (
       <div
         data-native-preview
@@ -528,6 +559,7 @@ vi.mock("../ui/motion.js", () => ({
   bubblePop: undefined,
   bubbleRise: undefined,
   descend: undefined,
+  dim: undefined,
   move: undefined,
   duration: { enter: 0, exit: 0 },
   enter: undefined,
@@ -615,6 +647,12 @@ vi.mock("./message-hold.js", async () => {
       </>
     ),
     MessageMore: () => null,
+    // A tap opens a waiting bubble to edit; its held menu is the ellipsis's, drawn there.
+    WaitingHold: (props: { children: ReactNode; onPress?: () => void }) => (
+      <div aria-label="Waiting bubble" onClick={props.onPress} role="button">
+        {props.children}
+      </div>
+    ),
   };
 });
 vi.mock("./task-line.js", async () => {
@@ -702,8 +740,24 @@ vi.mock("./request-card.js", () => ({
 }));
 
 vi.mock("./answer-bar.js", () => ({
-  AnswerBar: (props: { readonly question: string }) => (
-    <section aria-label="Answer bar">{props.question}</section>
+  AnswerBar: (props: {
+    readonly surface: { readonly request: { readonly presentation: { readonly title: string } } };
+  }) => <section aria-label="Answer bar">{props.surface.request.presentation.title}</section>,
+}));
+vi.mock("./question-card.js", () => ({
+  QuestionRequestCard: (props: {
+    readonly composer: string | null;
+    readonly onAnswerHere?: () => void;
+    readonly onBackToMessage?: () => void;
+  }) => (
+    <section aria-label="Question" data-composer={props.composer ?? undefined}>
+      {props.onAnswerHere === undefined ? null : (
+        <button aria-label="Type an answer" onClick={props.onAnswerHere} />
+      )}
+      {props.onBackToMessage === undefined ? null : (
+        <button aria-label="Back to message" onClick={props.onBackToMessage} />
+      )}
+    </section>
   ),
 }));
 
@@ -751,6 +805,9 @@ function WithNativeHeader(props: {
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
 afterEach(() => {
+  composerEditorFake.composing = false;
+  composerEditorFake.ahead = null;
+  composerEditorFake.runningAhead = false;
   aiSharingTestPermission.allowed = true;
   for (const root of roots.splice(0)) act(() => root.unmount());
   dictation.dispose();
@@ -785,11 +842,21 @@ const base = {
     thread.id === conversationId ? { ...thread, purpose: "voice" as const } : thread,
   ),
 };
+/** A page tab in the mock's list, as a message includes it. */
+const includedPage = () =>
+  BrowserPageContentPartSchema.parse({
+    type: "browser-page",
+    sessionId: "bsn_00000000-0000-4000-8000-0000000000aa",
+    tabId: placeList(base).find(({ kind }) => kind === "page")!.key,
+    title: "Research page",
+    url: "https://example.com",
+  });
 const conversationTitle = base.threads.find(({ id }) => id === conversationId)!.title;
 const viewer = base.user;
 if (viewer === null) throw new Error("The mock Host has no signed-in reader.");
 const userId = viewer.id;
 const workId = ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000004");
+const otherWorkId = "thr_00000000-0000-4000-8000-000000000005";
 const newDraftId = homeDraftId;
 const at = "2026-10-09T10:00:00.000Z";
 const human = {
@@ -1001,6 +1068,7 @@ function chatAtWork() {
 function waitingInput(message: MessageEntry, threadId: string): ThreadInputQueue["items"][number] {
   return {
     canCancel: true,
+    canEdit: true,
     canMove: true,
     canSteer: true,
     input: {
@@ -1014,9 +1082,12 @@ function waitingInput(message: MessageEntry, threadId: string): ThreadInputQueue
       replyTarget: null,
       runId: null,
       state: "pending",
+      teamRequestId: null,
+      teamSource: null,
       threadId: threadId as ThreadInputQueue["threadId"],
       updatedAt: at,
     },
+    lease: null,
     message: {
       author: human,
       content: [{ text: message.body, type: "text" }],
@@ -1103,18 +1174,117 @@ function snapshotFor(input: {
   };
 }
 
-/** One state object, as a store's snapshot must be. */
-const connectingWatch = { error: null, frame: null, status: "connecting" } as const;
+/** One targeted browser socket, as the Host answers a passive watch on it. */
+class WatchSocket {
+  binaryType: "arraybuffer" | "blob" = "blob";
+  readyState = 0;
+  readonly #listeners = new Map<string, Set<(event: never) => void>>();
+  constructor(
+    readonly sessionId: string,
+    readonly surfaceId: string,
+  ) {}
+  addEventListener(type: string, listener: (event: never) => void): void {
+    const listeners = this.#listeners.get(type) ?? new Set();
+    listeners.add(listener);
+    this.#listeners.set(type, listeners);
+  }
+  send(): void {}
+  close(code = 1000, reason = ""): void {
+    if (this.readyState === 3) return;
+    this.readyState = 3;
+    this.#emit("close", { code, reason });
+  }
+  /** Opens, admits the watch and answers its subscription. */
+  admit(): void {
+    this.readyState = 1;
+    this.#emit("open", {});
+    this.#receive(
+      JSON.stringify({
+        type: "browser.snapshot",
+        sessionId: this.sessionId,
+        state: "ready",
+        access: "read-write",
+        targetedStreamingVersion: 1,
+        dialog: null,
+        surfaces: [{ id: this.surfaceId, active: true, title: "Page", url: "about:blank" }],
+      }),
+    );
+    this.#receive(
+      JSON.stringify({ type: "browser.dialog.changed", surfaceId: this.surfaceId, dialog: null }),
+    );
+  }
+  /** One JPEG picture of an 800 by 600 page. */
+  paint(frameId: number): void {
+    const header = new TextEncoder().encode(
+      JSON.stringify({
+        encoding: "jpeg",
+        frameId,
+        geometryRevision: 1,
+        watchToken: `00000000-0000-4000-8000-${String(frameId).padStart(12, "0")}`,
+        surfaceId: this.surfaceId,
+        viewportWidth: 800,
+        viewportHeight: 600,
+        rasterWidth: 800,
+        rasterHeight: 600,
+      }),
+    );
+    const bytes = new Uint8Array(4 + header.length + 4);
+    new DataView(bytes.buffer).setUint32(0, header.length);
+    bytes.set(header, 4);
+    bytes.set([0xff, 0xd8, 0xff, 0xd9], 4 + header.length);
+    this.#receive(bytes.buffer);
+  }
+  #receive(data: string | ArrayBuffer): void {
+    this.#emit("message", { data });
+  }
+  #emit(type: string, event: unknown): void {
+    for (const listener of this.#listeners.get(type) ?? []) listener(event as never);
+  }
+}
+
+/** A display socket that never opens: nothing in these panes draws a computer's screen. */
+const idleDisplaySocket = () => ({
+  binaryType: "arraybuffer",
+  readyState: 0,
+  addEventListener: () => undefined,
+  close: () => undefined,
+  send: () => undefined,
+});
 
 /** A Host whose snapshot the test moves, recording what the phone asks of it. */
 function fakeHost(initial: HostSnapshot) {
-  let snapshot = seedBrowserSnapshot(initial);
+  let snapshot = initial;
   // What the Host answers the next "Load earlier" with: the transcript with that page merged in.
   let earlierPage: HostSnapshot | null = null;
   const listeners = new Set<() => void>();
   const runPlaces = new RunPlaceStore();
-  let frame: BrowserFrameView | null = null;
-  const frameListeners = new Set<() => void>();
+  const placeActivity = new PlaceActivityStore();
+  // This device's view of each page tab, bound once it is activated here.
+  const viewers = new Map<string, TabViewer>();
+  const activateTab = vi.fn(async (tabId: string) => {
+    const tab = snapshot.tabs.get(tabId as TabId);
+    if (tab?.kind !== "page") throw new Error("Only a listed page binds a viewer here.");
+    const viewer = {
+      kind: "page",
+      sessionId: createBrowserSessionId(),
+      surfaceId: tabId,
+    } as TabViewer;
+    viewers.set(tabId, viewer);
+    for (const listener of listeners) listener();
+    return viewer;
+  });
+  const sockets: WatchSocket[] = [];
+  let painted = 0;
+  const watch = new BrowserWatchStore(
+    (sessionId, surfaceId) => {
+      const socket = new WatchSocket(sessionId, surfaceId);
+      sockets.push(socket);
+      return socket;
+    },
+    "watch",
+    undefined,
+    () => 60_000,
+  );
   const watchRelease = vi.fn();
   const dispatch = vi.fn(async (command: { readonly type: string }) => ({ type: command.type }));
   const stopRun = vi.fn(async (_threadId: string) => undefined);
@@ -1122,7 +1292,7 @@ function fakeHost(initial: HostSnapshot) {
   const loadTranscriptAround = vi.fn(async (_threadId: string, _messageId: string) => undefined);
   const loadEarlierTranscript = vi.fn(async (_threadId: string) => {
     if (earlierPage === null) return;
-    snapshot = seedBrowserSnapshot(earlierPage);
+    snapshot = earlierPage;
     earlierPage = null;
     for (const listener of listeners) listener();
   });
@@ -1130,29 +1300,58 @@ function fakeHost(initial: HostSnapshot) {
     data: {},
     ok: true,
   }));
+  // The one waiting message open in place, as the client's editor holds it.
+  const editor = {
+    cancel: vi.fn(async () => undefined),
+    leaseId: "lease-here",
+    revision: 0,
+    save: vi.fn(async (_content: readonly object[]) => ({ editedAt: at, revision: 1 })),
+    touch: vi.fn(),
+  };
   const client = {
-    acceptBrowserWatchFrame: vi.fn(),
+    acceptBrowserWatchFrame: vi.fn((sessionId: string, token: string, surfaceId: string) =>
+      watch.accept(sessionId, surfaceId, token),
+    ),
     activateThread: vi.fn(),
     // What a mounted tab preview reads: the Host's latest place and a passive picture.
     browserWatchFrames: {
-      get: () => frame,
-      subscribe: (_sessionId: string, listener: () => void) => {
-        frameListeners.add(listener);
-        return () => frameListeners.delete(listener);
-      },
+      accept: (sessionId: string, surfaceId: string, token: string) =>
+        watch.accept(sessionId, surfaceId, token),
+      claim: (sessionId: string, surfaceId: string, token: string) =>
+        watch.claim(sessionId, surfaceId, token),
+      get: (sessionId: string, surfaceId: string) => watch.get(sessionId, surfaceId).frame,
+      invalidationKey: watch.invalidationKey,
+      subscribe: (sessionId: string, listener: () => void, surfaceId: string) =>
+        watch.subscribe(sessionId, surfaceId, listener),
     },
+    // No page is open interactively here.
+    browserFrames: { get: () => null, subscribe: () => () => undefined },
+    connectComputerDisplay: idleDisplaySocket,
     runPlace: runPlaces.get,
     subscribeRunPlace: runPlaces.subscribe,
-    browserWatchState: () => connectingWatch,
+    placeActivity: placeActivity.get,
+    subscribePlaceActivity: placeActivity.subscribe,
+    tabViewer: (tabId: string) => viewers.get(tabId) ?? null,
+    activateTab,
+    browserWatchState: watch.get,
     cancelThreadInput: vi.fn(async () => undefined),
+    decideTeamAsk: vi.fn(async (_decision: object) => undefined),
+    editWaitingMessage: vi.fn(async (_threadId: string, _messageId: string) => editor),
     latestPlaceOfThread: () => null,
-    retainBrowserWatch: vi.fn(() => watchRelease),
-    subscribeBrowserWatch: () => () => undefined,
+    ownsEditLease: (leaseId: string) => leaseId === editor.leaseId,
+    releaseWaitingMessage: vi.fn(async (_threadId: string, _messageId: string) => undefined),
+    retainBrowserWatch: vi.fn(
+      (sessionId: string, surfaceId: string, options?: Parameters<typeof watch.retain>[2]) => {
+        const release = watch.retain(sessionId, surfaceId, options);
+        return () => {
+          watchRelease();
+          release();
+        };
+      },
+    ),
+    subscribeBrowserWatch: watch.subscribe,
     subscribeLatestPlace: () => () => undefined,
     dispatch,
-    get browserTabs() {
-      return snapshot.browserTabs!;
-    },
     getSnapshot: () => snapshot,
     load: vi.fn(async () => undefined),
     loadEarlierTranscript,
@@ -1173,14 +1372,45 @@ function fakeHost(initial: HostSnapshot) {
   };
   return {
     client: client as unknown as HostClient,
+    decideTeamAsk: client.decideTeamAsk,
     dispatch,
+    editWaitingMessage: client.editWaitingMessage,
+    editor,
+    releaseWaitingMessage: client.releaseWaitingMessage,
     runPlaces,
+    placeActivity,
     watchRelease,
-    picture(next: BrowserFrameView | null) {
+    /** The Host binds this device's view of a page tab to another browser session. */
+    rebind(tabId: string, sessionId: string) {
       act(() => {
-        frame = next;
-        frameListeners.forEach((listener) => listener());
+        viewers.set(tabId, { kind: "page", sessionId, surfaceId: tabId } as TabViewer);
+        snapshot = { ...snapshot };
+        for (const frames of [client.browserWatchFrames, client.browserFrames])
+          reconcileBrowserLastPictures(
+            frames,
+            (_sessionId, id) => (viewers.has(id) ? null : undefined),
+            (id) => {
+              const viewer = viewers.get(id);
+              return viewer?.kind === "page" ? viewer.sessionId : undefined;
+            },
+          );
+        for (const listener of listeners) listener();
       });
+    },
+    paint() {
+      const socket = sockets.at(-1)!;
+      act(() => {
+        if (socket.readyState === 0) socket.admit();
+        socket.paint(++painted);
+      });
+    },
+    /** How many pictures the Host has sent. */
+    get painted() {
+      return painted;
+    },
+    /** The network drops the watch: the client keeps its picture and waits to try again. */
+    drop() {
+      act(() => sockets.at(-1)!.close(1006));
     },
     /** The transcript the Host has once the phone loads its earlier page. */
     holdEarlier(next: HostSnapshot) {
@@ -1189,7 +1419,7 @@ function fakeHost(initial: HostSnapshot) {
     loadEarlierTranscript,
     loadTranscriptAround,
     move(next: HostSnapshot) {
-      snapshot = seedBrowserSnapshot(next);
+      snapshot = next;
       act(() => {
         for (const listener of listeners) listener();
       });
@@ -1220,6 +1450,8 @@ async function mount(
     readonly withPage?: import("./thread-pane.js").PageCompanion;
     /** A page Ask put on this reader's draft for the Thread. */
     readonly draftPage?: import("@opensteer/core").BrowserPageContentPart;
+    /** Where the screen holding the pane takes the reader once its task is gone. */
+    readonly onGone?: () => void;
   } = {},
 ) {
   const drafts = createThreadDraftStore({
@@ -1242,6 +1474,7 @@ async function mount(
       hostClient={host.client}
       messageId={options.messageId ?? null}
       onAnchorReleased={() => undefined}
+      onGone={options.onGone ?? (() => undefined)}
       onHeader={onHeader}
       onOpenThread={() => undefined}
       withPage={options.withPage}
@@ -1249,22 +1482,22 @@ async function mount(
       threadId={threadId}
     />
   );
-  await act(async () =>
-    root.render(
-      options.header === true ? (
-        <WithNativeHeader
-          hostClient={host.client}
-          onHeader={(header) => headers.push(header)}
-          pane={pane}
-          threadId={threadId}
-        />
-      ) : (
-        pane((header) => headers.push(header))
-      ),
-    ),
-  );
+  const tree = () =>
+    options.header === true ? (
+      <WithNativeHeader
+        hostClient={host.client}
+        onHeader={(header) => headers.push(header)}
+        pane={pane}
+        threadId={threadId}
+      />
+    ) : (
+      pane((header) => headers.push(header))
+    );
+  await act(async () => root.render(tree()));
   await settle();
-  return { container, drafts, headers, root, pane };
+  /** Draws the same screen again, as a change around it would. */
+  const rerender = () => act(async () => root.render(tree()));
+  return { container, drafts, headers, rerender, root, pane };
 }
 
 function text(container: HTMLElement): string {
@@ -1327,6 +1560,91 @@ async function type(container: HTMLElement, label: string, words: string): Promi
   await settle();
 }
 
+/** The field a waiting message opens into, or null while none is open. */
+function editField(container: HTMLElement): HTMLTextAreaElement | null {
+  return container.querySelector<HTMLTextAreaElement>(
+    'textarea[aria-label="Edit message"], textarea[aria-label="Edit Maya’s ask"]',
+  );
+}
+
+/** A tap on the waiting bubble holding these words. */
+async function tapWaiting(container: HTMLElement, words: string): Promise<void> {
+  const bubble = [...container.querySelectorAll<HTMLElement>('[aria-label="Waiting bubble"]')].find(
+    (node) => node.textContent?.includes(words),
+  );
+  if (bubble === undefined) throw new Error(`No waiting bubble saying ${words}`);
+  await act(async () => bubble.click());
+  await settle();
+}
+
+/** Maya's ask of the reader's agent, waiting in the task for the reader's answer. */
+function teammateAsk(body: string) {
+  const teamId = "dep_0192f4a1-1111-4000-8000-0000000000aa";
+  const requestId = "treq_0192f4a1-5555-4000-8000-000000000001";
+  const author = {
+    actor: "human",
+    displayName: "Maya",
+    kind: "team-member",
+    teamId,
+    teamUserId: "usr_0192f4a1-6666-4000-8000-000000000001",
+  } as const;
+  const entry: MessageEntry = { ...said(body, null), author } as MessageEntry;
+  const base = waitingInput(entry, workId);
+  const item = {
+    ...base,
+    canCancel: false,
+    canMove: false,
+    canSteer: false,
+    input: {
+      ...base.input,
+      state: "awaiting-approval",
+      teamRequestId: requestId,
+      teamSource: {
+        audience: {
+          channelKind: "public",
+          channelName: "general",
+          memberCount: 12,
+          peopleOnly: false,
+          teamName: "Acme",
+        },
+        channelId: "tch_0192f4a1-7777-4000-8000-000000000001",
+        messageId: null,
+        teamId,
+        threadRootId: null,
+      },
+    },
+    message: { ...base.message, author },
+  } as ThreadInputQueue["items"][number];
+  return { entry, item, requestId, teamId };
+}
+
+/** The waiting item as the Host reports it once another device saved `words` as `revision`. */
+function savedElsewhere(
+  item: ThreadInputQueue["items"][number],
+  words: string,
+  revision: number,
+): ThreadInputQueue["items"][number] {
+  return {
+    ...item,
+    message: {
+      ...item.message,
+      content: [{ text: words, type: "text" }],
+      edit: { editedAt: at, revision },
+    },
+  } as ThreadInputQueue["items"][number];
+}
+
+/** `snapshot` with `item` as the task's only waiting input. */
+function withWaiting(
+  snapshot: HostSnapshot,
+  item: ThreadInputQueue["items"][number],
+): HostSnapshot {
+  return {
+    ...snapshot,
+    inputQueues: { [workId]: { ...snapshot.inputQueues[workId]!, items: [item] } },
+  };
+}
+
 function sent(dispatch: ReturnType<typeof fakeHost>["dispatch"]): readonly string[] {
   return dispatch.mock.calls.map(([command]) => command.type);
 }
@@ -1334,15 +1652,7 @@ function sent(dispatch: ReturnType<typeof fakeHost>["dispatch"]): readonly strin
 const queueControls = ["Queued", "Paused", "Resume", "Steer", "Up next", "Edit", "Remove"] as const;
 
 describe("a conversation with a page", () => {
-  const page = () =>
-    BrowserPageContentPartSchema.parse({
-      type: "browser-page",
-      sessionId: base.browserSessions[0]!.id,
-      tabId: (base.browserSessions[0]!.browserTabs?.sessionTabs(base.browserSessions[0]!.id) ??
-        [])[0]!.id,
-      title: "Research page",
-      url: "https://example.com",
-    });
+  const page = includedPage;
   // The page the composer includes: at rest a chip naming its site, open its title above the words.
   const pageChip = (container: HTMLElement) =>
     container.querySelector(
@@ -1350,7 +1660,7 @@ describe("a conversation with a page", () => {
     );
 
   // Failure: the person is left on a page for a tab the Host never made.
-  it("pushes an app's own route at once, and takes that page back if the Host refuses the tab", async () => {
+  it("opens an app's one tab, then shows it, and stays with why when the Host refuses", async () => {
     const appId = "app_11111111-1111-4111-8111-111111111111";
     const host = fakeHost(
       snapshotFor({
@@ -1369,60 +1679,84 @@ describe("a conversation with a page", () => {
         threadId: workId,
       }),
     );
-    const answer = Promise.withResolvers<void>();
-    Object.assign(host.client, {
-      openAppTab: () => answer.promise,
-      viewApp: () => new Promise(() => undefined),
-    });
+    const refused = Promise.withResolvers<{ tabId: string }>();
+    const opened = Promise.withResolvers<{ tabId: string }>();
+    const openTab = vi
+      .fn()
+      .mockReturnValueOnce(refused.promise)
+      .mockReturnValueOnce(opened.promise);
+    Object.assign(host.client, { openTab, viewApp: () => new Promise(() => undefined) });
     const { container } = await mount(host, workId);
     await press(container, "Open Budget");
+    expect(openTab).toHaveBeenLastCalledWith({ appId, kind: "app" });
+    await act(async () => refused.reject(new Error("This Host cannot open app tabs.")));
+    expect(harness.dispatch).not.toHaveBeenCalledWith(
+      expect.objectContaining({ name: "WorkspaceBrowser" }),
+    );
+    expect(text(container)).toContain("This app could not open as a tab");
+    await press(container, "Open Budget");
+    await act(async () => opened.resolve({ tabId: "tab_budget" }));
     expect(harness.dispatch).toHaveBeenLastCalledWith(
       expect.objectContaining({
         name: "WorkspaceBrowser",
-        params: expect.objectContaining({ appId, threadId: workId }),
+        params: expect.objectContaining({ tabId: "tab_budget", threadId: workId }),
         type: "PUSH",
       }),
     );
-    harness.currentRoute = { name: "WorkspaceBrowser", params: { appId } };
-    await act(async () => answer.reject(new Error("This Host cannot open app tabs.")));
-    expect(harness.dispatch).toHaveBeenLastCalledWith({ count: 1, type: "POP" });
-    expect(text(container)).toContain("This Host cannot open app tabs.");
   });
 
-  it("takes one open question in the bar, and leaves a durable one to its card", async () => {
+  it("answers a question, live or durable, in the bar, and leaves a draft its bar until asked", async () => {
     const runId = createId("run");
     const question = (mode: "durable" | "live"): Request =>
       ({
-        ...approval(runId, "More information needed"),
-        kind: "harness.input",
+        ...approval(runId, "Which branch?"),
+        kind: mode === "live" ? "harness.input" : "person.question",
         mode,
         originatingThreadId: workId,
-        payload: { kind: "harness.input" },
+        payload: { kind: mode === "live" ? "harness.input" : "person.question" },
         presentation: {
-          fields: [{ id: "q", multiSelect: false, prompt: "Which branch?", secret: false }],
+          fields: [
+            { custom: false, id: "q", multiSelect: false, prompt: "Which branch?", secret: false },
+          ],
           kind: "form",
-          title: "More information needed",
+          title: "Which branch?",
         },
       }) as Request;
-    const asking = (request: Request) =>
-      fakeHost(
-        snapshotFor({
-          entries: [],
-          requests: [request],
-          run: { id: runId, status: "waiting" },
-          threadId: workId,
-        }),
-      );
-    const live = await mount(asking(question("live")), workId);
-    expect(live.container.querySelector('[aria-label="Answer bar"]')?.textContent).toBe(
-      "Which branch?",
-    );
-    expect(live.container.querySelector('[aria-label="Docked request"]')).toBeNull();
-    const durable = await mount(asking(question("durable")), workId);
-    expect(durable.container.querySelector('[aria-label="Answer bar"]')).toBeNull();
-    expect(durable.container.querySelector('[aria-label="Docked request"]')?.textContent).toBe(
-      "More information needed",
-    );
+    const snapshot = (requests: readonly Request[]) =>
+      snapshotFor({
+        entries: [],
+        requests: [...requests],
+        run: { id: runId, status: "waiting" },
+        threadId: workId,
+      });
+    const bar = (container: HTMLElement) => container.querySelector('[aria-label="Answer bar"]');
+    const card = (container: HTMLElement) =>
+      container.querySelector<HTMLElement>('[aria-label="Question"]');
+    for (const mode of ["live", "durable"] as const) {
+      const { container } = await mount(fakeHost(snapshot([question(mode)])), workId);
+      expect(bar(container)?.textContent).toBe("Which branch?");
+      expect(card(container)?.dataset["composer"]).toBe("answer");
+      expect(container.querySelector('textarea[aria-label="Message"]')).toBeNull();
+      expect(container.querySelector('[aria-label="Docked request"]')).toBeNull();
+    }
+
+    // A message being written keeps the bar; the question docks beside it.
+    const host = fakeHost(snapshot([]));
+    const { container } = await mount(host, workId);
+    await type(container, "Message", "Half a thought");
+    await act(async () => host.move(snapshot([question("durable")])));
+    await settle();
+    expect(card(container)?.dataset["composer"]).toBe("message");
+    expect(bar(container)).toBeNull();
+    await press(container, "Type an answer");
+    expect(bar(container)).not.toBeNull();
+    expect(card(container)?.dataset["composer"]).toBe("answer");
+    await press(container, "Back to message");
+    expect(bar(container)).toBeNull();
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+    ).toBe("Half a thought");
+    expect(host.dispatch).not.toHaveBeenCalled();
   });
 
   it("shows all of itself beside the page, with its approval, and includes the page", async () => {
@@ -1451,11 +1785,66 @@ describe("a conversation with a page", () => {
     await focus(container);
     expect(pageChip(container)?.textContent).toBe("Research page");
     await type(container, "Message", "Explain this");
+    // The field holds a reference React has not heard about yet; Send reads it first.
+    const words = `Explain this [Fix login](opensteer:${otherWorkId})`;
+    composerEditorFake.ahead = words;
     await press(container, "Send message");
     expect(host.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "thread.sendMessage",
-        content: expect.arrayContaining([included]),
+        content: expect.arrayContaining([included, { text: words, type: "text" }]),
+      }),
+    );
+  });
+
+  it("keeps words typed while a sent message is still being saved", async () => {
+    // The phone's disk holds the message's save until the test lets it finish.
+    let save: Promise<void> | null = null;
+    let saved!: () => void;
+    const files = new (class extends MemoryPrivateFilesystem {
+      override async writeFileAtomic(path: string, content: Uint8Array | string) {
+        const held = save;
+        save = null;
+        if (held !== null) await held;
+        return super.writeFileAtomic(path, content);
+      }
+    })();
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+    const { container } = await mount(host, workId, { files });
+    await type(container, "Message", "Hang the mirror first");
+    save = new Promise<void>((resolve) => (saved = resolve));
+    await press(container, "Send message");
+    await type(container, "Message", "Hang the mirror first, then the art");
+    await act(async () => saved());
+    await settle();
+    expect(host.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "thread.sendMessage",
+        content: [{ text: "Hang the mirror first", type: "text" }],
+      }),
+    );
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+    ).toBe("Hang the mirror first, then the art");
+  });
+
+  it("keeps a task's composing text until Send is tapped after composition ends", async () => {
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+    const { container } = await mount(host, workId);
+    await type(container, "Message", "未確定");
+    composerEditorFake.composing = true;
+    composerEditorFake.ahead = "未確定の入力";
+    await press(container, "Send message");
+    expect(sent(host.dispatch)).not.toContain("thread.sendMessage");
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+    ).toBe("未確定の入力");
+    composerEditorFake.composing = false;
+    await press(container, "Send message");
+    expect(host.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "thread.sendMessage",
+        content: expect.arrayContaining([{ text: "未確定の入力", type: "text" }]),
       }),
     );
   });
@@ -1815,6 +2204,7 @@ describe("a voice conversation while Opensteer is replying", () => {
       "Send the note to Maya?",
     );
     await type(container, "Message", "Use the staging list instead");
+    composerEditorFake.runningAhead = true;
     expect(text(container)).not.toContain("chooses");
     expect(hasButton(container, "Choose Reject and send")).toBe(false);
     expect(container.querySelector('textarea[aria-label="Suggest a change"]')).toBeNull();
@@ -1827,6 +2217,10 @@ describe("a voice conversation while Opensteer is replying", () => {
       threadId: conversationId,
       type: "thread.sendMessage",
     });
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+      "the sent words left a field running ahead of React",
+    ).toBe("");
     expect(container.querySelector('[aria-label="Docked request"]')).not.toBeNull();
   });
 
@@ -2274,7 +2668,7 @@ describe("surfaces belonging to one reply", () => {
           app: "Calendar",
           bundleId: "com.apple.iCal",
           computer: "Mac mini",
-          runnerId: createId("runner"),
+          runnerId: DeviceIdSchema.parse(createId("runner")),
         },
         effect: "write",
         integration: "Computer use",
@@ -2288,7 +2682,7 @@ describe("surfaces belonging to one reply", () => {
       integration: {
         account: "This computer",
         computerApp: null,
-        phone: { computer, runnerId: createId("runner") },
+        phone: { computer, runnerId: DeviceIdSchema.parse(createId("runner")) },
         effect: "write",
         integration: "Computer use",
         operation: { name: "act", title: "Act" },
@@ -2302,6 +2696,8 @@ describe("surfaces belonging to one reply", () => {
         run: null,
         threadId,
       }),
+      // None of the places it used is still a tab.
+      tabs: tabStoreFixture([]),
       browserUses: [
         {
           sessionId: "reply-browser",
@@ -2313,26 +2709,6 @@ describe("surfaces belonging to one reply", () => {
           pageTitle: "Shared page",
           pageSite: "https://example.com",
         },
-      ],
-      browserSessions: [
-        seedBrowserSession(
-          {
-            access: "read-write",
-            attachedRunIds: [],
-            dialog: null,
-            error: null,
-            id: "reply-browser",
-            origin: "agent",
-            placement: { kind: "runner", runnerId: createId("runner") },
-            profileId: null,
-            runtimeId: "reply-runtime",
-            state: "closed",
-            viewerError: null,
-            viewerState: "disconnected",
-          },
-          undefined,
-          [],
-        ),
       ],
     };
     const host = fakeHost(initial);
@@ -3008,7 +3384,7 @@ describe("a task", () => {
     ).toBeNull();
   });
 
-  it("shows the first two waiting bubbles, expands the rest, and restores a draft for Edit", async () => {
+  it("shows the first two waiting bubbles, expands the rest, and edits one in place", async () => {
     const task = taskAtWork();
     const waiting = [
       "First queued ask",
@@ -3033,14 +3409,396 @@ describe("a task", () => {
     expect(text(container)).toContain(waiting[3]!.body);
     await press(container, "Show fewer");
     expect(text(container)).not.toContain(waiting[2]!.body);
-    const edit = Array.from(container.querySelectorAll("button")).find(
-      (node) => node.textContent === "Edit",
+
+    await press(container, "Edit");
+    expect(host.editWaitingMessage).toHaveBeenCalledWith(workId, waiting[0]!.id);
+    expect(editField(container)?.value).toBe(waiting[0]!.body);
+    await type(container, "Edit message", "First queued ask, but shorter");
+    expect(host.editor.touch).toHaveBeenCalled();
+    // The last keystroke, a reference, is still on its way from the field when Save is tapped.
+    const words = `First queued ask, but shorter, like [Fix login](opensteer:${otherWorkId})`;
+    composerEditorFake.ahead = words;
+    await press(container, "Save");
+    expect(host.editor.save).toHaveBeenCalledWith([{ text: words, type: "text" }], 0);
+    // The message is changed where it waits; nothing is taken back or sent anew.
+    expect(host.client.cancelThreadInput).not.toHaveBeenCalled();
+    expect(sent(host.dispatch)).not.toContain("thread.sendMessage");
+    expect(editField(container)).toBeNull();
+  });
+
+  it("keeps a waiting edit open while composing and releases Save for the completed text", async () => {
+    const waiting = said("Include the card fees", null);
+    const host = fakeHost(
+      snapshotFor({
+        entries: [waiting],
+        queue: [waitingInput(waiting, workId)],
+        run: null,
+        threadId: workId,
+      }),
     );
-    expect(edit).toBeDefined();
-    await act(async () => edit!.click());
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "未確定");
+    composerEditorFake.composing = true;
+    composerEditorFake.ahead = "未確定の編集";
+    await press(container, "Save");
+    expect(host.editor.save).not.toHaveBeenCalled();
+    expect(host.editor.cancel).not.toHaveBeenCalled();
+    expect(editField(container)?.value).toBe("未確定の編集");
+    composerEditorFake.composing = false;
+    await press(container, "Save");
+    expect(host.editor.save).toHaveBeenCalledWith([{ text: "未確定の編集", type: "text" }], 0);
+    expect(editField(container)).toBeNull();
+  });
+
+  it("lets a waiting message go on as it was when its edit is cancelled", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const host = fakeHost(
+      snapshotFor({
+        entries: [...task.entries, waiting],
+        queue: [waitingInput(waiting, workId)],
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "Leave out the card fees");
+    await press(container, "Cancel");
+    expect(host.editor.cancel).toHaveBeenCalled();
+    expect(host.editor.save).not.toHaveBeenCalled();
+    expect(editField(container)).toBeNull();
+    expect(text(container)).toContain(waiting.body);
+  });
+
+  it("keeps an edit the agent took first, and hands it to the composer as a new message", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const queued = snapshotFor({
+      entries: [...task.entries, waiting],
+      queue: [waitingInput(waiting, workId)],
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(queued);
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "Include the card fees and the FX rate");
+    // The edit's lease lapsed and a Run took the message meanwhile.
+    await act(async () =>
+      host.move(
+        snapshotFor({
+          entries: [...task.entries, { ...waiting, runId: task.runId }],
+          queue: [],
+          run: { id: task.runId, status: "running" },
+          threadId: workId,
+        }),
+      ),
+    );
+    // Said as soon as it is gone, so Save is never offered for words with nowhere to go.
+    expect(editField(container)?.value).toBe("Include the card fees and the FX rate");
+    expect(text(container)).toContain("Your agent already took this message");
+    expect(hasButton(container, "Save")).toBe(false);
+    await press(container, "Send as new message…");
+    expect(host.editor.save).not.toHaveBeenCalled();
+    expect(editField(container)).toBeNull();
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+    ).toBe("Include the card fees and the FX rate");
+  });
+
+  it("shows a message another device is editing, and lets it go from here", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const host = fakeHost(
+      snapshotFor({
+        entries: [...task.entries, waiting],
+        queue: [
+          {
+            ...waitingInput(waiting, workId),
+            lease: {
+              deviceLabel: "Alex's iPad",
+              expiresAt: "2026-10-09T10:02:00.000Z",
+              leaseId: "lease-elsewhere",
+            },
+          },
+        ],
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    const { container } = await mount(host, workId);
+    expect(text(container)).toContain("Being edited on Alex's iPad");
+    expect(hasButton(container, "Edit")).toBe(false);
+    await tapWaiting(container, waiting.body);
+    expect(host.editWaitingMessage).not.toHaveBeenCalled();
+    await press(container, "Release");
+    expect(host.releaseWaitingMessage).toHaveBeenCalledWith(workId, waiting.id);
+  });
+
+  it("answers a teammate's ask with the words just saved, naming that version", async () => {
+    const ask = teammateAsk("@My agent is CI green yet?");
+    const host = fakeHost(
+      snapshotFor({ entries: [ask.entry], queue: [ask.item], run: null, threadId: workId }),
+    );
+    const { container } = await mount(host, workId);
+    expect(text(container)).toContain("Maya is asking your agent");
+    expect(text(container)).toContain("Replies in #general · 12 people");
+    await tapWaiting(container, ask.entry.body);
+    expect(hasButton(container, "Save and answer")).toBe(false);
+    await type(container, "Edit Maya’s ask", "@My agent is the integration shard green yet?");
+    await press(container, "Save and answer");
+    expect(host.editor.save).toHaveBeenCalledWith(
+      [{ text: "@My agent is the integration shard green yet?", type: "text" }],
+      0,
+    );
+    expect(host.decideTeamAsk).toHaveBeenCalledWith({
+      decision: "approve",
+      expectedRevision: 1,
+      requestId: ask.requestId,
+      teamId: ask.teamId,
+    });
+    expect(host.editor.save.mock.invocationCallOrder[0]!).toBeLessThan(
+      host.decideTeamAsk.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("ignores a decision tapped as the ask docks, then declines it", async () => {
+    const ask = teammateAsk("@My agent can you check what's on your machine");
+    const host = fakeHost(
+      snapshotFor({ entries: [ask.entry], queue: [ask.item], run: null, threadId: workId }),
+    );
+    const { container } = await mount(host, workId);
+    await press(container, "Decline");
+    expect(host.decideTeamAsk).not.toHaveBeenCalled();
+    const later = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
+    try {
+      await press(container, "Decline");
+    } finally {
+      later.mockRestore();
+    }
+    expect(host.decideTeamAsk).toHaveBeenCalledWith({
+      decision: "decline",
+      requestId: ask.requestId,
+      teamId: ask.teamId,
+    });
+  });
+
+  it("never saves or answers over a version saved elsewhere since the words were written", async () => {
+    const ask = teammateAsk("Original ask");
+    const initial = snapshotFor({
+      entries: [ask.entry],
+      queue: [ask.item],
+      run: null,
+      threadId: workId,
+    });
+    const host = fakeHost(initial);
+    let acquire!: (editor: typeof host.editor) => void;
+    host.editWaitingMessage.mockImplementationOnce(
+      () => new Promise((resolve) => (acquire = resolve)),
+    );
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, ask.entry.body);
+    await type(container, "Edit Maya’s ask", "A local change to the original ask");
+    // The iPad saved its own version while this phone was still opening the ask.
+    await act(async () =>
+      host.move(withWaiting(initial, savedElsewhere(ask.item, "From iPad", 1))),
+    );
+    host.editor.revision = 1;
+    await act(async () => acquire(host.editor));
     await settle();
-    expect(host.client.cancelThreadInput).toHaveBeenCalledWith(workId, waiting[0]!.id);
-    expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(waiting[0]!.body);
+    expect(text(container)).toContain("This ask changed elsewhere");
+    expect(button(container, "Save and answer").disabled).toBe(true);
+    expect(editField(container)?.value).toBe("A local change to the original ask");
+
+    await press(container, "Reload");
+    expect(editField(container)?.value).toBe("From iPad");
+    await type(container, "Edit Maya’s ask", "From iPad, by tonight");
+    host.editor.save.mockResolvedValueOnce({ editedAt: at, revision: 2 });
+    await press(container, "Save and answer");
+    expect(host.editor.save).toHaveBeenCalledWith(
+      [{ text: "From iPad, by tonight", type: "text" }],
+      1,
+    );
+    expect(host.decideTeamAsk).toHaveBeenCalledWith(
+      expect.objectContaining({ decision: "approve", expectedRevision: 2 }),
+    );
+  });
+
+  it("follows a version saved elsewhere until words are typed, then offers them as a new message", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const initial = snapshotFor({
+      entries: [...task.entries, waiting],
+      queue: [waitingInput(waiting, workId)],
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(initial);
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    const first = savedElsewhere(waitingInput(waiting, workId), "Card fees and FX", 1);
+    await act(async () => host.move(withWaiting(initial, first)));
+    expect(editField(container)?.value).toBe("Card fees and FX");
+
+    await type(container, "Edit message", "Card fees, FX and the wire charge");
+    await act(async () => host.move(withWaiting(initial, savedElsewhere(first, "Only FX", 2))));
+    expect(text(container)).toContain("This message changed elsewhere");
+    expect(hasButton(container, "Save")).toBe(false);
+    await press(container, "Send as new message…");
+    expect(host.editor.save).not.toHaveBeenCalled();
+    expect(editField(container)).toBeNull();
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+    ).toBe("Card fees, FX and the wire charge");
+  });
+
+  it("draws the ask the dock answers however many messages wait ahead of it", async () => {
+    const task = taskAtWork();
+    const own = ["First in line", "Second in line", "Third in line"].map((body) =>
+      said(body, null),
+    );
+    const ask = teammateAsk("@My agent is the release branch cut?");
+    const host = fakeHost(
+      snapshotFor({
+        entries: [...task.entries, ...own, ask.entry],
+        queue: [...own.map((entry) => waitingInput(entry, workId)), ask.item],
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    const { container } = await mount(host, workId);
+    expect(text(container)).toContain("Maya is asking your agent");
+    expect(text(container)).toContain(ask.entry.body);
+    expect(text(container)).not.toContain("Third in line");
+    await press(container, "Show 1 more");
+    expect(text(container)).toContain("Third in line");
+  });
+
+  it("keeps words typed while the message was opening when it can't be held, and tries again", async () => {
+    const task = taskAtWork();
+    const waiting = said("Original", null);
+    const host = fakeHost(
+      snapshotFor({
+        entries: [...task.entries, waiting],
+        queue: [waitingInput(waiting, workId)],
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    let refuse!: (error: Error) => void;
+    host.editWaitingMessage.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => (refuse = reject)),
+    );
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "Words typed on a slow connection");
+    await act(async () =>
+      refuse(
+        new HostClientRequestError({
+          code: "conflict",
+          message: "Being edited on Alex's iPad",
+          status: 409,
+        }),
+      ),
+    );
+    await settle();
+    expect(editField(container)?.value).toBe("Words typed on a slow connection");
+    expect(text(container)).toContain("Being edited on Alex's iPad");
+    expect(hasButton(container, "Discard")).toBe(true);
+
+    await press(container, "Try again");
+    expect(host.editWaitingMessage).toHaveBeenCalledTimes(2);
+    await press(container, "Save");
+    expect(host.editor.save).toHaveBeenCalledWith(
+      [{ text: "Words typed on a slow connection", type: "text" }],
+      0,
+    );
+  });
+
+  it("answers an ask the Host still offers in an archived task", async () => {
+    const ask = teammateAsk("@My agent is CI green yet?");
+    const initial = snapshotFor({
+      entries: [ask.entry],
+      queue: [ask.item],
+      run: null,
+      threadId: workId,
+    });
+    const host = fakeHost({
+      ...initial,
+      threads: initial.threads.map((thread) =>
+        thread.id === workId ? { ...thread, status: "archived" as const } : thread,
+      ),
+    });
+    const { container } = await mount(host, workId);
+    expect(button(container, "Answer").disabled).toBe(false);
+  });
+
+  it("lets a waiting message go while its task is out of sight, keeping the words for the return", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const initial = snapshotFor({
+      entries: [...task.entries, waiting],
+      queue: [waitingInput(waiting, workId)],
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(initial);
+    const { container, root, pane } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "Include the card fees and the FX rate");
+
+    // Another task pushed over this one.
+    harness.focused = false;
+    await act(async () => root.render(pane(() => undefined)));
+    expect(host.editor.cancel).toHaveBeenCalledTimes(1);
+    harness.focused = true;
+    await act(async () => root.render(pane(() => undefined)));
+    await settle();
+    expect(host.editWaitingMessage).toHaveBeenCalledTimes(2);
+    expect(editField(container)?.value).toBe("Include the card fees and the FX rate");
+
+    // The app goes to the background, and the iPad saves meanwhile.
+    await act(() => harness.appListeners.forEach((listener) => listener("background")));
+    expect(host.editor.cancel).toHaveBeenCalledTimes(2);
+    await act(async () =>
+      host.move(withWaiting(initial, savedElsewhere(waitingInput(waiting, workId), "Fees", 1))),
+    );
+    await act(() => harness.appListeners.forEach((listener) => listener("active")));
+    await settle();
+    expect(host.editWaitingMessage).toHaveBeenCalledTimes(3);
+    expect(editField(container)?.value).toBe("Include the card fees and the FX rate");
+    expect(text(container)).toContain("This message changed elsewhere");
+  });
+
+  it("leaves a task removed while it is open, once it is in front again", async () => {
+    const ask = teammateAsk("@My agent is CI green yet?");
+    const initial = snapshotFor({
+      entries: [ask.entry],
+      queue: [ask.item],
+      run: null,
+      threadId: workId,
+    });
+    const host = fakeHost(initial);
+    const onGone = vi.fn();
+    const { root, pane } = await mount(host, workId, { onGone });
+    harness.focused = false;
+    await act(async () => root.render(pane(() => undefined)));
+    await act(async () =>
+      host.move({
+        ...initial,
+        inputQueues: {},
+        threadLookups: { [workId]: "missing" },
+        threads: initial.threads.filter((thread) => thread.id !== workId),
+        transcripts: {},
+      }),
+    );
+    expect(onGone).not.toHaveBeenCalled();
+    harness.focused = true;
+    await act(async () => root.render(pane(() => undefined)));
+    await act(async () => root.render(pane(() => undefined)));
+    expect(onGone).toHaveBeenCalledTimes(1);
   });
 
   it("pins footer growth and removal only while the reader stays at the tail", async () => {
@@ -3105,7 +3863,7 @@ describe("a task", () => {
     expect(host.resumeThreadInputQueue).toHaveBeenCalledWith(workId);
   });
 
-  it("renders an empty task's queued bubble alongside its empty state", async () => {
+  it("shows an empty task's waiting message without the new-task prompt, and the prompt once it goes", async () => {
     const waiting = said("Start with these statements", null);
     const host = fakeHost(
       snapshotFor({
@@ -3117,8 +3875,12 @@ describe("a task", () => {
     );
     const { container } = await mount(host, workId);
     expect(container.querySelector('[aria-label="Queued message 1 of 1, up next"]')).not.toBeNull();
-    expect(text(container)).toContain("What would you like to do?");
     expect(text(container)).toContain(waiting.body);
+    expect(text(container)).not.toContain("What would you like to do?");
+    await act(async () =>
+      host.move(snapshotFor({ entries: [], queue: [], run: null, threadId: workId })),
+    );
+    expect(text(container)).toContain("What would you like to do?");
   });
 
   it("says its messages are loading, not that nothing was said, while it opens", async () => {
@@ -3538,7 +4300,7 @@ describe("a conversation in a pane that changes shape", () => {
     const host = fakeHost(
       snapshotFor({ entries: [], machines: [], run: null, threadId: conversationId }),
     );
-    await mount(host, conversationId);
+    const { container } = await mount(host, conversationId);
     const list = () => {
       if (harness.list === null) throw new Error("No transcript list.");
       return harness.list;
@@ -3551,6 +4313,28 @@ describe("a conversation in a pane that changes shape", () => {
       list().onContentSizeChange?.(390, 2000);
     });
     expect(harness.scrollToOffset).toHaveBeenLastCalledWith({ animated: false, offset: 1400 });
+
+    // However near the foot, a drag up is reading back; only the foot follows again.
+    const near = (y: number) =>
+      act(() => {
+        list().onScrollBeginDrag?.();
+        list().onScroll?.({
+          nativeEvent: {
+            contentOffset: { x: 0, y },
+            contentSize: { height: 2000, width: 390 },
+            layoutMeasurement: { height: 600, width: 390 },
+          },
+        });
+        list().onScrollEndDrag?.();
+      });
+    near(1350);
+    harness.scrollToOffset.mockReset();
+    act(() => list().onContentSizeChange?.(390, 2000));
+    expect(harness.scrollToOffset).not.toHaveBeenCalled();
+    // The pill takes them back, and is gone once they follow again.
+    await press(container, "Jump to latest");
+    expect(harness.scrollToOffset).toHaveBeenLastCalledWith({ animated: true, offset: 1400 });
+    expect(container.querySelector('[aria-label="Jump to latest"]')).toBeNull();
 
     // With the keyboard up the newest entry is past its inset, not under it.
     const inset = (bottom: number) =>
@@ -3723,7 +4507,7 @@ it("dictates at the caret, cancels preview, adopts edits and sends finalized wor
   await type(container, "Message", "Hi there");
   const field = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')!;
   await act(async () => {
-    harness.select?.({ nativeEvent: { selection: { start: 2, end: 2 } } });
+    composerEditorFake.select?.({ start: 2, end: 2 });
   });
   await press(container, "Start dictation (English)");
   await speech.emit({ type: "listening" });
@@ -3731,14 +4515,14 @@ it("dictates at the caret, cancels preview, adopts edits and sends finalized wor
   expect(field.value).toBe("Hi my there");
   await press(container, "Cancel dictation");
   expect(field.value).toBe("Hi there");
-  await act(async () => harness.select?.({ nativeEvent: { selection: { start: 3, end: 8 } } }));
+  await act(async () => composerEditorFake.select?.({ start: 3, end: 8 }));
   await press(container, "Start dictation (English)");
   await speech.emit({ type: "listening" });
   await speech.emit({ type: "text", finalized: [], volatile: ["my"] });
   expect(field.value).toBe("Hi my");
   expect(selectionCalls.at(-1)).toEqual({ text: "Hi my", start: 5, end: 5 });
   const calls = selectionCalls.length;
-  await act(async () => harness.select?.({ nativeEvent: { selection: { start: 0, end: 0 } } }));
+  await act(async () => composerEditorFake.select?.({ start: 0, end: 0 }));
   await speech.emit({ type: "text", finalized: [], volatile: ["my"] });
   expect(selectionCalls).toHaveLength(calls);
   await speech.emit({ type: "text", finalized: [], volatile: ["my friend"] });
@@ -3758,7 +4542,7 @@ it("dictates at the caret, cancels preview, adopts edits and sends finalized wor
     content: [{ type: "text", text: "Hi my there! friend" }],
   });
   expect(sent(host.dispatch)).toHaveLength(1);
-  expect(selectionCalls.at(-1)).toEqual({ text: "Hi my there! friend", start: 19, end: 19 });
+  expect(selectionCalls).toContainEqual({ text: "Hi my there! friend", start: 19, end: 19 });
 });
 
 it("keeps denied permission actionable and downloads without starting the microphone", async () => {
@@ -4220,6 +5004,7 @@ it("offers voice on Home's composer but not on a new task's", async () => {
         blocker={null}
         held={false}
         execution={firstMessageExecution(host.client.getSnapshot())}
+        hostClient={host.client}
         inputRef={{ current: null }}
         onChangeText={vi.fn()}
         onChooseAI={vi.fn()}
@@ -4252,14 +5037,7 @@ it("offers voice on Home's composer but not on a new task's", async () => {
 
 it("hands a new task to its transcript, with the page Ask started it from, without showing the empty starter again", async () => {
   const { NewTaskPane } = await import("../screens/new-task.js");
-  const page = BrowserPageContentPartSchema.parse({
-    type: "browser-page",
-    sessionId: base.browserSessions[0]!.id,
-    tabId: (base.browserSessions[0]!.browserTabs?.sessionTabs(base.browserSessions[0]!.id) ??
-      [])[0]!.id,
-    title: "Research page",
-    url: "https://example.com",
-  });
+  const page = includedPage();
   const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
   const thread = host.client.getSnapshot().threads.find(({ id }) => id === workId)!;
   const createThread = vi.fn(async () => thread);
@@ -4284,6 +5062,7 @@ it("hands a new task to its transcript, with the page Ask started it from, witho
       <ThreadPane
         deploymentId={deploymentId}
         hostClient={host.client}
+        onGone={vi.fn()}
         onOpenThread={vi.fn()}
         requestId={null}
         threadId={workId}
@@ -4335,6 +5114,141 @@ it("hands a new task to its transcript, with the page Ask started it from, witho
   }
 });
 
+it("becomes the task as Send is pressed, before the Host has made it", async () => {
+  const { NewTaskPane } = await import("../screens/new-task.js");
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const thread = host.client.getSnapshot().threads.find(({ id }) => id === workId)!;
+  let made!: () => void;
+  const createThread = vi.fn(
+    () => new Promise<typeof thread>((resolve) => (made = () => resolve(thread))),
+  );
+  Object.assign(host.client, { createThread });
+  const { container, drafts, root } = await mount(host, workId);
+  harness.activeHost = host.client;
+  await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(newDraftId), "Compare quotes");
+  const onStarted = vi.fn(() => true);
+  await act(async () =>
+    root.render(
+      <NewTaskPane
+        autoFocus={false}
+        deploymentId={deploymentId}
+        hostClient={host.client}
+        onStarted={onStarted}
+        underHeader={false}
+      />,
+    ),
+  );
+  expect(text(container)).toContain("What should your agent do?");
+
+  await press(container, "Send message");
+  expect(createThread).toHaveBeenCalledOnce();
+  expect(onStarted).not.toHaveBeenCalled();
+  expect(text(container)).not.toContain("What should your agent do?");
+  expect(occurrences(container, "Compare quotes")).toBe(1);
+
+  await act(async () => made());
+  await settle();
+  expect(onStarted).toHaveBeenCalledExactlyOnceWith(workId);
+  // Under the task fading in, this screen still shows what was sent.
+  expect(occurrences(container, "Compare quotes")).toBe(1);
+  expect(text(container)).not.toContain("What should your agent do?");
+  // Covered by the task, it is Home again for the next one.
+  await act(async () => {
+    for (const listener of harness.navigationListeners.get("transitionEnd") ?? []) listener();
+  });
+  expect(text(container)).toContain("What should your agent do?");
+  expect(occurrences(container, "Compare quotes")).toBe(0);
+});
+
+it("draws a sent message at once, and once, when the Host's copy outruns its answer", async () => {
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  let answer!: () => void;
+  host.dispatch.mockImplementation(
+    (command: { readonly type: string }) =>
+      new Promise((resolve) => {
+        if (command.type !== "thread.sendMessage") resolve({ type: command.type });
+        else answer = () => resolve({ type: command.type });
+      }),
+  );
+  const { container, drafts } = await mount(host, workId);
+  await type(container, "Message", "Compare the three quotes");
+  await press(container, "Send message");
+  expect(drafts.readPending(deploymentId, userId, workId)).not.toBeNull();
+  expect(occurrences(container, "Compare the three quotes")).toBe(1);
+  // In the transcript, where the Host's copy will stand, not in a card over the bar.
+  expect(container.querySelector('[data-testid="composer-dock"]')?.textContent ?? "").not.toContain(
+    "Compare the three quotes",
+  );
+  expect(text(container)).not.toContain("Not sent yet");
+
+  // The event stream delivers the Host's copy before the command's answer.
+  host.move(
+    snapshotFor({ entries: [said("Compare the three quotes", null)], run: null, threadId: workId }),
+  );
+  expect(occurrences(container, "Compare the three quotes")).toBe(1);
+
+  await act(async () => answer());
+  await settle();
+  expect(drafts.readPending(deploymentId, userId, workId)).toBeNull();
+  expect(occurrences(container, "Compare the three quotes")).toBe(1);
+});
+
+it("still offers to send again when the answer is lost after the Host's copy was shown", async () => {
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  let lose!: () => void;
+  host.dispatch.mockImplementation(
+    (command: { readonly type: string }) =>
+      new Promise((resolve, reject) => {
+        if (command.type !== "thread.sendMessage") resolve({ type: command.type });
+        else lose = () => reject(new Error("The connection was lost."));
+      }),
+  );
+  const { container, drafts } = await mount(host, workId);
+  await type(container, "Message", "Compare the three quotes");
+  await press(container, "Send message");
+  host.move(
+    snapshotFor({ entries: [said("Compare the three quotes", null)], run: null, threadId: workId }),
+  );
+  await act(async () => lose());
+  await settle();
+  expect(drafts.readPending(deploymentId, userId, workId)).not.toBeNull();
+  expect(hasButton(container, "Send this message again")).toBe(true);
+});
+
+it("never saves a moment holding neither the words sent nor the message they became", async () => {
+  const { NewTaskPane } = await import("../screens/new-task.js");
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  Object.assign(host.client, { createThread: vi.fn(() => new Promise(() => undefined)) });
+  const files = new MemoryPrivateFilesystem();
+  const saved: string[] = [];
+  const write = files.writeFileAtomic.bind(files);
+  files.writeFileAtomic = async (path: string, content: Uint8Array | string) => {
+    saved.push(typeof content === "string" ? content : new TextDecoder().decode(content));
+    await write(path, content);
+  };
+  const { container, drafts, root } = await mount(host, workId, { files });
+  harness.activeHost = host.client;
+  await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(newDraftId), "Compare quotes");
+  await act(async () =>
+    root.render(
+      <NewTaskPane
+        autoFocus={false}
+        deploymentId={deploymentId}
+        hostClient={host.client}
+        onStarted={() => true}
+        underHeader={false}
+      />,
+    ),
+  );
+  const first = saved.findIndex((content) => content.includes("Compare quotes"));
+  await press(container, "Send message");
+  await settle();
+  expect(drafts.readPending(deploymentId, userId, newTaskDraftKey(newDraftId))?.text).toBe(
+    "Compare quotes",
+  );
+  expect(saved.slice(first).every((content) => content.includes("Compare quotes"))).toBe(true);
+});
+
 it("keeps New task creation and message keys when Ask is left after a lost creation answer", async () => {
   const { NewTaskPane } = await import("../screens/new-task.js");
   const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
@@ -4346,14 +5260,7 @@ it("keeps New task creation and message keys when Ask is left after a lost creat
   Object.assign(host.client, { createThread });
   const { container, drafts, root } = await mount(host, workId);
   await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(newDraftId), "Research this page");
-  const included = BrowserPageContentPartSchema.parse({
-    type: "browser-page",
-    sessionId: base.browserSessions[0]!.id,
-    tabId: (base.browserSessions[0]!.browserTabs?.sessionTabs(base.browserSessions[0]!.id) ??
-      [])[0]!.id,
-    title: "Research page",
-    url: "https://example.com",
-  });
+  const included = includedPage();
   await drafts.writeDraftPage(deploymentId, userId, newTaskDraftKey(newDraftId), included);
   const draw = () => (
     <NewTaskPane
@@ -4372,7 +5279,7 @@ it("keeps New task creation and message keys when Ask is left after a lost creat
   await act(async () => root.render(<div />));
   await act(async () => root.render(draw()));
   expect(createThread).toHaveBeenCalledTimes(1);
-  await press(container, "Send again");
+  await press(container, "Send this message again");
   expect(createThread).toHaveBeenCalledTimes(2);
   expect(createThread.mock.calls[1]).toEqual(createThread.mock.calls[0]);
   expect(host.dispatch).toHaveBeenCalledWith(
@@ -4385,15 +5292,7 @@ it("keeps New task creation and message keys when Ask is left after a lost creat
 });
 
 describe("a new task Ask started", () => {
-  const included = () =>
-    BrowserPageContentPartSchema.parse({
-      type: "browser-page",
-      sessionId: base.browserSessions[0]!.id,
-      tabId: (base.browserSessions[0]!.browserTabs?.sessionTabs(base.browserSessions[0]!.id) ??
-        [])[0]!.id,
-      title: "Research page",
-      url: "https://example.com",
-    });
+  const included = includedPage;
 
   async function open(files: MemoryPrivateFilesystem) {
     const { NewTaskPane } = await import("../screens/new-task.js");
@@ -4492,16 +5391,9 @@ describe("a new task Ask started", () => {
 });
 
 describe("the Run's page above the conversation", () => {
-  const sessionId = "bsn_00000000-0000-4000-8000-000000000001";
-  const surfaceId = "srf_00000000-0000-4000-8000-000000000001";
-  const nextSurface = "srf_00000000-0000-4000-8000-000000000002";
-  const entered = (
-    runId: string,
-    threadId: string,
-    sequence = "1",
-    tab = surfaceId,
-    session = sessionId,
-  ) =>
+  const pageTab = TabIdSchema.parse("tab_run-page");
+  const nextTab = TabIdSchema.parse("tab_next-page");
+  const entered = (runId: string, threadId: string, sequence = "1", tabId: TabId = pageTab) =>
     PlaceEnteredEventViewSchema.parse({
       type: "place.entered",
       eventId: createId("event"),
@@ -4510,12 +5402,16 @@ describe("the Run's page above the conversation", () => {
       threadId,
       sequence,
       createdAt: at,
-      data: {
-        place: { kind: "browser", sessionId: session, surfaceId: tab },
-        title: `Live page ${sequence}`,
-        site: "https://example.com",
-      },
+      data: { tabId, title: `Live page ${sequence}`, site: "https://example.com" },
     });
+  /** The person's tabs with the Run's page among them. */
+  const withPage = (snapshot: HostSnapshot): HostSnapshot => ({
+    ...snapshot,
+    tabs: tabStoreFixture([
+      tabFixture({ tabId: pageTab, url: "https://example.com/" }),
+      tabFixture({ tabId: nextTab }),
+    ]),
+  });
   const card = (container: HTMLElement) => container.querySelector('[data-testid="run-page"]');
   // The page takes its height from the room the pane is laid out in.
   const layOut = () =>
@@ -4525,78 +5421,74 @@ describe("the Run's page above the conversation", () => {
       }),
     );
 
+  // The page's size as the pane lays it out.
+  const pageSize = (container: HTMLElement) =>
+    JSON.parse(
+      container.querySelector('[data-testid="run-page-picture"]')?.getAttribute("data-style") ??
+        "null",
+    ) as { readonly height?: number; readonly width?: number } | null;
+
   it.each([conversationId, workId])(
-    "keeps %s's card through thinking, Requests and catalog gaps, switches, then hands off to reply chips",
+    "keeps %s's card through thinking, Requests and list gaps, switches, then hands off to reply chips",
     async (threadId) => {
       const runId = createId("run");
       const entries = [said("Find the page", runId), ran(runId)];
-      const initial = snapshotFor({ entries, run: { id: runId, status: "running" }, threadId });
+      const initial = withPage(
+        snapshotFor({ entries, run: { id: runId, status: "running" }, threadId }),
+      );
       const host = fakeHost(initial);
       const { container } = await mount(host, threadId);
       await layOut();
       expect(card(container)).toBeNull();
-      await act(() => host.runPlaces.accept(entered(runId, threadId)));
+      await act(async () => host.runPlaces.accept(entered(runId, threadId)));
+      expect(card(container)).toBeNull();
+      host.paint();
       const original = card(container);
       expect(original).not.toBeNull();
-      expect(original?.textContent).toContain("Live page 1");
-      expect(original?.textContent).toContain("example.com");
-      host.picture({
-        data: new Uint8Array([1, 2]),
-        header: {
-          surfaceId,
-          frameId: 1,
-          watchToken: "one",
-          rasterWidth: 800,
-          rasterHeight: 600,
-          viewportWidth: 800,
-          viewportHeight: 600,
-        },
-      } as BrowserFrameView);
+      expect(
+        original?.querySelector('button[aria-label="Live page 1, example.com"]'),
+      ).not.toBeNull();
+      // The page is watched through this device's own binding of its tab.
+      expect(host.client.activateTab).toHaveBeenCalledExactlyOnceWith(pageTab);
+      const session = host.client.tabViewer(pageTab)!;
+      if (session.kind !== "page") throw new Error("Expected a page binding");
+      expect(host.client.retainBrowserWatch).toHaveBeenLastCalledWith(
+        session.sessionId,
+        pageTab,
+        expect.anything(),
+      );
       const image = container.querySelector<HTMLImageElement>("img[src]")!;
       expect(image).not.toBeNull();
       await act(() => image.dispatchEvent(new Event("load")));
       for (const patch of [
-        seedBrowserSnapshot({ browserSessions: [] } as unknown as HostSnapshot, []),
+        { browserSessions: [] },
         { connection: "connecting" as const },
-        {
-          ...snapshotFor({
-            entries,
-            requests: [approval(runId, "Continue?")],
-            run: { id: runId, status: "waiting" },
-            threadId,
-          }),
-          browserSessions: [],
-        },
+        snapshotFor({
+          entries,
+          requests: [approval(runId, "Continue?")],
+          run: { id: runId, status: "waiting" },
+          threadId,
+        }),
       ]) {
-        host.move({ ...initial, ...patch });
+        host.move({ ...initial, ...patch, tabs: initial.tabs });
         expect(card(container)).toBe(original);
         expect(container.querySelector("img[src]")).toBe(image);
       }
-      host.picture(null);
+      host.drop();
       expect(container.querySelector("img[src]")).toBe(image);
-      const replacementSession = "bsn_00000000-0000-4000-8000-000000000002";
-      host.move({
-        ...host.client.getSnapshot(),
-        browserSessions: [
-          seedBrowserSession(
-            { id: replacementSession, state: "ready" },
-            { rows: [{ id: surfaceId }] },
-          ),
-        ] as unknown as HostSnapshot["browserSessions"],
-      });
-      expect(host.runPlaces.get(runId)!.data.place).toMatchObject({ sessionId });
+      host.rebind(pageTab, "bsn_00000000-0000-4000-8000-000000000002");
       expect(card(container)).toBe(original);
       expect(container.querySelector("img[src]")).toBe(image);
       expect(host.client.retainBrowserWatch).toHaveBeenLastCalledWith(
-        replacementSession,
-        surfaceId,
+        "bsn_00000000-0000-4000-8000-000000000002",
+        pageTab,
         expect.anything(),
       );
-      await act(() => host.runPlaces.accept(entered(runId, threadId, "3", nextSurface)));
+      await act(async () => host.runPlaces.accept(entered(runId, threadId, "3", nextTab)));
       // Another tab is another page: it starts afresh, with no picture of the last one.
       expect(card(container)?.textContent).toContain("Live page 3");
       expect(container.querySelector("img[src]")).toBeNull();
-      const entry = entered(runId, threadId, "3", nextSurface);
+      const entry = entered(runId, threadId, "3", nextTab);
       const reply = wrote("Here is your page", runId, threadId);
       await act(() => {
         host.move(
@@ -4626,35 +5518,56 @@ describe("the Run's page above the conversation", () => {
     },
   );
 
-  it.each(["app", "phone"] as const)(
-    "keeps an unresolved %s card and binds only its Run's native session",
+  it.each(["window", "phone"] as const)(
+    "keeps a %s card while its session is unresolved, and binds only its Run's native session",
     async (kind) => {
       const runId = createId("run");
-      const initial = snapshotFor({
-        entries: [ran(runId)],
-        run: { id: runId, status: "running" },
-        machines: [],
-        threadId: conversationId,
-      });
+      const nativeTab = TabIdSchema.parse(`tab_native-${kind}`);
+      const initial = {
+        ...snapshotFor({
+          entries: [ran(runId)],
+          run: { id: runId, status: "running" },
+          machines: [],
+          threadId: conversationId,
+        }),
+        tabs: tabStoreFixture([
+          tabFixture({
+            tabId: nativeTab,
+            kind,
+            computer: { computerId: DeviceIdSchema.parse(macMini!.id), name: "Mac mini" },
+          }),
+        ]),
+      };
       const host = fakeHost(initial);
-      const entry = entered(runId, conversationId);
       host.runPlaces.accept(
         PlaceEnteredEventViewSchema.parse({
-          ...entry,
-          data: {
-            place:
-              kind === "app"
-                ? { kind, machineId: macMini!.id, appKey: "com.apple.notes" }
-                : { kind, machineId: macMini!.id, display: "main" },
-            title: "Native place",
-            site: null,
-          },
+          ...entered(runId, conversationId),
+          data: { tabId: nativeTab, title: "Native place", site: null },
         }),
       );
-      const { container } = await mount(host, conversationId);
+      // As the Host does, the Run's activity in that exact tab comes with the entry.
+      host.placeActivity.apply({
+        type: "host.place-activity",
+        activity: {
+          tabId: nativeTab,
+          threadId: conversationId,
+          runId,
+          generation: 1,
+          seq: 1,
+          order: 1,
+          at: Date.now(),
+          expiresAt: Date.now() + 15_000,
+          pointer: null,
+          geometryRevision: 0,
+        },
+      });
+      const { container } = await mount(host, conversationId, { header: true });
       await layOut();
-      const original = card(container);
-      expect(original).not.toBeNull();
+      // Unresolved, the bar names the place and nothing draws it.
+      expect(card(container)).toBeNull();
+      expect(
+        container.querySelector('header button[aria-label="Native place, Agent working"]'),
+      ).not.toBeNull();
       expect(container.querySelector("[data-native-preview]")).toBeNull();
       const session = {
         ...notesSession(runId),
@@ -4666,13 +5579,25 @@ describe("the Run's page above the conversation", () => {
         sessionId: ComputerUseSessionIdSchema.parse("cus_00000000-0000-4000-8000-0000000000bb"),
       };
       host.move({ ...initial, machines: [...macs(sessions([otherRun, session]))] });
-      expect(card(container)).toBe(original);
-      const preview = container.querySelector("[data-native-preview]");
-      expect(JSON.parse(preview!.getAttribute("data-source")!)).toEqual({
+      const source = {
         kind: "task-session",
         sessionId: session.sessionId,
-        ...(kind === "app" ? { appKey: "com.apple.notes" } : {}),
-      });
+        ...(kind === "window" ? { appKey: "com.apple.notes" } : {}),
+      };
+      const folded = container.querySelector("header [data-native-preview]");
+      expect(JSON.parse(folded!.getAttribute("data-source")!)).toEqual(source);
+      expect(card(container)).toBeNull();
+      await act(() => harness.displayReport?.({ kind: "drawn", width: 300, height: 600 }));
+      const original = card(container);
+      expect(original).not.toBeNull();
+      expect(pageSize(container)?.width).toBe(
+        Math.floor((pageSize(container)!.height! * 300) / 600),
+      );
+      expect(original!.querySelector('[data-testid="run-page-waiting"]')).not.toBeNull();
+      await act(() => harness.displayReport?.({ kind: "drawn", width: 300, height: 600 }));
+      expect(original!.querySelector('[data-testid="run-page-waiting"]')).toBeNull();
+      const preview = original!.querySelector("[data-native-preview]");
+      expect(JSON.parse(preview!.getAttribute("data-source")!)).toEqual(source);
       const renders = harness.nativeRenders;
       const reply = wrote("Still streaming", runId, conversationId);
       host.move({
@@ -4680,15 +5605,15 @@ describe("the Run's page above the conversation", () => {
         transcripts: { [conversationId]: [ran(runId), reply] },
       });
       expect(harness.nativeRenders).toBe(renders);
-      await press(container, "Native place");
+      // A press opens exactly its tab; only a page binds a viewer here.
+      await press(container, "Native place, Agent working, last picture");
       expect(harness.dispatch).toHaveBeenLastCalledWith(
         expect.objectContaining({
-          params: expect.objectContaining({
-            machineId: macMini!.id,
-            ...(kind === "app" ? { computerSessionId: session.sessionId } : { phone: true }),
-          }),
+          name: "WorkspaceBrowser",
+          params: expect.objectContaining({ tabId: nativeTab }),
         }),
       );
+      expect(host.client.activateTab).not.toHaveBeenCalled();
       await act(() => harness.appListeners.forEach((listener) => listener("background")));
       expect(container.querySelector("[data-native-preview]")?.getAttribute("data-active")).toBe(
         "false",
@@ -4696,64 +5621,70 @@ describe("the Run's page above the conversation", () => {
       host.move({ ...initial, machines: [] });
       expect(card(container)).toBe(original);
       expect(container.querySelector("[data-native-preview]")).toBe(preview);
-      expect(container.querySelector("[data-native-preview]")?.getAttribute("data-active")).toBe(
-        "false",
-      );
     },
   );
 
-  it("opens the exact place, folds away, and releases media while backgrounded or hidden", async () => {
+  it("keeps one picture and its size through fold, unfold and a dropped connection, and lets go only when hidden", async () => {
     const runId = createId("run");
-    const initial = snapshotFor({
-      entries: [ran(runId)],
-      run: { id: runId, status: "running" },
-      threadId: conversationId,
-    });
+    const initial = withPage(
+      snapshotFor({
+        entries: [ran(runId)],
+        run: { id: runId, status: "running" },
+        threadId: conversationId,
+      }),
+    );
     const host = fakeHost(initial);
     host.runPlaces.accept(entered(runId, conversationId));
-    const { container, root, pane } = await mount(host, conversationId);
+    const { container, rerender } = await mount(host, conversationId, { header: true });
     await layOut();
+    host.paint();
+    const size = pageSize(container);
+    expect(size?.height).toBeGreaterThan(0);
+    await press(container, "Fold page");
+    expect(card(container)).toBeNull();
+    // Folded, the bar draws the picture the page held, from the same watch.
+    expect(container.querySelector("header img[src]")).not.toBeNull();
     await press(container, "Live page 1, example.com");
+    expect(card(container)!.querySelector("img[src]")).not.toBeNull();
+    expect(pageSize(container)).toEqual(size);
+    expect(host.painted).toBe(1);
+    expect(host.client.retainBrowserWatch).toHaveBeenCalledOnce();
+    expect(host.watchRelease).not.toHaveBeenCalled();
+    // A dropped connection keeps the page, its size and its last picture, dimmed.
+    expect(card(container)!.querySelector('[data-testid="run-page-stale"]')).toBeNull();
+    host.drop();
+    expect(card(container)!.querySelector("img[src]")).not.toBeNull();
+    expect(pageSize(container)).toEqual(size);
+    expect(card(container)!.querySelector('[data-testid="run-page-stale"]')).not.toBeNull();
+    await press(container, "Live page 1, example.com, last picture");
     expect(harness.dispatch).toHaveBeenLastCalledWith({
       type: "PUSH",
       name: "WorkspaceBrowser",
-      params: { deploymentId, threadId: conversationId, sessionId, tabId: surfaceId },
+      params: { deploymentId, threadId: conversationId, tabId: pageTab },
     });
-    expect(host.client.retainBrowserWatch).toHaveBeenCalledOnce();
-    await act(() => harness.appListeners.forEach((listener) => listener("background")));
-    expect(host.watchRelease).toHaveBeenCalledOnce();
-    expect(card(container)).not.toBeNull();
-    await act(() => harness.appListeners.forEach((listener) => listener("active")));
-    expect(host.client.retainBrowserWatch).toHaveBeenCalledTimes(2);
     harness.inView = false;
-    await act(() => root.render(pane(() => undefined)));
-    expect(host.watchRelease).toHaveBeenCalledTimes(2);
+    await rerender();
+    expect(host.watchRelease).toHaveBeenCalledOnce();
     harness.inView = true;
-    await act(() => root.render(pane(() => undefined)));
-    expect(host.client.retainBrowserWatch).toHaveBeenCalledTimes(3);
-    // Folded, the page lets go of its picture; the bar's small one is the bar's.
-    await press(container, "Fold page");
-    expect(card(container)).toBeNull();
-    expect(host.watchRelease).toHaveBeenCalledTimes(3);
+    await rerender();
+    expect(host.client.retainBrowserWatch).toHaveBeenCalledTimes(2);
   });
 
   it("shows its tab in the browser page beside the conversation, in place", async () => {
     const runId = createId("run");
-    const initial = snapshotFor({
-      entries: [ran(runId)],
-      run: { id: runId, status: "running" },
-      threadId: workId,
-    });
+    const initial = withPage(
+      snapshotFor({
+        entries: [ran(runId)],
+        run: { id: runId, status: "running" },
+        threadId: workId,
+      }),
+    );
     const host = fakeHost(initial);
     host.runPlaces.accept(entered(runId, workId));
     const showTab = vi.fn();
     const { container } = await mount(host, workId, { withPage: { page: null, showTab } });
     await press(container, "Live page 1, example.com");
-    expect(showTab).toHaveBeenCalledExactlyOnceWith({
-      kind: "browser",
-      sessionId,
-      tabId: surfaceId,
-    });
+    expect(showTab).toHaveBeenCalledExactlyOnceWith({ tabId: pageTab });
     expect(harness.dispatch).not.toHaveBeenCalled();
   });
 });

@@ -185,6 +185,8 @@ describe("BrowserWatchStore", () => {
       geometryRevision: 1,
       loading: false,
       navigationFailed: false,
+      canGoBack: false,
+      canGoForward: false,
       sizedByAgent: false,
     };
     try {
@@ -432,6 +434,10 @@ describe("BrowserWatchStore", () => {
     socket.receive({ type: "browser.stream.state", surfaceId, state: "capacity" });
     expect(socket.closes).toEqual([]);
     expect(store.get(sessionId, surfaceId).frame?.header.frameId).toBe(5);
+    expect(store.status(sessionId, surfaceId)).toMatchObject({
+      status: "unavailable",
+      error: "Too many browser capture targets.",
+    });
     store.accept(sessionId, surfaceId, "00000000-0000-4000-8000-000000000004");
     socket.picture(6);
     socket.picture(7);
@@ -563,7 +569,7 @@ describe("frames a target cannot read", () => {
     expect(frame).not.toBeNull();
     lose(socket);
     expect(socket.closes).toMatchObject([{ code: 4002 }]);
-    expect(state(f)).toMatchObject({ error: null, status: "unavailable" });
+    expect(state(f)).toMatchObject({ error: null, status: "connecting" });
     expect(state(f).frame).toBe(frame);
     vi.advanceTimersByTime(9);
     expect(f.sockets).toHaveLength(1);
@@ -594,7 +600,7 @@ describe("frames a target cannot read", () => {
     const { frame } = state(f);
     lose(socket);
     expect(socket.closes).toMatchObject([{ code: 4002 }]);
-    expect(state(f)).toMatchObject({ error: null, status: "unavailable" });
+    expect(state(f)).toMatchObject({ error: null, status: "connecting" });
     expect(state(f).frame).toBe(frame);
     vi.advanceTimersByTime(10);
     expect(f.sockets).toHaveLength(2);
@@ -621,6 +627,8 @@ describe("frames a target cannot read", () => {
             geometryRevision: 1,
             loading: false,
             navigationFailed: false,
+            canGoBack: false,
+            canGoForward: false,
             sizedByAgent: false,
           },
         }),
@@ -832,7 +840,7 @@ describe("retained browser pictures", () => {
     vi.useRealTimers();
   });
 
-  it.each(["hidden", "network"] as const)(
+  it.each(["hidden", "network", "transport"] as const)(
     "keeps its picture through %s until the new socket delivers",
     (reason) => {
       store.retain(sessionId, surfaceId);
@@ -842,34 +850,44 @@ describe("retained browser pictures", () => {
       expect(store.get(sessionId, surfaceId).error).toBeNull();
       const first = store.get(sessionId, surfaceId).frame;
       expect(first).not.toBeNull();
+      const statuses: string[] = [];
+      const stop = store.subscribe(sessionId, surfaceId, () => {
+        statuses.push(store.get(sessionId, surfaceId).status);
+      });
       if (reason === "hidden") store.suspend(true);
-      else store.reconnect();
+      else if (reason === "network") store.reconnect();
+      else sockets[0]!.drop(1006);
       expect(store.get(sessionId, surfaceId).frame).toBe(first);
-      expect(store.get(sessionId, surfaceId).status).not.toBe("live");
+      expect(store.get(sessionId, surfaceId).status).toBe("connecting");
+      if (reason === "transport") vi.advanceTimersByTime(100);
       if (reason === "hidden") store.suspend(false);
       expect(sockets).toHaveLength(2);
       sockets[1]!.open();
       sockets[1]!.admit();
       expect(store.get(sessionId, surfaceId).frame).toBe(first);
       sockets[1]!.picture();
+      stop();
+      expect(statuses).not.toContain("unavailable");
       expect(store.get(sessionId, surfaceId).frame).not.toBe(first);
       expect(store.get(sessionId, surfaceId).status).toBe("live");
     },
   );
 
-  it("clears the retained browser picture when its login ends with 1008", () => {
-    store.retain(sessionId, surfaceId);
-    sockets[0]!.open();
-    sockets[0]!.admit();
-    sockets[0]!.picture();
-    expect(store.get(sessionId, surfaceId).frame).not.toBeNull();
-    sockets[0]!.drop(1008);
-    expect(store.get(sessionId, surfaceId).frame).toBeNull();
-    vi.advanceTimersByTime(100);
-    sockets[1]!.open();
-    sockets[1]!.admit();
-    expect(store.get(sessionId, surfaceId).frame).toBeNull();
-  });
+  it.each([1008, 4003, 4002, "clear"] as const)(
+    "clears the retained browser picture on terminal %s",
+    (reason) => {
+      store.retain(sessionId, surfaceId);
+      sockets[0]!.open();
+      sockets[0]!.admit();
+      sockets[0]!.picture();
+      expect(store.get(sessionId, surfaceId).frame).not.toBeNull();
+      if (reason === "clear") store.clear();
+      else sockets[0]!.drop(reason);
+      expect(store.get(sessionId, surfaceId)).toMatchObject({ frame: null, status: "unavailable" });
+      vi.advanceTimersByTime(100);
+      expect(sockets).toHaveLength(1);
+    },
+  );
 });
 
 it("keeps a retained target's frame through eligibility gaps, releases transport and credit, and clears on access loss", () => {
@@ -894,7 +912,7 @@ it("keeps a retained target's frame through eligibility gaps, releases transport
     expect(frame).not.toBeNull();
     store.reconcile(() => false);
     expect(first.readyState).toBe(3);
-    expect(store.get(sessionId, surfaceId)).toMatchObject({ frame, status: "unavailable" });
+    expect(store.get(sessionId, surfaceId)).toMatchObject({ frame, status: "connecting" });
     store.reconcile(() => true);
     expect(sockets).toHaveLength(2);
     const restored = sockets[1]!;

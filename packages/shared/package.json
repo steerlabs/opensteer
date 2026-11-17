@@ -5,12 +5,14 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./teamMentions": "./src/teamMentions.ts",
     "./requestGuidance": "./src/requestGuidance.ts",
     "./sessionDevice": "./src/sessionDevice.ts",
     "./plist": "./src/plist.ts",
     "./advertisedJsonSchema": "./src/advertisedJsonSchema.ts",
     "./atomicPrivateFile": "./src/atomicPrivateFile.ts",
     "./base64url": "./src/base64url.ts",
+    "./markdownImages": "./src/markdownImages.ts",
     "./boundedAsyncInbox": "./src/boundedAsyncInbox.ts",
     "./bootstrapDiagnostics": "./src/bootstrapDiagnostics.ts",
     "./boundedJson": "./src/boundedJson.ts",
@@ -44,6 +46,7 @@
     "./processSecrets": "./src/processSecrets.ts",
     "./proof": "./src/proof.ts",
     "./resizeObserver": "./src/resizeObserver.ts",
+    "./tailFollow": "./src/tailFollow.ts",
     "./responseStream": "./src/responseStream.ts",
     "./restartPolicy": "./src/restartPolicy.ts",
     "./safeMessage": "./src/safeMessage.ts",
@@ -51,7 +54,6 @@
     "./throwIfAborted": "./src/throwIfAborted.ts",
     "./markdown": "./src/markdown.ts",
     "./markdownParser": "./src/markdownParser.ts",
-    "./transcriptLinks": "./src/transcriptLinks.ts",
     "./userEnvironment": "./src/userEnvironment.ts",
     "./validationIssues": "./src/validationIssues.ts",
     "./webSocketFrame": "./src/webSocketFrame.ts",
@@ -66,7 +68,11 @@
     "./test-support/agentSkills": "./src/agentSkills.test-support.ts",
     "./appFrame": "./src/appFrame.ts",
     "./files/models": "./src/files/models.ts",
-    "./files/native-fs-helper": "./src/files/native-fs-helper.ts"
+    "./files/native-fs-helper": "./src/files/native-fs-helper.ts",
+    "./fileHref": "./src/fileHref.ts",
+    "./markdownLinks": "./src/markdownLinks.ts",
+    "./stripRefs": "./src/stripRefs.ts",
+    "./personMarkdown": "./src/personMarkdown.ts"
   },
   "scripts": {
     "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo",

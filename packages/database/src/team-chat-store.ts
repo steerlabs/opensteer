@@ -1,3 +1,17 @@
+import type { TeamBus } from "./team-bus.js";
+import {
+  channelShare,
+  requireOwnerChannel,
+  authorizePartnerWrite,
+  type TeamPartnerWriteContext,
+} from "./team-share-access.js";
+import {
+  recordSharedAsks,
+  sharedAskOutcomes,
+  cancelSharedAsks,
+  applySharedAskStatus,
+  failedSharedAsk,
+} from "./team-shared-agents.js";
 import { createHash } from "node:crypto";
 import {
   createId,
@@ -27,6 +41,9 @@ import {
   type TeamSearchInputSchema,
   type TeamSubscriptionScopeSchema,
 } from "@opensteer/protocol";
+import { TeamAskOutcomeSchema, type TeamAskOutcome } from "@opensteer/core";
+import { teamMentions } from "@opensteer/shared/teamMentions";
+import { createTeamAskReturn, teamAttachmentRefs } from "./team-request-returns.js";
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { z } from "zod";
@@ -40,20 +57,29 @@ import {
   teamConflict,
   teamReadableChannels,
   teamReadableChannelIds,
+  teamChannelPeopleOnly,
+  assertTeamSharedChannelVersion,
+  teamPeerSupportsSharedChannels,
+  teamSharedChannelIds,
 } from "./team-access-store.js";
 import { appendTeamAudit, type TeamAgentOperation } from "./team-audit-store.js";
 import { bindTeamFiles, teamFileView } from "./team-files-store.js";
+import { bindTeamShareFiles } from "./team-share-files-store.js";
+import { teamPrincipalProfiles } from "./team-principals-store.js";
 
 type Mention = z.infer<typeof TeamMentionSchema>;
 type ChannelAccess = z.infer<typeof import("@opensteer/protocol").TeamChannelAccessEntrySchema>;
 type Page = z.infer<typeof TeamPageDirectionSchema>;
 type MessageRow = Selectable<TeamMessageTable>;
-export function teamRequestView(row: Selectable<TeamAgentRequestTable>) {
+export function teamRequestView(
+  row: Selectable<TeamAgentRequestTable> & { pendingRemote?: boolean },
+) {
   return TeamAgentRequestSchema.strip().parse({
     ...row,
     createdAt: row.createdAt.toISOString(),
     acceptedAt: row.acceptedAt?.toISOString() ?? null,
     expiresAt: row.expiresAt?.toISOString() ?? null,
+    consentExpiresAt: row.consentExpiresAt?.toISOString() ?? null,
     finishedAt: row.finishedAt?.toISOString() ?? null,
   });
 }
@@ -79,9 +105,10 @@ export async function teamMessageViews(
       .where("messageId", "in", ids)
       .execute(),
     database
-      .selectFrom("teamAgentRequests")
+      .selectFrom("teamRequestStatuses")
       .selectAll()
-      .where("threadRootId", "in", ids)
+      .where("kind", "!=", "return")
+      .where((e) => e.or([e("threadRootId", "in", ids), e("triggerMessageId", "in", ids)]))
       .orderBy("createdAt")
       .execute(),
     sql<{
@@ -98,6 +125,17 @@ export async function teamMessageViews(
   ]);
   return rows.map((row) => {
     const summary = summaries.rows.find((r) => r.rootId === row.id);
+    const direct = requests.filter((request) => request.triggerMessageId === row.id).slice(-32);
+    const threadSelf = requests.filter(
+      (request) =>
+        request.kind === "self" &&
+        request.threadRootId === row.id &&
+        request.triggerMessageId !== row.id,
+    );
+    const shownRequests = [
+      ...threadSelf.slice(Math.max(0, threadSelf.length + direct.length - 32)),
+      ...direct,
+    ];
     return TeamMessageSchema.strip().parse({
       ...row,
       bodyMarkdown: row.deletedAt ? "" : row.bodyMarkdown,
@@ -119,12 +157,116 @@ export async function teamMessageViews(
         latestMessageId: summary?.latestMessageId ?? null,
         repliers: summary?.repliers ?? [],
       },
-      requests: requests
-        .filter((r) => r.threadRootId === row.id)
-        .slice(-32)
+      requests: shownRequests
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
         .map(teamRequestView),
     });
   });
+}
+
+function teamMessagePeopleIds(messages: readonly TeamMessage[]) {
+  return [
+    ...new Set(
+      messages.flatMap((m) => [
+        m.authorUserId,
+        ...m.mentions.map((p) => p.userId),
+        ...m.replySummary.repliers,
+        ...m.requests.map((r) => r.ownerUserId),
+      ]),
+    ),
+  ];
+}
+export async function teamContentPeople(
+  t: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
+  messages: readonly TeamMessage[],
+) {
+  const ids = teamMessagePeopleIds(messages);
+  if (!ids.length) return {};
+  const rows = await teamPrincipalProfiles(t)
+    .where("p.memberUserId", "is", null)
+    .where("p.id", "in", ids)
+    .execute();
+  if (!rows.length) return {};
+  const links = await t
+    .selectFrom("teamPartnerLinks")
+    .select(["partnerTeamId", "partnerName"])
+    .where(
+      "partnerTeamId",
+      "in",
+      rows.map((p) => p.homeTeamId),
+    )
+    .orderBy("createdAt", "desc")
+    .execute();
+  const handles = await t
+    .selectFrom("teamShareParticipants as a")
+    .innerJoin("teamShares as s", "s.id", "a.shareId")
+    .select(["a.principalId", "a.handle"])
+    .where("s.channelId", "in", [...new Set(messages.map((m) => m.channelId))])
+    .where(
+      "a.principalId",
+      "in",
+      rows.map((p) => p.id),
+    )
+    .execute();
+  return Object.fromEntries(
+    rows.map((p) => [
+      p.id,
+      {
+        name: p.displayName,
+        handle: handles.find((h) => h.principalId === p.id)?.handle ?? p.handle,
+        homeTeamName:
+          links.find((l) => l.partnerTeamId === p.homeTeamId)?.partnerName ?? "External team",
+        external: true as const,
+      },
+    ]),
+  );
+}
+export async function teamChannelShares(
+  t: Transaction<DatabaseSchema>,
+  ids: readonly TeamChannelId[],
+  viewerUserId?: UserId,
+) {
+  if (!ids.length)
+    return new Map<TeamChannelId, import("@opensteer/protocol").TeamChannel["share"]>();
+  const rows = await t
+    .selectFrom("teamShares as s")
+    .innerJoin("teamPartnerLinks as l", "l.id", "s.partnerLinkId")
+    .leftJoin("teamShareParticipants as viewer", (join) =>
+      join
+        .onRef("viewer.shareId", "=", "s.id")
+        .on(sql<boolean>`viewer.principal_id = ${viewerUserId ?? null}`),
+    )
+    .select([
+      "viewer.handle as viewerHandle",
+      "s.id",
+      "s.channelId",
+      "s.state",
+      "s.role",
+      "s.syncError",
+      "s.agentsEnabled",
+      "l.partnerTeamId",
+      "l.partnerName",
+    ])
+    .where("s.channelId", "in", [...ids])
+    .where((eb) => eb.or([eb("s.state", "=", "active"), eb("s.role", "=", "follower")]))
+    .orderBy("s.createdAt")
+    .execute();
+  assertTeamSharedChannelVersion(rows.length > 0);
+  return new Map(
+    rows.map((r) => [
+      r.channelId!,
+      {
+        ...(r.viewerHandle ? { viewerHandle: r.viewerHandle } : {}),
+        shareId: r.id,
+        agentsEnabled: r.agentsEnabled,
+        updateRequired: r.syncError === "update-required",
+        state: r.state === "ended" ? ("disconnected" as const) : ("shared" as const),
+        role: r.role,
+        teamId: r.partnerTeamId,
+        teamName: r.partnerName,
+      },
+    ]),
+  );
 }
 
 export interface TeamRequestChange {
@@ -132,18 +274,65 @@ export interface TeamRequestChange {
   readonly linkId: TeamLinkId;
   readonly requestId: TeamAgentRequestId;
 }
+export interface TeamChatRelay {
+  send(
+    actor: TeamActor,
+    input: Parameters<TeamChatStore["send"]>[1],
+  ): Promise<
+    | {
+        message: TeamMessage;
+        wake: "queued" | "no-link" | "not-requested" | "rate-limited" | "people-only";
+        askOutcomes: TeamAskOutcome[];
+      }
+    | undefined
+  >;
+  edit(
+    actor: TeamActor,
+    channelId: TeamChannelId,
+    messageId: TeamMessageId,
+    input: { bodyMarkdown: string; mentions: readonly Mention[] } | null,
+  ): Promise<boolean>;
+  pin(
+    actor: TeamActor,
+    channelId: TeamChannelId,
+    messageId: TeamMessageId,
+    pin: boolean,
+  ): Promise<boolean>;
+}
+/**
+ * Which of these people have their agent online: a live connection on the link's current
+ * epoch, on any team Host copy. One query on the caller's connection.
+ */
+export async function teamLinksOnline(
+  executor: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
+  userIds: readonly UserId[],
+): Promise<Set<UserId>> {
+  if (!userIds.length) return new Set();
+  const rows = await sql<{ owner: UserId }>`select distinct l.owner_user_id as owner
+    from team_link_connections c join team_links l on l.id=c.link_id
+    where l.owner_user_id = any(${[...userIds]}::text[]) and l.state='active'
+      and c.epoch=l.connection_epoch and c.seen_at > now()-interval '90 seconds'`.execute(executor);
+  return new Set(rows.rows.map((row) => row.owner));
+}
+
 export class TeamChatStore {
+  relay: TeamChatRelay | undefined;
   readonly #requestListeners = new Set<(event: TeamRequestChange) => Promise<void> | void>();
   readonly #listeners = new Set<(channelId: TeamChannelId) => void>();
   readonly access: TeamAccessStore;
   readonly identity: {
     readonly teamId: DeploymentId;
     readonly teamName: string;
-    readonly agentOnline?: (ownerUserId: UserId) => boolean;
   };
   constructor(access: TeamAccessStore, identity: TeamChatStore["identity"]) {
     this.access = access;
     this.identity = identity;
+  }
+  /** Request changes reach the copy holding the link through the link endpoint's own refresh. */
+  attach(bus: TeamBus) {
+    return bus.on((event) => {
+      if (event.kind === "channel") this.changed(event.channelId);
+    });
   }
   onChange(listener: (channelId: TeamChannelId) => void) {
     this.#listeners.add(listener);
@@ -177,10 +366,10 @@ export class TeamChatStore {
       channelId,
       threadRootId: rootId,
       messageId,
-      audience: (await this.#sourceAudiences(transaction, actor, [channelId])).get(channelId)!,
+      audience: (await this.sourceAudiences(transaction, actor, [channelId])).get(channelId)!,
     };
   }
-  async #sourceAudiences(
+  async sourceAudiences(
     transaction: Transaction<DatabaseSchema>,
     actor: TeamActor,
     channelIds: readonly TeamChannelId[],
@@ -194,17 +383,21 @@ export class TeamChatStore {
         kind: TeamSource["audience"]["channelKind"];
         peopleOnly: boolean;
         memberCount: string;
-      }>`select c.id,c.name,c.kind,c.people_only,
+      }>`select c.id,c.name,c.kind,${teamChannelPeopleOnly()} as people_only,
       (select count(*)::text from team_members m where m.state='active' and c.id in ${teamReadableChannelIds(sql.ref("m.userId"), "human")}) as member_count
       from team_channels c where c.id in (${sql.join(ids)}) and c.id in ${teamReadableChannels(actor)}`.execute(
         transaction,
       )
     ).rows;
     requireTeam(rows.length === ids.length);
+    const shares = await teamChannelShares(transaction, ids);
     return new Map(
       rows.map((channel) => [
         channel.id,
         {
+          externalTeams: shares.has(channel.id)
+            ? [{ teamId: shares.get(channel.id)!.teamId, name: shares.get(channel.id)!.teamName }]
+            : [],
           teamName: this.identity.teamName,
           channelName: channel.name ?? "Direct message",
           channelKind: channel.kind,
@@ -220,7 +413,7 @@ export class TeamChatStore {
     id: TeamChannelId,
     metadataOnly = false,
   ): Promise<TeamChannel> {
-    const authority = await this.access.channel(transaction, actor, id);
+    const authority = await this.access.peerChannel(transaction, actor, id);
     requireTeam(authority.read || (metadataOnly && authority.manage));
     const row = await transaction
       .selectFrom("teamChannels")
@@ -233,8 +426,11 @@ export class TeamChatStore {
       .where("ownerUserId", "=", actor.userId)
       .where("state", "=", "active")
       .executeTakeFirst();
+    const share = (await teamChannelShares(transaction, [id], actor.userId)).get(id);
     return TeamChannelSchema.strip().parse({
       ...row,
+      ...(share ? { share } : {}),
+      peopleOnly: authority.peopleOnly,
       name: row.name ?? "Direct message",
       archivedAt: row.archivedAt?.toISOString() ?? null,
       instructionsMarkdown: authority.read ? row.instructionsMarkdown : "",
@@ -244,7 +440,8 @@ export class TeamChatStore {
         manage: authority.manage,
         join: false,
         leave: authority.read && (row.kind === "public" || row.kind === "private"),
-        wakeOwnAgent: authority.post && !authority.peopleOnly && !!activeLink,
+        wakeOwnAgent:
+          authority.post && share?.agentsEnabled !== false && !authority.peopleOnly && !!activeLink,
       },
     });
   }
@@ -330,7 +527,7 @@ export class TeamChatStore {
           effects: emptyTeamAccessEffects,
         };
       }
-      await this.#insertChannel(transaction, actor, input);
+      await this.insertChannel(transaction, actor, input);
       return {
         value: await this.channelView(transaction, actor, input.id),
         effects: { ...emptyTeamAccessEffects, channels: [input.id] },
@@ -345,7 +542,7 @@ export class TeamChatStore {
    */
   async createGeneral(transaction: Transaction<DatabaseSchema>, ownerUserId: UserId) {
     const id = createId("teamChannel");
-    await this.#insertChannel(
+    await this.insertChannel(
       transaction,
       { kind: "human", userId: ownerUserId },
       {
@@ -376,7 +573,7 @@ export class TeamChatStore {
     if (await query.executeTakeFirst())
       teamConflict(`There’s already a channel called #${name.trim()}.`, teamChannelNameTakenReason);
   }
-  async #insertChannel(
+  async insertChannel(
     transaction: Transaction<DatabaseSchema>,
     actor: TeamActor,
     input: {
@@ -488,7 +685,8 @@ export class TeamChatStore {
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
       requireTeam(
-        row.kind === "group_dm" && (await this.access.channel(transaction, actor, channelId)).post,
+        row.kind === "group_dm" &&
+          (await this.access.peerChannel(transaction, actor, channelId)).post,
         "Only group DM participants can add people",
       );
       const entries = await transaction
@@ -576,7 +774,8 @@ export class TeamChatStore {
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
       requireTeam(
-        actor.kind === "human" && (await this.access.channel(transaction, actor, channelId)).manage,
+        actor.kind === "human" &&
+          (await this.access.peerChannel(transaction, actor, channelId)).manage,
       );
       requireTeam(
         channel.kind === "public" || channel.kind === "private",
@@ -695,7 +894,8 @@ export class TeamChatStore {
   ) {
     await this.access.mutateAs(actor, "channel.update", async (transaction) => {
       requireTeam(
-        actor.kind === "human" && (await this.access.channel(transaction, actor, channelId)).manage,
+        actor.kind === "human" &&
+          (await this.access.peerChannel(transaction, actor, channelId)).manage,
       );
       const row = await transaction
         .selectFrom("teamChannels")
@@ -755,29 +955,79 @@ export class TeamChatStore {
     });
     this.changed(channelId);
   }
-  async #mentions(
+  async mentions(
     transaction: Transaction<DatabaseSchema>,
     _actor: TeamActor,
     channelId: TeamChannelId,
-    mentions: readonly Mention[],
+    bodyMarkdown: string,
   ) {
-    requireTeam(
-      mentions.length <= 20 &&
-        new Set(mentions.map((m) => `${m.kind}:${m.userId}`)).size === mentions.length,
-      "Invalid mentions",
-    );
-    for (const mention of mentions)
-      requireTeam(
-        (
-          await this.access.channel(
-            transaction,
-            { kind: "human", userId: mention.userId },
-            channelId,
-          )
-        ).read,
-        "Mention target must belong to this channel",
-      );
-    return mentions;
+    if (!bodyMarkdown.includes("@")) return [];
+    const share = await channelShare(transaction, channelId);
+    if (share && share.state !== "ended") {
+      const people = await transaction
+        .selectFrom("teamShareParticipants")
+        .select(["principalId as userId", "handle"])
+        .where("shareId", "=", share.id)
+        .where("state", "=", "active")
+        .where("blocked", "=", false)
+        .execute();
+      return teamMentions(bodyMarkdown, people);
+    }
+    const members = await transaction
+      .selectFrom("teamMembers")
+      .select(["userId", "handle"])
+      .where("state", "=", "active")
+      .where(
+        "userId",
+        "in",
+        transaction
+          .selectFrom("teamMembers as m")
+          .select("m.userId")
+          .where(
+            sql<boolean>`${channelId} in ${teamReadableChannelIds(sql.ref("m.userId"), "human")}`,
+          ),
+      )
+      .execute();
+    return teamMentions(bodyMarkdown, members);
+  }
+  async notifyRequests(triggerMessageId: TeamMessageId, returnsOnly = false) {
+    const rows = await this.access.database
+      .selectFrom("teamAgentRequests")
+      .select(["id", "linkId", "state", "kind"])
+      .where("triggerMessageId", "=", triggerMessageId)
+      .execute();
+    for (const row of rows) {
+      if (returnsOnly && (row.kind !== "return" || row.state !== "queued")) continue;
+      await this.requestChanged({
+        kind: ["awaiting_approval", "queued", "working", "needs_you"].includes(row.state)
+          ? "queued"
+          : "cancelled",
+        linkId: row.linkId,
+        requestId: row.id,
+      });
+    }
+  }
+  async askOutcomes(
+    transaction: Transaction<DatabaseSchema>,
+    messageId: TeamMessageId,
+  ): Promise<TeamAskOutcome[]> {
+    const rows = await transaction
+      .selectFrom("teamAudit")
+      .select("metadata")
+      .where("action", "=", "request.create")
+      .where("resourceId", "=", messageId)
+      .orderBy("id")
+      .execute();
+    const outcomes = rows.flatMap((row) => {
+      const parsed = TeamAskOutcomeSchema.safeParse(row.metadata);
+      return parsed.success ? [parsed.data] : [];
+    });
+    return [
+      ...outcomes,
+      ...(await sharedAskOutcomes(transaction, messageId)).filter(
+        (r) => !outcomes.some((o) => o.ownerUserId === r.ownerUserId),
+      ),
+    ];
   }
   async send(
     actor: TeamActor,
@@ -790,9 +1040,13 @@ export class TeamChatStore {
       attachmentIds: readonly import("@opensteer/core").TeamBlobId[];
       agentRequestId?: import("@opensteer/core").TeamAgentRequestId;
       linkId?: TeamLinkId;
+      runId?: import("@opensteer/core").RunId;
+      publication?: boolean;
     },
   ) {
-    const result = await this.access.contentWrite(
+    const relayed = await this.relay?.send(actor, input);
+    if (relayed) return relayed;
+    const result = await this.access.writeForPeer(
       actor,
       input.channelId,
       async (transaction, authority) => {
@@ -815,21 +1069,16 @@ export class TeamChatStore {
           return {
             message: (await teamMessageViews(transaction, [existing]))[0]!,
             wake: "not-requested" as const,
+            askOutcomes: await this.askOutcomes(transaction, existing.id),
+            created: false,
           };
-        return this.insert(transaction, actor, input);
+        return { ...(await this.insert(transaction, actor, input)), created: true };
       },
     );
     this.changed(input.channelId);
-    if (result.wake === "queued") {
-      const request = await this.access.database
-        .selectFrom("teamAgentRequests")
-        .select(["id", "linkId"])
-        .where("triggerMessageId", "=", result.message.id)
-        .where("ownerUserId", "=", actor.userId)
-        .executeTakeFirstOrThrow();
-      await this.requestChanged({ kind: "queued", linkId: request.linkId, requestId: request.id });
-    }
-    return result;
+    const { created, ...sent } = result;
+    if (created && sent.askOutcomes.length) await this.notifyRequests(sent.message.id);
+    return sent;
   }
   async insert(
     transaction: Transaction<DatabaseSchema>,
@@ -844,20 +1093,27 @@ export class TeamChatStore {
       agentRequestId?: import("@opensteer/core").TeamAgentRequestId;
       linkId?: TeamLinkId;
       agent?: TeamAgentOperation;
+      publication?: boolean;
+      deferAudit?: boolean;
+      statusMessageIds?: readonly TeamMessageId[];
+      partner?: TeamPartnerWriteContext;
     },
   ) {
     TeamMarkdownSchema.parse(input.bodyMarkdown);
     requireTeam(
-      input.bodyMarkdown.trim() || input.attachmentIds.length,
+      input.bodyMarkdown.trim() || input.attachmentIds.length || input.partner?.attachments?.length,
       "A message needs text or files",
     );
-    requireTeam((await this.access.channel(transaction, actor, input.channelId)).post);
+    const shared = await requireOwnerChannel(transaction, input.channelId);
+    if (input.partner)
+      await authorizePartnerWrite(transaction, actor, input.channelId, input.partner);
+    else requireTeam((await this.access.channel(transaction, actor, input.channelId)).post);
     let link;
-    if (actor.kind === "agent") {
+    if (actor.kind === "agent" && !input.partner) {
       requireTeam(input.linkId);
       link = await this.access.link(transaction, actor, input.linkId);
     }
-    const mentions = await this.#mentions(transaction, actor, input.channelId, input.mentions);
+    const mentions = await this.mentions(transaction, actor, input.channelId, input.bodyMarkdown);
     if (input.threadRootId) {
       const root = await transaction
         .selectFrom("teamMessages")
@@ -870,13 +1126,30 @@ export class TeamChatStore {
         "Replies require a top-level message in the same channel",
       );
     }
-    // This owner row serializes the one rate budget across different channel writers.
-    await transaction
+    // Requester and target rows serialize budgets across channel writers.
+    const targetMembers = await transaction
       .selectFrom("teamMembers")
-      .select("userId")
-      .where("userId", "=", actor.userId)
+      .select(["userId", "handle"])
+      .where("userId", "in", [
+        ...new Set([
+          actor.userId,
+          ...mentions.filter((m) => m.kind === "agent").map((m) => m.userId),
+        ]),
+      ])
+      .orderBy("userId")
       .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
+      .execute();
+    await transaction
+      .selectFrom("teamPrincipals")
+      .select("id")
+      .where("id", "in", [actor.userId, ...mentions.map((m) => m.userId)])
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
+    await lockTeamMessages(transaction, [
+      ...(input.statusMessageIds ?? []),
+      ...(input.threadRootId ? [input.threadRootId] : []),
+    ]);
     const { changeSeq } = await bumpTeamChannel(transaction, input.channelId);
     const row = await transaction
       .insertInto("teamMessages")
@@ -897,6 +1170,7 @@ export class TeamChatStore {
         editedAt: null,
         deletedAt: null,
         changeSeq,
+        createdSeq: changeSeq,
       })
       .returningAll()
       .executeTakeFirstOrThrow();
@@ -924,90 +1198,49 @@ export class TeamChatStore {
         .set({ changeSeq })
         .where("id", "=", input.threadRootId)
         .execute();
-    let wake: "queued" | "no-link" | "not-requested" | "rate-limited" | "people-only" =
-      "not-requested";
-    let wakeLinkId: TeamLinkId | undefined;
-    const ownMention = mentions.some((m) => m.kind === "agent" && m.userId === actor.userId);
-    const sticky =
-      actor.kind === "human" && input.threadRootId
-        ? await transaction
-            .selectFrom("teamAgentRecipients")
-            .select("enabled")
-            .where("userId", "=", actor.userId)
-            .where("channelId", "=", row.channelId)
-            .where("rootId", "=", input.threadRootId)
-            .executeTakeFirst()
-        : undefined;
-    if (actor.kind === "human" && (ownMention || sticky?.enabled)) {
-      const authority = await this.access.channel(
-        transaction,
-        { kind: "agent", userId: actor.userId },
-        row.channelId,
-      );
-      const link = await transaction
-        .selectFrom("teamLinks")
-        .select("id")
-        .where("ownerUserId", "=", actor.userId)
-        .where("state", "=", "active")
-        .executeTakeFirst();
-      if (!authority.post) wake = "people-only";
-      else if (!link) wake = "no-link";
-      else {
-        const counts = (
-          await sql<{
-            minute: string;
-            queued: string;
-          }>`select count(*) filter(where created_at>now()-interval '1 minute')::text as minute,count(*) filter(where state='queued')::text as queued from team_agent_requests where owner_user_id=${actor.userId}`.execute(
-            transaction,
-          )
-        ).rows[0]!;
-        if (Number(counts.minute) >= 10 || Number(counts.queued) >= 32) wake = "rate-limited";
-        else {
-          wake = "queued";
-          if (ownMention)
-            await transaction
-              .insertInto("teamAgentRecipients")
-              .values({
-                userId: actor.userId,
-                channelId: row.channelId,
-                rootId: input.threadRootId ?? row.id,
-                enabled: true,
-              })
-              .onConflict((c) =>
-                c.columns(["userId", "channelId", "rootId"]).doUpdateSet({
-                  enabled: true,
-                  version: sql`case when team_agent_recipients.enabled then team_agent_recipients.version else team_agent_recipients.version+1 end`,
-                  updatedAt: new Date(),
-                }),
-              )
-              .execute();
-          wakeLinkId = link.id;
-        }
-      }
-    }
-    await bindTeamFiles(transaction, actor, row, input.attachmentIds);
-    if (wakeLinkId) {
-      await transaction
-        .insertInto("teamAgentRequests")
-        .values({
-          id: createId("teamAgentRequest"),
-          ownerUserId: actor.userId,
+    if (shared && !input.publication)
+      await recordSharedAsks(transaction, shared, row, mentions, this.identity.teamId);
+    const { wake, outcomes } = await this.admitRequests(transaction, actor, row, mentions, {
+      self: !input.partner,
+      publication: input.publication ?? false,
+      ...(shared ? { shareId: shared.id } : {}),
+      members: targetMembers,
+      bindFiles: async () => {
+        if (!input.partner) return bindTeamFiles(transaction, actor, row, input.attachmentIds);
+        const principal = await transaction
+          .selectFrom("teamPrincipals")
+          .select("homeTeamId")
+          .where("id", "=", actor.userId)
+          .executeTakeFirstOrThrow();
+        await bindTeamShareFiles(
+          transaction,
+          this.identity.teamId,
+          row.channelId,
+          input.partner.shareId,
+          [
+            {
+              id: row.id,
+              authorId: actor.userId,
+              authorKind: actor.kind,
+              authorTeamId: principal.homeTeamId,
+              files: input.partner.attachments ?? [],
+            },
+          ],
+        );
+      },
+    });
+    if (shared) outcomes.push(...(await sharedAskOutcomes(transaction, row.id)));
+    if (!input.deferAudit)
+      for (const outcome of outcomes)
+        await appendTeamAudit(transaction, {
+          actor: input.partner ? null : actor,
+          action: "request.create",
+          resourceKind: "message",
+          resourceId: row.id,
           channelId: row.channelId,
-          threadRootId: input.threadRootId ?? row.id,
-          triggerMessageId: row.id,
-          linkId: wakeLinkId,
-          state: "queued",
-          steps: sql`'[]'::jsonb`,
-          createdAt: new Date(),
-          acceptedAt: null,
-          expiresAt: null,
-          finishedAt: null,
-          replyMessageId: null,
-          failureCode: null,
-          changeSeq,
-        })
-        .execute();
-    }
+          outcome: outcome.outcome === "queued" ? "allowed" : "denied",
+          metadata: outcome,
+        });
     await transaction
       .insertInto("teamOutbox")
       .values({
@@ -1018,29 +1251,260 @@ export class TeamChatStore {
         createdAt: new Date(),
       })
       .execute();
-    if (actor.kind === "agent")
+    if (actor.kind === "agent" && !input.deferAudit)
       await appendTeamAudit(transaction, {
-        actor,
+        actor: input.partner ? null : actor,
         ...input.agent,
         linkId: link?.id,
-        metadata: { personalDeploymentId: link?.personalDeploymentId ?? null },
+        metadata: {
+          personalDeploymentId: link?.personalDeploymentId ?? null,
+          ...(input.partner
+            ? { partnerLinkId: input.partner.partnerLinkId, principalId: actor.userId }
+            : {}),
+        },
         action: "agent.post",
         resourceKind: "message",
         resourceId: row.id,
         channelId: row.channelId,
         requestId: input.agentRequestId,
       });
-    return { message: (await teamMessageViews(transaction, [row]))[0]!, wake };
+    return {
+      message: (await teamMessageViews(transaction, [row]))[0]!,
+      wake,
+      askOutcomes: outcomes,
+    };
+  }
+  async admitRequests(
+    transaction: Transaction<DatabaseSchema>,
+    actor: TeamActor,
+    row: MessageRow,
+    mentions: readonly Mention[],
+    options: {
+      self: boolean;
+      publication?: boolean;
+      shareId?: string;
+      bindFiles?: () => Promise<void>;
+      members?: readonly { userId: UserId; handle: string }[];
+    },
+  ) {
+    const changeSeq = row.changeSeq;
+    const targetMembers =
+      options.members ??
+      (await transaction
+        .selectFrom("teamMembers")
+        .select(["userId", "handle"])
+        .where("state", "=", "active")
+        .where("userId", "in", [...new Set([actor.userId, ...mentions.map((m) => m.userId)])])
+        .execute());
+    const foreignTeamName =
+      options.shareId && !targetMembers.some((m) => m.userId === actor.userId)
+        ? (
+            await transaction
+              .selectFrom("teamShares as s")
+              .innerJoin("teamPartnerLinks as l", "l.id", "s.partnerLinkId")
+              .select("l.partnerName")
+              .where("s.id", "=", options.shareId)
+              .executeTakeFirstOrThrow()
+          ).partnerName
+        : null;
+    let wake: "queued" | "no-link" | "not-requested" | "rate-limited" | "people-only" =
+      "not-requested";
+    const ownMention = mentions.some((m) => m.kind === "agent" && m.userId === actor.userId);
+    const sticky =
+      actor.kind === "human" && row.threadRootId
+        ? await transaction
+            .selectFrom("teamAgentRecipients")
+            .select("enabled")
+            .where("userId", "=", actor.userId)
+            .where("channelId", "=", row.channelId)
+            .where("rootId", "=", row.threadRootId)
+            .executeTakeFirst()
+        : undefined;
+    const targets = new Set(
+      mentions.filter((m) => m.kind === "agent" && m.userId !== actor.userId).map((m) => m.userId),
+    );
+    if (actor.kind === "human" && (ownMention || sticky?.enabled)) targets.add(actor.userId);
+    if (options.publication) targets.clear();
+    for (const target of targets)
+      if (!targetMembers.some((m) => m.userId === target)) targets.delete(target);
+    if (!options.self) targets.delete(actor.userId);
+    const admissions: {
+      id: TeamAgentRequestId;
+      targetAgentHandle: string;
+      ownerUserId: UserId;
+      linkId: TeamLinkId;
+      kind: "self" | "ask";
+    }[] = [];
+    const outcomes: TeamAskOutcome[] = [];
+    let minute = targets.size
+      ? Number(
+          (
+            await sql<{ count: string }>`select count(*)::text as count from team_agent_requests r
+      join team_messages m on m.id=r.trigger_message_id where r.kind<>'return' and m.author_user_id=${actor.userId}
+      and r.created_at>now()-interval '1 minute'`.execute(transaction)
+          ).rows[0]!.count,
+        )
+      : 0;
+    const references = options.shareId
+      ? await transaction
+          .selectFrom("teamShareAsks")
+          .selectAll()
+          .where("triggerMessageId", "=", row.id)
+          .execute()
+      : [];
+    for (const ownerUserId of [...targets].sort()) {
+      const authority = await this.access.channel(
+        transaction,
+        { kind: "agent", userId: ownerUserId },
+        row.channelId,
+      );
+      const targetLink = await transaction
+        .selectFrom("teamLinks")
+        .select("id")
+        .where("ownerUserId", "=", ownerUserId)
+        .where("state", "=", "active")
+        .orderBy("id")
+        .executeTakeFirst();
+      const queued = await transaction
+        .selectFrom("teamAgentRequests")
+        .select((e) => e.fn.countAll<string>().as("count"))
+        .where("kind", "!=", "return")
+        .where("ownerUserId", "=", ownerUserId)
+        .where("state", "in", ["awaiting_approval", "queued"])
+        .executeTakeFirstOrThrow();
+      const outcome: TeamAskOutcome["outcome"] = authority.peopleOnly
+        ? "people-only"
+        : !authority.read || !authority.post
+          ? "no-access"
+          : !targetLink
+            ? "no-link"
+            : minute >= 10 || Number(queued.count) >= 32
+              ? "rate-limited"
+              : "queued";
+      const reference = references.find((ref) => ref.targetPrincipalId === ownerUserId);
+      if (reference?.outcome) continue;
+      const handle =
+        reference?.targetAgentHandle ??
+        targetMembers.find((member) => member.userId === ownerUserId)!.handle;
+      const requestId =
+        outcome === "queued" ? (reference?.id ?? createId("teamAgentRequest")) : undefined;
+      outcomes.push({ ownerUserId, outcome, ...(requestId ? { handle, requestId } : {}) });
+      if (ownerUserId === actor.userId) wake = outcome === "no-access" ? "people-only" : outcome;
+      if (outcome !== "queued" || !targetLink) {
+        if (reference)
+          await applySharedAskStatus(
+            transaction,
+            reference.id,
+            {
+              ...failedSharedAsk(changeSeq, "execution_failed"),
+              refusal: outcome === "queued" ? "no-link" : outcome,
+            },
+            changeSeq,
+          );
+        continue;
+      }
+      minute++;
+      admissions.push({
+        id: requestId!,
+        targetAgentHandle: handle,
+        ownerUserId,
+        linkId: targetLink.id,
+        kind: ownerUserId === actor.userId ? "self" : "ask",
+      });
+    }
+    if (ownMention && admissions.some((a) => a.kind === "self"))
+      await transaction
+        .insertInto("teamAgentRecipients")
+        .values({
+          userId: actor.userId,
+          channelId: row.channelId,
+          rootId: row.threadRootId ?? row.id,
+          enabled: true,
+        })
+        .onConflict((c) =>
+          c.columns(["userId", "channelId", "rootId"]).doUpdateSet({
+            enabled: true,
+            version: sql`case when team_agent_recipients.enabled then team_agent_recipients.version else team_agent_recipients.version+1 end`,
+            updatedAt: new Date(),
+          }),
+        )
+        .execute();
+    await options.bindFiles?.();
+    const asker = admissions.some((a) => a.kind === "ask")
+      ? await teamPrincipalProfiles(transaction)
+          .where("p.id", "=", actor.userId)
+          .executeTakeFirstOrThrow()
+      : null;
+    const source = admissions.some((a) => a.kind === "ask")
+      ? await this.source(
+          transaction,
+          { kind: "human", userId: admissions[0]!.ownerUserId },
+          row.channelId,
+          row.threadRootId ?? row.id,
+          row.id,
+        )
+      : null;
+    for (const admission of admissions) {
+      await transaction
+        .insertInto("teamAgentRequests")
+        .values({
+          ...admission,
+          shareId: options.shareId ?? null,
+          channelId: row.channelId,
+          threadRootId: row.threadRootId ?? row.id,
+          triggerMessageId: row.id,
+          state: admission.kind === "ask" ? "awaiting_approval" : "queued",
+          presentation:
+            admission.kind === "ask"
+              ? {
+                  asker: {
+                    teamUserId: actor.userId,
+                    ...(foreignTeamName ? { homeTeamName: foreignTeamName } : {}),
+                    displayName: asker!.displayName,
+                    actor: actor.kind,
+                  },
+                  bodyMarkdown: row.bodyMarkdown,
+                  attachments: await teamAttachmentRefs(transaction, row.id),
+                  destination: {
+                    teamId: this.identity.teamId,
+                    channelId: row.channelId,
+                    threadRootId: row.threadRootId ?? row.id,
+                  },
+                  audience: source!.audience,
+                }
+              : null,
+          consentExpiresAt: admission.kind === "ask" ? new Date(Date.now() + 7 * 86400000) : null,
+          steps: sql`'[]'::jsonb`,
+          createdAt: new Date(),
+          acceptedAt: null,
+          expiresAt: null,
+          finishedAt: null,
+          replyMessageId: null,
+          failureCode: null,
+          changeSeq,
+        })
+        .execute();
+      await transaction
+        .updateTable("teamShareAsks")
+        .set({ localRequestId: admission.id })
+        .where("id", "=", admission.id)
+        .execute();
+    }
+    return { wake, outcomes };
   }
   async editOrDelete(
     actor: TeamActor,
     channelId: TeamChannelId,
     messageId: TeamMessageId,
     input: { bodyMarkdown: string; mentions: readonly Mention[] } | null,
+    partner?: TeamPartnerWriteContext,
   ) {
+    if (!partner && (await this.relay?.edit(actor, channelId, messageId, input))) return [];
     const deletedRequests: import("@opensteer/core").TeamAgentRequestId[] = [];
-    await this.access.contentWrite(actor, channelId, async (transaction, authority) => {
-      requireTeam(authority.read && actor.kind === "human");
+    await this.access.writeForPeer(actor, channelId, async (transaction, authority) => {
+      await requireOwnerChannel(transaction, channelId);
+      if (partner) await authorizePartnerWrite(transaction, actor, channelId, partner);
+      else requireTeam(authority.read && actor.kind === "human");
       const row = await transaction
         .selectFrom("teamMessages")
         .selectAll()
@@ -1049,7 +1513,7 @@ export class TeamChatStore {
         .executeTakeFirstOrThrow();
       requireTeam(
         (row.authorUserId === actor.userId && row.authorKind === "human") ||
-          (input === null && authority.manage),
+          (input === null && !partner && authority.manage),
       );
       if (row.deletedAt) return;
       await lockTeamMessages(transaction, [
@@ -1098,9 +1562,10 @@ export class TeamChatStore {
       if (input) {
         TeamMarkdownSchema.parse(input.bodyMarkdown);
         requireTeam(
-          authority.post && row.authorUserId === actor.userId && row.authorKind === "human",
+          (partner || authority.post) &&
+            row.authorUserId === actor.userId &&
+            row.authorKind === "human",
         );
-        await this.#mentions(transaction, actor, channelId, input.mentions);
       }
       await transaction
         .updateTable("teamMessages")
@@ -1117,11 +1582,14 @@ export class TeamChatStore {
         .where("id", "=", messageId)
         .execute();
       await transaction.deleteFrom("teamMentions").where("messageId", "=", messageId).execute();
-      if (input?.mentions.length)
+      const editedMentions = input
+        ? await this.mentions(transaction, actor, channelId, input.bodyMarkdown)
+        : [];
+      if (editedMentions.length)
         await transaction
           .insertInto("teamMentions")
           .values(
-            input.mentions.map((m) => ({
+            editedMentions.map((m) => ({
               messageId,
               channelId,
               targetUserId: m.userId,
@@ -1136,34 +1604,44 @@ export class TeamChatStore {
           .set({ changeSeq })
           .where("id", "=", row.threadRootId)
           .execute();
-      if (!input) {
+      const unanswered = await transaction
+        .selectFrom("teamAgentRequests")
+        .selectAll()
+        .where("triggerMessageId", "=", messageId)
+        .where("replyMessageId", "is", null)
+        .where((e) =>
+          e.or([
+            e.and([
+              e("kind", "=", "ask"),
+              e("state", "in", ["awaiting_approval", "queued", "working", "needs_you"]),
+            ]),
+            ...(input ? [] : [e.and([e("kind", "=", "self"), e("state", "=", "queued")])]),
+          ]),
+        )
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
+      for (const request of unanswered) {
         await transaction
-          .selectFrom("teamAgentRequests")
-          .select("id")
-          .where("triggerMessageId", "=", messageId)
-          .where("state", "=", "queued")
-          .orderBy("id")
-          .forNoKeyUpdate()
-          .execute();
-        const queued = await transaction
           .updateTable("teamAgentRequests")
           .set({
             state: "cancelled",
-            failureCode: "trigger_deleted",
+            failureCode: input ? "trigger_edited" : "trigger_deleted",
             finishedAt: new Date(),
             changeSeq,
           })
-          .where("triggerMessageId", "=", messageId)
-          .where("state", "=", "queued")
-          .returning(["id", "threadRootId"])
+          .where("id", "=", request.id)
           .execute();
-        deletedRequests.push(...queued.map((r) => r.id));
-        for (const { threadRootId } of queued)
-          await transaction
-            .updateTable("teamMessages")
-            .set({ changeSeq })
-            .where("id", "=", threadRootId)
-            .execute();
+        deletedRequests.push(request.id);
+        await createTeamAskReturn(transaction, request, "cancelled", changeSeq);
+      }
+      await cancelSharedAsks(
+        transaction,
+        [messageId],
+        changeSeq,
+        input ? "trigger_edited" : "trigger_deleted",
+      );
+      if (!input) {
         await transaction
           .updateTable("teamBlobs")
           .set({ state: "deleting" })
@@ -1181,7 +1659,10 @@ export class TeamChatStore {
           .where("messageId", "=", messageId)
           .execute();
         await appendTeamAudit(transaction, {
-          actor,
+          actor: partner ? null : actor,
+          ...(partner
+            ? { metadata: { partnerLinkId: partner.partnerLinkId, principalId: actor.userId } }
+            : {}),
           action: "message.delete",
           resourceKind: "message",
           resourceId: messageId,
@@ -1190,22 +1671,21 @@ export class TeamChatStore {
       }
     });
     this.changed(channelId);
-    if (deletedRequests.length)
-      for (const request of await this.access.database
-        .selectFrom("teamAgentRequests")
-        .select(["id", "linkId"])
-        .where("id", "in", deletedRequests)
-        .execute())
-        await this.requestChanged({
-          kind: "cancelled",
-          linkId: request.linkId,
-          requestId: request.id,
-        });
+    if (deletedRequests.length) await this.notifyRequests(messageId);
     return deletedRequests;
   }
-  async pin(actor: TeamActor, channelId: TeamChannelId, messageId: TeamMessageId, pin: boolean) {
-    await this.access.contentWrite(actor, channelId, async (transaction, authority) => {
-      requireTeam(actor.kind === "human" && authority.read);
+  async pin(
+    actor: TeamActor,
+    channelId: TeamChannelId,
+    messageId: TeamMessageId,
+    pin: boolean,
+    partner?: TeamPartnerWriteContext,
+  ) {
+    if (!partner && (await this.relay?.pin(actor, channelId, messageId, pin))) return;
+    await this.access.writeForPeer(actor, channelId, async (transaction, authority) => {
+      const shared = await requireOwnerChannel(transaction, channelId);
+      if (partner) await authorizePartnerWrite(transaction, actor, channelId, partner);
+      else requireTeam(actor.kind === "human" && authority.read && (!shared || authority.post));
       requireTeam(
         await transaction
           .selectFrom("teamMessages")
@@ -1260,8 +1740,10 @@ export class TeamChatStore {
       .limit(51)
       .execute();
     const selected = rows.slice(0, 50).sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+    const messages = await teamMessageViews(transaction, selected);
     return {
-      messages: await teamMessageViews(transaction, selected),
+      people: await teamContentPeople(transaction, messages),
+      messages,
       hasMore: rows.length > 50,
       throughSeq: channel.changeSeq,
       channel,
@@ -1275,7 +1757,7 @@ export class TeamChatStore {
     linkId?: TeamLinkId,
     agent?: TeamAgentOperation,
   ): Promise<Value> {
-    const revision = this.access.revision;
+    const revision = await this.access.current();
     try {
       const value = await this.access.database
         .transaction()
@@ -1285,7 +1767,7 @@ export class TeamChatStore {
           await this.access.member(transaction, actor.userId);
           await this.access.checkSession(transaction);
           if (channelId)
-            requireTeam((await this.access.channel(transaction, actor, channelId)).read);
+            requireTeam((await this.access.peerChannel(transaction, actor, channelId)).read);
           const result = await read(transaction);
           if (actor.kind === "agent")
             await appendTeamAudit(transaction, {
@@ -1306,7 +1788,7 @@ export class TeamChatStore {
             if (linkId) await this.access.link(t, actor, linkId);
             await this.access.member(t, actor.userId);
             await this.access.checkSession(t);
-            return channelId ? (await this.access.channel(t, actor, channelId)).read : false;
+            return channelId ? (await this.access.peerChannel(t, actor, channelId)).read : false;
           }),
         () => value,
       );
@@ -1340,7 +1822,9 @@ export class TeamChatStore {
         .where("channelId", "=", channelId)
         .where("id", "=", messageId)
         .executeTakeFirstOrThrow();
-      return (await teamMessageViews(t, [row]))[0]!;
+      const message = (await teamMessageViews(t, [row]))[0]!;
+      const people = await teamContentPeople(t, [message]);
+      return { ...message, ...(Object.keys(people).length ? { people } : {}) };
     });
   }
   async check(actor: TeamActor, channelId: TeamChannelId, clientIds: readonly string[]) {
@@ -1393,8 +1877,9 @@ export class TeamChatStore {
       };
       let messages = t.selectFrom("teamMessages").selectAll().where("channelId", "=", channel.id);
       let requests = t
-        .selectFrom("teamAgentRequests")
+        .selectFrom("teamRequestStatuses")
         .selectAll()
+        .where("kind", "!=", "return")
         .where("channelId", "=", channel.id);
       if (input.scope.kind === "thread") {
         const rootId = input.scope.rootId;
@@ -1408,11 +1893,11 @@ export class TeamChatStore {
         .orderBy("id")
         .limit(200)
         .execute();
-      const linkPresence = (rows: readonly { ownerUserId: UserId }[]) =>
-        [...new Set(rows.map((row) => row.ownerUserId))].slice(0, 200).map((ownerUserId) => ({
-          ownerUserId,
-          online: this.identity.agentOnline?.(ownerUserId) ?? false,
-        }));
+      const linkPresence = async (rows: readonly { ownerUserId: UserId }[]) => {
+        const owners = [...new Set(rows.map((row) => row.ownerUserId))].slice(0, 200);
+        const online = await teamLinksOnline(t, owners);
+        return owners.map((ownerUserId) => ({ ownerUserId, online: online.has(ownerUserId) }));
+      };
       if (input.sinceSeq !== null && BigInt(input.sinceSeq) <= BigInt(channel.changeSeq)) {
         const rows = await messages
           .where("changeSeq", ">", input.sinceSeq)
@@ -1427,7 +1912,7 @@ export class TeamChatStore {
         if (rows.length + statuses.length <= 200) {
           const cut = {
             ...base,
-            linkPresence: linkPresence([...statuses, ...recentRequests]),
+            linkPresence: await linkPresence([...statuses, ...recentRequests]),
             type: "resumed" as const,
             changedRows: await teamMessageViews(
               t,
@@ -1436,8 +1921,9 @@ export class TeamChatStore {
             deletedIds: rows.filter((r) => r.deletedAt).map((r) => r.id),
             requests: statuses.map(teamRequestView),
           };
-          if (TeamConsistentCutSchema.safeParse(cut).success)
-            return TeamConsistentCutSchema.parse(cut);
+          const people = await teamContentPeople(t, cut.changedRows);
+          if (TeamConsistentCutSchema.safeParse({ ...cut, people }).success)
+            return TeamConsistentCutSchema.parse({ ...cut, people });
         }
       }
       const page = await this.pageIn(
@@ -1449,7 +1935,8 @@ export class TeamChatStore {
       );
       const cut = {
         ...base,
-        linkPresence: linkPresence(recentRequests),
+        people: page.people,
+        linkPresence: await linkPresence(recentRequests),
         type: "snapshot" as const,
         messages: page.messages,
         requests: recentRequests.map(teamRequestView),
@@ -1457,6 +1944,10 @@ export class TeamChatStore {
       };
       while (!TeamConsistentCutSchema.safeParse(cut).success && cut.messages.length > 1) {
         cut.messages.shift();
+        const visible = new Set<string>(teamMessagePeopleIds(cut.messages));
+        cut.people = Object.fromEntries(
+          Object.entries(cut.people ?? {}).filter(([id]) => visible.has(id)),
+        );
         cut.hasMore = true;
       }
       return TeamConsistentCutSchema.parse(cut);
@@ -1468,14 +1959,14 @@ export class TeamChatStore {
     linkId?: TeamLinkId,
     agent?: TeamAgentOperation,
   ) {
-    const revision = this.access.revision;
+    const revision = await this.access.current();
     const result = await this.read(
       actor,
       "search",
       undefined,
       async (t) => {
         if (input.channelId)
-          requireTeam((await this.access.channel(t, actor, input.channelId)).read);
+          requireTeam((await this.access.peerChannel(t, actor, input.channelId)).read);
         await sql`set local statement_timeout='2s'`.execute(t);
         let query = t
           .selectFrom("teamMessages")
@@ -1511,12 +2002,13 @@ export class TeamChatStore {
           );
         const rows = await query.orderBy("id", "desc").limit(51).execute();
         const messages = await teamMessageViews(t, rows.slice(0, 50));
-        const audiences = await this.#sourceAudiences(
+        const audiences = await this.sourceAudiences(
           t,
           actor,
           messages.map((message) => message.channelId),
         );
         return {
+          people: await teamContentPeople(t, messages),
           results: messages.map((message) => ({
             message,
             source: {
@@ -1538,14 +2030,14 @@ export class TeamChatStore {
       () =>
         this.access.database.transaction().execute(async (t) => {
           for (const { message } of result.results)
-            if (!(await this.access.channel(t, actor, message.channelId)).read) return false;
+            if (!(await this.access.peerChannel(t, actor, message.channelId)).read) return false;
           return true;
         }),
       () => result,
     );
   }
   async readMarker(actor: TeamActor, channelId: TeamChannelId, throughMessageId: TeamMessageId) {
-    await this.access.contentWrite(actor, channelId, async (t, a) => {
+    await this.access.writeForPeer(actor, channelId, async (t, a) => {
       requireTeam(actor.kind === "human" && a.read);
       requireTeam(
         await t
@@ -1555,6 +2047,7 @@ export class TeamChatStore {
           .where("id", "=", throughMessageId)
           .executeTakeFirst(),
       );
+      await bumpTeamChannel(t, channelId);
       await t
         .insertInto("teamChannelMemberState")
         .values({
@@ -1598,7 +2091,7 @@ export class TeamChatStore {
     rootId: TeamMessageId,
     enabled: boolean,
   ) {
-    const recipient = await this.access.contentWrite(actor, channelId, async (t, authority) => {
+    const recipient = await this.access.writeForPeer(actor, channelId, async (t, authority) => {
       requireTeam(
         actor.kind === "human" &&
           authority.read &&
@@ -1611,6 +2104,7 @@ export class TeamChatStore {
         .where("id", "=", rootId)
         .executeTakeFirst();
       requireTeam(root && root.threadRootId === null && root.deletedAt === null);
+      await bumpTeamChannel(t, channelId);
       return t
         .insertInto("teamAgentRecipients")
         .values({ userId: actor.userId, channelId, rootId, enabled })
@@ -1632,8 +2126,9 @@ export class TeamChatStore {
     channelId: TeamChannelId,
     notificationLevel: "mentions" | "all" | "muted",
   ) {
-    await this.access.contentWrite(actor, channelId, async (t, a) => {
+    await this.access.writeForPeer(actor, channelId, async (t, a) => {
       requireTeam(actor.kind === "human" && a.read);
+      await bumpTeamChannel(t, channelId);
       await t
         .insertInto("teamChannelMemberState")
         .values({
@@ -1661,7 +2156,7 @@ export class TeamChatStore {
     agent?: TeamAgentOperation,
   ) {
     for (;;) {
-      const revision = this.access.revision;
+      const revision = await this.access.current();
       const result = await this.access.database.transaction().execute(async (t) => {
         const link = linkId ? await this.access.link(t, actor, linkId) : undefined;
         const member = await this.access.member(t, actor.userId);
@@ -1677,12 +2172,15 @@ export class TeamChatStore {
                   ...(member.role !== "member" ? [e("kind", "=", "private")] : []),
                 ]),
           );
+        if (!teamPeerSupportsSharedChannels())
+          query = query.where("id", "not in", teamSharedChannelIds());
         if (after) query = query.where("id", ">", after);
         if (channelIds) query = query.where("id", "in", [...channelIds]);
         const rows = await query.orderBy("id").limit(51).execute();
         const pageRows = rows.slice(0, 50),
           ids = pageRows.map((row) => row.id);
-        const authorities = await this.access.channels(t, actor, ids);
+        const authorities = await this.access.peerChannels(t, actor, ids);
+        const shares = await teamChannelShares(t, ids, actor.userId);
         const states = ids.length
           ? await t
               .selectFrom("teamChannelMemberState")
@@ -1722,6 +2220,7 @@ export class TeamChatStore {
           .where("state", "=", "active")
           .executeTakeFirst());
         const channels = [];
+        let selfOnline: boolean | undefined;
         for (const row of pageRows) {
           const authority = authorities.get(row.id) ?? {
             read: false,
@@ -1730,10 +2229,11 @@ export class TeamChatStore {
             peopleOnly: false,
           };
           const summary = {
+            ...(shares.has(row.id) ? { share: shares.get(row.id) } : {}),
             id: row.id,
             kind: row.kind,
             name: row.name ?? "Direct message",
-            peopleOnly: row.peopleOnly,
+            peopleOnly: authority.peopleOnly,
             archivedAt: row.archivedAt?.toISOString() ?? null,
             changeSeq: SequenceSchema.parse(row.changeSeq),
             latestMessageId: authority.read ? row.latestMessageId : null,
@@ -1743,7 +2243,11 @@ export class TeamChatStore {
               manage: authority.manage,
               join: !authority.read && row.kind === "public" && !row.archivedAt,
               leave: authority.read && (row.kind === "public" || row.kind === "private"),
-              wakeOwnAgent: authority.post && !authority.peopleOnly && linked,
+              wakeOwnAgent:
+                authority.post &&
+                shares.get(row.id)?.agentsEnabled !== false &&
+                !authority.peopleOnly &&
+                linked,
             },
           };
           const state = stateByChannel.get(row.id);
@@ -1756,7 +2260,9 @@ export class TeamChatStore {
             notificationLevel:
               state?.notificationLevel ??
               (row.kind === "dm" || row.kind === "group_dm" ? "all" : "mentions"),
-            agentOnline: linked && (this.identity.agentOnline?.(actor.userId) ?? false),
+            agentOnline:
+              linked &&
+              (selfOnline ??= (await teamLinksOnline(t, [actor.userId])).has(actor.userId)),
           });
         }
         if (actor.kind === "agent")
@@ -1773,9 +2279,18 @@ export class TeamChatStore {
           totalMentionCount: Number(mentions.rows[0]!.total),
           nextCursor: rows.length > 50 ? rows[49]!.id : null,
           accessRevision: revision,
+          // Moves with every rename, as revisions only grow: a session that missed one rereads.
+          namesRevision: SequenceSchema.parse(
+            (
+              await t
+                .selectFrom("users")
+                .select(sql<string>`coalesce(sum(name_revision), 0)::text`.as("total"))
+                .executeTakeFirstOrThrow()
+            ).total,
+          ),
         };
       });
-      if (revision === this.access.revision) return result;
+      if (revision === (await this.access.current())) return result;
     }
   }
 }

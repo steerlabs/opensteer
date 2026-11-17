@@ -127,7 +127,7 @@ public enum AppObserver {
       snapshot: observationId,
       app: app.identity,
       window: Observation.WindowSummary(
-        ref: bound.ref, id: identity.windowID,
+        ref: bound.ref, windowId: try WindowIdentities.retain(bound.liveness, app: app.identity),
         title: identity.title ?? "",
         frame: Observation.Rect(identity.frame),
         scale: Double(capture.scale)

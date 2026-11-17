@@ -38,6 +38,12 @@ export const descend = FadeInUp.duration(duration.enter);
 export const exit = FadeOut.duration(duration.exit);
 
 /**
+ * A live picture that stops arriving dims only once the wait outlasts a
+ * moment, so a quick reconnect never flickers.
+ */
+export const dim = FadeIn.duration(duration.enter).delay(400);
+
+/**
  * Something with a place goes to a new one, such as a task a person just asked
  * for something rising to the top. It never runs when the thing first mounts,
  * so a list that loads appears at once.
@@ -50,6 +56,9 @@ export const move = LinearTransition.duration(duration.enter);
  * `withSpring` honours Reduce Motion as the builders above do.
  */
 const bubbleSpring = { dampingRatio: 0.84, duration: 420 } as const;
+
+/** How long a sent bubble takes to settle in its place. */
+export const bubbleSettleMs = bubbleSpring.duration;
 
 /** What the reader just sent: it rises out of the composer into its place. */
 export function bubbleRise() {

@@ -1,10 +1,14 @@
+import { stripRefs } from "@opensteer/shared/stripRefs";
 import {
   TeamSourceSchema,
   OpensteerError,
   type DeploymentId,
+  type AuthSessionId,
   type RunId,
   type TeamAgentRequestId,
   type MessageId,
+  type UserId,
+  type TeamAskDecision,
 } from "@opensteer/core";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
@@ -12,6 +16,7 @@ import {
   TeamAgentRequestSchema,
   TeamMarkdownSchema,
   type PersonalTeamRequest,
+  type PersonalTeamRequestMirror,
   type TeamRunRequest,
 } from "@opensteer/protocol";
 import type { TaskAdmissionPort } from "../threads/task-admission.js";
@@ -35,12 +40,22 @@ export interface PersonalTeamRequestsOptions {
   readonly admission: TaskAdmissionPort;
   readonly runs: PersonalTeamRunPort;
   readonly rpc: (teamId: DeploymentId) => TeamLinkRpc;
+  readonly onConsentChanged?: (
+    teamId: DeploymentId,
+    requestId: TeamAgentRequestId,
+    opened: boolean,
+  ) => Promise<void>;
 }
 
 export class PersonalTeamRequests {
   readonly options: PersonalTeamRequestsOptions;
   readonly #work = new Map<DeploymentId, Promise<void>>();
   readonly #lastStatus = new Map<string, number>();
+  readonly #decisions = new Map<string, Promise<void>>();
+  readonly #decisionResumptions = new Set<Promise<void>>();
+  readonly #decisionRetries = new Map<DeploymentId, ReturnType<typeof setTimeout>>();
+  readonly #decisionAttempts = new Map<DeploymentId, number>();
+  #stopped = false;
   constructor(options: PersonalTeamRequestsOptions) {
     this.options = options;
   }
@@ -72,6 +87,56 @@ export class PersonalTeamRequests {
     )
       throw linkError();
     await links.observeName(teamId, source.audience.teamName);
+    if (request.kind !== "self") {
+      if (
+        request.kind === "ask" &&
+        (!value.presentation ||
+          !request.consentExpiresAt ||
+          value.presentation.destination.teamId !== teamId ||
+          value.presentation.destination.channelId !== source.channelId ||
+          value.presentation.destination.threadRootId !== source.threadRootId ||
+          value.presentation.audience.peopleOnly)
+      )
+        throw linkError("bad_request");
+      if (request.kind === "return" && !value.returnPayload) throw linkError("bad_request");
+      const opened = await requests.observe({
+        teamId,
+        requestId: request.id,
+        kind: request.kind,
+        remoteState: request.state,
+        presentation: value.presentation,
+        consentExpiresAt: request.consentExpiresAt,
+        returnPayload: value.returnPayload,
+        localDecision: null,
+        decisionAt: null,
+        returnAdmission: null,
+        triggerMessageId: request.triggerMessageId,
+        taskId: null,
+        inputId: null,
+        runId: null,
+        source,
+        terminalState: null,
+        publicationState: "pending",
+        replyMessageId: null,
+        answerMessageId: null,
+        answerPayload: null,
+        clientMessageId: null,
+        deliveryVia: null,
+        blockedReason: null,
+        createdAt: request.createdAt,
+      });
+      const mirror = (await requests.mirror(teamId, request.id))!;
+      if (["declined", "done", "failed", "stopped", "cancelled"].includes(request.state)) {
+        await this.cancel(teamId, request.id);
+        return;
+      }
+      if (request.kind === "ask") {
+        await this.#admitAsk(mirror);
+        if (opened) await this.options.onConsentChanged?.(teamId, request.id, true);
+        await this.#decided(mirror);
+      } else await this.#return(mirror);
+      return;
+    }
     let local = await requests.get(teamId, request.id);
     if (local && local.triggerMessageId !== request.triggerMessageId) throw linkError("conflict");
     if (local?.publicationState === "blocked") return;
@@ -98,6 +163,14 @@ export class PersonalTeamRequests {
         source,
       });
       local = await requests.record({
+        kind: request.kind,
+        remoteState: request.state,
+        presentation: null,
+        consentExpiresAt: null,
+        localDecision: null,
+        decisionAt: null,
+        returnPayload: null,
+        returnAdmission: null,
         teamId,
         requestId: request.id,
         triggerMessageId: request.triggerMessageId,
@@ -137,17 +210,334 @@ export class PersonalTeamRequests {
     await this.reconcileOne(local);
   }
 
+  async #admitAsk(local: PersonalTeamRequestMirror): Promise<void> {
+    if (
+      local.taskId ||
+      local.terminalState ||
+      local.kind !== "ask" ||
+      local.localDecision === "decline"
+    )
+      return;
+    try {
+      const presentation = local.presentation!;
+      await this.options.admission.admitTeamRequest({
+        bodyMarkdown: presentation.bodyMarkdown,
+        attachments: presentation.attachments,
+        origin: presentation.destination,
+        requestId: local.requestId,
+        triggerMessageId: local.triggerMessageId,
+        source: local.source,
+      });
+    } catch (error) {
+      if (
+        error instanceof OpensteerError &&
+        !error.retryable &&
+        ["bad_request", "forbidden", "not_found", "conflict", "resource_exhausted"].includes(
+          error.code,
+        )
+      ) {
+        await this.options.requests.admissionBlocked(local.teamId, local.requestId, error.message);
+        return;
+      }
+      throw error;
+    }
+  }
+  async resumeAdmissions(teamId: DeploymentId): Promise<void> {
+    await this.#recoverCancelledAsks(teamId);
+    for (const local of await this.options.requests.mirrors(teamId))
+      if (local.kind === "ask" && !local.terminalState && !local.taskId)
+        await this.#admitAsk(local);
+  }
+  async #recoverCancelledAsks(teamId?: DeploymentId): Promise<void> {
+    for (const local of await this.options.requests.terminalAsksPendingCleanup(teamId))
+      await this.options.admission.cancelTeamRequest({
+        teamId: local.teamId,
+        requestId: local.requestId,
+      });
+  }
+  async expireUndecidedAsks(): Promise<void> {
+    await this.#recoverCancelledAsks();
+    for (const local of await this.options.requests.expiredUndecidedAsks())
+      await this.cancel(local.teamId, local.requestId, "The time to approve this ask expired.");
+  }
+  async decide(
+    ownerId: UserId,
+    teamId: DeploymentId,
+    requestId: TeamAgentRequestId,
+    decision: TeamAskDecision,
+    expectedRevision?: number,
+    sessionId?: AuthSessionId,
+  ): Promise<void> {
+    const local = await this.options.requests.decide(
+      ownerId,
+      teamId,
+      requestId,
+      decision,
+      expectedRevision,
+      sessionId,
+    );
+    if (local.localDecision && !local.releasedAt && !local.terminalState)
+      this.#retryDecisions(teamId);
+    await this.options.onConsentChanged?.(teamId, requestId, false);
+    await this.#decided(local);
+  }
+
+  async stop(): Promise<void> {
+    this.#stopped = true;
+    for (const timer of this.#decisionRetries.values()) clearTimeout(timer);
+    this.#decisionRetries.clear();
+    this.#decisionAttempts.clear();
+    await Promise.allSettled([...this.#decisions.values(), ...this.#decisionResumptions]);
+  }
+
+  #retryDecisions(teamId: DeploymentId): void {
+    if (this.#stopped || this.#decisionRetries.has(teamId)) return;
+    const attempt = this.#decisionAttempts.get(teamId) ?? 0;
+    this.#decisionAttempts.set(teamId, attempt + 1);
+    const timer = setTimeout(
+      () => {
+        this.#decisionRetries.delete(teamId);
+        const work = this.#resumeDecisions(teamId).catch(() => this.#retryDecisions(teamId));
+        this.#decisionResumptions.add(work);
+        void work.finally(() => this.#decisionResumptions.delete(work));
+      },
+      Math.min(30_000, 500 * 2 ** Math.min(attempt, 6)),
+    );
+    timer.unref();
+    this.#decisionRetries.set(teamId, timer);
+  }
+
+  async #resumeDecisions(teamId: DeploymentId): Promise<void> {
+    for (const local of await this.options.requests.mirrors(teamId)) {
+      if (this.#stopped) return;
+      if (
+        local.kind === "ask" &&
+        local.localDecision &&
+        !local.releasedAt &&
+        !local.terminalState &&
+        local.publicationState !== "blocked"
+      )
+        await this.#decided(local).catch(() => undefined);
+    }
+    if (!this.#decisionRetries.has(teamId)) this.#decisionAttempts.delete(teamId);
+  }
+
+  async #decided(local: PersonalTeamRequestMirror): Promise<void> {
+    if (this.#stopped) return;
+    const key = `${local.teamId}:${local.requestId}`;
+    const existing = this.#decisions.get(key);
+    if (existing) return existing;
+    const work = this.#applyDecision(local.teamId, local.requestId);
+    this.#decisions.set(key, work);
+    try {
+      await work;
+    } catch (error) {
+      this.#retryDecisions(local.teamId);
+      throw error;
+    } finally {
+      if (this.#decisions.get(key) === work) this.#decisions.delete(key);
+    }
+  }
+
+  async #applyDecision(teamId: DeploymentId, requestId: TeamAgentRequestId): Promise<void> {
+    const local = await this.options.requests.mirror(teamId, requestId);
+    if (
+      !local ||
+      !local.localDecision ||
+      local.terminalState ||
+      local.publicationState === "blocked"
+    )
+      return;
+    if (local.releasedAt) {
+      const admitted = await this.options.requests.get(local.teamId, local.requestId);
+      if (admitted) await this.reconcileOne(admitted);
+      return;
+    }
+    try {
+      const link = await this.options.links.get(teamId);
+      if (!link || !["active", "unreachable"].includes(link.state)) throw linkError();
+      const ack = await this.options
+        .rpc(local.teamId)
+        .call({ type: "accept", requestId: local.requestId, decision: local.localDecision });
+      if (
+        ack.kind !== "accepted" ||
+        ack.request.id !== local.requestId ||
+        ack.request.kind !== "ask"
+      )
+        throw linkError("bad_request");
+      await this.options.requests.remote(local.teamId, local.requestId, ack.request.state);
+      if (local.localDecision === "decline") {
+        await this.cancel(local.teamId, local.requestId);
+        return;
+      }
+      if (!["queued", "working", "needs_you"].includes(ack.request.state))
+        throw linkError("conflict");
+      await this.options.admission.releaseTeamAsk({
+        teamId,
+        requestId,
+        localLinkId: link.id,
+        remoteLinkId: link.remoteLinkId,
+      });
+      const admitted = await this.options.requests.get(local.teamId, local.requestId);
+      if (admitted) await this.reconcileOne(admitted);
+    } catch (error) {
+      const current = await this.options.requests.mirror(teamId, requestId);
+      if (current?.releasedAt) await this.#failure(current, error);
+      else if (
+        error instanceof OpensteerError &&
+        !error.retryable &&
+        ["bad_request", "forbidden", "unauthorized", "not_found", "conflict"].includes(error.code)
+      ) {
+        await this.options.admission.cancelTeamRequest({
+          teamId,
+          requestId,
+          failureReason:
+            error.code === "unauthorized"
+              ? "The team link was revoked."
+              : error.code === "not_found"
+                ? "The team or reply thread is no longer available."
+                : error.code === "forbidden"
+                  ? "Team access was removed or the channel is people-only."
+                  : "Your decision could not be completed. Ask the sender to send a new ask.",
+        });
+        await this.options.onConsentChanged?.(teamId, requestId, false);
+      }
+      throw error;
+    }
+  }
+
+  async #return(local: PersonalTeamRequestMirror): Promise<void> {
+    if (local.terminalState && !local.returnAdmission) return;
+    await this.options.admission.admitTeamReturn({
+      teamId: local.teamId,
+      requestId: local.requestId,
+    });
+    const current = await this.options.requests.mirror(local.teamId, local.requestId);
+    if (!current?.returnAdmission) return;
+    const ack = await this.options.rpc(local.teamId).call({
+      type: "accept",
+      requestId: local.requestId,
+      ...(current.returnAdmission === "undeliverable" ? { decision: "decline" as const } : {}),
+    });
+    if (
+      ack.kind !== "accepted" ||
+      ack.request.id !== local.requestId ||
+      ack.request.kind !== "return"
+    )
+      throw linkError("bad_request");
+    await this.options.requests.remote(local.teamId, local.requestId, ack.request.state);
+  }
+
+  async resumeReturns(teamId: DeploymentId): Promise<void> {
+    for (const local of await this.options.requests.mirrors(teamId))
+      if (local.kind === "return") await this.#return(local);
+  }
+
   async reconnect(teamId: DeploymentId): Promise<void> {
-    for (const request of await this.options.requests.forTeam(teamId)) {
+    const link = await this.options.links.get(teamId);
+    if (!link || !["active", "unreachable"].includes(link.state)) throw linkError();
+    for (const post of await this.options.requests.pendingPosts(teamId)) {
+      if (post.localLinkId !== link.id || post.remoteLinkId !== link.remoteLinkId) continue;
+      if (stripRefs(post.bodyMarkdown) !== post.bodyMarkdown) {
+        const request = post.requestId
+          ? await this.options.requests.get(teamId, post.requestId)
+          : null;
+        if (request && (await this.#receipt(request))) {
+          await this.options.requests.forgetPost(teamId, post.clientMessageId, post.localLinkId);
+          continue;
+        }
+        if (request)
+          await this.options.requests.publication(
+            teamId,
+            request.requestId,
+            "blocked",
+            null,
+            "The saved post contains private references and cannot be replayed. Send a new post.",
+          );
+        await this.options.requests.forgetPost(teamId, post.clientMessageId, post.localLinkId);
+        continue;
+      }
       try {
-        await this.#receipt(request);
-        const current = (await this.options.requests.get(teamId, request.requestId))!;
+        const result = await this.options.rpc(teamId).call({
+          type: "post",
+          clientMessageId: post.clientMessageId,
+          runId: post.runId,
+          channelId: post.channelId,
+          ...(post.threadRootId ? { threadRootId: post.threadRootId } : {}),
+          ...(post.requestId ? { requestId: post.requestId } : {}),
+          bodyMarkdown: post.bodyMarkdown,
+          attachmentIds: [...post.attachmentIds],
+        });
+        if (result.kind !== "receipt" || result.messageId === null) throw linkError("bad_request");
+        await this.options.requests.recordPost({
+          ...post,
+          messageId: result.messageId,
+          askOutcomes: result.askOutcomes,
+        });
+      } catch (error) {
+        if (
+          !(error instanceof OpensteerError) ||
+          ![
+            "bad_request",
+            "forbidden",
+            "unauthorized",
+            "not_found",
+            "conflict",
+            "resource_exhausted",
+          ].includes(error.code)
+        )
+          throw error;
+        await this.options.requests.forgetPost(teamId, post.clientMessageId, post.localLinkId);
+      }
+    }
+    await this.resumeAdmissions(teamId);
+    const all = await this.options.requests.mirrors(teamId);
+    for (const local of all.filter((row) => row.kind === "self")) {
+      const admitted = await this.options.requests.get(teamId, local.requestId);
+      if (!admitted) continue;
+      try {
+        await this.#receipt(admitted);
+        const current = (await this.options.requests.get(teamId, local.requestId))!;
         const outcome = await this.options.runs.outcome(current);
         if (["pending", "working", "needs_you"].includes(outcome.state))
-          await this.options.rpc(teamId).call({ type: "accept", requestId: request.requestId });
+          await this.options.rpc(teamId).call({ type: "accept", requestId: local.requestId });
         await this.reconcileOne(current);
       } catch (error) {
-        await this.#failure(request, error);
+        await this.#failure(local, error);
+      }
+    }
+    const mirrors = all.filter((row) => row.kind !== "self");
+    for (let offset = 0; offset < mirrors.length; offset += 200) {
+      const batch = mirrors.slice(offset, offset + 200);
+      const result = await this.options
+        .rpc(teamId)
+        .call({ type: "reconcile", requestIds: batch.map((row) => row.requestId) });
+      if (result.kind !== "reconciled") throw linkError("bad_request");
+      for (const local of batch) {
+        try {
+          const remote = result.requests.find(
+            (entry) => entry.requestId === local.requestId,
+          )?.request;
+          if (
+            !remote ||
+            ["declined", "done", "failed", "stopped", "cancelled"].includes(remote.state)
+          ) {
+            if (local.kind === "return" && local.returnAdmission) {
+              await this.options.requests.remote(teamId, local.requestId, "done");
+            } else if (local.releasedAt) {
+              const admitted = await this.options.requests.get(teamId, local.requestId);
+              if (admitted && (await this.#receipt(admitted))) continue;
+              await this.cancel(teamId, local.requestId);
+            } else await this.cancel(teamId, local.requestId);
+            continue;
+          }
+          await this.options.requests.remote(teamId, local.requestId, remote.state);
+          if (local.kind === "ask") {
+            await this.#decided({ ...local, remoteState: remote.state });
+          } else if (local.kind === "return") await this.#return(local);
+        } catch (error) {
+          await this.#failure(local, error);
+        }
       }
     }
   }
@@ -167,7 +557,7 @@ export class PersonalTeamRequests {
     return true;
   }
 
-  async #failure(request: PersonalTeamRequest, error: unknown): Promise<void> {
+  async #failure(request: PersonalTeamRequestMirror, error: unknown): Promise<void> {
     if (
       error instanceof OpensteerError &&
       ["forbidden", "unauthorized", "not_found"].includes(error.code)
@@ -246,7 +636,10 @@ export class PersonalTeamRequests {
     answerMessageId: MessageId | null,
   ): Promise<void> {
     const { requests } = this.options;
+    const frozen = request.answerPayload !== null;
+    if (!request.answerPayload && finalMessage) finalMessage = stripRefs(finalMessage);
     try {
+      if (frozen && (await this.#receipt(request))) return;
       if (
         !request.answerPayload &&
         finalMessage &&
@@ -269,7 +662,20 @@ export class PersonalTeamRequests {
           payload: { bodyMarkdown: finalMessage, attachmentIds: [] },
           clientMessageId: teamOperationId("final", request.teamId, request.requestId),
         });
-      if (await this.#receipt(request)) return;
+      if (!frozen && (await this.#receipt(request))) return;
+      if (
+        request.answerPayload &&
+        stripRefs(request.answerPayload.bodyMarkdown) !== request.answerPayload.bodyMarkdown
+      ) {
+        await requests.publication(
+          request.teamId,
+          request.requestId,
+          "blocked",
+          null,
+          "The saved reply contains private references and cannot be replayed. Send a new reply.",
+        );
+        return;
+      }
       if (request.terminalState === "cancelled") {
         await requests.publication(
           request.teamId,
@@ -336,18 +742,13 @@ export class PersonalTeamRequests {
     reason = "The team request was cancelled.",
   ): Promise<void> {
     this.#lastStatus.delete(`${teamId}:${requestId}`);
-    const request = await this.options.requests.get(teamId, requestId);
-    if (request) {
-      await this.options.requests.terminal(teamId, requestId, request.runId, "cancelled");
-      if (request.publicationState !== "accepted")
-        await this.options.requests.publication(teamId, requestId, "blocked", null, reason);
-    }
-    await this.options.admission.cancelTeamRequest({ teamId, requestId });
+    await this.options.admission.cancelTeamRequest({ teamId, requestId, reason });
+    await this.options.onConsentChanged?.(teamId, requestId, false);
   }
 
   async revoked(teamId: DeploymentId): Promise<void> {
     await this.options.links.state(teamId, "revoked");
-    for (const request of await this.options.requests.forTeam(teamId))
+    for (const request of await this.options.requests.mirrors(teamId))
       await this.cancel(teamId, request.requestId, "The team link was revoked.");
   }
 }

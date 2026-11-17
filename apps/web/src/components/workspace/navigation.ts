@@ -1,12 +1,14 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useLocation, useNavigate, useNavigationType, type To } from "react-router";
 import { z } from "zod";
 import {
   parseNavigationInput,
-  phonePlaceKey,
-  type PersonalSurfaceDestination as SurfaceDestination,
+  type TabDestination as SurfaceDestination,
 } from "@opensteer/client/host";
-import { AppIdSchema } from "@opensteer/core";
+import { TabIdSchema, type TabId } from "@opensteer/core";
+import { teamEntryRefusalOutcome } from "@opensteer/protocol";
+import { useTeams } from "../../team/team-attachments.js";
+import type { SidebarSides } from "@opensteer/client/team";
 
 /**
  * The address has two axes and this module is the only thing that writes
@@ -22,11 +24,16 @@ import { AppIdSchema } from "@opensteer/core";
  * The query parameters that name the place in the middle. `panel` alone is the
  * start page.
  */
-const placeParams = [
+const placeParams = ["panel", "tab"] as const;
+
+/** Addresses of the stage before places: read once, then replaced away. */
+const legacyParams = [
+  "browserWorkspace",
+  "surfaceThread",
+  "surfaces",
   "computerWindow",
   "computerView",
   "computerViewGeneration",
-  "panel",
   "browser",
   "browserTab",
   "pendingBrowserTab",
@@ -38,20 +45,14 @@ const placeParams = [
   "opensteerApp",
 ] as const;
 
-/** Addresses of the stage before places: read once, then replaced away. */
-const legacyParams = ["browserWorkspace", "surfaceThread", "surfaces"] as const;
-
 /** What the middle shows, as the address says it. */
 export type PlaceSelection =
   | { readonly kind: "talk" }
   | { readonly kind: "launcher" }
-  | { readonly kind: "pending"; readonly idempotencyKey: string }
   | { readonly kind: "place"; readonly destination: SurfaceDestination };
 
 export function placeSelection(params: URLSearchParams): PlaceSelection {
   if (!params.has("panel")) return { kind: "talk" };
-  const pending = params.get("pendingBrowserTab");
-  if (pending) return { kind: "pending", idempotencyKey: pending };
   const destination = placeDestination(params);
   return destination ? { kind: "place", destination } : { kind: "launcher" };
 }
@@ -98,53 +99,13 @@ export function startPageLink(state: unknown): StartPageLink | null {
 let openings = 0;
 
 function placeDestination(params: URLSearchParams): SurfaceDestination | null {
-  const appId = AppIdSchema.safeParse(params.get("opensteerApp"));
-  if (appId.success) return { kind: "opensteer-app", appId: appId.data };
-  const sessionId = params.get("browser");
-  const tabId = params.get("browserTab");
-  if (sessionId && tabId) return { kind: "browser", sessionId, tabId };
-  const phone = params.get("phone");
-  if (phone) return { kind: "phone", machineId: phone };
-  const computerSessionId = params.get("computerSession");
-  const viewId = params.get("computerView");
-  const generation = Number(params.get("computerViewGeneration"));
-  if (viewId && Number.isSafeInteger(generation) && generation > 0) {
-    const appKey = params.get("app");
-    const source = { kind: "owner-view" as const, viewId, generation };
-    if (appKey) {
-      const window = Number(params.get("computerWindow"));
-      return {
-        kind: "app",
-        machineId: params.get("mac") ?? "",
-        appKey,
-        source,
-        ...(params.has("computerWindow") && Number.isSafeInteger(window) && window >= 0
-          ? { windowId: window }
-          : {}),
-      };
-    }
-  }
-  const appKey = params.get("app");
-  if (computerSessionId && appKey) {
-    return { appKey, computerSessionId, kind: "app", machineId: params.get("mac") ?? "" };
-  }
-  return null;
+  const tabId = TabIdSchema.safeParse(params.get("tab"));
+  return tabId.success ? { kind: "tab", tabId: tabId.data } : null;
 }
 
-/** The place catalog's key for a destination; a browser address without its tab has none yet. */
-export function destinationPlaceKey(destination: SurfaceDestination): string | null {
-  switch (destination.kind) {
-    case "opensteer-app":
-      return `opensteer-app:${destination.appId}`;
-    case "browser":
-      return destination.tabId ? `browser:${destination.sessionId}:${destination.tabId}` : null;
-    case "app":
-      return destination.source?.kind === "owner-view"
-        ? `app:${destination.machineId}:${destination.appKey}:${destination.windowId ?? destination.source.viewId}`
-        : `app:${destination.machineId}:${destination.appKey}:task:${destination.computerSessionId}`;
-    case "phone":
-      return phonePlaceKey(destination.machineId);
-  }
+/** The tab catalog's key for a destination. */
+export function destinationPlaceKey(destination: SurfaceDestination): TabId {
+  return destination.tabId;
 }
 
 /** A destination as the address names it: two destinations are one place exactly when these match. */
@@ -164,33 +125,7 @@ function writePlace(params: URLSearchParams, selection: PlaceSelection): void {
   if (selection.kind === "talk") return;
   params.set("panel", "browser");
   if (selection.kind === "launcher") return;
-  if (selection.kind === "pending") {
-    params.set("pendingBrowserTab", selection.idempotencyKey);
-    return;
-  }
-  const { destination } = selection;
-  if (destination.kind === "opensteer-app") {
-    params.set("opensteerApp", destination.appId);
-    return;
-  }
-  if (destination.kind === "browser") {
-    params.set("browser", destination.sessionId);
-    if (destination.tabId) params.set("browserTab", destination.tabId);
-    return;
-  }
-  if (destination.kind === "phone") {
-    params.set("phone", destination.machineId);
-    return;
-  }
-  if (destination.source?.kind === "owner-view") {
-    params.set("computerView", destination.source.viewId);
-    params.set("computerViewGeneration", String(destination.source.generation));
-  } else if (destination.computerSessionId)
-    params.set("computerSession", destination.computerSessionId);
-  if (destination.windowId !== undefined)
-    params.set("computerWindow", String(destination.windowId));
-  params.set("app", destination.appKey);
-  params.set("mac", destination.machineId);
+  params.set("tab", selection.destination.tabId);
 }
 
 /** Only the place survives a change of conversation; a message anchor or request focus does not. */
@@ -228,10 +163,7 @@ function areaAddress(to: string, currentSearch: string): Address & { readonly ha
  * address naming only its session names the tab the session shows, once the
  * catalog can say which.
  */
-export function canonicalPlaceSearch(
-  search: string,
-  activeTabOf: (sessionId: string) => string | null | undefined,
-): string | null {
+export function canonicalPlaceSearch(search: string): string | null {
   const params = new URLSearchParams(search);
   let changed = false;
   for (const name of legacyParams) {
@@ -244,40 +176,12 @@ export function canonicalPlaceSearch(
     params.set("panel", "browser");
     changed = true;
   }
-  const sessionId = params.get("browser");
-  if (sessionId && !params.get("browserTab")) {
-    const tabId = activeTabOf(sessionId);
-    // Unknown yet: wait for the catalog rather than inventing a tab.
-    if (tabId === undefined) return changed ? searchString(params) : null;
-    if (tabId) {
-      params.set("browserTab", tabId);
-      changed = true;
-    }
-  }
-  if (sessionId && !params.has("panel")) {
-    params.set("panel", "browser");
-    changed = true;
-  }
   return changed ? searchString(params) : null;
 }
 
 /* ---- The last place the person chose, per deployment and user ---- */
 
-const RememberedPlaceSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("browser"),
-    sessionId: z.string().min(1).max(200),
-    tabId: z.string().min(1).max(200),
-  }),
-  z.object({
-    kind: z.literal("app"),
-    appKey: z.string().min(1).max(512),
-    computerSessionId: z.string().min(1).max(200),
-    machineId: z.string().max(200),
-  }),
-  z.object({ kind: z.literal("phone"), machineId: z.string().min(1).max(200) }),
-  z.object({ kind: z.literal("opensteer-app"), appId: AppIdSchema }),
-]);
+const RememberedPlaceSchema = z.object({ kind: z.literal("tab"), tabId: TabIdSchema });
 
 const RememberedTalkSchema = z.object({
   kind: z.literal("talk"),
@@ -389,9 +293,104 @@ export function isSetupPath(pathname: string): boolean {
   return pathname === setupPath;
 }
 
+/** The address owns the side; full-window and directory pages belong to neither. */
+export function workspaceSide(pathname: string): string | null {
+  const team = /^\/teams\/([^/]+)(?:\/|$)/u.exec(pathname);
+  if (team) {
+    try {
+      return decodeURIComponent(team[1]!);
+    } catch {
+      return null;
+    }
+  }
+  return pathname === "/" || /^\/(?:tasks|automations|voice)(?:\/|$)/u.test(pathname)
+    ? "tasks"
+    : null;
+}
+
+const SideBookmarkSchema = z.object({
+  pathname: z.string().startsWith("/").max(8192),
+  search: z.string().max(16384),
+  hash: z.string().max(8192),
+  startFrom: z.string().max(2048).nullable(),
+  viewer: z.string().nullable(),
+});
+const SideMemorySchema = z.object({
+  side: z.string(),
+  /** The team last shown, which keeps its name in the switch while on Tasks. */
+  recent: z.string().nullable().catch(null),
+  bookmarks: z.record(z.string(), SideBookmarkSchema),
+});
+type SideMemory = z.infer<typeof SideMemorySchema>;
+
+function sideMemoryKey(scope: PlaceMemoryScope): string | null {
+  return scope.deploymentId && scope.userId
+    ? `opensteer.workspace.sides.v1:${encodeURIComponent(scope.deploymentId)}:${encodeURIComponent(scope.userId)}`
+    : null;
+}
+
+function readSideMemory(key: string | null): SideMemory {
+  try {
+    const parsed = SideMemorySchema.safeParse(
+      JSON.parse(key ? (sessionStorage.getItem(key) ?? "null") : "null"),
+    );
+    if (parsed.success) {
+      const bookmarks = Object.fromEntries(
+        Object.entries(parsed.data.bookmarks).filter(
+          ([side, bookmark]) =>
+            !bookmark.pathname.startsWith("//") &&
+            workspaceSide(bookmark.pathname) === side &&
+            (!bookmark.search || bookmark.search.startsWith("?")) &&
+            (!bookmark.hash || bookmark.hash.startsWith("#")),
+        ),
+      );
+      return { side: parsed.data.side, recent: parsed.data.recent, bookmarks };
+    }
+  } catch {
+    /* The window still remembers when storage is unavailable. */
+  }
+  return { side: "tasks", recent: null, bookmarks: {} };
+}
+
+function useTeamViewers() {
+  const { teams, forgotten } = useTeams();
+  const cache = useRef<readonly { id: string; viewer: string | null; removed: boolean }[]>([]);
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      const stops = teams.map((team) => team.client?.subscribe(listener));
+      return () => {
+        for (const stop of stops) stop?.();
+      };
+    },
+    [teams],
+  );
+  const read = useCallback(() => {
+    const next = teams.map((team) => {
+      const snapshot = team.client?.getSnapshot();
+      return {
+        id: team.teamId,
+        viewer: team.client?.scope.userId ?? null,
+        removed:
+          team.failure === "join" ||
+          team.link?.state === "revoked" ||
+          snapshot?.ended === "removed" ||
+          snapshot?.ended === "viewer-changed" ||
+          teamEntryRefusalOutcome(snapshot?.refusalReason) === "membership",
+      };
+    });
+    for (const id of forgotten) next.push({ id, viewer: null, removed: true });
+    if (JSON.stringify(next) !== JSON.stringify(cache.current)) cache.current = next;
+    return cache.current;
+  }, [teams, forgotten]);
+  return useSyncExternalStore(subscribe, read, read);
+}
+
 export interface WorkspaceNavigation {
+  readonly sides: SidebarSides;
+  readonly openSide: (side: string) => void;
   /** Changes on a place choice, including reselecting the current tab. */
   readonly placeOpening: number;
+  readonly pendingPlace: string | null;
   /** Where a conversation-area page is, keeping the place in the middle. */
   readonly conversationHref: (to: string) => To;
   /**
@@ -422,14 +421,6 @@ export interface WorkspaceNavigation {
       /** Takes the current entry's place in history: a hop between siblings. */
       readonly replace?: boolean;
     },
-  ) => void;
-  readonly showPendingBrowserTab: (
-    idempotencyKey: string,
-    options?: { readonly replace?: boolean; readonly address?: string },
-  ) => void;
-  readonly replacePendingBrowserTab: (
-    idempotencyKey: string,
-    destination: SurfaceDestination,
   ) => void;
   /** Includes synchronous choices made since the last render. */
   readonly address: () => Address;
@@ -467,14 +458,18 @@ export interface WorkspaceNavigation {
    * address as it is when the answer lands, so the conversation open then stays.
    */
   readonly beginPlaceOperation: (options?: {
+    readonly address?: string;
     /** The answer takes the start page's own history entry, as a new tab's page does. */
     readonly replace?: boolean;
-  }) => (destination: SurfaceDestination) => void;
+  }) => ((destination: SurfaceDestination) => void) & {
+    readonly launcher: (options: { address: string; open: boolean }) => void;
+  };
 }
 
 interface Address {
   readonly pathname: string;
   readonly search: string;
+  readonly hash?: string;
   /** The entry's history state, as the newest navigation left it. */
   readonly state?: unknown;
 }
@@ -486,36 +481,136 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
   const { search } = location;
   const { deploymentId, userId } = scope;
   const [placeOpening, setPlaceOpening] = useState(0);
-  // Every imperative choice reads the address as it is when it runs, never as
-  // it was when a callback was made: an answer that lands later must not write
-  // an older conversation or place back.
-  const latest = useRef<Address>({ pathname: location.pathname, search, state: location.state });
-  const seen = useRef(location);
-  const settingsReturn = useRef<Address>({ pathname: "/", search: "" });
-  // Any change of place in the address — a row, Back, a typed address — and
-  // every explicit place choice outdates a place operation still under way.
+  const [pending, setPending] = useState<{
+    address: string;
+    operation: number;
+    epoch: number;
+  } | null>(null);
+  const { surface } = useTeams();
+  const viewers = useTeamViewers();
+  const scopeKey = sideMemoryKey(scope);
+  const memory = useRef<{ key: string | null; value: SideMemory } | null>(null);
+  memory.current ??= { key: scopeKey, value: readSideMemory(scopeKey) };
+  const identity = useRef(scope);
   const placeEpoch = useRef(0);
   const operation = useRef(0);
-  if (seen.current !== location) {
-    if (placeOnly(seen.current.search).toString() !== placeOnly(search).toString())
-      placeEpoch.current += 1;
-    // A replaced address was a redirect or rewrite, never a place to return to.
-    if (!isSettingsPath(seen.current.pathname) && navigationType !== "REPLACE")
-      settingsReturn.current = { pathname: seen.current.pathname, search: seen.current.search };
-    seen.current = location;
-    latest.current = { pathname: location.pathname, search, state: location.state };
+  if (memory.current.key !== scopeKey) {
+    memory.current = { key: scopeKey, value: readSideMemory(scopeKey) };
+    placeEpoch.current += 1;
   }
+  if (identity.current.deploymentId !== deploymentId || identity.current.userId !== userId) {
+    placeEpoch.current += 1;
+    identity.current = scope;
+  }
+  const bookmarks = memory.current.value;
+  const previousViewers = useRef(viewers);
+  for (const team of viewers) {
+    const bookmark = bookmarks.bookmarks[team.id];
+    if (team.removed || (team.viewer && bookmark?.viewer && bookmark.viewer !== team.viewer))
+      delete bookmarks.bookmarks[team.id];
+    if (team.removed && bookmarks.side === team.id) bookmarks.side = "tasks";
+    if (team.removed && bookmarks.recent === team.id) bookmarks.recent = null;
+    const previous = previousViewers.current.find((held) => held.id === team.id);
+    if (previous && (team.viewer !== previous.viewer || team.removed !== previous.removed))
+      placeEpoch.current += 1;
+  }
+  if (previousViewers.current.some((previous) => !viewers.some((team) => team.id === previous.id)))
+    placeEpoch.current += 1;
+  previousViewers.current = viewers;
+  // Includes choices made synchronously since the last router render.
+  const latest = useRef<Address>(location);
+  const seen = useRef(location);
+  const settingsReturn = useRef<Address>({ pathname: "/", search: "" });
+  const remember = useCallback(
+    (address: Address) => {
+      const side = workspaceSide(address.pathname);
+      if (side === null) return;
+      const team = viewers.find((viewer) => viewer.id === side);
+      if (team?.removed) return;
+      bookmarks.side = side;
+      if (side !== "tasks") bookmarks.recent = side;
+      if (side !== "tasks" && !team?.viewer) return;
+      // An opening still under way finishes only on the address it started from.
+      const params = new URLSearchParams(address.search);
+      const search = params.toString();
+      bookmarks.bookmarks[side] = {
+        pathname: address.pathname,
+        search: search ? `?${search}` : "",
+        hash: address.hash ?? "",
+        startFrom: startPageOrigin(address.state),
+        viewer: team?.viewer ?? null,
+      };
+    },
+    [bookmarks, viewers],
+  );
+  if (seen.current !== location) {
+    if (
+      (latest.current.search !== location.search ||
+        latest.current.pathname !== location.pathname ||
+        navigationType === "POP") &&
+      (placeOnly(seen.current.search).toString() !== placeOnly(search).toString() ||
+        workspaceSide(seen.current.pathname) !== workspaceSide(location.pathname) ||
+        navigationType === "POP")
+    )
+      placeEpoch.current += 1;
+    if (!isSettingsPath(seen.current.pathname) && navigationType !== "REPLACE")
+      settingsReturn.current = seen.current;
+    seen.current = location;
+    latest.current = location;
+  }
+  remember(location);
+  const side = workspaceSide(location.pathname) ?? bookmarks.side;
+  const recent = bookmarks.recent;
+  const sides = useMemo<SidebarSides>(() => ({ side, recent }), [side, recent]);
+  useEffect(() => {
+    try {
+      if (scopeKey) sessionStorage.setItem(scopeKey, JSON.stringify(bookmarks));
+    } catch {
+      /* Navigation works without storage. */
+    }
+  }, [bookmarks, location, scopeKey, viewers]);
+  useEffect(
+    () => () => {
+      placeEpoch.current += 1;
+    },
+    [],
+  );
   // An explicit choice of what is already shown adds no entry.
   const go = useCallback(
     (to: Address, state?: unknown, replace = false) => {
       const current = latest.current;
-      const same = to.pathname === current.pathname && to.search === current.search;
+      const same =
+        to.pathname === current.pathname &&
+        to.search === current.search &&
+        (to.hash ?? "") === (current.hash ?? "");
       if (same && state === undefined) return;
+      if (workspaceSide(to.pathname) !== workspaceSide(current.pathname)) placeEpoch.current += 1;
       void navigate(to, { replace: same || replace, ...(state === undefined ? {} : { state }) });
       // Two choices in one event build on each other, not on the render before both.
       latest.current = { ...to, state };
     },
     [navigate],
+  );
+  const openSide = useCallback(
+    (targetSide: string) => {
+      if (surface === "team-web" && targetSide === "tasks") return;
+      remember(latest.current);
+      if (workspaceSide(latest.current.pathname) === targetSide) return;
+      const target = bookmarks.bookmarks[targetSide];
+      const viewer = viewers.find((candidate) => candidate.id === targetSide);
+      const restored =
+        target && (targetSide === "tasks" || (viewer?.viewer === target.viewer && !viewer.removed));
+      go(
+        restored
+          ? target
+          : {
+              pathname: targetSide === "tasks" ? "/" : `/teams/${encodeURIComponent(targetSide)}/`,
+              search: "",
+            },
+        restored && target.startFrom !== null ? { startFrom: target.startFrom } : undefined,
+      );
+    },
+    [surface, remember, bookmarks, viewers, go],
   );
   const choosePlace = useCallback(
     (
@@ -543,19 +638,15 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
   const openPage = useCallback<WorkspaceNavigation["openPage"]>(
     (to, options) => {
       const target = areaAddress(to, latest.current.search);
-      void navigate(target, {
-        ...(options?.replace ? { replace: true } : {}),
-        ...(options?.state === undefined ? {} : { state: options.state }),
-      });
-      latest.current = target;
+      go(target, options?.state, options?.replace);
     },
-    [navigate],
+    [go],
   );
   const mergeEntryState = useCallback<WorkspaceNavigation["mergeEntryState"]>(
     (patch) => {
-      const { pathname, search: current, state } = latest.current;
+      const { pathname, search: current, hash, state } = latest.current;
       go(
-        { pathname, search: current },
+        { pathname, search: current, hash: hash ?? "" },
         { ...(typeof state === "object" && state !== null ? state : {}), ...patch },
       );
     },
@@ -594,31 +685,6 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
       return searchString(params);
     },
     [search],
-  );
-  const currentScope = useRef({ deploymentId, userId });
-  currentScope.current = { deploymentId, userId };
-  const showPendingBrowserTab = useCallback<WorkspaceNavigation["showPendingBrowserTab"]>(
-    (idempotencyKey, options) =>
-      choosePlace({ kind: "pending", idempotencyKey }, undefined, {
-        ...options,
-        ...(options?.address === undefined
-          ? {}
-          : { state: { startAddress: options.address, startOpen: false } }),
-      }),
-    [choosePlace],
-  );
-  const replacePendingBrowserTab = useCallback<WorkspaceNavigation["replacePendingBrowserTab"]>(
-    (idempotencyKey, destination) => {
-      if (
-        currentScope.current.deploymentId !== deploymentId ||
-        currentScope.current.userId !== userId
-      )
-        return;
-      const selected = placeSelection(new URLSearchParams(latest.current.search));
-      if (selected.kind === "pending" && selected.idempotencyKey === idempotencyKey)
-        choosePlace({ kind: "place", destination }, undefined, { replace: true });
-    },
-    [choosePlace, deploymentId, userId],
   );
   const showPlace = useCallback<WorkspaceNavigation["showPlace"]>(
     (destination, options) =>
@@ -687,25 +753,47 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
     [choosePlace, deploymentId, userId],
   );
   const beginPlaceOperation = useCallback(
-    (options: { readonly replace?: boolean } = {}) => {
+    (options: { readonly replace?: boolean; readonly address?: string } = {}) => {
       operation.current += 1;
       const mine = operation.current;
+      if (options.address !== undefined) showLauncher({ address: options.address, open: false });
       const epoch = placeEpoch.current;
-      return (destination: SurfaceDestination) => {
-        if (operation.current !== mine || placeEpoch.current !== epoch) return;
-        choosePlace({ kind: "place", destination }, undefined, {
-          replace: options.replace === true,
-        });
-      };
+      setPending(
+        options.address === undefined ? null : { address: options.address, operation: mine, epoch },
+      );
+      const current = () => operation.current === mine && placeEpoch.current === epoch;
+      return Object.assign(
+        (destination: SurfaceDestination) => {
+          if (!current()) return;
+          setPending(null);
+          choosePlace({ kind: "place", destination }, undefined, {
+            replace: options.address !== undefined || options.replace === true,
+          });
+        },
+        {
+          launcher: (failure: { address: string; open: boolean }) => {
+            if (!current()) return;
+            setPending(null);
+            showLauncher({ ...failure, replace: true });
+          },
+        },
+      );
     },
-    [choosePlace],
+    [choosePlace, showLauncher],
   );
+  const pendingPlace =
+    pending?.operation === operation.current && pending.epoch === placeEpoch.current
+      ? pending.address
+      : null;
 
   const address = useCallback(() => latest.current, []);
   return useMemo(
     () => ({
       address,
+      sides,
+      openSide,
       placeOpening,
+      pendingPlace,
       beginPlaceOperation,
       conversationHref,
       hideComputer,
@@ -717,8 +805,6 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
       placeSearch,
       showComputer,
       showLauncher,
-      showPendingBrowserTab,
-      replacePendingBrowserTab,
       showPlace,
       showPlaceWithConversation,
       succeedPlace,
@@ -726,7 +812,10 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
     }),
     [
       address,
+      sides,
+      openSide,
       placeOpening,
+      pendingPlace,
       beginPlaceOperation,
       conversationHref,
       hideComputer,
@@ -738,8 +827,6 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
       placeSearch,
       showComputer,
       showLauncher,
-      showPendingBrowserTab,
-      replacePendingBrowserTab,
       showPlace,
       showPlaceWithConversation,
       succeedPlace,

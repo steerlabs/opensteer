@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { open, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -124,36 +125,6 @@ function subset(name, members) {
       return target[key];
     },
   });
-}
-
-export async function negotiateBackend(base, sessionId) {
-  const url = new URL(base);
-  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
-  url.pathname = `${url.pathname.replace(/\/$/u, "")}/backend/${encodeURIComponent(sessionId)}`;
-  const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(15_000) });
-  const body = await response.text();
-  if (!response.ok) {
-    let message;
-    try {
-      if (Buffer.byteLength(body) <= 16_384) {
-        const refusal = JSON.parse(body)?.error?.message;
-        if (typeof refusal === "string" && refusal.length > 0 && refusal.length <= 2_000)
-          message = refusal;
-      }
-    } catch {}
-    throw new Error(
-      `Browser backend negotiation refused (HTTP ${response.status}).${message ? ` ${message}` : ""}`,
-    );
-  }
-  if (Buffer.byteLength(body) > 1_024) throw new Error("Invalid browser backend negotiation");
-  const backend = JSON.parse(body);
-  if (
-    backend.sessionId !== sessionId ||
-    backend.version !== 1 ||
-    !["cdp", "actions"].includes(backend.backend)
-  )
-    throw new Error("Invalid exact-session browser backend negotiation");
-  return backend.backend;
 }
 
 export class ActionsClient {
@@ -343,69 +314,47 @@ export class ActionsClient {
 }
 
 export function createActionsHarness(client, initialTargetId) {
-  let selected = initialTargetId;
+  const operations = new AsyncLocalStorage();
+  const selected = initialTargetId;
   const bindings = new Map();
   // Tabs this attachment claimed; listing a tab does not make it ours or wake it.
   const claimed = new Set();
   const closed = new Set();
   const dialogs = new Map();
-  let inventory;
+  let dialogSequence = 0;
   const publicTab = (binding) => ({ ...binding, targetId: binding.surfaceId });
   client.onEvent((event) => {
+    if (event.surfaceId !== selected) return;
     if (event.type === "surface.closed") {
       closed.add(event.surfaceId);
       bindings.delete(event.surfaceId);
       claimed.delete(event.surfaceId);
     }
-    if (event.type === "dialog.changed") dialogs.set(event.surfaceId, event.dialog);
+    if (event.type === "dialog.changed") {
+      dialogSequence++;
+      dialogs.set(event.surfaceId, event.dialog);
+    }
   });
-  const listTabs = async () => {
-    const tabs = [];
-    let cursor;
-    do {
-      const result = await client.request(
-        {},
-        { type: "session.tabs", ...(cursor ? { cursor } : {}) },
-      );
-      tabs.push(...result.tabs);
-      cursor = result.nextCursor;
-    } while (cursor);
-    inventory = tabs;
-    for (const binding of inventory) bindings.set(binding.surfaceId, binding);
-    return inventory.map(publicTab);
-  };
   const bind = async () => {
+    const captured = operations.getStore();
+    if (captured) return captured;
     if (closed.has(selected))
       throw new BrowserActionError(
         "target-closed",
-        "The selected tab closed; choose an exact tab with switchTab",
+        "The selected tab closed; bind an exact tab with openPage(tabId)",
       );
-    if (!selected) {
-      await listTabs();
-      if (inventory.length !== 1)
-        throw new Error(
-          "Choose an exact tab with --tab or switchTab(targetId); listTabs() shows the tabs",
-        );
-      selected = inventory[0].surfaceId;
-    }
+    if (!selected) throw new Error("openPage(tabId) requires an explicit tab ID.");
     if (!claimed.has(selected)) await claim(selected);
     return bindings.get(selected);
   };
   const claim = async (surfaceId) => {
-    if (!bindings.has(surfaceId)) await listTabs();
-    const result = await client.request(
-      { surfaceId },
-      {
-        type: bindings.get(surfaceId)?.state === "suspended" ? "surface.resume" : "surface.attach",
-      },
-    );
-    if (result.binding.state === "live" && bindings.get(surfaceId)?.state === "suspended") {
-      claimed.delete(surfaceId);
-      dialogs.delete(surfaceId);
+    const sequence = dialogSequence;
+    const result = await client.request({ surfaceId }, { type: "surface.resume" });
+    if (result.reloaded)
       process.stderr.write(
-        `[opensteer] Tab ${surfaceId} was asleep and has resumed. Observe it again before acting; it may have reloaded, so discard old page handles.\n`,
+        `[opensteer] Tab ${surfaceId} reloaded. Observe it again and use fresh page handles.\n`,
       );
-    }
+    if (sequence === dialogSequence) dialogs.set(surfaceId, result.dialog);
     bindings.set(surfaceId, result.binding);
     claimed.add(surfaceId);
     return result.binding;
@@ -423,7 +372,7 @@ export function createActionsHarness(client, initialTargetId) {
         bindings.delete(binding.surfaceId);
         dialogs.delete(binding.surfaceId);
         process.stderr.write(
-          `[opensteer] Tab ${binding.surfaceId} is asleep. Resume it with --tab or switchTab, then observe it again before acting; it will reload and old page handles are invalid.\n`,
+          `[opensteer] Tab ${binding.surfaceId} is asleep. Bind it with openPage(tabId), then observe it again before acting; it will reload and old page handles are invalid.\n`,
         );
       }
       if (["stale-document", "stale-geometry"].includes(error.code)) {
@@ -694,7 +643,8 @@ export function createActionsHarness(client, initialTargetId) {
     },
     ariaSnapshot: async () => (await send({ type: "dom.snapshot" })).text,
   });
-  const stageFiles = async (paths) => {
+  const stageFiles = async (paths, binding = undefined) => {
+    binding ??= await bind();
     const list = Array.isArray(paths) ? paths : [paths];
     if (!list.length || list.length > 256)
       throw new TypeError("stageFiles requires between 1 and 256 files");
@@ -711,7 +661,7 @@ export function createActionsHarness(client, initialTargetId) {
         for (;;) {
           const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
           const last = offset + bytesRead >= info.size;
-          const result = await send({
+          const result = await sendOn(binding, {
             type: "file.stage",
             data: buffer.subarray(0, bytesRead).toString("base64"),
             fileId,
@@ -733,49 +683,14 @@ export function createActionsHarness(client, initialTargetId) {
     return files;
   };
   return Object.freeze({
+    run: (operation) => operations.run(bindings.get(selected), operation),
     page,
-    listTabs,
     pageInfo,
     currentTab: pageInfo,
     ensureRealTab: pageInfo,
     attach: bind,
     detach: async () => {},
-    drainEvents: () => client.drainEvents(),
-    switchTab: async (target) => {
-      const surfaceId = typeof target === "string" ? target : (target.surfaceId ?? target.targetId);
-      await listTabs();
-      const known = bindings.get(surfaceId);
-      if (!known || closed.has(surfaceId))
-        throw new BrowserActionError("target-closed", "That exact tab is no longer in the session");
-      const claimedBinding = await claim(surfaceId);
-      selected = surfaceId;
-      return publicTab(claimedBinding);
-    },
-    newTab: async (url = "about:blank") => {
-      const result = await client.request(
-        {},
-        {
-          type: "surface.open",
-          ...(url === "about:blank" ? {} : { url: address(url) }),
-        },
-      );
-      bindings.set(result.binding.surfaceId, result.binding);
-      claimed.add(result.binding.surfaceId);
-      selected = result.binding.surfaceId;
-      return selected;
-    },
-    closeTab: async (target) => {
-      const binding = target
-        ? bindings.get(typeof target === "string" ? target : (target.surfaceId ?? target.targetId))
-        : await bind();
-      if (!binding)
-        throw new BrowserActionError("target-closed", "Read listTabs before closing that tab");
-      const result = await sendOn(binding, { type: "surface.close" });
-      bindings.delete(binding.surfaceId);
-      claimed.delete(binding.surfaceId);
-      closed.add(binding.surfaceId);
-      return { success: result.outcome === "closed" || result.outcome === "already-closed" };
-    },
+    drainEvents: () => client.drainEvents().filter((event) => event.surfaceId === selected),
     gotoUrl,
     typeText,
     pressKey,
@@ -815,16 +730,17 @@ export function createActionsHarness(client, initialTargetId) {
       }
     },
     setInputFiles: async (target, paths) => {
+      const binding = await bind();
       const list = Array.isArray(paths) ? paths : [paths];
       if (!list.length || list.length > 256)
         throw new TypeError("setInputFiles requires between 1 and 256 files");
       const handles = list.every((file) => typeof file === "string" && file.startsWith("staged:"))
         ? list
-        : await stageFiles(list);
+        : await stageFiles(list, binding);
       const stagedFileIds = handles.map((handle) => handle.slice("staged:".length));
       if (stagedFileIds.some((id) => !/^[A-Za-z0-9_-]{1,64}$/u.test(id)))
         throw new TypeError("Invalid staged file handle");
-      return send({
+      return sendOn(binding, {
         type: "file.choose",
         ...(typeof target === "string"
           ? { locator: { by: "css", value: text(target) } }
@@ -847,6 +763,7 @@ export function createActionsHarness(client, initialTargetId) {
         ...(options.promptText !== undefined ? { promptText: inputText(options.promptText) } : {}),
       });
     },
+    waitForNetworkIdle: () => unsupported("waitForNetworkIdle"),
     cdp: () => unsupported("cdp()"),
     js: () => unsupported("js()"),
     fillLogin: () =>

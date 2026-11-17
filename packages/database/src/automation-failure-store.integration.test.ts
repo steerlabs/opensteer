@@ -153,7 +153,7 @@ integration.sequential("automation failure notices", () => {
     const program = {
       language: "javascript",
       source: "export default async () => null",
-      toolContractVersion: 3,
+      toolContractVersion: 4,
     } as const;
     function createOneShotTrigger(fixture: Fixture, suffix: string) {
       return triggers.create({
@@ -634,7 +634,7 @@ integration.sequential("automation failure notices", () => {
     expect(await storedNotices()).toEqual([
       {
         activationId: null,
-        detail: "Runner disconnected before the Trigger program finished",
+        detail: "The computer disconnected before the automation program finished",
         occurrenceId: lostOneShot.id,
         reason: "final-occurrence-interrupted",
         settledAt: null,
@@ -646,7 +646,7 @@ integration.sequential("automation failure notices", () => {
     await expect(triggers.failActiveAfterHostRestart()).resolves.toBe(1);
     expect((await storedNotices()).at(-1)).toEqual({
       activationId: null,
-      detail: "Host restarted before the Trigger program finished",
+      detail: "Host restarted before the automation program finished",
       occurrenceId: lostToRestart.id,
       reason: "final-occurrence-interrupted",
       settledAt: null,
@@ -665,7 +665,7 @@ integration.sequential("automation failure notices", () => {
       program: {
         language: "javascript",
         source: "export default async () => new Promise(() => setInterval(() => {}, 1000))",
-        toolContractVersion: 3,
+        toolContractVersion: 4,
       },
       source: {
         kind: "watch",

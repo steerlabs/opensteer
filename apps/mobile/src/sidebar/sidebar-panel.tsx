@@ -7,23 +7,22 @@ import {
   quietlyMoved,
   quietSeenScope,
   sameTaskListSource,
-  taskAttention,
   taskList,
   taskTime,
   type DoneTaskList,
   type HostClient,
   type HostSnapshot,
-  type PlaceItem,
-  type PersonalSurfaceDestination,
   type TaskList,
   type TaskRow,
 } from "@opensteer/client/host";
 import {
-  useBrowserGroups,
-  usePlace,
-  usePlaceStructure,
+  usePlaceAgents,
   useSyncingPlaceholder,
+  useTab,
+  useTabStrip,
+  useTabsSyncing,
 } from "@opensteer/client/react";
+import type { TabId } from "@opensteer/core";
 import {
   memo,
   useCallback,
@@ -46,8 +45,7 @@ import {
   View,
 } from "react-native";
 import { ActingDot, agentWorkingLabel } from "../browser/acting-dot.js";
-import { opensteerAppGlyph } from "../browser/agent-surface.js";
-import { tabSiteLabel } from "../browser/site-label.js";
+import { tabKindGlyph, tabTitle, tabWhat } from "../tabs/tab-entries.js";
 import { sidebarBottom, sidebarTop } from "../layout.js";
 import { statusTone } from "../screens/deployment-row.js";
 import {
@@ -83,35 +81,37 @@ import { useContentInsets } from "../ui/pane.js";
 import { useRetainedScroll, type ScrollMemory } from "../ui/retained-scroll.js";
 import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
-import type { TeamSessionClient } from "@opensteer/client/team";
-import type { MobileTeam } from "../team/mobile-teams.js";
-import { useCoordinatorSnapshot, useTeamsSnapshot } from "../team/team-context.js";
-import { MentionCount, TeamTile } from "../team/team-marks.js";
+import { useCoordinatorSnapshot, useMobileTeams, useTeamsSnapshot } from "../team/team-context.js";
+import { SideSwitch } from "./side-switch.js";
+import type { SidebarSide } from "./sidebar-side.js";
+import { recentTeam, type SidebarSides } from "@opensteer/client/team";
+import { TeamSide, type TeamPlace } from "./team-side.js";
 
 /** The root places the drawer switches between. */
-export type SidebarDestination = "Home" | "Schedules" | "Tabs";
+export type SidebarDestination = "Apps" | "Home" | "Schedules" | "Tabs";
 
 export interface SidebarActions {
   /** Closes the drawer and hands focus back to whatever opened it. */
   readonly close: () => void;
   /** Home: a new task's composer. */
   readonly onHome: () => void;
+  readonly onOpenNeedsYou: (deploymentId: string) => void;
   /** The Done page: every task in Done, newest Done first. */
-  readonly onOpenDone: (deploymentId: string) => void;
+  readonly onOpenDone: () => void;
   /** The sheet naming the tasks just moved to Done for the reader. */
   readonly onOpenQuietlyMoved: (deploymentId: string) => void;
-  /** Shows exactly this tab, app or phone, alone. */
-  readonly onOpenPlace: (destination: PersonalSurfaceDestination) => void;
+  /** Shows exactly this tab, of any kind, alone. */
+  readonly onOpenTab: (tabId: TabId) => void;
+  /** The person's published apps. */
+  readonly onApps: () => void;
   /** A task, at the request named when one is. */
   readonly onOpenTask: (deploymentId: string, threadId: string, requestId?: string) => void;
-  /** A team's own page: its channels, then its direct messages. */
-  readonly onOpenTeam: (teamId: string) => void;
-  /** Create a team or join with an invite. */
-  readonly onTeams: () => void;
+  /** A channel, or another of a team's places, from that team's side. */
+  readonly onOpenTeamPlace: (place: TeamPlace) => void;
   /** A hosted team still being set up: its progress. */
   readonly onTeamSetup: (hostedTeamId: string) => void;
   readonly onSchedules: () => void;
-  readonly onSearch: (deploymentId: string) => void;
+  readonly onSearch: () => void;
   readonly onSettings: () => void;
   readonly onTabs: () => void;
 }
@@ -244,10 +244,13 @@ function useDeploymentIdentity(deploymentId: string | null): DeploymentIdentity 
 }
 
 /**
- * The drawer: every open task — working, with anything waiting on the reader
- * first, then ready — until the Host moves it to Done, and Done's line; Automations;
- * one row per team this computer is in, each opening its own page; then the
- * Deployment's tabs, and below them Settings and which computer this is.
+ * The drawer. Under its head, once the person is in a team, a switch between
+ * Tasks and each team; below the list, Settings and which computer this is.
+ *
+ * Tasks is every open task — working, with anything waiting on the reader
+ * first, then ready — until the Host moves it to Done, and Done's line;
+ * Automations; then the Deployment's tabs. A team's side is its channels and
+ * direct messages (`team-side.tsx`).
  *
  * Only an attached Host of the Deployment underneath is read. While the
  * selection is moving to another one, or that Host has refused this phone,
@@ -271,13 +274,32 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   readonly shelves: ShelfMemory;
   /** The task in front, marked as the one open. */
   readonly selectedThreadId: string | null;
-  /** The team whose page or channel is in front. */
+  /** The tab in front, marked as the one open and always listed. */
+  readonly selectedTabId: TabId | null;
+  /** The conversation the reader is looking at, which may be drilled in under the selected task. */
+  readonly viewedThreadId: string | null;
+  /** The team whose screen is in front. */
   readonly openTeamId: string | null;
+  /** The channel or DM in front, marked as the one open. */
+  readonly openChannelId: string | null;
+  /** Which side of the switch shows and the team last shown, kept by the shell across the drawer and the column. */
+  readonly sides: SidebarSides;
+  readonly onSide: (side: SidebarSide) => void;
   readonly visible: boolean;
 }): ReactNode {
   const insets = useContentInsets();
   const { rows, selection } = useMobileState();
   const { actions, deploymentId, destination, docked, selectedThreadId, visible } = props;
+  const { teams } = useTeamsSnapshot();
+  const sideTeam =
+    props.sides.side === "tasks"
+      ? null
+      : (teams.find((team) => team.teamId === props.sides.side) ?? null);
+  const recent = recentTeam(
+    props.sides,
+    teams.map((team) => team.teamId),
+  );
+  const tasksShown = visible && sideTeam === null;
   const row = rows.find((candidate) => candidate.deploymentId === deploymentId);
   const hostClient =
     deploymentId !== null && selection.deploymentId === deploymentId && row?.signIn === null
@@ -285,15 +307,15 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
       : null;
   // Read only while the drawer is on screen: closed, it would otherwise
   // rebuild every row on every streamed update for a list nobody can see.
-  const savedTasks = useSavedSurface(visible ? deploymentId : null, "tasks");
+  const savedTasks = useSavedSurface(tasksShown ? deploymentId : null, "tasks");
   const model = useSidebarModel(
-    visible && savedTasks.source !== "saved" ? hostClient : null,
+    tasksShown && savedTasks.source !== "saved" ? hostClient : null,
     selectedThreadId,
     props.shelves,
   );
   const identity = useDeploymentIdentity(deploymentId);
   const userId = useHostUserId(hostClient);
-  const replies = useUnsentReplies(visible ? deploymentId : null, userId);
+  const replies = useUnsentReplies(tasksShown ? deploymentId : null, userId);
   const client = useMobileClient();
   const seen = useSyncExternalStore(
     client.quietSeen.subscribe,
@@ -305,7 +327,14 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   const [earlierFailure, setEarlierFailure] = useState<string | null>(null);
   const heading = useRef<TextInstance>(null);
   const retained = useRetainedScroll(props.scroll);
-
+  const mobileTeams = useMobileTeams();
+  const teamIds = teams.map((team) => team.teamId).join(" ");
+  // Each team out of view is painted from one read as the sidebar shows, at
+  // most every half minute, so its count is current without a socket.
+  useEffect(() => {
+    if (!visible || teamIds === "") return;
+    for (const teamId of teamIds.split(" ")) void mobileTeams.refresh(teamId);
+  }, [mobileTeams, props.sides.side, teamIds, visible]);
   // A screen reader lands on the drawer's own heading as it opens; the drawer
   // isolates it from what it covers while it is there. Docked, it appears with
   // the window and takes nobody's focus.
@@ -321,17 +350,29 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     },
     [actions, deploymentId],
   );
-  const moveTask = useCallback(
-    (task: TaskRow, done: boolean) => {
-      if (hostClient !== null) setTaskDone(hostClient, task.threadId, done);
-    },
-    [hostClient],
-  );
-
   const selectedRowId = useMemo(() => {
     if (hostClient === null || selectedThreadId === null) return selectedThreadId;
     return listedRowThreadId(hostClient.getSnapshot(), selectedThreadId);
   }, [hostClient, selectedThreadId]);
+  const viewed = useRef(props.viewedThreadId);
+  viewed.current = props.viewedThreadId;
+  // Done on the task in view moves on to the next one, if it is still in view.
+  const moveTask = useCallback(
+    (task: TaskRow, done: boolean) => {
+      if (hostClient === null) return;
+      const { threadId } = task;
+      const inView = () =>
+        viewed.current !== null &&
+        listedRowThreadId(hostClient.getSnapshot(), viewed.current) === threadId;
+      if (!inView()) return setTaskDone(hostClient, threadId, done);
+      setTaskDone(hostClient, threadId, done, (next) => {
+        if (!inView()) return;
+        if (next === null) actions.onHome();
+        else openTask(next);
+      });
+    },
+    [actions, hostClient, openTask],
+  );
   const loadEarlier = useCallback(() => {
     if (hostClient === null || loadingEarlier) return;
     setLoadingEarlier(true);
@@ -343,15 +384,14 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
       )
       .finally(() => setLoadingEarlier(false));
   }, [hostClient, loadingEarlier]);
+  const needsPage = useSyncExternalStore(
+    useCallback((notify) => hostClient?.subscribe(notify) ?? (() => {}), [hostClient]),
+    useCallback(() => hostClient?.getSnapshot().needsYou ?? null, [hostClient]),
+  );
   const openNeedsYou = useCallback(() => {
-    if (hostClient === null || deploymentId === null || model === null) return;
-    const first = model.list.working.find((task) => task.tone === "needs-you");
-    if (first === undefined) return;
-    const ask = taskAttention(hostClient.getSnapshot()).find(
-      ({ threadId }) => threadId === first.threadId,
-    );
-    actions.onOpenTask(deploymentId, first.threadId, ask?.requestId);
-  }, [actions, deploymentId, hostClient, model]);
+    if (hostClient === null || deploymentId === null) return;
+    actions.onOpenNeedsYou(deploymentId);
+  }, [actions, deploymentId, hostClient]);
   // The Thread in front has its draft in front of the reader already.
   const unsentReply = (threadId: string): boolean =>
     threadId !== selectedRowId && replies.has(threadId);
@@ -359,7 +399,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   const now = Date.now();
   const list = model?.list ?? null;
   const shown = list === null ? [] : [...list.working, ...list.ready];
-  const needsYou = list?.working.filter((task) => task.tone === "needs-you").length ?? 0;
+  const needsYou = needsPage?.count ?? 0;
   const doneCount = model?.done?.total ?? list?.done.length ?? 0;
   const moved =
     model === null || seen === null || model.quietScope === null
@@ -390,133 +430,172 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
         >
           Opensteer
         </Text>
-        {deploymentId === null ? null : (
+        {sideTeam !== null ? (
           <>
             <IconButton
               icon="magnifyingglass"
-              label="Search tasks"
-              onPress={() => actions.onSearch(deploymentId)}
+              label={`Search ${sideTeam.name}`}
+              onPress={() =>
+                actions.onOpenTeamPlace({ name: "TeamSearch", params: { teamId: sideTeam.teamId } })
+              }
             />
+            <IconButton
+              icon="square.and.pencil"
+              label="New message"
+              onPress={() =>
+                actions.onOpenTeamPlace({
+                  name: "TeamNewMessage",
+                  params: { teamId: sideTeam.teamId },
+                })
+              }
+            />
+          </>
+        ) : deploymentId === null ? null : (
+          <>
+            <IconButton icon="magnifyingglass" label="Search tasks" onPress={actions.onSearch} />
             <IconButton icon="square.and.pencil" label="New task" onPress={actions.onHome} />
           </>
         )}
       </View>
+      {recent === null ? null : (
+        <SideSwitch
+          active={sideTeam === null ? "tasks" : sideTeam.teamId}
+          ground={docked ? color.background : color.surfaceElevated}
+          needsYou={needsYou}
+          onSelect={props.onSide}
+          recent={recent}
+          teams={teams}
+        />
+      )}
 
-      <ScrollView
-        contentContainerStyle={styles.content}
-        onContentSizeChange={retained.onContentSizeChange}
-        onLayout={retained.onLayout}
-        onMomentumScrollEnd={retained.onMomentumScrollEnd}
-        onScrollEndDrag={retained.onScrollEndDrag}
-        ref={retained.ref}
-        showsVerticalScrollIndicator={false}
-        style={styles.scroll}
-      >
-        {savedTasks.source === "saved" ? (
-          <SavedTasks
-            tasks={savedTasks.content}
-            label={savedTasks.label}
-            capturedAt={savedTasks.capturedAt}
-          />
-        ) : null}
-        {model === null || list === null || deploymentId === null ? null : !model.loaded ? (
-          <View style={styles.loading}>
-            <ActivityIndicator color={color.muted} />
+      {sideTeam !== null ? (
+        <TeamSide
+          key={sideTeam.teamId}
+          onOpen={actions.onOpenTeamPlace}
+          openChannelId={sideTeam.teamId === props.openTeamId ? props.openChannelId : null}
+          paddingBottom={space[16]}
+          team={sideTeam}
+        />
+      ) : (
+        <ScrollView
+          contentContainerStyle={styles.content}
+          onContentSizeChange={retained.onContentSizeChange}
+          onLayout={retained.onLayout}
+          onMomentumScrollEnd={retained.onMomentumScrollEnd}
+          onScrollEndDrag={retained.onScrollEndDrag}
+          ref={retained.ref}
+          showsVerticalScrollIndicator={false}
+          style={styles.scroll}
+        >
+          {savedTasks.source === "saved" ? (
+            <SavedTasks
+              tasks={savedTasks.content}
+              label={savedTasks.label}
+              capturedAt={savedTasks.capturedAt}
+            />
+          ) : null}
+          {model === null || list === null || deploymentId === null ? null : !model.loaded ? (
+            <View style={styles.loading}>
+              <ActivityIndicator color={color.muted} />
+            </View>
+          ) : (
+            <>
+              <TasksHead needsYou={needsYou} onNeedsYou={openNeedsYou} />
+              {shown.length === 0 ? (
+                <AppText role="caption" style={styles.empty} tone="muted">
+                  {doneCount === 0 && !list.hasMore
+                    ? "Ask your agent for something and it shows up here while it works."
+                    : "You’re all caught up."}
+                </AppText>
+              ) : (
+                shown.map((task) => (
+                  <Animated.View key={task.threadId} layout={move}>
+                    <TaskRowView
+                      ask={task.tone === "needs-you" ? task.line : null}
+                      drafted={unsentReply(task.threadId)}
+                      onOpen={openTask}
+                      onSetDone={moveTask}
+                      row={task}
+                      selected={task.threadId === selectedRowId}
+                      shelf="open"
+                      time={taskTime(task, now)}
+                    />
+                  </Animated.View>
+                ))
+              )}
+              {!list.hasMore ? null : (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ busy: loadingEarlier }}
+                  disabled={loadingEarlier}
+                  onPress={loadEarlier}
+                  style={({ pressed }) => [styles.more, pressed && styles.pressed]}
+                >
+                  {loadingEarlier ? (
+                    <ActivityIndicator color={color.muted} size="small" />
+                  ) : (
+                    <AppText
+                      maxFontSizeMultiplier={controlFontScaleLimit}
+                      role="caption"
+                      tone="muted"
+                    >
+                      Show more
+                    </AppText>
+                  )}
+                </Pressable>
+              )}
+              {earlierFailure === null ? null : (
+                <AppText role="caption" style={styles.empty} tone="danger">
+                  {earlierFailure}
+                </AppText>
+              )}
+              {doneCount === 0 && moved.length === 0 ? null : (
+                <DoneLine
+                  count={doneCount}
+                  moved={moved.length}
+                  onOpen={actions.onOpenDone}
+                  onOpenMoved={() => actions.onOpenQuietlyMoved(deploymentId)}
+                />
+              )}
+            </>
+          )}
+
+          <View style={styles.nav}>
+            <DestinationRow
+              current={destination === "Schedules"}
+              icon="clock"
+              label="Automations"
+              onPress={actions.onSchedules}
+            />
+            <DestinationRow
+              current={destination === "Apps"}
+              icon="square.grid.2x2"
+              label="Apps"
+              onPress={actions.onApps}
+            />
           </View>
-        ) : (
-          <>
-            <TasksHead needsYou={needsYou} onNeedsYou={openNeedsYou} />
-            {shown.length === 0 ? (
-              <AppText role="caption" style={styles.empty} tone="muted">
-                {doneCount === 0 && !list.hasMore
-                  ? "Ask your agent for something and it shows up here while it works."
-                  : "You’re all caught up."}
-              </AppText>
+
+          <TeamSetupRows onSetup={actions.onTeamSetup} />
+
+          <View style={styles.tabs}>
+            {hostClient === null || model === null ? (
+              <GroupHead title="Tabs" />
             ) : (
-              shown.map((task) => (
-                <Animated.View key={task.threadId} layout={move}>
-                  <TaskRowView
-                    ask={task.tone === "needs-you" ? task.line : null}
-                    drafted={unsentReply(task.threadId)}
-                    onOpen={openTask}
-                    onSetDone={moveTask}
-                    row={task}
-                    selected={task.threadId === selectedRowId}
-                    shelf="open"
-                    time={taskTime(task, now)}
-                  />
-                </Animated.View>
-              ))
-            )}
-            {!list.hasMore ? null : (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ busy: loadingEarlier }}
-                disabled={loadingEarlier}
-                onPress={loadEarlier}
-                style={({ pressed }) => [styles.more, pressed && styles.pressed]}
-              >
-                {loadingEarlier ? (
-                  <ActivityIndicator color={color.muted} size="small" />
-                ) : (
-                  <AppText
-                    maxFontSizeMultiplier={controlFontScaleLimit}
-                    role="caption"
-                    tone="muted"
-                  >
-                    Show more
-                  </AppText>
-                )}
-              </Pressable>
-            )}
-            {earlierFailure === null ? null : (
-              <AppText role="caption" style={styles.empty} tone="danger">
-                {earlierFailure}
-              </AppText>
-            )}
-            {doneCount === 0 && moved.length === 0 ? null : (
-              <DoneLine
-                count={doneCount}
-                moved={moved.length}
-                onOpen={() => actions.onOpenDone(deploymentId)}
-                onOpenMoved={() => actions.onOpenQuietlyMoved(deploymentId)}
+              <SidebarTabs
+                hostClient={hostClient}
+                onOpen={actions.onOpenTab}
+                selectedTabId={props.selectedTabId}
               />
             )}
-          </>
-        )}
-
-        <View style={styles.nav}>
-          <DestinationRow
-            current={destination === "Schedules"}
-            icon="clock"
-            label="Automations"
-            onPress={actions.onSchedules}
-          />
-        </View>
-
-        <TeamRows
-          current={false}
-          onOpen={actions.onOpenTeam}
-          onSetup={actions.onTeamSetup}
-          onTeams={actions.onTeams}
-          openTeamId={props.openTeamId}
-          visible={visible}
-        />
-
-        <View style={styles.tabs}>
-          {hostClient === null || model === null ? (
-            <GroupHead title="Tabs" />
-          ) : (
-            <SidebarTabs hostClient={hostClient} onOpen={actions.onOpenPlace} />
-          )}
-          <DestinationRow
-            current={destination === "Tabs"}
-            icon="rectangle.on.rectangle"
-            label="All tabs"
-            onPress={actions.onTabs}
-          />
-        </View>
-      </ScrollView>
+            <DestinationRow
+              current={destination === "Tabs"}
+              icon="rectangle.on.rectangle"
+              label="All tabs"
+              onPress={actions.onTabs}
+            />
+          </View>
+        </ScrollView>
+      )}
 
       <View
         style={[
@@ -582,34 +661,16 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
 });
 
 /**
- * One row per team the person is in, as `MobileTeams` lists them: the team's name and the
- * mentions of the reader waiting there. It opens the team's own page. Each row
- * reads its own team's count, so a badge changing redraws only that row.
+ * Hosted teams still being set up, among the tasks until each is ready. Making
+ * or joining a team lives in Settings, out of the way of someone in none.
  */
-function TeamRows(props: {
-  /** The Teams page is in front. */
-  readonly current: boolean;
-  readonly onOpen: (teamId: string) => void;
-  readonly onSetup: (hostedTeamId: string) => void;
-  readonly onTeams: () => void;
-  readonly openTeamId: string | null;
-  readonly visible: boolean;
-}): ReactNode {
-  const { teams } = useTeamsSnapshot();
+function TeamSetupRows(props: { readonly onSetup: (hostedTeamId: string) => void }): ReactNode {
   const { hostedTeams } = useCoordinatorSnapshot();
   const settingUp = hostedTeams.filter((team) => team.stage !== "ready");
+  if (settingUp.length === 0) return null;
   // Between the nav's rule above and the tabs' rule below: no rule of its own.
   return (
     <View style={styles.teams}>
-      {teams.map((team) => (
-        <TeamRow
-          current={props.openTeamId === team.teamId}
-          key={team.teamId}
-          onOpen={props.onOpen}
-          team={team}
-          visible={props.visible}
-        />
-      ))}
       {settingUp.map((team) => (
         <DestinationRow
           accessibilityLabel={`${team.name}, ${team.stage === "failed" ? "setup didn't finish" : "setting up"}`}
@@ -633,71 +694,8 @@ function TeamRows(props: {
           onPress={() => props.onSetup(team.id)}
         />
       ))}
-      {teams.length > 0 || settingUp.length > 0 ? null : (
-        <DestinationRow
-          current={props.current}
-          icon="person.3"
-          label="Teams"
-          onPress={props.onTeams}
-        />
-      )}
     </View>
   );
-}
-
-const TeamRow = memo(function TeamRow(props: {
-  readonly current: boolean;
-  readonly onOpen: (teamId: string) => void;
-  readonly team: MobileTeam;
-  readonly visible: boolean;
-}): ReactNode {
-  const { team } = props;
-  const mentions = useTeamMentions(props.visible ? team.session : null);
-  const state =
-    team.state === "update-app" || team.state === "update-server"
-      ? "Update"
-      : team.state === "offline"
-        ? "Offline"
-        : team.state === "removed"
-          ? "Removed"
-          : team.state === "signed-out"
-            ? "Sign in"
-            : null;
-  return (
-    <DestinationRow
-      accessibilityLabel={[
-        team.name,
-        mentions > 0 ? `${mentions} ${mentions === 1 ? "mention" : "mentions"}` : null,
-        state,
-      ]
-        .filter(Boolean)
-        .join(", ")}
-      accessory={
-        state !== null ? (
-          <Text maxFontSizeMultiplier={controlFontScaleLimit} style={[type.caption, styles.count]}>
-            {state}
-          </Text>
-        ) : (
-          <MentionCount count={mentions} />
-        )
-      }
-      current={props.current}
-      icon="person.3"
-      label={team.name}
-      mark={<TeamTile size={20} team={{ id: team.teamId, name: team.name, imageUri: null }} />}
-      onPress={() => props.onOpen(team.teamId)}
-    />
-  );
-});
-
-/** Mentions of the reader across a team, read from that team's own session only. */
-function useTeamMentions(session: TeamSessionClient | null): number {
-  const read = useCallback(() => session?.getSnapshot().sidebar?.totalMentionCount ?? 0, [session]);
-  const subscribe = useCallback(
-    (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
-    [session],
-  );
-  return useSyncExternalStore(subscribe, read, read);
 }
 
 /**
@@ -813,76 +811,63 @@ function DoneLine(props: {
 const sidebarTabLimit = 5;
 
 /**
- * The Deployment's tabs, apps and phones as rows, in the shared place list's
- * order. A row opens exactly its place; nothing is shown of who opened it or
- * which task holds it, and no picture is asked for.
+ * The first tabs of the one list, in the Host's one order — the order All tabs
+ * shows — with the open one always listed. A row opens exactly its tab; no
+ * picture is asked for.
  */
 const SidebarTabs = memo(function SidebarTabs(props: {
   readonly hostClient: HostClient;
-  readonly onOpen: (destination: PersonalSurfaceDestination) => void;
+  readonly onOpen: (tabId: TabId) => void;
+  readonly selectedTabId: TabId | null;
 }): ReactNode {
-  // The panel arranges slots; each row reads its own place, so a title repaints one row.
-  const places = usePlaceStructure(props.hostClient);
-  const syncing = useBrowserGroups(props.hostClient).syncing && places.length === 0;
-  const finding = useSyncingPlaceholder(syncing, places.length);
+  const order = useTabStrip(props.hostClient).ordered;
+  const syncing = useTabsSyncing(props.hostClient) && order.length === 0;
+  const finding = useSyncingPlaceholder(syncing, order.length);
+  const shown = order.slice(0, sidebarTabLimit);
+  const { selectedTabId } = props;
+  if (selectedTabId !== null && order.includes(selectedTabId) && !shown.includes(selectedTabId))
+    shown.push(selectedTabId);
   return (
     <>
-      <GroupHead {...(syncing ? {} : { count: places.length })} title="Tabs" />
+      <GroupHead {...(syncing ? {} : { count: order.length })} title="Tabs" />
       {finding ? (
         <AppText role="caption" style={styles.finding} tone="muted">
           Finding tabs…
         </AppText>
       ) : null}
-      {places.slice(0, sidebarTabLimit).map((place) => (
-        <KeyedPlaceRow
+      {shown.map((tabId) => (
+        <SidebarTabRow
+          current={tabId === selectedTabId}
           hostClient={props.hostClient}
-          key={place.key}
+          key={tabId}
           onOpen={props.onOpen}
-          placeKey={place.key}
+          tabId={tabId}
         />
       ))}
     </>
   );
 });
 
-const KeyedPlaceRow = memo(function KeyedPlaceRow(props: {
+/** One tab, reading only its own row, so a title repaints only it. */
+const SidebarTabRow = memo(function SidebarTabRow(props: {
+  readonly current: boolean;
   readonly hostClient: HostClient;
-  readonly onOpen: (destination: PersonalSurfaceDestination) => void;
-  readonly placeKey: string;
+  readonly onOpen: (tabId: TabId) => void;
+  readonly tabId: TabId;
 }): ReactNode {
-  const place = usePlace(props.hostClient, props.placeKey);
-  return place ? <PlaceRow onOpen={props.onOpen} place={place} /> : null;
-});
-
-const placeGlyph: Record<PlaceItem["kind"], SFSymbolName> = {
-  "opensteer-app": opensteerAppGlyph,
-  app: "desktopcomputer",
-  browser: "globe",
-  phone: "smartphone",
-};
-
-const placeKind: Record<PlaceItem["kind"], string> = {
-  "opensteer-app": "Opensteer app",
-  app: "App",
-  browser: "Tab",
-  phone: "Phone",
-};
-
-const PlaceRow = memo(function PlaceRow(props: {
-  readonly onOpen: (destination: PersonalSurfaceDestination) => void;
-  readonly place: PlaceItem;
-}): ReactNode {
-  const { onOpen, place } = props;
-  const acting = place.occupants.some((occupant) => occupant.acting);
-  const unavailable = place.availability === "unavailable";
-  const where =
-    (place.kind === "browser" ? tabSiteLabel(place.site) : (place.device?.name ?? null)) ??
-    placeKind[place.kind];
+  const tab = useTab(props.hostClient, props.tabId);
+  // Working while one of its agents acts in this very tab, not merely while its task runs.
+  const agents = usePlaceAgents(props.hostClient, props.tabId);
+  const acting = agents.unnamedActing || agents.agents.some((agent) => agent.acting);
+  if (tab === undefined) return null;
+  const unavailable = tab.state === "unavailable";
+  const where = tabWhat(tab);
+  const title = tabTitle(tab);
   const label = [
-    place.title,
+    title,
     where,
     acting ? agentWorkingLabel.toLowerCase() : null,
-    unavailable ? "unavailable" : null,
+    unavailable ? (tab.unavailableReason ?? "unavailable") : null,
   ]
     .filter((part) => part !== null)
     .join(", ");
@@ -890,12 +875,12 @@ const PlaceRow = memo(function PlaceRow(props: {
     <DestinationRow
       accessibilityLabel={label}
       accessory={acting ? <ActingDot grouped /> : null}
-      current={false}
+      current={props.current}
       detail={where}
-      icon={placeGlyph[place.kind]}
-      label={place.title}
+      icon={tabKindGlyph[tab.kind]}
+      label={title}
       muted={unavailable}
-      onPress={() => onOpen(place.destination)}
+      onPress={() => props.onOpen(tab.tabId)}
     />
   );
 });

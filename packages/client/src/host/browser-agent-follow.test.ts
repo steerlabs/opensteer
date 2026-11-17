@@ -4,12 +4,13 @@ import {
   transitionBrowserAgentFollow,
   initialBrowserAgentFollowState,
   type BrowserAgentFollowTimers,
+  type BrowserTabDestination,
 } from "./browser-agent-follow.js";
-import type { BrowserTabDestination } from "./browser-thread-tabs.js";
+import { TabIdSchema } from "@opensteer/core";
 
-const a = { sessionId: "session", tabId: "a" };
-const b = { sessionId: "session", tabId: "b" };
-const c = { sessionId: "other-session", tabId: "c" };
+const a = { tabId: TabIdSchema.parse("a") };
+const b = { tabId: TabIdSchema.parse("b") };
+const c = { tabId: TabIdSchema.parse("c") };
 const timers: BrowserAgentFollowTimers = {
   now: () => Date.now(),
   schedule: (callback, delay) => {
@@ -147,7 +148,7 @@ describe("browser agent following", () => {
     expect(controller.state).toMatchObject({ following: true, steering: false, pending: [] });
   });
   it("forgets its unreported switches once the person takes over", () => {
-    const d = { sessionId: "session", tabId: "d" };
+    const d = { tabId: TabIdSchema.parse("d") };
     const { controller, update } = setup();
     update(b);
     vi.advanceTimersByTime(1000);

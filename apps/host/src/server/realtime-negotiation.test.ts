@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createHostServer, type HostServerDependencies } from "../server.js";
 import { signHostDiscovery } from "../identity/host-keys.js";
 import { hostServerTestDependencies } from "./host-server-test-harness.js";
-import { BrowserClientStreams } from "../browser/browser-client-streams.js";
+import { TabStreams } from "../tabs/tab-streams.js";
 
 const testDiscovery = signHostDiscovery(generateKeyPairSync("ed25519"), {
   canonicalOrigin: "https://opensteer.example",
@@ -34,18 +34,12 @@ describe("realtime version negotiation", () => {
     const published = Promise.withResolvers<void>();
     const removed = Promise.withResolvers<void>();
     const watchNode = vi.fn();
-    const streams = new BrowserClientStreams({
-      authorityGeneration: () => 0,
-      groupIds: async () => [],
-      readGroups: async () => [],
-      readTabs: async () => [],
-      groupId: async () => null,
-      live: () => undefined,
-      occupants: () => [],
-      onError: (error) => {
+    const streams = new TabStreams(
+      async () => ({ rows: new Map(), layout: { revision: 0, items: [] } }),
+      (error) => {
         throw error;
       },
-    });
+    );
     const { close, socket } = await realtimeSocket(
       async ({ sink }) => {
         entered.resolve();
@@ -55,7 +49,7 @@ describe("realtime version negotiation", () => {
         return () => removed.resolve();
       },
       {
-        browser: { clientStreams: streams } as unknown as HostServerDependencies["browser"],
+        tabs: { streams } as unknown as HostServerDependencies["tabs"],
         watchNode,
       },
     );
@@ -65,7 +59,7 @@ describe("realtime version negotiation", () => {
     socket.on("message", (raw) => {
       const frame = HostToClientMessageSchema.parse(JSON.parse(raw.toString()));
       frames.push(frame);
-      if (frame.type === "host.browser-groups" && frame.stream.op === "end") catalog.resolve();
+      if (frame.type === "host.tabs" && frame.stream.op === "end") catalog.resolve();
       if (frame.type === "host.pong") pong.resolve();
     });
     try {
@@ -85,16 +79,16 @@ describe("realtime version negotiation", () => {
         timeoutError: () => new Error("Personal snapshot never started"),
       });
       socket.send(JSON.stringify({ type: "client.watch-node", nodeId: null }));
-      socket.send(JSON.stringify({ type: "client.browser.resync" }));
-      socket.send(JSON.stringify({ type: "client.browser.resync" }));
       await withTimeout(catalog.promise, 1000, {
         timeoutError: () => new Error("Browser catalog waited for the personal snapshot"),
       });
-      expect(frames.map(({ type }) => type)).toEqual([
-        "host.browser-groups",
-        "host.browser-groups",
-      ]);
+      expect(frames.map(({ type }) => type)).toEqual(["host.tabs", "host.tabs"]);
       expect(watchNode).not.toHaveBeenCalled();
+      socket.send(JSON.stringify({ type: "client.browser.resync" }));
+      await vi.waitFor(
+        () => expect(frames.filter((frame) => frame.type === "host.tabs")).toHaveLength(4),
+        { timeout: 1000 },
+      );
       release.resolve();
       socket.send(JSON.stringify({ type: "client.ping", nonce: "personal-resumed" }));
       await withTimeout(pong.promise, 1000, {
@@ -155,6 +149,7 @@ describe("realtime version negotiation", () => {
     const browserEntered = Promise.withResolvers<void>();
     const releasePersonal = Promise.withResolvers<void>();
     const releaseBrowser = Promise.withResolvers<void>();
+    let subscriptions = 0;
     const { close, socket } = await realtimeSocket(
       async () => {
         personalEntered.resolve();
@@ -162,15 +157,14 @@ describe("realtime version negotiation", () => {
         return () => undefined;
       },
       {
-        browser: {
-          clientStreams: {
-            attach: async () => {
-              browserEntered.resolve();
-              await releaseBrowser.promise;
-              return { resync: () => undefined, close: () => undefined };
+        tabs: {
+          streams: {
+            subscribe: () => {
+              if (++subscriptions === 2) browserEntered.resolve();
+              return { ready: releaseBrowser.promise, close: () => {} };
             },
           },
-        } as unknown as HostServerDependencies["browser"],
+        } as unknown as HostServerDependencies["tabs"],
       },
     );
     try {
@@ -357,32 +351,31 @@ describe("realtime version negotiation", () => {
       await close();
     }
   });
-  it("refuses a subscription on another epoch with a final close, before subscribing", async () => {
+  it("refuses another Deployment's cursor with a final close, before subscribing", async () => {
     const subscribe = vi.fn();
     const attach = vi.fn();
     const { close, socket } = await realtimeSocket(subscribe, {
-      browser: { clientStreams: { attach } } as unknown as HostServerDependencies["browser"],
+      tabs: { streams: { subscribe: attach } } as unknown as HostServerDependencies["tabs"],
     });
     try {
       socket.send(
         JSON.stringify({
-          apiVersion: hostApiVersion + 1,
+          apiVersion: hostApiVersion,
           threadId: null,
           type: "client.subscribe",
           cursor: {
-            deploymentId: testDiscovery.document.deploymentId,
-            apiVersion: hostApiVersion + 1,
+            deploymentId: createId("deployment"),
+            apiVersion: hostApiVersion,
             afterSequence: zeroSequence,
           },
         }),
       );
-      socket.send(JSON.stringify({ type: "client.browser.resync" }));
 
       const refusal = await nextMessage(socket);
       expect(refusal).toEqual({
         error: {
           code: "bad_message",
-          message: `This deployment speaks Opensteer protocol ${hostApiVersion}.`,
+          message: "This cursor belongs to another deployment.",
           reason: "unsupported-version",
           retryable: false,
         },
@@ -391,6 +384,30 @@ describe("realtime version negotiation", () => {
       expect(await closedWith(socket)).toBe(unsupportedVersionCloseCode);
       expect(subscribe).not.toHaveBeenCalled();
       expect(attach).not.toHaveBeenCalled();
+    } finally {
+      await close();
+    }
+  });
+
+  it("replaces state read at another version instead of resuming or refusing it", async () => {
+    const subscribe = vi.fn(async () => () => undefined);
+    const { close, socket } = await realtimeSocket(subscribe);
+    const deploymentId = testDiscovery.document.deploymentId;
+    try {
+      socket.send(
+        JSON.stringify({
+          apiVersion: hostApiVersion - 1,
+          threadId: null,
+          type: "client.subscribe",
+          cursor: { deploymentId, apiVersion: hostApiVersion - 1, afterSequence: "41" },
+        }),
+      );
+      socket.send(JSON.stringify({ nonce: "replaced", type: "client.ping" }));
+
+      expect(await nextMessage(socket)).toEqual({ nonce: "replaced", type: "host.pong" });
+      expect(subscribe).toHaveBeenCalledWith(
+        expect.objectContaining({ afterSequence: zeroSequence }),
+      );
     } finally {
       await close();
     }
@@ -424,7 +441,7 @@ describe("realtime version negotiation", () => {
 async function realtimeSocket(
   subscribe: HostServerDependencies["realtime"]["subscribe"],
   options: {
-    browser?: HostServerDependencies["browser"];
+    tabs?: HostServerDependencies["tabs"];
     watchNode?: HostServerDependencies["realtime"]["watchNode"];
   } = {},
 ): Promise<{ readonly close: () => Promise<void>; readonly socket: WebSocket }> {
@@ -452,8 +469,9 @@ async function realtimeSocket(
         },
       } as never,
       discovery: testDiscovery,
-      ...(options.browser ? { browser: options.browser } : {}),
+      ...(options.tabs ? { tabs: options.tabs } : {}),
       realtime: {
+        observe: () => () => undefined,
         broadcast: () => undefined,
         registerConnection: () => () => undefined,
         subscribe,

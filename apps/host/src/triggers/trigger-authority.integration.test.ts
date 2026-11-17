@@ -1,3 +1,8 @@
+import {
+  opensteer_automation_read,
+  opensteer_automation_create,
+  opensteer_automation_update,
+} from "@opensteer/agent-tools/tools";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { TriggerOutputSchema } from "@opensteer/agent-tools/outputs";
 import { type ProductToolResult } from "../mcp/product-tools.test-support.js";
@@ -33,8 +38,10 @@ import {
 } from "@opensteer/orchestration";
 import { hostApi, type HostApiServerContext, type RunnerDescriptor } from "@opensteer/protocol";
 import {
+  TRIGGER_PROGRAM_VERSION_REFUSAL,
   TriggerControlInputSchema,
   TriggerRevisionSchema,
+  TriggerSummarySchema,
   TriggerSchema,
   type TriggerOccurrence,
   type TriggerProgram,
@@ -71,7 +78,7 @@ const nextHour = "2040-01-02T09:00:00.000Z";
 const program: TriggerProgram = {
   language: "javascript",
   source: "export default async () => ({ verified: true })",
-  toolContractVersion: 3,
+  toolContractVersion: 4,
 };
 const cron: TriggerSource = {
   kind: "schedule",
@@ -170,10 +177,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
   const triggers = triggerService();
   const agents = new ProductToolsTestClient({
     ...services,
-    browserSources: {
-      agentSignIn: unexpected,
-      agentUseCard: unexpected,
-    },
+    browserSources: { agentCopyChromeCookies: unexpected },
+    savedLogins: { useSavedLogin: unexpected, useCard: unexpected },
     machineFullDiskAccess: {
       request: unexpected,
     },
@@ -291,12 +296,12 @@ integration.sequential("Trigger authority through real Host services and Postgre
     await check(
       "A1 list Root task Trigger",
       f.child.id,
-      "trigger_read list",
+      "opensteer_automation_list list",
       "visible",
       async () => {
-        const result = hostApi["triggers.list"].success
-          .extend({
-            triggers: TriggerOutputSchema.shape.triggers.unwrap(),
+        const result = z
+          .object({
+            triggers: z.array(z.object(TriggerSummarySchema.omit({ webhookRouteKey: true }).shape)),
           })
           .parse(
             await agentTrigger(f.childToken, {
@@ -308,11 +313,17 @@ integration.sequential("Trigger authority through real Host services and Postgre
         return result;
       },
     );
-    await check("A1 get Root task Trigger", f.child.id, "trigger_read get", "visible", async () => {
-      const detail = await agentDetail(f.childToken, created.trigger.id);
-      expect(detail.trigger.id).toBe(created.trigger.id);
-      return detail.trigger;
-    });
+    await check(
+      "A1 get Root task Trigger",
+      f.child.id,
+      "opensteer_automation_list get",
+      "visible",
+      async () => {
+        const detail = await agentDetail(f.childToken, created.trigger.id);
+        expect(detail.trigger.id).toBe(created.trigger.id);
+        return detail.trigger;
+      },
+    );
     await check(
       "A1/F19 defer and resume cadence",
       f.child.id,
@@ -501,7 +512,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     });
   });
   it.each(["Trigger", "Watch"] as const)(
-    "A5: %s programs keep Thread operations with the anchor’s current access mode",
+    "A5: %s programs keep task operations with the anchor’s current access mode",
     async (kind) => {
       const f = await fixture();
       const own = await personCreate(f, f.isolatedChild);
@@ -515,12 +526,12 @@ integration.sequential("Trigger authority through real Host services and Postgre
       await check(
         `A5 ${kind} delegates locally`,
         f.isolatedChild.id,
-        "delegate_task",
+        "opensteer_task_delegate",
         "current access mode",
         async () => {
           const response = await control.handle(token, {
             type: "thread.delegate",
-            task: "Local authorized work",
+            message: "Local authorized work",
             requestId: randomUUID(),
           });
           if (response.type !== "thread.delegate.result")
@@ -558,7 +569,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       ).toEqual([]);
     },
   );
-  it("runs an agent's automation in its own task, and starts a program's standalone task", async () => {
+  it("runs an agent's automation in its own task, and starts a program's top-level task", async () => {
     const f = await fixture();
     const ownTask = (token: string, anchor: Thread, requestId: string) =>
       agents.handle(token, {
@@ -582,11 +593,13 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const replayed = await ownTask(f.fullChildToken, f.fullChild, requestId);
     if (created.type !== "trigger.control.result" || replayed.type !== "trigger.control.result")
       throw new Error("Expected Trigger creation");
-    const trigger = createdSchema.parse(created.result).trigger;
-    expect(createdSchema.parse(replayed.result).trigger.id).toBe(trigger.id);
+    const trigger = opensteer_automation_create.output.parse(created.result).automation!;
+    expect(opensteer_automation_create.output.parse(replayed.result).automation!.id).toBe(
+      trigger.id,
+    );
     expect(await children(f.fullChild.id)).toMatchObject([
       {
-        id: trigger.anchorThreadId,
+        id: trigger.taskId,
         accessMode: "full-access",
         listed: false,
         title: "Authority acceptance Trigger",
@@ -595,36 +608,38 @@ integration.sequential("Trigger authority through real Host services and Postgre
 
     const token = await startProgram(f, await personCreate(f, f.root));
     const delegate = async (input: Record<string, unknown>, operationKey: string) =>
-      z
-        .object({ assignmentId: z.null(), parentThreadId: z.null(), threadId: z.string() })
-        .parse(await programs.service.callTool(token, "delegate_task", input, { operationKey }));
-    const briefing = { task: "Write today's briefing", title: "Daily briefing", standalone: true };
+      z.object({ delegationId: z.null(), parentTaskId: z.null(), taskId: z.string() }).parse(
+        await programs.service.callTool(token, "opensteer_task_create", input, {
+          operationKey,
+        }),
+      );
+    const briefing = { message: "Write today's briefing", title: "Daily briefing" };
     const started = await delegate(briefing, "briefing");
-    expect((await delegate(briefing, "briefing")).threadId).toBe(started.threadId);
+    expect((await delegate(briefing, "briefing")).taskId).toBe(started.taskId);
     expect(
       await database
         .selectFrom("threads")
         .select(["accessMode", "listed", "parentThreadId", "title"])
-        .where("id", "=", started.threadId as ThreadId)
+        .where("id", "=", started.taskId as ThreadId)
         .executeTakeFirstOrThrow(),
     ).toEqual({ accessMode: "auto", listed: true, parentThreadId: null, title: "Daily briefing" });
     expect(
       await database
         .selectFrom("delegations")
         .select("id")
-        .where("childThreadId", "=", started.threadId as ThreadId)
+        .where("childThreadId", "=", started.taskId as ThreadId)
         .execute(),
     ).toEqual([]);
     expect(
       await database
         .selectFrom("threadInputs")
         .select("policy")
-        .where("threadId", "=", started.threadId as ThreadId)
+        .where("threadId", "=", started.taskId as ThreadId)
         .execute(),
     ).toEqual([{ policy: "queue" }]);
     await expect(
-      delegate({ ...briefing, threadId: f.unrelated.id }, "briefing-into-another"),
-    ).rejects.toThrow("omit threadId and places");
+      delegate({ ...briefing, taskId: f.unrelated.id }, "briefing-into-another"),
+    ).rejects.toThrow("taskId");
   });
   it("A5: program Trigger controls use current anchor authority", async () => {
     const f = await fixture();
@@ -667,7 +682,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         });
         const response = await programs.handle(triggerToken, {
           type: "thread.delegate",
-          task: "Work after mode change",
+          message: "Work after mode change",
           requestId: randomUUID(),
         });
         if (response.type !== "thread.delegate.result")
@@ -694,7 +709,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       requestId: randomUUID(),
     });
     if (watchRead.type !== "trigger.control.result") throw new Error("Expected Watch Trigger read");
-    const visible = TriggerOutputSchema.parse(watchRead.result).triggers ?? [];
+    const visible = TriggerOutputSchema.parse(watchRead.result).automations ?? [];
     expect(visible.map(({ id }) => id).sort()).toEqual(
       [own.trigger.id, watch.trigger.id, outside.trigger.id].sort(),
     );
@@ -718,11 +733,11 @@ integration.sequential("Trigger authority through real Host services and Postgre
     for (const request of [
       {
         type: "thread.read",
-        threadId: f.specialist.id,
+        taskId: f.specialist.id,
       },
       {
         type: "thread.delegate",
-        task: "Owner-wide delegation",
+        message: "Owner-wide delegation",
       },
       {
         type: "thread.message",
@@ -768,7 +783,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     await check(
       "A6 Root task Watch queues outside lineage",
       f.root.id,
-      "thread_send queue",
+      "opensteer_task_send queue",
       "run queued",
       async () => {
         const response = await watches.handle(watchToken, {
@@ -979,8 +994,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const token = await startProgram(f, created);
     const response = await programs.handle(token, {
       type: "thread.delegate",
-      threadId: f.unrelated.id,
-      task: "Reuse this unrelated Thread",
+      taskId: f.unrelated.id,
+      message: "Reuse this unrelated task",
       requestId: randomUUID(),
     });
     if (
@@ -1165,7 +1180,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       },
     );
     await check(
-      "F22 attribution references clear when an author Thread is deleted",
+      "F22 attribution references clear when an author task is deleted",
       "schema",
       "inspect foreign keys",
       "created_by_thread_id references threads(id) on delete set null",
@@ -1203,7 +1218,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       },
     );
   });
-  it("A10/F15: observes a committed actor downgrade or anchor upgrade before the shared Thread read", async () => {
+  it("A10/F15: observes a committed actor downgrade or anchor upgrade before the shared task read", async () => {
     const f = await fixture();
     for (const change of ["actor-downgrade", "anchor-upgrade"] as const) {
       const created = await personCreate(f, f.sibling);
@@ -1257,7 +1272,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       }
     }
   });
-  it("A10: overlapping Trigger delegation and mutation respect Thread-before-Trigger lock order", async () => {
+  it("A10: overlapping Trigger delegation and mutation respect task-before-Trigger lock order", async () => {
     const f = await fixture();
     const created = await personCreate(f, f.child);
     const token = await startProgram(f, created);
@@ -1285,7 +1300,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     });
     const delegated = peerPrograms.handle(token, {
       type: "thread.delegate",
-      task: "Overlapping Trigger delegation",
+      message: "Overlapping Trigger delegation",
       title: "Concurrent worker",
       requestId: randomUUID(),
     });
@@ -1320,7 +1335,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
           const assignment = await database
             .selectFrom("delegations")
             .select("origin")
-            .where("id", "=", worker.result.assignmentId)
+            .where("id", "=", worker.result.delegationId)
             .executeTakeFirstOrThrow();
           expect(assignment.origin).toBe("trigger");
           expect((await personDetail(f, created.trigger.id)).trigger.nextFireAt).toBe(plusThirty);
@@ -1639,12 +1654,12 @@ integration.sequential("Trigger authority through real Host services and Postgre
       await check(
         `F17 MCP stray/missing ${JSON.stringify(args)}`,
         f.fullChild.id,
-        "MCP trigger_write",
+        "MCP opensteer_automation_create",
         "tool error; no mutation",
         async () => {
           const before = await personDetail(f, childTrigger.trigger.id);
           const result = await childClient.callTool({
-            name: "trigger_write",
+            name: "opensteer_automation_create",
             arguments: args,
           });
           expect(result.isError).toBe(true);
@@ -1666,14 +1681,14 @@ integration.sequential("Trigger authority through real Host services and Postgre
     await check(
       "F17 MCP valid set_next_fire",
       f.fullChild.id,
-      "MCP trigger_write",
+      "MCP opensteer_automation_create",
       plusThirty,
       async () => {
         const result = await childClient.callTool({
-          name: "trigger_write",
+          name: "opensteer_automation_control",
           arguments: {
-            action: "set_next_fire",
-            triggerId: childTrigger.trigger.id,
+            action: "reschedule",
+            automationId: childTrigger.trigger.id,
             nextFireAt: plusThirty,
           },
         });
@@ -1685,7 +1700,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       },
     );
   });
-  it.each([3] as const)(
+  it.each([4] as const)(
     "dispatches only supported version %s after an anchor computer downgrade",
     async (version) => {
       const f = await fixture();
@@ -1739,7 +1754,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
           .set({
             capabilities: sql<
               RunnerDescriptor["capabilities"]
-            >`${JSON.stringify(["filesystem", "trigger-program-v3"])}::jsonb`,
+            >`${JSON.stringify(["filesystem", "trigger-program-v4"])}::jsonb`,
           })
           .where("id", "=", f.runnerId)
           .execute();
@@ -1765,20 +1780,20 @@ integration.sequential("Trigger authority through real Host services and Postgre
           })
           .where("id", "=", f.runnerId)
           .execute();
-        if (version === 3) {
+        if (version === 4) {
           await expect(
             triggers.update(
               f.ownerId,
               {
                 triggerId: saved.trigger.id,
-                expectedRevisionId: saved.revision.id,
+                expectedRevisionId: saved.revision!.id,
                 name: "Unsupported retained v3",
               },
               null,
             ),
           ).rejects.toMatchObject({
             message:
-              "This computer's Runner cannot run Trigger program version 3. Use version 2 or update that computer.",
+              "Update this computer to run automation programs with tool contract version 4.",
           });
         }
         const occurrence =
@@ -1829,23 +1844,23 @@ integration.sequential("Trigger authority through real Host services and Postgre
             "Runner downgrade dispatch",
             ingress,
             `version ${version}`,
-            version === 3 ? "failed without send" : "unchanged send",
+            version === 4 ? "failed without send" : "unchanged send",
             async () => {
               dispatch.mockClear();
               coordinator.start();
               await vi.waitFor(async () => {
                 const detail = await personDetail(f, saved.trigger.id);
-                expect(detail.occurrences[0]?.status).toBe(version === 3 ? "failed" : "running");
+                expect(detail.occurrences[0]?.status).toBe(version === 4 ? "failed" : "running");
               });
               const detail = await personDetail(f, saved.trigger.id);
-              if (version === 3) {
+              if (version === 4) {
                 expect(dispatch).not.toHaveBeenCalled();
                 expect(detail.occurrences[0]?.error).toEqual({
                   code: "dispatch_failed",
                   status: "failed",
                   retryable: false,
                   message:
-                    "This computer's Runner cannot run Trigger program version 3. Use version 2 or update that computer.",
+                    "Update this computer to run automation programs with tool contract version 4.",
                 });
               } else {
                 expect(dispatch).toHaveBeenCalledOnce();
@@ -1876,7 +1891,64 @@ integration.sequential("Trigger authority through real Host services and Postgre
       }
     },
   );
-  it.each([3] as const)(
+  it("keeps a pre-version-4 program readable and replaceable, and refuses to run it", async () => {
+    const f = await fixture(undefined, { rootAccessMode: "full-access" });
+    const saved = await personCreate(f, f.root);
+    await database
+      .updateTable("triggerRevisions")
+      .set({ program: { ...program, toolContractVersion: 3 } })
+      .where("id", "=", saved.revision.id)
+      .execute();
+    const dispatcher = new HostCommandDispatcher({
+      store,
+      triggers: triggerStore,
+      runners: {
+        identityForEnvironment: () =>
+          ({
+            runnerId: f.runnerId,
+            bootId: "authority-boot",
+            connectionGeneration: 1,
+            capabilities: ["execution-plane-v2", "agent-tools-plan-v1"],
+          }) as unknown as RunnerIdentity,
+      } as unknown as RunnerRegistry,
+      executionLeaseMs: 90_000,
+      publicUrl: new URL("https://host.test"),
+      onDeploymentEvent: vi.fn(),
+      requestResponseVault: {} as never,
+      runToolTokens: {} as never,
+      attachmentRunTokens: {} as never,
+      attachments: { listForRun: async () => [] },
+      browser: { hasBrowserProfiles: async () => false },
+      egress: {} as never,
+      pluginVersions: async () => [],
+      pluginsTokens: {} as never,
+      triggerControlTokens: {} as never,
+      teamRequestContext: async () => {
+        throw new Error("Unexpected team request");
+      },
+    });
+    const occurrence = await triggers.run(f.ownerId, saved.trigger.id, {}, null);
+    const command = (await store.listPendingCommands()).find(
+      ({ id }) => id === occurrence.commandId,
+    );
+    if (!command) throw new Error("Expected the occurrence's command");
+    await expect(dispatcher.dispatch(command, new AbortController().signal)).rejects.toThrow(
+      TRIGGER_PROGRAM_VERSION_REFUSAL,
+    );
+    expect((await personDetail(f, saved.trigger.id)).revision.program.toolContractVersion).toBe(3);
+    const read = await agentDetail(f.rootToken, saved.trigger.id);
+    expect(read.revision?.program.toolContractVersion).toBe(3);
+    const replaced = createdSchema.parse(
+      await agentTrigger(f.rootToken, {
+        operation: "update",
+        triggerId: saved.trigger.id,
+        expectedRevisionId: saved.revision.id,
+        program,
+      }),
+    );
+    expect(replaced.revision.program).toEqual(program);
+  });
+  it.each([4] as const)(
     "reconciles Watch version %s against an old stored advertisement",
     async (version) => {
       const f = await fixture();
@@ -1944,17 +2016,17 @@ integration.sequential("Trigger authority through real Host services and Postgre
           "Runner downgrade Watch",
           "Host reconciliation",
           `version ${version}`,
-          version === 3 ? "backoff without activation" : "activation sent",
+          version === 4 ? "backoff without activation" : "activation sent",
           async () => {
             await service.reconcile(f.environmentId);
             const desired = reconcileWatches.mock.calls[0]?.[2];
             const detail = await personDetail(f, saved.trigger.id);
-            if (version === 3) {
+            if (version === 4) {
               expect(desired).toEqual([]);
               expect(detail.activation).toMatchObject({
                 observed: "backoff",
                 lastError:
-                  "This computer's Runner cannot run Trigger program version 3. Use version 2 or update that computer.",
+                  "Update this computer to run automation programs with tool contract version 4.",
               });
             } else {
               expect(desired).toEqual([
@@ -1988,7 +2060,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     } as unknown as HostApiServerContext;
     const code = {
       ...program,
-      toolContractVersion: 3 as const,
+      toolContractVersion: 4 as const,
     };
     const client = await connectMcp(await mcpEndpoint(), f.rootToken);
     await check(
@@ -2031,12 +2103,11 @@ integration.sequential("Trigger authority through real Host services and Postgre
             context,
           ),
         );
-        expect(updated.revision.program.toolContractVersion).toBe(3);
+        expect(updated.revision.program.toolContractVersion).toBe(4);
         const mcp = await client.callTool({
-          name: "trigger_write",
+          name: "opensteer_automation_create",
           arguments: {
-            action: "create",
-            anchorThreadId: f.root.id,
+            taskId: f.root.id,
             name: "Current agent v3",
             program: code,
             source: {
@@ -2047,13 +2118,12 @@ integration.sequential("Trigger authority through real Host services and Postgre
           },
         });
         expect(mcp.isError).not.toBe(true);
-        const saved = createdSchema.parse(mcp.structuredContent);
+        const saved = opensteer_automation_create.output.parse(mcp.structuredContent);
         const changed = await client.callTool({
-          name: "trigger_write",
+          name: "opensteer_automation_update",
           arguments: {
-            action: "update",
-            triggerId: saved.trigger.id,
-            expectedRevisionId: saved.revision.id,
+            automationId: saved.automation!.id,
+            expectedRevisionId: saved.revision!.id,
             program: {
               ...code,
               source: "export default () => 'MCP current'",
@@ -2062,8 +2132,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
         });
         expect(changed.isError).not.toBe(true);
         expect(
-          createdSchema.parse(changed.structuredContent).revision.program.toolContractVersion,
-        ).toBe(3);
+          opensteer_automation_update.output.parse(changed.structuredContent).revision!.program
+            .toolContractVersion,
+        ).toBe(4);
         return {
           person: updated,
           agent: changed,
@@ -2093,10 +2164,10 @@ integration.sequential("Trigger authority through real Host services and Postgre
       } as unknown as HostApiServerContext;
       const code = {
         ...program,
-        toolContractVersion: 3 as const,
+        toolContractVersion: 4 as const,
       };
       const reason =
-        "This computer's Runner cannot run Trigger program version 3. Use version 2 or update that computer.";
+        "Update this computer to run automation programs with tool contract version 4.";
       const endpoint = await mcpEndpoint();
       const client = await connectMcp(endpoint, f.rootToken);
       await check(
@@ -2125,12 +2196,11 @@ integration.sequential("Trigger authority through real Host services and Postgre
           });
           // Current session can target an old computer: the domain must refuse it even
           // when the authoring session itself advertises the current input schema.
-          const currentClient = await connectMcp(await mcpEndpoint(false), f.rootToken);
+          const currentClient = await connectMcp(await mcpEndpoint(), f.rootToken);
           const refused = await currentClient.callTool({
-            name: "trigger_write",
+            name: "opensteer_automation_create",
             arguments: {
-              action: "create",
-              anchorThreadId: f.root.id,
+              taskId: f.root.id,
               name: "Unsupported MCP v3",
               program: code,
               source: {
@@ -2147,7 +2217,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
             .set({
               capabilities: sql<
                 RunnerDescriptor["capabilities"]
-              >`${JSON.stringify(["trigger-program-v3"])}::jsonb`,
+              >`${JSON.stringify(["trigger-program-v4"])}::jsonb`,
             })
             .where("id", "=", f.runnerId)
             .execute();
@@ -2170,7 +2240,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
                 idempotencyKey: randomUUID(),
                 triggerId: saved.trigger.id,
                 input: {
-                  expectedRevisionId: saved.revision.id,
+                  expectedRevisionId: saved.revision!.id,
                   program: code,
                 },
               },
@@ -2180,21 +2250,20 @@ integration.sequential("Trigger authority through real Host services and Postgre
             message: reason,
           });
           const refusedUpdate = await currentClient.callTool({
-            name: "trigger_write",
+            name: "opensteer_automation_update",
             arguments: {
-              action: "update",
-              triggerId: saved.trigger.id,
-              expectedRevisionId: saved.revision.id,
+              automationId: saved.trigger.id,
+              expectedRevisionId: saved.revision!.id,
               program: code,
             },
           });
           expect(refusedUpdate.isError).toBe(true);
           expect(JSON.stringify(refusedUpdate)).toContain(reason);
           expect(await personDetail(f, saved.trigger.id)).toEqual(before);
-          const legacyTool = (await client.listTools()).tools.find(
-            ({ name }) => name === "trigger_write",
+          const tool = (await client.listTools()).tools.find(
+            ({ name }) => name === "opensteer_automation_create",
           );
-          expect(legacyTool?.description).toContain("load opensteer:triggers");
+          expect(tool).toBeDefined();
           return {
             refused,
             capabilities,
@@ -2208,7 +2277,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     capabilities: RunnerDescriptor["capabilities"] = [
       "filesystem",
       "environment-list-v1",
-      "trigger-program-v3",
+      "trigger-program-v4",
     ],
     options: { readonly rootAccessMode?: Thread["accessMode"] } = {},
   ) {
@@ -2305,7 +2374,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       harnessInstanceId: harness.id,
       idempotencyKey: randomUUID(),
       modelSelection,
-      title: "Unrelated work Thread",
+      title: "Unrelated work task",
     });
     const childExecution = await activate(base, delegated);
     const siblingExecution = await activate(base, sibling);
@@ -2490,35 +2559,93 @@ integration.sequential("Trigger authority through real Host services and Postgre
     input: unknown,
   ) {
     const parsed = TriggerControlInputSchema.parse(input);
-    const response = await control.handle(token, {
-      input: parsed,
-      requestId: randomUUID(),
-      tool:
-        parsed.operation === "get" || parsed.operation === "list"
-          ? "trigger.read"
-          : "trigger.write",
-      type: "trigger.control",
-    });
-    if (response.type !== "trigger.control.result")
-      throw new Error("Expected Trigger control result");
-    return response.result;
-  }
-  async function agentDetail(token: string, triggerId: TriggerId) {
-    return hostApi["triggers.get"].success
-      .extend({
-        trigger: z.object(
-          TriggerSchema.omit({
-            webhookRouteKey: true,
-          }).shape,
-        ),
-      })
-      .parse(
-        await agentTrigger(token, {
-          operation: "get",
-          triggerId,
-          occurrenceLimit: 100,
-        }),
+    const { operation, ...fields } = parsed;
+    const names = {
+      list: "opensteer_automation_list",
+      get: "opensteer_automation_read",
+      create: "opensteer_automation_create",
+      update: "opensteer_automation_update",
+      set_status: "opensteer_automation_control",
+      set_next_fire: "opensteer_automation_control",
+      run: "opensteer_automation_control",
+      cancel: "opensteer_automation_control",
+    };
+    const args: Record<string, unknown> = { ...fields };
+    if ("triggerId" in args) {
+      args.automationId = args.triggerId;
+      delete args.triggerId;
+    }
+    if ("anchorThreadId" in args) {
+      args.taskId = args.anchorThreadId;
+      delete args.anchorThreadId;
+    }
+    delete args.idempotencyKey;
+    if (operation === "set_status") {
+      args.action =
+        args.status === "active" ? "resume" : args.status === "paused" ? "pause" : "archive";
+      delete args.status;
+    }
+    if (operation === "set_next_fire") args.action = "reschedule";
+    if (operation === "run") args.action = "run_now";
+    if (operation === "cancel") args.action = "cancel_pending";
+    if ("source" in parsed && parsed.source?.kind === "schedule") {
+      const schedule = parsed.source.schedule;
+      args.source = {
+        kind: "schedule",
+        ...(schedule.kind === "cron"
+          ? { cron: schedule.expression, timezone: schedule.timezone }
+          : { at: schedule.at }),
+        ...(schedule.payload === undefined ? {} : { payload: schedule.payload }),
+      };
+    }
+    const result = await (control as ProductToolsTestClient).service.callTool(
+      token,
+      names[operation],
+      args,
+      { operationKey: randomUUID() },
+    );
+    const domain = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(domain);
+      if (value === null || typeof value !== "object") return value;
+      const keys: Record<string, string> = {
+        automation: "trigger",
+        automations: "triggers",
+        automationId: "triggerId",
+        taskId: "anchorThreadId",
+        createdByTaskId: "createdByThreadId",
+        taskTitle: "anchorThreadTitle",
+        createdByTaskTitle: "createdByThreadTitle",
+      };
+      return Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [
+          keys[key] ?? key,
+          ["program", "source", "result", "payload"].includes(key) ? item : domain(item),
+        ]),
       );
+    };
+    return domain(result);
+  }
+
+  async function agentDetail(token: string, triggerId: TriggerId) {
+    const result = opensteer_automation_read.output.parse(
+      await agents.service.callTool(
+        token,
+        "opensteer_automation_read",
+        { automationId: triggerId, occurrenceLimit: 100 },
+        { operationKey: randomUUID() },
+      ),
+    );
+    if (!result.automation) throw new Error("Automation detail missing");
+    return {
+      ...result,
+      trigger: {
+        ...result.automation,
+        anchorThreadId: result.automation.taskId,
+        createdByThreadId: result.automation.createdByTaskId,
+      },
+      downstreamRuns: result.downstreamRuns ?? [],
+      occurrences: result.occurrences ?? [],
+    };
   }
   async function personDetail(f: Fixture, triggerId: TriggerId) {
     return hostApi["triggers.get"].success.parse(
@@ -2574,7 +2701,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       runnerBootId: "authority-boot",
       runnerId: f.runnerId,
       threadId: anchor.id,
-      toolContractVersion: created.revision.program.toolContractVersion,
+      toolContractVersion: 4,
     });
     return token;
   }
@@ -2601,7 +2728,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       executionGeneration: active.executionGeneration,
       revisionId: created.revision.id,
       triggerId: created.trigger.id,
-      toolContractVersion: created.revision.program.toolContractVersion,
+      toolContractVersion: 4,
     });
     return token;
   }
@@ -2664,7 +2791,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       }),
     ]);
   }
-  async function mcpEndpoint(_legacyOverride?: boolean) {
+  async function mcpEndpoint() {
     let service: OpensteerMcpService;
     const server = createServer((request, response) => {
       void (async () => {
@@ -2795,7 +2922,7 @@ async function denied(
       if (!(caught instanceof OpensteerError)) throw new Error("Expected an Opensteer error");
       expect(caught.code).toBe(code);
       expect(caught.message.trim().length).toBeGreaterThan(0);
-      if (code === "not_found") expect(caught.message).toBe("Trigger not found");
+      if (code === "not_found") expect(caught.message).toBe("Automation not found");
       return {
         code: caught.code,
         message: caught.message,

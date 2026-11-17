@@ -1,3 +1,4 @@
+import type { IphoneRunnerPort } from "@opensteer/protocol/iphone-bridge";
 import type {
   DesktopUseComputerViewInput,
   DesktopUseComputerViewResult,
@@ -182,6 +183,7 @@ export class ComputerUseService {
   async startForSlot(
     deploymentIdInput: string,
     passwords?: PasswordsAuthorityPort,
+    iphone?: IphoneRunnerPort,
   ): Promise<ComputerUseBridgeHandle | null> {
     if (!this.supported || this.#stopped) return null;
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
@@ -189,6 +191,7 @@ export class ComputerUseService {
     if (existing) return { token: existing.token, url: existing.url };
     const server = new ComputerUseBridgeServer({
       helper: this.#helperPort(),
+      ...(iphone ? { iphone } : {}),
       ...(passwords ? { passwords } : {}),
       ...(this.#options.log === undefined ? {} : { log: this.#options.log }),
       now: this.#now,
@@ -519,7 +522,7 @@ export class ComputerUseService {
           }
         }
       }
-      if (method === "view.windows") {
+      if (method === "view.windows" || method === "window.resolve") {
         await client.handshake(deadline);
         if (this.#ownerViewVersion !== 3)
           throw new ComputerUseHelperFailure(

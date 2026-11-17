@@ -1,13 +1,10 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { RunnerIdSchema, DeviceIdSchema } from "@opensteer/core";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { createIntegrationMcpFixture } from "../mcp/integration-fixture.test-support.js";
-import { createServer } from "node:http";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   IntegrationDefinitionSchema,
   createIntegrationId,
@@ -33,12 +30,14 @@ import { createOpenApiAdapter, openApiAdapter } from "@opensteer/integration-ada
 import {
   ComputerAppNotOfferedError,
   type CallableIntegrationTool,
-  type ComputerAppAccessDecision,
+  type DeviceComputerAppAccessDecision as ComputerAppAccessDecision,
   type IntegrationPlatformStore,
   type PreparedIntegrationInstallFulfillment,
 } from "@opensteer/database";
 import {
   OpensteerError,
+  TabIdSchema,
+  WindowIdSchema,
   createToolOutput,
   RequestJsonObjectSchema,
   createId,
@@ -46,7 +45,6 @@ import {
   type Request,
 } from "@opensteer/core";
 import {
-  computerUseUpdateMacSentence,
   computerUseUpdateSentence,
   mintComputerUseSessionId,
   type MachineAppStatus,
@@ -81,7 +79,7 @@ const caller: ToolCaller = { run: null, threadId: createId("thread") };
 const runCaller = (run: RunToolContext): ToolCaller => ({
   run: {
     ...run,
-    aud: "opensteer-integration-tools",
+    aud: "opensteer-run-tools",
     bindingGeneration: 1,
     environmentId: createId("environment"),
     exp: 2_000_000_000,
@@ -600,7 +598,7 @@ describe("IntegrationPlatformService definition reconciliation", () => {
 });
 
 describe("IntegrationPlatformService uninstall", () => {
-  it("takes affected Runner admission turns in stable order", async () => {
+  it("takes affected Device admission turns in stable order", async () => {
     const installationId = createIntegrationId("installation");
     const first = createId("runner");
     const second = createId("runner");
@@ -633,7 +631,12 @@ describe("IntegrationPlatformService uninstall", () => {
         }),
       },
       store: {
-        listComputerRunnerIdsForInstallation: vi.fn(async () => [second, first, second]),
+        getDeviceSelfRunnerId: vi.fn(async (id: import("@opensteer/core").DeviceId) =>
+          RunnerIdSchema.parse(id),
+        ),
+        listComputerDeviceIdsForInstallation: vi.fn(async () =>
+          [second, first, second].map((id) => DeviceIdSchema.parse(id)),
+        ),
         uninstall,
       },
     });
@@ -676,12 +679,12 @@ describe("IntegrationPlatformService computer connections", () => {
     };
     let existing = false;
     const setComputerConnection = vi.fn(
-      async (input: Parameters<IntegrationPlatformStore["setComputerConnection"]>[0]) => {
+      async (input: Parameters<IntegrationPlatformStore["setDeviceComputerConnection"]>[0]) => {
         if (!existing && !input.createIfMissing) {
           throw new ComputerAppNotOfferedError("Studio Mac");
         }
         return {
-          connection,
+          connection: deviceConnection(connection),
           created: false,
           fulfilledRequestIds: [],
           grants: [],
@@ -702,7 +705,7 @@ describe("IntegrationPlatformService computer connections", () => {
       definitions: [computerDefinition],
       store: {
         listInstallations: vi.fn(async () => [installed]),
-        setComputerConnection,
+        setDeviceComputerConnection: setComputerConnection,
       },
     });
     const input = {
@@ -722,7 +725,7 @@ describe("IntegrationPlatformService computer connections", () => {
     });
     existing = true;
     await expect(service.computerAppApprovals.setComputerConnection(input)).resolves.toEqual(
-      connection,
+      deviceConnection(connection),
     );
     expect(setComputerConnection).toHaveBeenCalledTimes(2);
   });
@@ -1098,7 +1101,10 @@ describe("IntegrationPlatformService computer invocation", () => {
         }),
         getComputerConnectionForCall,
         listCallableTools: vi.fn(async () => authority),
-        listComputerRunnerIdsForInstallation: vi.fn(async () => [runnerId]),
+        getDeviceSelfRunnerId: vi.fn(async (id: import("@opensteer/core").DeviceId) =>
+          RunnerIdSchema.parse(id),
+        ),
+        listComputerDeviceIdsForInstallation: vi.fn(async () => [DeviceIdSchema.parse(runnerId)]),
         listGrants: vi.fn(async () => [callable.grant as IntegrationGrant]),
         listInstallations: vi.fn(async () => [callable.installation]),
         revokeComputerConnection: vi.fn(async () => {
@@ -1116,11 +1122,11 @@ describe("IntegrationPlatformService computer invocation", () => {
         revokeGrant: vi.fn(async () => {
           authority = [];
         }),
-        setComputerConnection: vi.fn(async () => {
+        setDeviceComputerConnection: vi.fn(async () => {
           connectionAccess = "read";
           authority = [];
           return {
-            connection,
+            connection: deviceConnection(connection),
             created: false,
             fulfilledRequestIds: [],
             grants: [],
@@ -3582,7 +3588,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
         app: notes,
         definitionId: "macos-app",
         kind: "computer.app.access",
-        runnerId,
+        deviceId: DeviceIdSchema.parse(runnerId),
         setupRequestId: "setup-request",
       },
       presentation: {
@@ -3649,8 +3655,8 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       onRequestsChanged,
       onDeploymentEvent,
       store: {
-        requestComputerAppAccess,
-        getComputerUsePolicy: async () => ({
+        requestDeviceComputerAppAccess: requestComputerAppAccess,
+        getDeviceComputerUsePolicy: async () => ({
           appApproval: "ask",
           approvalKeyId: null,
           revision: 0,
@@ -3728,7 +3734,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
             deviceProfile: "iphone",
             publicKeyFingerprint: "phone-key",
           }),
-          requestComputerAppSetup,
+          requestDeviceComputerAppSetup: requestComputerAppSetup,
         },
       });
       const asking = service.computerAppApprovals.requestComputerAppSetup({
@@ -3774,7 +3780,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       grants: [],
       requestEvents: [cancellationEvent],
       requestIds: [createId("request")],
-      runnerId: null,
+      deviceId: null,
     }));
     const onDeploymentEvent = vi.fn();
     const onRequestsChanged = vi.fn();
@@ -3783,7 +3789,10 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       definitions: [computerDefinition],
       onRequestsChanged,
       onDeploymentEvent,
-      store: { cancelComputerAppSetup, requestComputerAppSetup },
+      store: {
+        cancelDeviceComputerAppSetup: cancelComputerAppSetup,
+        requestDeviceComputerAppSetup: requestComputerAppSetup,
+      },
     });
 
     await service.computerAppApprovals.requestComputerAppSetup({
@@ -3815,7 +3824,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       grants: [],
       requestEvents: [requestEvent],
       requestIds: [createId("request")],
-      runnerIds: [],
+      deviceIds: [],
     }));
     const onDeploymentEvent = vi.fn();
     const onRequestsChanged = vi.fn();
@@ -3825,7 +3834,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       onConnectionsChanged,
       onRequestsChanged,
       onDeploymentEvent,
-      store: { expireComputerAppSetupRequests },
+      store: { expireDeviceComputerAppSetupRequests: expireComputerAppSetupRequests },
     });
 
     await service.computerAppApprovals.expireComputerAppSetupRequests();
@@ -3843,11 +3852,11 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       adapters: [],
       onRequestsChanged,
       store: {
-        expireComputerAppSetupRequests: vi.fn(async () => ({
+        expireDeviceComputerAppSetupRequests: vi.fn(async () => ({
           grants: [],
           requestEvents: [],
           requestIds: [],
-          runnerIds: [],
+          deviceIds: [],
         })),
       },
     });
@@ -3893,7 +3902,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
       truncated: false,
       window: {
         ref: "window-1",
-        id: 7,
+        windowId: WindowIdSchema.parse("win_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
         frame: { height: 600, width: 800, x: 0, y: 0 },
         scale: 2,
         title: "Shopping",
@@ -4017,6 +4026,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
     };
     const lease = { sessionId: mintComputerUseSessionId() };
     const mockedComputerUse = {
+      eligibleInventory: async () => ({ machines: [], phones: [] }),
       closeForConnection: vi.fn(),
       eligibleMachines: vi.fn(async () => []),
       installedApps: vi.fn(async () => []),
@@ -4043,7 +4053,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
                 performed: null,
                 window: {
                   ref: "window-1",
-                  id: 7,
+                  windowId: WindowIdSchema.parse("win_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
                   title: "Shopping",
                   focused: true,
                   main: true,
@@ -4150,6 +4160,10 @@ describe("IntegrationPlatformService computer use gateway", () => {
     const computerUse = liveComputerUse ?? mockedComputerUse;
     const service = platform({
       adapters: [],
+      nativeTabs: {
+        acquired: vi.fn(async () => TabIdSchema.parse("native-fixture")),
+        captureMembership: vi.fn(async () => 0),
+      },
       computerApps,
       computerUse,
       definitions: [definition],
@@ -4208,6 +4222,48 @@ describe("IntegrationPlatformService computer use gateway", () => {
         }),
       },
     });
+    vi.spyOn(service.computerAppApprovals, "computerUseInventory").mockImplementation(async () => ({
+      machines:
+        input.phone || input.revoked?.()
+          ? []
+          : [
+              {
+                name: "Alex's Mac",
+                deviceId: DeviceIdSchema.parse(runnerId),
+                definitionId: "macos-app",
+                ready: true,
+                state: "ready",
+                appApproval: "ask",
+                apps: [
+                  {
+                    name: notes.displayName,
+                    bundleId: notes.bundleId,
+                    connectionId: connection.id,
+                    access: input.connectionAccess ?? "read-write",
+                    status: "approved",
+                  },
+                ],
+              },
+            ],
+      phones:
+        !input.phone || input.revoked?.()
+          ? []
+          : [
+              {
+                name: "Pixel 7",
+                deviceId: DeviceIdSchema.parse(runnerId),
+                definitionId: "android-phone",
+                ready: true,
+                state: "ready",
+                blockedByOwner: false,
+                connection: {
+                  connectionId: connection.id,
+                  access: input.connectionAccess ?? "read-write",
+                },
+              },
+            ],
+    }));
+    vi.spyOn(service.computerAppApprovals, "computerAppHolders").mockResolvedValue(new Map());
     return {
       callable,
       computerUse,
@@ -4249,6 +4305,112 @@ describe("IntegrationPlatformService computer use gateway", () => {
   }
 
   const context = { runId: createId("run"), threadId: createId("thread") };
+
+  it("explains a missing callable with the listing blocker and reuses its tool lookup", async () => {
+    const f = guiFixture({ operation: "observe" });
+    const who = runCaller(context);
+    const tools = vi.spyOn(f.service, "listCallableTools").mockResolvedValue([]);
+    try {
+      const access = await f.service.computerAccess(
+        { ownerUserId: who.run!.requestedBy, threadId: who.threadId },
+        who.run!,
+      );
+      const state = access.appEntries(access.machines[0]!)[0]!;
+      tools.mockClear();
+      await expect(operate(f.service, f.callable, {}, who)).rejects.toMatchObject({
+        code: "forbidden",
+        reason: state.blocked!.code,
+        message: state.blocked!.message,
+        next: state.blocked!.next,
+      });
+      expect(tools).toHaveBeenCalledOnce();
+    } finally {
+      await f.service.close();
+    }
+  });
+
+  it("preserves the owner blocker when a phone's bound connection becomes unusable", async () => {
+    const f = guiFixture({ phone: true, operation: "observe" });
+    const who = runCaller(context);
+    const inventory = await f.service.computerAppApprovals.computerUseInventory(
+      who.run!.requestedBy,
+    );
+    vi.spyOn(f.service, "listCallableTools").mockResolvedValue([]);
+    vi.spyOn(f.service.computerAppApprovals, "computerUseInventory").mockResolvedValue({
+      ...inventory,
+      phones: inventory.phones.map((phone) => ({
+        ...phone,
+        connectionId: f.callable.grant.connectionId!,
+        connection: null,
+        blockedByOwner: true,
+      })),
+    });
+    try {
+      const access = await f.service.computerAccess(
+        { ownerUserId: who.run!.requestedBy, threadId: who.threadId },
+        who.run!,
+      );
+      const state = access.phone(access.phones[0]!);
+      await expect(operate(f.service, f.callable, {}, who)).rejects.toMatchObject({
+        reason: state.blocked!.code,
+        message: state.blocked!.message,
+        next: state.blocked!.next,
+      });
+    } finally {
+      await f.service.close();
+    }
+  });
+
+  it.each([false, true])(
+    "uses the listing blocker when a granted target goes offline (phone=%s)",
+    async (phone) => {
+      const f = guiFixture({
+        phone,
+        settleRefusal: new ComputerUseError("offline", "Disconnected"),
+      });
+      const who = runCaller(context);
+      const inventory = await f.service.computerAppApprovals.computerUseInventory(
+        who.run!.requestedBy,
+      );
+      vi.spyOn(f.service.computerAppApprovals, "computerUseInventory").mockResolvedValue({
+        machines: inventory.machines.map((machine) => ({
+          ...machine,
+          state: "offline",
+          ready: false,
+        })),
+        phones: inventory.phones.map((entry) => ({ ...entry, state: "offline", ready: false })),
+      });
+      try {
+        const access = await f.service.computerAccess(
+          { ownerUserId: who.run!.requestedBy, threadId: who.threadId },
+          who.run!,
+        );
+        const state = phone
+          ? access.phone(access.phones[0]!)
+          : access.appEntries(access.machines[0]!)[0]!;
+        await expect(operate(f.service, f.callable, {}, who)).rejects.toMatchObject({
+          reason: state.blocked!.code,
+          message: state.blocked!.message,
+          next: state.blocked!.next,
+        });
+      } finally {
+        await f.service.close();
+      }
+    },
+  );
+
+  it("authorizes callable operations without gathering discovery facts", async () => {
+    const f = guiFixture({ operation: "observe" });
+    const access = vi
+      .spyOn(f.service, "computerAccess")
+      .mockRejectedValue(new Error("Unexpected discovery"));
+    try {
+      await operate(f.service, f.callable, {}, runCaller(context));
+      expect(access).not.toHaveBeenCalled();
+    } finally {
+      await f.service.close();
+    }
+  });
 
   it.each([false, true])(
     "revokes during a slow saved-login seal without dispatch (phone=%s)",
@@ -4336,61 +4498,18 @@ describe("IntegrationPlatformService computer use gateway", () => {
         actions: [{ type: "type", text: { loginRef: `lgn_${"a".repeat(32)}`, field: "password" } }],
       };
       expect(validateJsonSchema(f.inputSchema, args)).toEqual([]);
-      const who = runCaller(context);
-      let mcp: ReturnType<typeof createIntegrationMcpFixture> | undefined;
-      const server = createServer((request, response) => {
-        void (async () => {
-          const chunks: Buffer[] = [];
-          for await (const chunk of request) chunks.push(Buffer.from(chunk));
-          const body: unknown = chunks.length
-            ? JSON.parse(Buffer.concat(chunks).toString("utf8"))
-            : undefined;
-          await mcp!.handle(request, response, body, "run-token");
-        })().catch((error: unknown) =>
-          response.destroy(error instanceof Error ? error : new Error("MCP test request failed")),
-        );
-      });
-      const client = new Client({ name: "saved-login-contract", version: "1" });
       try {
-        await new Promise<void>((resolve, reject) => {
-          server.once("error", reject);
-          server.listen(0, "127.0.0.1", resolve);
-        });
-        const address = server.address();
-        if (!address || typeof address === "string")
-          throw new Error("MCP test server did not bind");
-        const url = new URL(`http://127.0.0.1:${address.port}/mcp`);
-        mcp = createIntegrationMcpFixture({
-          definitions: [phone ? phoneDefinition : guiDefinition],
-
-          runTokens: {
-            authenticate: async () => who.run!,
-          },
-          triggerTokens: {
-            authenticate: async () => {
-              throw new Error("Not a trigger token");
-            },
-          },
-          onEvent: () => undefined,
-          platform: f.service,
-          publicUrl: url,
-        });
-        await client.connect(new StreamableHTTPClientTransport(url) as unknown as Transport);
-        const result = await client.callTool({
-          name: "computer",
-          arguments: {
-            code: phone
-              ? `const p=await phone("Pixel 7");await p.observe();await p.type(${JSON.stringify(args.actions[0]!.text)})`
-              : `const a=await app("Notes");const w=await a.window();await w.observe();await w.type(${JSON.stringify(args.actions[0]!.text)})`,
-          },
-        });
-        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        const result = await f.service.callComputerOperation(
+          runCaller(context),
+          f.callable.grant.connectionId!,
+          f.callable.tool.name,
+          args,
+          new AbortController().signal,
+          Date.now() + 1000,
+        );
+        expect(result.value).toMatchObject({ performed: [] });
       } finally {
-        await client.close();
-        await mcp?.close();
         await f.service.close();
-        server.closeAllConnections();
-        await new Promise<void>((resolve) => server.close(() => resolve()));
       }
 
       expect(f.computerUse.sendAct).toHaveBeenCalledWith(
@@ -4478,30 +4597,24 @@ describe("IntegrationPlatformService computer use gateway", () => {
     });
   });
 
-  /*
-   * A refusal for want of permission is said in the computer's own words.
-   * Failure modes:
-   * - a phone's sentence, already a whole sentence about the phone — paused
-   *   or a task that may only look — gets " on Pixel 7" bolted on
-   *   after its full stop;
-   * - a Mac's sentence, which names only the app, loses the Mac it is about.
-   */
   it.each([
     ["a paused phone", "This phone is paused. Resume it in the Opensteer Agent Phone app."],
     ["a task that may only look", "This task may look at the phone but not operate it."],
-  ])("says a phone's refusal for %s in the phone's own sentence", async (_name, sentence) => {
+  ])("normalizes a phone permission failure for %s", async (_name, sentence) => {
     const { callable, service } = guiFixture({
       phone: true,
       settleRefusal: new ComputerUseError("permission-required", sentence),
     });
 
     await expect(operate(service, callable, {}, runCaller(context))).rejects.toMatchObject({
-      code: "permission-required",
-      message: sentence,
+      code: "forbidden",
+      reason: "permission_required",
+      message: "Pixel 7 needs computer-use permissions.",
+      next: expect.any(String),
     });
   });
 
-  it("names the Mac after an app's refusal for want of permission", async () => {
+  it("normalizes an app permission failure with the Mac identity", async () => {
     const { callable, service } = guiFixture({
       settleRefusal: new ComputerUseError(
         "permission-required",
@@ -4510,8 +4623,10 @@ describe("IntegrationPlatformService computer use gateway", () => {
     });
 
     await expect(operate(service, callable, {}, runCaller(context))).rejects.toMatchObject({
-      code: "permission-required",
-      message: "Notes needs Accessibility permission on Alex's Mac.",
+      code: "forbidden",
+      reason: "permission_required",
+      message: "Alex's Mac needs computer-use permissions.",
+      next: expect.any(String),
     });
   });
 
@@ -4521,8 +4636,10 @@ describe("IntegrationPlatformService computer use gateway", () => {
     });
 
     await expect(operate(service, callable, {}, runCaller(context))).rejects.toMatchObject({
-      code: "incompatible-version",
-      message: computerUseUpdateMacSentence("Alex's Mac"),
+      code: "forbidden",
+      reason: "update_required",
+      message: "Alex's Mac needs an Opensteer update.",
+      next: expect.any(String),
     });
   });
 
@@ -4643,9 +4760,12 @@ function platform(input: {
     ownerUserId: ReturnType<typeof createId<"user">>,
   ) => Promise<readonly IntegrationConnectionSummary[]>;
   readonly adapters: readonly IntegrationAdapter[];
-  readonly computerApps?: Partial<Pick<ComputerAppHub, ApprovalHubMember>> &
+  readonly computerApps?: Partial<
+    Pick<ComputerAppHub, ApprovalHubMember | "withDeviceAdmissions">
+  > &
     Pick<ComputerAppHub, "appStatus" | "attached" | "send" | "withRunnerAdmission">;
   readonly computerUse?: ComputerUseGateway;
+  readonly nativeTabs?: ConstructorParameters<typeof IntegrationPlatformService>[0]["nativeTabs"];
   readonly definitions?: readonly ReturnType<typeof IntegrationDefinitionSchema.parse>[];
   readonly isRunnerConnected?: (runnerId: ReturnType<typeof createId<"runner">>) => boolean;
   readonly mcpImageContent?: () => Promise<boolean>;
@@ -4668,6 +4788,22 @@ function platform(input: {
     adapters: input.adapters,
     authorizationSource: { providerAuthorizations: vi.fn(async () => ({})) },
     computerApps: {
+      deviceStatus: () => null,
+      withDeviceAdmission: (id, action) =>
+        input.computerApps?.withRunnerAdmission(RunnerIdSchema.parse(id), action) ?? action(),
+      withDeviceAdmissions: async (ids, action) => {
+        if (input.computerApps?.withDeviceAdmissions)
+          return input.computerApps.withDeviceAdmissions(ids, action);
+        const sorted = [...new Set(ids)].sort();
+        const enter = (index: number): ReturnType<typeof action> =>
+          index === sorted.length
+            ? action()
+            : (input.computerApps?.withRunnerAdmission(RunnerIdSchema.parse(sorted[index]), () =>
+                enter(index + 1),
+              ) ?? enter(index + 1));
+        return enter(0);
+      },
+      requireDeviceAgentAccess: async () => {},
       requireAgentAccess: async () => {},
       removePluginData: async () => {},
       reportsApp: () => "offline",
@@ -4695,7 +4831,19 @@ function platform(input: {
       materializeForAdapter:
         input.materializeForAdapter ?? vi.fn(async () => Promise.reject(new Error("unused"))),
     },
-    ...(input.computerUse ? { computerUse: input.computerUse } : {}),
+    ...(input.computerUse
+      ? {
+          computerUse: Object.assign(input.computerUse, {
+            eligibleInventory:
+              input.computerUse.eligibleInventory ??
+              (async (owner) => ({
+                machines: await input.computerUse!.eligibleMachines(owner, "macos-app"),
+                phones: await input.computerUse!.eligibleMachines(owner, "android-phone"),
+              })),
+          }),
+        }
+      : {}),
+    ...(input.nativeTabs ? { nativeTabs: input.nativeTabs } : {}),
     computerToolEnabled: () => true,
     computerUseVersion: () => 2,
     ...(input.mcpImageContent ? { mcpImageContent: input.mcpImageContent } : {}),
@@ -4713,19 +4861,81 @@ function platform(input: {
       ? {
           connections: { assertOwner: vi.fn(async () => undefined) },
           computerAppRunner: vi.fn(async () => null),
+          requireSelfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
+          requireDeviceSelfRunnerId: async (id: unknown) => RunnerIdSchema.parse(id),
+          getDeviceSelfRunnerId: async (id: unknown) => RunnerIdSchema.parse(id),
+          getDeviceComputerConnectionForCall: async (
+            params: Parameters<IntegrationPlatformStore["getComputerConnectionForCall"]>[0],
+          ) => {
+            const found = await input.store?.getComputerConnectionForCall?.(params);
+            return found
+              ? {
+                  ...found,
+                  deviceId: DeviceIdSchema.parse(found.runnerId),
+                  deviceName: found.runnerName,
+                  connection: {
+                    ...found.connection,
+                    computer: found.connection.computer
+                      ? {
+                          ...found.connection.computer,
+                          deviceId: DeviceIdSchema.parse(found.connection.computer.runnerId),
+                        }
+                      : null,
+                  },
+                }
+              : null;
+          },
           listGrants: vi.fn(async () => []),
+          listDeviceComputerAppSetupRequests: async () => [],
           ...input.store,
+          requests: {
+            listPendingIntegrationAccessRequests: async () => [],
+            ...input.store.requests,
+          },
         }
       : {
           connections: { assertOwner: vi.fn(async () => undefined) },
           getToolInvocation: vi.fn(async () => mailInvocation),
           computerAppRunner: vi.fn(async () => null),
+          requireSelfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
+          requireDeviceSelfRunnerId: async (id: unknown) => RunnerIdSchema.parse(id),
+          getDeviceSelfRunnerId: async (id: unknown) => RunnerIdSchema.parse(id),
+          getDeviceComputerConnectionForCall: async (
+            params: Parameters<IntegrationPlatformStore["getComputerConnectionForCall"]>[0],
+          ) => {
+            const found = await input.store?.getComputerConnectionForCall?.(params);
+            return found
+              ? {
+                  ...found,
+                  deviceId: DeviceIdSchema.parse(found.runnerId),
+                  deviceName: found.runnerName,
+                  connection: {
+                    ...found.connection,
+                    computer: found.connection.computer
+                      ? {
+                          ...found.connection.computer,
+                          deviceId: DeviceIdSchema.parse(found.connection.computer.runnerId),
+                        }
+                      : null,
+                  },
+                }
+              : null;
+          },
           install: vi.fn(),
           listInstallations: vi.fn(async () => []),
-        }) as IntegrationPlatformStore,
+        }) as unknown as IntegrationPlatformStore,
   });
   services.push(service);
   return service;
+}
+
+function deviceConnection(connection: IntegrationConnectionSummary) {
+  return {
+    ...connection,
+    computer: connection.computer
+      ? { ...connection.computer, deviceId: DeviceIdSchema.parse(connection.computer.runnerId) }
+      : null,
+  };
 }
 
 function computerConnectionSummary(
@@ -5060,12 +5270,16 @@ describe("computer app request matrix", () => {
     const threadReadInsideAdmission: boolean[] = [];
     const requestComputerAppAccess = vi.fn(
       async (
-        input: Parameters<IntegrationPlatformStore["requestComputerAppAccess"]>[0],
+        input: Parameters<IntegrationPlatformStore["requestDeviceComputerAppAccess"]>[0],
       ): Promise<ComputerAppAccessDecision> => {
         switch (options.decision ?? "computer") {
           case "approved":
             available = input.access;
-            return { connection, kind: "approved", requestEvents: [] };
+            return {
+              connection: deviceConnection(connection),
+              kind: "approved",
+              requestEvents: [],
+            };
           case "personal-grant":
             return { kind: "personal-grant", replayed: false, request, requestEvents: [] };
           case "computer":
@@ -5147,8 +5361,9 @@ describe("computer app request matrix", () => {
         stop: vi.fn(),
       },
       store: {
+        requireSelfDeviceId: async (id) => DeviceIdSchema.parse(id),
         listCallableTools: async () => refs(available),
-        requestComputerAppAccess,
+        requestDeviceComputerAppAccess: requestComputerAppAccess,
       },
     });
     const input = {
@@ -5176,13 +5391,14 @@ describe("computer app request matrix", () => {
     await test.service.computerAppApprovals.requestComputerAppAccess(test.input);
     expect(test.threadReadInsideAdmission).toEqual([false]);
   });
-  it("returns already available and toolRefs when the requested access is callable", async () => {
+  it("returns the resolved target when the requested access is callable", async () => {
     const test = fixture({ connectionAccess: "read-write", callableAccess: "read-write" });
     expect(
       await test.service.computerAppApprovals.requestComputerAppAccess(test.input),
     ).toMatchObject({
-      status: "already-available",
-      toolRefs: { observe: expect.any(String), act: expect.any(String) },
+      status: "fulfilled",
+      app: { displayName: expect.any(String), bundleId: expect.any(String) },
+      computerId: expect.any(String),
     });
     expect(test.requestComputerAppAccess).not.toHaveBeenCalled();
   });

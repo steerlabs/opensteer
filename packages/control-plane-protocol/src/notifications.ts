@@ -110,7 +110,12 @@ export const HostNotificationPublicationSchema = z
           (publication.kind === "team-notice") !==
             (publication.teamTarget?.kind === "team-notice") ||
           publication.teamTarget?.kind === "team-ready")) ||
-      (!teamKind && publication.threadId === null)
+      (!teamKind &&
+        publication.threadId === null &&
+        (publication.kind !== "request-opened" ||
+          publication.requestId !== null ||
+          publication.runId !== null ||
+          publication.messageId != null))
     )
       context.addIssue({ code: "custom", message: "Notification target does not match its kind" });
     const seen = new Set<string>();

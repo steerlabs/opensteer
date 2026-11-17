@@ -1,6 +1,6 @@
 import { encodeBase64Url } from "@opensteer/shared/base64url";
+import type { TabViewer } from "@opensteer/protocol";
 import type { BrowserFrameStore, BrowserFrameView } from "./client.js";
-import type { PlaceItem } from "./places.js";
 
 export interface BrowserLastPicture {
   readonly frame: BrowserFrameView;
@@ -83,19 +83,22 @@ export function getBrowserLastPicture(
 }
 
 /**
- * What a list row may show for a tab: a picture this device already holds.
- * Asking never streams, requests, subscribes or reorders what is kept.
+ * What a list row may show for a tab: a picture this device already holds of
+ * the page its own viewer bound. Asking never streams, requests, subscribes
+ * or reorders what is kept.
  */
 export function browserTabPicture(
   client: {
     readonly browserWatchFrames: BrowserFrameStore;
     readonly browserFrames: BrowserFrameStore;
+    tabViewer(tabId: string): TabViewer | null;
   },
-  sessionId: string,
   tabId: string,
 ): BrowserTabPicture | null {
+  const viewer = client.tabViewer(tabId);
+  if (viewer?.kind !== "page") return null;
   for (const frames of [client.browserWatchFrames, client.browserFrames]) {
-    const picture = current(frames, sessionId, tabId)?.entry.picture;
+    const picture = current(frames, viewer.sessionId, tabId)?.entry.picture;
     if (picture)
       return {
         get uri() {
@@ -108,36 +111,29 @@ export function browserTabPicture(
   return null;
 }
 
-/**
- * Forgets pictures of tabs no longer listed, and of tabs that have since
- * loaded another page, whose picture would show the wrong one.
- */
-export function keepBrowserLastPictures(
-  frames: BrowserFrameStore,
-  places: readonly PlaceItem[],
-): void {
-  const documents = new Map<string, string | null>();
-  for (const place of places)
-    if (place.destination.kind === "browser" && place.destination.tabId && place.browser)
-      documents.set(
-        pictureKey(place.destination.sessionId, place.destination.tabId),
-        place.browser.documentId,
-      );
-  reconcileBrowserLastPictures(frames, (sessionId, tabId) =>
-    documents.get(pictureKey(sessionId, tabId)),
-  );
-}
-
 export function reconcileBrowserLastPictures(
   frames: BrowserFrameStore,
   document: DocumentForTab,
+  sessionForTab?: (tabId: string) => string | undefined,
 ): void {
   listedDocuments.set(frames, document);
-  for (const [key, entry] of caches.get(frames) ?? []) {
-    const documentId = document(entry.sessionId, entry.tabId);
-    if (documentId === undefined || (entry.documentId != null && entry.documentId !== documentId)) {
+  for (const [key, entry] of Array.from(caches.get(frames) ?? [])) {
+    if (!current(frames, entry.sessionId, entry.tabId)) continue;
+    const sessionId = sessionForTab?.(entry.tabId) ?? entry.sessionId;
+    const documentId = document(sessionId, entry.tabId);
+    if (
+      documentId === undefined ||
+      (documentId !== null && entry.documentId != null && entry.documentId !== documentId)
+    ) {
       entry.unsubscribe();
       caches.get(frames)?.delete(key);
+    } else if (sessionId !== entry.sessionId) {
+      entry.unsubscribe();
+      caches.get(frames)?.delete(key);
+      if (current(frames, sessionId, entry.tabId)) continue;
+      rememberBrowserLastPicture(frames, sessionId, entry.tabId, entry.picture.frame);
+      const moved = caches.get(frames)?.get(pictureKey(sessionId, entry.tabId));
+      if (moved) moved.documentId = entry.documentId ?? documentId;
     } else entry.documentId ??= documentId;
   }
 }

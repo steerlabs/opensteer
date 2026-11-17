@@ -1,4 +1,5 @@
 export * from "./access.js";
+export * from "./assets.js";
 export * from "./attachments.js";
 export * from "./run-plans.js";
 export * from "./browser.js";
@@ -45,6 +46,7 @@ export * from "./agent-connections.js";
 export * from "./settings.js";
 export * from "./team-access.js";
 export * from "./runner-skill-metadata.js";
+export * from "./runner-agent-home-settings.js";
 
 export * from "./automatic-models.js";
 
@@ -58,6 +60,7 @@ export * from "./team-api.js";
 export * from "./team-session.js";
 
 export * from "./needs-you.js";
+export * from "./person-questions.js";
 export {
   readTeamFrame,
   TeamClientFrameViewSchema,
@@ -67,3 +70,31 @@ export {
 } from "./team-views.js";
 
 export * from "./devices.js";
+
+export * from "./team-partner.js";
+
+export * from "./team-share.js";
+
+export * from "./references.js";
+export * from "./file-sources.js";
+export * from "./transcript-files.js";
+
+export * from "./tabs.js";
+export * from "./agent-tool-relay.js";
+
+export {
+  PageAgentBindingSchema,
+  PageAgentBindInputSchema,
+  type PageAgentBinding,
+} from "./browser-agent.js";
+
+export {
+  ToolErrorSchema,
+  ToolFailureSchema,
+  type ToolError,
+  type ToolFailure,
+} from "@opensteer/core";
+
+export * from "./phone-display.js";
+
+export * from "./device-wire-compatibility.js";

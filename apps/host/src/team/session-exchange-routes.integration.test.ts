@@ -25,7 +25,7 @@ import Fastify from "fastify";
 import { SignJWT, exportJWK, generateKeyPair, type CryptoKey } from "jose";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { RemoteTeamIdentityAssertionVerifier } from "../access/team-identity-assertion-verifier.js";
-import { normalizeHostError } from "../server/http-errors.js";
+import { installHostHttpBoundary } from "../server/host-http-boundary.js";
 import { registerTeamSessionExchangeRoute } from "./session-exchange-routes.js";
 
 // Skipped outside the PostgreSQL launcher, which provides the database URL.
@@ -77,21 +77,29 @@ integration("team session exchange", () => {
 
     const now = Math.floor(Date.now() / 1_000);
     const foreignKey = (await generateKeyPair("EdDSA", { crv: "Ed25519" })).privateKey;
+    expect(
+      await host.exchange(await host.assertion(host.owner, { iat: now - 120, exp: now - 60 })),
+    ).toMatchObject(refused("assertion-expired"));
     for (const assertion of [
-      await host.assertion(host.owner, { iat: now - 120, exp: now - 60 }),
       await host.assertion(host.owner, {
         aud: "https://other.example.invalid",
         authority: { ...host.authority, canonicalOrigin: "https://other.example.invalid" },
       }),
+      await host.assertion(host.owner, {}, foreignKey),
+    ])
+      expect(await host.exchange(assertion)).toMatchObject(refused("assertion-invalid"));
+    for (const assertion of [
       await host.assertion(host.owner, {
         authority: { ...host.authority, hostInstanceId: createId("hostInstance") },
       }),
       await host.assertion(host.owner, {
         authority: { ...host.authority, deploymentId: createId("deployment") },
       }),
-      await host.assertion(host.owner, {}, foreignKey),
     ])
-      expect(await host.exchange(assertion)).toMatchObject(refused("assertion-invalid"));
+      expect(await host.exchange(assertion)).toMatchObject({
+        status: 403,
+        body: { error: { reason: "authority-changed" } },
+      });
   });
 
   it("refuses an application this team Host does not serve", async () => {
@@ -260,10 +268,7 @@ integration("team session exchange", () => {
       })
       .execute();
     const app = Fastify();
-    app.setErrorHandler((error, _request, reply) => {
-      const normalized = normalizeHostError(error);
-      void reply.status(normalized.status).send({ error: normalized.error });
-    });
+    installHostHttpBoundary(app);
     registerTeamSessionExchangeRoute(app, { identity, members });
     await app.ready();
     hosts.push(async () => {
@@ -353,7 +358,7 @@ function account(): ControlPlaneAccountId {
 
 function refused(reason: string) {
   return {
-    status: reason === "assertion-invalid" ? 401 : 403,
+    status: reason === "assertion-invalid" || reason === "assertion-expired" ? 401 : 403,
     body: { error: { reason: TeamEntryRefusalReasonSchema.parse(reason) } },
   };
 }

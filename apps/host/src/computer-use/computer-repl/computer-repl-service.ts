@@ -1,5 +1,5 @@
 import { DeviceAccessRefusal } from "../../administration/device-access.js";
-import { utf8Prefix } from "@opensteer/core";
+import { utf8Prefix, OpensteerError } from "@opensteer/core";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { delay } from "@opensteer/shared/delay";
 import { Worker } from "node:worker_threads";
@@ -251,9 +251,11 @@ export class ComputerReplService {
         code:
           error instanceof DeviceAccessRefusal
             ? error.reason
-            : "code" in record && typeof record.code === "string"
-              ? record.code
-              : "failed",
+            : error instanceof OpensteerError && error.reason
+              ? error.reason
+              : "code" in record && typeof record.code === "string"
+                ? record.code
+                : "failed",
         ...(error instanceof DeviceAccessRefusal
           ? { machineId: error.machineId, capability: error.capability }
           : {}),
@@ -263,6 +265,7 @@ export class ComputerReplService {
             : error instanceof Error
               ? error.message
               : "Computer operation failed.",
+        ...("next" in record && typeof record.next === "string" ? { next: record.next } : {}),
         performed:
           "performed" in record && Array.isArray(record.performed)
             ? record.performed.filter((value): value is string => typeof value === "string")
@@ -340,10 +343,16 @@ export class ComputerReplService {
       }
     }
     if (call.started) this.#executing--;
+    const failure = error ? boundedReplFailure(error) : undefined;
     call.resolve({
       content: call.content,
-      ...(error
-        ? { isError: true as const, structuredContent: { error: boundedReplFailure(error) } }
+      ...(failure
+        ? {
+            isError: true as const,
+            structuredContent: {
+              error: failure,
+            },
+          }
         : {}),
     });
     this.#drain();

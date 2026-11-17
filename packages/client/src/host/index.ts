@@ -5,11 +5,11 @@ export * from "./agent-activity-model.js";
 export * from "./conversation-presentation.js";
 export * from "./client.js";
 export * from "./deployment-policy.js";
-export * from "./phone-tab.js";
 export * from "./browser-access.js";
 export * from "./browser-profile-settings.js";
 export * from "./browser-sign-in.js";
 export * from "./composer-surface.js";
+export * from "./question-answers.js";
 export * from "./connection-usage.js";
 export * from "./execution-menu.js";
 export * from "./execution-preferences.js";
@@ -31,7 +31,8 @@ export * from "./thread-list-model.js";
 export * from "./search.js";
 export * from "./waiting-requests.js";
 export * from "./thread-placement.js";
-export * from "./queued-messages.js";
+export * from "./waiting-inputs.js";
+export * from "./waiting-draft.js";
 export * from "./transcript.js";
 export * from "./usage-notice.js";
 export * from "./browser-presentation.js";
@@ -53,7 +54,11 @@ export * from "./browser-history.js";
 export * from "./navigation-input.js";
 export * from "./computer-view-retention.js";
 export * from "./action-review.js";
-export * from "./browser-tab-strip.js";
+export * from "./tab-strip.js";
+export * from "./tab-store.js";
+export * from "./tabs-client.js";
+export * from "./apps.js";
+export type { TabsClient, TabsReadModel, TabsHostSnapshot } from "./tabs-contract.js";
 export * from "./tab-list.js";
 
 export * from "./browser-preferences.js";
@@ -73,6 +78,7 @@ export * from "./app-icons.js";
 export * from "./run-place.js";
 export * from "./run-page.js";
 export * from "./run-page-memory.js";
+export * from "./run-place-picture.js";
 
 export * from "./request-settlement.js";
 export * from "./personal-remote-access.js";
@@ -83,10 +89,7 @@ export * from "./connected-agents.js";
 
 export * from "./automatic-models.js";
 
-export type { AppTab } from "@opensteer/protocol";
-
 export * from "./browser-last-picture.js";
-export * from "./browser-thread-tabs.js";
 export * from "./browser-agent-follow.js";
 export * from "./harness-authentication.js";
 export * from "./account-name.js";
@@ -96,9 +99,20 @@ export * from "./subagent-model.js";
 export * from "./subagent-now.js";
 export * from "./node-detail.js";
 
-export { BrowserTabStore, type BrowserTabKey, type BrowserTabList } from "./browser-tab-store.js";
 export * from "./personal-team-links.js";
 export * from "./personal-stream-cache.js";
 export * from "./needs-you.js";
 
 export * from "./thread-visits.js";
+
+export * from "./idle-compaction.js";
+
+export * from "./asset-urls.js";
+
+export * from "./composer-references.js";
+export * from "./transcript-files.js";
+
+export * from "./tabs-contract.js";
+export * from "./device-projection.js";
+export type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";
+export * from "./iphone-setup.js";

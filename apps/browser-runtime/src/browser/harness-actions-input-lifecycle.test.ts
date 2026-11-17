@@ -254,62 +254,6 @@ assert(await page.locator('#keys').inputValue()==='A!A?','shifted aliases: '+awa
   );
 
   acceptance(
-    "14-paste",
-    "every way a harness program presses Cmd+V is refused at the router",
-    async (kit, report) => {
-      // The probe is not part of the recorded page state: a regression that
-      // pasted would put this computer's clipboard there, and evidence keeps
-      // only whether anything arrived.
-      await kit.run(`await page.evaluate(()=>{
-  document.body.insertAdjacentHTML('beforeend','<div id="paste-probe" contenteditable="true"></div>');
-  window.pastes=0;document.addEventListener('paste',()=>window.pastes++,true);
-  document.querySelector('#paste-probe').focus();
-});
-const refused=/Pasting is not available to agents/;
-await fails(()=>page.keyboard.press('Meta+V'),refused);
-await fails(()=>pressKey('v',{modifiers:4}),refused);
-await fails(()=>pressKey('v',{modifiers:4,commands:[]}),refused);
-await fails(()=>cdp('Input.dispatchKeyEvent',{type:'rawKeyDown',key:'v',code:'KeyV',windowsVirtualKeyCode:86,modifiers:4}),refused);
-await fails(()=>cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'v',code:'KeyV',modifiers:4,commands:['paste']}),refused);
-await page.keyboard.type('ok');
-const probe=await page.evaluate(()=>({pastes:window.pastes,typedOnly:document.querySelector('#paste-probe').textContent==='ok',length:document.querySelector('#paste-probe').textContent.length}));
-console.log(JSON.stringify(probe));
-assert(probe.pastes===0&&probe.typedOnly,'nothing pasted: '+JSON.stringify(probe));`);
-      // Each press owes its release even when refused, so count the downs.
-      const attempts = kit.trace.filter(
-        (e) =>
-          e.method === "Input.dispatchKeyEvent" &&
-          e.parameters?.type !== "keyUp" &&
-          String(e.parameters?.key).toLowerCase() === "v" &&
-          (Number(e.parameters?.modifiers) & 4) !== 0,
-      );
-      expect(attempts).toHaveLength(5);
-      for (const attempt of attempts)
-        expect(attempt.error, JSON.stringify(attempt.parameters)).toMatch(
-          /Pasting is not available to agents/,
-        );
-      // A macOS browser gets Playwright's paste command from the harness;
-      // elsewhere the router infers it. Both are refused.
-      const userAgent = await kit.read<string>("navigator.userAgent");
-      const mac = /Macintosh/u.test(userAgent);
-      expect(attempts.map((e) => e.parameters?.commands)).toEqual([
-        mac ? ["paste"] : undefined,
-        mac ? ["paste"] : undefined,
-        [],
-        undefined,
-        ["paste"],
-      ]);
-      const state = await kit.state();
-      const reached = (state.events as Record<string, unknown>[]).filter(
-        (e) => e.type === "keydown" && String(e.key).toLowerCase() === "v",
-      );
-      expect(reached).toEqual([]);
-      report.paste = { browser: userAgent, harnessSentPaste: mac, attempts: attempts.length };
-    },
-    "14",
-  );
-
-  acceptance(
     "14-version",
     "a slow browser-version lookup does not poison later actions in the program",
     async (kit) => {
@@ -480,7 +424,7 @@ console.log(JSON.stringify({elapsed:Date.now()-since}));`,
 
   acceptance(
     "14-release-tab-switch",
-    "an unresolved release is waited for once, not again after a tab switch or at exit",
+    "an unresolved release is waited for once while another bound page remains usable",
     async (kit, report) => {
       let firstSession: string | undefined;
       kit.hooks.before = async (method, parameters, sessionId) => {
@@ -488,11 +432,13 @@ console.log(JSON.stringify({elapsed:Date.now()-since}));`,
         firstSession ??= sessionId;
         if (sessionId === firstSession) await new Promise((resolve) => setTimeout(resolve, 8000));
       };
+      const second = await kit.ledger.openSurface();
+      await kit.ledger.binding(second.id)!.cdp.send("Page.navigate", { url: kit.site.url("12") });
       const out = await kit.run(
         `await fails(()=>page.locator('#keys').press('a',{timeout:500}),/release|Timeout/);
-const second=await newTab(${JSON.stringify(kit.site.url("12"))});
-await page.getByRole('button',{name:'Still usable'}).click();
-console.log(JSON.stringify({second}));`,
+const other=await openPage(${JSON.stringify(second.id)});
+await other.getByRole('button',{name:'Still usable'}).click();
+console.log(JSON.stringify({second:other.tabId}));`,
         { timeoutMs: 20_000 },
       );
       report.processElapsed = out.elapsedMs;

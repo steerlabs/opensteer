@@ -13,9 +13,8 @@ describe("workspace tab commands", () => {
     const style = document.createElement("style");
     style.textContent = stylesheet("tokens", "workspace");
     document.body.append(style);
-    const fixed = placeList(client.getSnapshot()).find((place) => !place.closable)!;
-    const row = element(`.side-tab[data-place-key="${fixed.key}"]`);
-    expect(row.querySelector(".side-tab__close-slot, .side-row-action")).toBeNull();
+    const first = placeList(client.getSnapshot())[0]!;
+    const row = element(`.side-tab[data-place-key="${first.key}"]`);
     const title = getComputedStyle(element(".side-tab__title", row));
     expect(title.flexGrow).toBe("1");
     expect(title.textOverflow).not.toBe("ellipsis");

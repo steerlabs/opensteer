@@ -1,5 +1,6 @@
-import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
+import { RunnerIdSchema } from "@opensteer/core";
+import { tabStoreFixture } from "@opensteer/client/test-support";
 
 import type { ReactNode } from "react";
 import { act } from "react";
@@ -191,33 +192,34 @@ function text(): string {
 }
 
 function host(manage = true, empty = false) {
-  const snapshot = seedBrowserSnapshot(
-    {
-      connection: "connected",
-      network: "online",
-      session: "authenticated",
-      user: { id: "user-a" },
-      browserProfileManageAvailable: manage,
-      browserProfiles: empty
-        ? []
-        : [
-            { id: "bpr_work", name: "Work", revision: 1 },
-            { id: "bpr_personal", name: "Personal", revision: 1 },
-          ],
-      browserProfileDeletions: [] as {
-        profileId: string;
-        computerId: string;
-        state: "pending-computer" | "pending-restart";
-      }[],
-      browserTabGroups: { groups: [], order: [] },
-      tabRestoreVersion: 1,
-      activatingPersonalTabs: [],
-      browserSessions: [],
-      browserPlacements: [],
-      machines: [{ id: "computer-delete", name: "Studio Mac" }],
-    } as unknown as import("@opensteer/client/host").HostSnapshot,
-    [],
-  );
+  const snapshot = {
+    connection: "connected",
+    network: "online",
+    session: "authenticated",
+    user: { id: "user-a" },
+    browserProfileManageAvailable: manage,
+    browserProfiles: empty
+      ? []
+      : [
+          { id: "bpr_work", name: "Work", revision: 1 },
+          { id: "bpr_personal", name: "Personal", revision: 1 },
+        ],
+    browserProfileDeletions: [] as {
+      profileId: string;
+      computerId: string;
+      state: "pending-computer" | "pending-restart";
+    }[],
+    browserSessions: [],
+    browserPlacements: [],
+    machines: [
+      {
+        id: "computer-delete",
+        selfRunnerId: RunnerIdSchema.parse("rnr_88888888-8888-4888-8888-888888888888"),
+        name: "Studio Mac",
+      },
+    ],
+    tabs: tabStoreFixture([]),
+  };
   const dispatch = vi.fn(async (command: { type: string }) => ({ type: command.type }));
   state.hostClient = { dispatch, getSnapshot: () => snapshot };
   return { dispatch, snapshot };
@@ -280,10 +282,14 @@ describe("mobile browser profiles", () => {
     snapshot.browserProfileDeletions = [
       {
         profileId: "bpr_deleted_offline",
-        computerId: "computer-delete",
+        computerId: RunnerIdSchema.parse("rnr_88888888-8888-4888-8888-888888888888"),
         state: "pending-computer",
       },
-      { profileId: "bpr_deleted_restart", computerId: "computer-delete", state: "pending-restart" },
+      {
+        profileId: "bpr_deleted_restart",
+        computerId: RunnerIdSchema.parse("rnr_88888888-8888-4888-8888-888888888888"),
+        state: "pending-restart",
+      },
     ];
     const repaint = await render();
     expect(text()).toContain("Will be erased when Studio Mac is back online");

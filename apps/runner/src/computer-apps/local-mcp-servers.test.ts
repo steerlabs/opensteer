@@ -57,7 +57,7 @@ it("ends all plugin sessions before deleting state and acknowledges repeated rem
 
 it("runs local MCP where no native provider exists, through removal of its plugin's data", async () => {
   directory = await realpath(await mkdtemp(path.join(tmpdir(), "local-mcp-")));
-  const prepared = prepareIntegrationsModule({ dataDirectory: directory, platform: "win32" });
+  const prepared = await prepareIntegrationsModule({ dataDirectory: directory, platform: "win32" });
   expect(prepared?.providers).toEqual([]);
   expect(prepared?.descriptor).toMatchObject({ pluginDataRemoval: 1, platform: "win32" });
   expect(prepared?.descriptor).not.toHaveProperty("computerUseVersion");
@@ -84,7 +84,7 @@ it("runs local MCP where no native provider exists, through removal of its plugi
     });
   } finally {
     servers.detach();
-    prepared?.close?.();
+    await prepared?.close?.();
   }
 });
 

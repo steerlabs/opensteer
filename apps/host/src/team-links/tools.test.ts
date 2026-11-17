@@ -51,6 +51,7 @@ it("uses durable operation IDs and attaches reply claims only for the exact Run 
     },
   });
   const request = PersonalTeamRequestSchema.parse({
+    kind: "self",
     teamId: source.teamId,
     requestId: createId("teamAgentRequest"),
     triggerMessageId: "2",
@@ -64,7 +65,9 @@ it("uses durable operation IDs and attaches reply claims only for the exact Run 
   });
   const ledger = {
     forRun: async () => request,
-    freeze: vi.fn(),
+    post: async () => undefined,
+    recordPost: vi.fn(),
+    freeze: vi.fn(async () => request),
     publication: vi.fn(),
   } as unknown as PersonalTeamRequestsStore;
   const calls: TeamLinkCallInput[] = [];
@@ -73,7 +76,13 @@ it("uses durable operation IDs and attaches reply claims only for the exact Run 
     if (input.type === "read") return { kind: "read", result: { source } } as TeamLinkResult;
     return { kind: "receipt", messageId: source.messageId };
   };
-  const tools = new TeamRunTools({} as PersonalTeamLinksStore, ledger, () => ({ call }));
+  const tools = new TeamRunTools(
+    {
+      get: async () => ({ id: "local", remoteLinkId: createId("teamLink"), state: "active" }),
+    } as unknown as PersonalTeamLinksStore,
+    ledger,
+    () => ({ call }),
+  );
   const post = {
     channelId: source.channelId,
     threadRootId: source.threadRootId!,

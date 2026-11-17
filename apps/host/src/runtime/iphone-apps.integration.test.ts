@@ -40,7 +40,7 @@ import {
   operations,
   requestComputerAppSetup,
   setComputerApp,
-  toolReadiness,
+  toolBlocked,
   toolText,
   waitForClose,
   waitForMessage,
@@ -627,7 +627,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     const connection = await host.store.database
       .selectFrom("integrationConnections")
       .select("id")
-      .where("runnerId", "=", phone.runnerId)
+      .where("deviceId", "=", await host.store.requireSelfDeviceId(phone.runnerId))
       .where("integrationDefinitionId", "=", "apple-calendar")
       .executeTakeFirstOrThrow();
     expect(
@@ -698,7 +698,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     const connection = await host.store.database
       .selectFrom("integrationConnections")
       .select("id")
-      .where("runnerId", "=", phone.runnerId)
+      .where("deviceId", "=", await host.store.requireSelfDeviceId(phone.runnerId))
       .where("integrationDefinitionId", "=", "apple-calendar")
       .executeTakeFirstOrThrow();
     const run = await dispatchCallerRun(host, caller, {
@@ -819,9 +819,12 @@ integration.sequential("iPhone integrations Host contract", () => {
     const phoneWriteAddress = operation(phoneTools, "create_event").address;
     await phone.disconnectStream();
     expect(
-      toolReadiness(await gateway.call("integration_search", { query: "Calendar" }), "list_events")
-        .detail,
-    ).toBe(offline("Test iPhone"));
+      toolBlocked(await gateway.call("integration_search", { query: "Calendar" }), "list_events"),
+    ).toEqual({
+      code: "unavailable",
+      message: `apple-calendar is unavailable: ${offline("Test iPhone").replace(/[.!?]+$/, "")}.`,
+      next: "Continue without it and tell the person what the message says.",
+    });
     await phone.reconnect();
     // Give the other Mac signed write approval and a live Workspace grant.
     // Losing the phone still cannot route to it.
@@ -900,9 +903,15 @@ integration.sequential("iPhone integrations Host contract", () => {
       ...phoneReadAddress,
     });
     expect(offlineCall).toMatchObject({ isError: true });
-    expect(toolText(offlineCall)).toBe(
-      `device-offline: machineId=${phone.runnerId}, capability=apps. Device is offline. Do not request access.`,
-    );
+    expect(offlineCall).toMatchObject({
+      structuredContent: {
+        error: {
+          code: "computer_offline",
+          message: "Device is offline. Do not request access.",
+          next: `computerId=${phone.runnerId}, access=apps. Continue without it and tell the person what the message says.`,
+        },
+      },
+    });
     expect(macCalls).toHaveLength(0);
     await writeFile(
       join(directory, "invocations.json"),

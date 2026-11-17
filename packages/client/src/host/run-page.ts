@@ -1,68 +1,76 @@
-import { computerAppIdentityKey, type MachineSummary } from "@opensteer/protocol";
 import type { PlaceEnteredEventView } from "@opensteer/core";
-import type { BrowserSessionSummary } from "./client.js";
+import type { HostSnapshot } from "./client.js";
 
-/**
- * What a person has done with a conversation's live page, held in memory for
- * that conversation only: open or folded is presentation, never a route.
- */
 export interface RunPageMemory {
-  /** The person folded it here, and it stays folded until they open it. */
   readonly folded: boolean;
-  /** The Run whose page stands open. */
-  readonly openRunId: string | null;
-  /** The Run whose first action was already decided, so it opens at most once by itself. */
-  readonly decidedRunId: string | null;
+  readonly run: {
+    readonly runId: string;
+    readonly intent: "undecided" | "open" | "closed";
+    readonly paged: boolean;
+  } | null;
 }
 
-export const freshRunPageMemory: RunPageMemory = {
-  folded: false,
-  openRunId: null,
-  decidedRunId: null,
-};
+export const freshRunPageMemory: RunPageMemory = { folded: false, run: null };
 
-/** What the person was doing when the agent first acted. */
 export interface RunPageMoment {
+  readonly visible: boolean;
+  readonly picture: boolean;
   readonly cellular: boolean | null;
   readonly scrolledUp: boolean;
   readonly typing: boolean;
 }
 
-/**
- * The agent acted in a place for this Run. The first time, the page opens by
- * itself unless the person folded it here, is reading back, is typing, or is
- * on cellular, where a large picture costs their data.
- */
-export function runPageActed(
+export function runPageConsidered(
   memory: RunPageMemory,
-  runId: string,
+  runId: string | null,
   moment: RunPageMoment,
 ): RunPageMemory {
-  if (moment.cellular === null) return memory;
-  if (memory.decidedRunId === runId) return memory;
-  const opens = !memory.folded && !moment.scrolledUp && !moment.typing && !moment.cellular;
-  return { ...memory, decidedRunId: runId, openRunId: opens ? runId : null };
+  if (runId === null) return memory.run === null ? memory : { ...memory, run: null };
+  const run =
+    memory.run?.runId === runId
+      ? memory.run
+      : { runId, intent: "undecided" as const, paged: false };
+  let intent = run.intent;
+  if (intent === "undecided") {
+    if (memory.folded) intent = "closed";
+    else if (moment.visible && moment.picture && !moment.typing && moment.cellular !== null)
+      intent = moment.scrolledUp || moment.cellular ? "closed" : "open";
+  }
+  if (memory.run === run && intent === run.intent) return memory;
+  return { ...memory, run: intent === run.intent ? run : { ...run, intent } };
 }
 
 export function runPageFolded(memory: RunPageMemory): RunPageMemory {
-  return { ...memory, folded: true, openRunId: null };
+  if (memory.folded && (memory.run === null || memory.run.intent === "closed")) return memory;
+  return { ...memory, folded: true, run: memory.run && { ...memory.run, intent: "closed" } };
 }
 
-export function runPageOpened(runId: string): RunPageMemory {
-  return { folded: false, openRunId: runId, decidedRunId: runId };
+export function runPageOpened(runId: string, memory = freshRunPageMemory): RunPageMemory {
+  if (!memory.folded && memory.run?.runId === runId && memory.run.intent === "open") return memory;
+  return {
+    folded: false,
+    run: { runId, intent: "open", paged: memory.run?.runId === runId && memory.run.paged },
+  };
 }
 
-/** `none` while no Run of this conversation is in a place; it ends with the Run. */
-export type RunPageShown = "none" | "open" | "folded";
+export function runPagePaged(memory: RunPageMemory, runId: string): RunPageMemory {
+  if (memory.run?.runId !== runId || memory.run.intent !== "open" || memory.run.paged)
+    return memory;
+  return { ...memory, run: { ...memory.run, paged: true } };
+}
 
-/** `runId` is the conversation's Run, only while it is in a place; `fits` is whether `runPageSize` found room. */
+export type RunPageShown = "none" | "folded" | "row" | "page";
+
 export function runPageShown(
   memory: RunPageMemory,
   runId: string | null,
   fits: boolean,
+  options: { readonly picture: boolean; readonly headHasRoom?: boolean } = { picture: true },
 ): RunPageShown {
   if (runId === null) return "none";
-  return memory.openRunId === runId && fits ? "open" : "folded";
+  if (memory.run?.runId === runId && memory.run.intent === "open" && fits)
+    return options.picture || memory.run.paged ? "page" : "row";
+  return options.headHasRoom === false ? "row" : "folded";
 }
 
 /** Below this a page is too small to read and folds instead. */
@@ -96,34 +104,18 @@ export function runPageSize(input: {
 }
 
 /**
- * Whether this conversation's agent is acting in its Run's place right now. A
- * tab is shared, so it counts only when this conversation is the one acting
- * there; a Mac app or phone session is the Run's own.
+ * Whether this conversation's agent is acting in its Run's place right now:
+ * the Host's activity for that exact tab names this conversation. A window
+ * is never inferred from its app, so two windows of one app stay apart.
  */
 export function runPlaceActing(
   entry: PlaceEnteredEventView,
-  snapshot: {
-    readonly browserSessions: readonly BrowserSessionSummary[];
-    readonly machines: readonly MachineSummary[];
-  },
+  snapshot: Pick<HostSnapshot, "tabs">,
+  activity: readonly { readonly threadId: string }[],
   threadId: string,
 ): boolean {
-  const place = entry.data.place;
-  if (place.kind === "browser")
-    return snapshot.browserSessions.some(
-      (session) =>
-        session.state === "ready" &&
-        session.browserTabs
-          ?.sessionTab(session.id, place.surfaceId)
-          ?.occupants.some((occupant) => occupant.acting && occupant.threadId === threadId) ===
-          true,
-    );
-  const session = snapshot.machines
-    .find((machine) => machine.id === place.machineId)
-    ?.computerUse?.sessions.find((session) => session.runId === entry.runId);
-  if (session === undefined) return false;
-  return place.kind === "phone"
-    ? session.actingDisplay === true
-    : session.actingAppKeys.includes(place.appKey) &&
-        session.apps.some((app) => computerAppIdentityKey(app) === place.appKey);
+  return (
+    snapshot.tabs.get(entry.data.tabId) !== undefined &&
+    activity.some((record) => record.threadId === threadId)
+  );
 }

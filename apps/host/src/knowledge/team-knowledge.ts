@@ -211,10 +211,18 @@ export async function startTeamKnowledge(options: {
   ): Promise<
     Map<KnowledgeTopicId, { readonly audience: TeamTopicAudience; readonly roomCanRead?: boolean }>
   > {
-    const [readers, members, roomReaders] = await Promise.all([
+    const [readers, members, roomReaders, sharedRoom] = await Promise.all([
       teamTopicReaders(executor, topicIds),
       teamActiveMemberCount(executor),
       room ? teamChannelReaders(executor, room) : undefined,
+      room
+        ? executor
+            .selectFrom("teamShares")
+            .select("id")
+            .where("channelId", "=", room)
+            .where((eb) => eb.or([eb("state", "=", "active"), eb("role", "=", "follower")]))
+            .executeTakeFirst()
+        : undefined,
     ]);
     return new Map(
       [...readers].map(([topicId, read]) => [
@@ -227,7 +235,8 @@ export async function startTeamKnowledge(options: {
           ...(roomReaders
             ? {
                 roomCanRead:
-                  read === "everyone" || [...roomReaders].every((userId) => read.has(userId)),
+                  !sharedRoom &&
+                  (read === "everyone" || [...roomReaders].every((userId) => read.has(userId))),
               }
             : {}),
         },
@@ -324,7 +333,7 @@ export async function startTeamKnowledge(options: {
   async function topics(
     agent: TeamKnowledgeAgent,
   ): Promise<TeamKnowledgeAnswer<TeamKnowledgeTopicsResult>> {
-    const authorizedAt = access.revision;
+    const authorizedAt = await access.current();
     return denied(agent, "knowledge.topics", async () => {
       const { result, room, actor } = await inTransaction(async (transaction) => {
         const { actor, room } = await caller(transaction, agent);
@@ -391,7 +400,7 @@ export async function startTeamKnowledge(options: {
     agent: TeamKnowledgeAgent,
     input: TeamKnowledgeReadInput,
   ): Promise<TeamKnowledgeAnswer<TeamKnowledgeReadResult>> {
-    const authorizedAt = access.revision;
+    const authorizedAt = await access.current();
     return denied(agent, "knowledge.read", async () => {
       const read = await inTransaction(async (transaction) => {
         const { actor, room } = await caller(transaction, agent);
@@ -476,7 +485,7 @@ export async function startTeamKnowledge(options: {
     agent: TeamKnowledgeAgent,
     input: TeamKnowledgeWrite,
   ): Promise<TeamKnowledgeAnswer<TeamKnowledgeWriteResult>> {
-    const authorizedAt = access.revision;
+    const authorizedAt = await access.current();
     return denied(agent, "knowledge.write", async () => {
       const outcome = await access.knowledgeWrite(async (transaction) => {
         const { actor, room } = await caller(transaction, agent);
@@ -581,7 +590,7 @@ export async function startTeamKnowledge(options: {
     });
 
   async function topicsList(actor: TeamActor, input: Read<"team.knowledge.topics.list">["input"]) {
-    const authorizedAt = access.revision;
+    const authorizedAt = await access.current();
     const page = await inTransaction(async (transaction) => {
       const seen: TeamTopic[] = [];
       let after = input.after;
@@ -611,7 +620,7 @@ export async function startTeamKnowledge(options: {
     const person = human(actor);
     if (!isTeamKnowledgeRead(name))
       throw new OpensteerError({ code: "not_found", message: "Unsupported knowledge read" });
-    const authorizedAt = access.revision;
+    const authorizedAt = await access.current();
     switch (name) {
       case "team.knowledge.topics.list":
         return topicsList(person, teamReadSchemas[name].input.parse(input));

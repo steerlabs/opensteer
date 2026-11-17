@@ -1,9 +1,38 @@
+import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
+import { DeviceIdSchema, DeviceDriverGenerationSchema } from "@opensteer/core";
+import { MachineSummarySchema } from "./machines.js";
+import { OwnerWindowInfoSchema } from "./computer-use.js";
+import { HostBootstrapSchema, type HostBootstrap } from "./bootstrap.js";
+import {
+  TabCommandSchema,
+  TabCommandResultSchema,
+  TabGetInputSchema,
+  TabBootstrapSchema,
+} from "./tabs.js";
+import {
+  AppViewSchema,
+  AppCommandSchema,
+  AppCommandResultSchema,
+  AppsListInputSchema,
+  AppsListResultSchema,
+} from "./apps.js";
+import { MessageOriginSchema, TabViewSchema } from "@opensteer/core";
+import {
+  TranscriptFileOpenInputSchema,
+  TranscriptFileOpenSchema,
+  TranscriptFileContentInputSchema,
+  TranscriptFileContentSchema,
+} from "./transcript-files.js";
 import { TeamCommandResultViewSchema, teamReadViews } from "./team-views.js";
 import { NeedsYouPageSchema } from "./needs-you.js";
+import {
+  CompactionSendChoiceSchema,
+  IdleCompactionPolicySchema,
+  IdleCompactionPolicyViewSchema,
+} from "@opensteer/core";
 import { ToolOutputViewSchema } from "@opensteer/core";
 import { AutomaticModelsViewSchema } from "./automatic-models.js";
 import { TeamCommandSchema, teamReadSchemas } from "./team-api.js";
-import { AutomaticModelConfigSchema, AutomaticModelConfigViewSchema } from "@opensteer/core";
 import {
   AgentConnectionSchema,
   AgentConnectionIdSchema,
@@ -28,7 +57,6 @@ import {
   ChannelAccountViewSchema,
   ChannelBindingIdSchema,
   ChannelBindingViewSchema,
-  ChannelConnectionInspectionViewSchema,
   ChannelDashboardViewSchema,
   ChannelExecutionPolicySchema,
   ChannelRouteSelectorSchema,
@@ -73,7 +101,9 @@ import {
   LiveRunProgressViewSchema,
   LocalPasswordRecoveryTokenSchema,
   MessageContentSchema,
+  MessageEditViewSchema,
   MessageIdSchema,
+  MessageRevisionViewSchema,
   MessageViewSchema,
   ModelSelectionSchema,
   NotificationInstallationIdSchema,
@@ -91,6 +121,7 @@ import {
   SequenceSchema,
   ThreadAccessModeSchema,
   ThreadIdSchema,
+  ThreadInputEditLeaseViewSchema,
   ThreadInputPolicySchema,
   ThreadInputQueueViewSchema,
   ThreadInputViewSchema,
@@ -100,6 +131,7 @@ import {
   ThreadViewSchema,
   TimeZoneSchema,
   QuietTaskDaysSchema,
+  PersonNameSchema,
   TriggerIdSchema,
   TriggerOccurrenceIdSchema,
   WaitingRequestViewSchema,
@@ -142,6 +174,10 @@ import {
   RequestComputerAppSetupSchema,
   SaveIntegrationProviderApplicationSchema,
   SetComputerAppConnectionSchema,
+  DeviceSetComputerAppConnectionSchema,
+  DeviceRequestComputerAppSetupSchema,
+  DeviceComputerAppSetupRequestViewSchema,
+  DeviceIntegrationConnectionSummaryViewSchema,
   SetIntegrationApplicationSourceDefaultSchema,
   SetIntegrationProviderApplicationStatusSchema,
 } from "@opensteer/integration-core";
@@ -155,10 +191,12 @@ import {
   UpdateTriggerHttpBodySchema,
 } from "@opensteer/triggers/models";
 import { z } from "zod";
-import { AppIdSchema, AppSchema } from "@opensteer/core";
+import { ReferenceResolveInputSchema, ReferenceResolveResultSchema } from "./references.js";
+import { AppIdSchema } from "@opensteer/core";
 import { AgentPhoneHostTargetViewSchema } from "./android-phone.js";
+import { AssetUrlsInputSchema, AssetUrlsSchema } from "./assets.js";
 import { AttachmentContentSchema, AttachmentReferenceInputSchema } from "./attachments.js";
-import { AppTabsSchema, HostBootstrapSchema, IdentityConfigViewSchema } from "./bootstrap.js";
+import { IdentityConfigViewSchema, OwnerProfileViewSchema } from "./bootstrap.js";
 import {
   BrowserSignInDecisionSchema,
   BrowserSignInOutcomeSchema,
@@ -178,33 +216,13 @@ import {
   BrowserProfileDeletionSchema,
   BrowserProfileNameSchema,
   BrowserProfileSchema,
-  BrowserTabCloseCommandSchema,
-  BrowserTabCloseResultSchema,
   BrowserTabIconInputSchema,
   BrowserTabIconResultSchema,
-  BrowserTabOpenCommandSchema,
-  BrowserTabOpenResultSchema,
   CreateBrowserProfileBodySchema,
   CreateBrowserProfileResponseSchema,
   StartHostedBrowserBodySchema,
   StartHostedBrowserResponseSchema,
   ThreadBrowserUsageSchema,
-  PersonalTabActivateCommandSchema,
-  PersonalTabActivateResultSchema,
-  PersonalTabCloseCommandSchema,
-  PersonalTabCloseResultSchema,
-  PersonalTabGroupUpdateCommandSchema,
-  PersonalTabGroupUpdateResultSchema,
-  PersonalTabReopenCommandSchema,
-  PersonalTabReopenResultSchema,
-  PersonalTabsCloseCommandSchema,
-  PersonalTabsCloseResultSchema,
-  PersonalTabsGroupCommandSchema,
-  PersonalTabsGroupResultSchema,
-  PersonalTabsMoveCommandSchema,
-  PersonalTabsMoveResultSchema,
-  PersonalTabsUngroupCommandSchema,
-  PersonalTabsUngroupResultSchema,
   browserUsageRunBatchSize,
 } from "./browser.js";
 import {
@@ -222,7 +240,6 @@ import {
   ComputerUseInstalledAppSchema,
   ComputerUseInstalledAppsParamsSchema,
   ComputerUseSessionIdSchema,
-  OwnerWindowInfoSchema,
   computerUseMaxInstalledApps,
   computerUseMaxWindows,
 } from "./computer-use.js";
@@ -230,8 +247,6 @@ import {
   ApprovedComputerAppSchema,
   ComputerViewCloseCommandSchema,
   ComputerViewCloseResultSchema,
-  ComputerViewOpenCommandSchema,
-  ComputerViewOpenResultSchema,
   ComputerViewRenewCommandSchema,
   ComputerViewRenewResultSchema,
 } from "./computer-view.js";
@@ -242,8 +257,8 @@ import {
   DeviceRefusalContextSchema,
   DeviceSessionBindingProofSchema,
 } from "./devices.js";
-import { MachineSummarySchema } from "./machines.js";
-import { defineRpc, type RpcClient, type RpcHandlers } from "./rpc.js";
+
+import { defineRpc, type RpcClient, type RpcDeclaration, type RpcHandlers } from "./rpc.js";
 import { RunnerModuleNameSchema } from "./runner-identity.js";
 import {
   HarnessAuthenticationStateViewSchema,
@@ -281,6 +296,9 @@ const ComputerUseInstalledAppViewSchema = z.object({
   identity: ComputerAppIdentityViewSchema,
 });
 const idempotencyKeySchema = z.string().trim().min(1).max(255);
+/** Client-generated, so a retried take is the same lease. */
+const threadInputEditLeaseIdSchema = z.string().regex(/^[A-Za-z0-9_-]{16,64}$/);
+export const messageRevisionsPageSize = 20;
 const emailSchema = z.email().max(320);
 // An interrupted native OAuth authorization rides through sign-in as its opaque
 // original query string. Bounding it keeps an unauthenticated caller from
@@ -299,12 +317,12 @@ const oidcReturnPathSchema = z
   .default("/");
 
 /**
- * The request header every rpc caller states its protocol epoch in. A request
- * that omits it is a client from before negotiation existed, and the Host
- * refuses it: there are none in the wild, because the Host serves its own web
- * bundle and the Desktop ships with the Host it talks to.
+ * The request headers every rpc caller states its versions in. Phones, Agent
+ * Phones, Runners and open windows update apart from their Host, so it serves
+ * every caller whose window overlaps its own.
  */
 export {
+  hostApiCurrentHeader,
   hostApiVersionHeader,
   teamApiVersion,
   teamApiVersionHeader,
@@ -345,26 +363,99 @@ const harnessAuthenticationEnvelopeSchema = z.object({
   environmentStatus: z.enum(["connected", "disconnected"]),
 });
 
+const deviceConnectionViewSchema = DeviceIntegrationConnectionSummaryViewSchema.extend({
+  computer: DeviceIntegrationConnectionSummaryViewSchema.shape.computer
+    .unwrap()
+    .unwrap()
+    .extend({ runnerId: RunnerIdSchema.optional() })
+    .nullable()
+    .default(null),
+});
+
+const deviceSetupRequestViewSchema = DeviceComputerAppSetupRequestViewSchema.extend({
+  runnerId: RunnerIdSchema.optional(),
+});
+
+export const IntegrationDashboardResponseSchema = IntegrationDashboardViewSchema.extend({
+  connections: z
+    .array(z.union([IntegrationConnectionSummaryViewSchema, deviceConnectionViewSchema]))
+    .max(500),
+});
+export const ComputerAppSetupListResponseSchema = z.object({
+  requests: z
+    .array(z.union([ComputerAppSetupRequestViewSchema, deviceSetupRequestViewSchema]))
+    .max(1_000),
+});
+
+export const IphoneScreenAttachCommandSchema = z.strictObject({
+  type: z.literal("iphone.screen.attach"),
+  idempotencyKey: idempotencyKeySchema,
+  driverRunnerId: RunnerIdSchema,
+  target: z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("new"), name: z.string().trim().min(1).max(120) }),
+    z.strictObject({
+      kind: z.literal("existing"),
+      deviceId: DeviceIdSchema,
+      expectedGeneration: DeviceDriverGenerationSchema,
+    }),
+  ]),
+});
+export type IphoneScreenAttachCommand = z.infer<typeof IphoneScreenAttachCommandSchema>;
+export const IphoneScreenDetachCommandSchema = z.strictObject({
+  type: z.literal("iphone.screen.detach"),
+  idempotencyKey: idempotencyKeySchema,
+  deviceId: DeviceIdSchema,
+  expectedGeneration: DeviceDriverGenerationSchema,
+});
+export type IphoneScreenDetachCommand = z.infer<typeof IphoneScreenDetachCommandSchema>;
+export const IphoneScreenAttachResultSchema = z.object({
+  type: z.literal("iphone.screen.attach"),
+  deviceId: DeviceIdSchema,
+  generation: DeviceDriverGenerationSchema,
+});
+export type IphoneScreenAttachResult = z.infer<typeof IphoneScreenAttachResultSchema>;
+export const IphoneScreenDetachResultSchema = z.object({
+  type: z.literal("iphone.screen.detach"),
+  deviceId: DeviceIdSchema,
+  generation: DeviceDriverGenerationSchema,
+});
+export type IphoneScreenDetachResult = z.infer<typeof IphoneScreenDetachResultSchema>;
+export const DeviceMachineRevokeCommandSchema = z.strictObject({
+  idempotencyKey: idempotencyKeySchema,
+  machineId: z.string().min(1).max(512).pipe(DeviceIdSchema),
+  type: z.literal("machine.revoke"),
+});
+export type DeviceMachineRevokeCommand = z.infer<typeof DeviceMachineRevokeCommandSchema>;
+export const DeviceMachineRenameCommandSchema = z.strictObject({
+  idempotencyKey: idempotencyKeySchema,
+  machineId: z.string().min(1).max(512).pipe(DeviceIdSchema),
+  name: z.string().trim().min(1).max(120),
+  type: z.literal("machine.rename"),
+});
+export type DeviceMachineRenameCommand = z.infer<typeof DeviceMachineRenameCommandSchema>;
+export const DeviceMachineAccessUpdateCommandSchema = z.strictObject({
+  type: z.literal("machine.access.update"),
+  idempotencyKey: idempotencyKeySchema,
+  deviceId: DeviceIdSchema,
+  expectedRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  policy: MachineAccessPolicySchema,
+});
+export type DeviceMachineAccessUpdateCommand = z.infer<
+  typeof DeviceMachineAccessUpdateCommandSchema
+>;
+export const DeviceMachineSessionBindCommandSchema = z.strictObject({
+  type: z.literal("machine.session.bind"),
+  idempotencyKey: idempotencyKeySchema,
+  machineId: DeviceIdSchema,
+  proof: DeviceSessionBindingProofSchema,
+});
+export type DeviceMachineSessionBindCommand = z.infer<typeof DeviceMachineSessionBindCommandSchema>;
+
 const otherCommandInputSchema = z.discriminatedUnion("type", [
-  z.strictObject({
-    type: z.literal("app.tab.open"),
-    appId: AppIdSchema,
-    idempotencyKey: idempotencyKeySchema,
-  }),
-  z.strictObject({
-    type: z.literal("app.tab.close"),
-    appId: AppIdSchema,
-    idempotencyKey: idempotencyKeySchema,
-  }),
-  z.strictObject({
-    type: z.literal("phone.tab.close"),
-    machineId: RunnerIdSchema,
-    idempotencyKey: idempotencyKeySchema,
-  }),
-  ComputerViewOpenCommandSchema,
+  IphoneScreenAttachCommandSchema,
+  IphoneScreenDetachCommandSchema,
   ComputerViewCloseCommandSchema,
   ComputerViewRenewCommandSchema,
-  BrowserTabCloseCommandSchema,
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     mediaType: AttachmentMediaTypeSchema,
@@ -419,8 +510,11 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     .strictObject({
       content: MessageContentSchema,
       delivery: ThreadInputPolicySchema.extract(["queue", "steer"]).optional().default("queue"),
+      compaction: CompactionSendChoiceSchema.optional(),
       freshContext: z.boolean().optional(),
       idempotencyKey: idempotencyKeySchema,
+      /** Sent only to a Host advertising `message-origin-v1`. */
+      origin: MessageOriginSchema.optional(),
       threadId: ThreadIdSchema,
       type: z.literal("thread.sendMessage"),
       quotedMessageId: MessageIdSchema.optional(),
@@ -455,6 +549,47 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     threadId: ThreadIdSchema,
     type: z.literal("thread.input.move"),
   }),
+  /**
+   * Starts editing a waiting message on this device. The client names the
+   * lease, so a retry is the same lease. Another device's live lease is a
+   * conflict unless `takeOver`.
+   */
+  z.strictObject({
+    leaseId: threadInputEditLeaseIdSchema,
+    messageId: MessageIdSchema,
+    takeOver: z.boolean(),
+    threadId: ThreadIdSchema,
+    type: z.literal("thread.input.lease.take"),
+  }),
+  /** Extends this device's lease while the person types; a replaced lease stays replaced. */
+  z.strictObject({
+    leaseId: threadInputEditLeaseIdSchema,
+    messageId: MessageIdSchema,
+    threadId: ThreadIdSchema,
+    type: z.literal("thread.input.lease.renew"),
+  }),
+  /** Ends this device's lease, or with no `leaseId` releases whichever device holds it. */
+  z.strictObject({
+    leaseId: threadInputEditLeaseIdSchema.optional(),
+    messageId: MessageIdSchema,
+    threadId: ThreadIdSchema,
+    type: z.literal("thread.input.lease.release"),
+  }),
+  /**
+   * Replaces a waiting message's content in place and ends the lease. Accepted
+   * when `leaseId` is the live lease or no device holds one, and the message is
+   * still at `expectedRevision` (0 when never edited). Non-text parts may only be
+   * kept or removed.
+   */
+  z.strictObject({
+    content: MessageContentSchema,
+    expectedRevision: z.number().int().nonnegative(),
+    idempotencyKey: idempotencyKeySchema,
+    leaseId: threadInputEditLeaseIdSchema.optional(),
+    messageId: MessageIdSchema,
+    threadId: ThreadIdSchema,
+    type: z.literal("thread.input.edit"),
+  }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     threadId: ThreadIdSchema,
@@ -484,18 +619,31 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     keyId: NotificationPreviewKeyIdSchema,
     key: NotificationPreviewKeySchema,
   }),
-  // The reader's IANA time zone, which a client reports from its own clock so
-  // an agent asked for "5pm" means the person's 5pm.
+  // Sent by apps from before `message-origin-v1`; accepted and ignored.
   z.strictObject({
     type: z.literal("viewer.timeZone.update"),
     idempotencyKey: idempotencyKeySchema,
     timeZone: TimeZoneSchema,
+  }),
+  z.strictObject({
+    type: z.literal("settings.idleCompaction.set"),
+    idempotencyKey: idempotencyKeySchema,
+    policy: IdleCompactionPolicySchema,
   }),
   // How many untouched days move the reader's tasks to Done. Needs `quiet-tasks-v1`.
   z.strictObject({
     type: z.literal("viewer.quietTasks.update"),
     idempotencyKey: idempotencyKeySchema,
     quietTaskDays: QuietTaskDaysSchema,
+  }),
+  // The personal owner's own name; null shows "You" and is refused while an Account owns it.
+  // Sent only to Hosts whose bootstrap carries `ownerProfile`.
+  z.strictObject({
+    type: z.literal("viewer.name.update"),
+    idempotencyKey: idempotencyKeySchema,
+    name: PersonNameSchema.nullable(),
+    /** `ownerProfile.version` when the person began editing. */
+    expectedVersion: OwnerProfileViewSchema.shape.version,
   }),
   z.strictObject({
     continuation: z
@@ -514,11 +662,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     threadId: ThreadIdSchema,
     type: z.literal("thread.access.update"),
-  }),
-  z.strictObject({
-    type: z.literal("automaticModels.set"),
-    idempotencyKey: idempotencyKeySchema,
-    config: AutomaticModelConfigSchema,
   }),
   // A choice a person just made, to start their next Thread from. The Host
   // folds it into the one record it keeps per person, so a phone and a desktop
@@ -633,17 +776,8 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("harness.authentication.cancel"),
   }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    machineId: z.string().min(1).max(512),
-    type: z.literal("machine.revoke"),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    machineId: z.string().min(1).max(512),
-    name: z.string().trim().min(1).max(120),
-    type: z.literal("machine.rename"),
-  }),
+  DeviceMachineRevokeCommandSchema,
+  DeviceMachineRenameCommandSchema,
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     machineId: RunnerIdSchema,
@@ -750,12 +884,12 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
-    input: SetComputerAppConnectionSchema,
+    input: z.union([SetComputerAppConnectionSchema, DeviceSetComputerAppConnectionSchema]),
     type: z.literal("integration.computer.setup.set"),
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
-    input: RequestComputerAppSetupSchema,
+    input: z.union([RequestComputerAppSetupSchema, DeviceRequestComputerAppSetupSchema]),
     type: z.literal("integration.computer.setup.request"),
   }),
   z.strictObject({
@@ -1096,37 +1230,24 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-const commandInputSchema = z.discriminatedUnion("type", [
+const commandInputSchema = z.union([
+  DeviceMachineAccessUpdateCommandSchema,
+  ...TabCommandSchema.options,
+  ...AppCommandSchema.options,
   ...TeamCommandSchema.options,
   SettingsPluginEnableCommandSchema,
-  BrowserTabOpenCommandSchema,
-  PersonalTabActivateCommandSchema,
-  PersonalTabCloseCommandSchema,
-  PersonalTabReopenCommandSchema,
-  PersonalTabsGroupCommandSchema,
-  PersonalTabsUngroupCommandSchema,
-  PersonalTabsMoveCommandSchema,
-  PersonalTabGroupUpdateCommandSchema,
-  PersonalTabsCloseCommandSchema,
   ...otherCommandInputSchema.options,
 ]);
 
 const commandOutputSchema = z.discriminatedUnion("type", [
+  IphoneScreenAttachResultSchema,
+  IphoneScreenDetachResultSchema,
+  ...TabCommandResultSchema.options,
+  ...AppCommandResultSchema.options,
   ...TeamCommandResultViewSchema.options,
   SettingsPluginEnableResultSchema,
-  PersonalTabActivateResultSchema,
-  PersonalTabCloseResultSchema,
-  PersonalTabReopenResultSchema,
-  PersonalTabsGroupResultSchema,
-  PersonalTabsUngroupResultSchema,
-  PersonalTabsMoveResultSchema,
-  PersonalTabGroupUpdateResultSchema,
-  PersonalTabsCloseResultSchema,
-  BrowserTabOpenResultSchema,
-  ComputerViewOpenResultSchema,
   ComputerViewCloseResultSchema,
   ComputerViewRenewResultSchema,
-  BrowserTabCloseResultSchema,
   z.object({ type: z.literal("attachment.upload.create"), attachment: AttachmentSchema }),
   z.object({ type: z.literal("attachment.upload.discard") }),
 
@@ -1153,6 +1274,21 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   z.object({ input: ThreadInputViewSchema, type: z.literal("thread.input.cancel") }),
   z.object({ type: z.literal("thread.input.move") }),
+  z.object({
+    lease: ThreadInputEditLeaseViewSchema,
+    revision: z.number().int().nonnegative(),
+    type: z.literal("thread.input.lease.take"),
+  }),
+  z.object({
+    lease: ThreadInputEditLeaseViewSchema,
+    type: z.literal("thread.input.lease.renew"),
+  }),
+  z.object({ type: z.literal("thread.input.lease.release") }),
+  z.object({
+    edit: MessageEditViewSchema,
+    message: MessageViewSchema,
+    type: z.literal("thread.input.edit"),
+  }),
   z.object({ input: ThreadInputViewSchema, type: z.literal("thread.input.steer") }),
   z.object({
     input: ThreadInputViewSchema,
@@ -1186,7 +1322,17 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     registered: z.literal(true),
   }),
   z.object({ timeZone: TimeZoneSchema, type: z.literal("viewer.timeZone.update") }),
+  z.object({
+    policy: IdleCompactionPolicyViewSchema,
+    type: z.literal("settings.idleCompaction.set"),
+  }),
   z.object({ quietTaskDays: QuietTaskDaysSchema, type: z.literal("viewer.quietTasks.update") }),
+  // `applied` is false when the Account already had a newer name, which `profile` then shows.
+  z.object({
+    applied: z.boolean(),
+    profile: OwnerProfileViewSchema,
+    type: z.literal("viewer.name.update"),
+  }),
   z.object({
     asOfSequence: SequenceSchema,
     thread: ThreadViewSchema,
@@ -1196,7 +1342,6 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     preferences: ExecutionPreferencesViewSchema,
     type: z.literal("execution.preferences.remember"),
   }),
-  z.object({ type: z.literal("automaticModels.set"), config: AutomaticModelConfigViewSchema }),
   z.object({ type: z.literal("run.interrupt"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("node.stop"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("request.respond") }),
@@ -1275,7 +1420,9 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("integration.mcp.authorization.begin"),
   }),
   z.object({
-    connection: IntegrationConnectionSummaryViewSchema.nullable(),
+    connection: z
+      .union([IntegrationConnectionSummaryViewSchema, deviceConnectionViewSchema])
+      .nullable(),
     type: z.literal("integration.computer.setup.set"),
   }),
   z.object({
@@ -1416,9 +1563,6 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("browser.profile.delete"),
     deletion: BrowserProfileDeletionSchema.optional().catch(undefined),
   }),
-  z.object({ type: z.literal("app.tab.open"), appTabs: AppTabsSchema }),
-  z.object({ type: z.literal("app.tab.close"), appTabs: AppTabsSchema }),
-  z.object({ type: z.literal("phone.tab.close") }),
   z.object({ type: z.literal("browser.session.close") }),
   z.object({ type: z.literal("browser.history.remove") }),
   z.object({ type: z.literal("browser.history.clear") }),
@@ -1442,14 +1586,21 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
+// Keep schema implementation types out of the shared RPC registry.
 const declaration = <Payload extends z.ZodType, Success extends z.ZodType>(
   method: "GET" | "POST",
   payload: Payload,
   success: Success,
   stream?: true,
-) => ({ error: HostApiErrorSchema, method, payload, success, ...(stream ? { stream } : {}) });
+): RpcDeclaration<
+  z.ZodType<Payload["_zod"]["output"], Payload["_zod"]["input"]>,
+  z.ZodType<Success["_zod"]["output"], Success["_zod"]["input"]>,
+  typeof HostApiErrorSchema
+> => ({ error: HostApiErrorSchema, method, payload, success, ...(stream ? { stream } : {}) });
 
-export const hostApi = defineRpc({
+const workspaceBootstrapOutput: z.ZodType<HostBootstrap> = HostBootstrapSchema;
+// Named groups keep TypeScript declaration serialization below its size limit.
+const hostApiGroup1 = defineRpc({
   "attention.get": declaration(
     "POST",
     z.strictObject({ deviceAccessRequests: z.literal("include").optional() }),
@@ -1584,6 +1735,39 @@ export const hostApi = defineRpc({
     teamReadSchemas["team.agent.requests.get"].input,
     teamReadViews["team.agent.requests.get"],
   ),
+  "team.share.participants.get": declaration(
+    "GET",
+    teamReadSchemas["team.share.participants.get"].input,
+    teamReadViews["team.share.participants.get"],
+  ),
+  "team.shares.list": declaration(
+    "GET",
+    teamReadSchemas["team.shares.list"].input,
+    teamReadViews["team.shares.list"],
+  ),
+  "team.partners.list": declaration(
+    "POST",
+    teamReadSchemas["team.partners.list"].input,
+    teamReadViews["team.partners.list"],
+  ),
+  "team.partner.invite.preview": declaration(
+    "POST",
+    teamReadSchemas["team.partner.invite.preview"].input,
+    teamReadViews["team.partner.invite.preview"],
+  ),
+  "team.partner.invites.list": declaration(
+    "POST",
+    teamReadSchemas["team.partner.invites.list"].input,
+    teamReadViews["team.partner.invites.list"],
+  ),
+  "team.sharing.policy.get": declaration(
+    "POST",
+    teamReadSchemas["team.sharing.policy.get"].input,
+    teamReadViews["team.sharing.policy.get"],
+  ),
+} as const);
+
+const hostApiGroup2 = defineRpc({
   "team.links.list": declaration(
     "POST",
     teamReadSchemas["team.links.list"].input,
@@ -1634,7 +1818,6 @@ export const hostApi = defineRpc({
     teamReadSchemas["team.knowledge.note.history"].input,
     teamReadViews["team.knowledge.note.history"],
   ),
-
   "browser.searchSuggestions.get": declaration(
     "GET",
     z.strictObject({ query: z.string().trim().min(1).max(200) }),
@@ -1660,18 +1843,16 @@ export const hostApi = defineRpc({
    * Deployment with remote access off refuses with reason
    * `personal-remote-access-off`.
    */
-  "agentPhone.target.get": declaration("GET", emptyInputSchema, AgentPhoneHostTargetViewSchema),
-  "apps.get": declaration("GET", z.strictObject({ appId: AppIdSchema }), AppSchema),
   "apps.view": declaration(
     "POST",
     z.strictObject({ appId: AppIdSchema, theme: z.enum(["light", "dark"]) }),
     z.object({
-      app: AppSchema,
+      app: AppViewSchema,
       path: z.string().regex(/^\/v1\/apps\/app_[0-9a-f-]{36}\/(light|dark)\/[A-Za-z0-9_-]{43}\/$/u),
-      /** One-use address on the app's own origin; absent on routes without one. */
       entryUrl: z.url().max(512).optional(),
     }),
   ),
+  "agentPhone.target.get": declaration("GET", emptyInputSchema, AgentPhoneHostTargetViewSchema),
   "attachment.get": declaration("GET", AttachmentReferenceInputSchema, AttachmentSchema),
   "attachment.upload": {
     ...declaration("POST", AttachmentReferenceInputSchema, AttachmentSchema),
@@ -1695,7 +1876,6 @@ export const hostApi = defineRpc({
     BrowserSourceInspectionSchema,
   ),
   "auth.config": declaration("GET", emptyInputSchema, IdentityConfigViewSchema),
-
   "auth.native.complete": declaration(
     "POST",
     z.strictObject({ accept: z.boolean(), oauthQuery: oauthQuerySchema }),
@@ -1747,13 +1927,15 @@ export const hostApi = defineRpc({
     ]),
     z.object({ session: AuthenticatedSessionViewSchema }),
   ),
+} as const);
+
+const hostApiGroup3 = defineRpc({
   "auth.setup.exchange": declaration(
     "POST",
     z.strictObject({ token: z.string().trim().min(16).max(4_096) }),
     emptyOutputSchema,
   ),
   "auth.signOut": declaration("POST", emptyInputSchema, emptyOutputSchema),
-  "bootstrap.get": declaration("GET", emptyInputSchema, HostBootstrapSchema),
   "channel.connection.check": declaration(
     "POST",
     z.strictObject({ connectionId: IntegrationConnectionIdSchema }),
@@ -1797,7 +1979,7 @@ export const hostApi = defineRpc({
     }),
     harnessAuthenticationEnvelopeSchema,
   ),
-  /** Requires automatic-models-v1; automaticModels.set is a person-only commands.dispatch mutation. */
+  /** Requires automatic-models-v1. The choices come from settings.json in Agent home. */
   "automaticModels.get": declaration("GET", z.strictObject({}), AutomaticModelsViewSchema),
   "harness.catalog.refresh": declaration(
     "POST",
@@ -1861,6 +2043,8 @@ export const hostApi = defineRpc({
       app: z
         .object({ ...ComputerUseResolvedAppSchema.shape, identity: ComputerAppIdentityViewSchema })
         .nullable(),
+      /** What is being approved, as a person knows it; an older Host sends none. */
+      name: z.string().min(1).max(255).optional(),
       /** Which of a server's secrets already have a value, which allowing can keep. */
       savedSecrets: z.array(LocalMcpSecretNameSchema).max(localMcpMaxSecrets).optional(),
     }),
@@ -1868,7 +2052,7 @@ export const hostApi = defineRpc({
   "integration.computer.setup.list": declaration(
     "GET",
     emptyInputSchema,
-    z.object({ requests: z.array(ComputerAppSetupRequestViewSchema).max(1_000) }),
+    ComputerAppSetupListResponseSchema,
   ),
   /** Plugin servers on the caller's computers whose secrets the caller may change; never values. */
   "integration.server.secrets.list": declaration(
@@ -1905,13 +2089,9 @@ export const hostApi = defineRpc({
     z.strictObject({ sessionId: ComputerUseSessionIdSchema }),
     emptyOutputSchema,
   ),
-  "computer.app.windows": declaration(
-    "POST",
-    z.strictObject({ machineId: RunnerIdSchema, app: ComputerAppIdentitySchema }),
-    z.object({
-      windows: z.array(z.object(OwnerWindowInfoSchema.shape)).max(computerUseMaxWindows),
-    }),
-  ),
+} as const);
+
+const hostApiGroup4 = defineRpc({
   "integration.computer.apps.approved": declaration(
     "GET",
     emptyInputSchema,
@@ -1931,7 +2111,6 @@ export const hostApi = defineRpc({
     z.strictObject({}),
     z.object({ specialists: z.array(SpecialistRegistrationViewSchema) }),
   ),
-
   "plugin.list": declaration(
     "GET",
     z.strictObject({}),
@@ -1947,14 +2126,7 @@ export const hostApi = defineRpc({
     z.strictObject({ connectionId: IntegrationConnectionIdSchema }),
     IntegrationRepositoryAccessViewSchema,
   ),
-  "integrations.get": declaration("GET", emptyInputSchema, IntegrationDashboardViewSchema),
-  "machines.list": declaration(
-    "GET",
-    emptyInputSchema,
-    // Four registry projections feed one list, each read a page of 100 deep: the bound
-    // has to admit all of them or a busy Deployment fails its own response.
-    z.object({ machines: z.array(MachineSummarySchema).max(400) }),
-  ),
+  "integrations.get": declaration("GET", emptyInputSchema, IntegrationDashboardResponseSchema),
   "machine.access.history": declaration(
     "GET",
     z.strictObject({
@@ -1967,7 +2139,6 @@ export const hostApi = defineRpc({
       sessions: z.array(ShellSessionHistoryEntrySchema).max(machineAccessHistoryMaxSessions),
     }),
   ),
-
   "requests.list": declaration(
     "GET",
     durablePageInputSchema.extend({ deviceAccessRequests: z.literal("include").optional() }),
@@ -1976,7 +2147,6 @@ export const hostApi = defineRpc({
       window: DurableWindowSchema,
     }),
   ),
-
   "tasks.list": declaration(
     "GET",
     z
@@ -2006,6 +2176,15 @@ export const hostApi = defineRpc({
     "GET",
     emptyInputSchema,
     z.object({ sessions: z.array(AuthSessionSummaryViewSchema).max(100) }),
+  ),
+  /** Personal only: signed addresses for image files on the hosting computer. */
+  "asset.urls": declaration("POST", AssetUrlsInputSchema, AssetUrlsSchema),
+  "file.open": declaration("POST", TranscriptFileOpenInputSchema, TranscriptFileOpenSchema),
+  "file.content": declaration(
+    "GET",
+    TranscriptFileContentInputSchema,
+    TranscriptFileContentSchema,
+    true,
   ),
   "tool.output.get": declaration(
     "GET",
@@ -2086,6 +2265,19 @@ export const hostApi = defineRpc({
     z.strictObject({ threadId: ThreadIdSchema }),
     ThreadInputQueueViewSchema,
   ),
+  /** A waiting message's versions, newest first, a bounded page at a time. */
+  "thread.message.revisions.list": declaration(
+    "GET",
+    z.strictObject({
+      threadId: ThreadIdSchema,
+      messageId: MessageIdSchema,
+      before: z.number().int().positive().optional(),
+    }),
+    z.object({
+      revisions: z.array(MessageRevisionViewSchema).max(messageRevisionsPageSize),
+      hasMore: z.boolean(),
+    }),
+  ),
   /**
    * What each of the Thread's active Runs is streaming right now, as `replace`
    * items. A reader that opened the Thread mid-turn, or saw a gap in a stream,
@@ -2117,14 +2309,24 @@ export const hostApi = defineRpc({
       ),
     ThreadMessagePageSchema,
   ),
+  "references.resolve": declaration(
+    "POST",
+    ReferenceResolveInputSchema,
+    ReferenceResolveResultSchema,
+  ),
   "thread.requests.list": declaration(
     "GET",
     z
       .strictObject({
         threadId: ThreadIdSchema,
+        requestId: RequestIdSchema.optional(),
         deviceAccessRequests: z.literal("include").optional(),
       })
-      .extend(durablePageInputSchema.shape),
+      .extend(durablePageInputSchema.shape)
+      .refine(
+        (input) => !input.requestId || (input.before === undefined && input.limit === undefined),
+        "A targeted Request read cannot page",
+      ),
     z.object({
       requests: readableRequestList(RequestViewSchema, 100),
       threadId: ThreadIdSchema,
@@ -2168,6 +2370,37 @@ export const hostApi = defineRpc({
     z.object({ triggers: z.array(TriggerSummaryViewSchema).max(100) }),
   ),
 } as const);
+
+const workspaceHostApi = defineRpc({
+  "machines.list": declaration(
+    "GET",
+    emptyInputSchema,
+    z.object({ machines: z.array(MachineSummarySchema).max(400) }),
+  ),
+  "computer.app.windows": declaration(
+    "POST",
+    z.strictObject({ machineId: RunnerIdSchema, app: ComputerAppIdentitySchema }),
+    z.object({
+      windows: z.array(z.object(OwnerWindowInfoSchema.shape)).max(computerUseMaxWindows),
+    }),
+  ),
+  "tabs.get": declaration("GET", TabGetInputSchema, TabViewSchema),
+  "tabs.state": declaration("GET", z.strictObject({}), TabBootstrapSchema),
+  "apps.list": declaration("GET", AppsListInputSchema, AppsListResultSchema),
+  "apps.get": declaration("GET", z.strictObject({ appId: AppIdSchema }), AppViewSchema),
+  "bootstrap.get": declaration("GET", z.strictObject({}), workspaceBootstrapOutput),
+});
+export const hostApi: typeof hostApiGroup1 &
+  typeof hostApiGroup2 &
+  typeof hostApiGroup3 &
+  typeof hostApiGroup4 &
+  typeof workspaceHostApi = {
+  ...hostApiGroup1,
+  ...hostApiGroup2,
+  ...hostApiGroup3,
+  ...hostApiGroup4,
+  ...workspaceHostApi,
+};
 
 export type HostApiCommand = z.output<typeof commandInputSchema>;
 export type HostApiCommandInput = z.input<typeof commandInputSchema>;

@@ -22,13 +22,20 @@ try {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(web.origin);
-  const rows = page.locator('.side-tab[data-group="web"]');
+  const rows = page.locator('.side-tab[data-kind="page"]');
   await rows.first().waitFor();
+  // The mock seeds a group of its own; this journey builds and follows one group alone.
+  await page.evaluate(async () => {
+    const client = Reflect.get(window, "opensteerMock") as MockHostClient;
+    for (const item of client.getSnapshot().tabs.layout.items)
+      if (item.kind === "group") await client.deleteTabGroup(item.group.groupId);
+  });
+  await page.locator(".side-tab-group__main").waitFor({ state: "detached" });
   const firstKey = await rows.first().getAttribute("data-place-key");
   const keys = await rows.evaluateAll((nodes) =>
     nodes.map((node) => node.getAttribute("data-place-key")!),
   );
-  const secondKey = keys.find((key) => key.split(":")[1] !== firstKey?.split(":")[1])!;
+  const secondKey = keys.find((key) => key !== firstKey)!;
   const first = () => page.locator(`.side-tab[data-place-key="${firstKey}"] .side-tab__main`);
   const second = () => page.locator(`.side-tab[data-place-key="${secondKey}"] .side-tab__main`);
   const header = page.locator(".side-tab-group__main");
@@ -94,11 +101,7 @@ try {
       await message.fill("@");
       const firstTitle = await page.evaluate((key) => {
         const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-        const tabId = key!.split(":").slice(2).join(":");
-        return client
-          .getSnapshot()
-          .browserSessions.flatMap((session) => session.browserTabs?.sessionTabs(session?.id) ?? [])
-          .find((tab) => tab.id === tabId)!.title;
+        return client.getSnapshot().tabs.get(key!)!.title;
       }, firstKey);
       await page
         .getByRole("option")
@@ -195,13 +198,14 @@ try {
       const result = await client.rpc["bootstrap.get"]({});
       if (!result.ok) throw new Error(result.error.message);
       return {
-        version: result.data.browser.tabGroupsVersion,
-        layout: result.data.browser.tabGroups,
+        groups: result.data.tabs.layout.items.flatMap((item) =>
+          item.kind === "group" ? [item.group.name] : [],
+        ),
       };
     });
     expectThat(
       { ...layout, errors },
-      layout.version === 1 && layout.layout?.groups[0]?.title === "Reading" && errors.length === 0,
+      layout.groups.includes("Reading") && errors.length === 0,
       "bootstrap or page errors disagree with the UI",
     );
     return { ...layout, errors };

@@ -120,6 +120,7 @@ export type AcpNormalizedUpdate = { readonly nodeKey?: string } & (
       readonly outputTokens: number;
       readonly reasoningTokens?: number;
     }
+  | { readonly kind: "compaction"; readonly compactionId?: string }
   | { readonly kind: "ignore" }
 );
 

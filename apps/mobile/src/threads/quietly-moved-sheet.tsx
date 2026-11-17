@@ -10,7 +10,7 @@ import {
   type TaskRow,
 } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
-import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import * as Haptics from "expo-haptics";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
@@ -25,6 +25,7 @@ import {
 } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
+import { openTopLevel } from "../top-level.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { useContentInsets } from "../ui/pane.js";
 import { AppText, Notice, PrimaryButton } from "../ui/primitives.js";
@@ -127,10 +128,16 @@ function QuietlyMoved(props: {
       );
     });
   };
+  // Reached from the sidebar, so a task chosen here is top-level like one chosen there.
   const openTask = useCallback(
     (threadId: string) => {
-      navigation.goBack();
-      navigation.dispatch(StackActions.push("Thread", { deploymentId, threadId }));
+      const state = navigation.getState();
+      const action =
+        state === undefined
+          ? null
+          : openTopLevel(state, { name: "Thread", params: { deploymentId, threadId } });
+      if (action === null) navigation.goBack();
+      else navigation.dispatch(action);
     },
     [deploymentId, navigation],
   );

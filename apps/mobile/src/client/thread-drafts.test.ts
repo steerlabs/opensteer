@@ -11,6 +11,8 @@ const userId = "usr_0192f4a1-aaaa-4000-8000-00000000000a";
 const otherUserId = "usr_0192f4a1-bbbb-4000-8000-00000000000b";
 const threadId = "thr_0192f4a1-2222-4000-8000-000000000002";
 const otherThreadId = "thr_0192f4a1-3333-4000-8000-000000000003";
+/** Words holding an inline reference: drafts and sends keep its Markdown byte for byte. */
+const referenced = `Compare with [Fix \\[login\\] 🦊](opensteer:${otherThreadId}) first`;
 const page = BrowserPageContentPartSchema.parse({
   sessionId: "bsn_0192f4a1-6666-4000-8000-000000000006",
   tabId: "tab-1",
@@ -52,13 +54,13 @@ describe("createThreadDraftStore", () => {
     const { drafts, privateFiles } = open(new DelayedFilesystem());
     await drafts.load();
     const first = drafts.writeDraft(deploymentId, userId, threadId, "first edit");
-    const second = drafts.writeDraft(deploymentId, userId, threadId, "latest edit");
-    expect(drafts.readDraft(deploymentId, userId, threadId)?.text).toBe("latest edit");
+    const second = drafts.writeDraft(deploymentId, userId, threadId, referenced);
+    expect(drafts.readDraft(deploymentId, userId, threadId)?.text).toBe(referenced);
     ready.resolve();
     await Promise.all([first, second]);
     const relaunched = open(privateFiles).drafts;
     await relaunched.load();
-    expect(relaunched.readDraft(deploymentId, userId, threadId)?.text).toBe("latest edit");
+    expect(relaunched.readDraft(deploymentId, userId, threadId)?.text).toBe(referenced);
   });
 
   it("never exposes one signed-in user's draft or pending work to another", async () => {
@@ -114,7 +116,7 @@ describe("createThreadDraftStore", () => {
     await drafts.load();
     await drafts.claimPending(deploymentId, userId, threadId, {
       idempotencyKey: "message:abc",
-      text: "send me",
+      text: referenced,
       threadId,
     });
 
@@ -125,7 +127,7 @@ describe("createThreadDraftStore", () => {
       createdAt: "2026-09-14T12:00:00.000Z",
       delivery: "queue",
       idempotencyKey: "message:abc",
-      text: "send me",
+      text: referenced,
       threadId,
       userId,
     });
@@ -830,3 +832,22 @@ describe("a draft file from the release that steered approvals", () => {
     });
   });
 });
+
+it.each(["compactFirst", "keepFullHistory"] as const)(
+  "preserves %s through a device restart and refuses changing it under the same key",
+  async (compaction) => {
+    const { drafts, privateFiles } = open();
+    await drafts.load();
+    const command = { text: "Continue", threadId, idempotencyKey: "compaction-choice", compaction };
+    await drafts.claimPending(deploymentId, userId, threadId, command);
+    const restored = open(privateFiles).drafts;
+    await restored.load();
+    expect(restored.readPending(deploymentId, userId, threadId)).toMatchObject(command);
+    await expect(
+      restored.claimPending(deploymentId, userId, threadId, {
+        ...command,
+        compaction: compaction === "compactFirst" ? "keepFullHistory" : "compactFirst",
+      }),
+    ).rejects.toThrow(/awaiting acknowledgement/);
+  },
+);

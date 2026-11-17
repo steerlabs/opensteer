@@ -9,42 +9,27 @@ import {
   createId,
   HarnessIdSchema,
   ModelSelectionSchema,
-  OpensteerError,
   provisionalThreadTitle,
-  SequenceSchema,
   type AgentEvent,
   type Message,
   type Run,
   type Thread,
   type UserId,
 } from "@opensteer/core";
-import {
-  BrowserTabGroupStore,
-  createDatabase,
-  migrateToLatest,
-  OpensteerStore,
-  PersonalTabStore,
-} from "@opensteer/database";
+import { createDatabase, migrateToLatest, OpensteerStore } from "@opensteer/database";
 import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
-import {
-  BrowserSurfaceIdSchema,
-  ComputerUseSessionSummarySchema,
-  createBrowserSessionId,
-  HarnessInputSchema,
-  mintComputerUseSessionId,
-} from "@opensteer/protocol";
+import { HarnessInputSchema } from "@opensteer/protocol";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { BrowserService } from "../browser/browser-service.js";
-import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
+
 import { type RunToolScope, type RunToolTokenService } from "./run-tool-tokens.js";
 import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
 import { AgentCallerResolver } from "../mcp/agent-caller.js";
-import { readPersonalResources } from "../browser/personal-snapshot.js";
+import { readEmptyPersonalResources } from "@opensteer/database/test-support/store";
 const evidenceRoot = join(tmpdir(), "opensteer-title-review", randomUUID());
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -62,22 +47,10 @@ integration("agent-to-agent messaging round trip", () => {
     maxConnections: 4,
   });
   const store = new OpensteerStore(database, {
-    readPersonalResources: (input) => readPersonalResources(input, () => []),
+    readPersonalResources: readEmptyPersonalResources,
   });
   const realtime = new RealtimeHub({
     store,
-  });
-  const browserTabs = new BrowserTabGroupService({
-    groups: new BrowserTabGroupStore(database),
-    browser: {
-      flushPendingTabDescriptors: async () => undefined,
-      agentReachableSavedSession: BrowserService.prototype.agentReachableSavedSession,
-      agentMayAccessSession: BrowserService.prototype.agentMayAccessSession,
-      listAgentProfiles: async () => [],
-      tabOccupants: () => [],
-      tabStateOf: () => undefined,
-    } as unknown as BrowserService,
-    publish: vi.fn(),
   });
   const claimsByToken = new Map<string, RunToolScope>();
   const admission = new KeyedAdmissionQueue({
@@ -104,14 +77,18 @@ integration("agent-to-agent messaging round trip", () => {
   let execution: ReturnType<typeof personalTestExecution>;
   const service = new ProductToolsTestClient({
     computerUse,
-    browserTabs,
     personShow: (userId, message) => realtime.showToPerson(userId, message),
     browserSources: {
-      agentUseCard: async () => {
+      agentCopyChromeCookies: async () => {
+        throw new Error("Unexpected Chrome cookie copy");
+      },
+    },
+    savedLogins: {
+      useCard: async () => {
         throw new Error("Unexpected card use");
       },
-      agentSignIn: async () => {
-        throw new Error("Unexpected browser sign-in");
+      useSavedLogin: async () => {
+        throw new Error("Unexpected saved login");
       },
     },
     machineFullDiskAccess: {
@@ -160,498 +137,7 @@ integration("agent-to-agent messaging round trip", () => {
   afterAll(async () => {
     await database.destroy();
   });
-  it("authorizes person_show against saved-tab ownership and Thread visibility", async () => {
-    const f = await createMessagingFixture();
-    const strangerId = await store.createUser("Other person");
-    const otherThreadId = createId("thread");
-    const original = await database
-      .selectFrom("threads")
-      .selectAll()
-      .where("id", "=", f.threadB.id)
-      .executeTakeFirstOrThrow();
-    await database
-      .insertInto("threads")
-      .values({
-        ...original,
-        id: otherThreadId,
-        lineageRootThreadId: otherThreadId,
-        createdBy: strangerId,
-      })
-      .execute();
-    const sessionId = createBrowserSessionId();
-    await store.createBrowserSession({
-      id: sessionId,
-      runnerId: f.runnerId,
-      origin: "agent",
-      ownerId: f.userId,
-      placementKey: "test",
-      profileId: null,
-      runtimeId: "test",
-    });
-    const tabId = BrowserSurfaceIdSchema.parse("saved-gmail");
-    const tabs = new PersonalTabStore(database);
-    await tabs.recordChanges(
-      sessionId,
-      [
-        {
-          id: tabId,
-          title: "Gmail",
-          url: "https://mail.google.com/mail/u/0",
-          order: 0,
-          openerId: null,
-        },
-      ],
-      [],
-    );
-    await tabs.suspend(sessionId);
-    const show = (
-      token: string,
-      target:
-        | {
-            tabId: string;
-          }
-        | {
-            threadId: string;
-          }
-        | {
-            current: true;
-          },
-    ) =>
-      service.handle(token, {
-        type: "person.show",
-        requestId: randomUUID(),
-        target,
-      });
-    await expect(
-      show(f.tokenA, {
-        tabId,
-      }),
-    ).resolves.toMatchObject({
-      type: "person.show.result",
-      status: "no-device-connected",
-      connectedDevices: 0,
-    });
-    await expect(
-      store.createBrowserSession({
-        id: createBrowserSessionId(),
-        runnerId: f.runnerId,
-        origin: "agent",
-        ownerId: strangerId,
-        placementKey: "other",
-        profileId: null,
-        runtimeId: "test",
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(
-      show(f.tokenA, {
-        tabId: "private-tab",
-      }),
-    ).rejects.toMatchObject({
-      code: "forbidden",
-    });
-    await expect(
-      show(f.tokenA, {
-        threadId: otherThreadId,
-      }),
-    ).rejects.toMatchObject({
-      code: "forbidden",
-    });
-    await expect(
-      show(f.tokenA, {
-        threadId: f.threadB.id,
-      }),
-    ).resolves.toMatchObject({
-      status: "no-device-connected",
-    });
-    const frames: import("@opensteer/protocol").HostToClientMessage[] = [];
-    const legacyFrames: import("@opensteer/protocol").HostToClientMessage[] = [];
-    const subscription = {
-      afterSequence: SequenceSchema.parse("0"),
-      deploymentId: f.deploymentId,
-      userId: f.userId,
-    };
-    const opted = () =>
-      realtime.subscribe({
-        ...subscription,
-        personShow: "accept",
-        sink: {
-          id: randomUUID(),
-          send: async (message) => {
-            frames.push(message);
-          },
-          close: vi.fn(),
-        },
-      });
-    let release = await opted();
-    const releaseLegacy = await realtime.subscribe({
-      ...subscription,
-      sink: {
-        id: randomUUID(),
-        send: async (message) => {
-          legacyFrames.push(message);
-        },
-        close: vi.fn(),
-      },
-    });
-    const request = {
-      type: "person.show",
-      requestId: randomUUID(),
-      target: {
-        tabId,
-      },
-    };
-    try {
-      await expect(service.handle(f.tokenA, request)).resolves.toMatchObject({
-        status: "sent-unconfirmed",
-        connectedDevices: 1,
-      });
-      expect(frames.filter((message) => message.type === "host.show")).toEqual([
-        {
-          type: "host.show",
-          threadId: f.threadA.id,
-          runId: f.runA.id,
-          target: {
-            tabId,
-          },
-        },
-      ]);
-      expect(legacyFrames.some((message) => message.type === "host.show")).toBe(false);
-      await expect(service.handle(f.tokenA, request)).resolves.toMatchObject({
-        status: "already-requested",
-        connectedDevices: 0,
-      });
-      expect(frames.filter((message) => message.type === "host.show")).toHaveLength(1);
-      await expect(
-        show(f.tokenA, {
-          current: true,
-        }),
-      ).rejects.toMatchObject({
-        code: "bad_request",
-        message: "This Run has not worked in a place yet.",
-      });
-      const place = {
-        kind: "browser" as const,
-        sessionId,
-        surfaceId: tabId,
-      };
-      drainRunPlaces.mockImplementationOnce(async () => {
-        await store.recordRunPlace({
-          runId: f.runA.id,
-          bindingGeneration: 1,
-          data: {
-            place,
-            title: "Gmail",
-            site: "https://mail.google.com",
-          },
-        });
-      });
-      await expect(
-        show(f.tokenA, {
-          current: true,
-        }),
-      ).resolves.toMatchObject({
-        status: "sent-unconfirmed",
-      });
-      expect(frames.at(-1)).toMatchObject({
-        type: "host.show",
-        runId: f.runA.id,
-        target: {
-          place,
-          runId: f.runA.id,
-        },
-      });
-      release();
-      frames.length = 0;
-      release = await opted();
-      expect(frames.some((message) => message.type === "host.show")).toBe(false);
-    } finally {
-      release();
-      releaseLegacy();
-    }
-    await tabs.close(f.userId, tabId);
-    await expect(service.handle(f.tokenA, request)).rejects.toMatchObject({
-      code: "forbidden",
-    });
-    await expect(
-      show(f.tokenA, {
-        tabId,
-      }),
-    ).rejects.toMatchObject({
-      code: "forbidden",
-    });
-    await expect(
-      show(f.tokenA, {
-        current: true,
-      }),
-    ).rejects.toMatchObject({
-      code: "forbidden",
-    });
-  });
-  it.each([
-    ["app", false],
-    ["phone", false],
-    ["app", true],
-    ["phone", true],
-  ] as const)(
-    "shows the Run's newest %s place through its authority (voice: %s)",
-    async (kind, voice) => {
-      const f = await createMessagingFixture(voice);
-      const app = {
-        bundleId: "com.apple.Notes",
-        displayName: "Notes",
-        teamId: null,
-      };
-      const session = ComputerUseSessionSummarySchema.parse({
-        sessionId: mintComputerUseSessionId(),
-        runId: f.runA.id,
-        threadId: f.threadA.id,
-        threadTitle: "Work",
-        openedAt: new Date().toISOString(),
-        actionCount: 1,
-        apps: kind === "app" ? [app] : [],
-        display: kind === "phone",
-      });
-      computerUse.sessionsForRunner.mockReturnValue([session]);
-      computerUse.authorizeDisplay.mockResolvedValue(f.runnerId);
-      const place =
-        kind === "app"
-          ? {
-              kind,
-              machineId: f.runnerId,
-              appKey: "com.apple.notes",
-            }
-          : {
-              kind,
-              machineId: f.runnerId,
-              display: "main",
-            };
-      await store.recordRunPlace({
-        runId: f.runA.id,
-        bindingGeneration: 1,
-        data: {
-          place: {
-            kind: "app",
-            machineId: f.runnerId,
-            appKey: "earlier-app",
-          },
-          title: "Earlier",
-          site: null,
-        },
-      });
-      await store.recordRunPlace({
-        runId: f.runA.id,
-        bindingGeneration: 1,
-        data: {
-          place,
-          title: kind,
-          site: null,
-        },
-      });
-      const frames: import("@opensteer/protocol").HostToClientMessage[] = [];
-      const release = await realtime.subscribe({
-        afterSequence: SequenceSchema.parse("0"),
-        deploymentId: f.deploymentId,
-        userId: f.userId,
-        personShow: "accept",
-        sink: {
-          id: randomUUID(),
-          send: async (message) => {
-            frames.push(message);
-          },
-          close: vi.fn(),
-        },
-      });
-      const show = () =>
-        service.handle(f.tokenA, {
-          type: "person.show",
-          requestId: randomUUID(),
-          target: {
-            current: true,
-          },
-        });
-      const ownedBy = (effectiveOwner: typeof f.userId) =>
-        new Map([
-          [
-            f.runnerId,
-            {
-              effectiveOwner,
-              ownerKind: "user" as const,
-            },
-          ],
-        ]);
-      const owners = vi.spyOn(store, "effectiveMachineOwners").mockResolvedValue(ownedBy(f.userId));
-      try {
-        await expect(show()).resolves.toMatchObject({
-          status: "sent-unconfirmed",
-          connectedDevices: 1,
-        });
-        expect(frames.filter((message) => message.type === "host.show")).toEqual([
-          {
-            type: "host.show",
-            threadId: f.threadA.id,
-            runId: f.runA.id,
-            target: {
-              place,
-              runId: f.runA.id,
-            },
-          },
-        ]);
-        if (kind === "phone") {
-          // Agents release a phone before they reply, and its tab stays.
-          computerUse.sessionsForRunner.mockReturnValue([]);
-          await expect(show()).resolves.toMatchObject({
-            status: "sent-unconfirmed",
-          });
-          expect(frames.filter((message) => message.type === "host.show")).toHaveLength(2);
-          owners.mockResolvedValue(ownedBy(createId("user")));
-          await expect(show()).rejects.toMatchObject({
-            code: "forbidden",
-          });
-          return;
-        }
-        expect(computerUse.authorizeDisplay).toHaveBeenLastCalledWith(
-          session.sessionId,
-          f.userId,
-          "com.apple.notes",
-        );
-        computerUse.authorizeDisplay.mockRejectedValueOnce(
-          new OpensteerError({
-            code: "forbidden",
-            message: "Access revoked",
-          }),
-        );
-        await expect(show()).rejects.toMatchObject({
-          code: "forbidden",
-        });
-        computerUse.sessionsForRunner.mockReturnValue([
-          {
-            ...session,
-            runId: createId("run"),
-          },
-        ]);
-        await expect(show()).rejects.toMatchObject({
-          code: "forbidden",
-        });
-        expect(frames.filter((message) => message.type === "host.show")).toHaveLength(1);
-      } finally {
-        release();
-        owners.mockRestore();
-        computerUse.sessionsForRunner.mockReset();
-        computerUse.authorizeDisplay.mockReset();
-      }
-    },
-  );
-  it("searches asleep saved tabs before pagination and reports matching fields", async () => {
-    const f = await createMessagingFixture();
-    const sessionId = createBrowserSessionId();
-    await store.createBrowserSession({
-      id: sessionId,
-      runnerId: f.runnerId,
-      origin: "agent",
-      ownerId: f.userId,
-      placementKey: "test",
-      profileId: null,
-      runtimeId: "test",
-    });
-    const tabs = new PersonalTabStore(database);
-    const rows = Array.from(
-      {
-        length: 70,
-      },
-      (_, index) => ({
-        id: BrowserSurfaceIdSchema.parse(`tab-${String(index).padStart(3, "0")}`),
-        title: index < 65 ? "Recent" : "Gmail",
-        url: index < 65 ? "https://example.com" : "https://mail.google.com",
-        order: index,
-        openerId: null,
-      }),
-    );
-    await tabs.recordChanges(sessionId, rows.slice(64), []);
-    await tabs.suspend(sessionId);
-    const recentSessionId = createBrowserSessionId();
-    await store.createBrowserSession({
-      id: recentSessionId,
-      runnerId: f.runnerId,
-      origin: "agent",
-      ownerId: f.userId,
-      placementKey: "recent",
-      profileId: null,
-      runtimeId: "test",
-    });
-    await tabs.recordChanges(recentSessionId, rows.slice(0, 64), []);
-    const read = async (input: Record<string, string>) => {
-      const result = await service.handle(f.tokenA, {
-        type: "browser.tab.read",
-        requestId: randomUUID(),
-        input,
-      });
-      if (result.type !== "browser.tab.read.result") throw new Error("Expected tab read");
-      return result.result;
-    };
-    const first = await read({});
-    expect(first.tabs).toHaveLength(64);
-    expect(first.tabs.every((tab) => tab.title === "Recent")).toBe(true);
-    const found = await read({
-      query: "gmail",
-    });
-    expect(found.tabs).toHaveLength(5);
-    expect(
-      found.tabs.every((tab) => tab.state === "asleep" && tab.matchedFields?.includes("title")),
-    ).toBe(true);
-    expect(found.totalMatches).toBe(5);
-    await new BrowserTabGroupStore(database).group(f.userId, {
-      tabIds: [rows[69]!.id],
-      title: "Archive",
-      idempotencyKey: randomUUID(),
-    });
-    expect(
-      (
-        await read({
-          query: "archive",
-        })
-      ).tabs,
-    ).toMatchObject([
-      {
-        tabId: rows[69]!.id,
-        matchedFields: ["group"],
-      },
-    ]);
-    expect(
-      (
-        await read({
-          query: "Guest",
-        })
-      ).tabs.every((tab) => tab.matchedFields?.includes("profile")),
-    ).toBe(true);
-    const paged = await read({
-      query: "example",
-    });
-    expect(paged.tabs).toHaveLength(64);
-    expect(paged.totalMatches).toBe(65);
-    expect(paged.nextCursor).toBeTruthy();
-    expect(
-      (
-        await read({
-          query: "example",
-          cursor: paged.nextCursor!,
-        })
-      ).tabs,
-    ).toHaveLength(1);
-    await expect(
-      read({
-        query: "gmail",
-        cursor: paged.nextCursor!,
-      }),
-    ).rejects.toThrow("different search");
-    await tabs.close(f.userId, rows[69]!.id);
-    expect(
-      (
-        await read({
-          query: "gmail",
-        })
-      ).totalMatches,
-    ).toBe(4);
-  });
+
   it("round-trips typed agent authorship across Threads", async () => {
     const fixture = await createMessagingFixture();
     const outbound = await service.handle(fixture.tokenA, {
@@ -818,7 +304,7 @@ integration("agent-to-agent messaging round trip", () => {
     if (retried.type !== "thread.message.result") throw new Error("Expected a message result");
     expect(retried.result).toMatchObject({
       disposition: "steering",
-      assignmentId: null,
+      delegationId: null,
       messageId: steered.result.messageId,
       runId: running.runId,
     });
@@ -954,7 +440,7 @@ integration("agent-to-agent messaging round trip", () => {
       const response = await service.handle(fixture.tokenA, {
         requestId: randomUUID(),
         type: "thread.delegate",
-        task,
+        message: task,
         ...(title === undefined
           ? {}
           : {
@@ -971,7 +457,7 @@ integration("agent-to-agent messaging round trip", () => {
             ownerId: fixture.userId,
             threadId: fixture.threadA.id,
           })
-        )?.assignments.find((assignment) => assignment.id === response.result.assignmentId);
+        )?.assignments.find((assignment) => assignment.id === response.result.delegationId);
       const row = await database
         .selectFrom("threads")
         .select(["title", "titleSource"])
@@ -1006,15 +492,15 @@ integration("agent-to-agent messaging round trip", () => {
         icon: true,
       });
       await commands.cancelAssignment({
-        assignmentId: response.result.assignmentId,
+        assignmentId: response.result.delegationId,
         idempotencyKey: randomUUID(),
         requestedBy: fixture.userId,
       });
       const reused = await service.handle(fixture.tokenA, {
         requestId: randomUUID(),
         type: "thread.delegate",
-        task: "Another task",
-        threadId: worker.id,
+        message: "Another task",
+        taskId: worker.id,
       });
       if (reused.type !== "thread.delegate.result") throw new Error("Expected reuse");
       expect(
@@ -1034,7 +520,7 @@ integration("agent-to-agent messaging round trip", () => {
     const response = await service.handle(f.tokenA, {
       type: "thread.delegate",
       requestId: randomUUID(),
-      task: "Book a flight",
+      message: "Book a flight",
     });
     if (response.type !== "thread.delegate.result") throw new Error("Expected delegation");
     const worker = (await readToolRecords(store, response.result)).thread;
@@ -1055,7 +541,7 @@ integration("agent-to-agent messaging round trip", () => {
       color: worker.color,
     });
     await commands.cancelAssignment({
-      assignmentId: response.result.assignmentId,
+      assignmentId: response.result.delegationId,
       idempotencyKey: randomUUID(),
       requestedBy: f.userId,
     });
@@ -1063,16 +549,16 @@ integration("agent-to-agent messaging round trip", () => {
       service.handle(f.tokenA, {
         type: "thread.delegate",
         requestId: randomUUID(),
-        threadId: worker.id,
-        task: "New task",
+        taskId: worker.id,
+        message: "New task",
         icon: "hotel",
       }),
     ).rejects.toThrow("Unrecognized key");
     const reused = await service.handle(f.tokenA, {
       type: "thread.delegate",
       requestId: randomUUID(),
-      threadId: worker.id,
-      task: "New task",
+      taskId: worker.id,
+      message: "New task",
     });
     if (reused.type !== "thread.delegate.result") throw new Error("Expected reuse");
     expect(
@@ -1091,7 +577,7 @@ integration("agent-to-agent messaging round trip", () => {
       const response = await service.handle(fixture.tokenA, {
         requestId: randomUUID(),
         type: "thread.delegate",
-        task: "Research the contract",
+        message: "Research the contract",
       });
       if (
         response.type !== "thread.delegate.result" ||
@@ -1123,7 +609,7 @@ integration("agent-to-agent messaging round trip", () => {
       const before = await database
         .selectFrom("delegations")
         .selectAll()
-        .where("id", "=", response.result.assignmentId)
+        .where("id", "=", response.result.delegationId)
         .executeTakeFirstOrThrow();
       expect(before.status).toBe("completed");
       const reused = await store.delegateThread({
@@ -1246,15 +732,15 @@ integration("agent-to-agent messaging round trip", () => {
     await writeFile(join(evidenceRoot, `${name}.json`), JSON.stringify(result, null, 2));
     console.info(`Title review receipt: ${join(evidenceRoot, `${name}.json`)}`);
   }
-  it("thread_update shares Done, freezes messages and delegation, and reopens through the same authority", async () => {
+  it("opensteer_task_update shares Done, freezes messages and delegation, and reopens through the same authority", async () => {
     const f = await createMessagingFixture();
     const write = (action: string, fields = {}) =>
       service.handle(f.tokenA, {
         type: "thread.update",
         requestId: randomUUID(),
         input: {
-          threadId: f.threadB.id,
-          action,
+          taskId: f.threadB.id,
+          ...(action === "rename" ? {} : { done: action === "done" }),
           ...fields,
         },
       });
@@ -1296,8 +782,8 @@ integration("agent-to-agent messaging round trip", () => {
       service.handle(f.tokenA, {
         type: "thread.delegate",
         requestId: randomUUID(),
-        threadId: f.threadB.id,
-        task: "No delegation",
+        taskId: f.threadB.id,
+        message: "No delegation",
       }),
     ).rejects.toMatchObject({
       code: "conflict",
@@ -1391,13 +877,13 @@ integration("agent-to-agent messaging round trip", () => {
           await client.connect(clientTransport);
           const names = (await client.listTools()).tools.map(({ name }) => name);
           inventories.push(names);
-          expect(names).toContain("thread_update");
+          expect(names).toContain("opensteer_task_update");
           if (modern) {
             const result = await client.callTool({
-              name: "thread_update",
+              name: "opensteer_task_update",
               arguments: {
-                threadId: f.threadB.id,
-                action: "rename",
+                taskId: f.threadB.id,
+
                 title: "MCP write",
               },
             });
@@ -1418,7 +904,7 @@ integration("agent-to-agent messaging round trip", () => {
           type: "thread.update",
           requestId: randomUUID(),
           input: {
-            action: "done",
+            done: true,
           },
         }),
       ).resolves.toMatchObject({

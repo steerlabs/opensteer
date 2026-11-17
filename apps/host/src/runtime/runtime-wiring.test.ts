@@ -1,3 +1,4 @@
+import { IdleCompactionService } from "../agents/idle-compaction-service.js";
 import { describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core";
@@ -6,11 +7,64 @@ import {
   ensureDefaultHarnesses,
   integrationConnectionReaction,
   runnerRegistrationHook,
+  runnerAttachedReaction,
   terminalRunReaction,
 } from "./runtime.js";
 import type { HarnessInstanceRecord } from "@opensteer/database";
 
 describe("Host runtime wiring", () => {
+  it("rearms an offline idle compaction on attach only within its cache window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    let online = false;
+    let admitted = 0;
+    const threadId = createId("thread");
+    const service = new IdleCompactionService({
+      list: async () => [
+        {
+          threadId,
+          requestedBy: createId("user"),
+          providerSessionId: createId("providerSession"),
+          environmentId: createId("environment"),
+          contextSnapshot: {
+            usedTokens: 200_000,
+            measuredAt: 0,
+            requestStartedAt: 0,
+            promptCacheTtlMs: 300_000,
+            sourceRunId: createId("run"),
+            bindingGeneration: 1,
+            ordinal: 0,
+          },
+        },
+      ],
+      admit: async () => {
+        if (online) admitted++;
+      },
+      onError: (error) => {
+        throw error;
+      },
+    });
+    const attached = runnerAttachedReaction(
+      () => {},
+      () => service.reconcile(),
+    );
+    try {
+      await service.start();
+      await vi.advanceTimersByTimeAsync(80_000);
+      expect(admitted).toBe(0);
+      online = true;
+      await attached();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(admitted).toBe(1);
+      await vi.advanceTimersByTimeAsync(120_000);
+      await attached();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(admitted).toBe(1);
+    } finally {
+      await service.close();
+      vi.useRealTimers();
+    }
+  });
   it("reconciles a registering Runner before execution is woken", async () => {
     const wake = vi.fn();
     let finishCatalogCapture: (() => void) | undefined;

@@ -1,15 +1,13 @@
 import { foldedSubagentSummary, turnSubagentCount } from "./subagent-model.js";
 import { pageSiteLabel } from "./surfaces.js";
 import {
+  imageGenerationToolName,
   isIntegrationGatewayTool,
-  placeIdentityKey,
   type AssignmentSummary,
-  type BrowserTabWriteInput,
   type WaitingRequest,
   type MessageAuthor,
   type IntegrationCallSubject,
 } from "@opensteer/core";
-import type { TriggerWriteInput } from "@opensteer/triggers/models";
 import { readComputerUseResultHeadline, readComputerStepHeadline } from "@opensteer/protocol";
 import { isRecord } from "@opensteer/shared/isRecord";
 import type {
@@ -25,13 +23,16 @@ import type {
   ToolEntry,
   TranscriptEntry,
 } from "./client.js";
-import {
-  browserSignInPasswordsNeed,
-  type BrowserSignInPasswords,
-} from "@opensteer/protocol/browser-sources";
+import { savedLoginPasswordsNeed, type PasswordsNeed } from "@opensteer/protocol";
 import { browserSiteLabel } from "./browser-sign-in.js";
 import { readCardUseResult } from "./cards.js";
-import { browserSignInStep, readBrowserSignInResult, type BrowserSignInStep } from "./passwords.js";
+import {
+  chromeCookiesStep,
+  readChromeCookiesResult,
+  readSavedLoginResult,
+  savedLoginStep,
+  type SignInStep,
+} from "./passwords.js";
 import { requestWaitingOnAssignment } from "./waiting-requests.js";
 import { isTerminalRunEntryStatus } from "./transcript.js";
 
@@ -439,12 +440,11 @@ export function turnState(turn: Turn): TurnState {
  * What to offer of Opensteer Passwords, or null. The latest word on a sign-in
  * since the person last spoke decides, and only once the agent has stopped:
  * their next message, or a sign-in that got further, ends the offer, so a
- * Thread shows it once, at its end. A Chrome Request's ending is newer than
- * the `pending` that opened it; a repeated call adds nothing.
+ * Thread shows it once, at its end. A repeated call adds nothing.
  */
 export interface PasswordsSetupOffer {
   readonly credential: "login" | "card";
-  readonly need: BrowserSignInPasswords;
+  readonly need: PasswordsNeed;
   readonly site: string;
 }
 export function passwordsSetupOffer(
@@ -479,25 +479,22 @@ export function callPasswordsOffer(
 
 /** What one step says about Passwords: an offer, a definite no, or nothing yet (`undefined`). */
 function stepPasswordsOffer(entry: TranscriptEntry): PasswordsSetupOffer | null | undefined {
-  if (entry.kind === "request" && entry.requestKind === "browser.sign-in") {
-    return entry.passwordsOffer ? { ...entry.passwordsOffer, credential: "login" } : null;
-  }
-  if (entry.kind === "tool" && entry.tool?.name === "use_card" && entry.output) {
+  if (entry.kind !== "tool" || entry.tool?.namespace !== "opensteer" || !entry.output)
+    return undefined;
+  if (entry.tool.name === "card_request") {
     const result = readCardUseResult(entry.output.text);
     if (!result || result.status === "resolved") return undefined;
     const need = result.status === "unavailable" ? cardOfferNeed(result.reason) : null;
     return need ? { credential: "card", need, site: result.site } : null;
   }
-  if (entry.kind !== "tool" || !isSignInTool(entry) || !entry.output) return undefined;
-  const result = readBrowserSignInResult(entry.output.text);
-  if (result === null || result.status === "resolved") return undefined;
-  if (result.status === "pending" && result.replayed) return undefined;
-  const need = browserSignInPasswordsNeed(result);
-  const site = "site" in result ? result.site : stringField(effectiveArguments(entry), "site");
-  return need && site ? { credential: "login", need, site } : null;
+  if (entry.tool.name !== "saved_login_request" || entry.state !== "done") return undefined;
+  const result = readSavedLoginResult(entry.output.text);
+  if (result === null || (result.status === "pending" && result.replayed)) return undefined;
+  const need = savedLoginPasswordsNeed(result);
+  return need ? { credential: "login", need, site: result.site } : null;
 }
 
-function cardOfferNeed(reason: string): BrowserSignInPasswords | null {
+function cardOfferNeed(reason: string): PasswordsNeed | null {
   switch (reason) {
     case "no-saved-card":
       return "no-login";
@@ -694,6 +691,7 @@ export function conversationRows(
  * a reply, a task that needs the reader, a failure or its work on a computer.
  */
 function conversationTurnShows(turn: Turn, { atComputer, live }: ConversationRowOptions): boolean {
+  if (turn.run?.compaction) return true;
   const { composing, reply, startHold, unprompted } = conversationTurn(turn);
   const ended =
     turn.run !== null &&
@@ -729,7 +727,9 @@ export function silentRunLabel(run: RunEntry): string {
 
 /** Which reply's Activity to show: the one under way, else the latest; or one turn's own. */
 export type ConversationActivitySelection =
-  { readonly kind: "latest" } | { readonly key: string; readonly kind: "turn" };
+  | { readonly kind: "latest" }
+  | { readonly key: string; readonly kind: "turn" }
+  | { readonly kind: "run"; readonly runId: string };
 
 /**
  * What one reply did, as Activity shows it. A message that joins a Run splits
@@ -807,6 +807,8 @@ export function conversationActivityTurn(
   if (selection.kind === "turn") {
     return activities.find(({ keys }) => keys.includes(selection.key)) ?? null;
   }
+  if (selection.kind === "run")
+    return activities.findLast(({ turn }) => turn.runId === selection.runId) ?? null;
   return (
     activities.findLast(({ live }) => live) ??
     activities.findLast(({ reply, steps }) => reply !== null || steps.length > 0) ??
@@ -1203,48 +1205,30 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
   const result: (Exclude<WorkRow, { kind: "steps" }> | Steps)[] = [];
 
   let pending: PlaceEntry[] = [];
-  let session: string | null = null;
   // A tab is entered while a command runs, so it joins the browser row still
-  // open (reasoning doesn't close it), else its session's next command. Only a
-  // tab with no row of its session before the next message, Request or subagent
-  // stands alone. A row whose command named its session through a variable is
-  // on the session of the first tab it meets.
+  // open (reasoning doesn't close it), else the next browser command's row.
+  // Only a tab with no browser row before the next message, Request or
+  // subagent stands alone.
   let open: Steps | null = null;
-  const sessionRows = new Map<string, Steps>();
-  const unknownSession = JSON.stringify(["browser", null]);
-  const ownerOf = (row: Steps | null | undefined, key: string): Steps | null => {
-    if (!row || (row.joinKey !== key && row.joinKey !== unknownSession)) return null;
-    if (row.joinKey === unknownSession) {
-      sessionRows.delete(unknownSession);
-      row.joinKey = key;
-      sessionRows.set(key, row);
-    }
-    return row;
-  };
+  let browserRow: Steps | null = null;
   const flushPlaces = () => {
     for (const entry of pending) {
-      const key = JSON.stringify([
-        "browser",
-        entry.place.kind === "browser" ? entry.place.sessionId : null,
-      ]);
-      const owner = ownerOf(sessionRows.get(key) ?? sessionRows.get(unknownSession), key);
-      if (owner) owner.entries.push(entry);
+      if (browserRow) browserRow.entries.push(entry);
       else result.push({ entry, key: `place:${entry.id}`, kind: "place" });
     }
     pending = [];
     open = null;
-    sessionRows.clear();
+    browserRow = null;
   };
   for (const entry of work) {
     if (entry.kind === "place") {
-      if (entry.place.kind !== "browser") {
+      // Only a page has a site; a window or phone place stands on its own row.
+      if (entry.site === null) {
         flushPlaces();
         result.push({ entry, key: `place:${entry.id}`, kind: "place" });
         continue;
       }
-      session = entry.place.sessionId;
-      const owner = ownerOf(open, JSON.stringify(["browser", session]));
-      if (owner) owner.entries.push(entry);
+      if (open) open.entries.push(entry);
       else pending.push(entry);
       continue;
     }
@@ -1275,17 +1259,9 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
         : presentation
           ? stepGroup(presentation.kind)
           : null;
-    const joinKey =
-      entry.kind === "tool" && group !== null ? groupJoinKey(entry, group, session) : null;
-    const places =
-      group === "browser"
-        ? pending.filter(
-            (place) =>
-              place.place.kind === "browser" &&
-              JSON.stringify([group, place.place.sessionId]) === joinKey,
-          )
-        : [];
-    if (group === "browser") pending = pending.filter((place) => !places.includes(place));
+    const joinKey = entry.kind === "tool" && group !== null ? groupJoinKey(entry, group) : null;
+    const places = group === "browser" ? pending : [];
+    if (group === "browser") pending = [];
     let row: Steps;
     if (last?.kind === "steps" && joinKey !== null && last.joinKey === joinKey) {
       row = last;
@@ -1295,7 +1271,7 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
       result.push(row);
     }
     open = group === "browser" ? row : null;
-    if (open && joinKey !== null) sessionRows.set(joinKey, open);
+    if (open) browserRow = open;
   }
   flushPlaces();
 
@@ -1318,12 +1294,7 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
  * Computer use folds steps on one app or phone. Runner ids keep computers
  * apart even when they share a display name.
  */
-function groupJoinKey(tool: ToolEntry, group: StepGroup, session: string | null): string | null {
-  if (group === "browser") {
-    const command = commandFrom(effectiveArguments(tool)) ?? "";
-    const literal = /--session(?:=|\s+)(?:"([^"$]+)"|'([^'$]+)'|([^\s"'$`]+))/.exec(command);
-    return JSON.stringify([group, literal?.[1] ?? literal?.[2] ?? literal?.[3] ?? session]);
-  }
+function groupJoinKey(tool: ToolEntry, group: StepGroup): string | null {
   if (group === "integration-call") {
     const subject = tool.integration;
     if (!subject || subject.effect !== "read") return null;
@@ -1370,8 +1341,7 @@ function rowPlaces(
   const places = new Map<string, PlaceEntry>();
   for (const entry of entries) {
     if (entry.kind !== "place") continue;
-    const key = placeIdentityKey(entry.place);
-    if (!places.has(key)) places.set(key, entry);
+    if (!places.has(entry.tabId)) places.set(entry.tabId, entry);
   }
   return [...places.values()];
 }
@@ -1744,7 +1714,7 @@ function toolTone(tool: ToolEntry): ActivityTone {
       return "stopped";
     case "done":
       // A sign-in that came back without signing in must not read as done.
-      return signInResult(tool)?.signedIn === false || cardUseFailed(tool) ? "stopped" : "done";
+      return signInStep(tool)?.succeeded === false || cardUseFailed(tool) ? "stopped" : "done";
     default:
       return tool.state;
   }
@@ -1900,7 +1870,15 @@ function isIntegrationGateway(tool: ToolEntry): boolean {
 export function toolPresentation(tool: ToolEntry): ToolPresentation {
   const identity = tool.tool;
   const args = effectiveArguments(tool);
-  if (identity?.name === "computer" && isIntegrationGateway(tool))
+  if (identity?.name === imageGenerationToolName)
+    return step({
+      activeLabel: "Generating image",
+      label: "Generate image",
+      hint: stringField(args, "prompt") ?? "",
+      icon: "sparkles",
+      kind: "tool",
+    });
+  if (identity?.name === "computer_use" && isIntegrationGateway(tool))
     return step({
       activeLabel: "Running computer code",
       label: "Ran computer code",
@@ -1914,15 +1892,7 @@ export function toolPresentation(tool: ToolEntry): ToolPresentation {
   const kind = identity ? toolKinds.get(`${identity.namespace}/${identity.name}`) : undefined;
 
   if (identity?.namespace === "opensteer") {
-    const present = opensteerSteps.get(
-      (
-        {
-          thread_delegate: "delegate_task",
-          thread_message: "thread_send",
-          request_list: "pending_request",
-        } as Readonly<Record<string, string>>
-      )[identity.name] ?? identity.name,
-    );
+    const present = opensteerSteps.get(identity.name);
     if (present) return present(tool, args);
   }
 
@@ -2051,225 +2021,218 @@ function saidByAction<Action extends string>(
   };
 }
 
-const tabActions: Record<BrowserTabWriteInput["action"], StepWords> = {
-  close: ["Closing tabs", "Closed tabs"],
-  group: ["Grouping tabs", "Grouped tabs"],
-  move: ["Moving tabs", "Moved tabs"],
-  restore: ["Restoring tabs", "Restored tabs"],
-  ungroup: ["Ungrouping tabs", "Ungrouped tabs"],
-  update_group: ["Updating a tab group", "Updated a tab group"],
-};
+/** A step whose words follow one boolean argument, such as `done` or `paused`. */
+function saidByFlag(
+  field: string,
+  whenTrue: StepWords,
+  whenFalse: StepWords,
+  icon: ActivityIcon,
+): OpensteerStep {
+  return (tool, args) =>
+    said(isRecord(args) && args[field] === false ? whenFalse : whenTrue, icon)(tool, args);
+}
 
-const taskActions = {
-  done: ["Marking a task done", "Marked a task done"],
-  rename: ["Renaming a task", "Renamed a task"],
-  reopen: ["Reopening a task", "Reopened a task"],
-} satisfies Record<string, StepWords>;
-
-const automationActions: Record<TriggerWriteInput["action"], StepWords> = {
-  cancel: ["Cancelling an automation run", "Cancelled an automation run"],
-  create: ["Creating an automation", "Created an automation"],
-  run: ["Running an automation", "Ran an automation"],
-  set_next_fire: ["Rescheduling an automation", "Rescheduled an automation"],
-  set_status: ["Changing an automation", "Changed an automation"],
-  update: ["Changing an automation", "Changed an automation"],
-};
+/** A step that names what it started: its title, else the first words it was given. */
+function startedTask([activeLabel, label]: StepWords): OpensteerStep {
+  return (_tool, args) =>
+    step({
+      activeLabel,
+      hint: stringField(args, "title") ?? stringField(args, "message") ?? "",
+      hintKind: "prose",
+      icon: "share",
+      kind: "task",
+      label,
+    });
+}
 
 /** Transcripts outlive their tool inventory, so removed names stay readable. */
 const opensteerSteps = new Map<string, OpensteerStep>([
-  ["thread_wait", said(["Waiting for a task", "Waited for a task"], "list")],
+  ["opensteer_task_list", said(["Looking up tasks", "Looked up tasks"], "list")],
+  ["opensteer_task_read", said(["Reading a task", "Read a task"], "list")],
+  ["opensteer_task_create", startedTask(["Starting a task", "Started a task"])],
+  ["opensteer_task_delegate", startedTask(["Delegating a task", "Delegated a task"])],
+  ["opensteer_task_send", said(["Sending to a task", "Sent to a task"], "share")],
+  ["opensteer_task_wait", said(["Waiting for a task", "Waited for a task"], "list")],
+  ["opensteer_task_interrupt", said(["Stopping a task", "Stopped a task"], "stop")],
+  ["opensteer_task_resume", said(["Resuming a task", "Resumed a task"], "list")],
   [
-    "thread_configure",
-    (tool, args) =>
-      said(
-        isRecord(args) && (args.harnessInstanceId || args.modelSelection)
-          ? ["Changing a task’s AI", "Changed a task’s AI"]
-          : ["Reading a task’s AI settings", "Read a task’s AI settings"],
-        "pencil",
-      )(tool, args),
-  ],
-  [
-    "thread_queue",
+    "opensteer_task_queue",
     saidByAction(
       {
         list: ["Looking at queued work", "Looked at queued work"],
         cancel: ["Cancelling queued work", "Cancelled queued work"],
         move: ["Reordering queued work", "Reordered queued work"],
         steer: ["Steering queued work", "Steered queued work"],
-        resume: ["Resuming queued work", "Resumed queued work"],
       },
       ["Managing queued work", "Managed queued work"],
       "list",
     ),
   ],
-
-  ["team_read", said(["Reading team context", "Read team context"], "list")],
-  ["team_search", said(["Searching team messages", "Searched team messages"], "search")],
-  ["team_post", said(["Replying to the team", "Replied to the team"], "share")],
-  ["knowledge_topics", said(["Looking up team topics", "Looked up team topics"], "list")],
   [
-    "knowledge_read",
-    (tool, args) =>
-      (stringField(args, "query") !== null
-        ? said(["Searching team notes", "Searched team notes"], "search")
-        : said(["Reading team notes", "Read team notes"], "list"))(tool, args),
+    "opensteer_task_update",
+    (_tool, args) => {
+      const done = isRecord(args) ? args["done"] : undefined;
+      const [activeLabel, label]: StepWords =
+        done === true
+          ? ["Marking a task done", "Marked a task done"]
+          : done === false
+            ? ["Reopening a task", "Reopened a task"]
+            : ["Renaming a task", "Renamed a task"];
+      const hint = stringField(args, "title") ?? "";
+      return step({ activeLabel, hint, hintKind: "prose", icon: "pencil", kind: "tool", label });
+    },
+  ],
+  ["opensteer_task_configure", said(["Changing a task’s AI", "Changed a task’s AI"], "pencil")],
+  [
+    "opensteer_delegation_status",
+    said(["Checking delegated work", "Checked delegated work"], "list"),
   ],
   [
-    "knowledge_write",
-    (tool, args) =>
-      (isRecord(args) && args["delete"] === true
-        ? said(["Deleting a team note", "Deleted a team note"], "pencil")
-        : stringField(args, "noteId") !== null
-          ? said(["Updating a team note", "Updated a team note"], "pencil")
-          : said(["Saving a team note", "Saved a team note"], "pencil"))(tool, args),
+    "opensteer_delegation_wait",
+    said(["Waiting for delegated work", "Waited for delegated work"], "list"),
   ],
-
-  ["settings_read", said(["Reading settings", "Read settings"], "list")],
   [
-    "settings_write",
+    "opensteer_delegation_cancel",
+    said(["Stopping delegated work", "Stopped delegated work"], "stop"),
+  ],
+  ["opensteer_subagent_read", said(["Reading a subagent", "Read a subagent"], "list")],
+  ["opensteer_subagent_stop", said(["Stopping a subagent", "Stopped a subagent"], "stop")],
+
+  ["opensteer_request_list", said(["Checking its requests", "Checked its requests"], "list")],
+  ["opensteer_request_read", said(["Reading a request", "Read a request"], "list")],
+  ["opensteer_request_answer", said(["Answering a request", "Answered a request"], "pencil")],
+  ["opensteer_request_withdraw", said(["Withdrawing a request", "Withdrew a request"], "stop")],
+
+  ["opensteer_automation_list", said(["Looking up automations", "Looked up automations"], "list")],
+  ["opensteer_automation_read", said(["Reading an automation", "Read an automation"], "list")],
+  [
+    "opensteer_automation_create",
+    saidByAction({}, ["Creating an automation", "Created an automation"], "pencil", "name"),
+  ],
+  [
+    "opensteer_automation_update",
+    saidByAction({}, ["Changing an automation", "Changed an automation"], "pencil", "name"),
+  ],
+  [
+    "opensteer_automation_control",
     saidByAction(
       {
-        set_default: ["Changing the default AI", "Changed the default AI"],
-        configure_model: ["Changing model limits", "Changed model limits"],
-        set_enabled: ["Changing AI availability", "Changed AI availability"],
-        rename: ["Renaming an AI", "Renamed an AI"],
-        remember_execution: ["Saving AI preferences", "Saved AI preferences"],
-        set_time_zone: ["Changing the time zone", "Changed the time zone"],
+        pause: ["Pausing an automation", "Paused an automation"],
+        resume: ["Resuming an automation", "Resumed an automation"],
+        archive: ["Archiving an automation", "Archived an automation"],
+        reschedule: ["Rescheduling an automation", "Rescheduled an automation"],
+        run_now: ["Running an automation", "Ran an automation"],
+        cancel_pending: ["Cancelling an automation run", "Cancelled an automation run"],
       },
-      ["Changing settings", "Changed settings"],
+      ["Changing an automation", "Changed an automation"],
+      "pencil",
+    ),
+  ],
+
+  ["opensteer_team_read", said(["Reading team context", "Read team context"], "list")],
+  [
+    "opensteer_team_file_download",
+    said(["Downloading a team file", "Downloaded a team file"], "folder"),
+  ],
+  ["opensteer_team_search", said(["Searching team messages", "Searched team messages"], "search")],
+  ["opensteer_team_post", said(["Replying to the team", "Replied to the team"], "share")],
+  [
+    "opensteer_knowledge_topic_list",
+    said(["Looking up team topics", "Looked up team topics"], "list"),
+  ],
+  ["opensteer_knowledge_search", said(["Searching team notes", "Searched team notes"], "search")],
+  ["opensteer_knowledge_read", said(["Reading team notes", "Read team notes"], "list")],
+  [
+    "opensteer_knowledge_save",
+    (tool, args) =>
+      (stringField(args, "noteId") !== null
+        ? said(["Updating a team note", "Updated a team note"], "pencil")
+        : said(["Saving a team note", "Saved a team note"], "pencil"))(tool, args),
+  ],
+  ["opensteer_knowledge_remove", said(["Deleting a team note", "Deleted a team note"], "pencil")],
+
+  ["opensteer_ai_account_list", said(["Looking up AI accounts", "Looked up AI accounts"], "list")],
+  [
+    "opensteer_ai_account_update",
+    saidByAction(
+      {
+        rename: ["Renaming an AI account", "Renamed an AI account"],
+        enable: ["Turning on an AI account", "Turned on an AI account"],
+        disable: ["Turning off an AI account", "Turned off an AI account"],
+        set_default: ["Changing the default AI account", "Changed the default AI account"],
+        set_model_limits: ["Changing model limits", "Changed model limits"],
+      },
+      ["Changing an AI account", "Changed an AI account"],
       "pencil",
       "name",
     ),
   ],
+  [
+    "opensteer_defaults_read",
+    said(["Reading new-task defaults", "Read new-task defaults"], "list"),
+  ],
+  [
+    "opensteer_defaults_update",
+    said(["Changing new-task defaults", "Changed new-task defaults"], "pencil"),
+  ],
+
   ["computer_list", said(["Looking up computers", "Looked up computers"], "laptop")],
   [
-    "computer_write",
-    saidByAction(
-      {
-        rename: ["Renaming a computer", "Renamed a computer"],
-        revoke: ["Revoking a computer", "Revoked a computer"],
-        stop_session: ["Stopping computer access", "Stopped computer access"],
-      },
-      ["Managing a computer", "Managed a computer"],
-      "laptop",
-      "name",
-    ),
+    "computer_update",
+    saidByAction({}, ["Renaming a computer", "Renamed a computer"], "laptop", "name"),
   ],
   [
-    "integration_manage",
-    saidByAction(
-      {
-        list: ["Looking up integration access", "Looked up integration access"],
-        disconnect: ["Disconnecting an integration", "Disconnected an integration"],
-        uninstall: ["Uninstalling an integration", "Uninstalled an integration"],
-        revoke_grant: ["Revoking integration access", "Revoked integration access"],
-      },
-      ["Managing integrations", "Managed integrations"],
-      "puzzle",
-    ),
+    "computer_remove",
+    (tool, args) =>
+      (stringField(args, "target") === "session"
+        ? said(["Ending computer access", "Ended computer access"], "laptop")
+        : said(["Removing a computer", "Removed a computer"], "laptop"))(tool, args),
   ],
   [
-    "channel_manage",
-    saidByAction(
-      {
-        list: ["Looking up messaging channels", "Looked up messaging channels"],
-        revoke_binding: ["Revoking a channel binding", "Revoked a channel binding"],
-        pause: ["Pausing a messaging channel", "Paused a messaging channel"],
-        resume: ["Resuming a messaging channel", "Resumed a messaging channel"],
-      },
-      ["Managing messaging channels", "Managed messaging channels"],
-      "share",
-    ),
+    "computer_access_request",
+    (tool, args) =>
+      (stringField(args, "access") === "full_disk_access"
+        ? said(["Asking for full access to a Mac", "Asked for full access to a Mac"], "laptop")
+        : said(["Asking for computer access", "Asked for computer access"], "laptop"))(tool, args),
   ],
-  [
-    "plugin_manage",
-    saidByAction(
-      {
-        list: ["Looking up plugins and specialists", "Looked up plugins and specialists"],
-        update: ["Updating a plugin", "Updated a plugin"],
-        activate: ["Activating a plugin", "Activated a plugin"],
-        enable: ["Enabling a plugin", "Enabled a plugin"],
-        deactivate: ["Deactivating a plugin", "Deactivated a plugin"],
-        disable: ["Disabling a plugin", "Disabled a plugin"],
-        remove: ["Removing a plugin", "Removed a plugin"],
-        remove_specialist: ["Removing a specialist", "Removed a specialist"],
-      },
-      ["Managing plugins", "Managed plugins"],
-      "puzzle",
-    ),
-  ],
-  [
-    "browser_profile_write",
-    saidByAction(
-      {
-        list: ["Looking up browser access", "Looked up browser access"],
-        rename: ["Renaming a browser profile", "Renamed a browser profile"],
-        delete: ["Deleting a browser profile", "Deleted a browser profile"],
-        clear_history: ["Clearing browser history", "Cleared browser history"],
-        remove_history: ["Removing a history entry", "Removed a history entry"],
-        remove_site: ["Forgetting a website", "Forgot a website"],
-        revoke_grant: ["Revoking browser access", "Revoked browser access"],
-      },
-      ["Managing a browser profile", "Managed a browser profile"],
-      "browser",
-      "name",
-    ),
-  ],
-  ["task_cancel", said(["Stopping a task", "Stopped a task"], "stop")],
-  ["task_status", said(["Checking a task", "Checked a task"], "list")],
-  ["thread_interrupt", said(["Stopping a task", "Stopped a task"], "stop")],
-  [
-    "browser_access_request",
-    said(["Asking for browser access", "Asked for browser access"], "browser"),
-  ],
-  [
-    "browser_profile_create",
-    said(["Creating a browser profile", "Created a browser profile"], "browser"),
-  ],
+
   [
     "browser_profile_list",
     said(["Looking up browser profiles", "Looked up browser profiles"], "browser"),
   ],
   [
+    "browser_profile_update",
+    saidByAction(
+      {},
+      ["Renaming a browser profile", "Renamed a browser profile"],
+      "browser",
+      "name",
+    ),
+  ],
+  [
+    "browser_profile_remove",
+    (tool, args) => {
+      const target = stringField(args, "target");
+      return said(
+        target === "history"
+          ? ["Clearing browser history", "Cleared browser history"]
+          : target === "history_url"
+            ? ["Removing a history entry", "Removed a history entry"]
+            : target === "site"
+              ? ["Forgetting a website", "Forgot a website"]
+              : ["Deleting a browser profile", "Deleted a browser profile"],
+        "browser",
+      )(tool, args);
+    },
+  ],
+  [
     "browser_profile_request",
     said(["Asking for a browser profile", "Asked for a browser profile"], "browser"),
   ],
+  ["saved_login_request", signInPresentation("Getting your saved login for")],
+  ["chrome_cookies_request", signInPresentation("Copying your Chrome sign-in for")],
   [
-    "browser_profile_save",
-    said(["Saving the browser profile", "Saved the browser profile"], "browser"),
-  ],
-  ["browser_session_close", said(["Closing the browser", "Closed the browser"], "browser")],
-  ["browser_session_list", said(["Looking up browsers", "Looked up browsers"], "browser")],
-  [
-    "browser_session_open",
-    (_tool, args) =>
-      step({
-        activeLabel: "Opening a browser",
-        hint: browserSessionHint(args),
-        icon: "browser",
-        kind: "browser",
-        label: "Opened a browser",
-        surface: "browser",
-      }),
-  ],
-  ["browser_sign_in", signInPresentation],
-  ["browser_tab_read", said(["Looking at saved tabs", "Looked at saved tabs"], "browser")],
-  ["browser_tab_write", saidByAction(tabActions, ["Arranging tabs", "Arranged tabs"], "browser")],
-  ["orchestrator_capabilities", said(["Looking up engines", "Looked up engines"], "list")],
-  ["environment_list", said(["Looking up computers", "Looked up computers"], "laptop")],
-  [
-    "machine_full_disk_access_request",
-    said(["Asking for full access to a Mac", "Asked for full access to a Mac"], "laptop"),
-  ],
-  [
-    "device_access_request",
-    said(["Asking for device access", "Asked for device access"], "laptop"),
-  ],
-  ["pending_request", said(["Checking its requests", "Checked its requests"], "list")],
-  ["request_withdraw", said(["Withdrawing a request", "Withdrew a request"], "stop")],
-  ["sign_in", signInPresentation],
-  [
-    "use_card",
+    "card_request",
     (tool, args) => {
       const result = tool.output ? readCardUseResult(tool.output.text) : null;
       const site = result?.site ?? stringField(args, "site");
@@ -2294,43 +2257,50 @@ const opensteerSteps = new Map<string, OpensteerStep>([
       });
     },
   ],
+
   [
-    "delegate_task",
-    (_tool, args) =>
-      step({
-        activeLabel: "Starting a task",
-        hint: stringField(args, "title") ?? stringField(args, "task") ?? "",
-        hintKind: "prose",
-        icon: "share",
-        kind: "task",
-        label: "Started a task",
-      }),
+    "integration_list",
+    said(["Looking up integration access", "Looked up integration access"], "puzzle"),
   ],
-  ["app_list", said(["Listing apps", "Listed apps"], "share")],
-  ["app_fetch", said(["Calling an app", "Called an app"], "share")],
-  ["app_publish", said(["Publishing an app", "Published an app"], "share")],
-  ["person_message", said(["Sending a message", "Sent a message"], "share")],
-  ["person_show", said(["Sending to your screen", "Sent to your screen"], "share")],
-  ["thread_list", said(["Looking up conversations", "Looked up conversations"], "list")],
-  ["thread_send", said(["Sending a message", "Sent a message"], "share")],
-  ["thread_read", said(["Reading a conversation", "Read a conversation"], "list")],
   [
-    "thread_update",
-    saidByAction(taskActions, ["Changing a task", "Changed a task"], "pencil", "title"),
-  ],
-  ["trigger_read", said(["Looking up automations", "Looked up automations"], "list")],
-  [
-    "trigger_write",
-    saidByAction(
-      automationActions,
-      ["Changing an automation", "Changed an automation"],
-      "pencil",
-      "name",
-    ),
+    "integration_remove",
+    (tool, args) => {
+      const target = stringField(args, "target");
+      return said(
+        target === "integration"
+          ? ["Uninstalling an integration", "Uninstalled an integration"]
+          : target === "grant"
+            ? ["Revoking integration access", "Revoked integration access"]
+            : ["Disconnecting an integration", "Disconnected an integration"],
+        "puzzle",
+      )(tool, args);
+    },
   ],
 
   [
-    "plugin_install",
+    "opensteer_messaging_bridge_list",
+    said(["Looking up messaging bridges", "Looked up messaging bridges"], "share"),
+  ],
+  [
+    "opensteer_messaging_bridge_update",
+    saidByFlag(
+      "paused",
+      ["Pausing a messaging bridge", "Paused a messaging bridge"],
+      ["Resuming a messaging bridge", "Resumed a messaging bridge"],
+      "share",
+    ),
+  ],
+  [
+    "opensteer_messaging_bridge_remove",
+    said(["Removing a messaging bridge", "Removed a messaging bridge"], "share"),
+  ],
+
+  [
+    "opensteer_plugin_list",
+    said(["Looking up plugins and specialists", "Looked up plugins and specialists"], "puzzle"),
+  ],
+  [
+    "opensteer_plugin_install",
     (_tool, args) =>
       step({
         activeLabel: "Installing a plugin",
@@ -2341,6 +2311,66 @@ const opensteerSteps = new Map<string, OpensteerStep>([
         label: "Installed a plugin",
       }),
   ],
+  [
+    "opensteer_plugin_update",
+    saidByFlag(
+      "enabled",
+      ["Turning on a plugin", "Turned on a plugin"],
+      ["Turning off a plugin", "Turned off a plugin"],
+      "puzzle",
+    ),
+  ],
+  [
+    "opensteer_plugin_remove",
+    (tool, args) =>
+      (stringField(args, "target") === "specialist"
+        ? said(["Removing a specialist", "Removed a specialist"], "puzzle")
+        : said(["Removing a plugin", "Removed a plugin"], "puzzle"))(tool, args),
+  ],
+
+  ["app_list", said(["Listing apps", "Listed apps"], "share")],
+  ["app_publish", said(["Publishing an app", "Published an app"], "share")],
+  ["app_start", said(["Starting an app", "Started an app"], "share")],
+  ["app_stop", said(["Stopping an app", "Stopped an app"], "share")],
+  ["app_delete", said(["Deleting an app", "Deleted an app"], "share")],
+  ["send_to_person", said(["Sending a message", "Sent a message"], "share")],
+  ["show_to_person", said(["Sending to your screen", "Sent to your screen"], "share")],
+  // Saved task history still holds calls made under these earlier names.
+  ["person_notify", said(["Sending a message", "Sent a message"], "share")],
+  ["person_show", said(["Sending to your screen", "Sent to your screen"], "share")],
+  ["ask_person", said(["Asking you", "Asked you"], "share")],
+
+  [
+    "browser_access_request",
+    said(["Asking for browser access", "Asked for browser access"], "browser"),
+  ],
+  [
+    "browser_profile_create",
+    said(["Creating a browser profile", "Created a browser profile"], "browser"),
+  ],
+  [
+    "browser_profile_save",
+    said(["Saving the browser profile", "Saved the browser profile"], "browser"),
+  ],
+  ["browser_session_close", said(["Closing the browser", "Closed the browser"], "browser")],
+  ["browser_session_list", said(["Looking up browsers", "Looked up browsers"], "browser")],
+  [
+    "browser_session_open",
+    (_tool, args) =>
+      step({
+        activeLabel: "Opening a browser",
+        hint: browserSessionHint(args),
+        icon: "browser",
+        kind: "browser",
+        label: "Opened a browser",
+        surface: "browser",
+      }),
+  ],
+  ["tab_list", said(["Looking at tabs", "Looked at tabs"], "browser")],
+  ["tab_open", said(["Opening a tab", "Opened a tab"], "browser")],
+  ["tab_close", said(["Closing tabs", "Closed tabs"], "browser")],
+  ["tab_organize", said(["Arranging tabs", "Arranged tabs"], "browser")],
+  ["tab_group_update", said(["Updating a tab group", "Updated a tab group"], "browser")],
 ]);
 
 /** Every engine's name for each kind of step it shares with the others. */
@@ -2565,7 +2595,7 @@ function integrationPresentation(
             : "Looked up an integration",
       });
     case "integration_search": {
-      const onMac = stringField(args, "runnerId") !== null;
+      const onMac = stringField(args, "computerId") !== null;
       return gatewayStep({
         activeLabel: onMac ? "Listing apps on a Mac" : "Searching integrations",
         hint: searchedFor([stringField(args, "query")]),
@@ -2573,9 +2603,9 @@ function integrationPresentation(
         label: onMac ? "Listed apps on a Mac" : "Searched integrations",
       });
     }
-    case "integration_request": {
-      const target =
-        stringField(args, "kind") === "computer-app" ? "app access on a Mac" : "integration access";
+    case "integration_request":
+    case "app_access_request": {
+      const target = name === "app_access_request" ? "app access" : "integration access";
       return gatewayStep({
         activeLabel: `Requesting ${target}`,
         hint: stringField(args, "reason") ?? "",
@@ -2583,7 +2613,7 @@ function integrationPresentation(
         label: `Requested ${target}`,
       });
     }
-    case "integration_propose": {
+    case "custom_integration_request": {
       const target = `${sourceKinds[stringField(args, "kind") ?? ""] ?? "an"} integration`;
       return gatewayStep({
         activeLabel: `Proposing ${target}`,
@@ -2598,33 +2628,35 @@ function integrationPresentation(
 }
 
 /**
- * `sign_in` reads by what it came to, from the result the Host
- * returned: a check only when it signed in, an alert when it did not, and the
- * browser while it is still on its way. Output it cannot read never reads as
- * signed in.
+ * A sign-in step reads by what it came to, from the result the Host returned:
+ * a check when it did what it asked, an alert when it did not, and the browser
+ * while it is still on its way. Output it cannot read never reads as done.
  */
-function signInPresentation(tool: ToolEntry, args: unknown): ToolPresentation {
-  const site = stringField(args, "site");
-  const domain = site === null ? null : browserSiteLabel(site);
-  const result = signInResult(tool);
-  return step({
-    activeLabel: domain === null ? "Signing in" : `Signing in to ${domain}`,
-    hint: result?.hint ?? domain ?? "",
-    hintKind: "prose",
-    icon:
-      result?.signedIn === true
-        ? "check-circle"
-        : result?.signedIn === false
-          ? "alert-circle"
-          : "browser",
-    kind: "browser",
-    label:
-      result?.label ?? (domain === null ? "Tried to sign in" : `Tried to sign in to ${domain}`),
-  });
+function signInPresentation(
+  activeVerb: string,
+): (tool: ToolEntry, args: unknown) => ToolPresentation {
+  return (tool, args) => {
+    const site = stringField(args, "site");
+    const domain = site === null ? "a site" : browserSiteLabel(site);
+    const result = signInStep(tool);
+    return step({
+      activeLabel: `${activeVerb} ${domain}`,
+      hint: result?.hint ?? (site === null ? "" : domain),
+      hintKind: "prose",
+      icon:
+        result?.succeeded === true
+          ? "check-circle"
+          : result?.succeeded === false
+            ? "alert-circle"
+            : "browser",
+      kind: "browser",
+      label: result?.label ?? `Tried to sign in to ${domain}`,
+    });
+  };
 }
 
 function cardUseFailed(tool: ToolEntry): boolean {
-  if (tool.tool?.namespace !== "opensteer" || tool.tool.name !== "use_card" || !tool.output)
+  if (tool.tool?.namespace !== "opensteer" || tool.tool.name !== "card_request" || !tool.output)
     return false;
   const result = readCardUseResult(tool.output.text);
   return (
@@ -2634,20 +2666,18 @@ function cardUseFailed(tool: ToolEntry): boolean {
   );
 }
 
-function isSignInTool(tool: ToolEntry): boolean {
-  return (
-    tool.tool?.namespace === "opensteer" &&
-    (tool.tool.name === "browser_sign_in" || tool.tool.name === "sign_in") &&
-    tool.state === "done"
-  );
-}
-
-function signInResult(tool: ToolEntry): BrowserSignInStep | null {
-  if (!isSignInTool(tool) || !tool.output) return null;
-  const result = readBrowserSignInResult(tool.output.text);
-  return result === null
-    ? null
-    : browserSignInStep(result, stringField(effectiveArguments(tool), "site"));
+/** What a finished sign-in step came to, or null for any other step or unreadable output. */
+function signInStep(tool: ToolEntry): SignInStep | null {
+  if (tool.tool?.namespace !== "opensteer" || tool.state !== "done" || !tool.output) return null;
+  if (tool.tool.name === "saved_login_request") {
+    const result = readSavedLoginResult(tool.output.text);
+    return result && savedLoginStep(result);
+  }
+  if (tool.tool.name === "chrome_cookies_request") {
+    const result = readChromeCookiesResult(tool.output.text);
+    return result && chromeCookiesStep(result);
+  }
+  return null;
 }
 
 /** A gateway step's hint is always words about the step, never a reference. */
@@ -2778,7 +2808,7 @@ function computerStepNamesPlace(tool: ToolEntry): boolean {
 function isComputerUseCall(tool: ToolEntry): boolean {
   return (
     computerPlace(tool) !== null &&
-    tool.tool?.name !== "computer" &&
+    tool.tool?.name !== "computer_use" &&
     tool.tool?.name !== "integration_describe" &&
     tool.tool?.name !== "integration_search"
   );
@@ -3049,7 +3079,7 @@ export function toolStatusLabel(tool: ToolEntry): string {
     case "done":
       return cardUseFailed(tool)
         ? "Card use unavailable"
-        : signInResult(tool)?.signedIn === false
+        : signInStep(tool)?.succeeded === false
           ? "Didn’t sign in"
           : "Done";
     case "failed":
@@ -3077,14 +3107,6 @@ export function toolArgumentsText(tool: ToolEntry): string {
  */
 function shownArguments(tool: ToolEntry): unknown {
   const args = effectiveArguments(tool);
-  if (
-    tool.tool?.namespace === "opensteer" &&
-    (tool.tool.name === "browser_sign_in" || tool.tool.name === "sign_in")
-  ) {
-    if (isRecord(args) && "code" in args) return { ...args, code: "[hidden]" };
-    if (typeof args === "string")
-      return args.replace(/("code"\s*:\s*)"(?:[^"\\]|\\.)*("|$)/gu, '$1"[hidden]"');
-  }
   if (!isIntegrationGateway(tool) || !isRecord(args)) return args;
   // `toolRef` was the address before `operation` and `account`; old transcripts still hold it.
   const { toolRef: _reference, ...unaddressed } = args;

@@ -1,3 +1,4 @@
+import { stripRefs } from "@opensteer/shared/stripRefs";
 import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { OpensteerError, type UserId, type RunId } from "@opensteer/core";
@@ -141,6 +142,7 @@ export class VoiceCalls {
     if (entry.abort.signal.aborted) return Promise.reject(ended());
     const existing = entry.ids.get(id);
     if (existing) return existing;
+    text = stripRefs(text);
     const result = entry.queue.then(async () => {
       const writer = await withTimeout(entry.writer.promise, this.rendezvousMs, {
         signal: entry.abort.signal,

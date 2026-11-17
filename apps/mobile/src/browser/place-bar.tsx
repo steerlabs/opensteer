@@ -1,7 +1,15 @@
 import { useNavigation } from "@react-navigation/native";
-import { createContext, useContext, useLayoutEffect, useMemo, type ReactNode } from "react";
-import { Platform } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { createContext, useContext, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
+import type { HostInstance } from "react-native";
+import {
+  attentionBadge,
+  menuHint,
+  menuLabel,
+  useIsTopLevel,
+  useIsPresented,
+  useMenuAttention,
+} from "../navigation-header.js";
+import { useSidebarControl, useSidebarDocked } from "../sidebar/sidebar-context.js";
 import { ToolbarButton } from "./toolbar.js";
 
 interface PlaceBar {
@@ -22,18 +30,6 @@ export function PlaceBarProvider(props: PlaceBar & { readonly children: ReactNod
 }
 
 /**
- * Whether this screen has iOS's vertical bar, measured where the screen is: it
- * is the one thing that insets a single side, as a notch insets both. UIKit
- * moves native bar items into it, and only then is a native bar free of a row
- * over the page. Ask at a screen's root: a pane beside another has one-sided
- * insets of its own.
- */
-export function useVerticalBar(): boolean {
-  const { left, right } = useSafeAreaInsets();
-  return Platform.OS === "ios" && left !== right;
-}
-
-/**
  * Puts the native bar away while a place draws its own. A streamed page cannot
  * run under a bar, so the bar's row would cost the page its height, and the
  * place's own bar already names it. Only what draws its own bar asks, so a
@@ -51,16 +47,55 @@ export function useNativeBarAway(away = true): void {
   }, [hide, navigation]);
 }
 
-/** The way out of a place, standing for the native Back its bar replaced. */
-export function ToolbarLeave(): ReactNode {
+/**
+ * The way out, standing for the leading control the native bar would have had:
+ * the Menu where the page is top-level (opened from the sidebar), else Back.
+ * The vertical bar holds it instead, unless the native bar is put away even
+ * there (`ownRow`).
+ */
+export function ToolbarLeave(props: { readonly ownRow?: boolean }): ReactNode {
   const navigation = useNavigation();
-  if (useContext(PlaceBarContext).verticalBar) return null;
+  const verticalBar = useContext(PlaceBarContext).verticalBar;
+  const topLevel = useIsTopLevel();
+  if (verticalBar && props.ownRow !== true) return null;
+  if (topLevel) return <ToolbarMenuButton />;
+  return (
+    <>
+      <ToolbarButton
+        accessibilityHint="Returns to the previous screen"
+        label="Back"
+        onPress={() => navigation.goBack()}
+        symbol="chevron.left"
+      />
+      <ToolbarMenuButton />
+    </>
+  );
+}
+
+/** The Menu, only where a drawer sidebar can open from this screen. */
+function ToolbarMenuButton(): ReactNode {
+  const sidebar = useSidebarControl();
+  const docked = useSidebarDocked();
+  const presented = useIsPresented();
+  if (sidebar === null || docked || presented) return null;
+  return <ToolbarMenu sidebar={sidebar} />;
+}
+
+function ToolbarMenu({
+  sidebar,
+}: {
+  readonly sidebar: NonNullable<ReturnType<typeof useSidebarControl>>;
+}): ReactNode {
+  const attention = useMenuAttention();
+  const button = useRef<HostInstance>(null);
   return (
     <ToolbarButton
-      accessibilityHint="Returns to the previous screen"
-      label="Back"
-      onPress={() => navigation.goBack()}
-      symbol="chevron.left"
+      accessibilityHint={menuHint}
+      {...(attention === 0 ? {} : { badge: attentionBadge(attention) })}
+      label={menuLabel(attention)}
+      onPress={() => sidebar.open(button.current)}
+      ref={button}
+      symbol="line.3.horizontal"
     />
   );
 }

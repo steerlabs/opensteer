@@ -1,4 +1,22 @@
 import {
+  DesktopIphoneSetupBeginSchema,
+  DesktopIphoneDetachInputSchema,
+  DesktopIphoneDetachCompleteSchema,
+  DesktopIphoneDetachStatusSchema,
+  DesktopIphoneSetupChooseSchema,
+  DesktopIphoneSetupAddSchema,
+  DesktopIphoneSetupHelpSchema,
+  DesktopIphoneSetupCompleteSchema,
+  DesktopIphoneSetupFailureSchema,
+  DesktopIphoneSetupIdSchema,
+  DesktopIphoneSetupStatusSchema,
+  DesktopIphoneSetupWifiSchema,
+  DesktopIphoneWifiInputSchema,
+  DesktopIphoneConfigureWifiSchema,
+  DesktopIphoneWifiStatusSchema,
+  type DesktopIphoneSetupBridge,
+} from "@opensteer/protocol/desktop";
+import {
   DesktopIntegrationAuthorizationReturnSchema,
   DesktopIntegrationAuthorizationSubscriptionSchema,
   DesktopFinishIntegrationAuthorizationInputSchema,
@@ -172,6 +190,7 @@ import {
   DesktopStartLocalRunnerInputSchema,
   DesktopTailscaleShareResultSchema,
   DesktopTailscaleStatusSchema,
+  type DesktopCreatePersonalDeploymentInput,
 } from "@opensteer/protocol/desktop";
 import {
   DictationAvailabilitySchema,
@@ -420,6 +439,126 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       ipcRenderer.removeListener(desktopBridgeChannels.localVisibilityChanged, receive);
     };
   },
+  iphoneSetup: {
+    wifiStatus: async (input) =>
+      DesktopIphoneWifiStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneWifiStatus,
+          DesktopIphoneWifiInputSchema.parse(input),
+        ),
+      ),
+    configureWifi: async (input) =>
+      DesktopIphoneWifiStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneConfigureWifi,
+          DesktopIphoneConfigureWifiSchema.parse(input),
+        ),
+      ),
+    wifi: async (input) =>
+      DesktopIphoneSetupStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneSetupWifi,
+          DesktopIphoneSetupWifiSchema.parse(input),
+        ),
+      ),
+    detach: async (input) =>
+      DesktopIphoneDetachStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneDetach,
+          DesktopIphoneDetachInputSchema.parse(input),
+        ),
+      ),
+    completeDetach: async (input) => {
+      await invoke(
+        desktopBridgeChannels.iphoneDetachComplete,
+        DesktopIphoneDetachCompleteSchema.parse(input),
+      );
+    },
+    pendingDetaches: async (input) =>
+      DesktopIphoneDetachStatusSchema.array()
+        .max(64)
+        .parse(
+          await invoke(
+            desktopBridgeChannels.iphonePendingDetaches,
+            DesktopIphoneSetupBeginSchema.parse(input),
+          ),
+        ),
+    begin: async (input) =>
+      DesktopIphoneSetupStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneSetupBegin,
+          DesktopIphoneSetupBeginSchema.parse(input),
+        ),
+      ),
+    choose: async (input) =>
+      DesktopIphoneSetupStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneSetupChoose,
+          DesktopIphoneSetupChooseSchema.parse(input),
+        ),
+      ),
+    add: async (input) =>
+      DesktopIphoneSetupStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneSetupAdd,
+          DesktopIphoneSetupAddSchema.parse(input),
+        ),
+      ),
+    help: async (input) =>
+      DesktopIphoneSetupStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneSetupHelp,
+          DesktopIphoneSetupHelpSchema.parse(input),
+        ),
+      ),
+    retry: async (input) =>
+      DesktopIphoneSetupStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneSetupRetry,
+          DesktopIphoneSetupIdSchema.parse(input),
+        ),
+      ),
+    complete: async (input) =>
+      DesktopIphoneSetupStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneSetupComplete,
+          DesktopIphoneSetupCompleteSchema.parse(input),
+        ),
+      ),
+    failed: async (input) =>
+      DesktopIphoneSetupStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneSetupFailed,
+          DesktopIphoneSetupFailureSchema.parse(input),
+        ),
+      ),
+    status: async (input) =>
+      DesktopIphoneSetupStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneSetupStatus,
+          DesktopIphoneSetupIdSchema.parse(input),
+        ),
+      ),
+    cancel: async (input) => {
+      await invoke(
+        desktopBridgeChannels.iphoneSetupCancel,
+        DesktopIphoneSetupIdSchema.parse(input),
+      );
+    },
+    subscribe: (input, listener) => {
+      const target = DesktopIphoneSetupIdSchema.parse(input);
+      const receive = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        const state = DesktopIphoneSetupStatusSchema.parse(value);
+        if (state.setupId === target.setupId) listener(state);
+      };
+      ipcRenderer.on(desktopBridgeChannels.iphoneSetupChanged, receive);
+      void invoke(desktopBridgeChannels.iphoneSetupSubscribe, target).catch(() => undefined);
+      return () => {
+        ipcRenderer.removeListener(desktopBridgeChannels.iphoneSetupChanged, receive);
+        void invoke(desktopBridgeChannels.iphoneSetupUnsubscribe, target).catch(() => undefined);
+      };
+    },
+  } satisfies DesktopIphoneSetupBridge,
   agentPhoneAdb: {
     open: async (input) =>
       DesktopAgentPhoneAdbOpenResultSchema.parse(
@@ -668,7 +807,8 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       desktopBridgeChannels.connectPrivate,
       DesktopConnectPrivateDeploymentInputSchema.parse(input),
     ),
-  createPersonalDeployment: () => invoke<void>(desktopBridgeChannels.createPersonalDeployment),
+  createPersonalDeployment: (input?: DesktopCreatePersonalDeploymentInput) =>
+    invoke<void>(desktopBridgeChannels.createPersonalDeployment, input ?? {}),
   getDeploymentAccessSnapshot: async () =>
     DeploymentAccessSnapshotSchema.parse(
       await invoke<DeploymentAccessSnapshot>(desktopBridgeChannels.getDeploymentAccessSnapshot),

@@ -1,3 +1,13 @@
+import { computerConnectionDeviceId } from "./integration-store.js";
+import type {
+  IntegrationConnectionSummary as LegacyIntegrationConnectionSummary,
+  ComputerAppSetupRequest as LegacyComputerAppSetupRequest,
+} from "@opensteer/integration-core";
+import { legacySelfConnection, legacySelfSetupRequest } from "./device-legacy-store.js";
+import { requireSelfDeviceId } from "./device-inventory-store.js";
+import { DeviceIdSchema, isPhoneDisplayDefinitionId, type DeviceId } from "@opensteer/core";
+import { deviceOwnershipIn } from "./machine-ownership.js";
+import { getDeviceSelfRunnerId } from "./device-inventory-store.js";
 import { getBrowserSessionForOwner } from "./browser-session-store.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
@@ -14,11 +24,13 @@ import {
   ResolvedRequestSchema,
   RequestIdSchema,
   RequestJsonObjectSchema,
+  RequestPresentationSchema,
   RequestResponseSchema,
   RunnerIdSchema,
   ThreadIdSchema,
   browserSessionClosedReason,
   createId,
+  requestFormAnswersProblem,
   type AgentEvent,
   type BrowserProfileId,
   type BrowserSourceId,
@@ -50,11 +62,11 @@ import {
   integrationInstallManifestSummary,
   integrationProposalName,
   type ComputerAppIdentity,
-  type ComputerAppSetupRequest,
+  type DeviceComputerAppSetupRequest as ComputerAppSetupRequest,
   type IntegrationAccess,
   type IntegrationGrant,
   type IntegrationConnectionId,
-  type IntegrationConnectionSummary,
+  type DeviceIntegrationConnectionSummary as IntegrationConnectionSummary,
   type IntegrationInstallManifest,
   type IntegrationInstallationId,
   type IntegrationProviderAuthorization,
@@ -101,7 +113,7 @@ import {
   type InstallIntegrationMutation,
 } from "./integration-platform-stores.js";
 import { deviceAccessStates } from "./device-store.js";
-import { machineOwnershipIn, machineIsManagedBy } from "./machine-ownership.js";
+import { machineIsManagedBy } from "./machine-ownership.js";
 import { cancelPending } from "./request-cancellation.js";
 import { requestFromRow, requestInsert, requestOriginEnvironment } from "./request-persistence.js";
 import { insertBrowserProfileOnLockedHome } from "./browser-session-store.js";
@@ -148,7 +160,7 @@ interface CreateRequestFields {
 export type CreateRequestInput = CreateRequestFields & RequestOriginInput;
 
 /** What one task's ask for an app on a Mac came to. */
-export type ComputerAppAccessDecision =
+export type DeviceComputerAppAccessDecision =
   | {
       readonly connection: IntegrationConnectionSummary;
       readonly kind: "approved";
@@ -168,6 +180,15 @@ export type ComputerAppAccessDecision =
       readonly requestEvents: readonly AgentEvent[];
       readonly setupRequest: ComputerAppSetupRequest;
     };
+
+export type ComputerAppAccessDecision =
+  | (Omit<Extract<DeviceComputerAppAccessDecision, { kind: "approved" }>, "connection"> & {
+      readonly connection: LegacyIntegrationConnectionSummary;
+    })
+  | (Omit<Extract<DeviceComputerAppAccessDecision, { kind: "computer" }>, "setupRequest"> & {
+      readonly setupRequest: LegacyComputerAppSetupRequest;
+    })
+  | Extract<DeviceComputerAppAccessDecision, { kind: "personal-grant" }>;
 
 /**
  * What makes two integration Requests the same ask: the resource an access
@@ -304,7 +325,7 @@ export class RequestStore {
   async createDeviceAccessRequest(
     input: {
       readonly callId: string;
-      readonly machineId: RunnerId;
+      readonly machineId: DeviceId;
       readonly access: "browser" | "apps" | "files";
       readonly reason: string;
       readonly originatingRunId: RunId;
@@ -315,12 +336,12 @@ export class RequestStore {
   ): Promise<RequestMutation> {
     return withPersonalTransaction(this.#database, async (transaction) => {
       const machine = await transaction
-        .selectFrom("runners")
+        .selectFrom("devices")
         .select("name")
         .where("id", "=", input.machineId)
         .executeTakeFirst();
       if (!machine)
-        throw new OpensteerError({ code: "forbidden", message: "Owned device not found" });
+        throw new OpensteerError({ code: "forbidden", message: "Owned computer not found" });
       const label = { browser: "Browser", apps: "Apps", files: "Files and commands" }[input.access];
       return createRequestInTransaction(
         this.#links,
@@ -371,17 +392,20 @@ export class RequestStore {
         .where("id", "=", input.requestId)
         .executeTakeFirst();
       if (!row || row.kind !== "device.access" || row.payload.kind !== "device.access")
-        throw new OpensteerError({ code: "not_found", message: "Device access Request not found" });
-      const ownership = await machineOwnershipIn(transaction, row.payload.machineId);
+        throw new OpensteerError({
+          code: "not_found",
+          message: "Computer access Request not found",
+        });
+      const ownership = await deviceOwnershipIn(transaction, row.payload.machineId);
       if (!ownership || !machineIsManagedBy(ownership, input.resolvedBy))
         throw new OpensteerError({
           code: "forbidden",
-          message: "Only this device's owner can answer its access Request.",
+          message: "Only this computer's owner can answer its access Request.",
         });
       if (row.status !== "pending")
         throw new OpensteerError({
           code: "conflict",
-          message: "Device access Request is no longer pending",
+          message: "Computer access Request is no longer pending",
         });
       await lockActiveDurableRequestAuthority(transaction, requestFromRow(row));
       const now = new Date();
@@ -399,6 +423,78 @@ export class RequestStore {
           ),
         })
         .where("id", "=", row.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      const request = requestFromRow(resolved);
+      await enqueueContinuation(transaction, request, now);
+      await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+      return { events: await terminalEvents(transaction, request), request };
+    });
+  }
+  /**
+   * The person answers or dismisses a question an agent asked with
+   * `ask_person`. Only the person it asked may answer, and the answer must fit
+   * the questions; the task that asked wakes with it however late it comes.
+   */
+  async answerPersonQuestion(input: {
+    readonly requestId: RequestId;
+    readonly resolvedBy: UserId;
+    readonly settlementSessionId?: string;
+    readonly response: RequestResponse;
+  }): Promise<{ events: readonly AgentEvent[]; request: Request }> {
+    const declined =
+      input.response.kind === "external" &&
+      input.response.value !== undefined &&
+      Object.keys(input.response.value).length === 1 &&
+      input.response.value.decision === "declined";
+    if (input.response.kind !== "form" && !declined)
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Answer a question with its answers, or dismiss it.",
+      });
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const row = await transaction
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", input.requestId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!row || row.kind !== "person.question")
+        throw new OpensteerError({ code: "not_found", message: "Question not found" });
+      if (row.status !== "pending")
+        throw new OpensteerError({ code: "conflict", message: "Question is no longer pending" });
+      if (row.requestedBy !== input.resolvedBy)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Only the person it asked can answer this question.",
+        });
+      const pending = requestFromRow(row);
+      if (pending.presentation.kind !== "form")
+        throw new Error("A person question is presented as a form");
+      if (input.response.kind === "form") {
+        const problem = requestFormAnswersProblem(
+          pending.presentation.fields,
+          input.response.answers,
+        );
+        if (problem !== null) throw new OpensteerError({ code: "bad_request", message: problem });
+      }
+      await lockActiveDurableRequestAuthority(transaction, pending);
+      const now = new Date();
+      const resolved = await transaction
+        .updateTable("requests")
+        .set({
+          status: declined ? "declined" : "fulfilled",
+          resolvedAt: now,
+          resolvedBy: input.resolvedBy,
+          response: jsonValue(input.response),
+          settlementProvenance: await readRequestSettlementProvenance(
+            transaction,
+            input.resolvedBy,
+            input.settlementSessionId,
+          ),
+        })
+        .where("id", "=", row.id)
+        .where("status", "=", "pending")
         .returningAll()
         .executeTakeFirstOrThrow();
       const request = requestFromRow(resolved);
@@ -1494,6 +1590,25 @@ export class RequestStore {
     ]);
     return requestPage(rows, Number(count.count), limit, scope);
   }
+  async referenceForOwner(input: {
+    readonly ownerId: UserId;
+    readonly threadId: ThreadId;
+    readonly requestId: RequestId;
+  }): Promise<Request | null> {
+    return withPersonalReadTransaction(this.#database, async (transaction) => {
+      await requirePersonalOwner(transaction, input.ownerId);
+      const row = await transaction
+        .selectFrom("requests")
+        .innerJoin("threads", "threads.id", "requests.originatingThreadId")
+        .selectAll("requests")
+        .where("requests.id", "=", input.requestId)
+        .where("requests.originatingThreadId", "=", input.threadId)
+        .where("threads.createdBy", "=", input.ownerId)
+        .executeTakeFirst();
+      return row ? requestFromRow(row) : null;
+    });
+  }
+
   async originatingPendingPage(input: {
     readonly before?: string;
     readonly deviceAccessRequests?: "include";
@@ -1678,7 +1793,29 @@ export class RequestStore {
     });
   }
 
-  async requestComputerAppAccess(input: {
+  async requestComputerAppAccess(
+    input: Omit<Parameters<RequestStore["requestDeviceComputerAppAccess"]>[0], "deviceId"> & {
+      readonly runnerId: RunnerId;
+    },
+  ): Promise<ComputerAppAccessDecision> {
+    const result = await this.requestDeviceComputerAppAccess({
+      ...input,
+      deviceId: await requireSelfDeviceId(this.#database, input.runnerId),
+    });
+    if (result.kind === "computer")
+      return {
+        ...result,
+        setupRequest: await legacySelfSetupRequest(this.#database, result.setupRequest),
+      };
+    if (result.kind === "approved")
+      return {
+        ...result,
+        connection: await legacySelfConnection(this.#database, result.connection),
+      };
+    return result;
+  }
+
+  async requestDeviceComputerAppAccess(input: {
     readonly reason: string;
     readonly threadTitle: string | null;
     readonly access: IntegrationAccess;
@@ -1687,17 +1824,17 @@ export class RequestStore {
     /** Audit correlation for a connection written inline. */
     readonly auditRequestId: string;
     readonly definitionDigest: string;
-    readonly definitionId: "android-phone" | "macos-app";
+    readonly definitionId: "android-phone" | "iphone-screen" | "macos-app";
     readonly idempotencyKey?: string;
     readonly originatingOccurrenceId?: TriggerOccurrenceId | null;
     readonly originatingRunId: RunId | null;
     readonly ownerUserId: UserId;
-    readonly runnerId: RunnerId;
+    readonly deviceId: DeviceId;
     readonly threadId: ThreadId;
     /** The tool rows of a connection this ask creates inline. */
     readonly tools: (connectionId: IntegrationConnectionId) => readonly IntegrationToolMaterial[];
-  }): Promise<ComputerAppAccessDecision> {
-    if ((input.app === null) !== (input.definitionId === "android-phone")) {
+  }): Promise<DeviceComputerAppAccessDecision> {
+    if ((input.app === null) !== isPhoneDisplayDefinitionId(input.definitionId)) {
       throw new OpensteerError({
         code: "bad_request",
         message: "A Mac app access ask names its app; a phone access ask names none",
@@ -1727,11 +1864,11 @@ export class RequestStore {
       await ((transaction) => lockRequestOrigin(transaction, origin))(personalTransaction);
       return (async (transaction) => {
         const runner = await lockComputerApprovalScopeInTransaction(transaction, {
-          runnerId: input.runnerId,
+          deviceId: input.deviceId,
         });
         const ownership =
-          runner.revokedAt === null ? await machineOwnershipIn(transaction, runner.id) : null;
-        if (runner.revokedAt !== null) {
+          runner.removedAt === null ? await deviceOwnershipIn(transaction, runner.id) : null;
+        if (runner.removedAt !== null) {
           throw new OpensteerError({
             code: "not_found",
             message: "Computer not found",
@@ -1748,7 +1885,7 @@ export class RequestStore {
         const scope = computerAppScopeOf({
           app,
           definitionId: input.definitionId,
-          runnerId: input.runnerId,
+          deviceId: input.deviceId,
         });
         // This observation chooses the approval path under the Mac's fence.
         // Each accepting path revalidates it after taking installation/server
@@ -1769,7 +1906,7 @@ export class RequestStore {
             "integrationServers.installationId",
           ])
           .where("integrationConnections.connectionKind", "=", "computer")
-          .where("integrationConnections.runnerId", "=", input.runnerId)
+          .where(computerConnectionDeviceId, "=", input.deviceId)
           .where("integrationConnections.integrationDefinitionId", "=", input.definitionId)
           // `= null` matches nothing, so a phone's app-less connection is found with `is`.
           .where(
@@ -1790,7 +1927,7 @@ export class RequestStore {
           integrationAccessCovers(current.computerAccess, access);
         const policy = await computerUsePolicyInTransaction(
           transaction,
-          input.runnerId,
+          input.deviceId,
           input.ownerUserId,
         );
         // Automatic approval never widens or re-identifies a connection, so an
@@ -1805,7 +1942,7 @@ export class RequestStore {
             definitionId: input.definitionId,
             requestId: input.auditRequestId,
             runner,
-            runnerId: input.runnerId,
+            deviceId: input.deviceId,
             tools: input.tools,
           });
           return {
@@ -1823,7 +1960,7 @@ export class RequestStore {
               access,
               callId:
                 input.idempotencyKey ??
-                `computer.app.grant:${input.definitionId}:${input.runnerId}:${scope.appKey ?? ""}:${access}`,
+                `computer.app.grant:${input.definitionId}:${input.deviceId}:${scope.appKey ?? ""}:${access}`,
               installationId: current.installationId,
               originatingThreadId: input.threadId,
               reason: input.reason,
@@ -1846,7 +1983,7 @@ export class RequestStore {
           definitionId: input.definitionId,
           now,
           ownerUserId: input.ownerUserId,
-          runnerId: input.runnerId,
+          deviceId: input.deviceId,
           task: {
             reason: input.reason,
             threadId: input.threadId,
@@ -1858,7 +1995,7 @@ export class RequestStore {
           ...origin,
           callId:
             input.idempotencyKey ??
-            `computer.app.access:${input.definitionId}:${input.runnerId}:${scope.appKey ?? ""}:${access}`,
+            `computer.app.access:${input.definitionId}:${input.deviceId}:${scope.appKey ?? ""}:${access}`,
           kind: "computer.app.access",
           mode: "durable",
           originatingThreadId: input.threadId,
@@ -1868,7 +2005,7 @@ export class RequestStore {
             definitionId: input.definitionId,
             kind: "computer.app.access",
             reason: input.reason,
-            runnerId: input.runnerId,
+            deviceId: input.deviceId,
             setupRequestId: setupRequest.id,
           },
           presentation: computerAppAccessPresentation({
@@ -1926,13 +2063,13 @@ export class RequestStore {
         });
       const named = await transaction
         .selectFrom("requests")
-        .select(sql<string>`payload->>'runnerId'`.as("runnerId"))
+        .select(sql<string>`coalesce(payload->>'deviceId',payload->>'runnerId')`.as("runnerId"))
         .where("id", "=", input.requestId)
         .where("kind", "=", "computer.app.access")
         .executeTakeFirst();
       if (!named) throw noLongerPending();
       await lockComputerApprovalScopeInTransaction(transaction, {
-        runnerId: RunnerIdSchema.parse(named.runnerId),
+        deviceId: DeviceIdSchema.parse(named.runnerId),
       });
       const observed = await transaction
         .selectFrom("requests")
@@ -2786,7 +2923,7 @@ export class RequestStore {
       if (pending.mode !== "durable" || pending.originatingThreadId !== input.threadId) {
         throw new OpensteerError({
           code: "forbidden",
-          message: "Only the originating Thread may withdraw its pending durable Request",
+          message: "Only the task that opened a pending Request may withdraw it",
         });
       }
       if (pending.requestedBy !== input.withdrawnBy) {
@@ -2958,6 +3095,9 @@ export class RequestStore {
                 gate.or([
                   // A call's Run spans unrelated turns, so its Requests never settle as one batch.
                   gate("originRun.voiceSessionId", "is not", null),
+                  // A question the person answered continues the task by itself: the
+                  // agent asked it to hear back, not to wait on anything else it asked.
+                  sql<boolean>`requests.kind = 'person.question'`,
                   gate.not(
                     gate.exists(
                       gate
@@ -3224,32 +3364,40 @@ async function createRequestInTransaction(
     )
       throw new OpensteerError({
         code: "bad_request",
-        message: "Use device_access_request for device access.",
+        message: "Use computer_access_request for device access.",
       });
     const payload = input.payload;
-    const runner = await transaction
-      .selectFrom("runners")
-      .select(["accessPolicy", "allowedModules", "moduleDescriptors", "revokedAt", "kind"])
-      .where("id", "=", payload.machineId)
+    const deviceId = payload.machineId;
+    const device = await transaction
+      .selectFrom("devices")
+      .select("accessPolicy")
+      .where("id", "=", deviceId)
       .forNoKeyUpdate()
       .executeTakeFirst();
-    const ownership = await machineOwnershipIn(transaction, payload.machineId);
+    const selfRunnerId = await getDeviceSelfRunnerId(transaction, payload.machineId);
+    const runner = selfRunnerId
+      ? await transaction
+          .selectFrom("runners")
+          .select(["allowedModules", "moduleDescriptors", "revokedAt", "kind"])
+          .where("id", "=", selfRunnerId)
+          .executeTakeFirst()
+      : undefined;
+    const ownership = await deviceOwnershipIn(transaction, payload.machineId);
     if (
-      !runner ||
-      runner.revokedAt ||
-      runner.kind === "managed" ||
+      !device ||
+      (runner?.revokedAt !== null && runner !== undefined) ||
       !ownership ||
       !machineIsManagedBy(ownership, input.requestedBy)
     )
       throw new OpensteerError({
         code: "forbidden",
-        message: "Only an owned active device can receive an access Request.",
+        message: "Only an owned active computer can receive an access Request.",
       });
     if (!deviceOnline())
       throw new OpensteerError({
         code: "runner_offline",
         reason: "device-offline",
-        message: "That device is offline. Do not request access while it is offline.",
+        message: "That computer is offline. Do not request access while it is offline.",
         details: { machineId: payload.machineId, capability: payload.access },
       });
     const duplicate = await transaction
@@ -3266,10 +3414,10 @@ async function createRequestInTransaction(
       .executeTakeFirst();
     if (duplicate) return { replayed: true, request: requestFromRow(duplicate), events: [] };
     const state = deviceAccessStates(
-      runner.accessPolicy,
-      runner.allowedModules,
-      runner.moduleDescriptors,
-      runner.kind === "main" && ownership.ownerKind === "deployment",
+      device.accessPolicy,
+      runner?.allowedModules ?? ["integrations"],
+      runner?.moduleDescriptors ?? { integrations: { platform: "ios" } },
+      runner?.kind === "main" && ownership.ownerKind === "deployment",
     )[payload.access];
     if (state !== "disabled")
       throw new OpensteerError({
@@ -3359,6 +3507,25 @@ async function createRequestInTransaction(
       };
     }
   }
+  if (input.kind === "person.question") {
+    // Asking the same thing again while it waits is the same question, whatever
+    // Run asks it, so a background pass that wakes twice raises one card.
+    const duplicate = await transaction
+      .selectFrom("requests")
+      .selectAll()
+      .where("kind", "=", "person.question")
+      .where("status", "=", "pending")
+      .where("requestedBy", "=", input.requestedBy)
+      .where("originatingThreadId", "=", input.originatingThreadId)
+      .where(
+        sql<boolean>`presentation = ${JSON.stringify(RequestPresentationSchema.parse(input.presentation))}::jsonb`,
+      )
+      .orderBy("createdAt", "asc")
+      .orderBy("id", "asc")
+      .limit(1)
+      .executeTakeFirst();
+    if (duplicate) return { events: [], replayed: true, request: requestFromRow(duplicate) };
+  }
   if (input.payload.kind === "computer.app.access") {
     // The same ask for the same app is the same card, whatever call identity
     // the Run gave it: the app, the computer and the access are the whole
@@ -3373,7 +3540,11 @@ async function createRequestInTransaction(
       .where("requestedBy", "=", input.requestedBy)
       .where("originatingThreadId", "=", input.originatingThreadId)
       .where(sql<string>`payload->>'definitionId'`, "=", input.payload.definitionId)
-      .where(sql<string>`payload->>'runnerId'`, "=", input.payload.runnerId)
+      .where(
+        sql<string>`coalesce(payload->>'deviceId',payload->>'runnerId')`,
+        "=",
+        input.payload.deviceId,
+      )
       .where(
         app === null
           ? sql<boolean>`payload->'app' = 'null'::jsonb`
@@ -4317,7 +4488,7 @@ function requestOriginOf(input: RequestOriginSelector): RequestOriginInput {
   }
   throw new OpensteerError({
     code: "bad_request",
-    message: "A Request must originate from a Run or a Trigger Occurrence",
+    message: "A Request must originate from a Run or an automation occurrence",
   });
 }
 
@@ -4631,11 +4802,11 @@ function requestPage(
 
 export async function fulfillDeviceAccessRequestsInTransaction(
   transaction: Transaction<DatabaseSchema>,
-  machineId: RunnerId,
+  machineId: DeviceId,
   policy: MachineAccessPolicy,
 ): Promise<readonly AgentEvent[]> {
   const access = deviceAccess(policy);
-  const ownership = await machineOwnershipIn(transaction, machineId);
+  const ownership = await deviceOwnershipIn(transaction, machineId);
   const rows = await transaction
     .selectFrom("requests")
     .selectAll()

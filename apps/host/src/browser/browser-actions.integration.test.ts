@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { HostToClientMessageSchema } from "@opensteer/protocol";
 import { browserRows } from "./browser-rows.test-support.js";
 import {
@@ -11,9 +12,8 @@ import {
 import { BrowserSurfaceIdSchema, createBrowserSessionId } from "@opensteer/protocol/browser";
 import { zeroSequence } from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
-import { BrowserTabGroupStore } from "@opensteer/database";
+import { TabStore } from "@opensteer/database";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
-import { BrowserTabGroupService } from "./browser-tab-group-service.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
@@ -116,6 +116,23 @@ async function setup(surfaceState = true) {
     placement: { kind: "runner", runnerId: phone.runnerId },
   });
   const sessionId = opened.session.id;
+  await new TabStore(host.store.database).open(
+    {
+      id: BrowserSurfaceIdSchema.parse("page-integration"),
+      ownerId: host.ownerId,
+      computerId: DeviceIdSchema.parse(phone.runnerId),
+      kind: "page",
+      title: "Integration page",
+      url: "about:blank",
+      openedBy: "person",
+      pageBinding: {
+        lineageId: sessionId,
+        sessionId,
+        surfaceId: BrowserSurfaceIdSchema.parse("page-integration"),
+      },
+    },
+    "action-page",
+  );
   const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
   const backend = (token = run.toolsToken, id = sessionId) =>
     fetch(`${host.origin.origin}/internal/v1/browser-backend/${id}`, { headers: bearer(token) });
@@ -194,9 +211,7 @@ integration("session-scoped browser agent backends", () => {
     const f = await setup();
     const tabId = BrowserSurfaceIdSchema.parse("page-integration");
     const group = () =>
-      browserRows(f.host.runtime.browser, f.host.ownerId, f.sessionId).then(
-        (rows) => rows.lineage!,
-      );
+      browserRows(f.host.runtime.browser, f.host.ownerId, f.sessionId).then((rows) => rows);
     await vi.waitFor(async () => expect((await group()).tabs).toHaveLength(1), { timeout: 2000 });
     const realtime = await connect(
       `ws://127.0.0.1:${f.host.hostPort}/v1/realtime`,
@@ -230,7 +245,7 @@ integration("session-scoped browser agent backends", () => {
         realtime,
         (message) => {
           const parsed = HostToClientMessageSchema.safeParse(message);
-          if (!parsed.success || parsed.data.type !== "host.browser-tabs") return false;
+          if (!parsed.success || parsed.data.type !== "host.tabs") return false;
           const stream = parsed.data.stream;
           return (
             stream.op === "rows"
@@ -238,7 +253,11 @@ integration("session-scoped browser agent backends", () => {
               : stream.op === "change"
                 ? [...(stream.add ?? []), ...(stream.update ?? [])]
                 : []
-          ).some((row) => row.id === tabId && row.state === state);
+          ).some(
+            (row) =>
+              ("tabId" in row ? row.tabId : undefined) === tabId &&
+              row.state === (state === "suspended" ? "asleep" : "open"),
+          );
         },
         2000,
       );
@@ -263,9 +282,9 @@ integration("session-scoped browser agent backends", () => {
     };
     await publish("suspended");
     const stranger = await f.host.store.createUser("No browser access");
-    await expect(f.host.runtime.browser.activatePersonalTab(stranger, tabId)).rejects.toMatchObject(
-      { code: "not_found" },
-    );
+    await expect(
+      f.host.runtime.tabs.activate(stranger, tabId, crypto.randomUUID()),
+    ).rejects.toMatchObject({ code: "not_found" });
     const watchedError = new Promise<{ code: number; reason: string }>((resolve) =>
       viewer.once("close", (code, reason) => resolve({ code, reason: reason.toString() })),
     );
@@ -310,8 +329,8 @@ integration("session-scoped browser agent backends", () => {
     f.phone.sendServer({ type: "cdp.result", requestId: resume.requestId, result: {} });
     expect(await activation).toMatchObject({
       type: "tab.activate",
-      tabId,
-      session: { id: f.sessionId },
+      tab: { tabId },
+      viewer: { kind: "page", sessionId: f.sessionId },
     });
     expect(
       f.phone
@@ -352,34 +371,7 @@ integration("session-scoped browser agent backends", () => {
     expect(JSON.stringify(await response.json())).toContain(
       "The phone's browser is busy with another tab.",
     );
-    expect(
-      (
-        await f.host.store.database
-          .selectFrom("personalTabs")
-          .select("state")
-          .where("id", "=", tabId)
-          .executeTakeFirstOrThrow()
-      ).state,
-    ).toBe("live");
-    const savedTabs = new BrowserTabGroupService({
-      groups: new BrowserTabGroupStore(f.host.store.database),
-      browser: f.host.runtime.browser,
-      publish: () => undefined,
-    });
-    expect(
-      (
-        await savedTabs.read(
-          {
-            kind: "agent",
-            ownerId: f.host.ownerId,
-
-            threadId: f.run.threadId,
-            agentBindingId: `run:${f.run.runId}`,
-          },
-          {},
-        )
-      ).tabs.find((tab) => tab.tabId === tabId),
-    ).toMatchObject({ state: "asleep", sessionId: f.sessionId });
+    expect((await f.host.runtime.tabs.get(f.host.ownerId, tabId)).state).toBe("asleep");
     const socket = await f.actions();
     const pending = f.act(
       socket,
@@ -403,6 +395,8 @@ integration("session-scoped browser agent backends", () => {
       requestId: command.requestId,
       result: {
         type: "surface.resume",
+        dialog: null,
+        reloaded: false,
         binding: {
           surfaceId: tabId,
           documentId: "document-integration",
@@ -425,17 +419,18 @@ integration("session-scoped browser agent backends", () => {
         expect(
           (
             await browserRows(f.host.runtime.browser, f.host.ownerId, f.sessionId).then(
-              (rows) => rows.lineage!,
+              (rows) => rows,
             )
           ).tabs,
         ).toHaveLength(1),
       { timeout: 2000 },
     );
     const before = f.phone.receivedCommands().length;
-    const result = await f.host.runtime.browser.activatePersonalTab(f.host.ownerId, tabId);
+    const result = await f.host.runtime.tabs.activate(f.host.ownerId, tabId, crypto.randomUUID());
+    if (result.viewer.kind !== "page") throw new Error("Expected page");
     expect(
-      (await browserRows(f.host.runtime.browser, f.host.ownerId, result.session.id)).lineage
-        ?.tabs?.[0]?.state,
+      (await browserRows(f.host.runtime.browser, f.host.ownerId, result.viewer.sessionId)).tabs[0]
+        ?.state,
     ).toBe("live");
     expect(
       f.phone
@@ -480,9 +475,7 @@ integration("session-scoped browser agent backends", () => {
       f.phone.publishTabs({ surfaces });
       await vi.waitFor(
         () => {
-          const records = f.host.runtime.browser.clientStreams.source.ports.live(
-            f.sessionId,
-          )?.records;
+          const records = f.host.runtime.browser.pageInventory(f.sessionId)?.records;
           expect(records?.size).toBe(surfaces.length);
           for (const { active: _active, ...surface } of surfaces)
             expect(records?.get(String(surface.id))).toMatchObject(surface);
@@ -570,7 +563,7 @@ integration("session-scoped browser agent backends", () => {
     cleanups.push(() => chromium.close());
     await vi.waitFor(
       () =>
-        expect(f.host.runtime.browser.bootstrap(f.host.ownerId)).resolves.toMatchObject({
+        expect(f.host.runtime.browser.workspaceBootstrap(f.host.ownerId)).resolves.toMatchObject({
           placements: expect.arrayContaining([
             expect.objectContaining({ runnerId: chromium.runnerId, available: true }),
           ]),

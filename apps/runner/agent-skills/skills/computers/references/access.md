@@ -1,12 +1,12 @@
 # Computer access and refusals
 
-`computer_list` includes access-off devices and phones, without granting shell routes. For an online disabled capability or a `device-access-off` refusal, call `device_access_request` with the stable `machineId`, capability as `access`, and the task's reason. It asks the person in Needs you. Never request access for `device-offline`, or re-ask after Not now in this task. Fulfillment resumes in a new Run with rebuilt routes; use that Run's note. Per-app, profile, OS and finer file/command permissions still apply.
+`computer_list` includes access-off computers and phones, without granting shell routes. For an online disabled switch or a `device-access-off` refusal, call `computer_access_request` with the `computerId`, the switch (`browser`, `apps` or `files`) as `access`, and the task's reason. It asks the person in Needs you. Never request access for `device-offline`, or re-ask after Not now in this task. Fulfillment resumes in a new Run with rebuilt routes; use that Run's note. Per-app, profile, OS and finer file/command permissions still apply.
 
 The note says per Mac whether macOS Full Disk Access is on for the process running that computer's Opensteer Runner. It lets separately authorized commands reach protected files; it does not authorize commands, integrations, or computer access by itself.
 
 Where it is off, some protected data may fail with `Operation not permitted`; another macOS permission may still allow a particular location. Nothing you retry changes a missing permission — not `sudo`, not a different path to the same file, not copying it somewhere else first. The command may be right while macOS still refuses the Runner process.
 
-If `machine_full_disk_access_request` is listed for this Run, request it with the exact computer alias from the note and one sentence about what you need to open. Otherwise return the exact Mac alias and access needed to your assigner. Wait for the permission result before using the protected files. The person completes the macOS permission setup at that Mac for the process running its Opensteer Runner, and Opensteer tells you when it is on — or that they declined. If they decline, carry on without those folders and do not ask again unless they bring it up.
+If `computer_access_request` is listed for this Run, call it with `access: "full_disk_access"`, the `computerId` the note gives for that Mac, and one sentence about what you need to open. Otherwise return the exact Mac alias and access needed to the delegating task. Wait for the permission result before using the protected files. The person completes the macOS permission setup at that Mac for the process running its Opensteer Runner, and Opensteer tells you when it is on — or that they declined. If they decline, carry on without those folders and do not ask again unless they bring it up.
 
 Once Opensteer reports that it is on, run the same command again in a new session.
 

@@ -8,81 +8,49 @@ function tool(name: AgentToolName) {
   return spec;
 }
 describe("Opensteer tool inputs", () => {
-  it("accepts the current Run place without caller-supplied native identities", () => {
-    const schema = tool("person_show").input;
-    expect(schema.parse({ target: { current: true } })).toEqual({ target: { current: true } });
-    expect(schema.safeParse({ target: { current: false } }).success).toBe(false);
-    expect(schema.safeParse({ target: { current: true, tabId: "another-tab" } }).success).toBe(
-      false,
-    );
-    expect(
-      schema.safeParse({
-        target: { place: { kind: "phone", machineId: "arbitrary", display: "main" } },
-      }).success,
-    ).toBe(false);
+  it("requires an explicit tab or task for Show", () => {
+    const schema = tool("show_to_person").input;
+    expect(schema.safeParse({ target: { tabId: "tab-from-list" } }).success).toBe(true);
+    expect(schema.safeParse({ target: { taskId: createId("thread") } }).success).toBe(true);
+    for (const target of [
+      { current: true },
+      { runId: createId("run") },
+      { tabId: "one", taskId: createId("thread") },
+      { place: { kind: "phone", machineId: "arbitrary", display: "main" } },
+    ])
+      expect(schema.safeParse({ target }).success).toBe(false);
   });
   it("refuses the removed home alias", () => {
-    expect(tool("thread_read").input.safeParse({ threadId: "home", limit: 1 }).success).toBe(false);
+    expect(tool("opensteer_task_read").input.safeParse({ taskId: "home", limit: 1 }).success).toBe(
+      false,
+    );
   });
   it("names exactly one conversation, subagent or task target", () => {
     const subagentId = createId("executionNode");
-    const assignmentId = createId("delegation");
-    const read = tool("thread_read").input;
-    const cancel = tool("task_cancel").input;
-    expect(read.safeParse({ subagentId }).success).toBe(true);
-    expect(read.safeParse({}).success).toBe(false);
-    expect(read.safeParse({ threadId: "home", subagentId }).success).toBe(false);
+    const delegationId = createId("delegation");
+    const read = tool("opensteer_task_read").input;
+    const cancel = tool("opensteer_delegation_cancel").input;
+    expect(tool("opensteer_subagent_read").input.safeParse({ subagentId }).success).toBe(true);
+    expect(read.safeParse({}).success).toBe(true);
+    expect(read.safeParse({ taskId: "home", subagentId }).success).toBe(false);
     expect(read.safeParse({ subagentId, query: "text" }).success).toBe(false);
-    expect(cancel.safeParse({ subagentId }).success).toBe(true);
-    expect(cancel.safeParse({ assignmentId }).success).toBe(true);
+    expect(tool("opensteer_subagent_stop").input.safeParse({ subagentId }).success).toBe(true);
+    expect(cancel.safeParse({ delegationId }).success).toBe(true);
     expect(cancel.safeParse({}).success).toBe(false);
-    expect(cancel.safeParse({ assignmentId, subagentId }).success).toBe(false);
+    expect(cancel.safeParse({ delegationId, subagentId }).success).toBe(false);
   });
   it("requires itemId for text offsets and refuses removed history fields", () => {
-    const schema = tool("thread_read").input;
-    expect(schema.safeParse({ threadId: "home", textOffset: 2 }).success).toBe(false);
-    expect(schema.safeParse({ threadId: "self", itemId: "item", textOffset: 2 }).success).toBe(
-      true,
-    );
-    expect(schema.safeParse({ threadId: "self", itemId: "item", before: "cursor" }).success).toBe(
+    const schema = tool("opensteer_task_read").input;
+    expect(schema.safeParse({ taskId: "home", textOffset: 2 }).success).toBe(false);
+    expect(schema.safeParse({ itemId: "item", textOffset: 2 }).success).toBe(true);
+    expect(schema.safeParse({ itemId: "item", before: "cursor" }).success).toBe(false);
+    expect(schema.safeParse({ taskId: "home", maxMessages: 1 }).success).toBe(false);
+    expect(schema.safeParse({ taskId: "home", view: "activity", query: "text" }).success).toBe(
       false,
     );
-    expect(schema.safeParse({ threadId: "home", maxMessages: 1 }).success).toBe(false);
-    expect(schema.safeParse({ threadId: "home", view: "activity", query: "text" }).success).toBe(
-      false,
-    );
-  });
-  it("keeps browser session identity explicit", () => {
-    const schema = tool("browser_session_open").input;
-    expect(schema.safeParse({ fresh: true }).success).toBe(true);
-    expect(
-      schema.safeParse({ profileId: "bpr_00000000-0000-4000-a000-000000000000" }).success,
-    ).toBe(true);
-    expect(schema.safeParse({}).success).toBe(false);
-    expect(
-      schema.safeParse({
-        fresh: true,
-        sessionId: "bsn_00000000-0000-4000-a000-000000000000",
-      }).success,
-    ).toBe(false);
-  });
-  it("lets a browser session name the machine that runs it", () => {
-    const schema = tool("browser_session_open").input;
-    expect(
-      schema.safeParse({
-        environmentId: "env_00000000-0000-4000-a000-000000000000",
-        fresh: true,
-      }).success,
-    ).toBe(true);
-    // A machine is not an identity, so naming one still leaves the identity
-    // choice required.
-    expect(
-      schema.safeParse({ environmentId: "env_00000000-0000-4000-a000-000000000000" }).success,
-    ).toBe(false);
-    expect(schema.safeParse({ environmentId: "runner-1", fresh: true }).success).toBe(false);
   });
   it("keeps both Trigger tool input schemas union-free", () => {
-    for (const name of ["trigger_read", "trigger_write"] as const) {
+    for (const name of ["opensteer_automation_list", "opensteer_automation_create"] as const) {
       const json = JSON.stringify(
         z.toJSONSchema(tool(name).input, { io: "input", target: "draft-7" }),
       );
@@ -91,10 +59,10 @@ describe("Opensteer tool inputs", () => {
     }
   });
   it("requires an explicit thread message delivery policy", () => {
-    const schema = tool("thread_send").input;
+    const schema = tool("opensteer_task_send").input;
     const base = {
       message: "A self-contained update",
-      threadId: "thr_00000000-0000-4000-a000-000000000000",
+      taskId: "thr_00000000-0000-4000-a000-000000000000",
     };
 
     expect(schema.safeParse(base).success).toBe(false);
@@ -105,25 +73,19 @@ describe("Opensteer tool inputs", () => {
     expect(schema.safeParse({ ...base, delivery: "turn" }).success).toBe(false);
     expect(schema.safeParse({ ...base, delivery: "notify" }).success).toBe(false);
   });
-  it("loads the Trigger contract only for program authoring, not timing controls", () => {
-    const write = tool("trigger_write");
-    expect(write.description).toContain(
-      "Before writing or changing a program, load opensteer:triggers",
-    );
-    expect(write.description).not.toContain("Trigger programs execute as Node.js ESM modules");
-    const schema = JSON.stringify(write.input.toJSONSchema({ io: "input" }));
-    expect(schema).not.toContain("Trigger programs execute as Node.js ESM modules");
-    expect(schema).toContain('"toolContractVersion"');
-    for (const requirement of [
-      "Timing controls require anchor access no higher than yours",
-      "archiving require full-access",
-      "set_status: triggerId, status",
-      "set_next_fire: triggerId, future ISO nextFireAt",
-      "run: non-archived schedule/webhook triggerId",
-      "cancel: triggerId, optional occurrenceId",
-      "Started work keeps running",
-    ]) {
-      expect(write.description).toContain(requirement);
-    }
+  it("requires version 4 for authored automation programs", () => {
+    const input = tool("opensteer_automation_create").input;
+    for (const version of [1, 2, 3])
+      expect(
+        input.safeParse({
+          name: "test",
+          program: {
+            language: "javascript",
+            source: "export default () => {}",
+            toolContractVersion: version,
+          },
+          source: { kind: "webhook" },
+        }).success,
+      ).toBe(false);
   });
 });

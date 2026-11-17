@@ -159,10 +159,10 @@ describe("credential proxy", () => {
       expect(await response.json()).toMatchObject({ result: { content: [] } });
     };
     await call("browser_profile_request");
-    await call("person_show");
+    await call("show_to_person");
     proxy.suspend();
     proxy.resume();
-    await call("thread_list");
+    await call("opensteer_task_list");
     expect(host.seen).toHaveLength(3);
   });
 

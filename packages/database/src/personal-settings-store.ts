@@ -3,7 +3,6 @@ import { PrincipalIdSchema } from "@opensteer/channel-core";
 import {
   OpensteerError,
   PersonalSettingsSchema,
-  emptyAutomaticModelConfig,
   emptyExecutionPreferences,
   type ComputerFolder,
   type UserId,
@@ -46,10 +45,8 @@ export async function initializePersonalSettings(
       agentHomeComputerId: agentHome.computerId,
       agentHomePath: agentHome.path,
       voiceThreadId: null,
-      timeZone: null,
       quietTaskDays: 0,
       executionPreferences: emptyExecutionPreferences,
-      backgroundModelPreferences: emptyAutomaticModelConfig,
     })
     .onConflict((c) => c.column("singletonKey").doNothing())
     .executeTakeFirstOrThrow();
@@ -64,6 +61,7 @@ export async function findPersonalSettings(database: Kysely<DatabaseSchema>) {
     .executeTakeFirst();
   return row
     ? PersonalSettingsSchema.parse({
+        idleCompactionPolicy: row.idleCompactionPolicy,
         ownerId: row.ownerId,
         agentHome: { computerId: row.agentHomeComputerId, path: row.agentHomePath },
         voiceThreadId: row.voiceThreadId,

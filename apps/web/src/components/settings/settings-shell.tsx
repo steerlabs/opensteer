@@ -34,7 +34,7 @@ import { MessagingPage } from "../messaging-page.js";
 import { DevicesSection } from "../devices/devices-page.js";
 import { AccountSection } from "./sections/account.js";
 import { AiEnginesSection } from "./sections/ai-engines.js";
-import { AutomaticModelsSection } from "./sections/automatic-models.js";
+import { IdleCompactionSection } from "./sections/idle-compaction.js";
 import { BrowserProfilesSection } from "./sections/browser-profiles.js";
 import { ChromeSection } from "./sections/chrome.js";
 import { GeneralSection } from "./sections/general.js";
@@ -263,7 +263,7 @@ export function SettingsSectionRoute({
       content = (
         <>
           <AiEnginesSection />
-          <AutomaticModelsSection />
+          <IdleCompactionSection />
         </>
       );
       break;

@@ -1,3 +1,4 @@
+import { TranscriptImageContext } from "@opensteer/client/react";
 import {
   canRespondToRequests,
   conversationName,
@@ -18,6 +19,7 @@ import {
 import { harnessCatalogEntry } from "@opensteer/core";
 import { useHostSelector } from "@opensteer/client/react";
 import { isRecord } from "@opensteer/shared/isRecord";
+import { readTail, type TailReading } from "@opensteer/shared/tailFollow";
 import {
   StackActions,
   useIsFocused,
@@ -63,6 +65,7 @@ import {
 import { SubagentStop } from "../thread/subagent-stop.js";
 import { SubagentSteps } from "../thread/transcript.js";
 import { QuestionCard } from "../thread/waiting-questions.js";
+import { BarControl } from "../ui/bar-control.js";
 import { useAppForeground } from "../ui/foreground.js";
 import { useLiquidGlass } from "../ui/glass.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
@@ -316,7 +319,11 @@ function AttachedSubagent(props: {
               </AppText>
             ),
       headerRight: () =>
-        shownHop === null ? null : <SiblingHop noun={noun} onHop={hop} siblings={shownHop} />,
+        shownHop === null ? null : (
+          <BarControl>
+            <SiblingHop noun={noun} onHop={hop} siblings={shownHop} />
+          </BarControl>
+        ),
       // What the back control of a screen opened from this one says.
       title: title ?? noun,
     });
@@ -358,55 +365,57 @@ function AttachedSubagent(props: {
       </Screen>
     );
   return (
-    <AgentsLive value={live}>
-      <AgentEngine value={engine}>
-        <AgentScopeProvider value={agentScope}>
-          <Screen edgeToEdge>
-            <ComposerDockLayout
-              avoidKeyboard
-              dock={
-                <>
-                  {surface !== null && user !== null ? (
-                    <QuestionCard
-                      asker={false}
-                      canRespond={canRespond}
-                      deploymentId={deploymentId}
-                      drafts={drafts}
-                      hostClient={hostClient}
-                      surface={surface}
-                      userId={user.id}
-                    />
-                  ) : null}
-                  {card === null ? null : (
-                    <WatchFooter
-                      card={card}
-                      engine={engine}
-                      hostClient={hostClient}
-                      reportsTo={reportsTo}
-                    />
-                  )}
-                </>
-              }
-            >
-              {(clearance) => (
-                <Body
-                  agentScope={agentScope}
-                  clearance={clearance}
-                  detail={detail}
-                  live={live}
-                  onLoadEarlier={() => void watched.watch?.loadOlder()}
-                  onOpenAncestor={openAncestor}
-                  onOpenStep={openStep}
-                  onRetry={() => watched.watch?.retry()}
-                  rootTitle={threadTitle ?? detail?.parent.title ?? "Conversation"}
-                  state={state}
-                />
-              )}
-            </ComposerDockLayout>
-          </Screen>
-        </AgentScopeProvider>
-      </AgentEngine>
-    </AgentsLive>
+    <TranscriptImageContext value={{ client: hostClient, threadId }}>
+      <AgentsLive value={live}>
+        <AgentEngine value={engine}>
+          <AgentScopeProvider value={agentScope}>
+            <Screen edgeToEdge>
+              <ComposerDockLayout
+                avoidKeyboard
+                dock={
+                  <>
+                    {surface !== null && user !== null ? (
+                      <QuestionCard
+                        asker={false}
+                        canRespond={canRespond}
+                        deploymentId={deploymentId}
+                        drafts={drafts}
+                        hostClient={hostClient}
+                        surface={surface}
+                        userId={user.id}
+                      />
+                    ) : null}
+                    {card === null ? null : (
+                      <WatchFooter
+                        card={card}
+                        engine={engine}
+                        hostClient={hostClient}
+                        reportsTo={reportsTo}
+                      />
+                    )}
+                  </>
+                }
+              >
+                {(clearance) => (
+                  <Body
+                    agentScope={agentScope}
+                    clearance={clearance}
+                    detail={detail}
+                    live={live}
+                    onLoadEarlier={() => void watched.watch?.loadOlder()}
+                    onOpenAncestor={openAncestor}
+                    onOpenStep={openStep}
+                    onRetry={() => watched.watch?.retry()}
+                    rootTitle={threadTitle ?? detail?.parent.title ?? "Conversation"}
+                    state={state}
+                  />
+                )}
+              </ComposerDockLayout>
+            </Screen>
+          </AgentScopeProvider>
+        </AgentEngine>
+      </AgentsLive>
+    </TranscriptImageContext>
   );
 }
 
@@ -532,7 +541,9 @@ function Body(props: {
   const insets = useContentInsets();
   const column = useReadingColumn();
   const list = useRef<ScrollViewInstance>(null);
-  const atEnd = useRef(false);
+  const tail = useRef<TailReading>({ follows: false, offset: 0 });
+  // The keyboard's inset under the list, as the dock reports it: the foot is past it.
+  const inset = useRef(0);
   const card = detail?.card ?? null;
   const settled = card !== null && card.endedAt !== null;
   return (
@@ -549,14 +560,20 @@ function Body(props: {
       ]}
       contentInsetAdjustmentBehavior="never"
       maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+      onContentInsetChange={({ bottom }) => {
+        inset.current = bottom;
+      }}
       onContentSizeChange={() => {
-        if (atEnd.current) list.current?.scrollToEnd({ animated: false });
+        if (tail.current.follows) list.current?.scrollToEnd({ animated: false });
       }}
       onScroll={({ nativeEvent }) => {
         const { contentOffset, contentSize, layoutMeasurement } = nativeEvent;
-        atEnd.current =
-          contentOffset.y > 0 &&
-          contentOffset.y + layoutMeasurement.height >= contentSize.height - space[48];
+        tail.current = readTail(
+          tail.current,
+          contentOffset.y,
+          contentSize.height + inset.current - layoutMeasurement.height,
+          true,
+        );
       }}
       ref={list}
       scrollEventThrottle={32}

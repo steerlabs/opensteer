@@ -1,3 +1,4 @@
+import { BrowserSurfaceIdSchema, DeviceIdSchema } from "../packages/core/src/index.js";
 import { browserRows } from "../apps/host/src/browser/browser-rows.test-support.js";
 import {
   hostApiVersion,
@@ -38,7 +39,7 @@ const browserServiceMain = fileURLToPath(
 );
 
 /**
- * One agent's work, as the skill and tools describe it: two sessions side by
+ * One agent's work, as the skill and tools describe it: two browsers side by
  * side, the chat's photo uploaded, every mistake explained, a granted profile
  * signed in, and the sign-in still there after Chromium dies.
  */
@@ -89,15 +90,35 @@ export async function agentJourney(
   const report = JSON.parse(first.assistantText) as AgentReport;
   if ("error" in report) throw new Error(report.error);
 
-  // Two sessions, both held by the Run, each driven by its own ID.
-  const [sessionA, sessionB] = report.opened;
-  expect(sessionA).not.toBe(sessionB);
+  const [tabA, tabB] = report.opened;
+  const tabs = await stack.host.store.database
+    .selectFrom("personalTabs")
+    .selectAll()
+    .where(
+      "id",
+      "in",
+      [tabA, tabB, report.profileSibling, report.guestReuse.second, report.profileTab].map(
+        (value) => BrowserSurfaceIdSchema.parse(value),
+      ),
+    )
+    .execute();
+  const sessionFor = (tabId: string) =>
+    tabs.find((tab) => tab.id === tabId)!.pageBinding!.lineageId;
+  expect(sessionFor(tabA)).not.toBe(sessionFor(tabB));
+  expect(sessionFor(report.profileSibling)).toBe(sessionFor(tabB));
+  expect(sessionFor(report.guestReuse.second)).toBe(sessionFor(tabA));
   expect(report.listed).toEqual(
     expect.arrayContaining([
-      { attached: true, id: sessionA },
-      { attached: true, id: sessionB },
+      expect.objectContaining({ tabId: tabA, usedBy: [{ taskId: threadId }] }),
+      expect.objectContaining({ tabId: tabB, usedBy: [{ taskId: threadId }] }),
     ]),
   );
+  expect(report.reused).toEqual({ before: 3, after: 3, tabId: tabA });
+  const profileSession = sessionFor(report.profileTab);
+  expect(profileSession).toBe(sessionFor(tabB));
+  expect(
+    await stack.host.store.database.selectFrom("browserSessions").select("id").execute(),
+  ).toHaveLength(2);
   // The chat's photo reaches the page under its own name and type, byte for byte.
   expect(report.photoName).toBe("mattress.png");
   const expectedPhoto = { name: "mattress.png", size: photo.byteLength, type: "image/png" };
@@ -114,44 +135,33 @@ export async function agentJourney(
     received: ["single", "hidden"],
     url: `${pageOrigin}/upload`,
   });
-  // One tab carries the visits: the session's own page, navigated in place.
+  // The browsing tab carries visits in place; its Guest sibling stays open.
   const { browsing } = report;
-  expect(browsing.start).toMatchObject({ tabs: 1, url: `${pageOrigin}/upload?first` });
-  expect(browsing.inPlace).toMatchObject({ tabs: 1, url: `${pageOrigin}/upload?next` });
+  expect(browsing.start).toMatchObject({ tabs: 2, url: `${pageOrigin}/upload?first` });
+  expect(browsing.inPlace).toMatchObject({ tabs: 2, url: `${pageOrigin}/upload?next` });
   // A tab that cannot open is never left behind, and the page in use stays in use.
   expect(browsing.failed).toMatchObject({
     failures: [
-      { error: "Navigation requires an HTTP or HTTPS URL" },
-      { error: expect.stringMatching(/^Could not open http:\/\/127\.0\.0\.1:1\/: net::ERR_/u) },
+      { error: expect.stringContaining("Use about:blank or an HTTP(S) URL without credentials.") },
+      { opened: expect.any(String) },
     ],
-    tabs: 1,
+    tabs: 2,
     url: `${pageOrigin}/upload?next`,
   });
-  // Past six tabs the agent hears once that it is collecting tabs; closing
-  // what it opened leaves the session as it found it.
-  expect(browsing.many).toMatchObject({ tabs: 1, whileMany: 8 });
-  // Cmd+V crosses the Runner and Host to the session's router, which refuses
-  // it however the agent presses it; the page receives neither key nor paste.
-  expect(browsing.paste).toMatchObject({
-    refusals: ["refused", "refused", "refused", "refused"],
-    pastes: 0,
-    typedOnly: true,
-    vKeys: 0,
-  });
-  expect(
-    browsing.many.stderr.match(/\[opensteer\] This Browser Session has \d+ tabs open/gu),
-  ).toEqual(["[opensteer] This Browser Session has 7 tabs open"]);
-  // Every mistake says what happened and what to do next.
-  expect(report.withoutSession.stderr).toContain("--session <Browser Session ID>");
+  // Closing the temporary tabs leaves the two original Guest tabs.
+  expect(browsing.many).toMatchObject({ tabs: 2, whileMany: 9 });
+  // Full browser access admits clipboard keys; uploads still stage files on the browser computer.
+  expect(browsing.paste).toMatchObject({ refusals: ["sent", "sent", "sent", "sent"] });
+  expect(report.withoutTab.code).not.toBe(0);
+  expect(report.withoutTab.stderr).toContain("openPage(tabId)");
+  expect(report.outsideFile.code).not.toBe(0);
   expect(report.outsideFile.stderr).toContain("accepts only files staged for this Browser Session");
-  for (const refused of [report.endedSession, report.unknownSession]) {
+  for (const refused of [report.endedTab, report.unknownTab]) {
     expect(refused.code).not.toBe(0);
-    expect(refused.stderr).toContain(
-      "This Browser Session has ended or is unavailable. Open a session with browser_session_open.",
-    );
+    expect(refused.stderr).toContain("Tab not found");
   }
   expect(report.accessAlreadyAvailable.error).toContain(
-    "This browser profile is already available. Open it with browser_session_open.",
+    "This browser profile is already available. Open a page with tab_open and its profileId.",
   );
   expect(report.signedIn).toMatchObject({
     stdout: expect.stringContaining("marketplace_session=signed-in"),
@@ -165,7 +175,7 @@ export async function agentJourney(
     // A controlled sign-in waits for native cookie commit before it reports success.
     expect(
       await stack.host.browser.applySiteCookies(
-        BrowserSessionIdSchema.parse(report.profileSession),
+        BrowserSessionIdSchema.parse(profileSession),
         browserSiteFromUrl(pageOrigin),
         [
           {
@@ -183,8 +193,7 @@ export async function agentJourney(
       ),
     ).toBe("applied");
   }
-  const watch =
-    label === "relayed" ? await watchBrowserSession(stack, report.profileSession) : null;
+  const watch = label === "relayed" ? await watchBrowserSession(stack, profileSession) : null;
   if (watch && process.env.OPENSTEER_BROWSER_WATCH_CHROMIUM_ARTIFACT_PATH) {
     await writeFile(
       process.env.OPENSTEER_BROWSER_WATCH_CHROMIUM_ARTIFACT_PATH,
@@ -196,9 +205,12 @@ export async function agentJourney(
     const bootstrap = await stack.api["bootstrap.get"]({});
     return (
       bootstrap.ok &&
-      bootstrap.data.browser.groups.rows.every(
-        (session) => session.sessionId !== report.profileSession || session.state !== "ready",
-      )
+      (
+        await stack.host.store.getBrowserSessionForOwner(
+          BrowserSessionIdSchema.parse(profileSession),
+          bootstrap.data.user.id,
+        )
+      )?.state !== "ready"
     );
   }, 20_000);
   const later = await stack.sendMessage({
@@ -826,21 +838,24 @@ type AgentReport =
         };
         readonly start: { readonly tabs: number; readonly url: string };
       };
-      readonly endedSession: HarnessResult;
-      readonly listed: { readonly attached: boolean; readonly id: string }[];
+      readonly endedTab: HarnessResult;
+      readonly listed: { readonly usedBy: { taskId: string }[]; readonly tabId: string }[];
       readonly opened: [string, string];
       readonly outsideFile: HarnessResult;
       readonly photoName: string;
-      readonly profileSession: string;
+      readonly profileTab: string;
+      readonly profileSibling: string;
+      readonly guestReuse: { readonly first: string; readonly second: string };
+      readonly reused: { readonly before: number; readonly after: number; readonly tabId: string };
       readonly second: { readonly url: string };
       readonly signedIn: HarnessResult;
-      readonly unknownSession: HarnessResult;
+      readonly unknownTab: HarnessResult;
       readonly upload: {
         readonly chooser: unknown;
         readonly direct: unknown;
         readonly received: Record<"hidden" | "single", unknown>;
       };
-      readonly withoutSession: HarnessResult;
+      readonly withoutTab: HarnessResult;
     };
 
 /**
@@ -974,9 +989,101 @@ document.getElementById("choose").addEventListener("click", () => document.getEl
 export async function browserInventory(stack: VerticalStack, sessionId?: string) {
   const owner = await stack.host.store.firstUser();
   if (!owner) throw new Error("Browser fixture owner is missing.");
-  return browserRows(
+  const rows = await browserRows(
     stack.host.browser,
     owner.id,
     sessionId ? BrowserSessionIdSchema.parse(sessionId) : undefined,
   );
+  const session = sessionId
+    ? await stack.host.store.getBrowserSessionForOwner(
+        BrowserSessionIdSchema.parse(sessionId),
+        owner.id,
+      )
+    : null;
+  return session && ["closed", "failed", "closing"].includes(session.state)
+    ? { ...rows, tabs: rows.tabs.map((tab) => ({ ...tab, availability: "unavailable" })) }
+    : rows;
+}
+
+// These cases exercise the runtime's internal page protocol; workspace membership has its own suite.
+export async function runtimeBrowserCommand(
+  stack: VerticalStack,
+  input: unknown,
+): Promise<
+  import("../packages/protocol/src/index.js").RpcResult<
+    | import("../packages/protocol/src/host-api.js").HostApiCommandOutput
+    | import("../packages/protocol/src/browser.js").BrowserTabOpenResult
+    | import("../packages/protocol/src/browser.js").BrowserTabCloseResult,
+    import("zod").z.infer<typeof import("../packages/protocol/src/host-api.js").HostApiErrorSchema>
+  >
+> {
+  const { BrowserTabOpenCommandSchema, BrowserTabCloseCommandSchema } =
+    await import("../packages/protocol/src/browser.js");
+  const { hostApi, HostApiErrorSchema } = await import("../packages/protocol/src/host-api.js");
+  const owner = await stack.host.store.firstUser();
+  if (!owner) throw new Error("Fixture owner missing");
+  try {
+    const open = BrowserTabOpenCommandSchema.safeParse(input);
+    if (open.success) {
+      const data = await stack.host.browser.openTab(owner.id, open.data);
+      const record = await stack.host.store.getBrowserSessionForOwner(data.sessionId, owner.id);
+      const row = stack.host.browser.pageInventory(data.sessionId)?.records.get(data.tabId);
+      if (record && row) {
+        const { TabStore } = await import("../packages/database/src/tab-store.js");
+        const profile = record.profileId
+          ? (await stack.host.store.listBrowserProfiles(owner.id)).find(
+              (profile) => profile.id === record.profileId,
+            )
+          : null;
+        const write = {
+          id: data.tabId,
+          ownerId: owner.id,
+          computerId: DeviceIdSchema.parse(record.runnerId),
+          kind: "page" as const,
+          title: row.title,
+          url: row.url,
+          profileId: record.profileId,
+          profileName: profile?.name ?? null,
+          openedBy: "person" as const,
+          pageBinding: {
+            lineageId: data.groupId!,
+            sessionId: data.sessionId,
+            surfaceId: data.tabId,
+          },
+        };
+        await new TabStore(stack.host.store.database).open(
+          write,
+          `fixture:${open.data.idempotencyKey}`,
+        );
+        await stack.host.browser.pageTabs.admitted!(write);
+      }
+      return { ok: true, data };
+    }
+    const close = BrowserTabCloseCommandSchema.safeParse(input);
+    if (close.success)
+      return { ok: true, data: await stack.host.browser.closeTab(owner.id, close.data) };
+    return await stack.api["commands.dispatch"](hostApi["commands.dispatch"].payload.parse(input));
+  } catch (error) {
+    const { OpensteerError } = await import("../packages/core/src/index.js");
+    if (error instanceof Error && error.name === "ZodError")
+      return {
+        ok: false,
+        error: HostApiErrorSchema.parse({
+          code: "bad_request",
+          message: "Invalid payload",
+          reason: "invalid-payload",
+          retryable: false,
+        }),
+      };
+    if (!(error instanceof OpensteerError)) throw error;
+    return {
+      ok: false,
+      error: HostApiErrorSchema.parse({
+        code: error.code,
+        message: error.message,
+        reason: error.reason,
+        retryable: error.retryable,
+      }),
+    };
+  }
 }

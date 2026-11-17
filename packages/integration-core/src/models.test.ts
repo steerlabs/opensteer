@@ -319,6 +319,14 @@ describe("integration readiness", () => {
     expect(
       resolveIntegrationReadiness({ ...connected, hasAccess: (id) => id === connectionId }),
     ).toMatchObject({ code: "READY", connectionId, requiredAccess: null });
+    expect(
+      resolveIntegrationReadiness({
+        ...connected,
+        hasAccess: () => true,
+        requiredAccess: "read-write",
+        runAccess: "read",
+      }),
+    ).toMatchObject({ code: "READ_ONLY_TASK", requiredAccess: null });
   });
 
   it("reports reauthorization instead of pretending a broken connection is usable", () => {
@@ -361,6 +369,64 @@ describe("integration readiness", () => {
       code: "ADMIN_CONFIGURATION_REQUIRED",
       connectionId,
       detail: "Link Opensteer Account or use your own OAuth app.",
+    });
+  });
+});
+
+describe("canonical Device integration targets", () => {
+  it("normalizes old target records without accepting ambiguous or malformed identities", async () => {
+    const { createId } = await import("@opensteer/core");
+    const {
+      DeviceRequestComputerAppSetupReaderSchema,
+      DeviceRequestComputerAppSetupSchema,
+      DeviceComputerAppSetupRequestReaderSchema,
+    } = await import("./models.js");
+    const runnerId = createId("runner");
+    const legacy = {
+      kind: "app",
+      access: "read",
+      app: null,
+      definitionId: "android-phone",
+      runnerId,
+    };
+    const canonical = {
+      kind: "app",
+      access: "read",
+      app: null,
+      definitionId: "android-phone",
+      deviceId: runnerId,
+    };
+    expect(DeviceRequestComputerAppSetupReaderSchema.parse(legacy)).toEqual(canonical);
+    expect(DeviceRequestComputerAppSetupSchema.parse(canonical)).toEqual(canonical);
+    expect(
+      DeviceRequestComputerAppSetupReaderSchema.safeParse({ ...canonical, runnerId }).success,
+    ).toBe(false);
+    expect(
+      DeviceRequestComputerAppSetupReaderSchema.safeParse({
+        ...canonical,
+        deviceId: createId("user"),
+      }).success,
+    ).toBe(false);
+    const screen = { ...canonical, definitionId: "iphone-screen", deviceId: createId("device") };
+    expect(DeviceRequestComputerAppSetupReaderSchema.parse(screen)).toEqual(screen);
+    const request = {
+      ...legacy,
+      id: "00000000-0000-4000-8000-000000000001",
+      deploymentId: createId("deployment"),
+      ownerUserId: createId("user"),
+      definitionDigest: "digest",
+      policyAppApproval: null,
+      server: null,
+      reason: null,
+      threadId: null,
+      threadTitle: null,
+      createdAt: "2026-10-01T00:00:00Z",
+      expiresAt: "2026-10-02T00:00:00Z",
+    };
+    const { runnerId: legacyId, ...rest } = request;
+    expect(DeviceComputerAppSetupRequestReaderSchema.parse(request)).toEqual({
+      ...rest,
+      deviceId: legacyId,
     });
   });
 });

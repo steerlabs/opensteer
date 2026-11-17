@@ -1,9 +1,9 @@
 interface:
   display_name: "Opensteer Computer Use"
-  short_description: "See and operate Mac apps and Agent Phones with code"
-  default_prompt: "Use $opensteer:computer-use to see and operate an approved Mac app or phone with the computer tool."
+  short_description: "See and operate Mac apps and phone screens with code"
+  default_prompt: "Use $opensteer:computer-use to see and operate an approved Mac app or phone with computer_use."
 dependencies:
   tools:
     - type: "mcp"
       value: "opensteer"
-      description: "Opensteer computer tool, plus discovery and approval requests"
+      description: "Opensteer computer_use tool, plus discovery and approval requests"

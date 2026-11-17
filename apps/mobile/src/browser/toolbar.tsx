@@ -1,4 +1,12 @@
-import { createContext, memo, useContext, useRef, type ReactNode, type RefObject } from "react";
+import {
+  createContext,
+  memo,
+  useContext,
+  useRef,
+  type ReactNode,
+  type Ref,
+  type RefObject,
+} from "react";
 import {
   Pressable,
   StyleSheet,
@@ -76,10 +84,13 @@ export function Toolbar(props: {
  */
 export const ToolbarButton = memo(function ToolbarButton(props: {
   readonly accessibilityHint?: string;
+  /** A count drawn over the control's corner; the label must say it too. */
+  readonly badge?: string;
   readonly count?: number;
   readonly disabled?: boolean;
   readonly label: string;
   readonly onPress: () => void;
+  readonly ref?: Ref<HostInstance>;
   readonly selected?: boolean;
   readonly symbol?: SFSymbolName;
 }): ReactNode {
@@ -96,6 +107,7 @@ export const ToolbarButton = memo(function ToolbarButton(props: {
       }}
       disabled={disabled}
       onPress={props.onPress}
+      ref={props.ref}
       style={({ pressed }) => [styles.slot, pressed && styles.pressed]}
     >
       <ToolbarRound selected={props.selected === true}>
@@ -115,6 +127,13 @@ export const ToolbarButton = memo(function ToolbarButton(props: {
           </View>
         )}
       </ToolbarRound>
+      {props.badge === undefined ? null : (
+        <View style={styles.badge}>
+          <AppText maxFontSizeMultiplier={1} style={styles.badgeText}>
+            {props.badge}
+          </AppText>
+        </View>
+      )}
     </Pressable>
   );
 });
@@ -244,6 +263,20 @@ function ShrinkingCapsule(props: {
 function noop(): void {}
 
 const styles = StyleSheet.create({
+  // The bar's Menu badge, as the native bar's: amber over the control's trailing corner.
+  badge: {
+    alignItems: "center",
+    backgroundColor: color.amber,
+    borderRadius: radius.full,
+    height: 16,
+    justifyContent: "center",
+    minWidth: 16,
+    paddingHorizontal: space[4],
+    position: "absolute",
+    right: 0,
+    top: 0,
+  },
+  badgeText: { color: color.inkOnAmber, fontSize: 11, fontWeight: "700" },
   bar: {
     alignItems: "center",
     flexDirection: "row",

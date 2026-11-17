@@ -2,11 +2,12 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 // A Go module compiled into a shipped binary is redistributed with it, and its
-// licence asks to be named. The helper and the process supervisor are the two
-// Go programs this tree ships, so a new `require` has to arrive with its notice.
+// licence asks to be named, so a new `require` in a shipped Go program has to
+// arrive with its notice.
 const goModules = [
   "apps/runner/native-fs-helper/go.mod",
   "apps/desktop/process-supervisor/go.mod",
+  "apps/desktop/iphone-bridge/go.mod",
 ] as const;
 
 function directRequires(path: string): readonly string[] {

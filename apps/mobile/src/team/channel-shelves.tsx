@@ -1,3 +1,4 @@
+import { TeamImageHold } from "./team-image-hold.js";
 import type { ReactNode } from "react";
 import { Image, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import {
@@ -54,45 +55,60 @@ export function FilesBody(props: {
         />
       ) : (
         <RowGroup>
-          {props.files.map((file) => (
-            <Pressable
-              accessibilityHint="Opens the file"
-              accessibilityLabel={`${file.attachment.name}, ${file.attachment.size}`}
-              accessibilityRole="button"
-              key={file.id}
-              onLongPress={() => props.onShowMessage(file.messageId)}
-              onPress={() => props.onOpen(file)}
-              style={({ pressed }) => [styles.fileRow, pressed && styles.pressed]}
-            >
-              {file.attachment.preview === null ? (
-                <View style={[styles.thumb, styles.thumbFile]}>
-                  <Symbol name="doc.text" size={17} tint={color.textSoft} />
+          {props.files.map((file) => {
+            const face = (
+              <>
+                {file.attachment.preview === null ? (
+                  <View style={[styles.thumb, styles.thumbFile]}>
+                    <Symbol name="doc.text" size={17} tint={color.textSoft} />
+                  </View>
+                ) : (
+                  <Image source={{ uri: file.attachment.preview.uri }} style={styles.thumb} />
+                )}
+                <View style={styles.words}>
+                  <AppText
+                    maxFontSizeMultiplier={controlFontScaleLimit}
+                    numberOfLines={1}
+                    role="body"
+                  >
+                    {file.attachment.name}
+                  </AppText>
+                  <AppText
+                    maxFontSizeMultiplier={controlFontScaleLimit}
+                    numberOfLines={1}
+                    role="caption"
+                    tone="muted"
+                  >
+                    {file.attachment.size}
+                  </AppText>
                 </View>
-              ) : (
-                <Image source={{ uri: file.attachment.preview.uri }} style={styles.thumb} />
-              )}
-              <View style={styles.words}>
-                <AppText
-                  maxFontSizeMultiplier={controlFontScaleLimit}
-                  numberOfLines={1}
-                  role="body"
-                >
-                  {file.attachment.name}
-                </AppText>
-                <AppText
-                  maxFontSizeMultiplier={controlFontScaleLimit}
-                  numberOfLines={1}
-                  role="caption"
-                  tone="muted"
-                >
-                  {file.attachment.size}
-                </AppText>
-              </View>
-              {file.pinned ? (
-                <Symbol accessibilityLabel="Pinned" name="pin" size={13} tint={color.amber} />
-              ) : null}
-            </Pressable>
-          ))}
+                {file.pinned ? (
+                  <Symbol accessibilityLabel="Pinned" name="pin" size={13} tint={color.amber} />
+                ) : null}
+              </>
+            );
+            return file.attachment.kind === "image" ? (
+              <TeamImageHold
+                id={file.id}
+                key={file.id}
+                onPress={() => props.onOpen(file)}
+                style={styles.fileRow}
+              >
+                {face}
+              </TeamImageHold>
+            ) : (
+              <Pressable
+                key={file.id}
+                accessibilityLabel={file.attachment.name}
+                accessibilityRole="button"
+                onLongPress={() => props.onShowMessage(file.messageId)}
+                onPress={() => props.onOpen(file)}
+                style={styles.fileRow}
+              >
+                {face}
+              </Pressable>
+            );
+          })}
         </RowGroup>
       )}
     </ScrollView>

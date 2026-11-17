@@ -1,140 +1,172 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { validateResults } from "./ci-check.mjs";
+import { timedOutLanes, validateResults } from "./ci-check.mjs";
 import { allNativeMacTasks, lanes, nativeMacMatrix } from "./ci-changes.mjs";
-const plan = {
-  version: 1,
-  nativeMac: [],
-  lanes: Object.fromEntries(lanes.map((k) => [k, k === "lint"])),
-};
-const results = {
-  changes: {
-    result: "success",
-    outputs: {
-      ...Object.fromEntries(lanes.map((k) => [k, String(plan.lanes[k])])),
-      "native-mac-tasks": "[]",
-    },
-  },
-  ...Object.fromEntries(lanes.map((k) => [k, { result: k === "lint" ? "success" : "skipped" }])),
-};
-test("docs-only explicit skips green", () =>
-  assert.doesNotThrow(() => validateResults(plan, results, "pull_request")));
-test("forced selected skip red", () =>
-  assert.throws(() =>
-    validateResults({ ...plan, lanes: { ...plan.lanes, tests: true } }, results, "pull_request"),
-  ));
-test("missing output red", () => {
-  const r = structuredClone(results);
-  delete r.changes.outputs.tests;
-  assert.throws(() => validateResults(plan, r, "pull_request"));
-});
-test("main forbids skips and detector failure is red", () => {
-  assert.throws(() => validateResults(plan, results, "push"));
-  assert.throws(() =>
-    validateResults(plan, { ...results, changes: { result: "failure" } }, "pull_request"),
+/** A plan and the `needs` its run produced, every selected lane green, every other skipped. */
+function run({ on = ["lint"], tasks = [], tests = [], integration = [], whole = false } = {}) {
+  const selected = Object.fromEntries(
+    lanes.map((k) => [k, k === "native-mac" ? tasks.length > 0 : on.includes(k)]),
   );
-});
-
-test("a failing or missing matrix lane cannot pass Check", () => {
-  const selected = {
-    version: 1,
-    nativeMac: allNativeMacTasks,
-    lanes: Object.fromEntries(lanes.map((k) => [k, true])),
+  const shards = { tests: tests.length ? 2 : 0, integration: integration.length ? 1 : 0 };
+  const plan = {
+    version: 2,
+    nativeMac: tasks,
+    files: { tests, integration },
+    whole: { tests: whole, integration: whole },
+    shards,
+    lanes: selected,
   };
+  const range = (n) => JSON.stringify(Array.from({ length: n }, (_, i) => i + 1));
   const needs = {
     changes: {
       result: "success",
       outputs: {
-        ...Object.fromEntries(lanes.map((k) => [k, "true"])),
-        "native-mac-tasks": JSON.stringify(nativeMacMatrix(allNativeMacTasks)),
+        ...Object.fromEntries(lanes.map((k) => [k, String(selected[k])])),
+        "native-mac-tasks": JSON.stringify(nativeMacMatrix(tasks)),
+        "tests-shards": range(shards.tests),
+        "integration-shards": range(shards.integration),
       },
     },
-    ...Object.fromEntries(lanes.map((k) => [k, { result: "success" }])),
+    ...Object.fromEntries(lanes.map((k) => [k, { result: selected[k] ? "success" : "skipped" }])),
   };
-  assert.doesNotThrow(() => validateResults(selected, needs, "push"));
-  for (const lane of ["native-mac", "native-windows", "tests", "integration", "browser-journeys"]) {
-    for (const result of ["failure", "cancelled", "skipped"]) {
-      assert.throws(() => validateResults(selected, { ...needs, [lane]: { result } }, "push"));
-    }
-    const missing = { ...needs };
-    delete missing[lane];
-    assert.throws(() => validateResults(selected, missing, "push"));
+  return { plan, needs };
+}
+const docs = run();
+const unit = run({ on: ["lint", "build-types", "tests"], tests: ["a.test.ts"] });
+const everything = run({
+  on: lanes,
+  tasks: allNativeMacTasks,
+  tests: ["a.test.ts"],
+  integration: ["b.integration.test.ts"],
+  whole: true,
+});
+test("explicit skips pass on PRs and main pushes", () => {
+  for (const event of ["pull_request", "push"]) {
+    assert.doesNotThrow(() => validateResults(docs.plan, docs.needs, event));
+    assert.doesNotThrow(() => validateResults(unit.plan, unit.needs, event));
   }
 });
-
-test("Check holds the native-mac task list to the plan, and main to every task", () => {
-  const iphone = {
-    ...plan,
-    nativeMac: ["iphone"],
-    lanes: { ...plan.lanes, "native-mac": true },
-  };
-  const needs = structuredClone(results);
-  needs.changes.outputs["native-mac"] = "true";
-  needs.changes.outputs["native-mac-tasks"] = JSON.stringify(nativeMacMatrix(["iphone"]));
-  needs["native-mac"] = { result: "success" };
-  assert.doesNotThrow(() => validateResults(iphone, needs, "pull_request"));
-  const widened = structuredClone(needs);
+test("a selected lane that skipped, failed or is missing fails Check", () => {
+  for (const lane of ["tests", "build-types"])
+    for (const result of ["failure", "cancelled", "skipped"])
+      assert.throws(() =>
+        validateResults(unit.plan, { ...unit.needs, [lane]: { result } }, "pull_request"),
+      );
+  const missing = { ...everything.needs };
+  delete missing["native-windows"];
+  assert.throws(() => validateResults(everything.plan, missing, "schedule"));
+  assert.throws(() =>
+    validateResults(
+      { ...docs.plan, lanes: { ...docs.plan.lanes, tests: true } },
+      docs.needs,
+      "pull_request",
+    ),
+  );
+});
+test("a lane cut at its time limit says so; other cancellations say they were cancelled", () => {
+  const job = (name, minutes, conclusion = "cancelled") => ({
+    name,
+    conclusion,
+    started_at: "2026-11-15T15:23:05Z",
+    completed_at: new Date(Date.parse("2026-11-15T15:23:05Z") + minutes * 60_000).toISOString(),
+  });
+  const limits = { "build-types": 7, tests: 9, "native-mac (iphone)": 6 };
+  const timedOut = timedOutLanes(
+    [
+      job("build-types", 7),
+      job("tests (2)", 3),
+      job("native-mac (iphone)", 6),
+      job("integration (1)", 11, "failure"),
+    ],
+    limits,
+  );
+  assert.deepEqual(
+    [...timedOut],
+    [
+      ["build-types", "build-types exceeded its 7-minute time limit"],
+      ["native-mac", "native-mac (iphone) exceeded its 6-minute time limit"],
+    ],
+  );
+  const cut = structuredClone(unit.needs);
+  cut["build-types"] = { result: "cancelled" };
+  cut.tests = { result: "cancelled" };
+  assert.throws(
+    () => validateResults(unit.plan, cut, "push", undefined, { timedOut }),
+    /^Error: build-types exceeded its 7-minute time limit; tests was cancelled before it finished$/,
+  );
+});
+test("detector failures, missing outputs and an old plan fail Check", () => {
+  assert.throws(() =>
+    validateResults(docs.plan, { ...docs.needs, changes: { result: "failure" } }, "pull_request"),
+  );
+  assert.throws(() => validateResults({ ...docs.plan, detectionError: true }, docs.needs, "push"));
+  assert.throws(() => validateResults({ ...docs.plan, version: 1 }, docs.needs, "push"));
+  const r = structuredClone(docs.needs);
+  delete r.changes.outputs.tests;
+  assert.throws(() => validateResults(docs.plan, r, "pull_request"));
+  assert.throws(() => validateResults(docs.plan, docs.needs, undefined), /Unknown CI event/);
+});
+test("shard outputs agree with the planned files", () => {
+  const wrongCount = structuredClone(unit.needs);
+  wrongCount.changes.outputs["tests-shards"] = "[1,2,3,4]";
+  assert.throws(() => validateResults(unit.plan, wrongCount, "pull_request"), /tests-shards/);
+  // A selected lane needs files, and files need the lane.
+  assert.throws(
+    () =>
+      validateResults({ ...unit.plan, files: { tests: [], integration: [] } }, unit.needs, "push"),
+    /tests-shards/,
+  );
+  const quiet = structuredClone(docs);
+  quiet.plan.files.tests = ["a.test.ts"];
+  assert.throws(() => validateResults(quiet.plan, quiet.needs, "push"), /tests-shards/);
+});
+test("Check holds the native-mac task list to the plan", () => {
+  const iphone = run({ tasks: ["iphone"] });
+  assert.doesNotThrow(() => validateResults(iphone.plan, iphone.needs, "pull_request"));
+  const widened = structuredClone(iphone.needs);
   widened.changes.outputs["native-mac-tasks"] = JSON.stringify(
     nativeMacMatrix(["iphone", "passwords-tests"]),
   );
-  assert.throws(() => validateResults(iphone, widened, "pull_request"), /native-mac-tasks/);
-  const missing = structuredClone(needs);
+  assert.throws(() => validateResults(iphone.plan, widened, "pull_request"), /native-mac-tasks/);
+  const missing = structuredClone(iphone.needs);
   delete missing.changes.outputs["native-mac-tasks"];
-  assert.throws(() => validateResults(iphone, missing, "pull_request"), /native-mac-tasks/);
+  assert.throws(() => validateResults(iphone.plan, missing, "pull_request"), /native-mac-tasks/);
   assert.throws(
-    () => validateResults({ ...iphone, nativeMac: [] }, needs, "pull_request"),
+    () => validateResults({ ...iphone.plan, nativeMac: [] }, iphone.needs, "pull_request"),
     /native-mac-tasks/,
   );
   // The lane flag must agree with the task list, even when the output matches it.
-  const quiet = { ...iphone, lanes: { ...iphone.lanes, "native-mac": false } };
-  const quietNeeds = structuredClone(needs);
-  quietNeeds.changes.outputs["native-mac"] = "false";
-  assert.throws(() => validateResults(quiet, quietNeeds, "pull_request"), /native-mac-tasks/);
-  const all = Object.fromEntries(lanes.map((k) => [k, true]));
-  const main = structuredClone(needs);
-  for (const lane of lanes) {
-    main.changes.outputs[lane] = "true";
-    main[lane] = { result: "success" };
-  }
-  // Main picks its macOS tasks per push; the scheduled and manual runs take them all.
-  assert.doesNotThrow(() => validateResults({ ...iphone, lanes: all }, main, "push"));
-  for (const event of ["schedule", "workflow_dispatch"])
-    assert.throws(
-      () => validateResults({ ...iphone, lanes: all }, main, event),
-      /forbid skipping native-mac tasks/,
-    );
-  const noMac = structuredClone(main);
-  noMac.changes.outputs["native-mac"] = "false";
-  noMac.changes.outputs["native-mac-tasks"] = "[]";
-  noMac["native-mac"] = { result: "skipped" };
-  const linuxOnly = { ...iphone, nativeMac: [], lanes: { ...all, "native-mac": false } };
-  assert.doesNotThrow(() => validateResults(linuxOnly, noMac, "push"));
-  assert.throws(() => validateResults(linuxOnly, noMac, "schedule"), /forbid/);
-  // Every other lane still runs on main.
-  const noTests = structuredClone(noMac);
-  noTests.changes.outputs.tests = "false";
-  noTests.tests = { result: "skipped" };
-  assert.throws(
-    () =>
-      validateResults(
-        { ...linuxOnly, lanes: { ...linuxOnly.lanes, tests: false } },
-        noTests,
-        "push",
-      ),
-    /forbids skips/,
-  );
+  const quiet = structuredClone(iphone);
+  quiet.plan.lanes["native-mac"] = false;
+  quiet.needs.changes.outputs["native-mac"] = "false";
+  assert.throws(() => validateResults(quiet.plan, quiet.needs, "pull_request"), /native-mac-tasks/);
 });
-
-test("only a scheduled run with nothing new on main may skip everything", () => {
-  const none = Object.fromEntries(lanes.map((k) => [k, false]));
-  const unchanged = { version: 1, unchangedSince: "a".repeat(40), nativeMac: [], lanes: none };
-  const needs = {
-    changes: {
-      result: "success",
-      outputs: { ...Object.fromEntries(lanes.map((k) => [k, "false"])), "native-mac-tasks": "[]" },
-    },
-    ...Object.fromEntries(lanes.map((k) => [k, { result: "skipped" }])),
-  };
+test("scheduled and manual runs forbid skipped lanes, tasks and partial suites", () => {
+  for (const event of ["schedule", "workflow_dispatch"]) {
+    assert.doesNotThrow(() => validateResults(everything.plan, everything.needs, event));
+    assert.throws(() => validateResults(unit.plan, unit.needs, event), /forbid/);
+    const someTasks = run({
+      ...everything,
+      on: lanes,
+      tasks: ["iphone"],
+      tests: ["a.test.ts"],
+      integration: ["b.integration.test.ts"],
+      whole: true,
+    });
+    assert.throws(
+      () => validateResults(someTasks.plan, someTasks.needs, event),
+      /native-mac tasks/,
+    );
+    const partial = structuredClone(everything);
+    partial.plan.whole.integration = false;
+    assert.throws(() => validateResults(partial.plan, partial.needs, event), /partial suites/);
+  }
+  // Main pushes select like PRs, natives included.
+  assert.doesNotThrow(() => validateResults(unit.plan, unit.needs, "push"));
+});
+test("an unchanged scheduled run still enforces lint policy guards", () => {
+  const unchanged = { ...docs.plan, unchangedSince: "a".repeat(40) };
+  const needs = docs.needs;
   const sha = "a".repeat(40);
   assert.doesNotThrow(() => validateResults(unchanged, needs, "schedule", sha));
   // The commit it vouches for must be the one this run is on.
@@ -144,13 +176,17 @@ test("only a scheduled run with nothing new on main may skip everything", () => 
   );
   for (const event of ["push", "workflow_dispatch", "pull_request"])
     assert.throws(() => validateResults(unchanged, needs, event, sha), /Only a scheduled run/);
-  assert.throws(() => validateResults(plan, results, undefined), /Unknown CI event/);
   const partly = structuredClone(needs);
-  partly.changes.outputs.lint = "true";
-  partly.lint = { result: "success" };
+  partly.changes.outputs.lint = "false";
+  partly.lint = { result: "skipped" };
   assert.throws(
     () =>
-      validateResults({ ...unchanged, lanes: { ...none, lint: true } }, partly, "schedule", sha),
+      validateResults(
+        { ...unchanged, lanes: { ...unchanged.lanes, lint: false } },
+        partly,
+        "schedule",
+        sha,
+      ),
     /Only a scheduled run/,
   );
 });
@@ -288,7 +324,7 @@ test("public Go proxy fallback is a quoted environment value and tests bypass re
   assert.match(runner.scripts["test:native-fs"], /test -count=1 -timeout=2m \.\/\.\.\.$/);
 });
 
-test("native-fs executes once on shard one, fails the lane and Check, and uploads its log", async () => {
+test("Go helpers execute once on shard one, fail the lane and Check, and upload their logs", async () => {
   const { workflow } = await ciConfig();
   const job = workflow.jobs.tests;
   const steps = job.steps.filter((s) => s.run?.includes("test:native-fs"));
@@ -299,6 +335,12 @@ test("native-fs executes once on shard one, fails the lane and Check, and upload
   assert.equal(job["continue-on-error"], undefined);
   assert.match(step.run, /set -o pipefail/);
   assert.match(step.run, /test:native-fs 2>&1 \| tee "\$RUNNER_TEMP\/evidence\/native-fs.log"/);
+  const bridgeSteps = job.steps.filter((s) => s.run?.includes("test:iphone-bridge"));
+  assert.deepEqual(bridgeSteps, steps);
+  assert.match(
+    step.run,
+    /test:iphone-bridge 2>&1 \| tee "\$RUNNER_TEMP\/evidence\/iphone-bridge.log"/,
+  );
   assert.doesNotMatch(step.run, /\|\| true/);
   assert.ok(workflow.jobs.Check.needs.includes("tests"));
   assert.ok(job.steps.some((s) => s.if === "always()" && s.with?.path.includes("evidence")));
@@ -310,7 +352,7 @@ test("native-fs executes once on shard one, fails the lane and Check, and upload
   // validateResults' failing matrix-lane regression above proves the Check side.
 });
 
-test("main push concurrency coalesces by branch without changing other event groups", async () => {
+test("main pushes have independent commit groups while PRs cancel only their own older runs", async () => {
   const { workflow } = await ciConfig();
   const { runInNewContext } = await import("node:vm");
   const expand = (value, github) =>
@@ -324,11 +366,18 @@ test("main push concurrency coalesces by branch without changing other event gro
       ref,
       event: { pull_request: { number } },
     });
-  assert.equal(group("push", "a"), group("push", "b"));
-  assert.notEqual(group("push", "a"), group("push", "a", "refs/heads/other"));
+  assert.notEqual(group("push", "a"), group("push", "b"));
+  assert.equal(group("push", "a"), "ci-a-push");
   assert.equal(group("pull_request", "a", "refs/pull/12/merge", 12), "ci-12-pull_request");
-  for (const event of ["schedule", "workflow_dispatch"])
+  assert.equal(group("pull_request", "b", "refs/pull/12/merge", 12), "ci-12-pull_request");
+  for (const event of ["schedule", "workflow_dispatch"]) {
     assert.equal(group(event, "a"), `ci-a-${event}`);
+    assert.notEqual(group(event, "a"), group("push", "a"));
+    assert.equal(
+      expand(workflow.concurrency["cancel-in-progress"], { event_name: event }),
+      "false",
+    );
+  }
   assert.equal(expand(workflow.concurrency["cancel-in-progress"], { event_name: "push" }), "false");
   assert.equal(
     expand(workflow.concurrency["cancel-in-progress"], { event_name: "pull_request" }),
@@ -348,11 +397,17 @@ test("release native proof and release builds share a toolchain; release caches 
   // Releases wait for main's full CI; the account-wide macOS limit already caps it.
   assert.equal(workflow.jobs["native-mac"].strategy["max-parallel"], undefined);
   const caches = release.jobs.build.steps.filter((step) => step.uses?.startsWith("actions/cache@"));
-  assert.equal(caches.length, 3);
+  assert.equal(caches.length, 5);
   for (const cache of caches) {
     assert.match(cache.with.key, /^release-only-/u);
-    assert.match(cache.with.key, /toolchain|java/u);
-    assert.match(cache.with.key, /hashFiles|outputs.swift/u);
+    if (cache.with.key.startsWith("release-only-native-")) {
+      assert.match(cache.with.key, /steps.native-cache.outputs/u);
+      assert.match(cache.with.path, /native-products\/(computer-use|passwords|dictation)\//u);
+      assert.match(cache.if, /steps.native-cache.outputs/u);
+    } else {
+      assert.match(cache.with.key, /toolchain|java/u);
+      assert.match(cache.with.key, /hashFiles/u);
+    }
     assert.equal(cache.with["restore-keys"], undefined);
   }
   assert.deepEqual(
@@ -360,10 +415,10 @@ test("release native proof and release builds share a toolchain; release caches 
     [
       ["${{ runner.temp }}/macos-build/postgres"],
       [
-        "apps/desktop/native/computer-use/.build",
-        "apps/desktop/native/passwords/.build",
-        "apps/desktop/native/dictation/.build",
+        "${{ runner.temp }}/native-products/computer-use/${{ steps.native-cache.outputs.computer-use }}",
       ],
+      ["${{ runner.temp }}/native-products/passwords/${{ steps.native-cache.outputs.passwords }}"],
+      ["${{ runner.temp }}/native-products/dictation/${{ steps.native-cache.outputs.dictation }}"],
       ["~/.gradle/caches/modules-2", "~/.gradle/wrapper/dists"],
     ],
   );
@@ -374,7 +429,6 @@ test("real-browser command fails its existing job and Check and uploads inventor
   const { workflow } = await ciConfig();
   const job = workflow.jobs["browser-journeys"];
   assert.equal(job["runs-on"], "ubuntu-24.04");
-  assert.equal(job["timeout-minutes"], 8);
   assert.equal(job["continue-on-error"], undefined);
   const steps = job.steps.filter((step) => /pnpm test:browser/.test(step.run));
   assert.equal(steps.length, 1);
@@ -407,31 +461,14 @@ test("real-browser command fails its existing job and Check and uploads inventor
     assert.equal(uploads[0].with.path.trim(), "${{ runner.temp }}/evidence", lane);
   }
   const aggregate = readFileSync("scripts/ci-check.ts", "utf8");
-  assert.match(aggregate, /read\("browser-1.inventory.json"\)/);
+  assert.match(aggregate, /read\("browser-journeys", "browser-1.inventory.json"\)/);
+  // A lane's test code writes into its own evidence; merged artifacts would let it forge the plan.
+  const download = workflow.jobs.Check.steps.find((entry) =>
+    entry.uses?.startsWith("actions/download-artifact@"),
+  );
+  assert.equal(download.with["merge-multiple"], undefined);
+  assert.match(aggregate, /read\("plan", "ci-plan.json"\)/);
   assert.match(aggregate, /checkInventories\(\[inventory\], 1, "browser"\)/);
   assert.match(aggregate, /inventory.discovered/);
   assert.match(aggregate, /realBrowserTests/);
-});
-
-test("main may skip native-windows for an unrelated push; scheduled and manual runs may not", () => {
-  const needs = structuredClone(results);
-  for (const lane of lanes) {
-    needs.changes.outputs[lane] = String(!lane.startsWith("native-"));
-    needs[lane] = { result: lane.startsWith("native-") ? "skipped" : "success" };
-  }
-  const push = {
-    ...plan,
-    lanes: Object.fromEntries(lanes.map((k) => [k, !k.startsWith("native-")])),
-  };
-  assert.doesNotThrow(() => validateResults(push, needs, "push"));
-  for (const event of ["schedule", "workflow_dispatch"]) {
-    const full = structuredClone({ plan: { ...push, nativeMac: allNativeMacTasks }, needs });
-    full.plan.lanes["native-mac"] = true;
-    full.needs.changes.outputs["native-mac"] = "true";
-    full.needs.changes.outputs["native-mac-tasks"] = JSON.stringify(
-      nativeMacMatrix(allNativeMacTasks),
-    );
-    full.needs["native-mac"] = { result: "success" };
-    assert.throws(() => validateResults(full.plan, full.needs, event), /forbids skips/);
-  }
 });

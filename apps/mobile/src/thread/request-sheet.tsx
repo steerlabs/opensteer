@@ -1,3 +1,4 @@
+import { setPhoneDisplayAccess } from "@opensteer/client/integrations";
 import {
   browserAccessChoices,
   browserAccessGrantable,
@@ -14,7 +15,7 @@ import {
   deriveSurface,
   fullAccessDeclineLabel,
   fullAccessRequestBody,
-  mutationIdempotencyKey,
+  isQuestionRequest,
   passwordSignInAccountList,
   passwordSignInAllowRemembers,
   passwordSignInConsent,
@@ -32,6 +33,7 @@ import {
 import { computerAppAccessApproval, computerUseAccessLabel } from "@opensteer/client/integrations";
 import { useHostSelector, useHostSnapshot } from "@opensteer/client/react";
 import {
+  isPhoneDisplayDefinitionId,
   requestAgentProposedDetail,
   requestAgentProposedLabel,
   requestOptionDeclines,
@@ -67,10 +69,11 @@ import { HomeMenu } from "../screens/profile-home-menu.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Chip, monoFontFamily, Notice, StatusDot } from "../ui/primitives.js";
+import { readFailure, UnavailableState } from "../ui/unavailable-state.js";
 import { SheetBarButton } from "../ui/sheet-bar.js";
 import { Symbol } from "../ui/symbol.js";
 import { AnswerPill, AnswerRow } from "./answer-pill.js";
-import { requestTitle } from "./docked-requests.js";
+import { requestTitle, requestTitleLine } from "./docked-requests.js";
 import { answerDeviceAccessRequest } from "@opensteer/client/computers";
 import { AskerByline, useRequestAsker } from "./asker-byline.js";
 import { InstallReview } from "./integration-install-review.js";
@@ -99,6 +102,7 @@ import { signInAvailability, signInStatus } from "./request-sign-in-status.js";
 import { useThreadMutation } from "./thread-mutation-registry.js";
 import type { ThreadMutationGate } from "./thread-mutation-gate.js";
 import { useRequestResponse, type RequestResponder } from "./use-request-response.js";
+import { QuestionCard } from "./waiting-questions.js";
 
 /** A native answer in English: the same word for a refusal on every kind of Request. */
 const declineLabel = "Don’t Allow";
@@ -109,6 +113,8 @@ export type RequestSheetScreenProps = StaticScreenProps<{
   readonly full?: boolean;
   /** "Don't Allow and say why": the sheet takes the reason instead. */
   readonly reason?: boolean;
+  /** Opened from a link: a settled Request is shown as it ended rather than closed. */
+  readonly opened?: "reference";
   readonly requestId: string;
   readonly threadId: string;
 }>;
@@ -116,11 +122,21 @@ export type RequestSheetScreenProps = StaticScreenProps<{
 /** The route names a Request and nothing else: what it asks is read from the Host. */
 export function RequestSheetScreen(props: RequestSheetScreenProps): ReactNode {
   const navigation = useNavigation();
-  const { deploymentId, reason, requestId, threadId } = props.route.params;
+  const { deploymentId, opened, reason, requestId, threadId } = props.route.params;
   const { selection } = useMobileState();
   if (selection.deploymentId !== deploymentId || selection.hostClient === null) {
     return <Gone onClose={() => navigation.goBack()} />;
   }
+  if (opened === "reference")
+    return (
+      <ReferencedRequest
+        deploymentId={deploymentId}
+        hostClient={selection.hostClient}
+        key={`${deploymentId}:${requestId}`}
+        requestId={requestId}
+        threadId={threadId}
+      />
+    );
   return (
     <SubscribedRequestSheet
       deploymentId={deploymentId}
@@ -170,6 +186,121 @@ function SubscribedRequestSheet(props: {
   );
 }
 
+type TargetedRead =
+  | { readonly state: "loading" }
+  | { readonly state: "read"; readonly request: Request | null }
+  | { readonly state: "offline" | "failed" };
+
+/**
+ * A Request a link named, which may have been settled long ago. One still
+ * waiting opens as any approval does, and closes once answered; one that has
+ * ended shows what it asked and how it ended, and answers nothing. Absence is
+ * decided only once the Host has been asked for exactly this Request.
+ */
+function ReferencedRequest(props: {
+  readonly deploymentId: string;
+  readonly hostClient: HostClient;
+  readonly requestId: string;
+  readonly threadId: string;
+}): ReactNode {
+  const { deploymentId, hostClient, requestId, threadId } = props;
+  const navigation = useNavigation();
+  const [attempt, setAttempt] = useState(0);
+  const [read, setRead] = useState<TargetedRead>({ state: "loading" });
+  // The conversation's Requests stay live while it is open, so an answer given here shows.
+  useEffect(() => hostClient.observeThread(threadId), [hostClient, threadId]);
+  const held = useHostSelector(
+    hostClient,
+    (snapshot) =>
+      (snapshot.requests[threadId] ?? []).find(({ id }) => id === requestId) ??
+      snapshot.waitingRequests.find(({ request }) => request.id === requestId)?.request ??
+      null,
+  );
+  useEffect(() => {
+    let current = true;
+    setRead({ state: "loading" });
+    hostClient.readRequest(threadId, requestId).then(
+      (request) => current && setRead({ state: "read", request }),
+      (error: unknown) => {
+        if (!current) return;
+        const failure = readFailure(error);
+        setRead(failure === "unavailable" ? { state: "read", request: null } : { state: failure });
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [attempt, hostClient, requestId, threadId]);
+  if (held?.status === "pending")
+    return (
+      <SubscribedRequestSheet
+        deploymentId={deploymentId}
+        hostClient={hostClient}
+        reason={false}
+        requestId={requestId}
+        threadId={threadId}
+      />
+    );
+  const request = held ?? (read.state === "read" ? read.request : null);
+  if (request !== null)
+    return (
+      <SettledRequest
+        onClose={() => navigation.goBack()}
+        onOpenTask={() => {
+          navigation.goBack();
+          navigation.dispatch(StackActions.push("Thread", { deploymentId, threadId, requestId }));
+        }}
+        request={request}
+      />
+    );
+  if (read.state === "loading")
+    return (
+      <View style={[styles.gone, styles.referenced]}>
+        <ActivityIndicator color={color.muted} />
+      </View>
+    );
+  return (
+    <View style={styles.referenced}>
+      <UnavailableState
+        onBack={() => navigation.goBack()}
+        onRetry={read.state === "read" ? undefined : () => setAttempt((count) => count + 1)}
+      />
+    </View>
+  );
+}
+
+const settledWords: Record<Request["status"], string> = {
+  pending: "Waiting for an answer",
+  fulfilled: "Answered",
+  declined: "Declined",
+  withdrawn: "Withdrawn",
+  cancelled: "Cancelled",
+};
+
+/** A Request as it ended, read only: what it asked and how it was settled. */
+function SettledRequest(props: {
+  readonly onClose: () => void;
+  readonly onOpenTask: () => void;
+  readonly request: Request;
+}): ReactNode {
+  const { request } = props;
+  return (
+    <ScrollView contentContainerStyle={styles.settled} style={styles.referenced}>
+      <View style={styles.settledHead}>
+        <Symbol name="hand.raised" size={18} tint={color.muted} />
+        <AppText role="caption" tone="muted">
+          {settledWords[request.status]}
+        </AppText>
+      </View>
+      <AppText role="title">{requestTitleLine(request)}</AppText>
+      <AnswerRow>
+        <AnswerPill label="Open task" onPress={props.onOpenTask} tone="secondary" />
+        <AnswerPill label="Close" onPress={props.onClose} tone="secondary" />
+      </AnswerRow>
+    </ScrollView>
+  );
+}
+
 /** The Thread's own gate and draft, as the composer holds them, from a sibling route. */
 function SheetForRequest(props: {
   readonly canRespond: boolean;
@@ -191,6 +322,21 @@ function SheetForRequest(props: {
     (snapshot) => snapshot.threads.find(({ id }) => id === threadId)?.status === "archived",
   );
   if (surface === null) return null;
+  // A question reads the same wherever it opens: its card, with the answer it
+  // was given there, and its own field because no composer stands below.
+  if (isQuestionRequest(surface.request) && surface.denied === null)
+    return (
+      <ScrollView contentContainerStyle={styles.questionSheet} keyboardShouldPersistTaps="handled">
+        <QuestionCard
+          canRespond={props.canRespond}
+          deploymentId={deploymentId}
+          drafts={drafts}
+          hostClient={hostClient}
+          surface={surface}
+          userId={userId}
+        />
+      </ScrollView>
+    );
   const pendingMessage = owner === "message" || drafts.readPending(deploymentId, userId, threadId);
   return (
     <RequestSheetContent
@@ -663,27 +809,20 @@ function RequestBody(props: {
           onAllow={() => {
             const { payload } = request;
             if (payload.kind !== "computer.app.access") return;
-            const { access, definitionId, runnerId, setupRequestId } = payload;
+            const { access, definitionId, deviceId, setupRequestId } = payload;
             void responder.attempt("computer-app-allow", { shareWithAi: true }, async () => {
-              if (definitionId !== "android-phone") {
+              if (!isPhoneDisplayDefinitionId(definitionId)) {
                 await props.computerApproval.ask(setupRequestId);
                 return;
               }
-              const result = await props.hostClient.dispatch({
-                idempotencyKey: mutationIdempotencyKey(`phone-request:${request.id}`),
-                input: { access, app: null, definitionId, kind: "app", runnerId },
-                type: "integration.computer.setup.set",
-              });
-              if (result.type !== "integration.computer.setup.set") {
-                throw new Error("Could not confirm your answer was sent.");
-              }
+              await setPhoneDisplayAccess(props.hostClient, { access, definitionId, deviceId });
               responder.admitted();
             });
           }}
           onDecline={() => decline("computer-app-decline")}
           pendingId={session.pendingId}
           reason={reason}
-          runnerId={request.payload.runnerId}
+          deviceId={request.payload.deviceId}
         />
       ) : request.kind === "device.access" && request.payload.kind === "device.access" ? (
         <DeviceAccessBody
@@ -1272,20 +1411,20 @@ function CardUseBody(props: {
 }
 
 /**
- * An agent asked to use an app on a Mac, or the whole screen of an agent
- * phone. Mac approval happens there; phone access can be allowed here.
+ * An agent asked to use an app on a Mac, or the whole screen of a phone.
+ * Mac approval happens there; phone access can be allowed here.
  */
 function ComputerAppAccessBody(props: {
   readonly access: "read" | "read-write";
   readonly canRespond: boolean;
-  readonly definitionId: "android-phone" | "macos-app";
+  readonly definitionId: "android-phone" | "iphone-screen" | "macos-app";
   readonly failure: string | null;
   readonly machines: readonly MachineSummary[];
   readonly onAllow: () => void;
   readonly onDecline: () => void;
   readonly pendingId: string | null;
   readonly reason: string | null;
-  readonly runnerId: string;
+  readonly deviceId: string;
 }): ReactNode {
   // A computer this viewer cannot see is still somewhere; it is just not
   // named. The mobile app is never at the Mac it asks about.
@@ -1293,7 +1432,7 @@ function ComputerAppAccessBody(props: {
     definitionId: props.definitionId,
     machines: props.machines,
     onThatMac: false,
-    runnerId: props.runnerId,
+    deviceId: props.deviceId,
   });
   const locked = !props.canRespond || props.pendingId !== null;
   return (
@@ -1470,25 +1609,27 @@ function RequestForm(props: {
                 ) : null}
               </>
             ) : (
-              <View style={styles.group}>
-                {(field.choices ?? []).map((choice, choiceIndex) => (
-                  <FormChoiceRow
-                    description={choice.description}
-                    disabled={props.disabled}
-                    hint={position === null ? hint : `${hint}, ${position}`}
-                    // Values are not required to be unique; their position is.
-                    key={`${choiceIndex}:${choice.value}`}
-                    label={choice.label}
-                    mode={mode}
-                    onPress={() => {
-                      void Haptics.selectionAsync();
-                      setValues(toggleRequestChoice(field, values, choice.value));
-                    }}
-                    selected={values.includes(choice.value)}
-                    separated={choiceIndex > 0}
-                  />
-                ))}
-              </View>
+              <>
+                <View style={styles.group}>
+                  {(field.choices ?? []).map((choice, choiceIndex) => (
+                    <FormChoiceRow
+                      description={choice.description}
+                      disabled={props.disabled}
+                      hint={position === null ? hint : `${hint}, ${position}`}
+                      // Values are not required to be unique; their position is.
+                      key={`${choiceIndex}:${choice.value}`}
+                      label={choice.label}
+                      mode={mode}
+                      onPress={() => {
+                        void Haptics.selectionAsync();
+                        setValues(toggleRequestChoice(field, values, choice.value));
+                      }}
+                      selected={values.includes(choice.value)}
+                      separated={choiceIndex > 0}
+                    />
+                  ))}
+                </View>
+              </>
             )}
           </View>
         );
@@ -1550,6 +1691,7 @@ function FormChoiceRow(props: {
 }
 
 const styles = StyleSheet.create({
+  questionSheet: { padding: space[16] },
   accounts: { gap: space[6] },
   bar: {
     alignItems: "center",
@@ -1575,6 +1717,9 @@ const styles = StyleSheet.create({
   },
   form: { gap: space[16] },
   gone: { gap: space[8], padding: space[16] },
+  referenced: { backgroundColor: color.surfaceElevated, flex: 1 },
+  settled: { gap: space[12], padding: space[24] },
+  settledHead: { alignItems: "center", flexDirection: "row", gap: space[6] },
   group: {
     backgroundColor: "rgba(255, 255, 255, 0.05)",
     borderRadius: radius.lg,

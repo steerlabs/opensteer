@@ -1,3 +1,4 @@
+import { ToolFailureSchema } from "@opensteer/core";
 import { startHeldRequest } from "./held-request.test-support.js";
 /**
  * Real Host/PostgreSQL proposal, review, connection and repair journey.
@@ -148,7 +149,7 @@ integration("proposal credential guidance", () => {
           .execute(),
       });
       const before = await count();
-      const refusal = await gateway.callRaw("integration_propose", {
+      const refusal = await gateway.callRaw("custom_integration_request", {
         kind: "openapi",
         description: "Read and manage Gmail messages.",
         reason: "Read my Gmail",
@@ -183,7 +184,10 @@ integration("proposal credential guidance", () => {
       });
       facts.push({ refusal });
       expect(refusal.structuredContent).toMatchObject({
-        status: "unsupported",
+        requestId: null,
+        kind: "integration.install",
+        status: "blocked",
+        proposalStatus: "unsupported",
         catalogAlternatives: [],
       });
       expect(toolText(refusal)).toContain(
@@ -272,7 +276,7 @@ integration("proposal credential guidance", () => {
       closers.unshift(() => gateway.close());
       const catalogBefore = integrationDefinitions.map(integrationDefinitionDigest);
       const propose = (overrides: Json = {}, document: Json = spec()) =>
-        gateway.call("integration_propose", {
+        gateway.call("custom_integration_request", {
           source: JSON.stringify(document),
           kind: "openapi",
           reason: "Use the provider API",
@@ -1127,7 +1131,7 @@ integration("proposal credential guidance", () => {
       const gateway = await integrationGateway(run.integrationTools);
       closers.unshift(() => gateway.close());
       const propose = (overrides: Json = {}) =>
-        gateway.call("integration_propose", {
+        gateway.call("custom_integration_request", {
           source: JSON.stringify(spec()),
           kind: "openapi",
           reason: "Use the provider API",
@@ -1191,7 +1195,11 @@ integration("proposal credential guidance", () => {
           () => null,
           (error: unknown) => (error instanceof Error ? error.message : String(error)),
         );
-        expect(refusal?.startsWith(`invalid_arguments: ${field}: `)).toBe(true);
+        expect(ToolFailureSchema.parse(JSON.parse(refusal!)).error).toMatchObject({
+          code: "invalid_input",
+          message: expect.stringMatching(new RegExp(`^invalid_arguments: ${field}: `)),
+          next: null,
+        });
         refusals.push(refusal!);
       }
       facts.push({ step: "argument refusals name their field", observed: refusals });

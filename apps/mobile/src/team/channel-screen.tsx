@@ -182,15 +182,17 @@ export function ChannelTitle(props: { readonly channel: ChannelHeaderView }): Re
   const { channel } = props;
   const dm = channel.kind === "dm" || channel.kind === "group-dm";
   const presence = channel.kind === "dm" ? channel.people[0]?.presence : null;
-  const subtitle = dm
-    ? presence === "active"
-      ? "Active"
-      : presence === "away"
-        ? "Away"
-        : null
-    : channel.memberCount === null
-      ? null
-      : `${channel.memberCount} ${channel.memberCount === 1 ? "member" : "members"}`;
+  const subtitle =
+    channel.shareLabel ??
+    (dm
+      ? presence === "active"
+        ? "Active"
+        : presence === "away"
+          ? "Away"
+          : null
+      : channel.memberCount === null
+        ? null
+        : `${channel.memberCount} ${channel.memberCount === 1 ? "member" : "members"}`);
   return (
     <View accessibilityRole="header" style={styles.title}>
       <View style={styles.titleLine}>

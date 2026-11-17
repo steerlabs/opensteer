@@ -1,13 +1,17 @@
+import { stripRefs } from "@opensteer/shared/stripRefs";
+import { markdownLink } from "@opensteer/shared/markdownLinks";
+import { markdownPreview } from "@opensteer/shared/markdownPreview";
+import { teamKnowledgeLimits, TeamKnowledgeWriteSchema } from "@opensteer/protocol";
 import {
   createId,
+  teamPageUrl,
   OpensteerError,
   type DeploymentId,
   type TeamAgentRequestId,
 } from "@opensteer/core";
 import type {
-  knowledge_read,
-  knowledge_topics,
-  knowledge_write,
+  opensteer_knowledge_topic_list,
+  opensteer_knowledge_save,
 } from "@opensteer/agent-tools/tools";
 import type { PersonalTeamLink, TeamKnowledgeWrite } from "@opensteer/protocol";
 import type { z } from "zod";
@@ -38,7 +42,7 @@ export class PersonalTeamKnowledge implements TeamKnowledgePort {
         caller.requestId && caller.teamOrigin?.teamId === link.teamId
           ? { requestId: caller.requestId }
           : {};
-      return { team: { id: link.teamId, name: link.teamName }, ...request };
+      return { team: { id: link.teamId, name: link.teamName }, origin: link.origin, ...request };
     };
     if (wanted) {
       const link = active.find((candidate) => candidate.teamId === wanted);
@@ -65,23 +69,32 @@ export class PersonalTeamKnowledge implements TeamKnowledgePort {
 
   async topics(
     caller: TeamKnowledgeCaller,
-    input: z.output<typeof knowledge_topics.input>,
+    input: z.output<typeof opensteer_knowledge_topic_list.input>,
     signal?: AbortSignal,
-  ): Promise<z.output<typeof knowledge_topics.output>> {
-    const { team, ...request } = await this.#team(caller, input.team);
+  ): Promise<z.output<typeof opensteer_knowledge_topic_list.output>> {
+    const { team, origin, ...request } = await this.#team(caller, input.team);
     signal?.throwIfAborted();
     const result = await this.#rpc(team.id).call({ type: "knowledge.topics", ...request });
     if (result.kind !== "knowledge.topics") throw linkError("bad_request");
-    return { team, topics: result.result.topics };
+    return {
+      team,
+      topics: result.result.topics.map((topic) => ({
+        ...topic,
+        link: markdownLink(
+          topic.name,
+          teamPageUrl({ origin, target: { kind: "knowledge-topic", topicId: topic.id } }),
+        ),
+      })),
+    };
   }
 
   async read(
     caller: TeamKnowledgeCaller,
-    input: z.output<typeof knowledge_read.input>,
+    input: Parameters<TeamKnowledgePort["read"]>[1],
     signal?: AbortSignal,
-  ): Promise<z.output<typeof knowledge_read.output>> {
+  ): ReturnType<TeamKnowledgePort["read"]> {
     const { team: requested, ...read } = input;
-    const { team, ...request } = await this.#team(caller, requested);
+    const { team, origin, ...request } = await this.#team(caller, requested);
     signal?.throwIfAborted();
     const result = await this.#rpc(team.id).call({
       type: "knowledge.read",
@@ -89,15 +102,49 @@ export class PersonalTeamKnowledge implements TeamKnowledgePort {
       input: read,
     });
     if (result.kind !== "knowledge.read") throw linkError("bad_request");
-    return { ...result.result, team };
+    const page = {
+      ...result.result,
+      team,
+      topics: result.result.topics.map((topic) => ({
+        ...topic,
+        link: markdownLink(
+          topic.name,
+          teamPageUrl({ origin, target: { kind: "knowledge-topic", topicId: topic.id } }),
+        ),
+      })),
+      notes: result.result.notes.map((note) => ({
+        ...note,
+        link: markdownLink(
+          note.title,
+          teamPageUrl({
+            origin,
+            target: { kind: "knowledge-note", topicId: note.topicId, noteId: note.id },
+          }),
+        ),
+      })),
+    };
+    for (
+      let index = page.notes.length - 1;
+      Buffer.byteLength(JSON.stringify(page)) > teamKnowledgeLimits.agentReadBytes && index >= 0;
+      index--
+    ) {
+      page.notes[index] = {
+        ...page.notes[index]!,
+        body: markdownPreview(page.notes[index]!.body, teamKnowledgeLimits.previewChars),
+      };
+      page.truncated = true;
+    }
+    if (Buffer.byteLength(JSON.stringify(page)) > teamKnowledgeLimits.agentReadBytes)
+      throw linkError("resource_exhausted");
+    return page;
   }
 
   async write(
     caller: TeamKnowledgeCaller,
-    input: z.output<typeof knowledge_write.input>,
+    input: Parameters<TeamKnowledgePort["write"]>[1],
     signal?: AbortSignal,
-  ): Promise<z.output<typeof knowledge_write.output>> {
-    const { team, ...request } = await this.#team(caller, input.team);
+  ): Promise<z.output<typeof opensteer_knowledge_save.output>> {
+    const { team, origin, ...request } = await this.#team(caller, input.team);
     signal?.throwIfAborted();
     const write: TeamKnowledgeWrite =
       input.noteId === undefined
@@ -106,8 +153,8 @@ export class PersonalTeamKnowledge implements TeamKnowledgePort {
             noteId: createId("knowledgeNote"),
             topicId: input.topicId!,
             expectedVersion: null,
-            title: input.title!,
-            body: input.body!,
+            title: stripRefs(input.title!),
+            body: stripRefs(input.body!),
           }
         : {
             noteId: input.noteId,
@@ -115,17 +162,31 @@ export class PersonalTeamKnowledge implements TeamKnowledgePort {
             ...(input.delete
               ? { delete: true as const }
               : {
-                  ...(input.title === undefined ? {} : { title: input.title }),
-                  ...(input.body === undefined ? {} : { body: input.body }),
+                  ...(input.title === undefined ? {} : { title: stripRefs(input.title) }),
+                  ...(input.body === undefined ? {} : { body: stripRefs(input.body) }),
                 }),
           };
     const result = await this.#rpc(team.id).call({
       type: "knowledge.write",
       ...request,
-      input: write,
+      input: TeamKnowledgeWriteSchema.parse(write),
     });
     if (result.kind !== "knowledge.write") throw linkError("bad_request");
-    return result.result;
+    const note = result.result.written ? result.result : result.result.current;
+    const link = markdownLink(
+      "title" in note ? note.title : "Note",
+      teamPageUrl({
+        origin,
+        target: {
+          kind: "knowledge-note",
+          topicId: note.topicId,
+          noteId: "noteId" in note ? note.noteId : note.id,
+        },
+      }),
+    );
+    return result.result.written
+      ? { ...result.result, link }
+      : { ...result.result, current: { ...result.result.current, link } };
   }
 }
 

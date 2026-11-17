@@ -5,11 +5,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 /*
- * The Menu in a sidebar destination's bar. What can go wrong:
+ * The Menu in a top-level screen's bar. What can go wrong:
  * - a docked sidebar offers a control that hides it, so a person can lose the
  *   one place to switch between tasks and tabs;
  * - with the sidebar a drawer, the Menu is missing, so it can be opened only
  *   by a swipe nobody knows about;
+ * - a drill-in loses Back when Menu is added, or a presented flow loses its controls;
  * - it is a drawn view rather than a native bar item, so it is not in the
  *   vertical bar, has no label for VoiceOver, and is not a keyboard target;
  * - questions waiting are not said in its name while they show on its badge.
@@ -19,6 +20,8 @@ const harness = vi.hoisted(() => ({
   attention: 0,
   options: {} as Record<string, unknown>,
   open: vi.fn(),
+  routeKey: "thread-a",
+  presented: false,
 }));
 
 vi.mock("react-native", () => ({
@@ -52,9 +55,33 @@ vi.mock("@react-navigation/native", () => {
       harness.options = { ...harness.options, ...options };
     },
   };
-  return { useNavigation: () => navigation };
+  // A task top-level over Home, with a subagent drilled into over it.
+  const state = {
+    index: 2,
+    routes: [
+      { key: "home", name: "Home" },
+      { key: "thread-a", name: "Thread" },
+      { key: "subagent", name: "Subagent" },
+    ],
+  };
+  return {
+    useNavigation: () => navigation,
+    useNavigationState: (select: (value: typeof state) => unknown) =>
+      select(
+        harness.presented
+          ? {
+              ...state,
+              routes: [state.routes[0]!, { key: "settings", name: "Settings" }, state.routes[2]!],
+            }
+          : state,
+      ),
+    useRoute: () => ({ key: harness.routeKey }),
+  };
 });
-vi.mock("./ui/mobile-client-context.js", () => ({ useHostValue: () => harness.attention }));
+vi.mock("./ui/mobile-client-context.js", () => ({
+  useHostValue: () => harness.attention,
+  useSelectedHostClient: () => null,
+}));
 vi.mock("./ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
@@ -64,7 +91,7 @@ vi.mock("./ui/symbol.js", () => ({
   ),
 }));
 
-import { useSidebarMenu } from "./navigation-header.js";
+import { TopLevelMenu } from "./navigation-header.js";
 import { SidebarControlContext, SidebarDockedContext } from "./sidebar/sidebar-context.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -74,12 +101,9 @@ afterEach(() => {
   harness.attention = 0;
   harness.options = {};
   harness.open.mockReset();
+  harness.routeKey = "thread-a";
+  harness.presented = false;
 });
-
-function Destination(): ReactNode {
-  useSidebarMenu(null);
-  return null;
-}
 
 function mount(docked: boolean) {
   const root = createRoot(document.createElement("div"));
@@ -89,7 +113,7 @@ function mount(docked: boolean) {
       root.render(
         <SidebarControlContext.Provider value={{ close: vi.fn(), open: harness.open }}>
           <SidebarDockedContext.Provider value={next}>
-            <Destination />
+            <TopLevelMenu />
           </SidebarDockedContext.Provider>
         </SidebarControlContext.Provider>,
       ),
@@ -112,11 +136,10 @@ function leadingItems(): readonly NativeItem[] {
   return typeof items === "function" ? (items as () => NativeItem[])() : [];
 }
 
-describe("the Menu in a sidebar destination's bar", () => {
+describe("the Menu in a top-level screen's bar", () => {
   it("is a native bar item that opens the drawer, and says the questions waiting", () => {
     harness.attention = 2;
     mount(false);
-    expect(harness.options["headerBackVisible"]).toBe(false);
     expect(leadingItems()).toEqual([
       expect.objectContaining({
         accessibilityLabel: "Menu, 2 questions need you",
@@ -134,8 +157,24 @@ describe("the Menu in a sidebar destination's bar", () => {
     const render = mount(true);
     expect(leadingItems()).toEqual([]);
     expect((harness.options["headerLeft"] as () => ReactNode)()).toBeNull();
-    expect(harness.options["headerBackVisible"]).toBe(false);
     render(false);
     expect(leadingItems().map((item) => item.label)).toEqual(["Menu"]);
+  });
+
+  it("keeps Back on a drill-in and adds Menu only while the sidebar is a drawer", () => {
+    harness.routeKey = "subagent";
+    const render = mount(false);
+    expect(harness.options["headerBackVisible"]).toBe(true);
+    expect(leadingItems().map((item) => item.label)).toEqual(["Menu"]);
+    render(true);
+    expect(harness.options["headerBackVisible"]).toBe(true);
+    expect(leadingItems()).toEqual([]);
+  });
+
+  it("leaves a presented flow's own controls in charge", () => {
+    harness.presented = true;
+    harness.routeKey = "subagent";
+    mount(false);
+    expect(harness.options).toEqual({});
   });
 });

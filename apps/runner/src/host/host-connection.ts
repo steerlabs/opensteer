@@ -1,11 +1,16 @@
+import { AppServerError } from "../apps/app-server-manager.js";
+import { harnessMinimumVersion } from "@opensteer/core";
+import { meetsMinimumVersion } from "@opensteer/harness";
 import { join } from "node:path";
 import { RunFiles, RunFileError, type RunFilePort } from "../attachments/run-files.js";
 import type { HostRunFileRequest } from "@opensteer/protocol";
 import { sameRunnerConnectionFence, computerAppMaxTimeoutMs } from "@opensteer/protocol";
 import { openAppTunnel } from "../apps/app-tunnel.js";
-import type { HostAppRequest } from "@opensteer/protocol";
+import type { HostAppRequest, HostAppsSync } from "@opensteer/protocol";
+import type { AppServerState } from "../apps/app-server-manager.js";
 import type { RunnerConfig } from "@opensteer/config";
 import type {
+  ComputerFolder,
   EnvironmentId,
   HarnessId,
   HarnessInstanceId,
@@ -120,6 +125,12 @@ interface InboundFrame {
   readonly isBinary: boolean;
 }
 
+type RunnerReportSink = Omit<RunnerMessageSink, "send"> & {
+  send(message: RunnerOperationalReport): Promise<void>;
+  abort?: (reason: string) => void;
+  close?: () => void;
+};
+
 type PostAuthenticationHostMessage = Exclude<
   HostToRunnerMessage,
   { readonly type: "host.challenge" | "host.error" }
@@ -160,6 +171,7 @@ function computerAppModuleHandler(
         }
       : {}),
     ...(integrations.computerUse ? { computerUse: integrations.computerUse } : {}),
+    ...(integrations.phoneScreens ? { phoneScreens: integrations.phoneScreens } : {}),
     localMcp: integrations.localMcp,
     logger,
     providers: integrations.providers,
@@ -704,7 +716,7 @@ export class ReconnectingHostConnection {
     return {
       bootId: this.#bootId,
       capabilities: [
-        ...runnerCapabilities(),
+        ...runnerCapabilities(harnessDrivers),
         ...(harnessDrivers.some((driver) => driver.driverKind === "codex")
           ? ["voice-run-v1" as const]
           : []),
@@ -1097,6 +1109,7 @@ export class ReconnectingHostConnection {
     const work: RunnerWorkSession = agents
       ? new AgentsWorkSession({
           agents,
+          agentHome: welcome.agentHome,
           appTransport: this.#config,
           environmentId: () => requiredEnvironmentId(this.#identity),
           fail: (reason) => socket.close(1011, reason),
@@ -1169,8 +1182,9 @@ export class ReconnectingHostConnection {
       },
     });
     try {
-      // Before anything else on this connection, the Host learns every Run this
-      // Runner holds and answers which of them continue here.
+      // The Host hears the first settings.json read, then every Run this Runner
+      // holds, and answers which continue here before it dispatches anything.
+      await work.initialReports();
       await sink.send({
         complete: true,
         executions: work.attachInventory(),
@@ -1242,6 +1256,8 @@ interface RunnerWorkSession {
     RunnerOperationalReport,
     { readonly type: "runner.executions.attach" }
   >["executions"];
+  /** What the Host must hear before it dispatches anything: the first read of settings.json. */
+  initialReports(): Promise<void>;
   handle(message: RunnerWorkMessage): Promise<void>;
   /** Stops accepting work and waits for whatever is already in flight. */
   close(): Promise<void>;
@@ -1250,6 +1266,8 @@ interface RunnerWorkSession {
 interface AgentsWorkSessionOptions {
   readonly appTransport: Pick<RunnerConfig, "hostUrl" | "mode" | "controlCaPath">;
   readonly agents: RunnerAgentsConnection;
+  /** The Agent home this computer hosts, as the Host's welcome named it. */
+  readonly agentHome?: ComputerFolder | undefined;
   readonly environmentId: () => EnvironmentId;
   readonly fail: (reason: string) => void;
   readonly fence: RunnerConnectionFenceLedger;
@@ -1273,12 +1291,14 @@ export class AgentsWorkSession implements RunnerWorkSession {
   readonly #commandResponses = new Set<Promise<void>>();
   readonly #invalidatedHarnesses = new Set<HarnessInstanceId>();
   readonly #unsubscribePreparation: () => void;
+  readonly #unobserveApps: () => void;
   /**
    * Admit commands against the profile set they follow. Engine controls keep
    * their receipts in flight without holding up Stop or revocation.
    */
   readonly #voiceResponses = new Set<Promise<void>>();
   readonly #initialSkills: Promise<void>;
+  readonly #initialSettings: Promise<void>;
   #ordered: Promise<void> = Promise.resolve();
   #orderedPending = 0;
 
@@ -1293,7 +1313,16 @@ export class AgentsWorkSession implements RunnerWorkSession {
           : { status: "failed", reason: "unreadable" },
       );
     });
+    this.#initialSettings = options.agents.runtime
+      .observeAgentHomeSettings(
+        (read) => this.#reportSettings(read),
+        options.agentHome ? { agentHome: options.agentHome, signal: this.#signal } : undefined,
+      )
+      .catch(() => undefined);
     this.#initialSkills = Promise.resolve();
+    this.#unobserveApps = options.agents.runtime.appServers.observe((state) =>
+      this.#reportAppState(state),
+    );
     this.#unsubscribePreparation = options.agents.runtime.subscribeHarnessPreparation(
       (harnessInstanceId) => {
         this.#invalidatedHarnesses.add(harnessInstanceId);
@@ -1309,6 +1338,10 @@ export class AgentsWorkSession implements RunnerWorkSession {
       activeTriggerOccurrenceIds: [...runtime.activeTriggerOccurrenceIds()],
       activeWatchActivationIds: [...runtime.activeWatchActivationIds()],
     };
+  }
+
+  initialReports(): Promise<void> {
+    return this.#initialSettings;
   }
 
   attachInventory(): ReturnType<RunnerWorkSession["attachInventory"]> {
@@ -1410,17 +1443,23 @@ export class AgentsWorkSession implements RunnerWorkSession {
       case "host.app.cancel":
         void this.#answerAppRequest(message).catch(() => this.#options.fail("App response failed"));
         return;
+      case "host.apps.sync":
+        void this.#answerAppsSync(message).catch(() => this.#options.fail("App response failed"));
+        return;
     }
   }
 
   async close(): Promise<void> {
     this.#unsubscribePreparation();
+    this.#unobserveApps();
     this.#options.agents.runtime.observeAgentHomeSkills(undefined);
+    void this.#options.agents.runtime.observeAgentHomeSettings(undefined);
     this.#lifetime.abort(new Error("Host connection stopped"));
     await withTimeout(
       Promise.allSettled([
         this.#ordered.then(() => Promise.allSettled(this.#commandResponses)),
         this.#initialSkills,
+        this.#initialSettings,
         ...this.#catalogResponses,
         ...this.#authenticationResponses,
         ...this.#modelServerResponses,
@@ -1667,80 +1706,145 @@ export class AgentsWorkSession implements RunnerWorkSession {
   }
 
   async #answerAppRequest(request: HostAppRequest): Promise<void> {
+    const appId =
+      request.type === "host.app.start" || request.type === "host.app.connect"
+        ? request.spec.appId
+        : request.appId;
+    const generation =
+      request.type === "host.app.start" || request.type === "host.app.connect"
+        ? request.spec.generation
+        : request.type === "host.app.stop"
+          ? request.generation
+          : request.fence.bindingGeneration;
     const echo = {
       type: "runner.app.result" as const,
       requestId: request.requestId,
-      appId: request.spec.appId,
+      appId,
       fence: request.fence,
+      generation,
     };
+    const manager = this.#options.agents.runtime.appServers;
     let controller: AbortController | undefined;
     let retained = false;
     try {
-      if (
-        !sameRunnerConnectionFence(request.fence, this.#options.fence.fence) ||
-        request.fence.environmentId !== this.#options.environmentId()
-      )
-        throw new Error("App request belongs to another connection");
-      if (request.spec.folder.computerId !== request.fence.runnerId)
-        throw new Error("App folder belongs to another computer");
+      this.#assertAppFence(request.fence);
       if (request.type === "host.app.cancel") {
         this.#appRequests.get(request.requestId)?.controller.abort();
         return;
       }
+      if (
+        (request.type === "host.app.start" || request.type === "host.app.connect") &&
+        request.spec.folder.computerId !== request.fence.runnerId
+      )
+        throw new Error("App folder belongs to another computer");
       if (this.#appRequests.has(request.requestId)) throw new Error("Duplicate app request");
       controller = new AbortController();
-      this.#appRequests.set(request.requestId, { appId: request.spec.appId, controller });
+      this.#appRequests.set(request.requestId, { appId, controller });
       const signal = AbortSignal.any([
         this.#signal,
         controller.signal,
         AbortSignal.timeout(30_000),
       ]);
-      const manager = this.#options.agents.runtime.appServers;
       if (request.type === "host.app.stop") {
+        // Older starts and tunnels end with the generation they served.
         for (const [id, entry] of this.#appRequests)
-          if (id !== request.requestId && entry.appId === request.spec.appId)
-            entry.controller.abort();
-        await manager.stop(request.spec.appId, request.spec.version);
-      } else {
-        if (
-          request.type === "host.app.connect" &&
-          [...this.#appRequests.values()].filter((entry) => entry.appId === request.spec.appId)
-            .length > 64
-        )
-          throw new Error("Too many app tunnels");
-        const port = await manager.start(request.spec, signal);
-        if (request.type === "host.app.connect") {
-          const tunnel = await openAppTunnel(
-            this.#options.appTransport,
-            request.ticket,
-            port,
-            AbortSignal.any([this.#signal, controller.signal]),
-            signal,
-          );
-          retained = true;
-          void tunnel.done.finally(() => this.#appRequests.delete(request.requestId));
-        }
-        await this.#options.sink.send({ ...echo, ok: true, port });
+          if (id !== request.requestId && entry.appId === appId) entry.controller.abort();
+        await manager.stop(appId, request.generation);
+        await this.#sendAppReport({ ...echo, ok: true });
         return;
       }
-      await this.#options.sink.send({ ...echo, ok: true });
+      if (request.type === "host.app.start") {
+        const port = await manager.start(request.spec, signal);
+        await this.#sendAppReport({ ...echo, ok: true, port });
+        return;
+      }
+      if ([...this.#appRequests.values()].filter((entry) => entry.appId === appId).length > 64)
+        throw new Error("Too many app tunnels");
+      // A connect opens only the exact running generation's port; it never starts a server.
+      if (!manager.running(request.spec)) throw new Error("This app's server is not running");
+      const tunnel = await openAppTunnel(
+        this.#options.appTransport,
+        request.ticket,
+        request.spec.port,
+        AbortSignal.any([this.#signal, controller.signal]),
+        signal,
+      );
+      retained = true;
+      void tunnel.done.finally(() => this.#appRequests.delete(request.requestId));
+      await this.#sendAppReport({ ...echo, ok: true, port: request.spec.port });
     } catch (error) {
+      if (request.type === "host.app.cancel") return;
       const logTail =
         error &&
         typeof error === "object" &&
         "logTail" in error &&
         typeof error.logTail === "string"
           ? error.logTail
-          : this.#options.agents.runtime.appServers.logTail(request.spec.appId);
-      await this.#options.sink.send({
+          : manager.logTail(appId);
+      await this.#sendAppReport({
         ...echo,
         ok: false,
+        ...(error instanceof AppServerError && error.reason ? { reason: error.reason } : {}),
         error: (error instanceof Error ? error.message : "App server failed").slice(0, 2_000),
         ...(logTail ? { logTail: logTail.slice(-16_384) } : {}),
       });
     } finally {
-      if (!retained) this.#appRequests.delete(request.requestId);
+      if (!retained && controller) this.#appRequests.delete(request.requestId);
     }
+  }
+
+  /** Complete-set reconciliation: answered after orphans stopped and each start settled. */
+  async #answerAppsSync(request: HostAppsSync): Promise<void> {
+    const echo = {
+      type: "runner.apps.sync.result" as const,
+      requestId: request.requestId,
+      fence: request.fence,
+    };
+    try {
+      this.#assertAppFence(request.fence);
+      if (request.apps.some((app) => app.spec.folder.computerId !== request.fence.runnerId))
+        throw new Error("App folder belongs to another computer");
+      await this.#options.agents.runtime.appServers.sync(request.apps, this.#signal);
+      await this.#sendAppReport({ ...echo, ok: true });
+    } catch (error) {
+      await this.#sendAppReport({
+        ...echo,
+        ok: false,
+        error: (error instanceof Error ? error.message : "App reconciliation failed").slice(
+          0,
+          2_000,
+        ),
+      });
+    }
+  }
+
+  #reportAppState(state: AppServerState): void {
+    if (this.#signal.aborted) return;
+    void this.#sendAppReport({
+      type: "runner.app.state",
+      fence: {
+        ...this.#options.fence.fence,
+        environmentId: this.#options.environmentId(),
+        bindingGeneration: state.generation,
+      },
+      appId: state.appId,
+      version: state.version,
+      generation: state.generation,
+      state: state.state,
+      ...(state.error ? { error: state.error.slice(0, 2_000) } : {}),
+    }).catch(() => undefined);
+  }
+
+  #assertAppFence(fence: HostAppRequest["fence"]): void {
+    if (
+      !sameRunnerConnectionFence(fence, this.#options.fence.fence) ||
+      fence.environmentId !== this.#options.environmentId()
+    )
+      throw new Error("App request belongs to another connection");
+  }
+
+  #sendAppReport(message: RunnerOperationalReport): Promise<void> {
+    return this.#options.sink.send(message);
   }
 
   #skillSequence = 0;
@@ -1756,6 +1860,21 @@ export class AgentsWorkSession implements RunnerWorkSession {
       type: "runner.skills.report",
       scanSequence: ++this.#skillSequence,
       scannedAt: new Date().toISOString(),
+      result,
+    });
+  }
+
+  #settingsSequence = 0;
+  async #reportSettings(
+    result: import("@opensteer/protocol").RunnerSettingsReport["result"],
+  ): Promise<void> {
+    if (this.#signal.aborted) return;
+    await this.#options.sink.send({
+      ...this.#options.fence.fence,
+      environmentId: this.#options.environmentId(),
+      type: "runner.settings.report",
+      readSequence: ++this.#settingsSequence,
+      readAt: new Date().toISOString(),
       result,
     });
   }
@@ -1787,6 +1906,7 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
       activeWatchActivationIds: [],
     }),
     attachInventory: () => [],
+    initialReports: () => Promise.resolve(),
     close: () => Promise.resolve(),
     settled: () => true,
     handle: async (message) => {
@@ -1851,11 +1971,31 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
           return;
         case "host.app.start":
         case "host.app.connect":
-        case "host.app.stop":
           await sink.send({
             type: "runner.app.result",
             requestId: message.requestId,
             appId: message.spec.appId,
+            generation: message.spec.generation,
+            fence: message.fence,
+            ok: false,
+            error: notRunningAgents,
+          });
+          return;
+        case "host.app.stop":
+          await sink.send({
+            type: "runner.app.result",
+            requestId: message.requestId,
+            appId: message.appId,
+            generation: message.generation,
+            fence: message.fence,
+            ok: false,
+            error: notRunningAgents,
+          });
+          return;
+        case "host.apps.sync":
+          await sink.send({
+            type: "runner.apps.sync.result",
+            requestId: message.requestId,
             fence: message.fence,
             ok: false,
             error: notRunningAgents,
@@ -1901,7 +2041,7 @@ interface BufferedEffectScope {
  * the same Run (or Trigger occurrence) until its receipt is on the wire.
  */
 export class CausallyOrderedRunnerSink implements RunnerMessageSink {
-  readonly #delegate: RunnerMessageSink & { abort?: (reason: string) => void; close?: () => void };
+  readonly #delegate: RunnerReportSink;
   readonly #scopes = new Map<string, BufferedEffectScope>();
   #bufferedBytes = 0;
   #closed = false;
@@ -1909,7 +2049,7 @@ export class CausallyOrderedRunnerSink implements RunnerMessageSink {
   readonly #refresh: ((runId: RunId) => Promise<RefreshedRunCredentials | undefined>) | undefined;
 
   constructor(
-    delegate: RunnerMessageSink & { abort?: (reason: string) => void; close?: () => void },
+    delegate: RunnerReportSink,
     refresh?: (runId: RunId) => Promise<RefreshedRunCredentials | undefined>,
   ) {
     this.#delegate = delegate;
@@ -2198,21 +2338,35 @@ function hostMessageFence(message: PostAuthenticationHostMessage): RunnerConnect
     case "host.app.connect":
     case "host.app.stop":
     case "host.app.cancel":
+    case "host.apps.sync":
       return message.fence;
     default:
       return message;
   }
 }
 
-function runnerCapabilities(): RunnerCapability[] {
+export function runnerCapabilities(
+  harnessDrivers: readonly RunnerHarnessDriver[] = [],
+): RunnerCapability[] {
   return [
+    ...(harnessDrivers.some(
+      (driver) =>
+        driver.driverKind === "claude" &&
+        driver.readiness !== "unavailable" &&
+        driver.installation &&
+        meetsMinimumVersion(driver.installation.version, harnessMinimumVersion("claude")),
+    )
+      ? ["claude-compaction-v1" as const]
+      : []),
+
+    "agent-home-settings-v1",
     "settings-plugin-policy-v1",
     "assignments-v1",
     "attempts-v1",
     "browser-page-input-v1",
     "browser-profile-create-v1",
     "environment-list-v1",
-    "trigger-program-v3",
+    "trigger-program-v4",
     "native-place-input-v1",
     "execution-plane-v2",
     "filesystem",
@@ -2220,6 +2374,7 @@ function runnerCapabilities(): RunnerCapability[] {
     "network-egress",
     "native-session-continuation-v1",
     "requester-time-zone-v1",
+    "message-origin-v1",
     "agent-tools-plan-v1",
     "steer-answer-v1",
     "thread-state-v1",

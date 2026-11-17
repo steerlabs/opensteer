@@ -39,7 +39,7 @@ final class WireShapeTests: XCTestCase {
       snapshot: "0123456789abcdef",
       app: AppIdentity(bundleId: "com.apple.Notes", displayName: "Notes", teamId: nil),
       window: Observation.WindowSummary(
-        ref: "ref-A", id: 1,
+        ref: "ref-A", windowId: "win_00000000-0000-4000-8000-000000000042",
         title: "",
         frame: Observation.Rect(CGRect(x: 10, y: 20, width: 800, height: 600)),
         scale: 1.8
@@ -67,7 +67,7 @@ final class WireShapeTests: XCTestCase {
       ]
     )
     let window = try XCTUnwrap(encoded["window"] as? [String: Any])
-    XCTAssertEqual(Set(window.keys), ["ref", "id", "title", "frame", "scale"])
+    XCTAssertEqual(Set(window.keys), ["ref", "windowId", "title", "frame", "scale"])
     // The window as a whole is nullable; the title inside it is a string.
     XCTAssertEqual(window["title"] as? String, "")
     let frame = try XCTUnwrap(window["frame"] as? [String: Any])
@@ -83,7 +83,7 @@ final class WireShapeTests: XCTestCase {
       snapshot: String(repeating: "f", count: 16),
       app: AppIdentity(bundleId: "com.apple.Notes", displayName: "Notes", teamId: nil),
       window: Observation.WindowSummary(
-        ref: "ref-A", id: 1, title: "", frame: Observation.Rect(.zero), scale: 1),
+        ref: "ref-A", windowId: "win_00000000-0000-4000-8000-000000000042", title: "", frame: Observation.Rect(.zero), scale: 1),
       tree: "",
       elementCount: 0,
       truncated: false,
@@ -104,7 +104,7 @@ final class WireShapeTests: XCTestCase {
           snapshot: "0123456789abcdef",
           app: AppIdentity(bundleId: "com.apple.Notes", displayName: "Notes", teamId: nil),
           window: Observation.WindowSummary(
-            ref: "ref-A", id: 1, title: "", frame: Observation.Rect(.zero), scale: 1),
+            ref: "ref-A", windowId: "win_00000000-0000-4000-8000-000000000042", title: "", frame: Observation.Rect(.zero), scale: 1),
           tree: "",
           elementCount: 0,
           truncated: false,

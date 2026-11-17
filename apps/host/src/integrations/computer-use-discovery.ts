@@ -1,8 +1,10 @@
+import type { DeviceAvailability, PhoneDisplayView } from "@opensteer/protocol";
+import type { PhoneDisplayDefinitionId } from "@opensteer/core";
 import type { CallableIntegrationTool } from "@opensteer/database";
 import type { IntegrationAccess, IntegrationConnectionId } from "@opensteer/integration-core";
-import { computerUseBusyNextStep } from "../computer-use/computer-use-service.js";
+import type { Blocked } from "@opensteer/core";
 
-export function toolReference(callable: CallableIntegrationTool): string {
+function toolReference(callable: CallableIntegrationTool): string {
   return `${callable.grant.id}.${callable.tool.id}.${callable.tool.schemaDigest}`;
 }
 
@@ -28,202 +30,262 @@ export function computerToolRefs(
  * Every computer-use ask has this one shape. The ordinary `integration` form
  * names no app, so it can neither add an app nor say which one to grant.
  */
-export const computerAppRequestShape =
-  'integration_request {kind: "computer-app", runnerId, app, access, reason}';
+export const computerAppRequestShape = "app_access_request {computerId, app, access, reason}";
 
 /** A phone is asked for whole, so its ask names the phone and no app. */
-export const phoneRequestShape =
-  'integration_request {kind: "computer-app", runnerId, access, reason}';
+export const phoneRequestShape = "app_access_request {computerId, access, reason}";
 
 export const noPhone =
-  "No Android phone is set up for agents. The person adds one from Computers in Opensteer, with the phone plugged in.";
+  "No phone display is set up for agents. The person adds one from Computers in Opensteer, with the phone plugged in.";
 
-/** A `runnerId` that names none of this person's phones set up for agents. */
-export function unknownPhone(runnerId: string): string {
-  return `No Android phone set up for agents has runnerId ${runnerId}. Search "Android phone" with integration_search to list your phones and their runnerIds.`;
+/** A `computerId` that names none of this person's phones set up for agents. */
+export function unknownPhone(computerId: string): string {
+  return `No phone display set up for agents has computerId ${computerId}. Search "Phone display" with integration_search to list your phones and their computerIds.`;
 }
 
 export const noComputerUseMac =
   "No Mac is set up for computer use. The person sets it up on the Mac they want agents to use.";
 
 /**
- * A `runnerId` that names none of this person's Macs set up for computer
+ * A `computerId` that names none of this person's Macs set up for computer
  * use: a typo, another person's Mac, or one that was removed. Each is fixed
  * the same way, by reading the ids again.
  */
-export function unknownComputerUseMac(runnerId: string): string {
-  return `No Mac set up for computer use has runnerId ${runnerId}. Search "Computer use" with integration_search to list your Macs and their runnerIds.`;
+export function unknownComputerUseMac(computerId: string): string {
+  return `No Mac set up for computer use has computerId ${computerId}. Search "Computer use" with integration_search to list your Macs and their computerIds.`;
 }
 
-export function computerUseNextAction(machine: {
+type ComputerAccess =
+  { access: IntegrationAccess; blocked?: never } | { blocked: Blocked; access?: never };
+function blocked(code: string, message: string, next: string): { blocked: Blocked } {
+  return { blocked: { code, message, next } };
+}
+export function computerMachineProblem(machine: {
   name: string;
   state: string;
-  appApproval: "ask" | "automatic";
-}): string {
-  return (
-    unusableMachineNextAction(machine) ??
-    `Search with runnerId to list installed apps on ${machine.name}. Request an app with ${computerAppRequestShape}; ${approvalOutcome(machine)}`
-  );
-}
-
-function unusableMachineNextAction(machine: { name: string; state: string }): string | null {
-  if (machine.state === "offline") return `${machine.name} is offline.`;
+  computerToolEnabled?: boolean;
+  computerUseVersion?: number | null;
+}): { blocked: Blocked } | null {
+  if (machine.state === "offline")
+    return blocked(
+      "computer_offline",
+      `${machine.name} is offline.`,
+      "The person can bring it online; other work can continue.",
+    );
+  if (
+    machine.computerToolEnabled === false ||
+    (machine.computerUseVersion !== undefined && machine.computerUseVersion !== 2)
+  )
+    return blocked(
+      "update_required",
+      `${machine.name} needs an Opensteer update.`,
+      "The person can update Opensteer on the task's computer and the target computer.",
+    );
   if (machine.state === "permission-required")
-    return `${machine.name} needs macOS Accessibility and Screen Recording for Opensteer Computer Use.`;
-  if (machine.state === "unavailable")
-    return `Computer use needs the Opensteer desktop app on ${machine.name}.`;
+    return blocked(
+      "permission_required",
+      `${machine.name} needs computer-use permissions.`,
+      "The person can enable Opensteer accessibility permissions and, on macOS, Screen Recording in Settings.",
+    );
+  if (machine.state !== "ready")
+    return blocked(
+      "unavailable",
+      `${machine.name} is unavailable for computer use.`,
+      "The person can enable computer use in Opensteer; other work can continue.",
+    );
   return null;
 }
-
-function approvalOutcome(machine: { appApproval: "ask" | "automatic" }): string {
-  return machine.appApproval === "automatic"
-    ? "it is approved automatically and becomes available in the computer tool."
-    : "the owner can approve it from any Opensteer app.";
-}
-
-/** The computer owner may answer on any signed-in device. */
 export function pendingOnComputerNextAction(machine: string): string {
-  return `Approval for ${machine} is pending; the owner can allow or decline from any Opensteer app. Pending grants no access; do not poll, repeat or route around the Request.`;
+  return `The owner can answer the pending request for ${machine} from any Opensteer app. A pending request grants nothing yet. Its outcome goes to the task that opened it; a running task can call app_access_request if it needs its own continuation. Automation occurrences receive no continuation.`;
 }
-
-export const pendingPhoneAccessNextAction =
-  "Approval is pending; the owner can allow or decline from any Opensteer app. Pending grants no access; do not poll, repeat or route around the Request.";
-
-export const pendingPersonalGrantNextAction =
-  "Approval is pending; the person can approve it from anywhere. Pending grants no access; do not poll, repeat or route around the Request.";
-
-/** What discovery knows about one app on one Mac, gathered by the caller. */
-export interface ComputerAppDiscoveryFacts {
+interface CommonFacts {
+  readonly callable: boolean;
+  readonly canAct?: boolean;
+  readonly pendingPersonalGrant: boolean;
+  readonly heldByAnotherRun: boolean;
+}
+interface ComputerAppDiscoveryFacts extends CommonFacts {
   readonly app: string;
-  readonly machine: Parameters<typeof computerUseNextAction>[0];
+  readonly computerId: string;
+  readonly machine: {
+    name: string;
+    state: string;
+    appApproval: "ask" | "automatic";
+    computerToolEnabled?: boolean;
+    computerUseVersion?: number | null;
+  };
   readonly approval: {
     readonly status: "approved" | "blocked";
     readonly access: IntegrationAccess;
   } | null;
-  /** The person holds the app's observe tool. */
-  readonly callable: boolean;
-  /** A setup request for this app on this Mac awaits its owner. */
   readonly pendingOnMac: boolean;
-  /** An ordinary grant request for this app's connection awaits approval for this task. */
-  readonly pendingPersonalGrant: boolean;
-  /** Another Run on this Host holds the app, with its Thread's title when known. */
-  readonly heldByAnotherRun: { readonly threadTitle: string | null } | null;
 }
-
-/**
- * One app's discovery status and the single next step, most specific first:
- * a block, then an approval already waiting (so the model never asks twice),
- * then another task's session, and only then whether it can call or ask.
- */
-export function computerAppDiscovery(facts: ComputerAppDiscoveryFacts): {
-  readonly status: "approved" | "blocked" | "not-approved";
-  readonly pending?: "mac" | "personal";
-  readonly inUse?: true;
-  readonly nextAction: string;
-} {
-  const status = facts.approval?.status ?? "not-approved";
-  if (status === "blocked")
-    return {
-      status,
-      nextAction: `${facts.app} is blocked on ${facts.machine.name}. The owner can unblock it from any Opensteer app.`,
-    };
-  if (facts.pendingOnMac)
-    return { status, pending: "mac", nextAction: pendingOnComputerNextAction(facts.machine.name) };
-  if (facts.pendingPersonalGrant)
-    return { status, pending: "personal", nextAction: pendingPersonalGrantNextAction };
-  if (facts.heldByAnotherRun) {
-    const title = facts.heldByAnotherRun.threadTitle;
-    return {
-      status,
-      inUse: true,
-      nextAction: `This app is already being used by another task.${title ? ` (Thread: ${title})` : ""} ${computerUseBusyNextStep}`,
-    };
-  }
-  if (facts.callable)
-    return { status, nextAction: "Use the computer tool with app() to see and operate this app." };
-  if (facts.approval)
-    return {
-      status,
-      nextAction: `Request access with ${computerAppRequestShape}; the person can approve from anywhere.`,
-    };
-  // This row is already one app of the Mac's listing, so the step is the
-  // request itself rather than the search that produced it.
-  return {
-    status,
-    nextAction:
-      unusableMachineNextAction(facts.machine) ??
-      `Request it with ${computerAppRequestShape}; ${approvalOutcome(facts.machine)}`,
+export function computerAppDiscovery(facts: ComputerAppDiscoveryFacts): ComputerAccess {
+  const name = `${facts.app} on ${facts.machine.name}`;
+  if (facts.approval?.status === "blocked")
+    return blocked(
+      "blocked_by_owner",
+      `${name} is blocked by its owner.`,
+      "The owner can unblock it from any Opensteer app.",
+    );
+  const problem = computerMachineProblem(facts.machine);
+  if (problem) return problem;
+  if (facts.callable && !facts.heldByAnotherRun)
+    return { access: facts.canAct ? "read-write" : "read" };
+  if (facts.pendingOnMac || facts.pendingPersonalGrant)
+    return blocked(
+      "access_pending",
+      `Access to ${name} is pending.`,
+      pendingOnComputerNextAction(name),
+    );
+  if (facts.heldByAnotherRun) return busy(name);
+  return blocked(
+    "access_required",
+    `${name} needs access for this task.`,
+    `Request access with app_access_request {computerId:${JSON.stringify(facts.computerId)}, app:${JSON.stringify(facts.app)}, access:"read-write", reason:"<why you need it>"}; ${facts.machine.appApproval === "automatic" ? "access is approved automatically." : "the owner can approve from any Opensteer app."}`,
+  );
+}
+export interface PhoneDiscoveryFacts extends CommonFacts {
+  readonly phone: {
+    readonly name: string;
+    readonly state: string;
+    readonly computerId: string;
+    readonly computerToolEnabled?: boolean;
+    readonly definitionId?: PhoneDisplayDefinitionId;
+    readonly availability?: DeviceAvailability;
+    readonly setup?: PhoneDisplayView["setup"];
   };
-}
-
-/** What discovery knows about one phone, gathered by the caller. */
-export interface PhoneDiscoveryFacts {
-  readonly phone: { readonly name: string; readonly state: string };
-  /** The phone's approved connection, when it has one. */
   readonly connection: { readonly access: IntegrationAccess } | null;
-  /** The person holds the phone's observe tool. */
-  readonly callable: boolean;
-  /** The person also holds its act tool: its grant is read-write, not only read. */
-  readonly canAct: boolean;
-  /** An access Request for this phone awaits its owner. */
   readonly pendingPhoneAccess: boolean;
-  /** An ordinary grant request for the phone's connection awaits approval for this task. */
-  readonly pendingPersonalGrant: boolean;
-  /** Another Run on this Host holds the phone, with its Thread's title when known. */
-  readonly heldByAnotherRun: { readonly threadTitle: string | null } | null;
+  readonly blockedByOwner?: boolean;
 }
-
-/**
- * One phone's discovery status and the single next step, most specific
- * first: an approval already waiting (so the model never asks twice), then a
- * phone that cannot work right now, then another task holding it, and only
- * then whether it can call or ask.
- */
-export function phoneDiscovery(facts: PhoneDiscoveryFacts): {
-  readonly approval: "approved" | "not-approved" | "pending";
-  readonly inUse: boolean;
-  readonly nextAction: string;
-} {
-  const inUse = facts.heldByAnotherRun !== null;
+function busy(name: string): ComputerAccess {
+  return blocked(
+    "in_use",
+    `${name} is in use by another task.`,
+    "Other work can continue while the holding task finishes.",
+  );
+}
+export function phoneDiscovery(facts: PhoneDiscoveryFacts): ComputerAccess {
+  const name = facts.phone.name;
+  if (facts.blockedByOwner)
+    return blocked(
+      "blocked_by_owner",
+      `${name} is blocked by its owner.`,
+      "The owner can unblock it from any Opensteer app.",
+    );
+  const problem = phoneProblem(facts.phone);
+  if (problem) return problem;
+  if (facts.callable && !facts.heldByAnotherRun)
+    return { access: facts.canAct ? "read-write" : "read" };
   if (facts.pendingPhoneAccess || facts.pendingPersonalGrant)
-    return {
-      approval: "pending",
-      inUse,
-      nextAction: facts.pendingPhoneAccess
-        ? pendingPhoneAccessNextAction
-        : pendingPersonalGrantNextAction,
-    };
-  const approval = facts.connection ? "approved" : "not-approved";
-  const unusable = unusablePhoneNextAction(facts.phone);
-  if (unusable) return { approval, inUse, nextAction: unusable };
-  if (facts.heldByAnotherRun) {
-    const title = facts.heldByAnotherRun.threadTitle;
-    return {
-      approval,
-      inUse,
-      nextAction: `${facts.phone.name} is already being used by another task.${title ? ` (Thread: ${title})` : ""} ${computerUseBusyNextStep}`,
-    };
-  }
-  if (facts.callable)
-    return {
-      approval,
-      inUse,
-      nextAction: facts.canAct
-        ? "Use the computer tool with phone(): observe, act, and release when you are done so another task can use the phone."
-        : `Use the computer tool with phone(): observe, and release when you are done so another task can use the phone. This task may only look at ${facts.phone.name}; to act, ask with ${phoneRequestShape} and access "read-write".`,
-    };
-  return {
-    approval,
-    inUse,
-    nextAction: `Request access with ${phoneRequestShape}; the owner allows it from any Opensteer app.`,
-  };
+    return blocked(
+      "access_pending",
+      `Access to ${name} is pending.`,
+      pendingOnComputerNextAction(name),
+    );
+  if (facts.heldByAnotherRun) return busy(name);
+  return blocked(
+    "access_required",
+    `${name} needs access for this task.`,
+    `Request access with app_access_request {computerId:${JSON.stringify(facts.phone.computerId)}, access:"read-write", reason:"<why you need it>"}; the owner can approve from any Opensteer app.`,
+  );
 }
 
-function unusablePhoneNextAction(phone: { name: string; state: string }): string | null {
-  if (phone.state === "offline") return `${phone.name} is offline.`;
+function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked } | null {
+  const reason = phone.availability?.reason?.kind;
+  const location =
+    phone.setup?.location === "driver-mac"
+      ? ` in Opensteer on ${phone.setup.driverRunnerName}`
+      : " in Opensteer on its driving Mac";
+  if (reason === "driver-offline" || (phone.state === "offline" && reason !== "not-connected"))
+    return blocked(
+      "computer_offline",
+      `${phone.name}'s screen driver is offline.`,
+      phone.definitionId === "iphone-screen"
+        ? `The person can wake its driving Mac and open Opensteer there${phone.setup?.location === "driver-mac" ? ` (${phone.setup.driverRunnerName})` : ""}; other work can continue.`
+        : "The person can bring the phone online; other work can continue.",
+    );
+  switch (reason) {
+    case "approval-required":
+      return computerMachineProblem({ ...phone, state: "ready" });
+    case "locked":
+      return blocked(
+        "permission_required",
+        `${phone.name} is locked.`,
+        "Ask the person to unlock the iPhone physically, then observe again. Never enter or ask for its passcode.",
+      );
+    case "access-off":
+      return blocked(
+        "permission_required",
+        `Apps access is off on ${phone.name}.`,
+        `Ask with computer_access_request {computerId:${JSON.stringify(phone.computerId)}, access:"apps", reason:"<why you need it>"}.`,
+      );
+    case "driver-update-required":
+      return blocked(
+        "update_required",
+        `${phone.name}'s screen driver needs an update.`,
+        `The person can update Opensteer${location}.`,
+      );
+    case "trust-required":
+    case "developer-mode-required":
+    case "setup-required":
+    case "permission-required":
+      return blocked(
+        "permission_required",
+        `${phone.name} needs ${reason === "trust-required" ? "the person to trust its driving Mac" : reason === "developer-mode-required" ? "Developer Mode" : reason === "setup-required" ? "screen setup" : "screen permissions"}.`,
+        phone.definitionId === "android-phone"
+          ? "The person can enable Opensteer's accessibility service in the phone's settings."
+          : `The person can finish or fix the iPhone's screen setup${location}.`,
+      );
+    case "paused":
+      return blocked(
+        "paused",
+        `${phone.name}'s screen is paused.`,
+        "The person can resume screen control in Opensteer or on the phone; other work can continue.",
+      );
+    case "protected":
+      return blocked(
+        "permission_required",
+        `${phone.name}'s screen is protected.`,
+        "The person can leave the protected screen; other work can continue.",
+      );
+    case "not-connected":
+      return blocked(
+        "unavailable",
+        `${phone.name} is not connected to its screen driver.`,
+        `The person can connect the iPhone to its Mac with a cable or the same Wi-Fi, then finish or fix setup${location}.`,
+      );
+    case "helper-unavailable":
+    case "connecting":
+    case "unreported":
+    case "runtime-failed":
+    case "unsupported":
+      return blocked(
+        "unavailable",
+        `${phone.name}'s screen is unavailable (${reason}).`,
+        `The person can check the screen driver and finish or fix setup${location}. Continue other work; do not poll or route through the Mac's apps.`,
+      );
+  }
   if (phone.state === "permission-required")
-    return `${phone.name} needs its Opensteer accessibility service turned back on in the phone's settings. Tell the person.`;
-  if (phone.state === "unavailable")
-    return `${phone.name} is not taking work from agents right now, for example because it is paused on the phone. Tell the person, or continue other work.`;
-  return null;
+    return blocked(
+      "permission_required",
+      `${phone.name} needs screen permissions.`,
+      phone.definitionId === "iphone-screen"
+        ? `The person can check screen permissions and fix setup${location}.`
+        : "The person can enable Opensteer's accessibility service in the phone's settings.",
+    );
+  if (phone.definitionId === "android-phone" && phone.state === "unavailable")
+    return blocked(
+      "paused",
+      `${phone.name} is paused on the phone.`,
+      "The person can resume it on the phone; other work can continue.",
+    );
+  if (phone.definitionId === "iphone-screen" && phone.state !== "ready")
+    return blocked(
+      "unavailable",
+      `${phone.name}'s screen is unavailable.`,
+      `The person can check its screen driver and fix setup${location}.`,
+    );
+  return computerMachineProblem(phone);
 }

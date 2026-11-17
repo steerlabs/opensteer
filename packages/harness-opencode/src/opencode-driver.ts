@@ -1,3 +1,4 @@
+import { toolOutputWithImages } from "@opensteer/harness";
 import { opencodeLightModelFamilies } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
@@ -17,7 +18,7 @@ import {
   createId,
   harnessUsageLimitFailureCode,
   modelDisplayName,
-  normalizeToolOutput,
+  createToolOutput,
   type HarnessInstanceId,
   type ModelSelection,
   type PendingRequest,
@@ -31,6 +32,7 @@ import {
 import { maxHarnessModelsPerCatalog } from "@opensteer/protocol";
 import {
   Deferred,
+  generatedImage,
   runTitleProcess,
   withBackgroundTextDirectory,
   backgroundTextResult,
@@ -758,6 +760,9 @@ interface OpencodeActiveTurn {
   readonly finishedBackground: Set<string>;
   readonly completedParts: Set<string>;
   rootIdle: boolean;
+  readonly imageJobs: Map<string, { callId: string; path: string; sessionId: string }>;
+  readonly imageCalls: Map<string, ExecutionNodeId | undefined>;
+  readonly finishedImageCalls: Set<string>;
   /** Usage of each subagent's steps, by child session; the Run's usage includes it. */
   readonly childUsage: Map<string, OpencodeUsage>;
   readonly completion: Deferred<void>;
@@ -909,6 +914,9 @@ class OpencodeHarnessSession implements HarnessSession {
       finishedBackground: new Set(),
       completedParts: new Set(),
       rootIdle: false,
+      imageJobs: new Map(),
+      imageCalls: new Map(),
+      finishedImageCalls: new Set(),
       completion: new Deferred<void>(),
       failure: undefined,
       interruptRequested: run.signal.aborted,
@@ -924,6 +932,7 @@ class OpencodeHarnessSession implements HarnessSession {
     this.#activeTurn = active;
     const abort = () => {
       active.interruptRequested = true;
+      this.#cancelImageGenerations(active);
       void this.#interruptActive(active);
     };
     if (!run.signal.aborted) run.signal.addEventListener("abort", abort, { once: true });
@@ -1006,6 +1015,7 @@ class OpencodeHarnessSession implements HarnessSession {
     const active = this.#activeTurn;
     if (!active || active.terminal) return;
     active.interruptRequested = true;
+    this.#cancelImageGenerations(active);
     await this.#interruptActive(active);
   }
 
@@ -1263,6 +1273,49 @@ class OpencodeHarnessSession implements HarnessSession {
 
   async #handleEvent(type: string, properties: unknown): Promise<void> {
     switch (type) {
+      case "session.inbox.enqueued": {
+        if (!isRecord(properties) || typeof properties.sessionID !== "string") return;
+        const item = properties.item;
+        if (!isRecord(item) || item.type !== "synthetic" || !isRecord(item.payload)) return;
+        const payload = item.payload;
+        const metadata = payload.metadata;
+        if (
+          !isRecord(metadata) ||
+          metadata.source !== "experimental_image_generate" ||
+          typeof metadata.jobID !== "string"
+        )
+          return;
+        const active = this.#liveTurn();
+        const job = active?.imageJobs.get(metadata.jobID);
+        if (
+          !active ||
+          !job ||
+          properties.sessionID !== job.sessionId ||
+          !["completed", "error", "cancelled"].includes(String(metadata.state))
+        )
+          return;
+        const text = typeof payload.text === "string" ? payload.text : "Image generation finished";
+        const saved = /Saved image: (.+) \([^\n]+\)\./u.exec(text)?.[1];
+        this.#publish({
+          type: "tool.completed",
+          data: {
+            callId: job.callId,
+            nodeId: active.imageCalls.get(job.callId),
+            isError: metadata.state !== "completed",
+            output: createToolOutput(
+              text,
+              metadata.state === "completed" && saved?.startsWith(job.path + ".")
+                ? generatedImage(saved)
+                : [],
+            ),
+          },
+        });
+        active.imageJobs.delete(metadata.jobID);
+        active.imageCalls.delete(job.callId);
+        active.finishedImageCalls.add(job.callId);
+        if (active.rootIdle && !active.background.size) this.#settleTurn();
+        return;
+      }
       case "session.created":
       case "session.updated": {
         // A subagent's child session names this one as its parent.
@@ -1418,6 +1471,7 @@ class OpencodeHarnessSession implements HarnessSession {
         }
         if (idle.sessionID !== this.#sessionId) return;
         active.rootIdle = true;
+        if (active.imageCalls.size && !active.interruptRequested && !active.failure) return;
         if (active.background.size) {
           this.#publish({ type: "run.phase", data: { phase: "background" } });
           return;
@@ -1497,12 +1551,18 @@ class OpencodeHarnessSession implements HarnessSession {
     }
   }
 
-  #handleToolPart(part: OpencodePart): void {
+  #handleToolPart(part: OpencodePart, nodeId?: ExecutionNodeId): void {
     const active = this.#liveTurn();
     if (!active) return;
     const callId = part.callID;
     const state = part.state;
     if (!callId || !state) return;
+    if (part.tool === "experimental_image_generate") {
+      if (active.interruptRequested || active.finishedImageCalls.has(callId)) return;
+      if (active.rootIdle && !active.imageCalls.size)
+        this.#publish({ type: "run.phase", data: { phase: "turn" } });
+      active.imageCalls.set(callId, nodeId);
+    }
     if (part.tool === "task") this.#trackTask(active, callId, state);
     if (state.status === "running" && !this.#startedTools.has(callId)) {
       this.#startedTools.add(callId);
@@ -1511,6 +1571,7 @@ class OpencodeHarnessSession implements HarnessSession {
         data: {
           arguments: state.input,
           callId,
+          nodeId,
           tool: opencodeToolIdentity(part.tool ?? "unknown"),
         },
         type: "tool.started",
@@ -1524,6 +1585,7 @@ class OpencodeHarnessSession implements HarnessSession {
         data: {
           arguments: state.input,
           callId,
+          nodeId,
           tool: opencodeToolIdentity(part.tool ?? "unknown"),
         },
         type: "tool.started",
@@ -1544,18 +1606,43 @@ class OpencodeHarnessSession implements HarnessSession {
         data: {
           arguments: state.input,
           callId,
+          nodeId,
           tool: opencodeToolIdentity(part.tool ?? "unknown"),
         },
         type: "tool.started",
       });
     }
     this.#startedToolArguments.delete(callId);
+    if (part.tool === "experimental_image_generate") {
+      const metadata = state.metadata;
+      if (
+        state.status === "completed" &&
+        isRecord(metadata) &&
+        typeof metadata.jobID === "string" &&
+        typeof metadata.path === "string"
+      ) {
+        active.imageJobs.set(metadata.jobID, {
+          callId,
+          path: metadata.path,
+          sessionId: part.sessionID,
+        });
+        return;
+      }
+      active.imageCalls.delete(callId);
+      active.finishedImageCalls.add(callId);
+    }
     this.#publish({
       data: {
         callId,
+        nodeId,
         isError: state.status === "error",
-        output: normalizeToolOutput(
-          state.status === "error" ? (state.error ?? "") : (state.output ?? ""),
+        output: toolOutputWithImages(
+          state.status === "error"
+            ? (state.error ?? "")
+            : Array.isArray(state.attachments) && state.attachments.length
+              ? [{ type: "text", text: state.output ?? "" }, ...state.attachments]
+              : (state.output ?? ""),
+          this.#context.imageStore,
         ),
       },
       type: "tool.completed",
@@ -1749,6 +1836,10 @@ class OpencodeHarnessSession implements HarnessSession {
       return;
     }
     if (part.type !== "tool" || !part.callID || !part.state) return;
+    if (part.tool === "experimental_image_generate") {
+      this.#handleToolPart(part, nodeId);
+      return;
+    }
     if (part.tool === "task") this.#trackTask(active, part.callID, part.state, session);
     const key = `${session}:${part.callID}`;
     const tool = opencodeToolIdentity(part.tool ?? "unknown");
@@ -1770,8 +1861,13 @@ class OpencodeHarnessSession implements HarnessSession {
         callId: part.callID,
         isError: state.status === "error",
         nodeId,
-        output: normalizeToolOutput(
-          state.status === "error" ? (state.error ?? "") : (state.output ?? ""),
+        output: toolOutputWithImages(
+          state.status === "error"
+            ? (state.error ?? "")
+            : Array.isArray(state.attachments) && state.attachments.length
+              ? [{ type: "text", text: state.output ?? "" }, ...state.attachments]
+              : (state.output ?? ""),
+          this.#context.imageStore,
         ),
       },
       type: "tool.completed",
@@ -1783,6 +1879,7 @@ class OpencodeHarnessSession implements HarnessSession {
     if (!active || active.terminal || !error) return;
     if (error.name === "MessageAbortedError") {
       active.interruptRequested = true;
+      this.#cancelImageGenerations(active);
       return;
     }
     active.failure ??= opencodeFailure(error);
@@ -1797,6 +1894,7 @@ class OpencodeHarnessSession implements HarnessSession {
   #settleTurn(): void {
     const active = this.#activeTurn;
     if (!active || active.terminal) return;
+    if (!active.interruptRequested && !active.failure && active.imageCalls.size) return;
     if (active.failure) {
       this.#publishFailure(active, active.failure);
       return;
@@ -1961,6 +2059,8 @@ class OpencodeHarnessSession implements HarnessSession {
                     })),
                   }
                 : {}),
+              // OpenCode offers its own "Type your own answer" unless the question turns it off.
+              custom: question.custom !== false,
               id: questionIds[index] ?? `question-${index}`,
               multiSelect: question.multiple === true,
               prompt: question.question,
@@ -2062,7 +2162,24 @@ class OpencodeHarnessSession implements HarnessSession {
     if (usage) this.#publish({ data: usage, type: "run.usage" });
   }
 
+  #cancelImageGenerations(active: OpencodeActiveTurn): void {
+    for (const [callId, nodeId] of active.imageCalls)
+      this.#publish({
+        type: "tool.completed",
+        data: {
+          callId,
+          isError: true,
+          output: createToolOutput("Image generation cancelled"),
+          nodeId,
+        },
+      });
+    for (const callId of active.imageCalls.keys()) active.finishedImageCalls.add(callId);
+    active.imageCalls.clear();
+    active.imageJobs.clear();
+  }
+
   #publishTerminal(active: OpencodeActiveTurn, status: "completed" | "interrupted"): void {
+    this.#cancelImageGenerations(active);
     if (!this.#publisher.claimTerminal(active)) return;
     this.#forgetTurnState();
     void this.#cancelPendingRequests("run-ended");
@@ -2077,6 +2194,7 @@ class OpencodeHarnessSession implements HarnessSession {
   }
 
   #publishFailure(active: OpencodeActiveTurn, error: OpensteerError): void {
+    this.#cancelImageGenerations(active);
     if (!this.#publisher.claimTerminal(active)) return;
     this.#forgetTurnState();
     void this.#cancelPendingRequests("run-ended");
@@ -2140,6 +2258,7 @@ class OpencodeHarnessSession implements HarnessSession {
     const active = this.#activeTurn;
     if (active && !active.terminal) {
       active.interruptRequested = true;
+      this.#cancelImageGenerations(active);
       await this.#interruptActive(active).catch(() => undefined);
     }
     await this.#cancelPendingRequests("source-closed");

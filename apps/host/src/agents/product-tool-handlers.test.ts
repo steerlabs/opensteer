@@ -1,3 +1,4 @@
+import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { messageItem } from "../mcp/thread-items.js";
 import type { AgentTriggerManager } from "../mcp/handlers/triggers.js";
 import { mcpToolCallId } from "../integrations/mcp-call-id.js";
@@ -20,11 +21,7 @@ import {
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
-import {
-  createBrowserSessionId,
-  HarnessInstanceCatalogSchema,
-  type HarnessInstanceCatalog,
-} from "@opensteer/protocol";
+import { HarnessInstanceCatalogSchema, type HarnessInstanceCatalog } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { BrowserService } from "../browser/browser-service.js";
 import { type RunToolTokenService } from "./run-tool-tokens.js";
@@ -97,7 +94,7 @@ describe("Product tool handlers", () => {
           type: "thread.delegate",
           requestId: crypto.randomUUID(),
           specialist: "invoices",
-          task: "Read invoices",
+          message: "Read invoices",
         }),
       ).rejects.toThrow("Specialist is removing");
       expect(delegateThread).not.toHaveBeenCalled();
@@ -158,8 +155,8 @@ describe("Product tool handlers", () => {
       await service.handle("run-token", {
         type: "thread.delegate",
         requestId: crypto.randomUUID(),
-        threadId: existing.id,
-        task: "Next batch",
+        taskId: existing.id,
+        message: "Next batch",
       });
       expect(delegateThread).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -215,7 +212,7 @@ describe("Product tool handlers", () => {
       type: "request.list.result",
       window: {
         hasMore: true,
-        nextBefore: "next_request_page",
+        nextCursor: "next_request_page",
       },
     });
     expect(visiblePage).toHaveBeenCalledWith({
@@ -274,7 +271,7 @@ describe("Product tool handlers", () => {
       type: "request.list.result",
       window: {
         hasMore: true,
-        nextBefore: "next_request_page",
+        nextCursor: "next_request_page",
       },
     });
     expect(visiblePage).toHaveBeenCalledWith({
@@ -283,20 +280,22 @@ describe("Product tool handlers", () => {
       originatingThreadId: claims.threadId,
     });
   });
-  it.each(["sign-in"] as const)(
-    "keeps %s Browser Session requests admitted through the single sign-in permission",
+  it.each(["saved_login_request", "chrome_cookies_request"] as const)(
+    "keeps %s tab requests admitted through the single sign-in permission",
     async (type) => {
       const current = thread(currentThreadId, nativeHarnessId, "Worker");
       const result = {
         status: "unavailable",
         site: "https://example.com",
-        reason: "no-saved-login",
+        reason: "unsupported",
       } as const;
-      const agentSignIn = vi.fn(async () => result);
+      const useSavedLogin = vi.fn(async () => result);
+      const agentCopyChromeCookies = vi.fn(async () => result);
       const { service, admitRunToolCall } = makeService({
-        browserSources: {
-          agentSignIn,
-          agentUseCard: async () => {
+        browserSources: { agentCopyChromeCookies },
+        savedLogins: {
+          useSavedLogin,
+          useCard: async () => {
             throw new Error("Unexpected card use");
           },
         },
@@ -307,34 +306,70 @@ describe("Product tool handlers", () => {
         messages: [],
         threads: [current],
       });
-      const sessionId = createBrowserSessionId();
-      const requestId = crypto.randomUUID();
+      const tabId = BrowserSurfaceIdSchema.parse("sign-in-tab");
       await expect(
-        service.handle("run-token", {
-          requestId,
+        service.service.callTool(
+          "run-token",
           type,
-          sessionId,
-          site: result.site,
-          reason: "Read the account",
-        }),
+          {
+            tabId,
+            site: result.site,
+            reason: "Read the account",
+          },
+          { operationKey: "tab-sign-in" },
+        ),
       ).resolves.toEqual({
-        requestId,
-        type: `${type}.result`,
-        // On the result, because a long-lived session keeps the skill it read first.
-        result: {
-          ...result,
-          guidance: expect.stringContaining("call sign_in again"),
-        },
+        requestId: null,
+        kind: type === "saved_login_request" ? "browser.password-sign-in" : "browser.sign-in",
+        next:
+          type === "saved_login_request"
+            ? "No saved login was released. Continue without it and report the reason."
+            : "No cookies were copied. Continue without them and report the reason.",
+        status: "blocked",
+        site: result.site,
+        reason: result.reason,
+        [type === "saved_login_request" ? "loginStatus" : "cookiesStatus"]: "unavailable",
       });
-      expect(agentSignIn).toHaveBeenCalledWith(
-        expect.objectContaining({
-          sessionId,
-          site: result.site,
-        }),
-      );
+      expect(
+        type === "saved_login_request" ? useSavedLogin : agentCopyChromeCookies,
+      ).toHaveBeenCalledWith(expect.objectContaining({ tabId, site: result.site }));
       expect(admitRunToolCall).not.toHaveBeenCalled();
     },
   );
+
+  it("preserves a joined cookie Request even when this call identity did not create it", async () => {
+    const pending = pendingRequest();
+    const { service } = makeService({
+      browserSources: {
+        agentCopyChromeCookies: async () => ({
+          status: "pending",
+          site: "https://example.com",
+          requestId: pending.id,
+          replayed: true,
+        }),
+      },
+      commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+      messages: [],
+      requests: { get: async () => pending },
+      threads: [thread(currentThreadId, nativeHarnessId, "Worker")],
+    });
+    await expect(
+      service.service.callTool(
+        "run-token",
+        "chrome_cookies_request",
+        {
+          tabId: BrowserSurfaceIdSchema.parse("sign-in-tab"),
+          site: "https://example.com",
+          reason: "Read the account",
+        },
+        { operationKey: "joined-cookie" },
+      ),
+    ).resolves.toMatchObject({
+      requestId: pending.id,
+      status: "pending",
+      cookiesStatus: "pending",
+    });
+  });
 
   it("coordinates durable child and target turns through typed task history", async () => {
     const current = {
@@ -386,19 +421,19 @@ describe("Product tool handlers", () => {
       service.handle("run-token", {
         limit: 10,
         requestId: readId,
-        threadId: target.id,
+        taskId: target.id,
         type: "thread.read",
       }),
     ).resolves.toMatchObject({
       items: [messageItem(targetMessage, 20_000)],
-      thread: {
+      task: {
         id: target.id,
       },
     });
     const delegateId = crypto.randomUUID();
     const delegateRequest = ProductToolRequestSchema.parse({
       requestId: delegateId,
-      task: "Research the provider contract",
+      message: "Research the provider contract",
       title: child.title,
       type: "thread.delegate",
     });
@@ -406,17 +441,22 @@ describe("Product tool handlers", () => {
     await expect(service.handle("run-token", delegateRequest)).resolves.toMatchObject({
       result: {
         runId: childRun.id,
-        threadId: child.id,
+        taskId: child.id,
       },
     });
     expect(delegateThread).toHaveBeenCalledWith({
       accessMode: "auto",
       callerIntent: {
-        requestId: mcpToolCallId(`run:${claims.runId}`, delegateId, "operation", "delegate_task"),
+        requestId: mcpToolCallId(
+          `run:${claims.runId}`,
+          delegateId,
+          "operation",
+          "opensteer_task_delegate",
+        ),
         requestFingerprint: fingerprint({
           mode: delegateRequest.mode,
           timeoutMs: delegateRequest.timeoutMs,
-          task: delegateRequest.task,
+          message: delegateRequest.message,
           title: delegateRequest.title,
         }),
       },
@@ -424,7 +464,7 @@ describe("Product tool handlers", () => {
       environmentId,
       harnessInstanceId: nativeHarnessId,
       idempotencyKey: expect.stringContaining(
-        `${mcpToolCallId(`run:${claims.runId}`, delegateId, "operation", "delegate_task")}:delegate`,
+        `${mcpToolCallId(`run:${claims.runId}`, delegateId, "operation", "opensteer_task_delegate")}:delegate`,
       ),
       modelSelection: testModelSelection,
       origin: {
@@ -469,7 +509,7 @@ describe("Product tool handlers", () => {
         },
       ],
       idempotencyKey: expect.stringContaining(
-        `${mcpToolCallId(`run:${claims.runId}`, messageId, "operation", "thread_send")}:message`,
+        `${mcpToolCallId(`run:${claims.runId}`, messageId, "operation", "opensteer_task_send")}:message`,
       ),
       policy: "queue",
       requestedBy: ownerId,
@@ -509,7 +549,7 @@ describe("Product tool handlers", () => {
     await expect(
       service.handle("run-token", {
         requestId: crypto.randomUUID(),
-        task: "Do work",
+        message: "Do work",
         model: testModelSelection,
         type: "thread.delegate",
       }),
@@ -531,7 +571,7 @@ describe("Product tool handlers", () => {
     await expect(
       service.handle("run-token", {
         requestId: crypto.randomUUID(),
-        task: "Do work",
+        message: "Do work",
         type: "thread.delegate",
         model: testModelSelection,
       }),
@@ -567,12 +607,12 @@ describe("Product tool handlers", () => {
         threadId: current.id,
         type: "thread.message",
       }),
-    ).rejects.toThrow("cannot message its own active Thread");
+    ).rejects.toThrow("cannot message its own active task");
     await expect(
       service.handle("run-token", {
         limit: 10,
         requestId: crypto.randomUUID(),
-        threadId: foreign.id,
+        taskId: foreign.id,
         type: "thread.read",
       }),
     ).rejects.toThrow("unavailable");
@@ -593,7 +633,7 @@ describe("Product tool handlers", () => {
     await expect(
       service.handle("run-token", {
         requestId: crypto.randomUUID(),
-        task: "Do not run",
+        message: "Do not run",
         title: "Disabled",
         type: "thread.delegate",
       }),
@@ -615,11 +655,11 @@ describe("Product tool handlers", () => {
     await expect(
       service.handle("run-token", {
         requestId: crypto.randomUUID(),
-        task: "Do not schedule this",
+        message: "Do not schedule this",
         title: "Unavailable driver",
         type: "thread.delegate",
       }),
-    ).rejects.toThrow("cannot run harness driver native");
+    ).rejects.toThrow("cannot run native AI accounts");
     expect(delegateThread).not.toHaveBeenCalled();
     expect(enqueueThreadInput).not.toHaveBeenCalled();
   });
@@ -653,110 +693,21 @@ describe("Product tool handlers", () => {
     await expect(
       service.handle("run-token", {
         requestId,
-        task: "Existing task",
+        message: "Existing task",
         title: child.title,
         type: "thread.delegate",
       }),
     ).resolves.toMatchObject({
       result: {
         runId: childRun.id,
-        threadId: child.id,
+        taskId: child.id,
       },
     });
     expect(delegateThread).not.toHaveBeenCalled();
     expect(enqueueThreadInput).not.toHaveBeenCalled();
   });
 
-  it("carries a chosen browser machine through and refuses one this user cannot reach", async () => {
-    const current = thread(currentThreadId, nativeHarnessId, "Owner task", null, {});
-    const freshSummary = {
-      access: "read-write" as const,
-      activeAttachmentCount: 1,
-      attached: true,
-      createdAt: now,
-      id: createBrowserSessionId(),
-      origin: "agent" as const,
-      placement: {
-        kind: "runner" as const,
-        runnerId: createId("runner"),
-      },
-      profileId: null,
-      profileName: null,
-      runtimeId: "hosted-browser-1",
-      state: "ready" as const,
-      updatedAt: now,
-    };
-    const openAgentSession = vi.fn(async () => ({
-      session: freshSummary,
-      wasExisting: false,
-    }));
-    const { service } = makeService({
-      browser: {
-        openAgentSession,
-      },
-      commands: {
-        delegateThread: vi.fn(),
-        enqueueThreadInput: vi.fn(),
-      },
-      environments: [environmentId, targetEnvironmentId],
-      messages: [],
-      threads: [current],
-    });
-    await expect(
-      service.handle("run-token", {
-        environmentId: targetEnvironmentId,
-        fresh: true,
-        requestId: crypto.randomUUID(),
-        type: "browser.session.open",
-      }),
-    ).resolves.toMatchObject({
-      type: "browser.session.open.result",
-    });
-    expect(openAgentSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        chosenEnvironmentId: targetEnvironmentId,
-        // The Run's own machine still travels, so an unnamed session keeps
-        // landing next to the agent.
-        environmentId,
-        fresh: true,
-      }),
-    );
-    await expect(
-      service.handle("run-token", {
-        environmentId: createId("environment"),
-        fresh: true,
-        requestId: crypto.randomUUID(),
-        type: "browser.session.open",
-      }),
-    ).rejects.toMatchObject({
-      code: "bad_request",
-      message: expect.stringContaining("not exist"),
-    });
-    const { service: unreachable } = makeService({
-      browser: {
-        openAgentSession: vi.fn(),
-      },
-      commands: {
-        delegateThread: vi.fn(),
-        enqueueThreadInput: vi.fn(),
-      },
-      environments: [environmentId, targetEnvironmentId],
-      foreignEnvironmentId: targetEnvironmentId,
-      messages: [],
-      threads: [current],
-    });
-    await expect(
-      unreachable.handle("run-token", {
-        environmentId: targetEnvironmentId,
-        fresh: true,
-        requestId: crypto.randomUUID(),
-        type: "browser.session.open",
-      }),
-    ).rejects.toMatchObject({
-      code: "forbidden",
-    });
-  });
-  it("admits full access requests from %s before calling the service", async () => {
+  it("sends Full Disk Access requests to their service without device admission", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Client", null, {});
     const request = vi.fn(async () => ({
       kind: "machine.full-disk-access" as const,
@@ -776,24 +727,21 @@ describe("Product tool handlers", () => {
       threads: [current],
     });
     const callId = crypto.randomUUID();
+    const computerId = createId("runner");
     expect(
       await service.handle("run-token", {
-        type: "machine.full-disk-access.request",
+        type: "computer.access.request",
         requestId: callId,
-        computer: "test-mac",
+        computerId,
+        access: "full_disk_access",
         reason: "Read Mail",
       }),
     ).toMatchObject({
-      type: "machine.full-disk-access.request.result",
+      type: "computer.access.request.result",
     });
     expect(request).toHaveBeenCalledWith({
-      callId: mcpToolCallId(
-        `run:${claims.runId}`,
-        callId,
-        "operation",
-        "machine_full_disk_access_request",
-      ),
-      computer: "test-mac",
+      callId: mcpToolCallId(`run:${claims.runId}`, callId, "operation", "computer_access_request"),
+      computerId,
       reason: "Read Mail",
       claims,
     });
@@ -840,7 +788,12 @@ describe("Product tool handlers", () => {
       expect.objectContaining({
         action: "thread.message",
         requestFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
-        requestId: mcpToolCallId(`run:${claims.runId}`, requestId, "operation", "thread_send"),
+        requestId: mcpToolCallId(
+          `run:${claims.runId}`,
+          requestId,
+          "operation",
+          "opensteer_task_send",
+        ),
         runId: claims.runId,
         sourceThreadId: claims.threadId,
       }),
@@ -848,7 +801,7 @@ describe("Product tool handlers", () => {
     expect(enqueueThreadInput).toHaveBeenCalledTimes(2);
     const firstKey = enqueueThreadInput.mock.calls[0]?.[0].idempotencyKey;
     expect(firstKey).toBe(
-      `run:${claims.runId}:${mcpToolCallId(`run:${claims.runId}`, requestId, "operation", "thread_send")}:message`,
+      `run:${claims.runId}:${mcpToolCallId(`run:${claims.runId}`, requestId, "operation", "opensteer_task_send")}:message`,
     );
     expect(enqueueThreadInput.mock.calls[1]?.[0].idempotencyKey).toBe(firstKey);
     expect(firstKey).not.toContain(claims.jti);
@@ -918,7 +871,7 @@ describe("Product tool handlers", () => {
       }),
     ).resolves.toMatchObject({
       result: {
-        triggers: [],
+        automations: [],
       },
       type: "trigger.control.result",
     });
@@ -965,7 +918,7 @@ describe("Product tool handlers", () => {
         name: "Nightly report",
         operation: "create",
         program: {
-          toolContractVersion: 3,
+          toolContractVersion: 4,
           language: "javascript",
           source: "export default () => {}",
         },
@@ -980,7 +933,7 @@ describe("Product tool handlers", () => {
     expect(manage).toHaveBeenCalledWith(
       claims.requestedBy,
       expect.objectContaining({
-        idempotencyKey: `run:${claims.runId}:${mcpToolCallId(`run:${claims.runId}`, requestId, "operation", "trigger_write")}:trigger.create`,
+        idempotencyKey: `run:${claims.runId}:${mcpToolCallId(`run:${claims.runId}`, requestId, "operation", "opensteer_automation_create")}:trigger.create`,
       }),
       current.id,
       expect.objectContaining({
@@ -1039,6 +992,7 @@ describe("Product tool handlers", () => {
 function makeService(options: {
   personShow?: ConstructorParameters<typeof ProductToolsTestClient>[0]["personShow"];
   browserSources?: ConstructorParameters<typeof ProductToolsTestClient>[0]["browserSources"];
+  savedLogins?: ConstructorParameters<typeof ProductToolsTestClient>[0]["savedLogins"];
   machineFullDiskAccess?: ConstructorParameters<
     typeof ProductToolsTestClient
   >[0]["machineFullDiskAccess"];
@@ -1081,6 +1035,7 @@ function makeService(options: {
   messages: readonly Message[];
   listHarnessInstances?: OpensteerStore["listHarnessInstances"];
   requests?: {
+    get?: OpensteerStore["requests"]["get"];
     visiblePage?: OpensteerStore["requests"]["visiblePage"];
     withdraw?: OpensteerStore["requests"]["withdraw"];
   };
@@ -1332,6 +1287,8 @@ function makeService(options: {
       };
     },
     requests: {
+      get: options.requests?.get ?? vi.fn(async () => null),
+      findByCallIdentity: vi.fn(async () => null),
       visiblePage:
         options.requests?.visiblePage ??
         vi.fn(async () => {
@@ -1343,6 +1300,7 @@ function makeService(options: {
           throw new Error("Unexpected Request withdrawal");
         }),
     },
+    messageTeamSources: async () => new Map(),
     threadMessagePageForOwner: async (input: {
       maxItems: number;
       ownerId: typeof ownerId;
@@ -1424,8 +1382,11 @@ function makeService(options: {
           }
         : {}),
       browserSources: options.browserSources ?? {
-        agentSignIn: unexpectedBrowserRequest,
-        agentUseCard: unexpectedBrowserRequest,
+        agentCopyChromeCookies: unexpectedBrowserRequest,
+      },
+      savedLogins: options.savedLogins ?? {
+        useSavedLogin: unexpectedBrowserRequest,
+        useCard: unexpectedBrowserRequest,
       },
       machineFullDiskAccess: options.machineFullDiskAccess ?? {
         request: vi.fn(),
@@ -1701,6 +1662,7 @@ it("uses authenticated admission for a person message without waking work", asyn
     type: "person.message.result",
     requestId,
     messageId,
+    link: `[Message](opensteer:${messageId})`,
   });
   expect(publishPersonMessage).toHaveBeenCalledWith({
     message: "Ready.",
@@ -1713,7 +1675,7 @@ it("uses authenticated admission for a person message without waking work", asyn
         `run:${fixture.claims.runId}`,
         requestId,
         "operation",
-        "person_message",
+        "send_to_person",
       ),
     }),
   });
@@ -1737,7 +1699,7 @@ it("omits client-only addressing from agent thread history", async () => {
   const response = await fixture.service.handle("run-token", {
     type: "thread.read",
     requestId: crypto.randomUUID(),
-    threadId: current.id,
+    taskId: current.id,
   });
   expect(response).toMatchObject({
     type: "thread.read.result",
@@ -1792,7 +1754,7 @@ it.each([
             }
           : {
               target: {
-                current: true,
+                taskId: currentThreadId,
               },
             }),
       }),
@@ -1821,7 +1783,7 @@ it("allows a task to show its Thread to the person", async () => {
       type: "person.show",
       requestId: crypto.randomUUID(),
       target: {
-        threadId: currentThreadId,
+        taskId: currentThreadId,
       },
     }),
   ).resolves.toMatchObject({
@@ -1833,7 +1795,7 @@ it("allows a task to show its Thread to the person", async () => {
     ownerId,
     expect.objectContaining({
       target: {
-        threadId: currentThreadId,
+        taskId: currentThreadId,
       },
     }),
   );

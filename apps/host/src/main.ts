@@ -41,14 +41,16 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
 
   const stopper = hostStopper(runtime);
   for (const signal of shutdownSignals) process.once(signal, () => stopper.signal(signal));
-  void runtime.authorityLost.then((error) => stopper.authorityLost(error));
+  // Only a Host that fences its database with the lifetime lock can lose it.
+  if ("authorityLost" in runtime)
+    void runtime.authorityLost.then((error) => stopper.authorityLost(error));
 }
 
 function safeRequestLog(request: { readonly method?: unknown; readonly url?: unknown }) {
   const rawUrl = typeof request.url === "string" ? request.url : "";
   return {
     method: typeof request.method === "string" ? request.method : undefined,
-    path: rawUrl.split("?", 1)[0],
+    path: rawUrl.replace(/(\/media\/)[^/?]+/gu, "$1[redacted]").split("?", 1)[0],
   };
 }
 

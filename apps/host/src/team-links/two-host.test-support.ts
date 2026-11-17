@@ -27,6 +27,7 @@ import {
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { createDatabase } from "@opensteer/database";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
+import { admitTeamReturn } from "@opensteer/database/task-admission-store";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
 import {
   TeamAgentRequestSchema,
@@ -108,6 +109,10 @@ export async function createTwoHostLinkFixture() {
     get revision() {
       return SequenceSchema.parse(String(revision));
     },
+    async current() {
+      return SequenceSchema.parse(String(revision));
+    },
+    withLinkEpoch: (_linkId, _epoch, run) => run(),
     async mutate(write) {
       const result = await team.database.transaction().execute(async (tx) => {
         await sql`select * from team_access_state where singleton_key='team' for update`.execute(
@@ -132,13 +137,16 @@ export async function createTwoHostLinkFixture() {
           .where("id", "=", channelId)
           .forNoKeyUpdate()
           .execute();
-        const rights = await resolver.channel(tx, actor, channelId);
+        const rights = await resolver.peerChannel(tx, actor, channelId);
         if (!rights.post || rights.peopleOnly) throw linkError();
         return write(tx, rights);
       });
     },
-    async knowledgeWrite() {
-      throw new Error("Knowledge execution belongs to lane K");
+    async knowledgeWrite(write) {
+      return team.database.transaction().execute(async (tx) => {
+        await sql`select * from team_access_state where singleton_key='team' for share`.execute(tx);
+        return write(tx);
+      });
     },
     async handoff(authorizedAt, authorize, deliver) {
       if (authorizedAt !== access.revision && !(await authorize())) throw linkError();
@@ -153,7 +161,7 @@ export async function createTwoHostLinkFixture() {
     team.database,
   );
   const resolver: TeamAccessResolver = {
-    async channel(tx, actor, target) {
+    async peerChannel(tx, actor, target) {
       const row = await tx
         .selectFrom("teamChannels")
         .selectAll()
@@ -235,6 +243,7 @@ export async function createTwoHostLinkFixture() {
   const rawView = (row: Awaited<ReturnType<typeof teamRequestRow>>): TeamAgentRequest =>
     TeamAgentRequestSchema.parse({
       id: row.id,
+      kind: row.kind,
       ownerUserId: row.ownerUserId,
       channelId: row.channelId,
       threadRootId: row.threadRootId,
@@ -329,6 +338,14 @@ export async function createTwoHostLinkFixture() {
     return result;
   };
   const admission: TaskAdmissionPort = {
+    async releaseTeamAsk(input) {
+      await (
+        await import("@opensteer/database/task-admission-store")
+      ).releaseTeamAsk(database, input);
+    },
+    async admitTeamReturn(input) {
+      await admitTeamReturn(database, { ...input, ownerId: personal.userId });
+    },
     async admitTeamRequest(input) {
       return database.transaction().execute(async (tx) => {
         const key = `team:${input.origin.teamId}:${input.requestId}`;
@@ -383,6 +400,15 @@ export async function createTwoHostLinkFixture() {
     async cancelTeamRequest(input) {
       const local = await requests.get(input.teamId, input.requestId);
       if (!local) return;
+      await requests.terminal(input.teamId, input.requestId, local.runId, "cancelled");
+      if (local.publicationState !== "accepted")
+        await requests.publication(
+          input.teamId,
+          input.requestId,
+          "blocked",
+          null,
+          input.reason ?? "The team request was cancelled.",
+        );
       if (local.runId)
         await database
           .updateTable("runs")
@@ -505,6 +531,8 @@ export async function createTwoHostLinkFixture() {
     const input = TeamAgentRequestSchema.parse(request.body);
     await publisher.deliver(team.deploymentId, {
       request: input,
+      presentation: null,
+      returnPayload: null,
       source: sourceFor(input),
       bodyMarkdown: "Team ask",
       attachments: [],

@@ -1,5 +1,10 @@
+import { runnerCapabilities } from "./host-connection.js";
+import { harnessMinimumVersion } from "@opensteer/core";
+import type { RunnerHarnessDriver } from "@opensteer/protocol";
 import { fileURLToPath } from "node:url";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { once } from "node:events";
@@ -36,6 +41,7 @@ import {
   RunnerToHostMessageSchema,
   type RunnerCommand,
   type RunnerConnectionFence,
+  type RunnerAppResult,
   type RunnerOperationalReport,
   type RunnerToHostMessage,
 } from "@opensteer/protocol";
@@ -51,6 +57,7 @@ import {
 } from "./host-connection.js";
 import { LocalMcpServers } from "../computer-apps/local-mcp-servers.js";
 import { RunnerRuntime } from "../runtime/runtime.js";
+import { AgentHomeManager } from "../folders/agent-home.js";
 import {
   providerContinuationIdentityProjector,
   RunnerConnectionFenceLedger,
@@ -74,8 +81,8 @@ const testAgentSkills = {
     "opensteer:computer-use": "/runner/agent-skills/skills/computer-use",
     "opensteer:computers": "/runner/agent-skills/skills/computers",
     "opensteer:devices": "/runner/agent-skills/skills/devices",
-    "opensteer:threads": "/runner/agent-skills/skills/threads",
-    "opensteer:triggers": "/runner/agent-skills/skills/triggers",
+    "opensteer:tasks": "/runner/agent-skills/skills/tasks",
+    "opensteer:automations": "/runner/agent-skills/skills/automations",
     "opensteer:projects": "/runner/agent-skills/skills/projects",
   },
   rootPath: "/runner/agent-skills",
@@ -126,13 +133,15 @@ describe("AgentsWorkSession", () => {
       const execution = Promise.withResolvers<void>();
       const steering = Promise.withResolvers<void>();
       const calls: string[] = [];
-      const messages: RunnerOperationalReport[] = [];
+      const messages: Parameters<CausallyOrderedRunnerSink["send"]>[0][] = [];
       const sink = new CausallyOrderedRunnerSink({
         send: async (message) => void messages.push(message),
       });
       const runtime = {
         observeAgentHomeSkills: () => undefined,
+        observeAgentHomeSettings: async () => undefined,
         subscribeHarnessPreparation: () => () => undefined,
+        appServers: { observe: () => () => undefined },
         handleCommand: async (command: RunnerCommand) => {
           calls.push(command.type);
           if (command.type === "run.execute") await execution.promise;
@@ -229,7 +238,7 @@ describe("CausallyOrderedRunnerSink", () => {
       runId: createId("run"),
       threadId: createId("thread"),
     };
-    const messages: RunnerOperationalReport[] = [];
+    const messages: Parameters<CausallyOrderedRunnerSink["send"]>[0][] = [];
     const sink = new CausallyOrderedRunnerSink({
       send: async (message) => void messages.push(message),
     });
@@ -255,7 +264,7 @@ describe("CausallyOrderedRunnerSink", () => {
     }
   });
   it("reports an uncertain steer without converting it to a refusal", async () => {
-    const messages: RunnerOperationalReport[] = [];
+    const messages: Parameters<CausallyOrderedRunnerSink["send"]>[0][] = [];
     const sink = new CausallyOrderedRunnerSink({
       send: async (message) => void messages.push(message),
     });
@@ -286,7 +295,7 @@ describe("CausallyOrderedRunnerSink", () => {
       const runId = createId("run");
       const threadId = createId("thread");
       const environmentId = createId("environment");
-      const messages: RunnerOperationalReport[] = [];
+      const messages: Parameters<CausallyOrderedRunnerSink["send"]>[0][] = [];
       const sink = new CausallyOrderedRunnerSink({
         send: async (message) => void messages.push(message),
       });
@@ -331,9 +340,10 @@ describe("WebSocketMessageSink", () => {
         environmentId: createId("environment"),
       },
 
+      generation: 1,
       requestId: randomUUID(),
       type: "runner.app.result",
-    } satisfies RunnerOperationalReport;
+    } satisfies RunnerAppResult;
     const receive = () =>
       withTimeout(
         new Promise<unknown>((resolve) =>
@@ -1872,6 +1882,134 @@ describe("runnerWebSocketUrl", () => {
     }
   });
 
+  it("reports settings.json in the Agent home its welcome names before it attaches", async () => {
+    const agentHome = await realpath(await mkdtemp(join(tmpdir(), "opensteer-settings-attach-")));
+    const settings = { backgroundModels: { naming: [{ engine: "codex" }] } };
+    await writeFile(join(agentHome, "settings.json"), JSON.stringify(settings));
+    const environmentId = createId("environment");
+    const runnerId = createId("runner");
+    const abort = new AbortController();
+    const received: RunnerToHostMessage[] = [];
+    const server = createServer();
+    await new Promise<void>((ready) => server.listen(0, "127.0.0.1", ready));
+    const address = server.address() as AddressInfo;
+    const webSockets = new WebSocketServer({ server, path: "/internal/v1/runners" });
+    webSockets.on("connection", (socket) => {
+      socket.send(
+        JSON.stringify({
+          challengeId: RunnerChallengeIdSchema.parse(`rch_${randomUUID()}`),
+          expiresAt: new Date(Date.now() + 30_000).toISOString(),
+          hostSessionId: randomUUID(),
+          nonce: randomUUID(),
+          proofFormatVersion: 2,
+          type: "host.challenge",
+        }),
+      );
+      socket.on("message", (raw) => {
+        const message = RunnerToHostMessageSchema.parse(JSON.parse(raw.toString()));
+        received.push(message);
+        if (message.type === "runner.executions.attach") abort.abort(new Error("test complete"));
+        if (message.type !== "runner.enroll") return;
+        socket.send(
+          JSON.stringify({
+            agentHome: { computerId: runnerId, path: agentHome },
+            allowedModules: ["agents"],
+            bootId: message.descriptor.bootId,
+            connectionGeneration: 1,
+            connectionId: RunnerConnectionIdSchema.parse(`rcn_${randomUUID()}`),
+            connectionLeaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
+            connectionLeaseId: RunnerConnectionLeaseIdSchema.parse(`rls_${randomUUID()}`),
+            environmentIds: runnerEnvironmentIds(message.descriptor),
+            heartbeatIntervalMs: 60_000,
+            runnerId: message.descriptor.runnerId,
+            serverTime: new Date().toISOString(),
+            type: "host.welcome",
+          }),
+        );
+      });
+    });
+    const bootId = RunnerBootIdSchema.parse(`rbt_${randomUUID()}`);
+    const runtime = new RunnerRuntime({
+      nativeFsHelperBinary: testNativeFsHelperBinary,
+      nodeExecutable: process.execPath,
+      agentSkills: testAgentSkills,
+      plugins: noPlugins,
+      bootId,
+      deploymentShape: serverDeploymentShape,
+      environmentId,
+      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
+      harnesses: new HarnessRegistry(),
+      maxConcurrentRuns: 1,
+      dataDirectory: join(agentHome, ".runner"),
+      privateStateDirectory: join(agentHome, ".runner", "state"),
+      browserHarnessExecutable: "/opt/opensteer/browser-harness",
+      projectContinuationIdentity,
+      agentHome: new AgentHomeManager(runnerId),
+    });
+    const pair = generateKeyPairSync("ed25519");
+    const identity = {
+      createdAt: new Date().toISOString(),
+      environmentId,
+      lastConnectionGeneration: 0,
+      privateKey: pair.privateKey,
+      publicKey: pair.publicKey,
+      publicKeyPem: pair.publicKey.export({ format: "pem", type: "spki" }).toString(),
+      runnerId,
+      version: 3 as const,
+    };
+    const connection = new ReconnectingHostConnection({
+      agents: { runtime },
+      bootId,
+      config: {
+        browserBridge: undefined,
+        controlCaPath: undefined,
+        dataDirectory: join(agentHome, ".runner"),
+        deploymentShape: serverDeploymentShape,
+        enrollmentToken: "s".repeat(32),
+        environmentId,
+        hostUrl: new URL(`http://127.0.0.1:${address.port}`),
+        maxConcurrentRuns: 1,
+        maxConcurrentTriggerPrograms: 4,
+        mode: "development",
+        modules: ["agents"],
+        name: "Hosting computer",
+        nodeExecutable: process.execPath,
+        runnerId,
+        runnerKind: "main",
+      } as unknown as RunnerConfig,
+      identity,
+      identityStore: {
+        acceptHostConnection: async ({ connectionGeneration }) => ({
+          ...identity,
+          lastConnectionGeneration: connectionGeneration,
+        }),
+      },
+      logger: { error: () => undefined, info: () => undefined },
+      runtimeVersion: "test",
+    });
+    try {
+      await connection.run(abort.signal);
+      const enroll = received.find((message) => message.type === "runner.enroll");
+      expect(enroll?.descriptor.capabilities).toContain("agent-home-settings-v1");
+      const reported = received.filter(
+        (message) =>
+          message.type === "runner.settings.report" || message.type === "runner.executions.attach",
+      );
+      expect(reported.map((message) => message.type)).toEqual([
+        "runner.settings.report",
+        "runner.executions.attach",
+      ]);
+      expect(reported[0]).toMatchObject({ environmentId, result: { status: "valid", settings } });
+    } finally {
+      connection.close();
+      await runtime.close();
+      for (const client of webSockets.clients) client.terminate();
+      await new Promise<void>((resolvePromise) => webSockets.close(() => resolvePromise()));
+      await new Promise<void>((resolvePromise) => server.close(() => resolvePromise()));
+      await rm(agentHome, { recursive: true, force: true });
+    }
+  });
+
   it("re-enrolls when the Host no longer knows this Runner's persisted key", async () => {
     // Resetting the Host database leaves a previously connected Runner holding
     // an identity file the Host has never seen. Retrying that key can never
@@ -2516,3 +2654,23 @@ function terminalEvent(ids: {
     type: "runner.event",
   };
 }
+
+it("advertises compaction only for a qualifying installed Claude CLI", () => {
+  const driver = (version?: string, readiness = "configured", kind = "claude") =>
+    ({
+      driverKind: kind,
+      readiness,
+      ...(version ? { installation: { version } } : {}),
+    }) as unknown as RunnerHarnessDriver;
+  for (const drivers of [
+    [],
+    [driver()],
+    [driver("1.0.0")],
+    [driver("99.0.0", "unavailable")],
+    [driver("99.0.0", "configured", "codex")],
+  ])
+    expect(runnerCapabilities(drivers)).not.toContain("claude-compaction-v1");
+  expect(runnerCapabilities([driver(harnessMinimumVersion("claude"))])).toContain(
+    "claude-compaction-v1",
+  );
+});

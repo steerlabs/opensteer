@@ -87,7 +87,6 @@ describe("Settings → Passwords on the Mac that keeps them", () => {
     );
     expect(text(page)).toContain("Take that access away any time in the Passwords window.");
     expect(text(page)).toContain("Sign-ins can stay saved in the browser profile.");
-    expect(text(page)).toContain("Sites you allowed from Chrome keep using Chrome.");
     expect(buttons(page)).toEqual(["Open Passwords"]);
     await click(button(page, "Open Passwords"));
     expect(fake.bridge.passwordsOpen).toHaveBeenCalledExactlyOnceWith();

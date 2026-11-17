@@ -38,13 +38,13 @@ export function callerListScope(_caller: AgentCaller): AgentThreadListScope {
   return { kind: "personal" };
 }
 const actions = {
-  device_access_request: "device.access.request",
-  delegate_task: "thread.delegate",
-  thread_send: "thread.message",
-  person_message: "person.message",
-  person_show: "person.show",
-  thread_update: "thread.write",
-  task_cancel: "assignment.cancel",
+  computer_access_request: "device.access.request",
+  opensteer_task_delegate: "thread.delegate",
+  opensteer_task_send: "thread.message",
+  send_to_person: "person.message",
+  show_to_person: "person.show",
+  opensteer_task_update: "thread.write",
+  opensteer_delegation_cancel: "assignment.cancel",
 } as const;
 type AdmittedTool = keyof typeof actions;
 export function runAdmission(
@@ -72,7 +72,7 @@ export function runAdmission(
 }
 export function mutationAdmission(
   caller: AgentCaller,
-  tool: "delegate_task" | "thread_send",
+  tool: "opensteer_task_delegate" | "opensteer_task_send",
   input: { readonly observationId?: string | undefined },
   requestId: string,
   targetThreadIds: readonly Thread["id"][] = [],
@@ -120,7 +120,7 @@ export function delegationOrigin(caller: AgentCaller, observationId: string) {
   if (caller.kind === "connection")
     throw new OpensteerError({
       code: "forbidden",
-      message: "Delegation requires an anchor Thread",
+      message: "Delegation requires a task",
     });
   const p = caller.program;
   return p.kind === "trigger"

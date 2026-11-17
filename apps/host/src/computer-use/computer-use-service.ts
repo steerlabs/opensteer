@@ -1,12 +1,22 @@
+import type { DeviceAvailability, PhoneDisplayView } from "@opensteer/protocol";
+import { sameDeviceDriver } from "./device-drivers.js";
+import type { ComputerTargetId } from "../computer-apps/computer-app-hub.js";
+import type { DeviceDisplayAuthorization, DeviceDriverRoute } from "./device-drivers.js";
 import { randomUUID } from "node:crypto";
 import {
   createId,
+  DeviceIdSchema,
+  isPhoneDisplayDefinitionId,
+  phoneDisplayDefinitionIds,
+  iphoneScreenDefinitionId,
+  type PhoneDisplayDefinitionId,
+  type DeviceId,
+  type DeviceDriverIdentity,
   OpensteerError,
-  type EventData,
   type RunId,
-  type RunnerId,
   type ThreadId,
   type UserId,
+  type WindowId,
   type DeploymentId,
 } from "@opensteer/core";
 import { getIntegrationDefinition } from "@opensteer/integration-catalog";
@@ -19,8 +29,16 @@ import {
   type IntegrationAccess,
 } from "@opensteer/integration-core";
 import {
-  AndroidPhoneActParamsSchema,
-  AndroidPhoneDispatchActParamsSchema,
+  getPhoneDisplayCodec,
+  PhoneDisplayActParamsSchema,
+  PhoneDisplayDispatchActParamsSchema,
+  PhoneDisplayObservationResultSchema,
+  PhoneDisplayActResultSchema,
+  PhoneDisplayInstalledAppsParamsSchema,
+  PhoneDisplayInstalledAppsResultSchema,
+  validatePhoneDisplayActions,
+  type PhoneDisplayObservation,
+  type PhoneDisplayInstalledAppsResult,
   ComputerUseDispatchActParamsSchema,
   RunnerAuxiliaryRequestIdSchema,
   loginEnvelopeMaxLifetimeMs,
@@ -28,11 +46,6 @@ import {
   type LoginReceiverKey,
   type LoginText,
   type LoginEnvelopeBinding,
-  AndroidPhoneActResultSchema,
-  AndroidPhoneObservationResultSchema,
-  AndroidPhoneInstalledAppsResultSchema,
-  AndroidPhoneInstalledAppsParamsSchema,
-  androidPhoneDefinitionId,
   ComputerUseActParamsSchema,
   ComputerUseWindowsParamsSchema,
   ComputerUseBindParamsSchema,
@@ -50,8 +63,6 @@ import {
   mintComputerUseSessionId,
   type PlaceIdentity,
   type AndroidPhoneInstalledAppsParams,
-  type AndroidPhoneInstalledAppsResult,
-  type AndroidPhoneObservation,
   type ComputerUseErrorCode,
   type ComputerUseHelperEvent,
   type ComputerUseInstalledAppsParams,
@@ -80,13 +91,8 @@ import type {
 /** The definition a Mac's app sessions belong to. */
 export const computerUseDefinitionId = "macos-app";
 
-/**
- * The definition whose sessions hold a whole display rather than apps: an
- * Android phone's screen. It is the only one, and the frame says so by its
- * literal, so a display this Host does not know how to read is refused rather
- * than operated.
- */
-export type DisplayDefinitionId = typeof androidPhoneDefinitionId;
+/** Display codecs that hold a whole Device screen. */
+export type DisplayDefinitionId = PhoneDisplayDefinitionId;
 
 /** The frame's `params`, which is JSON on a wire rather than any object. */
 type ComputerUseFrameParams = HostIntegrationsComputerUse["params"];
@@ -177,21 +183,21 @@ function authorityUnchecked(): ComputerUseError {
  * ledger could not take at once, is still retried on the minute sweep.
  */
 interface HeldStop {
+  readonly route?: DeviceDriverRoute | undefined;
   /** The computer named the Run and waits to hear the Stop was recorded. */
   readonly acknowledge: boolean;
   /** Who the session belonged to; null for a session this Host already forgot. */
   readonly ownerUserId: UserId | null;
   readonly runId: RunId;
-  readonly runnerId: RunnerId;
+  readonly deviceId: ComputerTargetId;
   readonly sessionId: ComputerUseSessionId;
 }
 
 /** The computer a call goes to, and whose it is. */
-export interface ComputerUseMachine {
-  readonly ownerUserId: UserId;
-  readonly runnerId: RunnerId;
-  readonly runnerName: string;
-}
+export type ComputerUseMachine = { readonly ownerUserId: UserId } & (
+  | { readonly deviceId: DeviceId; readonly deviceName: string }
+  | { readonly runnerId: import("@opensteer/core").RunnerId; readonly runnerName: string }
+);
 
 /**
  * What one call operates: one app on a Mac, or a phone's whole display. A
@@ -288,7 +294,7 @@ export type ComputerUseDispatchResult =
     })
   | (DispatchOutcome & {
       readonly kind: "display";
-      readonly observation: AndroidPhoneObservation | null;
+      readonly observation: PhoneDisplayObservation | null;
     });
 
 export interface ComputerUseMachineOption {
@@ -296,10 +302,14 @@ export interface ComputerUseMachineOption {
   /** Whether that computer reports the definition ready right now. */
   readonly ready: boolean;
   readonly state: "offline" | "ready" | "permission-required" | "unavailable";
-  readonly runnerId: RunnerId;
+  readonly definitionId?: DisplayDefinitionId;
+  readonly runnerId: ComputerTargetId;
+  readonly deviceId?: ComputerTargetId;
+  readonly availability?: DeviceAvailability;
+  readonly setup?: PhoneDisplayView["setup"];
 }
 
-type MachineOwners = ReadonlyMap<RunnerId, { readonly effectiveOwner: UserId | null }>;
+type MachineOwners = ReadonlyMap<ComputerTargetId, { readonly effectiveOwner: UserId | null }>;
 
 /**
  * The durable record of a person's Stops. A Run outlives a Host restart, so a
@@ -307,8 +317,10 @@ type MachineOwners = ReadonlyMap<RunnerId, { readonly effectiveOwner: UserId | n
  * that has not ended.
  */
 export interface ComputerUseStopLedger {
-  readonly initial: readonly { readonly runId: RunId; readonly runnerId: RunnerId }[];
-  record(runId: RunId, runnerId: RunnerId): Promise<void>;
+  readonly initial: readonly ({ readonly runId: RunId } & (
+    { readonly deviceId: DeviceId } | { readonly runnerId: import("@opensteer/core").RunnerId }
+  ))[];
+  record(runId: RunId, deviceId: ComputerTargetId): Promise<void>;
   clear(runId: RunId): Promise<void>;
 }
 
@@ -318,22 +330,21 @@ type ComputerUseAdmission = <Result>(send: () => Promise<Result>) => Promise<Res
 export interface ComputerUseServiceOptions {
   readonly deploymentId: DeploymentId;
   readonly passwords?: Pick<PasswordSignInService, "seal" | "validateLease">;
-  readonly loginReceiver?: (runnerId: RunnerId) => LoginReceiverKey | null;
+  readonly loginReceiver?: (deviceId: ComputerTargetId) => LoginReceiverKey | null;
   readonly onSessionEnded?: (sessionId: ComputerUseSessionId) => void;
-  readonly onPhoneHeld?: (runnerId: RunnerId) => void;
   readonly onAuthorityRevoked?: (
     context: Pick<ComputerUseContext, "runId" | "bindingGeneration">,
   ) => void;
-  readonly beginPlaceEntry?: (
-    runId: RunId,
-    bindingGeneration: number,
-  ) => (data: EventData<"place.entered">) => void;
   readonly onPlaceActivity?: (input: {
     ownerId: UserId;
     threadId: ThreadId;
     runId: RunId;
     generation: number;
-    place: PlaceIdentity;
+    place: (
+      | Omit<Extract<PlaceIdentity, { kind: "phone" }>, "machineId">
+      | Omit<Extract<PlaceIdentity, { kind: "app" }>, "machineId">
+    ) & { machineId: ComputerTargetId };
+    windowId?: WindowId;
     title: string;
     at: number;
     ended: boolean;
@@ -345,18 +356,25 @@ export interface ComputerUseServiceOptions {
     | "machinesFor"
     | "sendComputerUse"
     | "withRunnerAdmission"
-  >;
+  > &
+    Partial<
+      Pick<ComputerAppHub, "captureRoute" | "routeCurrent" | "deviceStatus" | "withDeviceAdmission">
+    >;
   /**
    * Every computer this person may own that serves computer apps, with the
    * platform its `integrations` module reports, which decides the definitions
    * it can serve.
    */
-  readonly listMachines: (
-    ownerUserId: UserId,
-  ) => Promise<
-    readonly { readonly name: string; readonly platform: ComputerAppPlatform; runnerId: RunnerId }[]
+  readonly listMachines: (ownerUserId: UserId) => Promise<
+    readonly ({
+      readonly name: string;
+      readonly platform: ComputerAppPlatform;
+      readonly definitionId?: DisplayDefinitionId;
+      readonly availability?: DeviceAvailability;
+      readonly setup?: PhoneDisplayView["setup"];
+    } & ({ deviceId: DeviceId } | { runnerId: import("@opensteer/core").RunnerId }))[]
   >;
-  readonly machineOwners: (runnerIds: readonly RunnerId[]) => Promise<MachineOwners>;
+  readonly machineOwners: (deviceIds: readonly ComputerTargetId[]) => Promise<MachineOwners>;
   readonly authorizer: RunCapabilityBindingAuthorizer;
   /** What a session opening, closing, gaining an app or acting makes stale. */
   readonly onSessionsChanged: () => void;
@@ -399,6 +417,7 @@ export interface ComputerUseServiceOptions {
 }
 
 interface Session {
+  route?: DeviceDriverRoute | undefined;
   readonly cancellation: AbortController;
   readonly pending: Map<string, ComputerUseTarget>;
   actor: { threadId: ThreadId } | null;
@@ -410,8 +429,9 @@ interface Session {
   /** The acting apps its owner was last told about. */
   announcedActing: string;
   apps: ComputerAppIdentity[];
-  readonly windows: Map<string, { ref: string; id: number; title: string }>;
-  readonly windowRefs: Map<string, { ref: string; id: number; title: string }>;
+  readonly acquiredWindows: Map<string, Set<WindowId>>;
+  readonly windows: Map<string, { ref: string; windowId: WindowId; title: string }>;
+  readonly windowRefs: Map<string, { ref: string; windowId: WindowId; title: string }>;
   /**
    * The display this session holds, for a phone, from the moment its first
    * call reserved it; null for a Mac's session, which holds apps instead.
@@ -447,8 +467,8 @@ interface Session {
   readonly openedAt: string;
   readonly ownerUserId: UserId;
   readonly runId: RunId;
-  readonly runnerId: RunnerId;
-  readonly runnerName: string;
+  readonly deviceId: ComputerTargetId;
+  readonly deviceName: string;
   readonly sessionId: ComputerUseSessionId;
   readonly threadId: ThreadId;
   threadTitle: string | null;
@@ -456,17 +476,17 @@ interface Session {
   readonly titleReady: Promise<void>;
 }
 
-function sessionKey(runId: RunId, bindingGeneration: number, runnerId: RunnerId): string {
+function sessionKey(runId: RunId, bindingGeneration: number, deviceId: ComputerTargetId): string {
   // UUIDs and the numeric generation cannot contain this separator.
-  return `${runId}|${bindingGeneration}|${runnerId}`;
+  return `${runId}|${bindingGeneration}|${deviceId}`;
 }
 
-function stopKey(runId: RunId, runnerId: RunnerId): string {
-  return `${runId}|${runnerId}`;
+function stopKey(runId: RunId, deviceId: ComputerTargetId): string {
+  return `${runId}|${deviceId}`;
 }
 
-function stopReportKey(stop: Pick<HeldStop, "runId" | "runnerId" | "sessionId">): string {
-  return `${stop.runId}|${stop.runnerId}|${stop.sessionId}`;
+function stopReportKey(stop: Pick<HeldStop, "runId" | "deviceId" | "sessionId" | "route">): string {
+  return `${stop.runId}|${stop.deviceId}|${stop.sessionId}|${stop.route?.generation ?? "self"}|${stop.route?.auxiliaryFence.auxiliaryStreamId ?? ""}`;
 }
 
 /**
@@ -497,7 +517,6 @@ export class ComputerUseService {
   readonly #machineOwners: ComputerUseServiceOptions["machineOwners"];
   readonly #now: () => number;
   readonly #onSessionsChanged: () => void;
-  readonly #onPhoneHeld: ComputerUseServiceOptions["onPhoneHeld"];
   readonly #onAuthorityRevoked: ComputerUseServiceOptions["onAuthorityRevoked"];
   readonly #onSessionEnded: NonNullable<ComputerUseServiceOptions["onSessionEnded"]>;
   readonly #onPresenceChanged: NonNullable<ComputerUseServiceOptions["onPresenceChanged"]>;
@@ -514,20 +533,22 @@ export class ComputerUseService {
    * `computerUseHolderKey`. An app is entered once its computer confirmed the
    * claim; a display is entered when it is reserved, before the frame leaves.
    */
-  readonly #appOwners = new Map<RunnerId, Map<string, Session>>();
+  readonly #appOwners = new Map<ComputerTargetId, Map<string, Session>>();
   readonly #listMachines: ComputerUseServiceOptions["listMachines"];
   /**
    * A person's Stop applies to this Run/Mac pair until that Run ends. It holds
    * here the moment it is pressed, and the ledger keeps it for the next Host.
    */
   readonly #stopped: Set<string>;
+  readonly #removedDevices = new Set<ComputerTargetId>();
   readonly #stops: ComputerUseStopLedger;
   /** A Runner chooses reported IDs; only an exact Run/Runner/session tuple may share a write. */
   readonly #unrecordedStops = new Map<string, HeldStop>();
   readonly #stopWrites = new Map<string, Promise<void>>();
+  /** Ledger writes nobody awaits; shutdown waits for them so none outlives the Host's database. */
+  readonly #writes = new Set<Promise<unknown>>();
   /** Sessions the Host has let go whose close the Mac has not yet answered. */
   readonly #undeliveredCloses = new Set<Session>();
-  readonly #beginPlaceEntry: ComputerUseServiceOptions["beginPlaceEntry"];
   readonly #onPlaceActivity: ComputerUseServiceOptions["onPlaceActivity"];
   readonly #resolveActor: ComputerUseServiceOptions["resolveActor"];
   readonly #threadTitle: ComputerUseServiceOptions["threadTitle"];
@@ -552,15 +573,15 @@ export class ComputerUseService {
     this.#now = options.now ?? (() => Date.now());
     this.#onSessionsChanged = options.onSessionsChanged;
     this.#onSessionEnded = options.onSessionEnded ?? (() => undefined);
-    this.#onPhoneHeld = options.onPhoneHeld;
     this.#onPresenceChanged = options.onPresenceChanged ?? (() => undefined);
     this.#actingWindowMs = options.actingWindowMs ?? computerUseActingWindowMs;
     this.#authorizer = options.authorizer;
     this.#stops = options.stops;
     this.#stopped = new Set(
-      options.stops.initial.map((stop) => stopKey(stop.runId, stop.runnerId)),
+      options.stops.initial.map((stop) =>
+        stopKey(stop.runId, "deviceId" in stop ? stop.deviceId : stop.runnerId),
+      ),
     );
-    this.#beginPlaceEntry = options.beginPlaceEntry;
     this.#onPlaceActivity = options.onPlaceActivity;
     this.#resolveActor = options.resolveActor;
     this.#threadTitle = options.threadTitle;
@@ -585,13 +606,13 @@ export class ComputerUseService {
    * The session record is minted before the first await, so a Run that ends
    * meanwhile finds it and the dispatch that follows refuses on it.
    */
-  async prepare(
-    machine: ComputerUseMachine,
-    context: ComputerUseContext,
-  ): Promise<ComputerUseLease> {
+  async prepare(input: ComputerUseMachine, context: ComputerUseContext): Promise<ComputerUseLease> {
+    const machine = normalizedMachine(input);
+    if (this.#removedDevices.has(machine.deviceId))
+      throw new ComputerUseError("unsupported", "This Device was removed.");
     if (this.#closed) throw new ComputerUseError("failed", "Opensteer is shutting down.", true);
-    if (this.#stopped.has(stopKey(context.runId, machine.runnerId)))
-      throw stoppedByUser(machine.runnerName);
+    if (this.#stopped.has(stopKey(context.runId, machine.deviceId)))
+      throw stoppedByUser(machine.deviceName);
     const session = this.#session(machine, context);
     session.inFlight += 1;
     const lease: ComputerUseLease = { sessionId: session.sessionId };
@@ -604,7 +625,7 @@ export class ComputerUseService {
       if (!this.#holds(session))
         throw new ComputerUseError(
           "failed",
-          `Computer use for this task on ${machine.runnerName} ended before this call was sent, so nothing happened.`,
+          `Computer use for this task on ${machine.deviceName} ended before this call was sent, so nothing happened.`,
         );
     } catch (error) {
       this.release(lease);
@@ -723,10 +744,28 @@ export class ComputerUseService {
     admit?: ComputerUseAdmission,
     deadline?: number,
   ): Promise<ComputerUseDispatch> {
-    const parsed =
-      target.kind === "app"
-        ? ComputerUseActParamsSchema.safeParse(params)
-        : AndroidPhoneActParamsSchema.safeParse(params);
+    let parsed;
+    try {
+      parsed =
+        target.kind === "app"
+          ? ComputerUseActParamsSchema.safeParse(params)
+          : PhoneDisplayActParamsSchema.safeParse(
+              typeof params === "object" && params !== null && "actions" in params
+                ? {
+                    ...params,
+                    actions: getPhoneDisplayCodec(target.definitionId).parseActions(params.actions),
+                  }
+                : params,
+            );
+    } catch (error) {
+      this.release(lease);
+      throw new ComputerUseError(
+        "failed",
+        error instanceof z.ZodError
+          ? unusableActions(error, target)
+          : "Those phone actions are not usable.",
+      );
+    }
     if (!parsed.success) {
       this.release(lease);
       throw new ComputerUseError("failed", unusableActions(parsed.error, target));
@@ -757,9 +796,8 @@ export class ComputerUseService {
     deadline?: number,
   ): Promise<ComputerUseDispatch> {
     const { session, authority } = this.#spend(lease);
-    const key = sessionKey(session.runId, session.authority.bindingGeneration, session.runnerId);
+    const key = sessionKey(session.runId, session.authority.bindingGeneration, session.deviceId);
     let addedApp = false;
-    let enterPlace: ((data: EventData<"place.entered">) => void) | undefined;
     const requestId = RunnerAuxiliaryRequestIdSchema.parse(`cai:${randomUUID()}`);
     const saved = new Map<number, LoginText>();
     if (operation === "act" && Array.isArray(params.actions)) {
@@ -789,13 +827,18 @@ export class ComputerUseService {
       if (this.#closed) throw new ComputerUseError("failed", "Opensteer is shutting down.", true);
       if (signal?.aborted || (deadline !== undefined && this.#now() >= deadline))
         throw new ComputerUseError("failed", "Computer use was cancelled. Nothing was performed.");
-      if (this.#stopped.has(stopKey(session.runId, session.runnerId)))
-        throw stoppedByUser(session.runnerName);
+      if (this.#stopped.has(stopKey(session.runId, session.deviceId)))
+        throw stoppedByUser(session.deviceName);
       if (this.#sessions.get(key) !== session)
-        throw sessionEndedBeforeSend(session.runnerName, target);
+        throw sessionEndedBeforeSend(session.deviceName, target);
     };
     try {
       if (saved.size > 0) {
+        if (target.kind === "display" && getPhoneDisplayCodec(target.definitionId).externalRoute)
+          throw new ComputerUseError(
+            "unsupported",
+            "Saved logins are not supported by this phone driver. Nothing was performed.",
+          );
         // Revocation must find a pending batch even before its first dispatch
         // has made this session a holder of the surface.
         await admit(async () => {
@@ -803,7 +846,7 @@ export class ComputerUseService {
           checkSession();
           session.pending.set(requestId, target);
         });
-        const receiver = this.#loginReceiver?.(session.runnerId);
+        const receiver = this.#loginReceiver?.(session.deviceId);
         if (!receiver || !this.#passwords)
           throw new ComputerUseError(
             "unsupported",
@@ -826,11 +869,11 @@ export class ComputerUseService {
               "Saved login typing expired or was cancelled. Nothing was performed.",
             );
           if (this.#closed || this.#sessions.get(key) !== session)
-            throw sessionEndedBeforeSend(session.runnerName, target);
-          if (this.#stopped.has(stopKey(session.runId, session.runnerId)))
-            throw stoppedByUser(session.runnerName);
+            throw sessionEndedBeforeSend(session.deviceName, target);
+          if (this.#stopped.has(stopKey(session.runId, session.deviceId)))
+            throw stoppedByUser(session.deviceName);
           if (
-            canonicalJson(this.#loginReceiver?.(session.runnerId) ?? null) !==
+            canonicalJson(this.#loginReceiver?.(session.deviceId) ?? null) !==
             canonicalJson(receiver)
           )
             throw new ComputerUseError(
@@ -841,7 +884,7 @@ export class ComputerUseService {
             if (!passwords.validateLease({ ...text, deploymentId: this.#deploymentId }))
               throw new ComputerUseError(
                 "failed",
-                "This saved login ended or belongs to another personal deployment. Call sign_in again. Nothing was performed.",
+                "This saved login ended or belongs to another personal deployment. Call saved_login_request again. Nothing was performed.",
               );
         };
         check();
@@ -880,14 +923,14 @@ export class ComputerUseService {
           } catch {
             throw new ComputerUseError(
               "failed",
-              "The saved login could not be prepared. Nothing was performed. Call sign_in again.",
+              "The saved login could not be prepared. Nothing was performed. Call saved_login_request again.",
             );
           }
           check();
           if (result.status !== "sealed")
             throw new ComputerUseError(
               "failed",
-              "The saved login ended or could not be prepared. Nothing was performed. Call sign_in again.",
+              "The saved login ended or could not be prepared. Nothing was performed. Call saved_login_request again.",
             );
           const received = result.envelope.binding;
           if (
@@ -916,7 +959,7 @@ export class ComputerUseService {
         const schema =
           target.kind === "app"
             ? ComputerUseDispatchActParamsSchema
-            : AndroidPhoneDispatchActParamsSchema;
+            : PhoneDisplayDispatchActParamsSchema;
         timeoutMs = Math.max(1, actDeadline - this.#now());
         params = ComputerUseFrameParamsSchema.parse(
           schema.parse({
@@ -930,6 +973,54 @@ export class ComputerUseService {
         await this.#authorizeSession(session, authority);
         checkSession();
         checkSaved();
+        const route = await this.#hub.captureRoute?.(
+          session.deviceId,
+          target.kind === "display" ? target.definitionId : undefined,
+        );
+        if (
+          session.route &&
+          (!this.#hub.routeCurrent?.(session.route) || !sameDriver(session.route, route))
+        )
+          throw sessionEndedBeforeSend(session.deviceName, target);
+        checkSession();
+        session.route ??= route;
+        if (target.kind === "display") {
+          const status = this.#hub.deviceStatus?.(session.deviceId);
+          const refreshReadiness =
+            operation === "observe" &&
+            (status?.operations.some(
+              ({ operation, state }) => operation === "observe" && state === "ready",
+            ) ||
+              status?.availability.reason?.kind === "locked" ||
+              status?.availability.reason?.kind === "protected");
+          if (
+            route?.role === "screen" &&
+            status?.availability.state !== "ready" &&
+            !refreshReadiness
+          )
+            throw new ComputerUseError("unsupported", "This phone is not ready for control.");
+          if (operation === "act") {
+            if (route?.role === "screen") {
+              if (!status || status.availability.state !== "ready")
+                throw new ComputerUseError("unsupported", "This phone is not ready for input.");
+              validatePhoneDisplayActions(params.actions, {
+                actions: status.actions,
+                navigationButtons: status.navigationButtons,
+                wake: status.wake,
+                input: status.operations.some(
+                  ({ operation, state }) => operation === "act" && state === "ready",
+                ),
+                loginText: false,
+              });
+            }
+          }
+          params = ComputerUseFrameParamsSchema.parse(
+            getPhoneDisplayCodec(target.definitionId).encodeParams(
+              operation as "observe" | "act",
+              params,
+            ),
+          );
+        }
         if (target.kind === "app") addedApp = this.#rememberApp(session, target.app);
         else this.#reserveDisplay(session, target.definitionId);
         if (savedDeadline !== undefined) timeoutMs = Math.max(1, savedDeadline - this.#now());
@@ -937,7 +1028,6 @@ export class ComputerUseService {
         session.dispatched = true;
         if (target.kind === "app") this.#noteActing(session, computerAppIdentityKey(target.app));
 
-        enterPlace = this.#beginPlaceEntry?.(session.runId, session.authority.bindingGeneration);
         return this.#hub.sendComputerUse({
           access: target.access,
           app: target.kind === "app" ? target.app : null,
@@ -948,7 +1038,8 @@ export class ComputerUseService {
           params,
           requestId,
           runId: session.runId,
-          runnerId: session.runnerId,
+          runnerId: session.deviceId,
+          route: session.route,
           sessionId: session.sessionId,
           signal: AbortSignal.any([session.cancellation.signal, ...(signal ? [signal] : [])]),
           threadTitle: session.threadTitle,
@@ -998,11 +1089,6 @@ export class ComputerUseService {
             (operation === "act" && (result.performed?.length ?? 0) > 0)) &&
           this.#sessions.get(key) === session
         ) {
-          enterPlace?.({
-            place: { kind: "phone", machineId: session.runnerId, display: "main" },
-            title: session.runnerName,
-            site: null,
-          });
           if (operation === "act" && (result.performed?.length ?? 0) > 0) {
             this.#noteActing(session, target.definitionId);
             this.#publishPlaceActivity(session, target.definitionId, false);
@@ -1017,15 +1103,6 @@ export class ComputerUseService {
           )
         ) {
           this.#noteActing(session, computerAppIdentityKey(target.app));
-          enterPlace?.({
-            place: {
-              kind: "app",
-              machineId: session.runnerId,
-              appKey: computerAppIdentityKey(target.app),
-            },
-            title: target.app.displayName.slice(0, 256),
-            site: null,
-          });
           this.#publishPlaceActivity(session, computerAppIdentityKey(target.app), false);
         }
         if (requested > 0 && this.#sessions.get(key) === session) {
@@ -1045,7 +1122,7 @@ export class ComputerUseService {
     outcome: ComputerUseOutcome,
     params: ComputerUseFrameParams,
   ): ComputerUseDispatchResult {
-    const key = sessionKey(session.runId, session.authority.bindingGeneration, session.runnerId);
+    const key = sessionKey(session.runId, session.authority.bindingGeneration, session.deviceId);
     const words = scopeWords(target);
     const releaseApp = () => {
       if (!addedApp || target.kind !== "app") return;
@@ -1053,12 +1130,13 @@ export class ComputerUseService {
       this.#publishPlaceActivity(session, appKey, true);
       session.actedAt.delete(appKey);
       session.windows.delete(appKey);
+      session.acquiredWindows.delete(appKey);
       session.apps = session.apps.filter((app) => computerAppIdentityKey(app) !== appKey);
     };
     if (outcome.kind === "error") {
       if (outcome.abandoned) {
-        if (this.#stopped.has(stopKey(session.runId, session.runnerId)))
-          throw stoppedByUser(session.runnerName);
+        if (this.#stopped.has(stopKey(session.runId, session.deviceId)))
+          throw stoppedByUser(session.deviceName);
         // The Host gave up on this answer — the caller went away, or the
         // deadline and its grace passed — so whatever the Mac is still doing
         // for it belongs to nobody. Only this session ends; the Run may use
@@ -1084,14 +1162,14 @@ export class ComputerUseService {
       );
     }
     if (this.#sessions.get(key) !== session) {
-      if (this.#stopped.has(stopKey(session.runId, session.runnerId)))
-        throw stoppedByUser(session.runnerName);
+      if (this.#stopped.has(stopKey(session.runId, session.deviceId)))
+        throw stoppedByUser(session.deviceName);
       // The answer arrived after the session ended here, so its observation
       // may already be stale and an act may or may not have happened.
       // The gateway adds the outcome-unknown instructions to an act.
       throw new ComputerUseError(
         operation === "act" ? "outcome-unknown" : "failed",
-        `Computer use for this task on ${session.runnerName} ended before this answer arrived.${
+        `Computer use for this task on ${session.deviceName} ended before this answer arrived.${
           operation === "act"
             ? ""
             : ` Observe the ${words.subject} again before deciding what to do next.`
@@ -1101,6 +1179,16 @@ export class ComputerUseService {
     let result: ComputerUseDispatchResult;
     try {
       result = parseComputerUseResult(target, operation, outcome.value);
+      if (
+        operation === "bind" &&
+        !result.error &&
+        typeof params.windowId === "string" &&
+        result.window?.windowId !== params.windowId
+      )
+        throw new ComputerUseError(
+          "failed",
+          "The Mac returned a different window than the one requested.",
+        );
     } catch (error) {
       this.#forgetAfter(session, "failed");
       throw error;
@@ -1132,9 +1220,22 @@ export class ComputerUseService {
           ? session.windowRefs.get(params.window)
           : undefined);
       if (window) {
+        if (operation === "bind" || operation === "observe") {
+          const heldWindows = session.acquiredWindows.get(appKey) ?? new Set<WindowId>();
+          heldWindows.add(window.windowId);
+          session.acquiredWindows.set(appKey, heldWindows);
+        }
         const previous = session.windows.get(appKey);
-        session.windows.set(appKey, { ref: window.ref, id: window.id, title: window.title });
-        session.windowRefs.set(window.ref, { ref: window.ref, id: window.id, title: window.title });
+        session.windows.set(appKey, {
+          ref: window.ref,
+          windowId: window.windowId,
+          title: window.title,
+        });
+        session.windowRefs.set(window.ref, {
+          ref: window.ref,
+          windowId: window.windowId,
+          title: window.title,
+        });
         windowChanged = previous?.ref !== window.ref || previous.title !== window.title;
       } else if (operation === "act" && typeof params.window === "string") {
         // The ref has been bound already. It stays current across input calls.
@@ -1146,10 +1247,9 @@ export class ComputerUseService {
     session.confirmed = true;
     session.lastUsedAt = this.#now();
     if (wasUnconfirmed || addedApp || windowChanged) this.#onSessionsChanged();
-    if (wasUnconfirmed && session.display !== null) this.#onPhoneHeld?.(session.runnerId);
-    const owners = this.#appOwners.get(session.runnerId) ?? new Map<string, Session>();
+    const owners = this.#appOwners.get(session.deviceId) ?? new Map<string, Session>();
     owners.set(computerUseHolderKey(holdingOf(target)), session);
-    this.#appOwners.set(session.runnerId, owners);
+    this.#appOwners.set(session.deviceId, owners);
     if (result.error) this.#forgetAfter(session, result.error.code);
     return result;
   }
@@ -1162,8 +1262,8 @@ export class ComputerUseService {
    * sessions, and a Run that ended during its first call would leave a record
    * nothing could find to close.
    */
-  #session(machine: ComputerUseMachine, context: ComputerUseContext): Session {
-    const key = sessionKey(context.runId, context.bindingGeneration, machine.runnerId);
+  #session(machine: ReturnType<typeof normalizedMachine>, context: ComputerUseContext): Session {
+    const key = sessionKey(context.runId, context.bindingGeneration, machine.deviceId);
     const existing = this.#sessions.get(key);
     if (existing) return existing;
     const now = this.#now();
@@ -1178,6 +1278,7 @@ export class ComputerUseService {
       actionCount: 0,
       activityTimer: undefined,
       apps: [],
+      acquiredWindows: new Map(),
       windows: new Map(),
       windowRefs: new Map(),
       confirmed: false,
@@ -1189,8 +1290,8 @@ export class ComputerUseService {
       openedAt: new Date(now).toISOString(),
       ownerUserId: machine.ownerUserId,
       runId: context.runId,
-      runnerId: machine.runnerId,
-      runnerName: machine.runnerName,
+      deviceId: machine.deviceId,
+      deviceName: machine.deviceName,
       sessionId: mintComputerUseSessionId(),
       threadId: context.threadId,
       threadTitle: null,
@@ -1211,13 +1312,13 @@ export class ComputerUseService {
 
   /** Every later call adds the app when it is new to the session. */
   #rememberApp(session: Session, app: ComputerAppIdentity): boolean {
-    if (session.display !== null) throw mixedScopes(session.runnerName);
+    if (session.display !== null) throw mixedScopes(session.deviceName);
     const key = computerAppIdentityKey(app);
     if (session.apps.some((held) => computerAppIdentityKey(held) === key)) return false;
     if (session.apps.length >= computerUseMaxSessionApps) {
       throw new ComputerUseError(
         "unsupported",
-        `This task is already using ${session.apps.length} apps on ${session.runnerName}, which is as many as one session holds.`,
+        `This task is already using ${session.apps.length} apps on ${session.deviceName}, which is as many as one session holds.`,
       );
     }
     session.apps.push(app);
@@ -1233,21 +1334,20 @@ export class ComputerUseService {
    * forgetting it lets the display go with it.
    */
   #reserveDisplay(session: Session, definitionId: DisplayDefinitionId): void {
-    if (session.apps.length > 0) throw mixedScopes(session.runnerName);
+    if (session.apps.length > 0) throw mixedScopes(session.deviceName);
     const key = computerUseHolderKey({ definitionId, kind: "display" });
-    const owners = this.#appOwners.get(session.runnerId) ?? new Map<string, Session>();
+    const owners = this.#appOwners.get(session.deviceId) ?? new Map<string, Session>();
     const holder = owners.get(key);
     if (holder && holder !== session) {
-      const title = holder.threadTitle;
       throw new ComputerUseError(
         "busy",
-        `${session.runnerName} is already being used by another task.${title ? ` (Thread: ${title})` : ""} ${computerUseBusyNextStep}`,
+        `${session.deviceName} is already being used by another task. ${computerUseBusyNextStep}`,
         true,
       );
     }
     session.display = definitionId;
     owners.set(key, session);
-    this.#appOwners.set(session.runnerId, owners);
+    this.#appOwners.set(session.deviceId, owners);
   }
 
   /**
@@ -1280,7 +1380,7 @@ export class ComputerUseService {
   }
 
   #forget(session: Session): void {
-    const key = sessionKey(session.runId, session.authority.bindingGeneration, session.runnerId);
+    const key = sessionKey(session.runId, session.authority.bindingGeneration, session.deviceId);
     if (this.#sessions.get(key) !== session) return;
     this.#sessions.delete(key);
     session.cancellation.abort();
@@ -1288,19 +1388,14 @@ export class ComputerUseService {
     for (const app of session.apps)
       this.#publishPlaceActivity(session, computerAppIdentityKey(app), true);
     if (session.display) this.#publishPlaceActivity(session, session.display, true);
-    const owners = this.#appOwners.get(session.runnerId);
+    const owners = this.#appOwners.get(session.deviceId);
     for (const [app, holder] of owners ?? []) if (holder === session) owners?.delete(app);
-    if (owners?.size === 0) this.#appOwners.delete(session.runnerId);
+    if (owners?.size === 0) this.#appOwners.delete(session.deviceId);
     if (session.activityTimer) clearTimeout(session.activityTimer);
     if (session.actingTimer) clearTimeout(session.actingTimer);
     if (session.confirmed) this.#onSessionsChanged();
   }
 
-  /**
-   * The computer's own sentence, plus the Thread when this Host is the one
-   * holding the session. `busy` names no other Deployment's Thread, because
-   * only the Host that opened a session knows what it is for.
-   */
   #sentence(
     session: Session,
     scope: ComputerUseScope,
@@ -1310,42 +1405,37 @@ export class ComputerUseService {
     if (code === "no-session") {
       // The computer no longer holds this session — it was stopped, swept or
       // lost with its connection — so nothing of this call ran there.
-      return `Computer use for this task on ${session.runnerName} ended before this call ran. Observe the ${scopeWords(scope).subject} again to continue.`;
+      return `Computer use for this task on ${session.deviceName} ended before this call ran. Observe the ${scopeWords(scope).subject} again to continue.`;
     }
     if (code !== "busy") return message;
-    const holder = this.#appOwners
-      .get(session.runnerId)
-      ?.get(computerUseHolderKey(holdingOf(scope)));
-    const title = holder?.runId !== session.runId ? holder?.threadTitle : null;
-    return `${title ? `${message} (Thread: ${title})` : message} ${computerUseBusyNextStep}`;
+    return `${message} ${computerUseBusyNextStep}`;
   }
 
   // ---- Mac operations --------------------------------------------------
 
   /** Owned inventory needs no screen-control grant or session, including while paused. */
   async installedApps(
-    runnerId: RunnerId,
+    deviceId: ComputerTargetId,
     actorUserId: UserId,
     params: ComputerUseInstalledAppsParams,
   ): Promise<z.infer<typeof ComputerUseInstalledAppsResultSchema>>;
   async installedApps(
-    runnerId: RunnerId,
+    deviceId: ComputerTargetId,
     actorUserId: UserId,
     params: AndroidPhoneInstalledAppsParams,
     definitionId: DisplayDefinitionId,
-  ): Promise<AndroidPhoneInstalledAppsResult>;
+  ): Promise<PhoneDisplayInstalledAppsResult>;
   async installedApps(
-    runnerId: RunnerId,
+    deviceId: ComputerTargetId,
     actorUserId: UserId,
     params: ComputerUseInstalledAppsParams | AndroidPhoneInstalledAppsParams,
     definitionId?: DisplayDefinitionId,
   ): Promise<
-    z.infer<typeof ComputerUseInstalledAppsResultSchema> | AndroidPhoneInstalledAppsResult
+    z.infer<typeof ComputerUseInstalledAppsResultSchema> | PhoneDisplayInstalledAppsResult
   > {
-    const parsed =
-      definitionId === androidPhoneDefinitionId
-        ? AndroidPhoneInstalledAppsParamsSchema.parse(params)
-        : params;
+    const parsed = isPhoneDisplayDefinitionId(definitionId)
+      ? PhoneDisplayInstalledAppsParamsSchema.parse(params)
+      : params;
     const outcome = await this.#send(
       {
         access: null,
@@ -1353,15 +1443,17 @@ export class ComputerUseService {
         operation: "installed_apps",
         params: parsed,
         ...(definitionId ? { definitionId } : {}),
-        runnerId,
+        deviceId,
         timeoutMs: machineTimeoutMs,
       },
       actorUserId,
     );
     if (outcome.kind === "error")
       throw new ComputerUseError(outcome.code, outcome.message, outcome.retryable);
-    return definitionId === androidPhoneDefinitionId
-      ? AndroidPhoneInstalledAppsResultSchema.parse(outcome.value)
+    return isPhoneDisplayDefinitionId(definitionId)
+      ? PhoneDisplayInstalledAppsResultSchema.parse(
+          getPhoneDisplayCodec(definitionId).decodeResult("installed_apps", outcome.value),
+        )
       : ComputerUseInstalledAppsResultSchema.parse(outcome.value);
   }
 
@@ -1374,14 +1466,15 @@ export class ComputerUseService {
   async resolveApp(input: {
     readonly app: string;
     readonly runId?: RunId;
-    readonly runnerId: RunnerId;
+    readonly deviceId?: DeviceId;
+    readonly runnerId?: import("@opensteer/core").RunnerId;
   }): Promise<ComputerUseResolvedApp> {
     const outcome = await this.#send({
       access: null,
       app: null,
       operation: "resolve_app",
       params: { app: input.app },
-      runnerId: input.runnerId,
+      deviceId: input.deviceId ?? input.runnerId!,
       ...(input.runId ? { runId: input.runId } : {}),
       timeoutMs: machineTimeoutMs,
     });
@@ -1401,38 +1494,54 @@ export class ComputerUseService {
     definitionId: typeof computerUseDefinitionId | DisplayDefinitionId,
   ): Promise<readonly ComputerUseMachineOption[]> {
     const inventory = await this.eligibleInventory(ownerUserId);
-    return definitionId === androidPhoneDefinitionId ? inventory.phones : inventory.machines;
+    return isPhoneDisplayDefinitionId(definitionId)
+      ? inventory.phones.filter(
+          (phone) => phone.definitionId === undefined || phone.definitionId === definitionId,
+        )
+      : inventory.machines;
   }
 
   async eligibleInventory(ownerUserId: UserId): Promise<{
     readonly machines: readonly ComputerUseMachineOption[];
     readonly phones: readonly ComputerUseMachineOption[];
   }> {
-    const machines = await this.#listMachines(ownerUserId);
-    const owners = await this.#machineOwners(machines.map((machine) => machine.runnerId));
+    const machines = (await this.#listMachines(ownerUserId)).map((machine) => ({
+      ...machine,
+      deviceId: "deviceId" in machine ? machine.deviceId : machine.runnerId,
+    }));
+    const owners = await this.#machineOwners(machines.map((machine) => machine.deviceId));
     const project = (
       definitionId: typeof computerUseDefinitionId | DisplayDefinitionId,
     ): ComputerUseMachineOption[] => {
       const platforms = sessionDefinitionPlatforms(definitionId);
       const live = new Map(
-        this.#hub.machinesFor(definitionId).map((machine) => [machine.runnerId, machine]),
+        this.#hub
+          .machinesFor(definitionId)
+          .map((machine): [ComputerTargetId, typeof machine] => [machine.runnerId, machine]),
       );
       return machines
         .filter(
           (machine) =>
             platforms.has(machine.platform) &&
-            owners.get(machine.runnerId)?.effectiveOwner === ownerUserId,
+            (definitionId === iphoneScreenDefinitionId
+              ? machine.definitionId === definitionId
+              : machine.definitionId === undefined || machine.definitionId === definitionId) &&
+            owners.get(machine.deviceId)?.effectiveOwner === ownerUserId,
         )
-        .map(({ name, runnerId }) => {
-          const status = live.get(runnerId)?.status;
+        .map(({ name, deviceId, availability, setup }) => {
+          const status = live.get(deviceId)?.status;
           const ready =
             !!status?.operations.length &&
             status.operations.every((operation) => operation.state === "ready");
           return {
             name,
-            runnerId,
+            deviceId,
+            ...(availability ? { availability } : {}),
+            ...(setup ? { setup } : {}),
+            runnerId: deviceId,
+            ...(isPhoneDisplayDefinitionId(definitionId) ? { definitionId } : {}),
             ready,
-            state: !this.#hub.attached(runnerId)
+            state: !this.#hub.attached(deviceId)
               ? "offline"
               : ready
                 ? "ready"
@@ -1444,7 +1553,7 @@ export class ComputerUseService {
     };
     return {
       machines: project(computerUseDefinitionId),
-      phones: project(androidPhoneDefinitionId),
+      phones: phoneDisplayDefinitionIds.flatMap((definitionId) => project(definitionId)),
     };
   }
 
@@ -1452,15 +1561,35 @@ export class ComputerUseService {
     return this.#threadTitle(threadId, ownerUserId);
   }
 
+  nativeTargetUsers(
+    ownerId: UserId,
+    deviceId: ComputerTargetId,
+    windowId?: WindowId,
+  ): Array<{ taskId: ThreadId }> {
+    return [
+      ...new Set(
+        this.#snapshot()
+          .filter(
+            (session) =>
+              session.ownerUserId === ownerId &&
+              session.deviceId === deviceId &&
+              session.confirmed &&
+              this.#holds(session) &&
+              (windowId === undefined
+                ? session.display !== null
+                : [...session.acquiredWindows.values()].some((windows) => windows.has(windowId))),
+          )
+          .map((session) => session.threadId),
+      ),
+    ]
+      .sort()
+      .map((taskId) => ({ taskId }));
+  }
+
   /** The Run holding each app, or the display, on this computer, keyed by `computerUseHolderKey`. */
-  holders(
-    runnerId: RunnerId,
-  ): ReadonlyMap<string, { readonly runId: RunId; readonly threadTitle: string | null }> {
+  holders(deviceId: ComputerTargetId): ReadonlyMap<string, { readonly runId: RunId }> {
     return new Map(
-      [...(this.#appOwners.get(runnerId) ?? [])].map(([app, { runId, threadTitle }]) => [
-        app,
-        { runId, threadTitle },
-      ]),
+      [...(this.#appOwners.get(deviceId) ?? [])].map(([app, { runId }]) => [app, { runId }]),
     );
   }
 
@@ -1473,9 +1602,12 @@ export class ComputerUseService {
   }
 
   /** Agent release is attempt-authorized; its cleanup never resolves another generation. */
-  async releaseSession(authority: ComputerUseContext, runnerId: RunnerId): Promise<boolean> {
+  async releaseSession(
+    authority: ComputerUseContext,
+    deviceId: ComputerTargetId,
+  ): Promise<boolean> {
     const session = this.#sessions.get(
-      sessionKey(authority.runId, authority.bindingGeneration, runnerId),
+      sessionKey(authority.runId, authority.bindingGeneration, deviceId),
     );
     if (session) await this.#authorizeSession(session, authority);
     else {
@@ -1522,7 +1654,10 @@ export class ComputerUseService {
     } catch (error) {
       if (error instanceof ComputerUseError && error.code === "offline") {
         this.#undeliveredCloses.delete(session);
-      } else {
+      } else if (
+        !this.#removedDevices.has(session.deviceId) &&
+        (!session.route || this.#hub.routeCurrent?.(session.route))
+      ) {
         this.#undeliveredCloses.add(session);
       }
     }
@@ -1536,7 +1671,12 @@ export class ComputerUseService {
    * helper may already hold, and nothing else would ever take it down.
    */
   async #close(session: Session): Promise<void> {
-    if (!session.dispatched) return;
+    if (
+      !session.dispatched ||
+      this.#removedDevices.has(session.deviceId) ||
+      (session.route && !this.#hub.routeCurrent?.(session.route))
+    )
+      return;
     const outcome = await this.#send({
       access: null,
       app: null,
@@ -1544,7 +1684,8 @@ export class ComputerUseService {
       operation: "close",
       params: {},
       runId: session.runId,
-      runnerId: session.runnerId,
+      deviceId: session.deviceId,
+      route: session.route,
       sessionId: session.sessionId,
       timeoutMs: closeTimeoutMs,
     });
@@ -1561,7 +1702,7 @@ export class ComputerUseService {
     for (const [key, stopped] of this.#unrecordedStops) {
       if (stopped.runId === runId) this.#unrecordedStops.delete(key);
     }
-    void this.#stops.clear(runId).catch(this.#onError);
+    void this.#write(this.#stops.clear(runId)).catch(this.#onError);
     for (const session of this.#snapshot()) {
       if (session.runId !== runId) continue;
       void this.#closeSession(session).catch(() => undefined);
@@ -1573,9 +1714,9 @@ export class ComputerUseService {
    * back, and every session using it ends now rather than running on
    * authority nobody has any more.
    */
-  closeForConnection(runnerId: RunnerId, holding: ComputerUseHolding): void {
+  closeForConnection(deviceId: ComputerTargetId, holding: ComputerUseHolding): void {
     for (const session of this.#snapshot()) {
-      if (session.runnerId !== runnerId) continue;
+      if (session.deviceId !== deviceId) continue;
       const holds =
         holding.kind === "app"
           ? session.apps.some((app) => computerAppIdentityKey(app) === holding.appKey)
@@ -1596,21 +1737,59 @@ export class ComputerUseService {
    * the bridge connection that opened it, so there is nothing left to tell and
    * nothing to send a `close` to.
    */
-  forgetRunner(runnerId: RunnerId): void {
-    for (const session of this.#undeliveredCloses) {
-      if (session.runnerId === runnerId) this.#undeliveredCloses.delete(session);
+  forgetRunner(runnerId: import("@opensteer/core").RunnerId): void {
+    for (const session of [...this.#snapshot(), ...this.#undeliveredCloses]) {
+      if (
+        session.route?.runnerId === runnerId ||
+        (!session.route && session.deviceId === runnerId)
+      ) {
+        this.#undeliveredCloses.delete(session);
+        this.#forget(session);
+      }
     }
-    for (const session of this.#snapshot()) {
-      if (session.runnerId === runnerId) this.#forget(session);
+  }
+
+  forgetDriver(binding: DeviceDriverIdentity): void {
+    for (const session of [...this.#snapshot(), ...this.#undeliveredCloses])
+      if (sameDeviceDriver(session.route, binding)) {
+        this.#undeliveredCloses.delete(session);
+        this.#onAuthorityRevoked?.(session.authority);
+        this.#forget(session);
+      }
+  }
+
+  forgetDevice(deviceId: ComputerTargetId, removed = false): void {
+    for (const session of [...this.#snapshot(), ...this.#undeliveredCloses])
+      if (session.deviceId === deviceId) {
+        this.#undeliveredCloses.delete(session);
+        this.#onAuthorityRevoked?.(session.authority);
+        this.#forget(session);
+      }
+    if (removed) {
+      this.#removedDevices.add(deviceId);
+      for (const [key, stop] of this.#unrecordedStops)
+        if (stop.deviceId === deviceId) this.#unrecordedStops.delete(key);
+      for (const key of this.#stopped) if (key.endsWith(`|${deviceId}`)) this.#stopped.delete(key);
     }
   }
 
   /** Applies an unsolicited event from the current fenced Runner stream. */
-  handleHelperEvent(runnerId: RunnerId, event: ComputerUseHelperEvent): void {
+  handleHelperEvent(
+    deviceId: ComputerTargetId,
+    event: ComputerUseHelperEvent,
+    route?: DeviceDriverRoute,
+  ): void {
+    if (route && !this.#hub.routeCurrent?.(route)) return;
     if (event.event !== "session.stopped") return;
+    const named = this.#snapshot().find(
+      (candidate) => candidate.sessionId === event.params.sessionId,
+    );
+    if (named && named.deviceId !== deviceId) return;
     const session = this.#snapshot().find(
       (candidate) =>
-        candidate.runnerId === runnerId && candidate.sessionId === event.params.sessionId,
+        candidate.deviceId === deviceId &&
+        candidate.sessionId === event.params.sessionId &&
+        (!route || sameDriver(candidate.route, route)),
     );
     if (!session) {
       // A person's Stop for a session this Host already forgot: the stream
@@ -1621,7 +1800,8 @@ export class ComputerUseService {
           acknowledge: true,
           ownerUserId: null,
           runId: event.params.runId,
-          runnerId,
+          deviceId,
+          route,
           sessionId: event.params.sessionId,
         }).catch(this.#onError);
       return;
@@ -1654,11 +1834,11 @@ export class ComputerUseService {
         (stop) => stop.sessionId === sessionId,
       );
       if (pending.length === 0) return;
-      const owners = await this.#machineOwners(pending.map((stop) => stop.runnerId));
+      const owners = await this.#machineOwners(pending.map((stop) => stop.deviceId));
       const owned = pending.filter(
         (stop) =>
           (stop.ownerUserId === null || stop.ownerUserId === actorUserId) &&
-          owners.get(stop.runnerId)?.effectiveOwner === actorUserId,
+          owners.get(stop.deviceId)?.effectiveOwner === actorUserId,
       );
       if (owned.length === 0)
         throw new ComputerUseError("unsupported", "Only this computer's owner can do that.");
@@ -1682,7 +1862,8 @@ export class ComputerUseService {
       acknowledge,
       ownerUserId: session.ownerUserId,
       runId: session.runId,
-      runnerId: session.runnerId,
+      deviceId: session.deviceId,
+      route: session.route,
       sessionId: session.sessionId,
     });
   }
@@ -1694,7 +1875,8 @@ export class ComputerUseService {
    * reported again while held only adds whether to acknowledge it.
    */
   #hold(stop: HeldStop): Promise<void> {
-    this.#stopped.add(stopKey(stop.runId, stop.runnerId));
+    if (this.#removedDevices.has(stop.deviceId)) return Promise.resolve();
+    this.#stopped.add(stopKey(stop.runId, stop.deviceId));
     const key = stopReportKey(stop);
     const held = this.#unrecordedStops.get(key);
     this.#unrecordedStops.set(key, {
@@ -1714,25 +1896,32 @@ export class ComputerUseService {
     const key = stopReportKey(stop);
     const inFlight = this.#stopWrites.get(key);
     if (inFlight) return inFlight;
-    const write = this.#stops
-      .record(stop.runId, stop.runnerId)
-      .then(() => {
-        const recorded = this.#unrecordedStops.get(key) ?? stop;
+    const write = this.#write(
+      this.#stops.record(stop.runId, stop.deviceId).then(() => {
+        const recorded = this.#unrecordedStops.get(key);
+        if (!recorded) return;
         this.#unrecordedStops.delete(key);
         if (recorded.acknowledge) {
           void this.#hub
-            .acknowledgeComputerUseStop(recorded.runnerId, {
+            .acknowledgeComputerUseStop(recorded.deviceId, {
               runId: recorded.runId,
               sessionId: recorded.sessionId,
+              route: recorded.route,
             })
             .catch(this.#onError);
         }
-      })
-      .finally(() => {
-        this.#stopWrites.delete(key);
-      });
+      }),
+    ).finally(() => {
+      this.#stopWrites.delete(key);
+    });
     this.#stopWrites.set(key, write);
     return write;
+  }
+
+  #write<T>(work: Promise<T>): Promise<T> {
+    const tracked = work.finally(() => this.#writes.delete(tracked));
+    this.#writes.add(tracked);
+    return tracked;
   }
 
   /**
@@ -1748,7 +1937,7 @@ export class ComputerUseService {
     sessionId: ComputerUseSessionId,
     actorUserId: UserId,
     appKey?: string,
-  ): Promise<RunnerId> {
+  ): Promise<DeviceDisplayAuthorization> {
     const session = this.#snapshot().find((candidate) => candidate.sessionId === sessionId);
     if (
       !session ||
@@ -1766,18 +1955,18 @@ export class ComputerUseService {
     if (!this.#holds(session)) {
       throw new OpensteerError({ code: "forbidden", message: "That phone session has ended." });
     }
-    return session.runnerId;
+    return { deviceId: DeviceIdSchema.parse(session.deviceId), route: session.route };
   }
 
   isDisplaySessionLive(
     sessionId: ComputerUseSessionId,
-    runnerId: RunnerId,
+    deviceId: ComputerTargetId,
     appKey?: string,
   ): boolean {
     return this.#snapshot().some(
       (session) =>
         session.sessionId === sessionId &&
-        session.runnerId === runnerId &&
+        session.deviceId === deviceId &&
         session.confirmed &&
         (appKey === undefined
           ? session.display !== null
@@ -1791,7 +1980,7 @@ export class ComputerUseService {
   /** Owner input renews idle time, without admitting an agent call or pinning in-flight work. */
   noteOwnerActivity(sessionId: ComputerUseSessionId): void {
     const session = this.#snapshot().find((candidate) => candidate.sessionId === sessionId);
-    if (!session || !this.isDisplaySessionLive(sessionId, session.runnerId)) {
+    if (!session || !this.isDisplaySessionLive(sessionId, session.deviceId)) {
       throw new OpensteerError({ code: "forbidden", message: "That phone session has ended." });
     }
     session.lastUsedAt = this.#now();
@@ -1813,15 +2002,15 @@ export class ComputerUseService {
     if (session.ownerUserId !== actorUserId) {
       throw new ComputerUseError("unsupported", "Only this computer's owner can do that.");
     }
-    await this.#assertMachineOwner(session.runnerId, actorUserId);
+    await this.#assertMachineOwner(session.deviceId, actorUserId);
   }
 
   /** Whether this is still the live session for its Run on its Mac. */
   #holds(session: Session): boolean {
-    const key = sessionKey(session.runId, session.authority.bindingGeneration, session.runnerId);
+    const key = sessionKey(session.runId, session.authority.bindingGeneration, session.deviceId);
     return (
       !this.#closed &&
-      !this.#stopped.has(stopKey(session.runId, session.runnerId)) &&
+      !this.#stopped.has(stopKey(session.runId, session.deviceId)) &&
       this.#sessions.get(key) === session
     );
   }
@@ -1833,7 +2022,8 @@ export class ComputerUseService {
     for (const stop of this.#unrecordedStops.values()) {
       void this.#recordStop(stop).catch((error: unknown) => this.#onError(error));
     }
-    void this.#expireSetupRequests?.().catch((error: unknown) => this.#onError(error));
+    if (this.#expireSetupRequests)
+      void this.#write(this.#expireSetupRequests()).catch((error: unknown) => this.#onError(error));
   }
 
   sweepIdle(): void {
@@ -1850,15 +2040,23 @@ export class ComputerUseService {
     clearInterval(this.#sweep);
     const sessions = [...this.#sessions.values()];
     await Promise.allSettled(sessions.map((session) => this.#closeSession(session)));
+    while (this.#writes.size > 0) await Promise.allSettled(this.#writes);
   }
 
   // ---- projection ------------------------------------------------------
 
+  deviceForSession(sessionId: ComputerUseSessionId): ComputerTargetId | null {
+    return (
+      [...this.#sessions.values()].find((session) => session.sessionId === sessionId)?.deviceId ??
+      null
+    );
+  }
+
   /** Every live session on one computer. */
-  sessionsForRunner(runnerId: RunnerId): ComputerUseSessionSummary[] {
+  sessionsForRunner(deviceId: ComputerTargetId): ComputerUseSessionSummary[] {
     return [...this.#sessions.values()]
       .filter(
-        (session) => session.runnerId === runnerId && session.confirmed && holdsAnything(session),
+        (session) => session.deviceId === deviceId && session.confirmed && holdsAnything(session),
       )
       .map((session) =>
         summarize(
@@ -1889,7 +2087,8 @@ export class ComputerUseService {
       readonly operation: ComputerUseOperation;
       readonly params: ComputerUseFrameParams;
       readonly runId?: RunId;
-      readonly runnerId: RunnerId;
+      readonly deviceId: ComputerTargetId;
+      readonly route?: DeviceDriverRoute | undefined;
       readonly sessionId?: ComputerUseSessionId;
       readonly timeoutMs: number;
     },
@@ -1899,8 +2098,11 @@ export class ComputerUseService {
     // disconnect and an access change are decided in, and the answer is waited
     // for outside it so a slow app never holds up the turn that is trying to
     // stop it.
-    const sent = await this.#hub.withRunnerAdmission(input.runnerId, async () => {
-      if (actorUserId) await this.#assertMachineOwner(input.runnerId, actorUserId);
+    const sent = await (
+      this.#hub.withDeviceAdmission?.bind(this.#hub) ??
+      this.#hub.withRunnerAdmission.bind(this.#hub)
+    )(input.deviceId, async () => {
+      if (actorUserId) await this.#assertMachineOwner(input.deviceId, actorUserId);
       return this.#hub.sendComputerUse({
         access: input.access,
         app: input.app,
@@ -1911,7 +2113,8 @@ export class ComputerUseService {
         // about the Mac rather than one app: the helper reads them as the
         // bridge connection's bookkeeping, not as authority over an app.
         runId: input.runId ?? runlessRunId(),
-        runnerId: input.runnerId,
+        runnerId: input.deviceId,
+        route: input.route,
         sessionId: input.sessionId ?? mintComputerUseSessionId(),
         threadTitle: null,
         timeoutMs: input.timeoutMs,
@@ -1920,9 +2123,9 @@ export class ComputerUseService {
     return sent.outcome;
   }
 
-  async #assertMachineOwner(runnerId: RunnerId, actorUserId: UserId): Promise<void> {
-    const owners = await this.#machineOwners([runnerId]);
-    if (owners.get(runnerId)?.effectiveOwner !== actorUserId) {
+  async #assertMachineOwner(deviceId: ComputerTargetId, actorUserId: UserId): Promise<void> {
+    const owners = await this.#machineOwners([deviceId]);
+    if (owners.get(deviceId)?.effectiveOwner !== actorUserId) {
       throw new ComputerUseError("unsupported", "Only this computer's owner can do that.");
     }
   }
@@ -1939,17 +2142,18 @@ export class ComputerUseService {
   #publishPlaceActivity(session: Session, key: string, ended: boolean): void {
     if (!session.actor) return;
     const app = session.apps.find((app) => computerAppIdentityKey(app) === key);
-    const place: PlaceIdentity =
+    const place: Parameters<NonNullable<ComputerUseServiceOptions["onPlaceActivity"]>>[0]["place"] =
       session.display !== null
-        ? { kind: "phone", machineId: session.runnerId, display: "main" }
-        : { kind: "app", machineId: session.runnerId, appKey: key };
+        ? { kind: "phone", machineId: DeviceIdSchema.parse(session.deviceId), display: "main" }
+        : { kind: "app", machineId: DeviceIdSchema.parse(session.deviceId), appKey: key };
     this.#onPlaceActivity?.({
       ownerId: session.ownerUserId,
       ...session.actor,
       runId: session.runId,
       generation: session.authority.bindingGeneration,
       place,
-      title: app?.displayName ?? session.runnerName,
+      ...(session.windows.get(key) ? { windowId: session.windows.get(key)!.windowId } : {}),
+      title: app?.displayName ?? session.deviceName,
       at: this.#now(),
       ended,
     });
@@ -1971,7 +2175,7 @@ export class ComputerUseService {
         session.actingTimer = undefined;
         if (
           this.#sessions.get(
-            sessionKey(session.runId, session.authority.bindingGeneration, session.runnerId),
+            sessionKey(session.runId, session.authority.bindingGeneration, session.deviceId),
           ) !== session
         )
           return;
@@ -2031,7 +2235,7 @@ export class ComputerUseService {
       session.activityTimer = undefined;
       if (
         this.#sessions.get(
-          sessionKey(session.runId, session.authority.bindingGeneration, session.runnerId),
+          sessionKey(session.runId, session.authority.bindingGeneration, session.deviceId),
         ) !== session
       )
         return;
@@ -2055,7 +2259,7 @@ function summarize(
     apps: session.apps.map((app) => ({ ...app })),
     windows: [...session.windows]
       .filter(([appKey]) => session.apps.some((app) => computerAppIdentityKey(app) === appKey))
-      .map(([appKey, window]) => ({ appKey, id: window.id, title: window.title })),
+      .map(([appKey, window]) => ({ appKey, windowId: window.windowId, title: window.title })),
     display: session.display !== null,
     openedAt: session.openedAt,
     runId: session.runId,
@@ -2097,7 +2301,9 @@ function parseComputerUseResult(
 ): ComputerUseDispatchResult {
   if (scope.kind === "display") {
     if (operation === "observe") {
-      const parsed = AndroidPhoneObservationResultSchema.safeParse(value);
+      const parsed = PhoneDisplayObservationResultSchema.safeParse(
+        decodePhoneResult(scope.definitionId, "observe", value),
+      );
       if (!parsed.success) throw unreadableObservation("observe", scope);
       return {
         error: null,
@@ -2106,7 +2312,9 @@ function parseComputerUseResult(
         performed: null,
       };
     }
-    const parsed = AndroidPhoneActResultSchema.safeParse(value);
+    const parsed = PhoneDisplayActResultSchema.safeParse(
+      decodePhoneResult(scope.definitionId, "act", value),
+    );
     if (!parsed.success) throw unreadableObservation("act", scope);
     return {
       error: parsed.data.error
@@ -2169,10 +2377,10 @@ function unreadableObservation(
 }
 
 /** A computer is a Mac or a phone; a session that already holds one kind never takes the other. */
-function mixedScopes(runnerName: string): ComputerUseError {
+function mixedScopes(deviceName: string): ComputerUseError {
   return new ComputerUseError(
     "unsupported",
-    `This task's session on ${runnerName} cannot hold both apps and the whole screen.`,
+    `This task's session on ${deviceName} cannot hold both apps and the whole screen.`,
   );
 }
 
@@ -2198,23 +2406,23 @@ function unusableActions(error: z.ZodError, scope: Pick<ComputerUseScope, "kind"
     error.issues.length > problems.length
       ? ` (and ${error.issues.length - problems.length} more)`
       : "";
-  return `Those actions are not usable — ${problems.join("; ")}${more}. Correct those fields as the computer tool describes, ${scope.kind === "app" ? "observe this window again, and act on its snapshot" : "observe the phone again, and act on its observationId"}.`;
+  return `Those actions are not usable — ${problems.join("; ")}${more}. Correct those fields as computer_use describes, ${scope.kind === "app" ? "observe this window again, and act on its snapshot" : "observe the phone again, and act on its observationId"}.`;
 }
 
 function sessionEndedBeforeSend(
-  runnerName: string,
+  deviceName: string,
   scope: Pick<ComputerUseScope, "kind">,
 ): ComputerUseError {
   return new ComputerUseError(
     "failed",
-    `Computer use for this task on ${runnerName} ended before this call was sent, so nothing happened. Observe the ${scopeWords(scope).subject} again to continue.`,
+    `Computer use for this task on ${deviceName} ended before this call was sent, so nothing happened. Observe the ${scopeWords(scope).subject} again to continue.`,
   );
 }
 
-function stoppedByUser(runnerName: string): ComputerUseError {
+function stoppedByUser(deviceName: string): ComputerUseError {
   return new ComputerUseError(
     "stopped-by-user",
-    `Computer use was stopped for this task on ${runnerName}.`,
+    `Computer use was stopped for this task on ${deviceName}.`,
   );
 }
 
@@ -2230,4 +2438,37 @@ function noSessionOpened(code: ComputerUseErrorCode | "offline"): boolean {
  */
 function runlessRunId(): RunId {
   return createId("run");
+}
+
+function normalizedMachine(machine: ComputerUseMachine): {
+  ownerUserId: UserId;
+  deviceId: DeviceId;
+  deviceName: string;
+} {
+  return "deviceId" in machine
+    ? machine
+    : {
+        ownerUserId: machine.ownerUserId,
+        deviceId: DeviceIdSchema.parse(machine.runnerId),
+        deviceName: machine.runnerName,
+      };
+}
+function sameDriver(left?: DeviceDriverRoute, right?: DeviceDriverRoute): boolean {
+  return (
+    left?.deviceId === right?.deviceId &&
+    left?.runnerId === right?.runnerId &&
+    left?.generation === right?.generation
+  );
+}
+
+function decodePhoneResult(
+  definitionId: DisplayDefinitionId,
+  operation: "observe" | "act",
+  value: unknown,
+): unknown {
+  try {
+    return getPhoneDisplayCodec(definitionId).decodeResult(operation, value);
+  } catch {
+    return null;
+  }
 }

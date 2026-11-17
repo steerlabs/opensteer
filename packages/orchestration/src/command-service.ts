@@ -158,6 +158,40 @@ export class CommandService {
       return result;
     });
   }
+  takeThreadInputLease(input: Parameters<OpensteerStore["takeThreadInputLease"]>[0]) {
+    return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
+      const result = await this.#store.takeThreadInputLease(input);
+      for (const event of result.events) this.#onDeploymentEvent(event);
+      return result;
+    });
+  }
+  renewThreadInputLease(input: Parameters<OpensteerStore["renewThreadInputLease"]>[0]) {
+    return this.#admission.execute([threadKey(input.threadId)], byteSize(input), () =>
+      this.#store.renewThreadInputLease(input),
+    );
+  }
+  releaseThreadInputLease(input: Parameters<OpensteerStore["releaseThreadInputLease"]>[0]) {
+    return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
+      const result = await this.#store.releaseThreadInputLease(input);
+      this.#publishQueueAdvance(result.events);
+      return result;
+    });
+  }
+  editThreadInput(input: Parameters<OpensteerStore["editThreadInput"]>[0]) {
+    return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
+      const result = await this.#store.editThreadInput(input);
+      this.#publishQueueAdvance(result.events);
+      return result;
+    });
+  }
+  #publishQueueAdvance(events: readonly AgentEvent[]) {
+    const environments = new Set<EnvironmentId>();
+    for (const event of events) {
+      this.#onDeploymentEvent(event);
+      if (event.environmentId) environments.add(event.environmentId);
+    }
+    for (const environmentId of environments) this.#onExecutionQueued(environmentId);
+  }
   steerThreadInput(input: SteerThreadInputRequest): Promise<EnqueuedThreadInput> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.steerThreadInput(input);
@@ -171,14 +205,14 @@ export class CommandService {
   cancelThreadInput(input: CancelThreadInputRequest): Promise<CancelledThreadInput> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.cancelThreadInput(input);
-      for (const event of result.events) this.#onDeploymentEvent(event);
+      this.#publishQueueAdvance(result.events);
       return result;
     });
   }
   moveThreadInput(input: MoveThreadInputRequest): Promise<MovedThreadInput> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.moveThreadInput(input);
-      for (const event of result.events) this.#onDeploymentEvent(event);
+      this.#publishQueueAdvance(result.events);
       return result;
     });
   }

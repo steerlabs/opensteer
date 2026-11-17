@@ -1,3 +1,4 @@
+import { KnowledgeTopicIdSchema } from "@opensteer/core";
 import {
   OpensteerError,
   type KnowledgeNoteId,
@@ -11,6 +12,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
+import { teamPrincipalProfiles } from "./team-principals-store.js";
 
 type Executor = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
 
@@ -217,13 +219,15 @@ export async function createTeamTopic(
 /** Every team starts with one topic everyone can write, so agents have somewhere to save. */
 export async function ensureTeamStarterTopic(
   database: Kysely<DatabaseSchema>,
-  id: KnowledgeTopicId,
+  _id: KnowledgeTopicId,
 ): Promise<void> {
+  const id = KnowledgeTopicIdSchema.parse("ktp_00000000-0000-4000-8000-000000000001");
   await database.transaction().execute(async (transaction) => {
     const inserted = await sql<{ id: KnowledgeTopicId }>`
       insert into team_topics (id, name, description)
       select ${id}, 'General', 'Anything the team should know that has no better home.'
       where not exists (select 1 from team_topics)
+      on conflict (id) do nothing
       returning id`.execute(transaction);
     if (inserted.rows.length)
       await insertGrants(
@@ -426,7 +430,7 @@ function versionRows(executor: Executor) {
   return executor
     .selectFrom("teamNoteVersions as v")
     .innerJoin("teamNotes as n", "n.id", "v.noteId")
-    .innerJoin("users as u", "u.id", "v.writerUserId")
+    .innerJoin(teamPrincipalProfiles(executor).as("writer"), "writer.id", "v.writerUserId")
     .leftJoin("teamAgentRequests as r", "r.id", "v.requestId")
     .select([
       "v.noteId",
@@ -438,7 +442,7 @@ function versionRows(executor: Executor) {
       "v.writtenAt",
       "v.writerKind",
       "v.writerUserId",
-      "u.displayName",
+      "writer.displayName",
       "r.channelId",
       "r.triggerMessageId",
     ]);

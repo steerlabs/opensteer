@@ -1,7 +1,9 @@
+import type { TeamPerson } from "@opensteer/client/team";
+import { teamAskOwnerControl, teamAskStatuses } from "@opensteer/client/team";
 import type {
+  NeedsYouPage,
   TeamAgentRequest,
   TeamChannel,
-  TeamMember,
   TeamMessage,
   TeamFileSchema,
 } from "@opensteer/protocol";
@@ -9,6 +11,7 @@ import type { TeamSidebar, TeamTimeline } from "@opensteer/client/team";
 import type { z } from "zod";
 import type {
   AgentRequestView,
+  AskStatusView,
   AuthorView,
   ChannelKind,
   ChannelRowView,
@@ -33,11 +36,16 @@ type TeamFile = z.infer<typeof TeamFileSchema>;
 /** What every mapper needs to say things in this viewer's words. */
 export interface TeamWords {
   readonly viewerUserId: string;
-  readonly members: ReadonlyMap<string, TeamMember>;
+  readonly members: ReadonlyMap<string, TeamPerson>;
   /** Owners whose Opensteer is connected to the team right now. */
   readonly linkOnline: ReadonlyMap<string, boolean>;
   readonly previews: ReadonlyMap<string, string>;
   readonly managedChannels: ReadonlySet<string>;
+  /**
+   * The viewer's own Opensteer, where asks to their agent wait: with it, an
+   * ask awaiting them gets their control in place of its status line.
+   */
+  readonly asks?: { readonly teamId: string; readonly needsYou: NeedsYouPage | null } | undefined;
 }
 
 export function person(words: TeamWords, userId: string): PersonView {
@@ -67,6 +75,7 @@ export function sidebarView(input: {
     mentions: entry.mentionCount,
     peopleOnly: entry.channel.peopleOnly,
     muted: entry.notificationLevel === "muted",
+    shared: entry.channel.share?.state === "shared",
   });
   const channels = rows
     .filter((entry) => !directKinds.has(entry.channel.kind))
@@ -114,6 +123,7 @@ const failureWords: Readonly<Record<NonNullable<TeamAgentRequest["failureCode"]>
   access_revoked: "Access changed before it could post.",
   link_revoked: "Your Opensteer is no longer connected to this team.",
   trigger_deleted: "The message it answered was deleted.",
+  trigger_edited: "The message it answered was edited.",
   execution_failed: "It stopped with an error. Open the task to see why.",
 };
 
@@ -122,6 +132,9 @@ export function requestView(words: TeamWords, request: TeamAgentRequest): AgentR
   const owner = person(words, request.ownerUserId);
   const base = { id: request.id, owner, askedAt: request.createdAt };
   switch (request.state) {
+    case "awaiting_approval":
+    case "declined":
+      return null;
     case "queued":
       return words.linkOnline.get(request.ownerUserId) === false
         ? {
@@ -201,12 +214,13 @@ export function mentionViews(words: TeamWords, message: TeamMessage): readonly M
       return {
         handle: member?.handle ?? owner.handle,
         label: owner.name,
+        ...(owner.externalTeam ? { externalTeam: owner.externalTeam } : {}),
         tone: mention.userId === words.viewerUserId ? "you" : "person",
       };
     return {
       handle: `${member?.handle ?? owner.handle}-agent`,
+      ...(owner.externalTeam ? { externalTeam: owner.externalTeam } : {}),
       label: owner.you ? "My agent" : `${firstName(owner)}’s agent`,
-      // Only its owner's ask is live; anyone else's mention of it is a reference.
       tone: message.authorUserId === mention.userId ? "agent" : "agent-reference",
     };
   });
@@ -243,6 +257,11 @@ export function messageView(
     : undefined;
   const replies = message.replySummary;
   return {
+    askStatuses: askStatusViews(
+      words,
+      [...(options.requests ?? []), ...message.requests],
+      message.id,
+    ),
     id: message.id,
     author: author(words, message),
     at: message.createdAt,
@@ -279,6 +298,33 @@ export function messageView(
   };
 }
 
+function askStatusViews(
+  words: TeamWords,
+  requests: readonly TeamAgentRequest[],
+  messageId: string,
+): readonly AskStatusView[] {
+  const statuses = teamAskStatuses(requests, messageId, (id) => person(words, id).name);
+  const { asks } = words;
+  if (!asks) return statuses;
+  return statuses.map((status) => {
+    const request = requests
+      .filter((row) => row.id === status.id)
+      .reduce<TeamAgentRequest | null>(
+        (latest, row) =>
+          !latest || BigInt(row.changeSeq) >= BigInt(latest.changeSeq) ? row : latest,
+        null,
+      );
+    if (!request) return status;
+    const control = teamAskOwnerControl({
+      needsYou: asks.needsYou,
+      request,
+      teamId: asks.teamId,
+      viewerUserId: words.viewerUserId,
+    });
+    return control.kind === "none" ? status : { ...status, control };
+  });
+}
+
 /** A message the server has not confirmed yet, drawn from what was sent. */
 export function pendingView(
   words: TeamWords,
@@ -299,9 +345,15 @@ export function pendingView(
     mentions: send.mentions.map((mention) => {
       const owner = person(words, mention.userId);
       return mention.kind === "person"
-        ? { handle: owner.handle, label: owner.name, tone: owner.you ? "you" : "person" }
+        ? {
+            handle: owner.handle,
+            label: owner.name,
+            tone: owner.you ? "you" : "person",
+            ...(owner.externalTeam ? { externalTeam: owner.externalTeam } : {}),
+          }
         : {
             handle: `${owner.handle}-agent`,
+            ...(owner.externalTeam ? { externalTeam: owner.externalTeam } : {}),
             label: owner.you ? "My agent" : `${firstName(owner)}’s agent`,
             tone: mention.userId === words.viewerUserId ? "agent" : "agent-reference",
           };
@@ -332,7 +384,7 @@ export function timelineItems(
   const asks = new Map<string, TeamAgentRequest[]>();
   if (cards)
     for (const request of timeline.requests) {
-      if (replied.has(request.id)) continue;
+      if (replied.has(request.id) || request.kind === "ask") continue;
       asks.set(request.triggerMessageId, [...(asks.get(request.triggerMessageId) ?? []), request]);
     }
   for (const message of timeline.messages) {

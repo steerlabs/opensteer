@@ -261,6 +261,10 @@ async function pump(key: string, context: Context) {
             if (deviceContext.success) Object.assign(call.failure, deviceContext.data);
             const code = context.vm.getProp(state.error, "code");
             const performed = context.vm.getProp(state.error, "performed");
+            const next = context.vm.getProp(state.error, "next");
+            const nextValue: unknown = context.vm.dump(next);
+            if (typeof nextValue === "string") call.failure.next = nextValue;
+            next.dispose();
             if (context.vm.typeof(code) === "string")
               call.failure.code = context.vm.getString(code);
             const receipts: unknown = context.vm.dump(performed);
@@ -424,6 +428,25 @@ async function handle(input: unknown) {
         if (typeof observation.observationId === "string")
           context.phones.set(item.request.target ?? "", observation.observationId);
       }
+    }
+    if (
+      !message.error &&
+      (item.request.operation === "bind" || item.request.operation === "tab") &&
+      typeof value === "object" &&
+      value !== null &&
+      !Array.isArray(value)
+    ) {
+      const connection =
+        typeof value.connectionId === "string" ? value.connectionId : item.request.target;
+      const window = value.window;
+      if (
+        typeof window === "object" &&
+        window !== null &&
+        !Array.isArray(window) &&
+        typeof window.ref === "string"
+      )
+        context.snapshots.delete(`${connection}:${window.ref}`);
+      else context.phones.delete(connection ?? "");
     }
     if (item.request.operation === "release") context.phones.delete(item.request.target ?? "");
   }

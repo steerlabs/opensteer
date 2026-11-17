@@ -6,6 +6,7 @@ import Animated from "react-native-reanimated";
 import { PhoneBrowserHost } from "../../modules/phone-browser/index.js";
 import { edgeSwipe } from "../browser/floating-bar.js";
 import { usePageChrome } from "../browser/floating-page.js";
+import { useIsTopLevel } from "../navigation-header.js";
 import type { PhoneBrowserManager, PhonePresentationAdmission } from "./manager.js";
 import { usePhoneTabPresentation } from "./presentation.js";
 
@@ -35,11 +36,13 @@ export function PhoneBrowserTabHost(
   const navigation = useNavigation();
   // A screen over this one takes Back and the pull; the page's gestures wait until it is shown again.
   const focused = useIsFocused();
+  // A top-level page has no swipe back to lend the page: its stack options keep it off.
+  const topLevel = useIsTopLevel();
   useLayoutEffect(() => {
-    if (edgeSwipe({ canGoBack }) === "leave") return;
+    if (topLevel || edgeSwipe({ canGoBack }) === "leave") return;
     navigation.setOptions({ gestureEnabled: false });
     return () => navigation.setOptions({ gestureEnabled: true });
-  }, [canGoBack, navigation]);
+  }, [canGoBack, navigation, topLevel]);
   // Android's Back reaches JavaScript before any native handler, on every version, so the page's
   // history claims it here, ahead of the screen's.
   useEffect(() => {

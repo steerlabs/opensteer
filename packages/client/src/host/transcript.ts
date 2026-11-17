@@ -13,12 +13,14 @@ import {
   requestTitleText,
   type AgentEventView as AgentEvent,
   type LiveStreamKey,
+  type MessageEdit,
   type MessageKind,
   type MessageView,
   type Request,
   type RunUsage,
   type ThreadInputPolicy,
   type ThreadInputQueue,
+  type ThreadInputState,
 } from "@opensteer/core";
 import { liveStreamText, type LiveRunView } from "./live-progress.js";
 import type {
@@ -104,9 +106,22 @@ function foldTranscriptOwnEvent(
         kind: "place",
         runId: event.runId,
       });
-    case "run.queued":
+    case "run.queued": {
+      const maintenance = event.data.run.maintenance;
+      if (!maintenance) return [...entries];
+      const updated = upsertRunEntry(entries, event, "queued");
+      const prior = findEntry(updated, `run:${event.runId}`, "run");
+      return prior
+        ? upsertEntry(updated, {
+            ...prior,
+            compaction: { status: "running", reason: maintenance.reason },
+          })
+        : updated;
+    }
     case "thread.input-queue-updated":
+    case "thread-input.lease-changed":
     case "thread.state-changed":
+    case "task.removed":
       return [...entries];
     case "run.delivery-updated": {
       const prior = entries.find((entry) => entry.kind === "run" && entry.runId === event.runId);
@@ -119,6 +134,13 @@ function foldTranscriptOwnEvent(
           delivery: event.data.delivery,
         });
       return upsertEntry(entries, { ...prior, delivery: event.data.delivery });
+    }
+    case "run.context-measured":
+      return [...entries];
+    case "run.compaction": {
+      const updated = upsertRunEntry(entries, event, "running");
+      const prior = findEntry(updated, `run:${event.runId}`, "run");
+      return prior ? upsertEntry(updated, { ...prior, compaction: event.data }) : updated;
     }
     case "run.started":
       return upsertRunEntry(entries, event, "running");
@@ -459,7 +481,14 @@ function foldTranscriptOwnEvent(
     // while it waited, so its entry leaves the place it was sent from. Only a
     // queued input is ever placed.
     case "message.placed": {
-      const placed = toTranscriptEntry({ ...event.data.message, published: false }, "queue");
+      const placed = toTranscriptEntry(
+        {
+          ...event.data.message,
+          published: false,
+          ...(event.data.edit ? { edit: event.data.edit } : {}),
+        },
+        "queue",
+      );
       const rest = entries.filter((entry) => entry.id !== event.data.message.id);
       const prior = entries.find((entry) => entry.id === event.data.message.id);
       return placed
@@ -478,6 +507,8 @@ function foldTranscriptOwnEvent(
     // injection only records that the active Run accepted it.
     case "message.injected":
       return [...entries];
+    case "message.updated":
+      return withEditedMessage(entries, event.data.message, event.data.edit);
     case "thread-input.updated": {
       const input = event.data.input;
       // A withdrawn message was taken back before any Run could read it, so
@@ -496,12 +527,11 @@ function foldTranscriptOwnEvent(
       // refusal, or a Run that ended first — waits again, held by no Run until
       // one takes it, exactly as a reload reads it.
       const published = threadInputIsPublished(input);
-      const outcome =
-        state === "pending"
-          ? { delivery: null, waiting: true as const }
-          : state === "claimed"
-            ? { delivery: null }
-            : { delivery: threadInputDelivery({ ...input, state }) };
+      const outcome = isWaitingInputState(state)
+        ? { delivery: null, waiting: true as const }
+        : state === "claimed"
+          ? { delivery: null }
+          : { delivery: threadInputDelivery({ ...input, state }) };
       const held = entries.find((entry) => entry.id === input.messageId);
       if (held?.kind === "message") {
         const settled = {
@@ -542,6 +572,45 @@ function foldTranscriptOwnEvent(
         providerSessionId: event.data.thread.providerSessionId,
       });
   }
+}
+
+/**
+ * A message still waiting for a Run: in line, or a teammate's ask awaiting
+ * its owner's approval. Either may be edited, and neither has reached the agent.
+ */
+export function isWaitingInputState(
+  state: ThreadInputState,
+): state is Extract<ThreadInputState, "pending" | "awaiting-approval"> {
+  return state === "pending" || state === "awaiting-approval";
+}
+
+/**
+ * A waiting message rewritten in place keeps its place and lifecycle in the
+ * conversation; only its words, files and edit mark change. Without `edit` the
+ * Host rewrote it (a gathered assignment return), so its edit mark stays. An
+ * entry not loaded stays unloaded: an edit never draws a message.
+ */
+export function withEditedMessage(
+  entries: readonly TranscriptEntry[],
+  message: MessageView,
+  edit: MessageEdit | undefined,
+): TranscriptEntry[] {
+  const held = entries.find((entry) => entry.id === message.id);
+  if (held?.kind !== "message" || (edit && (held.edit?.revision ?? 0) > edit.revision))
+    return [...entries];
+  const mark = edit ?? held.edit;
+  const edited = toMessageEntry({ ...message, ...(mark ? { edit: mark } : {}) }, held.policy);
+  if (!edited) return [...entries];
+  const { places: _places, edit: _edit, ...kept } = held;
+  const next: MessageEntry = {
+    ...kept,
+    attachments: edited.attachments ?? [],
+    body: edited.body,
+    ...(mark ? { edit: mark } : {}),
+    pages: edited.pages ?? [],
+    ...(edited.places ? { places: edited.places } : {}),
+  };
+  return entries.map((entry) => (entry === held ? next : entry));
 }
 
 /**
@@ -728,6 +797,9 @@ function mergeLifecycle(previous: TranscriptEntry, next: TranscriptEntry): Trans
     ];
     return {
       ...next,
+      ...((next.compaction ?? previous.compaction)
+        ? { compaction: next.compaction ?? previous.compaction }
+        : {}),
       createdAt: next.startedAt ?? previous.startedAt ?? previous.createdAt,
       ...((next.startedAt ?? previous.startedAt)
         ? { startedAt: next.startedAt ?? previous.startedAt }
@@ -1079,6 +1151,8 @@ export function toMessageEntry(
   policy: ThreadInputPolicy | undefined = message.policy,
   input?: (Pick<ThreadInput, "policy" | "state"> & Partial<Pick<ThreadInput, "teamSource">>) | null,
 ): MessageEntry | null {
+  if (message.author.kind === "platform" && message.author.cause === "claude-compaction")
+    return null;
   const recovery =
     message.kind === "continuation" &&
     message.author.kind === "platform" &&
@@ -1103,6 +1177,7 @@ export function toMessageEntry(
     sequence: message.sequence,
     published: input ? threadInputIsPublished(input) : (message.published ?? true),
     ...(message.quote ? { quote: message.quote } : {}),
+    ...(message.edit ? { edit: message.edit } : {}),
     attachments,
     pages,
     ...(places.length ? { places } : {}),
@@ -1143,6 +1218,24 @@ function upsertRunEntry(
     // A Stop already asked for holds until the Run ends, whatever it reports meanwhile.
     ...(prior?.stopping === true && !isTerminalRunEntryStatus(status) ? { stopping: true } : {}),
     ...(delivery ? { delivery } : {}),
+    ...(prior?.compaction
+      ? {
+          compaction: {
+            ...prior.compaction,
+            ...((prior.compaction.reason === "idle" || prior.compaction.reason === "before-send") &&
+            isTerminalRunEntryStatus(status)
+              ? {
+                  status:
+                    status === "completed"
+                      ? ("created" as const)
+                      : status === "interrupted"
+                        ? ("stopped" as const)
+                        : ("failed" as const),
+                }
+              : {}),
+          },
+        }
+      : {}),
     ...(prior?.usage ? { usage: prior.usage } : {}),
     ...(prior?.attempt ? { attempt: prior.attempt } : {}),
     ...(startedBy ? { startedBy } : {}),
@@ -1216,14 +1309,12 @@ function toolEntryId(runId: string | null, callId: string): string {
 export function requestReceipt(
   request: Exclude<Request, { status: "pending" }>,
 ): RequestReceiptEntry {
-  const passwordsOffer = browserSignInPasswordsOffer(request);
   return {
     createdAt: request.resolvedAt,
     ...(request.status === "declined" ? { declined: true } : {}),
     id: `request:${request.id}`,
     kind: "request",
     outcome: requestOutcome(request),
-    ...(passwordsOffer === null ? {} : { passwordsOffer }),
     requestId: request.id,
     requestKind: request.kind,
     runId: request.originatingRunId,
@@ -1272,18 +1363,6 @@ function requestOutcome(request: Request): string {
   return prefix;
 }
 
-function browserSignInPasswordsOffer(
-  request: Request,
-): NonNullable<RequestReceiptEntry["passwordsOffer"]> | null {
-  if (request.payload.kind !== "browser.sign-in" || request.status !== "fulfilled") return null;
-  const response = BrowserSignInRequestResponseSchema.safeParse(
-    request.response.kind === "external" ? request.response.value : null,
-  );
-  return response.success && response.data.outcome === "not-signed-in" && response.data.passwords
-    ? { need: response.data.passwords, site: request.payload.site }
-    : null;
-}
-
 /** A sign-in receipt says what happened to the browser, in the card's own words. */
 export function browserSignInReceipt(request: Request): string {
   if (request.status === "declined") return "Not allowed";
@@ -1293,7 +1372,7 @@ export function browserSignInReceipt(request: Request): string {
   if (!response.success || response.data.outcome === "session-closed") return "Allowed";
   if (response.data.outcome === "not-signed-in") return "Chrome not signed in";
   const site = request.payload.kind === "browser.sign-in" ? request.payload.site : null;
-  return site ? `Signed in to ${browserSiteLabel(site)}` : "Signed in";
+  return site ? `Copied Chrome sign-in for ${browserSiteLabel(site)}` : "Copied Chrome sign-in";
 }
 
 /**

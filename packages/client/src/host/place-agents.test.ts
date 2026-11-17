@@ -1,5 +1,4 @@
-import { browserStoreFixture } from "../test-support/browser-snapshot.js";
-import type { BrowserGroupRow, BrowserTabRow } from "@opensteer/protocol/browser-tabs";
+import { TabIdSchema } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import type { PlaceOccupant } from "@opensteer/protocol";
 import {
@@ -13,11 +12,10 @@ import type { PlaceItem } from "./places.js";
 /*
  * Who a place's bar names. What can go wrong: an agent is invented from the
  * route or picked by being nearby; a Thread the reader cannot open is offered;
- * the idle agent is listed before the working one; Chat is named as a task;
- * an older Host's anonymous acting is dropped, or named after someone.
+ * the idle agent is listed before the working one; Chat is named as a task.
  */
 
-const tab = { kind: "browser", sessionId: "browser-a", tabId: "tab-a" } as const;
+const tab = { kind: "tab", tabId: TabIdSchema.parse("tab-a") } as const;
 
 function occupant(threadId: string, patch: Partial<PlaceOccupant> = {}): PlaceOccupant {
   return {
@@ -33,8 +31,6 @@ function occupant(threadId: string, patch: Partial<PlaceOccupant> = {}): PlaceOc
 function source(patch: Partial<PlaceAgentSource> = {}): PlaceAgentSource {
   return {
     activeTasks: [],
-    browserSessions: [],
-    machines: [],
     tasks: null,
     threads: [
       { id: "thread-hotels", title: "Compare hotels", icon: "bed", color: "purple" },
@@ -109,94 +105,6 @@ describe("place agents", () => {
       detail: "Agent working",
       label: "Tokyo trip, agent working",
     });
-  });
-
-  it("says an older Host's browser acts without naming anyone, only for its one tab", () => {
-    const browser = (tabs: { id: string; occupants: PlaceOccupant[] }[]) =>
-      source({
-        browserSessions: [
-          {
-            id: "browser-a",
-            state: "ready",
-            acting: true,
-            browserTabs: browserStoreFixture(
-              [{ id: "browser-a", sessionId: "browser-a" } as BrowserGroupRow],
-              [{ groupId: "browser-a", rows: tabs as BrowserTabRow[] }],
-            ),
-          },
-        ] as unknown as PlaceAgentSource["browserSessions"],
-      });
-    expect(placeAgents(place([]), browser([{ id: "tab-a", occupants: [] }])).unnamedActing).toBe(
-      true,
-    );
-    // Two tabs: the browser's flag cannot say which one.
-    expect(
-      placeAgents(
-        place([]),
-        browser([
-          { id: "tab-a", occupants: [] },
-          { id: "tab-b", occupants: [] },
-        ]),
-      ).unnamedActing,
-    ).toBe(false);
-    // A Host that names who acts named someone in another tab.
-    expect(
-      placeAgents(
-        place([]),
-        browser([{ id: "tab-a", occupants: [occupant("thread-trip", { acting: true })] }]),
-      ).unnamedActing,
-    ).toBe(false);
-  });
-
-  it("does not assign session-wide acting to legacy tabs in a multi-tab browser", () => {
-    const legacy = source({
-      browserSessions: [
-        {
-          id: "browser-a",
-          state: "ready",
-          acting: true,
-          tabs: [{ id: "tab-a" }, { id: "tab-b" }],
-        },
-      ] as unknown as PlaceAgentSource["browserSessions"],
-    });
-    expect(placeAgents(place([]), legacy).unnamedActing).toBe(false);
-    expect(placeAgents(place([], { ...tab, tabId: "tab-b" }), legacy).unnamedActing).toBe(false);
-  });
-
-  it("says a task session acts on an app without an actor, and never for the person's own view", () => {
-    const machines = (actor: { threadId: string; home: boolean } | null) =>
-      [
-        {
-          id: "mac-a",
-          computerUse: {
-            sessions: [{ sessionId: "session-a", actor, actingAppKeys: ["notes"], apps: [] }],
-          },
-        },
-      ] as unknown as PlaceAgentSource["machines"];
-    const app = {
-      appKey: "notes",
-      computerSessionId: "session-a",
-      kind: "app",
-      machineId: "mac-a",
-    } as const;
-    expect(placeAgents(place([], app), source({ machines: machines(null) })).unnamedActing).toBe(
-      true,
-    );
-    expect(
-      placeAgents(place([], app), source({ machines: machines({ home: false, threadId: "x" }) }))
-        .unnamedActing,
-    ).toBe(false);
-    expect(
-      placeAgents(
-        place([], {
-          appKey: "notes",
-          kind: "app",
-          machineId: "mac-a",
-          source: { generation: 1, kind: "owner-view", viewId: "view-a" },
-        }),
-        source({ machines: machines(null) }),
-      ).unnamedActing,
-    ).toBe(false);
   });
 
   it("compares answers by what the bar says", () => {

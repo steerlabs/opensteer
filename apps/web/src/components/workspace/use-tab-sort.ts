@@ -6,8 +6,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from "react";
-import type { BrowserTabMove } from "@opensteer/protocol";
-import type { BrowserTabStrip, PlaceDescriptor } from "@opensteer/client/host";
+import type { TabStrip } from "@opensteer/client/host";
 import { rowPositions, type RowMotion } from "./row-motion.js";
 import { snapTop } from "./scroll-edges.js";
 import {
@@ -19,6 +18,7 @@ import {
   stepSlot,
   type SortRow,
   type SortSlot,
+  type TabMove,
 } from "./tab-sort.js";
 
 /** How far a press travels before it lifts the row, as Chrome waits before dragging a tab. */
@@ -30,7 +30,7 @@ const glide = 0.3;
 
 /** A lift in progress: the list shows the strip as it was until the drop. */
 export interface TabSortLift {
-  readonly strip: BrowserTabStrip<PlaceDescriptor>;
+  readonly strip: TabStrip;
   readonly rows: readonly SortRow[];
   readonly key: string;
   /** The group being moved; its tabs fold under its header while it moves. */
@@ -97,12 +97,12 @@ interface Drag {
  * drop then moves only the rows the new order moves.
  */
 export function useTabSort(input: {
-  readonly strip: BrowserTabStrip<PlaceDescriptor>;
+  readonly strip: TabStrip;
   readonly rows: readonly SortRow[];
   readonly movable: boolean;
   readonly list: RefObject<HTMLElement | null>;
   readonly motion: RefObject<RowMotion | null>;
-  readonly move: (move: BrowserTabMove) => void;
+  readonly move: (move: TabMove) => void;
   readonly announce: (words: string) => void;
   readonly title: (row: SortRow) => string;
 }): { readonly lift: TabSortLift | null; readonly handle: TabSortHandle } {

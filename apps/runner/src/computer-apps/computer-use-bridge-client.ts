@@ -1,4 +1,13 @@
 import {
+  iphoneRunnerBridgeHeader,
+  iphoneRunnerMethodSchema,
+  iphoneRunnerResults,
+  type IphoneRunnerMethod,
+  type IphoneRunnerParams,
+  type IphoneRunnerResult,
+} from "@opensteer/protocol/iphone-bridge";
+import type { z } from "zod";
+import {
   ComputerUseBridgeFrameSchema,
   ComputerUseBridgeRequestSchema,
   computerUseBridgeMaxFrameBytes,
@@ -11,7 +20,6 @@ import {
   type ComputerUseBridgeEvent,
   type ComputerUseBridgeFrame,
   type ComputerUseBridgeMethod,
-  type ComputerUseBridgeRequest,
   type ComputerUseErrorCode,
 } from "@opensteer/protocol";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
@@ -23,6 +31,7 @@ import { delay } from "@opensteer/shared/delay";
  * running. It is short because the target is loopback on this very computer:
  * the answer is a connect or a refusal, never a network.
  */
+type NativeBridgeRequest = z.infer<typeof ComputerUseBridgeRequestSchema>;
 const connectTimeoutMs = 5_000;
 const minimumRetryDelayMs = 250;
 const maximumRetryDelayMs = 5_000;
@@ -104,6 +113,7 @@ export interface ComputerUseBridgeRequestOptions {
 }
 
 export interface ComputerUseBridgeClientOptions {
+  readonly iphoneScreen?: boolean;
   /** Readiness for the current Desktop connection, cleared on loss and reconnect. */
   readonly ownerInputVersion?: () => 2 | undefined;
   readonly videoProfile?: () => 1 | undefined;
@@ -183,6 +193,18 @@ export class ComputerUseBridgeClient {
       throw new Error("The computer use bridge target must be a loopback ws:// or http:// URL");
     }
     this.#url = url;
+  }
+
+  async iphoneRequest<M extends IphoneRunnerMethod>(
+    method: M,
+    params: IphoneRunnerParams<M>,
+    options: ComputerUseBridgeRequestOptions,
+  ): Promise<IphoneRunnerResult<M>> {
+    if (!this.#options.iphoneScreen)
+      throw new ComputerUseBridgeError("unsupported", "iPhone bridge negotiation is required.");
+    return iphoneRunnerResults[method].parse(
+      await this.request(method, params, options),
+    ) as IphoneRunnerResult<M>;
   }
 
   async request(
@@ -301,7 +323,7 @@ export class ComputerUseBridgeClient {
     this.disconnect();
   }
 
-  #send(pending: PendingRequest, frame: ComputerUseBridgeRequest, deadline: number): void {
+  #send(pending: PendingRequest, frame: NativeBridgeRequest, deadline: number): void {
     const id = frame.id;
     this.#pending.set(id, pending);
     void this.#connect().then(
@@ -391,6 +413,7 @@ export class ComputerUseBridgeClient {
       followRedirects: false,
       headers: {
         authorization: `Bearer ${this.#options.token}`,
+        ...(this.#options.iphoneScreen ? { [iphoneRunnerBridgeHeader]: "1" } : {}),
         [computerUseBridgeOwnerInputHeader]: "2",
         [computerUseBridgeVideoProfileHeader]: "1",
       },
@@ -445,6 +468,17 @@ export class ComputerUseBridgeClient {
       pending.settle({ error: new ComputerUseBridgeError(frame.error.code, frame.error.message) });
       return;
     }
+    const phone = iphoneRunnerMethodSchema.safeParse(pending.method);
+    if (phone.success) {
+      const result = iphoneRunnerResults[phone.data].safeParse(frame.result);
+      if (!result.success) {
+        pending.settle({ error: this.#lostError(pending) });
+        this.#lost(socket);
+        return;
+      }
+      pending.settle({ value: result.data });
+      return;
+    }
     pending.settle({ value: frame.result });
   }
 
@@ -477,7 +511,9 @@ export class ComputerUseBridgeClient {
     }
     return new ComputerUseBridgeError(
       "outcome-unknown",
-      pending.method === "session.act" ? actLostSentence : writeLostSentence,
+      pending.method === "session.act" || pending.method === "iphone.perform"
+        ? actLostSentence
+        : writeLostSentence,
     );
   }
 

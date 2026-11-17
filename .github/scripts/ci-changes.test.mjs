@@ -1,103 +1,437 @@
 import { test } from "node:test";
-import { matchesGlob } from "node:path";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import {
   allNativeMacTasks,
-  nativeMacMatrix,
   decide,
   detect,
+  laneUniverse,
   lanes,
   lastFullRunSha,
+  lockfileChanges,
+  nativeMacMatrix,
   parseDiff,
   readGraph,
 } from "./ci-changes.mjs";
-const graph = [
+import { darwinOnlyTests, realBrowserTests } from "./ci-test-files.mjs";
+
+// A small repository: core <- protocol <- host, web; leaf stands alone.
+const fixtureGraph = [
+  { name: "core", dir: "packages/core", deps: [], coverage: [] },
+  { name: "protocol", dir: "packages/protocol", deps: ["core"], coverage: [] },
+  { name: "host", dir: "apps/host", deps: ["protocol"], coverage: ["integration"] },
+  { name: "web", dir: "apps/web", deps: ["protocol"], coverage: ["browser-journeys"] },
   { name: "leaf", dir: "packages/leaf", deps: [], coverage: [] },
-  { name: "host", dir: "apps/host", deps: ["leaf"], coverage: ["integration"] },
-  { name: "web", dir: "apps/web", deps: ["host"], coverage: [] },
 ];
-test("reverse transitive dependencies include development and optional edges", () => {
-  assert.deepEqual(decide(["packages/leaf/a.ts"], graph).affected, ["host", "leaf", "web"]);
-  assert.equal(decide(["packages/leaf/a.ts"], graph).lanes.integration, true);
+const lock = (web) =>
+  [
+    "lockfileVersion: '9.0'",
+    "",
+    "importers:",
+    "",
+    "  .:",
+    "    devDependencies:",
+    "      vitest: 4.1.10",
+    "",
+    "  apps/web:",
+    "    dependencies:",
+    `      react: ${web}`,
+    "",
+    "packages:",
+    "",
+    `  react@${web}: {}`,
+    "",
+  ].join("\n");
+const fixtureFiles = {
+  "packages/core/src/index.ts": "export const core = 1;",
+  "packages/core/src/index.test.ts": 'import { core } from "./index.js";',
+  "packages/protocol/src/index.ts": 'import { core } from "@opensteer/core";',
+  "packages/protocol/src/index.test.ts": 'import "./index.js";',
+  "apps/host/src/main.ts":
+    'import "protocol";\nimport { helper } from "../../../scripts/helper.js";',
+  "apps/host/src/main.test.ts": 'import "./main.js";',
+  "apps/host/src/store.integration.test.ts": 'import "./main.js";',
+  "apps/web/src/app.ts": "export {};",
+  "apps/web/src/app.test.ts": 'import "./app.js";',
+  "packages/leaf/src/leaf.ts": "export {};",
+  "packages/leaf/src/leaf.test.ts": 'import "./leaf.js";',
+  "scripts/helper.ts": "export const helper = 1;",
+  "scripts/tool.ts": "export {};",
+  "scripts/test-integration.ts": 'import { run } from "./run.js";',
+  "scripts/run.ts": "export const run = 1;",
+  // A root guard imports no workspace: it runs whenever the unit lane does.
+  "tests/guard.test.ts": 'import { readFileSync } from "node:fs";',
+  "tests/host-flow.test.ts": 'import "../apps/host/src/main.js";',
+  "tests/tool.test.ts": 'import "../scripts/tool.js";\nimport "../packages/leaf/src/leaf.js";',
+  "tests/prettier.test.ts": 'readFileSync(".prettierignore", "utf8");\nimport "web";',
+  "tests/team.test-support.ts": 'import "host";',
+  "tests/team.integration.test.ts": 'import "./team.test-support.js";',
+  "vitest.config.ts": 'import "./scripts/sequencer.js";',
+  "scripts/sequencer.ts": "export {};",
+  "vitest.integration.config.ts": 'setupFiles: ["./scripts/run.ts"]',
+  ".prettierignore": "dist",
+  "pnpm-lock.yaml": lock("19.0.0"),
+  "docs/a.md": "",
+};
+const repoWith = (overrides = {}, base = {}) => {
+  const files = { ...fixtureFiles, ...overrides };
+  return {
+    tracked: Object.keys(files).filter((file) => files[file] !== undefined),
+    read: (file) => files[file],
+    readBase: (file) => ({ ...fixtureFiles, ...base })[file],
+  };
+};
+const on = (plan) =>
+  Object.entries(plan.lanes)
+    .filter(([, selected]) => selected)
+    .map(([lane]) => lane);
+const unitAll = Object.keys(fixtureFiles)
+  .filter((f) => f.endsWith(".test.ts") && !f.includes(".integration."))
+  .sort();
+const guard = "tests/guard.test.ts";
+
+test("selection table: lanes, test files and typecheck scope per change", () => {
+  const cases = [
+    {
+      name: "docs only",
+      files: ["docs/a.md", "README.md", ".agents/skills/a/SKILL.md"],
+      lanes: ["lint"],
+    },
+    { name: "workflow only", files: [".github/workflows/ci.yml"], lanes: ["lint"] },
+    { name: "release workflow", files: [".github/workflows/release.yml"], lanes: ["lint"] },
+    {
+      name: "CI script",
+      files: [".github/scripts/ci-sharding.mjs", "scripts/ci-sequencer.ts"],
+      lanes: ["lint"],
+    },
+    {
+      name: "leaf package",
+      files: ["packages/leaf/src/leaf.ts"],
+      lanes: ["lint", "build-types", "tests"],
+      // tests/tool.test.ts imports the leaf relatively.
+      tests: ["packages/leaf/src/leaf.test.ts", "tests/tool.test.ts", guard],
+      typecheck: ["leaf"],
+    },
+    {
+      name: "shared core package",
+      files: ["packages/core/src/index.ts"],
+      lanes: ["lint", "build-types", "tests", "integration", "browser-journeys"],
+      tests: [
+        "apps/host/src/main.test.ts",
+        "apps/web/src/app.test.ts",
+        "packages/core/src/index.test.ts",
+        "packages/protocol/src/index.test.ts",
+        "tests/host-flow.test.ts",
+        "tests/prettier.test.ts",
+        guard,
+      ],
+      integration: ["apps/host/src/store.integration.test.ts", "tests/team.integration.test.ts"],
+      typecheck: ["core", "host", "protocol", "web"],
+    },
+    {
+      name: "a test-only edit runs itself, not its package's dependents",
+      files: ["packages/core/src/index.test.ts"],
+      lanes: ["lint", "build-types", "tests"],
+      tests: ["packages/core/src/index.test.ts", guard],
+      typecheck: ["core"],
+    },
+    {
+      name: "root config",
+      files: ["tsconfig.base.json"],
+      lanes: ["lint", "build-types", "tests"],
+      tests: unitAll,
+      typecheck: "all",
+    },
+    {
+      name: "unit runner",
+      files: ["scripts/sequencer.ts"],
+      lanes: ["lint", "build-types", "tests"],
+      tests: unitAll,
+      typecheck: [],
+    },
+    {
+      name: "integration runner",
+      files: ["scripts/run.ts"],
+      lanes: ["lint", "build-types", "integration"],
+      integration: ["apps/host/src/store.integration.test.ts", "tests/team.integration.test.ts"],
+      typecheck: [],
+    },
+    {
+      name: "a loose script runs what imports it",
+      files: ["scripts/helper.ts"],
+      lanes: ["lint", "build-types", "tests", "integration"],
+      tests: ["apps/host/src/main.test.ts", "tests/host-flow.test.ts", guard],
+      integration: ["apps/host/src/store.integration.test.ts", "tests/team.integration.test.ts"],
+      typecheck: ["host"],
+    },
+    {
+      name: "test support selects its importers",
+      files: ["tests/team.test-support.ts"],
+      lanes: ["lint", "build-types", "integration"],
+      integration: ["tests/team.integration.test.ts"],
+      typecheck: [],
+    },
+    {
+      name: "a lint input runs the tests that name it",
+      files: [".prettierignore"],
+      lanes: ["lint", "build-types", "tests"],
+      tests: ["tests/prettier.test.ts", guard],
+      typecheck: [],
+    },
+    {
+      name: "unknown path fails open",
+      files: ["mystery.txt"],
+      lanes: ["lint", "build-types", "tests", "integration", "browser-journeys"],
+      tests: unitAll,
+      integration: ["apps/host/src/store.integration.test.ts", "tests/team.integration.test.ts"],
+      typecheck: "all",
+    },
+  ];
+  for (const c of cases) {
+    const plan = decide(c.files, fixtureGraph, fixtureGraph, { repo: repoWith() });
+    assert.deepEqual(on(plan), c.lanes, c.name);
+    assert.deepEqual(plan.files.tests, (c.tests ?? []).toSorted(), c.name);
+    assert.deepEqual(plan.files.integration, (c.integration ?? []).toSorted(), c.name);
+    if (c.typecheck) assert.deepEqual(plan.typecheck, c.typecheck, c.name);
+    assert.equal(plan.shards.tests > 0, plan.files.tests.length > 0, c.name);
+    assert.deepEqual(plan.build, [], `${c.name}: PRs build nothing`);
+  }
 });
-test("ordinary docs skip heavy lanes but shipped skill markdown does not", () => {
-  assert.equal(decide(["docs/a.md", "README.md"], graph).lanes.tests, false);
-  assert.equal(decide(["apps/runner/agent-skills/skills/a.md"], graph).lanes.tests, true);
+test("a root test reaching a package by relative import runs when that package is affected", () => {
+  // host-flow imports host's source by path, never by name; a host manifest change still reaches it.
+  const host = decide(["apps/host/package.json"], fixtureGraph, fixtureGraph, {
+    repo: repoWith({}),
+  });
+  assert.ok(host.files.tests.includes("tests/host-flow.test.ts"));
 });
-test("contributor skills and agent settings select only lint", () => {
-  const plan = decide([".agents/skills/a/SKILL.md", ".claude/skills", "docs/a.md"], graph);
-  assert.equal(plan.full, false);
-  assert.deepEqual(
-    Object.entries(plan.lanes)
-      .filter(([, selected]) => selected)
-      .map(([lane]) => lane),
-    ["lint"],
+test("a lockfile change selects the importers whose entries changed", () => {
+  const web = decide(["pnpm-lock.yaml"], fixtureGraph, fixtureGraph, {
+    repo: repoWith({ "pnpm-lock.yaml": lock("19.1.0") }),
+  });
+  assert.deepEqual(web.affected, ["web"]);
+  assert.deepEqual(on(web), ["lint", "build-types", "tests", "browser-journeys"]);
+  assert.deepEqual(web.files.tests, ["apps/web/src/app.test.ts", guard, "tests/prettier.test.ts"]);
+  // A shared package entry changed: only the importers that install it.
+  const shared = lock("19.0.0").replace("react@19.0.0: {}", "react@19.0.0: {resolution: x}");
+  const other = decide(["pnpm-lock.yaml"], fixtureGraph, fixtureGraph, {
+    repo: repoWith({ "pnpm-lock.yaml": shared }),
+  });
+  assert.deepEqual(other.affected, ["web"]);
+  assert.deepEqual(lockfileChanges(lock("1"), lock("2")).importers, ["apps/web"]);
+  // A transitive update reaches its consumers even when their own entries are unchanged.
+  const graph = (protocol, page) =>
+    [
+      "importers:",
+      "",
+      "  apps/marketing:",
+      "    dependencies:",
+      "      next:",
+      "        specifier: 1.0.0",
+      `        version: ${page}`,
+      "  packages/database:",
+      "    dependencies:",
+      "      pg:",
+      "        specifier: 8.0.0",
+      "        version: 8.0.0",
+      "",
+      "snapshots:",
+      "",
+      `  next@${page}: {}`,
+      "",
+      "  pg@8.0.0:",
+      "    dependencies:",
+      `      pg-protocol: ${protocol}`,
+      "",
+      `  pg-protocol@${protocol}: {}`,
+      "",
+    ].join("\n");
+  assert.deepEqual(lockfileChanges(graph("1.0.0", "1.0.0"), graph("1.0.1", "1.0.1")), {
+    importers: ["apps/marketing", "packages/database"],
+    other: false,
+  });
+  // Settings, catalogs, overrides and patches reach everything, even beside importer edits.
+  assert.equal(lockfileChanges(lock("1"), `settings:\n  x: 1\n${lock("1")}`).other, true);
+  const mixed = decide(["pnpm-lock.yaml"], fixtureGraph, fixtureGraph, {
+    repo: repoWith({ "pnpm-lock.yaml": `overrides:\n  react: 19.1.0\n${lock("19.1.0")}` }),
+  });
+  assert.equal(mixed.typecheck, "all");
+  assert.deepEqual(mixed.files.tests, unitAll);
+  // An unreadable base lockfile cannot narrow anything.
+  const missing = decide(["pnpm-lock.yaml"], fixtureGraph, fixtureGraph, {
+    repo: repoWith({}, { "pnpm-lock.yaml": undefined }),
+  });
+  assert.equal(missing.typecheck, "all");
+});
+test("a deleted package still selects its dependents through the base graph", () => {
+  const head = fixtureGraph.filter((p) => p.name !== "leaf");
+  const base = fixtureGraph.map((p) =>
+    p.name === "host" ? { ...p, deps: ["protocol", "leaf"] } : p,
   );
+  const plan = decide(["packages/leaf/src/leaf.ts"], head, base, {
+    repo: repoWith({
+      "packages/leaf/src/leaf.ts": undefined,
+      "packages/leaf/src/leaf.test.ts": undefined,
+    }),
+  });
+  assert.deepEqual(plan.affected, ["host", "leaf"]);
+  assert.ok(plan.files.integration.includes("apps/host/src/store.integration.test.ts"));
 });
-test("unknown/root/config/lock/toolchain and malformed diff fail open", () => {
-  for (const file of [
-    "unknown",
-    "package.json",
-    "pnpm-lock.yaml",
-    ".github/scripts/a.mjs",
-    "packages/leaf/tsconfig.json",
-    "go.work",
-  ])
-    // Every lane but the native ones, which run for their own inputs.
-    assert.ok(
-      Object.entries(decide([file], graph).lanes).every(
-        ([lane, on]) => on || lane.startsWith("native-"),
-      ),
-      file,
-    );
+test("main pushes build what they changed; full runs run and build everything", () => {
+  const push = decide(["packages/leaf/src/leaf.ts"], fixtureGraph, fixtureGraph, {
+    event: "push",
+    repo: repoWith(),
+  });
+  assert.deepEqual(push.build, ["leaf"]);
+  assert.deepEqual(push.files.tests, [
+    "packages/leaf/src/leaf.test.ts",
+    guard,
+    "tests/tool.test.ts",
+  ]);
+  const full = decide([], fixtureGraph, fixtureGraph, { event: "full", repo: repoWith() });
+  assert.ok(Object.values(full.lanes).every(Boolean));
+  assert.deepEqual(full.whole, { tests: true, integration: true });
+  assert.deepEqual(full.files.tests, unitAll);
+  assert.equal(full.build, "all");
+  assert.deepEqual(full.nativeMac, allNativeMacTasks);
+});
+test("Vitest path filters match by substring, so the plan names every file they reach", () => {
+  const plan = decide(["tests/a.test.ts"], fixtureGraph, fixtureGraph, {
+    repo: repoWith({ "tests/a.test.ts": "", "packages/leaf/tests/a.test.ts": "" }),
+  });
+  assert.ok(plan.files.tests.includes("packages/leaf/tests/a.test.ts"));
+});
+test("detector errors select every lane and every native task", () => {
+  const plan = detect({ root: "/missing", event: "pull_request" });
+  assert.ok(plan.detectionError);
+  assert.ok(Object.values(plan.lanes).every(Boolean));
+  assert.deepEqual(plan.nativeMac, allNativeMacTasks);
   assert.throws(() => parseDiff("a.ts"));
   assert.deepEqual(parseDiff("a b.ts\0old.ts\0"), ["a b.ts", "old.ts"]);
 });
-test("deleted package uses base graph", () =>
-  assert.deepEqual(decide(["packages/leaf/a.ts"], graph.slice(1), graph).affected, [
-    "host",
-    "leaf",
-    "web",
-  ]));
-test("main and detector errors select all lanes", () => {
-  assert.ok(Object.values(decide([], graph, graph, true).lanes).every(Boolean));
-  assert.ok(
-    Object.values(detect({ root: "/missing", event: "pull_request" }).lanes).every(Boolean),
-  );
-});
+
+const realFiles = parseDiff(execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" }));
+const realGraph = readGraph(process.cwd());
+const nativeInputs = JSON.parse(readFileSync(".github/scripts/ci-native-inputs.json", "utf8"));
+const realRepo = {
+  tracked: realFiles,
+  read: (file) => {
+    try {
+      return readFileSync(file, "utf8");
+    } catch {
+      return undefined;
+    }
+  },
+  readBase: () => undefined,
+};
+const real = (files, event = "pull_request") =>
+  decide(files, realGraph, realGraph, { event, repo: realRepo });
 test("real graph includes every workspace dependency kind", () => {
-  const g = readGraph(process.cwd());
-  assert.ok(g.length > 40);
-  assert.ok(g.find((p) => p.name === "@opensteer/host").deps.length);
+  assert.ok(realGraph.length > 40);
+  assert.ok(realGraph.find((p) => p.name === "@opensteer/host").deps.length);
 });
-test("Android source gates Android; native Mac source gates Mac", () => {
-  const mac = [{ name: "desktop", dir: "apps/desktop", deps: [], coverage: ["native-mac"] }];
-  const a = decide(["apps/agent-phone/app/src/main/Phone.kt"], mac);
-  assert.equal(a.lanes.android, true);
-  assert.equal(a.lanes["native-mac"], false);
-  assert.equal(a.lanes.tests, false);
-  const n = decide(["apps/desktop/native/computer-use/Sources/Foo.swift"], mac);
-  assert.equal(n.lanes["native-mac"], true);
-  assert.equal(n.lanes.android, false);
+test("the Linux unit universe leaves out other lanes' files", () => {
+  const { tests, integration } = laneUniverse(realFiles);
+  for (const file of [...realBrowserTests, ...darwinOnlyTests])
+    assert.ok(!tests.includes(file), file);
+  assert.ok(
+    !tests.some((file) => /\.(integration|windows|gui|engine|device|soak)\.test\./.test(file)),
+  );
+  assert.ok(integration.every((file) => file.includes(".integration.test.")));
 });
-test("the iphone task runs for what its tests import, read or launch, not for any edit", () => {
-  const web = [{ name: "web", dir: "apps/web", deps: [], coverage: ["tests"] }];
-  assert.equal(decide(["apps/web/src/page.ts"], web).lanes["native-mac"], false);
+test("real native selection: PRs for their own sources, main for everything they import", () => {
+  const cases = [
+    // [file, PR tasks, main push tasks]
+    [".github/workflows/release.yml", [], []],
+    [".github/workflows/ci.yml", [], allNativeMacTasks],
+    ["apps/web/src/app-model.ts", [], []],
+    [
+      "apps/desktop/native/passwords/Sources/Broker.swift",
+      ["passwords-helper", "passwords-tests", "release-native"],
+      ["passwords-helper", "passwords-tests", "release-native"],
+    ],
+    // The helper build scripts import this release cache module.
+    [
+      "apps/desktop/scripts/native-build-cache.ts",
+      ["computer-helper", "passwords-helper", "dictation-helper", "release-native"],
+      ["computer-helper", "passwords-helper", "dictation-helper", "release-native"],
+    ],
+    ["tests/kernel-lock.test.ts", ["iphone"], ["iphone"]],
+    [
+      "packages/protocol/src/browser.ts",
+      [],
+      [
+        "computer-helper",
+        "computer-tests",
+        "dictation-helper",
+        "iphone",
+        "passwords-helper",
+        "release-native",
+      ],
+    ],
+  ];
+  for (const [file, pr, push] of cases) {
+    assert.deepEqual(real([file]).nativeMac, pr, `${file} on a PR`);
+    assert.deepEqual(real([file], "push").nativeMac.toSorted(), push.toSorted(), `${file} on main`);
+  }
+});
+test("real Windows and Android selection follow their own sources on PRs", () => {
+  const windows = (file, event) => real([file], event).lanes["native-windows"];
   for (const file of [
-    "tests/vm-slot-queue.test.ts",
-    "apps/desktop/src/computer-use/computer-use-service.ts",
-    "packages/protocol/src/browser.ts",
-    "scripts/mac-app-tree.py",
-    "apps/desktop/native/passwords/Tests/Fixtures/passwords-wire.json",
-    "vitest.config.ts",
+    "apps/desktop/process-supervisor/main.go",
+    "apps/runner/native-fs-helper/go.mod",
+    "packages/harness/src/new-case.windows.test.ts",
+    ".github/scripts/run-as-standard-user.ps1",
+    "vitest.windows.config.ts",
   ])
-    assert.ok(decide([file], web).nativeMac.includes("iphone"), file);
+    assert.equal(windows(file, "pull_request"), true, file);
+  for (const file of ["packages/shared/src/processControl.ts", "pnpm-lock.yaml"]) {
+    assert.equal(windows(file, "pull_request"), false, file);
+    assert.equal(windows(file, "push"), true, file);
+  }
+  assert.equal(windows("docs/releases.md", "push"), false);
+  const android = (file, event) => real([file], event).lanes.android;
+  for (const file of [
+    "apps/agent-phone/app/src/main/Phone.kt",
+    "apps/mobile/modules/phone-browser/android/src/main/java/A.kt",
+    "packages/core/src/fixtures/notification-preview-v1.json",
+    "packages/runner-auth/src/agent-phone-wire.ts",
+  ])
+    assert.equal(android(file, "pull_request"), true, file);
+  assert.equal(android("packages/core/src/index.ts", "pull_request"), false);
+  assert.equal(android("packages/core/src/index.ts", "push"), true);
+  // Shared fixtures keep their package's unit tests too.
+  assert.ok(real(["packages/core/src/fixtures/notification-preview-v1.json"]).lanes.tests);
 });
-test("git fixture: a main push picks macOS tasks from its one commit", async () => {
+test("extension changes run the Host browser source journey without selecting the Host suite", () => {
+  const journey = "apps/host/src/browser/browser-source-journey.integration.test.ts";
+  for (const [file, event] of [
+    ["apps/browser-extension/src/worker.ts", "pull_request"],
+    ["apps/browser-extension/scripts/build.mjs", "push"],
+  ]) {
+    const plan = real([file], event);
+    assert.equal(plan.lanes["browser-journeys"], true, file);
+    assert.equal(plan.lanes.integration, true, file);
+    assert.ok(plan.files.integration.includes(journey), file);
+    assert.ok(!plan.affected.includes("@opensteer/host"), file);
+  }
+});
+test("real browser journeys run for their owners, their dependencies and their runner", () => {
+  for (const file of [
+    ...realBrowserTests,
+    "vitest.browser.config.ts",
+    "packages/client/src/index.ts",
+  ])
+    assert.equal(real([file]).lanes["browser-journeys"], true, file);
+  // The control plane reaches no browser-journey owner.
+  assert.equal(real(["apps/control-plane/src/main.ts"]).lanes["browser-journeys"], false);
+  // Identity does: root journeys import Host source by path, and the Host depends on identity.
+  assert.equal(real(["packages/identity/src/index.ts"]).lanes["browser-journeys"], true);
+});
+test("git fixture: a main push checks its one commit; anything else runs everything", async () => {
   const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
-  const { execFileSync } = await import("node:child_process");
   const root = mkdtempSync(join(tmpdir(), "ci-push-"));
   const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
   const write = (p, s) => {
@@ -121,46 +455,52 @@ test("git fixture: a main push picks macOS tasks from its one commit", async () 
   };
   try {
     git("init", "-q");
-    write("pnpm-workspace.yaml", "packages:\n  - packages/*\n");
+    write("pnpm-workspace.yaml", "packages:\n  - apps/*\n  - packages/*\n");
     write("packages/a/package.json", JSON.stringify({ name: "a" }));
+    write("packages/a/src/a.test.ts", "");
+    write("apps/desktop/package.json", JSON.stringify({ name: "desktop" }));
     const first = commit();
     write("apps/desktop/native/passwords/Sources/Broker.swift", "// changed");
-    const second = commit();
+    commit();
     const push = detect({ root, event: "push", before: first });
-    assert.ok(Object.entries(push.lanes).every(([lane, on]) => on || lane.startsWith("native-")));
     assert.deepEqual(push.nativeMac, ["passwords-helper", "passwords-tests", "release-native"]);
-    // Several commits in one push, or a new branch, run every task.
+    assert.equal(push.lanes.tests, false);
     write("docs/a.md", "x");
     commit();
-    assert.deepEqual(detect({ root, event: "push", before: first }).nativeMac, allNativeMacTasks);
-    assert.deepEqual(
-      detect({ root, event: "push", before: "0".repeat(40) }).nativeMac,
-      allNativeMacTasks,
-    );
-    // A docs-only merge runs every Linux lane on main and no macOS task.
+    // A docs-only merge runs lint alone on main.
     const docs = detect({ root, event: "push", before: git("rev-parse", "HEAD^1") });
-    assert.deepEqual(docs.nativeMac, []);
-    assert.equal(docs.lanes.tests, true);
-    assert.equal(second.length, 40);
+    assert.deepEqual(on(docs), ["lint"]);
+    // Several commits in one push, or a new branch, run every lane and task.
+    for (const before of [first, "0".repeat(40)]) {
+      const all = detect({ root, event: "push", before });
+      assert.deepEqual(all.nativeMac, allNativeMacTasks);
+      assert.deepEqual(all.files.tests, ["packages/a/src/a.test.ts"]);
+      // This fixture has no integration files, so only that lane stays off.
+      assert.deepEqual(
+        on(all).filter((lane) => lane !== "integration"),
+        lanes.filter((lane) => lane !== "integration"),
+      );
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
-test("scheduled and manual runs take every task unless main has not changed", () => {
+test("scheduled and manual runs take everything unless main has not changed", () => {
   for (const event of ["schedule", "workflow_dispatch"]) {
     const plan = detect({ event });
     assert.deepEqual(plan.nativeMac, allNativeMacTasks);
     assert.ok(Object.values(plan.lanes).every(Boolean));
+    assert.deepEqual(plan.whole, { tests: true, integration: true });
   }
   const unchanged = detect({ event: "schedule", unchangedSince: "a".repeat(40) });
   assert.deepEqual(unchanged.nativeMac, []);
-  assert.ok(Object.values(unchanged.lanes).every((on) => on === false));
-  // Only a scheduled run consults the last full run.
+  assert.deepEqual(on(unchanged), ["lint"]);
   assert.deepEqual(
     detect({ event: "workflow_dispatch", unchangedSince: "a".repeat(40) }).nativeMac,
     allNativeMacTasks,
   );
 });
+
 test("the last full run is the newest earlier scheduled or manual main run that passed", async () => {
   const run = (run_number, head_sha, conclusion = "success", head_branch = "main") => ({
     run_number,
@@ -207,10 +547,6 @@ test("the last full run is the newest earlier scheduled or manual main run that 
     }),
     /HTTP 403/u,
   );
-});
-test("source-bearing markdown and fixtures never count as documentation", () => {
-  for (const p of ["SKILL.md", "docs/fixtures/prompt.md"])
-    assert.equal(decide([p], []).lanes.tests, true);
 });
 test("git fixture: dev/optional edges, deletion, rename, malformed manifest and missing base", async () => {
   const { mkdtempSync, mkdirSync, writeFileSync, rmSync, renameSync } = await import("node:fs");
@@ -279,157 +615,6 @@ test("git fixture: dev/optional edges, deletion, rename, malformed manifest and 
   }
 });
 
-test("real control-plane database changes select integration coverage", () => {
-  const real = readGraph(process.cwd());
-  const plan = decide(["apps/control-plane/src/database/store.ts"], real);
-  assert.ok(plan.affected.includes("@opensteer/control-plane"));
-  assert.equal(plan.lanes.integration, true);
-});
-
-// Enumerate independently from the detector: these are the integration config's
-// current include globs, not a hand-maintained workspace owner list.
-const realFiles = parseDiff(
-  (await import("node:child_process")).execFileSync("git", ["ls-files", "-z"], {
-    encoding: "utf8",
-  }),
-);
-const integrationFiles = realFiles.filter((p) =>
-  /^(?:apps\/.*\.integration\.test\.tsx?|packages\/.*\.integration\.test\.ts|tests\/.*\.integration\.test\.ts)$/.test(
-    p,
-  ),
-);
-const realGraph = readGraph(process.cwd());
-for (const owner of realGraph.filter((p) =>
-  integrationFiles.some((f) => f.startsWith(p.dir + "/")),
-)) {
-  test(`real integration owner and dependencies: ${owner.name}`, () => {
-    // An ordinary source edit must select integration, even though this edit
-    // neither changes a test nor happens to contain a lane-name substring.
-    const file = realFiles.find(
-      (f) =>
-        f.startsWith(owner.dir + "/src/") && /\.tsx?$/.test(f) && !/\.test\.|test-support/.test(f),
-    );
-    assert.ok(file, `missing source fixture for ${owner.name}`);
-    assert.equal(decide([file], realGraph).lanes.integration, true, file);
-    const pending = [...owner.deps];
-    const visited = new Set();
-    while (pending.length) {
-      const name = pending.pop();
-      const dependency = realGraph.find((p) => p.name === name);
-      assert.ok(dependency);
-      if (visited.has(dependency.name)) continue;
-      visited.add(dependency.name);
-      pending.push(...dependency.deps);
-      assert.equal(
-        decide([`${dependency.dir}/src/ordinary-change.ts`], realGraph).lanes.integration,
-        true,
-        dependency.name,
-      );
-    }
-  });
-}
-
-// Native Mac task selection. Each control names the task inputs it exercises; main's
-// full push run remains the backstop for anything a selection here misses.
-const nativeInputs = JSON.parse(
-  (await import("node:fs")).readFileSync(".github/scripts/ci-native-inputs.json", "utf8"),
-);
-const swiftOnly = (plan) => plan.nativeMac.filter((task) => task !== "iphone");
-test("a file a Swift task's node script imports selects that task, and only tasks importing it", () => {
-  const file = "packages/integration-catalog/src/definitions/computer-apps.ts";
-  assert.ok(nativeInputs["computer-tests"].includes("packages/integration-catalog"));
-  assert.ok(!nativeInputs["passwords-helper"].includes("packages/integration-catalog"));
-  const plan = decide([file], realGraph);
-  assert.deepEqual(swiftOnly(plan), ["computer-helper", "computer-tests", "release-native"]);
-  const signing = "apps/desktop/src/signed-helpers/metadata.ts";
-  assert.ok(nativeInputs["passwords-helper"].includes(signing));
-  assert.ok(swiftOnly(decide([signing], realGraph)).includes("passwords-helper"));
-});
-test("an unrelated edit, even a global one, runs no macOS task", () => {
-  const web = decide(["apps/web/src/app-model.ts"], realGraph);
-  assert.deepEqual(web.nativeMac, []);
-  assert.equal(web.lanes["native-mac"], false);
-  const launcher = decide(["scripts/test-integration.ts"], realGraph);
-  assert.equal(launcher.full, true);
-  assert.deepEqual(launcher.nativeMac, []);
-  assert.deepEqual(decide(["docs/releases.md"], realGraph).nativeMac, []);
-});
-test("Swift sources, node manifests and the CI definition select their tasks", () => {
-  assert.deepEqual(swiftOnly(decide(["apps/desktop/native/passwords/Package.swift"], realGraph)), [
-    "passwords-helper",
-    "passwords-tests",
-    "release-native",
-  ]);
-  // Swift-only tests do not depend on installed Node packages.
-  assert.deepEqual(swiftOnly(decide(["pnpm-lock.yaml"], realGraph)), [
-    "computer-helper",
-    "passwords-helper",
-    "computer-tests",
-    "dictation-helper",
-    "release-native",
-  ]);
-  assert.deepEqual(decide([".github/workflows/ci.yml"], realGraph).nativeMac, allNativeMacTasks);
-  assert.deepEqual(decide([], realGraph, realGraph, true).nativeMac, allNativeMacTasks);
-  assert.deepEqual(
-    detect({ root: "/missing", event: "pull_request" }).nativeMac,
-    allNativeMacTasks,
-  );
-});
-test("the native input list names only tracked files and packages", () => {
-  for (const [task, inputs] of Object.entries(nativeInputs))
-    for (const input of inputs)
-      assert.ok(
-        realFiles.some((file) => file === input || file.startsWith(`${input}/`)),
-        `${task}: ${input}`,
-      );
-});
-test("required-but-dynamic and directory-boundary inputs select exactly", () => {
-  // The build scripts load these through createRequire; the generated list follows them.
-  for (const file of [
-    "apps/desktop/scripts/signing-input.cjs",
-    "apps/desktop/scripts/macos-release-identity.cjs",
-  ])
-    assert.deepEqual(swiftOnly(decide([file], realGraph)), [
-      "computer-helper",
-      "passwords-helper",
-      "dictation-helper",
-      "release-native",
-    ]);
-  // A script beside them that no build loads runs neither helper.
-  assert.deepEqual(swiftOnly(decide(["apps/desktop/scripts/after-pack.cjs"], realGraph)), []);
-  // tsx compiles a task's node scripts with the tsconfig files above them and what
-  // those extend, so each selects the tasks whose scripts it compiles.
-  assert.deepEqual(swiftOnly(decide(["apps/desktop/tsconfig.json"], realGraph)), [
-    "computer-helper",
-    "passwords-helper",
-    "dictation-helper",
-    "release-native",
-  ]);
-  assert.deepEqual(swiftOnly(decide(["tsconfig.base.json"], realGraph)), [
-    "computer-helper",
-    "passwords-helper",
-    "computer-tests",
-    "dictation-helper",
-    "release-native",
-  ]);
-  assert.deepEqual(
-    swiftOnly(decide(["apps/desktop/native/computer-use-x/a.swift"], realGraph)),
-    [],
-  );
-  // A workspace package counts whole, manifest included.
-  assert.ok(
-    swiftOnly(decide(["packages/protocol/package.json"], realGraph)).includes("passwords-helper"),
-  );
-  // Swift tests read these TypeScript and fixture files across the language boundary.
-  assert.deepEqual(swiftOnly(decide(["packages/client/src/host/passwords.ts"], realGraph)), [
-    "passwords-tests",
-  ]);
-  assert.ok(
-    swiftOnly(decide(["packages/protocol/fixtures/login-envelope-v1.json"], realGraph)).includes(
-      "computer-tests",
-    ),
-  );
-});
 test("workflow steps name exactly the configured native-mac tasks and their Swift tests", async () => {
   const { readFileSync } = await import("node:fs");
   const { parse } = await import("yaml");
@@ -462,39 +647,14 @@ test("workflow steps name exactly the configured native-mac tasks and their Swif
     assert.deepEqual(vitestRuns.get(task).toSorted(), vitest.toSorted(), task);
   }
 });
-test("a root test edit selects its own lane, the test guards and typecheck, not everything", () => {
-  const lanesOf = (file) =>
-    Object.entries(decide([file], realGraph).lanes)
-      .filter(([, on]) => on)
-      .map(([lane]) => lane);
-  assert.deepEqual(lanesOf("tests/agent-context-budget-gate.test.ts"), [
-    "lint",
-    "build-types",
-    "tests",
-  ]);
-  // tests/test-tiers.test.ts and the other repo-wide guards run in `tests`.
-  assert.deepEqual(lanesOf("tests/browser-profiles.integration.test.ts"), [
-    "lint",
-    "build-types",
-    "tests",
-    "integration",
-  ]);
-  assert.deepEqual(lanesOf("tests/browser-harness-actions.engine.test.ts"), [
-    "lint",
-    "build-types",
-    "tests",
-  ]);
-  const darwin = decide(["tests/kernel-lock.test.ts"], realGraph);
-  assert.deepEqual(darwin.nativeMac, ["iphone"]);
-  assert.equal(darwin.lanes.integration, false);
-  // Support modules and fixtures under tests/ can feed any suite.
-  assert.ok(
-    Object.entries(decide(["tests/browser-deployment.test-support.ts"], realGraph).lanes).every(
-      ([lane, on]) => on || lane.startsWith("native-"),
-    ),
-  );
+test("the native input list names only tracked files and packages", () => {
+  for (const [task, inputs] of Object.entries(nativeInputs))
+    for (const input of inputs)
+      assert.ok(
+        realFiles.some((file) => file === input || file.startsWith(`${input}/`)),
+        `${task}: ${input}`,
+      );
 });
-
 test("dictation selects its Swift lane and pins its SDK independently", () => {
   const plan = decide(
     ["packages/apple-dictation/Sources/OpensteerDictation/DictationService.swift"],
@@ -507,174 +667,7 @@ test("dictation selects its Swift lane and pins its SDK independently", () => {
   assert.equal(nativeMacMatrix(["iphone"])[0].xcode, "/Applications/Xcode.app/Contents/Developer");
 });
 
-test("script READMEs and SKILL files, consumed and prettier inputs retain coverage", async () => {
-  for (const file of [
-    "scripts/README.md",
-    "scripts/test-vm/README.md",
-    "scripts/fixtures/README.md",
-    "scripts/test-support/README.md",
-    "scripts/SKILL.md",
-    "scripts/other/README.md",
-    "apps/runner/agent-skills/skills/SKILL.md",
-  ])
-    assert.equal(decide([file], graph).full, true, file);
-
-  const { readFileSync } = await import("node:fs");
-  const { defaultTestInclude, defaultTestExclude } = await import("./ci-test-files.mjs");
-  const guard = "tests/generated-build-ignores.test.ts";
-  const plan = decide([".prettierignore"], graph);
-  assert.equal(plan.lanes.tests, true);
-  assert.ok(defaultTestInclude.some((glob) => matchesGlob(guard, glob)));
-  assert.ok(!defaultTestExclude.some((glob) => matchesGlob(guard, glob)));
-  assert.match(readFileSync(guard, "utf8"), /\.prettierignore/);
-});
-
-test("release native proof uses release inputs and the hosted release toolchain", () => {
-  for (const file of [
-    ".github/workflows/release.yml",
-    "apps/desktop/native/passkeys/toolchain.json",
-    "apps/desktop/native/passkeys/addon.mm",
-    "apps/desktop/native/dictation/Sources/DictationHelper/main.swift",
-    "apps/desktop/scripts/build-swift-products.ts",
-    "packages/apple-data/Sources/OpensteerAppleData/DataContracts.swift",
-  ])
-    assert.ok(decide([file], realGraph).nativeMac.includes("release-native"), file);
-  for (const file of [
-    "apps/web/src/app-model.ts",
-    "docs/releases.md",
-    "scripts/public-download/build.ts",
-  ])
-    assert.ok(!decide([file], realGraph).nativeMac.includes("release-native"), file);
-  const [task] = nativeMacMatrix(["release-native"]);
-  assert.equal(task.runner, "macos-26");
-  assert.equal(task.xcode, "/Applications/Xcode_26.6.app/Contents/Developer");
-});
-test("notification preview native suites select their existing lanes", () => {
-  const graph = readGraph(process.cwd());
-  assert.ok(
-    decide(
-      ["apps/mobile/modules/notification-preview/ios/Sources/NotificationPreview/Preview.swift"],
-      graph,
-    ).nativeMac.includes("iphone"),
-  );
-  assert.equal(
-    decide(
-      [
-        "apps/mobile/modules/notification-preview/android/src/main/java/com/opensteer/notificationpreview/PreviewCrypto.kt",
-      ],
-      graph,
-    ).lanes.android,
-    true,
-  );
-  const fixture = decide(["packages/core/src/fixtures/notification-preview-v1.json"], graph);
-  assert.equal(fixture.lanes.android, true);
-  assert.equal(fixture.lanes.tests, true);
-});
-test("phone browser Kotlin selects Android; the files its tests share keep their own lanes too", () => {
-  const graph = readGraph(process.cwd());
-  for (const file of [
-    "apps/mobile/modules/phone-connection/android/src/main/java/com/opensteer/phoneconnection/PhoneConnectionRuntime.kt",
-    "apps/mobile/modules/phone-browser/android/src/main/java/com/opensteer/phonebrowser/PhoneBrowserPool.kt",
-    "apps/mobile/modules/remote-text-input/android/src/main/java/com/opensteer/remotetextinput/RemoteInputType.kt",
-  ])
-    assert.equal(decide([file], graph).lanes.android, true, file);
-  for (const file of [
-    "packages/browser-core/test-vectors/attach-tickets.v1.json",
-    "packages/browser-core/test-vectors/frames.v1.json",
-    "packages/browser-core/test-vectors/fences.v1.json",
-    "apps/mobile/modules/phone-browser/index.ts",
-    "apps/mobile/modules/phone-browser/types.ts",
-  ]) {
-    const shared = decide([file], graph);
-    assert.equal(shared.lanes.android, true, file);
-    assert.equal(shared.lanes.tests, true, file);
-  }
-});
-
-test("real-browser owners, dependencies, root files and deletions select browser journeys", async () => {
-  const { realBrowserTests } = await import("./ci-test-files.mjs");
-  for (const file of realBrowserTests)
-    assert.equal(decide([file], realGraph).lanes["browser-journeys"], true, file);
-  const owners = realGraph.filter((owner) =>
-    realBrowserTests.some((file) => file.startsWith(owner.dir + "/")),
-  );
-  for (const owner of owners) {
-    assert.ok(owner.coverage.includes("browser-journeys"), owner.name);
-    const pending = [owner.name];
-    const seen = new Set();
-    while (pending.length) {
-      const name = pending.pop();
-      if (seen.has(name)) continue;
-      seen.add(name);
-      const dependency = realGraph.find((entry) => entry.name === name);
-      assert.ok(dependency);
-      assert.equal(
-        decide([`${dependency.dir}/src/change.ts`], realGraph).lanes["browser-journeys"],
-        true,
-        name,
-      );
-      pending.push(...dependency.deps);
-    }
-    const head = realGraph.map((entry) =>
-      entry.name === owner.name ? { ...entry, coverage: [] } : entry,
-    );
-    assert.equal(
-      decide([`${owner.dir}/removed.ts`], head, realGraph).lanes["browser-journeys"],
-      true,
-    );
-  }
-  assert.equal(decide(["vitest.browser.config.ts"], realGraph).lanes["browser-journeys"], true);
-});
-
-test("native-windows runs for its Go modules, closure, CI definition and Windows-real files only", () => {
-  const windows = (files) => decide(files, realGraph).lanes["native-windows"];
-  for (const file of [
-    "apps/desktop/process-supervisor/main.go",
-    "apps/desktop/personal-runtime-launcher/exec_windows.go",
-    "apps/runner/native-fs-helper/go.mod",
-    // What the Windows-real files and build scripts import, counted whole for a package.
-    "scripts/dev-supervisor.ts",
-    "packages/shared/src/processControl.ts",
-    // The launch sites the Windows-real files drive.
-    "packages/harness/src/process-supervisor.ts",
-    "packages/harness-cursor/src/plugin.ts",
-    "apps/runner/src/agent/program-executor.ts",
-    "apps/runner/src/runtime/execution-containment.ts",
-    "tsconfig.base.json",
-    "vitest.windows.config.ts",
-    // A new Windows-real file selects the lane before the closure is regenerated.
-    "packages/harness/src/new-case.windows.test.ts",
-    "pnpm-lock.yaml",
-    ".github/workflows/ci.yml",
-    ".github/scripts/run-as-standard-user.ps1",
-  ])
-    assert.equal(windows([file]), true, file);
-  for (const file of [
-    "apps/web/src/app-model.ts",
-    "scripts/test-integration.ts",
-    "docs/releases.md",
-    "apps/desktop/process-supervisor-x/main.go",
-  ])
-    assert.equal(windows([file]), false, file);
-  assert.ok(nativeInputs["native-windows"].includes("tests/windows-lane.windows.test.ts"));
-});
-test("main selects native-windows per push; scheduled, manual and failed detection always run it", () => {
-  assert.equal(
-    decide(["apps/web/src/app-model.ts"], realGraph, realGraph, true, { fullNative: false }).lanes[
-      "native-windows"
-    ],
-    false,
-  );
-  assert.equal(decide([], realGraph, realGraph, true).lanes["native-windows"], true);
-  for (const event of ["schedule", "workflow_dispatch"])
-    assert.equal(detect({ event }).lanes["native-windows"], true, event);
-  assert.equal(
-    detect({ event: "schedule", unchangedSince: "a".repeat(40) }).lanes["native-windows"],
-    false,
-  );
-  assert.equal(detect({ root: "/missing", event: "pull_request" }).lanes["native-windows"], true);
-});
-test("Check needs native-windows, and the changes job and action publish its flag", async () => {
+test("Check needs every lane, and the changes job and action publish the plan", async () => {
   const { readFileSync } = await import("node:fs");
   const { parse } = await import("yaml");
   const workflow = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
@@ -683,6 +676,15 @@ test("Check needs native-windows, and the changes job and action publish its fla
     assert.ok(workflow.jobs.Check.needs.includes(lane), lane);
     assert.ok(workflow.jobs.changes.outputs[lane], lane);
     assert.ok(action.outputs[lane], lane);
+  }
+  for (const output of [
+    "typecheck-filters",
+    "build-filters",
+    "tests-shards",
+    "integration-shards",
+  ]) {
+    assert.ok(workflow.jobs.changes.outputs[output], output);
+    assert.ok(action.outputs[output], output);
   }
   assert.equal(workflow.jobs["native-windows"]["runs-on"], "windows-2025");
 });
