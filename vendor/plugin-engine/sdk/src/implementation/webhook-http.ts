@@ -81,6 +81,7 @@ export const webhookCallback = (pluginEngine: PluginEngine) =>
     });
   }).pipe(
     Effect.catchTags({
+      AppNotFound: () => Effect.succeed(HttpServerResponse.empty({ status: 404 })),
       WebhookNotFound: () => Effect.succeed(HttpServerResponse.empty({ status: 404 })),
       WebhookFailed: ({ reason }) =>
         Effect.succeed(HttpServerResponse.empty({ status: reason === "inactive" ? 410 : 503 })),

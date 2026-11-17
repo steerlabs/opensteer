@@ -25,7 +25,7 @@ const callbacks = new Map<
 >();
 const elicitations = new Map<string, AbortController>();
 const requests = new Map<string, AbortController>();
-const streams = new Map<string, AsyncIterator<Uint8Array>>();
+const streams = new Map<string, ReadableStreamDefaultReader<Uint8Array>>();
 let engine: Awaited<ReturnType<typeof startEngine>> | undefined;
 let initializing: Promise<void> | undefined;
 let closing = false;
@@ -92,7 +92,7 @@ const stop = async () => {
   if (closing) return;
   closing = true;
   for (const request of requests.values()) request.abort();
-  for (const stream of streams.values()) await stream.return?.().catch(() => {});
+  for (const stream of streams.values()) await stream.cancel().catch(() => {});
   streams.clear();
   await initializing;
   await engine?.close();
@@ -145,7 +145,10 @@ process.on("message", (raw: unknown) => {
     }
     if (message.type === "cancel") {
       requests.get(message.id)?.abort();
-      await streams.get(message.id)?.return?.();
+      await streams
+        .get(message.id)
+        ?.cancel()
+        .catch(() => {});
       streams.delete(message.id);
       return;
     }
@@ -209,7 +212,7 @@ process.on("message", (raw: unknown) => {
         return;
       }
       try {
-        const chunk = await reader.next();
+        const chunk = await reader.read();
         send({
           type: "streamChunk",
           id: message.id,
@@ -247,7 +250,7 @@ process.on("message", (raw: unknown) => {
         controller.signal,
       );
       if (result instanceof Response) {
-        if (result.body) streams.set(message.id, result.body.values());
+        if (result.body) streams.set(message.id, result.body.getReader());
         send({
           type: "result",
           id: message.id,

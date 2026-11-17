@@ -38,6 +38,12 @@ the Run's guide.
 App tool outputs carry app identity and publication metadata, never a viewing credential or a
 token-bearing URL; clients get viewing authority on their own and treat the whole URL as private.
 
+Plugin pages use the same viewing gateway, origins and isolation. Their operations act as the
+owner viewing the page, with the plugin's current account links and standing access setting. A
+mutation that requires tool approval fails, as in the framework's own page host; pages cannot
+pause for a Request. Plugin pages are viewing targets, not published Apps: the tab model pins a
+published App's computer and numeric publication version, which plugins do not have.
+
 ## Origins
 
 Each app has its own origin, because an opaque sandbox breaks ordinary web apps: WebKit refuses even

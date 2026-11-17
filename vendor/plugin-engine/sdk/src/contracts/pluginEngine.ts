@@ -283,7 +283,7 @@ export interface PluginEngineInputs {
    * Origin new webhook subscriptions register their callbacks on; defaults to `origin`.
    * Existing subscriptions keep the callback URL they stored.
    */
-  readonly webhookOrigin?: string;
+  readonly webhookOrigin?: string | (() => Effect.Effect<string | undefined, Error>);
   /** The Git backend behind app source. The pluginEngine derives revision storage from it. */
   readonly git: RepositoryBackend;
   /**

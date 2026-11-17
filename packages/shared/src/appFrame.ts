@@ -172,7 +172,9 @@ export function isAppNavigation(value: string, document: string): boolean {
   try {
     const from = new URL(document);
     const to = new URL(value, document);
-    const prefix = /^\/v1\/apps\/[^/]+\/(?:light|dark)\/[^/]+\//u.exec(from.pathname)?.[0];
+    const prefix = /^\/v1\/(?:apps|plugin-pages)\/[^/]+\/(?:light|dark)\/[^/]+\//u.exec(
+      from.pathname,
+    )?.[0];
     return (
       to.protocol === from.protocol &&
       to.host === from.host &&

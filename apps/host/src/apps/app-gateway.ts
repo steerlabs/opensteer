@@ -33,6 +33,7 @@ const cookieLifetime = 30 * 24 * 60 * 60 * 1_000;
 const loopbackNames = ["localhost", "127.0.0.1", "[::1]"];
 const identitySchema = z.strictObject({
   appId: AppIdSchema,
+  kind: z.enum(["app", "plugin"]),
   origin: z.string(),
   userId: UserIdSchema,
   sessionId: AuthSessionIdSchema,
@@ -52,6 +53,7 @@ export function hasAppAuthority(headers: IncomingHttpHeaders): boolean {
 interface AppGatewayOptions {
   apps: Pick<AppService, "get" | "response" | "connect" | "onRevoked">;
   identity: Pick<IdentityService, "isSessionCurrent">;
+  plugins?: Pick<import("../plugins/plugin-pages.js").PluginPages, "authorize" | "response">;
   signingKey: Uint8Array;
   canonicalOrigin: string;
   /** A real origin holds one person's logins and storage, so shared Deployments have none. */
@@ -80,6 +82,7 @@ export class AppGateway {
     session: AuthenticatedSession,
     theme: AppTheme,
     headers: Readonly<Record<string, string | readonly string[] | undefined>>,
+    kind: "app" | "plugin" = "app",
   ): string | undefined {
     if (!this.#options.realOrigins) return undefined;
     const canonical = new URL(this.#options.canonicalOrigin);
@@ -109,6 +112,7 @@ export class AppGateway {
     this.#tickets.set(ticket, {
       identity: {
         appId,
+        kind,
         origin,
         userId: session.user.id,
         sessionId: session.id,
@@ -137,7 +141,9 @@ export class AppGateway {
           throw new Error("App request refused");
         const { identity, cookie, path, entry } = await this.#admit(request.raw, mode);
         this.#recheck(identity, controller, request.raw.socket);
-        const result = await this.#options.apps.response({
+        const target = identity.kind === "plugin" ? this.#options.plugins : this.#options.apps;
+        if (!target) throw new Error("App target is unavailable");
+        const result = await target.response({
           appId: identity.appId,
           userId: identity.userId,
           originMode: mode,
@@ -218,6 +224,7 @@ export class AppGateway {
       if (!this.#isolated(request, mode.origin, true)) throw new Error("App upgrade refused");
       const { identity, cookie, path, entry } = await this.#admit(request, mode);
       this.#recheck(identity, controller, socket);
+      if (identity.kind !== "app") throw new Error("Plugin pages do not use app tunnels");
       const { stream, port } = await this.#options.apps.connect(
         identity.appId,
         identity.userId,
@@ -412,7 +419,10 @@ export class AppGateway {
       !(await this.#options.identity.isSessionCurrent(identity.sessionId, identity.userId))
     )
       throw new Error("App session ended");
-    await this.#options.apps.get(identity.userId, identity.appId);
+    if (identity.kind === "plugin") {
+      if (!this.#options.plugins) throw new Error("Plugin pages unavailable");
+      await this.#options.plugins.authorize(identity.userId, identity.appId);
+    } else await this.#options.apps.get(identity.userId, identity.appId);
   }
   #track(socket: Duplex, controller: AbortController): () => void {
     this.#sockets.set(socket, (this.#sockets.get(socket) ?? 0) + 1);

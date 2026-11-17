@@ -1,3 +1,5 @@
+import { resolvePublicAddress } from "@opensteer/access";
+import { PluginPages } from "../plugins/plugin-pages.js";
 import { PluginOAuthService } from "../plugins/plugin-oauth-service.js";
 import { PluginOAuthStore } from "../plugins/plugin-oauth-store.js";
 import { PluginAuthority } from "../plugins/plugin-authority.js";
@@ -1120,6 +1122,15 @@ export async function createHostRuntime(
             .catch((error) => app.log.error({ err: error }, "Plugin recovery failed"));
       },
       credentialKey,
+      webhookOrigin: async () => {
+        const status = await personalRemoteAccess?.status();
+        if (status?.mode === "connect") return status.route?.document.route.origin;
+        if (config.exposure === "loopback") return undefined;
+        return resolvePublicAddress(config.canonicalOrigin.hostname).then(
+          () => config.canonicalOrigin.origin,
+          () => undefined,
+        );
+      },
       origin: config.canonicalOrigin.origin,
       ...options.pluginEngine,
     });
@@ -2339,10 +2350,12 @@ export async function createHostRuntime(
       egress,
       executionLeaseMs: config.executionLeaseMs,
       skillPolicy: (ownerUserId) => integrationPlatformStore.settings.skillPolicy(ownerUserId),
-      pluginVersions: async (ownerUserId) =>
-        (await integrationPlatformStore.plugins.current(ownerUserId)).map(
+      pluginVersions: async (ownerUserId) => [
+        ...(await integrationPlatformStore.plugins.current(ownerUserId)).map(
           ({ id, name, digest }) => ({ pluginId: id, name, digest }),
         ),
+        ...(await pluginService!.skillCache.versions(await pluginAgentStore.settings(ownerUserId))),
+      ],
       pluginsTokens,
       attachmentRunTokens,
       attachments: attachmentStore,
@@ -2691,6 +2704,14 @@ export async function createHostRuntime(
     });
     const pluginOwnerApi = new PluginOwnerApi({
       service: pluginService,
+      pages: new PluginPages({
+        service: pluginService,
+        assertOwner: (userId) => requirePersonalOwner(database, userId),
+        access: async (userId, plugin) =>
+          (await pluginAgentStore.settings(userId)).find((row) => row.pluginId === plugin)
+            ?.access ?? "all",
+      }),
+      webhooks: { service: pluginService, origin: () => pluginService!.webhookOrigin() },
       settings: pluginAgentStore,
       accountLinked: (input) => pluginTools.accountLinked(input),
       assertOwner: (userId) => requirePersonalOwner(database, userId),

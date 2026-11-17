@@ -1,3 +1,4 @@
+import { folderSkills } from "apps/skills";
 import { oauthReviewDigest } from "./oauth-review.js";
 import { join } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
@@ -5,6 +6,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as PgClient from "@effect/sql-pg/PgClient";
 import {
   Option,
+  Result,
   Deferred,
   Effect,
   Exit,
@@ -55,6 +57,7 @@ import {
   WebhookTarget,
   LinkWebhookSource,
   CompleteWebhookSetup,
+  WebhookSetupView,
   type PluginEngine,
 } from "@opensteer/plugin-engine-sdk/core";
 import { filesystemBlobStore, workerdApps } from "@opensteer/plugin-engine-sdk/node";
@@ -96,6 +99,21 @@ import {
 } from "./engine-protocol.js";
 import type { z } from "zod";
 import { ElicitationResponse, type ElicitationHandler } from "apps/contracts";
+
+const packagedSkills = (files: Schema.Schema.Type<typeof SourceFiles>) =>
+  Effect.tryPromise({
+    try: () =>
+      folderSkills({
+        files: files
+          .filter((file) => file.path.startsWith("skills/"))
+          .map((file) => {
+            if (!("content" in file) || "encoding" in file)
+              throw new PluginServiceError("invalid", "Skill resources must be UTF-8 text");
+            return { path: file.path, content: file.content };
+          }),
+      }),
+    catch: (error) => (error instanceof Error ? error : new Error("Invalid plugin skill source")),
+  });
 
 type Callback = <K extends PluginCallback>(
   operation: K,
@@ -301,8 +319,8 @@ export async function startEngine(
         const engine = yield* createPluginEngine({
           database,
           secret: Redacted.make(config.secret),
-          origin: config.origin,
-          // Source backend construction point: replace this adapter to remove the system git dependency.
+          webhookOrigin: () =>
+            callback("webhookOrigin", {}).pipe(Effect.map((origin) => origin ?? undefined)),
           git: repositories,
           markdown: markdownRefusals,
           hooks: accountAdapter.hooks,
@@ -565,6 +583,12 @@ export async function startEngine(
               })).files;
               name = input.name;
             }
+            const validSkills = yield* packagedSkills(files).pipe(Effect.result);
+            if (Result.isFailure(validSkills))
+              return {
+                status: "build-error",
+                error: { code: "invalid-skills", message: validSkills.failure.message },
+              };
             return yield* engine.apps
               .deploy({
                 owner,
@@ -593,7 +617,16 @@ export async function startEngine(
               plugin,
               links: yield* accountAdapter.links(app),
               versions: yield* engine.apps.versions({ app, owner }),
-              schedules: yield* engine.schedules.list({ app, owner }),
+              schedules: Option.isSome(selected)
+                ? ((yield* read(
+                    engine.schedules.definitions({
+                      app,
+                      owner,
+                      actor: owner,
+                      accounts: selected.value,
+                    }),
+                  )) ?? [])
+                : [],
               webhooks: yield* engine.webhooks.list({ app }),
               workflows: Option.isSome(selected)
                 ? yield* read(engine.apps.workflows.list({ app, accounts: selected.value }))
@@ -853,11 +886,14 @@ export async function startEngine(
             return yield* skills(Schema.decodeUnknownSync(SkillsInput)(raw), backend(context));
           case "skillFiles": {
             const app = AppId.make(operations.skillFiles.input.parse(raw).plugin);
-            const bundle = yield* engine.skills.bundle({
-              app,
-              accounts: yield* accountAdapter.accounts(app),
-            });
-            const files = bundle.skills.flatMap((skill) =>
+            const plugin = yield* engine.apps.get({ app, owner });
+            if (!plugin.activeVersion)
+              return yield* Effect.fail(
+                new PluginServiceError("invalid", "Plugin is not deployed"),
+              );
+            const source = yield* engine.apps.source({ app, owner, version: plugin.activeVersion });
+            const skills = yield* packagedSkills(source.files);
+            const files = skills.flatMap((skill) =>
               skill.files.map((file) => ({
                 path: `${skill.name}/${file.path}`,
                 content: file.content,
@@ -865,7 +901,7 @@ export async function startEngine(
             );
             return {
               plugin: app,
-              version: bundle.version,
+              version: plugin.activeVersion,
               digest: createHash("sha256").update(JSON.stringify(files)).digest("hex"),
               files,
             };
@@ -1075,7 +1111,43 @@ export async function startEngine(
         case "schedules.list":
           return decode(ScheduleInputs.list).pipe(Effect.flatMap(engine.schedules.list));
         case "schedules.configure":
-          return decode(ScheduleInputs.configure).pipe(Effect.flatMap(engine.schedules.configure));
+          return Effect.gen(function* () {
+            const app = AppId.make(String(input.input.app));
+            const saved = (yield* engine.schedules.list({ app, owner })).find(
+              (schedule) =>
+                schedule.name === input.input.name &&
+                (schedule.actor === null || schedule.actor === owner),
+            );
+            if (saved)
+              return yield* engine.schedules.update({
+                app,
+                name: saved.name,
+                copy: saved.id,
+                owner,
+                enabled: input.input.enabled === true,
+                ...(input.input.approvalMode === undefined
+                  ? {}
+                  : {
+                      approvalMode: Schema.decodeUnknownSync(
+                        ScheduleInputs.configure.fields.approvalMode,
+                      )(input.input.approvalMode),
+                    }),
+              });
+            const definitions = yield* engine.schedules.definitions({
+              app,
+              actor: owner,
+              accounts: yield* accountAdapter.accounts(app),
+            });
+            const declaration = definitions.find((schedule) => schedule.name === input.input.name);
+            if (!declaration)
+              return yield* Effect.fail(
+                new PluginServiceError("invalid", "Plugin does not declare this schedule"),
+              );
+            return yield* Schema.decodeUnknownEffect(ScheduleInputs.configure)({
+              ...data,
+              ...(declaration.scope === "app" ? {} : { actor: owner }),
+            }).pipe(Effect.flatMap(engine.schedules.configure));
+          });
         case "schedules.update":
           return decode(ScheduleInputs.update).pipe(Effect.flatMap(engine.schedules.update));
         case "schedules.remove":
@@ -1113,9 +1185,15 @@ export async function startEngine(
         case "webhooks.confirmRemoval":
           return decode(WebhookTarget).pipe(Effect.flatMap(engine.webhooks.confirmRemoval));
         case "webhookSetup.read":
-          return decode(WebhookTarget).pipe(Effect.flatMap(engine.webhookSetup.read));
+          return decode(WebhookTarget).pipe(
+            Effect.flatMap(engine.webhookSetup.read),
+            Effect.flatMap(Schema.encodeEffect(WebhookSetupView)),
+          );
         case "webhookSetup.complete":
-          return decode(CompleteWebhookSetup).pipe(Effect.flatMap(engine.webhookSetup.complete));
+          return decode(CompleteWebhookSetup).pipe(
+            Effect.flatMap(engine.webhookSetup.complete),
+            Effect.tap(() => composed.scheduler.wakeWebhookSources),
+          );
       }
     };
     return {

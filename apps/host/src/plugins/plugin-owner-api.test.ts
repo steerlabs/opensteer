@@ -1,3 +1,4 @@
+import { z } from "zod";
 import Fastify from "fastify";
 import { createId, OpensteerError, type AuthenticatedSession, type UserId } from "@opensteer/core";
 import {
@@ -120,7 +121,12 @@ function setup(options: { plugins?: number; tools?: number } = {}) {
           readOnly: index % 2 === 0,
         })),
       },
-      skills: { skills: [{ name: "triage", description: "How to triage" }] },
+      skills: {
+        revision: "a".repeat(64),
+        app: { id, name: `Plugin ${id}`, slug: id },
+        version: `${id}-v2`,
+        skills: [{ name: "triage", description: "How to triage" }],
+      },
       versions: [
         { id: `${id}-v1`, createdAt: "2026-11-01T00:00:00.000Z" },
         { id: `${id}-v2`, createdAt: "2026-11-02T00:00:00.000Z" },
@@ -158,7 +164,32 @@ function setup(options: { plugins?: number; tools?: number } = {}) {
     reviewAccountLink: vi.fn(async () => consent),
     linkAccount: vi.fn(async () => consent),
     unlinkAccount: vi.fn(async () => null),
-    manage: vi.fn(async (_input: unknown, _context: unknown) => ({ id: "run1" })),
+    manage: vi.fn(async (input: unknown, _context: unknown) => {
+      const { operation } = z.object({ operation: z.string() }).parse(input);
+      return operation === "schedules.answer"
+        ? {
+            id: "r1",
+            scheduleId: "schedule1",
+            app: "p0",
+            owner: "personal",
+            name: "w",
+            status: "denied",
+            scheduledAt: "2026-11-01T00:00:00.000Z",
+            startedAt: "2026-11-01T00:00:00.000Z",
+            finishedAt: "2026-11-01T00:00:00.000Z",
+            expiresAt: null,
+            requestId: null,
+            failure: null,
+          }
+        : {
+            id: "run1",
+            app: "p0",
+            version: "p0-v2",
+            workflow: "w",
+            status: "queued",
+            createdAt: "2026-11-01T00:00:00.000Z",
+          };
+    }),
   };
   const store = {
     settings: vi.fn(async () => [...settings.values()]),
@@ -309,7 +340,11 @@ describe("the person's plugin API", () => {
       consent,
       links: [{ account: { id: "acc1", label: "Work" }, current: false }],
     });
-    expect(view.page).toEqual({ url: null, unavailable: expect.any(String) });
+    expect(view.page).toEqual({
+      url: null,
+      reference: { kind: "plugin", pluginId: "p0" },
+      unavailable: expect.any(String),
+    });
   });
 
   it("pages the catalog through the engine with the Host's cursor", async () => {

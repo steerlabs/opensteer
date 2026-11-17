@@ -671,6 +671,14 @@ test("input always goes to the person, and its answer reaches only that executio
   const second = await call(caller, "plugin_call", {
     calls: { path: "tools.fixture.input", input: { label: "second" } },
   });
+  expect(first, JSON.stringify(first)).toMatchObject({
+    status: "pending",
+    requestId: expect.any(String),
+  });
+  expect(second, JSON.stringify(second)).toMatchObject({
+    status: "pending",
+    requestId: expect.any(String),
+  });
   const firstRequest = await store.requests.get(z.custom<RequestId>().parse(first.requestId));
   expect(firstRequest?.kind).toBe("plugin.input");
   expect(firstRequest?.presentation.plugin?.decision).toMatchObject({

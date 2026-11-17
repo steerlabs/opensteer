@@ -35,11 +35,13 @@ it("permits relative app resources and same-prefix navigation without granting a
   expect(appFrameContentSecurityPolicy).toContain("connect-src 'self'");
   expect(appFrameContentSecurityPolicy).toContain("script-src 'self' 'unsafe-inline' https:");
   expect(appFrameContentSecurityPolicy).not.toContain("allow-same-origin");
-  const prefix = "https://host/v1/apps/app_test/dark/token/";
-  expect(isAppNavigation(prefix + "settings", prefix)).toBe(true);
-  expect(isAppNavigation(prefix + "#details", prefix)).toBe(true);
-  expect(isAppNavigation("https://host/v1/rpc/foo", prefix)).toBe(false);
-  expect(isAppNavigation("https://other/v1/apps/app_test/dark/token/", prefix)).toBe(false);
+  for (const kind of ["apps", "plugin-pages"]) {
+    const prefix = `https://host/v1/${kind}/app_test/dark/token/`;
+    expect(isAppNavigation(prefix + "settings", prefix)).toBe(true);
+    expect(isAppNavigation(prefix + "#details", prefix)).toBe(true);
+    expect(isAppNavigation("https://host/v1/rpc/foo", prefix)).toBe(false);
+    expect(isAppNavigation("https://other/v1/apps/app_test/dark/token/", prefix)).toBe(false);
+  }
 });
 
 it("maps every app to exactly one origin label and rejects other spellings", async () => {

@@ -111,6 +111,7 @@ export const hostApiScopes = {
   "devices.overview.get": "session",
   "plugins.installed.list": "session",
   "plugins.get": "session",
+  "plugins.page.view": "session",
   "plugins.catalog.list": "session",
   "plugins.catalog.get": "session",
   "plugins.accounts.list": "session",
