@@ -1928,17 +1928,17 @@ export async function setRunnerShellFullDiskAccess(
   fullDiskAccess: boolean,
 ): Promise<boolean> {
   return commitPersonalMutation(database, async (tx, mutation) => {
-  const result = await tx
-    .updateTable("runners")
-    .set({
-      moduleDescriptors: sql`jsonb_set(module_descriptors, '{shell,fullDiskAccess}', to_jsonb(${fullDiskAccess}::boolean))`,
-    })
-    .where("id", "=", runnerId)
-    .where("revokedAt", "is", null)
-    .where(sql<boolean>`module_descriptors ? 'shell'`)
-    .executeTakeFirst(databaseOperationOptions());
-  if (result.numUpdatedRows > 0n) mutation.bumpResource("machine");
-  return result.numUpdatedRows > 0n;
+    const result = await tx
+      .updateTable("runners")
+      .set({
+        moduleDescriptors: sql`jsonb_set(module_descriptors, '{shell,fullDiskAccess}', to_jsonb(${fullDiskAccess}::boolean))`,
+      })
+      .where("id", "=", runnerId)
+      .where("revokedAt", "is", null)
+      .where(sql<boolean>`module_descriptors ? 'shell'`)
+      .executeTakeFirst(databaseOperationOptions());
+    if (result.numUpdatedRows > 0n) mutation.bumpResource("machine");
+    return result.numUpdatedRows > 0n;
   });
 }
 export async function authenticateRunnerConnection(

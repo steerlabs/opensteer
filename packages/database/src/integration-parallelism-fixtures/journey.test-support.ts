@@ -50,8 +50,8 @@ export function databaseJourney(label: string): void {
       }),
     );
     if (scenario === "cycle") {
-      const from = label === "a" ? "deployment_event_state" : "threads";
-      const to = label === "a" ? "threads" : "deployment_event_state";
+      const from = label === "a" ? "client_sync_state" : "threads";
+      const to = label === "a" ? "threads" : "client_sync_state";
       appendFileSync(
         process.env.OPENSTEER_LOCK_ORDER_TRACE!,
         JSON.stringify({
@@ -75,13 +75,13 @@ export function databaseJourney(label: string): void {
       const client = new Client({ connectionString: hostUrl });
       await client.connect();
       try {
-        await client.query("create temporary table deployment_event_state (id text primary key)");
+        await client.query("create temporary table client_sync_state (id text primary key)");
         await client.query("create temporary table threads (id text primary key)");
-        await client.query("insert into deployment_event_state values ('w')");
+        await client.query("insert into client_sync_state values ('w')");
         await client.query("insert into threads values ('t')");
         await client.query("begin");
         await client.query("select * from threads for no key update");
-        await client.query("select * from deployment_event_state for no key update");
+        await client.query("select * from client_sync_state for no key update");
         await client.query("commit");
       } finally {
         await client.end();

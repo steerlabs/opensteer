@@ -1,6 +1,6 @@
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { upsertSelfDeviceInTransaction } from "./device-inventory-store.js";
 import { DeviceIdSchema } from "@opensteer/core";
-import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   personalFixtureOwner,
   createPersonalRunFixturePort,
@@ -3480,7 +3480,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     let replacing: Promise<unknown> | undefined;
     try {
       await barrier.reached;
-      replacing = withPersonalTransaction(database, (transaction) =>
+      replacing = commitPersonalMutation(database, (transaction) =>
         installIntegrationInTransaction(transaction, {
           actorUserId: setup.ownerUserId,
           adapterSnapshot: null,
@@ -3560,7 +3560,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         /"name":"integration_?tools"/iu.test(node) &&
         node.includes("ForNoKeyUpdate"),
     );
-    const replacing = withPersonalTransaction(barrier.database, (transaction) =>
+    const replacing = commitPersonalMutation(barrier.database, (transaction) =>
       installIntegrationInTransaction(transaction, {
         actorUserId: setup.ownerUserId,
         adapterSnapshot: null,
@@ -3595,7 +3595,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     let revoking: Promise<unknown> | undefined;
     try {
       await barrier.reached;
-      revoking = withPersonalTransaction(database, (transaction) =>
+      revoking = commitPersonalMutation(database, (transaction) =>
         revokeComputerConnectionsInTransaction(transaction, {
           connectionId: source.connection.id,
           ownerUserId: setup.ownerUserId,

@@ -1,3 +1,4 @@
+import { lockThreadProviderSession } from "./run-projection-locks.js";
 import { refreshRequestState } from "./request-persistence.js";
 import { ChannelConversationIdSchema } from "@opensteer/channel-core";
 import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
@@ -136,6 +137,7 @@ export async function finalizeRunTransaction(
   return commitPersonalMutation(transaction, async (tx, mutation) => {
     const children = await readFinishChildren(tx, run.id);
     if (!children.hasMore) {
+      await lockThreadProviderSession(tx, run.threadId, run.providerSessionId);
       await settleFinishChildren(tx, mutation, run.id, input, children);
       await finalizeRunOutcome(tx, input, run, thread, reply?.id ?? null, mutation);
       mutation.react({
@@ -370,6 +372,7 @@ export async function drainRunFinish(
         .executeTakeFirst();
       if (!run?.finishIntent) return "settled";
       await lockThreadRow(tx, run.threadId);
+      await lockThreadProviderSession(tx, run.threadId, run.providerSessionId);
       const thread = await tx
         .selectFrom("threads")
         .selectAll()

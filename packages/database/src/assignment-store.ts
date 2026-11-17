@@ -35,7 +35,7 @@ import {
 import { isDeepStrictEqual } from "node:util";
 import { cancelPending } from "./request-store.js";
 import { finalizeRunTransaction } from "./run-finalization.js";
-import { lockRunProjectionRows } from "./run-projection-locks.js";
+import { lockRunProjectionRows, lockThreadProviderSession } from "./run-projection-locks.js";
 import { runReply } from "./run-reply.js";
 const assignmentResultPreviewMaxBytes = 8 * 1_024;
 const truncatedReplyNote = "\n\n[Reply truncated. The full reply is in the task.]";
@@ -658,6 +658,8 @@ export async function drainAssignmentCancellation(
         .limit(16)
         .execute();
       if (inputs.length) {
+        await lockThreadRow(tx, assignment.childThreadId);
+        await lockThreadProviderSession(tx, assignment.childThreadId);
         const rows = await tx
           .updateTable("threadInputs")
           .set({ state: "cancelled", cancelReason: "assignment-cancelled", updatedAt: now })

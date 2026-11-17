@@ -3906,8 +3906,11 @@ export async function ensureQueuedRun(
         .select("status")
         .where("id", "=", candidate.assignmentId)
         .executeTakeFirst();
-      if (assignment && (assignment.status !== "open" ||
-        await assignmentWasCancelled(transaction, candidate.assignmentId))) {
+      if (
+        assignment &&
+        (assignment.status !== "open" ||
+          (await assignmentWasCancelled(transaction, candidate.assignmentId)))
+      ) {
         const cancelled = await transaction
           .updateTable("threadInputs")
           .set({

@@ -2246,7 +2246,7 @@ describeStore("PostgreSQL store", (it) => {
     expect(delivered).toMatchObject({ throughOrdinal: 1, replayed: false });
     await expect(
       store.markSteerUnknown(steered.command.id, "Late ambiguous transport result"),
-    ).resolves.toEqual([]);
+    ).resolves.toBeUndefined();
     await expect(
       database
         .selectFrom("threadInputs")

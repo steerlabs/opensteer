@@ -1,6 +1,7 @@
 import {
   SequenceSchema,
   contentSaysSomething,
+  utf8Prefix,
   type ContentPart,
   type MessageId,
   deriveThreadStatus,
@@ -113,7 +114,7 @@ export async function projectLastReply(
   const firstText = reply.content.find((part) => part.type === "text" && /\S/u.test(part.text));
   const preview =
     firstText?.type === "text"
-      ? plainTextExcerpt(firstText.text.slice(0, 16_384), taskLineMaxLength)
+      ? plainTextExcerpt(utf8Prefix(firstText.text, 16_384), taskLineMaxLength)
       : null;
   await tx
     .updateTable("threads")
@@ -193,7 +194,6 @@ export async function projectThreadState(
       .selectFrom("runs")
       .select(["status", "maintenance", "failure"])
       .where("threadId", "=", threadId)
-      .where("maintenance", "is", null)
       .orderBy("runOrdinal", "desc")
       .limit(1)
       .executeTakeFirst();

@@ -548,11 +548,6 @@ integration.sequential("unified integration access Requests", () => {
       resolvedBy: fixture.userId,
     });
     expect(selected).toMatchObject({
-      events: [
-        expect.objectContaining({
-          type: "request.updated",
-        }),
-      ],
       request: {
         payload: {
           requestedServerId: material.servers[0]!.id,

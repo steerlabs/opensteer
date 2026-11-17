@@ -2100,7 +2100,8 @@ describeStore("PostgreSQL store", (it) => {
         runnerId: fixture.runnerId,
       }),
     ).resolves.toMatchObject({
-      wasDuplicate: false,
+      replayed: false,
+      throughOrdinal: 0,
     });
     expect(first.run).toMatchObject({
       harnessInstanceId: fixture.harnessInstance.id,
@@ -2305,7 +2306,8 @@ describeStore("PostgreSQL store", (it) => {
         runnerId: fixture.runnerId,
       }),
     ).resolves.toMatchObject({
-      wasDuplicate: false,
+      replayed: false,
+      throughOrdinal: 1,
     });
     expect(
       await database

@@ -1,7 +1,7 @@
 import { type RunMaintenance, type ThreadId, type UserId, OpensteerError } from "@opensteer/core";
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { enqueueThreadInputInTransaction } from "./thread-inbox.js";
 
 export async function admitIdleCompaction(
@@ -14,7 +14,7 @@ export async function admitIdleCompaction(
   },
 ) {
   try {
-    return await withPersonalTransaction(database, async (transaction) => {
+    return await commitPersonalMutation(database, async (transaction) => {
       const result = await enqueueThreadInputInTransaction(transaction, {
         ...input,
         ...(input.nowMs === undefined ? {} : { maintenanceNowMs: input.nowMs }),
