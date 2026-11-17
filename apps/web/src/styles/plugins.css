@@ -1,11 +1,3 @@
-/* ---- Settings → Plugins ---- */
-.plugin-install__skipped {
-  margin: var(--space-4) 0 0;
-  padding-left: var(--space-16);
-  color: var(--text-soft);
-  font-size: var(--text-md);
-}
-
 .plugin-row + .plugin-row {
   border-top: 1px solid var(--line);
 }
