@@ -385,9 +385,6 @@ describe("WaitingInputs", () => {
   });
 
   it("edits a message in place: Enter saves the new words with the files still kept", async () => {
-    const editor = fakeEditor();
-    const editWaitingMessage = vi.fn(async () => editor);
-    const client = { editWaitingMessage } as unknown as HostClient;
     const photo = { artifactId: "a1", mediaType: "image/png", name: "photo.png", type: "artifact" };
     const notes = {
       artifactId: "a2",
@@ -395,18 +392,16 @@ describe("WaitingInputs", () => {
       name: "notes.txt",
       type: "artifact",
     };
+    const content: ContentPart[] = [
+      { text: "Check the shard", type: "text" },
+      { ...photo, type: "artifact" },
+      { ...notes, type: "artifact" },
+    ];
+    const editor = fakeEditor({ content });
+    const editWaitingMessage = vi.fn(async () => editor);
+    const client = { editWaitingMessage } as unknown as HostClient;
     const container = mount(
-      render(
-        client,
-        inputsOf([
-          item(
-            "mine",
-            "Check the shard",
-            { canEdit: true },
-            { content: [{ text: "Check the shard", type: "text" }, photo, notes] as ContentPart[] },
-          ),
-        ]),
-      ),
+      render(client, inputsOf([item("mine", "Check the shard", { canEdit: true }, { content })])),
     );
     await clickWords(container, "mine");
     expect(editWaitingMessage).toHaveBeenCalledWith("thread", "mine");

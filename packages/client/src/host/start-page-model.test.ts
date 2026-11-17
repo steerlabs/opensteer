@@ -278,6 +278,16 @@ describe("start page projection", () => {
             ? {
                 ...machine,
                 apps,
+                phoneDisplay:
+                  machine.phoneDisplay && apps?.length === 0
+                    ? {
+                        ...machine.phoneDisplay,
+                        view: {
+                          state: "unavailable" as const,
+                          reason: { kind: "connecting" as const },
+                        },
+                      }
+                    : machine.phoneDisplay,
                 computerUse: machine.computerUse && {
                   ...machine.computerUse,
                   displayStreamSupported: false,
@@ -302,6 +312,10 @@ describe("start page projection", () => {
           machine.id === pixel.id && machine.computerUse
             ? {
                 ...machine,
+                phoneDisplay: machine.phoneDisplay && {
+                  ...machine.phoneDisplay,
+                  view: { state: "unavailable" as const, reason: { kind: "paused" as const } },
+                },
                 computerUse: {
                   ...machine.computerUse,
                   detail: "Paused on the phone",

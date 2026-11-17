@@ -38,10 +38,12 @@ it("carries pending profile erasure through the mock catalog and clears complete
     const readDeletions = async () => {
       const kind = "browser-profile";
       const { revision } = unwrap(await client.rpc["resources.get"]({ kind }));
-      const { data } = unwrap(await client.rpc["resources.detail.get"]({
-        kind,
-        expectedRevision: revision,
-      }));
+      const { data } = unwrap(
+        await client.rpc["resources.detail.get"]({
+          kind,
+          expectedRevision: revision,
+        }),
+      );
       if (data.kind !== kind) throw new Error("Expected browser profiles");
       return data.deletions;
     };

@@ -635,6 +635,14 @@ describe("a conversation's page above it at phone width", () => {
   };
   async function opened() {
     await mount(`/tasks/${waiting}`, { width: 390 });
+    await vi.waitFor(
+      () =>
+        expect(
+          document.querySelector(".composer-dock [data-composer-input]"),
+          "The scoped conversation never mounted its composer",
+        ).not.toBeNull(),
+      { timeout: 1500 },
+    );
     phoneGeometry();
     expect(page() ?? folded(), "The Run was already in a place").toBeNull();
   }
