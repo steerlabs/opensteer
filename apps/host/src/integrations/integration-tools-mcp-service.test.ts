@@ -1,5 +1,8 @@
 import { integrationBlocked } from "./integration-blocked.js";
-import type { IntegrationPlatformService } from "./integration-platform-service.js";
+import {
+  IntegrationAuthorizationRequiredError,
+  type IntegrationPlatformService,
+} from "./integration-platform-service.js";
 import { gatherComputerAccess } from "./computer-access.js";
 import { ToolFailureSchema } from "@opensteer/core";
 import { createIntegrationMcpFixture } from "../mcp/integration-fixture.test-support.js";
@@ -693,6 +696,55 @@ describe("Opensteer MCP integration access classes", () => {
     expect(Buffer.byteLength(JSON.stringify(captures["all-uninstalled"]))).toBeLessThan(6000);
     expect(Buffer.byteLength(JSON.stringify(captures.populated))).toBeLessThan(8000);
   });
+
+  it.each([
+    "READY",
+    "REAUTHORIZATION_REQUIRED",
+    "ACCESS_GRANT_REQUIRED",
+    "INTEGRATION_UNAVAILABLE",
+  ] as const)(
+    "rechecks execution failures against discovery readiness: %s",
+    async (readinessCode) => {
+      const entry = inventoryEntry({ readinessCode });
+      const callable = callableTool({
+        entry,
+        effect: "read",
+        name: "issues.get",
+        title: "Get issue",
+      });
+      const { handler } = await createHarness({
+        inventory: [entry],
+        callableTools: [callable],
+        callTool: vi.fn(async () => {
+          if (readinessCode === "REAUTHORIZATION_REQUIRED")
+            throw new IntegrationAuthorizationRequiredError(callable);
+          throw new OpensteerError({ code: "conflict", message: "Access changed" });
+        }),
+      });
+      const response = result(
+        await handler(
+          {
+            params: {
+              name: "integration_call",
+              arguments: {
+                operation: "issues.get",
+                account: callable.grant.connectionId,
+                arguments: {},
+              },
+            },
+          },
+          callExtra("execution-access"),
+        ),
+      );
+      expect(response).toMatchObject({
+        error: integrationBlocked(entry.readiness.tools[0]!.readiness, entry.installation.name) ?? {
+          code: "conflict",
+          message: "Access changed",
+          next: null,
+        },
+      });
+    },
+  );
 
   it("describes and calls an operation by its name and account", async () => {
     const entry = inventoryEntry();
@@ -1827,6 +1879,7 @@ function inventoryEntry(
     readonly readinessCode?:
       | "ACCESS_GRANT_REQUIRED"
       | "READY"
+      | "INTEGRATION_UNAVAILABLE"
       | "REAUTHORIZATION_REQUIRED"
       | "USER_AUTHORIZATION_REQUIRED"
       | "READ_ONLY_TASK";
@@ -1859,6 +1912,7 @@ function inventoryEntry(
     connectionId: null,
     description: toolEffect === "read" ? "List issues" : "Create issue",
     id: toolId,
+    serverId,
     name: toolEffect === "read" ? "issues.list" : "issues.create",
     schemaDigest: integrationSchemaDigest(linearToolSchemas),
     status: "active" as const,

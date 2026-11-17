@@ -79,7 +79,8 @@ it("serves the production inventory and validates mocked calls through real MCP 
               catalog: [],
               total: 0,
               nextCursor: null,
-              marker: "first",
+              guidance: { catalog: "first" },
+              stale: "must be stripped",
             },
             {
               operations: [],
@@ -87,13 +88,16 @@ it("serves the production inventory and validates mocked calls through real MCP 
               catalog: [],
               total: 0,
               nextCursor: null,
-              marker: "second",
+              guidance: { catalog: "second" },
             },
           ],
         },
         opensteer_automation_list: {
           $byArgs: [
-            { args: { systemRole: "memory-light" }, result: { automations: [], marker: "light" } },
+            {
+              args: { systemRole: "memory-light" },
+              result: { automations: [], replayed: true },
+            },
           ],
         },
       },
@@ -124,6 +128,7 @@ it("serves the production inventory and validates mocked calls through real MCP 
       });
       expect(valid.isError).not.toBe(true);
       expect(JSON.stringify(valid)).toContain("first");
+      expect(JSON.stringify(valid)).not.toContain("must be stripped");
       const invalid = await client.callTool({
         name: "integration_search",
         arguments: { unexpected: true },
@@ -140,7 +145,7 @@ it("serves the production inventory and validates mocked calls through real MCP 
       JSON.stringify(
         await clients[0]!.callTool({ name: "opensteer_automation_list", arguments: args }),
       );
-    expect(await byArgs({ systemRole: "memory-light" })).toContain("light");
+    expect(await byArgs({ systemRole: "memory-light" })).toContain('"replayed":true');
     expect(await byArgs({})).toContain("No case mock matches these arguments");
     expect(host.calls.map((call) => call.valid)).toEqual([true, false, true, true, true]);
     const out = await mkdtemp(join(tmpdir(), "opensteer-eval-mcp-evidence-"));
@@ -286,7 +291,7 @@ it("preserves production action validation before consuming mocks", async () => 
       turns: ["hi"],
       expect: {},
       mocks: {
-        opensteer_automation_create: { marker: "admitted" },
+        opensteer_automation_create: { replayed: true },
         opensteer_automation_control: { marker: "admitted" },
         opensteer_automation_read: { marker: "admitted" },
       },
@@ -339,7 +344,7 @@ it("preserves production action validation before consuming mocks", async () => 
         },
       },
     });
-    expect(JSON.stringify(result)).toContain("admitted");
+    expect(result).toMatchObject({ structuredContent: { replayed: true } });
     expect(host.calls.at(-1)?.valid).toBe(true);
   } finally {
     await client.close();

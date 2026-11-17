@@ -321,7 +321,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
           result =
             offset < result.$responses.length
               ? result.$responses[offset]
-              : { status: "unavailable", message: "Case mock response sequence exhausted" };
+              : { $error: "Case mock response sequence exhausted" };
         }
         if (isRecord(result) && Array.isArray(result.$byArgs)) {
           const entry = result.$byArgs.find(
@@ -329,7 +329,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
           );
           result = isRecord(entry)
             ? entry.result
-            : { status: "unavailable", message: "No case mock matches these arguments" };
+            : { $error: "No case mock matches these arguments" };
         }
         if (isRecord(result) && typeof result.$error === "string") {
           calls[index] = {
@@ -433,6 +433,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
           };
           return agentToolFailureResult({ code: "invalid_mock_output", message });
         }
+        result = output.data;
         calls[index] = { at: calls[index]?.at ?? Date.now(), tool: name, args, valid, result };
         if (name === "integration_describe" || !isRecord(result)) {
           return { content: [{ type: "text", text: JSON.stringify(result) }] };

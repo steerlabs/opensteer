@@ -110,7 +110,7 @@ export const chrome_cookies_request = defineAgentTool({
   opensRequest: true,
   title: "Request Chrome cookies",
   description:
-    "Sign in by copying the person's Chrome cookies for a site into a browser tab, with their approval. No typing or codes, but some sites (often banks) tie a login to the original browser and refuse copied cookies; saved_login_request signs in fresh instead. A fulfilled copy means only that cookies arrived: reload and check the account. You never see cookie values.",
+    'Sign in by copying the person\'s Chrome cookies for a site into a browser tab, with their approval. No typing or codes, but some sites (often banks) tie a login to the original browser and refuse copied cookies; saved_login_request signs in fresh instead. When cookiesStatus is "copied", reload and check the account. Fulfilled alone does not mean cookies arrived. You never see cookie values.',
   input: z
     .strictObject({
       reason: ReasonInputSchema,
@@ -128,7 +128,7 @@ export const saved_login_request = defineAgentTool({
   opensRequest: true,
   title: "Request a saved login",
   description:
-    'Sign in with a login and password saved in Opensteer Passwords, with the person\'s approval. A fulfilled sign-in gives a loginRef you fill without seeing the values: in a browser, focus each field and call fillLogin(loginRef, "username" | "password" | "code"); in a genuine Mac or phone app, type {loginRef, field}. Then submit and check the account. The reference lasts about an hour, so call again to sign back in after a site logs you out. When Passwords lacks the login, is not set up or is off, Opensteer shows the person how to fix it under your reply and tells you once a login is saved; that status is true only when returned, so if the person says it is fixed or asks again, call again first.',
+    'Sign in with a login and password saved in Opensteer Passwords, with the person\'s approval. When loginRef is returned, fill without seeing the values: in a browser, focus each field and call fillLogin(loginRef, "username" | "password" | "code"); in a genuine Mac or phone app, type {loginRef, field}. Then submit and check the account. The reference lasts about an hour, so call again to sign back in after a site logs you out. When Passwords lacks the login, is not set up or is off, Opensteer shows the person how to fix it under your reply and tells you once a login is saved; that status is true only when returned, so if the person says it is fixed or asks again, call again first.',
   input: z
     .strictObject({
       reason: ReasonInputSchema,
