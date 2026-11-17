@@ -8,6 +8,7 @@ import {
   type teamReadSchemas,
 } from "@opensteer/protocol";
 import type { z } from "zod";
+import { clientIssue, presentClientIssue } from "../feedback/client-issue.js";
 import { PagedList } from "./paged-list.js";
 import { teamRpcResult } from "./rpc-result.js";
 import type { TeamSessionClient } from "./team-session-client.js";
@@ -84,7 +85,14 @@ export function partnerActionError(error: unknown): string {
     if (error.code === "forbidden")
       return "Sharing may be turned off, or you may need an admin’s approval. Refresh and try again.";
   }
-  return "The team didn’t answer. Check your connection and try again.";
+  // Anything else is said by the shared presenter; the connection is the pill's to say.
+  const issue = clientIssue(error, { operation: "action", label: "finish that" });
+  return issue === null ? "" : presentClientIssue({ ...issue, target: "team" }).title;
+}
+
+function partnerReadError(error: unknown): string {
+  const issue = clientIssue(error, { operation: "read", label: "sharing settings" });
+  return issue === null ? "" : presentClientIssue({ ...issue, target: "team" }).title;
 }
 
 type Policy = z.infer<(typeof teamReadSchemas)["team.sharing.policy.get"]["output"]>;
@@ -172,7 +180,7 @@ export class TeamPartnerSettings {
         .then(teamRpcResult)
         .then(
           (policy) => this.#set({ policy }),
-          (error: unknown) => this.#set({ error: partnerActionError(error) }),
+          (error: unknown) => this.#set({ error: partnerReadError(error) }),
         ),
       this.links.reload(),
       this.invites.reload(),

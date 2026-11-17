@@ -22,9 +22,12 @@ export interface ClientIssue {
   readonly name?: string;
   readonly target?: "computer" | "team";
   readonly resource?: string;
+  /** The whole verb phrase, as "Couldn't {action}." says it: "close this tab". */
   readonly action?: string;
+  /** Its past participle, as "Not {done}." says it: "closed". */
   readonly done?: string;
-  readonly thing?: string;
+  /** The full clause "Couldn't confirm {happened}." says: "your answer was sent". */
+  readonly happened?: string;
 }
 export interface ClientIssuePresentation {
   readonly title: string;
@@ -134,22 +137,20 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
     case "refresh-failed":
       return result(`Couldn't refresh ${issue.resource ?? "this"}.`, "retry");
     case "not-sent":
-      return result(
-        `Not ${issue.done ?? "changed"}. ${issue.reason === "offline" ? "You're offline." : `Can't reach ${name}.`}`,
-      );
+      // No reason: a check after a lost answer found it was not done, so it can be tried again.
+      return issue.reason === undefined
+        ? result(`Not ${issue.done ?? "changed"}.`, "retry")
+        : result(
+            `Not ${issue.done ?? "changed"}. ${issue.reason === "offline" ? "You're offline." : `Can't reach ${name}.`}`,
+          );
     case "unconfirmed":
-      return result(
-        issue.thing && issue.done
-          ? `Couldn't confirm ${issue.thing} ${issue.done}.`
-          : "Couldn't confirm this change.",
-        "check",
-      );
+      return result(`Couldn't confirm ${issue.happened ?? "this change"}.`, "check");
     case "rejected": {
       const reason = rejectionDetail(issue.reason);
       return result(
         reason
           ? `Not ${issue.done ?? "changed"}. ${reason}`
-          : `Couldn't ${issue.action ?? "change this"}${issue.thing ? ` ${issue.thing}` : ""}.`,
+          : `Couldn't ${issue.action ?? "change this"}.`,
       );
     }
     case "storage-unavailable":

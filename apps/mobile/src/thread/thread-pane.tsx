@@ -5,7 +5,8 @@ import {
   type MessageDeliveryAction,
 } from "@opensteer/client/host";
 import { useClientConnection, useOptionalMessageOutbox } from "@opensteer/client/react";
-import { ActionLine, issueLine } from "../ui/action-line.js";
+import { ActionLine } from "../ui/action-line.js";
+import { issueLine } from "../ui/client-feedback.js";
 import { useConnectionReady, useShowsLive } from "../ui/connection-live.js";
 import { ConnectionRouteGate } from "../ui/route-gate.js";
 import { UnavailableState } from "../ui/unavailable-state.js";

@@ -17,9 +17,10 @@ import {
   ActionRow,
   ChoiceRow,
   ErrorText,
+  Footer,
   LinkRow,
   MenuRow,
-  NoteRow,
+  PlaceholderRow,
   Section,
 } from "./settings-form-primitives.android.js";
 import type {
@@ -118,7 +119,9 @@ function Accounts({
           <LinkRow detail={form.confirmation} title="Done" />
         </Section>
       )}
-      <ErrorText detail={form.error} />
+      {form.line === null ? null : (
+        <Footer link={form.line.link ?? null} text={form.line.text} tone={form.line.tone} />
+      )}
       {form.locations.length === 0 ? null : (
         <Section>
           <ChoiceRow
@@ -221,8 +224,10 @@ function BackgroundModels({ form }: { readonly form: BackgroundModelsForm }): Re
         backgroundModelRows(view).map((row) => (
           <LinkRow detail={row.detail} key={row.role} title={row.title} />
         ))
+      ) : form.line ? (
+        <Footer link={form.line.link ?? null} text={form.line.text} tone={form.line.tone} />
       ) : (
-        <NoteRow text={form.error ? "Background models could not be loaded." : "Loading…"} />
+        <PlaceholderRow label="Not loaded yet" />
       )}
       <ErrorText detail={fileError} />
     </Section>

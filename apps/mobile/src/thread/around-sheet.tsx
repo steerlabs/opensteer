@@ -1,4 +1,3 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
 import {
   canRespondToRequests,
   conversationThreadIds,
@@ -66,6 +65,7 @@ import {
   type AroundSection,
 } from "./around-model.js";
 import { TaskStatus } from "./task-status.js";
+import { failureWords } from "../ui/client-feedback.js";
 
 export type AroundScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -805,10 +805,16 @@ const ScheduleRow = memo(function ScheduleRow(props: {
         },
         (error: unknown) => {
           setAsked((held) => (held === mine ? null : held));
-          Alert.alert(
-            `${automation.name} was not changed`,
-            presentActionFailure(error, "The schedule could not be changed."),
+          const words = failureWords(
+            error,
+            {
+              label: `change ${automation.name}`,
+              done: "changed",
+              happened: `${automation.name} changed`,
+            },
+            "The schedule could not be changed.",
           );
+          if (words !== null) Alert.alert(words);
         },
       );
   };

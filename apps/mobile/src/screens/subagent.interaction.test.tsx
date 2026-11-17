@@ -11,6 +11,7 @@ import { harnessCatalogEntry } from "@opensteer/core";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { testHostConnection } from "@opensteer/client/test-support";
 
 /*
  * An opened subagent on a phone, pushed over its conversation. What can go
@@ -174,6 +175,7 @@ async function scene(name: MockSubagentScene) {
     getSnapshot: () => current,
     subscribe: () => () => undefined,
   } as unknown as HostClient;
+  Object.assign(harness.hostClient, { connection: testHostConnection(harness.hostClient) });
   const node = (title: string) =>
     (current.transcripts[thread.id] ?? []).find(
       (entry): entry is NodeEntry => entry.kind === "node" && entry.title === title,

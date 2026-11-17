@@ -24,10 +24,6 @@ export function noteCountWords(count: number): string {
   return count === 1 ? "1 note" : `${count} notes`;
 }
 
-export function failureWords(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message !== "" ? error.message : fallback;
-}
-
 export const levelWords: Readonly<Record<TeamTopicLevel | TopicEveryoneLevel, string>> = {
   none: "None",
   read: "Read",

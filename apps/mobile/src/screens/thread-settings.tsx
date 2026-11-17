@@ -1,4 +1,5 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
+import type { ClientSession } from "@opensteer/client/connections";
+import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import {
   canContinueThreadOnPlacement,
   routeOnAccount,
@@ -35,7 +36,6 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { canRespondToRequests } from "@opensteer/client/host";
 import {
   color,
   material,
@@ -63,6 +63,7 @@ import {
 import { useThreadMutation } from "../thread/thread-mutation-registry.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { SheetBarButton } from "../ui/sheet-bar.js";
+import { ActionLine } from "../ui/action-line.js";
 import { AppText, Notice, PrimaryButton, SecondaryButton, SwitchRow } from "../ui/primitives.js";
 import { useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { EngineMark } from "../thread/settings/engine-mark.js";
@@ -184,7 +185,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
     [props.snapshot, props.thread],
   );
   const disabledReason = settingsDisabledReason({
-    canRespond: canRespondToRequests(props.snapshot),
+    canRespond: true,
     hasRun: props.snapshot.runQueue.some((run) => run.threadId === props.threadId),
     mutationOwner: owner,
     kind: "thread",
@@ -235,8 +236,10 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
     | { readonly error: string } => {
     const selected = client.getSnapshot().selection;
     if (selected.deploymentId !== props.deploymentId || selected.hostClient !== props.hostClient) {
-      return { error: "This deployment is no longer open." };
+      return { error: "This computer is no longer open." };
     }
+    const unsent = notSent(props.hostClient);
+    if (unsent !== null) return { error: unsent };
     const snapshot = props.hostClient.getSnapshot();
     if (snapshot.user?.id !== props.snapshot.user?.id) {
       return { error: "The signed-in user changed. Choose the model again." };
@@ -244,7 +247,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
     const thread = snapshot.threads.find(({ id }) => id === props.threadId);
     if (thread === undefined) return { error: "This thread is no longer here." };
     const reason = settingsDisabledReason({
-      canRespond: canRespondToRequests(snapshot),
+      canRespond: true,
       hasRun: snapshot.runQueue.some((run) => run.threadId === props.threadId),
       mutationOwner: null,
       kind: "thread",
@@ -372,18 +375,18 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
       void (async () => {
         let validated = resolveExecutionSelection(next, live.placements);
         if (validated === null)
-          throw new Error("That choice is no longer available. Choose another.");
+          throw new SettingsChanged("That choice is no longer available. Choose another.");
         if (targetAccess !== live.thread.accessMode) {
           await props.hostClient.updateThreadAccess(props.threadId, targetAccess);
           const refreshed = liveMutationContext();
-          if ("error" in refreshed) throw new Error(refreshed.error);
+          if ("error" in refreshed) throw new SettingsChanged(refreshed.error);
           const target = placementForSelection(refreshed.placements, next);
           validated = resolveExecutionSelection(next, refreshed.placements);
           if (!target?.available || validated === null) {
-            throw new Error("That choice is no longer available. Choose another.");
+            throw new SettingsChanged("That choice is no longer available. Choose another.");
           }
           const reason = accessModeUnavailableReason(targetAccess, target);
-          if (reason !== null) throw new Error(reason);
+          if (reason !== null) throw new SettingsChanged(reason);
           if (
             refreshed.thread.providerSessionId !== live.thread.providerSessionId ||
             !runsChosenExecution(
@@ -392,7 +395,9 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
               refreshed.placements,
             )
           ) {
-            throw new Error("This conversation changed. Choose the model again to review it.");
+            throw new SettingsChanged(
+              "This conversation changed. Choose the model again to review it.",
+            );
           }
         }
         const execution = {
@@ -411,7 +416,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
         })
         .catch((error: unknown) => {
           if (mounted.current) {
-            setFailure(presentActionFailure(error, "That change could not be applied."));
+            setFailure(changeFailure(error));
           }
         })
         .finally(() => {
@@ -521,8 +526,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
           void Haptics.selectionAsync();
         })
         .catch((error: unknown) => {
-          if (mounted.current)
-            setFailure(presentActionFailure(error, "That access mode could not be applied."));
+          if (mounted.current) setFailure(changeFailure(error));
         })
         .finally(() => {
           mutationInFlight.current = false;
@@ -816,7 +820,11 @@ function ModelPickerList(
     })()
       .catch((error: unknown) => {
         if (mounted.current)
-          props.onFailure(presentActionFailure(error, "Models could not be refreshed."));
+          props.onFailure(
+            clientIssue(error, { operation: "refresh", label: "models" }) === null
+              ? null
+              : presentClientIssue({ code: "refresh-failed", resource: "models" }).title,
+          );
       })
       .finally(() => {
         refreshing.current = false;
@@ -864,13 +872,17 @@ function ModelPickerList(
       />
       {props.disabledReason ? <AppText tone="muted">{props.disabledReason}</AppText> : null}
       {props.failure ? (
-        <Notice
-          title="That did not change"
-          detail={props.failure}
-          action={{ label: "Dismiss", onPress: props.onDismissFailure }}
+        <ActionLine
+          line={{ key: props.failure, text: props.failure, tone: "muted", haptic: "warning" }}
+          numberOfLines={2}
+          onDismiss={props.onDismissFailure}
         />
       ) : null}
-      {signedIn === null ? null : <Notice detail={signedIn} title="Done" tone="neutral" />}
+      {signedIn === null ? null : (
+        <AppText role="caption" tone="muted">
+          {signedIn}
+        </AppText>
+      )}
       {conversation ? (
         <>
           <AppText role="title">Access</AppText>
@@ -1126,7 +1138,7 @@ function SubscribedNewThread(props: {
   const pickerPreferences = useMemo(() => preferences, [preferences]);
   const displayed = execution.selection ?? execution.blocked;
   const disabledReason = settingsDisabledReason({
-    canRespond: canRespondToRequests(snapshot),
+    canRespond: true,
     kind: "draft",
   });
   const picker = useMemo(
@@ -1215,7 +1227,7 @@ function SubscribedNewThread(props: {
         selected.deploymentId !== props.deploymentId ||
         selected.hostClient !== props.hostClient
       ) {
-        setFailure("This deployment is no longer open.");
+        setFailure("This computer is no longer open.");
         return;
       }
       const live = props.hostClient.getSnapshot();
@@ -1223,8 +1235,9 @@ function SubscribedNewThread(props: {
         setFailure("The signed-in user changed. Choose the model again.");
         return;
       }
-      if (!canRespondToRequests(live)) {
-        setFailure("Reconnect to choose thread settings.");
+      const unsent = notSent(props.hostClient);
+      if (unsent !== null) {
+        setFailure(unsent);
         return;
       }
       const livePlacements = threadPlacementOptions(live.environments, live.harnesses);
@@ -1295,7 +1308,7 @@ function SubscribedNewThread(props: {
           acceptedChoice.current = null;
           if (mounted.current) {
             setChosen(null);
-            setFailure(presentActionFailure(error, "That choice could not be remembered."));
+            setFailure(changeFailure(error));
           }
           return null;
         },
@@ -1320,11 +1333,12 @@ function SubscribedNewThread(props: {
         selected.hostClient !== props.hostClient ||
         live.user?.id !== pickerUserId.current
       ) {
-        setFailure("The deployment or signed-in user changed. Reopen the draft to change access.");
+        setFailure("The computer or signed-in user changed. Reopen the draft to change access.");
         return;
       }
-      if (!canRespondToRequests(live)) {
-        setFailure("Reconnect to change access.");
+      const unsent = notSent(props.hostClient);
+      if (unsent !== null) {
+        setFailure(unsent);
         return;
       }
       const livePlacements = threadPlacementOptions(live.environments, live.harnesses);
@@ -1353,8 +1367,7 @@ function SubscribedNewThread(props: {
         },
         (error: unknown) => {
           acceptedChoice.current = null;
-          if (mounted.current)
-            setFailure(presentActionFailure(error, "Access could not be changed."));
+          if (mounted.current) setFailure(changeFailure(error));
           return null;
         },
       );
@@ -1435,6 +1448,27 @@ function SubscribedNewThread(props: {
       query={query}
     />
   );
+}
+
+/** A check this sheet made itself, whose words are its own and safe to show. */
+class SettingsChanged extends Error {}
+
+/** Known before anything is sent: the computer can't be reached right now. */
+function notSent(session: ClientSession): string | null {
+  const state = session.connection.getSnapshot();
+  if (state.phase === "ready" && state.network !== "offline") return null;
+  return presentClientIssue({
+    code: "not-sent",
+    reason: state.network === "offline" ? "offline" : "unreachable",
+    ...(state.name ? { name: state.name } : {}),
+  }).title;
+}
+
+/** A change that didn't land, in the sheet's own words or the shared outcome words. */
+function changeFailure(error: unknown): string | null {
+  if (error instanceof SettingsChanged) return error.message;
+  const issue = clientIssue(error, { operation: "action", label: "change this" });
+  return issue === null ? null : presentClientIssue(issue).title;
 }
 
 function UnavailableSheet(props: {

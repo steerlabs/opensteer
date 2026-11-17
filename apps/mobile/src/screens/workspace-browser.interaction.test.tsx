@@ -1424,7 +1424,9 @@ describe("mobile pages", () => {
     state.hostClient = { closeTabs };
     const { container } = await setup({ sessionId: "chosen" }, { snapshot: twoPages() });
     await pressAsync(menu(), "Close tab");
-    expect(container.textContent).toContain("Try again.");
+    // The Host's own sentence is never shown; the refusal is said in the app's words.
+    expect(container.textContent).toContain("Couldn't close this tab.");
+    expect(container.textContent).not.toContain("Try again.");
     expect(state.setParams).not.toHaveBeenCalled();
     expect(state.goBack).not.toHaveBeenCalled();
   });

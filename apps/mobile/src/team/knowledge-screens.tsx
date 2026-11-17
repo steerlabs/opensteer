@@ -38,11 +38,15 @@ import { Markdown } from "../markdown/markdown.js";
 import type { RootParamList } from "../navigation.js";
 import { color, controlFontScaleLimit, radius, space } from "../theme.js";
 import { NativeMenu } from "../thread/composer-menu.js";
+import { clientIssue, clientIssueActions, presentClientIssue } from "@opensteer/client/feedback";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
 import { AppText, Notice, SecondaryButton, SectionLabel } from "../ui/primitives.js";
+import { teamOutcome, teamOutcomeLine } from "./team-feedback.js";
 import { Screen } from "../ui/screen.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { SearchField } from "./channel-details.js";
-import { failureWords, noteCountWords, noteWhen } from "./knowledge-model.js";
+import { noteCountWords, noteWhen } from "./knowledge-model.js";
 import {
   Empty,
   Loading,
@@ -54,6 +58,7 @@ import {
 } from "./knowledge-parts.js";
 import { useTeamSession } from "./team-context.js";
 import { Avatar } from "./team-marks.js";
+import { failureWords } from "../ui/client-feedback.js";
 
 type Navigation = NativeStackNavigationProp<RootParamList>;
 
@@ -63,10 +68,35 @@ function topicSymbol(topic: TeamTopic): SFSymbolName {
   return topic.audience.everyone ? "globe" : "person.2";
 }
 
-function failure(error: unknown): string {
-  return isNoteChangedConflict(error)
-    ? "Someone changed this note. You're seeing the newest version now."
-    : failureWords(error, "The team didn't answer.");
+/** A note read's failure in the shared presenter's words; a changed note says so. */
+function readWords(error: unknown, resource: string): string {
+  if (isNoteChangedConflict(error))
+    return "Someone changed this note. You're seeing the newest version now.";
+  const issue = clientIssue(error, { operation: "read", label: resource });
+  return issue === null ? `Couldn't load ${resource}.` : presentClientIssue(issue).title;
+}
+
+/** A change's failure: a newer note than the one acted on, or the shared presenter's words. */
+function changeWords(error: unknown): string {
+  if (isNoteChangedConflict(error))
+    return "Someone changed this note. You're seeing the newest version now.";
+  return (
+    failureWords(error, {
+      label: "change this note",
+      done: "changed",
+      happened: "this note changed",
+    }) ?? ""
+  );
+}
+
+function failedLine(text: string, retry?: () => void): ActionLineValue {
+  return {
+    key: `${text}:${Date.now()}`,
+    text,
+    tone: "danger",
+    haptic: "error",
+    ...(retry ? { link: { label: clientIssueActions.tryAgain, onPress: retry } } : {}),
+  };
 }
 
 /**
@@ -92,7 +122,7 @@ export function TeamKnowledgeScreen(
   const query = useSettledText(text);
   const topics = useKnowledgeTopics(session);
   const notes = useKnowledgeNotes(session, { topicId: chosen, query });
-  useReloadOnReturn(session, () => {
+  useReloadOnReturn(() => {
     topics.reload();
     notes.reload();
   });
@@ -119,7 +149,18 @@ export function TeamKnowledgeScreen(
   if (session === null || topics.topics === null)
     return (
       <Screen>
-        <Loading failure={topics.error === null ? null : failure(topics.error)} />
+        <Loading
+          line={
+            topics.error === null
+              ? null
+              : {
+                  key: "topics",
+                  text: presentClientIssue(topics.error).title,
+                  tone: "muted",
+                  link: { label: clientIssueActions.tryAgain, onPress: topics.reload },
+                }
+          }
+        />
       </Screen>
     );
   const readable = chosen === null || topic?.can.read === true;
@@ -182,11 +223,18 @@ export function TeamKnowledgeScreen(
             <Empty text="You manage this topic but can't read its notes." />
           ) : notes.notes === null ? (
             notes.error === null ? (
-              <View style={styles.loading}>
-                <ActivityIndicator accessibilityLabel="Loading notes" color={color.muted} />
-              </View>
+              <PlaceholderRows count={4} />
             ) : (
-              <Notice detail={failure(notes.error)} title="Notes didn't load" tone="neutral" />
+              <View style={styles.loading}>
+                <ActionLine
+                  line={{
+                    key: "notes",
+                    text: presentClientIssue(notes.error).title,
+                    tone: "muted",
+                    link: { label: clientIssueActions.tryAgain, onPress: notes.reload },
+                  }}
+                />
+              </View>
             )
           ) : notes.stale ? undefined : (
             <Empty
@@ -277,12 +325,24 @@ function TopicBar(props: {
   readonly onChanged: () => void;
 }): ReactNode {
   const { topic } = props;
+  const [line, setLine] = useState<ActionLineValue | null>(null);
   const setArchived = (archive: boolean): void => {
     if (!topic) return;
-    void teamCommand(props.session, {
-      type: archive ? "team.knowledge.topic.archive" : "team.knowledge.topic.restore",
-      topicId: topic.id,
-    }).then(props.onChanged, (error: unknown) => Alert.alert("That didn't work", failure(error)));
+    setLine(null);
+    void teamOutcome(
+      props.session,
+      archive
+        ? { label: "archive this topic", done: "archived" }
+        : { label: "restore this topic", done: "restored" },
+      () =>
+        teamCommand(props.session, {
+          type: archive ? "team.knowledge.topic.archive" : "team.knowledge.topic.restore",
+          topicId: topic.id,
+        }),
+    ).then((outcome) => {
+      if (outcome.kind === "confirmed") props.onChanged();
+      else setLine(teamOutcomeLine(outcome));
+    });
   };
   const facts = props.query
     ? "Best match first"
@@ -339,6 +399,7 @@ function TopicBar(props: {
           {topic.description}
         </AppText>
       ) : null}
+      {line !== null ? <ActionLine line={line} onDismiss={() => setLine(null)} /> : null}
       {topic?.archivedAt ? (
         <AppText role="caption" tone="muted">
           Archived. Agents can read it but save nothing new here.
@@ -429,14 +490,21 @@ export function TeamNoteScreen(
   const padding = useBottomPadding();
   const read = useKnowledgeNote(session, noteId, topicId);
   const [viewing, setViewing] = useState<number | null>(null);
-  useReloadOnReturn(session, read.reload);
+  const [line, setLine] = useState<ActionLineValue | null>(null);
+  useReloadOnReturn(read.reload);
   const topicName = read.topic?.name ?? "";
   useLayoutEffect(() => navigation.setOptions({ title: topicName }), [navigation, topicName]);
   const { note, topic, history } = read;
   if (session === null || note === null)
     return (
       <Screen>
-        <Loading failure={read.error === null ? null : failure(read.error)} />
+        <Loading
+          line={
+            read.error === null
+              ? null
+              : { ...failedLine(readWords(read.error, "this note"), read.reload), tone: "muted" }
+          }
+        />
       </Screen>
     );
   const canWrite = topic?.can.write === true;
@@ -448,18 +516,21 @@ export function TeamNoteScreen(
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setViewing(null);
   };
-  const restore = (from: TeamNote) =>
-    void read
-      .restore(from)
-      .then(done, (error: unknown) => Alert.alert("It wasn't restored", failure(error)));
-  const remove = () =>
-    void read
-      .remove()
-      .then(done, (error: unknown) => Alert.alert("It wasn't deleted", failure(error)));
+  const restore = (from: TeamNote) => {
+    setLine(null);
+    void read.restore(from).then(done, (error: unknown) => setLine(failedLine(changeWords(error))));
+  };
+  const remove = () => {
+    setLine(null);
+    void read.remove().then(done, (error: unknown) => setLine(failedLine(changeWords(error))));
+  };
   const source = shown.source;
   return (
     <Screen edgeToEdge>
       <ScrollView contentContainerStyle={[styles.page, { paddingBottom: padding }]}>
+        {line === null ? null : (
+          <ActionLine line={line} numberOfLines={2} onDismiss={() => setLine(null)} />
+        )}
         {older ? (
           <View style={styles.viewing}>
             <Symbol name="clock" size={14} tint={color.muted} />
@@ -570,14 +641,19 @@ export function TeamNoteScreen(
                 </Pressable>
               ))}
           {history === null ? null : history.loading ? (
-            <ActivityIndicator color={color.muted} />
+            <PlaceholderRows count={2} />
           ) : history.error !== null ? (
-            <View style={styles.versionsFailed}>
-              <AppText role="caption" style={styles.grow} tone="danger">
-                {failure(history.error)}
-              </AppText>
-              <TextButton label="Try again" onPress={() => void read.moreHistory()} />
-            </View>
+            <ActionLine
+              line={{
+                key: "history",
+                text: readWords(history.error, "older versions"),
+                tone: "muted",
+                link: {
+                  label: clientIssueActions.tryAgain,
+                  onPress: () => void read.moreHistory(),
+                },
+              }}
+            />
           ) : history.hasMore ? (
             <TextButton label="Older versions" onPress={() => void read.moreHistory()} />
           ) : null}
@@ -666,12 +742,6 @@ const styles = StyleSheet.create({
   versionN: { width: 26 },
   versionOn: { backgroundColor: color.surfaceRaised },
   versions: { gap: 0 },
-  versionsFailed: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: space[12],
-    paddingTop: space[10],
-  },
   versionsHead: {
     alignItems: "center",
     borderBottomWidth: StyleSheet.hairlineWidth,

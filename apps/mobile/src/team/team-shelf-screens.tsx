@@ -16,13 +16,22 @@ import type { HostApiCommandInput, TeamMessage } from "@opensteer/protocol";
 import { useFocusEffect, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ActivityIndicator, Alert, ScrollView, StyleSheet, View } from "react-native";
+import { Alert, ScrollView, StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootParamList } from "../navigation.js";
 import { sideMemory } from "../side-memory.js";
-import { color, space } from "../theme.js";
+import { space } from "../theme.js";
 import type { NativeMenuOption } from "../thread/composer-menu.js";
-import { AppText, Notice, RowGroup, SecondaryButton } from "../ui/primitives.js";
+import type { ActionLineValue } from "../ui/action-line.js";
+import { readLine, useScreenRead } from "../ui/client-feedback.js";
+import { AppText, RowGroup, SecondaryButton } from "../ui/primitives.js";
+import {
+  TeamOutcomeLine,
+  TeamWaiting,
+  teamOutcome,
+  teamOutcomeLine,
+  useTeamOutcomes,
+} from "./team-feedback.js";
 import { Screen } from "../ui/screen.js";
 import {
   ChannelDetailsBody,
@@ -47,62 +56,27 @@ import {
 type Navigation = NativeStackNavigationProp<RootParamList>;
 type ChannelParams = StaticScreenProps<{ readonly teamId: string; readonly channelId: string }>;
 
-/** Reads one page from the team, again whenever `key` changes. */
+/** Reads one page from the team, again whenever `key` changes; kept through an outage. */
 function useTeamRead<Value>(
   session: TeamSessionClient | null,
   read: (session: TeamSessionClient) => Promise<Value>,
   key: string,
-): { readonly value: Value | null; readonly failure: string | null; readonly reload: () => void } {
-  const [value, setValue] = useState<Value | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
-  const [generation, setGeneration] = useState(0);
-  const reload = useCallback(() => {
-    setFailure(null);
-    setGeneration((next) => next + 1);
-  }, []);
-  useEffect(() => {
-    if (session === null) return;
-    let current = true;
-    void read(session).then(
-      (next) => {
-        if (!current) return;
-        setValue(next);
-        setFailure(null);
-      },
-      (error: unknown) =>
-        current && setFailure(error instanceof Error ? error.message : "The team didn't answer."),
-    );
-    return () => {
-      current = false;
-    };
-    // `read` is rebuilt every render; `key` says when its answer can differ.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session, key, generation]);
-  return { value, failure, reload };
+  label: string,
+): {
+  readonly value: Value | null;
+  readonly line: ActionLineValue | null;
+  readonly reload: () => void;
+} {
+  const state = useScreenRead<Value>(session, {
+    key: `team-read:${label}:${key}`,
+    label,
+    read: session === null ? null : () => read(session),
+  });
+  return { value: state.data, line: readLine(state, state.refresh), reload: state.refresh };
 }
 
 async function command(session: TeamSessionClient, input: HostApiCommandInput): Promise<void> {
   unwrapRpcResult(await session.rpc["commands.dispatch"](input));
-}
-
-function Loading(props: {
-  readonly failure: string | null;
-  readonly onRetry?: () => void;
-}): ReactNode {
-  return (
-    <View style={styles.center}>
-      {props.failure === null ? (
-        <ActivityIndicator color={color.muted} />
-      ) : (
-        <Notice
-          {...(props.onRetry ? { action: { label: "Try again", onPress: props.onRetry } } : {})}
-          detail={props.failure}
-          title="This didn't load"
-          tone="neutral"
-        />
-      )}
-    </View>
-  );
 }
 
 function useBottomPadding(): number {
@@ -120,6 +94,7 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
     session,
     async (team) => unwrapRpcResult(await team.rpc["team.channel.get"]({ channelId: channelKey })),
     `${channelId}:${snapshot.sidebar?.accessRevision ?? ""}`,
+    "this channel",
   );
   const counts = useTeamRead(
     session,
@@ -136,6 +111,7 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
       };
     },
     channelId,
+    "counts",
   );
   // Rename, Members, Files and Pinned are screens of their own: coming back reads again.
   const { reload: reloadChannel } = channel;
@@ -157,28 +133,30 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
       : entry?.notificationLevel === "muted"
         ? "nothing"
         : "mentions";
+  const outcomes = useTeamOutcomes();
   const working =
     snapshot.channel?.scope.channelId === channelId
       ? snapshot.channel.messages
           .flatMap((message) => message.requests)
           .filter((request) => ["queued", "working", "needs_you"].includes(request.state)).length
       : 0;
-  if (session === null || channel.value === null)
-    return (
-      <Screen>
-        <Loading failure={channel.failure} onRetry={channel.reload} />
-      </Screen>
-    );
+  if (session === null || channel.value === null) return <TeamWaiting line={channel.line} />;
   const value = channel.value;
-  const run = (input: HostApiCommandInput, after?: () => void): void => {
-    void command(session, input).then(
-      () => {
+  const run = (
+    input: HostApiCommandInput,
+    after?: () => void,
+    spec: { readonly label: string; readonly done: string; readonly happened?: string } = {
+      label: "change this",
+      done: "changed",
+    },
+  ): void => {
+    void outcomes
+      .attempt(session, spec, () => command(session, input))
+      .then((done) => {
+        if (!done) return;
         channel.reload();
         after?.();
-      },
-      (error: unknown) =>
-        Alert.alert("That didn't work", error instanceof Error ? error.message : undefined),
-    );
+      });
   };
   const setNotify = (level: "all" | "mentions" | "muted"): void =>
     run(
@@ -187,6 +165,7 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
     );
   return (
     <Screen edgeToEdge>
+      <TeamOutcomeLine line={outcomes.line} onDismiss={() => outcomes.say(null)} />
       <ChannelDetailsBody
         sharedAgents={
           value.can.manage && value.share?.shareId && value.share.agentsEnabled !== undefined
@@ -229,17 +208,21 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
                   style: "destructive",
                   text: "Leave",
                   onPress: () =>
-                    run({ type: "team.channel.leave", channelId: channelKey }, () => {
-                      const action = sideMemory.trim(
-                        navigation.getState(),
-                        (route) =>
-                          isRecord(route.params) &&
-                          route.params["teamId"] === teamId &&
-                          route.params["channelId"] === channelId,
-                      );
-                      if (action !== null) navigation.dispatch(action);
-                      else navigation.popToTop();
-                    }),
+                    run(
+                      { type: "team.channel.leave", channelId: channelKey },
+                      () => {
+                        const action = sideMemory.trim(
+                          navigation.getState(),
+                          (route) =>
+                            isRecord(route.params) &&
+                            route.params["teamId"] === teamId &&
+                            route.params["channelId"] === channelId,
+                        );
+                        if (action !== null) navigation.dispatch(action);
+                        else navigation.popToTop();
+                      },
+                      { label: "leave this channel", done: "left" },
+                    ),
                 },
               ],
             ),
@@ -252,11 +235,19 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
                 {
                   style: "destructive",
                   text: "Archive",
-                  onPress: () => run({ type: "team.channel.archive", channelId: channelKey }),
+                  onPress: () =>
+                    run({ type: "team.channel.archive", channelId: channelKey }, undefined, {
+                      label: "archive this channel",
+                      done: "archived",
+                    }),
                 },
               ],
             ),
-          onRestore: () => run({ type: "team.channel.restore", channelId: channelKey }),
+          onRestore: () =>
+            run({ type: "team.channel.restore", channelId: channelKey }, undefined, {
+              label: "restore this channel",
+              done: "restored",
+            }),
         }}
         sharing={<ChannelShares session={session} channel={value} />}
         archived={value.archivedAt !== null}
@@ -287,6 +278,7 @@ export function TeamMembersScreen(props: ChannelParams): ReactNode {
   const padding = useBottomPadding();
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
+  const outcomes = useTeamOutcomes();
   const channelKey = TeamChannelIdSchema.parse(channelId);
   const access = useTeamRead(
     session,
@@ -299,18 +291,14 @@ export function TeamMembersScreen(props: ChannelParams): ReactNode {
       return { list, groups: groups.groups, channel };
     },
     channelId,
+    "members",
   );
   const participants = useTeamShareParticipants(
     session,
     channelKey,
     access.value?.channel.share ? query : null,
   );
-  if (session === null || access.value === null)
-    return (
-      <Screen>
-        <Loading failure={access.failure} onRetry={access.reload} />
-      </Screen>
-    );
+  if (session === null || access.value === null) return <TeamWaiting line={access.line} />;
   const { list, groups, channel } = access.value;
   // A group DM's people are added with the DM's own command and never replaced.
   const groupDm = channel.kind === "group_dm";
@@ -368,14 +356,16 @@ export function TeamMembersScreen(props: ChannelParams): ReactNode {
         })
     : [];
   const replace = (entries: typeof list.entries): void => {
-    void command(session, {
-      type: "team.channel.access.set",
-      channelId: channelKey,
-      expectedRevision: list.revision,
-      access: [...entries],
-    }).then(access.reload, (error: unknown) =>
-      Alert.alert("That didn't work", error instanceof Error ? error.message : undefined),
-    );
+    void outcomes
+      .attempt(session, { label: "change who is here", done: "changed" }, () =>
+        command(session, {
+          type: "team.channel.access.set",
+          channelId: channelKey,
+          expectedRevision: list.revision,
+          access: [...entries],
+        }),
+      )
+      .then(access.reload);
   };
   const addToDm = (userId: string): void => {
     const name = personView(userId, directory).name;
@@ -384,19 +374,22 @@ export function TeamMembersScreen(props: ChannelParams): ReactNode {
       {
         text: "Add",
         onPress: () =>
-          void command(session, {
-            type: "team.dm.people.add",
-            channelId: channelKey,
-            userIds: [UserIdSchema.parse(userId)],
-            historyVisibleConfirmed: true,
-          }).then(access.reload, (error: unknown) =>
-            Alert.alert("That didn't work", error instanceof Error ? error.message : undefined),
-          ),
+          void outcomes
+            .attempt(session, { label: `add ${name}`, done: "added" }, () =>
+              command(session, {
+                type: "team.dm.people.add",
+                channelId: channelKey,
+                userIds: [UserIdSchema.parse(userId)],
+                historyVisibleConfirmed: true,
+              }),
+            )
+            .then(access.reload),
       },
     ]);
   };
   return (
     <Screen edgeToEdge>
+      <TeamOutcomeLine line={outcomes.line} onDismiss={() => outcomes.say(null)} />
       <MembersBody
         canAdd={canAdd}
         candidates={candidates}
@@ -474,13 +467,9 @@ export function TeamInstructionsScreen(props: ChannelParams): ReactNode {
       return { channel, instructions };
     },
     channelId,
+    "instructions",
   );
-  if (session === null || read.value === null)
-    return (
-      <Screen>
-        <Loading failure={read.failure} onRetry={read.reload} />
-      </Screen>
-    );
+  if (session === null || read.value === null) return <TeamWaiting line={read.line} />;
   const { channel, instructions } = read.value;
   return (
     <Screen edgeToEdge>
@@ -494,18 +483,20 @@ export function TeamInstructionsScreen(props: ChannelParams): ReactNode {
         lastChanged={null}
         onSave={async (text) => {
           setFailure(null);
-          try {
-            await command(session, {
-              type: "team.channel.instructions.set",
-              channelId: channelKey,
-              expectedRevision: SequenceSchema.parse(instructions.revision),
-              instructionsMarkdown: text,
-            });
-            read.reload();
-          } catch (error) {
-            setFailure(error instanceof Error ? error.message : "They weren't saved.");
-            throw error;
-          }
+          const outcome = await teamOutcome(
+            session,
+            { label: "save these instructions", done: "saved" },
+            () =>
+              command(session, {
+                type: "team.channel.instructions.set",
+                channelId: channelKey,
+                expectedRevision: SequenceSchema.parse(instructions.revision),
+                instructionsMarkdown: text,
+              }),
+          );
+          if (outcome.kind === "confirmed") return read.reload();
+          setFailure(teamOutcomeLine(outcome)?.text ?? null);
+          throw new Error("Not saved");
         }}
       />
     </Screen>
@@ -527,6 +518,7 @@ export function TeamFilesScreen(props: ChannelParams): ReactNode {
         await team.rpc["team.files.page"]({ channelId: TeamChannelIdSchema.parse(channelId) }),
       ).files,
     channelId,
+    "files",
   );
   const carriers = useMemo(
     () =>
@@ -536,12 +528,7 @@ export function TeamFilesScreen(props: ChannelParams): ReactNode {
     [read.value],
   );
   const previews = useTeamPreviews(session, carriers);
-  if (session === null || read.value === null)
-    return (
-      <Screen>
-        <Loading failure={read.failure} onRetry={read.reload} />
-      </Screen>
-    );
+  if (session === null || read.value === null) return <TeamWaiting line={read.line} />;
   const lower = query.trim().toLowerCase();
   const files: FileRowView[] = read.value
     .map((row) => ({
@@ -608,13 +595,9 @@ export function TeamPinnedScreen(props: ChannelParams): ReactNode {
     session,
     async (team) => (await team.pinnedMessages(channelKey)).messages,
     channelId,
+    "pinned messages",
   );
-  if (session === null || read.value === null)
-    return (
-      <Screen>
-        <Loading failure={read.failure} onRetry={read.reload} />
-      </Screen>
-    );
+  if (session === null || read.value === null) return <TeamWaiting line={read.line} />;
   const viewerId = snapshot.bootstrap?.member.userId ?? "";
   const now = new Date();
   return (
@@ -694,11 +677,7 @@ export function TeamSearchScreen(
           ...(hasFile ? { hasFile: true } : {}),
           ...(inThreads ? { threadsOnly: true } : {}),
         })
-        .catch(
-          (error: unknown) =>
-            current() &&
-            setFailure(error instanceof Error ? error.message : "The team didn't answer."),
-        )
+        .catch(() => current() && setFailure("Couldn't load results."))
         .finally(() => current() && setSearching(false));
     }, 250);
     return () => clearTimeout(timer);
@@ -788,11 +767,7 @@ export function TeamSearchScreen(
           const mine = generation.current;
           void session
             ?.loadMoreSearch()
-            .catch(
-              (error: unknown) =>
-                mine === generation.current &&
-                setFailure(error instanceof Error ? error.message : "The team didn't answer."),
-            );
+            .catch(() => mine === generation.current && setFailure("Couldn't load more results."));
         }}
         onOpenMessage={(_team, result) => {
           const raw = results.find((row) => row.message.id === result.message.id)?.raw;
@@ -836,6 +811,7 @@ export function TeamNoticesScreen(
     session,
     async (team) => unwrapRpcResult(await team.rpc["team.notices.page"]({})).notices,
     teamId,
+    "notices",
   );
   const markRead = useCallback(
     (noticeId: string) => {
@@ -847,12 +823,7 @@ export function TeamNoticesScreen(
     },
     [read.reload, session],
   );
-  if (session === null || read.value === null)
-    return (
-      <Screen>
-        <Loading failure={read.failure} onRetry={read.reload} />
-      </Screen>
-    );
+  if (session === null || read.value === null) return <TeamWaiting line={read.line} />;
   const now = new Date();
   return (
     <Screen edgeToEdge>
@@ -881,6 +852,5 @@ export function TeamNoticesScreen(
 }
 
 const styles = StyleSheet.create({
-  center: { alignItems: "center", flex: 1, justifyContent: "center", padding: space[16] },
   form: { gap: space[16], padding: space[16] },
 });

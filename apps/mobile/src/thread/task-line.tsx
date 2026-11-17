@@ -1,4 +1,3 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
 import {
   assignmentPresentation,
   taskOwner,
@@ -49,6 +48,7 @@ import {
   type AgentScope,
 } from "./subagent-rows.js";
 import { heldSelector } from "./agent-select.js";
+import { failureWords } from "../ui/client-feedback.js";
 
 /** What task and subagent cards need from the pane that owns the Host client. */
 export interface TaskScope {
@@ -494,9 +494,14 @@ export function useAssignmentStop(
         confirmLabel="Stop task"
         cancelLabel="Keep working"
         onClose={dismiss}
-        onError={(error) =>
-          Alert.alert(`${title} was not stopped`, presentActionFailure(error, "Try again."))
-        }
+        onError={(error) => {
+          const words = failureWords(error, {
+            label: `stop ${title}`,
+            done: "stopped",
+            happened: `${title} stopped`,
+          });
+          if (words !== null) Alert.alert(words);
+        }}
       />
     ),
   };

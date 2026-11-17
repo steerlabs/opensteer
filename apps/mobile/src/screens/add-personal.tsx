@@ -1,4 +1,4 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
+import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import type { VerifiedPersonalHostEndpoint } from "@opensteer/client/connections";
 import { useNavigation, useRoute, type RouteProp } from "@react-navigation/native";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -12,7 +12,8 @@ import type { RootParamList } from "../navigation.js";
 import { resetToDeployment } from "../navigation-ref.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
-import { AppText, Field, Notice, PrimaryButton, RowGroup } from "../ui/primitives.js";
+import { ActionLine } from "../ui/action-line.js";
+import { AppText, Field, PrimaryButton, RowGroup } from "../ui/primitives.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
 import { DeploymentDoorSymbol } from "./add-deployment.js";
 
@@ -92,8 +93,14 @@ export function AddPersonalScreen(): ReactNode {
     })()
       .catch((error: unknown) => {
         if (attempt.current !== current) return;
+        const issue = clientIssue(error, { operation: "action", label: "connect" });
+        if (issue === null) return;
+        // A refusal says so, with the computer's own reason where it gave a safe one.
         setFailure(
-          presentActionFailure(error, "That computer did not accept this phone with that code."),
+          issue.code === "rejected"
+            ? presentClientIssue({ ...issue, action: "connect this phone", done: "connected" })
+                .title
+            : "Couldn't reach that computer. Check the address and try again.",
         );
       })
       .finally(() => {
@@ -103,7 +110,10 @@ export function AddPersonalScreen(): ReactNode {
 
   const failureNotice =
     failure === null ? null : (
-      <Notice detail={failure} title="That computer did not let this phone in" />
+      <ActionLine
+        line={{ key: failure, text: failure, tone: "danger", haptic: "error" }}
+        numberOfLines={2}
+      />
     );
 
   if (confirming) {

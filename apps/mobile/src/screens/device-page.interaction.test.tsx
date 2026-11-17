@@ -65,6 +65,13 @@ it("keeps native Cancel setup on the device page when redemption won", async () 
     return send(command);
   });
   const refresh = vi.spyOn(host, "refresh");
+  host.connection.start();
+  await vi.waitFor(
+    () => expect(host.connection.getSnapshot().phase, "never attached").toBe("ready"),
+    {
+      timeout: 2000,
+    },
+  );
   state.host = host;
   const root = createRoot(document.createElement("div"));
   try {
@@ -118,6 +125,13 @@ it("refreshes and explains a conflicting device-page switch without retrying the
     .machines.find((entry) => entry.kind !== "home" && entry.status !== "pending" && entry.access)!;
   const update = vi.spyOn(host, "updateMachineAccess").mockResolvedValue({ outcome: "conflict" });
   const refresh = vi.spyOn(host, "refresh");
+  host.connection.start();
+  await vi.waitFor(
+    () => expect(host.connection.getSnapshot().phase, "never attached").toBe("ready"),
+    {
+      timeout: 2000,
+    },
+  );
   state.host = host;
   const root = createRoot(document.createElement("div"));
   try {

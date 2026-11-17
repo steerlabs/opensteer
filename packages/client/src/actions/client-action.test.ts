@@ -8,9 +8,9 @@ it("decides not-sent synchronously and keeps lost acknowledgement uncertain afte
   let calls = 0;
   const action = createClientAction(session, {
     key: "tab:close:1",
-    label: "close",
+    label: "close this tab",
     done: "closed",
-    thing: "this tab",
+    happened: "this tab closed",
     execute: async () => {
       calls++;
       throw new HostTransportError("timed-out");

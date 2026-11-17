@@ -1,4 +1,4 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
+import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { hostsDeployment } from "@opensteer/client/computers";
 import type { AccountDeploymentDirectoryUnavailable } from "@opensteer/client/connections";
@@ -63,6 +63,7 @@ import {
   useMobileState,
   useSelectedHostClient,
 } from "../ui/mobile-client-context.js";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
 import { AppText, Notice, RowGroup, StatusDot } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
@@ -405,26 +406,24 @@ export function DeploymentsScreen(): ReactNode {
   const column = useReadingColumn();
   const [refreshing, setRefreshing] = useState(false);
   const [startingAccountSignIn, setStartingAccountSignIn] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
+  const [failure, setFailure] = useState<ActionLineValue | null>(null);
   const accountFlowGeneration = useRef(0);
   const mounted = useRef(true);
   const pendingOpen = useRef<{ cancel: () => void } | null>(null);
-  const visibleFailure =
-    failure ??
-    (directory.status === "error"
-      ? (directory.detail ?? "Your Opensteer Account list could not be refreshed.")
-      : null);
-
+  // A background reread that fails keeps the list as it was and says nothing.
   const refresh = useCallback(() => {
     setRefreshing(true);
     setFailure(null);
     void client
       .refreshDirectory()
-      .catch((error: unknown) => {
+      .catch((error: unknown) =>
         setFailure(
-          presentActionFailure(error, "Your Opensteer Account list could not be refreshed."),
-        );
-      })
+          failedLine(
+            error,
+            presentClientIssue({ code: "refresh-failed", resource: "your computers" }).title,
+          ),
+        ),
+      )
       .finally(() => setRefreshing(false));
   }, [client]);
 
@@ -474,12 +473,13 @@ export function DeploymentsScreen(): ReactNode {
         .openDeployment(row.deploymentId)
         .then(openSelected)
         .catch((error: unknown) => {
-          const detail = presentActionFailure(error, "That deployment could not be opened.");
+          const line = failedLine(error, `Couldn't open ${row.name}.`);
           // Selection resets the navigation tree before Host OAuth finishes.
-          // An alert survives that reset, so a cancelled browser or rejected
-          // callback does not disappear with this screen's local state.
-          if (opened) Alert.alert("That deployment did not open", detail, [{ text: "Done" }]);
-          else if (attempt.active) setFailure(detail);
+          // An alert survives that reset, so a rejected callback does not
+          // disappear with this screen's local state.
+          if (line !== null && opened)
+            Alert.alert(line.text, "Try again from Computers.", [{ text: "Done" }]);
+          else if (attempt.active) setFailure(line);
           attempt.cancel();
         });
     },
@@ -512,7 +512,7 @@ export function DeploymentsScreen(): ReactNode {
       setFailure(null);
       void runDeploymentRecovery(client, navigation, row).catch((error: unknown) => {
         if (!mounted.current || !navigation.isFocused()) return;
-        setFailure(presentActionFailure(error, "Sign-in did not finish. Try again."));
+        setFailure(failedLine(error, "Sign-in didn't finish.", () => recover(row)));
       });
     },
     [client, navigation],
@@ -548,7 +548,7 @@ export function DeploymentsScreen(): ReactNode {
     })()
       .catch((error: unknown) => {
         if (!accountFlowIsCurrent(generation, expectedSelection)) return;
-        setFailure(presentActionFailure(error, "Your Opensteer Account could not be reached."));
+        setFailure(failedLine(error, "Couldn't sign in to your Opensteer Account."));
       })
       .finally(() => {
         if (mounted.current && accountFlowGeneration.current === generation) {
@@ -574,7 +574,7 @@ export function DeploymentsScreen(): ReactNode {
                   if (client.getSnapshot().selection.deploymentId === null) resetToDeployments();
                 })
                 .catch((error: unknown) => {
-                  setFailure(presentActionFailure(error, "That deployment could not be removed."));
+                  setFailure(failedLine(error, `Couldn't remove ${row.name}.`));
                 });
             },
             style: "destructive",
@@ -599,9 +599,7 @@ export function DeploymentsScreen(): ReactNode {
             onPress: () => {
               setFailure(null);
               void client.signOut(row.deploymentId).catch((error: unknown) => {
-                setFailure(
-                  presentActionFailure(error, "Signing out of that deployment did not finish."),
-                );
+                setFailure(failedLine(error, `Couldn't sign out of ${row.name}.`));
               });
             },
             style: "destructive",
@@ -655,7 +653,7 @@ export function DeploymentsScreen(): ReactNode {
       <Welcome
         portalOrigin={client.portalOrigin}
         account={account.account}
-        failure={failure}
+        failure={failure?.text ?? null}
         onAccount={signInAccount}
         onAddress={enterAddress}
         onScan={() => {
@@ -678,7 +676,7 @@ export function DeploymentsScreen(): ReactNode {
       <SignedInWaiting onRefresh={refresh}>
         <Welcome
           account={account.account}
-          failure={directory.status === "error" ? listed.detail : failure}
+          failure={directory.status === "error" ? listed.detail : (failure?.text ?? null)}
           onAccount={signInAccount}
           onAddress={enterAddress}
           onScan={scan}
@@ -701,8 +699,8 @@ export function DeploymentsScreen(): ReactNode {
           ) : undefined
         }
       >
-        {visibleFailure === null ? null : (
-          <Notice detail={visibleFailure} title="Something did not work" />
+        {failure === null ? null : (
+          <ActionLine line={failure} numberOfLines={2} onDismiss={() => setFailure(null)} />
         )}
         {identity === null ? null : (
           <RowGroup>
@@ -781,6 +779,22 @@ function UnavailableAccountDeployments(props: {
       })}
     </View>
   );
+}
+
+/**
+ * A device or Account step that failed, in the screen's own words; nothing
+ * for a person who cancelled. These never reach the computer's own answer,
+ * so there is no reason to read out, only what didn't happen.
+ */
+function failedLine(error: unknown, text: string, retry?: () => void): ActionLineValue | null {
+  if (clientIssue(error, { operation: "action", label: text }) === null) return null;
+  return {
+    key: text,
+    text,
+    tone: "muted",
+    link: retry ? { label: "Try again", onPress: retry } : null,
+    haptic: "warning",
+  };
 }
 
 const styles = StyleSheet.create({

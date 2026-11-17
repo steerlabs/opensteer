@@ -184,6 +184,7 @@ vi.mock("@react-navigation/native", () => ({
     isFocused: () => true,
   }),
 }));
+vi.mock("../ui/action-line.js", () => ({ RowSubtitle: () => null }));
 vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileClient: () => ({ signIn: vi.fn() }),
   useSelectedHostClient: () => null,

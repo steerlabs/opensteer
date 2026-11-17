@@ -1695,7 +1695,7 @@ describe("a conversation with a page", () => {
     );
 
   // Failure: the person is left on a page for a tab the Host never made.
-  it("opens an app's one tab, then shows it, and stays with why when the Host refuses", async () => {
+  it("opens an app's one tab, then shows it, and stays honest when its answer is lost", async () => {
     const appId = "app_11111111-1111-4111-8111-111111111111";
     const host = fakeHost(
       snapshotFor({
@@ -1728,7 +1728,7 @@ describe("a conversation with a page", () => {
     expect(harness.dispatch).not.toHaveBeenCalledWith(
       expect.objectContaining({ name: "WorkspaceBrowser" }),
     );
-    expect(text(container)).toContain("This app could not open as a tab");
+    expect(text(container)).toContain("Couldn't confirm this app opened.");
     await press(container, "Open Budget");
     await act(async () => opened.resolve({ tabId: "tab_budget" }));
     expect(harness.dispatch).toHaveBeenLastCalledWith(
@@ -3731,7 +3731,7 @@ describe("a task", () => {
     );
     await settle();
     expect(editField(container)?.value).toBe("Words typed on a slow connection");
-    expect(text(container)).toContain("Couldn't complete this action.");
+    expect(text(container)).toContain("This message can’t be edited right now.");
     expect(hasButton(container, "Discard")).toBe(true);
 
     await press(container, "Try again");
@@ -4263,7 +4263,9 @@ describe("task marks on a phone", () => {
       dispatch.mockRejectedValueOnce(new Error("Icon refused"));
       await press(container, "Change icon…");
       await press(container, "Plane");
-      expect(text(container)).toContain("Icon refused");
+      // An unvalidated failure may have landed: it is never said as a refusal or in its own words.
+      expect(text(container)).toContain("Couldn't confirm the icon changed.");
+      expect(text(container)).not.toContain("Icon refused");
       expect(client.getSnapshot().threads.find(({ id }) => id === workId)?.icon).toBe("document");
       vi.mocked(focus).mockClear();
       await press(container, "Close");

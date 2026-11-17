@@ -117,10 +117,10 @@ import { InsetView, Pane, useContentInsets } from "../ui/pane.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { ActionLine } from "../ui/action-line.js";
 import { useConnectionReady } from "../ui/connection-live.js";
-import { refusal, useItemAction } from "../ui/item-action.js";
+import { refusal, useScreenAction } from "../ui/client-feedback.js";
 import { AppText, SecondaryButton } from "../ui/primitives.js";
 import { ConnectionRouteGate } from "../ui/route-gate.js";
-import { closeTabs, tabActionKey, tabActionWords } from "../tabs/tab-actions.js";
+import { closeTabs, tabActionKey, tabActionSpecs } from "../tabs/tab-actions.js";
 import { DeploymentGate } from "./deployment-gate.js";
 import { Screen } from "../ui/screen.js";
 import { useScreenPresence, type PagePresence } from "../ui/page-presence.js";
@@ -298,7 +298,11 @@ function ClosedTab(props: {
   readonly tabId: TabId;
 }): ReactNode {
   const { hostClient, intent, tabId } = props;
-  const reopening = useItemAction(hostClient, tabActionKey("reopen", tabId), tabActionWords.reopen);
+  const reopening = useScreenAction(
+    hostClient,
+    tabActionKey("reopen", tabId),
+    tabActionSpecs.reopen,
+  );
   const reopen = async () => {
     // Renewed before the answer: the reopened tab's first ask may land before it.
     intent.current = tabId;
@@ -331,7 +335,11 @@ const retriable: ReadonlySet<TabUnavailableCode> = new Set(["paused", "protected
 function UnavailableTab(props: { readonly hostClient: HostClient; readonly tab: Tab }): ReactNode {
   const { hostClient, tab } = props;
   const closing = useTabClose(hostClient, tab.tabId);
-  const retrying = useItemAction(hostClient, tabActionKey("open", tab.tabId), tabActionWords.open);
+  const retrying = useScreenAction(
+    hostClient,
+    tabActionKey("open", tab.tabId),
+    tabActionSpecs.open,
+  );
   const retry = () =>
     void retrying.run(async () => {
       const viewer = await hostClient.activateTab(tab.tabId, { wake: true });
@@ -529,10 +537,10 @@ function Focused(
   );
 
   // A new tab of this page's profile, over this one, so Back returns here.
-  const opening = useItemAction(
+  const opening = useScreenAction(
     hostClient,
     tabActionKey("newTab", tab.tabId),
-    tabActionWords.newTab,
+    tabActionSpecs.newTab,
   );
   const onOpenTab = useCallback(
     (url: string) => {
@@ -1050,7 +1058,7 @@ function useTabClose(
   hostClient: HostClient,
   tabId: TabId,
 ): { readonly close: () => void; readonly closing: boolean; readonly failure: string | null } {
-  const operation = useItemAction(hostClient, tabActionKey("close", tabId), tabActionWords.close);
+  const operation = useScreenAction(hostClient, tabActionKey("close", tabId), tabActionSpecs.close);
   const { run } = operation;
   const close = useCallback(
     () => void run(() => closeTabs(hostClient, [tabId])),

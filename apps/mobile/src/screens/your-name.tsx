@@ -1,4 +1,3 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
 import type { AccountProfile } from "@opensteer/control-plane-protocol";
 import { normalizePersonName } from "@opensteer/core";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -8,6 +7,7 @@ import { useMobileTeams } from "../team/team-context.js";
 import { useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsSection } from "./native-settings-page.types.js";
+import { failureWords } from "../ui/client-feedback.js";
 
 export type YourNameParams = {
   /**
@@ -82,7 +82,11 @@ export function YourNameScreen(props: StaticScreenProps<YourNameParams>): ReactN
     setSaving(true);
     setError(null);
     // Each answer carries the name now stored, so a refused save shows the newer one.
-    const saved: Promise<{ applied: boolean; name: string | null; version: string | null }> =
+    const saved: Promise<{
+      applied: boolean;
+      name: string | null;
+      version: string | null;
+    }> | null =
       target === "owner" && host !== null
         ? host.setOwnerName(name, base.version).then(({ applied }) => {
             profiles?.changed();
@@ -96,7 +100,12 @@ export function YourNameScreen(props: StaticScreenProps<YourNameParams>): ReactN
                 setAccount(profile);
                 return { applied, name: profile.name, version: String(profile.revision) };
               })
-          : Promise.reject(new Error("Sign in to your Opensteer Account to set your name."));
+          : null;
+    if (saved === null) {
+      setSaving(false);
+      setError("Sign in to your Opensteer Account to set your name.");
+      return;
+    }
     void saved
       .then(({ applied, name: current, version }) => {
         if (applied) {
@@ -107,7 +116,15 @@ export function YourNameScreen(props: StaticScreenProps<YourNameParams>): ReactN
         setDraft(null);
         setError(conflict);
       })
-      .catch((reason: unknown) => setError(presentActionFailure(reason, "Your name wasn’t saved.")))
+      .catch((reason: unknown) =>
+        setError(
+          failureWords(
+            reason,
+            { label: "save your name", done: "saved", happened: "your name was saved" },
+            "Your name wasn’t saved.",
+          ),
+        ),
+      )
       .finally(() => setSaving(false));
   };
 

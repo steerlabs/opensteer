@@ -1,11 +1,13 @@
 import type { TeamSessionSnapshot } from "@opensteer/client/team";
 import { useCallback, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
-import { ActivityIndicator, Alert, Pressable, StyleSheet, View } from "react-native";
+import { presentClientIssue } from "@opensteer/client/feedback";
+import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
 import type { MobileTeam } from "../team/mobile-teams.js";
 import { useMobileTeams } from "../team/team-context.js";
 import { TeamPageList } from "../team/team-page-list.js";
 import { drawerSection } from "../team/team-views.js";
 import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
 import { AppText } from "../ui/primitives.js";
 
 /** A team place the sidebar opens. The shell decides whether it is top-level or presented. */
@@ -60,12 +62,10 @@ export function TeamSide(props: {
 
   return (
     <View style={styles.side}>
-      <TeamNotice team={team} />
+      <TeamNotice loaded={section !== null} team={team} />
       {section === null ? (
         team.state === "loading" || team.state === "live" ? (
-          <View style={styles.loading}>
-            <ActivityIndicator color={color.muted} />
-          </View>
+          <PlaceholderRows count={4} />
         ) : null
       ) : (
         <TeamPageList
@@ -87,11 +87,12 @@ export function TeamSide(props: {
 }
 
 /** Why a team can't be read right now, and the one thing that helps. Nothing while it can. */
-function TeamNotice(props: { readonly team: MobileTeam }): ReactNode {
+function TeamNotice(props: { readonly team: MobileTeam; readonly loaded: boolean }): ReactNode {
   const { team } = props;
   const teams = useMobileTeams();
   const [busy, setBusy] = useState(false);
-  const notice = noticeFor(team);
+  // What it last showed stays as it was through an outage; the pill speaks for the connection.
+  const notice = team.state === "offline" && props.loaded ? null : noticeFor(team);
   if (notice === null) return null;
   const act = (): void => {
     setBusy(true);
@@ -101,14 +102,8 @@ function TeamNotice(props: { readonly team: MobileTeam }): ReactNode {
         : notice.action === "retry"
           ? teams.refresh(team.teamId, true)
           : teams.forget(team.teamId);
-    void work
-      .catch((error: unknown) =>
-        Alert.alert(
-          notice.action === "sign-in" ? "Not signed in" : `${team.name} didn't answer`,
-          error instanceof Error ? error.message : undefined,
-        ),
-      )
-      .finally(() => setBusy(false));
+    // What happened shows as the team's state, which redraws this notice.
+    void work.catch(() => undefined).finally(() => setBusy(false));
   };
   return (
     <View accessibilityLiveRegion="polite" style={styles.notice}>
@@ -161,7 +156,16 @@ function noticeFor(team: MobileTeam): {
     case "loading":
       return null;
     case "offline":
-      return { title: `Can't reach ${team.name}`, detail: null, action: "retry" };
+      return {
+        title: presentClientIssue({
+          code: "connection",
+          reason: "unreachable",
+          name: team.name,
+          target: "team",
+        }).title,
+        detail: "Your own tasks still work.",
+        action: "retry",
+      };
     case "signed-out":
       return {
         title: `Sign in to ${team.name}`,
@@ -169,17 +173,16 @@ function noticeFor(team: MobileTeam): {
         action: "sign-in",
       };
     case "update-app":
-      return { title: "Update Opensteer", detail: `to keep using ${team.name}`, action: null };
     case "update-server":
       return {
-        title: `${team.name} needs an update`,
-        detail: "Ask its administrator to update the server.",
+        title: presentClientIssue({ code: team.state, name: team.name, target: "team" }).title,
+        detail: null,
         action: null,
       };
     case "removed":
     case "join":
       return {
-        title: `You're no longer in ${team.name}`,
+        title: presentClientIssue({ code: "access-lost", name: team.name, target: "team" }).title,
         detail: "Tasks it started stay in your list.",
         action: "remove",
       };
@@ -210,7 +213,6 @@ function useSessionValue<T>(
 }
 
 const styles = StyleSheet.create({
-  loading: { alignItems: "flex-start", paddingHorizontal: space[20], paddingVertical: space[12] },
   notice: {
     ...material.plate,
     alignItems: "center",

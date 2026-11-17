@@ -1,4 +1,4 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
+import { clientIssue } from "@opensteer/client/feedback";
 import { formatRelativeTime, messageAuthorName, type HostClient } from "@opensteer/client/host";
 import type { ThreadMessagePage } from "@opensteer/protocol";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -14,7 +14,8 @@ import {
 } from "react-native";
 import { color, radius, space, touchTarget, type } from "../theme.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
-import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
+import { ActionLine } from "../ui/action-line.js";
+import { AppText, SecondaryButton } from "../ui/primitives.js";
 import { useListContentInsets } from "../ui/screen.js";
 
 /** The Host's cap on a query; a longer one is refused, so it is not sent. */
@@ -89,7 +90,8 @@ function ThreadFind(props: {
           setNextBefore(page.window.nextBefore ?? null);
         })
         .catch((error: unknown) => {
-          setFailure(presentActionFailure(error, "This conversation could not be searched."));
+          if (clientIssue(error, { operation: "read", label: "search" }) !== null)
+            setFailure("Couldn't search this conversation.");
         })
         .finally(() => setSearching(false));
     },
@@ -188,7 +190,14 @@ function ThreadFind(props: {
             />
           </View>
           {failure === null ? null : (
-            <Notice detail={failure} title="Something did not work" tone="neutral" />
+            <ActionLine
+              line={{
+                key: failure,
+                text: failure,
+                tone: "muted",
+                link: { label: "Try again", onPress: () => search() },
+              }}
+            />
           )}
         </View>
       }

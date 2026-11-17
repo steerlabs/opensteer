@@ -11,9 +11,10 @@ import {
 } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { opensteerAppGlyph } from "../browser/agent-surface.js";
-import { useClientOperation } from "@opensteer/client/react";
 import { color, radius, space } from "../theme.js";
-import { AppText, Notice } from "../ui/primitives.js";
+import { ActionLine } from "../ui/action-line.js";
+import { notDone, useScreenAction } from "../ui/client-feedback.js";
+import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { AppFrame } from "./app-frame.js";
 import { TranscriptHostClientContext } from "./attachment-views.js";
@@ -35,7 +36,6 @@ function Card(props: { readonly client: HostClient; readonly entry: AppEntry }):
   const { appId } = entry;
   const tabs = useContext(TranscriptAppTabsContext);
   const [title, setTitle] = useState(entry.title);
-  const operation = useClientOperation(client, `app:${appId}`);
   const model = client.getSnapshot().tabs;
   // The app's one tab, while it is in the list: only the list's membership changes it.
   const readTab = useCallback((): TabId | null => {
@@ -48,16 +48,27 @@ function Card(props: { readonly client: HostClient; readonly entry: AppEntry }):
     [model],
   );
   const tabId = useSyncExternalStore(subscribe, readTab, readTab);
+  const opening = useScreenAction<null, TabId>(client, `open-app:${appId}`, {
+    label: "open this app",
+    done: "opened",
+    happened: "this app opened",
+    execute: async () => {
+      const parsed = AppIdSchema.parse(appId);
+      return (await client.openTab({ appId: parsed, kind: "app" })).tabId;
+    },
+    // The tab list says whether the lost answer opened it.
+    reconcile: async () => {
+      const opened = readTab();
+      return opened === null
+        ? notDone({ label: "open", done: "opened" })
+        : { kind: "confirmed", value: opened };
+    },
+    retry: () => open(),
+  });
   const open = () =>
-    void operation.run(
-      async () => {
-        const parsed = AppIdSchema.safeParse(appId);
-        if (!parsed.success) throw new Error("This app can no longer be opened.");
-        return (await client.openTab({ appId: parsed.data, kind: "app" })).tabId;
-      },
-      "Try again in a moment.",
-      (opened) => tabs?.show(opened),
-    );
+    void opening.run(null).then((outcome) => {
+      if (outcome.kind === "confirmed") tabs?.show(outcome.value);
+    });
   if (tabId !== null)
     return (
       <Pressable
@@ -96,23 +107,19 @@ function Card(props: { readonly client: HostClient; readonly entry: AppEntry }):
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Open ${title}`}
-          accessibilityState={{ busy: operation.busy, disabled: operation.busy }}
-          disabled={operation.busy}
+          accessibilityState={{ busy: opening.running, disabled: opening.running }}
+          disabled={opening.running}
           onPress={open}
           hitSlop={8}
         >
-          <AppText tone={operation.busy ? "muted" : "default"}>
-            {operation.busy ? "Opening…" : "Open"}
+          <AppText tone={opening.running ? "muted" : "default"}>
+            {opening.running ? "Opening…" : "Open"}
           </AppText>
         </Pressable>
       </View>
-      {operation.failure === null ? null : (
+      {opening.line === null ? null : (
         <View style={styles.failure}>
-          <Notice
-            action={{ label: "Try again", onPress: open }}
-            detail={operation.failure}
-            title="This app could not open as a tab"
-          />
+          <ActionLine line={opening.line} numberOfLines={2} onDismiss={opening.dismiss} />
         </View>
       )}
       <AppFrame appId={appId} client={client} onTitle={setTitle} />

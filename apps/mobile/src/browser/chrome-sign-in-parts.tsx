@@ -1,4 +1,3 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
 import { unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import type { BrowserSourceInspection } from "@opensteer/protocol/browser-sources";
 import { useEffect, useState, type ReactNode } from "react";
@@ -41,8 +40,9 @@ export function useChromeInspection(
           setInspection(result);
           setError(null);
         })
-        .catch((reason: unknown) => {
-          if (live) setError(presentActionFailure(reason, "Opensteer couldn’t check Chrome."));
+        // The last answer stands through a failed check; with none, say only that it failed.
+        .catch(() => {
+          if (live) setError("Couldn’t check Chrome.");
         });
     };
     check();
@@ -53,7 +53,7 @@ export function useChromeInspection(
     };
   }, [active, foreground, hostClient, url]);
 
-  return { error, inspection };
+  return { error: inspection === null ? error : null, inspection };
 }
 
 /** One Chrome to use, read out as a radio with what it can do for the site. */

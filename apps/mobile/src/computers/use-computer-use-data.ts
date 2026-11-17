@@ -1,54 +1,35 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
 import type { HostClient } from "@opensteer/client/host";
 import { loadComputerUseData, type ComputerUseData } from "@opensteer/client/integrations";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ClientReadState } from "@opensteer/client/reads";
+import { useCallback } from "react";
+import { useScreenRead } from "../ui/client-feedback.js";
 
 /**
  * What the block reads besides the machine: the approved apps and the pending
- * approvals. It reloads when the Host says a machine changed and after each
- * action here, and keeps what it had when a reload fails.
+ * approvals. It rereads when the Host says a machine changed and after each
+ * action here, and keeps what it had through outages and failed rereads.
  */
-export function useComputerUseData(
-  hostClient: HostClient | null,
-  revision: number,
-): {
+export function useComputerUseData(hostClient: HostClient | null): {
   readonly data: ComputerUseData | null;
-  readonly error: string | null;
+  readonly read: ClientReadState<ComputerUseData> & { readonly refresh: () => void };
   readonly reload: () => Promise<void>;
 } {
-  const [data, setData] = useState<ComputerUseData | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const source = useMemo(() => ({ active: false, request: 0 }), [hostClient]);
-  // Another Deployment's apps are never this one's, even for a moment.
-  useEffect(() => {
-    setData(null);
-    setError(null);
-  }, [hostClient]);
-
-  const reload = useCallback(async () => {
-    if (!source.active || hostClient === null) return;
-    const current = ++source.request;
-    try {
-      const next = await loadComputerUseData(hostClient);
-      if (!source.active || current !== source.request) return;
-      setData(next);
-      setError(null);
-    } catch (reason) {
-      if (source.active && current === source.request) {
-        setError(presentActionFailure(reason, "Computer use could not be loaded."));
-      }
-      throw reason;
-    }
-  }, [hostClient, source]);
-
-  useEffect(() => {
-    source.active = true;
-    void reload().catch(() => undefined);
-    return () => {
-      source.active = false;
-      source.request += 1;
-    };
-  }, [reload, revision, source]);
-
-  return { data, error, reload };
+  const read = useScreenRead(hostClient, {
+    key: "computer-use",
+    label: "computer use",
+    read: hostClient === null ? null : () => loadComputerUseData(hostClient),
+    subscribeInvalidation: (invalidate) => {
+      if (hostClient === null) return () => {};
+      let revision = hostClient.getSnapshot().machineRevision;
+      return hostClient.subscribe(() => {
+        const next = hostClient.getSnapshot().machineRevision;
+        if (next === revision) return;
+        revision = next;
+        invalidate();
+      });
+    },
+  });
+  const { refresh } = read;
+  const reload = useCallback(async () => refresh(), [refresh]);
+  return { data: read.data, read, reload };
 }

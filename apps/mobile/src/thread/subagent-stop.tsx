@@ -1,4 +1,3 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
 import { MenuView } from "@expo/ui/community/menu";
 import { useActionReview } from "@opensteer/client/react";
 import { noteSubagentStop, type AgentCard, type HostClient } from "@opensteer/client/host";
@@ -8,6 +7,7 @@ import { ActionReviewSheet } from "../ui/action-review.js";
 import { Symbol } from "../ui/symbol.js";
 import { color, material, radius, touchTarget } from "../theme.js";
 import { AnswerPill } from "./answer-pill.js";
+import { failureWords } from "../ui/client-feedback.js";
 
 /**
  * Stopping one subagent, after asking: a long press on its row (`children`),
@@ -93,9 +93,14 @@ export function SubagentStop(props: {
         onConfirmed={() => {
           if (card.nodeId !== null) noteSubagentStop(card.nodeId);
         }}
-        onError={(error) =>
-          Alert.alert(`${card.title} was not stopped`, presentActionFailure(error, "Try again."))
-        }
+        onError={(error) => {
+          const words = failureWords(error, {
+            label: `stop ${card.title}`,
+            done: "stopped",
+            happened: `${card.title} stopped`,
+          });
+          if (words !== null) Alert.alert(words);
+        }}
       />
     </>
   );

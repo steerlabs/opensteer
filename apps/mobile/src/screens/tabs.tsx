@@ -33,11 +33,11 @@ import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
 import { ActionLine } from "../ui/action-line.js";
 import { Gated } from "../ui/connection-gate.js";
 import { useConnectionReady } from "../ui/connection-live.js";
-import { useItemAction } from "../ui/item-action.js";
+import { useScreenAction } from "../ui/client-feedback.js";
 import { PlaceholderRows } from "../ui/placeholder.js";
 import { AppText, SecondaryButton } from "../ui/primitives.js";
 import { ConnectionRouteGate } from "../ui/route-gate.js";
-import { tabActionKey, tabActionWords } from "../tabs/tab-actions.js";
+import { tabActionKey, tabActionSpecs } from "../tabs/tab-actions.js";
 import { Symbol } from "../ui/symbol.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
@@ -112,10 +112,10 @@ function TabsForReader(props: {
   const insets = useListContentInsets(space[32]);
   const syncing = useTabsSyncing(hostClient);
   const [filter, setFilter] = useState<TabFilter>(allTabs);
-  const reopen = useItemAction(
+  const reopen = useScreenAction(
     hostClient,
     tabActionKey("reopenLast", "list"),
-    tabActionWords.reopenLast,
+    tabActionSpecs.reopenLast,
   );
   // The shared filter: it reads only what it matches on, so a title arriving recomputes nothing.
   const shared = useMemo<SharedTabFilter>(

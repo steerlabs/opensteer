@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { controlledClientSession } from "@opensteer/client/test-support";
 
 import type { SurfaceModel } from "@opensteer/client/host";
 import type { Request, RequestFormField } from "@opensteer/core";
@@ -10,6 +11,14 @@ import { createThreadMutationGate } from "./thread-mutation-gate.js";
 vi.mock("./password-approval-auth.js", () => ({
   authenticatePasswordApproval: vi.fn(async () => true),
 }));
+vi.mock(
+  "../ui/action-line.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).actionLine,
+);
+vi.mock(
+  "../ui/placeholder.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).placeholder,
+);
 vi.mock("expo-haptics", () => ({
   ImpactFeedbackStyle: { Medium: "medium" },
   NotificationFeedbackType: { Error: "error", Success: "success" },
@@ -166,6 +175,7 @@ async function render(
   vi.useFakeTimers({ toFake: ["Date"] });
   const dispatch = vi.fn(async () => ({ type: "request.respond" }));
   const hostClient = {
+    connection: controlledClientSession().connection,
     dispatch,
     getSnapshot: () => ({ user: { id: "usr_00000000-0000-4000-8000-000000000001" } }),
     subscribe: () => () => undefined,
@@ -312,7 +322,7 @@ describe("answering a question", () => {
     dispatch.mockRejectedValueOnce(new Error("socket closed"));
     await tap("S3");
     await tap("Answer");
-    expect(document.body.textContent).toContain("Could not confirm your answer was sent.");
+    expect(document.body.textContent).toContain("Couldn't confirm your answer was sent.");
     await tap("Answer");
     expect(dispatch).toHaveBeenCalledTimes(2);
     const [first, second] = dispatch.mock.calls.map(

@@ -4,6 +4,7 @@ import type { PasswordSignInCard } from "@opensteer/protocol";
 import type { BrowserSignInOutcome } from "@opensteer/protocol/browser-sources";
 import { useState, useSyncExternalStore } from "react";
 import type { QuestionDrafts } from "@opensteer/client/host";
+import type { ActionLineValue } from "../ui/action-line.js";
 import type { RequestFormDraft, RequestSubmission } from "./request-form-model.js";
 
 /**
@@ -12,12 +13,6 @@ import type { RequestFormDraft, RequestSubmission } from "./request-form-model.j
  * the sheet to read the Thread and opening it again finds every answer where it
  * was left, and a retry from either keeps the key of the answer it repeats.
  */
-/** One line under a Request's answers: muted when nothing went out, danger when refused. */
-export interface RequestLine {
-  readonly text: string;
-  readonly tone: "muted" | "danger";
-}
-
 export interface RequestSession {
   answers: RequestFormDraft;
   /** Undefined means untouched, so the agent's suggestion still applies. */
@@ -28,8 +23,8 @@ export interface RequestSession {
   chosenSourceId: string | null;
   /** An Allow the Host kept pending: Chrome is offline and it finishes by itself. */
   allowed: BrowserSignInOutcome | null;
-  /** What the last answer came to: a refusal, or that it never went out. */
-  failure: RequestLine | null;
+  /** What the last answer came to, beside the answers; null once it went through. */
+  failure: ActionLineValue | null;
   held: RequestSubmission | null;
   heldPasswordKey: string | null;
   heldSignIn: { readonly key: string; readonly signature: string } | null;

@@ -1,4 +1,4 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
+import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import { useNavigation } from "@react-navigation/native";
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
 import { SymbolView, type SFSymbol } from "expo-symbols";
@@ -7,7 +7,8 @@ import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { resetToDeployment, resetToDeployments } from "../navigation-ref.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
-import { AppText, Notice, RowGroup, SecondaryButton } from "../ui/primitives.js";
+import { ActionLine } from "../ui/action-line.js";
+import { AppText, RowGroup, SecondaryButton } from "../ui/primitives.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
 import {
@@ -96,9 +97,10 @@ export function AddDeploymentScreen(): ReactNode {
       else resetToDeployment(deploymentId);
     } catch (error: unknown) {
       if (!flowIsCurrent(generation, expectedSelection)) return;
-      setFailure(
-        presentActionFailure(error, "Your Opensteer Account list could not be refreshed."),
-      );
+      if (clientIssue(error, { operation: "refresh", label: "your computers" }) !== null)
+        setFailure(
+          presentClientIssue({ code: "refresh-failed", resource: "your computers" }).title,
+        );
     } finally {
       if (mounted.current && accountFlowGeneration.current === generation) setRefreshing(false);
     }
@@ -133,7 +135,8 @@ export function AddDeploymentScreen(): ReactNode {
         ) {
           return;
         }
-        setFailure(presentActionFailure(error, "Your Opensteer Account could not be reached."));
+        if (clientIssue(error, { operation: "action", label: "sign in" }) !== null)
+          setFailure("Couldn't sign in to your Opensteer Account.");
       })
       .finally(() => {
         if (mounted.current && accountFlowGeneration.current === generation) {
@@ -163,7 +166,12 @@ export function AddDeploymentScreen(): ReactNode {
       {/* The header already says what this sheet is for, so the sheet does not
           say it a second time in the display face; the doors are the content. */}
       <ScrollView contentContainerStyle={[styles.content, column]}>
-        {failure === null ? null : <Notice detail={failure} title="That did not work" />}
+        {failure === null ? null : (
+          <ActionLine
+            line={{ key: failure, text: failure, tone: "muted", haptic: "warning" }}
+            numberOfLines={2}
+          />
+        )}
         {identity === null ? (
           <AddDeploymentDoors
             account={account.account}

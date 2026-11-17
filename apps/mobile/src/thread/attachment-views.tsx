@@ -1,4 +1,4 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
+import { presentClientIssue } from "@opensteer/client/feedback";
 import type { HostClient } from "@opensteer/client/host";
 import {
   AttachmentIdSchema,
@@ -22,6 +22,7 @@ import { color, material, radius, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { attachmentKey, type ComposerAttachment } from "./draft-attachments.js";
+import { failureWords } from "../ui/client-feedback.js";
 
 /**
  * The Thread's own client, which a transcript's rows read the files messages
@@ -42,6 +43,8 @@ export function AttachmentStrip(props: {
   readonly notice: string | null;
   readonly onRemove: (key: string) => void;
   readonly onRetry: (key: string) => void;
+  /** Out of reach: unfinished uploads wait instead of spinning. */
+  readonly waiting: boolean;
 }): ReactNode {
   if (props.items.length === 0 && props.notice === null) return null;
   return (
@@ -61,6 +64,7 @@ export function AttachmentStrip(props: {
               key={attachmentKey(item)}
               onRemove={props.onRemove}
               onRetry={props.onRetry}
+              waiting={props.waiting}
             />
           ))}
         </ScrollView>
@@ -79,19 +83,25 @@ function StagedChip(props: {
   readonly item: ComposerAttachment;
   readonly onRemove: (key: string) => void;
   readonly onRetry: (key: string) => void;
+  readonly waiting: boolean;
 }): ReactNode {
   const { item } = props;
   const key = attachmentKey(item);
   const failed = item.status === "error";
-  const busy = item.status === "staged" || item.status === "uploading";
+  const unfinished = item.status === "staged" || item.status === "uploading";
+  // A file that can't go now waits, the attachment's own fact; it uploads once it can.
+  const paused = unfinished && props.waiting;
+  const busy = unfinished && !paused;
   // A file the Host already holds is only confirmed, never sent again.
-  const detail = busy
-    ? item.localUri === null
-      ? "Checking…"
-      : "Uploading…"
-    : failed
-      ? (item.error ?? "Could not be attached.")
-      : attachmentDetail(item.name, item.mediaType, item.sizeBytes);
+  const detail = paused
+    ? presentClientIssue({ code: "preparation-required" }).title
+    : busy
+      ? item.localUri === null
+        ? "Checking…"
+        : "Uploading…"
+      : failed
+        ? (item.error ?? "Could not be attached.")
+        : attachmentDetail(item.name, item.mediaType, item.sizeBytes);
   return (
     <View
       accessibilityLabel={`${item.name}, ${detail}`}
@@ -111,6 +121,10 @@ function StagedChip(props: {
         {busy ? (
           <View style={styles.mediaOverlay}>
             <ActivityIndicator color={color.text} size="small" />
+          </View>
+        ) : paused ? (
+          <View style={styles.mediaOverlay}>
+            <Symbol name="pause" size={12} tint={color.text} />
           </View>
         ) : null}
       </View>
@@ -204,7 +218,11 @@ function SentChip(props: {
       .catch((error: unknown) =>
         Alert.alert(
           "Attachment not opened",
-          presentActionFailure(error, "This attachment could not be read."),
+          failureWords(
+            error,
+            { label: "open this attachment", done: "opened" },
+            "This attachment could not be read.",
+          ) ?? "",
         ),
       )
       .finally(() => setOpening(false));
