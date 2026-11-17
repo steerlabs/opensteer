@@ -17,12 +17,18 @@ const restoreBudgetBytes = 64 * 1024 ** 2;
 const sleepsPerPass = 8;
 const concurrentSleeps = 4;
 const rendererSampleMs = 30_000;
-const rendererRecheckMs = 1_000;
+const pressureScanMs = 1_000;
+const rendererSettleMs = 3_000;
+const ineffectiveReclaimsBeforeBackoff = 3;
+const minimumReclaimBytes = 16 * 1024 ** 2;
+const reportMemoryChangeBytes = 64 * 1024 ** 2;
 
 export interface TabSleepPass {
   readonly livePages: number;
   readonly rendererProcesses: number;
-  readonly rendererBytes: number;
+  readonly rendererResidentBytes: number | null;
+  readonly unassignedRendererProcesses: number;
+  readonly underPressure: 0 | 1;
   readonly attempted: number;
   readonly slept: number;
 }
@@ -64,6 +70,11 @@ export class TabSleeper {
   private closed = false;
   private rendererUsage: BrowserRendererUsage | null = null;
   private nextRendererSample = 0;
+  private declined = new WeakSet<TabRecord>();
+  private reclaimFrom: { usage: BrowserRendererUsage; settledAt: number } | null = null;
+  private ineffectiveReclaims = 0;
+  private pressureBackoffUntil = 0;
+  private lastReportedPass: TabSleepPass | null = null;
 
   private releasing = false;
   private readonly options: TabSleeperOptions;
@@ -303,6 +314,59 @@ export class TabSleeper {
     );
     this.timer.unref();
   }
+  private sampleRenderers(): void {
+    const measure = this.options.rendererUsage;
+    if (!measure) return;
+    const now = Date.now();
+    this.nextRendererSample = now + rendererSampleMs;
+    const usage = measure();
+    this.rendererUsage = usage;
+    if (!this.overBudget()) {
+      this.reclaimFrom = null;
+      this.ineffectiveReclaims = 0;
+      this.pressureBackoffUntil = 0;
+      return;
+    }
+    const reclaim = this.reclaimFrom;
+    if (!reclaim || now < reclaim.settledAt) return;
+    this.reclaimFrom = null;
+    if (
+      usage.processes < reclaim.usage.processes ||
+      (usage.bytes !== null &&
+        reclaim.usage.bytes !== null &&
+        reclaim.usage.bytes - usage.bytes >= minimumReclaimBytes)
+    ) {
+      this.ineffectiveReclaims = 0;
+    } else if (++this.ineffectiveReclaims >= ineffectiveReclaimsBeforeBackoff) {
+      this.ineffectiveReclaims = 0;
+      this.pressureBackoffUntil = now + rendererSampleMs;
+    }
+  }
+
+  private reportPass(pass: TabSleepPass): void {
+    const last = this.lastReportedPass;
+    if (
+      last &&
+      !pass.slept &&
+      last.livePages === pass.livePages &&
+      last.underPressure === pass.underPressure &&
+      !this.countChanged(last.rendererProcesses, pass.rendererProcesses) &&
+      !this.countChanged(last.unassignedRendererProcesses, pass.unassignedRendererProcesses) &&
+      (last.rendererResidentBytes === pass.rendererResidentBytes ||
+        (last.rendererResidentBytes !== null &&
+          pass.rendererResidentBytes !== null &&
+          Math.abs(last.rendererResidentBytes - pass.rendererResidentBytes) <
+            Math.max(reportMemoryChangeBytes, last.rendererResidentBytes / 10)))
+    )
+      return;
+    this.lastReportedPass = pass;
+    this.options.onPass?.(pass);
+  }
+
+  private countChanged(previous: number, next: number): boolean {
+    return Math.abs(previous - next) >= Math.max(1, Math.ceil(previous / 10));
+  }
+
   private async pass(): Promise<void> {
     this.running = true;
     let attempted = 0;
@@ -310,11 +374,7 @@ export class TabSleeper {
     let livePages = 0;
     const pending = new Set<Promise<void>>();
     try {
-      if (this.options.rendererUsage) {
-        this.nextRendererSample = Date.now() + rendererSampleMs;
-        this.rendererUsage = this.options.rendererUsage();
-        this.overBudget();
-      }
+      this.sampleRenderers();
       const candidates = [...this.sessions].flatMap(([id, session]) =>
         [...session.ledger.policyRecords()]
           .filter((record) => record.live)
@@ -323,6 +383,7 @@ export class TabSleeper {
       livePages = candidates.length;
       candidates.sort(
         (a, b) =>
+          Number(this.declined.has(a.record)) - Number(this.declined.has(b.record)) ||
           this.category(a.session, a.record) - this.category(b.session, b.record) ||
           a.record.usedAt - b.record.usedAt,
       );
@@ -331,7 +392,11 @@ export class TabSleeper {
         if (attempted >= sleepsPerPass || this.closed) break;
         const deadline = this.deadline(session, record);
         if (this.rendererUsage && deadline > Date.now()) {
-          if (!this.releasing) continue;
+          if (
+            !this.releasing ||
+            Date.now() < Math.max(this.pressureBackoffUntil, this.reclaimFrom?.settledAt ?? 0)
+          )
+            continue;
           // Only a successful sleep can change the measured pressure.
           if (pending.size) await Promise.all(pending);
           if (this.closed) break;
@@ -353,7 +418,10 @@ export class TabSleeper {
           .sleep(record.id, (next) => this.blocked(id, next, Date.now()))
           .then((committed) => {
             if (committed) slept++;
-            else this.nextProbe.set(record, Date.now() + quietMs);
+            else {
+              this.declined.add(record);
+              this.nextProbe.set(record, Date.now() + quietMs);
+            }
             this.trimRestore();
           })
           .finally(() => pending.delete(sleeping));
@@ -369,16 +437,29 @@ export class TabSleeper {
       }
     } finally {
       this.running = false;
-      if (this.rendererUsage && this.releasing && (slept > 0 || attempted >= sleepsPerPass))
-        this.nextRendererSample = Date.now() + rendererRecheckMs;
-      this.poke(attempted >= sleepsPerPass ? 1_000 : 0);
-      this.options.onPass?.({
-        livePages,
-        rendererProcesses: this.rendererUsage?.processes ?? 0,
-        rendererBytes: this.rendererUsage?.bytes ?? 0,
-        attempted,
-        slept,
-      });
+      if (attempted < sleepsPerPass) this.declined = new WeakSet();
+      if (this.rendererUsage && this.releasing) {
+        const now = Date.now();
+        if (slept > 0) {
+          this.reclaimFrom ??= { usage: this.rendererUsage, settledAt: now + rendererSettleMs };
+          this.reclaimFrom.settledAt = now + rendererSettleMs;
+        }
+        if (attempted >= sleepsPerPass)
+          this.nextRendererSample = Math.min(this.nextRendererSample, now + pressureScanMs);
+        if (this.reclaimFrom)
+          this.nextRendererSample = Math.min(this.nextRendererSample, this.reclaimFrom.settledAt);
+      }
+      this.poke(attempted >= sleepsPerPass ? pressureScanMs : 0);
+      if (this.options.onPass)
+        this.reportPass({
+          livePages,
+          rendererProcesses: this.rendererUsage?.processes ?? 0,
+          rendererResidentBytes: this.rendererUsage?.bytes ?? null,
+          unassignedRendererProcesses: this.rendererUsage?.unassignedProcesses ?? 0,
+          underPressure: this.releasing ? 1 : 0,
+          attempted,
+          slept,
+        });
     }
   }
 

@@ -9,7 +9,7 @@ import { AsyncMutex } from "../async.js";
 import { BrowserRuntimeError } from "../errors.js";
 import type { LatestFrameStream } from "../stream/latest-frame-stream.js";
 import { rasterShowsSize, readImageDimensions } from "../stream/frame.js";
-import type { CdpSession, PageCapture } from "./backend.js";
+import { BrowserPaintTimeoutError, type CdpSession, type PageCapture } from "./backend.js";
 import type {
   PageSize,
   SurfaceBinding,
@@ -151,7 +151,11 @@ export class ScreencastController {
   setStreaming(streaming: boolean, captureRegions = this.captureRegions): Promise<void> {
     this.captureRegions = captureRegions;
     if (this.closed) throw new BrowserRuntimeError("conflict", "The browser stream is closed.");
-    if (this.streaming === streaming) return Promise.resolve();
+    if (
+      this.streaming === streaming &&
+      (!streaming || !this.active || this.active.casting || this.active.castAbort)
+    )
+      return Promise.resolve();
     const previous = this.streaming;
     this.streaming = streaming;
     if (!streaming) this.active?.castAbort?.abort();
@@ -653,6 +657,7 @@ export class ScreencastController {
     }
     const page = this.ledger.binding(active.surfaceId)?.page;
     if (page?.capture && !page.capture.read()) return;
+    active.releaseRendering ??= active.cdp.retainRendering?.() ?? null;
     active.awaitingNavigation = false;
     const castAbort = new AbortController();
     active.castAbort = castAbort;
@@ -663,7 +668,12 @@ export class ScreencastController {
         if (page?.settleRendering) await page.settleRendering(canceled);
       } catch (error) {
         if (canceled.aborted) return;
-        throw error;
+        if (!(error instanceof BrowserPaintTimeoutError)) throw error;
+        active.releaseRendering?.();
+        active.releaseRendering = null;
+        active.awaitingNavigation = this.ledger.binding(active.surfaceId)?.surface.loading === true;
+        this.showRetainedPicture(active);
+        return;
       }
       if (this.closed || this.active !== active || !this.streaming || canceled.aborted) return;
       const start = async () => {

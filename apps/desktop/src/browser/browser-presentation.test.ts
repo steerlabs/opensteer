@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { WebContents } from "electron";
+import { BrowserPaintTimeoutError } from "@opensteer/browser-runtime-core";
 import type { NativePresentationSource, PresentedSurface } from "@opensteer/browser-runtime-core";
 import { BrowserSessionIdSchema, BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import type { ElectronAppWindow } from "../app/electron-window.js";
@@ -69,7 +70,11 @@ function onPlatform(platform: NodeJS.Platform): void {
     Object.defineProperty(process, "platform", actual);
   });
 }
-function fixture() {
+function fixture(
+  onError = (error: unknown) => {
+    throw error;
+  },
+) {
   let observe = (_event: DesktopBrowserSocketObservation) => {};
   let input = () => {};
   let humanInput = () => {};
@@ -88,9 +93,7 @@ function fixture() {
     },
     autofillPreload: "unused",
     glassPreload: "unused",
-    onError: (error) => {
-      throw error;
-    },
+    onError,
     quit: vi.fn(),
   });
   managers.push(manager);
@@ -456,6 +459,52 @@ it("switches to an unplaced page without exposing it or keeping the old page's g
     emulation: null,
   });
   expect(contentView.children).toEqual([appView, next.view, f.native.view]);
+});
+
+it("keeps the previous native view when first paint is late and retries on update", async () => {
+  const onError = vi.fn();
+  const f = fixture(onError);
+  f.socket("admitted");
+  f.native.waitForPaint = async () => {};
+  const target = await f.manager.present(f.sender, f.request);
+  await Promise.resolve();
+
+  const nextId = BrowserSurfaceIdSchema.parse("bsf_00000000-0000-4000-8000-000000000003");
+  const first = Promise.withResolvers<void>();
+  const lateFrame = Promise.withResolvers<void>();
+  const next = {
+    ...f.native,
+    view: {
+      webContents: Object.assign(new EventEmitter(), {
+        isCrashed: () => false,
+        getZoomFactor: () => 1,
+        stopFindInPage: vi.fn(),
+      }),
+    },
+    unmount: vi.fn(),
+    waitForPaint: vi.fn().mockReturnValueOnce(first.promise).mockReturnValue(lateFrame.promise),
+  };
+  f.source.presentSurface.mockReturnValue({
+    ...f.surface,
+    surfaceId: nextId,
+    page: { ...f.surface.page, native: next },
+    release: vi.fn(),
+  } as unknown as PresentedSurface);
+  await f.manager.update(f.sender, { presentationId: target.presentationId, surfaceId: nextId });
+  const timeout = new BrowserPaintTimeoutError();
+  // Production reports terminal handoff errors to main; record them here.
+  const error = expect(first.promise).rejects.toBe(timeout);
+  first.reject(timeout);
+  await error;
+  expect(onError).not.toHaveBeenCalled();
+  expect(f.native.unmount).not.toHaveBeenCalled();
+  expect(next.unmount).not.toHaveBeenCalled();
+  await f.manager.update(f.sender, { presentationId: target.presentationId, rect });
+  expect(next.waitForPaint).toHaveBeenCalledTimes(2);
+  lateFrame.resolve();
+  await lateFrame.promise;
+  expect(f.native.unmount).toHaveBeenCalledOnce();
+  expect(next.unmount).not.toHaveBeenCalled();
 });
 
 it("attributes native page input only to the window's admitted presentation consumer", async () => {

@@ -55,6 +55,12 @@ export interface PageCapturePort {
 
 export type KeepAwakeReason = "upload" | "post" | "download" | "media" | "fullscreen" | "capturing";
 
+export class BrowserPaintTimeoutError extends Error {
+  constructor(message = "Browser paint wait timed out.") {
+    super(message);
+  }
+}
+
 /** Engine operations never own native focus; active-surface selection belongs to the ledger. */
 export interface BrowserPage {
   /** Reads opaque restore state without closing or changing the page. Null refuses this document. */
@@ -211,12 +217,14 @@ export interface LocalProfileEngine {
 
 export interface BrowserRendererUsage {
   readonly processes: number;
-  readonly bytes: number;
+  /** Total resident bytes when every attributed process was measured. */
+  readonly bytes: number | null;
+  readonly unassignedProcesses?: number;
 }
 
 export interface BrowserLauncher {
   readonly hostCost?: "process" | "partition";
-  /** Engine-wide census includes shared renderers, subframes, and workers. */
+  /** Deduplicated renderer census for this runtime, including its subframes. */
   rendererUsage?(): BrowserRendererUsage;
   /** Completes engine initialization before the runtime advertises placement. */
   prepare?(): Promise<void>;

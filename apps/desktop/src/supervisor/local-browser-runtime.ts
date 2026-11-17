@@ -64,6 +64,7 @@ export async function startLocalBrowserRuntime(
     downloads: options.downloads,
     localProfileRoot: profileRoot,
     pagePolicyPreloadPath: options.pagePolicyPreloadPath,
+    onPageCleanupFailure: () => diagnostics.append('{"event":"browser.page.cdp-cleanup.failed"}\n'),
     onLocalProfileDiagnostic: (diagnostic) => diagnostics.append(`${JSON.stringify(diagnostic)}\n`),
   });
   const preparation = launcher.prepare();

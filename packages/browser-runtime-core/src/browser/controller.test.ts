@@ -30,6 +30,7 @@ import {
   validClaims,
   withoutTitleSamples,
 } from "../test-support/fakes.js";
+import { BrowserPaintTimeoutError } from "./backend.js";
 import { BrowserController } from "./controller.js";
 import { HostSignIns } from "./host-sign-ins.js";
 import { SessionFiles } from "./session-files.js";
@@ -2267,6 +2268,54 @@ describe("BrowserController", () => {
     expect(commandsNamed("Page.getLayoutMetrics", page)).toHaveLength(0);
     await controller.close();
     await ledger.close();
+  });
+
+  it("keeps the stream subscribed after a paint timeout and starts on a new capture", async () => {
+    let capture = { width: 1280, height: 720, rasterScale: 1, revision: 1 };
+    const listeners = new Set<() => void>();
+    const lateFrame = Promise.withResolvers<void>();
+    const settleRendering = vi
+      .fn()
+      .mockRejectedValueOnce(new BrowserPaintTimeoutError())
+      .mockReturnValue(lateFrame.promise);
+    const releaseRendering = vi.fn();
+    Object.assign(page.cdpSession, { retainRendering: () => releaseRendering });
+    Object.assign(page, {
+      capture: {
+        read: () => capture,
+        subscribe: (listener: () => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+      settleRendering,
+      applyGeometry: async () => undefined,
+    });
+    const controller = createController();
+    try {
+      await controller.start();
+      await controller.handle({ type: "stream.subscribe", captureRegion: true });
+      expect(commandsNamed("Page.startScreencast", page)).toHaveLength(0);
+      expect(releaseRendering).toHaveBeenCalledOnce();
+      capture = { ...capture, revision: 2 };
+      for (const listener of listeners) listener();
+      lateFrame.resolve();
+      await vi.waitFor(() => expect(commandsNamed("Page.startScreencast", page)).toHaveLength(1), {
+        timeout: 1_000,
+      });
+      page.cdpSession.emit("Page.screencastFrame", {
+        sessionId: 1,
+        data: jpeg(1280, 720).toString("base64"),
+        metadata: { deviceWidth: 1280, deviceHeight: 720 },
+      });
+      await flushMicrotasks();
+      expect(sink.frames).toHaveLength(1);
+      expect(sink.messages.some((message) => message.type === "browser.error")).toBe(false);
+    } finally {
+      lateFrame.resolve();
+      await controller.close();
+      await ledger.close();
+    }
   });
 
   it("returns from native startup without a descriptor and restarts when it is published", async () => {

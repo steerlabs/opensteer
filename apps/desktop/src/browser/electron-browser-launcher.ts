@@ -9,6 +9,7 @@ import {
 } from "@opensteer/browser-core";
 import { type BrowserCookie } from "@opensteer/browser-profile";
 import {
+  BrowserPaintTimeoutError,
   BrowserRuntimeError,
   pageViewport,
   normalizeElectronCursor,
@@ -108,10 +109,12 @@ export interface ElectronLocalProfileOpenTiming {
 
 type PageOpenTiming = (stage: ElectronLocalProfileOpenTiming["stage"]) => void;
 const paintWaitMs = 5_000;
+const placementWaitMs = 5_000;
 const pageCloseGraceMs = 1_000;
 const pageDestroyMs = 500;
 
 interface ElectronBrowserLauncherOptions {
+  readonly onPageCleanupFailure?: (() => void) | undefined;
   readonly onLocalProfileOpenTiming?: (timing: ElectronLocalProfileOpenTiming) => void;
   readonly onLocalProfileDiagnostic?: (diagnostic: ElectronLocalProfileDiagnostic) => void;
   readonly authenticator?: PasskeyAuthenticator;
@@ -145,6 +148,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   readonly #pagePolicyPreloadPath: string;
   readonly #views: ElectronBrowserViewPool;
   readonly #localProfileRoot: string | undefined;
+  readonly #onPageCleanupFailure: ElectronBrowserLauncherOptions["onPageCleanupFailure"];
   readonly #onLocalProfileOpenTiming: ElectronBrowserLauncherOptions["onLocalProfileOpenTiming"];
   readonly #onLocalProfileDiagnostic: ElectronBrowserLauncherOptions["onLocalProfileDiagnostic"];
   readonly localProfiles: LocalProfileEngine = {
@@ -164,23 +168,40 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   }
 
   rendererUsage(): BrowserRendererUsage {
-    const otherRenderers = new Set(
-      webContents
-        .getAllWebContents()
-        .filter(
-          (contents) => !contents.isDestroyed() && !this.#configuredSessions.has(contents.session),
-        )
-        .map((contents) => contents.getOSProcessId()),
-    );
-    const renderers = new Set<number>();
-    let kibibytes = 0;
-    for (const { type, pid, memory } of app.getAppMetrics()) {
-      if (type !== "Tab" || pid <= 0 || renderers.has(pid) || otherRenderers.has(pid)) continue;
-      renderers.add(pid);
-      kibibytes +=
-        memory?.workingSetSize ?? (process.platform === "linux" ? linuxRendererRss(pid) : 0);
+    const owned = this.#views.contents();
+    const ownPids = new Set<number>();
+    const assignedPids = new Set<number>();
+    for (const contents of new Set([...webContents.getAllWebContents(), ...owned])) {
+      if (contents.isDestroyed()) continue;
+      for (const frame of contents.mainFrame?.framesInSubtree ?? []) {
+        if (frame.isDestroyed()) continue;
+        const pid = frame.osProcessId;
+        if (pid <= 0) continue;
+        assignedPids.add(pid);
+        if (owned.has(contents)) ownPids.add(pid);
+      }
     }
-    return { bytes: kibibytes * 1024, processes: renderers.size };
+
+    const measured = new Map<number, number | null>();
+    let unassignedProcesses = 0;
+    for (const { type, pid, memory } of app.getAppMetrics()) {
+      if (type !== "Tab" || pid <= 0 || measured.has(pid)) continue;
+      const resident = ownPids.has(pid)
+        ? (memory?.workingSetSize ?? (process.platform === "linux" ? linuxRendererRss(pid) : null))
+        : null;
+      measured.set(pid, resident && resident > 0 ? resident * 1024 : null);
+      if (!assignedPids.has(pid)) unassignedProcesses++;
+    }
+    let total = 0;
+    let count = 0;
+    for (const pid of ownPids) {
+      const resident = measured.get(pid);
+      if (resident == null) continue;
+      total += resident;
+      count++;
+    }
+    const bytes = count > 0 && count === ownPids.size ? total : null;
+    return { bytes, processes: ownPids.size, unassignedProcesses };
   }
 
   constructor(options: ElectronBrowserLauncherOptions) {
@@ -197,6 +218,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     app.userAgentFallback = chromeUserAgent(brandedFallback);
     electronSession.defaultSession.setUserAgent(brandedFallback);
     this.#localProfileRoot = options.localProfileRoot;
+    this.#onPageCleanupFailure = options.onPageCleanupFailure;
     this.#onLocalProfileOpenTiming = options.onLocalProfileOpenTiming;
     this.#onLocalProfileDiagnostic = options.onLocalProfileDiagnostic;
     this.#authenticator = options.authenticator;
@@ -307,6 +329,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     await Promise.all([profileSession.clearCache(), profileSession.clearStorageData()]);
     const context = new ElectronBrowserContext({
       wakeSeeds: this.#wakeSeeds,
+      onPageCleanupFailure: this.#onPageCleanupFailure,
       protection: (contents) => this.#protection(contents),
       createView: (options, opener) => this.#views.create(options, opener, request.initialViewport),
       createHelper: (options) => this.#views.createHelper(options),
@@ -334,6 +357,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   ): ElectronBrowserContext {
     return new ElectronBrowserContext({
       wakeSeeds: this.#wakeSeeds,
+      onPageCleanupFailure: this.#onPageCleanupFailure,
       protection: (contents) => this.#protection(contents),
       createView: (options, opener, timing, startRenderer) =>
         this.#views.create(options, opener, viewport, timing, startRenderer),
@@ -387,13 +411,13 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   }
 }
 
-function linuxRendererRss(pid: number): number {
+function linuxRendererRss(pid: number): number | null {
   try {
     const status = readFileSync(`/proc/${pid}/status`, "utf8");
-    return Number(/^VmRSS:\s+(\d+)/m.exec(status)?.[1] ?? 0);
+    return Number(/^VmRSS:\s+(\d+)/m.exec(status)?.[1]) || null;
   } catch {
     // A renderer can exit between the census and the memory read.
-    return 0;
+    return null;
   }
 }
 
@@ -478,6 +502,12 @@ export function electronPagePresentation(page: BrowserPage): ElectronPagePresent
   return page instanceof ElectronBrowserPage && !page.isClosed() ? page : null;
 }
 
+// Electron's native disposal is scoped to this WebContents even when its
+// renderer process is shared with another page.
+function destroyWebContents(contents: WebContents): void {
+  (contents as WebContents & { destroy(): void }).destroy();
+}
+
 class ElectronBrowserViewPool {
   #closed = false;
   readonly #views = new Map<WebContentsView, BaseWindow>();
@@ -488,15 +518,24 @@ class ElectronBrowserViewPool {
    */
   readonly #helpers = new Set<WebContentsView>();
 
+  contents(): ReadonlySet<WebContents> {
+    return new Set(
+      [...this.#views.keys(), ...this.#helpers].flatMap((view) =>
+        view.webContents ? [view.webContents] : [],
+      ),
+    );
+  }
+
   close(): void {
     this.#closed = true;
-    for (const view of [...this.#views.keys(), ...this.#helpers]) {
+    for (const view of this.#views.keys()) {
+      const contents = view.webContents;
+      if (contents && !contents.isDestroyed()) destroyWebContents(contents);
+    }
+    for (const view of this.#helpers) {
       const contents = view.webContents;
       if (contents && !contents.isDestroyed()) contents.close({ waitForBeforeUnload: false });
     }
-    for (const host of this.#views.values()) if (!host.isDestroyed()) host.destroy();
-    this.#views.clear();
-    this.#helpers.clear();
   }
 
   /** A view for hidden storage work; a native window per helper costs more than its load. */
@@ -637,7 +676,10 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
   }
 
   close(): Promise<void> {
-    this.#closePromise ??= this.#close();
+    this.#closePromise ??= this.#close().catch((error: unknown) => {
+      this.#closePromise = undefined;
+      throw error;
+    });
     return this.#closePromise;
   }
 
@@ -646,17 +688,18 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
     await (this.cdp as ElectronBrowserCdpBackend).close().catch((error) => failures.push(error));
     try {
       await this.context.close();
+      // Save only after the closing pages had their last chance to write.
+      await (this.#localProfile
+        ? this.#finalSave(this.#localProfile)
+        : Promise.all([
+            this.#profileSession.clearCache(),
+            this.#profileSession.clearStorageData(),
+          ]));
     } catch (error) {
       failures.push(error);
     } finally {
       this.#notifyClosed();
     }
-    // The final save follows disposal so it captures what closing pages wrote last.
-    await (
-      this.#localProfile
-        ? this.#finalSave(this.#localProfile)
-        : Promise.all([this.#profileSession.clearCache(), this.#profileSession.clearStorageData()])
-    ).catch((error) => failures.push(error));
     if (failures.length === 1) throw failures[0];
     if (failures.length)
       throw new AggregateError(failures, "Electron browser close did not complete cleanly.");
@@ -696,6 +739,7 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
 }
 
 interface ElectronBrowserContextOptions {
+  readonly onPageCleanupFailure?: (() => void) | undefined;
   readonly wakeSeeds: WakeSeeds;
   readonly protection: (contents: WebContents) => {
     method(): string;
@@ -841,28 +885,32 @@ class ElectronBrowserContext implements BrowserContext {
   }
 
   close(): Promise<void> {
-    this.#closePromise ??= this.#close();
+    this.#closePromise ??= this.#close().catch((error: unknown) => {
+      this.#closePromise = undefined;
+      throw error;
+    });
     return this.#closePromise;
   }
 
   async #close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.#events.emit("close");
-    screen.off("display-metrics-changed", this.#displayChanged);
-    screen.off("display-added", this.#displayChanged);
-    screen.off("display-removed", this.#displayChanged);
-    const pages = [...this.#pages];
-    this.#pages.clear();
+    if (!this.#closed) {
+      this.#closed = true;
+      this.#events.emit("close");
+      screen.off("display-metrics-changed", this.#displayChanged);
+      screen.off("display-added", this.#displayChanged);
+      screen.off("display-removed", this.#displayChanged);
+      this.#events.removeAllListeners();
+    }
     for (const view of this.#storageViews) {
       if (!view.webContents.isDestroyed()) view.webContents.close({ waitForBeforeUnload: false });
     }
-    try {
-      await Promise.allSettled(pages.map((page) => page.close()));
-    } finally {
-      this.#untrack?.();
-      this.#events.removeAllListeners();
-    }
+    const results = await Promise.allSettled([...this.#pages].map((page) => page.close()));
+    const failures = results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    if (failures.length)
+      throw new AggregateError(failures, "Electron browser pages failed to close.");
+    this.#untrack?.();
   }
 
   pageByTargetId(targetId: string): Promise<ElectronBrowserPage | null> {
@@ -904,6 +952,7 @@ class ElectronBrowserContext implements BrowserContext {
         fullVersion: process.versions.chrome,
       }),
       browserAcceptLanguages(app.getPreferredSystemLanguages()),
+      this.#options.onPageCleanupFailure,
     );
     this.#pages.add(page);
     page.onClose(() => {
@@ -1124,6 +1173,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     }),
     identity?: BrowserIdentity,
     acceptLanguage?: string,
+    private readonly onPageCleanupFailure?: () => void,
   ) {
     this.view = view;
     this.initialLoad = initialLoad;
@@ -1528,7 +1578,8 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
         return;
       }
       const remaining = deadline - performance.now();
-      if (remaining <= 0) throw new Error("Electron browser paint wait timed out.");
+      if (remaining <= 0)
+        throw new BrowserPaintTimeoutError("Electron browser paint wait timed out.");
       let settled = false;
       const settle = (error?: Error) => {
         if (settled) return;
@@ -1547,7 +1598,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
         reject: (error: Error) => settle(error),
       };
       const timer = setTimeout(
-        () => settle(new Error("Electron browser paint wait timed out.")),
+        () => settle(new BrowserPaintTimeoutError("Electron browser paint wait timed out.")),
         remaining,
       );
       timer.unref();
@@ -1783,7 +1834,18 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     const owner = this.#serializeGeometry;
     this.#assertPlacementLive(owner);
     if (this.#dialog) return;
-    const cdp = await this.cdp();
+    const deadline = performance.now() + placementWaitMs;
+    const wait = <T>(start: () => Promise<T>, epoch?: AbortSignal): Promise<T> => {
+      const remaining = deadline - performance.now();
+      const timeoutError = () =>
+        new BrowserPaintTimeoutError("Electron browser geometry timed out.");
+      if (remaining <= 0) throw timeoutError();
+      const lifecycle = this.#paintLifecycle.signal;
+      const signal = epoch ? AbortSignal.any([lifecycle, epoch]) : lifecycle;
+      signal.throwIfAborted();
+      return withTimeout(start(), remaining, { signal, timeoutError });
+    };
+    const cdp = await wait(() => this.cdp());
     this.#assertPlacementLive(owner);
     const release = cdp.retainRendering?.();
     try {
@@ -1798,7 +1860,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
         ) {
           const epoch = this.#surfaceAbort.signal;
           try {
-            await this.#beforeResize?.();
+            await wait(() => this.#beforeResize?.() ?? Promise.resolve(), epoch);
           } catch (error) {
             this.#assertPlacementLive(owner);
             if (epoch !== this.#surfaceAbort.signal) continue;
@@ -1836,17 +1898,25 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
         if (!metrics && this.#metricsOverride === null) this.#metricsSurfaceRevision = revision;
         try {
           if (this.#boundsRevision !== this.#metricsBoundsRevision)
-            await cdp.send("Page.getLayoutMetrics");
+            await wait(() => cdp.send("Page.getLayoutMetrics"), signal);
           this.#assertPlacementLive(owner);
           if (signal.aborted) continue;
-          if (metrics) await cdp.send("Emulation.setDeviceMetricsOverride", { ...metrics });
-          else if (this.#metricsOverride !== null)
-            await cdp.send("Emulation.clearDeviceMetricsOverride");
-          this.#metricsOverride = metrics ? JSON.stringify(metrics) : null;
+          if (metrics) {
+            // A timed-out command can apply later. A subsequent non-emulated
+            // placement must still ask Chromium to clear it.
+            this.#metricsOverride = JSON.stringify(metrics);
+            await wait(
+              () => cdp.send("Emulation.setDeviceMetricsOverride", { ...metrics }),
+              signal,
+            );
+          } else if (this.#metricsOverride !== null) {
+            await wait(() => cdp.send("Emulation.clearDeviceMetricsOverride"), signal);
+            this.#metricsOverride = null;
+          }
           this.#assertPlacementLive(owner);
           if (signal.aborted) continue;
           this.#metricsSurfaceRevision = revision;
-          await cdp.send("Page.getLayoutMetrics");
+          await wait(() => cdp.send("Page.getLayoutMetrics"), signal);
           this.#assertPlacementLive(owner);
           if (signal.aborted) continue;
           this.#metricsBoundsRevision = this.#boundsRevision;
@@ -2041,7 +2111,10 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   }
 
   close(): Promise<void> {
-    this.#closePromise ??= this.#close();
+    this.#closePromise ??= this.#close().catch((error: unknown) => {
+      this.#closePromise = undefined;
+      throw error;
+    });
     return this.#closePromise;
   }
 
@@ -2053,9 +2126,10 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     this.unmount();
     this.#cancelPaint();
     this.#syncRenderingDemand();
-    // Closing the page answers whatever its commands still wait for, such as
-    // an evaluation awaiting the person's input, so the hub finishes after it.
-    await Promise.all([this.#hub.close(), this.#disposeContents()]);
+    // Closing the page ends commands still waiting for that renderer.
+    const cleanup = this.#hub.close().catch(() => this.onPageCleanupFailure?.());
+    await this.#disposeContents();
+    await cleanup;
   }
 
   async #disposeContents(): Promise<void> {
@@ -2064,15 +2138,13 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     const destroyed = Promise.withResolvers<void>();
     contents.once("destroyed", destroyed.resolve);
     try {
-      contents.close({ waitForBeforeUnload: false });
       try {
+        contents.close({ waitForBeforeUnload: false });
         await withTimeout(destroyed.promise, pageCloseGraceMs, {
           timeoutError: () => new Error("Electron browser page didn't close."),
         });
       } catch {
-        // Electron's native destroy bypasses a stalled page close without
-        // killing the renderer a different page could share.
-        if (!contents.isDestroyed()) (contents as WebContents & { destroy(): void }).destroy();
+        if (!contents.isDestroyed()) destroyWebContents(contents);
         await withTimeout(destroyed.promise, pageDestroyMs, {
           timeoutError: () => new Error("Electron browser page wasn't destroyed."),
         });
@@ -2736,8 +2808,6 @@ class ElectronDebuggerHub {
     } catch (error) {
       this.#forced = true;
       this.#forcedDisposal.resolve();
-      // Never force-crash: same-site pages, such as a popup and its opener, share a renderer.
-      if (!this.#webContents.isDestroyed()) this.#webContents.close({ waitForBeforeUnload: false });
       throw error;
     } finally {
       if (this.#isAttached()) this.#debugger.detach();
