@@ -13,6 +13,7 @@ type ImageScope = {
   readonly viewerId: UserId;
   readonly threadId: ThreadId;
   readonly nodeId?: ExecutionNodeId;
+  readonly includeNodeOutputs?: boolean;
 };
 
 function scopeOf(input: ImageScope) {
@@ -36,7 +37,11 @@ export async function resolvePersonalToolImages(
       ...new Set(input.paths.map(normalizeToolImagePath).filter((path) => path !== null)),
     ].map((path) => ({ path, hash: outputImagePathHash(path).toString("hex") }));
     if (!keys.length) return [];
-    const byNode = input.nodeId ? sql`image.node_id=${input.nodeId}` : sql`image.node_id is null`;
+    const byNode = input.nodeId
+      ? sql`image.node_id=${input.nodeId}`
+      : input.includeNodeOutputs
+        ? sql`true`
+        : sql`image.node_id is null`;
     const rows = await sql<ImageView>`
       select selected.id,selected.path,selected.media_type,selected.generated
       from jsonb_to_recordset(${JSON.stringify(keys)}::jsonb) as key(path text,hash text)
@@ -75,7 +80,9 @@ export async function readPersonalToolImage(
       (await (
         input.nodeId
           ? query.where("image.nodeId", "=", input.nodeId)
-          : query.where("image.nodeId", "is", null)
+          : input.includeNodeOutputs
+            ? query
+            : query.where("image.nodeId", "is", null)
       ).executeTakeFirst()) ?? null
     );
   });

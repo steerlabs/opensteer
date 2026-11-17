@@ -9,6 +9,7 @@ import {
 import { personalBrowserRepository } from "@opensteer/database/test-support/store";
 import { personalTestExecution } from "./personal-execution.test-support.js";
 import { randomUUID } from "node:crypto";
+import { commitPersonalMutation } from "@opensteer/database/personal-mutation";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { expect, vi } from "vitest";
 import { sql } from "kysely";
@@ -16,10 +17,10 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";
 import {
   createId,
+  zeroSequence,
   formatReferenceLink,
   MessageIdSchema,
   BrowserSurfaceIdSchema,
-  type AgentEvent,
   type RunId,
   type PlaceIdentity,
   ThreadAccessModeSchema,
@@ -46,7 +47,6 @@ import {
 } from "@opensteer/agent-tools/tools";
 import { ThreadReadOutputSchema } from "@opensteer/agent-tools/outputs";
 import {
-  appendHostDeploymentEvent,
   needsYouPage,
   dispatchNodeStop,
   withDatabaseTransaction,
@@ -116,7 +116,6 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     signer: {} as never,
     hostOrigin: new URL("https://host.test"),
     onSessionsChanged: () => {},
-    onDeploymentEvent: (event) => realtime.publish(event),
   });
   const computerUse = {
     sessionsForRunner: vi.fn<
@@ -236,13 +235,16 @@ async function waitingTask(storeFixture: StoreFixture, suffix: string) {
         .selectAll()
         .where("id", "=", assignmentId)
         .executeTakeFirstOrThrow();
-      return appendHostDeploymentEvent(tx, {
-        type: "assignment.updated",
+      return {
+        type: "assignment.updated" as const,
+        eventId: createId("event"),
+        createdAt: new Date().toISOString(),
+        sequence: zeroSequence,
         threadId: task.threadId,
         environmentId: task.environmentId,
         runId: null,
         data: { assignment: await assignmentSummaryInTransaction(tx, row) },
-      });
+      };
     });
     s.realtime.publish(event);
   };
@@ -927,59 +929,83 @@ async function place(
     },
     randomUUID(),
   );
-  return withDatabaseTransaction(storeFixture.database, (tx) =>
-    appendHostDeploymentEvent(tx, {
-      type: "place.entered",
-      threadId: f.thread.id,
-      runId: f.run.id,
-      environmentId: f.environmentId,
-      data: {
-        tabId:
-          value.kind === "browser"
-            ? value.surfaceId
-            : BrowserSurfaceIdSchema.parse(
-                value.kind === "app"
-                  ? `window:${value.machineId}:${value.appKey}`
-                  : `phone:${value.machineId}`,
-              ),
-        title,
-        site: null,
-      },
-    }),
-  );
+  await commitPersonalMutation(storeFixture.database, async (tx, mutation) => {
+    const { nextTranscriptPosition: position } = await tx
+      .updateTable("threads")
+      .set({ nextTranscriptPosition: sql<string>`next_transcript_position + 1` })
+      .where("id", "=", f.thread.id)
+      .returning("nextTranscriptPosition")
+      .executeTakeFirstOrThrow();
+    await tx
+      .insertInto("transcriptItems")
+      .values({
+        id: `place:${f.run.id}:${position}`,
+        threadId: f.thread.id,
+        runId: f.run.id,
+        attemptId: null,
+        nodeId: null,
+        kind: "place",
+        position,
+        revision: mutation.sequence,
+        visible: true,
+        isTurnStart: false,
+        createdAt: new Date(),
+        body: { tabId: id, title, site: null },
+        view: { title },
+      })
+      .execute();
+  });
 }
-async function tool(
-  storeFixture: StoreFixture,
-  f: Fixture,
-  name: string,
-  subject?: Extract<AgentEvent, { type: "tool.started" }>["data"]["integration"],
-) {
+async function tool(storeFixture: StoreFixture, f: Fixture, name: string) {
   const callId = randomUUID();
   const base = {
+    bindingGeneration: f.bindingGeneration,
     threadId: f.thread.id,
     runId: f.run.id,
     environmentId: f.environmentId,
   };
-  const started = await withDatabaseTransaction(storeFixture.database, (tx) =>
-    appendHostDeploymentEvent(tx, {
+  const run = await storeFixture.database
+    .selectFrom("runs")
+    .select("nextRunnerOrdinal")
+    .where("id", "=", f.run.id)
+    .executeTakeFirstOrThrow();
+  const commit = (event: PendingAgentEvent) =>
+    storeFixture.store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      runnerId: f.runnerId,
+      runnerBootId: f.runnerBootId,
+      event,
+    });
+  await commit(
+    pendingEvent({
       ...base,
+      ordinal: run.nextRunnerOrdinal,
       type: "tool.started",
       data: {
         callId,
         tool: { namespace: "opensteer", name },
         arguments: { secret: "typed-value" },
-        ...(subject ? { integration: subject } : {}),
       },
     }),
   );
-  const completed = await withDatabaseTransaction(storeFixture.database, (tx) =>
-    appendHostDeploymentEvent(tx, {
-      ...base,
-      type: "tool.completed",
-      data: { callId, isError: false, output: { text: "output-secret ".repeat(100) } },
-    }),
-  );
-  return { started, completed };
+  const row = await storeFixture.database
+    .selectFrom("toolCalls")
+    .select("id")
+    .where("runId", "=", f.run.id)
+    .where("callId", "=", callId)
+    .executeTakeFirstOrThrow();
+  return {
+    itemId: `tool:${row.id}`,
+    complete: () =>
+      commit(
+        pendingEvent({
+          ...base,
+          ordinal: run.nextRunnerOrdinal + 1,
+          type: "tool.completed",
+          data: { callId, isError: false, output: { text: "output-secret ".repeat(100) } },
+        }),
+      ),
+  };
 }
 
 describeStore("shaped agent task tools", (it) => {
@@ -1819,7 +1845,7 @@ describeStore("shaped agent task tools", (it) => {
     ).toBe(true);
   });
 
-  it("withholds sensitive tools even by itemId and resolves starts outside a completion-only page", async ({
+  it("withholds sensitive tools and reads a tool through one stable item before and after completion", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("shaped-tools");
@@ -1832,41 +1858,48 @@ describeStore("shaped agent task tools", (it) => {
       "computer_use.type",
     ]) {
       const t = await tool(storeFixture, f, name);
-      for (const event of [t.started, t.completed])
-        expect((await s.read({ view: "activity", itemId: event.sequence })).items[0]).toMatchObject(
-          { title: name, text: null, textTruncated: false },
-        );
+      const point = () => s.read({ view: "activity", itemId: t.itemId });
+      expect((await point()).items[0]).toMatchObject({
+        itemId: t.itemId,
+        type: "tool.started",
+        title: name,
+        text: null,
+        textTruncated: false,
+      });
+      await t.complete();
+      expect((await point()).items[0]).toMatchObject({
+        itemId: t.itemId,
+        type: "tool.completed",
+        title: name,
+        text: null,
+        textTruncated: false,
+      });
       expect((await s.read({ view: "activity", limit: 1 })).items[0]).toMatchObject({
         title: name,
         text: null,
       });
     }
     const safe = await tool(storeFixture, f, "shell");
+    expect((await s.read({ itemId: safe.itemId })).items[0]!.text).toContain("typed-value");
+    await safe.complete();
     const clipped = (await s.read({ view: "activity", limit: 1 })).items[0]!;
-    expect(clipped).toMatchObject({ title: "shell", textTruncated: true, nextTextOffset: 500 });
+    expect(clipped).toMatchObject({
+      itemId: safe.itemId,
+      title: "shell",
+      textTruncated: true,
+      nextTextOffset: 500,
+    });
     expect(clipped.text).toHaveLength(500);
-    expect(
-      (await s.read({ view: "activity", itemId: safe.completed.sequence })).items[0]!.text,
-    ).toBe("output-secret ".repeat(100));
-    expect(
-      (await s.read({ view: "activity", itemId: safe.started.sequence })).items[0]!.text,
-    ).toContain("typed-value");
-    await storeFixture.database
-      .deleteFrom("deploymentEvents")
-      .where("sequence", "=", safe.started.sequence)
-      .execute();
-    expect(
-      (await s.read({ view: "activity", itemId: safe.completed.sequence })).items[0]!.text,
-    ).toBeNull();
+    expect((await s.read({ itemId: safe.itemId })).items[0]!.text).toContain("output-secret");
   });
 
-  it("orders activity messages with events, pages by event sequence, and omits reasoning, node text and Request payloads", async ({
+  it("orders retained activity items, pages by item position, and omits reasoning, node text and Request payloads", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("shaped-events");
     const s = setup(storeFixture, f);
     const requestId = createId("request");
-    const request = await storeFixture.openLiveRequest(f, requestId);
+    await storeFixture.openLiveRequest(f, requestId);
     const base = {
       bindingGeneration: f.bindingGeneration,
       environmentId: f.environmentId,
@@ -1932,10 +1965,7 @@ describeStore("shaped agent task tools", (it) => {
       earlier.items
         .filter((i) => i.type.startsWith("node."))
         .map((i) => ({ title: i.title, status: i.status, text: i.text })),
-    ).toEqual([
-      { title: "Research", status: "completed", text: null },
-      { title: "Research", status: "started", text: null },
-    ]);
+    ).toEqual([{ title: "Research", status: "completed", text: null }]);
     expect(earlier.items.find((i) => i.type === "request.opened")).toMatchObject({
       title: "Approval required",
       link: formatReferenceLink(requestId, "Approval required"),
@@ -1951,7 +1981,7 @@ describeStore("shaped agent task tools", (it) => {
       expect(serialized).not.toContain(secret);
     expect((await s.read({ view: "activity", itemId: messageId })).items).toEqual(page.items);
     expect(
-      (await s.read({ view: "activity", itemId: request.event.sequence })).items[0],
+      (await s.read({ view: "activity", itemId: `request:${requestId}` })).items[0],
     ).toMatchObject({ title: "Approval required" });
   });
 

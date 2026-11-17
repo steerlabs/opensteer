@@ -6,7 +6,7 @@ import {
   activityItem,
   withheldTool,
 } from "./thread-items.js";
-import { formatReferenceLink, createId, type Request } from "@opensteer/core";
+import { formatReferenceLink, createId } from "@opensteer/core";
 
 it("keeps the newest item past the byte bound, so paging always advances", () => {
   const large = "\u0001".repeat(50_000);
@@ -83,26 +83,25 @@ it("names a file a message carries", () => {
   );
 });
 
-it("links a Request activity's real Request but never treats its sequence as a message", () => {
-  const event = {
-    sequence: "42",
-    type: "request.opened",
-    runId: null,
-    createdAt: "2026-11-06T12:00:00.000Z",
-  } as Parameters<typeof activityItem>[0];
-  const facts = { ownRun: true, named: false, maxChars: 100 };
-  expect(activityItem(event, facts)).not.toHaveProperty("link");
-  const request = {
-    id: createId("request"),
-    kind: "harness.input",
-    presentation: {
-      kind: "choice",
-      title: "Choose export",
-      options: [{ id: "csv", label: "CSV" }],
-    },
-  } as Request;
-  expect(activityItem(event, { ...facts, request })).toMatchObject({
-    itemId: "42",
-    link: formatReferenceLink(request.id, "Choose export"),
+it("links Request activity using its real Request ID and returns the stable item ID", () => {
+  const requestId = createId("request");
+  const itemId = `request:${requestId}`;
+  expect(
+    activityItem(
+      {
+        id: itemId,
+        position: "42",
+        type: "request.opened",
+        requestId,
+        requestKind: "harness.input",
+        title: "Choose export",
+        runId: null,
+        createdAt: "2026-11-06T12:00:00.000Z",
+      },
+      { named: false, maxChars: 100 },
+    ),
+  ).toMatchObject({
+    itemId,
+    link: formatReferenceLink(requestId, "Choose export"),
   });
 });

@@ -379,7 +379,7 @@ const retainedStateDdl = `
   create index transcript_node on transcript_items(node_id,position desc,id desc) where visible and node_id is not null;
   create index transcript_run_place on transcript_items(run_id,position desc,id desc) where visible and kind = 'place';
   create index transcript_root_activity on transcript_items(thread_id,position desc,id desc)
-    where visible and node_id is null and kind in ('message','tool');
+    where visible and node_id is null and kind in ('message','tool','place','app','request','node');
   create index transcript_node_activity on transcript_items(node_id,position desc,id desc)
     where visible and node_id is not null and kind in ('node-message','tool');
   create index transcript_thread on transcript_items(thread_id);

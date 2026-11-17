@@ -11,6 +11,7 @@ import {
   readAgentThreadRecent,
   readAgentThreadActivity,
   encodeThreadHistoryCursor,
+  readThreadHistory,
   readAssignmentResult,
   beginAssignmentResultWait,
   endAssignmentResultWait,
@@ -21,14 +22,7 @@ import {
   AgentRequestResponderSchema,
   reachableNode,
 } from "@opensteer/database";
-import {
-  activityItem,
-  messageItem,
-  taskItem,
-  boundedThreadItems,
-  itemText,
-} from "../thread-items.js";
-import { sql } from "kysely";
+import { activityItem, messageItem, taskItem, boundedThreadItems } from "../thread-items.js";
 import { stripRefs } from "@opensteer/shared/stripRefs";
 import { isDeepStrictEqual } from "node:util";
 import { ThreadService } from "../../threads/thread-service.js";
@@ -63,7 +57,6 @@ import {
   ThreadIdSchema,
   MessageIdSchema,
   type AgentEvent,
-  AgentEventSchema,
   type PlaceContentPart,
   type PlaceIdentity,
   type DeploymentId,
@@ -518,12 +511,11 @@ export class ProductToolHandlers {
     });
     if (!recent) throw forbidden("task is unavailable to this user");
     const seen = new Set<string>();
-    const references = recent.places.flatMap((event) => {
-      if (!event.runId) return [];
-      const key = `${event.runId}:${event.data.tabId}`;
+    const references = recent.places.flatMap((place) => {
+      const key = `${place.runId}:${place.tabId}`;
       if (seen.has(key)) return [];
       seen.add(key);
-      return [{ threadId: thread.id, runId: event.runId, ...event.data }];
+      return [{ threadId: thread.id, ...place }];
     });
     const recentPlaces = (await this.#readableTabPlaces(caller.userId, references))
       .slice(0, 10)
@@ -537,15 +529,11 @@ export class ProductToolHandlers {
       })),
       recentPlaces,
     };
-    // An event's itemId can't name a message, so it needs no `view` to be read.
-    if (
-      input.view === "activity" ||
-      (input.itemId && !MessageIdSchema.safeParse(input.itemId).success)
-    )
+    if (input.itemId ? !MessageIdSchema.safeParse(input.itemId).success : input.view === "activity")
       return { ...context, ...(await this.#activity(caller, thread.id, input)) };
     let page;
     try {
-      page = await this.#store.threadMessagePageForOwner({
+      page = await readThreadHistory(this.#store.database, {
         threadId: thread.id,
         ownerId: caller.userId,
         maxItems: input.itemId ? 1 : input.limit,
@@ -592,144 +580,60 @@ export class ProductToolHandlers {
     if (!node) throw missing();
     const thread = await this.#store.getThreadForOwner(node.threadId, caller.userId);
     if (!thread) throw missing();
-    try {
-    } catch {
-      throw missing();
-    }
-    const page = await this.#store.nodeEventPageForOwner({
-      ownerId: caller.userId,
-      threadId: thread.id,
-      nodeId: node.id,
-      maxItems: input.itemId ? 1 : input.limit,
-      types:
-        input.view === "activity" || input.itemId
-          ? ["node.message", "tool.started", "tool.completed"]
-          : ["node.message"],
-      ...(input.cursor ? { before: input.cursor } : {}),
-      ...(input.itemId ? { itemId: input.itemId } : {}),
-    });
-    if (!page) throw missing();
-    const calls = page.events.flatMap((event) =>
-      event.type === "tool.completed" ? [event.data.callId] : [],
-    );
-    const starts = calls.length
-      ? await this.#store.database
-          .selectFrom("deploymentEvents")
-          .selectAll()
-          .where("nodeDetailId", "=", node.id)
-          .where("type", "=", "tool.started")
-          .where(sql<string>`data->>'callId'`, "in", calls)
-          .execute()
-      : [];
-    const started = new Map(
-      starts
-        .map((row) => {
-          const event = AgentEventSchema.parse({
-            ...row,
-            createdAt: row.createdAt.toISOString(),
-            sequence: String(row.sequence),
-          });
-          return event.type === "tool.started" ? ([event.data.callId, event] as const) : null;
-        })
-        .filter((entry) => entry !== null),
-    );
-    const mapped = [...page.events].reverse().flatMap((event) => {
-      if (event.type === "node.message")
-        return [
-          {
-            itemId: event.sequence,
-            type: "node.message",
-            status: "published",
-            runId: event.runId,
-            title: null,
-            ...itemText(event.data.text, input.maxCharsPerItem, input.textOffset),
-            createdAt: event.createdAt,
-          },
-        ];
-      if (event.type !== "tool.started" && event.type !== "tool.completed") return [];
-      return [
-        activityItem(event, {
-          start: event.type === "tool.started" ? event : started.get(event.data.callId),
-          ownRun: node.requestedBy === caller.userId,
-          named: !!input.itemId,
-          maxChars: input.maxCharsPerItem,
-          offset: input.textOffset,
-        }),
-      ];
-    });
-    const items = boundedThreadItems(mapped);
-    if (input.itemId && !items.length) throw forbidden("Item is unavailable in this subagent");
-    const hasMore = items.length < mapped.length || page.window.hasMore;
+    const { node: subagent, ...activity } = await this.#activity(caller, thread.id, input, node.id);
     return {
       thread: { ...thread, link: formatReferenceLink(thread.id, thread.title) },
-      subagent: page.node,
+      subagent,
       recentRuns: [],
       recentPlaces: [],
-      items,
-      hasMore,
-      nextBefore: hasMore ? (items.at(-1)?.itemId ?? page.window.nextBefore) : null,
+      ...activity,
     };
   }
 
   async #activity(
     caller: AgentCaller,
     threadId: Thread["id"],
-    input: ToolCall<"opensteer_task_read">["input"] & {
-      subagentId?: import("@opensteer/core").ExecutionNodeId | undefined;
-    },
+    input: ToolCall<"opensteer_task_read">["input"],
+    nodeId?: import("@opensteer/core").ExecutionNodeId,
   ) {
     const page = await readAgentThreadActivity(this.#store.database, {
       threadId,
       ownerId: caller.userId,
       limit: input.itemId ? 1 : input.limit,
+      ...(nodeId ? { nodeId, messagesOnly: input.view !== "activity" && !input.itemId } : {}),
       ...(input.cursor ? { before: input.cursor } : {}),
       ...(input.itemId ? { itemId: input.itemId } : {}),
     });
-    if (!page) throw forbidden("task is unavailable to this user");
-    const starts = new Map(page.starts.map((s) => [s.completionSequence, s.start]));
-    const events = page.items.filter((item) => item.type !== "message");
-    const startOf = (event: (typeof events)[number]) =>
-      event.type === "tool.started"
-        ? event
-        : event.type === "tool.completed"
-          ? starts.get(event.sequence)
-          : undefined;
-    const machineOf = (event: (typeof events)[number]) => {
-      const integration = startOf(event)?.data.integration;
-      return integration?.computerApp?.runnerId ?? integration?.phone?.runnerId;
-    };
-    const requestIds = events.flatMap((event) =>
-      event.type === "request.resolved"
-        ? [event.data.request.id]
-        : event.type === "request.cancelled"
-          ? [event.data.requestId]
-          : [],
-    );
-    const [places, owners, requests, messages] = await Promise.all([
+    if (!page)
+      throw forbidden(nodeId ? "Subagent is unavailable" : "task is unavailable to this user");
+    const machineOf = (item: (typeof page.items)[number]) =>
+      item.type === "tool.started" || item.type === "tool.completed"
+        ? (item.integration?.computerApp?.runnerId ?? item.integration?.phone?.runnerId)
+        : undefined;
+    const [places, owners, messages] = await Promise.all([
       this.#readableTabPlaces(
         caller.userId,
-        events.flatMap((event) =>
-          event.type === "place.entered"
-            ? [{ threadId, tabId: event.data.tabId, sequence: event.sequence }]
-            : [],
+        page.items.flatMap((item) =>
+          item.type === "place.entered" ? [{ id: item.id, tabId: item.place.tabId }] : [],
         ),
       ),
-      this.#store.effectiveDeviceOwners(events.flatMap((event) => machineOf(event) ?? [])),
-      Promise.all(requestIds.map((id) => this.#store.requests.get(id))),
+      this.#store.effectiveDeviceOwners(page.items.flatMap((item) => machineOf(item) ?? [])),
       this.#readableMessages(
         caller,
         page.items.flatMap((item) => (item.type === "message" ? [item.message] : [])),
       ),
     ]);
-    const readablePlaces = new Set(places.map((place) => place.sequence));
-    const requestById = new Map(requests.flatMap((r) => (r ? [[r.id, r] as const] : [])));
+    const readablePlaces = new Set(places.map((place) => place.id));
     const readableMessages = new Map(messages.map((message) => [message.id, message]));
-    const mapped = page.items.flatMap((item) => {
+    const mapped = page.items.flatMap<{
+      item: (typeof page.items)[number];
+      view: ReturnType<typeof activityItem>;
+    }>((item) => {
       if (item.type === "message")
         return [
           {
-            sequence: item.sequence,
-            item: messageItem(
+            item,
+            view: messageItem(
               readableMessages.get(item.message.id)!,
               input.maxCharsPerItem,
               input.textOffset,
@@ -738,23 +642,11 @@ export class ProductToolHandlers {
         ];
       const machineId = machineOf(item);
       if (machineId && owners.get(machineId)?.effectiveOwner !== caller.userId) return [];
-      if (item.type === "place.entered" && !readablePlaces.has(item.sequence)) return [];
+      if (item.type === "place.entered" && !readablePlaces.has(item.id)) return [];
       return [
         {
-          sequence: item.sequence,
-          item: activityItem(item, {
-            start: startOf(item),
-            request:
-              item.type === "request.opened"
-                ? item.data.request
-                : item.type === "request.resolved"
-                  ? requestById.get(item.data.request.id)
-                  : item.type === "request.cancelled"
-                    ? requestById.get(item.data.requestId)
-                    : undefined,
-            nodeTitle:
-              item.type === "node.completed" ? page.nodeTitles.get(item.data.nodeId) : undefined,
-            ownRun: !!item.runId && page.requesters.get(item.runId) === caller.userId,
+          item,
+          view: activityItem(item, {
             named: !!input.itemId,
             maxChars: input.maxCharsPerItem,
             offset: input.textOffset,
@@ -762,13 +654,21 @@ export class ProductToolHandlers {
         },
       ];
     });
-    const items = boundedThreadItems(mapped.map(({ item }) => item));
-    if (input.itemId && !items.length) throw forbidden("Item is unavailable in this task");
+    const items = boundedThreadItems(mapped.map(({ view }) => view));
+    if (input.itemId && !items.length)
+      throw forbidden(
+        nodeId ? "Item is unavailable in this subagent" : "Item is unavailable in this task",
+      );
     const trimmed = items.length < mapped.length;
+    const last = mapped[items.length - 1]?.item;
     return {
+      ...(nodeId ? { node: page.node } : {}),
       items,
       hasMore: trimmed || page.hasMore,
-      nextBefore: trimmed ? mapped[items.length - 1]!.sequence : page.nextBefore,
+      nextBefore:
+        trimmed && last
+          ? page.encodeCursor({ beforeId: last.id, beforePosition: last.position })
+          : page.nextBefore,
     };
   }
 
