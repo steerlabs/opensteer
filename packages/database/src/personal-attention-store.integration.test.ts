@@ -7,10 +7,10 @@ import {
   refreshLatestRunCompletion,
   settleExpiredPersonalAttention,
   refreshTeamAskAttention,
-  updateAttentionLinkContribution,
 } from "./personal-attention-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { createPersonalStateFixture } from "./personal-state.test-support.js";
+import { PersonalTeamLinksStore } from "./personal-team-links-store.js";
 import { withPersonalSyncRead } from "./personal-sync-store.js";
 
 test("parks ordinary asks by link while retaining failed asks and dropping expired consent", async () => {
@@ -43,25 +43,8 @@ test("parks ordinary asks by link while retaining failed asks and dropping expir
       withPersonalSyncRead(database, async (tx) =>
         (await readAttentionKeys(tx, { limit: 10 })).map(({ kind }) => kind).toSorted(),
       );
-    const flip = (state: "active" | "revoked") =>
-      commitPersonalMutation(database, async (tx, mutation) => {
-        const before = await tx
-          .selectFrom("personalTeamLinks")
-          .select(["id", "state", "approvalAttentionCount"])
-          .where("teamDeploymentId", "=", teamId)
-          .forNoKeyUpdate()
-          .executeTakeFirstOrThrow();
-        await tx
-          .updateTable("personalTeamLinks")
-          .set({ state })
-          .where("id", "=", before.id)
-          .execute();
-        updateAttentionLinkContribution(mutation, {
-          before: before.state,
-          after: state,
-          bucket: before.approvalAttentionCount,
-        });
-      });
+    const links = new PersonalTeamLinksStore(database);
+    const flip = (state: "active" | "revoked") => links.state(teamId, state);
     expect(await fetchCount()).toEqual({ pendingRequestCount: 0, needsYouCount: 2 });
     expect(await fetchKinds()).toEqual(["failed-ask", "team-ask"]);
     const parked = await database

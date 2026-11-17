@@ -1,6 +1,6 @@
 import { DeviceIdSchema } from "@opensteer/core";
 import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation, installPersonalMutationHooks } from "./personal-mutation.js";
 
 import {
   cloneTestDatabase,
@@ -9,7 +9,6 @@ import {
 } from "./test-database.test-support.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
-  AgentEventSchema,
   NotificationIdSchema,
   notificationPushWindowMilliseconds,
   HarnessIdSchema,
@@ -44,8 +43,8 @@ import {
   NotificationStore,
   type DecidedNotification,
   type NotificationPublication,
+  type NotificationTransition,
 } from "./notification-store.js";
-import { messageFromRow } from "./thread-row-mappers.js";
 import { NotificationStateStore } from "./notification-state.js";
 import { issueRunGrant } from "./run-grants.js";
 import { jsonValue } from "./store-primitives.js";
@@ -57,7 +56,7 @@ import {
 } from "./store.integration.test-support.js";
 import { requestInsert } from "./request-store.js";
 import { OpensteerStore } from "./store.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
+import { refreshRequestState } from "./request-persistence.js";
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const modelSelection = ModelSelectionSchema.parse({
@@ -83,6 +82,21 @@ integration("notification decision boundary", () => {
         close: () => database.destroy(),
       };
     });
+    const transitions: NotificationTransition[] = [];
+    installPersonalMutationHooks(database, {
+      wake() {},
+      suspend: () => ({ committed() {}, rolledBack() {} }),
+      onFailure(error) {
+        throw error;
+      },
+      react(change) {
+        if (change.type === "requestChanged" || change.type === "runFinished")
+          transitions.push(change);
+      },
+    });
+    const recordAddressedReply = (
+      change: Extract<NotificationTransition, { type: "replyPublished" }>,
+    ) => transitions.push(change);
     const store = new OpensteerStore(database);
     const directory = new AccountDirectoryStore(database);
     let now = new Date();
@@ -333,7 +347,7 @@ integration("notification decision boundary", () => {
         })
         .where("id", "=", run.providerSessionId!)
         .executeTakeFirstOrThrow();
-      await withPersonalTransaction(database, (transaction) =>
+      await commitPersonalMutation(database, (transaction) =>
         issueRunGrant(transaction, {
           bindingGeneration: 1,
           modelSelection,
@@ -355,7 +369,7 @@ integration("notification decision boundary", () => {
       readonly sequence: string;
       readonly createdAt: string;
     }> {
-      return withPersonalTransaction(database, async (transaction) => {
+      return commitPersonalMutation(database, async (transaction) => {
         const context = await transaction
           .selectFrom("runs")
           .innerJoin("threads", "threads.id", "runs.threadId")
@@ -379,6 +393,7 @@ integration("notification decision boundary", () => {
             content: jsonValue(content),
             id,
             kind: "assistant",
+            published: true,
             runId: target.runId,
             sequence: context.nextMessageSequence,
             threadId: target.threadId,
@@ -416,23 +431,16 @@ integration("notification decision boundary", () => {
           },
       target: { readonly runId: RunId; readonly threadId: ThreadId } = fixture,
     ): Promise<void> {
-      await withPersonalTransaction(database, (transaction) =>
-        event.type === "run.completed"
-          ? appendHostDeploymentEvent(transaction, {
-              type: "run.completed",
-              environmentId: fixture.environmentId,
-              runId: target.runId,
-              threadId: target.threadId,
-              data: { ...event.data, status: "completed" },
-            })
-          : appendHostDeploymentEvent(transaction, {
-              type: "run.phase",
-              environmentId: fixture.environmentId,
-              runId: target.runId,
-              threadId: target.threadId,
-              data: event.data,
-            }),
-      );
+      if (event.type === "run.phase") {
+        if (event.data.phase === "background" && event.data.replyMessageId)
+          transitions.push({
+            ...target,
+            type: "replyPublished",
+            messageId: event.data.replyMessageId,
+          });
+        return;
+      }
+      await recordTerminal(target, "completed", event.data.replyMessageId);
     }
 
     async function appendCompletedReply(
@@ -468,33 +476,52 @@ integration("notification decision boundary", () => {
         readonly threadId: ThreadId;
       } = fixture,
     ): Promise<void> {
-      await withPersonalTransaction(database, (transaction) =>
-        appendHostDeploymentEvent(transaction, {
-          data: {
-            code: "runner_execution_error",
-            message,
-            retryable: false,
-            status: "failed",
-          },
-          environmentId: fixture.environmentId,
-          runId: target.runId,
-          threadId: target.threadId,
-          type: "run.failed",
-        }),
-      );
+      await recordTerminal(target, "failed", null, message);
     }
     async function appendRunInterrupted(fixture: Fixture): Promise<void> {
-      await withPersonalTransaction(database, (transaction) =>
-        appendHostDeploymentEvent(transaction, {
-          data: {
-            status: "interrupted",
-          },
-          environmentId: fixture.environmentId,
-          runId: fixture.runId,
-          threadId: fixture.threadId,
-          type: "run.interrupted",
-        }),
-      );
+      await recordTerminal(fixture, "interrupted", null);
+    }
+    async function recordTerminal(
+      target: { runId: RunId; threadId: ThreadId },
+      outcome: "completed" | "failed" | "interrupted",
+      messageId: MessageId | null,
+      failureMessage?: string,
+    ) {
+      await commitPersonalMutation(database, async (tx, mutation) => {
+        await tx
+          .updateTable("runs")
+          .set({
+            status: outcome,
+            completedAt: now,
+            revision: mutation.sequence,
+            terminalReplyMessageId: messageId,
+            ...(failureMessage
+              ? {
+                  failure: {
+                    code: "runner_execution_error",
+                    message: failureMessage,
+                    retryable: false,
+                    status: "failed" as const,
+                  },
+                }
+              : {}),
+          })
+          .where("id", "=", target.runId)
+          .execute();
+        mutation.change({
+          scopeKey: `thread:${target.threadId}`,
+          entityKind: "collection",
+          entityId: "scope",
+          operation: "invalidate",
+        });
+        mutation.react({
+          ...target,
+          type: "runFinished",
+          outcome,
+          attemptId: null,
+          bindingGeneration: null,
+        });
+      });
     }
     function pendingRequest(fixture: Fixture, requiredActor: "owner" | "requester") {
       return PendingRequestSchema.parse({
@@ -533,23 +560,14 @@ integration("notification decision boundary", () => {
       fixture: Fixture,
       requiredActor: "owner" | "requester",
     ): Promise<RequestId> {
-      return storeOpenedRequest(fixture, pendingRequest(fixture, requiredActor));
+      return storeOpenedRequest(pendingRequest(fixture, requiredActor));
     }
     async function storeOpenedRequest(
-      fixture: Fixture,
       request: import("@opensteer/core").PendingRequest,
     ): Promise<RequestId> {
-      await withPersonalTransaction(database, async (transaction) => {
+      await commitPersonalMutation(database, async (transaction) => {
         await transaction.insertInto("requests").values(requestInsert(request)).execute();
-        await appendHostDeploymentEvent(transaction, {
-          data: {
-            request,
-          },
-          environmentId: fixture.environmentId,
-          runId: fixture.runId,
-          threadId: fixture.threadId,
-          type: "request.opened",
-        });
+        await refreshRequestState(transaction, request.id);
       });
       return request.id;
     }
@@ -617,7 +635,7 @@ integration("notification decision boundary", () => {
         response: null,
         status: "pending",
       });
-      return storeOpenedRequest(fixture, request);
+      return storeOpenedRequest(request);
     }
     async function setRunSeedAuthor(fixture: Fixture, kind: MessageAuthor["kind"]): Promise<void> {
       const author = MessageAuthorSchema.parse(
@@ -704,30 +722,17 @@ integration("notification decision boundary", () => {
     }
     const observed = new Map<string, DecidedNotification>();
     const publications = new Map<string, NotificationPublication>();
-    const readEvents = new Set<string>();
     async function decideCommitted(_fixture: Fixture) {
-      const rows = await database
-        .selectFrom("deploymentEvents")
-        .selectAll()
-        .orderBy("sequence", "asc")
-        .execute();
       const decided: DecidedNotification[] = [];
-      for (const row of rows) {
-        if (readEvents.has(row.eventId)) continue;
-        readEvents.add(row.eventId);
-        const parsed = AgentEventSchema.safeParse({
-          ...row,
-          createdAt: row.createdAt.toISOString(),
-        });
-        if (!parsed.success) continue;
-        for (const decision of await notifications.decide(parsed.data)) {
+      for (const change of transitions.splice(0)) {
+        for (const decision of await notifications.decide(change)) {
           decided.push(decision);
           observed.set(decision.view.id, decision);
           publications.set(decision.view.id, {
             ...decision.view,
             userId: decision.userId,
-            eventId: row.eventId,
-            sequence: row.sequence,
+            eventId: createId("event"),
+            sequence: decision.sequence,
             occurredAt: new Date(decision.view.occurredAt),
             expiresAt: new Date(
               Date.parse(decision.view.occurredAt) + notificationPushWindowMilliseconds,
@@ -759,7 +764,6 @@ integration("notification decision boundary", () => {
     now = new Date();
     observed.clear();
     publications.clear();
-    readEvents.clear();
     await personalFixtureOwner(database, databaseUrl);
     await directory.configureProvider({
       issuer: "https://accounts.opensteer.invalid",
@@ -781,6 +785,7 @@ integration("notification decision boundary", () => {
       finishRequestRun,
       markRunning,
       appendReply,
+      recordAddressedReply,
       appendRunnerEvent,
       appendCompletedReply,
       appendRunFailed,
@@ -794,7 +799,6 @@ integration("notification decision boundary", () => {
       makePersonalDeployment,
       observed,
       publications,
-      readEvents,
       decideCommitted,
       observedViews,
       publicationEntries,
@@ -1553,6 +1557,7 @@ integration("notification decision boundary", () => {
         database,
         text,
         decideCommitted,
+        recordAddressedReply,
         notificationState,
         publicationEntries,
         notifications,
@@ -1568,27 +1573,19 @@ integration("notification decision boundary", () => {
       });
       const intermediate = await appendReply(active, text("Still working."));
       const addressed = await appendReply(active, text("Milestone ready."));
-      const row = await database
+      await database
         .updateTable("messages")
-        .set({
-          addressedToUserId: active.ownerId,
-        })
+        .set({ addressedToUserId: active.ownerId })
         .where("id", "=", addressed.id)
-        .returningAll()
         .executeTakeFirstOrThrow();
-      const addressedEvent = await withPersonalTransaction(database, (transaction) =>
-        appendHostDeploymentEvent(transaction, {
-          type: "message.created",
-          data: {
-            input: null,
-            message: messageFromRow(row),
-            addressedToUserId: active.ownerId,
-          },
-          environmentId: active.environmentId,
-          threadId: active.threadId,
-          runId: active.runId,
-        }),
-      );
+      const addressedEvent = {
+        type: "replyPublished" as const,
+        messageId: addressed.id,
+        addressedToUserId: active.ownerId,
+        runId: active.runId,
+        threadId: active.threadId,
+      };
+      recordAddressedReply(addressedEvent);
       await decideCommitted(fixture);
       await decideCommitted(active);
       expect(BigInt(addressed.sequence)).toBe(BigInt(intermediate.sequence) + 1n);

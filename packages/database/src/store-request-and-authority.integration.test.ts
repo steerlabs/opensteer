@@ -133,28 +133,10 @@ describeStore("PostgreSQL store", (it) => {
       resolvedAt: consent?.request.resolvedAt,
       resolvedBy: consent?.request.resolvedBy,
     });
-    expect(consent?.events).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: "request.resolved",
-          data: expect.objectContaining({
-            request: expect.objectContaining({
-              response: {
-                kind: "external",
-                value: {
-                  outcome: "authorized",
-                  account: "a•••",
-                },
-              },
-              settlementProvenance: {
-                sessionId,
-                deviceLabel: "Safari on iPhone",
-              },
-            }),
-          }),
-        }),
-      ]),
-    );
+    expect(consent?.request).toMatchObject({
+      response: { kind: "external", value: { outcome: "authorized", account: "a•••" } },
+      settlementProvenance: { sessionId, deviceLabel: "Safari on iPhone" },
+    });
     expect(await store.requests.settlePasswordSignInRequest(interruption)).toBeNull();
     expect(
       await store.requests.settlePasswordSignInRequest({
@@ -245,9 +227,10 @@ describeStore("PostgreSQL store", (it) => {
           .where("id", "=", opened.request.id)
           .forUpdate()
           .execute(),
-      () =>
+      async () =>
         store.requests.resolveBrowserRequest({
           requestId: opened.request.id,
+          expectedRevision: (await store.requests.revision(opened.request.id))!,
           resolvedBy: fixture.userId,
           response: {
             kind: "external",
@@ -355,6 +338,7 @@ describeStore("PostgreSQL store", (it) => {
         .toBeGreaterThanOrEqual(count);
     const resolving = store.requests.resolveBrowserRequest({
       requestId: opened.request.id,
+      expectedRevision: (await store.requests.revision(opened.request.id))!,
       resolvedBy: fixture.userId,
       response: {
         kind: "external",
@@ -715,6 +699,7 @@ describeStore("PostgreSQL store", (it) => {
       await expect(
         store.requests.resolveBrowserRequest({
           requestId: opened.request.id,
+          expectedRevision: (await store.requests.revision(opened.request.id))!,
           resolvedBy: fixture.userId,
           response: {
             kind: "external",
@@ -733,6 +718,7 @@ describeStore("PostgreSQL store", (it) => {
       expect((await store.requests.get(opened.request.id))?.status).toBe("pending");
       const resolved = await store.requests.resolveBrowserRequest({
         requestId: opened.request.id,
+        expectedRevision: (await store.requests.revision(opened.request.id))!,
         resolvedBy: fixture.userId,
         response: {
           kind: "external",
@@ -923,6 +909,7 @@ describeStore("PostgreSQL store", (it) => {
           material,
         },
         requestId: opened.request.id,
+        expectedRevision: (await platform.requests.revision(opened.request.id))!,
         resolvedBy: fixture.userId,
         response: {
           kind: "choice",
@@ -966,6 +953,7 @@ describeStore("PostgreSQL store", (it) => {
           material,
         },
         requestId: access.request.id,
+        expectedRevision: (await platform.requests.revision(access.request.id))!,
         resolvedBy: fixture.userId,
         settlementSessionId: createId("authSession"),
       }),
@@ -982,6 +970,7 @@ describeStore("PostgreSQL store", (it) => {
         material,
       },
       requestId: opened.request.id,
+      expectedRevision: (await platform.requests.revision(opened.request.id))!,
       resolvedBy: fixture.userId,
       response: {
         kind: "choice",
@@ -991,6 +980,7 @@ describeStore("PostgreSQL store", (it) => {
     await expect(
       platform.requests.tryBindExistingIntegrationAccessInstallation({
         requestId: access.request.id,
+        expectedRevision: (await platform.requests.revision(access.request.id))!,
         resolvedBy: fixture.userId,
         settlementSessionId: createId("authSession"),
       }),
@@ -1215,6 +1205,7 @@ describeStore("PostgreSQL store", (it) => {
     const mainResolution = await platform.requests.resolveIntegrationAccessRequest({
       providerAuthorizations: {},
       requestId: mainRequest.request.id,
+      expectedRevision: (await platform.requests.revision(mainRequest.request.id))!,
       resolvedBy: fixture.userId,
       response: {
         kind: "external",
@@ -1285,6 +1276,7 @@ describeStore("PostgreSQL store", (it) => {
     await expect(
       platform.requests.selectIntegrationAccessServer({
         requestId: selectedRequest.request.id,
+        expectedRevision: (await platform.requests.revision(selectedRequest.request.id))!,
         requestedServerId: serverId,
         resolvedBy: fixture.userId,
         settlementSessionId: createId("authSession"),
@@ -1297,12 +1289,14 @@ describeStore("PostgreSQL store", (it) => {
     });
     await platform.requests.selectIntegrationAccessServer({
       requestId: selectedRequest.request.id,
+      expectedRevision: (await platform.requests.revision(selectedRequest.request.id))!,
       requestedServerId: serverId,
       resolvedBy: fixture.userId,
     });
     const selectedResolution = await platform.requests.resolveIntegrationAccessRequest({
       providerAuthorizations: {},
       requestId: selectedRequest.request.id,
+      expectedRevision: (await platform.requests.revision(selectedRequest.request.id))!,
       resolvedBy: fixture.userId,
       response: {
         kind: "external",
@@ -1354,6 +1348,7 @@ describeStore("PostgreSQL store", (it) => {
       platform.requests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: requiredWrite.request.id,
+        expectedRevision: (await platform.requests.revision(requiredWrite.request.id))!,
         resolvedBy: fixture.userId,
         response: {
           kind: "external",
@@ -1383,6 +1378,7 @@ describeStore("PostgreSQL store", (it) => {
       platform.requests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: missingConnectionRequest.request.id,
+        expectedRevision: (await platform.requests.revision(missingConnectionRequest.request.id))!,
         resolvedBy: fixture.userId,
         response: {
           kind: "external",
@@ -1412,6 +1408,7 @@ describeStore("PostgreSQL store", (it) => {
       platform.requests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: missingConnectionRequest.request.id,
+        expectedRevision: (await platform.requests.revision(missingConnectionRequest.request.id))!,
         resolvedBy: fixture.userId,
         response: {
           kind: "external",
@@ -1434,6 +1431,7 @@ describeStore("PostgreSQL store", (it) => {
     const declinedResolution = await platform.requests.resolveIntegrationAccessRequest({
       providerAuthorizations: {},
       requestId: declinedRequest.request.id,
+      expectedRevision: (await platform.requests.revision(declinedRequest.request.id))!,
       resolvedBy: fixture.userId,
       response: {
         kind: "external",
@@ -1472,6 +1470,7 @@ describeStore("PostgreSQL store", (it) => {
       platform.requests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: mcpRequest.request.id,
+        expectedRevision: (await platform.requests.revision(mcpRequest.request.id))!,
         resolvedBy: fixture.userId,
         response: {
           kind: "external",

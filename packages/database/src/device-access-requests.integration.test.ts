@@ -17,7 +17,7 @@ import {
   pendingEvent,
   type StoreFixture,
 } from "./store.integration.test-support.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { personalReachableGrant, phoneRunnerGrant } from "./runner-store.js";
 
 type Started = Awaited<ReturnType<StoreFixture["startRunFixture"]>>;
@@ -143,17 +143,24 @@ describeStore("device access Requests", (it) => {
     const opened = await ask(f, run, target);
     expect(old.PendingRequestViewSchema.safeParse(opened.request).success).toBe(false);
     const notifications = new NotificationStore(f.database);
-    const event = opened.events.find(({ type }) => type === "request.opened")!;
-    const [notification] = await notifications.decide(event);
+    const [notification] = await notifications.decide({
+      type: "requestChanged",
+      kind: "device.access",
+      status: "pending",
+      opened: true,
+      requestId: opened.request.id,
+      runId: run.run.id,
+      threadId: run.thread.id,
+    });
     expect(notification).toMatchObject({ deviceAccessRequests: "include" });
     expect(
       await notifications.publicationSkipReason({
         ...notification!.view,
         userId: run.userId,
-        eventId: event.eventId,
-        sequence: event.sequence,
-        occurredAt: new Date(event.createdAt),
-        expiresAt: new Date(Date.parse(event.createdAt) + 60_000),
+        eventId: createId("event"),
+        sequence: notification!.sequence,
+        occurredAt: new Date(opened.request.createdAt),
+        expiresAt: new Date(Date.parse(opened.request.createdAt) + 60_000),
       }),
     ).toBeNull();
 
@@ -329,7 +336,7 @@ describeStore("device access Requests", (it) => {
       idempotency: { key: "enable", requestedBy: run.userId },
     };
     await expect(
-      withPersonalTransaction(f.database, async (tx) => {
+      commitPersonalMutation(f.database, async (tx) => {
         const { updateMachineAccessPolicy } = await import("./machine-store.js");
         await updateMachineAccessPolicy(tx, update);
         expect(await tx.selectFrom("requestContinuations").selectAll().execute()).toHaveLength(1);
@@ -349,12 +356,10 @@ describeStore("device access Requests", (it) => {
     const updated = await f.store.updateMachineAccessPolicy(update);
     expect(updated).toMatchObject({
       outcome: "updated",
-      requestEvents: [expect.objectContaining({ type: "request.resolved" })],
     });
     expect((await f.store.requests.get(opened.request.id))?.status).toBe("fulfilled");
     expect(await f.store.updateMachineAccessPolicy(update)).toMatchObject({
       replayed: true,
-      requestEvents: [],
     });
     expect(await f.database.selectFrom("requestContinuations").selectAll().execute()).toHaveLength(
       1,
@@ -369,12 +374,14 @@ describeStore("device access Requests", (it) => {
     await expect(
       f.store.requests.declineDeviceAccessRequest({
         requestId: opened.request.id,
+        expectedRevision: (await f.store.requests.revision(opened.request.id))!,
         resolvedBy: createId("user"),
         response: decline,
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
     await f.store.requests.declineDeviceAccessRequest({
       requestId: opened.request.id,
+      expectedRevision: (await f.store.requests.revision(opened.request.id))!,
       resolvedBy: run.userId,
       response: decline,
     });
@@ -433,7 +440,7 @@ describeStore("device access Requests", (it) => {
       .where("id", "=", DeviceIdSchema.parse(nextTarget))
       .execute();
     const { fulfillDeviceAccessRequestsInTransaction } = await import("./request-store.js");
-    await withPersonalTransaction(f.database, (tx) =>
+    await commitPersonalMutation(f.database, (tx) =>
       fulfillDeviceAccessRequestsInTransaction(tx, DeviceIdSchema.parse(nextTarget), {
         ...machineAccessPolicyDefault,
         browser: true,

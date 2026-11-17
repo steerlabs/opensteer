@@ -107,7 +107,6 @@ function fixture(pending = request, compatibilityReason: string | null = null) {
     localMcpSecrets: { saved: vi.fn(async () => []), update: vi.fn(() => async () => null) },
     onConnectionsChanged: changed,
     onLocalServerApproved: vi.fn(),
-    publishRequestEvents: vi.fn(),
     store: store as unknown as IntegrationPlatformStore,
   });
   return { service, store, computerUse, admission, install, changed };
@@ -210,12 +209,17 @@ describe("owner-session computer app approvals", () => {
     });
     await service.declineComputerAppAccess({
       requestId: "req_task" as import("@opensteer/core").RequestId,
+      expectedRevision: "7",
       resolvedBy: ownerUserId,
       settlementSessionId: "session",
       response: { kind: "external", value: { decision: "declined" } },
     });
     expect(store.requests.declineComputerAppAccessRequest).toHaveBeenCalledWith(
-      expect.objectContaining({ settlementSessionId: "session", actorUserId: ownerUserId }),
+      expect.objectContaining({
+        settlementSessionId: "session",
+        actorUserId: ownerUserId,
+        expectedRevision: "7",
+      }),
     );
   });
   it.each(["allow", "deny"] as const)(
@@ -230,7 +234,11 @@ describe("owner-session computer app approvals", () => {
       expect(
         decision === "allow" ? store.localMcp.approve : store.localMcp.decline,
       ).toHaveBeenCalledWith(
-        expect.objectContaining({ settlementSessionId: "session", actorUserId: ownerUserId }),
+        expect.objectContaining({
+          settlementSessionId: "session",
+          actorUserId: ownerUserId,
+          expectedRevision: "7",
+        }),
       );
     },
   );

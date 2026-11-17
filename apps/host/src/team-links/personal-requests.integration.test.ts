@@ -618,10 +618,11 @@ describeStore("personal team consent and returns", (it) => {
     f.offline(true);
     const inputEvents = () =>
       storeFixture.database
-        .selectFrom("deploymentEvents")
+        .selectFrom("clientChanges")
         .select("sequence")
-        .where("threadId", "=", identity.threadId)
-        .where("type", "=", "thread-input.updated")
+        .where("scopeKey", "=", `thread:${identity.threadId}`)
+        .where("entityKind", "=", "collection")
+        .where("entityId", "=", "input-queue")
         .execute();
     const before = (await inputEvents()).length;
     await expect(
@@ -756,13 +757,12 @@ describeStore("personal team consent and returns", (it) => {
         .where("id", "=", before.taskId!)
         .executeTakeFirst(),
     ).toBeUndefined();
-    expect(
-      await f.database
-        .selectFrom("deploymentEvents")
-        .select(["threadId", "data"])
-        .where("type", "=", "task.removed")
-        .execute(),
-    ).toEqual([{ threadId: null, data: { threadId: before.taskId } }]);
+    const state = await f.database
+      .selectFrom("clientSyncState")
+      .select(["prunedThroughSequence", "sequence"])
+      .executeTakeFirstOrThrow();
+    expect(BigInt(state.prunedThroughSequence)).toBeGreaterThan(0n);
+    expect(BigInt(state.prunedThroughSequence)).toBeLessThanOrEqual(BigInt(state.sequence));
   });
 
   for (const adopted of [false, true])

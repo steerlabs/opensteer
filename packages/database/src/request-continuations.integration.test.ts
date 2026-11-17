@@ -1,4 +1,4 @@
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { createHash } from "node:crypto";
 import { expect } from "vitest";
 import { sql } from "kysely";
@@ -198,9 +198,10 @@ describeStore("Request continuation admission", (it) => {
     const secondHost = new OpensteerStore(database);
     const first = await open(store, fixture, "first");
     const second = await open(store, fixture, "second");
-    const decline = (host: OpensteerStore, requestId: typeof first.request.id) =>
+    const decline = async (host: OpensteerStore, requestId: typeof first.request.id) =>
       host.requests.resolveBrowserRequest({
         requestId,
+        expectedRevision: (await host.requests.revision(requestId))!,
         resolvedBy: fixture.userId,
         response: {
           kind: "external",
@@ -275,9 +276,10 @@ describeStore("Request continuation admission", (it) => {
       const fixture = await startRunFixture(`background-requests-${ends}`);
       const first = await open(store, fixture, "first");
       const second = await open(store, fixture, "second");
-      const answer = (requestId: typeof first.request.id) =>
+      const answer = async (requestId: typeof first.request.id) =>
         store.requests.resolveBrowserRequest({
           requestId,
+          expectedRevision: (await store.requests.revision(requestId))!,
           resolvedBy: fixture.userId,
           response: {
             kind: "external",
@@ -356,6 +358,7 @@ describeStore("Request continuation admission", (it) => {
     const request = await open(store, fixture, "first");
     await store.requests.resolveBrowserRequest({
       requestId: request.request.id,
+      expectedRevision: (await store.requests.revision(request.request.id))!,
       resolvedBy: fixture.userId,
       response: {
         kind: "external",
@@ -381,6 +384,7 @@ describeStore("Request continuation admission", (it) => {
     for (const requestId of [held.request.id, abandoned.request.id])
       await store.requests.resolveBrowserRequest({
         requestId,
+        expectedRevision: (await store.requests.revision(requestId))!,
         resolvedBy: fixture.userId,
         response: {
           kind: "external",
@@ -405,6 +409,7 @@ describeStore("Request continuation admission", (it) => {
     const opened = await open(store, fixture, "held");
     await store.requests.resolveBrowserRequest({
       requestId: opened.request.id,
+      expectedRevision: (await store.requests.revision(opened.request.id))!,
       resolvedBy: fixture.userId,
       response: {
         kind: "external",
@@ -433,6 +438,7 @@ describeStore("Request continuation admission", (it) => {
     const opened = await open(store, fixture, "held");
     await store.requests.resolveBrowserRequest({
       requestId: opened.request.id,
+      expectedRevision: (await store.requests.revision(opened.request.id))!,
       resolvedBy: fixture.userId,
       response: {
         kind: "external",
@@ -491,6 +497,7 @@ describeStore("Request continuation admission", (it) => {
       await finish(store, fixture);
       await store.requests.resolveBrowserRequest({
         requestId: opened.request.id,
+        expectedRevision: (await store.requests.revision(opened.request.id))!,
         resolvedBy: fixture.userId,
         response: {
           kind: "external",
@@ -644,6 +651,7 @@ describeStore("Request continuation admission", (it) => {
     await open(store, fixture, "still-pending");
     await store.requests.resolveBrowserRequest({
       requestId: first.request.id,
+      expectedRevision: (await store.requests.revision(first.request.id))!,
       resolvedBy: fixture.userId,
       response: {
         kind: "external",
@@ -687,7 +695,7 @@ describeStore("Request continuation admission", (it) => {
       const fixture = await startRunFixture(`request-cancel-${reason}`);
       const request = await open(store, fixture, "cancelled");
       await finish(store, fixture);
-      await withPersonalTransaction(database, (tx) =>
+      await commitPersonalMutation(database, (tx) =>
         cancelPending(tx, {
           requestIds: [request.request.id],
           reason,

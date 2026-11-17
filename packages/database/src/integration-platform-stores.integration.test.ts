@@ -1301,6 +1301,7 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     await platform.requests.resolveIntegrationAccessRequest({
       providerAuthorizations: {},
       requestId: opened.request.id,
+      expectedRevision: (await platform.requests.revision(opened.request.id))!,
       resolvedBy: userId,
       response: {
         kind: "external",
@@ -1418,12 +1419,6 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     });
 
     expect(mutation.cancelledRequestIds).toEqual([opened.request.id]);
-    expect(mutation.requestEvents).toEqual([
-      expect.objectContaining({
-        data: { reason: "resource-deleted", requestId: opened.request.id },
-        type: "request.cancelled",
-      }),
-    ]);
     await expect(platform.requests.get(opened.request.id)).resolves.toMatchObject({
       cancellationReason: "resource-deleted",
       status: "cancelled",
@@ -2517,13 +2512,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       runnerId: setup.runnerId,
       tools: setup.tools("read"),
     });
-    expect(created.requestEvents).toEqual([
-      expect.objectContaining({
-        data: expect.objectContaining({
-          request: expect.objectContaining({ id: read.request.id }),
-        }),
-      }),
-    ]);
+    expect(created.fulfilledRequestIds).toEqual([read.request.id]);
     await expect(platform.requests.get(read.request.id)).resolves.toMatchObject({
       status: "fulfilled",
     });
@@ -2538,7 +2527,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       runnerId: setup.runnerId,
       tools: setup.tools("read"),
     });
-    expect(unchanged.requestEvents).toEqual([]);
+    expect(unchanged.fulfilledRequestIds).toEqual([]);
     await expect(platform.requests.get(write.request.id)).resolves.toMatchObject({
       status: "pending",
     });
@@ -2552,15 +2541,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
       runnerId: setup.runnerId,
       tools: setup.tools("read-write"),
     });
-    expect(
-      widened.requestEvents
-        .map((event) => {
-          if (event.type !== "request.resolved")
-            throw new Error("Expected a resolved access Request");
-          return event.data.request.id;
-        })
-        .sort(),
-    ).toEqual([write.request.id, anotherRead.request.id].sort());
+    expect([...widened.fulfilledRequestIds].sort()).toEqual(
+      [write.request.id, anotherRead.request.id].sort(),
+    );
     expect(widened.grants).toEqual([
       expect.objectContaining({ access: "read-write", connectionId: created.connection.id }),
     ]);
@@ -2571,7 +2554,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
     const stillActionable = await request("read", "computer-request-survives-machine-removal");
     const revoked = await store.revokeRunner(setup.runnerId, setup.ownerUserId);
     expect(revoked.cancelledRequestIds).toEqual([]);
-    expect(revoked.requestEvents).toEqual([]);
     await expect(platform.requests.get(stillActionable.request.id)).resolves.toMatchObject({
       cancellationReason: null,
       status: "pending",
@@ -2618,11 +2600,12 @@ integration.sequential("PostgreSQL computer app connections", () => {
     const otherRunnerId = createId("runner");
     await insertComputerRunner(otherRunnerId, run.userId, "Other Mac");
     const other = await connect(otherRunnerId, "read-write");
-    expect(other.requestEvents).toEqual([]);
+    expect(other.fulfilledRequestIds).toEqual([]);
     await expect(
       platform.requests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: opened.request.id,
+        expectedRevision: (await platform.requests.revision(opened.request.id))!,
         resolvedBy: run.userId,
         response: {
           kind: "external",
@@ -2647,7 +2630,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         .execute(),
     ).toEqual([]);
     const widened = await connect(setup.runnerId, "read-write");
-    expect(widened.requestEvents.map((event) => event.type)).toEqual(["request.resolved"]);
+    expect(widened.fulfilledRequestIds).toEqual([opened.request.id]);
     await expect(platform.requests.get(opened.request.id)).resolves.toMatchObject({
       status: "fulfilled",
       response: { value: { connectionId: own.connection.id } },
@@ -2793,6 +2776,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         fulfillment = platform.requests.resolveIntegrationAccessRequest({
           providerAuthorizations: {},
           requestId: opened.request.id,
+          expectedRevision: (await platform.requests.revision(opened.request.id))!,
           resolvedBy: run.userId,
           response: {
             kind: "external",
@@ -4860,13 +4844,15 @@ integration.sequential("PostgreSQL computer app connections", () => {
     };
     const opened = await askOnMac(ask);
     expect(opened.replayed).toBe(false);
-    expect(opened.requestEvents).toEqual([
-      expect.objectContaining({
-        data: { request: expect.objectContaining({ id: opened.request.id }) },
-        threadId: run.threadId,
-        type: "request.opened",
-      }),
-    ]);
+    const requestRevision = (await platform.requests.revision(opened.request.id))!;
+    expect(
+      await database
+        .selectFrom("clientChanges")
+        .select(["scopeKey", "operation"])
+        .where("entityKind", "=", "request")
+        .where("entityId", "=", opened.request.id)
+        .execute(),
+    ).toEqual([{ scopeKey: `thread:${run.threadId}`, operation: "upsert" }]);
     expect(opened.setupRequest).toMatchObject({ access: "read", app: notes });
     expect(opened.request).toMatchObject({
       kind: "computer.app.access",
@@ -4889,7 +4875,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     });
     const again = await askOnMac(ask);
     expect(again.replayed).toBe(true);
-    expect(again.requestEvents).toEqual([]);
+    expect(await platform.requests.revision(opened.request.id)).toBe(requestRevision);
     expect(again.request.id).toBe(opened.request.id);
     expect(again.setupRequest.id).toBe(opened.setupRequest.id);
     // A second call with a different call identity is still the same card.
@@ -4949,11 +4935,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         connectionId: consumed.connection.id,
       }),
     ]);
-    expect(consumed.requestEvents).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: "request.resolved", threadId: run.threadId }),
-      ]),
-    );
+    expect(consumed.fulfilledRequestIds).toContain(opened.request.id);
     await expect(platform.requests.get(opened.request.id)).resolves.toMatchObject({
       status: "fulfilled",
       settlementProvenance: { sessionId, deviceLabel: "iPhone" },
@@ -5001,15 +4983,16 @@ integration.sequential("PostgreSQL computer app connections", () => {
       platform.declineComputerAppAccessRequest({
         actorUserId: run.userId,
         requestId: opened.request.id,
+        expectedRevision: (await platform.requests.revision(opened.request.id))!,
         response: { kind: "external", value: { decision: "fulfilled" } },
       }),
     ).rejects.toMatchObject({ code: "bad_request" });
     const declined = await platform.declineComputerAppAccessRequest({
       actorUserId: run.userId,
       requestId: opened.request.id,
+      expectedRevision: (await platform.requests.revision(opened.request.id))!,
     });
     expect(declined.request.status).toBe("declined");
-    expect(declined.events).toContainEqual(expect.objectContaining({ type: "request.resolved" }));
     await expect(platform.listComputerAppSetupRequests(run.userId)).resolves.toEqual([]);
     await expect(
       database
@@ -5022,6 +5005,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       platform.declineComputerAppAccessRequest({
         actorUserId: run.userId,
         requestId: opened.request.id,
+        expectedRevision: (await platform.requests.revision(opened.request.id))!,
       }),
     ).rejects.toMatchObject({ code: "conflict" });
   });
@@ -5614,6 +5598,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       const decline = platform.declineComputerAppAccessRequest({
         actorUserId: test.run.userId,
         requestId: declining.request.id,
+        expectedRevision: (await platform.requests.revision(declining.request.id))!,
       });
       await waitForLockWaiters(2);
       release();
@@ -6264,6 +6249,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       const declined = await platform.declineComputerAppAccessRequest({
         actorUserId: run.userId,
         requestId: wide.request.id,
+        expectedRevision: (await platform.requests.revision(wide.request.id))!,
       });
       expect(declined.request.status).toBe("declined");
       expect(

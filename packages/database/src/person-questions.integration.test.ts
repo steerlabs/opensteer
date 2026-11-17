@@ -94,6 +94,7 @@ describeStore("person questions", (it) => {
     await expect(
       f.store.requests.answerPersonQuestion({
         requestId: request.id,
+        expectedRevision: (await f.store.requests.revision(request.id))!,
         resolvedBy: createId("user"),
         response: answer({ question_1: ["Send it"] }),
       }),
@@ -101,14 +102,27 @@ describeStore("person questions", (it) => {
     await expect(
       f.store.requests.answerPersonQuestion({
         requestId: request.id,
+        expectedRevision: (await f.store.requests.revision(request.id))!,
         resolvedBy: run.userId,
         response: answer({ question_1: ["Send it", "Not yet"] }),
       }),
     ).rejects.toMatchObject({ code: "bad_request" });
     expect(await continuations(f)).toEqual([]);
 
+    const revision = (await f.store.requests.revision(request.id))!;
+    await expect(
+      f.store.requests.answerPersonQuestion({
+        requestId: request.id,
+        expectedRevision: (BigInt(revision) + 1n).toString(),
+        resolvedBy: run.userId,
+        response: answer({ question_1: ["Send it"] }),
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await continuations(f)).toEqual([]);
+
     const settled = await f.store.requests.answerPersonQuestion({
       requestId: request.id,
+      expectedRevision: (await f.store.requests.revision(request.id))!,
       resolvedBy: run.userId,
       response: answer({ question_1: ["Wait until Friday"] }),
     });
@@ -116,11 +130,27 @@ describeStore("person questions", (it) => {
       status: "fulfilled",
       response: answer({ question_1: ["Wait until Friday"] }),
     });
-    expect(settled.events.map(({ type }) => type)).toContain("request.resolved");
+    const settledRevision = (await f.store.requests.revision(request.id))!;
+    expect(BigInt(settledRevision)).toBeGreaterThan(BigInt(revision));
+    expect(
+      await f.database
+        .selectFrom("clientChanges")
+        .select(["entityKind", "operation"])
+        .where("sequence", "=", settledRevision)
+        .where("entityId", "=", request.id)
+        .execute(),
+    ).toEqual([{ entityKind: "request", operation: "remove" }]);
+    expect(
+      await f.database
+        .selectFrom("clientSyncState")
+        .select("pendingRequestCount")
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ pendingRequestCount: 0 });
     expect(await continuations(f)).toEqual([{ requestId: request.id }]);
     await expect(
       f.store.requests.answerPersonQuestion({
         requestId: request.id,
+        expectedRevision: (await f.store.requests.revision(request.id))!,
         resolvedBy: run.userId,
         response: answer({ question_1: ["Send it"] }),
       }),
@@ -133,12 +163,14 @@ describeStore("person questions", (it) => {
     await expect(
       f.store.requests.answerPersonQuestion({
         requestId: request.id,
+        expectedRevision: (await f.store.requests.revision(request.id))!,
         resolvedBy: run.userId,
         response: { kind: "external", value: { decision: "fulfilled" } },
       }),
     ).rejects.toMatchObject({ code: "bad_request" });
     const dismissed = await f.store.requests.answerPersonQuestion({
       requestId: request.id,
+      expectedRevision: (await f.store.requests.revision(request.id))!,
       resolvedBy: run.userId,
       response: { kind: "external", value: { decision: "declined" } },
     });
@@ -155,6 +187,7 @@ describeStore("person questions", (it) => {
     await finish(f, run);
     await f.store.requests.answerPersonQuestion({
       requestId: first.request.id,
+      expectedRevision: (await f.store.requests.revision(first.request.id))!,
       resolvedBy: run.userId,
       response: { kind: "form", answers: { question_1: ["Send it"] } },
     });
