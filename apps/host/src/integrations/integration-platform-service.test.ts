@@ -4304,7 +4304,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
     try {
       const access = await f.service.computerAccess(
         { ownerUserId: who.run!.requestedBy, threadId: who.threadId },
-        who.run,
+        who.run!,
       );
       const state = access.appEntries(access.machines[0]!)[0]!;
       tools.mockClear();

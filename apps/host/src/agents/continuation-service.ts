@@ -463,7 +463,7 @@ export async function continuationMessage(
         const phone = (await computerAccess()).phones.find(
           ({ connection }) => connection !== null && connection.connectionId === connectionId,
         );
-        if (phone) return phoneContinuation(await computerAccess(), phone);
+        if (phone) return phoneContinuation(request, await computerAccess(), phone);
       }
       if (!target.success) {
         return `${receipt} The fulfilled connection was not recorded; its current state is unverified.`;
@@ -519,7 +519,7 @@ export async function continuationMessage(
         if (request.status === "declined")
           return `Request ${request.id} was declined by the user. Continue the task without ${phone?.name ?? "that phone"} and do not request it again unless the user asks.`;
         return phone
-          ? phoneContinuation(await computerAccess(), phone)
+          ? phoneContinuation(request, await computerAccess(), phone)
           : `Request ${request.id} was fulfilled, but that phone is no longer available to this task. Continue without it.`;
       }
       const asked = payload.app;
@@ -556,21 +556,26 @@ async function computerAppContinuation(
   if (!machine || !app)
     return `Request ${request.id} was fulfilled, but ${displayName} on ${mac} is unavailable. Use integration_search {query:"Computer use"} to find current targets.`;
   const result = access.app(machine, { displayName: app.name, bundleId: app.bundleId });
-  return result.blocked
-    ? `${result.blocked.message} ${result.blocked.next}`
-    : `${displayName} on ${mac} is ready. Use app(${JSON.stringify(displayName)}, {computer:${JSON.stringify(mac)}}) in computer_use.`;
+  return `Request ${request.id} was fulfilled. ${
+    result.blocked
+      ? `${result.blocked.message} ${result.blocked.next}`
+      : `${displayName} on ${mac} is ready. Use app(${JSON.stringify(displayName)}, {computer:${JSON.stringify(mac)}}) in computer_use.`
+  }`;
 }
 async function phoneContinuation(
+  request: Request,
   access: Awaited<ReturnType<IntegrationInventorySource["computerAccess"]>>,
   phone: Awaited<ReturnType<IntegrationInventorySource["computerUsePhones"]>>[number],
 ): Promise<string> {
   const current = access.phones.find((entry) => entry.runnerId === phone.runnerId);
-  if (!current)
-    return `${phone.name} is unavailable. Use integration_search {query:"Android phone"} to find current targets.`;
-  const result = access.phone(current);
-  return result.blocked
-    ? `${result.blocked.message} ${result.blocked.next}`
-    : `${phone.name} is ready. Use phone(${JSON.stringify(phone.runnerId)}) in computer_use.`;
+  const result = current ? access.phone(current) : null;
+  return `Request ${request.id} was fulfilled. ${
+    !result
+      ? `${phone.name} is unavailable. Use integration_search {query:"Android phone"} to find current targets.`
+      : result.blocked
+        ? `${result.blocked.message} ${result.blocked.next}`
+        : `${phone.name} is ready. Use phone(${JSON.stringify(phone.runnerId)}) in computer_use.`
+  }`;
 }
 
 function inventoryFor(

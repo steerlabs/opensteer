@@ -688,7 +688,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           .filter((row) => row.type === "text")
           .map((row) => row.text)
           .join("\n"),
-      ).toContain("busy");
+      ).toContain("in_use:");
       cancellation.abort();
       const cancelled = await pending;
       expect(cancelled.isError).toBe(true);
@@ -1392,7 +1392,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           .filter((row) => row.type === "text")
           .map((row) => row.text)
           .join("\n"),
-      ).toContain(`update_required: ${mac} needs an Opensteer update for computer use.`);
+      ).toContain(`update_required: ${mac} needs an Opensteer update.`);
       expect(world.fakeMac.frames.filter((frame) => frame.operation === "windows")).toEqual([]);
       const search = json(await gateway.call("integration_search", { query: "Computer use" }));
       expect(macRow(search).computers[0]).toMatchObject({ blocked: { code: "update_required" } });
@@ -2298,7 +2298,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       kind: "computer.app.access",
       status: "pending",
       replayed: false,
-      nextAction: `Approval for ${mac} is pending; the owner can allow or decline from any Opensteer app. Pending grants no access; do not poll, repeat or route around the Request.`,
+      next: expect.stringContaining("Nothing is granted until they answer"),
     });
     const [setup] = await world.persistence.listComputerAppSetupRequests(world.owner.userId);
     expect(setup).toMatchObject({
@@ -2331,11 +2331,11 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       access: "read-write",
     });
     expect(await continuationMessage(fulfilled, inventorySource(world.platform))).toBe(
-      `Notes on ${mac} is ready. Use app("Notes", {computer:"Alex's Mac"}) in computer_use.`,
+      `Request ${fulfilled.id} was fulfilled. Notes on ${mac} is ready. Use app("Notes", {computer:"Alex's Mac"}) in computer_use.`,
     );
 
     expect(notes).not.toHaveProperty("toolRefs");
-    expect(notes).not.toHaveProperty("nextAction");
+    expect(notes).not.toHaveProperty("next");
     const [legacy] = await world.platform.listCallableTools({
       ownerUserId: world.owner.userId,
 
@@ -2495,7 +2495,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const request = await world.requestById(requestId);
       expect(request.status).toBe("fulfilled");
       expect(await continuationMessage(request, inventorySource(world.platform))).toBe(
-        `Request ${requestId} was fulfilled. ${app} on ${mac} is ready. Use app(${JSON.stringify(app)}, {computer: ${JSON.stringify(mac)}}) in computer_use. Continue.`,
+        `Request ${requestId} was fulfilled. ${app} on ${mac} is ready. Use app(${JSON.stringify(app)}, {computer:${JSON.stringify(mac)}}) in computer_use.`,
       );
     }
     // Both Threads share the wider personal grant, independent of ask order.
@@ -2558,9 +2558,10 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         reason: "Add the dentist appointment.",
       }),
     );
-    expect(calendar).toEqual({
+    expect(calendar).toMatchObject({
+      kind: "computer.app.access",
+      requestId: null,
       status: "fulfilled",
-      nextAction: "Use computer_use to see and operate approved apps and phones.",
     });
     expect(
       text(
@@ -2578,9 +2579,10 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         reason: "Read the draft.",
       }),
     );
-    expect(textEdit).toEqual({
+    expect(textEdit).toMatchObject({
+      kind: "computer.app.access",
+      requestId: null,
       status: "fulfilled",
-      nextAction: "Use computer_use to see and operate approved apps and phones.",
     });
     const reviews = world.fakeMac.reviews.length;
     const widen = json(
@@ -2593,7 +2595,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(widen).toMatchObject({
       kind: "computer.app.access",
       status: "pending",
-      nextAction: `Approval for ${mac} is pending; the owner can allow or decline from any Opensteer app. Pending grants no access; do not poll, repeat or route around the Request.`,
+      next: expect.stringContaining("Nothing is granted until they answer"),
     });
     await vi.waitFor(() => expect(world.fakeMac.reviews).toHaveLength(reviews + 1));
     expect(await world.appAccess()).toMatchObject({ TextEdit: "read" });
@@ -2747,11 +2749,18 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       toolRefusal("conflict", `${mac} is offline.`),
     );
     const offlineCatalog = json(await a.call("integration_search", { query: "Computer use" }));
-    expect(macRow(offlineCatalog).computers[0]).toMatchObject({ state: "offline" });
+    expect(macRow(offlineCatalog).computers[0]).toMatchObject({
+      blocked: { code: "computer_offline" },
+    });
     expect(JSON.stringify(offlineCatalog)).not.toContain("toolRef");
-    expect(await a.call("computer_use", { code: 'await (await app("Notes")).windows()' })).toEqual(
-      refusal(`offline: ${mac} is offline. Notes will work again when it is back.`),
-    );
+    expect(
+      await a.call("computer_use", { code: 'await (await app("Notes")).windows()' }),
+    ).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: { ...macRow(offlineCatalog).computers[0]!.blocked, performed: [] },
+      },
+    });
 
     // A Trigger occurrence has no Run for a session to belong to.
     await world.fakeMac.attach();
@@ -3440,7 +3449,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         reason: "Check the phone",
       }),
     );
-    expect(request.status).toBe("already-available");
+    expect(request).toMatchObject({ requestId: null, status: "fulfilled" });
     const refused = await phoneCode(gatewayB, "await p.observe()");
     expect(refused).toEqual(
       refusal(`in_use: ${phone} is in use by another task (First display holder).`),
@@ -3498,7 +3507,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     );
     expect(pending).toMatchObject({
       kind: "computer.app.access",
-      nextAction: `Approval is pending; the owner can allow or decline from any Opensteer app. Pending grants no access; do not poll, repeat or route around the Request.`,
+      next: expect.stringContaining("Nothing is granted until they answer"),
       replayed: false,
       status: "pending",
     });
@@ -3534,7 +3543,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     });
     expect(granted).not.toHaveProperty("toolRefs");
     expect(await continuationMessage(fulfilled, inventorySource(world.platform))).toBe(
-      `${phone} is ready. Use phone(${JSON.stringify(phoneId)}) in computer_use.`,
+      `Request ${fulfilled.id} was fulfilled. ${phone} is ready. Use phone(${JSON.stringify(phoneId)}) in computer_use.`,
     );
 
     const [row] = await world.platform.listCallableTools({
@@ -3653,7 +3662,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         }),
       );
       // The phone already covers this task’s ask, so it comes straight back.
-      expect(asked).toMatchObject({ status: "already-available" });
+      expect(asked).toMatchObject({ requestId: null, status: "fulfilled" });
       expect(asked).not.toHaveProperty("toolRefs");
     })();
     expect((await phoneRow(b)).phones[0]).toMatchObject({
