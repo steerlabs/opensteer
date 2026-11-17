@@ -230,14 +230,38 @@ export function useConnectionDot(connection: ClientConnection): {
   readonly tone: "green" | "muted" | "amber";
   readonly words: string | null;
 } {
-  const state = useClientConnection(connection);
-  const issue = connectionNotice(state);
-  if (issue !== null)
-    return {
-      tone: amberCodes.has(issue.code) ? "amber" : "muted",
-      words: presentClientIssue(issue).title,
-    };
-  return { tone: state.phase === "ready" ? "green" : "muted", words: null };
+  // Only what the dot shows: the sidebar redraws when its meaning changes, not on every publish.
+  const read = useCallback(() => {
+    const state = connection.getSnapshot();
+    const issue = connectionNotice(state);
+    if (issue !== null)
+      return `${amberCodes.has(issue.code) ? "amber" : "muted"}\u0000${presentClientIssue(issue).title}`;
+    return state.phase === "ready" ? "green" : "muted";
+  }, [connection]);
+  const key = useSyncExternalStore(connection.subscribe, read, read);
+  return useMemo(() => {
+    const [tone, words] = key.split("\u0000") as ["green" | "muted" | "amber", string?];
+    return { tone, words: words ?? null };
+  }, [key]);
+}
+
+/** Whether this connection is past its quiet moment and still not ready. */
+export function useConnectionInterrupted(connection: ClientConnection): boolean {
+  const read = useCallback(() => {
+    const state = connection.getSnapshot();
+    return state.showInterruption && state.phase !== "ready";
+  }, [connection]);
+  return useSyncExternalStore(connection.subscribe, read, read);
+}
+
+/** Whether this connection has ever been ready in this session. */
+export function useConnectionEverReady(connection: ClientConnection | null): boolean {
+  const read = useCallback(() => (connection?.getSnapshot().readyRevision ?? 0) > 0, [connection]);
+  const subscribe = useCallback(
+    (listener: () => void) => connection?.subscribe(listener) ?? (() => {}),
+    [connection],
+  );
+  return useSyncExternalStore(subscribe, read, read);
 }
 
 /** Whether live marks (breathing dots, typing) may keep moving for this connection. */
@@ -291,14 +315,24 @@ export function useConnectionGate(
     readonly failed?: { readonly resource: string; readonly onRetry: () => void } | null;
   },
 ): ReactNode | null {
-  const state = useClientConnection(connection);
   const claim = useContext(GateContext).claim;
   const gating = !options.ready;
   useEffect(
     () => (gating && options.scope === "route" ? claim() : undefined),
     [claim, gating, options.scope],
   );
-  if (!gating) return null;
+  // The caller doesn't redraw for the connection; only the gate it shows does.
+  return gating ? <GateFor connection={connection} options={options} /> : null;
+}
+
+function GateFor({
+  connection,
+  options,
+}: {
+  readonly connection: ClientConnection;
+  readonly options: Omit<Parameters<typeof useConnectionGate>[1], "ready">;
+}) {
+  const state = useClientConnection(connection);
   const said = presentConnectionGate(state);
   const trouble = state.showInterruption && state.issue !== null && state.phase !== "ready";
   const back = options.onBack === undefined ? null : { label: "Back", onPress: options.onBack };

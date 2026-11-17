@@ -44,8 +44,8 @@ import {
   type InitialOwnerClaimInput,
   type PasswordSignInInput,
 } from "@opensteer/client/host";
-import { useClientConnection, useHostSnapshot } from "@opensteer/client/react";
-import { useConnectionGate } from "./components/connection-shell.js";
+import { useHostSnapshot } from "@opensteer/client/react";
+import { useConnectionGate, useConnectionInterrupted } from "./components/connection-shell.js";
 import { consumeOAuthErrorQuery } from "./account/auth-error-query.js";
 import { NativeOAuthConsent, useNativeOAuthQuery } from "./account/native-oauth-consent.js";
 import { startHostOidcSignIn } from "./account/host-oidc.js";
@@ -146,8 +146,8 @@ export function App({
   }, [continuingSetup, onSetupOpened, shellReady]);
   // Until this Opensteer has answered, its connection is the one thing said:
   // setup's own opening screen while setup continues and nothing is wrong.
-  const connection = useClientConnection(hostClient.connection);
-  const interrupted = connection.showInterruption && connection.phase !== "ready";
+  // Only whether it's interrupted: the app never redraws for every connection publish.
+  const interrupted = useConnectionInterrupted(hostClient.connection);
   const appGate = useConnectionGate(hostClient.connection, {
     scope: "app",
     ready: snapshot.session !== "checking" && !interrupted,

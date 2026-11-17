@@ -1,6 +1,3 @@
-import { useSyncExternalStore } from "react";
-const noConnectionSubscription = () => () => {};
-const noConnectionSnapshot = () => null;
 import { deploymentPolicy } from "@opensteer/core";
 import type { AgentConnectionAuthorizationTarget } from "@opensteer/protocol";
 import type { DesktopLocalExecutionStatus } from "@opensteer/protocol/desktop";
@@ -46,7 +43,7 @@ import {
 import { ToastProvider } from "../components/toast.js";
 import { createBrowserHostClient } from "../host/browser-host-client.js";
 import { disposeMessageOutbox } from "@opensteer/client/host";
-import { ConnectionGateView } from "../components/connection-shell.js";
+import { ConnectionGateView, useConnectionEverReady } from "../components/connection-shell.js";
 import { browserClientLifecycle } from "../host/browser-lifecycle.js";
 
 const SignedInApp = lazy(async () => {
@@ -276,11 +273,8 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     });
   }, [bridge, hostTransportIdentity, passkeyMode]);
 
-  const connection = useSyncExternalStore(
-    hostClient?.connection.subscribe ?? noConnectionSubscription,
-    hostClient?.connection.getSnapshot ?? noConnectionSnapshot,
-    hostClient?.connection.getSnapshot ?? noConnectionSnapshot,
-  );
+  // Only whether this window's connection was ever ready; the surface never redraws per publish.
+  const everReady = useConnectionEverReady(hostClient?.connection ?? null);
   useEffect(
     () => () => {
       if (!hostClient) return;
@@ -371,7 +365,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     const choosing = chooserFor !== null && chooserFor === selected?.id;
     const presentation = choosing
       ? "picker"
-      : connection && connection.readyRevision > 0
+      : everReady
         ? "ready"
         : desktopAccessPresentationFromSnapshot(snapshot);
     const activeScreen = screen;
@@ -604,7 +598,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     }
 
     const opening = settingUpHere ? <SetupOpening /> : null;
-    if (!hostClient || (!connection?.readyRevision && selectedConnection?.status !== "connected")) {
+    if (!hostClient || (!everReady && selectedConnection?.status !== "connected")) {
       if (opening && !operationError) return opening;
       // Main's own first attempt can still be cancelled; once it has
       // answered, this window's connection explains itself on the shared clock.
