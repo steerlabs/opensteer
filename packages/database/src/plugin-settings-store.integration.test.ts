@@ -49,7 +49,7 @@ describeStore("personal plugin settings", (test) => {
     expect(await plugins.current(owner.userId)).toMatchObject([{ id: pluginId }]);
     const outsider = await f.store.createUser("Other person");
     await expect(settings.overview(outsider)).rejects.toMatchObject({ code: "forbidden" });
-    await expect(settings.detail(outsider, command.target)).rejects.toMatchObject({
+    await expect(settings.row(outsider, command.target)).rejects.toMatchObject({
       code: "forbidden",
     });
     await expect(

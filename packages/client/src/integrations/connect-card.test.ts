@@ -4,7 +4,6 @@ import { mockMessagesDefinition } from "../mock/mock-integration-fixtures.js";
 import {
   collapsedAccountRows,
   connectCard,
-  integrationRequestRetiredDetail,
 } from "./connect-card.js";
 
 /** An access Request for Messages on a computer, or for a local server needing no account. */
@@ -124,14 +123,6 @@ describe("connectCard", () => {
     expect(connectCard({ loaded: catalogInstall(false) })).toMatchObject({
       phase: "needs-admin",
       primary: null,
-    });
-  });
-
-  it("only offers declining a Request for an account Opensteer no longer connects", () => {
-    expect(connectCard({ loaded: loaded("provider") })).toMatchObject({
-      phase: "unavailable",
-      primary: null,
-      error: integrationRequestRetiredDetail,
     });
   });
 

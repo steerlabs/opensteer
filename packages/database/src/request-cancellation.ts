@@ -38,7 +38,6 @@ export async function cancelPending(
       .where((eb) =>
         eb.or([
           eb("mode", "=", "live"),
-          eb("kind", "=", "integration.input"),
           eb.and([
             eb("kind", "in", ["plugin.approval", "plugin.input"]),
             input.cancelHandedOffPlugins
@@ -105,7 +104,7 @@ export async function cancelPending(
     )
   ) {
     for (const row of rows) {
-      if (row.mode !== "durable" || row.kind === "integration.input") continue;
+      if (row.mode !== "durable") continue;
       await transaction
         .insertInto("requestContinuations")
         .values({

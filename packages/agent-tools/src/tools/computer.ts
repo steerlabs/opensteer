@@ -1,8 +1,13 @@
-import { RunnerIdSchema } from "@opensteer/core";
+import { RunnerIdSchema, requestReasonMaxLength } from "@opensteer/core";
+import { IntegrationAccessSchema } from "@opensteer/integration-core/access";
 import { z } from "zod";
 import { defineAgentTool } from "../registry.js";
 import { CursorSchema, OperationKeySchema } from "./inputs.js";
-import { IntegrationCallOutputSchema } from "./integration-outputs.js";
+import {
+  AppAccessRequestOutputSchema,
+  ComputerAppsOutputSchema,
+  ComputerUseOutputSchema,
+} from "./computer-outputs.js";
 import { AgentLinkSchema, RequestCreationOutputSchema } from "./outputs.js";
 
 const accessState = z.enum(["enabled", "disabled", "unsupported"]);
@@ -83,7 +88,7 @@ export const computer_use = defineAgentTool({
   description:
     "Run JavaScript to operate approved Mac windows and Agent Phones; variables and handles last for this Run attempt. tab(tabId), using an ID from tab_list or tab_open, binds that exact window or phone. apps()/app() and phones()/phone() also discover and bind targets. Bound handles report tabId. Observe before using screenshot coordinates or element indices. Await calls and print() results; execution has a 100 second deadline. Read opensteer:computer-use for the window and phone API. After an outcome-unknown action, observe before repeating it.",
   input: z.strictObject({ code: z.string().min(1).max(65536) }),
-  output: IntegrationCallOutputSchema,
+  output: ComputerUseOutputSchema,
   capability: "computerUse",
   access: "write",
   callers: ["run"] as const,
@@ -108,10 +113,100 @@ export const computer_access_request = defineAgentTool({
   callers: ["run"] as const,
 });
 
+export const ComputerAppsInputSchema = z.strictObject({
+  computerId: RunnerIdSchema.optional().describe(
+    "A Mac or phone from this listing, to list its installed apps.",
+  ),
+  query: z.string().trim().max(240).default("").describe("Filters a computer's installed apps."),
+  limit: z.number().int().min(1).max(50).default(20),
+  cursor: z
+    .string()
+    .regex(/^\d{1,5}$/u)
+    .transform(Number)
+    .pipe(z.number().int().max(10_000))
+    .optional()
+    .describe("nextCursor from the previous page."),
+});
+export const computer_apps = defineAgentTool({
+  name: "computer_apps",
+  title: "List Mac apps and phones",
+  description:
+    "List the Macs set up for computer use, each with its approval policy and its approved or waiting apps, and the Agent Phones with their approval. Pass a computerId to list that Mac's or phone's installed apps, filtered by query; phone apps include launch package names. Listing grants no access; ask with app_access_request.",
+  input: ComputerAppsInputSchema,
+  output: ComputerAppsOutputSchema,
+  access: "read",
+  callers: ["run", "program", "connection"] as const,
+});
+
+/**
+ * One app on one Mac, a whole phone, one device data app, or one local server. The Host resolves
+ * what `app`, `dataApp` and `server` name.
+ */
+export const AppAccessRequestInputSchema = z
+  .strictObject({
+    computerId: RunnerIdSchema.optional().describe(
+      "The Mac, iPhone or phone; omit for an app on the Mac this task runs on.",
+    ),
+    app: z
+      .string()
+      .trim()
+      .min(1)
+      .max(255)
+      .optional()
+      .describe("Mac app name, path or bundle ID, operated through computer_use."),
+    dataApp: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .optional()
+      .describe(
+        "A data app whose tools appear in plugin_search: calendar, contacts, reminders or messages on a Mac; calendar, contacts, reminders, photos or location on an iPhone.",
+      ),
+    server: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .optional()
+      .describe("A local server's name from local_server_list."),
+    access: IntegrationAccessSchema,
+    reason: z.string().trim().min(1).max(requestReasonMaxLength),
+    operationKey: OperationKeySchema.optional(),
+  })
+  .superRefine((input, context) => {
+    const named = [input.app, input.dataApp, input.server].filter((value) => value !== undefined);
+    if (named.length > 1)
+      context.addIssue({
+        code: "custom",
+        message: "Name one of app, dataApp or server",
+        path: ["app"],
+      });
+    if (named.length === 0 && input.computerId === undefined)
+      context.addIssue({
+        code: "custom",
+        message: "Name the app on a Mac, a dataApp, a server, or the phone by its computerId",
+        path: ["app"],
+      });
+  });
+export const app_access_request = defineAgentTool({
+  name: "app_access_request",
+  opensRequest: true,
+  title: "Request an app, phone or local server",
+  description:
+    "Ask the person to let this task use one Mac app or a whole Agent Phone through computer_use, a device data app on a Mac or iPhone, or a local server, through their plugin tools. For a Mac app pass app and, unless it is on the Mac this task runs on, its computerId; for a phone pass only its computerId; for a data app pass dataApp and the computerId it is on, when known; for a local server pass server. read observes and read-write also acts. Pending grants no access; never repeat a pending or declined ask.",
+  input: AppAccessRequestInputSchema,
+  output: AppAccessRequestOutputSchema,
+  access: "write",
+  callers: ["run"] as const,
+});
+
 export const computerTools = [
   computer_list,
   computer_update,
   computer_remove,
   computer_use,
+  computer_apps,
   computer_access_request,
+  app_access_request,
 ] as const;

@@ -9,14 +9,12 @@ import {
   type HarnessInstanceId,
   type UserId,
 } from "@opensteer/core";
-import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
 import { hostApi } from "@opensteer/protocol";
 import {
   AdministrationService,
   isAdministrationCommand,
   type AdministrationCommand,
 } from "../../administration/administration-service.js";
-import { isIntegrationAdministrationCommand } from "../../integrations/integration-administration.js";
 import type { AgentCaller } from "../agent-caller.js";
 import { computerIds } from "../computer-ids.js";
 import { operationId } from "../operations.js";
@@ -32,8 +30,6 @@ type AdministrationToolName =
   | "browser_profile_list"
   | "browser_profile_update"
   | "browser_profile_remove"
-  | "integration_list"
-  | "integration_remove"
   | "opensteer_messaging_bridge_list"
   | "opensteer_messaging_bridge_update"
   | "opensteer_messaging_bridge_remove";
@@ -43,7 +39,6 @@ function command(value: Record<string, unknown>): AdministrationCommand {
   const parsed = hostApi["commands.dispatch"].payload.parse(value);
   if (
     isAdministrationCommand(parsed) ||
-    isIntegrationAdministrationCommand(parsed) ||
     parsed.type === "browser.site.remove" ||
     parsed.type === "channel.binding.revoke" ||
     parsed.type === "channel.connection.status.set"
@@ -53,15 +48,9 @@ function command(value: Record<string, unknown>): AdministrationCommand {
 }
 export class AdministrationToolHandlers {
   readonly service: AdministrationService;
-  readonly listConnections: (userId: UserId) => Promise<readonly IntegrationConnectionSummary[]>;
   readonly canExecute: (environmentId: EnvironmentId) => boolean;
-  constructor(
-    service: AdministrationService,
-    listConnections: (userId: UserId) => Promise<readonly IntegrationConnectionSummary[]>,
-    canExecute: (environmentId: EnvironmentId) => boolean,
-  ) {
+  constructor(service: AdministrationService, canExecute: (environmentId: EnvironmentId) => boolean) {
     this.service = service;
-    this.listConnections = listConnections;
     this.canExecute = canExecute;
   }
   #write(
@@ -178,31 +167,6 @@ export class AdministrationToolHandlers {
         return this.#write(c, tool, { type: "browser.site.remove", site: i.site });
     }
   }
-  async integrationCommand(c: ToolCall<"integration_remove">) {
-    const i = c.input;
-    const tool = "integration_remove";
-    switch (i.target) {
-      case "account": {
-        const kind = i.connectionId
-          ? await this.service.dependencies.integrations.platform.store.getConnectionKind({
-              connectionId: i.connectionId,
-              ownerUserId: c.caller.userId,
-            })
-          : null;
-        return this.#write(c, tool, {
-          type: kind === "mcp-oauth" ? "integration.mcp.disconnect" : "integration.disconnect",
-          connectionId: i.connectionId,
-        });
-      }
-      case "integration":
-        return this.#write(c, tool, {
-          type: "integration.uninstall",
-          installationId: i.installationId,
-        });
-      case "grant":
-        return this.#write(c, tool, { type: "integration.grant.revoke", grantId: i.grantId });
-    }
-  }
   bridgeCommand(
     c:
       ToolCall<"opensteer_messaging_bridge_update"> | ToolCall<"opensteer_messaging_bridge_remove">,
@@ -303,24 +267,6 @@ export class AdministrationToolHandlers {
       sites: sources.sites,
     };
   }
-  async integration_list({ caller }: ToolCall<"integration_list">) {
-    await this.service.actor(caller);
-    const platform = this.service.dependencies.integrations.platform;
-    const [grants, connections, oauth, installations] = await Promise.all([
-      platform.store.listGrants({ ownerUserId: caller.userId }),
-      this.listConnections(caller.userId),
-      platform.store.listMcpOAuthConnections(caller.userId),
-      platform.store.listInstallations(),
-    ]);
-    return {
-      grants,
-      installations,
-      connections: [
-        ...connections,
-        ...oauth.map((connection) => ({ ...connection, id: connection.connectionId })),
-      ],
-    };
-  }
   async opensteer_messaging_bridge_list({ caller }: ToolCall<"opensteer_messaging_bridge_list">) {
     await this.service.actor(caller);
     const dashboard = await this.service.dependencies.channels.service.dashboard(caller.userId);
@@ -388,8 +334,6 @@ export function administrationToolHandlers(
     browser_profile_list: (c) => admin.browser_profile_list(c),
     browser_profile_update: mutation((c) => admin.browserCommand(c)),
     browser_profile_remove: mutation((c) => admin.browserCommand(c)),
-    integration_list: (c) => admin.integration_list(c),
-    integration_remove: mutation((c) => admin.integrationCommand(c)),
     opensteer_messaging_bridge_list: (c) => admin.opensteer_messaging_bridge_list(c),
     opensteer_messaging_bridge_update: mutation((c) => admin.bridgeCommand(c)),
     opensteer_messaging_bridge_remove: mutation((c) => admin.bridgeCommand(c)),

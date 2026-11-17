@@ -1,9 +1,9 @@
 import { personalTestExecution } from "../mcp/personal-execution.test-support.js";
 import {
-  createIntegrationPlatform,
-  type IntegrationPlatformTestHarness,
-  type IntegrationPlatformTestOptions,
-} from "./integration-platform.test-support.js";
+  createDeviceServices,
+  type DeviceServicesTestHarness,
+  type DeviceServicesTestOptions,
+} from "../devices/device-services.test-support.js";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
@@ -40,7 +40,7 @@ import {
 import {
   createDatabase,
   IntegrationPlatformStore,
-  IntegrationStore,
+  listIntegrationConnections,
   OpensteerStore,
   TabStore,
 } from "@opensteer/database";
@@ -3972,7 +3972,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
 const tree = '[0] window "Groceries" (0,0 1200×900)\n  [1] button "New Note" (20,10 80×40)';
 
 /** What the continuation outbox reads, served by the platform under test. */
-function inventorySource(platform: IntegrationPlatformTestHarness): IntegrationInventorySource {
+function inventorySource(platform: DeviceServicesTestHarness): IntegrationInventorySource {
   return {
     computerUseMachines: (ownerUserId) =>
       platform.devices.computerAppApprovals.computerUseMachines(ownerUserId),
@@ -4936,14 +4936,17 @@ async function createWorld(
     readonly releasedMacRunner?: boolean;
     readonly ownerViews?: boolean;
     readonly passwords?: ConstructorParameters<typeof ComputerUseService>[0]["passwords"];
-    readonly onTabUsed?: IntegrationPlatformTestOptions["onTabUsed"];
-    readonly computerReplTime?: IntegrationPlatformTestOptions["computerReplTime"];
+    readonly onTabUsed?: DeviceServicesTestOptions["onTabUsed"];
+    readonly computerReplTime?: DeviceServicesTestOptions["computerReplTime"];
   } = {},
 ) {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), "opensteer-computer-use-journey-"));
   const store = new OpensteerStore(database);
   const persistence = new IntegrationPlatformStore(database);
-  const connections = new IntegrationStore(database);
+  const connections = {
+    listConnections: (owner: Parameters<typeof listIntegrationConnections>[1]) =>
+      listIntegrationConnections(database, owner),
+  };
   const owner = await createOwner(store, randomUUID(), dataDirectory, options.ownerUserId);
   // The Runner authenticates its transport; the Host authorizes owner decisions.
   const keys = generateKeyPairSync("ed25519");
@@ -5136,7 +5139,7 @@ async function createWorld(
       throw error;
     },
   });
-  const platform = createIntegrationPlatform({
+  const platform = createDeviceServices({
     nativeTabs,
     tabs,
     ...(options.onTabUsed ? { onTabUsed: options.onTabUsed } : {}),
@@ -5154,18 +5157,12 @@ async function createWorld(
           }
         : { kind: "phone", computerId: row.computerId, tabGeneration: row.generation };
     },
-    adapters: [],
-    authorizationSource: { providerAuthorizations: async () => ({}) },
     listConnections: (ownerUserId) => connections.listConnections(ownerUserId),
     secretVault: new AesGcmSecretVault(
       new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
     ),
     computerApps: hub,
     computerUse: options.withoutComputerUse ? null : computerUse,
-    credentialMaterializer: {
-      materializeForAdapter: vi.fn(),
-      markAdapterAuthorizationRequired: vi.fn(),
-    },
     dataDirectory,
     definitions,
     // Only the Mac and the phone here have streams; the agents' own Runner
@@ -5176,7 +5173,6 @@ async function createWorld(
     computerUseVersion: () => macVersion.value,
     ...(options.computerReplTime ? { computerReplTime: options.computerReplTime } : {}),
     mcpImageContent: async () => imageGate.on,
-    mcpOauth: { providerFor: vi.fn() },
     onDeploymentEvent: () => undefined,
     onConnectionsChanged: () => {
       void persistence
@@ -5327,11 +5323,11 @@ async function createWorld(
 let mcpRequestId = 0;
 
 async function openGateway(
-  platform: IntegrationPlatformTestHarness,
+  platform: DeviceServicesTestHarness,
   userId: UserId,
   run: Awaited<ReturnType<typeof startRun>>,
   trigger: boolean,
-  definitions: readonly IntegrationDefinition[],
+  _definitions: readonly IntegrationDefinition[],
 ) {
   const runScope = run.claims;
   const triggerScope = {
@@ -5350,9 +5346,6 @@ async function openGateway(
     toolContractVersion: 5 as const,
   };
   const service = createIntegrationMcpFixture({
-    definitions,
-
-    onEvent: () => undefined,
     platform,
     publicUrl: new URL("https://opensteer.example.test"),
     runTokens: {

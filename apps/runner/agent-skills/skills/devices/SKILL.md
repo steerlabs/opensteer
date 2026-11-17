@@ -29,7 +29,7 @@ instead of building another.
    state such as pairing credentials in `PLUGIN_DATA`.
 5. **Register it** with `local_server_add`: a specific name, the computer that reaches the device,
    the folder, the launch, secret names and the device. The person reviews the exact launch on that
-   computer; if its tools then say access is needed, ask with `integration_request`. Its tools appear
+   computer; if its tools then say access is needed, ask with `app_access_request` and `server`. Its tools appear
    in `plugin_search` under that name, such as `tools["office-light"].on`; call them with
    `plugin_call` or `plugin_execute` by the exact path search returns.
 6. **Codes the device shows,** such as a TV's pairing code, never go through chat. A server tool asks

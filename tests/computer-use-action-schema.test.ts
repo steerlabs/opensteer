@@ -2,7 +2,7 @@ import { validateJsonSchema } from "../packages/shared/src/jsonSchemaValidation.
 import { LoginTextSchema } from "../packages/protocol/src/password-sign-in.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { describe, expect, it } from "vitest";
-import { getIntegrationDefinition } from "../packages/integration-catalog/src/index.js";
+import { getDeviceDefinition as getIntegrationDefinition } from "../packages/integration-catalog/src/devices.js";
 import { parseComputerAppConfig } from "../packages/integration-core/src/computer-app.js";
 import { AndroidPhoneActionSchema } from "../packages/protocol/src/android-phone.js";
 import { ComputerUseActionSchema } from "../packages/protocol/src/computer-use.js";

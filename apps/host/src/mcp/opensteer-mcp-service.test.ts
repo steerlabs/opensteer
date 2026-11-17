@@ -100,7 +100,7 @@ function fixture() {
     opensteer_plugin_install: vi.fn(async () => {
       throw new Error("Unexpected effect");
     }),
-    integration_search: vi.fn(async () => ({ total: 0, nextCursor: null })),
+    computer_apps: vi.fn(async () => ({ total: 0, nextCursor: null })),
   } as unknown as AgentToolHandlers;
   const changes = new Set<
     Parameters<import("@opensteer/orchestration").RealtimeHub["observe"]>[0]
@@ -231,7 +231,6 @@ describe("Opensteer MCP spine", () => {
     "live",
     "other-run",
     "integration",
-    "program",
   ] as const)("keeps non-held results and pending guidance compatible (%s)", async (state) => {
     const f = await httpFixture();
     const requestId = createId("request");
@@ -252,8 +251,7 @@ describe("Opensteer MCP spine", () => {
         replayed: false,
       }),
       browser_profile_request: async () => pending,
-      integration_request: async () => pending,
-      integration_call: async () => ({
+      computer_use: async () => ({
         content: [{ type: "text", text: JSON.stringify(pending) }],
         structuredContent: pending,
       }),
@@ -285,7 +283,7 @@ describe("Opensteer MCP spine", () => {
       const response = await fetch(f.url, {
         method: "POST",
         headers: {
-          authorization: state === "program" ? "Bearer program" : "Bearer run",
+          authorization: "Bearer run",
           accept: "application/json, text/event-stream",
           "content-type": "application/json",
           "mcp-session-id": sessionId,
@@ -296,20 +294,9 @@ describe("Opensteer MCP spine", () => {
           id: "pending-call",
           method: "tools/call",
           params:
-            state === "program"
-              ? {
-                  name: "integration_request",
-                  arguments: { catalog: "google-gmail", access: "read", reason: "Read email" },
-                }
-              : state === "integration"
-                ? {
-                    name: "integration_call",
-                    arguments: {
-                      operation: "issues.list",
-                      arguments: {},
-                    },
-                  }
-                : state === "settled"
+            state === "integration"
+              ? { name: "computer_use", arguments: { code: "print(1)" } }
+              : state === "settled"
                   ? {
                       name: "saved_login_request",
                       arguments: { site: "example.com", reason: "Check email" },
@@ -666,7 +653,7 @@ describe("Opensteer MCP spine", () => {
       // Every Run lists knowledge; its handlers decide per call whether the owner may use it.
       expect(names).toEqual(toolsFor({ ...f.run, knowledge: true }).map((t) => t.name));
       expect(names).toContain("opensteer_task_wait");
-      expect(names).toContain("integration_call");
+      expect(names).toContain("computer_use");
       expect(names).toContain("opensteer_task_delegate");
       expect(client.getServerVersion()?.name).toBe("opensteer");
       expect(client.getInstructions()).toBeUndefined();
@@ -951,7 +938,7 @@ describe("Opensteer MCP spine", () => {
     try {
       const names = (await client.listTools(undefined, { timeout: 5000 })).tools.map((t) => t.name);
       expect(names).toContain("opensteer_task_delegate");
-      expect(names).toContain("integration_search");
+      expect(names).toContain("computer_apps");
       expect(names).toContain("opensteer_task_wait");
       expect(client.getInstructions()).toBeUndefined();
       expect(names).not.toContain("computer_use");
@@ -1178,11 +1165,11 @@ describe("Opensteer MCP spine", () => {
   });
   it("reports a result outside its contract as the Host's failure, not the arguments'", async () => {
     const f = await httpFixture();
-    f.handlers.integration_search = async () => ({ total: "many" }) as never;
+    f.handlers.computer_apps = async () => ({ total: "many" }) as never;
     const client = await connect(f.url, "run");
     try {
       const result = await client.callTool(
-        { name: "integration_search", arguments: { query: "notes" } },
+        { name: "computer_apps", arguments: { query: "notes" } },
         undefined,
         { timeout: 5000 },
       );

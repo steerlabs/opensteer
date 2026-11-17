@@ -24,8 +24,6 @@
     "@opensteer/control-plane-protocol": "workspace:*",
     "@opensteer/core": "workspace:*",
     "@opensteer/deployment-authority": "workspace:*",
-    "@opensteer/integration-auth": "workspace:*",
-    "@opensteer/integration-catalog": "workspace:*",
     "@opensteer/integration-core": "workspace:*",
     "@opensteer/protocol": "workspace:*",
     "@opensteer/shared": "workspace:*",
@@ -35,6 +33,7 @@
     "jose": "catalog:",
     "kysely": "catalog:",
     "nanostores": "catalog:",
+    "oauth4webapi": "3.8.5",
     "pg": "catalog:",
     "zod": "catalog:"
   },

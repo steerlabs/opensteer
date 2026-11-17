@@ -104,17 +104,12 @@ integration("MCP servers on a computer", () => {
       closers.unshift(() => computer.close());
 
       // 1. Installed, pinned to the Mac, and nothing started anywhere yet.
-      const installed = await testRpcData(
-        host.origin,
-        "commands.dispatch",
-        {
-          idempotencyKey: "local-mcp-install",
-          input: { directory: fixture.plugin, runnerId: computer.runnerId },
-          type: "plugin.install",
-        },
-        { headers: host.ownerHeaders },
-      );
-      if (installed.type !== "plugin.install") throw new Error("Mismatch");
+      await host.runtime.localServers.installPackage({
+        actorUserId: host.ownerId,
+        directory: fixture.plugin,
+        requestId: "local-mcp-install",
+        runnerId: computer.runnerId,
+      });
       const server = await serverRow(host);
       expect(server.transport).toMatchObject({ runnerId: computer.runnerId, type: "runner" });
       expect(server.status).toBe("needs-attention");
@@ -331,22 +326,12 @@ integration("MCP servers on a computer", () => {
       // 10. Installed again as it was, twice over, the second while the first
       // is still being listed: still approved, and listed again now.
       for (const key of ["local-mcp-reinstall", "local-mcp-reinstall-again"]) {
-        await testRpcData(
-          host.origin,
-          "commands.dispatch",
-          {
-            idempotencyKey: key,
-            input: { directory: fixture.plugin, runnerId: computer.runnerId },
-            type: "plugin.update",
-            pluginId: (
-              await host.store.database
-                .selectFrom("integrationInstallations")
-                .select("pluginId")
-                .executeTakeFirstOrThrow()
-            ).pluginId!,
-          },
-          { headers: host.ownerHeaders },
-        );
+        await host.runtime.localServers.installPackage({
+          actorUserId: host.ownerId,
+          directory: fixture.plugin,
+          requestId: key,
+          runnerId: computer.runnerId,
+        });
       }
       await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
       expect(said(await call("echo", { text: "reinstalled" }))).toBe("echo: reinstalled");
@@ -362,22 +347,12 @@ integration("MCP servers on a computer", () => {
       const previous = Number(said(await call("pid", {})));
       expect(alive(previous)).toBe(true);
       await fixture.changeLaunch();
-      await testRpcData(
-        host.origin,
-        "commands.dispatch",
-        {
-          idempotencyKey: "local-mcp-changed",
-          input: { directory: fixture.plugin, runnerId: computer.runnerId },
-          type: "plugin.update",
-          pluginId: (
-            await host.store.database
-              .selectFrom("integrationInstallations")
-              .select("pluginId")
-              .executeTakeFirstOrThrow()
-          ).pluginId!,
-        },
-        { headers: host.ownerHeaders },
-      );
+      await host.runtime.localServers.installPackage({
+        actorUserId: host.ownerId,
+        directory: fixture.plugin,
+        requestId: "local-mcp-changed",
+        runnerId: computer.runnerId,
+      });
       await waitForCondition(async () => !alive(previous), 15_000);
       const changed = await serverRow(host);
       const changedLaunch = (changed.transport as { readonly launch: LocalMcpLaunch }).launch;
@@ -396,16 +371,11 @@ integration("MCP servers on a computer", () => {
       // 12. Uninstalled: nothing waits on the Mac and nothing runs.
       const last = Number(said(await call("pid", {})));
       expect(alive(last)).toBe(true);
-      await testRpcData(
-        host.origin,
-        "commands.dispatch",
-        {
-          idempotencyKey: "local-mcp-uninstall",
-          installationId: server.installationId,
-          type: "integration.uninstall",
-        },
-        { headers: host.ownerHeaders },
-      );
+      await host.runtime.localServers.uninstall({
+        actorUserId: host.ownerId,
+        installationId: server.installationId,
+        requestId: "local-mcp-uninstall",
+      });
       await waitForCondition(async () => !alive(last), 15_000);
       const leftover = await host.store.database
         .selectFrom("computerAppSetupRequests")
@@ -474,20 +444,17 @@ integration("MCP servers on a computer", () => {
           { idempotencyKey: `${key}:${randomUUID()}`, ...command } as never,
           { headers: host.ownerHeaders },
         );
-      const pluginId = async () =>
-        (
-          await host.store.database
-            .selectFrom("integrationInstallations")
-            .select("pluginId")
-            .executeTakeFirstOrThrow()
-        ).pluginId!;
       const started = (value: string) =>
         waitForCondition(async () => (await readText(fixture.seenFile)) === value, 30_000);
 
-      await dispatch("install", {
-        input: { directory: fixture.plugin, runnerId: computer.runnerId },
-        type: "plugin.install",
-      });
+      const install = (key: string, runnerId?: typeof computer.runnerId) =>
+        host.runtime.localServers.installPackage({
+          actorUserId: host.ownerId,
+          directory: fixture.plugin,
+          requestId: `${key}:${randomUUID()}`,
+          runnerId,
+        });
+      await install("install", computer.runnerId);
       const server = await serverRow(host);
       const launch = (server.transport as { readonly launch: LocalMcpLaunch }).launch;
       expect(launch).toMatchObject({
@@ -538,7 +505,7 @@ integration("MCP servers on a computer", () => {
         .executeTakeFirstOrThrow();
       expect(sealed.encryptedPayload.includes("hunter2")).toBe(false);
       const listed = JSON.stringify(
-        await testRpcData(host.origin, "plugin.list", {}, { headers: host.ownerHeaders }),
+        await testRpcData(host.origin, "integration.platform.get", {}, { headers: host.ownerHeaders }),
       );
       expect(listed).not.toContain("hunter2");
       expect(listed).not.toContain("encryptedPayload");
@@ -582,7 +549,7 @@ integration("MCP servers on a computer", () => {
       expect((await serverRow(host)).statusDetail).not.toContain("leaky-hunter3");
       expect(
         JSON.stringify(
-          await testRpcData(host.origin, "plugin.list", {}, { headers: host.ownerHeaders }),
+          await testRpcData(host.origin, "integration.platform.get", {}, { headers: host.ownerHeaders }),
         ),
       ).not.toContain("leaky-hunter3");
       await dispatch("unleak", {
@@ -594,11 +561,7 @@ integration("MCP servers on a computer", () => {
 
       // A new launch is asked about again; leaving the field blank keeps the value.
       await fixture.changeLaunch();
-      await dispatch("update", {
-        input: { directory: fixture.plugin },
-        pluginId: await pluginId(),
-        type: "plugin.update",
-      });
+      await install("update");
       if (personal) {
         await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
         expect((await serverRow(host)).transport).toMatchObject({ runnerId: computer.runnerId });
@@ -614,11 +577,7 @@ integration("MCP servers on a computer", () => {
           .selectFrom("pluginVersions")
           .select("id")
           .execute();
-        await dispatch("unchanged", {
-          input: { directory: fixture.plugin },
-          pluginId: await pluginId(),
-          type: "plugin.update",
-        });
+        await install("unchanged");
         expect(await serverRow(host)).toEqual(before);
         expect(
           await host.store.database.selectFrom("pluginVersions").select("id").execute(),
@@ -649,11 +608,7 @@ integration("MCP servers on a computer", () => {
             ? { secrets: { camera: names.map((name) => ({ name, title: name })) } }
             : {};
           await writeFile(path, JSON.stringify(manifest));
-          await dispatch("declare", {
-            input: { directory: fixture.plugin },
-            pluginId: await pluginId(),
-            type: "plugin.update",
-          });
+          await install("declare");
         };
         await declare(["CAMERA_PASSWORD", "EXTRA_PASSWORD"]);
         let next = await waitingRequest(host, server.id);
@@ -692,11 +647,7 @@ integration("MCP servers on a computer", () => {
         };
         mcp.mcpServers.second = mcp.mcpServers.camera;
         await writeFile(mcpPath, JSON.stringify(mcp));
-        await dispatch("new-server", {
-          input: { directory: fixture.plugin },
-          pluginId: await pluginId(),
-          type: "plugin.update",
-        });
+        await install("new-server");
         const second = await host.store.database
           .selectFrom("integrationServers")
           .selectAll()
@@ -708,18 +659,15 @@ integration("MCP servers on a computer", () => {
           decision: "deny",
           setupRequestId: secondRequest.id,
         });
-        await dispatch("reinstall-declined", {
-          input: { directory: fixture.plugin },
-          pluginId: await pluginId(),
-          type: "plugin.update",
-        });
+        await install("reinstall-declined");
         expect((await waitingRequest(host, second.id)).id).not.toBe(secondRequest.id);
       }
 
       // Uninstalled: its secrets go with it.
-      await dispatch("uninstall", {
+      await host.runtime.localServers.uninstall({
+        actorUserId: host.ownerId,
         installationId: server.installationId,
-        type: "integration.uninstall",
+        requestId: "uninstall",
       });
       expect(
         await host.store.database

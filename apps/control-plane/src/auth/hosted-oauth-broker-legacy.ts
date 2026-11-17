@@ -1,7 +1,12 @@
-import { integrationDefinitions } from "@opensteer/integration-catalog";
 import type { IntegrationDefinition } from "@opensteer/integration-core";
 import { authorizationDigest } from "@opensteer/integration-core/authorization-digest";
 import { ControlPlaneError } from "../server/errors.js";
+
+/**
+ * The catalog definitions old Host requests named. The catalog no longer ships any service
+ * definition, so every catalog-qualified request is refused; only plugin sign-in remains.
+ */
+const integrationDefinitions: readonly IntegrationDefinition[] = [];
 
 export function legacyOAuthDefinition(provider: string, definitionId: string) {
   return integrationDefinitions.find(

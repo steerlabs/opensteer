@@ -105,7 +105,6 @@ export function registerPluginOAuthRoutes(
   registerOAuthCallbackRoute(app, {
     attemptIdSchema: IntegrationAuthorizationAttemptIdSchema,
     authenticator,
-    kind: "provider",
     path: "/v1/plugin-oauth/callback",
     prepare: () => null,
     identify: (state) =>

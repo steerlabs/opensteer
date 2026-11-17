@@ -20,9 +20,9 @@ Never mark yourself Done.
 2. For each listed task, call `opensteer_task_read` with its `taskId` and `limit` of its count,
    at most 100. Messages come newest first; page with `cursor` set to `nextCursor` until you reach
    the listed first time. A call counts: the Voice task holds what the person said.
-3. Read the mail, Messages and calendar connected to the owner: find mail with
-   `integration_search` and read it with `integration_call`; Messages and Calendar on the person's
-   devices are plugin tools, found with `plugin_search` and read with `plugin_call`. Keep pages small and stop at your saved
+3. Read the mail, Messages and calendar connected to the owner: mail plugins and the person's
+   device Messages and Calendar are plugin tools, found with `plugin_search` and read with
+   `plugin_call`. Keep pages small and stop at your saved
    positions. Opensteer only wakes you for them every two hours when nothing else is new.
 4. Decide, using the per-person skill, and leave out anything already reported, unless it changed,
    and anything `memory/forgotten.md` covers. Most wakes need nothing.

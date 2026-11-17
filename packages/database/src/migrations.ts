@@ -93,6 +93,74 @@ alter table threads drop column if exists specialist_id;
 alter table plugin_versions drop column if exists specialist_manifest;
 delete from plugin_owner_settings where target->>'kind' = 'specialist';
 `;
+/**
+ * Service integrations are gone: provider applications, their OAuth sources and MCP OAuth
+ * credentials, every installation that is not a device app or a local server, and the Requests
+ * only they could answer. Computer, messaging and local-server rows stay. Databases created from
+ * the current baseline never had the dropped storage.
+ */
+export const dropServiceIntegrationsMigrationName = "0031_drop_service_integrations_contract";
+const DROP_SERVICE_INTEGRATIONS_SQL = `
+create temporary table service_servers on commit drop as
+  select id from integration_servers where transport->>'type' not in ('computer', 'runner');
+create temporary table service_installations on commit drop as
+  select id from integration_installations installation
+    where source_kind in ('proposed', 'remote-mcp')
+      or (plugin_id is null and not exists (
+        select 1 from integration_servers server
+          where server.installation_id = installation.id
+            and server.id not in (select id from service_servers)));
+create temporary table service_connections on commit drop as
+  select id, credential_id from integration_connections
+    where connection_kind in ('provider-account', 'mcp-oauth');
+create temporary table service_requests on commit drop as
+  select id from requests where kind in ('integration.install', 'integration.input')
+  union select request_id from integration_request_details
+    where installation_id in (select id from service_installations)
+      or requested_server_id in (select id from service_servers)
+      or requested_connection_id in (select id from service_connections)
+      or (installation_id is null and manifest->>'kind' = 'proposal');
+delete from request_continuations where request_id in (select id from service_requests);
+delete from requests where id in (select id from service_requests);
+
+delete from integration_grants where connection_id in (select id from service_connections)
+  or installation_id in (select id from service_installations);
+delete from integration_tools where connection_id in (select id from service_connections)
+  or server_id in (select id from service_servers)
+  or server_id in (select id from integration_servers
+    where installation_id in (select id from service_installations));
+delete from integration_tool_definitions where connection_id in (select id from service_connections)
+  or server_id in (select id from service_servers)
+  or server_id in (select id from integration_servers
+    where installation_id in (select id from service_installations));
+delete from integration_connections where id in (select id from service_connections);
+delete from credentials where id in (select credential_id from service_connections);
+delete from integration_server_secrets where server_id in (select id from service_servers)
+  or server_id in (select id from integration_servers
+    where installation_id in (select id from service_installations));
+delete from integration_servers where id in (select id from service_servers)
+  or installation_id in (select id from service_installations);
+delete from integration_installations where id in (select id from service_installations);
+delete from plugin_owner_settings where target->>'kind' = 'service';
+
+drop table if exists mcp_oauth_credentials;
+drop table if exists integration_application_source_defaults;
+alter table integration_connections
+  drop column if exists provider_application_id,
+  drop column if exists application_source,
+  drop column if exists auth_method_id,
+  drop column if exists authorization_digest,
+  drop column if exists granted_scopes;
+drop table if exists integration_provider_applications;
+alter table integration_connections drop constraint if exists integration_connections_connection_kind_check;
+alter table integration_connections add constraint integration_connections_connection_kind_check
+  check (connection_kind in ('channel', 'computer'));
+alter table integration_installations drop column if exists adapter_snapshot;
+alter table integration_installations drop constraint if exists integration_installations_source_kind_check;
+alter table integration_installations add constraint integration_installations_source_kind_check
+  check (source_kind in ('plugin', 'built-in'));
+alter table integration_auth_attempts drop column if exists result_connection_id;
+`;
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
@@ -338,6 +406,11 @@ export function migrationProvider(): MigrationProvider {
             ); CREATE INDEX plugin_oauth_records_expiry ON plugin_oauth_records(expires_at) WHERE expires_at IS NOT NULL;`,
               )
               .execute(database);
+          },
+        },
+        [dropServiceIntegrationsMigrationName]: {
+          async up(database) {
+            await sql.raw(DROP_SERVICE_INTEGRATIONS_SQL).execute(database);
           },
         },
       };

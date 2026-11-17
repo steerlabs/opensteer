@@ -22,10 +22,10 @@ import { settings } from "../mcp/tool-access.js";
 import { notifyMachinesChanged } from "../shell/machine-access-events.js";
 import { harnessView, requireMachineAccessManagement } from "./authority.js";
 import {
-  executeIntegrationAdministration,
-  isIntegrationAdministrationCommand,
+  executeDeviceAdministration,
+  isDeviceAdministrationCommand,
   type AdministrationActor,
-} from "../integrations/integration-administration.js";
+} from "../devices/device-administration.js";
 export type AdministrationCaller =
   | AgentCaller
   | ({
@@ -50,7 +50,7 @@ export type AdministrationDependencies = Pick<
   readonly publishDeploymentEvent: (event: import("@opensteer/core").AgentEvent) => void;
   readonly integrations: Pick<
     HostServerDependencies["integrations"],
-    "devices" | "localServers" | "platform" | "service" | "continuations"
+    "devices" | "localServerRegistry" | "continuations"
   >;
 };
 const coreTypes = [
@@ -85,7 +85,7 @@ export type AdministrationCommand =
         type: "browser.site.remove" | "channel.binding.revoke" | "channel.connection.status.set";
       }
     >
-  | Parameters<typeof executeIntegrationAdministration>[2];
+  | Parameters<typeof executeDeviceAdministration>[2];
 export function isAdministrationCommand(
   command: HostApiCommand,
 ): command is CoreAdministrationCommand {
@@ -240,18 +240,6 @@ export class AdministrationService {
             notice: null,
             revokedUpstream: false,
           };
-        if (command.type === "integration.uninstall") {
-          const removed = z
-            .object({
-              cancelledRequestIds: z.array(z.string()),
-              removedConnectionIds: z.array(z.string()),
-            })
-            .parse(result);
-          fields = {
-            cancelledRequests: removed.cancelledRequestIds.length,
-            removedConnections: removed.removedConnectionIds.length,
-          };
-        }
         if (command.type === "browser.profile.delete")
           fields = z
             .object({
@@ -278,13 +266,11 @@ export class AdministrationService {
   ): Promise<HostApiCommandOutput> {
     const { userId } = actor;
     const dependencies = this.dependencies;
-    if (isIntegrationAdministrationCommand(command)) {
-      const result = await executeIntegrationAdministration(
+    if (isDeviceAdministrationCommand(command)) {
+      const result = await executeDeviceAdministration(
         {
           devices: dependencies.integrations.devices,
-          localServers: dependencies.integrations.localServers,
-          platform: dependencies.integrations.platform,
-          integrations: dependencies.integrations.service,
+          localServers: dependencies.integrations.localServerRegistry,
         },
         actor,
         command,

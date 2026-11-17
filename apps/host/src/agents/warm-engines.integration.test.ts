@@ -247,10 +247,7 @@ integration("Warm engines", () => {
       };
       await vi.waitFor(
         async () => {
-          expect((await settings.detail(workspace.ownerId, target)).contents).toContainEqual({
-            name: "a6-private-skill",
-            kind: "skill",
-          });
+          expect((await settings.row(workspace.ownerId, target)).target).toEqual(target);
         },
         {
           timeout: 5000,

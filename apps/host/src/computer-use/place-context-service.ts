@@ -6,7 +6,8 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import type { IntegrationStore, OpensteerStore } from "@opensteer/database";
+import type { OpensteerStore } from "@opensteer/database";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
 import { computerAppIdentitiesEqual } from "@opensteer/integration-core/computer-app";
 import type { BrowserService } from "../browser/browser-service.js";
 import type { DeviceService } from "../devices/device-service.js";
@@ -17,7 +18,11 @@ type ComputerUseInventory = Awaited<ReturnType<ComputerUseService["eligibleInven
 interface PlaceContextDependencies {
   readonly browser: Pick<BrowserService, "assertPagesUsable">;
   readonly computerUse: Pick<ComputerUseService, "eligibleInventory" | "sessionsForRunner">;
-  readonly connections: Pick<IntegrationStore, "listConnections">;
+  readonly connections: {
+    readonly listConnections: (
+      ownerUserId: UserId,
+    ) => Promise<readonly IntegrationConnectionSummary[]>;
+  };
   readonly integrations: Pick<DeviceService, "listCallableTools">;
   readonly store: Pick<OpensteerStore, "hasHumanIncludedPlace">;
 }

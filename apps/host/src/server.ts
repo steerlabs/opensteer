@@ -281,27 +281,12 @@ import {
   type RequestResponseVault,
 } from "./identity/request-response-vault.js";
 import type { IntegrationAuthAttemptLifecycle } from "./access/integration-auth-attempt-service.js";
-import {
-  createIntegrationAuthorizationRpcHandlers,
-  registerIntegrationAuthorizationRoutes,
-  type IntegrationAuthorizationRpcOptions,
-} from "./access/integration-authorization-routes.js";
-import type { IntegrationDashboardService } from "./integrations/integration-dashboard-service.js";
-import {
-  createIntegrationPlatformRpcHandlers,
-  registerIntegrationPlatformRoutes,
-  type IntegrationPlatformRpcOptions,
-} from "./integrations/integration-platform-routes.js";
-import type { IntegrationPlatformService } from "./integrations/integration-platform-service.js";
+import { registerIntegrationAuthorizationRoutes } from "./access/integration-authorization-routes.js";
 import type { DeviceService } from "./devices/device-service.js";
+import type { AccessRequests } from "./devices/access-requests.js";
+import { createDeviceRpcHandlers, type DeviceRpcOptions } from "./devices/device-routes.js";
 import type { LocalServerService } from "./local-servers/local-server-service.js";
-import {
-  createIntegrationRpcHandlers,
-  registerIntegrationRoutes,
-  type IntegrationRpcOptions,
-} from "./integrations/integration-routes.js";
-import type { IntegrationService } from "./integrations/integration-service.js";
-import type { McpOAuthService } from "./integrations/mcp-oauth-service.js";
+import type { LocalServerRegistry } from "./local-servers/local-server-registry.js";
 import type { LocalBootstrapService } from "./runtime/local-bootstrap.js";
 import {
   projectMachines,
@@ -430,14 +415,14 @@ export interface HostServerDependencies {
   readonly discovery: HostDiscoveryEnvelope;
   readonly egress: EgressService;
   readonly integrations: {
+    readonly access: AccessRequests;
     readonly authAttempts: IntegrationAuthAttemptLifecycle;
     readonly continuations: ContinuationService;
-    readonly dashboard: IntegrationDashboardService;
+    readonly definitions: DeviceRpcOptions["definitions"];
     readonly devices: DeviceService;
+    readonly listConnections: DeviceRpcOptions["listConnections"];
     readonly localServers: LocalServerService;
-    readonly mcpOauth: McpOAuthService;
-    readonly platform: IntegrationPlatformService;
-    readonly service: IntegrationService;
+    readonly localServerRegistry: LocalServerRegistry;
     readonly skills: import("./local-servers/plugin-package-service.js").PluginPackageService;
   };
   /** Shared with Runner registration so live sign-in attempts resume on reconnect. */
@@ -489,9 +474,7 @@ export async function createHostServer(
           path.startsWith("/media/") ||
           path.startsWith("/hooks/v1/plugins/") ||
           path.startsWith("/v1/integration-authorizations/") ||
-          path === "/v1/plugin-oauth/callback" ||
-          path.startsWith("/v1/integrations/oauth/callback/") ||
-          path === "/v1/integration-platform/mcp-oauth/callback"
+          path === "/v1/plugin-oauth/callback"
         );
       },
     }),
@@ -657,40 +640,24 @@ export async function createHostServer(
     currentRoute: async () =>
       (await dependencies.personalRemoteAccess?.service.status())?.route ?? null,
   };
-  const integrationAuthorizationRpcOptions: IntegrationAuthorizationRpcOptions = {
+  registerIntegrationAuthorizationRoutes(app, {
     ...(dependencies.pluginOAuth ? { plugins: dependencies.pluginOAuth } : {}),
     attempts: dependencies.integrations.authAttempts,
     authenticator: dependencies.authenticator,
     deploymentId: dependencies.discovery.document.deploymentId,
-    integrations: dependencies.integrations.service,
-    mcpOauth: dependencies.integrations.mcpOauth,
-  };
-  registerIntegrationAuthorizationRoutes(app, integrationAuthorizationRpcOptions);
+  });
   if (dependencies.pluginOAuth)
     registerPluginOAuthRoutes(app, dependencies.pluginOAuth, dependencies.authenticator);
-  const integrationRpcOptions: IntegrationRpcOptions = {
+  const deviceRpcOptions: DeviceRpcOptions = {
     pluginsChanged: (viewers) =>
       dependencies.realtime.sendToUsers(viewers, { type: "host.plugins-changed" }),
     authenticator: dependencies.authenticator,
-    dashboard: dependencies.integrations.dashboard,
-    deploymentId: dependencies.discovery.document.deploymentId,
+    definitions: dependencies.integrations.definitions,
     devices: dependencies.integrations.devices,
-    integrations: dependencies.integrations.service,
-    platform: dependencies.integrations.platform,
-  };
-  registerIntegrationRoutes(app, integrationRpcOptions);
-  const integrationPlatformRpcOptions: IntegrationPlatformRpcOptions = {
-    pluginsChanged: (viewers) =>
-      dependencies.realtime.sendToUsers(viewers, { type: "host.plugins-changed" }),
-    authenticator: dependencies.authenticator,
-    dashboard: dependencies.integrations.dashboard,
-    deploymentId: dependencies.discovery.document.deploymentId,
-    devices: dependencies.integrations.devices,
+    listConnections: dependencies.integrations.listConnections,
     localServers: dependencies.integrations.localServers,
-    platform: dependencies.integrations.platform,
-    mcpOauth: dependencies.integrations.mcpOauth,
+    localServerRegistry: dependencies.integrations.localServerRegistry,
   };
-  registerIntegrationPlatformRoutes(app, integrationPlatformRpcOptions);
   registerTriggerRoutes(app, dependencies.authenticator, dependencies.triggers.service);
   registerTriggerCdpBridge(app, dependencies.browser, dependencies.triggers.controlTokens);
   registerWatchCdpBridge(app, dependencies.browser, dependencies.triggers.watchBrowserTokens);
@@ -1715,7 +1682,7 @@ export async function createHostServer(
       return administration.execute({ kind: "person", userId }, command, context.afterResponse);
     switch (command.type) {
       case "settings.plugin.enabled.set": {
-        const result = await dependencies.integrations.platform.store.settings.setEnabled(
+        const result = await dependencies.integrations.devices.store.settings.setEnabled(
           userId,
           command,
         );
@@ -1945,9 +1912,6 @@ export async function createHostServer(
                   });
                 await dependencies.pluginRequests.respond(input);
                 return;
-              case "integration.input":
-                await dependencies.integrations.localServers.inputRequests.respond(input);
-                return;
               // A sign-in is answered by `browser.sign-in.respond`, which can
               // deliver it; a saved-password sign-in is approved only on its
               // Mac and declined with its own command; a copy Request can no
@@ -1969,9 +1933,8 @@ export async function createHostServer(
                   dependencies.integrations.continuations.notify();
                 return;
               }
-              case "integration.access":
-              case "integration.install": {
-                const result = await dependencies.integrations.platform.resolveRequest(input);
+              case "integration.access": {
+                const result = await dependencies.integrations.access.resolve(input);
                 if (result.request.status === "fulfilled")
                   dependencies.integrations.continuations.notify();
                 return;
@@ -2557,12 +2520,8 @@ export async function createHostServer(
       identityRpcHandlers,
       createTriggerRpcHandlers(dependencies.triggers.service),
       dependencies.triggers.service,
-      createIntegrationRpcHandlers(integrationRpcOptions),
-      integrationRpcOptions,
-      createIntegrationAuthorizationRpcHandlers(integrationAuthorizationRpcOptions),
-      integrationAuthorizationRpcOptions,
-      createIntegrationPlatformRpcHandlers(integrationPlatformRpcOptions),
-      integrationPlatformRpcOptions,
+      createDeviceRpcHandlers(deviceRpcOptions),
+      deviceRpcOptions,
       createChannelRpcHandlers(dependencies.channels.service),
       dependencies.channels.service,
       createBrowserSourceRpcHandlers(browserSourceRpcOptions),

@@ -75,10 +75,11 @@ it("queues plugin cleanup atomically, gates old Runners, acknowledges and replay
         },
         { headers: host.ownerHeaders },
       );
-    await dispatch({
-      idempotencyKey: globalThis.crypto.randomUUID(),
-      type: "plugin.install",
-      input: { directory: plugin, runnerId: capable.runnerId },
+    await host.runtime.localServers.installPackage({
+      actorUserId: host.ownerId,
+      directory: plugin,
+      requestId: globalThis.crypto.randomUUID(),
+      runnerId: capable.runnerId,
     });
     const installed = await host.store.database
       .selectFrom("plugins")
@@ -107,10 +108,10 @@ it("queues plugin cleanup atomically, gates old Runners, acknowledges and replay
     const hostData = join(host.config.dataDirectory, "plugins", "data", installed.id);
     await mkdir(hostData, { recursive: true });
     await writeFile(join(hostData, "pairing"), "host-secret");
-    await dispatch({
-      idempotencyKey: globalThis.crypto.randomUUID(),
-      type: "integration.uninstall",
+    await host.runtime.localServers.uninstall({
+      actorUserId: host.ownerId,
       installationId: server.installationId,
+      requestId: globalThis.crypto.randomUUID(),
     });
     expect(
       await host.store.database

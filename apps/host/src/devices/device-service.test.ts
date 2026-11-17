@@ -10,9 +10,9 @@ import {
   computerCallable,
   integrationRequest,
   listedTool,
-} from "../integrations/integration-platform-service.test-support.js";
+} from "./device-service.test-support.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { type IntegrationPlatformTestHarness } from "../integrations/integration-platform.test-support.js";
+import { type DeviceServicesTestHarness } from "./device-services.test-support.js";
 import { createIntegrationMcpFixture } from "../mcp/integration-fixture.test-support.js";
 import { createServer } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -28,7 +28,7 @@ import {
   type IntegrationServer,
 } from "@opensteer/integration-core";
 import { computerAppTools } from "@opensteer/integration-core/computer-app-tools";
-import { computerAppIntegrations } from "@opensteer/integration-catalog";
+import { computerAppIntegrations } from "@opensteer/integration-catalog/devices";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import {
   ComputerAppNotOfferedError,
@@ -52,7 +52,7 @@ import {
 } from "@opensteer/protocol";
 
 import { describe, expect, it, vi } from "vitest";
-import { IntegrationAuthorizationRequiredError } from "../integrations/integration-platform-service.js";
+import { IntegrationAuthorizationRequiredError } from "./integration-authorization-required.js";
 import type {
   ComputerAppHub,
   ComputerAppInvokeOutcome,
@@ -71,7 +71,7 @@ import type { ToolCaller } from "../agents/tool-caller.js";
 
 usePlatformFixtures();
 
-describe("IntegrationPlatformService computer connections", () => {
+describe("DeviceService computer connections", () => {
   it("refuses an offline create but allows an offline access change", async () => {
     const runnerId = createId("runner");
     const installed = {
@@ -109,7 +109,6 @@ describe("IntegrationPlatformService computer connections", () => {
       },
     );
     const service = platform({
-      adapters: [],
       computerApps: {
         appStatus: vi.fn(() => null),
         attached: vi.fn(() => false),
@@ -162,7 +161,6 @@ describe("IntegrationPlatformService computer connections", () => {
     });
     const onDeploymentEvent = vi.fn();
     const service = platform({
-      adapters: [],
       computerApps: {
         appStatus: vi.fn(),
         attached: vi.fn(),
@@ -200,7 +198,7 @@ describe("IntegrationPlatformService computer connections", () => {
   });
 });
 
-describe("IntegrationPlatformService computer invocation", () => {
+describe("DeviceService computer invocation", () => {
   function invocationFixture(input: {
     readonly connectionAccess?: "read" | "read-write";
     readonly grantAccess?: "read" | "read-write";
@@ -246,7 +244,6 @@ describe("IntegrationPlatformService computer invocation", () => {
     });
     const listCallableTools = vi.fn(async () => [callable]);
     const service = platform({
-      adapters: [],
       computerApps: {
         appStatus: vi.fn(() => null),
         attached: vi.fn(() => input.moduleAttached ?? false),
@@ -562,7 +559,6 @@ describe("IntegrationPlatformService computer invocation", () => {
         }),
       };
       const service = platform({
-        adapters: [],
         computerApps: {
           appStatus: vi.fn(() => computerStatus()),
           attached: vi.fn(() => true),
@@ -632,7 +628,7 @@ describe("IntegrationPlatformService computer invocation", () => {
   );
 });
 
-describe("IntegrationPlatformService computer discovery", () => {
+describe("DeviceService computer discovery", () => {
   it.each([
     [
       false,
@@ -689,7 +685,6 @@ describe("IntegrationPlatformService computer discovery", () => {
         },
       ];
       const service = platform({
-        adapters: [],
         isRunnerConnected: vi.fn(() => runnerConnected),
         computerApps: {
           appStatus: vi.fn(() => status),
@@ -770,7 +765,6 @@ describe("IntegrationPlatformService computer discovery", () => {
       ),
     };
     const service = platform({
-      adapters: [],
       computerApps: {
         appStatus: vi.fn(() => mixedStatus),
         attached: vi.fn(() => true),
@@ -852,7 +846,6 @@ describe("IntegrationPlatformService computer discovery", () => {
       serverId: callable.server.id,
     };
     const service = platform({
-      adapters: [],
       computerApps: {
         appStatus: vi.fn(() => null),
         attached: vi.fn(() => true),
@@ -934,7 +927,6 @@ describe("IntegrationPlatformService computer discovery", () => {
     };
     const getComputerConnectionForCall = vi.fn();
     const service = platform({
-      adapters: [],
       computerApps: {
         appStatus: vi.fn(() => null),
         attached: vi.fn(() => false),
@@ -987,7 +979,6 @@ describe("IntegrationPlatformService computer discovery", () => {
       serverId: callable.server.id,
     };
     const service = platform({
-      adapters: [],
       computerApps: {
         appStatus: vi.fn(() => computerStatus(undefined, ["query_messages", "export_attachment"])),
         attached: vi.fn(() => true),
@@ -1057,7 +1048,6 @@ describe("IntegrationPlatformService computer discovery", () => {
       serverId: callable.server.id,
     };
     const service = platform({
-      adapters: [],
       computerApps: {
         appStatus: vi.fn(() =>
           computerStatus({
@@ -1122,7 +1112,7 @@ describe("IntegrationPlatformService computer discovery", () => {
   });
 });
 
-describe("IntegrationPlatformService computer app setup expiry", () => {
+describe("DeviceService computer app setup expiry", () => {
   it("publishes replacement and opened events with one continuation wake", async () => {
     const guiDefinitionCandidate = computerAppIntegrations.find(({ id }) => id === "macos-app");
     if (!guiDefinitionCandidate || !isComputerAppDefinition(guiDefinitionCandidate)) {
@@ -1192,7 +1182,6 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       setupRequest: {} as never,
     }));
     const service = platform({
-      adapters: [],
       computerApps: {
         attached: () => true,
         withRunnerAdmission: async (_id, task) => task(),
@@ -1276,7 +1265,6 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
         return availability;
       });
       const service = platform({
-        adapters: [],
         definitions: [definition],
         computerApps: {
           appStatus: () => null,
@@ -1348,7 +1336,6 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
     const onDeploymentEvent = vi.fn();
     const onRequestsChanged = vi.fn();
     const service = platform({
-      adapters: [],
       definitions: [computerDefinition],
       onRequestsChanged,
       onDeploymentEvent,
@@ -1390,7 +1377,6 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
     const onRequestsChanged = vi.fn();
     const onConnectionsChanged = vi.fn();
     const service = platform({
-      adapters: [],
       onConnectionsChanged,
       onRequestsChanged,
       onDeploymentEvent,
@@ -1409,7 +1395,6 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
   it("says nothing when no approval had expired", async () => {
     const onRequestsChanged = vi.fn();
     const service = platform({
-      adapters: [],
       onRequestsChanged,
       store: {
         expireComputerAppSetupRequests: vi.fn(async () => ({
@@ -1427,7 +1412,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
   });
 });
 
-describe("IntegrationPlatformService computer use gateway", () => {
+describe("DeviceService computer use gateway", () => {
   const guiDefinitionCandidate = computerAppIntegrations.find(({ id }) => id === "macos-app");
   if (!guiDefinitionCandidate || !isComputerAppDefinition(guiDefinitionCandidate)) {
     throw new Error("The macos-app definition is missing from the catalog.");
@@ -1718,7 +1703,6 @@ describe("IntegrationPlatformService computer use gateway", () => {
       : null;
     const computerUse = liveComputerUse ?? mockedComputerUse;
     const service = platform({
-      adapters: [],
       nativeTabs: {
         acquired: vi.fn(async () => TabIdSchema.parse("native-fixture")),
         captureMembership: vi.fn(async () => 0),
@@ -1794,7 +1778,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
   }
 
   function operate(
-    service: IntegrationPlatformTestHarness,
+    service: DeviceServicesTestHarness,
     callable: CallableIntegrationTool,
     args: Readonly<Record<string, unknown>>,
     who: ToolCaller,
@@ -1934,8 +1918,6 @@ describe("IntegrationPlatformService computer use gateway", () => {
           throw new Error("MCP test server did not bind");
         const url = new URL(`http://127.0.0.1:${address.port}/mcp`);
         mcp = createIntegrationMcpFixture({
-          definitions: [phone ? phoneDefinition : guiDefinition],
-
           runTokens: {
             authenticate: async () => who.run!,
           },
@@ -1944,7 +1926,6 @@ describe("IntegrationPlatformService computer use gateway", () => {
               throw new Error("Not a trigger token");
             },
           },
-          onEvent: () => undefined,
           platform: f.service,
           publicUrl: url,
         });
@@ -2287,7 +2268,6 @@ describe("computer app request matrix", () => {
       path: "/System/Applications/Notes.app",
     }));
     const service = platform({
-      adapters: [],
       definitions: [definition],
       listConnections: async () => (options.connectionAccess ? [connection] : []),
       computerApps: {

@@ -321,7 +321,7 @@ export class ProductToolsTestClient {
         },
       ) as never,
       product,
-      integrations: unavailable as never,
+      devices: unavailable as never,
       apps: unavailable as never,
       triggers: new TriggerToolHandlers(options.triggers ?? (unavailable as AgentTriggerManager)),
       teamRequestForRun: async () => null,

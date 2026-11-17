@@ -17,15 +17,7 @@ export const integrationGatewayNamespaces = [
   "mcp:opensteer_integrations",
 ] as const;
 
-const gatewayToolNames = new Set([
-  "computer_use",
-  "integration_search",
-  "integration_describe",
-  "integration_call",
-  "integration_request",
-  "app_access_request",
-  "custom_integration_request",
-]);
+const gatewayToolNames = new Set(["computer_use", "computer_apps", "app_access_request"]);
 
 /**
  * Whether a recorded tool is the integration gateway. Under the one server it

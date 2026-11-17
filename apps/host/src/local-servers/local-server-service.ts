@@ -7,7 +7,6 @@ import {
   OpensteerError,
   isLoopbackHostname,
   refused,
-  type AgentEvent,
   type RunId,
   type RunnerId,
   type UserId,
@@ -29,7 +28,6 @@ import {
 import { isNodeError } from "@opensteer/shared/nodeError";
 import { assertPluginDataId, removePluginData } from "@opensteer/shared/privateFiles";
 import { safeMessage } from "@opensteer/shared/safeMessage";
-import type { RunCapabilityClaims } from "../agents/run-capability.js";
 import type { ToolCaller } from "../agents/tool-caller.js";
 import { ComputerMcpSessionError, type ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { computerAppTransportUnavailableDetail } from "../computer-apps/computer-app-availability.js";
@@ -45,7 +43,7 @@ import {
   sanitizeToolResult,
   type UpstreamClient,
 } from "./mcp-clients.js";
-import { IntegrationInput, integrationInputTimeoutMs } from "./server-input.js";
+import { ServerInput, serverInputTimeoutMs } from "./server-input.js";
 
 /** A server a plugin declares, as the Host stores it before anything has started it. */
 export interface PendingLocalServer extends DiscoveredIntegrationServer {
@@ -83,9 +81,9 @@ export class LocalServerService {
   }) => Promise<void>;
   readonly #personal: boolean;
   readonly #store: IntegrationPlatformStore;
-  /** The MCP clients the Host holds, shared with service integrations' remote servers. */
+  /** The MCP clients the Host holds for the servers computers run. */
   readonly clients: McpClientPool;
-  readonly inputRequests: IntegrationInput;
+  readonly inputRequests: ServerInput;
   /** Seals what computer owners enter for their MCP servers' secrets. */
   readonly secrets: LocalMcpSecrets;
 
@@ -100,14 +98,12 @@ export class LocalServerService {
     >;
     readonly dataDirectory: string;
     readonly isRunnerConnected: (runnerId: RunnerId) => boolean;
-    readonly longRequestHold?: (run: RunCapabilityClaims<string>) => Promise<boolean>;
     readonly onConnectionsChanged: () => void;
     readonly onSettingsChanged?: (input: {
       installationId?: string;
       ownerUserId?: UserId;
     }) => Promise<void>;
     readonly personal?: boolean;
-    readonly publishRequestEvents: (events: readonly AgentEvent[]) => void;
     readonly secretVault: Pick<AesGcmSecretVault, "open" | "seal">;
     readonly store: IntegrationPlatformStore;
   }) {
@@ -119,11 +115,7 @@ export class LocalServerService {
     this.#personal = options.personal ?? false;
     this.#store = options.store;
     this.secrets = new LocalMcpSecrets(options.secretVault);
-    this.inputRequests = new IntegrationInput({
-      requests: options.store.requests,
-      longRequestHold: options.longRequestHold ?? (async () => false),
-      publish: options.publishRequestEvents,
-    });
+    this.inputRequests = new ServerInput();
     this.clients = new McpClientPool({
       onClientClosed: (client) => this.inputRequests.forget(client),
     });
@@ -341,9 +333,9 @@ export class LocalServerService {
         { arguments: { ...args }, name: callable.tool.name },
         undefined,
         {
-          maxTotalTimeout: integrationInputTimeoutMs,
+          maxTotalTimeout: serverInputTimeoutMs,
           signal: call.signal,
-          timeout: integrationInputTimeoutMs,
+          timeout: serverInputTimeoutMs,
         },
       );
       return sanitizeToolResult(result, call.redactor());

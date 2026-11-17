@@ -433,7 +433,7 @@ export const TriggerWriteOutputSchema = TriggerOutputSchema.extend({
   webhook: z.object({ url: z.url(), secret: z.string().min(1) }).optional(),
 });
 
-export { AgentMediaContentSchema, IntegrationCallOutputSchema } from "./integration-outputs.js";
+export { AgentMediaContentSchema, ComputerUseOutputSchema } from "./computer-outputs.js";
 
 /** A timeline entry. `itemId` is a message ID, or an activity event's sequence. */
 export const ThreadItemSchema = z.object({

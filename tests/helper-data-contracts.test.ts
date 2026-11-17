@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { validateJsonSchema } from "../packages/shared/src/jsonSchemaValidation.js";
-import { getIntegrationDefinition } from "../packages/integration-catalog/src/index.js";
+import { getDeviceDefinition as getIntegrationDefinition } from "../packages/integration-catalog/src/devices.js";
 import { parseComputerAppConfig } from "../packages/integration-core/src/computer-app.js";
 import { computerAppOperationContract } from "../packages/integration-core/src/computer-app-tools.js";
 import {

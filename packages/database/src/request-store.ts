@@ -48,8 +48,6 @@ import {
   IntegrationInstallManifestSchema,
   computerAppIdentitiesEqual,
   integrationAccessCovers,
-  integrationInstallManifestSummary,
-  integrationProposalName,
   type ComputerAppIdentity,
   type ComputerAppSetupRequest,
   type IntegrationAccess,
@@ -167,20 +165,6 @@ export type ComputerAppAccessDecision =
       readonly setupRequest: ComputerAppSetupRequest;
     };
 
-/**
- * What makes two integration Requests the same ask: the resource an access
- * Request would grant, or the exact artifact an installation Request would
- * install.
- */
-type IntegrationRequestSubject =
-  | {
-      readonly definitionId: string;
-      readonly kind: "integration.install";
-    }
-  | {
-      readonly kind: "integration.install";
-      readonly proposalDigest: string;
-    };
 export interface RequestMutation {
   readonly events: readonly AgentEvent[];
   readonly replayed: boolean;
@@ -235,33 +219,6 @@ export class RequestStore {
    * is accepted — this is dedup, not an invariant, and its cost is one extra
    * card to approve rather than a broken guarantee.
    */
-  async pendingTriggerEquivalent(
-    input: RequestOriginInput & {
-      readonly requestedBy: UserId;
-    },
-    subject: IntegrationRequestSubject,
-  ): Promise<RequestMutation | null> {
-    if (input.originatingOccurrenceId === undefined) return null;
-    const row = await this.#database
-      .selectFrom("requests")
-      .innerJoin("integrationRequestDetails", "integrationRequestDetails.requestId", "requests.id")
-      .selectAll("requests")
-      .where("requests.kind", "=", subject.kind)
-      .where("requests.status", "=", "pending")
-      .where("requests.requestedBy", "=", input.requestedBy)
-      .where((expression) => integrationSubjectFilter(expression, subject))
-      .orderBy("requests.createdAt", "asc")
-      .orderBy("requests.id", "asc")
-      .limit(1)
-      .executeTakeFirst();
-    return row
-      ? {
-          events: [],
-          replayed: true,
-          request: requestFromRow(row),
-        }
-      : null;
-  }
   async createDeviceAccessRequest(
     input: {
       readonly callId: string;
@@ -583,119 +540,6 @@ export class RequestStore {
       .where("id", "=", id)
       .executeTakeFirst();
     return row ? requestFromRow(row) : null;
-  }
-  async settleIntegrationInput(input: {
-    readonly caller: Parameters<typeof assertActiveGrant>[1];
-    readonly requestId: RequestId;
-    readonly resolvedBy: UserId;
-    readonly settlementSessionId?: string;
-    readonly action: "accept" | "decline" | "cancel";
-  }): Promise<RequestMutation> {
-    return withPersonalTransaction(this.#database, async (personalTransaction) => {
-      await (async (transaction) => {
-        const request = await transaction
-          .selectFrom("requests")
-          .selectAll()
-          .where("id", "=", input.requestId)
-          .executeTakeFirst();
-        if (request) {
-          const origin = await lockRequestOrigin(transaction, request);
-          if (!origin?.running)
-            throw new OpensteerError({
-              code: "conflict",
-              message: "The calling Run has ended",
-            });
-        }
-      })(personalTransaction);
-      return (async (transaction) => {
-        const observed = await transaction
-          .selectFrom("requests")
-          .selectAll()
-          .where("id", "=", input.requestId)
-          .executeTakeFirst();
-        if (
-          !observed ||
-          observed.kind !== "integration.input" ||
-          observed.status !== "pending" ||
-          observed.originatingRunId !== input.caller.runId ||
-          observed.requestedBy !== input.resolvedBy
-        )
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Device input is no longer pending",
-          });
-        const pending = requestFromRow(observed);
-        await lockActiveDurableRequestAuthority(transaction, pending);
-        await assertActiveGrant(transaction, input.caller, this.#executionNow);
-        if (
-          pending.presentation.kind !== "form" ||
-          pending.presentation.fields.some((field) => !field.secret)
-        )
-          throw new Error("Device input requires secret form fields");
-        const response: RequestResponse =
-          input.action === "accept"
-            ? {
-                kind: "form",
-                answers: Object.fromEntries(
-                  pending.presentation.fields.map((field) => [field.id, []]),
-                ),
-              }
-            : {
-                kind: "external",
-                value: {
-                  decision: input.action,
-                },
-              };
-        const row = await transaction
-          .updateTable("requests")
-          .set({
-            status: input.action === "accept" ? "fulfilled" : "declined",
-            resolvedAt: new Date(),
-            resolvedBy: input.resolvedBy,
-            response: jsonValue(response),
-            settlementProvenance: await readRequestSettlementProvenance(
-              transaction,
-              input.resolvedBy,
-              input.settlementSessionId,
-            ),
-          })
-          .where("id", "=", input.requestId)
-          .where("status", "=", "pending")
-          .returningAll()
-          .executeTakeFirst();
-        if (!row)
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Device input is no longer pending",
-          });
-        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-        const request = requestFromRow(row);
-        return {
-          request,
-          events: await terminalEvents(transaction, request),
-          replayed: false,
-        };
-      })(personalTransaction);
-    });
-  }
-  async cancelIntegrationInputs(
-    reason: RequestCancellationReason,
-    requestId?: RequestId,
-  ): Promise<readonly AgentEvent[]> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
-      const rows = await transaction
-        .selectFrom("requests")
-        .select("id")
-        .where("kind", "=", "integration.input")
-        .where("status", "=", "pending")
-        .$if(requestId !== undefined, (query) => query.where("id", "=", requestId!))
-        .execute();
-      return cancelPending(transaction, {
-        reason,
-        resolvedAt: new Date(),
-        requestIds: rows.map(({ id }) => id),
-      });
-    });
   }
   /** The Request a call opened, or the one it joined. */
   async findByCallIdentity(
@@ -2355,16 +2199,8 @@ export async function integrationAccessRequestInput(
       message: "Integration installation is no longer available",
     });
   }
-  const title = installation?.title ?? integrationInstallDisplayName(manifest!);
-  // A proposed installation's title came from the document an agent
-  // researched, so every surface says so beside it, as the install card does:
-  // untrusted text must not read as Opensteer's own prose.
-  const agentProposed = installation
-    ? installation.sourceKind === "proposed"
-    : manifest!.kind === "proposal";
-  const summary = manifest
-    ? RequestJsonObjectSchema.parse(integrationInstallManifestSummary(manifest))
-    : null;
+  const title = installation?.title ?? manifest!.definition.name;
+  const summary = manifest ? RequestJsonObjectSchema.parse(manifest) : null;
   return {
     ...requestOriginOf(input),
     callId: input.callId,
@@ -2388,11 +2224,6 @@ export async function integrationAccessRequestInput(
       requestedServerId: input.requestedServerId,
     },
     presentation: {
-      ...(agentProposed
-        ? {
-            agentProposed: true,
-          }
-        : {}),
       detail: input.reason,
       kind: "external",
       subject: {
@@ -2406,25 +2237,8 @@ export async function integrationAccessRequestInput(
   };
 }
 
-/**
- * The name an approver sees on an installation card. A catalog manifest names
- * its definition outright; a proposal has no definition until it is installed,
- * so it is called what it will be called once installed.
- *
- * A proposal's name is text an agent researched rather than a name Opensteer
- * vouches for, so the Request carrying it is marked `agentProposed`: unmarked,
- * a title like `Gmail — approved by your administrator` would read as the
- * platform's own prose on the card that grants it.
- */
-export function integrationInstallDisplayName(manifest: IntegrationInstallManifest): string {
-  return manifest.kind === "catalog"
-    ? manifest.definition.name
-    : integrationProposalName(manifest.proposal);
-}
 export function installManifestSubject(manifest: IntegrationInstallManifest): string {
-  return manifest.kind === "catalog"
-    ? `catalog:${manifest.definition.id}:${manifest.digest}`
-    : `proposal:${manifest.proposal.digest}`;
+  return `catalog:${manifest.definition.id}:${manifest.digest}`;
 }
 export async function validateIntegrationRequestDetail(
   transaction: Transaction<DatabaseSchema>,
@@ -2436,25 +2250,6 @@ export async function validateIntegrationRequestDetail(
       code: "bad_request",
       message: "Integration Request detail is required",
     });
-  }
-  if (input.kind === "integration.install") {
-    if (
-      detail.access !== null ||
-      !detail.manifest ||
-      detail.installationId ||
-      detail.requestedConnectionId ||
-      detail.requestedServerId
-    ) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "Installation Request detail is invalid",
-      });
-    }
-    const manifest = IntegrationInstallManifestSchema.parse(detail.manifest);
-    if (manifest.kind === "catalog") {
-      await assertCatalogDefinitionAvailable(transaction, manifest.definition.id);
-    }
-    return;
   }
   if (
     input.kind !== "integration.access" ||
@@ -2577,17 +2372,12 @@ export async function lockAndValidateIntegrationAccessResources(
           const requirement = IntegrationConnectionRequirementSchema.parse(
             server.connectionRequirement,
           );
-          return requirement.kind === "mcp-oauth"
-            ? connection.connectionKind === "mcp-oauth" &&
-                connection.integrationServerId === server.id
-            : requirement.kind === "computer"
-              ? connection.connectionKind === "computer" &&
-                connection.integrationServerId === server.id &&
-                connection.integrationDefinitionId === requirement.definitionId
-              : requirement.kind === "provider" &&
-                connection.connectionKind === "provider-account" &&
-                connection.integrationDefinitionId === requirement.definitionId &&
-                connection.provider === requirement.provider;
+          return (
+            requirement.kind === "computer" &&
+            connection.connectionKind === "computer" &&
+            connection.integrationServerId === server.id &&
+            connection.integrationDefinitionId === requirement.definitionId
+          );
         })
       : false;
     if (!compatible) {
@@ -2777,7 +2567,7 @@ async function createRequestInTransaction(
       });
     }
   }
-  if (input.kind === "integration.access" || input.kind === "integration.install") {
+  if (input.kind === "integration.access") {
     await validateIntegrationRequestDetail(transaction, input);
   }
   const integrationDetail = input.integrationDetail;
@@ -3151,7 +2941,6 @@ export async function enqueueContinuation(
   createdAt: Date,
 ): Promise<void> {
   if (
-    request.kind === "integration.input" ||
     request.mode !== "durable" ||
     (request.status !== "fulfilled" && request.status !== "declined")
   ) {
@@ -3307,22 +3096,6 @@ function callIdentityFilter(
           ? expression("originatingOccurrenceId", "=", origin.originatingOccurrenceId)
           : expression("originatingRunId", "=", origin.originatingRunId),
     ]);
-}
-function integrationSubjectFilter(
-  expression: ExpressionBuilder<DatabaseSchema, "integrationRequestDetails" | "requests">,
-  subject: IntegrationRequestSubject,
-) {
-  return "definitionId" in subject
-    ? expression(
-        sql<string>`integration_request_details.manifest -> 'definition' ->> 'id'`,
-        "=",
-        subject.definitionId,
-      )
-    : expression(
-        sql<string>`integration_request_details.manifest -> 'proposal' ->> 'digest'`,
-        "=",
-        subject.proposalDigest,
-      );
 }
 function originMismatchMessage(input: RequestOriginSelector): string {
   return input.originatingRunId != null

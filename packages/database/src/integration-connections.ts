@@ -6,7 +6,7 @@ import {
 import type { Kysely, Selectable } from "kysely";
 import type { DatabaseSchema, IntegrationConnectionTable } from "./schema.js";
 
-/** An owner's provider accounts and computer apps, newest first, as every surface lists them. */
+/** An owner's computer apps and phones, newest first, as every surface lists them. */
 export async function listIntegrationConnections(
   database: Kysely<DatabaseSchema>,
   ownerUserId: UserId,
@@ -15,7 +15,7 @@ export async function listIntegrationConnections(
     .selectFrom("integrationConnections")
     .selectAll()
     .where("ownerUserId", "=", ownerUserId)
-    .where("connectionKind", "in", ["provider-account", "computer"])
+    .where("connectionKind", "=", "computer")
     .where("status", "!=", "revoked")
     .orderBy("updatedAt", "desc")
     .limit(500)
@@ -28,9 +28,6 @@ export function integrationConnectionFromRow(
 ): IntegrationConnectionSummary {
   return IntegrationConnectionSummarySchema.parse({
     accountIdentifier: row.accountIdentifier,
-    applicationSource: row.applicationSource,
-    authMethodId: row.authMethodId,
-    authorizationDigest: row.authorizationDigest,
     computer:
       row.connectionKind === "computer" && row.computerAccess && row.runnerId
         ? {
@@ -47,10 +44,8 @@ export function integrationConnectionFromRow(
     displayName: row.displayName,
     externalIdentityId: row.externalIdentityId,
     externalTenantId: row.externalTenantId,
-    grantedScopes: row.grantedScopes,
     id: row.id,
     provider: row.provider,
-    providerApplicationId: row.providerApplicationId,
     status: row.status,
     statusDetail: row.statusDetail,
     statusReason: row.statusReason,

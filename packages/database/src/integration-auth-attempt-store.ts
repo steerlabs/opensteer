@@ -173,7 +173,6 @@ export class IntegrationAuthAttemptStore implements IntegrationAuthAttemptStoreP
           "failureReason",
           "id",
           "ownerUserId",
-          "resultConnectionId",
           "status",
           "surface",
         ])

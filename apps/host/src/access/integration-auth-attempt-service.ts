@@ -3,7 +3,6 @@ import { isErasedIntegrationAuthAttemptPayload } from "@opensteer/database";
 import {
   integrationProviderIdentityAlreadyConnectedFailureCode,
   IntegrationAuthorizationAttemptIdSchema,
-  type IntegrationConnectionId,
 } from "@opensteer/integration-core";
 import {
   type IntegrationAuthAttemptFailureReason,
@@ -102,7 +101,6 @@ export interface IntegrationAuthAttemptLifecycle {
     readonly surface: IntegrationAuthAttemptSurface;
   } | null>;
   status(input: { readonly id: IntegrationAuthAttemptId; readonly ownerUserId: UserId }): Promise<{
-    readonly connectionId: IntegrationConnectionId | null;
     readonly expiresAt: Date;
     readonly failureCode: string | null;
     readonly status: IntegrationAuthorizationPublicStatus;
@@ -270,7 +268,7 @@ export class DefaultIntegrationAuthAttemptLifecycle implements IntegrationAuthAt
     const opened = await this.#vault.open(
       attempt.encryptedPayload,
       attemptSecretContext({
-        flow: attempt.id.startsWith("imo_") ? "mcp-oauth" : "provider-oauth",
+        flow: "provider-oauth",
         id: attempt.id,
         ownerUserId: attempt.ownerUserId,
       }),
@@ -310,7 +308,6 @@ export class DefaultIntegrationAuthAttemptLifecycle implements IntegrationAuthAt
     readonly id: IntegrationAuthAttemptId;
     readonly ownerUserId: UserId;
   }): Promise<{
-    readonly connectionId: IntegrationConnectionId | null;
     readonly expiresAt: Date;
     readonly failureCode: string | null;
     readonly status: IntegrationAuthorizationPublicStatus;
@@ -318,7 +315,6 @@ export class DefaultIntegrationAuthAttemptLifecycle implements IntegrationAuthAt
     const attempt = await this.#store.getAuthAttempt(input);
     if (!attempt) return null;
     return {
-      connectionId: attempt.resultConnectionId,
       expiresAt: attempt.expiresAt,
       failureCode: publicFailureCode(attempt.failureReason),
       status: publicStatus(attempt, this.#now()),

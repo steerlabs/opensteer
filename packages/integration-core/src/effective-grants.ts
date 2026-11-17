@@ -2,7 +2,6 @@ import { intersectResourceAccess, type ThreadAccessMode, type UserId } from "@op
 import {
   type IntegrationConnectionId,
   type IntegrationInstallationId,
-  type IntegrationServerId,
 } from "./ids.js";
 import type { IntegrationAccess } from "./access.js";
 import type {
@@ -108,17 +107,10 @@ function toolAuthorityIsCurrent(
     return connection === null && tool.connectionId === null;
   }
   if (!connection) return false;
-  if (
-    (tool.connectionRequirement.kind === "computer" ||
-      tool.connectionRequirement.kind === "mcp-oauth") &&
-    tool.connectionId === null
-  )
-    return false;
-  if (tool.connectionId !== null && tool.connectionId !== connection.id) return false;
+  if (tool.connectionId === null || tool.connectionId !== connection.id) return false;
   return isIntegrationConnectionEligible({
     connection,
     connectionRequirement: tool.connectionRequirement,
-    serverId: tool.serverId as IntegrationServerId,
   });
 }
 

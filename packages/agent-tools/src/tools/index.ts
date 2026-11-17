@@ -44,7 +44,6 @@ import {
   opensteer_automation_list,
   opensteer_automation_create,
 } from "./triggers.js";
-import { integrationTools } from "./integrations.js";
 import {
   opensteer_knowledge_search,
   opensteer_knowledge_remove,
@@ -89,7 +88,6 @@ export const agentTools = [
   opensteer_automation_control,
   opensteer_automation_list,
   opensteer_automation_create,
-  ...integrationTools,
   opensteer_team_file_download,
   opensteer_team_read,
   opensteer_team_search,
@@ -119,7 +117,6 @@ export * from "./team.js";
 export * from "./requests.js";
 export * from "./threads.js";
 export * from "./triggers.js";
-export * from "./integrations.js";
 export * from "./knowledge.js";
 
 export * from "./tabs.js";

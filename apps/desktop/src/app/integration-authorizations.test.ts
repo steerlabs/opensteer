@@ -91,7 +91,6 @@ describe("DesktopIntegrationAuthorizations loopback return", () => {
     expect(await post(port)).toBe(200);
     await vi.waitFor(() =>
       expect(received).toHaveBeenCalledWith({
-        kind: "plugin",
         attemptId,
         deploymentId,
         returnProof,
@@ -133,7 +132,6 @@ describe("DesktopIntegrationAuthorizations loopback return", () => {
     instance.attach({ deploymentId, userId }, received);
     await vi.waitFor(() =>
       expect(received).toHaveBeenCalledWith({
-        kind: "plugin",
         attemptId,
         deploymentId,
         returnProof,

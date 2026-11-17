@@ -49,17 +49,19 @@ import {
 } from "@opensteer/control-plane-protocol";
 import {
   buildDeclarativeAuthorizationUrl,
-  createOAuthState,
   missingRequiredScopes,
   exchangeDeclarativeAuthorizationToken,
+  refreshDeclarativeCredential,
+  revokeDeclarativeCredential,
+} from "./provider-oauth-flow.js";
+import {
+  createOAuthState,
   oauthAuthorizationFailure,
   oauthUserDeniedAuthorization,
   OAuth2Error,
   oauthFailureKind,
-  refreshDeclarativeCredential,
-  revokeDeclarativeCredential,
   validateOAuthAuthorizationResponse,
-} from "@opensteer/integration-auth";
+} from "./provider-oauth.js";
 import {
   generateOAuthBrokerEphemeralKeyPair,
   openOAuthBrokerPayload,

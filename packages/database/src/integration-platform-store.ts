@@ -22,23 +22,19 @@ export {
   type SetComputerConnectionInput,
   type SetComputerConnectionResult,
 } from "./computer-connection-writes.js";
-export * from "./mcp-oauth-connection-store.js";
 import { ComputerConnectionStore } from "./computer-connection-store.js";
-import { McpOAuthConnectionStore } from "./mcp-oauth-connection-store.js";
 
 /** Stable facade over aggregate-specific integration persistence stores. */
 export class IntegrationPlatformStore {
   readonly computerOperations: ComputerOperationStore;
   readonly connections: IntegrationConnectionAuthStore;
   readonly computerConnections: ComputerConnectionStore;
-  /** Remote MCP servers' OAuth connections, a service integration concern. */
-  readonly mcpOAuthConnections: McpOAuthConnectionStore;
   readonly grants: IntegrationGrantStore;
   readonly installations: IntegrationInstallStore;
   /** The MCP servers computers run, and the approvals they wait on. */
   readonly localMcp: LocalMcpServerStore;
   readonly requests: RequestStore;
-  /** Service integration install and access Requests, which `requests` creates and settles. */
+  /** Access Requests for device data apps and local servers, which `requests` creates and settles. */
   readonly integrationRequests: IntegrationRequestStore;
   readonly install: IntegrationInstallStore["install"];
   readonly uninstall: IntegrationInstallStore["uninstall"];
@@ -47,7 +43,6 @@ export class IntegrationPlatformStore {
   readonly listDiscoveryInventory: IntegrationInstallStore["listDiscoveryInventory"];
   readonly listServers: IntegrationInstallStore["listServers"];
   readonly listTools: IntegrationInstallStore["listTools"];
-  readonly reconcileProviderConnectionTools: IntegrationInstallStore["reconcileProviderConnectionTools"];
   readonly getConnectionAccount: IntegrationConnectionAuthStore["getConnectionAccount"];
   readonly getConnectionKind: IntegrationConnectionAuthStore["getConnectionKind"];
   readonly listComputerAppSetupRequests: ComputerConnectionStore["listComputerAppSetupRequests"];
@@ -67,19 +62,10 @@ export class IntegrationPlatformStore {
   readonly setComputerConnection: ComputerConnectionStore["setComputerConnection"];
   readonly revokeComputerConnection: ComputerConnectionStore["revokeComputerConnection"];
   readonly getComputerConnectionForCall: ComputerConnectionStore["getComputerConnectionForCall"];
-  readonly getMcpOAuthServer: McpOAuthConnectionStore["getMcpOAuthServer"];
-  readonly completeMcpOAuthAttempt: McpOAuthConnectionStore["completeMcpOAuthAttempt"];
-  readonly getMcpOAuthConnection: McpOAuthConnectionStore["getMcpOAuthConnection"];
-  readonly replaceMcpOAuthCredential: McpOAuthConnectionStore["replaceMcpOAuthCredential"];
-  readonly listMcpOAuthConnections: McpOAuthConnectionStore["listMcpOAuthConnections"];
-  readonly revokeMcpOAuthConnection: McpOAuthConnectionStore["revokeMcpOAuthConnection"];
-  readonly markMcpOAuthConnectionNeedsAttention: McpOAuthConnectionStore["markMcpOAuthConnectionNeedsAttention"];
   readonly createGrant: IntegrationGrantStore["createGrant"];
   readonly listGrants: IntegrationGrantStore["listGrants"];
   readonly connectionDiscoveryScope: IntegrationGrantStore["connectionDiscoveryScope"];
-  readonly isConnectionUsableForAccessRequest: IntegrationGrantStore["isConnectionUsableForAccessRequest"];
   readonly revokeGrant: IntegrationGrantStore["revokeGrant"];
-  readonly getToolInvocation: IntegrationGrantStore["getToolInvocation"];
   readonly getToolSchemas: IntegrationGrantStore["getToolSchemas"];
   readonly listCallableTools: IntegrationGrantStore["listCallableTools"];
   readonly settings: PluginSettingsStore;
@@ -91,7 +77,6 @@ export class IntegrationPlatformStore {
     this.computerOperations = new ComputerOperationStore(database);
     this.connections = new IntegrationConnectionAuthStore(database);
     this.computerConnections = new ComputerConnectionStore(database);
-    this.mcpOAuthConnections = new McpOAuthConnectionStore(database);
     this.grants = new IntegrationGrantStore(database);
     this.installations = new IntegrationInstallStore(database);
     this.localMcp = new LocalMcpServerStore(database);
@@ -107,8 +92,6 @@ export class IntegrationPlatformStore {
     );
     this.listServers = this.installations.listServers.bind(this.installations);
     this.listTools = this.installations.listTools.bind(this.installations);
-    this.reconcileProviderConnectionTools =
-      this.installations.reconcileProviderConnectionTools.bind(this.installations);
     this.getConnectionAccount = this.connections.getConnectionAccount.bind(this.connections);
     this.getConnectionKind = this.connections.getConnectionKind.bind(this.connections);
     this.listComputerAppSetupRequests = this.computerConnections.listComputerAppSetupRequests.bind(
@@ -153,34 +136,10 @@ export class IntegrationPlatformStore {
     this.getComputerConnectionForCall = this.computerConnections.getComputerConnectionForCall.bind(
       this.computerConnections,
     );
-    this.getMcpOAuthServer = this.mcpOAuthConnections.getMcpOAuthServer.bind(
-      this.mcpOAuthConnections,
-    );
-    this.completeMcpOAuthAttempt = this.mcpOAuthConnections.completeMcpOAuthAttempt.bind(
-      this.mcpOAuthConnections,
-    );
-    this.getMcpOAuthConnection = this.mcpOAuthConnections.getMcpOAuthConnection.bind(
-      this.mcpOAuthConnections,
-    );
-    this.replaceMcpOAuthCredential = this.mcpOAuthConnections.replaceMcpOAuthCredential.bind(
-      this.mcpOAuthConnections,
-    );
-    this.listMcpOAuthConnections = this.mcpOAuthConnections.listMcpOAuthConnections.bind(
-      this.mcpOAuthConnections,
-    );
-    this.revokeMcpOAuthConnection = this.mcpOAuthConnections.revokeMcpOAuthConnection.bind(
-      this.mcpOAuthConnections,
-    );
-    this.markMcpOAuthConnectionNeedsAttention =
-      this.mcpOAuthConnections.markMcpOAuthConnectionNeedsAttention.bind(this.mcpOAuthConnections);
     this.createGrant = this.grants.createGrant.bind(this.grants);
     this.listGrants = this.grants.listGrants.bind(this.grants);
     this.connectionDiscoveryScope = this.grants.connectionDiscoveryScope.bind(this.grants);
-    this.isConnectionUsableForAccessRequest = this.grants.isConnectionUsableForAccessRequest.bind(
-      this.grants,
-    );
     this.revokeGrant = this.grants.revokeGrant.bind(this.grants);
-    this.getToolInvocation = this.grants.getToolInvocation.bind(this.grants);
     this.getToolSchemas = this.grants.getToolSchemas.bind(this.grants);
     this.listCallableTools = this.grants.listCallableTools.bind(this.grants);
   }

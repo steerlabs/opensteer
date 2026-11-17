@@ -17,10 +17,6 @@ export type {
   IntegrationPlatformDashboardView,
   IntegrationDefinitionSummary,
   IntegrationDefinitionSummaryView,
-  IntegrationAuthorizationStatus,
-  IntegrationAuthorizationStart,
-  IntegrationOAuthApplicationSource,
-  IntegrationRepositoryAccess,
 } from "@opensteer/integration-core";
 export {
   IntegrationOAuthAttemptIdSchema,

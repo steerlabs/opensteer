@@ -90,7 +90,7 @@ it("sends a plugin sign-in's desktop return to the plugin command and closes it 
     getSnapshot: () => ({ user: { id: userId }, deploymentId }),
   } as unknown as HostClient;
   const stop = subscribePluginSignInReturns(bridge, client);
-  receive({ kind: "plugin", deploymentId, attemptId, returnProof: "r".repeat(43) });
+  receive({ deploymentId, attemptId, returnProof: "r".repeat(43) });
   await vi.waitFor(() =>
     expect(bridge.finishIntegrationAuthorization).toHaveBeenCalledWith({ deploymentId, attemptId }),
   );
