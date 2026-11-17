@@ -6,7 +6,7 @@ type DelegationCall = ToolCall<"opensteer_task_delegate"> & {
 };
 import type { DeviceAccessService } from "../../administration/device-access-service.js";
 import { threadWaitMaxMs } from "@opensteer/agent-tools/tools";
-import { toolMessageAuthor, toolRequestAnswerer } from "@opensteer/agent-tools/outputs";
+import { toolRequestAnswerer } from "@opensteer/agent-tools/outputs";
 import {
   readAgentThreadRecent,
   readAgentThreadActivity,
@@ -18,7 +18,6 @@ import {
   withoutDatabaseOperationSignal,
   withDatabaseOperationSignal,
   readAgentRequest,
-  requestRevision,
   AgentRequestResponderSchema,
   reachableNode,
 } from "@opensteer/database";
@@ -56,7 +55,6 @@ import {
   compareSequence,
   ThreadIdSchema,
   MessageIdSchema,
-  type AgentEvent,
   type PlaceContentPart,
   type PlaceIdentity,
   type DeploymentId,
@@ -145,7 +143,7 @@ export class ProductToolHandlers {
 
   readonly #deploymentId: DeploymentId;
   readonly #threads: ThreadService;
-  readonly #realtime: Pick<RealtimeHub, "observe" | "sendToUsers">;
+  readonly #realtime: Pick<RealtimeHub, "observe" | "observeScopes" | "sendToUsers">;
   readonly #tabs: Pick<TabServicePort, "authorizeShow" | "get"> | undefined;
   readonly #personShow:
     | ((userId: RunToolScope["requestedBy"], message: PersonShowMessage) => Promise<number>)
@@ -176,7 +174,6 @@ export class ProductToolHandlers {
   readonly #questionNotices: Pick<TaskQuestionNotices, "wait"> | undefined;
   readonly #execution: AgentExecution;
   readonly #isEnvironmentConnected: (environmentId: EnvironmentId) => boolean;
-  readonly #onEvent: (event: AgentEvent) => void;
   readonly #store: OpensteerStore;
   readonly #onBrowserUsage: ((credits: readonly BrowserUsageCredit[]) => void) | undefined;
   readonly #placeContext: Pick<PlaceContextService, "assertDelegated"> | undefined;
@@ -185,7 +182,7 @@ export class ProductToolHandlers {
   constructor(options: {
     readonly deploymentId: DeploymentId;
     readonly threads: ThreadService;
-    readonly realtime: Pick<RealtimeHub, "observe" | "sendToUsers">;
+    readonly realtime: Pick<RealtimeHub, "observe" | "observeScopes" | "sendToUsers">;
     readonly computerUse?: Pick<ComputerUseService, "sessionsForRunner" | "authorizeDisplay">;
     readonly personShow?: (userId: UserId, message: PersonShowMessage) => Promise<number>;
     readonly tabs?: Pick<TabServicePort, "authorizeShow" | "get">;
@@ -217,7 +214,6 @@ export class ProductToolHandlers {
     readonly execution: AgentExecution;
     readonly isEnvironmentConnected: (environmentId: EnvironmentId) => boolean;
     readonly memoryPasses?: Pick<MemoryPassService, "admissionSelection">;
-    readonly onEvent: (event: AgentEvent) => void;
     readonly store: OpensteerStore;
     readonly onBrowserUsage?: (credits: readonly BrowserUsageCredit[]) => void;
     readonly placeContext?: Pick<PlaceContextService, "assertDelegated">;
@@ -241,7 +237,6 @@ export class ProductToolHandlers {
     this.#questionNotices = options.questionNotices;
     this.#execution = options.execution;
     this.#isEnvironmentConnected = options.isEnvironmentConnected;
-    this.#onEvent = options.onEvent;
     this.#store = options.store;
     this.#placeContext = options.placeContext;
     this.#onBrowserUsage = options.onBrowserUsage;
@@ -371,7 +366,6 @@ export class ProductToolHandlers {
       requestedBy: claims.requestedBy,
       requiredActor: "requester",
     });
-    for (const event of created.events) this.#onEvent(event);
     return requestResult(
       {
         kind: "person.question" as const,
@@ -881,7 +875,6 @@ export class ProductToolHandlers {
       assignmentId: input.delegationId,
       authority: threadCallerAuthority(caller),
     });
-    for (const event of read.events) this.#onEvent(event);
     return taskItem(read.assignment, read.result);
   }
 
@@ -901,7 +894,7 @@ export class ProductToolHandlers {
   }) {
     if (input.action === "respond") {
       const run = requireRun(caller);
-      const request = await readAgentRequest(
+      const { request } = await readAgentRequest(
         this.#store.database,
         threadCallerAuthority(run),
         input.requestId!,
@@ -924,6 +917,7 @@ export class ProductToolHandlers {
       await this.#commands.sendControl({
         type: "request.respond",
         requestId: request.id,
+        expectedRevision: agentResponder.expectedRevision,
         response,
         sealedResponse,
         requestedBy: caller.userId,
@@ -939,7 +933,7 @@ export class ProductToolHandlers {
       return { request: agentRequest((await this.#store.requests.get(request.id))!) };
     }
     if (input.action === "read") {
-      const request = await readAgentRequest(
+      const { request, revision } = await readAgentRequest(
         this.#store.database,
         threadCallerAuthority(caller),
         input.requestId!,
@@ -947,6 +941,7 @@ export class ProductToolHandlers {
       return {
         request: {
           ...agentRequest(request),
+          revision,
           ...(requestIsAgentAnswerable(request) ? { presentation: request.presentation } : {}),
         },
       };
@@ -977,7 +972,6 @@ export class ProductToolHandlers {
       threadId: claims.threadId,
       withdrawnBy: claims.requestedBy,
     });
-    for (const event of withdrawn.events) this.#onEvent(event);
     return { request: agentRequest(withdrawn.request) };
   }
 
@@ -1627,30 +1621,19 @@ export class ProductToolHandlers {
       requestedBy: caller.userId,
       authority: threadCallerAuthority(caller),
     });
-    const messages = await this.#readableMessages(
-      caller,
-      queue.items.map(({ message }) => message),
-    );
     return {
       link: formatReferenceLink(thread.id, thread.title),
       paused: queue.paused,
-      items: queue.items.map((item, index) => {
-        const message = messages[index]!;
-        const text = message.content
-          .map((part) => (part.type === "text" ? part.text : `[${part.type}]`))
-          .join("\n");
-        const preview = stripRefs(text);
-        return {
-          messageId: message.id,
-          link: formatReferenceLink(message.id, `Message · ${thread.title}`),
-          author: toolMessageAuthor(message.author),
-          preview: preview.slice(0, 500),
-          truncated: preview.length > 500,
-          canCancel: item.canCancel,
-          canMove: item.canMove,
-          canSteer: item.canSteer,
-        };
-      }),
+      items: queue.items.map(({ message, canCancel, canMove, canSteer }) => ({
+        messageId: message.id,
+        link: formatReferenceLink(message.id, `Message · ${thread.title}`),
+        author: message.author,
+        preview: stripRefs(message.preview),
+        truncated: message.truncated,
+        canCancel,
+        canMove,
+        canSteer,
+      })),
     };
   }
   async opensteer_task_wait(
@@ -1690,17 +1673,17 @@ export class ProductToolHandlers {
       const wait = new ThreadWaitService({
         subscribe: (wake) => {
           const anchorId = caller.kind === "connection" ? undefined : callerThread(caller).id;
-          const detach = this.#realtime.observe((change) => {
-            if (
-              // Revocation ends a connection's whole session, so the service owns that wake.
-              ("threadId" in change &&
-                (change.threadId === threadId || change.threadId === anchorId)) ||
-              change.type === "host.machines.changed" ||
-              (caller.kind === "program" && change.type === "host.triggers-changed")
-            )
-              wake();
+          const unobserve = this.#realtime.observeScopes(
+            [`thread:${threadId}`, ...(anchorId ? [`thread:${anchorId}`] : [])],
+            wake,
+          );
+          const unobserveNotices = this.#realtime.observe((change) => {
+            if (caller.kind === "program" && change.type === "host.triggers-changed") wake();
           });
-          return detach;
+          return () => {
+            unobserve();
+            unobserveNotices();
+          };
         },
         read: ({ signal, expiresAt }) =>
           withDatabaseOperationSignal(signal, expiresAt, async () => {
@@ -1781,7 +1764,6 @@ export class ProductToolHandlers {
               ...(call.signal ? { signal: call.signal } : {}),
             })
           : undefined;
-      if (task) for (const event of task.events) this.#onEvent(event);
       // Oldest first, so the last item is where the next wait resumes.
       const items = boundedThreadItems(
         result.messages.map((message) => messageItem(message, 20_000)),
@@ -1813,10 +1795,9 @@ export class ProductToolHandlers {
       };
     } finally {
       if (held && waitId) {
-        const events = await withoutDatabaseOperationSignal(() =>
+        await withoutDatabaseOperationSignal(() =>
           endAssignmentResultWait(this.#store.database, { assignmentId: held, waitId }),
         );
-        for (const event of events) this.#onEvent(event);
       }
     }
   }
@@ -1908,7 +1889,6 @@ function agentRequest(request: Request) {
     reason: "reason" in request.payload ? request.payload.reason : null,
     originatingThreadId: request.originatingThreadId,
     createdAt: request.createdAt,
-    revision: requestRevision(request),
     settlementProvenance: request.settlementProvenance
       ? toolRequestAnswerer(
           "kind" in request.settlementProvenance

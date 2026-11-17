@@ -1,4 +1,3 @@
-import type { BootstrapNoticeSource } from "@opensteer/shared/bootstrapDiagnostics";
 import type { RunnerId, UserId } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import type { RealtimeHub } from "@opensteer/orchestration";
@@ -7,22 +6,6 @@ import type {
   ShellCloseReason,
   ShellSessionSummary,
 } from "@opensteer/protocol";
-
-/**
- * Tells every connected client that the computers list changed.
- *
- * The message names nothing — not the machine, not what happened to it —
- * because every client answers it by rereading the list, and the reread is
- * where authorization lives. That is exactly what lets this one go to everybody
- * while the two `host.machine.access.session.*` messages below, which carry
- * facts about one machine, stay addressed to that machine's owner.
- */
-export function notifyMachinesChanged(
-  realtime: Pick<RealtimeHub, "broadcast">,
-  source: BootstrapNoticeSource = "unspecified",
-): void {
-  realtime.broadcast({ type: "host.machines.changed" }, source);
-}
 
 /**
  * Which apps on a Mac an agent is acting in now, for each changed session.
@@ -73,7 +56,7 @@ export function machineAccessNotifier(options: {
   ): Promise<void> => {
     try {
       const recipients = await machineOwners(options, runnerId);
-      if (recipients.length) options.realtime.sendToUsers(recipients, message, "machine.access");
+      if (recipients.length) options.realtime.sendToUsers(recipients, message);
     } catch (error) {
       options.onError(error);
     }

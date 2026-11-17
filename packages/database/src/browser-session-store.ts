@@ -1784,10 +1784,7 @@ export function recordRunTabPlace(
     );
     mutation.change(
       { scopeKey, entityKind: "thread", entityId: thread.id, operation: "upsert" },
-      () => ({
-        ...taskView(current),
-        latestPlace: place,
-      }),
+      () => taskView(current),
     );
     mutation.change(
       { scopeKey, entityKind: "collection", entityId: "run-queue", operation: "invalidate" },

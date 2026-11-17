@@ -22,6 +22,7 @@ export class TaskAdmissionService implements TaskAdmissionPort {
   readonly options: {
     readonly database: Kysely<DatabaseSchema>;
     readonly execution: () => Promise<ExecutionSelection>;
+    readonly onExecutionQueued?: () => void;
     readonly revokeGrants: (grants: readonly RevokedRunGrant[]) => void;
   };
   constructor(options: TaskAdmissionService["options"]) {
@@ -50,12 +51,14 @@ export class TaskAdmissionService implements TaskAdmissionPort {
       ownerId: settings.ownerId,
       execution: await this.options.execution(),
     });
+    this.options.onExecutionQueued?.();
     return admitted.receipt;
   }
 
   async releaseTeamAsk(input: Parameters<TaskAdmissionPort["releaseTeamAsk"]>[0]): Promise<void> {
     const result = await releaseTeamAsk(this.options.database, input);
     this.options.revokeGrants(result.revokedGrants);
+    this.options.onExecutionQueued?.();
   }
   async admitTeamReturn(input: Parameters<TaskAdmissionPort["admitTeamReturn"]>[0]): Promise<void> {
     const settings = await personalSettings(this.options.database);
@@ -63,6 +66,7 @@ export class TaskAdmissionService implements TaskAdmissionPort {
       ...input,
       ownerId: settings.ownerId,
     });
+    this.options.onExecutionQueued?.();
   }
 
   async cancelTeamRequest(

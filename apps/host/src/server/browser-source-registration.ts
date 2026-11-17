@@ -129,21 +129,34 @@ export async function handleBrowserSourceCommand(
           url: command.url,
         }),
       };
-    case "browser.sign-in.respond":
+    case "browser.sign-in.respond": {
+      if (command.expectedRevision === undefined)
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Review the current Request before answering.",
+        });
       return {
         type: command.type,
         outcome: await options.service.respond({
           decision: command.decision,
+          expectedRevision: command.expectedRevision,
           ...(context.session ? { settlementSessionId: context.session.id } : {}),
           ownerId,
           requestId: command.requestId,
         }),
       };
+    }
     case "browser.password-sign-in.respond": {
       if (!context.session)
         throw new OpensteerError({
           code: "unauthorized",
           message: "Sign in to answer this Request.",
+        });
+      const expectedRevision = command.expectedRevision;
+      if (expectedRevision === undefined)
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Review the current Request before answering.",
         });
       return {
         type: command.type,
@@ -151,6 +164,7 @@ export async function handleBrowserSourceCommand(
           ownerId,
           requestId: command.requestId,
           decision: command.decision,
+          expectedRevision,
           sessionId: context.session.id,
           revalidate: () => options.revalidateSession(context),
         })),

@@ -12,40 +12,26 @@ that returns Connect app origins ships. The Account never hosts a person's Deplo
 
 ## API compatibility
 
-Phones, Agent Phones, Runners, open windows, personal Opensteer and team servers update on their
-own schedules, so each API is a window, not an exact match
-([authority.ts](../packages/deployment-authority/src/authority.ts)). Refusing a peer is the last
-resort: a person whose phone updated before their Mac loses their Mac.
+Personal Opensteer uses API **62**. The Host, its apps and agent-enabled Runners update
+together. Discovery advertises 62 as both the current and minimum personal version.
+The authenticated personal socket admits a version 62 attach for the shell and any
+selected task. Each task or subagent subscription has its own generation and cursor.
+The cursor identifies the exact state the viewer installed. A missing or expired
+cursor rebuilds that scope from current state. Viewed tasks receive live text after
+the durable state on which it depends. Resources use per-kind revisions and push
+current summaries to interested devices.
 
-- Each side has a current version and the oldest it still serves. A personal caller states both
-  (`x-opensteer-api-version` carries its minimum, `x-opensteer-api-current` its current; a socket
-  carries them in its URL) and is served the lower of the two current versions while the windows
-  overlap. A personal descriptor advertises the Host's minimum as `apiVersion` and its current as
-  `currentApiVersion`. A peer from before the window states and advertises one version, which the
-  minimum fields keep matching while the minimum holds. A team peer states only its current
-  version and serves any peer at or above its own minimum; a newer team peer adapts down.
-- Changes are additive by default and keep the version: new commands, reads, optional fields, and
-  frame types, union members and enum values a reader is never sent. A Host parses requests
-  strictly; replies and frames are read tolerantly where a reader can be. A personal realtime
-  reader does not skip a frame it cannot read, it resubscribes to repair it, so a Host sends a new
-  personal frame type, member or value only to callers that ask for it or are new enough to read
-  it. Two things stay strict everywhere: signed discovery documents, and inputs whose
-  dropped field would change an answer or authorize something, such as an approval of words a
-  person never saw. An older caller is refused that one operation, never the connection.
-- Move a current version only for a change an older peer would misread, and then serve older
-  callers the shape they read; the personal [wire guard](../packages/protocol/src/personal-wire.test.ts)
-  compares every personal schema with the one recorded at the minimum. Bootstrap tells a caller
-  the version it is served before it reads any state, and each realtime sync names the version its
-  state was read at; saved state read at another version is replaced by a snapshot, never resumed
-  or refused.
-- Raise a minimum only for a security reason or once published Stable already speaks the new
-  minimum; the [Stable floor guard](../.github/scripts/ci-stable-api.mjs) enforces both, and an
-  exception needs an explicit guard change and Tim's approval.
-- A refusal names the side that is behind: "Update Opensteer" for the app or personal Opensteer,
-  and the team server for a team below a peer's minimum.
+Agent-enabled Runners authenticate with a signed `run-events-v2` capability and check
+the Host challenge for statement protocol version 2. The Host acknowledges committed
+ordinals. The Runner proof format and browser, messaging and Agent Phone module
+handshakes keep their own versions.
 
-[The team wire guard](../packages/protocol/src/team-wire.test.ts) holds a snapshot of every team
-schema as its reader parses it and fails on a non-additive change unless the version moves.
+A team peer states only its current version and serves any peer at or above its own
+minimum. A newer team peer adapts down. The team wire guard compares every team schema
+from the reader's perspective and fails on a non-additive change unless the version
+moves. The Stable floor guard keeps published Stable team servers compatible. A refusal
+names the side that needs updating. [Team wire guard](../packages/protocol/src/team-wire.test.ts)
+[Stable floor guard](../.github/scripts/ci-stable-api.mjs)
 
 ## Route selection and lifetime
 

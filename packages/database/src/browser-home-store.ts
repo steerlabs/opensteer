@@ -33,6 +33,15 @@ export async function listEligibleBrowserRunners(
     .execute(databaseOperationOptions());
 }
 
+export async function isEligibleBrowserRunner(
+  database: Kysely<DatabaseSchema>,
+  ownerId: UserId,
+  runnerId: RunnerId,
+): Promise<boolean> {
+  const eligible = await eligibleBrowserRunners(database, ownerId);
+  return !!(await eligible.where("id", "=", runnerId).executeTakeFirst());
+}
+
 export async function lockBrowserHomeRunner(
   transaction: Transaction<DatabaseSchema>,
   ownerId: UserId,

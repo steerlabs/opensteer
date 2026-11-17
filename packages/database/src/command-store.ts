@@ -596,23 +596,6 @@ function requestResponseDispatchConflict(): OpensteerError {
     message: "The Request response reservation was cancelled before dispatch",
   });
 }
-function deferred<T>(): {
-  readonly promise: Promise<T>;
-  readonly reject: (reason?: unknown) => void;
-  readonly resolve: (value: T | PromiseLike<T>) => void;
-} {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return {
-    promise,
-    reject,
-    resolve,
-  };
-}
 export function assertRequestResponse(
   request: Request,
   response: RequestResponse,
@@ -1176,272 +1159,256 @@ export async function claimNextCommand(
 }
 
 /**
- * Delivers one live Request response across a transactional send boundary.
- *
- * The transaction holds the fences in ./lock-order.ts until the Runner
- * reports that it accepted the response.
- * The receipt callback then waits for this transaction to commit before the
- * Runner acknowledgement is released to the dispatcher. Cancellation either
- * wins before the envelope is opened or waits until the accepted response is
- * durable; it can never commit in the middle of secret delivery.
+ * The dispatched command is the durable intent. Authorize its handoff under
+ * the commit fence, then let the Runner wait on its own transport.
  */
 export async function dispatchRequestResponse(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
   send: (beforeAck: () => Promise<void>) => Promise<void>,
 ): Promise<SucceededCommand> {
-  const committed = deferred<void>();
-  // A send failure can happen before the Runner ever invokes beforeAck. Keep
-  // both sides observed so neither a rollback nor a rejected commit gate can
-  // become an unhandled rejection.
-  void committed.promise.catch(() => undefined);
-  let sendPromise: Promise<void> | undefined;
+  const intent = await commitPersonalMutation(database, async (transaction) => {
+    const observed = await transaction
+      .selectFrom("commands")
+      .innerJoin("requests", "requests.responseCommandId", "commands.id")
+      .select([
+        "commands.requestedBy as respondingUserId",
+        "commands.payload as responsePayload",
+        "commands.runId",
+        "commands.threadId",
+        "requests.id as requestId",
+        "requests.originatingRunId",
+        "requests.originatingThreadId",
+      ])
+      .where("commands.id", "=", commandId)
+      .where("commands.type", "=", "request.respond")
+      .executeTakeFirst();
+    if (
+      !observed ||
+      !observed.runId ||
+      !observed.threadId ||
+      observed.runId !== observed.originatingRunId ||
+      observed.threadId !== observed.originatingThreadId
+    ) {
+      throw requestResponseDispatchConflict();
+    }
+    const payload = observed.responsePayload as Readonly<Record<string, unknown>>;
+    const agentResponder = payload.agentResponder
+      ? AgentRequestResponderSchema.parse(payload.agentResponder)
+      : undefined;
+    if (agentResponder && agentResponder.authority.userId !== observed.respondingUserId)
+      throw requestResponseDispatchConflict();
+    if (agentResponder)
+      await lockThreadCaller(transaction, agentResponder.authority, [observed.runId], true);
+    const run = await transaction
+      .selectFrom("runs")
+      .select(["requestedBy", "status", "threadId", "finishIntent"])
+      .where("id", "=", observed.runId)
+      .forNoKeyUpdate()
+      .executeTakeFirst();
+    if (
+      !run ||
+      run.threadId !== observed.threadId ||
+      run.finishIntent !== null ||
+      !["starting", "running", "waiting"].includes(run.status) ||
+      !(await runHasActiveGrant(transaction, observed.runId))
+    ) {
+      throw requestResponseDispatchConflict();
+    }
+    await requirePersonalOwner(transaction, observed.respondingUserId);
+    if (agentResponder)
+      await assertAgentRequestTarget(transaction, agentResponder.authority, observed.threadId, {
+        admitted: true,
+      });
+    await lockThreadRow(transaction, observed.threadId);
+    await lockRunProjectionRows(transaction, {
+      runIds: [observed.runId],
+      commandIds: [commandId],
+      threadIds: [observed.threadId],
+    });
+    const requestRow = await transaction
+      .selectFrom("requests")
+      .selectAll()
+      .where("id", "=", observed.requestId)
+      .forNoKeyUpdate()
+      .executeTakeFirst();
+    const command = await transaction
+      .selectFrom("commands")
+      .select(["id", "requestedBy", "runId", "status", "threadId", "type"])
+      .where("id", "=", commandId)
+      .forNoKeyUpdate()
+      .executeTakeFirst();
+    if (
+      !requestRow ||
+      requestRow.mode !== "live" ||
+      requestRow.status !== "pending" ||
+      requestRow.revision !== payload.expectedRevision ||
+      requestRow.responseCommandId !== commandId ||
+      requestRow.originatingRunId !== observed.runId ||
+      requestRow.originatingThreadId !== observed.threadId ||
+      !command ||
+      command.type !== "request.respond" ||
+      command.status !== "dispatched" ||
+      command.runId !== observed.runId ||
+      command.threadId !== observed.threadId
+    ) {
+      throw requestResponseDispatchConflict();
+    }
+    const request = requestFromRow(requestRow);
+    if (agentResponder) assertAgentRequestAnswer(request, agentResponder, requestRow.revision);
+    if (
+      !agentResponder &&
+      request.requiredActor === "requester" &&
+      request.requestedBy !== command.requestedBy
+    ) {
+      throw requestResponseDispatchConflict();
+    }
+    await stampDispatchIntent(transaction, commandId);
+    return {
+      requestId: request.id,
+      revision: requestRow.revision,
+      runId: observed.runId,
+      threadId: observed.threadId,
+      agentResponder,
+    };
+  });
+  let result: SucceededCommand | undefined;
   try {
-    // Non-retrying: the Runner send/acknowledgement gate cannot safely be replayed.
-    const result = await commitPersonalMutation(
-      database,
-      async (transaction) => {
-        const observed = await transaction
-          .selectFrom("commands")
-          .innerJoin("requests", "requests.responseCommandId", "commands.id")
-          .select([
-            "commands.requestedBy as respondingUserId",
-            "commands.payload as responsePayload",
-            "commands.runId",
-            "commands.threadId",
-            "requests.id as requestId",
-            "requests.originatingRunId",
-            "requests.originatingThreadId",
-          ])
-          .where("commands.id", "=", commandId)
-          .where("commands.type", "=", "request.respond")
+    await send(async () => {
+      result = await commitPersonalMutation(database, async (tx) => {
+        const pending = await tx
+          .selectFrom("requests")
+          .select("id")
+          .where("id", "=", intent.requestId)
+          .where("revision", "=", intent.revision)
+          .where("responseCommandId", "=", commandId)
+          .where("status", "=", "pending")
           .executeTakeFirst();
-        if (
-          !observed ||
-          !observed.runId ||
-          !observed.threadId ||
-          observed.runId !== observed.originatingRunId ||
-          observed.threadId !== observed.originatingThreadId
-        ) {
+        if (!pending || !(await runHasActiveGrant(tx, intent.runId)))
           throw requestResponseDispatchConflict();
-        }
-        const payload = observed.responsePayload as Readonly<Record<string, unknown>>;
-        const agentResponder = payload.agentResponder
-          ? AgentRequestResponderSchema.parse(payload.agentResponder)
-          : undefined;
-        if (agentResponder && agentResponder.authority.userId !== observed.respondingUserId)
-          throw requestResponseDispatchConflict();
-        if (agentResponder)
-          await lockThreadCaller(transaction, agentResponder.authority, [observed.runId], true);
-        const run = await transaction
-          .selectFrom("runs")
-          .select(["requestedBy", "status", "threadId", "finishIntent"])
-          .where("id", "=", observed.runId)
-          .forNoKeyUpdate()
-          .executeTakeFirst();
-        if (
-          !run ||
-          run.threadId !== observed.threadId ||
-          run.finishIntent !== null ||
-          !["starting", "running", "waiting"].includes(run.status) ||
-          !(await runHasActiveGrant(transaction, observed.runId))
-        ) {
-          throw requestResponseDispatchConflict();
-        }
-        await requirePersonalOwner(transaction, observed.respondingUserId);
-        if (agentResponder)
-          await assertAgentRequestTarget(transaction, agentResponder.authority, observed.threadId, {
+        if (intent.agentResponder)
+          await assertAgentRequestTarget(tx, intent.agentResponder.authority, intent.threadId, {
             admitted: true,
           });
-        await lockThreadRow(transaction, observed.threadId);
-        await lockRunProjectionRows(transaction, {
-          runIds: [observed.runId],
-          commandIds: [commandId],
-          threadIds: [observed.threadId],
-        });
-        const requestRow = await transaction
-          .selectFrom("requests")
-          .selectAll()
-          .where("id", "=", observed.requestId)
-          .forNoKeyUpdate()
-          .executeTakeFirst();
-        const command = await transaction
+        const succeeded = await succeedCommandInTransaction(tx, commandId);
+        const accepted = await tx
           .selectFrom("commands")
-          .select(["id", "requestedBy", "runId", "status", "threadId", "type"])
+          .select("id")
           .where("id", "=", commandId)
-          .forNoKeyUpdate()
+          .where("status", "=", "succeeded")
           .executeTakeFirst();
-        if (
-          !requestRow ||
-          requestRow.mode !== "live" ||
-          requestRow.status !== "pending" ||
-          requestRow.revision !== payload.expectedRevision ||
-          requestRow.responseCommandId !== commandId ||
-          requestRow.originatingRunId !== observed.runId ||
-          requestRow.originatingThreadId !== observed.threadId ||
-          !command ||
-          command.type !== "request.respond" ||
-          command.status !== "dispatched" ||
-          command.runId !== observed.runId ||
-          command.threadId !== observed.threadId
-        ) {
-          throw requestResponseDispatchConflict();
-        }
-        const request = requestFromRow(requestRow);
-        if (agentResponder) assertAgentRequestAnswer(request, agentResponder, requestRow.revision);
-        if (
-          !agentResponder &&
-          request.requiredActor === "requester" &&
-          request.requestedBy !== command.requestedBy
-        ) {
-          throw requestResponseDispatchConflict();
-        }
-        const accepted = deferred<void>();
-        sendPromise = send(async () => {
-          accepted.resolve();
-          await committed.promise;
-        });
-        void sendPromise.catch(accepted.reject);
-        await accepted.promise;
-        if (agentResponder)
-          await assertAgentRequestTarget(transaction, agentResponder.authority, observed.threadId, {
-            admitted: true,
-          });
-        const succeeded = await succeedCommandInTransaction(transaction, commandId);
-        const resolved = await transaction
-          .selectFrom("requests")
-          .select("status")
-          .where("id", "=", request.id)
-          .executeTakeFirst();
-        if (!resolved || resolved.status === "pending") {
-          throw new OpensteerError({
-            code: "internal",
-            message: "Accepted Request response did not produce its durable resolution",
-          });
-        }
+        if (!accepted) throw requestResponseDispatchConflict();
         return succeeded;
-      },
-      undefined,
-      "non-retrying",
-    );
-    committed.resolve();
-    // Reaching the commit proves that the Runner receipt arrived. A caller
-    // abort racing after that receipt cannot turn the durable response back
-    // into an uncertain command.
-    await sendPromise?.catch(() => undefined);
-    return result;
+      });
+    });
   } catch (error) {
-    committed.reject(error);
-    await sendPromise?.catch(() => undefined);
-    throw error;
+    if (!result) throw error;
   }
+  if (!result) throw requestResponseDispatchConflict();
+  return result;
 }
 
-/** Keep messaging admission live until the Runner accepts the exact command. */
 export async function dispatchChannelCommand(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
   send: (beforeAck: () => Promise<void>) => Promise<void>,
 ): Promise<SucceededCommand> {
-  const committed = deferred<void>();
-  void committed.promise.catch(() => undefined);
-  let sendPromise: Promise<void> | undefined;
-  try {
-    // Non-retrying: the Runner send/acknowledgement gate cannot safely be replayed.
-    const result = await commitPersonalMutation(
-      database,
-      async (transaction) => {
-        const observed = await transaction
-          .selectFrom("commands")
-          .innerJoin("threads", "threads.id", "commands.threadId")
-          .select(["commands.runId", "commands.type", "commands.authoritySource"])
-          .where("commands.id", "=", commandId)
-          .where("commands.status", "=", "dispatched")
-          .executeTakeFirst();
-        if (
-          !observed?.runId ||
-          observed.authoritySource.kind !== "channel-ingress" ||
-          (observed.type !== "run.execute" && observed.type !== "run.steer")
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Messaging command is no longer dispatchable",
-          });
-        }
-        const run = await transaction
-          .selectFrom("runs")
-          .select(["status", "threadId", "requestedBy", "finishIntent"])
-          .where("id", "=", observed.runId)
-          .forNoKeyUpdate()
-          .executeTakeFirstOrThrow();
-        if (
-          run.finishIntent !== null ||
-          (observed.type === "run.execute"
-            ? run.status !== "starting"
-            : !["running", "waiting"].includes(run.status))
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Messaging Run is no longer active",
-          });
-        }
-        const steer =
-          observed.type === "run.steer"
-            ? await transaction
-                .selectFrom("threadInputs")
-                .select("messageId")
-                .where("steerCommandId", "=", commandId)
-                .executeTakeFirst()
-            : null;
-        const authorized =
-          observed.type === "run.execute"
-            ? await channelRunAuthorityIsCurrent(transaction, observed.runId)
-            : steer !== undefined &&
-              steer !== null &&
-              (await channelInputAuthorityIsCurrent(transaction, steer.messageId));
-        if (
-          !authorized ||
-          !(await threadExecutionIsAvailableToUser(transaction, run.threadId, run.requestedBy))
-        ) {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Messaging access changed before dispatch",
-          });
-        }
-        await lockThreadRow(transaction, run.threadId);
-        const command = await transaction
-          .selectFrom("commands")
-          .select("status")
-          .where("id", "=", commandId)
-          .forNoKeyUpdate()
-          .executeTakeFirstOrThrow();
-        if (command.status !== "dispatched") {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Messaging command is no longer dispatchable",
-          });
-        }
-        const accepted = deferred<void>();
-        sendPromise = send(async () => {
-          accepted.resolve();
-          await committed.promise;
-        });
-        void sendPromise.catch(accepted.reject);
-        await accepted.promise;
-        return succeedCommandInTransaction(transaction, commandId);
-      },
-      undefined,
-      "non-retrying",
+  await commitPersonalMutation(database, async (transaction) => {
+    const observed = await transaction
+      .selectFrom("commands")
+      .innerJoin("threads", "threads.id", "commands.threadId")
+      .select(["commands.runId", "commands.type", "commands.authoritySource"])
+      .where("commands.id", "=", commandId)
+      .where("commands.status", "=", "dispatched")
+      .executeTakeFirst();
+    if (
+      !observed?.runId ||
+      observed.authoritySource.kind !== "channel-ingress" ||
+      (observed.type !== "run.execute" && observed.type !== "run.steer")
+    ) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Messaging command is no longer dispatchable",
+      });
+    }
+    const run = await transaction
+      .selectFrom("runs")
+      .select(["status", "threadId", "requestedBy", "finishIntent"])
+      .where("id", "=", observed.runId)
+      .forNoKeyUpdate()
+      .executeTakeFirstOrThrow();
+    if (
+      run.finishIntent !== null ||
+      (observed.type === "run.execute"
+        ? run.status !== "starting"
+        : !["running", "waiting"].includes(run.status))
+    ) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Messaging Run is no longer active",
+      });
+    }
+    const steer =
+      observed.type === "run.steer"
+        ? await transaction
+            .selectFrom("threadInputs")
+            .select("messageId")
+            .where("steerCommandId", "=", commandId)
+            .executeTakeFirst()
+        : null;
+    const authorized =
+      observed.type === "run.execute"
+        ? await channelRunAuthorityIsCurrent(transaction, observed.runId)
+        : steer !== undefined &&
+          steer !== null &&
+          (await channelInputAuthorityIsCurrent(transaction, steer.messageId));
+    if (
+      !authorized ||
+      !(await threadExecutionIsAvailableToUser(transaction, run.threadId, run.requestedBy))
+    ) {
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Messaging access changed before dispatch",
+      });
+    }
+    await lockThreadRow(transaction, run.threadId);
+    const command = await transaction
+      .selectFrom("commands")
+      .select("status")
+      .where("id", "=", commandId)
+      .forNoKeyUpdate()
+      .executeTakeFirstOrThrow();
+    if (command.status !== "dispatched") {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Messaging command is no longer dispatchable",
+      });
+    }
+    await stampDispatchIntent(transaction, commandId);
+  });
+  let result: SucceededCommand | undefined;
+  await send(async () => {
+    result = await commitPersonalMutation(database, (tx) =>
+      succeedCommandInTransaction(tx, commandId),
     );
-    committed.resolve();
-    await sendPromise?.catch(() => undefined);
-    return result;
-  } catch (error) {
-    committed.reject(error);
-    await sendPromise?.catch(() => undefined);
-    throw error;
-  }
+  });
+  if (!result)
+    throw new OpensteerError({ code: "conflict", message: "Messaging command was not accepted" });
+  return result;
 }
+
+async function stampDispatchIntent(
+  transaction: Transaction<DatabaseSchema>,
+  commandId: CommandRow["id"],
+) {
+  await transaction
+    .updateTable("commands")
+    .set({ updatedAt: new Date() })
+    .where("id", "=", commandId)
+    .where("status", "=", "dispatched")
+    .executeTakeFirstOrThrow();
+}
+
 export async function listPendingCommands(
   database: Kysely<DatabaseSchema>,
   limit = 500,

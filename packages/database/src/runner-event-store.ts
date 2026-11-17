@@ -487,16 +487,29 @@ async function applyEventProjection(
                 .where("state", "=", "claimed")
                 .returningAll()
                 .execute();
+        if (deliveredRows.length)
+          await transaction
+            .selectFrom("messages")
+            .select("id")
+            .where(
+              "id",
+              "in",
+              deliveredRows.map(({ messageId }) => messageId),
+            )
+            .orderBy("id")
+            .forNoKeyUpdate()
+            .execute();
+        // What the person wrote while the engine was starting is the started
+        // turn's to take now.
+        const handed = await deliverConversationInputsInTransaction(transaction, event.runId);
+        revokedGrants = handed.revokedGrants;
+        await markAttemptStarted(transaction, event.runId, event.bindingGeneration);
         const deliveredById = new Map(deliveredRows.map((row) => [row.messageId, row]));
         for (const { messageId } of fixedBatch) {
           const row = deliveredById.get(messageId);
           if (!row) continue;
           await publishExecutionInput(transaction, row);
         }
-        // What the person wrote while the engine was starting is the started
-        // turn's to take now.
-        const handed = await deliverConversationInputsInTransaction(transaction, event.runId);
-        revokedGrants = handed.revokedGrants;
       }
 
       break;
@@ -1016,8 +1029,6 @@ export async function commitRunnerEvent(
             });
             if (event.type !== "run.phase") await assignmentActivityEventsForRun(tx, run.id);
           }
-          if (event.type === "run.started")
-            await markAttemptStarted(tx, run.id, event.bindingGeneration);
           if (event.type === "run.context-measured" || event.type === "run.compaction")
             invalidateExecution(mutation, run.threadId, "return-hint");
           return "applied";

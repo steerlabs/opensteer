@@ -440,7 +440,7 @@ export const TriggerWriteOutputSchema = TriggerOutputSchema.extend({
 
 export { AgentMediaContentSchema, IntegrationCallOutputSchema } from "./integration-outputs.js";
 
-/** A timeline entry. `itemId` is a message ID, or an activity event's sequence. */
+/** A timeline entry addressed by its stable item ID. */
 export const ThreadItemSchema = z.object({
   link: AgentLinkSchema.optional(),
   itemId: z.string(),

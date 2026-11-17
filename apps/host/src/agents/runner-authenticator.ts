@@ -31,6 +31,9 @@ import {
   RunnerAuxiliaryTicketClaimsSchema,
   RunnerChallengeIdSchema,
   RunnerChallengeSchema,
+  runEventsCapability,
+  runEventsVersion,
+  runEventsUpdateReason,
   runnerProofFormatVersion,
   runnerProofFormatUpdateReason,
   RunnerDescriptorSchema,
@@ -355,6 +358,7 @@ export class RunnerAuthenticator {
       hostSessionId: randomBytes(24).toString("base64url"),
       nonce: randomBytes(32).toString("base64url"),
       type: "host.challenge",
+      runEventsVersion,
       proofFormatVersion: runnerProofFormatVersion,
     });
   }
@@ -371,6 +375,12 @@ export class RunnerAuthenticator {
         throw authenticationFailed();
     } else await this.#verifyEnrolledProof(challenge, proof);
     const descriptor = RunnerDescriptorSchema.parse(proof.descriptor);
+    if (descriptor.modules.agents && !descriptor.capabilities.includes(runEventsCapability))
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: "run-events-version-mismatch",
+        message: runEventsUpdateReason,
+      });
     return { ...proof, proofFormatVersion: runnerProofFormatVersion, descriptor };
   }
 

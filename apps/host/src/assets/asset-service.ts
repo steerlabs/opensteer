@@ -57,6 +57,9 @@ export class AssetService {
     deploymentId: DeploymentId;
     access: TranscriptFileAccess;
     authorizeMedia: (input: FileContext & { sessionId: string }) => Promise<boolean>;
+    guardRead?: (
+      input: FileContext & { sessionId: string; resource: ResolvedTranscriptFile["resource"] },
+    ) => { current(): boolean; release(): void };
     now?: () => number;
   };
   constructor(options: AssetService["options"]) {
@@ -294,8 +297,9 @@ export class AssetService {
         const abort = new AbortController();
         const disconnected = () => abort.abort();
         request.raw.once("aborted", disconnected);
+        const c = this.#verify(request.params.token);
+        const guard = c && this.options.guardRead?.(c);
         try {
-          const c = this.#verify(request.params.token);
           if (!c || !(await this.options.authorizeMedia(c))) return reply.code(404).send();
           const result = await this.#slot(async () => {
             if (!(await this.options.authorizeMedia(c))) throw fileUnavailable();
@@ -311,6 +315,8 @@ export class AssetService {
             const bytes = c.variant === "preview" ? await this.#preview(c, file.bytes) : file.bytes;
             return { bytes, type: c.variant === "preview" ? "image/webp" : file.mediaType };
           }, abort.signal);
+          if (!(await this.options.authorizeMedia(c)) || guard?.current() === false)
+            return reply.code(404).send();
           reply.headers({
             "content-type": result.type,
             "content-length": result.bytes.length,
@@ -325,6 +331,7 @@ export class AssetService {
         } catch {
           return reply.code(404).send();
         } finally {
+          guard?.release();
           request.raw.removeListener("aborted", disconnected);
         }
       },

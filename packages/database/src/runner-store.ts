@@ -1421,7 +1421,7 @@ export async function createRunnerEnrollment(
     readonly tokenHash: string;
   },
 ): Promise<RunnerEnrollmentIssuanceRecord> {
-  return commitPersonalMutation(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     let preparedIdentity = input.preparedIdentity ?? null;
     if (preparedIdentity) {
       try {
@@ -1638,6 +1638,7 @@ export async function createRunnerEnrollment(
         tokenHash: input.tokenHash,
       })
       .executeTakeFirstOrThrow(databaseOperationOptions());
+    if (input.runnerKind === "local") mutation.bumpResource("machine");
     return {
       deviceProfile: input.deviceProfile ?? null,
       allowedModules,
@@ -1666,7 +1667,7 @@ export async function retireRunnerEnrollment(
     readonly ownerId: UserId;
   },
 ): Promise<"consumed" | "expired" | "retired"> {
-  return commitPersonalMutation(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     const identity = await transaction
       .selectFrom("runnerEnrollments")
       .select(["ownerKind", "ownerUserId", "tokenHash"])
@@ -1699,6 +1700,7 @@ export async function retireRunnerEnrollment(
       })
       .where("id", "=", input.enrollmentId)
       .executeTakeFirstOrThrow(databaseOperationOptions());
+    mutation.bumpResource("machine");
     return "retired";
   });
 }
@@ -1926,9 +1928,10 @@ export async function setRunnerShellFullDiskAccess(
   database: Kysely<DatabaseSchema>,
   runnerId: RunnerId,
   fullDiskAccess: boolean,
+  connectionGeneration?: number,
 ): Promise<boolean> {
   return commitPersonalMutation(database, async (tx, mutation) => {
-    const result = await tx
+    let update = tx
       .updateTable("runners")
       .set({
         moduleDescriptors: sql`jsonb_set(module_descriptors, '{shell,fullDiskAccess}', to_jsonb(${fullDiskAccess}::boolean))`,
@@ -1936,9 +1939,14 @@ export async function setRunnerShellFullDiskAccess(
       .where("id", "=", runnerId)
       .where("revokedAt", "is", null)
       .where(sql<boolean>`module_descriptors ? 'shell'`)
-      .executeTakeFirst(databaseOperationOptions());
-    if (result.numUpdatedRows > 0n) mutation.bumpResource("machine");
-    return result.numUpdatedRows > 0n;
+      .where(
+        sql<boolean>`module_descriptors #> '{shell,fullDiskAccess}' IS DISTINCT FROM to_jsonb(${fullDiskAccess}::boolean)`,
+      );
+    if (connectionGeneration !== undefined)
+      update = update.where("connectionGeneration", "=", String(connectionGeneration));
+    const result = await update.returning("id").executeTakeFirst(databaseOperationOptions());
+    if (result) mutation.bumpResource("machine");
+    return !!result;
   });
 }
 export async function authenticateRunnerConnection(
@@ -1959,17 +1967,19 @@ export async function recordRunnerUpdateRequired(
     readonly reason: "agent-phone-outdated" | "runner-outdated";
   },
 ): Promise<boolean> {
-  const result = await database
-    .updateTable("runners")
-    .set({
-      updateRequired: input.reason,
-      updatedAt: new Date(),
-    })
-    .where("id", "=", input.runnerId)
-    .where("connectionGeneration", "=", String(input.connectionGeneration))
-    .where("revokedAt", "is", null)
-    .executeTakeFirst(databaseOperationOptions());
-  return result.numUpdatedRows === 1n;
+  return commitPersonalMutation(database, async (tx, mutation) => {
+    const result = await tx
+      .updateTable("runners")
+      .set({ updateRequired: input.reason, updatedAt: new Date() })
+      .where("id", "=", input.runnerId)
+      .where("connectionGeneration", "=", String(input.connectionGeneration))
+      .where("revokedAt", "is", null)
+      .where(sql<boolean>`update_required IS DISTINCT FROM ${input.reason}`)
+      .returning("id")
+      .executeTakeFirst(databaseOperationOptions());
+    if (result) mutation.bumpResource("machine");
+    return !!result;
+  });
 }
 
 /**

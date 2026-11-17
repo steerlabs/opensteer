@@ -154,6 +154,7 @@ export const RunnerCapabilitySchema = z.enum([
   // exactly the execution an interrupt names.
   "attempts-v1",
   "earlier-boots-contained-v1",
+  "run-events-v2",
   // Accepts a `browser-page` content part in a Run's inputs; an older Runner's
   // strict input schema refuses the whole Run.
   "browser-page-input-v1",

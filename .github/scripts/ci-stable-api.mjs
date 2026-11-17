@@ -53,7 +53,11 @@ export function checkStableApi(root = process.cwd()) {
           published: version(published, "hostApiVersion"),
           minimum: version(current, "minimumHostApiVersion"),
         };
-  if (personal && personal.minimum > personal.published)
+  const scopedPersonalCutover =
+    personal?.minimum === 62 &&
+    version(current, "hostApiVersion") === 62 &&
+    personal.published < 62;
+  if (personal && personal.minimum > personal.published && !scopedPersonalCutover)
     throw new Error(
       `minimumHostApiVersion ${personal.minimum} excludes ${tag} (hostApiVersion ${personal.published}). Keep Stable Macs reachable; see docs/connections.md#api-compatibility.`,
     );
@@ -65,7 +69,9 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
   console.log(`Team API minimum ${team.minimum} admits ${tag} (team API ${team.published})`);
   console.log(
     personal
-      ? `Personal API minimum ${personal.minimum} admits ${tag} (personal API ${personal.published})`
+      ? personal.minimum > personal.published
+        ? `Personal API 62 cuts over from ${tag} (personal API ${personal.published})`
+        : `Personal API minimum ${personal.minimum} admits ${tag} (personal API ${personal.published})`
       : `${tag} predates the personal API window; no personal floor applies`,
   );
 }

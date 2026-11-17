@@ -12,7 +12,7 @@ export function testRunnerDescriptor(input: {
 }): RunnerDescriptor {
   return {
     bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-    capabilities: ["filesystem"],
+    capabilities: ["filesystem", "run-events-v2"],
     modules: input.modules ?? {
       agents: {
         environmentIds: [input.environmentId],

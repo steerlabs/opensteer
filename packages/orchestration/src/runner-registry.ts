@@ -186,7 +186,7 @@ export interface RunnerRegistryHooks {
   authorize(identity: RunnerIdentity): Promise<void>;
   /** Persist the Runner receipt before any causally later event is admitted. */
   onCommandAccepted?(identity: RunnerIdentity, receipt: RunnerCommandAccepted): Promise<void>;
-  onEvent(identity: RunnerIdentity, event: PendingAgentEvent): Promise<void>;
+  onEvent(identity: RunnerIdentity, event: PendingAgentEvent): Promise<number>;
   /**
    * The Host refused a durable event as invalid for its Run, not because the
    * store was unavailable. The hook settles the Run as its owner sees fit; the
@@ -1784,6 +1784,34 @@ export class RunnerRegistry {
     }
   }
 
+  requestLiveProgress(runId: RunId): void {
+    for (const connection of this.#byPeer.values()) {
+      if (!connection.ownedRunBindings.has(runId) || connection.revokedRunIds.has(runId)) continue;
+      void connection.peer
+        .send({ ...connection.identity.fence, runId, type: "host.live.resync" })
+        .catch(() => undefined);
+      return;
+    }
+  }
+
+  probeFullDiskAccess(runnerId?: RunnerId): void {
+    for (const connection of this.#byPeer.values()) {
+      const { identity } = connection;
+      if (
+        !connection.attached ||
+        (runnerId && runnerId !== identity.runnerId) ||
+        identity.modules.shell?.platform !== "darwin"
+      )
+        continue;
+      void connection.peer
+        .send({
+          ...identity.fence,
+          type: "host.shell.probe-full-disk-access",
+        })
+        .catch(() => undefined);
+    }
+  }
+
   /**
    * Sends a durable command and resolves when the Runner accepts it. A caller
    * that prepared the command for one connection names its generation: a
@@ -2249,8 +2277,11 @@ export class RunnerRegistry {
         }
         const { event } = message;
         if (connection.revokedRunIds.has(event.runId)) break;
+        let throughOrdinal: number;
         try {
-          await this.#runHook(() => this.#hooks.onEvent(connection.identity, event));
+          throughOrdinal = await this.#runHook(() =>
+            this.#hooks.onEvent(connection.identity, event),
+          );
         } catch (error) {
           // Only a refusal of this event isolates to its Run. Anything else —
           // the store unreachable, a commit whose outcome is unknown — says
@@ -2267,7 +2298,7 @@ export class RunnerRegistry {
           connection,
           event.runId,
           {
-            ordinal: event.ordinal,
+            ordinal: throughOrdinal,
           },
           terminal,
         );

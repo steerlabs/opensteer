@@ -747,6 +747,7 @@ export async function connectCallerMachine(
       "requester-time-zone-v1",
       "agent-tools-plan-v1",
       "execution-plane-v2",
+      "run-events-v2",
       ...(input.voice ? ["voice-run-v1"] : []),
       ...(input.restartsRuns ? ["attempts-v1"] : []),
     ],

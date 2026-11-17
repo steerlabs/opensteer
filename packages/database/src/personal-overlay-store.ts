@@ -1,10 +1,8 @@
 import { OpensteerError, utf8Prefix, type ThreadId, type UserId } from "@opensteer/core";
-import {
-  TranscriptOverlayCursorSchema,
-  type TranscriptOverlayCursor,
-  type TranscriptOverlayKind,
-} from "@opensteer/protocol/transcript";
+import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
+import { TranscriptOrderCursorSchema } from "@opensteer/protocol/transcript";
 import { sql, type Kysely, type Transaction } from "kysely";
+import { z } from "zod";
 import { boundedSerializedPrefix } from "./message-window.js";
 import {
   authorizedDetail,
@@ -18,6 +16,13 @@ import type { DatabaseSchema } from "./schema.js";
 
 type DetailScope = Exclude<PersonalReadScope, { kind: "shell" }>;
 type Read = Transaction<DatabaseSchema>;
+const TranscriptOverlayKindSchema = z.enum(["requests", "tools", "nodes"]);
+const TranscriptOverlayCursorSchema = TranscriptOrderCursorSchema.omit({
+  beforePosition: true,
+  orderRevision: true,
+}).extend({ kind: TranscriptOverlayKindSchema, revision: PersonalRevisionSchema });
+type TranscriptOverlayCursor = z.infer<typeof TranscriptOverlayCursorSchema>;
+type TranscriptOverlayKind = z.infer<typeof TranscriptOverlayKindSchema>;
 type Address = Omit<TranscriptOverlayCursor, "beforeId" | "kind">;
 
 export function encodeOverlayCursor(cursor: TranscriptOverlayCursor) {
@@ -37,7 +42,7 @@ function decodeOverlayCursor(cursor: string) {
 export function activeRunQueue(tx: Read, threadId: ThreadId) {
   return tx
     .selectFrom("runs")
-    .select(["id", "status", "revision", "latestPlace", "createdAt", "runOrdinal"])
+    .select(["id", "status", "revision", "createdAt", "runOrdinal"])
     .select(sql<boolean>`finish_intent is not null`.as("finishing"))
     .where("threadId", "=", threadId)
     .where(sql<boolean>`status in ('queued','starting','running','waiting')`)

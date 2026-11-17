@@ -35,6 +35,7 @@ import {
   RunnerAuxiliaryStreamIdSchema,
   RunnerBootIdSchema,
   RunnerChallengeIdSchema,
+  RunnerConnectionFenceSchema,
   RunnerConnectionIdSchema,
   RunnerConnectionLeaseIdSchema,
   runnerEnvironmentIds,
@@ -559,9 +560,8 @@ describe("runnerWebSocketUrl", () => {
     const abort = new AbortController();
     const advertised: unknown[] = [];
     const announcements: RunnerToHostMessage[] = [];
-    // Two "denied" answers before the person turns the switch: the watch must
-    // stay silent while the answer is what the descriptor already said.
-    const answers = [false, false, true];
+    // The first probe happens on connect. A foreground refresh sees the grant.
+    const answers = [false, true, true];
     let probes = 0;
     const probe = vi.fn(async () => answers[Math.min(probes++, answers.length - 1)] ?? true);
     let connections = 0;
@@ -575,6 +575,7 @@ describe("runnerWebSocketUrl", () => {
           hostSessionId: randomUUID(),
           nonce: randomUUID(),
           proofFormatVersion: 2,
+          runEventsVersion: 2,
           type: "host.challenge",
         }),
       );
@@ -599,6 +600,15 @@ describe("runnerWebSocketUrl", () => {
               runnerId: message.descriptor.runnerId,
               serverTime: new Date().toISOString(),
               type: "host.welcome",
+            }),
+          );
+          return;
+        }
+        if (message.type === "runner.executions.attach") {
+          socket.send(
+            JSON.stringify({
+              ...RunnerConnectionFenceSchema.parse(message),
+              type: "host.shell.probe-full-disk-access",
             }),
           );
           return;
@@ -646,7 +656,7 @@ describe("runnerWebSocketUrl", () => {
         runnerId,
         runnerKind: "local",
       } as unknown as RunnerConfig,
-      fullDiskAccessProbe: { deniedIntervalMs: 5, grantedIntervalMs: 5, probe },
+      fullDiskAccessProbe: { probe },
       identity,
       identityStore: {
         acceptHostConnection: async ({ connectionGeneration }) => ({
@@ -679,7 +689,7 @@ describe("runnerWebSocketUrl", () => {
         runnerId,
         type: "runner.shell.full-disk-access",
       });
-      expect(probes).toBeGreaterThanOrEqual(3);
+      expect(probes).toBe(3);
       expect(advertised[0]).toEqual({
         fullDiskAccess: false,
         hostPublicKey:
@@ -727,6 +737,7 @@ describe("runnerWebSocketUrl", () => {
           hostSessionId: randomUUID(),
           nonce: randomUUID(),
           proofFormatVersion: 2,
+          runEventsVersion: 2,
           type: "host.challenge",
         }),
       );
@@ -853,6 +864,7 @@ describe("runnerWebSocketUrl", () => {
         hostSessionId: "host-session-with-at-least-thirty-two-characters",
         nonce: "runner-challenge-with-at-least-thirty-two-characters",
         proofFormatVersion: 2,
+        runEventsVersion: 2,
         type: "host.challenge" as const,
       };
       socket.send(JSON.stringify(challenge));
@@ -1156,6 +1168,7 @@ describe("runnerWebSocketUrl", () => {
           hostSessionId: randomUUID(),
           nonce: randomUUID(),
           proofFormatVersion: 2,
+          runEventsVersion: 2,
           type: "host.challenge",
         }),
       );
@@ -1412,6 +1425,7 @@ describe("runnerWebSocketUrl", () => {
           hostSessionId: randomUUID(),
           nonce: randomUUID(),
           proofFormatVersion: 2,
+          runEventsVersion: 2,
           type: "host.challenge",
         }),
       );
@@ -1605,6 +1619,7 @@ describe("runnerWebSocketUrl", () => {
           hostSessionId: randomUUID(),
           nonce: randomUUID(),
           proofFormatVersion: 2,
+          runEventsVersion: 2,
           type: "host.challenge",
         }),
       );
@@ -1805,6 +1820,7 @@ describe("runnerWebSocketUrl", () => {
           hostSessionId: randomUUID(),
           nonce: randomUUID(),
           proofFormatVersion: 2,
+          runEventsVersion: 2,
           type: "host.challenge",
         }),
       );
@@ -1902,6 +1918,7 @@ describe("runnerWebSocketUrl", () => {
           hostSessionId: randomUUID(),
           nonce: randomUUID(),
           proofFormatVersion: 2,
+          runEventsVersion: 2,
           type: "host.challenge",
         }),
       );
@@ -2031,6 +2048,7 @@ describe("runnerWebSocketUrl", () => {
           hostSessionId: randomUUID(),
           nonce: randomUUID(),
           proofFormatVersion: 2,
+          runEventsVersion: 2,
           type: "host.challenge",
         }),
       );
@@ -2525,6 +2543,7 @@ async function fakeAgentsHost() {
         hostSessionId: randomUUID(),
         nonce: randomUUID(),
         proofFormatVersion: 2,
+        runEventsVersion: 2,
         type: "host.challenge",
       }),
     );

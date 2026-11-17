@@ -1,10 +1,8 @@
 import {
-  withAdministrationTransaction,
   administrationCommand,
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
-import { withDatabaseTransaction } from "./connection.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
   type HarnessId,
@@ -148,7 +146,7 @@ export async function createHarnessInstance(
   input: CreateHarnessInstanceInput,
 ): Promise<HarnessInstanceRecord> {
   const id = input.id ?? createId("harnessInstance");
-  return withDatabaseTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     // Adding a profile is a person clicking a button, and a retried click
     // must not leave two. Reconciles and seeding create profiles with no
     // requester at all, so the idempotent path exists only where a request
@@ -279,6 +277,7 @@ export async function createHarnessInstance(
         })
         .executeTakeFirstOrThrow();
     }
+    mutation.bumpResource("harness");
     return row;
   });
 }
@@ -404,150 +403,157 @@ export async function updateHarnessInstance(
     readonly name?: string;
   },
 ): Promise<HarnessInstanceRecord> {
-  return withAdministrationTransaction(database, input.administration, async (transaction) => {
-    // Resolve the immutable parent without taking a profile lock, then take
-    // the same parent lock create/default/remove use before locking the
-    // profile. Keeping this environment-then-profile order prevents two
-    // lifecycle writers from waiting on one another in opposite directions.
-    const identity = await transaction
-      .selectFrom("harnessInstances")
-      .select("environmentId")
-      .where("id", "=", input.id)
-      .executeTakeFirst();
-    if (!identity) {
-      throw new OpensteerError({ code: "not_found", message: "AI engine not found" });
-    }
-    const environment = await transaction
-      .selectFrom("executionEnvironments")
-      .select("id")
-      .where("id", "=", identity.environmentId)
-      .forNoKeyUpdate()
-      .executeTakeFirst();
-    if (!environment) {
-      throw new OpensteerError({ code: "not_found", message: "Work location not found" });
-    }
-    await lockHarnessSiblings(transaction, identity.environmentId);
-    const current = await transaction
-      .selectFrom("harnessInstances")
-      .selectAll()
-      .where("id", "=", input.id)
-      .where("environmentId", "=", identity.environmentId)
-      .forNoKeyUpdate()
-      .executeTakeFirst();
-    if (!current) {
-      throw new OpensteerError({ code: "not_found", message: "AI engine not found" });
-    }
-    if (current.removedAt) {
-      throw new OpensteerError({ code: "not_found", message: "AI engine not found" });
-    }
-    if (
-      input.expectedRuntimeRevision !== undefined &&
-      current.runtimeRevision !== input.expectedRuntimeRevision
-    ) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "This account's settings changed. Refresh before saving again.",
-        retryable: true,
-      });
-    }
-    const configChanged =
-      input.config !== undefined && !isDeepStrictEqual(current.config, input.config);
-    // Turning a profile off retires it from desired state, and the Runner's
-    // reconciliation closes its shared adapter — which ends every session on
-    // it. So the refusal and the write have to be one decision: a caller that
-    // asked "is it idle?" outside this transaction can be overtaken by a run
-    // that binds before the write lands, and the reconcile then closes the
-    // adapter under it.
-    //
-    // Serialized against run binding via the row lock: the `forNoKeyUpdate` above
-    // holds this profile row for the rest of the transaction, and
-    // `acquireExecutionBinding` — the one place a run is bound to a profile
-    // for execution — takes the same row `forShare` and re-reads `enabled`
-    // under it. Postgres therefore orders the two outcomes rather than
-    // letting them race: either the binding commits first and this query sees
-    // its non-terminal run, or this commits first and the binding is refused.
-    if ((input.enabled === false && current.enabled) || configChanged) {
-      const activeRun = await transaction
-        .selectFrom("runs")
-        .select("id")
-        .where("environmentId", "=", current.environmentId)
-        .where("harnessInstanceId", "=", input.id)
-        .where("status", "in", nonTerminalRunStatuses)
-        .limit(1)
+  return commitPersonalMutation(database, (transaction, mutation) =>
+    administrationCommand(transaction, input.administration, async () => {
+      // Resolve the immutable parent without taking a profile lock, then take
+      // the same parent lock create/default/remove use before locking the
+      // profile. Keeping this environment-then-profile order prevents two
+      // lifecycle writers from waiting on one another in opposite directions.
+      const identity = await transaction
+        .selectFrom("harnessInstances")
+        .select("environmentId")
+        .where("id", "=", input.id)
         .executeTakeFirst();
-      if (activeRun) {
+      if (!identity) {
+        throw new OpensteerError({ code: "not_found", message: "AI engine not found" });
+      }
+      const environment = await transaction
+        .selectFrom("executionEnvironments")
+        .select("id")
+        .where("id", "=", identity.environmentId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!environment) {
+        throw new OpensteerError({ code: "not_found", message: "Work location not found" });
+      }
+      await lockHarnessSiblings(transaction, identity.environmentId);
+      const current = await transaction
+        .selectFrom("harnessInstances")
+        .selectAll()
+        .where("id", "=", input.id)
+        .where("environmentId", "=", identity.environmentId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!current) {
+        throw new OpensteerError({ code: "not_found", message: "AI engine not found" });
+      }
+      if (current.removedAt) {
+        throw new OpensteerError({ code: "not_found", message: "AI engine not found" });
+      }
+      if (
+        input.expectedRuntimeRevision !== undefined &&
+        current.runtimeRevision !== input.expectedRuntimeRevision
+      ) {
         throw new OpensteerError({
           code: "conflict",
-          message:
-            "This AI engine is still running work (including any voice call); stop it or wait for it to finish before changing its configuration or turning it off",
+          message: "This account's settings changed. Refresh before saving again.",
           retryable: true,
         });
       }
-    }
-    // The name holds the revision the row carries right now; a
-    // runtime-affecting change is what advances it.
-    const currentRevision = current.runtimeRevision;
-    const enabling = input.enabled === true && !current.enabled;
-    const disablingDefault = input.enabled === false && current.enabled && current.isDefault;
-    let claimsDefault = false;
-    if (enabling) {
-      const existingDefault = await transaction
-        .selectFrom("harnessInstances")
-        .select("id")
-        .where("driverKind", "=", current.driverKind)
-        .where("environmentId", "=", current.environmentId)
-        .where("isDefault", "=", true)
-        .where("removedAt", "is", null)
-        .executeTakeFirst();
-      claimsDefault = !existingDefault;
-    }
-    const row = await transaction
-      .updateTable("harnessInstances")
-      .set({
-        ...(configChanged
-          ? { config: jsonValue(input.config), runtimeRevision: currentRevision + 1 }
-          : {}),
-        ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
-        ...(disablingDefault ? { isDefault: false } : {}),
-        ...(claimsDefault ? { isDefault: true } : {}),
-        ...(input.name === undefined ? {} : { name: input.name }),
-        updatedAt: new Date(),
-      })
-      .where("id", "=", input.id)
-      .returning(harnessInstanceColumns)
-      .executeTakeFirstOrThrow();
-    if (disablingDefault) {
-      const successor = await transaction
-        .selectFrom("harnessInstances")
-        .select("id")
-        .where("driverKind", "=", current.driverKind)
-        .where("environmentId", "=", current.environmentId)
-        .where("enabled", "=", true)
-        .where("removedAt", "is", null)
-        .orderBy("createdAt")
-        .orderBy("id")
-        .limit(1)
-        .executeTakeFirst();
-      if (successor) {
+      const configChanged =
+        input.config !== undefined && !isDeepStrictEqual(current.config, input.config);
+      // Turning a profile off retires it from desired state, and the Runner's
+      // reconciliation closes its shared adapter — which ends every session on
+      // it. So the refusal and the write have to be one decision: a caller that
+      // asked "is it idle?" outside this transaction can be overtaken by a run
+      // that binds before the write lands, and the reconcile then closes the
+      // adapter under it.
+      //
+      // Serialized against run binding via the row lock: the `forNoKeyUpdate` above
+      // holds this profile row for the rest of the transaction, and
+      // `acquireExecutionBinding` — the one place a run is bound to a profile
+      // for execution — takes the same row `forShare` and re-reads `enabled`
+      // under it. Postgres therefore orders the two outcomes rather than
+      // letting them race: either the binding commits first and this query sees
+      // its non-terminal run, or this commits first and the binding is refused.
+      if ((input.enabled === false && current.enabled) || configChanged) {
+        const activeRun = await transaction
+          .selectFrom("runs")
+          .select("id")
+          .where("environmentId", "=", current.environmentId)
+          .where("harnessInstanceId", "=", input.id)
+          .where("status", "in", nonTerminalRunStatuses)
+          .limit(1)
+          .executeTakeFirst();
+        if (activeRun) {
+          throw new OpensteerError({
+            code: "conflict",
+            message:
+              "This AI engine is still running work (including any voice call); stop it or wait for it to finish before changing its configuration or turning it off",
+            retryable: true,
+          });
+        }
+      }
+      // The name holds the revision the row carries right now; a
+      // runtime-affecting change is what advances it.
+      const currentRevision = current.runtimeRevision;
+      const enabling = input.enabled === true && !current.enabled;
+      const disablingDefault = input.enabled === false && current.enabled && current.isDefault;
+      let claimsDefault = false;
+      if (enabling) {
+        const existingDefault = await transaction
+          .selectFrom("harnessInstances")
+          .select("id")
+          .where("driverKind", "=", current.driverKind)
+          .where("environmentId", "=", current.environmentId)
+          .where("isDefault", "=", true)
+          .where("removedAt", "is", null)
+          .executeTakeFirst();
+        claimsDefault = !existingDefault;
+      }
+      const row = await transaction
+        .updateTable("harnessInstances")
+        .set({
+          ...(configChanged
+            ? { config: jsonValue(input.config), runtimeRevision: currentRevision + 1 }
+            : {}),
+          ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
+          ...(disablingDefault ? { isDefault: false } : {}),
+          ...(claimsDefault ? { isDefault: true } : {}),
+          ...(input.name === undefined ? {} : { name: input.name }),
+          updatedAt: new Date(),
+        })
+        .where("id", "=", input.id)
+        .returning(harnessInstanceColumns)
+        .executeTakeFirstOrThrow();
+      if (disablingDefault) {
+        const successor = await transaction
+          .selectFrom("harnessInstances")
+          .select("id")
+          .where("driverKind", "=", current.driverKind)
+          .where("environmentId", "=", current.environmentId)
+          .where("enabled", "=", true)
+          .where("removedAt", "is", null)
+          .orderBy("createdAt")
+          .orderBy("id")
+          .limit(1)
+          .executeTakeFirst();
+        if (successor) {
+          await transaction
+            .updateTable("harnessInstances")
+            .set({ isDefault: true, updatedAt: new Date() })
+            .where("id", "=", successor.id)
+            .execute();
+        }
+      }
+      // A catalog describes what a profile offers, so it must not outlive the
+      // configuration that produced it — nor a profile that has been turned
+      // off. Leaving a disabled profile's catalog in place served a stale
+      // answer to every client and left it to the UI to hide.
+      if (configChanged || input.enabled === false) {
         await transaction
-          .updateTable("harnessInstances")
-          .set({ isDefault: true, updatedAt: new Date() })
-          .where("id", "=", successor.id)
+          .deleteFrom("harnessCatalogs")
+          .where("harnessInstanceId", "=", input.id)
           .execute();
       }
-    }
-    // A catalog describes what a profile offers, so it must not outlive the
-    // configuration that produced it — nor a profile that has been turned
-    // off. Leaving a disabled profile's catalog in place served a stale
-    // answer to every client and left it to the UI to hide.
-    if (configChanged || input.enabled === false) {
-      await transaction
-        .deleteFrom("harnessCatalogs")
-        .where("harnessInstanceId", "=", input.id)
-        .execute();
-    }
-    return row;
-  });
+      mutation.bumpResource("harness");
+      if (configChanged || input.enabled !== undefined) {
+        mutation.bumpResource("harness-catalog");
+        mutation.bumpResource("harness-auth");
+      }
+      return row;
+    }),
+  );
 }
 
 /**
@@ -571,49 +577,52 @@ export async function setDefaultHarnessInstance(
     readonly harnessInstanceId: HarnessInstanceId;
   },
 ): Promise<HarnessInstanceRecord> {
-  return withAdministrationTransaction(database, input.administration, async (transaction) => {
-    const environment = await transaction
-      .selectFrom("executionEnvironments")
-      .select("id")
-      .where("id", "=", input.environmentId)
-      .forNoKeyUpdate()
-      .executeTakeFirst();
-    if (!environment) {
-      throw new OpensteerError({ code: "not_found", message: "Work location not found" });
-    }
-    await lockHarnessSiblings(transaction, input.environmentId);
-    const current = await transaction
-      .selectFrom("harnessInstances")
-      .select(harnessInstanceColumns)
-      .where("id", "=", input.harnessInstanceId)
-      .where("environmentId", "=", input.environmentId)
-      .forNoKeyUpdate()
-      .executeTakeFirst();
-    if (!current || current.removedAt) {
-      throw new OpensteerError({ code: "not_found", message: "AI engine not found" });
-    }
-    if (!current.enabled) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Turn this AI engine on before making it the default",
-      });
-    }
-    if (current.isDefault) return current;
-    await transaction
-      .updateTable("harnessInstances")
-      .set({ isDefault: false, updatedAt: new Date() })
-      .where("driverKind", "=", current.driverKind)
-      .where("environmentId", "=", input.environmentId)
-      .where("isDefault", "=", true)
-      .where("removedAt", "is", null)
-      .execute();
-    return await transaction
-      .updateTable("harnessInstances")
-      .set({ isDefault: true, updatedAt: new Date() })
-      .where("id", "=", input.harnessInstanceId)
-      .returning(harnessInstanceColumns)
-      .executeTakeFirstOrThrow();
-  });
+  return commitPersonalMutation(database, (transaction, mutation) =>
+    administrationCommand(transaction, input.administration, async () => {
+      const environment = await transaction
+        .selectFrom("executionEnvironments")
+        .select("id")
+        .where("id", "=", input.environmentId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!environment) {
+        throw new OpensteerError({ code: "not_found", message: "Work location not found" });
+      }
+      await lockHarnessSiblings(transaction, input.environmentId);
+      const current = await transaction
+        .selectFrom("harnessInstances")
+        .select(harnessInstanceColumns)
+        .where("id", "=", input.harnessInstanceId)
+        .where("environmentId", "=", input.environmentId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!current || current.removedAt) {
+        throw new OpensteerError({ code: "not_found", message: "AI engine not found" });
+      }
+      if (!current.enabled) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Turn this AI engine on before making it the default",
+        });
+      }
+      if (current.isDefault) return current;
+      mutation.bumpResource("harness");
+      await transaction
+        .updateTable("harnessInstances")
+        .set({ isDefault: false, updatedAt: new Date() })
+        .where("driverKind", "=", current.driverKind)
+        .where("environmentId", "=", input.environmentId)
+        .where("isDefault", "=", true)
+        .where("removedAt", "is", null)
+        .execute();
+      return await transaction
+        .updateTable("harnessInstances")
+        .set({ isDefault: true, updatedAt: new Date() })
+        .where("id", "=", input.harnessInstanceId)
+        .returning(harnessInstanceColumns)
+        .executeTakeFirstOrThrow();
+    }),
+  );
 }
 
 /**
@@ -634,7 +643,7 @@ export async function removeHarnessInstance(
   environmentId: EnvironmentId,
   harnessInstanceId: HarnessInstanceId,
 ): Promise<HarnessInstanceRecord> {
-  return withDatabaseTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     // Pair with profile creation's environment lock. A concurrent removal
     // commits its tombstone before the waiting creator counts live profiles,
     // so freeing the final slot and filling it are one deterministic order.
@@ -703,6 +712,9 @@ export async function removeHarnessInstance(
       .deleteFrom("harnessCatalogs")
       .where("harnessInstanceId", "=", harnessInstanceId)
       .execute();
+    mutation.bumpResource("harness");
+    mutation.bumpResource("harness-catalog");
+    mutation.bumpResource("harness-auth");
     return row;
   });
 }
@@ -727,7 +739,7 @@ export async function recordHarnessCatalogs(
       );
     }
   }
-  return withDatabaseTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     // Deterministic lock order keeps overlapping multi-profile captures from
     // deadlocking when their request order differs.
     const catalogs = [...input.catalogs].sort((left, right) =>
@@ -827,6 +839,10 @@ export async function recordHarnessCatalogs(
         )
         .execute();
     }
+    if (currentCatalogs.length) {
+      mutation.bumpResource("harness-catalog");
+      mutation.bumpResource("harness-auth");
+    }
     return currentCatalogs;
   });
 }
@@ -907,11 +923,17 @@ export async function discardHarnessCatalog(
   environmentId: EnvironmentId,
   harnessInstanceId: HarnessInstanceId,
 ): Promise<void> {
-  await database
-    .deleteFrom("harnessCatalogs")
-    .where("environmentId", "=", environmentId)
-    .where("harnessInstanceId", "=", harnessInstanceId)
-    .execute();
+  await commitPersonalMutation(database, async (tx, mutation) => {
+    const deleted = await tx
+      .deleteFrom("harnessCatalogs")
+      .where("environmentId", "=", environmentId)
+      .where("harnessInstanceId", "=", harnessInstanceId)
+      .executeTakeFirst();
+    if (deleted.numDeletedRows > 0) {
+      mutation.bumpResource("harness-catalog");
+      mutation.bumpResource("harness-auth");
+    }
+  });
 }
 
 export async function listHarnessCatalogs(
@@ -981,7 +1003,7 @@ export async function rememberExecutionChoice(
   choice: ExecutionChoice,
   administration?: AdministrationCommandIdentity | undefined,
 ): Promise<ExecutionPreferences> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     await requirePersonalOwner(transaction, userId);
     return administrationCommand(transaction, administration, async () => {
       const existing = await transaction
@@ -999,6 +1021,7 @@ export async function rememberExecutionChoice(
         .set({ executionPreferences: jsonValue(merged) })
         .where("ownerId", "=", userId)
         .execute();
+      mutation.bumpResource("settings");
       return merged;
     });
   });

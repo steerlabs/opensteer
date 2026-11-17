@@ -101,8 +101,8 @@ which entries applied:
 - **Agents.** If a person can do it, decide whether agents should reach it
   through the [tool catalog](packages/agent-tools/src/tools/index.ts).
   Model-facing text has behavioral evals in `evals/agent-tools`.
-- **Deployments and versions.** Personal Opensteer and team servers; the personal
-  and team API windows, which keep older apps working
+- **Deployments and versions.** Personal Opensteer and team servers; personal
+  API 62 and the team API compatibility window
   ([API compatibility](docs/connections.md#api-compatibility)). Stable and Beta update
   channels ([Releases](docs/releases.md)).
 - **Connections.** Same computer, private network, personal Connect, and a weak cellular
@@ -244,8 +244,8 @@ Most code changes need no documentation change: agents can read the code.
 
 ## How it works
 
-Personal clients use typed RPC (`packages/protocol`) and one resumable personal event
-stream. The Host owns private tasks, Runs, Requests and the Inbox in PostgreSQL; agents
+Personal clients use typed RPC (`packages/protocol`) and one authenticated socket with
+independent resumable shell, task and subagent scopes. The Host owns private tasks, Runs, Requests and the Inbox in PostgreSQL; agents
 run only on the person's own hosting computer. Other enrolled computers are tool targets.
 Native browser data stays on its owning computer
 ([profile authority](docs/browser-sessions.md#profile-state)).

@@ -1,5 +1,6 @@
 import {
   ScopedHostMessageSchema,
+  personalAuthorityChangedReason,
   type PersonalResumeCursor,
   type PersonalScope,
   type ScopedClientMessage,
@@ -18,12 +19,18 @@ type CutFrame = Extract<
 >;
 type WithoutAddress<T> = T extends CutFrame ? Omit<T, keyof Address> : never;
 type Watch = Extract<ScopedClientMessage, { type: "client.resources.watch" }>;
+type LiveFrame = Extract<ScopedHostMessage, { type: "host.live" }>;
+type DetailScope = LiveFrame["scope"];
+type LiveResync = Extract<ScopedClientMessage, { type: "client.live.resync" }>;
+export type PersonalLiveUpdate = Omit<LiveFrame, "type" | "scope" | keyof Address>;
+type ShellProgress = Extract<ScopedHostMessage, { type: "host.synchronized" }>["shellProgress"];
 type Resource = Omit<Extract<ScopedHostMessage, { type: "host.resource" }>, "type" | keyof Address>;
 
 interface ScopeCut {
   readonly throughSequence: string;
   readonly cursor: PersonalResumeCursor | null;
   readonly frames: readonly WithoutAddress<CutFrame>[];
+  readonly shellProgress?: ShellProgress;
 }
 
 interface PersonalSyncPort {
@@ -32,6 +39,7 @@ interface PersonalSyncPort {
     cursor: PersonalResumeCursor | null,
     signal: AbortSignal,
     anchorItemId?: string,
+    selectedThreadId?: string,
   ): Promise<ScopeCut>;
   send(encoded: string, dispatchGuard: () => boolean, signal: AbortSignal): Promise<boolean>;
   readResources?(
@@ -39,6 +47,8 @@ interface PersonalSyncPort {
     installed: Watch["installed"],
     signal: AbortSignal,
   ): Promise<readonly Resource[]>;
+  readLive?(scope: DetailScope, request?: LiveResync): readonly PersonalLiveUpdate[];
+  onFailure?(error: unknown): void;
   close(reason: string): void;
 }
 
@@ -63,6 +73,10 @@ interface Subscription {
   synchronized: boolean;
   needsRepair: boolean;
   pauseCount: number;
+  readonly live: Map<string, PersonalLiveUpdate>;
+  readonly sentLive: Map<string, number>;
+  liveTimer?: ReturnType<typeof setTimeout> | undefined;
+  liveReady?: boolean;
   resources?: { interests: Watch["interests"]; installed: Watch["installed"]; dirty: boolean };
 }
 
@@ -78,15 +92,24 @@ export class PersonalSyncSocket {
   #head = 0n;
   #closed = false;
   #initialShellReady = true;
+  #selectedThreadId: string | undefined;
+  #attached = false;
   #pressureTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(port: PersonalSyncPort) {
     this.#port = port;
   }
 
+  get attached() {
+    return this.#attached && this.#initialShellReady && !this.#closed;
+  }
+
   attach(request: Extract<ScopedClientMessage, { type: "client.attach" }>) {
-    const { selected, ...shell } = request;
+    if (this.#attached || this.#closed) return;
+    this.#attached = true;
     this.#initialShellReady = false;
+    const { selected, ...shell } = request;
+    this.#selectedThreadId = selected?.scope.threadId;
     this.subscribe(
       {
         type: "client.subscribe",
@@ -135,10 +158,12 @@ export class PersonalSyncSocket {
       sending: false,
       synchronized: false,
       needsRepair: false,
+      live: new Map(),
+      sentLive: new Map(),
       pauseCount: [...this.#fences].filter((matches) => matches(request.scope)).length,
       ...(watch ? { resources: { ...watch, dirty: true } } : {}),
     };
-    prior?.controller.abort();
+    if (prior) this.#cancel(prior);
     this.#generations.set(request.subscriptionId, request.generation);
     this.#subscriptions.set(request.subscriptionId, current);
     this.#schedule(current);
@@ -147,7 +172,7 @@ export class PersonalSyncSocket {
   unsubscribe(address: Address) {
     const current = this.#subscriptions.get(address.subscriptionId);
     if (!current || current.request.generation !== address.generation) return;
-    current.controller.abort();
+    this.#cancel(current);
     this.#subscriptions.delete(address.subscriptionId);
     this.#reschedule();
   }
@@ -187,7 +212,6 @@ export class PersonalSyncSocket {
     this.#head = sequence;
     for (const current of this.#subscriptions.values()) {
       if (sequence > current.pendingHead) current.pendingHead = sequence;
-      if (current.resources) current.resources.dirty = true;
       this.#schedule(current);
     }
   }
@@ -211,7 +235,8 @@ export class PersonalSyncSocket {
     return {
       committed: () => {
         if (!this.#fences.delete(matches)) return;
-        if (affected().length) this.close("Personal authority changed");
+        const ids = affected().map((current) => current.request.subscriptionId);
+        if (ids.length) this.close(personalAuthorityChangedReason(ids));
       },
       rolledBack: () => {
         if (!this.#fences.delete(matches)) return;
@@ -227,9 +252,131 @@ export class PersonalSyncSocket {
     if (this.#closed) return;
     this.#closed = true;
     clearTimeout(this.#pressureTimer);
-    for (const current of this.#subscriptions.values()) current.controller.abort();
+    for (const current of this.#subscriptions.values()) this.#cancel(current);
     this.#subscriptions.clear();
     this.#port.close(reason);
+  }
+
+  #cancel(current: Subscription) {
+    clearTimeout(current.liveTimer);
+    current.live.clear();
+    current.sentLive.clear();
+    current.controller.abort();
+  }
+
+  observesThread(threadId: string) {
+    return [...this.#subscriptions.values()].some(
+      ({ request, synchronized, needsRepair, pauseCount }) =>
+        synchronized &&
+        !needsRepair &&
+        pauseCount === 0 &&
+        request.scope.kind !== "shell" &&
+        request.scope.threadId === threadId,
+    );
+  }
+
+  offerLive(scope: DetailScope, update: PersonalLiveUpdate) {
+    for (const current of this.#subscriptions.values()) {
+      const subscribed = current.request.scope;
+      if (
+        !current.synchronized ||
+        current.needsRepair ||
+        subscribed.kind !== scope.kind ||
+        subscribed.threadId !== scope.threadId ||
+        (subscribed.kind === "node" && scope.kind === "node" && subscribed.nodeId !== scope.nodeId)
+      )
+        continue;
+      this.#queueLive(current, update);
+    }
+  }
+
+  resyncLive(request: LiveResync) {
+    const current = this.#subscriptions.get(request.subscriptionId);
+    if (
+      !current?.synchronized ||
+      current.needsRepair ||
+      current.request.generation !== request.generation ||
+      current.request.scope.kind === "shell"
+    )
+      return;
+    for (const update of this.#port.readLive?.(current.request.scope, request) ?? [])
+      this.#queueLive(current, update, true);
+  }
+
+  #queueLive(current: Subscription, update: PersonalLiveUpdate, replace = false) {
+    const key = JSON.stringify([update.runId, update.attemptId, update.streamId]);
+    if (replace) current.sentLive.delete(key);
+    current.live.delete(key);
+    current.live.set(key, update);
+    let bytes = [...current.live.values()].reduce(
+      (total, frame) => total + Buffer.byteLength(JSON.stringify(frame)) + 128,
+      0,
+    );
+    for (const [id, frame] of current.live) {
+      if (bytes <= 64 * 1024) break;
+      current.live.delete(id);
+      bytes -= Buffer.byteLength(JSON.stringify(frame)) + 128;
+    }
+    if (!current.liveTimer && !current.liveReady) {
+      current.liveTimer = setTimeout(() => {
+        current.liveTimer = undefined;
+        current.liveReady = true;
+        this.#schedule(current);
+      }, 50);
+      current.liveTimer.unref?.();
+    }
+  }
+
+  #readyLive(current: Subscription) {
+    if (!current.liveReady) return [];
+    const through = BigInt(current.cursor?.afterSequence ?? 0);
+    return [...current.live].filter(([, update]) => BigInt(update.afterSequence) <= through);
+  }
+
+  async #sendLive(current: Subscription) {
+    if (current.request.subscriptionId === "shell" || current.request.scope.kind === "shell")
+      return;
+    for (const [key, update] of this.#readyLive(current)) {
+      const last = current.sentLive.get(key);
+      const text = update.update;
+      const append =
+        last !== undefined &&
+        text.operation === "replace" &&
+        text.offset <= last &&
+        last < text.totalLength;
+      const { item: _item, ...identity } = update;
+      const frame = append
+        ? {
+            ...identity,
+            update: {
+              operation: "append" as const,
+              offset: last,
+              totalLength: text.totalLength,
+              text: text.text.slice(last - text.offset),
+            },
+          }
+        : update;
+      if (
+        !(await this.#send(
+          current,
+          {
+            ...frame,
+            type: "host.live",
+            subscriptionId: current.request.subscriptionId,
+            generation: current.request.generation,
+            scope: current.request.scope,
+          },
+          () => current.live.get(key) === update,
+        ))
+      )
+        return;
+      if (current.live.get(key) === update) current.live.delete(key);
+      current.sentLive.delete(key);
+      if (text.operation !== "close") current.sentLive.set(key, text.totalLength);
+      if (current.sentLive.size > 64)
+        current.sentLive.delete(current.sentLive.keys().next().value!);
+    }
+    if (current.live.size === 0) current.liveReady = false;
   }
 
   #matches(current: Subscription) {
@@ -258,13 +405,16 @@ export class PersonalSyncSocket {
     if (
       current.synchronized &&
       current.pendingHead <= BigInt(current.cursor?.afterSequence ?? 0) &&
-      !current.resources?.dirty
+      !current.resources?.dirty &&
+      this.#readyLive(current).length === 0
     )
       return;
     current.sending = true;
     void this.#drain(current)
-      .catch(() => {
-        if (this.#matches(current)) this.close("Personal scope delivery failed");
+      .catch((error: unknown) => {
+        if (!this.#matches(current)) return;
+        this.#port.onFailure?.(error);
+        this.close("Personal scope delivery failed");
       })
       .finally(() => {
         current.sending = false;
@@ -276,6 +426,7 @@ export class PersonalSyncSocket {
     const { request, controller } = current;
     if (current.synchronized && current.pendingHead <= BigInt(current.cursor?.afterSequence ?? 0)) {
       await this.#sendResources(current);
+      await this.#sendLive(current);
       return;
     }
     const cursor = current.cursor;
@@ -284,6 +435,7 @@ export class PersonalSyncSocket {
       cursor,
       controller.signal,
       request.anchorItemId,
+      this.#selectedThreadId,
     );
     if (!this.#matches(current)) return;
     const address = { subscriptionId: request.subscriptionId, generation: request.generation };
@@ -295,26 +447,47 @@ export class PersonalSyncSocket {
       const sent = await this.#send(current, { ...frame, ...address });
       if (!sent) return;
       if (!cut.cursor) throw new Error("A durable personal cut needs a cursor");
+      if (frame.type === "host.snapshot" && "tasks" in frame.snapshot && current.resources) {
+        for (const resource of frame.snapshot.resources ?? [])
+          current.resources.installed = {
+            ...current.resources.installed,
+            [resource.kind]: resource.revision,
+          };
+      }
       current.cursor = { ...cut.cursor, afterSequence: frame.throughSequence };
     }
     if (!this.#matches(current) || current.pauseCount > 0 || !cut.cursor) return;
     current.cursor = cut.cursor;
+    const watched = current.resources;
+    if (watched && cut.shellProgress) {
+      const revisions = cut.shellProgress.resourceRevisions;
+      watched.dirty ||= watched.interests.some(
+        (kind) => watched.installed[kind] !== revisions[kind],
+      );
+    }
     if (!current.synchronized) {
       const sent = await this.#send(current, {
         type: "host.synchronized",
         ...address,
         scope: request.scope,
         throughSequence: cut.throughSequence,
+        ...(cut.shellProgress ? { shellProgress: cut.shellProgress } : {}),
       });
       if (sent) {
         current.synchronized = true;
+        if (request.scope.kind !== "shell")
+          for (const update of this.#port.readLive?.(request.scope) ?? [])
+            this.#queueLive(current, update);
         if (request.subscriptionId === "shell" && !this.#initialShellReady) {
           this.#initialShellReady = true;
           this.#reschedule();
         }
       }
     }
-    if (current.synchronized) await this.#sendResources(current);
+    if (current.synchronized) {
+      await this.#sendResources(current);
+      await this.#sendLive(current);
+    }
   }
 
   async #sendResources(current: Subscription) {
@@ -353,7 +526,7 @@ export class PersonalSyncSocket {
     if (!guard()) return false;
     const parsed = ScopedHostMessageSchema.safeParse(frame);
     if (!parsed.success) {
-      if (frame.type !== "host.changes") throw new Error("Invalid personal sync frame");
+      if (frame.type !== "host.changes") throw parsed.error;
       const sent = await this.#send(
         current,
         {

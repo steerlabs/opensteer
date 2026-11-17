@@ -54,7 +54,6 @@ export async function publishThreadSummary(tx: Tx, threadId: ThreadId): Promise<
         "lastReplyPreview",
         "failurePreview",
         "latestRunCompletedAt",
-        "latestPlace",
         "listed",
         "removedAt",
       ])
@@ -83,7 +82,7 @@ export async function publishThreadSummary(tx: Tx, threadId: ThreadId): Promise<
     } else {
       mutation.change(
         { scopeKey: threadScope, entityKind: "thread", entityId: threadId, operation: "upsert" },
-        () => ({ ...view, latestPlace: row.latestPlace }),
+        () => view,
       );
     }
     if (row.listed && row.status !== "archived" && !row.removedAt) {
@@ -141,7 +140,7 @@ export async function publishRunQueue(tx: Tx, threadId: ThreadId, runId?: RunId)
       .executeTakeFirstOrThrow();
     const runs = await tx
       .selectFrom("runs")
-      .select(["id", "status", "revision", "latestPlace"])
+      .select(["id", "status", "revision"])
       .select(sql<boolean>`finish_intent is not null`.as("finishing"))
       .where("threadId", "=", threadId)
       .where(sql<boolean>`status in ('queued','starting','running','waiting')`)

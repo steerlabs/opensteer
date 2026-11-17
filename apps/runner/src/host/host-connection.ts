@@ -31,6 +31,9 @@ import {
   type HostToRunnerMessage,
   type RunnerAgentsModule,
   type RunnerAuxiliaryModule,
+  runEventsCapability,
+  runEventsUpdateReason,
+  runEventsVersion,
   type RunnerChallenge,
   type RunnerCommand,
   type RunnerConnectionFence,
@@ -70,11 +73,7 @@ import {
   type RefreshedRunCredentials,
   type RunnerMessageSink,
 } from "../runtime/runtime.js";
-import {
-  watchFullDiskAccess,
-  type FullDiskAccessProbeOptions,
-  type FullDiskAccessWatch,
-} from "../shell/full-disk-access.js";
+import { probeFullDiskAccess, type FullDiskAccessProbeOptions } from "../shell/full-disk-access.js";
 import type { PreparedShellModule } from "../shell/shell-host-key.js";
 import { ShellModuleHandler } from "../shell/shell-module-handler.js";
 
@@ -315,6 +314,7 @@ export class ReconnectingHostConnection {
    * started — a person turns that switch while the Runner is connected.
    */
   #fullDiskAccess: boolean | undefined;
+  #diskProbe: Promise<boolean> | undefined;
   #identity: RunnerIdentity;
   /** Set after the Host rejects this Runner's persisted key; see `#proof`. */
   #reenroll = false;
@@ -454,8 +454,8 @@ export class ReconnectingHostConnection {
    * The Host learns this computer's engines only from a hello, so when a CLI
    * has appeared or gone since this socket's, the Runner reconnects to say
    * hello again. Runs survive that; trigger programs do not, so it waits while
-   * one is running or a command the Host sent is still queued, and the next
-   * heartbeat looks again.
+   * one is running or a command the Host sent is still queued. This check
+   * runs when a caller explicitly refreshes this computer's engines.
    */
   recheckEngines(): void {
     const advertised = this.#advertisedEngines;
@@ -616,6 +616,8 @@ export class ReconnectingHostConnection {
     if (Date.parse(first.expiresAt) <= Date.now()) {
       throw new Error("Host Runner challenge is expired");
     }
+    if (this.#agents && first.runEventsVersion !== runEventsVersion)
+      throw new Error(runEventsUpdateReason);
     const descriptor = await this.#descriptor();
     const proof = this.#proof(first, descriptor);
     await sendWireMessage(socket, proof);
@@ -709,6 +711,8 @@ export class ReconnectingHostConnection {
     const agents = this.#agents;
     const harnessDrivers = agents ? await agents.runtime.harnessDrivers() : [];
     await this.#computerUse?.permissions().catch(() => undefined);
+    if (this.#shellModule?.descriptor.platform === "darwin")
+      this.#fullDiskAccess = await this.#probeFullDiskAccess().catch(() => undefined);
     const bridge = this.#browserBridge;
     const browserCapabilities = bridge
       ? await new LocalBrowserRuntimeBridge(bridge).capabilities()
@@ -717,6 +721,7 @@ export class ReconnectingHostConnection {
       bootId: this.#bootId,
       capabilities: [
         ...runnerCapabilities(harnessDrivers),
+        ...(agents ? ([runEventsCapability] as const) : []),
         ...(harnessDrivers.some((driver) => driver.driverKind === "codex")
           ? ["voice-run-v1" as const]
           : []),
@@ -792,37 +797,38 @@ export class ReconnectingHostConnection {
     };
   }
 
-  /**
-   * Keeps the Host's copy of the macOS grant current for one connection.
-   *
-   * macOS raises no event when a person turns the switch, and the descriptor is
-   * signed once at connect, so the alternative to re-probing here would be
-   * dropping a healthy connection to restate a boolean. The fenced connection
-   * carries the new answer instead: it grants nothing on the Host, and the host
-   * key beside it stays where only a signed hello can state it.
-   */
-  #watchFullDiskAccess(socket: WebSocket, signal: AbortSignal): FullDiskAccessWatch | undefined {
+  #probeFullDiskAccess(): Promise<boolean> {
     const shell = this.#shellModule;
-    const initial = this.#fullDiskAccess;
-    if (!shell || shell.descriptor.platform !== "darwin" || initial === undefined) return undefined;
-    return watchFullDiskAccess({
-      ...this.#fullDiskAccessProbe,
-      helperBinary: shell.helperBinary,
-      initial,
-      onChange: async (fullDiskAccess) => {
+    if (!shell || shell.descriptor.platform !== "darwin") return Promise.resolve(false);
+    this.#diskProbe ??= (this.#fullDiskAccessProbe.probe ?? probeFullDiskAccess)(
+      shell.helperBinary,
+    ).finally(() => {
+      this.#diskProbe = undefined;
+    });
+    return this.#diskProbe;
+  }
+
+  #reportFullDiskAccess(socket: WebSocket): void {
+    void this.#probeFullDiskAccess()
+      .then(async (value) => {
+        if (
+          this.#socket !== socket ||
+          socket.readyState !== WebSocket.OPEN ||
+          this.#fullDiskAccess === value
+        )
+          return;
         await sendWireMessage(socket, {
           ...this.#fence.fence,
-          fullDiskAccess,
+          fullDiskAccess: value,
           type: "runner.shell.full-disk-access",
         });
-        this.#fullDiskAccess = fullDiskAccess;
-      },
-      onError: (error) =>
-        this.#logger.error("This computer's macOS Full Disk Access probe failed", {
+        this.#fullDiskAccess = value;
+      })
+      .catch((error: unknown) =>
+        this.#logger.error("Full Disk Access probe failed", {
           reason: safeErrorMessage(error),
         }),
-      signal,
-    });
+      );
   }
 
   #proof(challenge: RunnerChallenge, descriptor: RunnerDescriptor) {
@@ -1130,7 +1136,6 @@ export class ReconnectingHostConnection {
     const supervision = handlers.map(({ handler, module }) =>
       this.#superviseModule(module, handler, socket, modules, moduleSignal),
     );
-    const fullDiskAccess = this.#watchFullDiskAccess(socket, moduleSignal);
     const sendHeartbeat = (): void => {
       // The frame is built inside the promise: reading what this Runner is
       // busy with and stamping the fence are part of the send, so a failure in
@@ -1146,7 +1151,6 @@ export class ReconnectingHostConnection {
         .catch(() => socket.close(1011, "Heartbeat failed"));
     };
     const heartbeat = setInterval(() => {
-      this.recheckEngines();
       if (socket.readyState !== WebSocket.OPEN) return;
       sendHeartbeat();
       for (const module of modules.values()) void this.#moduleHeartbeat(module);
@@ -1157,6 +1161,9 @@ export class ReconnectingHostConnection {
       fence: hostMessageFence,
       handle: async (message: PostAuthenticationHostMessage) => {
         switch (message.type) {
+          case "host.shell.probe-full-disk-access":
+            this.#reportFullDiskAccess(socket);
+            break;
           case "host.welcome":
             throw new Error("Host repeated the Runner authentication handshake");
           case "host.connection.lease-renewed":
@@ -1205,7 +1212,6 @@ export class ReconnectingHostConnection {
     } finally {
       await dispatcher.abortAndDrain(new Error("Runner connection closed"));
       clearInterval(heartbeat);
-      fullDiskAccess?.stop();
       moduleLifetime.abort(new Error("Runner connection closed"));
       for (const waiter of this.#ticketWaiters.values()) {
         waiter.reject(new Error("Runner connection closed"));
@@ -1413,6 +1419,9 @@ export class AgentsWorkSession implements RunnerWorkSession {
         );
         return;
       }
+      case "host.live.resync":
+        this.#options.agents.runtime.resynchronizeLive(message.runId);
+        return;
       case "host.events.acked":
         this.#options.agents.runtime.acknowledge(message.acks);
         return;

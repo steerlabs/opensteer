@@ -80,7 +80,9 @@ export async function buildPersonalShellSnapshot(
     recentTaskIds: window.recent,
     activeTaskIds: window.active,
     nextBefore: window.recentNextBefore
-      ? Buffer.from(JSON.stringify(window.recentNextBefore)).toString("base64url")
+      ? Buffer.from(JSON.stringify({ ...window.recentNextBefore, window: "recent" })).toString(
+          "base64url",
+        )
       : null,
     visits: window.visits.map((visit) => ({
       ...visit,
@@ -103,7 +105,7 @@ export async function buildPersonalDetailSnapshot(
 ) {
   const thread = await currentTasks(tx, viewerId)
     .where("id", "=", scope.threadId)
-    .select(["inputQueueRevision", "inputQueuePaused", "latestPlace"])
+    .select(["inputQueueRevision", "inputQueuePaused"])
     .executeTakeFirstOrThrow();
   const page = await readTranscriptPage(tx, {
     viewerId,
@@ -127,17 +129,8 @@ export async function buildPersonalDetailSnapshot(
   const tools = await overlayPage(tx, scope, address, "tools", 10, 8 * 1024);
   const nodes = await overlayPage(tx, scope, address, "nodes", 10, 8 * 1024);
   const queue = root ? await activeRunQueue(tx, thread.id) : [];
-  const node =
-    scope.kind === "node"
-      ? await tx
-          .selectFrom("executionNodes")
-          .select(["id", "title", "status"])
-          .where("id", "=", scope.nodeId)
-          .executeTakeFirstOrThrow()
-      : null;
   return PersonalDetailSnapshotSchema.parse({
-    thread: { ...taskView(thread), latestPlace: thread.latestPlace },
-    ...(node ? { node: { ...node, title: utf8Prefix(node.title, 240) } } : {}),
+    thread: taskView(thread),
     orderRevision: page.orderRevision,
     inputQueueRevision: thread.inputQueueRevision,
     ...(root

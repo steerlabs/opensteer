@@ -601,8 +601,14 @@ export class OpensteerStore {
   async setRunnerShellFullDiskAccess(
     runnerId: RunnerId,
     fullDiskAccess: boolean,
+    connectionGeneration?: number,
   ): Promise<boolean> {
-    return runnerStore.setRunnerShellFullDiskAccess(this.#database, runnerId, fullDiskAccess);
+    return runnerStore.setRunnerShellFullDiskAccess(
+      this.#database,
+      runnerId,
+      fullDiskAccess,
+      connectionGeneration,
+    );
   }
   async authenticateRunnerConnection(
     descriptor: RunnerDescriptor,

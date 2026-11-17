@@ -19,8 +19,14 @@ type FullAccessStore = Pick<OpensteerStore, "listReachableMachines" | "requireSe
 export class MachineFullDiskAccessService {
   readonly #store: FullAccessStore;
 
-  constructor(options: { readonly store: FullAccessStore }) {
+  readonly #probe: ((runnerId: RunnerId) => void) | undefined;
+
+  constructor(options: {
+    readonly store: FullAccessStore;
+    readonly probe?: (runnerId: RunnerId) => void;
+  }) {
     this.#store = options.store;
+    this.#probe = options.probe;
   }
 
   async request(input: {
@@ -46,6 +52,7 @@ export class MachineFullDiskAccessService {
         code: "bad_request",
         message: `${machine.name} is not a Mac, so macOS Full Disk Access does not apply.`,
       });
+    this.#probe?.(machine.runnerId);
     if (machine.fullDiskAccess === true)
       throw new OpensteerError({
         code: "bad_request",

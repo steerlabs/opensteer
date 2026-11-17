@@ -471,6 +471,9 @@ export function listMessageRevisions(
     readonly messageId: MessageId;
     readonly requestedBy: UserId;
     readonly before?: number | undefined;
+    readonly expectedRevision?: number | undefined;
+    readonly leaseId?: string | undefined;
+    readonly sessionId?: AuthSessionId | undefined;
   },
 ) {
   return withPersonalReadTransaction(database, async (transaction) => {
@@ -482,6 +485,49 @@ export function listMessageRevisions(
       .where("id", "=", input.messageId)
       .executeTakeFirst();
     if (!message) throw new OpensteerError({ code: "not_found", message: "Message not found" });
+    if (input.expectedRevision !== undefined) {
+      if (input.before !== undefined || message.revision !== input.expectedRevision)
+        throw new OpensteerError({
+          code: "conflict",
+          message: "This message changed on another device.",
+        });
+      const thread = await transaction
+        .selectFrom("threads")
+        .selectAll()
+        .where("id", "=", input.threadId)
+        .where("removedAt", "is", null)
+        .executeTakeFirst();
+      const queued = await transaction
+        .selectFrom("threadInputs")
+        .selectAll()
+        .where("threadId", "=", input.threadId)
+        .where("messageId", "=", message.id)
+        .executeTakeFirst();
+      if (
+        !thread ||
+        !queued ||
+        !(await inputEditEligibility(transaction, thread, queued, message, input.requestedBy))
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          message: "This input is no longer editable.",
+        });
+      assertInputLease(transaction, queued, input.leaseId, input.sessionId);
+      return {
+        revisions: [
+          MessageRevisionViewSchema.parse({
+            revision: message.revision,
+            content: message.content,
+            author: message.author,
+            deviceLabel: null,
+            createdAt: (message.editedAt ?? message.createdAt).toISOString(),
+          }),
+        ],
+        hasMore: false,
+      };
+    }
+    if (!message.published)
+      throw new OpensteerError({ code: "not_found", message: "Message not found" });
     const rows = await transaction
       .selectFrom("messageRevisions")
       .selectAll()

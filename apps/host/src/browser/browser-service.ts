@@ -889,6 +889,16 @@ export class BrowserService {
     return Boolean(this.#targetResolver) && !this.#closed;
   }
 
+  isPlacementReady(runnerId: RunnerId, runtimeId: string): boolean {
+    if (this.#closed) return false;
+    try {
+      return this.#targetResolver?.resolve({ kind: "runner", runnerId })?.runtimeId === runtimeId;
+    } catch (error) {
+      if (error instanceof OpensteerError && error.code === "runner_offline") return false;
+      throw error;
+    }
+  }
+
   async initialize(): Promise<void> {
     if (this.#personal) await this.#repository.failActiveBrowserSessions();
     await this.pruneHistory();

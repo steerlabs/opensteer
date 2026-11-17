@@ -281,41 +281,25 @@ export async function dispatchNodeStop(
   commandId: import("@opensteer/core").CommandId,
   send: (beforeAck: () => Promise<void>) => Promise<unknown>,
 ): Promise<void> {
-  const accepted = Promise.withResolvers<void>();
-  const committed = Promise.withResolvers<void>();
-  void committed.promise.catch(() => undefined);
-  let sending: Promise<unknown> | undefined;
-  try {
-    // A remote effect cannot be retried with a database transaction.
-    await commitPersonalMutation(
-      database,
-      async (tx) => {
-        await assertNodeStop(tx, input, bindingGeneration);
-        sending = send(async () => {
-          accepted.resolve();
-          await committed.promise;
-        });
-        void sending.catch(accepted.reject);
-        await accepted.promise;
-        await tx
-          .updateTable("commands")
-          .set({
-            status: "succeeded",
-            lastError: null,
-            updatedAt: new Date(),
-          })
-          .where("id", "=", commandId)
-          .where("status", "=", "dispatched")
-          .execute();
-      },
-      undefined,
-      "non-retrying",
-    );
-    committed.resolve();
-    await sending?.catch(() => undefined);
-  } catch (error) {
-    committed.reject(error);
-    await sending?.catch(() => undefined);
-    throw error;
-  }
+  await commitPersonalMutation(database, async (tx) => {
+    await assertNodeStop(tx, input, bindingGeneration);
+    const intent = await tx
+      .updateTable("commands")
+      .set({ updatedAt: new Date() })
+      .where("id", "=", commandId)
+      .where("status", "=", "dispatched")
+      .executeTakeFirst();
+    if (!intent.numUpdatedRows)
+      throw new OpensteerError({ code: "conflict", message: "Subagent stop was retired" });
+  });
+  await send(async () => {
+    await commitPersonalMutation(database, async (tx) => {
+      await tx
+        .updateTable("commands")
+        .set({ status: "succeeded", lastError: null, updatedAt: new Date() })
+        .where("id", "=", commandId)
+        .where("status", "=", "dispatched")
+        .execute();
+    });
+  });
 }
