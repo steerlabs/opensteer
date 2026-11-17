@@ -2276,8 +2276,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       const overview = client.settings.overview(deploymentId);
       return rpcSuccess({ ...overview, rows: overview.rows.map(listedMockRow) });
     },
-    "plugins.detail.get": unsupportedMockRpc,
-    "plugins.directory.get": unsupportedMockRpc,
     "devices.overview.get": async () => {
       const otherDevices = client.otherDevices();
       return rpcSuccess(
@@ -8752,9 +8750,6 @@ class MockHostState {
       ? { ...existing, computer, displayName, status: "connected", updatedAt: timestamp }
       : {
           accountIdentifier: null,
-          applicationSource: null,
-          authMethodId: "computer",
-          authorizationDigest: null,
           computer,
           connectionMethod: "computer",
           createdAt: timestamp,
@@ -9608,16 +9603,9 @@ class MockHostState {
 
   async loadIntegrations(): Promise<RpcData<"integrations.get">> {
     return {
-      applications: [...this.integrations.applications],
       authorizationSurface: "canonical",
-      callbackUrls: { ...this.integrations.callbackUrls },
       connections: [...this.integrations.connections],
-      // The dashboard still carries it; nothing in a client shows it any more.
-      hostedOAuthDisclosure: "Not shown.",
       isAdministrator: true,
-      providerAuthorizations: { ...this.integrations.providerAuthorizations },
-      providers: [...this.integrations.providers],
-      remoteAccountSignIn: true,
     };
   }
 
@@ -9625,14 +9613,15 @@ class MockHostState {
     return {
       authorizationSurface: "canonical",
       catalog: [...this.integrations.catalog],
-      connections: [...this.integrations.mcpConnections],
       installations: [...this.integrations.installations],
     };
   }
 
-  async installCatalogIntegration(
-    input: CommandInputOf<"integration.catalog.install">["input"],
-  ): Promise<CommandOutputOf<"integration.catalog.install">["installation"]> {
+  /** A device app installed from the catalog, as answering an access Request installs it. */
+  async installCatalogIntegration(input: {
+    readonly definitionId: string;
+    readonly digest: string;
+  }): Promise<RpcData<"integration.platform.get">["installations"][number]["installation"]> {
     const entry = this.integrations.catalog.find(
       ({ definition }) => definition.id === input.definitionId,
     );
@@ -9648,25 +9637,13 @@ class MockHostState {
     // carries the summary its snapshot discloses, not the catalog projection.
     const definition = mockIntegrationDefinitions.find(({ id }) => id === input.definitionId);
     if (!definition) throw new Error("Integration definition not found.");
-    const installation =
-      definition.adapter === "computer"
-        ? mockComputerAppInstallation({
-            createdAt: this.now().toISOString(),
-            definition,
-            digest: entry.digest,
-            installedBy: mockUserId,
-            connections: [],
-          })
-        : mockIntegrationInstallation({
-            createdAt: this.now().toISOString(),
-            definition,
-            digest: entry.digest,
-            installedBy: mockUserId,
-            providerApplicationRequired: definition.authMethods.some(
-              ({ kind }) => kind === "oauth",
-            ),
-            tools: mockCatalogTools(definition),
-          });
+    const installation = mockComputerAppInstallation({
+      createdAt: this.now().toISOString(),
+      definition,
+      digest: entry.digest,
+      installedBy: mockUserId,
+      connections: [],
+    });
     entry.installationId = installation.installation.id;
     this.integrations.installations.push(installation);
     return installation.installation;
@@ -11395,16 +11372,6 @@ class MockHostState {
     switch (requirement.kind) {
       case "none":
         return;
-      case "provider": {
-        const connected = this.integrations.connections.some(
-          (connection) =>
-            connection.id === connectionId &&
-            connection.definitionId === requirement.definitionId &&
-            connection.status === "connected",
-        );
-        if (!connected) throw new Error("Connect the requested account before granting access.");
-        return;
-      }
       case "computer": {
         const connected = this.integrations.connections.find(
           (connection) =>
@@ -11418,17 +11385,6 @@ class MockHostState {
           throw new Error("The selected computer app allows reading only.");
         }
         return;
-      }
-      case "mcp-oauth": {
-        const connected = this.integrations.mcpConnections.some(
-          (connection) =>
-            connection.connectionId === connectionId &&
-            connection.installationId === installation.installation.id &&
-            connection.serverId === server.id &&
-            connection.status === "connected",
-        );
-        if (!connected)
-          throw new Error("Connect the requested MCP account before granting access.");
       }
     }
   }
