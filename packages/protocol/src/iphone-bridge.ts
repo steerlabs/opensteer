@@ -289,14 +289,17 @@ const requestBase = {
   id: positive,
 };
 const phoneRef = iphoneNativePhoneRefSchema.shape;
+const imageRoots = z.array(z.string().min(1).max(4096)).max(8);
 const paramsByMethod = {
   hello: empty,
   init: z
     .object({
       privateRoot: z.string().min(1).max(4096),
-      imageRoots: z.array(z.string().min(1).max(4096)).max(8),
+      imageRoots,
     })
     .strict(),
+  "images.refresh": z.strictObject({ imageRoots }),
+  "setup.revealDeveloperMode": iphoneNativePhoneRefSchema,
   "roster.get": empty,
   "roster.subscribe": empty,
   "setup.inspect": iphoneNativePhoneRefSchema,
@@ -382,6 +385,18 @@ const iphoneNativeBaseRequestSchema = z
         params: paramsByMethod["init"],
       })
       .strict(),
+    z.strictObject({
+      ...requestBase,
+      method: z.literal("images.refresh"),
+      timeoutMs: positive.max(30000),
+      params: paramsByMethod["images.refresh"],
+    }),
+    z.strictObject({
+      ...requestBase,
+      method: z.literal("setup.revealDeveloperMode"),
+      timeoutMs: positive.max(30000),
+      params: paramsByMethod["setup.revealDeveloperMode"],
+    }),
     z
       .object({
         ...requestBase,

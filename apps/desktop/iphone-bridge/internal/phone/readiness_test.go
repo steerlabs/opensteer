@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestReadinessComesFromVerifiedSessionServicesStateAndMedia(t *testing.T) {
+func TestReadinessSeparatesCandidateEligibilityFromRuntimeCapabilities(t *testing.T) {
 	m := newTestManager(t)
 	d := ios.DeviceEntry{DeviceID: 1, Properties: ios.DeviceProperties{SerialNumber: "readiness-fixture", ConnectionType: "USB"}}
 	m.inventory.Replace([]ios.DeviceEntry{d})
@@ -29,15 +29,21 @@ func TestReadinessComesFromVerifiedSessionServicesStateAndMedia(t *testing.T) {
 		}
 		return result
 	}
-	assert("not-initialized")
+	if got := assert("")["capabilities"].(map[string]interface{})["observe"]; got != "not-initialized" {
+		t.Fatalf("unopened runtime capability: %v", got)
+	}
 	screen, _, _ := screenFixture(t)
 	s := &Session{identity: p.identity, announced: true, screen: screen, services: ios.RsdHandshakeResponse{Udid: p.identity, Services: map[string]ios.RsdServiceEntry{}}}
 	p.session = s
-	assert("native-service-missing")
-	for _, service := range []string{deviceInfoService, "com.apple.coredevice.screencaptureservice", "com.apple.coredevice.hid.indigo", DisplayService, "com.apple.coredevice.appservice", "com.apple.mobile.installation_proxy.shim.remote"} {
+	if got := assert("")["capabilities"].(map[string]interface{})["observe"]; got != "native-service-missing" {
+		t.Fatalf("missing runtime service: %v", got)
+	}
+	for _, service := range []string{deviceInfoService, "com.apple.coredevice.screencaptureservice", "com.apple.coredevice.hid.indigo", "com.apple.coredevice.appservice", "com.apple.mobile.installation_proxy.shim.remote"} {
 		s.services.Services[service] = ios.RsdServiceEntry{Port: 1234}
 	}
-	assert("lock-state-unknown")
+	if got := assert("")["capabilities"].(map[string]interface{})["observe"]; got != "lock-state-unknown" {
+		t.Fatalf("unknown runtime lock: %v", got)
+	}
 	p.sessionID = "setup"
 	p.binding = "binding"
 	includeScreenshot := true
@@ -46,14 +52,8 @@ func TestReadinessComesFromVerifiedSessionServicesStateAndMedia(t *testing.T) {
 	}
 	result := assert("")
 	caps := result["capabilities"].(map[string]interface{})
-	if caps["observe"] != nil || caps["act"] != "input-media-session-required" || caps["installedApps"] != nil || caps["launch"] != nil {
+	if caps["observe"] != nil || caps["act"] != nil || caps["installedApps"] != nil || caps["launch"] != nil {
 		t.Fatalf("wrong capabilities: %v", caps)
-	}
-	s.media = &MediaSession{}
-	s.media.ready.Store(true)
-	caps = assert("")["capabilities"].(map[string]interface{})
-	if caps["act"] != nil {
-		t.Fatal("negotiated media did not enable input")
 	}
 	for service, operation := range map[string]string{screenshotService: "observe", hidService: "act", appService: "launch", inventoryService: "installedApps"} {
 		entry := s.services.Services[service]
@@ -69,7 +69,6 @@ func TestReadinessComesFromVerifiedSessionServicesStateAndMedia(t *testing.T) {
 		}
 		s.services.Services[service] = entry
 	}
-	s.media = nil
 	p.sessionID = "setup"
 	p.binding = "binding"
 	if err := m.closeSession("binding", "setup"); err != nil {
@@ -77,7 +76,15 @@ func TestReadinessComesFromVerifiedSessionServicesStateAndMedia(t *testing.T) {
 	}
 	assert("")
 	s.services.Udid = "wrong-peer"
-	assert("identity-mismatch")
+	if got := assert("")["capabilities"].(map[string]interface{})["observe"]; got != "identity-mismatch" {
+		t.Fatalf("wrong runtime peer: %v", got)
+	}
+	for _, r := range []wire.Reason{wire.Unsupported, wire.UnsupportedIOS, wire.OwnedElsewhere, wire.USBMuxUnavailable} {
+		p.readinessReason = r
+		assert(string(r))
+	}
+	p.readinessReason = wire.TrustRequired
+	assert("")
 }
 
 type delayedOpenUSB struct {

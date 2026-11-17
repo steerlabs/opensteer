@@ -204,7 +204,8 @@ func openInput(ctx context.Context, b screenBackend) (xpcChannel, func(), error)
 			cancel()
 		}
 	}()
-	return conn, func() { _ = conn.Close(); close(done); cancel(); <-joined }, nil
+	input := &gracefulInput{xpcChannel: conn, wait: waitDuration}
+	return input, func() { _ = input.Close(); close(done); cancel(); <-joined }, nil
 }
 func digitizerPayload(phase uint64, p wire.Point, display uint64) map[string]interface{} {
 	return map[string]interface{}{"featureIdentifier": "com.apple.coredevice.feature.remote.hid.digitizer", "messageType": "IndigoDigitizerEvent", "payload": map[string]interface{}{"pointOne": map[string]interface{}{"x": p.X, "y": p.Y}, "eventType": phase, "edge": uint64(0), "target": display}}
@@ -325,4 +326,27 @@ func pressButton(ctx context.Context, c xpcChannel, button string, check func() 
 	}
 	held = false
 	return nil
+}
+
+const inputCloseGrace = 250 * time.Millisecond
+
+// Indigo has no acknowledgement; closing immediately after an up event loses it.
+type gracefulInput struct {
+	xpcChannel
+	lastSend time.Time
+	wait     pause
+}
+
+func (c *gracefulInput) Send(m map[string]interface{}, flags ...uint32) error {
+	err := c.xpcChannel.Send(m, flags...)
+	c.lastSend = time.Now()
+	return err
+}
+func (c *gracefulInput) Close() error {
+	if !c.lastSend.IsZero() {
+		if remaining := inputCloseGrace - time.Since(c.lastSend); remaining > 0 {
+			_ = c.wait(context.Background(), remaining)
+		}
+	}
+	return c.xpcChannel.Close()
 }

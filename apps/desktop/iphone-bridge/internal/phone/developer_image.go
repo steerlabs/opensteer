@@ -16,7 +16,12 @@ import (
 )
 
 const maxImageBytes int64 = 2 << 30
-const maxManifestBytes int64 = 4 << 20
+
+// Xcode 27.2 has a 785 KiB manifest, 141 identities and six shared files.
+const maxManifestBytes int64 = 8 << 20
+const maxBuildIdentities = 1024
+const maxIdentityEntries = 16
+const maxImageFiles = 256
 
 type imageManifest struct {
 	ProductBuildVersion string
@@ -51,13 +56,13 @@ func ValidateImage(directory string) (*Image, error) {
 		return reject()
 	}
 	var m imageManifest
-	if _, err := plist.Unmarshal(raw, &m); err != nil || len(m.BuildIdentities) < 1 || len(m.BuildIdentities) > 128 || len(m.ProductBuildVersion) < 1 || len(m.ProductBuildVersion) > 128 {
+	if _, err := plist.Unmarshal(raw, &m); err != nil || len(m.BuildIdentities) < 1 || len(m.BuildIdentities) > maxBuildIdentities || len(m.ProductBuildVersion) < 1 || len(m.ProductBuildVersion) > 128 {
 		return reject()
 	}
 	paths := map[string]bool{}
 	var total int64
 	for _, identity := range m.BuildIdentities {
-		if len(identity.Manifest) == 0 || len(identity.Manifest) > 128 {
+		if len(identity.Manifest) == 0 || len(identity.Manifest) > maxIdentityEntries {
 			return reject()
 		}
 		for key, entry := range identity.Manifest {
@@ -65,7 +70,7 @@ func ValidateImage(directory string) (*Image, error) {
 			if p == "" {
 				continue
 			}
-			if !fs.ValidPath(p) || strings.Contains(p, ":") || strings.Contains(p, "\\") || p == "BuildManifest.plist" {
+			if len(p) > 4096 || !fs.ValidPath(p) || strings.Contains(p, ":") || strings.Contains(p, "\\") || p == "BuildManifest.plist" {
 				return reject()
 			}
 			if paths[p] {
@@ -91,7 +96,7 @@ func ValidateImage(directory string) (*Image, error) {
 				return reject()
 			}
 			total += info.Size()
-			if total > maxImageBytes {
+			if total > maxImageBytes || len(paths) >= maxImageFiles {
 				return reject()
 			}
 			paths[p] = true
@@ -178,19 +183,7 @@ func (r contextReader) Read(b []byte) (int, error) {
 }
 func MountDeveloperImage(ctx context.Context, session *Session, d ios.DeviceEntry, path string) error {
 	d = session.Device(ctx, d)
-	var m imagemounter.ImageMounter
-	var err error
-	if imagemounter.SupportsCryptexDDI(d) {
-		m, err = imagemounter.NewCryptexDeveloperDiskImageMounter(d)
-	} else {
-		version, e := ios.GetProductVersion(d)
-		if e != nil {
-			return Classify(e, wire.ImageMountFailed)
-		}
-		personalized, e := imagemounter.NewPersonalizedDeveloperDiskImageMounter(d, version)
-		err = e
-		m = personalized
-	}
+	m, err := imagemounter.NewImageMounter(d)
 	if err != nil {
 		return Classify(err, wire.ImageMountFailed)
 	}

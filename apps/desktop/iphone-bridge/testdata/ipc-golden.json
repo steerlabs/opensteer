@@ -61,10 +61,20 @@
           "nativeEpoch": 2,
           "name": "Test iPhone 한글",
           "transport": "usb",
-          "reason": "qualification-required",
+          "reason": null,
           "model": "iPhoneFixture",
           "osVersion": "27.0",
-          "build": "TEST"
+          "build": "TEST",
+          "capabilities": {
+            "observe": "not-initialized",
+            "act": "not-initialized",
+            "launch": "not-initialized",
+            "installedApps": "not-initialized",
+            "text": "unsupported-text",
+            "clear": "unsupported-clear",
+            "indexedTargets": "geometry-unavailable",
+            "liveVideo": "unsupported"
+          }
         }
       ]
     }

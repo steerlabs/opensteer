@@ -44,16 +44,18 @@ func (f *fixtureChannel) ReceiveOnServerClientStream() (map[string]interface{}, 
 func (f *fixtureChannel) Close() error { f.closed = true; return nil }
 
 type fixtureScreen struct {
-	state    DeviceState
-	image    []byte
-	channel  *fixtureChannel
-	captures int
-	launches int
-	ax       AXSnapshot
+	state          DeviceState
+	image          []byte
+	channel        *fixtureChannel
+	captures       int
+	captureDisplay string
+	launches       int
+	ax             AXSnapshot
 }
 
 func (f *fixtureScreen) State(context.Context) (DeviceState, error) { return f.state, nil }
-func (f *fixtureScreen) Capture(context.Context, string) ([]byte, error) {
+func (f *fixtureScreen) Capture(_ context.Context, display string) ([]byte, error) {
+	f.captureDisplay = display
 	f.captures++
 	return f.image, nil
 }
@@ -241,6 +243,9 @@ func TestObserveUsesSameGeometryWithoutReturningImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	observation := o.(*Observation)
+	if b.captures != 1 {
+		t.Fatalf("observe captured %d PNGs", b.captures)
+	}
 	if observation.Screenshot != nil || observation.Geometry.Width != 100 || observation.Geometry.Height != 200 || observation.ObservationToken == "o" {
 		t.Fatal("invalid image-free observation")
 	}
@@ -348,5 +353,42 @@ func TestSessionCloseWaitsForContactRelease(t *testing.T) {
 	}
 	if len(b.channel.sent) != 2 || b.channel.sent[1]["payload"].(map[string]interface{})["eventType"] != uint64(2) {
 		t.Fatal("session teardown left contact held")
+	}
+}
+
+func TestEveryInputCloseDrainsAfterFinalRelease(t *testing.T) {
+	for _, button := range []bool{false, true} {
+		for _, abort := range []bool{false, true} {
+			c := &fixtureChannel{}
+			ctx, cancel := context.WithCancel(context.Background())
+			drained := false
+			input := &gracefulInput{xpcChannel: c, wait: func(cleanup context.Context, d time.Duration) error {
+				if cleanup.Err() != nil || d <= 0 || d > inputCloseGrace || c.closed || len(c.sent) != 2 {
+					t.Fatal("closed before release drained")
+				}
+				drained = true
+				return nil
+			}}
+			hold := func(context.Context, time.Duration) error {
+				if abort {
+					cancel()
+					return ctx.Err()
+				}
+				return nil
+			}
+			if button {
+				_ = pressButton(ctx, input, "home", func() error { return ctx.Err() }, hold)
+			} else {
+				rotation := 0
+				_ = gesture(ctx, input, Geometry{Rotation: &rotation}, wire.Point{}, wire.Action{Kind: "tap"}, func() error { return ctx.Err() }, hold)
+			}
+			if err := input.Close(); err != nil {
+				t.Fatal(err)
+			}
+			cancel()
+			if !drained || !c.closed {
+				t.Fatal("release was not drained")
+			}
+		}
 	}
 }

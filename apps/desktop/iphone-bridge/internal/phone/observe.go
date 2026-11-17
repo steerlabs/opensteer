@@ -168,21 +168,6 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 	if !before.same(after) {
 		return nil, wire.Fail(wire.StaleObservation)
 	}
-	// A second capture fences image-size changes even when the state service lacks dimensions.
-	verify, err := s.backend.Capture(ctx, before.uniqueID)
-	if err != nil {
-		return nil, err
-	}
-	if !samePNGDimensions(png, verify) {
-		return nil, wire.Fail(wire.StaleObservation)
-	}
-	final, err := s.backend.State(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if !before.same(final) {
-		return nil, wire.Fail(wire.StaleObservation)
-	}
 	if err := guard(); err != nil {
 		return nil, err
 	}

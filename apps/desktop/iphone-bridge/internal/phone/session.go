@@ -3,8 +3,10 @@ package phone
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/danielpaulus/go-ios/ios"
 	"github.com/danielpaulus/go-ios/ios/http"
@@ -33,16 +35,15 @@ type Session struct {
 	closeOnce   sync.Once
 	closeErr    error
 	tunnel      *tunnel.Userspace
+	dialTCP     func(context.Context, uint16) (net.Conn, error)
 	identity    string
 	services    ios.RsdHandshakeResponse
 	announced   bool
 	newRSD      func(context.Context) (RSD, error)
 	screen      *screenSession
-	media       *MediaSession
 	closed      bool
 	state       DeviceState
 	stateReason wire.Reason
-	inputReason wire.Reason
 }
 
 func OpenSession(lifetime, setup context.Context, device ios.DeviceEntry) (*Session, error) {
@@ -68,7 +69,7 @@ func OpenSession(lifetime, setup context.Context, device ios.DeviceEntry) (*Sess
 }
 
 func sessionFromTunnel(setup context.Context, t *tunnel.Userspace, identity string) (*Session, error) {
-	s := &Session{tunnel: t, identity: identity}
+	s := &Session{tunnel: t, identity: identity, dialTCP: t.DialTCP}
 	s.newRSD = func(ctx context.Context) (RSD, error) {
 		c, err := t.DialTCP(ctx, t.RSDPort)
 		if err != nil {
@@ -114,19 +115,27 @@ func (s *Session) Refresh(ctx context.Context) error {
 	s.services = reply
 	return nil
 }
-func (s *Session) DialService(ctx context.Context, name string) (net.Conn, error) {
+func (s *Session) DialService(ctx context.Context, name string) (conn net.Conn, err error) {
+	start := time.Now()
+	defer func() {
+		reason := ""
+		if err != nil {
+			reason = string(Classify(err, wire.NativeServiceFailed).Code)
+		}
+		slog.Debug("bridge.service", "service", name, "durationMs", time.Since(start).Milliseconds(), "reason", reason)
+	}()
 	s.mu.Lock()
 	closed := s.closed
 	port := s.services.GetPort(name)
-	t := s.tunnel
+	dial := s.dialTCP
 	s.mu.Unlock()
-	if closed || t == nil {
+	if closed || dial == nil {
 		return nil, wire.Fail(wire.NoSession)
 	}
 	if port < 1 || port > 65535 {
 		return nil, wire.Fail(wire.ServiceMissing)
 	}
-	return t.DialTCP(ctx, uint16(port))
+	return dial(ctx, uint16(port))
 }
 func (s *Session) OpenXPC(ctx context.Context, name string) (*xpc.Connection, error) {
 	c, err := s.DialService(ctx, name)
@@ -159,14 +168,10 @@ func (s *Session) Close() error {
 		s.mu.Lock()
 		s.closed = true
 		screen := s.screen
-		m := s.media
 		t := s.tunnel
 		s.mu.Unlock()
 		if screen != nil {
 			screen.close()
-		}
-		if m != nil {
-			s.closeErr = m.Close()
 		}
 		if t != nil {
 			_ = t.Close()
@@ -181,13 +186,10 @@ func (s *Session) Done() <-chan struct{} {
 	}
 	return s.tunnel.Done()
 }
-func (s *Session) MediaReady() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return !s.closed && s.media != nil && s.media.Ready()
-}
-
 func Classify(err error, fallback wire.Reason) *wire.Failure {
+	if err != nil {
+		slog.Debug("bridge.native-error", "err", err, "reason", string(fallback))
+	}
 	if errors.Is(err, ios.ErrRSDIdentityMismatch) {
 		return wire.Fail(wire.IdentityMismatch)
 	}

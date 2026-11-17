@@ -4,9 +4,13 @@ package display
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"math/rand"
+	"net"
 	"sync"
+	"syscall"
 
 	"github.com/danielpaulus/go-ios/ios"
 	"github.com/danielpaulus/go-ios/ios/coredevice"
@@ -134,7 +138,7 @@ func (s *Service) StartVideoStream(ctx context.Context, req VideoStreamRequest) 
 func (s *Service) StopMediaStream(ctx context.Context, clientSessionID uuid.UUID) error {
 	input := map[string]interface{}{
 		"avcMediaStreamOptionClientSessionID": map[string]interface{}{"uuid": clientSessionID},
-		"stopAll":                             false,
+		"stopAll":                             true,
 	}
 	_, err := s.invoke(ctx, featureStopMediaStream, actionMediaStreamStop, input)
 	return err
@@ -166,6 +170,9 @@ func (s *Service) invoke(ctx context.Context, feature, action string, input map[
 		_ = s.conn.Close()
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, fmt.Errorf("display: %s did not complete: %w (the device's mediastream daemon may be wedged; rebooting the device clears it)", feature, ctxErr)
+		}
+		if feature == featureStopMediaStream && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, syscall.ECONNRESET)) {
+			return map[string]interface{}{}, nil
 		}
 		return nil, fmt.Errorf("display: failed to receive the response to %s: %w", feature, err)
 	}

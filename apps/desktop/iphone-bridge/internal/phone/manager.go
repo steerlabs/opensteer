@@ -15,6 +15,7 @@ import (
 
 	"github.com/danielpaulus/go-ios/ios"
 	"github.com/google/uuid"
+	"github.com/steerlabs/opensteer/iphone-bridge/internal/diagnostic"
 	"github.com/steerlabs/opensteer/iphone-bridge/internal/wire"
 )
 
@@ -58,6 +59,8 @@ type Manager struct {
 	identities     map[string]string
 	phones         map[string]*localPhone
 	images         map[string]string
+	selectedImages map[string]string
+	mountImage     func(context.Context, *Session, ios.DeviceEntry, string) error
 	inventory      Inventory
 	revision       uint64
 	discovery      bool
@@ -72,7 +75,7 @@ type Manager struct {
 func NewManager(parent context.Context, usb USB, publish func(wire.Roster)) *Manager {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
 	workCtx, stopWork := context.WithCancel(ctx)
-	return &Manager{ctx: ctx, cancel: cancel, workCtx: workCtx, stopWork: stopWork, usb: usb, wifi: make(map[string]wirelessState), restoring: make(map[string]bool), browse: browseRemote, interfaces: lanInterfaces, dial: dialLAN, publish: publish, phones: make(map[string]*localPhone), images: make(map[string]string), identities: make(map[string]string)}
+	return &Manager{ctx: ctx, cancel: cancel, workCtx: workCtx, stopWork: stopWork, usb: usb, wifi: make(map[string]wirelessState), restoring: make(map[string]bool), browse: browseRemote, interfaces: lanInterfaces, dial: dialLAN, publish: publish, phones: make(map[string]*localPhone), images: make(map[string]string), selectedImages: make(map[string]string), mountImage: MountDeveloperImage, identities: make(map[string]string)}
 }
 func (m *Manager) Call(ctx context.Context, r wire.Request) (interface{}, error) {
 	m.mu.Lock()
@@ -101,6 +104,10 @@ func (m *Manager) Call(ctx context.Context, r wire.Request) (interface{}, error)
 		return nil, wire.Fail(wire.NotInitialized)
 	}
 	switch r.Method {
+	case "images.refresh":
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.refreshImages(p.(*wire.ImagesParams).ImageRoots), nil
 	case "setup.withdrawWifi":
 		return wire.Empty{}, m.withdrawWifi(ctx, p.(*wire.ForgetBindingParams))
 	case "phone.identity":
@@ -128,16 +135,33 @@ func (m *Manager) Call(ctx context.Context, r wire.Request) (interface{}, error)
 	case "setup.inspect":
 		return m.withPhone(ctx, *p.(*wire.PhoneRef), func(ctx context.Context, phone *localPhone) (interface{}, error) {
 			inspection, err := m.usb.Inspect(ctx, m.device(phone))
-			if err == nil {
-				m.mu.Lock()
-				phone.inspection = inspection
-				m.revision++
-				m.mu.Unlock()
-				if m.publish != nil {
-					m.publish(m.roster())
-				}
+			if err != nil {
+				inspection.Reason = Classify(err, wire.NativeServiceFailed).Code
 			}
+			m.mu.Lock()
+			phone.inspection = inspection
+			m.revision++
+			m.mu.Unlock()
+			if m.publish != nil {
+				m.publish(m.roster())
+			}
+
 			return inspection, err
+		})
+	case "setup.revealDeveloperMode":
+		return m.withPhone(ctx, *p.(*wire.PhoneRef), func(ctx context.Context, phone *localPhone) (interface{}, error) {
+			unlock, err := m.setupLock(phone)
+			if err != nil {
+				return nil, err
+			}
+			defer unlock()
+			revealer, ok := m.usb.(interface {
+				RevealDeveloperMode(context.Context, ios.DeviceEntry) error
+			})
+			if !ok {
+				return nil, wire.Fail(wire.Unsupported)
+			}
+			return wire.Empty{}, revealer.RevealDeveloperMode(ctx, m.device(phone))
 		})
 	case "setup.pair":
 		return m.withPhone(ctx, *p.(*wire.PhoneRef), func(ctx context.Context, phone *localPhone) (interface{}, error) {
@@ -211,28 +235,20 @@ func (m *Manager) init(p *wire.InitParams) (interface{}, error) {
 		root.Close()
 		return nil, wire.Fail(wire.NotInitialized)
 	}
-	options := []imageOption{}
-	for _, directory := range p.ImageRoots {
-		// Desktop supplies selected Xcode/device-support Restore directories, never a Runner.
-		image, err := ValidateImage(directory)
-		if err != nil {
-			continue
-		}
-		handle := uuid.New().String()
-		m.images[handle] = directory
-		options = append(options, imageOption{handle, safeLabel(image.Build)})
-		image.Close()
-	}
+	result := m.refreshImages(p.ImageRoots)
 	m.root = root
 	m.rootPath = canonical
+	if err := m.loadSelectedImages(); err != nil {
+		root.Close()
+		m.root = nil
+		return nil, err
+	}
 	if err := m.loadWifi(); err != nil {
 		root.Close()
 		m.root = nil
 		return nil, err
 	}
-	return struct {
-		Images []imageOption `json:"images"`
-	}{options}, nil
+	return result, nil
 }
 func (m *Manager) startDiscovery(ctx context.Context) error {
 	m.mu.Lock()
@@ -371,6 +387,7 @@ func (m *Manager) reconcile() error {
 	restore := []wire.PhoneRef{}
 	for _, d := range devices {
 		identity := d.Properties.SerialNumber
+		diagnostic.Remember(identity)
 		id := m.identities[identity]
 		if id == "" {
 			if len(m.identities) >= 64 {
@@ -393,6 +410,7 @@ func (m *Manager) reconcile() error {
 		if changedRoute {
 			phone.epoch++
 			phone.readinessReason = ""
+			phone.inspection = Inspection{}
 			if phone.routeCancel != nil {
 				phone.routeCancel()
 			}
@@ -508,7 +526,7 @@ func (m *Manager) roster() wire.Roster {
 		} else if p.readinessReason != "" {
 			caps = unavailableCapabilities(p.readinessReason)
 		}
-		r.Candidates = append(r.Candidates, wire.Candidate{LocalPhoneID: p.id, NativeEpoch: p.epoch, Name: name, Model: p.inspection.Model, OSVersion: p.inspection.OSVersion, Build: p.inspection.Build, Transport: transport, Reason: caps.Observe, Capabilities: &caps})
+		r.Candidates = append(r.Candidates, wire.Candidate{LocalPhoneID: p.id, NativeEpoch: p.epoch, Name: name, Model: p.inspection.Model, OSVersion: p.inspection.OSVersion, Build: p.inspection.Build, Transport: transport, Reason: candidateReason(p, reason), Capabilities: &caps})
 	}
 	sort.Slice(r.Candidates, func(i, j int) bool { return r.Candidates[i].LocalPhoneID < r.Candidates[j].LocalPhoneID })
 	return r
@@ -560,21 +578,10 @@ func (m *Manager) prepare(ctx context.Context, p *localPhone, handle string) (in
 	}
 	m.mu.Lock()
 	path := m.images[handle]
-	root := m.rootPath
 	m.mu.Unlock()
 	if path == "" {
 		return nil, wire.Fail(wire.ImageMissing)
 	}
-	image, err := ValidateImage(path)
-	if err != nil {
-		return nil, err
-	}
-	defer image.Close()
-	staged, cleanup, err := image.Stage(ctx, root)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
 	lifetime, cancel := context.WithCancel(m.ctx)
 	session, err := m.openTransport(lifetime, ctx, p)
 	if err != nil {
@@ -582,7 +589,23 @@ func (m *Manager) prepare(ctx context.Context, p *localPhone, handle string) (in
 		return nil, err
 	}
 	defer func() { cancel(); _ = session.Close() }()
-	if err := MountDeveloperImage(ctx, session, m.device(p), staged); err != nil {
+	if err := m.mountSelectedImage(ctx, p, session, path); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	imageLock, lockErr := LockIdentityStore(m.root)
+	if lockErr != nil {
+		m.mu.Unlock()
+		return nil, lockErr
+	}
+	err = m.loadSelectedImages()
+	if err == nil {
+		m.selectedImages[p.identity] = path
+		err = m.saveSelectedImages()
+	}
+	imageLock.Close()
+	m.mu.Unlock()
+	if err != nil {
 		return nil, err
 	}
 	inspection.Image = "mounted"
@@ -699,19 +722,10 @@ func (m *Manager) open(ctx context.Context, params *wire.SessionParams) (interfa
 		if err != nil {
 			return nil, err
 		}
-		_ = session.Probe(ctx)
-		if params.Access == "control" {
-			caps := session.capabilities()
-			if caps.Act == nil || *caps.Act == wire.MediaRequired {
-				err = session.StartMedia(m.ctx, ctx)
-				session.mu.Lock()
-				session.inputReason = ""
-				if err != nil {
-					session.inputReason = Classify(err, wire.MediaRequired).Code
-				}
-				session.mu.Unlock()
-			}
+		if err := m.ensureDeveloperServices(ctx, p, session); err != nil {
+			return nil, err
 		}
+		_ = session.Probe(ctx)
 		m.mu.Lock()
 		if p.binding != params.BindingToken || p.epoch != ref.NativeEpoch || p.session != session || p.sessionID != params.SessionID || ctx.Err() != nil {
 			m.mu.Unlock()
@@ -827,6 +841,15 @@ func (m *Manager) forget(params *wire.ForgetParams) error {
 		m.mu.Unlock()
 		return err
 	}
+	if err := m.loadSelectedImages(); err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	delete(m.selectedImages, identity)
+	if err := m.saveSelectedImages(); err != nil {
+		m.mu.Unlock()
+		return err
+	}
 	delete(m.identities, identity)
 	delete(m.phones, p.id)
 	err = m.saveIdentities()
@@ -854,7 +877,7 @@ func (m *Manager) WithSession(ctx context.Context, token, sessionID string, epoc
 			return nil, wire.Fail(wire.NoSession)
 		}
 		if control && access != "control" {
-			return nil, wire.Fail(wire.MediaRequired)
+			return nil, wire.Fail(wire.Unsupported)
 		}
 		return call(ctx, session)
 	})
@@ -925,4 +948,38 @@ func (m *Manager) forgetPrivateBinding(p *wire.ForgetBindingParams) error {
 	}
 	defer reservation.Close()
 	return reservation.Forget()
+}
+
+type imagesResult struct {
+	Images []imageOption `json:"images"`
+}
+
+func (m *Manager) refreshImages(roots []string) imagesResult {
+	options := []imageOption{}
+	images := map[string]string{}
+	for _, directory := range roots {
+		image, err := ValidateImage(directory)
+		if err != nil {
+			continue
+		}
+		handle := uuid.New().String()
+		images[handle] = directory
+		options = append(options, imageOption{handle, safeLabel(image.Build)})
+		image.Close()
+	}
+	m.images = images
+	return imagesResult{options}
+}
+
+func candidateReason(p *localPhone, transportReason wire.Reason) *wire.Reason {
+	if transportReason == wire.WifiPhoneNotFound {
+		return reasonPointer(transportReason)
+	}
+	for _, r := range []wire.Reason{p.inspection.Reason, p.readinessReason} {
+		switch r {
+		case wire.Unsupported, wire.UnsupportedIOS, wire.OwnedElsewhere, wire.USBMuxUnavailable, wire.CandidateGone:
+			return reasonPointer(r)
+		}
+	}
+	return nil
 }

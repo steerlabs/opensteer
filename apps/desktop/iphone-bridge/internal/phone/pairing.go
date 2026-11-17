@@ -2,10 +2,12 @@ package phone
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"unicode"
 
 	"github.com/danielpaulus/go-ios/ios"
+	"github.com/danielpaulus/go-ios/ios/amfi"
 	"github.com/steerlabs/opensteer/iphone-bridge/internal/wire"
 )
 
@@ -59,7 +61,7 @@ func (SystemUSB) Inspect(ctx context.Context, d ios.DeviceEntry) (Inspection, er
 	if !strings.HasPrefix(result.Model, "iPhone") {
 		return result, wire.Fail(wire.Unsupported)
 	}
-	if !strings.HasPrefix(result.OSVersion, "27.") && result.OSVersion != "27" {
+	if !supportedIOS(result.OSVersion) {
 		return result, wire.Fail(wire.UnsupportedIOS)
 	}
 	conn, err := ios.ConnectToService(d, "com.apple.mobile.mobile_image_mounter")
@@ -95,4 +97,19 @@ func safeLabel(s string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+func supportedIOS(version string) bool {
+	major, err := strconv.ParseUint(strings.Split(version, ".")[0], 10, 32)
+	return err == nil && major >= 27
+}
+
+func (SystemUSB) RevealDeveloperMode(ctx context.Context, d ios.DeviceEntry) error {
+	d.Context = ctx
+	conn, err := amfi.New(d)
+	if err != nil {
+		return Classify(err, wire.NativeServiceFailed)
+	}
+	defer conn.Close()
+	return ClassifyOrNil(conn.RevealDevMode(), wire.NativeServiceFailed)
 }

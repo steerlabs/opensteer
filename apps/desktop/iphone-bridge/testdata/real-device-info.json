@@ -1,0 +1,59 @@
+{
+  "displays": {
+    "backlightState": "off",
+    "displays": [
+      {
+        "active": false,
+        "backlightState": "off",
+        "bounds": [
+          [0, 0],
+          [1398, 2034]
+        ],
+        "chromeIdentifier": "com.apple.dt.devicekit.chrome.phone15",
+        "currentOrientation": "rot0",
+        "displayId": 1,
+        "name": "LCD",
+        "nativeOrientation": "rot0",
+        "nativeSize": [1398, 2034],
+        "physicalSize": [3.039130449295044, 4.421739101409912],
+        "pointScale": 3,
+        "primary": true,
+        "type": {
+          "integrated": {}
+        },
+        "uniqueId": "987-654-321"
+      },
+      {
+        "active": true,
+        "backlightState": "off",
+        "bounds": [
+          [0, 0],
+          [2007, 2853]
+        ],
+        "chromeIdentifier": "com.apple.dt.devicekit.chrome.phone14",
+        "currentOrientation": "rot0",
+        "displayId": 2,
+        "name": "LCD-1",
+        "nativeOrientation": "rot0",
+        "nativeSize": [1878, 2670],
+        "physicalSize": [4.367441654205322, 6.2093024253845215],
+        "pointScale": 3,
+        "primary": false,
+        "type": {
+          "integrated": {}
+        },
+        "uniqueId": "123-456-789"
+      }
+    ],
+    "orientation": {
+      "currentDeviceNonFlatOrientation": "portrait",
+      "currentDeviceOrientation": "portrait",
+      "currentDeviceOrientationLocked": false
+    }
+  },
+  "lockState": {
+    "passcodeRequired": true,
+    "unlockedSinceBoot": true
+  },
+  "note": "Captured 2026-11-17 via `xcrun devicectl device info displays|lockState` from an iPhone19,4 (two internal displays) on iOS 27.2 build 24B91020 with the screen off. devicectl surfaces CoreDevice's deviceinfo features getdisplayinfo/getlockstate; top-level keys match upstream go-ios e2e expectations (backlightState, displays, orientation)."
+}
