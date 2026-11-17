@@ -15,6 +15,7 @@ import {
   utf8ByteLength,
   type Thread,
   type Request,
+  type ThreadInputQueue,
 } from "@opensteer/core";
 import {
   PersonalNetworkShellSnapshotSchema,
@@ -22,16 +23,15 @@ import {
   type ScopedHostMessage,
 } from "@opensteer/protocol/personal-sync";
 import {
-  PersonalResourceDataSchema,
   PersonalResourceRevisionsSchema,
   personalResourceKinds,
   type PersonalResourceKind,
   type PersonalResourceView,
 } from "@opensteer/protocol/resources";
 import { TranscriptItemSchema, type TranscriptItem } from "@opensteer/protocol/transcript";
-import { type HostBootstrap } from "@opensteer/protocol";
+import { type PersonalInputQueue } from "@opensteer/protocol";
 import type { TranscriptFixtureSnapshot, ThreadSummary, TranscriptEntry } from "../host/client.js";
-import type { z } from "zod";
+import { messageBody } from "../host/transcript.js";
 
 type MockTranscriptSnapshot = TranscriptFixtureSnapshot;
 const itemRevisions = new WeakMap<TranscriptEntry, string>();
@@ -582,9 +582,28 @@ export function mockMessageContent(
 }
 
 export function mockScopedResource(
-  bootstrap: HostBootstrap,
+  bootstrap: Record<
+    | "personalSettings"
+    | "quietTaskDays"
+    | "executionPreferences"
+    | "identityConfig"
+    | "environments"
+    | "harnesses"
+    | "machines"
+    | "tabs",
+    unknown
+  > & {
+    ownerProfile?: unknown;
+    browser: {
+      profiles: unknown;
+      profileDeletions?: unknown;
+      placements: unknown;
+      profileHomes: unknown;
+      available: boolean;
+    };
+  },
   kind: PersonalResourceKind,
-): z.input<typeof PersonalResourceDataSchema> {
+) {
   switch (kind) {
     case "settings":
       return {
@@ -633,4 +652,46 @@ export function boundedMockPage(items: TranscriptItem[], ascending = false) {
     return size <= 64 * 1024;
   });
   return ascending ? bounded : bounded.reverse();
+}
+
+export function mockInputQueue(
+  queue: ThreadInputQueue,
+  revision: string,
+  ownsLease: (leaseId: string, messageId: string) => boolean,
+): PersonalInputQueue {
+  return {
+    threadId: queue.threadId,
+    paused: queue.paused,
+    steerRunId: queue.steerRunId,
+    revision,
+    items: queue.items.map(({ message, input, lease, ...actions }, index) => ({
+      message: {
+        id: message.id,
+        revision: message.edit?.revision ?? 0,
+        ...(message.edit ? { edit: message.edit } : {}),
+        author: message.author,
+        createdAt: message.createdAt,
+        preview: messageBody(message.content),
+        attachments: message.content.filter((part) => part.type === "artifact").slice(0, 6),
+        truncated: false,
+      },
+      input: { messageId: input.messageId, queueRank: String(index), state: input.state },
+      ask:
+        input.teamRequestId && input.teamSource
+          ? {
+              requestId: input.teamRequestId,
+              teamId: input.teamSource.teamId,
+              audience: input.teamSource.audience,
+            }
+          : null,
+      lease: lease
+        ? {
+            deviceLabel: lease.deviceLabel,
+            expiresAt: lease.expiresAt,
+            ownedBySession: ownsLease(lease.leaseId, message.id),
+          }
+        : null,
+      ...actions,
+    })),
+  };
 }

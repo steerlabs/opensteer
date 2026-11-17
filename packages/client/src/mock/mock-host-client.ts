@@ -12,6 +12,7 @@ import {
   mockScopedCursor,
   mockScopedResource,
   boundedMockPage,
+  mockInputQueue,
 } from "./mock-scoped-personal.js";
 import type { ThreadViewSource, ThreadViewState } from "../host/scoped-thread-reader.js";
 import {
@@ -2885,10 +2886,13 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       return rpcSuccess(hostApi["thread.browserUsage.get"].success.parse({ threadId, uses }));
     },
     "thread.inputQueue.get": async (input) =>
-      rpcSuccess({
-        ...client.loadThreadInputQueue(input.threadId),
-        revision: String(client.getSnapshot().revision),
-      }),
+      rpcSuccess(
+        mockInputQueue(
+          client.loadThreadInputQueue(input.threadId),
+          String(client.getSnapshot().revision),
+          (leaseId, messageId) => client.isLocalEditLease(messageId, leaseId),
+        ),
+      ),
     "thread.message.revisions.list": async (input) => {
       if (input.leaseId !== undefined) {
         const current = client
@@ -4753,6 +4757,8 @@ export class MockHostClient implements HostClient {
     let data: ThreadViewState | undefined;
     let priorWindow: MockHistoryWindow | undefined;
     let priorOverlay: string | null | undefined;
+    let priorQueue: ThreadInputQueue | undefined;
+    let inputQueue: ThreadViewState["inputQueue"] = null;
     const source = {
       subscribe: this.subscribe,
       getSnapshot: () => {
@@ -4768,7 +4774,13 @@ export class MockHostClient implements HostClient {
         const entries = window ? whole.filter(({ id }) => window.ids.has(id)) : whole;
         const requests = value.requests[threadId] ?? empty;
         const runQueue = value.runQueue.filter((run) => run.threadId === threadId);
-        const inputQueue = value.inputQueues[threadId] ?? null;
+        const queue = value.inputQueues[threadId];
+        if (queue !== priorQueue) {
+          priorQueue = queue;
+          inputQueue = queue
+            ? mockInputQueue(queue, String(value.revision), (id) => this.ownsEditLease(id))
+            : null;
+        }
         const synchronized = value.connection === "connected";
         const hasMore = window
           ? window.before !== null
@@ -5311,8 +5323,12 @@ export class MockHostClient implements HostClient {
     if (before) await this.#readMockHistory(threadId, { before });
   }
 
-  loadThreadInputQueue(threadId: string): Promise<ThreadInputQueue> {
-    return Promise.resolve(this.#state.loadThreadInputQueue(threadId));
+  async loadThreadInputQueue(threadId: string) {
+    return mockInputQueue(
+      this.#state.loadThreadInputQueue(threadId),
+      String(this.getSnapshot().revision),
+      (id) => this.ownsEditLease(id),
+    );
   }
 
   refresh(): Promise<void> {
@@ -7872,6 +7888,11 @@ class MockHostState {
     if (!mockEditable(item)) throw mockConflict("This message can’t be edited.");
     if (this.approvingAsks.has(messageId)) throw mockConflict("Approving…");
     return item;
+  }
+
+  isLocalEditLease(messageId: string, leaseId: string): boolean {
+    const lease = this.liveLease(messageId);
+    return lease?.here === true && lease.view.leaseId === leaseId;
   }
 
   private liveLease(messageId: string) {

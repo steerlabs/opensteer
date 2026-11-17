@@ -1,3 +1,4 @@
+import { readTranscriptItem } from "./personal-sync-store.js";
 import { readTranscriptPage } from "./personal-sync-store.js";
 import { jsonValue } from "./store-primitives.js";
 import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
@@ -1443,6 +1444,31 @@ integration.sequential("thread input queue promotion", () => {
       state: "pending",
       steerCommandId: null,
     });
+    const direct = await store.enqueueThreadInput({
+      threadId: f.thread.id,
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      policy: "steer",
+      idempotencyKey: "direct-steer-refused",
+      content: [{ type: "text", text: "Direct steer" }],
+    });
+    if (!direct.command) throw new Error("Expected direct steer command");
+    await store.refuseSteer(direct.command.id, "Driver refused");
+    await expect(
+      readTranscriptItem(database, {
+        viewerId: f.userId,
+        scope: { kind: "thread", threadId: f.thread.id },
+        itemId: direct.message.id,
+      }),
+    ).resolves.toMatchObject({
+      kind: "item",
+      item: {
+        kind: "message",
+        messageId: direct.message.id,
+        delivery: { status: "failed", reason: "Steer was not delivered: steer refused." },
+      },
+      body: { kind: "message", message: { content: [{ type: "text", text: "Direct steer" }] } },
+    });
     const unknownInput = await queued(f, "unknown");
     const unknown = await store.steerThreadInput({
       expectedRunId: f.initial.run!.id,
@@ -1453,6 +1479,22 @@ integration.sequential("thread input queue promotion", () => {
     });
     if (!unknown.command) throw new Error("Expected steer command");
     await store.markSteerUnknown(unknown.command.id, "Lost acknowledgement");
+    const scope = { kind: "thread", threadId: f.thread.id } as const;
+    const read = { viewerId: f.userId, scope };
+    await expect(
+      readTranscriptItem(database, { ...read, itemId: unknownInput.message.id }),
+    ).resolves.toMatchObject({
+      kind: "item",
+      item: {
+        kind: "message",
+        messageId: unknownInput.message.id,
+        delivery: { status: "unconfirmed", reason: "Message delivery could not be confirmed." },
+      },
+    });
+    await expect(
+      readTranscriptItem(database, { ...read, itemId: refusedInput.message.id }),
+    ).resolves.toEqual({ kind: "unavailable" });
+
     await store.commitRunnerEvent({
       environmentId: f.environmentId,
       event: pendingEvent({

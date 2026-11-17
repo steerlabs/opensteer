@@ -1,12 +1,16 @@
+import { stripRefs } from "@opensteer/shared/stripRefs";
 import { createHash } from "node:crypto";
 import { isAbsolute, normalize } from "node:path";
 import {
   contentSaysSomething,
+  threadInputDelivery,
+  type MessageEdit,
   type ContentPart,
   type MessageAuthor,
   type MessageKind,
   type MessageId,
   type ToolOutputImage,
+  type TeamSource,
   utf8ByteLength,
   utf8Prefix,
 } from "@opensteer/core";
@@ -59,6 +63,9 @@ export function describeTranscriptMessage(input: {
   readonly policy?: "queue" | "steer" | "report";
   readonly state?: string;
   readonly edited: boolean;
+  readonly edit?: MessageEdit;
+  readonly cancelReason?: string | null;
+  readonly teamSource?: TeamSource;
   readonly admittedSeed: boolean;
   readonly seedInRun: boolean;
   readonly assigned: boolean;
@@ -68,14 +75,25 @@ export function describeTranscriptMessage(input: {
     input.state === "delivered" ||
     (input.policy === "report" && input.state !== "cancelled");
   const cause = input.author.kind === "platform" ? input.author.cause : null;
+  const messageKind =
+    input.kind === "input" ||
+    input.kind === "assistant" ||
+    (input.kind === "continuation" && cause === "run-recovery")
+      ? input.kind
+      : undefined;
   const drawable =
-    cause !== "claude-compaction" &&
-    (input.kind === "input" ||
-      input.kind === "assistant" ||
-      (input.kind === "continuation" && cause === "run-recovery") ||
-      cause === "assignment-result") &&
-    contentSaysSomething(input.content);
-  const visible = drawable && (published || input.admittedSeed);
+    cause !== "claude-compaction" && messageKind && contentSaysSomething(input.content);
+  const delivery =
+    input.policy &&
+    (input.state === "unknown" ||
+      (input.state === "cancelled" && input.cancelReason !== "withdrawn"))
+      ? threadInputDelivery({
+          cancelReason: input.cancelReason ?? null,
+          policy: input.policy,
+          state: input.state,
+        })
+      : null;
+  const visible = Boolean(drawable && (published || input.admittedSeed || delivery));
   const isTurnStart =
     visible &&
     input.kind === "input" &&
@@ -87,10 +105,14 @@ export function describeTranscriptMessage(input: {
     isTurnStart,
     view: transcriptPreview({
       author: input.author.kind,
+      ...(messageKind ? { messageKind, messageAuthor: input.author } : {}),
+      ...(input.edit ? { edit: input.edit } : {}),
+      ...(delivery ? { delivery } : {}),
+      ...(input.teamSource ? { teamSource: input.teamSource } : {}),
       edited: input.edited,
       published,
       preview: input.content
-        .flatMap((part) => (part.type === "text" ? [part.text] : []))
+        .flatMap((part) => (part.type === "text" ? [stripRefs(part.text)] : []))
         .join("\n"),
     }),
   };

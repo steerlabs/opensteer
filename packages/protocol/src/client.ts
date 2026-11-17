@@ -270,12 +270,6 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("host.snapshot"),
     snapshot: DeploymentSnapshotSchema,
   }),
-  z.object({
-    ...clientMessageBase,
-    type: z.literal("host.events"),
-    throughSequence: SequenceSchema,
-    events: z.array(AgentEventViewSchema).max(2_000),
-  }),
   /**
    * A Run's streams before they complete. It follows every durable event
    * through `afterSequence`, so a reader never sees progress for a stream the
@@ -293,17 +287,6 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("host.synchronized"),
     /** The version this subscription is served; a Host from before the window omits it. */
     apiVersion: z.number().int().positive().optional(),
-    sequence: SequenceSchema,
-  }),
-  /**
-   * Answers `client.watch-node`. Every event of the subagent's own after
-   * `sequence` follows in `host.events`, in order with everything else;
-   * `node.events.list` reads the ones through it.
-   */
-  z.object({
-    ...clientMessageBase,
-    type: z.literal("host.node-watched"),
-    nodeId: ExecutionNodeIdSchema.nullable(),
     sequence: SequenceSchema,
   }),
   z.object({

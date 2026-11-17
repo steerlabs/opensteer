@@ -1,5 +1,6 @@
 import {
   followWaitingDraft,
+  hydrateWaitingDraft,
   HostClientRequestError,
   openWaitingDraft,
   reloadWaitingDraft,
@@ -102,7 +103,7 @@ export function useWaitingEdit(
       current === undefined || kept.phase === "saving"
         ? kept.draft
         : followWaitingDraft(kept.draft, {
-            content: current.item.message.content,
+            content: [{ type: "text", text: current.entry.body }],
             revision: current.revision,
           });
     const gone = current === undefined;
@@ -135,10 +136,12 @@ export function useWaitingEdit(
             shown?.messageId === messageId
               ? {
                   ...shown,
-                  draft:
-                    editor.content && !shown.draft.dirty
-                      ? openWaitingDraft({ content: editor.content, revision: editor.revision })
-                      : shown.draft,
+                  draft: editor.content
+                    ? hydrateWaitingDraft(shown.draft, {
+                        content: editor.content,
+                        revision: editor.revision,
+                      })
+                    : shown.draft,
                   failure: null,
                   phase: "open",
                 }
@@ -200,7 +203,10 @@ export function useWaitingEdit(
       close();
       setKept({
         asker: item.kind === "ask" ? item.asker : null,
-        draft: openWaitingDraft({ content: item.item.message.content, revision: item.revision }),
+        draft: openWaitingDraft({
+          content: [{ type: "text", text: item.entry.body }],
+          revision: item.revision,
+        }),
         failure: null,
         gone: false,
         kind: item.kind,

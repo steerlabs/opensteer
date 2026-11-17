@@ -1,8 +1,10 @@
-import { DeviceIdSchema } from "@opensteer/core";
+import { readTranscriptPage } from "./personal-sync-store.js";
+import { BrowserSurfaceIdSchema, DeviceIdSchema } from "@opensteer/core";
 import { createId, TabIdSchema } from "@opensteer/core";
 import { sql } from "kysely";
 import { expect, it } from "vitest";
 import { AppStore, appPortFirst } from "./app-store.js";
+import { OpensteerStore } from "./store.js";
 import { TabStore } from "./tab-store.js";
 import { createDatabase } from "./connection.js";
 import { installPersonalMutationHooks } from "./personal-mutation.js";
@@ -24,6 +26,22 @@ it("keeps person-owned apps and their fixed port through versions, HTML conversi
   try {
     const p = await seedPrivatePublisher(seed);
     const store = new AppStore(database);
+    const timeline = new OpensteerStore(database);
+    await database
+      .updateTable("runs")
+      .set({ bindingGeneration: 1 })
+      .where("id", "=", p.runId)
+      .execute();
+    const showPlace = (tab: string) =>
+      timeline.recordRunTabPlace({
+        runId: p.runId,
+        bindingGeneration: 1,
+        data: {
+          tabId: BrowserSurfaceIdSchema.parse(tab),
+          title: tab,
+          site: "https://example.com",
+        },
+      });
     const scope = {
       threadId: p.threadId,
       runId: p.runId,
@@ -87,6 +105,7 @@ it("keeps person-owned apps and their fixed port through versions, HTML conversi
       }),
     ).rejects.toThrow("changed while its server was starting");
 
+    expect(await showPlace("Budget source")).toBe(true);
     const html = await store.commit({
       scope,
       appId: reservation.appId,
@@ -96,6 +115,65 @@ it("keeps person-owned apps and their fixed port through versions, HTML conversi
     });
     expect(html.retiredServer).toEqual({ generation: stopped.server.generation + 1 });
     expect(await store.runtimeSet(p.agentHome.computerId)).toEqual([]);
+    const page = () =>
+      readTranscriptPage(database, {
+        viewerId: p.userId,
+        scope: { kind: "thread", threadId: p.threadId },
+      });
+    const secondPage = await page();
+    if (secondPage.kind !== "page") throw new Error("Expected app history");
+    const projection = secondPage.items.find((item) => item.kind === "app");
+    expect(projection).toMatchObject({
+      id: `app:${reservation.appId}`,
+      version: 2,
+      view: { title: "Notes as HTML" },
+    });
+    expect(await showPlace("Budget review")).toBe(true);
+    const third = await store.commit({
+      scope,
+      appId: reservation.appId,
+      name: "Budget 3",
+      publishKey: "third",
+      html: { sha256: "b".repeat(64), sizeBytes: 10 },
+    });
+    expect(third.version).toBe(3);
+    const latest = await page();
+    if (latest.kind !== "page" || !projection) throw new Error("Expected latest app card");
+    const cards = latest.items.filter((item) => item.kind === "app");
+    expect(cards).toEqual([
+      expect.objectContaining({
+        id: projection.id,
+        appId: reservation.appId,
+        version: 3,
+        view: { title: "Budget 3" },
+      }),
+    ]);
+    expect(BigInt(cards[0]!.position)).toBeGreaterThan(BigInt(projection.position));
+    expect(
+      await store.commit({
+        scope,
+        appId: reservation.appId,
+        name: "Notes",
+        publishKey: "first",
+        server,
+        serverGeneration: reservation.generation,
+      }),
+    ).toMatchObject({ version: 1 });
+    expect(await page()).toEqual(latest);
+    const markers = latest.items.filter((item) => item.kind === "place");
+    expect(markers).toHaveLength(2);
+    expect(markers[0]!.id).not.toBe(markers[1]!.id);
+    expect(BigInt(markers[0]!.position)).toBeLessThan(BigInt(projection.position));
+    expect(BigInt(markers[1]!.position)).toBeGreaterThan(BigInt(projection.position));
+    expect(BigInt(markers[1]!.position)).toBeLessThan(BigInt(cards[0]!.position));
+    const overlap = await readTranscriptPage(database, {
+      viewerId: p.userId,
+      scope: { kind: "thread", threadId: p.threadId },
+      anchorItemId: markers[1]!.id,
+      limit: 3,
+    });
+    if (overlap.kind !== "page") throw new Error("Expected overlapping app history");
+    expect(overlap.items.filter((item) => item.kind === "app")).toEqual(cards);
     const again = await store.prepareServer({
       scope,
       appId: reservation.appId,
@@ -131,15 +209,15 @@ it("keeps person-owned apps and their fixed port through versions, HTML conversi
     expect(survived).toMatchObject({
       threadId: null,
       runId: null,
-      name: "Notes as HTML",
-      version: { version: 2 },
+      name: "Budget 3",
+      version: { version: 3 },
       server: { port: reservation.port },
     });
     expect(
       (await database.selectFrom("appVersions").select("createdByRun").execute()).map(
         (row) => row.createdByRun,
       ),
-    ).toEqual([null, null]);
+    ).toEqual([null, null, null]);
 
     const tabs = new TabStore(database);
     const tabId = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);

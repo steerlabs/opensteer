@@ -1332,6 +1332,7 @@ export class OpensteerStore {
     readonly threadId: ThreadId;
     readonly requestedBy: UserId;
     readonly expectedRevision?: string;
+    readonly sessionId?: import("@opensteer/core").AuthSessionId;
   }) {
     return threadStore.getThreadInputQueue(this.#database, input);
   }

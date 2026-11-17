@@ -77,9 +77,7 @@ async function setup(holdBody?: (response: Response) => Promise<Response>) {
     { timeout: 1000 },
   );
   const waiting = () =>
-    waitingInputs(client.getThreadTranscript(threadId)?.getSnapshot().inputQueue!, {
-      ownsLease: (leaseId) => client.ownsEditLease(leaseId),
-    })[0];
+    waitingInputs(client.getThreadTranscript(threadId)?.getSnapshot().inputQueue!, {})[0];
   return { client, host, lost, messageId, mock, sent, threadId, waiting };
 }
 
@@ -90,7 +88,7 @@ it("edits a waiting message in place under this device's lease, renewing it only
 
   const editor = await client.editWaitingMessage(threadId, messageId);
   expect(editor.revision).toBe(0);
-  expect(waiting()!.lease).toEqual({ kind: "mine", leaseId: editor.leaseId });
+  expect(waiting()!.lease).toEqual({ kind: "mine" });
 
   const renewals = () => sent.filter((type) => type === "thread.input.lease.renew").length;
   editor.touch();
@@ -165,7 +163,7 @@ it("holds a message another device is editing until this one takes it over, and 
     code: "conflict",
   });
   const editor = await client.editWaitingMessage(threadId, messageId, { takeOver: true });
-  expect(waiting()!.lease).toEqual({ kind: "mine", leaseId: editor.leaseId });
+  expect(waiting()!.lease).toEqual({ kind: "mine" });
 
   mock.mockOtherDeviceEdit(threadId, messageId, "Alex's iPad");
   await expect(

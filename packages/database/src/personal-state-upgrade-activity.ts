@@ -230,7 +230,7 @@ function canonicalCard(row: LegacyActivity): { id: string; move: boolean } | nul
     case "delegation.settled":
       return id ? { id: `delegation:${id}`, move: false } : null;
     case "app.published":
-      return id ? { id: `app:${id}`, move: false } : null;
+      return id ? { id: `app:${id}`, move: true } : null;
     default:
       return null;
   }
@@ -416,7 +416,9 @@ async function importToolBatch(
       toolCallId: call.id,
       view: transcriptPreview({
         title: tool?.name,
-        status,
+        status: event.type === "tool.started" ? "running" : event.data.isError ? "failed" : "done",
+        tool,
+        ...(completedAt ? { completedAt: completedAt.toISOString() } : {}),
       }),
     });
     if (event.type === "tool.completed")

@@ -17,7 +17,14 @@ export function transcriptCard(
     case "message": {
       if (body?.kind === "message") {
         const full = toMessageEntry(body.message);
-        return full ? { ...full, itemId: id, itemRevision: item.revision } : undefined;
+        return full
+          ? {
+              ...full,
+              ...(item.delivery ? { delivery: item.delivery } : {}),
+              itemId: id,
+              itemRevision: item.revision,
+            }
+          : undefined;
       }
       const messageKind =
         item.messageKind ??
@@ -32,6 +39,9 @@ export function transcriptCard(
         ...(live ? { streaming: true } : {}),
         kind: "message",
         author,
+        ...(item.edit ? { edit: item.edit } : {}),
+        ...(item.teamSource ? { teamSource: item.teamSource } : {}),
+        ...(item.delivery ? { delivery: item.delivery } : {}),
         messageKind,
         body: preview,
         published: view.published ?? true,
@@ -50,12 +60,13 @@ export function transcriptCard(
         itemRevision: item.revision,
         callId: item.toolCallId,
         arguments: detail?.arguments,
-        integration: null,
+        integration: detail?.integration ?? null,
         isError: state === "failed",
         ...(item.nodeId ? { nodeId: item.nodeId } : {}),
         output: detail?.output,
         state,
         streamText: preview,
+        ...(item.completedAt ? { completedAt: item.completedAt } : {}),
         tool: item.tool ?? null,
       };
     }
@@ -80,6 +91,7 @@ export function transcriptCard(
             requestKind: item.requestKind ?? null,
             title: view.title ?? "Request",
             outcome: preview,
+            ...(item.waitedSince ? { waitedSince: item.waitedSince } : {}),
           };
     case "run": {
       const status: RunEntryStatus =
@@ -130,7 +142,14 @@ export function transcriptCard(
       return item.place && runId ? { ...base, ...item.place, runId, kind: "place" } : undefined;
     case "app":
       return runId
-        ? { ...base, runId, kind: "app", appId: item.appId, title: view.title ?? "App", version: 0 }
+        ? {
+            ...base,
+            runId,
+            kind: "app",
+            appId: item.appId,
+            title: view.title ?? "App",
+            version: item.version ?? 0,
+          }
         : undefined;
     case "assignment": {
       const assignment = body?.kind === "assignment" ? body.assignment : item.assignment;

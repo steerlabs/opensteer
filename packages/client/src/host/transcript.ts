@@ -1,4 +1,3 @@
-import { requestSettlementLabel } from "./request-settlement.js";
 import { BrowserSignInRequestResponseSchema } from "@opensteer/protocol/browser-sources";
 import { browserSiteLabel } from "./browser-sign-in.js";
 import { cardUseTitle } from "./cards.js";
@@ -7,14 +6,13 @@ import {
   contentSaysSomething,
   threadInputIsPublished,
   type ThreadInput,
-  requestOptionDeclines,
+  requestOutcomeText,
   requestTitleText,
   type MessageEdit,
   type MessageKind,
   type MessageView,
   type Request,
   type ThreadInputPolicy,
-  type ThreadInputQueue,
   type ThreadInputState,
 } from "@opensteer/core";
 import type {
@@ -74,35 +72,7 @@ export function withEditedMessage(
  * it did not, or may not, have reached a Run, or null once it did. Only an
  * input that left the queue other than by withdrawal has an outcome to show.
  */
-export function threadInputDelivery(input: {
-  readonly cancelReason: string | null;
-  readonly policy: ThreadInputPolicy;
-  readonly state: "cancelled" | "delivered" | "unknown";
-}): MessageEntry["delivery"] | null {
-  if (input.state === "delivered") return null;
-  if (input.state === "unknown") {
-    return { reason: "Message delivery could not be confirmed.", status: "unconfirmed" };
-  }
-  return { reason: cancellationReason(input), status: "failed" };
-}
-
-/**
- * A cancelled steer never reached its Run, and a promoted queue input whose
- * Run ended before receipt is the same story. A message a Stop cancelled
- * before its reply read it was stopped by the reader. Any other cancelled
- * queue input simply never got its turn, and the conversation has to say so
- * rather than show it as sent.
- */
-function cancellationReason(input: {
-  readonly cancelReason: string | null;
-  readonly policy: ThreadInputPolicy;
-}): string {
-  if (input.cancelReason === "stopped") return "Not sent: you stopped the reply.";
-  const detail = input.cancelReason?.replaceAll("-", " ");
-  const wasSteer = input.policy === "steer" || input.cancelReason === "run-ended-delivery-unknown";
-  if (wasSteer) return detail ? `Steer was not delivered: ${detail}.` : "Steer was not delivered.";
-  return detail ? `Not sent: ${detail}.` : "Not sent.";
-}
+export { threadInputDelivery } from "@opensteer/core";
 
 export function finishRunEntries(
   entries: readonly TranscriptEntry[],
@@ -152,7 +122,7 @@ export function isTerminalRunEntryStatus(status: RunEntry["status"]): boolean {
  */
 export function visibleTranscript(
   entries: readonly TranscriptEntry[],
-  queue: ThreadInputQueue | null,
+  queue: { readonly items: readonly { readonly message: { readonly id: string } }[] } | null,
   { conversation = false }: { readonly conversation?: boolean } = {},
 ): readonly TranscriptEntry[] {
   const order = new Map<string, number>(
@@ -311,36 +281,9 @@ export function requestReceipt(
 }
 
 function requestOutcome(request: Request): string {
-  if (request.status === "pending") return "Pending";
-  if (request.status === "cancelled") return `Cancelled · ${request.cancellationReason}`;
-  if (request.status === "withdrawn") return "Withdrawn";
-  if (request.settlementProvenance && "kind" in request.settlementProvenance)
-    return requestSettlementLabel(request)!;
   if (request.kind === "browser.sign-in") return browserSignInReceipt(request);
   if (request.kind === "browser.password-sign-in") return passwordSignInReceipt(request);
-  if (request.kind === "computer.app.access") {
-    const settlement = requestSettlementLabel(request);
-    if (settlement) return settlement;
-  }
-  const prefix = request.status === "declined" ? "Declined" : "Fulfilled";
-  if (request.response.kind === "choice" && request.presentation.kind === "choice") {
-    const { options } = request.presentation;
-    const optionId = request.response.optionId;
-    const chosen = options.find((option) => option.id === optionId);
-    // The one way a Request offered to decline it says nothing "Declined" does not.
-    if (
-      !chosen ||
-      (request.status === "declined" && options.filter(requestOptionDeclines).length === 1)
-    ) {
-      return prefix;
-    }
-    return `${prefix} · ${chosen.label}`;
-  }
-  if (request.response.kind === "form") return `${prefix} · Answered`;
-  if (request.response.kind === "external") {
-    return externalDecisionLabel(request.response.value?.["decision"]) ?? prefix;
-  }
-  return prefix;
+  return requestOutcomeText(request);
 }
 
 /** A sign-in receipt says what happened to the browser, in the card's own words. */
@@ -353,15 +296,6 @@ export function browserSignInReceipt(request: Request): string {
   if (response.data.outcome === "not-signed-in") return "Chrome not signed in";
   const site = request.payload.kind === "browser.sign-in" ? request.payload.site : null;
   return site ? `Copied Chrome sign-in for ${browserSiteLabel(site)}` : "Copied Chrome sign-in";
-}
-
-/**
- * The receipt of an externally resolved Request. Its response value carries the
- * decision, which is all the receipt says: a status beside it would repeat it.
- */
-function externalDecisionLabel(decision: unknown): string | null {
-  if (decision === "fulfilled") return "Allowed";
-  return decision === "declined" ? "Declined" : null;
 }
 
 export type {

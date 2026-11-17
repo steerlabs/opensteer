@@ -1,3 +1,4 @@
+import { mockInputQueue } from "@opensteer/client/mock";
 import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 
@@ -1308,14 +1309,21 @@ function fakeHost(initial: TranscriptFixtureSnapshot) {
     save: vi.fn(async (_content: readonly object[]) => ({ editedAt: at, revision: 1 })),
     touch: vi.fn(),
   };
+  const queueViews = new WeakMap<ThreadInputQueue, ReturnType<typeof mockInputQueue>>();
   const views = new Map<string, ReturnType<typeof buildTranscriptView>>();
   const noRows = [] as const;
   function buildTranscriptView(value: TranscriptFixtureSnapshot, id: string) {
+    const queue = value.inputQueues[id];
+    let inputQueue = queue ? queueViews.get(queue) : undefined;
+    if (queue && !inputQueue) {
+      inputQueue = mockInputQueue(queue, String(value.revision), (id) => id === editor.leaseId);
+      queueViews.set(queue, inputQueue);
+    }
     return {
       entries: value.transcripts[id] ?? noRows,
       requests: value.requests[id] ?? noRows,
       runQueue: value.runQueue.filter(({ threadId }) => threadId === id),
-      inputQueue: value.inputQueues[id] ?? null,
+      inputQueue: inputQueue ?? null,
       synchronized: value.connection === "connected",
       hasMore: value.transcriptWindows[id]?.hasMore ?? false,
       hasNewer: false,

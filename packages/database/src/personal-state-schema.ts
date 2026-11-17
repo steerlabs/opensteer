@@ -1,16 +1,22 @@
 import type {
   AppId,
+  AssignmentSummary,
   DelegationId,
   DeploymentId,
   ExecutionNodeId,
   IntegrationCallSubject,
   MessageId,
+  MessageAuthor,
+  MessageEdit,
+  MessageKind,
+  Request,
   RequestId,
   RunAttemptId,
   RunId,
   RunFailure,
   RunnerId,
   TabId,
+  TeamSource,
   TeamAgentRequestId,
   ThreadId,
   ToolIdentity,
@@ -116,6 +122,17 @@ export interface TranscriptPreview {
   readonly edited?: boolean;
   readonly published?: boolean;
   readonly truncated?: boolean;
+  readonly version?: number;
+  readonly assignment?: AssignmentSummary;
+  readonly teamSource?: TeamSource;
+  readonly completedAt?: string;
+  readonly tool?: ToolIdentity | null;
+  readonly requestKind?: Request["kind"];
+  readonly waitedSince?: string;
+  readonly messageKind?: Extract<MessageKind, "input" | "assistant" | "continuation">;
+  readonly messageAuthor?: MessageAuthor;
+  readonly edit?: MessageEdit;
+  readonly delivery?: { readonly status: "failed" | "unconfirmed"; readonly reason: string };
 }
 
 export type TranscriptItemKind =

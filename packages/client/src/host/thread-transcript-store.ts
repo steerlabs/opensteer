@@ -1,5 +1,5 @@
 import type { PersonalResumeCursor, ScopedHostMessage } from "@opensteer/protocol/personal-sync";
-import type { ThreadInputQueue } from "@opensteer/core";
+import type { PersonalInputQueue } from "@opensteer/protocol";
 import type {
   TranscriptPageSchema,
   TranscriptItem,
@@ -23,7 +23,7 @@ type DetailSnapshot = Extract<
 >;
 type Listener = () => void;
 type Page = import("zod").infer<typeof TranscriptPageSchema>;
-export type VersionedInputQueue = ThreadInputQueue & { readonly revision: string };
+export type VersionedInputQueue = PersonalInputQueue;
 
 export interface TranscriptState {
   readonly generation: number;

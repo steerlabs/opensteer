@@ -280,7 +280,7 @@ async function deriveMessages(tx: Tx, cursor: UpgradeCursor): Promise<UpgradeCur
       select *, (
         has_content and (published or coalesce(admitted,false))
         and (author->>'cause') is distinct from 'claude-compaction'
-        and (kind in ('input','assistant') or coalesce(author->>'cause' = 'assignment-result',false)
+        and (kind in ('input','assistant')
           or (kind='continuation' and coalesce(author->>'cause' = 'run-recovery',false)))
       ) as shown,
       ${cursor.position}::bigint + row_number() over(order by thread_id,sequence) as fallback
@@ -317,8 +317,8 @@ function canonicalSource(kind: Exclude<CanonicalKind, "message">, key: string) {
         from runs where id > ${key} order by id limit ${batchSize}`;
     case "request":
       return sql`select r.id as source_id,r.originating_thread_id as thread_id,r.originating_run_id as run_id,
-        r.created_at,r.status,n.attempt_id,r.originating_node_id as node_id,left(r.presentation->>'title',192) as title,
-        r.status <> 'pending' or r.mode='live' as visible
+        coalesce(r.resolved_at,r.created_at) as created_at,r.status,n.attempt_id,r.originating_node_id as node_id,left(r.presentation->>'title',192) as title,
+        r.status <> 'pending' as visible
         from requests r left join execution_nodes n on n.id=r.originating_node_id
         where r.id > ${key} order by r.id limit ${batchSize}`;
     case "node":
@@ -394,7 +394,7 @@ async function closeOpenTools(tx: Tx, source: Source, cursor: UpgradeCursor) {
   await sql`select id from transcript_items where id=any(${itemIds}::text[]) order by id for no key update`.execute(
     tx,
   );
-  await sql`update transcript_items set view=view||'{"status":"interrupted"}' where id = any(${itemIds}::text[])`.execute(
+  await sql`update transcript_items set view=view||jsonb_build_object('status','stopped','completedAt',${source.cutAt.toISOString()}::text) where id = any(${itemIds}::text[])`.execute(
     tx,
   );
   return { ...cursor, key: last.id };

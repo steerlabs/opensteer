@@ -1,3 +1,5 @@
+import { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
+import { readTranscriptOverlays } from "./personal-overlay-store.js";
 import { createId } from "@opensteer/core";
 import { sql } from "kysely";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -5,7 +7,7 @@ import { expect, test } from "vitest";
 import { commitPersonalMutation, installPersonalMutationHooks } from "./personal-mutation.js";
 import { refreshRequestAttention } from "./personal-attention-store.js";
 import { requestInsert } from "./request-persistence.js";
-import { liveRequest } from "./store.integration.test-support.js";
+import { liveRequest, pendingEvent } from "./store.integration.test-support.js";
 import { acceptPersonalRunnerStatement } from "./personal-runner-receipts.js";
 import { createPersonalStateFixture } from "./personal-state.test-support.js";
 import {
@@ -548,5 +550,102 @@ test("resumes a suspended scope when a deferred constraint rolls back COMMIT", a
   } finally {
     uninstall();
     await fixture.close();
+  }
+});
+
+test("keeps pending Requests in the overlay and writes one terminal receipt when the Run fails", async () => {
+  const f = await createPersonalStateFixture("terminal-receipts");
+  const { database, store, run } = f;
+  try {
+    const scope = { kind: "thread", threadId: run.threadId } as const;
+    const read = { viewerId: run.userId, scope };
+    const request = liveRequest({
+      id: createId("request"),
+      harnessInstanceId: run.harnessInstance.id,
+      requestedBy: run.userId,
+      runId: run.runId,
+      threadId: run.threadId,
+      presentation: {
+        kind: "choice",
+        title: "May I publish?",
+        options: [{ id: "yes", label: "Publish", hint: "confirm" }],
+      },
+    });
+    const emit = (event: Parameters<typeof pendingEvent>[0]) =>
+      store.commitRunnerEvent({
+        event: pendingEvent(event),
+        environmentId: run.environmentId,
+        runnerId: run.runnerId,
+        runnerBootId: run.runnerBootId,
+      });
+    const source = {
+      runId: run.runId,
+      threadId: run.threadId,
+      environmentId: run.environmentId,
+      bindingGeneration: run.bindingGeneration,
+    };
+    await emit({
+      ...source,
+      ordinal: 1,
+      type: "tool.started",
+      data: {
+        callId: "open",
+        tool: { namespace: "harness", name: "read" },
+        arguments: { target: "test" },
+      },
+    });
+    await emit({
+      ...source,
+      ordinal: 2,
+      type: "request.opened",
+      data: { request },
+    });
+    const pending = await readTranscriptPage(database, read);
+    if (pending.kind !== "page") throw new Error("Expected history");
+    expect(pending.items.filter((item) => item.kind === "request")).toEqual([]);
+    const overlay = await readTranscriptOverlays(database, { ...read, kind: "requests" });
+    expect(overlay).toMatchObject({ entries: [expect.objectContaining({ id: request.id })] });
+    const open = pending.items.find((item) => item.kind === "tool");
+    expect(open).toMatchObject({ view: { status: "running" } });
+
+    await emit({
+      ...source,
+      ordinal: 3,
+      type: "run.failed",
+      data: { status: "failed", code: "harness_error", message: "Engine failed", retryable: false },
+    });
+    await store.drainRunFinish(run.runId);
+    const ended = await database
+      .selectFrom("runs")
+      .select("completedAt")
+      .where("id", "=", run.runId)
+      .executeTakeFirstOrThrow();
+    const settled = await readTranscriptPage(database, read);
+    if (settled.kind !== "page" || !open || !ended.completedAt)
+      throw new Error("Expected settled history");
+    const stopped = settled.items.find((item) => item.kind === "tool");
+    expect(stopped).toMatchObject({
+      id: open.id,
+      position: open.position,
+      createdAt: open.createdAt,
+      completedAt: ended.completedAt.toISOString(),
+      view: { status: "stopped" },
+    });
+    expect(settled.items.filter((item) => item.kind === "request")).toEqual([
+      expect.objectContaining({
+        id: `request:${request.id}`,
+        requestId: request.id,
+        requestKind: "harness.input",
+        createdAt: ended.completedAt.toISOString(),
+        waitedSince: request.createdAt,
+        view: { title: "May I publish?", status: "cancelled", preview: "Cancelled · run-ended" },
+      }),
+    ]);
+    expect(await readTranscriptItem(database, { ...read, itemId: open.id })).toMatchObject({
+      item: stopped,
+      body: { kind: "tool", arguments: { target: "test" } },
+    });
+  } finally {
+    await f.close();
   }
 });

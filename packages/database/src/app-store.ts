@@ -348,6 +348,21 @@ export class AppStore {
           computerId: agentHome.computerId,
         }));
       const app = await lockApp(tx, input.scope.userId, appId, true);
+      const replay = await tx
+        .selectFrom("appVersions")
+        .select(["appId", "version"])
+        .where("createdByRun", "=", input.scope.runId)
+        .where("publishKey", "=", input.publishKey)
+        .executeTakeFirst();
+      if (replay) {
+        if (replay.appId !== app.id)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Publication key already used for another app",
+          });
+        return { ...replay, retiredServer: null };
+      }
+
       if (input.server) {
         const inside = relative(agentHome.path, input.server.folder.path);
         if (
@@ -423,15 +438,24 @@ export class AppStore {
         .where("threadId", "=", input.scope.threadId)
         .where("appId", "=", app.id)
         .executeTakeFirst();
-      await publishThreadCard(tx, mutation, {
-        id: existingCard?.id ?? `app:${input.scope.threadId}:${app.id}`,
-        threadId: input.scope.threadId,
-        runId: input.scope.runId,
-        kind: "app",
-        appId: app.id,
-        createdAt: mutation.state.now,
-        view: transcriptPreview({ title: name }),
-      });
+      await publishThreadCard(
+        tx,
+        mutation,
+        {
+          id:
+            existingCard?.id ??
+            (app.threadId === input.scope.threadId
+              ? `app:${app.id}`
+              : `app:${input.scope.threadId}:${app.id}`),
+          threadId: input.scope.threadId,
+          runId: input.scope.runId,
+          kind: "app",
+          appId: app.id,
+          createdAt: mutation.state.now,
+          view: transcriptPreview({ title: name, version }),
+        },
+        true,
+      );
       mutation.bumpResource("tab");
       return { appId: app.id, version, retiredServer };
     });
@@ -753,7 +777,7 @@ async function lockApp(
   await requireOwner(tx, ownerId);
   const app = await tx
     .selectFrom("apps")
-    .select(["id", "computerId", "latestVersion", "deleting"])
+    .select(["id", "computerId", "latestVersion", "deleting", "threadId"])
     .where("id", "=", appId)
     .where("ownerId", "=", ownerId)
     .forNoKeyUpdate()

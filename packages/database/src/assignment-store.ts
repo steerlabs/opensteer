@@ -134,6 +134,16 @@ export async function publishAssignmentSummaries(
       title: assignment.workerThread.title,
       status: assignment.status,
       preview: assignment.resultPreview ?? assignment.objectivePreview,
+      assignment: {
+        ...assignment,
+        objectivePreview: utf8Prefix(assignment.objectivePreview, 320),
+        resultPreview:
+          assignment.resultPreview === null ? null : utf8Prefix(assignment.resultPreview, 320),
+        workerThread: {
+          ...assignment.workerThread,
+          title: utf8Prefix(assignment.workerThread.title, 192),
+        },
+      },
     });
     await publishThreadCard(tx, mutation, {
       id: `assignment:${row.id}`,

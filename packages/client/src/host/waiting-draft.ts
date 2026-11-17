@@ -74,6 +74,26 @@ export function followWaitingDraft(draft: WaitingDraft, current: WaitingDraftSou
   return draft.conflict?.revision === current.revision ? draft : { ...draft, conflict: current };
 }
 
+/** Installs the full body once the lease opens, preserving text typed over its preview. */
+export function hydrateWaitingDraft(
+  draft: WaitingDraft,
+  current: WaitingDraftSource,
+): WaitingDraft {
+  if (current.revision < draft.baseRevision) return draft;
+  if (draft.dirty && current.revision > draft.baseRevision) return { ...draft, conflict: current };
+  const full = openWaitingDraft(current);
+  if (!draft.dirty) return full;
+  return measured({
+    ...full,
+    text: draft.text,
+    parts: full.parts.filter(
+      (part) =>
+        !draft.base.parts ||
+        draft.parts.some((kept) => JSON.stringify(part) === JSON.stringify(kept)),
+    ),
+  });
+}
+
 /** Lets the person's words go for the newer version that arrived under them. */
 export function reloadWaitingDraft(draft: WaitingDraft): WaitingDraft {
   return draft.conflict ? openWaitingDraft(draft.conflict) : draft;

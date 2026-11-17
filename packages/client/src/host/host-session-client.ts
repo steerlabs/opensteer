@@ -2900,9 +2900,9 @@ export class HttpHostClient {
       if (
         !current ||
         current.revision !== expectedRevision ||
-        held?.lease?.leaseId !== leaseId ||
+        !held?.lease?.ownedBySession ||
         Date.parse(held.lease.expiresAt) <= Date.now() ||
-        (held.message.edit?.revision ?? 0) !== expectedRevision
+        held.message.revision !== expectedRevision
       )
         throw new HostClientRequestError({
           code: "conflict",

@@ -661,11 +661,11 @@ describe("a conversation's page above it at phone width", () => {
     expect(page()).not.toBeNull();
     expect(folded(), "The head kept a picture of the open page").toBeNull();
 
-    await click(element(".run-page__handle"));
+    await act(async () => element<HTMLElement>(".run-page__handle").click());
     expect(page()).toBeNull();
     expect(folded()?.getAttribute("aria-expanded")).toBe("false");
 
-    await click(folded()!);
+    await act(async () => folded()!.click());
     expect(page()).not.toBeNull();
     // Folding and unfolding never navigate.
     expect(history.at(-1)).toMatchObject({ path: `/tasks/${waiting}`, search: "" });
@@ -676,7 +676,7 @@ describe("a conversation's page above it at phone width", () => {
     expect(element(".run-page__view").getAttribute("aria-label")).toContain(next.title);
     await act(async () => client.actInPlace(waiting, place.key));
 
-    await click(element(".run-page__view"));
+    await act(async () => element<HTMLElement>(".run-page__view").click());
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
     await act(async () => goTo!(`/tasks/${waiting}`));
     expect(page(), "Coming back, the page was no longer open").not.toBeNull();

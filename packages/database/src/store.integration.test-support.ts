@@ -92,9 +92,12 @@ export async function createStoreFixture() {
     });
     const { OpensteerStore } = await import("./store.js");
     const reactions: import("./personal-mutation.js").PersonalCommitReaction[] = [];
+    const commitListeners = new Set<(head: string, scopes: ReadonlySet<string>) => void>();
     const { installPersonalMutationHooks } = await import("./personal-mutation.js");
     installPersonalMutationHooks(database, {
-      wake() {},
+      wake(notice) {
+        for (const listener of commitListeners) listener(notice.head, notice.changedScopes);
+      },
       react(reaction) {
         reactions.push(reaction);
       },
@@ -737,6 +740,12 @@ export async function createStoreFixture() {
       startRunFixture,
       close: clone.drop,
       reactions,
+      observePersonalCommits(listener: (head: string, scopes: ReadonlySet<string>) => void) {
+        commitListeners.add(listener);
+        return () => {
+          commitListeners.delete(listener);
+        };
+      },
     });
   } catch (error) {
     await clone.drop();

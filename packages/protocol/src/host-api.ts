@@ -1,3 +1,4 @@
+import { PersonalInputQueueSchema } from "./personal-input-queue.js";
 import {
   PersonalDetailSnapshotSchema,
   PersonalRequestSummarySchema,
@@ -2242,45 +2243,7 @@ const hostApiGroup4 = defineRpc({
       threadId: ThreadIdSchema,
       expectedRevision: PersonalRevisionSchema.optional(),
     }),
-    z.strictObject({
-      threadId: ThreadIdSchema,
-      revision: PersonalRevisionSchema,
-      paused: z.boolean(),
-      steerRunId: RunIdSchema.nullable(),
-      items: z
-        .array(
-          z.strictObject({
-            message: z.strictObject({
-              id: MessageIdSchema,
-              revision: z.int().nonnegative(),
-              author: z.enum([
-                "agent",
-                "connection",
-                "human",
-                "platform",
-                "team-member",
-                "trigger",
-                "watch",
-              ]),
-              preview: z.string(),
-              truncated: z.boolean(),
-            }),
-            input: z.strictObject({
-              messageId: MessageIdSchema,
-              state: ThreadInputViewSchema.shape.state,
-              queueRank: PersonalRevisionSchema,
-            }),
-            canEdit: z.boolean(),
-            canCancel: z.boolean(),
-            canMove: z.boolean(),
-            canSteer: z.boolean(),
-            lease: z
-              .strictObject({ deviceLabel: z.string(), expiresAt: z.iso.datetime() })
-              .nullable(),
-          }),
-        )
-        .max(100),
-    }),
+    PersonalInputQueueSchema,
   ),
   /** A waiting message's versions, newest first, a bounded page at a time. */
   "thread.message.revisions.list": declaration(

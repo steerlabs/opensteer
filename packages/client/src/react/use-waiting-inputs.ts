@@ -18,10 +18,5 @@ export function useWaitingInputs(
 ): readonly WaitingInput[] | null {
   const queue = useThreadInputQueue(hostClient, threadId, observed);
   const needsYou = useHostSelector(hostClient, selectNeedsYou);
-  return useMemo(
-    () =>
-      queue &&
-      waitingInputs(queue, { needsYou, ownsLease: (leaseId) => hostClient.ownsEditLease(leaseId) }),
-    [hostClient, needsYou, queue],
-  );
+  return useMemo(() => queue && waitingInputs(queue, { needsYou }), [needsYou, queue]);
 }

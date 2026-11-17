@@ -1296,7 +1296,7 @@ export interface HostClient extends TabsClient {
    * queue and every event that touches it reads again, so no surface calls
    * this itself.
    */
-  loadThreadInputQueue(threadId: string): Promise<ThreadInputQueue>;
+  loadThreadInputQueue(threadId: string): Promise<import("@opensteer/protocol").PersonalInputQueue>;
   loadMachineAccessHistory(input: {
     readonly before?: string;
     readonly limit: number;

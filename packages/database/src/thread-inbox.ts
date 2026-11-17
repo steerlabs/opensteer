@@ -1,3 +1,5 @@
+import type { PersonalInputQueue } from "@opensteer/protocol";
+import type { AuthSessionId } from "@opensteer/core";
 import { assignmentWasCancelled } from "./execution-authority.js";
 import { writeExecutionItem } from "./execution-changes.js";
 import { unreadTaskContribution } from "./personal-attention-store.js";
@@ -55,6 +57,7 @@ import {
   type PrincipalId,
 } from "@opensteer/channel-core";
 import {
+  ArtifactContentPartSchema,
   deriveThreadStatus,
   placeInputFailure,
   ContentPartSchema,
@@ -93,7 +96,6 @@ import {
   type ReplyTarget,
   type RunId,
   type ThreadId,
-  type ThreadInput,
   type TriggerId,
   type TriggerWatchActivationId,
   type UserId,
@@ -217,33 +219,7 @@ function canManageQueuedInput(
  * delegation completion. Harnesses receive only references to this state.
  */
 
-interface WaitingInputView {
-  readonly message: {
-    readonly id: MessageId;
-    readonly revision: number;
-    readonly author: MessageAuthor["kind"];
-    readonly preview: string;
-    readonly truncated: boolean;
-  };
-  readonly input: {
-    readonly messageId: MessageId;
-    readonly state: ThreadInput["state"];
-    readonly queueRank: string;
-  };
-  readonly canEdit: boolean;
-  readonly canCancel: boolean;
-  readonly canMove: boolean;
-  readonly canSteer: boolean;
-  readonly lease: { readonly deviceLabel: string; readonly expiresAt: string } | null;
-}
-
-export interface ThreadInputQueueResult {
-  readonly threadId: ThreadId;
-  readonly revision: string;
-  readonly paused: boolean;
-  readonly steerRunId: RunId | null;
-  readonly items: readonly WaitingInputView[];
-}
+type WaitingInputView = PersonalInputQueue["items"][number];
 
 export async function readThreadInputQueue(
   transaction: Transaction<DatabaseSchema>,
@@ -252,8 +228,9 @@ export async function readThreadInputQueue(
     readonly threadId: ThreadId;
     readonly requestedBy: UserId;
     readonly expectedRevision?: string;
+    readonly sessionId?: AuthSessionId;
   },
-): Promise<ThreadInputQueueResult> {
+): Promise<PersonalInputQueue> {
   await requirePersonalOwner(transaction, request.requestedBy);
   const thread = await transaction
     .selectFrom("threads")
@@ -303,7 +280,15 @@ export async function readThreadInputQueue(
           "messages.kind",
           "messages.author",
           "messages.revision",
+          "messages.createdAt",
+          "messages.editedAt",
           "transcriptItems.view",
+          sql<unknown>`(
+            select coalesce(jsonb_agg(part), '[]'::jsonb)
+            from (select part from jsonb_path_query(
+              messages.content, '$[*] ? (@.type == "artifact")'
+            ) part limit 6) artifacts
+          )`.as("attachments"),
         ])
         .where(
           "messages.id",
@@ -320,21 +305,39 @@ export async function readThreadInputQueue(
     const own = row.state === "pending" && !row.teamRequestId && canManageQueuedInput(row, request);
     const liveLease = liveInputLease(transaction, row);
     const lease = liveLease
-      ? { deviceLabel: utf8Prefix(liveLease.deviceLabel, 100), expiresAt: liveLease.expiresAt }
+      ? {
+          deviceLabel: utf8Prefix(liveLease.deviceLabel, 100),
+          expiresAt: liveLease.expiresAt,
+          ownedBySession: row.editLeaseSessionId === request.sessionId,
+        }
       : null;
+    const attachments = z.array(ArtifactContentPartSchema).parse(message.attachments);
     const view = {
       message: {
         id: message.id,
         revision: message.revision,
-        author: message.author.kind,
+        ...(message.revision > 0 && message.editedAt
+          ? { edit: { revision: message.revision, editedAt: message.editedAt.toISOString() } }
+          : {}),
+        author: message.author,
+        createdAt: message.createdAt.toISOString(),
         preview: message.view?.preview ?? "",
         truncated: message.view?.truncated ?? false,
+        ...(attachments.length ? { attachments } : {}),
       },
       input: {
         messageId: row.messageId,
         state: row.state,
         queueRank: row.queueRank,
       },
+      ask:
+        row.teamRequestId && row.teamSource
+          ? {
+              teamId: row.teamSource.teamId,
+              requestId: row.teamRequestId,
+              audience: row.teamSource.audience,
+            }
+          : null,
       canEdit:
         !request.authority &&
         (await inputEditEligibility(transaction, thread, row, message, request.requestedBy)),
@@ -345,11 +348,19 @@ export async function readThreadInputQueue(
         steerable && own && !row.freshContext && compatibleSteeringTarget(active.replyTarget, row),
       ),
     };
-    while (view.message.preview && Buffer.byteLength(JSON.stringify(view)) > 900) {
+    while (
+      !request.authority &&
+      view.message.preview &&
+      Buffer.byteLength(JSON.stringify(view)) > 900
+    ) {
       view.message.preview = utf8Prefix(
         view.message.preview,
         Math.floor(Buffer.byteLength(view.message.preview) / 2),
       );
+      view.message.truncated = true;
+    }
+    while (attachments.length && Buffer.byteLength(JSON.stringify(view)) > 900) {
+      attachments.pop();
       view.message.truncated = true;
     }
     items.push(view);

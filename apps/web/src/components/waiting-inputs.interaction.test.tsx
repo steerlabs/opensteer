@@ -1,3 +1,4 @@
+import { mockInputQueue } from "@opensteer/client/mock";
 // @vitest-environment happy-dom
 
 import { act } from "react";
@@ -102,13 +103,17 @@ function ask(id: string, text: string, flags: Partial<Item> = {}): Item {
 
 function inputsOf(items: Item[], options: { paused?: boolean } = {}): WaitingInput[] {
   return waitingInputs(
-    {
-      items,
-      paused: options.paused ?? false,
-      steerRunId: null,
-      threadId: "thread",
-    } as unknown as ThreadInputQueue,
-    { ownsLease: () => false },
+    mockInputQueue(
+      {
+        items,
+        paused: options.paused ?? false,
+        steerRunId: null,
+        threadId: "thread",
+      } as unknown as ThreadInputQueue,
+      "0",
+      () => false,
+    ),
+    {},
   );
 }
 

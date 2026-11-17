@@ -144,7 +144,16 @@ async function storeToolCard(
   const id = `tool:${call.id}`;
   const view = transcriptPreview({
     title: call.tool?.name,
-    status: call.status,
+    status:
+      call.status === "open"
+        ? "running"
+        : call.status === "interrupted"
+          ? "stopped"
+          : call.isError
+            ? "failed"
+            : "done",
+    tool: call.tool,
+    ...(call.completedAt ? { completedAt: call.completedAt.toISOString() } : {}),
   });
   const row = await tx
     .insertInto("transcriptItems")
@@ -169,7 +178,7 @@ async function storeToolCard(
         view: eb.ref("excluded.view"),
       })),
     )
-    .returning(["position", "revision", "createdAt"])
+    .returningAll()
     .executeTakeFirstOrThrow();
   mutation.change(
     {
@@ -178,18 +187,7 @@ async function storeToolCard(
       entityId: id,
       operation: "upsert",
     },
-    () => ({
-      ...row,
-      createdAt: row.createdAt.toISOString(),
-      id,
-      kind: "tool",
-      runId: call.runId,
-      attemptId: call.attemptId,
-      nodeId: call.nodeId,
-      toolCallId: call.id,
-      isTurnStart: false,
-      view,
-    }),
+    () => itemView(row),
   );
 }
 
@@ -441,6 +439,7 @@ export async function interruptPersonalToolCalls(
   mutation: PersonalMutation,
   runId: ToolKey["runId"],
   ids: readonly string[],
+  completedAt = mutation.state.now,
 ) {
   if (!ids.length) return;
   if (ids.length > 128) throw new Error("A tool interruption batch exceeded the Run fence");
@@ -457,7 +456,7 @@ export async function interruptPersonalToolCalls(
   const callIds = current.map(({ id }) => id);
   await tx
     .updateTable("toolCalls")
-    .set({ status: "interrupted", completedAt: mutation.state.now })
+    .set({ status: "interrupted", completedAt })
     .where("id", "in", callIds)
     .execute();
   const closedCards = new Map(current.map((call) => [`tool:${call.id}`, call]));
@@ -473,7 +472,7 @@ export async function interruptPersonalToolCalls(
     .updateTable("transcriptItems")
     .set({
       revision: mutation.sequence,
-      view: sql`jsonb_strip_nulls(jsonb_build_object('title',view->'title','status','interrupted'))`,
+      view: sql`view || jsonb_build_object('status','stopped','completedAt',${completedAt.toISOString()}::text)`,
     })
     .where("id", "in", cardIds)
     .returningAll()

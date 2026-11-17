@@ -6,6 +6,9 @@ import {
   MessageIdSchema,
   MessageViewSchema,
   MessageAuthorSchema,
+  MessageEditSchema,
+  TeamSourceSchema,
+  IntegrationCallSubjectSchema,
   ToolIdentitySchema,
   ToolOutputViewSchema,
   ExecutionNodeViewSchema,
@@ -74,12 +77,21 @@ export const TranscriptItemSchema = z.discriminatedUnion("kind", [
     messageId: MessageIdSchema,
     messageKind: z.enum(["assistant", "input", "continuation"]).optional(),
     author: MessageAuthorSchema.optional(),
+    edit: MessageEditSchema.optional(),
+    teamSource: TeamSourceSchema.optional(),
+    delivery: z
+      .strictObject({
+        status: z.enum(["failed", "unconfirmed"]),
+        reason: z.string().max(500),
+      })
+      .optional(),
   }),
   z.strictObject({
     ...card,
     kind: z.literal("tool"),
     toolCallId: z.string().min(1).max(160),
     tool: ToolIdentitySchema.nullable().optional(),
+    completedAt: z.iso.datetime().optional(),
     view: TranscriptItemPreviewSchema.refine((value) => value.preview === undefined),
   }),
   z.strictObject({
@@ -96,6 +108,7 @@ export const TranscriptItemSchema = z.discriminatedUnion("kind", [
     kind: z.literal("request"),
     requestId: RequestIdSchema,
     requestKind: RequestKindSchema.optional(),
+    waitedSince: z.iso.datetime().optional(),
   }),
   z.strictObject({
     ...card,
@@ -109,7 +122,12 @@ export const TranscriptItemSchema = z.discriminatedUnion("kind", [
     delegationId: DelegationIdSchema,
     assignment: AssignmentSummarySchema.optional(),
   }),
-  z.strictObject({ ...card, kind: z.literal("app"), appId: AppIdSchema }),
+  z.strictObject({
+    ...card,
+    kind: z.literal("app"),
+    appId: AppIdSchema,
+    version: z.int().nonnegative().optional(),
+  }),
   z.strictObject({
     ...card,
     kind: z.literal("reasoning"),
@@ -149,6 +167,7 @@ export const TranscriptItemBodySchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("tool"),
     arguments: z.unknown(),
+    integration: IntegrationCallSubjectSchema.optional(),
     output: ToolOutputViewSchema.omit({ images: true }).optional(),
     images: z.array(TranscriptImageRefSchema).max(8).optional(),
   }),

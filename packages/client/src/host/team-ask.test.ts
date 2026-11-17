@@ -74,7 +74,6 @@ it("admits an ask into a task of its own as a gated waiting input that Needs you
     expect(
       waitingInputs(mock.getThreadTranscript(threadId)?.getSnapshot().inputQueue!, {
         needsYou: page,
-        ownsLease: () => false,
       }),
     ).toMatchObject([
       {
@@ -178,7 +177,7 @@ describe.each(["approve", "decline"] as const)("%s decision", (decision) => {
       expect(listed(snapshot.needsYou, second.requestId)).toBeDefined();
       const queue = client.getThreadTranscript(threadId)?.getSnapshot().inputQueue;
       if (decision === "approve") {
-        const waiting = waitingInputs(queue!, { ownsLease: () => false });
+        const waiting = waitingInputs(queue!, {});
         // Approving until the team confirms; then it joins the line and a Run takes it.
         expect(waiting).toMatchObject([{ approving: true, canEdit: false, kind: "ask" }]);
         await vi.waitFor(

@@ -1,3 +1,6 @@
+import { commitPersonalMutation } from "./personal-mutation.js";
+import { syncTranscriptMessage } from "./message-visibility.js";
+import { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
 import { sql } from "kysely";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { latestRunPlace, recordRunTabPlace } from "./browser-session-store.js";
@@ -8,6 +11,53 @@ import "./connection.js";
 import { readAgentThreadActivity, readAgentThreadRecent } from "./agent-thread-history.js";
 import { readThreadWaitSnapshot } from "./thread-wait.js";
 describeStore("agent Thread history", (it) => {
+  it("keeps model-control messages out of both history and point reads", async ({
+    storeFixture,
+  }) => {
+    const { database, startRunFixture } = storeFixture;
+    const f = await startRunFixture("model-control");
+    const ids = await commitPersonalMutation(database, async (tx) => {
+      const base = await tx
+        .selectFrom("messages")
+        .select("actorPrincipalId")
+        .where("id", "=", f.turn.message.id)
+        .executeTakeFirstOrThrow();
+      const controls = [
+        { kind: "run-result", cause: "assignment-result" },
+        { kind: "continuation", cause: "context-window" },
+        { kind: "input", cause: "claude-compaction" },
+      ] as const;
+      const ids = [];
+      for (const [index, { kind, cause }] of controls.entries()) {
+        const id = createId("message");
+        await tx
+          .insertInto("messages")
+          .values({
+            id,
+            threadId: f.thread.id,
+            runId: f.run.id,
+            sequence: String(100 + index),
+            kind,
+            actorPrincipalId: base.actorPrincipalId,
+            author: { kind: "platform", cause },
+            content: sql`${JSON.stringify([{ type: "text", text: "Control payload" }])}::jsonb`,
+          })
+          .execute();
+        await syncTranscriptMessage(tx, id);
+        ids.push(id);
+      }
+      return ids;
+    });
+    const read = { viewerId: f.userId, scope: { kind: "thread", threadId: f.thread.id } as const };
+    const page = await readTranscriptPage(database, read);
+    if (page.kind !== "page") throw new Error("Expected model task history");
+    for (const id of ids) {
+      expect(page.items.map((item) => item.id)).not.toContain(id);
+      await expect(readTranscriptItem(database, { ...read, itemId: id })).resolves.toEqual({
+        kind: "unavailable",
+      });
+    }
+  });
   it("orders published messages by their retained item and reads the canonical body", async ({
     storeFixture,
   }) => {

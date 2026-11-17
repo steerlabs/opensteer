@@ -1,10 +1,5 @@
-import {
-  utf8ByteLength,
-  type Request,
-  MessageIdSchema,
-  type ThreadInputQueue,
-} from "@opensteer/core";
-import type { HostApiClient } from "@opensteer/protocol";
+import { utf8ByteLength, type Request, MessageIdSchema } from "@opensteer/core";
+import type { HostApiClient, PersonalInputQueue } from "@opensteer/protocol";
 import type {
   TranscriptItem,
   TranscriptItemResult,
@@ -25,7 +20,7 @@ export interface ThreadViewState {
   readonly entries: readonly TranscriptEntry[];
   readonly requests: readonly Request[];
   readonly runQueue: readonly RunQueueEntry[];
-  readonly inputQueue: ThreadInputQueue | null;
+  readonly inputQueue: PersonalInputQueue | null;
   readonly synchronized: boolean;
   readonly generation?: number;
   readonly pendingRequestIds?: readonly string[];
@@ -120,7 +115,7 @@ export class ScopedThreadReader implements ThreadViewSource {
   readonly #cards = new WeakMap<TranscriptItem, TranscriptEntry | undefined>();
   readonly #liveCards = new WeakMap<TranscriptItem, TranscriptEntry | undefined>();
   readonly #overlayReads = new Map<Overlay, number>();
-  #queue: { generation: number; promise: Promise<ThreadInputQueue> } | undefined;
+  #queue: { generation: number; promise: Promise<PersonalInputQueue> } | undefined;
   #queueFailure: { generation: number; revision: string; error: unknown } | undefined;
   #requestCut: RequestSummaries | undefined;
   readonly #reviewedRevisions = new Map<string, string>();
@@ -393,13 +388,11 @@ export class ScopedThreadReader implements ThreadViewSource {
         const queue = unwrapRpcResult(result);
         if (
           queue.threadId !== this.#detail.scope.threadId ||
-          queue.revision === undefined ||
           BigInt(queue.revision) < BigInt(expectedRevision)
         )
           throw new Error("The Host returned a stale or misaddressed input queue.");
-        const versioned = { ...queue, revision: queue.revision };
         this.#queueFailure = undefined;
-        if (this.#detail.transcript.installQueue(versioned, generation)) return versioned;
+        if (this.#detail.transcript.installQueue(queue, generation)) return queue;
         if (current.inputQueue) return current.inputQueue;
         throw new Error("The input queue changed while it was loading.");
       } catch (error) {
@@ -684,6 +677,9 @@ function matchesBody(item: TranscriptItem, body: NonNullable<TranscriptItemResul
       return body.kind === "assignment" && body.assignment.id === item.delegationId;
     case "place":
       return body.kind === "place";
+    case "request":
+    case "app":
+      return false;
   }
 }
 

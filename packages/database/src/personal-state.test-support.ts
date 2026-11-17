@@ -1,3 +1,4 @@
+import { emptyPersonalResourceRevisions } from "./personal-state-schema.js";
 import type { DatabaseSchema } from "./schema.js";
 import { sql } from "kysely";
 import { createDatabase } from "./connection.js";
@@ -63,6 +64,7 @@ export async function preparePersonalConversion(
         sequence: sourceSequence.toString(),
         prunedThroughSequence: "0",
         retainedChangeCount: 0,
+        resourceRevisions: emptyPersonalResourceRevisions,
         pendingRequestCount: 0,
         pendingDeviceAccessRequestCount: 0,
         needsYouCount: 0,

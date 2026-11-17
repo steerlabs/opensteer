@@ -232,6 +232,20 @@ const itemColumns = [
 type Item = Pick<Selectable<TranscriptItemTable>, (typeof itemColumns)[number]>;
 
 export function itemView(row: Item) {
+  const {
+    version,
+    completedAt,
+    tool,
+    requestKind,
+    waitedSince,
+    messageKind,
+    messageAuthor,
+    edit,
+    delivery,
+    assignment,
+    teamSource,
+    ...view
+  } = row.view;
   const base = {
     id: row.id,
     kind: row.kind,
@@ -242,22 +256,40 @@ export function itemView(row: Item) {
     nodeId: row.nodeId,
     isTurnStart: row.isTurnStart,
     createdAt: row.createdAt.toISOString(),
-    view: row.view,
+    view,
   };
   switch (row.kind) {
     case "message":
-      return TranscriptItemSchema.parse({ ...base, messageId: row.messageId });
+      return TranscriptItemSchema.parse({
+        ...base,
+        messageId: row.messageId,
+        messageKind,
+        author: messageAuthor,
+        edit,
+        delivery,
+        teamSource,
+      });
     case "tool":
-      return TranscriptItemSchema.parse({ ...base, toolCallId: row.toolCallId });
+      return TranscriptItemSchema.parse({ ...base, toolCallId: row.toolCallId, tool, completedAt });
     case "request":
-      return TranscriptItemSchema.parse({ ...base, requestId: row.requestId });
+      return TranscriptItemSchema.parse({
+        ...base,
+        requestId: row.requestId,
+        requestKind,
+        waitedSince,
+      });
     case "node":
       return TranscriptItemSchema.parse({ ...base, executionNodeId: row.executionNodeId });
     case "assignment":
     case "delegation":
-      return TranscriptItemSchema.parse({ ...base, delegationId: row.delegationId });
+      return TranscriptItemSchema.parse({
+        ...base,
+        kind: "assignment",
+        delegationId: row.delegationId,
+        assignment,
+      });
     case "app":
-      return TranscriptItemSchema.parse({ ...base, appId: row.appId });
+      return TranscriptItemSchema.parse({ ...base, appId: row.appId, version });
     case "reasoning":
       return TranscriptItemSchema.parse({
         ...base,
@@ -535,7 +567,9 @@ export function readTranscriptItem(
         .executeTakeFirst();
       if (!fits) return { kind: "unavailable" as const };
       if (!fits.fits) return tooLarge();
-      const tool = await toolScope.select(["arguments", "output"]).executeTakeFirstOrThrow();
+      const tool = await toolScope
+        .select(["arguments", "output", "integration"])
+        .executeTakeFirstOrThrow();
       const { output } = tool;
       const images = await tx
         .selectFrom("toolOutputImages")
@@ -549,6 +583,7 @@ export function readTranscriptItem(
       body = {
         kind: "tool",
         arguments: tool.arguments,
+        ...(tool.integration ? { integration: tool.integration } : {}),
         ...(output ? { output: { text: output.text, truncation: output.truncation } } : {}),
         ...(images.length
           ? {

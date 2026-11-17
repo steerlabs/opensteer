@@ -11,6 +11,7 @@ import {
 import type { ContentPart, TeamSource } from "@opensteer/core";
 import {
   followWaitingDraft,
+  hydrateWaitingDraft,
   HostClientRequestError,
   messageAuthorName,
   mutationIdempotencyKey,
@@ -183,6 +184,7 @@ type EditNotice = "taken" | "changed" | "failed" | "unconfirmed";
 interface EditSession {
   /** Replaced when a lease that never opened is taken again; the words stay. */
   opening: Promise<WaitingMessageEditor>;
+  bodyLoaded: boolean;
   /** Left: unmounted, or closed by the person. */
   closed: boolean;
   /** A save is out; it ends the lease, and nothing closes the editor before it answers. */
@@ -223,7 +225,10 @@ function useInPlaceEdit(
   const row = useRef<HTMLLIElement | null>(null);
   const draft =
     kept && !gone && !saving
-      ? followWaitingDraft(kept, { content: input.item.message.content, revision: input.revision })
+      ? followWaitingDraft(kept, {
+          content: [{ type: "text", text: input.entry.body }],
+          revision: input.revision,
+        })
       : kept;
 
   useEffect(
@@ -246,21 +251,30 @@ function useInPlaceEdit(
     if (session.current) return;
     const held: EditSession = {
       closed: false,
+      bodyLoaded: false,
       opening: client.editWaitingMessage(input.threadId, input.messageId),
       saving: false,
       sending: null,
     };
     session.current = held;
-    setKept(openWaitingDraft({ content: input.item.message.content, revision: input.revision }));
+    setKept(
+      openWaitingDraft({
+        content: [{ type: "text", text: input.entry.body }],
+        revision: input.revision,
+      }),
+    );
     setNotice(null);
     onOpenChange(true);
     void held.opening.then(
       (editor) => {
-        if (session.current !== held || !editor.content) return;
+        if (session.current !== held) return;
+        if (!editor.content) {
+          held.bodyLoaded = true;
+          return;
+        }
         const source = { content: editor.content, revision: editor.revision };
-        setKept((draft) =>
-          draft?.dirty ? followWaitingDraft(draft, source) : openWaitingDraft(source),
-        );
+        setKept((draft) => (draft ? hydrateWaitingDraft(draft, source) : draft));
+        held.bodyLoaded = true;
       },
       (error: unknown) => {
         if (session.current === held) setNotice(isConflict(error) ? "changed" : "failed");
@@ -299,6 +313,7 @@ function useInPlaceEdit(
   const save = async (): Promise<number | null> => {
     const held = session.current;
     if (!held || !draft || held.saving) return null;
+    const bodyWasLoaded = held.bodyLoaded;
     held.saving = true;
     const current = await typed();
     held.saving = false;
@@ -319,7 +334,20 @@ function useInPlaceEdit(
         held.opening = client.editWaitingMessage(input.threadId, input.messageId);
         return held.opening;
       });
-      const edit = await editor.save(plan.content, plan.expectedRevision);
+      const ready =
+        !bodyWasLoaded && editor.content
+          ? waitingDraftSave(
+              hydrateWaitingDraft(current, { content: editor.content, revision: editor.revision }),
+            )
+          : plan;
+      if (!ready || ready.kind !== "edit") {
+        held.saving = false;
+        setSaving(false);
+        setNotice("changed");
+        return null;
+      }
+      held.bodyLoaded = true;
+      const edit = await editor.save(ready.content, ready.expectedRevision);
       held.saving = false;
       // Saving ended the lease; there is nothing left to cancel.
       finish(held, true);

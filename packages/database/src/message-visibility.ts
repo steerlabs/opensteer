@@ -14,6 +14,7 @@ import {
 import { isOfflineSettlement } from "./personal-transaction.js";
 import { itemView } from "./personal-sync-store.js";
 import { invalidateThreadCollection, publishThreadSummary } from "./thread-status.js";
+import { messageEditFromRow } from "./thread-row-mappers.js";
 import { describeTranscriptMessage } from "./transcript-store.js";
 import type { TranscriptItemTable } from "./personal-state-schema.js";
 import { sql, type Insertable, type RawBuilder } from "kysely";
@@ -53,7 +54,7 @@ export async function syncTranscriptMessage(
       .executeTakeFirstOrThrow();
     const input = await tx
       .selectFrom("threadInputs")
-      .select(["policy", "state", "runId"])
+      .select(["policy", "state", "runId", "cancelReason", "teamSource"])
       .where("messageId", "=", messageId)
       .executeTakeFirst();
     const seed =
@@ -80,12 +81,17 @@ export async function syncTranscriptMessage(
             .where("id", "=", runId)
             .executeTakeFirst()
         : seed;
+    const edit = messageEditFromRow(message);
     const { published, visible, isTurnStart, view } = describeTranscriptMessage({
       id: message.id,
       kind: message.kind,
       content: MessageContentSchema.parse(message.content),
       author: message.author,
-      ...(input ? { policy: input.policy, state: input.state } : {}),
+      ...(input
+        ? { policy: input.policy, state: input.state, cancelReason: input.cancelReason }
+        : {}),
+      ...(edit ? { edit } : {}),
+      ...(input?.teamSource ? { teamSource: input.teamSource } : {}),
       edited: message.revision > 0,
       admittedSeed: Boolean(
         seed && nonTerminalRunStatuses.some((status) => status === seed.status),
@@ -176,13 +182,15 @@ export async function publishThreadCard(
     Insertable<TranscriptItemTable>,
     "id" | "threadId" | "runId" | "kind" | "delegationId" | "appId" | "createdAt" | "view"
   >,
+  move = false,
 ) {
   const old = await tx
     .selectFrom("transcriptItems")
     .select("position")
     .where("id", "=", card.id)
     .executeTakeFirst();
-  const position = old?.position ?? (await allocateTranscriptPosition(tx, card.threadId));
+  const position =
+    !move && old?.position ? old.position : await allocateTranscriptPosition(tx, card.threadId);
   const item = await tx
     .insertInto("transcriptItems")
     .values({
@@ -200,11 +208,20 @@ export async function publishThreadCard(
         runId: card.runId,
         revision: mutation.sequence,
         position,
+        ...(move ? { createdAt: card.createdAt } : {}),
         visible: true,
       }),
     )
     .returningAll()
     .executeTakeFirstOrThrow();
+  if (move && old?.position) {
+    await tx
+      .updateTable("threads")
+      .set({ transcriptOrderRevision: mutation.sequence })
+      .where("id", "=", card.threadId)
+      .execute();
+    await invalidateThreadCollection(tx, card.threadId, "transcript-order");
+  }
   mutation.change(
     {
       scopeKey: `thread:${card.threadId}`,

@@ -321,7 +321,7 @@ export async function settleFinishChildren(
       .execute();
   }
   await endLiveExecutionNodes(tx, { runId, endedAt: input.completedAt, ids: children.nodes });
-  await interruptPersonalToolCalls(tx, mutation, runId, children.tools);
+  await interruptPersonalToolCalls(tx, mutation, runId, children.tools, input.completedAt);
   if (children.grants.length)
     await tx
       .updateTable("grants")

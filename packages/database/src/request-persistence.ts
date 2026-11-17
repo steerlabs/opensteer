@@ -3,16 +3,18 @@ import { refreshAssignmentWorkerSummaries } from "./assignment-store.js";
 import {
   OpensteerError,
   RequestSchema,
+  requestOutcomeText,
   utf8Prefix,
   type EnvironmentId,
   type Request,
   type RequestId,
 } from "@opensteer/core";
-import { sql, type Kysely, type Transaction } from "kysely";
+import type { Kysely, Transaction } from "kysely";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 import { refreshRequestAttention } from "./personal-attention-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { allocateTranscriptPosition } from "./message-visibility.js";
 import { itemView } from "./personal-sync-store.js";
 import { transcriptPreview } from "./transcript-store.js";
 
@@ -43,44 +45,47 @@ export function refreshRequestState(
     const scopeKey = nodeId ? (`node:${nodeId}` as const) : (`thread:${threadId}` as const);
     const id = `request:${requestId}`;
     const title = utf8Prefix(row.presentation.title, 240);
-    const view = transcriptPreview({ title, status: row.status });
-    let item = await tx
-      .updateTable("transcriptItems")
-      .set({ revision: mutation.sequence, view })
-      .where("id", "=", id)
-      .returningAll()
-      .executeTakeFirst();
-    if (!item) {
-      const { nextTranscriptPosition: position } = await tx
-        .updateTable("threads")
-        .set({ nextTranscriptPosition: sql<string>`next_transcript_position + 1` })
-        .where("id", "=", threadId)
-        .returning("nextTranscriptPosition")
-        .executeTakeFirstOrThrow();
-      item = await tx
+    const request = requestFromRow(row);
+    if (request.status !== "pending") {
+      const view = transcriptPreview({
+        title,
+        status: row.status,
+        preview: requestOutcomeText(request),
+        requestKind: row.kind,
+        ...(row.mode === "live" ? { waitedSince: row.createdAt.toISOString() } : {}),
+      });
+      const prior = await tx
+        .selectFrom("transcriptItems")
+        .select("position")
+        .where("id", "=", id)
+        .executeTakeFirst();
+      const position = prior?.position ?? (await allocateTranscriptPosition(tx, threadId));
+      const fields = {
+        position,
+        revision: mutation.sequence,
+        view,
+        visible: true,
+        createdAt: request.resolvedAt,
+      };
+      const item = await tx
         .insertInto("transcriptItems")
         .values({
           id,
           threadId,
           runId,
           nodeId,
-          position,
           requestId,
-          view,
           kind: "request",
-          revision: mutation.sequence,
-          visible: true,
           isTurnStart: false,
-          createdAt: row.createdAt,
+          ...fields,
         })
+        .onConflict((conflict) => conflict.column("id").doUpdateSet(fields))
         .returningAll()
         .executeTakeFirstOrThrow();
+      mutation.change({ scopeKey, entityKind: "item", entityId: id, operation: "upsert" }, () =>
+        itemView(item),
+      );
     }
-    const viewItem = itemView(item);
-    mutation.change(
-      { scopeKey, entityKind: "item", entityId: id, operation: "upsert" },
-      () => viewItem,
-    );
     mutation.change(
       {
         scopeKey,
@@ -103,7 +108,7 @@ export function refreshRequestState(
       mutation.react({ type: "deadlinesChanged" });
     await publishThreadSummary(tx, threadId);
     await refreshAssignmentWorkerSummaries(tx, threadId);
-    return requestFromRow(row);
+    return request;
   });
 }
 

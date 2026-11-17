@@ -1,3 +1,4 @@
+import { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
 import { lockPersonalSyncState } from "./personal-transaction.js";
 import { createId, type AssignmentId } from "@opensteer/core";
 
@@ -420,6 +421,37 @@ describeStore("Assignment result delivery", (it) => {
       waitId: otherId,
     });
     expect(await s.returns()).toHaveLength(1);
+  });
+  it("shows a delegate settlement without exposing its model continuation", async ({
+    storeFixture,
+  }) => {
+    const s = await deliveryFixture(storeFixture, "return-history");
+    const task = await s.delegate("Sales Agent");
+    await task.settle("Inspection complete.");
+    await s.store.drainAssignmentReturn(task.assignment.id);
+    const [result] = await s.returns();
+    if (!result) throw new Error("Expected the model's continuation");
+    const read = {
+      viewerId: s.f.userId,
+      scope: { kind: "thread", threadId: s.f.thread.id } as const,
+    };
+    const page = await readTranscriptPage(s.database, read);
+    if (page.kind !== "page") throw new Error("Expected parent history");
+    expect(page.items.filter((item) => item.kind === "assignment")).toEqual([
+      expect.objectContaining({
+        delegationId: task.assignment.id,
+        assignment: expect.objectContaining({
+          status: "completed",
+          initialRunId: task.run.id,
+          workerThread: expect.objectContaining({ title: "Sales Agent", id: task.thread.id }),
+          resultPreview: "Inspection complete.",
+        }),
+      }),
+    ]);
+    expect(page.items.map(({ id }) => id)).not.toContain(result.id);
+    expect(await readTranscriptItem(s.database, { ...read, itemId: result.id })).toEqual({
+      kind: "unavailable",
+    });
   });
   for (const ending of ["restart", "deadline", "run-end"] as const) {
     it(`recovers exactly one return when a persistent wait ends by ${ending}`, async ({

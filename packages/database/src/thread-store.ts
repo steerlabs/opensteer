@@ -2103,6 +2103,7 @@ export async function getThreadInputQueue(
     readonly threadId: ThreadId;
     readonly requestedBy: UserId;
     readonly expectedRevision?: string;
+    readonly sessionId?: import("@opensteer/core").AuthSessionId;
   },
 ) {
   return withPersonalReadTransaction(database, async (transaction) => {
