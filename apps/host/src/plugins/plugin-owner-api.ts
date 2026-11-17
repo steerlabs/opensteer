@@ -116,6 +116,7 @@ export function pluginEngineStateView(state: PluginServiceState): PluginEngineSt
           : "idle";
   return {
     status,
+    ...(state.unavailable ? { unavailable: state.unavailable } : {}),
     ...(status === "unavailable" && state.reason ? { reason: state.reason.slice(0, 500) } : {}),
   };
 }
@@ -278,7 +279,7 @@ export class PluginOwnerApi {
 
   async installed(userId: UserId, signal?: AbortSignal) {
     const [rows, settings, local] = await Promise.all([
-      // Local tools never wait on the engine, so an unavailable engine still shows them.
+      // Local tools remain visible when the sandbox is unavailable.
       this.#options.service.installed({}, owner, signal).catch((error: unknown) => {
         if (error instanceof PluginServiceError && error.code === "unavailable") return null;
         return hostError(error);
@@ -900,10 +901,12 @@ export class PluginOwnerApi {
             key: creationKey,
           }),
         );
+        changed();
         return { type: command.type, runId: run.id };
       }
       case "plugins.workflow.stop":
         await manage("workflowRuns.stop", { app: command.pluginId, run: command.runId });
+        changed();
         return { type: command.type };
       case "plugins.webhook.remove":
       case "plugins.webhook.removal.confirm":

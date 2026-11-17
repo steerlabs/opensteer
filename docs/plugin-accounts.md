@@ -31,7 +31,7 @@ without placement is unavailable for one-click sign-in.
 
 The broker accepts only plugin sign-in requests. Hosts using the retired built-in service
 integration protocol receive an explicit HTTP 400 asking them to update and restart sign-in.
-Account and the desktop ship independently; deploying Account does not upgrade a Host.
+Account deploys before the plugin-capable desktop release: Beta first, then Stable after qualification. Deploying Account does not upgrade a Host. During this deliberate cutover older Hosts cannot sign in; update the Host and its separately installed web/mobile clients, then restart consent.
 Plugin-only metadata uses version 3; older metadata requests receive the same refusal before an
 older Host can try to decode the changed response.
 The plugin-only broker migration discards short-lived attempts and refresh results: in-flight

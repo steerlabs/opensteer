@@ -1,3 +1,4 @@
+import { localNamespace } from "../plugins/provider-names.js";
 import type {
   ComputerAppApprovalAnswer,
   ComputerAppApprovalOutcome,
@@ -588,24 +589,12 @@ integration.sequential("iPhone integrations Host contract", () => {
     });
     const pluginDirectory = join(directory, "refused-plugin");
     await mkdir(pluginDirectory, { recursive: true });
-    await writeFile(
-      join(pluginDirectory, "plugin.json"),
-      JSON.stringify({
-        $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-        name: "iphone-refusal-fixture",
-      }),
-    );
-    await writeFile(
-      join(pluginDirectory, "mcp.json"),
-      JSON.stringify({
-        $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
-        mcpServers: { fixture: { type: "stdio", command: "node", args: [] } },
-      }),
-    );
+
     await expect(
       host.runtime.localServers.installPackage({
         actorUserId: host.ownerId,
         directory: pluginDirectory,
+        registration: { name: "iphone-refusal-fixture", launch: { command: "node", args: [] } },
         requestId: "iphone-local-server-refused",
         runnerId: phone.runnerId,
       }),
@@ -697,7 +686,8 @@ integration.sequential("iPhone integrations Host contract", () => {
     closers.unshift(() => run.complete());
     const gateway = keep(await integrationGateway(run.integrationTools));
     await grant(host, gateway, connection.id, "read-write");
-    const phoneCalendar = 'tools["calendar-test-iphone"]';
+    const phoneNamespace = localNamespace("calendar-test-iphone", `app_device_${connection.id}`);
+    const phoneCalendar = `tools[${JSON.stringify(phoneNamespace)}]`;
     const createEvent = { title: "no write", start: "2026-10-28T12:00", end: "2026-10-28T13:00" };
     expect((await pluginCall(gateway, `${phoneCalendar}.list_calendars`, {})).value).toEqual({
       calendars: [],
@@ -786,7 +776,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     );
     await phone.disconnectStream();
     expect(
-      JSON.stringify(await gateway.call("plugin_search", { namespace: "calendar-test-iphone" })),
+      JSON.stringify(await gateway.call("plugin_search", { namespace: phoneNamespace })),
     ).toContain(offline("Test iPhone"));
     await phone.reconnect();
     // Give the other Mac signed write approval and a live Workspace grant.
@@ -828,9 +818,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     await vi.waitFor(
       async () =>
         expect(
-          JSON.stringify(
-            await gateway.call("plugin_search", { namespace: "calendar-test-iphone" }),
-          ),
+          JSON.stringify(await gateway.call("plugin_search", { namespace: phoneNamespace })),
           "The reconnected phone's tools were not listed",
         ).toContain("create_event"),
       { timeout: 15_000 },

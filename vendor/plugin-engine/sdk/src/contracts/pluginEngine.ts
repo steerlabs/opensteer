@@ -286,6 +286,7 @@ export interface PluginEngineInputs {
    * Existing subscriptions keep the callback URL they stored.
    */
   readonly webhookOrigin?: string | (() => Effect.Effect<string | undefined, Error>);
+  readonly webhookCallbackPath?: (app: AppId, subscription: import("./shared.ts").WebhookId) => string;
   /** The Git backend behind app source. The pluginEngine derives revision storage from it. */
   readonly git: RepositoryBackend;
   /**

@@ -10,7 +10,6 @@
     "./adapter": "./src/adapter.ts",
     "./adapter-kind": "./src/adapter-kind.ts",
     "./auth-method": "./src/auth-method.ts",
-    "./authorization-digest": "./src/authorization-digest.ts",
     "./computer-app": "./src/computer-app.ts",
     "./computer-app-setup": "./src/computer-app-setup.ts",
     "./computer-app-tools": "./src/computer-app-tools.ts",

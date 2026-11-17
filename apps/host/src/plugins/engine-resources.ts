@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access } from "node:fs/promises";
+import { access, open } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
@@ -18,16 +18,20 @@ export async function pluginEngineUnavailableReason(
     return module.default;
   },
   signal?: AbortSignal,
-): Promise<string | undefined> {
+): Promise<PluginEngineUnavailability | undefined> {
   // There is no native Windows arm64 binary; do not silently depend on x64 emulation.
   if (
     !(["darwin", "linux"].includes(platform) && ["arm64", "x64"].includes(architecture)) &&
     !(platform === "win32" && architecture === "x64")
   )
-    return `Plugins are unavailable: workerd has no binary for ${platform}/${architecture}`;
+    return {
+      code: "unsupported-system",
+      detail: `Plugins are unavailable: workerd has no binary for ${platform}/${architecture}`,
+    };
   try {
     const binary = resolveBinary();
     await access(binary, platform === "win32" ? constants.F_OK : constants.X_OK);
+    const minimumMacOS = platform === "darwin" ? await binaryMinimumMacOS(binary) : undefined;
     try {
       signal?.throwIfAborted();
       const running = promisify(execFile)(binary, ["--version"], {
@@ -49,10 +53,48 @@ export async function pluginEngineUnavailableReason(
         await closed;
       }
     } catch {
-      return `Plugins are unavailable: workerd cannot run on this ${platform}/${architecture} system`;
+      return {
+        code: "unsupported-system",
+        ...(minimumMacOS ? { minimumMacOS } : {}),
+        detail: `Plugins are unavailable: workerd cannot run on this ${platform}/${architecture} system`,
+      };
     }
     return undefined;
   } catch {
-    return `Plugins are unavailable: the workerd runtime for ${platform}/${architecture} is missing`;
+    return {
+      code: "missing-runtime",
+      detail: `Plugins are unavailable: the workerd runtime for ${platform}/${architecture} is missing`,
+    };
+  }
+}
+
+export interface PluginEngineUnavailability {
+  code: "unsupported-system" | "missing-runtime";
+  minimumMacOS?: string;
+  detail: string;
+}
+
+/** Read the executable's declared deployment floor without loading its code. */
+export async function binaryMinimumMacOS(path: string): Promise<string | undefined> {
+  const file = await open(path, "r");
+  try {
+    const header = Buffer.alloc(16 * 1024);
+    const { bytesRead } = await file.read(header, 0, header.length, 0);
+    if (bytesRead < 32 || header.readUInt32LE(0) !== 0xfeedfacf) return undefined;
+    let offset = 32;
+    for (let index = 0; index < header.readUInt32LE(16) && offset + 8 <= bytesRead; index++) {
+      const command = header.readUInt32LE(offset);
+      const size = header.readUInt32LE(offset + 4);
+      if (size < 8 || offset + size > bytesRead) return undefined;
+      const versionOffset = command === 0x32 ? 12 : command === 0x24 ? 8 : undefined;
+      if (versionOffset !== undefined && size >= versionOffset + 4) {
+        const version = header.readUInt32LE(offset + versionOffset);
+        return [version >>> 16, (version >>> 8) & 255, version & 255].join(".");
+      }
+      offset += size;
+    }
+    return undefined;
+  } finally {
+    await file.close();
   }
 }

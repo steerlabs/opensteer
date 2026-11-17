@@ -38,7 +38,7 @@ import { AppGateway } from "../apps/host/src/apps/app-gateway.js";
 import { registerAppRoutes } from "../apps/host/src/apps/app-routes.js";
 import { cacheRunPlugins } from "../apps/runner/src/skills/plugin-cache.js";
 import { PluginPackageService } from "../apps/host/src/local-servers/plugin-package-service.js";
-import { engineDemand } from "../apps/host/src/plugins/engine-demand.js";
+import { engineDemand } from "../apps/host/src/plugins/engine-storage.js";
 import { createPersonalRunFixturePort } from "../packages/database/src/personal-run-fixture.test-support.js";
 import { RunCapabilityTokenService } from "../apps/host/src/agents/run-capability.js";
 import { SignedTokenService } from "../apps/host/src/identity/host-keys.js";
@@ -159,6 +159,18 @@ async function runs(plugin: string, status: string) {
     { timeout: 10_000 },
   );
 }
+function onBackground<T>(read: () => T, matches: (value: Awaited<T>) => boolean) {
+  const next = Promise.withResolvers<Awaited<T>>();
+  const changed = () => {
+    void Promise.resolve(read()).then((value) => {
+      if (matches(value)) next.resolve(value);
+    }, next.reject);
+  };
+  states.on("background", changed);
+  return deadline(next.promise, "Committed background state never reached its subscriber").finally(
+    () => states.off("background", changed),
+  );
+}
 beforeEach(async (testContext) => {
   publicOrigin = "https://fixture.invalid";
   const clone = await cloneTestDatabase("host");
@@ -207,6 +219,7 @@ beforeEach(async (testContext) => {
     authorize: (input) => authority.authorize(input),
     idleMs: 0,
     onState: (state) => states.emit(state.status, state),
+    onResourcesChanged: () => states.emit("background"),
   });
   testContext.onTestFinished(() => service.close());
   await ownTestDatabaseProducer(clone.url, async () => ({ close: () => service.close() }));
@@ -221,7 +234,7 @@ beforeEach(async (testContext) => {
     settings: records,
     assertOwner: (user) => requirePersonalOwner(database, user),
     accountLinked: async () => {},
-    changed: () => {},
+    changed: () => states.emit("ownerChanged"),
     pages,
     webhooks: { service, origin: () => service.webhookOrigin() },
   });
@@ -372,8 +385,14 @@ test("owner reads and commands match real catalog, accounts, schedule approvals,
     },
     context,
   );
+  const scheduledChange = onBackground(
+    () => api.reads()["plugins.schedule.runs"]({ pluginId: fixture.plugin }, context),
+    (page) => page.ok && page.data.runs.some((run) => run.status === "awaiting-approval"),
+  );
   await due(fixture.plugin, "reviewed");
-  const approved = await runs(fixture.plugin, "awaiting-approval");
+  const approvalPage = await scheduledChange;
+  if (!approvalPage.ok) throw new Error("Schedule read failed");
+  const approved = approvalPage.data.runs.find((run) => run.status === "awaiting-approval")!;
   expect(approved.approval).toEqual({ tool: "reviewed", arguments: { source: "reviewed" } });
   await api.command(
     {
@@ -419,33 +438,67 @@ test("owner reads and commands match real catalog, accounts, schedule approvals,
     },
     context,
   );
-  const workflow = await api.command(
-    {
-      type: "plugins.workflow.start",
-      pluginId: fixture.plugin,
-      workflow: "hold",
-      input: {},
-      idempotencyKey: randomUUID(),
-    },
-    context,
-  );
-  if (workflow.type !== "plugins.workflow.start") throw new Error("No workflow");
-  const workflowRuns = await api
-    .reads()
-    ["plugins.workflow.runs"]({ pluginId: fixture.plugin }, context);
-  expect(workflowRuns).toMatchObject({
-    ok: true,
-    data: { runs: [expect.objectContaining({ id: workflow.runId, workflow: "hold" })] },
+  const notices: string[][] = [[], []];
+  const subscribers = notices.map((seen) => () => {
+    seen.push("changed");
   });
-  await api.command(
-    {
-      type: "plugins.workflow.stop",
-      pluginId: fixture.plugin,
-      runId: workflow.runId,
-      idempotencyKey: randomUUID(),
-    },
-    context,
-  );
+  for (const subscriber of subscribers) states.on("ownerChanged", subscriber);
+  try {
+    const completed = onBackground(
+      () => api.reads()["plugins.workflow.runs"]({ pluginId: fixture.plugin }, context),
+      (page) =>
+        page.ok &&
+        page.data.runs.some((run) => run.workflow === "quick" && run.status === "complete"),
+    );
+    await api.command(
+      {
+        type: "plugins.workflow.start",
+        pluginId: fixture.plugin,
+        workflow: "quick",
+        input: {},
+        idempotencyKey: randomUUID(),
+      },
+      context,
+    );
+    await completed;
+    const workflow = await api.command(
+      {
+        type: "plugins.workflow.start",
+        pluginId: fixture.plugin,
+        workflow: "hold",
+        input: {},
+        idempotencyKey: randomUUID(),
+      },
+      context,
+    );
+    if (workflow.type !== "plugins.workflow.start") throw new Error("No workflow");
+    const workflowRuns = await api
+      .reads()
+      ["plugins.workflow.runs"]({ pluginId: fixture.plugin }, context);
+    expect(workflowRuns).toMatchObject({
+      ok: true,
+      data: {
+        runs: expect.arrayContaining([
+          expect.objectContaining({ id: workflow.runId, workflow: "hold" }),
+        ]),
+      },
+    });
+    await api.command(
+      {
+        type: "plugins.workflow.stop",
+        pluginId: fixture.plugin,
+        runId: workflow.runId,
+        idempotencyKey: randomUUID(),
+      },
+      context,
+    );
+    expect(notices).toEqual([
+      ["changed", "changed", "changed"],
+      ["changed", "changed", "changed"],
+    ]);
+  } finally {
+    for (const subscriber of subscribers) states.off("ownerChanged", subscriber);
+  }
   const invalidSkills = await service.install(
     {
       kind: "files",
@@ -1059,4 +1112,113 @@ test("a saved schedule wakes a stopped engine and off plugins cannot do backgrou
     },
     context,
   );
+});
+
+test("all workflow runs remain reachable live-first and newest-first when current declarations cannot be evaluated", async () => {
+  const fixture = await install("Workflow history", 1, false);
+  const started = await api.command(
+    {
+      type: "plugins.workflow.start",
+      pluginId: fixture.plugin,
+      workflow: "hold",
+      input: {},
+      idempotencyKey: randomUUID(),
+    },
+    context,
+  );
+  if (started.type !== "plugins.workflow.start") throw new Error("No workflow");
+  const historical = await api.command(
+    {
+      type: "plugins.workflow.start",
+      pluginId: fixture.plugin,
+      workflow: "quick",
+      input: {},
+      idempotencyKey: randomUUID(),
+    },
+    context,
+  );
+  if (historical.type !== "plugins.workflow.start") throw new Error("No history");
+  await vi.waitFor(
+    async () => {
+      const row = await service.manage(
+        { operation: "workflowRuns.get", input: { app: fixture.plugin, run: historical.runId } },
+        owner,
+      );
+      expect(row).toMatchObject({ status: "complete" });
+    },
+    { timeout: 10000 },
+  );
+  for (let index = 0; index < 6; index++)
+    await api.command(
+      {
+        type: "plugins.workflow.start",
+        pluginId: fixture.plugin,
+        workflow: "quick",
+        input: {},
+        idempotencyKey: randomUUID(),
+      },
+      context,
+    );
+  await vi.waitFor(
+    async () => {
+      const page = (
+        await import("../apps/host/src/plugins/engine-feature-schemas.js")
+      ).EngineWorkflowRunPageSchema.parse(
+        await service.manage(
+          { operation: "workflowRuns.list", input: { app: fixture.plugin } },
+          owner,
+        ),
+      );
+      expect(
+        page.items.filter((run) => run.workflow === "quick" && run.status === "complete"),
+      ).toHaveLength(7);
+    },
+    { timeout: 10000 },
+  );
+  await service.unlinkAccount(
+    { plugin: fixture.plugin, requirement: "service", scope: "user", account: fixture.account },
+    owner,
+  );
+  expect((await api.detail(personal.userId, fixture.plugin)).workflows).toBeNull();
+  const ids: string[] = [];
+  const finishedDates: number[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await service.manage(
+      {
+        operation: "workflowRuns.list",
+        input: { app: fixture.plugin, limit: "2", ...(cursor ? { cursor } : {}) },
+      },
+      owner,
+    );
+    const parsed = (
+      await import("../apps/host/src/plugins/engine-feature-schemas.js")
+    ).EngineWorkflowRunPageSchema.parse(page);
+    ids.push(...parsed.items.map((run) => run.id));
+    finishedDates.push(
+      ...parsed.items
+        .filter((run) => run.status === "complete")
+        .map((run) => Date.parse(run.createdAt)),
+    );
+    cursor = parsed.next;
+  } while (cursor);
+  expect(ids).toHaveLength(8);
+  expect(new Set(ids).size).toBe(8);
+  expect(ids[0]).toBe(started.runId);
+  expect(finishedDates).toEqual([...finishedDates].sort((a, b) => b - a));
+  await api.command(
+    {
+      type: "plugins.workflow.stop",
+      pluginId: fixture.plugin,
+      runId: started.runId,
+      idempotencyKey: randomUUID(),
+    },
+    context,
+  );
+  expect(
+    await service.manage(
+      { operation: "workflowRuns.get", input: { app: fixture.plugin, run: started.runId } },
+      owner,
+    ),
+  ).toMatchObject({ status: "terminated" });
 });

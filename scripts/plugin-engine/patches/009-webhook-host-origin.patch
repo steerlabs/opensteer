@@ -1,17 +1,18 @@
 --- a/sdk/src/contracts/pluginEngine.ts
 +++ b/sdk/src/contracts/pluginEngine.ts
-@@ -283,7 +283,7 @@
+@@ -283,7 +283,8 @@
     * Origin new webhook subscriptions register their callbacks on; defaults to `origin`.
     * Existing subscriptions keep the callback URL they stored.
     */
 -  readonly webhookOrigin?: string;
 +  readonly webhookOrigin?: string | (() => Effect.Effect<string | undefined, Error>);
++  readonly webhookCallbackPath?: (app: AppId, subscription: import("./shared.ts").WebhookId) => string;
    /** The Git backend behind app source. The pluginEngine derives revision storage from it. */
    readonly git: RepositoryBackend;
    /**
 --- a/sdk/src/implementation/webhooks.ts
 +++ b/sdk/src/implementation/webhooks.ts
-@@ -366,7 +366,7 @@
+@@ -366,10 +366,11 @@
    resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
    credentials: Credentials,
    crypto: HostCrypto,
@@ -20,26 +21,27 @@
    declarations: Declarations,
    workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
    lifecycle?: ResourceLifecycle,
-@@ -795,8 +795,11 @@
++  callbackPath: (app: AppId, subscription: WebhookId) => string = (app, id) => `/api/webhooks/${app}/${id}`,
+ ) => {
+   const db = database(storage);
+   const next = crypto.random.uuidV4();
+@@ -795,8 +796,8 @@
          input,
        ).pipe(Effect.mapError(() => new RequestInvalid()));
        const actor = parsed.actor ?? undefined;
 -      if (origin === undefined) return yield* new WebhookFailed({ reason: "unavailable" });
 -      const base = yield* Effect.try(() => new URL(origin)).pipe(
-+      const currentOrigin = typeof origin === "function"
-+        ? yield* origin().pipe(Effect.mapError(() => new WebhookFailed({ reason: "unavailable" })))
-+        : origin;
-+      if (currentOrigin === undefined) return yield* new WebhookFailed({ reason: "unavailable" });
-+      const base = yield* Effect.try(() => new URL(currentOrigin)).pipe(
++      const base = yield* (typeof origin === "function" ? origin() : Effect.succeed(origin)).pipe(
++        Effect.flatMap((value) => Effect.try(() => new URL(value ?? ""))),
          Effect.mapError(() => new WebhookFailed({ reason: "unavailable" })),
        );
        if (
-@@ -865,7 +868,7 @@
+@@ -865,7 +866,7 @@
        )
          return yield* new WebhookFailed({ reason: "input", mismatch: "source" });
        const id = WebhookId.make(`whk_${yield* next}`);
 -      const callbackUrl = new URL(`/api/webhooks/${parsed.app}/${id}`, base).href;
-+      const callbackUrl = new URL(`/hooks/v1/plugins/${parsed.app}/${id}`, base).href;
++      const callbackUrl = new URL(callbackPath(parsed.app, id), base).href;
        const secret = `${yield* next}${yield* next}`;
        const config = yield* runtime
          .webhook({
@@ -53,3 +55,13 @@
        WebhookNotFound: () => Effect.succeed(HttpServerResponse.empty({ status: 404 })),
        WebhookFailed: ({ reason }) =>
          Effect.succeed(HttpServerResponse.empty({ status: reason === "inactive" ? 410 : 503 })),
+--- a/sdk/src/implementation/create.ts
++++ b/sdk/src/implementation/create.ts
+@@ -123,6 +123,7 @@
+       declarations,
+       workflows.controls,
+       options.hooks,
++      options.webhookCallbackPath,
+     );
+     const apps = {
+       ...makeApps(

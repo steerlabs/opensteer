@@ -29,7 +29,7 @@ export const plugin_search = defineAgentTool({
   access: "read",
   callers: discoveryCallers,
   description:
-    "Find plugin tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with plugins and linked accounts listed once. Pass a path to plugin_call or plugin_describe, or use tools.<plugin>.<tool>() in plugin_execute. Omit query to list a namespace. Read the following page by passing next as the whole input; null ends paging. Approved device data apps (Calendar, Contacts, Reminders, Messages, iPhone Location and Photos) and local servers are plugins too, named like calendar-<computer>; an unavailable one says why.",
+    "Find plugin tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with plugins and linked accounts listed once. Pass a path to plugin_call or plugin_describe, or use tools.<plugin>.<tool>() in plugin_execute. Omit query to list a namespace. Read the following page by passing next as the whole input; null ends paging. Approved device data apps (Calendar, Contacts, Reminders, Messages, iPhone Location and Photos) and local servers are plugins too, with stable namespaces returned by discovery; an unavailable one says why.",
   input: searchInput,
   output: z.object({
     items: z.array(
@@ -203,8 +203,86 @@ export const plugin_account_request = defineAgentTool({
   }),
   output: z.object({ status: z.string(), requestId: id, next: z.string() }),
 });
+export const opensteer_plugin_catalog = defineAgentTool({
+  name: "opensteer_plugin_catalog",
+  title: "Find catalog plugins",
+  access: "read",
+  callers: ["run", "connection"],
+  description:
+    "Find plugins available to install by service name or purpose. Returns catalog ids, names, one-line descriptions and required account methods. Pass cursor to continue; null ends paging. Use the returned id with opensteer_plugin_install; installation never links an account.",
+  input: z.strictObject({
+    search: z.string().max(2000).optional(),
+    cursor: id.optional(),
+    limit: z.number().int().min(1).max(30).optional(),
+  }),
+  output: z.object({
+    items: z.array(
+      z.object({ id, name: z.string(), description: z.string(), accounts: z.array(z.string()) }),
+    ),
+    cursor: z.string().nullable(),
+  }),
+});
+export const plugin_skills = defineAgentTool({
+  name: "plugin_skills",
+  title: "Read plugin skills",
+  access: "read",
+  callers: discoveryCallers,
+  description:
+    "List live plugin skills with {} or {app:namespace}; read one with {app,name}, and a referenced file with {app,name,file}. Use the namespace from plugin_search or opensteer_plugin_list. These skills may depend on linked accounts; a read never links one. Native packaged skills remain available without starting the plugin engine.",
+  input: z.strictObject({
+    app: id.optional(),
+    name: id.optional(),
+    file: id.optional(),
+    version: id.optional(),
+    revision: id.optional(),
+  }),
+  output: json,
+});
+export const plugin_resources = defineAgentTool({
+  name: "plugin_resources",
+  title: "Read plugin background work",
+  access: "read",
+  callers: ["run", "connection"],
+  description:
+    "Read a plugin's schedules and runs, workflow declarations and runs (live first, then newest, even if current declarations fail), or webhook subscriptions. Schedule/workflow definitions carry names and input schemas for configuration and starting; null means current definitions could not be evaluated, while durable runs remain readable. Pass the returned workflow cursor for the next page. These reads do not start work or reveal webhook setup secrets. Scheduled approval answers and manual webhook setup/cleanup confirmation belong to the person in Plugins.",
+  input: z.strictObject({
+    pluginId: id,
+    resource: z.enum(["schedules", "workflows", "webhooks"]),
+    cursor: z.string().max(512).optional(),
+  }),
+  output: json,
+});
+export const opensteer_plugin_resource_update = defineAgentTool({
+  name: "opensteer_plugin_resource_update",
+  title: "Manage plugin background work",
+  access: "settings",
+  callers: ["run"],
+  openWorld: true,
+  description:
+    "Configure a declared schedule, run it now, start or stop a workflow, or remove a webhook subscription. Read plugin_resources first for current identities; cursor paging keeps every live workflow reachable. Starting a workflow needs a unique key: reusing that key recovers the same start. Manual provider cleanup and its confirmation, scheduled approval answers, webhook secret setup and account links remain person-only.",
+  input: z.strictObject({
+    pluginId: id,
+    change: z.discriminatedUnion("action", [
+      z.strictObject({
+        action: z.literal("schedule.configure"),
+        schedule: id,
+        enabled: z.boolean(),
+        approvalMode: z.enum(["browser", "automatic"]).optional(),
+      }),
+      z.strictObject({ action: z.literal("schedule.run"), schedule: id, scheduleId: id }),
+      z.strictObject({ action: z.literal("workflow.start"), workflow: id, input: json, key: id }),
+      z.strictObject({ action: z.literal("workflow.stop"), runId: id }),
+      z.strictObject({ action: z.literal("webhook.remove"), webhookId: id }),
+    ]),
+  }),
+  output: json,
+});
 export const pluginTools = [
   plugin_search,
+  opensteer_plugin_catalog,
+  plugin_skills,
+  plugin_resources,
+  opensteer_plugin_resource_update,
   plugin_describe,
   plugin_call,
   plugin_execute,

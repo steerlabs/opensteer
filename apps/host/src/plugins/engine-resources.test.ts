@@ -10,12 +10,12 @@ it.each(["ts", "js", "mjs"])("resolves the child beside a %s Host module", (exte
 });
 
 it("reports absent native targets and missing runtime files without launching the engine", async () => {
-  expect(await pluginEngineUnavailableReason("win32", "arm64")).toContain(
+  expect((await pluginEngineUnavailableReason("win32", "arm64"))?.detail).toContain(
     "no binary for win32/arm64",
   );
-  expect(await pluginEngineUnavailableReason("linux", "x64", () => "/missing/workerd")).toContain(
-    "missing",
-  );
+  expect(
+    (await pluginEngineUnavailableReason("linux", "x64", () => "/missing/workerd"))?.detail,
+  ).toContain("missing");
   const actual = process.arch;
   vi.spyOn(process, "arch", "get").mockReturnValue("arm");
   const service = new PluginService({
@@ -43,13 +43,13 @@ it("reports absent native targets and missing runtime files without launching th
 });
 
 it("reports an executable that the OS cannot load as unavailable", async () => {
-  expect(await pluginEngineUnavailableReason("linux", "x64", () => "/")).toContain(
+  expect((await pluginEngineUnavailableReason("linux", "x64", () => "/"))?.detail).toContain(
     "workerd cannot run",
   );
 });
 
 it("holds a first request behind the same pending runtime check as startup", async () => {
-  const checked = Promise.withResolvers<string | undefined>();
+  const checked = Promise.withResolvers<resources.PluginEngineUnavailability | undefined>();
   const check = vi
     .spyOn(resources, "pluginEngineUnavailableReason")
     .mockReturnValue(checked.promise);
@@ -76,15 +76,44 @@ it("holds a first request behind the same pending runtime check as startup", asy
       .catch((error: unknown) => error);
     abort.abort(reason);
     expect(await cancelled).toBe(reason);
-    checked.resolve("Plugins are unavailable: workerd cannot run on this system");
+    checked.resolve({
+      code: "unsupported-system",
+      detail: "Plugins are unavailable: workerd cannot run on this system",
+    });
     await starting;
     expect(await result).toMatchObject({ code: "unavailable" });
     expect(service.state().pid).toBeUndefined();
   } finally {
-    checked.resolve("Plugins are unavailable: workerd cannot run on this system");
+    checked.resolve({
+      code: "unsupported-system",
+      detail: "Plugins are unavailable: workerd cannot run on this system",
+    });
     await starting;
     await service.close();
     await result;
     check.mockRestore();
+  }
+});
+
+it("reports the deployment floor declared by an unloadable Mach-O binary", async () => {
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const directory = await mkdtemp(join(tmpdir(), "plugin-binary-"));
+  try {
+    const binary = join(directory, "workerd");
+    const bytes = Buffer.alloc(56);
+    bytes.writeUInt32LE(0xfeedfacf, 0);
+    bytes.writeUInt32LE(1, 16);
+    bytes.writeUInt32LE(0x32, 32);
+    bytes.writeUInt32LE(24, 36);
+    bytes.writeUInt32LE((13 << 16) | (5 << 8), 44);
+    await writeFile(binary, bytes, { mode: 0o700 });
+    expect(await pluginEngineUnavailableReason("darwin", "arm64", () => binary)).toMatchObject({
+      code: "unsupported-system",
+      minimumMacOS: "13.5.0",
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });

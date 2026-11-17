@@ -1063,6 +1063,11 @@ export async function createHostRuntime(
           throw new PluginServiceError("unavailable", "Local tools are starting");
         return localProviders.call(input, signal, elicit);
       },
+      onResourcesChanged: () => {
+        void personalSettings(database)
+          .then(({ ownerId }) => realtime.sendToUsers([ownerId], { type: "host.plugins-changed" }))
+          .catch(() => undefined);
+      },
       onExecution: (execution) => pluginExecutions?.report(execution),
       onState: (state) => {
         const engine = pluginEngineStateView(state);

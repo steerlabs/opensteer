@@ -1,3 +1,5 @@
+import { migrateEngineProduct, lockEngineApp, readEngineLinks } from "./engine-storage.js";
+export { migrateEngineProduct };
 import { createHash } from "node:crypto";
 import { Context, Effect, Option, Schema } from "effect";
 import type { SqlClient } from "effect/sql";
@@ -50,33 +52,6 @@ const canonical = (value: unknown): string =>
       : field,
   );
 
-export const migrateEngineProduct = (sql: SqlClient.SqlClient) =>
-  sql
-    .unsafe(
-      `
-  CREATE TABLE IF NOT EXISTS opensteer_account_links (
-    app text NOT NULL REFERENCES plugin_engine_apps(id) ON DELETE CASCADE,
-    requirement text NOT NULL, scope text NOT NULL CHECK (scope IN ('app', 'user')),
-    account text NOT NULL REFERENCES plugin_engine_accounts(id) ON DELETE CASCADE,
-    consent text NOT NULL, created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-    PRIMARY KEY (app, requirement, scope, account)
-  )`,
-    )
-    .pipe(
-      Effect.andThen(
-        sql.unsafe(
-          `CREATE TABLE IF NOT EXISTS opensteer_resource_creations (owner text NOT NULL, key text NOT NULL, kind text NOT NULL, result jsonb NOT NULL, PRIMARY KEY (owner, key, kind))`,
-        ),
-      ),
-      Effect.andThen(
-        sql.unsafe(`
-  CREATE TABLE IF NOT EXISTS opensteer_oauth_connections (
-    connection text PRIMARY KEY, app text NOT NULL, requirement text NOT NULL,
-    scope text NOT NULL, consent text NOT NULL, owner_user_id text, local_attempt text, account_binding jsonb
-  )`),
-      ),
-    );
-
 export function engineAccounts(options: {
   sql: SqlClient.SqlClient;
   engine: Effect.Effect<PluginEngine>;
@@ -120,12 +95,11 @@ export function engineAccounts(options: {
     );
   };
   const read = (sdk: PluginEngine, app: AppId) =>
-    sdk[StorageHost].read(
-      table,
-      sql`select requirement, scope, account, consent from opensteer_account_links where app = ${app} order by created_at, account`,
-    ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(rows)), storage);
-  const lock = (app: AppId) =>
-    storage(sql`select id from plugin_engine_apps where id = ${app} for no key update`);
+    sdk[StorageHost].read(table, readEngineLinks(sql, app)).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(rows)),
+      storage,
+    );
+  const lock = (app: AppId) => storage(lockEngineApp(sql, app));
   const get = (app: AppId) => Effect.flatMap(engine, (sdk) => sdk.apps.get({ app, owner }));
   const requirement = (app: App, name: string, scope: "app" | "user") => {
     const required = app.requirements.accounts[name];

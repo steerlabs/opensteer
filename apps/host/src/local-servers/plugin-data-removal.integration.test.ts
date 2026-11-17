@@ -44,22 +44,7 @@ it("queues plugin cleanup atomically, gates old Runners, acknowledges and replay
     closers.push(() => old.close());
     const plugin = join(work, "plugin");
     await mkdir(plugin);
-    await writeFile(
-      join(plugin, "plugin.json"),
-      JSON.stringify({
-        $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-        name: "removal-fixture",
-      }),
-    );
-    await writeFile(
-      join(plugin, "mcp.json"),
-      JSON.stringify({
-        $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
-        mcpServers: {
-          device: { type: "stdio", command: "node", args: ["-e", "process.stdin.resume()"] },
-        },
-      }),
-    );
+
     const dispatch = (input: Extract<HostApiCommand, { type: "plugin.remove" }>) =>
       testRpcData(
         host.origin,
@@ -73,6 +58,10 @@ it("queues plugin cleanup atomically, gates old Runners, acknowledges and replay
     await host.runtime.localServers.installPackage({
       actorUserId: host.ownerId,
       directory: plugin,
+      registration: {
+        name: "removal-fixture",
+        launch: { command: "node", args: ["-e", "process.stdin.resume()"] },
+      },
       requestId: globalThis.crypto.randomUUID(),
       runnerId: capable.runnerId,
     });

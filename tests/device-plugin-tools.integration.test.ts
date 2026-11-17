@@ -1,3 +1,4 @@
+import { localNamespace } from "../apps/host/src/plugins/provider-names.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -178,7 +179,9 @@ integration("device data apps as plugin tools", () => {
 
     // Found by search, described, and called on the Mac that holds it.
     const listEvents = await pluginPath(gateway, "list_events", "list_events");
-    expect(listEvents).toBe('tools["calendar-studio-mac"].list_events');
+    expect(listEvents).toBe(
+      `tools[${JSON.stringify(localNamespace("calendar-studio-mac", `app_device_${calendar.connection.id}`))}].list_events`,
+    );
     const described = await gateway.call("plugin_describe", { paths: [listEvents] });
     expect(JSON.stringify(described)).toContain("end: string");
     const page = { events: [], nextCursor: null };
@@ -199,7 +202,7 @@ integration("device data apps as plugin tools", () => {
 
     // One program mixes the device tool with a cloud plugin's tool.
     const mixed = await gateway.call("plugin_execute", {
-      code: `const events = await tools["calendar-studio-mac"].list_events({ start: "2026-10-01", end: "2026-10-02" });
+      code: `const events = await tools[${JSON.stringify(localNamespace("calendar-studio-mac", `app_device_${calendar.connection.id}`))}].list_events({ start: "2026-10-01", end: "2026-10-02" });
 return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
     });
     expect(mixed).toMatchObject({
@@ -224,6 +227,7 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
     // The person sees both apps in Plugins with what agents type, and sets Reminders to
     // read-only there: its write is refused, its read is not, and agents' list says so.
     const reminderPlugin = `app_device_${reminders.connection.id}`;
+    const reminderNamespace = localNamespace("reminders-studio-mac", reminderPlugin);
     const owned = await testRpcData(
       host.origin,
       "plugins.installed.list",
@@ -235,7 +239,7 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
         expect.objectContaining({
           id: `app_device_${calendar.connection.id}`,
           kind: "device-app",
-          name: "calendar-studio-mac",
+          name: localNamespace("calendar-studio-mac", `app_device_${calendar.connection.id}`),
           computer: expect.objectContaining({ id: computer.runnerId }),
           unavailable: null,
           access: "all",
@@ -244,7 +248,7 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
             { name: "create_event", readOnly: false },
           ]),
         }),
-        expect.objectContaining({ id: reminderPlugin, name: "reminders-studio-mac" }),
+        expect.objectContaining({ id: reminderPlugin, name: reminderNamespace }),
       ]),
     );
     const setAccess = (access: "all" | "read-only") =>
@@ -272,13 +276,13 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
       expect.arrayContaining([
         expect.objectContaining({
           id: reminderPlugin,
-          slug: "reminders-studio-mac",
+          slug: reminderNamespace,
           access: "read-only",
           status: "active",
         }),
       ]),
     );
-    const create = 'tools["reminders-studio-mac"].create_reminder';
+    const create = `tools[${JSON.stringify(reminderNamespace)}].create_reminder`;
     const refused = await pluginCall(gateway, create, { title: "Renew passport" });
     expect(refused.failure).toBeDefined();
     expect(helper.invocations).toHaveLength(sent);
@@ -292,10 +296,14 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
       );
     };
     sent = helper.invocations.length;
-    const lost = await pluginCall(gateway, 'tools["reminders-studio-mac"].update_reminder', {
-      completed: true,
-      id: "R1",
-    });
+    const lost = await pluginCall(
+      gateway,
+      `tools[${JSON.stringify(reminderNamespace)}].update_reminder`,
+      {
+        completed: true,
+        id: "R1",
+      },
+    );
     expect(lost.failure).toContain(
       "Studio Mac did not confirm this. Check whether it happened before trying again.",
     );
@@ -306,10 +314,12 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
     await computer.close();
     await waitForCondition(async () => {
       const found = await gateway.call("plugin_search", { query: "list_events" });
-      return !JSON.stringify(found.items).includes("calendar-studio-mac");
+      return !JSON.stringify(found.items).includes(
+        localNamespace("calendar-studio-mac", `app_device_${calendar.connection.id}`),
+      );
     }, 30_000);
     const offlineSearch = await gateway.call("plugin_search", {
-      namespace: "calendar-studio-mac",
+      namespace: localNamespace("calendar-studio-mac", `app_device_${calendar.connection.id}`),
     });
     expect(JSON.stringify(offlineSearch)).toContain("Studio Mac is offline");
     sent = helper.invocations.length;
@@ -322,7 +332,7 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
   }, 240_000);
 
   it("serves a Trigger program's device call with the Trigger's own authority", async () => {
-    const { host, helper, gateway, run } = await start();
+    const { host, helper, gateway, run, calendar } = await start();
     await pluginPath(gateway, "list_events", "list_events");
     const page = { events: [{ id: "E1" }], nextCursor: null };
     helper.answer = () => page;
@@ -331,7 +341,7 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
       caller,
       operationKey: "trigger-device-call",
       input: {
-        code: 'return await tools["calendar-studio-mac"].list_events({ start: "2026-10-01", end: "2026-10-02" });',
+        code: `return await tools[${JSON.stringify(localNamespace("calendar-studio-mac", `app_device_${calendar.connection.id}`))}].list_events({ start: "2026-10-01", end: "2026-10-02" });`,
       },
     });
     expect(result).toMatchObject({

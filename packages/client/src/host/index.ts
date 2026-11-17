@@ -84,7 +84,6 @@ export * from "./request-settlement.js";
 export * from "./personal-remote-access.js";
 export * from "./remote-access.js";
 export * from "./browser-cursor.js";
-export * from "./plugins.js";
 export * from "./connected-agents.js";
 
 export * from "./automatic-models.js";

@@ -1,3 +1,4 @@
+import { localNamespace, pluginNamespace } from "./provider-names.js";
 import { Effect, Schema } from "effect";
 import {
   AppId,
@@ -147,23 +148,12 @@ export function compositeBackend(
         const providers = (yield* host.providers()).filter(
           (entry) => input?.ids === undefined || input.ids.includes(AppId.make(entry.id)),
         );
-        if (
-          providers.some((entry) =>
-            installed.some((app) => app.id === entry.id || app.slug === entry.slug),
-          )
-        )
-          return yield* Effect.fail(
-            new PluginServiceError(
-              "invalid",
-              "Host provider namespace conflicts with an installed plugin",
-            ),
-          );
         return [
-          ...installed,
+          ...installed.map((app) => ({ ...app, slug: AppSlug.make(pluginNamespace(app.slug)) })),
           ...providers.map((entry) => ({
             id: AppId.make(entry.id),
             name: entry.name,
-            slug: AppSlug.make(entry.slug),
+            slug: AppSlug.make(localNamespace(entry.slug, entry.id)),
             activeVersion: version(entry),
           })),
         ];
@@ -309,15 +299,26 @@ export function compositeBackend(
       Effect.gen(function* () {
         yield* checked("listSkills", input.app);
         const selection = yield* selected(input);
-        return yield* engine.skills.list({ ...input, accounts: selection.accounts }, options);
+        const catalog = yield* engine.skills.list(
+          { ...input, accounts: selection.accounts },
+          options,
+        );
+        return {
+          ...catalog,
+          app: { ...catalog.app, slug: AppSlug.make(pluginNamespace(catalog.app.slug)) },
+        };
       }),
     readSkill: (input) =>
       Effect.gen(function* () {
         yield* checked("readSkill", input.app);
-        return yield* engine.skills.read({
+        const document = yield* engine.skills.read({
           ...input,
           accounts: yield* accounts.accounts(input.app, input.version),
         });
+        return {
+          ...document,
+          app: { ...document.app, slug: AppSlug.make(pluginNamespace(document.app.slug)) },
+        };
       }),
     findEventSubscription: (input) =>
       checked("findEventSubscription").pipe(

@@ -52,3 +52,19 @@ revocation notices, initiating remotely and locally through the same Account pat
 browser or provider, callback replay, two concurrent devices, cancellation, and unlink or relink
 during exchange must create no credentials. Exercise changed-source and missing-permission refusals
 without switching accounts.
+
+## Plugin broker cutover
+
+Deploy Account and its plugin-only registry/metadata first, verify metadata v3 and the registered
+placement, then qualify the plugin-capable Beta Host and matching web/mobile builds. Promote
+Stable only after that qualification. Update separately installed clients to the Host's API
+window. This order deliberately interrupts old built-in sign-ins; Account does not upgrade Hosts.
+Tell affected people to update their computer and clients and start sign-in again. The cutover
+migration discards in-flight attempts and uncommitted refresh recovery; an affected saved grant
+needs reconnecting. Never replay a discarded result or silently switch OAuth apps.
+
+For each managed provider check `placement.hosts` against every credential destination, including
+subdomains and ports. Check the optional lowercase `header` and optional or null `scheme` against
+the provider's expected token carrier; null means no scheme prefix. Omitted placement disables
+one-click sign-in. Re-qualify consent, renewal and revocation with the actual registration; a
+hermetic provider test does not establish that a production provider accepts these settings.

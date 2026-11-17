@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { stopProcessGroup } from "@opensteer/shared/processGroup";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { engineDemand } from "./engine-demand.js";
+import { engineDemand } from "./engine-storage.js";
 import {
   EngineMessageSchema,
   HostMessageSchema,
@@ -88,6 +88,7 @@ export interface PluginServiceOptions {
     input: PluginBrokerInput<K>,
     signal: AbortSignal,
   ) => Promise<PluginBrokerOutput<K>>;
+  readonly onResourcesChanged?: () => void;
   readonly onExecution?: (execution: PluginExecution) => void;
   readonly onDiagnostic?: (phase: string) => void;
   readonly onState?: (state: PluginServiceState) => void;
@@ -99,6 +100,7 @@ export type PluginServiceState = {
   pid?: number;
   startupMs?: number;
   reason?: string;
+  unavailable?: { code: "unsupported-system" | "missing-runtime"; minimumMacOS?: string };
 };
 const idleCheckMs = 60_000;
 /** Saved background work due sooner than this keeps the engine running. */
@@ -232,8 +234,15 @@ export class PluginService {
       this.#resourceAbort.signal,
     ).then((reason) => {
       if (this.#closed) return;
-      if (reason) this.#set({ status: "unavailable", generation: this.#state.generation, reason });
-      else this.#resourcesReady = true;
+      if (reason) {
+        const { detail, ...unavailable } = reason;
+        this.#set({
+          status: "unavailable",
+          generation: this.#state.generation,
+          reason: detail,
+          unavailable,
+        });
+      } else this.#resourcesReady = true;
     }));
   }
   #launchOnce(): Promise<void> {
@@ -379,7 +388,9 @@ export class PluginService {
         return;
       }
       const message = parsed.data;
-      if (message.type === "diagnostic") {
+      if (message.type === "resourcesChanged") {
+        this.#options.onResourcesChanged?.();
+      } else if (message.type === "diagnostic") {
         this.#options.onDiagnostic?.(message.phase);
       } else if (message.type === "ready") {
         ready = true;
@@ -638,6 +649,16 @@ export class PluginService {
       ? this.#versionChanges.run(() => this.#request(operation, input, context, signal))
       : this.#request(operation, input, context, signal);
   }
+  resourcesRead = (
+    input: PluginInput<"resourcesRead">,
+    context: PluginCaller,
+    signal?: AbortSignal,
+  ) => this.#request("resourcesRead", input, context, signal);
+  resourcesUpdate = (
+    input: PluginInput<"resourcesUpdate">,
+    context: PluginCaller,
+    signal?: AbortSignal,
+  ) => this.#request("resourcesUpdate", input, context, signal);
   async #request<K extends PluginOperation>(
     operation: K,
     input: PluginInput<K>,

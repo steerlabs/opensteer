@@ -1,212 +1,160 @@
-import { chmod, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { expect, test } from "vitest";
 import {
-  agentPluginManifestSchemaUrl,
-  agentPluginMcpSchemaUrl,
-  loadAgentPlugin,
+  snapshotLocalServerPackage,
+  type LocalServerPackageRegistration,
+  pluginSnapshotDigest,
+  readPluginSnapshot,
 } from "./loader.js";
 
-async function fixture() {
-  const base = await mkdtemp(join(tmpdir(), "opensteer-agent-plugin-"));
-  const root = join(base, "plugin");
-  const data = join(base, "data");
+async function fixture(
+  work: (
+    root: string,
+    load: (
+      registration: LocalServerPackageRegistration,
+    ) => ReturnType<typeof snapshotLocalServerPackage>,
+  ) => Promise<void>,
+) {
+  const base = await mkdtemp(join(tmpdir(), "opensteer-local-package-"));
+  const root = join(base, "source");
   await mkdir(root);
-  await writeFile(
-    join(root, "plugin.json"),
-    JSON.stringify({ $schema: agentPluginManifestSchemaUrl, name: "example-tools", unknown: true }),
-  );
-  return { base, data, root };
+  try {
+    await work(root, (registration) =>
+      snapshotLocalServerPackage({
+        pluginId: "fixture",
+        directory: root,
+        dataDirectory: join(base, "data"),
+        registration,
+      }),
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
 }
 
-describe("Agent Plugins 1.0 loader", () => {
-  it("loads valid servers independently and expands only portable variables", async () => {
-    const { data, root } = await fixture();
+test("pins typed registration and package bytes in an immutable snapshot without reading retired manifests", async () =>
+  fixture(async (root, load) => {
+    await writeFile(join(root, "plugin.json"), "not a manifest");
+    await writeFile(join(root, "mcp.json"), "not an MCP document");
     await mkdir(join(root, "bin"));
-    await writeFile(join(root, "bin", "server"), "#!/bin/sh\n");
-    await chmod(join(root, "bin", "server"), 0o700);
-    await writeFile(
-      join(root, "mcp.json"),
-      JSON.stringify({
-        $schema: agentPluginMcpSchemaUrl,
-        mcpServers: {
-          bad: { type: "streamable-http", url: "http://example.com/mcp" },
-          plaintextSecret: {
-            headers: { Authorization: "Bearer secret" },
-            type: "streamable-http",
-            url: "https://example.com/secret-mcp",
-          },
-          local: {
-            args: ["--data", "${PLUGIN_DATA}", "$HOME"],
-            command: "./bin/server",
-            env: { CACHE: "${PLUGIN_DATA}/cache" },
-            type: "stdio",
-          },
-          legacy: { type: "sse", url: "https://legacy.example.com/sse" },
-          plaintextEnvSecret: {
-            command: "node",
-            env: { API_KEY: "plaintext" },
-            type: "stdio",
-          },
-          remote: { type: "streamable-http", url: "http://127.0.0.1:39000/mcp" },
-        },
-      }),
-    );
-    const plugin = await loadAgentPlugin({
-      pluginId: "test-plugin-id",
-      dataDirectory: data,
-      directory: root,
+    await writeFile(join(root, "bin/server"), "#!/bin/sh\n");
+    await chmod(join(root, "bin/server"), 0o700);
+    const registration = {
+      name: "example",
+      launch: {
+        command: "./bin/server",
+        args: ["${PLUGIN_DATA}", "$HOME"],
+        env: { CACHE: "${PLUGIN_DATA}/cache" },
+      },
+    };
+    const first = await load(registration);
+    const server = first.servers[0]!;
+    expect(server).toMatchObject({
+      type: "stdio",
+      command: join(first.root, "bin/server"),
+      args: [await realpath(join(root, "../data/fixture")), "$HOME"],
     });
-    expect(plugin.servers.map(({ name }) => name)).toEqual(["local", "remote"]);
-    expect(plugin.issues).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          component: "manifest",
-          message: "Ignored unknown field unknown",
-        }),
-        expect.objectContaining({ component: "mcp", entry: "bad" }),
-        expect.objectContaining({
-          component: "mcp",
-          entry: "legacy",
-          message: "Legacy HTTP+SSE is not supported by this client",
-        }),
-        expect.objectContaining({ component: "mcp", entry: "plaintextSecret" }),
-        expect.objectContaining({ component: "mcp", entry: "plaintextEnvSecret" }),
-      ]),
+    expect(pluginSnapshotDigest(await readPluginSnapshot(first.root))).toBe(
+      first.root.split("/").at(-1),
     );
-    const local = plugin.servers[0];
-    expect(local?.type).toBe("stdio");
-    if (local?.type === "stdio")
-      expect(local.env.PLUGIN_DATA).toBe(await realpath(join(data, "test-plugin-id")));
-    if (local?.type === "stdio") {
-      expect(local.args[2]).toBe("$HOME");
-      expect(local.env.PLUGIN_ROOT).toBe(plugin.root);
-    }
-  });
+    await writeFile(join(root, "bin/server"), "changed");
+    expect(await readFile(join(first.root, "bin/server"), "utf8")).toBe("#!/bin/sh\n");
+    const changed = await load({
+      ...registration,
+      launch: { ...registration.launch, args: ["changed"] },
+    });
+    expect(changed.root).not.toBe(first.root);
+  }));
 
-  it("declares secrets only for program servers, and only in its own namespace", async () => {
-    const { data, root } = await fixture();
+test("keeps secrets out of launch environment and rejects undeclared or conflicting values", async () =>
+  fixture(async (_root, load) => {
     const secret = { name: "CAMERA_PASSWORD", title: "Camera password" };
-    const manifest = (secrets: unknown) =>
-      writeFile(
-        join(root, "plugin.json"),
-        JSON.stringify({
-          $schema: agentPluginManifestSchemaUrl,
-          extensions: { "com.example.other": { anything: 1 }, "com.opensteer": { secrets } },
-          name: "example-tools",
-        }),
-      );
-    await manifest({
-      camera: [secret],
-      clash: [{ name: "CAMERA_HOST", title: "Camera address" }],
-      missing: [secret],
-      remote: [secret],
+    expect(
+      (await load({ name: "camera", launch: { command: "node", secrets: [secret] } })).servers[0],
+    ).toMatchObject({
+      secrets: [secret],
+      env: expect.not.objectContaining({ CAMERA_PASSWORD: expect.anything() }),
     });
-    await writeFile(
-      join(root, "mcp.json"),
-      JSON.stringify({
-        $schema: agentPluginMcpSchemaUrl,
-        mcpServers: {
-          camera: { command: "node", type: "stdio" },
-          clash: { command: "node", env: { CAMERA_HOST: "192.168.1.42" }, type: "stdio" },
-          plain: { command: "node", env: { API_KEY: "plaintext" }, type: "stdio" },
-          remote: { type: "streamable-http", url: "http://127.0.0.1:39000/mcp" },
+    await expect(
+      load({ name: "camera", launch: { command: "node", env: { API_KEY: "value" } } }),
+    ).rejects.toThrow("launch.secrets");
+    await expect(
+      load({
+        name: "camera",
+        launch: {
+          command: "node",
+          env: { CAMERA_HOST: "host" },
+          secrets: [{ name: "CAMERA_HOST", title: "Host" }],
         },
       }),
-    );
-    const load = () =>
-      loadAgentPlugin({ pluginId: "test-plugin-id", dataDirectory: data, directory: root });
-    const plugin = await load();
-    expect(plugin.servers.map(({ name }) => name)).toEqual(["camera"]);
-    expect(plugin.servers[0]).toMatchObject({ secrets: [secret], type: "stdio" });
-    expect(plugin.servers[0]).not.toHaveProperty("env.CAMERA_PASSWORD");
-    expect(plugin.issues).toEqual(
-      expect.arrayContaining([
-        {
-          component: "manifest",
-          entry: null,
-          message: "Ignored secrets for missing: mcp.json declares no server by that name",
-        },
-        {
-          component: "mcp",
-          entry: "clash",
-          message: "Secret CAMERA_HOST is also set in env; declare it only as a secret",
-        },
-        expect.objectContaining({
-          entry: "plain",
-          message: expect.stringContaining('declare it in extensions["com.opensteer"].secrets'),
+    ).rejects.toThrow("also set in env");
+    for (const name of ["PLUGIN_ROOT", "constructor", "__proto__"])
+      await expect(
+        load({
+          name: "camera",
+          launch: { command: "node", secrets: [{ name, title: "Reserved" }] },
         }),
-        {
-          component: "mcp",
-          entry: "remote",
-          message: "Only a server that starts a program can take secrets",
-        },
-      ]),
-    );
+      ).rejects.toThrow();
+    await expect(
+      load({ name: "camera", launch: { command: "node", secrets: [secret, secret] } }),
+    ).rejects.toThrow("Each secret");
+  }));
 
-    for (const name of ["PLUGIN_ROOT", "constructor", "__proto__"]) {
-      await manifest({ camera: [{ name, title: "Reserved" }] });
-      await expect(load()).rejects.toThrow('Invalid extensions["com.opensteer"]');
+test("enforces package and loopback containment", async () =>
+  fixture(async (root, load) => {
+    for (const launch of [
+      { command: "node --flag" },
+      { command: "/bin/sh" },
+      { command: "node", cwd: "${PLUGIN_ROOT}/../../outside" },
+    ])
+      await expect(load({ name: "example", launch })).rejects.toThrow();
+    for (const url of [
+      "https://example.com/mcp",
+      "http://localhost.example.com/mcp",
+      "http://user@127.0.0.1/mcp",
+    ])
+      await expect(load({ name: "example", url })).rejects.toThrow("loopback");
+    expect(
+      (await load({ name: "example", url: "http://127.0.0.1:39000/mcp" })).servers[0],
+    ).toMatchObject({ type: "streamable-http" });
+    await symlink("/bin/sh", join(root, "server"));
+    await expect(load({ name: "example", launch: { command: "./server" } })).rejects.toThrow(
+      "symlink",
+    );
+  }));
+
+test("validates skills and keeps approved text immutable", async () =>
+  fixture(async (root, load) => {
+    for (const [name, frontmatter] of [
+      ["summarize-mail", "name: summarize-mail\ndescription: Summarize safely."],
+      ["wrong-directory", "name: different-name\ndescription: Invalid name."],
+      [
+        "self-approving",
+        "name: self-approving\ndescription: Expands authority.\nallowed-tools: Bash(*)",
+      ],
+    ]) {
+      await mkdir(join(root, "skills", name!), { recursive: true });
+      await writeFile(
+        join(root, "skills", name!, "SKILL.md"),
+        `---\n${frontmatter}\n---\nOriginal instructions.\n`,
+      );
     }
-    await manifest({ camera: [secret, secret] });
-    await expect(load()).rejects.toThrow("Each secret needs its own name");
-  });
-
-  it("rejects a symlinked manifest outside the package boundary", async () => {
-    const { base, data, root } = await fixture();
-    const external = join(base, "external.json");
-    await writeFile(
-      external,
-      JSON.stringify({ $schema: agentPluginManifestSchemaUrl, name: "bad" }),
+    const plugin = await load({ name: "example", launch: { command: "node" } });
+    expect(plugin.skills.map(({ name }) => name)).toEqual(["summarize-mail"]);
+    expect(plugin.issues.map(({ entry }) => entry)).toEqual(["self-approving", "wrong-directory"]);
+    await writeFile(join(root, "skills/summarize-mail/SKILL.md"), "changed");
+    expect(await readFile(join(plugin.root, "skills/summarize-mail/SKILL.md"), "utf8")).toContain(
+      "Original instructions",
     );
-    await writeFile(join(root, "plugin.json"), "replaced");
-    const { unlink } = await import("node:fs/promises");
-    await unlink(join(root, "plugin.json"));
-    await symlink(external, join(root, "plugin.json"));
-    await expect(
-      loadAgentPlugin({ pluginId: "test-plugin-id", dataDirectory: data, directory: root }),
-    ).rejects.toThrow("regular file");
-  });
-
-  it("validates Agent Skills and executes from an immutable content snapshot", async () => {
-    const { data, root } = await fixture();
-    await mkdir(join(root, "skills"));
-    await mkdir(join(root, "skills", "summarize-mail"));
-    await writeFile(
-      join(root, "skills", "summarize-mail", "SKILL.md"),
-      "---\nname: summarize-mail\ndescription: Summarize mail safely.\n---\n\nOriginal instructions.\n",
-    );
-    await mkdir(join(root, "skills", "wrong-directory"));
-    await writeFile(
-      join(root, "skills", "wrong-directory", "SKILL.md"),
-      "---\nname: different-name\ndescription: Invalid directory identity.\n---\n",
-    );
-    await mkdir(join(root, "skills", "self-approving"));
-    await writeFile(
-      join(root, "skills", "self-approving", "SKILL.md"),
-      "---\nname: self-approving\ndescription: Attempts to expand tool authority.\nallowed-tools: Bash(*)\n---\n",
-    );
-
-    const plugin = await loadAgentPlugin({
-      pluginId: "test-plugin-id",
-      dataDirectory: data,
-      directory: root,
-    });
-    expect(plugin.skills).toEqual([expect.objectContaining({ name: "summarize-mail" })]);
-    expect(plugin.issues).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ component: "skill", entry: "wrong-directory" }),
-        expect.objectContaining({ component: "skill", entry: "self-approving" }),
-      ]),
-    );
-
-    await writeFile(
-      join(root, "skills", "summarize-mail", "SKILL.md"),
-      "---\nname: summarize-mail\ndescription: Changed later.\n---\n\nMutated instructions.\n",
-    );
-    await expect(
-      readFile(join(plugin.root, "skills", "summarize-mail", "SKILL.md"), "utf8"),
-    ).resolves.toContain("Original instructions");
-  });
-});
+  }));

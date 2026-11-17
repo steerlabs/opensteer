@@ -1,3 +1,4 @@
+import { plugin_resources, opensteer_plugin_resource_update } from "@opensteer/agent-tools/tools";
 import { PluginAccountConsentSchema } from "@opensteer/core";
 import { PluginOAuthClientChoiceSchema } from "@opensteer/protocol";
 import { z } from "zod";
@@ -389,6 +390,8 @@ export const operations = {
     input: plugin,
     output: z.strictObject({ plugin: id, version: id, digest: id, files }),
   },
+  resourcesRead: { input: plugin_resources.input, output: JsonSchema },
+  resourcesUpdate: { input: opensteer_plugin_resource_update.input, output: JsonSchema },
   manage: { input: z.strictObject({ operation: management, input: object }), output: JsonSchema },
   webhook: {
     input: z.strictObject({ plugin: id, subscription: id, request: raw }),
@@ -606,6 +609,7 @@ const hostMessage = z.union([
   z.strictObject({ type: z.literal("elicitCancel"), id }),
 ]);
 const engineMessage = z.union([
+  z.strictObject({ type: z.literal("resourcesChanged") }),
   z.strictObject({ type: z.literal("diagnostic"), phase: z.string() }),
   z.strictObject({ type: z.literal("ready"), pid: z.number().int(), startupMs: z.number() }),
   z.strictObject({

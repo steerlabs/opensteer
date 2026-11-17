@@ -1,3 +1,4 @@
+import { localNamespace } from "../plugins/provider-names.js";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,8 +34,6 @@ const integration = baseDatabaseUrl ? describe : describe.skip;
 let database: Awaited<ReturnType<typeof createMachineAccessDatabase>> | undefined;
 let databaseUrl = "postgres://unconfigured";
 const photo = Buffer.from("the exact bytes of a photo");
-const exportAttachment = 'tools["messages-studio-mac"].export_attachment';
-const sendMessage = 'tools["messages-studio-mac"].send_message';
 
 function messagesProvider(received: Buffer[]): ComputerAppProvider {
   return {
@@ -154,7 +153,16 @@ integration("files between a Run and an app on another computer", () => {
       { headers: host.ownerHeaders },
     );
     await expect(held.result).resolves.toMatchObject({ status: "fulfilled" });
-    return { caller, gateway, root, sent, target: runFiles("target") };
+    const namespace = localNamespace("messages-studio-mac", `app_device_${enabled.connection.id}`);
+    return {
+      caller,
+      gateway,
+      root,
+      sent,
+      target: runFiles("target"),
+      exportAttachment: `tools[${JSON.stringify(namespace)}].export_attachment`,
+      sendMessage: `tools[${JSON.stringify(namespace)}].send_message`,
+    };
   }
 
   /** The Execution Runner's half, as host-connection answers it. */
@@ -184,7 +192,7 @@ integration("files between a Run and an app on another computer", () => {
   }
 
   it("hands a Run an attachment from another computer, at a path local to it", async () => {
-    const { caller, gateway, root, target } = await connected(true);
+    const { caller, gateway, root, target, exportAttachment } = await connected(true);
     const signal = new AbortController().signal;
     answerRunFiles(caller.primary.socket, caller.primary.fence, async (request) => {
       if (request.type !== "host.run-file.receive") throw new Error("Expected a receive");
@@ -203,7 +211,7 @@ integration("files between a Run and an app on another computer", () => {
   });
 
   it("sends a file from a Run through an app on another computer", async () => {
-    const { caller, gateway, sent, target } = await connected(true);
+    const { caller, gateway, sent, target, sendMessage } = await connected(true);
     const signal = new AbortController().signal;
     answerRunFiles(caller.primary.socket, caller.primary.fence, async (request) => {
       if (request.type !== "host.run-file.send") throw new Error("Expected a send");
@@ -226,7 +234,7 @@ integration("files between a Run and an app on another computer", () => {
   });
 
   it("never lets a transfer error hide a send that may have happened", async () => {
-    const { caller, gateway, target } = await connected(true);
+    const { caller, gateway, target, sendMessage } = await connected(true);
     const signal = new AbortController().signal;
     answerRunFiles(caller.primary.socket, caller.primary.fence, async (request) => {
       if (request.type !== "host.run-file.send") throw new Error("Expected a send");
@@ -248,7 +256,7 @@ integration("files between a Run and an app on another computer", () => {
   });
 
   it("tells the agent to update a computer that cannot move files", async () => {
-    const { gateway } = await connected(false);
+    const { gateway, exportAttachment } = await connected(false);
     expect(
       (await pluginCall(gateway, exportAttachment, { attachmentId: "at_1" })).failure,
     ).toContain("Update Opensteer on Studio Mac to use Export attachment.");
