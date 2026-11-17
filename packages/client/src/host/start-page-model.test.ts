@@ -4,7 +4,7 @@ import {
   ownerViewComputerReadiness,
 } from "../integrations/computer-reasons.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import type { HostSnapshot } from "./client.js";
+import type { TranscriptFixtureSnapshot } from "./client.js";
 import { placeList, samePlaceListSource } from "./places.js";
 import {
   startPageIndex,
@@ -47,9 +47,12 @@ describe("start page projection", () => {
   it("says where each profile lives from its home, and refuses one whose home is away by name", () => {
     const client = new MockHostClient({ latencyMs: 0, now });
     try {
-      const snapshot: HostSnapshot = { ...client.getSnapshot(), connection: "connected" };
+      const snapshot: TranscriptFixtureSnapshot = {
+        ...client.getSnapshot(),
+        connection: "connected",
+      };
       const id = (name: string) => snapshot.machines.find((machine) => machine.name === name)!.id;
-      const rows = (localMachineId: string | null, source: HostSnapshot = snapshot) =>
+      const rows = (localMachineId: string | null, source: TranscriptFixtureSnapshot = snapshot) =>
         Object.fromEntries(
           startPageIndex({ snapshot: source, localMachineId }).profiles.map((profile) => [
             profile.presentation.name,
@@ -177,7 +180,7 @@ describe("start page projection", () => {
       const pixel = machine("Pixel 7");
       const index = (snapshot = client.getSnapshot()) =>
         startPageIndex({ snapshot, approvedApps, localMachineId: mini.id });
-      const groups = (snapshot?: HostSnapshot) =>
+      const groups = (snapshot?: TranscriptFixtureSnapshot) =>
         index(snapshot).groups.map((group) => [group.label, group.readiness]);
 
       expect(groups()).toEqual([
@@ -285,7 +288,7 @@ describe("start page projection", () => {
             : machine,
         ),
       });
-      const readinessOf = (snapshot: HostSnapshot, machineId: string) =>
+      const readinessOf = (snapshot: TranscriptFixtureSnapshot, machineId: string) =>
         index(snapshot).groups.find((group) => group.machineId === machineId)?.readiness;
       expect(readinessOf(reattached(studio.id, []), studio.id)).toBe("connecting");
       expect(readinessOf(reattached(pixel.id, []), pixel.id)).toBe("connecting");

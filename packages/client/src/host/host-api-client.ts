@@ -1,7 +1,5 @@
 import { clientRpcSuccessSchema } from "./device-readers.js";
 import { clientCommandSchema } from "./device-commands.js";
-import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
-import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import {
   HostApiErrorSchema,
   TranscriptFileContentSchema,
@@ -15,7 +13,11 @@ import {
   type RpcInput,
   type RpcOutput,
 } from "@opensteer/protocol";
-import { apiVersionHeaders } from "@opensteer/deployment-authority";
+import {
+  apiVersionHeaders,
+  hostApiVersionHeader,
+  hostApiCurrentHeader,
+} from "@opensteer/deployment-authority";
 import { attachmentMaxBytes } from "@opensteer/core";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { formatIssues } from "@opensteer/shared/validationIssues";
@@ -47,6 +49,7 @@ const responseEnvelopes = new Map(
 export interface HttpHostApiClientOptions {
   readonly baseUrl: URL;
   readonly kind?: "personal" | "team";
+  readonly personalVersion?: number;
   readonly fetch: Fetch;
   /** IPC adapters return buffered bodies together with their headers. */
   readonly bufferedResponses?: boolean;
@@ -54,6 +57,21 @@ export interface HttpHostApiClientOptions {
   readonly onAuthenticationRequired: () => void;
   readonly onVersionMismatch?: () => void;
 }
+
+const scopedReadLimits = {
+  "personal.shell.get": 96 * 1024,
+  "thread.snapshot.get": 128 * 1024,
+  "thread.items.page": 128 * 1024,
+  "node.items.page": 128 * 1024,
+  "transcript.item.get": 1024 * 1024,
+  "thread.inputQueue.get": 96 * 1024,
+  "thread.overlays.page": 16 * 1024,
+  "resources.get": 32 * 1024,
+  "resources.detail.get": 64 * 1024,
+  "tasks.page": 64 * 1024,
+  "needsYou.get": 64 * 1024,
+} satisfies Partial<Record<keyof typeof hostApi, number>>;
+const personalReadLimit: Partial<Record<keyof typeof hostApi, number>> = scopedReadLimits;
 
 const maximumRpcPayloadBytes = 1 * 1_024 * 1_024;
 
@@ -186,13 +204,12 @@ async function request<Name extends keyof typeof hostApi>(
   if (declaration.method === "GET" || "binaryRequest" in declaration) {
     url.searchParams.set("input", serialized);
   }
-  const diagnostic = name === "bootstrap.get" ? bootstrapReadDiagnostics.takeSummary() : undefined;
   const deadline = new HostResponseDeadline(call?.signal);
   const maximumBytes = declaration.stream
     ? name === "file.content"
       ? transcriptFileContentMaxBytes
       : attachmentMaxBytes
-    : 16 * 1_024 * 1_024;
+    : (options.personalVersion && personalReadLimit[name]) || 16 * 1_024 * 1_024;
   const headersTimeoutMs =
     // Opening or waking a tab may start its browser first.
     name === "commands.dispatch" &&
@@ -226,11 +243,16 @@ async function request<Name extends keyof typeof hostApi>(
           : {}),
         credentials: "include",
         headers: {
-          ...(diagnostic ? { [bootstrapDiagnosticHeader]: JSON.stringify(diagnostic) } : {}),
           accept: declaration.stream ? "*/*" : "application/json",
           // Every rpc request states the versions this app speaks. It is sent from
           // here alone so no caller can reach a Host without having negotiated.
           ...apiVersionHeaders(options.kind === "team" ? "team" : "personal"),
+          ...(options.kind !== "team" && options.personalVersion
+            ? {
+                [hostApiVersionHeader]: String(options.personalVersion),
+                [hostApiCurrentHeader]: String(options.personalVersion),
+              }
+            : {}),
           ...(declaration.method === "POST"
             ? {
                 "content-type":

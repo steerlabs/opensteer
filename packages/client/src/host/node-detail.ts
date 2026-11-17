@@ -587,7 +587,7 @@ export function subagentDetail(
   const nodes = [
     ...new Map(
       [
-        ...transcriptNodes(reader.transcripts[snapshot.threadId] ?? []),
+        ...transcriptNodes(reader.transcripts?.[snapshot.threadId] ?? []),
         ...snapshot.entries.filter((entry): entry is NodeEntry => entry.kind === "node"),
       ].map((entry) => [entry.nodeId, entry]),
     ).values(),

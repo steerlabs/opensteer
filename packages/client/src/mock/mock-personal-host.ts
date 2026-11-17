@@ -1,12 +1,11 @@
-import { SequenceSchema, ThreadIdSchema, type AgentEventView } from "@opensteer/core";
+import { hostApi, type HostToClientMessage } from "@opensteer/protocol";
 import {
-  ClientToHostMessageSchema,
-  hostApi,
-  isDeviceAccessRequestEvent,
-  projectDeviceAccessRequestEvent,
-  type HostToClientMessage,
-} from "@opensteer/protocol";
-import { hostApiVersion } from "@opensteer/deployment-authority";
+  ScopedClientMessageSchema,
+  type ScopedClientMessage,
+  type ScopedHostMessage,
+} from "@opensteer/protocol/personal-sync";
+import type { PersonalResourceKind } from "@opensteer/protocol/resources";
+import { scopeKey } from "../host/scoped-personal-stream.js";
 import type { WebSocketClient } from "../host/host-session-client.js";
 import { MockHostClient } from "./mock-host-client.js";
 
@@ -32,7 +31,7 @@ export class MockPersonalSocket implements WebSocketClient {
   emit(type: string, event: unknown): void {
     for (const listener of this.#events.get(type) ?? []) listener(event as never);
   }
-  deliver(frame: HostToClientMessage): void {
+  deliver(frame: HostToClientMessage | ScopedHostMessage): void {
     if (this.readyState === 1) this.emit("message", { data: JSON.stringify(frame) });
   }
   send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
@@ -46,51 +45,38 @@ export class MockPersonalSocket implements WebSocketClient {
     this.emit("close", {});
   }
 }
-/** Runs the production client against the same mock RPC and Deployment stream. */
+type Subscription = Extract<ScopedClientMessage, { type: "client.subscribe" }>;
+interface SocketState {
+  subscriptions: Map<string, Subscription>;
+  interests: readonly PersonalResourceKind[];
+  selected?: string;
+}
+
 export class MockPersonalHost {
   readonly client: MockHostClient;
   readonly sockets = new Set<MockPersonalSocket>();
-  readonly #subscribed = new Map<MockPersonalSocket, boolean>();
+  readonly #states = new Map<MockPersonalSocket, SocketState>();
   readonly #release: () => void;
-  #through = SequenceSchema.parse("0");
-  #rows: AgentEventView[] = [];
+  #through = "0";
+
   constructor(client = new MockHostClient({ latencyMs: 0 })) {
     this.client = client;
-    this.#through = this.#highWater();
-    let visits = client.getSnapshot().threadVisits;
+    this.#through = String(client.getSnapshot().revision);
     this.#release = client.subscribe(() => {
-      const next = client.getSnapshot().threadVisits;
-      if (visits !== next) {
-        const changed = Object.entries(next).flatMap(([threadId, lastVisitedAt]) =>
-          lastVisitedAt > (visits[threadId] ?? "")
-            ? [{ threadId: ThreadIdSchema.parse(threadId), lastVisitedAt }]
-            : [],
-        );
-        visits = next;
-        if (changed.length) {
-          for (let start = 0; start < changed.length; start += 100)
-            for (const socket of this.#subscribed.keys())
-              socket.deliver({
-                type: "host.thread-visits",
-                visits: changed.slice(start, start + 100),
-              });
-          return;
-        }
-      }
-      this.#through = this.#highWater(SequenceSchema.parse(String(BigInt(this.#through) + 1n)));
-      this.#rows = [];
-      for (const socket of this.#subscribed.keys()) this.#snapshot(socket);
+      this.#through = String(client.getSnapshot().revision);
+      for (const [socket, state] of this.#states)
+        for (const { generation, subscriptionId, scope } of state.subscriptions.values())
+          socket.deliver({
+            type: "host.snapshot-required",
+            subscriptionId,
+            generation,
+            scope,
+            throughSequence: this.#through,
+            reason: "scope-invalidated",
+          });
     });
   }
-  #highWater(minimum = SequenceSchema.parse("0")) {
-    const snapshot = this.client.getSnapshot();
-    let through = BigInt(minimum);
-    for (const entries of Object.values(snapshot.transcripts))
-      for (const entry of entries)
-        if (entry.kind === "message" && entry.sequence && BigInt(entry.sequence) > through)
-          through = BigInt(entry.sequence);
-    return SequenceSchema.parse(String(through));
-  }
+
   readonly fetch: typeof globalThis.fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const key = url.pathname.slice("/v1/rpc/".length);
@@ -99,106 +85,163 @@ export class MockPersonalHost {
     const raw = url.searchParams.get("input") ?? init?.body;
     const payload = typeof raw === "string" ? JSON.parse(raw) : {};
     const result = await this.client.rpc[name](payload as never);
-    if (!result.ok || !result.data || typeof result.data !== "object") return Response.json(result);
-    return Response.json({
-      ...result,
-      data: {
-        ...result.data,
-        ...("asOfSequence" in result.data ? { asOfSequence: this.#through } : {}),
-        // Like the Host, its bootstrap names the version its sockets serve.
-        ...(name === "bootstrap.get" ? { apiVersion: this.apiVersion } : {}),
-      },
+    return Response.json(result, {
+      status: !result.ok && result.error.code === "unauthorized" ? 401 : 200,
     });
   };
-  /** The version this Host's bootstrap names and its sockets serve. */
-  apiVersion = hostApiVersion;
+
   readonly connect = (): MockPersonalSocket => {
+    const state: SocketState = { subscriptions: new Map(), interests: [] };
     const socket = new MockPersonalSocket((data) => {
-      const frame = ClientToHostMessageSchema.parse(JSON.parse(data));
-      if (frame.type !== "client.subscribe") return;
-      if (frame.cursor.deploymentId !== this.client.getSnapshot().deploymentId) {
-        socket.close();
-        return;
-      }
-      this.#subscribed.set(socket, frame.deviceAccessRequests === "include");
-      // Like the Host, state read at another version is replaced, not resumed.
-      const after = frame.cursor.apiVersion === this.apiVersion ? frame.cursor.afterSequence : "0";
-      const rows = this.#rows.filter((row) => BigInt(row.sequence) > BigInt(after));
-      if (
-        after !== "0" &&
-        rows.length <= 200 &&
-        this.#rows.length > 0 &&
-        BigInt(after) >= BigInt(this.#rows[0]!.sequence) - 1n
-      )
-        socket.deliver({
-          type: "host.events",
-          events: rows
-            .filter((event) => this.#subscribed.get(socket) || !deviceAccessEvent(event))
-            .map((event) => projected(event, this.#subscribed.get(socket) === true)),
-          throughSequence: this.#through,
-        });
-      else this.#snapshot(socket);
-      const visits = Object.entries(this.client.getSnapshot().threadVisits).map(
-        ([threadId, lastVisitedAt]) => ({
-          threadId: ThreadIdSchema.parse(threadId),
-          lastVisitedAt,
-        }),
-      );
-      for (let start = 0; start < visits.length; start += 100)
-        socket.deliver({ type: "host.thread-visits", visits: visits.slice(start, start + 100) });
-      socket.deliver({
-        type: "host.synchronized",
-        apiVersion: this.apiVersion,
-        sequence: this.#through,
+      const frame = ScopedClientMessageSchema.parse(JSON.parse(data));
+      queueMicrotask(() => {
+        if (this.sockets.has(socket)) this.#receive(socket, state, frame);
       });
     });
     this.sockets.add(socket);
+    this.#states.set(socket, state);
     socket.addEventListener("close", () => {
       this.sockets.delete(socket);
-      this.#subscribed.delete(socket);
+      this.#states.delete(socket);
     });
     return socket;
   };
-  #snapshot(socket: MockPersonalSocket): void {
-    socket.deliver({
-      type: "host.snapshot",
-      snapshot: this.client.deploymentSnapshot(
-        this.#through,
-        this.#subscribed.get(socket) ? "include" : "omit",
-      ),
-    });
+
+  #receive(socket: MockPersonalSocket, state: SocketState, frame: ScopedClientMessage) {
+    switch (frame.type) {
+      case "client.attach": {
+        if (this.client.getSnapshot().session !== "authenticated") {
+          socket.deliver({
+            type: "host.error",
+            error: { code: "forbidden", message: "Sign in required.", retryable: false },
+          });
+          return;
+        }
+        state.interests = frame.interests;
+        const selected = frame.selected;
+        if (selected) state.selected = selected.scope.threadId;
+        this.#receive(socket, state, {
+          type: "client.subscribe",
+          subscriptionId: "shell",
+          generation: frame.generation,
+          scope: { kind: "shell" },
+          ...(frame.cursor ? { cursor: frame.cursor } : {}),
+        });
+        if (selected) this.#receive(socket, state, { type: "client.subscribe", ...selected });
+        break;
+      }
+      case "client.subscribe":
+        state.subscriptions.set(frame.subscriptionId, frame);
+        this.#snapshot(socket, state, frame);
+        break;
+      case "client.unsubscribe":
+        if (state.subscriptions.get(frame.subscriptionId)?.generation === frame.generation)
+          state.subscriptions.delete(frame.subscriptionId);
+        break;
+      case "client.resources.watch": {
+        const shell = state.subscriptions.get("shell");
+        if (shell?.generation !== frame.generation) return;
+        state.interests = frame.interests;
+        this.#resources(socket, shell, state, frame.installed);
+        break;
+      }
+      case "client.ping":
+        socket.deliver({ type: "host.pong", nonce: frame.nonce });
+        break;
+    }
   }
-  publish(events: readonly AgentEventView[], throughSequence: string): void {
-    const through = SequenceSchema.parse(throughSequence);
-    if (
-      BigInt(through) < BigInt(this.#through) ||
-      events.some((row) => BigInt(row.sequence) > BigInt(through))
-    )
-      throw new Error("Invalid stream cut.");
-    this.#through = through;
-    this.#rows = [...this.#rows, ...events].slice(-1000);
-    for (const [socket, supportsDeviceAccess] of this.#subscribed)
+
+  #snapshot(socket: MockPersonalSocket, state: SocketState, subscription: Subscription) {
+    const { generation, subscriptionId, scope, cursor, anchorItemId } = subscription;
+    const address = { generation, subscriptionId, scope };
+    const shell =
+      scope.kind === "shell" ? this.client.scopedShell(state.selected, this.#through) : undefined;
+    const snapshot =
+      scope.kind === "shell"
+        ? shell
+        : this.client.scopedDetail(
+            scope.threadId,
+            scope.kind === "node" ? scope.nodeId : undefined,
+            anchorItemId,
+            this.#through,
+          );
+    if (!snapshot) {
+      if (scope.kind !== "shell" && subscriptionId !== "shell")
+        socket.deliver({
+          ...address,
+          scope,
+          subscriptionId,
+          type: "host.removed",
+          reason: "unavailable",
+        });
+      return;
+    }
+    const after = cursor?.afterSequence;
+    if (!after || after !== this.#through || cursor?.scopeKey !== scopeKey(scope))
       socket.deliver({
-        type: "host.events",
-        events: events
-          .filter((event) => supportsDeviceAccess || !deviceAccessEvent(event))
-          .map((event) => projected(event, supportsDeviceAccess)),
-        throughSequence: through,
+        ...address,
+        type: "host.snapshot",
+        throughSequence: this.#through,
+        snapshot,
       });
+    socket.deliver({ ...address, type: "host.synchronized", throughSequence: this.#through });
+    if (shell) this.#resources(socket, subscription, state);
   }
-  dispose(): void {
+
+  #resources(
+    socket: MockPersonalSocket,
+    shell: Subscription,
+    state: SocketState,
+    installed: Partial<Record<PersonalResourceKind, string>> = {},
+  ) {
+    for (const kind of state.interests) {
+      if (installed[kind] === this.#through) continue;
+      socket.deliver({
+        type: "host.resource",
+        subscriptionId: "shell",
+        generation: shell.generation,
+        kind,
+        revision: this.#through,
+        view: { complete: true, hasMore: false, entries: [] },
+      });
+    }
+  }
+
+  invalidateShell() {
+    for (const [socket, state] of this.#states) {
+      const shell = state.subscriptions.get("shell");
+      if (shell)
+        socket.deliver({
+          type: "host.snapshot-required",
+          scope: shell.scope,
+          generation: shell.generation,
+          subscriptionId: "shell",
+          throughSequence: this.#through,
+          reason: "scope-invalidated",
+        });
+    }
+  }
+
+  publish(through: string) {
+    if (BigInt(through) <= BigInt(this.#through)) return;
+    const fromSequence = this.#through;
+    this.#through = through;
+    for (const [socket, state] of this.#states)
+      for (const { generation, subscriptionId, scope } of state.subscriptions.values())
+        socket.deliver({
+          type: "host.changes",
+          subscriptionId,
+          generation,
+          scope,
+          fromSequence,
+          throughSequence: through,
+          changes: [],
+        });
+  }
+
+  dispose() {
     this.#release();
     for (const socket of this.sockets) socket.close();
     this.client.dispose();
   }
-}
-
-/** Tab place events carry no Request; only the rest pass through the device projection. */
-function deviceAccessEvent(event: AgentEventView): boolean {
-  return event.type !== "place.entered" && isDeviceAccessRequestEvent(event);
-}
-function projected(event: AgentEventView, include: boolean): AgentEventView {
-  return event.type === "place.entered"
-    ? event
-    : (projectDeviceAccessRequestEvent(event, include) as AgentEventView);
 }

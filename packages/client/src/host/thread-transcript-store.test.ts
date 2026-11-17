@@ -123,16 +123,61 @@ test("notifies only the live item and requests one repair for a UTF-16 offset ga
         ...frame,
         update: {
           operation: "replace",
-          text: "🦊bc",
+          text: "🦊abc",
           offset: 0,
-          totalLength: 4,
+          totalLength: 5,
           incomplete: false,
         },
       },
       "1",
     ),
   ).toBe("applied");
-  expect(store.get(item.id)?.text).toBe("🦊bc");
+  expect(store.get(item.id)?.text).toBe("🦊abc");
   expect(changed).toHaveBeenCalledTimes(3);
   expect(unrelated).not.toHaveBeenCalled();
+});
+
+test("preserves incompleteness and fences late replies after closure and boot replacement", () => {
+  const store = new ItemTextStore();
+  store.generation(1);
+  const address = {
+    type: "host.live" as const,
+    generation: 1,
+    scope,
+    subscriptionId,
+    runId,
+    attemptId,
+    bindingGeneration: 2,
+    streamId: "s",
+    afterSequence: "3",
+    itemId: item.id,
+    liveBootId: crypto.randomUUID(),
+  };
+  const replace = {
+    ...address,
+    update: {
+      operation: "replace" as const,
+      offset: 0,
+      totalLength: 2,
+      text: "🦊",
+      incomplete: true,
+    },
+  };
+  expect(store.apply(replace, "2")).toBe("barrier");
+  expect(store.apply(replace, "3")).toBe("applied");
+  expect(
+    store.apply(
+      { ...address, update: { operation: "append", offset: 2, text: "b", totalLength: 3 } },
+      "3",
+    ),
+  ).toBe("applied");
+  expect(store.get(item.id)?.incomplete).toBe(true);
+  expect(store.apply({ ...address, update: { operation: "close" } }, "3")).toBe("applied");
+  expect(store.apply(replace, "3")).toBe("ignored");
+  expect(store.get(item.id)).toBeUndefined();
+  const newBoot = { ...replace, liveBootId: crypto.randomUUID() };
+  expect(store.apply(newBoot, "3")).toBe("applied");
+  expect(store.apply(replace, "3")).toBe("ignored");
+  expect(store.apply({ ...newBoot, bindingGeneration: 1 }, "3")).toBe("ignored");
+  expect(store.get(item.id)?.text).toBe("🦊");
 });

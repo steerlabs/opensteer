@@ -1,3 +1,21 @@
+import {
+  PersonalDetailSnapshotSchema,
+  PersonalRequestSummarySchema,
+  PersonalShellSnapshotSchema,
+} from "./personal-sync.js";
+import {
+  PersonalResourceDetailSchema,
+  PersonalResourceKindSchema,
+  PersonalResourceViewSchema,
+  PersonalRevisionSchema,
+} from "./resources.js";
+import {
+  TranscriptItemIdSchema,
+  TranscriptItemResultSchema,
+  TranscriptItemSchema,
+  TranscriptOrderCursorSchema,
+  TranscriptPageResultSchema,
+} from "./transcript.js";
 import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
 import { DeviceIdSchema, DeviceDriverGenerationSchema } from "@opensteer/core";
 import { MachineSummarySchema } from "./machines.js";
@@ -2160,6 +2178,15 @@ const hostApiGroup4 = defineRpc({
       .refine((input) => !(input.active && input.done), "Active work is never Done"),
     TaskPageSchema,
   ),
+  "tasks.page": declaration(
+    "GET",
+    z.strictObject({
+      done: z.boolean().optional(),
+      before: z.string().max(4096).optional(),
+      limit: z.int().min(1).max(50).optional(),
+    }),
+    TaskPageSchema,
+  ),
   /**
    * The Run's executions and the subagents they started, oldest first: the
    * newest hundred attempts and two hundred subagents of a Run with more.
@@ -2263,8 +2290,11 @@ const hostApiGroup4 = defineRpc({
   ),
   "thread.inputQueue.get": declaration(
     "GET",
-    z.strictObject({ threadId: ThreadIdSchema }),
-    ThreadInputQueueViewSchema,
+    z.strictObject({
+      threadId: ThreadIdSchema,
+      expectedRevision: PersonalRevisionSchema.optional(),
+    }),
+    ThreadInputQueueViewSchema.extend({ revision: PersonalRevisionSchema.optional() }),
   ),
   /** A waiting message's versions, newest first, a bounded page at a time. */
   "thread.message.revisions.list": declaration(
@@ -2273,6 +2303,7 @@ const hostApiGroup4 = defineRpc({
       threadId: ThreadIdSchema,
       messageId: MessageIdSchema,
       before: z.number().int().positive().optional(),
+      expectedRevision: z.int().nonnegative().optional(),
     }),
     z.object({
       revisions: z.array(MessageRevisionViewSchema).max(messageRevisionsPageSize),
@@ -2372,7 +2403,80 @@ const hostApiGroup4 = defineRpc({
   ),
 } as const);
 
+const transcriptScopeInput = { threadId: ThreadIdSchema, nodeId: ExecutionNodeIdSchema.optional() };
+const transcriptPageInput = {
+  after: TranscriptOrderCursorSchema.optional(),
+  before: TranscriptOrderCursorSchema.optional(),
+  anchorItemId: TranscriptItemIdSchema.optional(),
+  aroundMessageId: MessageIdSchema.optional(),
+  limit: z.int().min(1).max(100).optional(),
+};
+
 const workspaceHostApi = defineRpc({
+  "personal.shell.get": declaration(
+    "GET",
+    z.strictObject({ selectedThreadId: ThreadIdSchema.optional() }),
+    PersonalShellSnapshotSchema,
+  ),
+  "thread.snapshot.get": declaration(
+    "GET",
+    z.strictObject(transcriptScopeInput),
+    PersonalDetailSnapshotSchema,
+  ),
+  "thread.items.page": declaration(
+    "GET",
+    z.strictObject({ threadId: ThreadIdSchema, ...transcriptPageInput }),
+    TranscriptPageResultSchema,
+  ),
+  "node.items.page": declaration(
+    "GET",
+    z.strictObject({
+      threadId: ThreadIdSchema,
+      nodeId: ExecutionNodeIdSchema,
+      ...transcriptPageInput,
+    }),
+    TranscriptPageResultSchema,
+  ),
+  "transcript.item.get": declaration(
+    "GET",
+    z.strictObject({
+      ...transcriptScopeInput,
+      itemId: TranscriptItemIdSchema,
+      expectedRevision: PersonalRevisionSchema.optional(),
+    }),
+    TranscriptItemResultSchema,
+  ),
+  "thread.overlays.page": declaration(
+    "GET",
+    z.strictObject({
+      ...transcriptScopeInput,
+      kind: z.enum(["requests", "tools", "nodes"]),
+      cursor: z.string().max(4096).optional(),
+    }),
+    z.strictObject({
+      revision: PersonalRevisionSchema,
+      entries: z.array(z.union([PersonalRequestSummarySchema, TranscriptItemSchema])).max(20),
+      next: z.string().max(4096).nullable(),
+    }),
+  ),
+  "resources.get": declaration(
+    "GET",
+    z.strictObject({
+      kind: PersonalResourceKindSchema,
+      knownRevision: PersonalRevisionSchema.optional(),
+    }),
+    z.strictObject({ revision: PersonalRevisionSchema, view: PersonalResourceViewSchema }),
+  ),
+  "resources.detail.get": declaration(
+    "GET",
+    z.strictObject({
+      kind: PersonalResourceKindSchema,
+      id: z.string().max(255).optional(),
+      expectedRevision: PersonalRevisionSchema,
+      cursor: z.string().max(4096).optional(),
+    }),
+    PersonalResourceDetailSchema,
+  ),
   "machines.list": declaration(
     "GET",
     emptyInputSchema,

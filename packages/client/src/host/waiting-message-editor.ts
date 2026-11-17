@@ -35,8 +35,11 @@ export interface WaitingMessageEditorPort {
    * sent, so the Host's report of that take never reads as another device's.
    */
   readonly leases: Set<string>;
-  /** Settles once the client holds the message at `revision`, the version the person edits. */
-  holdsRevision(threadId: string, messageId: string, revision: number): Promise<void>;
+  readRevision(
+    threadId: string,
+    messageId: string,
+    revision: number,
+  ): Promise<readonly ContentPart[] | undefined>;
   now(): number;
 }
 
@@ -55,6 +58,8 @@ export async function openWaitingMessageEditor(
   const leaseId = globalThis.crypto.randomUUID().replaceAll("-", "");
   port.leases.add(leaseId);
   let revision: number;
+  let content: readonly ContentPart[] | undefined;
+  let leaseTaken = false;
   try {
     const taken = await port.dispatch({
       leaseId,
@@ -65,10 +70,11 @@ export async function openWaitingMessageEditor(
     });
     if (taken.type !== "thread.input.lease.take") throw new Error("Edit lease command mismatch.");
     revision = taken.revision;
-    await port.holdsRevision(threadId, messageId, revision);
+    leaseTaken = true;
+    content = await port.readRevision(threadId, messageId, revision);
   } catch (error) {
     // A take that may have landed must not hold the queue for an editor that never opened.
-    if (!isSettledInputMutationError(error))
+    if (leaseTaken || !isSettledInputMutationError(error))
       await port
         .dispatch({ leaseId, messageId, threadId, type: "thread.input.lease.release" })
         .catch(() => undefined);
@@ -84,6 +90,7 @@ export async function openWaitingMessageEditor(
   let attempt: { readonly content: string; readonly key: string } | null = null;
 
   return {
+    ...(content ? { content } : {}),
     leaseId,
     revision,
     touch() {

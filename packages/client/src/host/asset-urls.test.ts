@@ -22,7 +22,7 @@ function setup() {
     data: {
       assets: input.assets.map(({ path, source = { kind: "path", path: path! }, variant }) => ({
         status: "ok" as const,
-        url: `/media/token-${revision}/${variant}-${encodeURIComponent(source.kind === "path" ? source.path : source.attachmentId)}`,
+        url: `/media/token-${revision}/${variant}-${encodeURIComponent(source.kind === "path" ? source.path : source.kind === "attachment" ? source.attachmentId : source.imageId)}`,
         expiresAt: new Date(Date.now() + 8 * 60 * 60_000).toISOString(),
         revision: String(revision),
         width: 100,

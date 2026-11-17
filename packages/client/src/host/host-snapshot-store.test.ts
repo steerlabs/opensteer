@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { HostClient, HostSnapshot } from "./client.js";
+import type { HostClient, TranscriptFixtureSnapshot } from "./client.js";
 import { sameStableHostSnapshot } from "./host-snapshot-selectors.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import {
@@ -78,7 +78,7 @@ describe("Host snapshot selectors", () => {
     const thread = activity.threads[0];
     expect(thread).toBeDefined();
     const status = thread?.status === "failed" ? "idle" : "failed";
-    const semanticChange: HostSnapshot = {
+    const semanticChange: TranscriptFixtureSnapshot = {
       ...activity,
       revision: activity.revision + 1,
       threads: activity.threads.map((candidate, index) =>
@@ -98,7 +98,7 @@ describe("Host snapshot selectors", () => {
     const selection = createHostSelection(store, (snapshot) => snapshot, sameStableHostSnapshot);
     const observer = observeSelection(store, selection);
 
-    const remote: HostSnapshot = {
+    const remote: TranscriptFixtureSnapshot = {
       ...harness.snapshot(),
       revision: harness.snapshot().revision + 1,
       sessionSurface: "personal-remote",
@@ -130,7 +130,7 @@ function observeSelection<Selection>(
   };
 }
 
-function transcriptActivity(snapshot: HostSnapshot): HostSnapshot {
+function transcriptActivity(snapshot: TranscriptFixtureSnapshot): TranscriptFixtureSnapshot {
   const timestamp = new Date(
     Date.parse(snapshot.threads[0]?.updatedAt ?? "2026-01-01") + 1,
   ).toISOString();
@@ -164,7 +164,7 @@ function clientHarness() {
   return {
     client,
     initialSnapshot,
-    publish: (next: HostSnapshot) => {
+    publish: (next: TranscriptFixtureSnapshot) => {
       snapshot = next;
       for (const listener of listeners) listener();
     },

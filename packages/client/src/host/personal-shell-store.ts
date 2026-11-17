@@ -68,10 +68,15 @@ export class PersonalShellStore {
         return true;
       case "host.synchronized":
         if (old.through !== frame.throughSequence) return false;
-        if (!old.synchronized) this.#replace({ ...old, synchronized: true });
+        const snapshot =
+          old.snapshot && frame.shellProgress
+            ? { ...old.snapshot, ...frame.shellProgress }
+            : old.snapshot;
+        if (!old.synchronized || snapshot !== old.snapshot)
+          this.#replace({ ...old, snapshot, synchronized: true });
         return true;
       case "host.snapshot": {
-        if (!("tasks" in frame.snapshot)) return false;
+        if (!("tasks" in frame.snapshot) || old.synchronized) return false;
         const snapshot = frame.snapshot;
         const sameViewer =
           old.snapshot?.epoch === snapshot.epoch &&
@@ -167,6 +172,10 @@ export class PersonalShellStore {
           ...old,
           through: frame.throughSequence,
           taskIds: ids,
+          snapshot:
+            old.snapshot && frame.shellProgress
+              ? { ...old.snapshot, ...frame.shellProgress }
+              : old.snapshot,
           tasks: tasks ?? old.tasks,
           visits: visits ?? old.visits,
           attention: attention ?? old.attention,
@@ -175,6 +184,17 @@ export class PersonalShellStore {
         return true;
       }
     }
+  }
+
+  checkpoint(): ShellSnapshot | undefined {
+    const { snapshot, tasks, taskIds, visits, attention, invalidated } = this.#state;
+    if (!snapshot || invalidated.size) return;
+    return {
+      ...snapshot,
+      tasks: taskIds.flatMap((id) => tasks.get(id) ?? []),
+      visits: [...visits.values()],
+      attention: [...attention.values()],
+    };
   }
 
   #replace(state: ShellState) {

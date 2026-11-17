@@ -1,8 +1,9 @@
 import type { ScopedHostMessage } from "@opensteer/protocol/personal-sync";
-import type {
-  PersonalResourceKind,
-  PersonalResourceRevisions,
-  PersonalResourceView,
+import {
+  personalResourceKinds,
+  type PersonalResourceKind,
+  type PersonalResourceRevisions,
+  type PersonalResourceView,
 } from "@opensteer/protocol/resources";
 
 type ResourceFrame = Extract<ScopedHostMessage, { type: "host.resource" }>;
@@ -57,9 +58,13 @@ export class PersonalResourceStore {
   updateRevisions(generation: number, revisions: PersonalResourceRevisions) {
     if (generation !== this.#generation) return;
     const previous = this.#known;
-    this.#known = revisions;
+    const next = { ...revisions };
+    if (previous)
+      for (const kind of personalResourceKinds)
+        if (BigInt(previous[kind]) > BigInt(revisions[kind])) next[kind] = previous[kind];
+    this.#known = next;
     for (const [kind, listeners] of this.#listeners)
-      if (previous?.[kind] !== revisions[kind]) for (const listener of listeners) listener();
+      if (previous?.[kind] !== next[kind]) for (const listener of listeners) listener();
   }
 
   install(frame: ResourceFrame) {
@@ -76,6 +81,10 @@ export class PersonalResourceStore {
     this.#evict();
     for (const listener of this.#listeners.get(frame.kind) ?? []) listener();
     return true;
+  }
+
+  checkpoint() {
+    return Object.fromEntries(this.#views);
   }
 
   clear() {

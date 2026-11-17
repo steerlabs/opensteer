@@ -1,5 +1,6 @@
 import { utf8ByteLength } from "@opensteer/core";
 import { z } from "zod";
+import { HostBootstrapSchema } from "./bootstrap.js";
 
 export const personalResourceKinds = [
   "settings",
@@ -60,3 +61,44 @@ export const PersonalResourceViewSchema = z
 export type PersonalResourceKind = z.infer<typeof PersonalResourceKindSchema>;
 export type PersonalResourceRevisions = z.infer<typeof PersonalResourceRevisionsSchema>;
 export type PersonalResourceView = z.infer<typeof PersonalResourceViewSchema>;
+
+const bootstrap = HostBootstrapSchema.shape;
+export const PersonalResourceDataSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("settings"),
+    settings: bootstrap.personalSettings,
+    quietTaskDays: bootstrap.quietTaskDays,
+    executionPreferences: bootstrap.executionPreferences,
+  }),
+  z.strictObject({ kind: z.literal("identity"), identity: bootstrap.identityConfig }),
+  z.strictObject({
+    kind: z.literal("owner-profile"),
+    ownerProfile: bootstrap.ownerProfile.unwrap().nullable(),
+  }),
+  z.strictObject({ kind: z.literal("environment"), environments: bootstrap.environments }),
+  z.strictObject({ kind: z.literal("machine"), machines: bootstrap.machines }),
+  z.strictObject({ kind: z.literal("harness"), harnesses: bootstrap.harnesses }),
+  z.strictObject({ kind: z.literal("harness-catalog"), environments: bootstrap.environments }),
+  z.strictObject({ kind: z.literal("harness-auth"), environments: bootstrap.environments }),
+  z.strictObject({ kind: z.literal("agent-home-settings"), settings: bootstrap.personalSettings }),
+  z.strictObject({ kind: z.enum(["tab", "tab-layout"]), tabs: bootstrap.tabs }),
+  z.strictObject({
+    kind: z.literal("browser-profile"),
+    profiles: bootstrap.browser.shape.profiles,
+    deletions: bootstrap.browser.shape.profileDeletions,
+  }),
+  z.strictObject({
+    kind: z.literal("browser-placement"),
+    placements: bootstrap.browser.shape.placements,
+  }),
+  z.strictObject({ kind: z.literal("browser-home"), homes: bootstrap.browser.shape.profileHomes }),
+  z.strictObject({ kind: z.literal("browser-availability"), available: z.boolean() }),
+]);
+
+export const PersonalResourceDetailSchema = z
+  .strictObject({
+    revision: PersonalRevisionSchema,
+    data: PersonalResourceDataSchema,
+    next: z.string().max(4096).nullable(),
+  })
+  .refine((value) => utf8ByteLength(JSON.stringify(value)) <= 64 * 1024);

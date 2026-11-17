@@ -4,6 +4,16 @@ import {
   DelegationIdSchema,
   ExecutionNodeIdSchema,
   MessageIdSchema,
+  MessageViewSchema,
+  MessageAuthorSchema,
+  ToolIdentitySchema,
+  ToolOutputViewSchema,
+  ExecutionNodeViewSchema,
+  RunViewSchema,
+  RunUsageViewSchema,
+  RunFailureViewSchema,
+  RequestKindSchema,
+  AssignmentSummarySchema,
   RequestIdSchema,
   RunAttemptIdSchema,
   RunIdSchema,
@@ -13,6 +23,7 @@ import {
   utf8ByteLength,
 } from "@opensteer/core";
 import { z } from "zod";
+import { TranscriptImageRefSchema } from "./assets.js";
 import { PersonalRevisionSchema } from "./resources.js";
 
 export const TranscriptItemIdSchema = z.string().min(1).max(600);
@@ -57,15 +68,46 @@ const card = {
   view: TranscriptItemPreviewSchema,
 };
 export const TranscriptItemSchema = z.discriminatedUnion("kind", [
-  z.strictObject({ ...card, kind: z.literal("message"), messageId: MessageIdSchema }),
-  z.strictObject({ ...card, kind: z.literal("tool"), toolCallId: z.string().min(1).max(160) }),
-  z.strictObject({ ...card, kind: z.literal("run"), runId: RunIdSchema }),
-  z.strictObject({ ...card, kind: z.literal("request"), requestId: RequestIdSchema }),
-  z.strictObject({ ...card, kind: z.literal("node"), executionNodeId: ExecutionNodeIdSchema }),
+  z.strictObject({
+    ...card,
+    kind: z.literal("message"),
+    messageId: MessageIdSchema,
+    messageKind: z.enum(["assistant", "input", "continuation"]).optional(),
+    author: MessageAuthorSchema.optional(),
+  }),
+  z.strictObject({
+    ...card,
+    kind: z.literal("tool"),
+    toolCallId: z.string().min(1).max(160),
+    tool: ToolIdentitySchema.nullable().optional(),
+    view: TranscriptItemPreviewSchema.refine((value) => value.preview === undefined),
+  }),
+  z.strictObject({
+    ...card,
+    kind: z.literal("run"),
+    runId: RunIdSchema,
+    replyMessageId: MessageIdSchema.nullable().optional(),
+    endedAt: z.iso.datetime().optional(),
+    usage: RunUsageViewSchema.optional(),
+    failure: RunFailureViewSchema.optional(),
+  }),
+  z.strictObject({
+    ...card,
+    kind: z.literal("request"),
+    requestId: RequestIdSchema,
+    requestKind: RequestKindSchema.optional(),
+  }),
+  z.strictObject({
+    ...card,
+    kind: z.literal("node"),
+    executionNodeId: ExecutionNodeIdSchema,
+    node: ExecutionNodeViewSchema.optional(),
+  }),
   z.strictObject({
     ...card,
     kind: z.enum(["assignment", "delegation"]),
     delegationId: DelegationIdSchema,
+    assignment: AssignmentSummarySchema.optional(),
   }),
   z.strictObject({ ...card, kind: z.literal("app"), appId: AppIdSchema }),
   z.strictObject({
@@ -75,7 +117,7 @@ export const TranscriptItemSchema = z.discriminatedUnion("kind", [
     bindingGeneration: z.int().nonnegative().nullable(),
   }),
   z.strictObject({ ...card, kind: z.literal("node-message"), nodeId: ExecutionNodeIdSchema }),
-  z.strictObject({ ...card, kind: z.literal("place") }),
+  z.strictObject({ ...card, kind: z.literal("place"), place: TranscriptPlaceSchema.optional() }),
 ]);
 
 export const TranscriptPageSchema = z.strictObject({
@@ -85,7 +127,36 @@ export const TranscriptPageSchema = z.strictObject({
   items: z.array(TranscriptItemSchema).max(100),
   hasMore: z.boolean(),
   nextBefore: TranscriptOrderCursorSchema.nullable(),
+  nextAfter: TranscriptOrderCursorSchema.nullable().optional(),
 });
 
 export type TranscriptItem = z.infer<typeof TranscriptItemSchema>;
 export type TranscriptOrderCursor = z.infer<typeof TranscriptOrderCursorSchema>;
+
+export const TranscriptPageResultSchema = z.discriminatedUnion("kind", [
+  TranscriptPageSchema,
+  z.strictObject({ kind: z.literal("history-reset"), orderRevision: PersonalRevisionSchema }),
+]);
+
+export const TranscriptItemBodySchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("message"), message: MessageViewSchema }),
+  z.strictObject({
+    kind: z.literal("tool"),
+    arguments: z.unknown(),
+    output: ToolOutputViewSchema.omit({ images: true }).optional(),
+    images: z.array(TranscriptImageRefSchema).max(8).optional(),
+  }),
+  z.strictObject({ kind: z.literal("node"), node: ExecutionNodeViewSchema }),
+  z.strictObject({ kind: z.literal("run"), run: RunViewSchema }),
+  z.strictObject({ kind: z.literal("assignment"), assignment: AssignmentSummarySchema }),
+  z.strictObject({ kind: z.literal("text"), text: z.string().max(480 * 1024) }),
+]);
+
+export const TranscriptItemResultSchema = z
+  .strictObject({
+    item: TranscriptItemSchema,
+    body: TranscriptItemBodySchema,
+    truncated: z.boolean(),
+  })
+  .refine((value) => utf8ByteLength(JSON.stringify(value)) <= 1024 * 1024);
+export type TranscriptItemResult = z.infer<typeof TranscriptItemResultSchema>;

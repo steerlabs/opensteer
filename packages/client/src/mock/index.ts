@@ -11,3 +11,5 @@ export * from "./mock-personal-host.js";
 export { mockDeviceAccessRequest } from "./mock-devices.js";
 export * from "./mock-screen-devices.js";
 export * from "./mock-iphone-setup.js";
+
+export { mockScopedResource } from "./mock-scoped-personal.js";

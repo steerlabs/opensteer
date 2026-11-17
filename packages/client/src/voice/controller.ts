@@ -276,7 +276,18 @@ export class VoiceController {
       call.setMuted(this.#snapshot.muted);
       media.keepAwake?.(true);
 
-      session.releaseThread = this.#input.hostClient.observeThread(call.identity.threadId);
+      const client = this.#input.hostClient;
+      const release = client.observeThread(call.identity.threadId);
+      const unsubscribe = client.getThreadTranscript(call.identity.threadId)?.subscribe(() => {
+        if (this.#session === session) {
+          this.#readActivity(session);
+          this.#readWork(session, client.getSnapshot());
+        }
+      });
+      session.releaseThread = () => {
+        unsubscribe?.();
+        release();
+      };
       session.speaker = new VoiceSpeaker({
         ...this.#input,
         baseline,
@@ -457,7 +468,9 @@ export class VoiceController {
           : first.request.id;
       return { kind: "request", requestId: shown, others: waiting.length - 1 };
     }
-    const offer = callPasswordsOffer(snapshot.transcripts[threadId] ?? []);
+    const offer = callPasswordsOffer(
+      this.#input.hostClient.getThreadTranscript(threadId)?.getSnapshot().entries ?? [],
+    );
     return offer ? { kind: "passwords", offer } : null;
   }
 
@@ -469,7 +482,8 @@ export class VoiceController {
   #readActivity(session: VoiceSession): void {
     const identity = session.call?.identity;
     if (!identity) return;
-    const entries = this.#input.hostClient.getSnapshot().transcripts[identity.threadId] ?? [];
+    const entries =
+      this.#input.hostClient.getThreadTranscript(identity.threadId)?.getSnapshot().entries ?? [];
     let running: ActivityIcon | null = null;
     let busy = false;
     for (let index = entries.length - 1; index >= Math.max(0, entries.length - 24); index -= 1) {

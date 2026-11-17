@@ -1,4 +1,13 @@
 import {
+  mockScopedShell,
+  mockScopedDetail,
+  mockScopedItems,
+  mockScopedCursor,
+  mockScopedResource,
+  boundedMockPage,
+} from "./mock-scoped-personal.js";
+import type { ThreadViewSource, ThreadViewState } from "../host/scoped-thread-reader.js";
+import {
   DeviceComputerAppSetupRequestReaderSchema,
   type DeviceComputerAppSetupRequest,
 } from "@opensteer/integration-core";
@@ -284,7 +293,7 @@ import type {
   HarnessAuthenticationEnvelope,
   HarnessSummary,
   HostClient,
-  HostSnapshot as PublicHostSnapshot,
+  TranscriptFixtureSnapshot as PublicHostSnapshot,
   MachineAccessHistoryPage,
   MachineAccessUpdateOutcome,
   MessageEntry,
@@ -1973,6 +1982,44 @@ function mockReaderThread<Thread extends { readonly id: string; readonly pending
   return { ...thread, pendingRequests: Math.max(0, thread.pendingRequests - hidden) };
 }
 
+function rpcNotFound(message: string) {
+  return { ok: false as const, error: { code: "not_found" as const, message, retryable: false } };
+}
+
+function mockItemsPage(
+  client: MockHostState,
+  input: z.output<(typeof hostApi)["thread.items.page"]["payload"]> & { nodeId?: string },
+) {
+  const snapshot = client.getSnapshot();
+  const revision = String(snapshot.revision);
+  const { threadId, nodeId } = input;
+  if (input.before && input.before.orderRevision !== revision)
+    return rpcSuccess({ kind: "history-reset" as const, orderRevision: revision });
+  const all = mockScopedItems(snapshot, threadId, nodeId);
+  const anchor = input.anchorItemId ?? input.aroundMessageId;
+  const index = anchor
+    ? all.findIndex(
+        (row) => row.id === anchor || (row.kind === "message" && row.messageId === anchor),
+      )
+    : -1;
+  if (anchor && index < 0) return rpcNotFound("Item unavailable.");
+  const end = input.before
+    ? all.findIndex(({ id }) => id === input.before?.beforeId)
+    : index >= 0
+      ? Math.min(all.length, index + 25)
+      : all.length;
+  const items = boundedMockPage(all.slice(Math.max(0, end - (input.limit ?? 50)), end));
+  const hasMore = items.length > 0 && items[0] !== all[0];
+  return rpcSuccess({
+    kind: "page" as const,
+    items,
+    orderRevision: revision,
+    revision,
+    hasMore,
+    nextBefore: hasMore ? mockScopedCursor(snapshot, threadId, nodeId, revision, items[0]) : null,
+  });
+}
+
 function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): HostApiHandlers {
   let referenceFailurePending = failureId !== undefined;
   const handlers: Partial<HostApiHandlers> = {
@@ -2254,6 +2301,59 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       const row = client.tabCatalog.store.get(tabId);
       return rpcSuccess({ favicon: await client.places.icon(tabId, input.iconRef, row) });
     },
+    "personal.shell.get": async ({ selectedThreadId }) =>
+      rpcSuccess(mockScopedShell(client.getSnapshot(), mockThread, selectedThreadId)),
+    "thread.snapshot.get": async ({ threadId, nodeId }) => {
+      const detail = mockScopedDetail(client.getSnapshot(), mockThread, threadId, nodeId);
+      return detail ? rpcSuccess(detail) : rpcNotFound("Conversation unavailable.");
+    },
+    "thread.items.page": async (input) => mockItemsPage(client, input),
+    "node.items.page": async (input) => mockItemsPage(client, input),
+    "thread.overlays.page": async () =>
+      rpcSuccess({ revision: String(client.getSnapshot().revision), entries: [], next: null }),
+    "transcript.item.get": async ({ threadId, nodeId, itemId }) => {
+      const snapshot = client.getSnapshot();
+      const item = mockScopedItems(snapshot, threadId, nodeId).find(({ id }) => id === itemId);
+      const row = snapshot.transcripts[threadId]?.find(({ id }) => id === itemId);
+      if (!item || !row) return rpcNotFound("Item unavailable.");
+      if (row.kind === "tool")
+        return rpcSuccess({
+          item,
+          body: {
+            kind: "tool",
+            arguments: row.arguments,
+            output: row.output && { text: row.output.text, truncation: row.output.truncation },
+          },
+          truncated: false,
+        });
+      if (row.kind === "reasoning")
+        return rpcSuccess({ item, body: { kind: "text", text: row.text }, truncated: false });
+      if (row.kind === "assignment")
+        return rpcSuccess({
+          item,
+          body: { kind: "assignment", assignment: row.assignment },
+          truncated: false,
+        });
+      if (row.kind === "message")
+        return rpcSuccess({ item, body: { kind: "text", text: row.body }, truncated: false });
+      return rpcNotFound("Item has no body.");
+    },
+    "resources.get": async () =>
+      rpcSuccess({
+        revision: String(client.getSnapshot().revision),
+        view: { complete: true, hasMore: false, entries: [] },
+      }),
+    "resources.detail.get": async ({ kind }) =>
+      rpcSuccess(
+        hostApi["resources.detail.get"].success.parse({
+          revision: String(client.getSnapshot().revision),
+          data: mockScopedResource(
+            hostApi["bootstrap.get"].success.parse(client.bootstrap()),
+            kind,
+          ),
+          next: null,
+        }),
+      ),
     "bootstrap.get": async () =>
       rpcSuccess(hostApi["bootstrap.get"].success.parse(client.bootstrap())),
     "tabs.get": async ({ tabId }) => {
@@ -2765,9 +2865,30 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       return rpcSuccess(hostApi["thread.browserUsage.get"].success.parse({ threadId, uses }));
     },
     "thread.inputQueue.get": async (input) =>
-      rpcSuccess(client.loadThreadInputQueue(input.threadId)),
-    "thread.message.revisions.list": async (input) =>
-      rpcSuccess(client.messageRevisionPage(input.messageId, input.before)),
+      rpcSuccess({
+        ...client.loadThreadInputQueue(input.threadId),
+        revision: String(client.getSnapshot().revision),
+      }),
+    "thread.message.revisions.list": async (input) => {
+      const page = client.messageRevisionPage(input.messageId, input.before);
+      if (input.expectedRevision !== 0 || page.revisions.length) return rpcSuccess(page);
+      const row = client
+        .loadThreadInputQueue(input.threadId)
+        .items.find(({ message }) => message.id === input.messageId);
+      if (!row?.lease || row.message.edit) return rpcNotFound("Waiting message unavailable.");
+      return rpcSuccess({
+        revisions: [
+          {
+            revision: 0,
+            content: row.message.content,
+            author: row.message.author,
+            deviceLabel: null,
+            createdAt: row.message.createdAt,
+          },
+        ],
+        hasMore: false,
+      });
+    },
     "thread.live.get": async (input) => rpcSuccess(client.liveStreams(input.threadId)),
     "thread.requests.list": async (input) => {
       const snapshot = client.getSnapshot();
@@ -2818,9 +2939,12 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
 
     "thread.messages.list": async (input) => rpcSuccess(client.listThreadMessages(input)),
   };
-  return new Proxy(handlers, {
-    get: (target, name) => Reflect.get(target, name) ?? unsupportedMockRpc,
-  }) as HostApiHandlers;
+  return new Proxy(
+    { ...handlers, "tasks.page": handlers["tasks.list"]! },
+    {
+      get: (target, name) => Reflect.get(target, name) ?? unsupportedMockRpc,
+    },
+  ) as HostApiHandlers;
 }
 
 /** A queued message joins the conversation where a Run takes it, as the Host places it. */
@@ -3991,6 +4115,7 @@ export class MockHostClient implements HostClient {
       this.#state.getSnapshot,
       (snapshot) =>
         this.#state.updatePlaces({
+          ...this.#state.getSnapshot(),
           ...snapshot,
           browserSessions: this.#state.getSnapshot().browserSessions,
         }),
@@ -4501,6 +4626,64 @@ export class MockHostClient implements HostClient {
     return this.#nodeDetails.open(threadId, nodeId, this.getSnapshot().deploymentId!);
   }
 
+  scopedShell(selected?: string, revision?: string) {
+    return mockScopedShell(this.getSnapshot(), mockThread, selected, revision);
+  }
+
+  scopedDetail(threadId: string, nodeId?: string, anchor?: string, revision?: string) {
+    return mockScopedDetail(this.getSnapshot(), mockThread, threadId, nodeId, anchor, revision);
+  }
+
+  readonly #transcriptSources = new Map<string, ThreadViewSource>();
+
+  getThreadTranscript(threadId: string): ThreadViewSource {
+    const held = this.#transcriptSources.get(threadId);
+    if (held) return held;
+    let previous: PublicHostSnapshot | undefined;
+    let data: ThreadViewState | undefined;
+    const source = {
+      subscribe: this.subscribe,
+      getSnapshot: () => {
+        const value = this.getSnapshot();
+        if (value === previous && data) return data;
+        previous = value;
+        data = {
+          entries: value.transcripts[threadId] ?? [],
+          requests: value.requests[threadId] ?? [],
+          runQueue: value.runQueue.filter((run) => run.threadId === threadId),
+          inputQueue: value.inputQueues[threadId] ?? null,
+          synchronized: value.connection === "connected",
+          hasMore: value.transcriptWindows[threadId]?.hasMore ?? false,
+          moreRequests: false,
+          hasNewer: false,
+        };
+        return data;
+      },
+    };
+    if (this.#transcriptSources.size >= 100) {
+      const oldest = this.#transcriptSources.keys().next();
+      if (!oldest.done) this.#transcriptSources.delete(oldest.value);
+    }
+    this.#transcriptSources.set(threadId, source);
+    return source;
+  }
+
+  getThreadItemText() {
+    return undefined;
+  }
+
+  async readTranscriptItem(threadId: string, itemId: string) {
+    const result = await this.rpc["transcript.item.get"]({ threadId, itemId });
+    return result.ok ? result.data : undefined;
+  }
+
+  setTranscriptAnchor() {}
+  async loadMoreOverlays() {}
+  async loadNewerTranscript() {}
+  watchPersonalResource() {
+    return () => {};
+  }
+
   observeThread(_threadId: string): () => void {
     return () => undefined;
   }
@@ -4574,7 +4757,7 @@ export class MockHostClient implements HostClient {
         dispatch: (command) => this.dispatch(command),
         leases: this.#editLeases,
         // The mock's snapshot is its Host, so it always holds the version taken.
-        holdsRevision: async () => undefined,
+        readRevision: async () => undefined,
         now: () => Date.now(),
       },
       threadId,

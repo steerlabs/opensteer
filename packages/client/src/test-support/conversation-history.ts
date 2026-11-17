@@ -9,7 +9,7 @@ export function conversationHistoryHost(source: MockHostClient) {
   const client = new HttpHostClient({
     baseUrl: "http://mock-host",
     capabilities: ["history-turns-v1"],
-    refreshIntervalMs: 0,
+
     webSocketFactory: () => ({
       binaryType: "arraybuffer",
       readyState: 0,

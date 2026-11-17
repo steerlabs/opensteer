@@ -1,6 +1,7 @@
 export * from "./use-host-snapshot.js";
 export * from "./use-computer-use-stop.js";
 export * from "./use-thread-input-queue.js";
+export * from "./use-thread-transcript.js";
 export * from "./use-waiting-inputs.js";
 export * from "./use-conversation-surfaces.js";
 export * from "./use-browser-popup-follow.js";
@@ -45,3 +46,6 @@ export * from "./use-idle-compaction.js";
 
 export * from "./use-asset-image.js";
 export * from "./use-reference.js";
+
+export * from "./use-transcript-message.js";
+export * from "./use-personal-resources.js";

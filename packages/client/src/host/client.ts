@@ -274,6 +274,9 @@ export interface RunQueueEntry {
 }
 
 export interface MessageEntry {
+  readonly itemId?: string;
+  readonly itemRevision?: string;
+  readonly previewTruncated?: boolean;
   teamSource?: TeamSource | null;
   addressedToUserId?: string;
   /** False for work drawn for its sender before the Run has received it. */
@@ -355,6 +358,7 @@ export interface AssignmentReturnEntry {
 }
 
 export interface ReasoningEntry {
+  readonly itemId?: string;
   completedAt?: string | null | undefined;
   createdAt: string;
   id: string;
@@ -390,6 +394,8 @@ export interface PlaceEntry {
 }
 
 export interface ToolEntry {
+  readonly itemId?: string;
+  readonly itemRevision?: string;
   arguments: unknown;
   callId: string;
   completedAt?: string | null | undefined;
@@ -801,7 +807,6 @@ export interface HostSnapshot {
   threadAutomations: Readonly<Record<string, readonly ThreadAutomation[]>>;
   /** Null until the Host has identified the deployment owning this session. */
   deploymentId: string | null;
-  requests: Record<string, Request[]>;
   /**
    * The pending Requests this person is the one to answer, wherever they were
    * asked, each with the handed-out work it holds up. "Needs you" on a task,
@@ -858,14 +863,6 @@ export interface HostSnapshot {
   /** Days untouched before the reader's tasks move to Done; null until the Host says. */
   quietTaskDays: QuietTaskDays | null;
   identityConfig: IdentityConfig | null;
-  /**
-   * The Host's durable pending-input queue, per Thread, for the Threads this
-   * client has activated. Absent until its first read lands; reloaded from
-   * the Host whenever an event touches that Thread's inputs or Runs, and
-   * patched in place when this client sends, steers or cancels. The transcript
-   * shows every message except the ones held here.
-   */
-  inputQueues: Record<string, ThreadInputQueue>;
   machines: MachineSummary[];
   /** Bumped when a machine's access sessions change, so readers refetch. */
   machineRevision: number;
@@ -912,11 +909,16 @@ export interface HostSnapshot {
   /** The Host advertises voice-run-v1: a call's agent runs as a Run with Opensteer's tools. */
   voiceAvailable?: boolean;
   threads: ThreadSummary[];
-  transcriptWindows: Record<string, TranscriptWindow>;
-  transcripts: Record<string, TranscriptEntry[]>;
   user: AuthenticatedUser | null;
   /** Recovery can replace the session with no other visible change, ending what was bound to it. */
   sessionId?: string;
+}
+
+export interface TranscriptFixtureSnapshot extends HostSnapshot {
+  requests: Record<string, Request[]>;
+  inputQueues: Record<string, ThreadInputQueue>;
+  transcriptWindows: Record<string, TranscriptWindow>;
+  transcripts: Record<string, TranscriptEntry[]>;
 }
 
 /**
@@ -1038,6 +1040,7 @@ export type MachineAccessUpdateOutcome =
  * leaving the person's text with them.
  */
 export interface WaitingMessageEditor {
+  readonly content?: readonly ContentPart[];
   readonly leaseId: string;
   readonly revision: number;
   touch(): void;
@@ -1130,6 +1133,24 @@ export interface HostClient extends TabsClient {
   readAttachment(attachmentId: string, signal?: AbortSignal): Promise<Blob>;
   discardAttachment(attachmentId: string): Promise<void>;
   activateThread(threadId: string): void;
+  deactivateThread?(threadId: string): void;
+  getThreadTranscript(
+    threadId: string,
+  ): import("./scoped-thread-reader.js").ThreadViewSource | undefined;
+  getThreadItemText(
+    threadId: string,
+    nodeId?: string,
+  ): import("./item-text-store.js").ItemTextStore | undefined;
+  readTranscriptItem(
+    threadId: string,
+    itemId: string,
+    nodeId?: string,
+  ): Promise<import("@opensteer/protocol/transcript").TranscriptItemResult | undefined>;
+  setTranscriptAnchor(threadId: string, itemId: string | undefined): void;
+  watchPersonalResource(
+    kind: import("@opensteer/protocol/resources").PersonalResourceKind,
+    listener: () => void,
+  ): () => void;
   /**
    * Keeps another Thread's transcript, pending Requests and assignments live
    * while held, without changing the active conversation or its read state.
@@ -1198,6 +1219,8 @@ export interface HostClient extends TabsClient {
   getSnapshot(): HostSnapshot;
   load(): Promise<void>;
   loadEarlierTranscript(threadId: string): Promise<void>;
+  loadNewerTranscript(threadId: string): Promise<void>;
+  loadMoreOverlays(threadId: string, kind: "requests" | "tools" | "nodes"): Promise<void>;
   /**
    * Takes back one of the reader's own queued messages before any Run picks
    * it up. The snapshot's queue drops it at once; a lost answer is retried

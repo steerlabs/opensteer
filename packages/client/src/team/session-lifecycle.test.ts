@@ -276,7 +276,6 @@ it("keeps Personal and Team attachments alive together with independent durable 
     baseUrl: "http://personal",
     fetch: personalHost.fetch,
     webSocketFactory: personalHost.connect,
-    refreshIntervalMs: 0,
   });
   const teamHost = new MockTeamHost(),
     team = new TeamSessionClient({
@@ -292,7 +291,7 @@ it("keeps Personal and Team attachments alive together with independent durable 
       expect(personal.deploymentPosition()).toBe("0");
       expect(team.getSnapshot().channel?.throughSeq).toBe("0");
     });
-    personalHost.publish([], "47");
+    personalHost.publish("47");
     await team.send({
       channelId: mockTeamChannelId,
       threadRootId: null,
