@@ -98,7 +98,7 @@ function ChooseStep({ device }: { readonly device: ThisDevice }) {
   const submit = (choice: DeviceSetupChoice) => void device.setUp(choice);
   return (
     <SetupFrame
-      description={`It joins ${device.opensteerName} as one of your devices. Your agent keeps running on ${device.homeName} and can reach this Mac for what you leave on.`}
+      description={`Your agent keeps running on ${device.homeName} and can use this Mac for what you turn on.`}
       footer={
         <SetupFooter
           action={
@@ -108,14 +108,14 @@ function ChooseStep({ device }: { readonly device: ThisDevice }) {
               onClick={() => submit({ name: trimmed, access, notifications })}
               type="button"
             >
-              {working ? "Setting up…" : "Continue"}
+              {working ? "Connecting…" : "Connect"}
             </button>
           }
         />
       }
       progress={{ count: 2, index: 0 }}
       stepKey="device-choose"
-      title="Set up this Mac"
+      title={`Connect this Mac to ${device.opensteerName}`}
     >
       <label className="field" htmlFor={nameId}>
         <span className="field__label">Name</span>

@@ -121,7 +121,7 @@ function Shell({ setup }: { readonly setup: Awaited<ReturnType<typeof attach>> }
         bridge={setup.bridge}
         deploymentId={device.deploymentId}
         name={device.opensteerName}
-        onSetUpAgain={device.openSetup}
+        onConnectAgain={device.openSetup}
         unconfirmed={status?.membership?.leaveUnconfirmed === true}
       />
     );
@@ -173,10 +173,10 @@ function button(name: string): HTMLButtonElement {
 it("sets up a new Mac with its switches, binds this session, then walks macOS and Ready", async () => {
   const setup = await attach({ remote: "connect", runnerId: null });
   await render(setup);
-  await waitForText("Set up this Mac", "the setup step");
+  await waitForText("Connect this Mac to", "the setup step");
   const switches = [...container().querySelectorAll<HTMLInputElement>('input[role="switch"]')];
   await act(async () => switches[1]!.click());
-  await act(async () => button("Continue").click());
+  await act(async () => button("Connect").click());
   await waitForText("Let macOS allow it", "the macOS step");
 
   const joined = setup.host
@@ -196,8 +196,8 @@ it("opens the workspace with the fix when Home's Use from anywhere is off, minti
   const setup = await attach({ remote: "off", runnerId: null });
   const before = setup.host.getSnapshot().machines.length;
   await render(setup);
-  await waitForText("Set up this Mac", "the setup step");
-  await act(async () => button("Continue").click());
+  await waitForText("Connect this Mac to", "the setup step");
+  await act(async () => button("Connect").click());
   await waitForText("use-from-anywhere", "the finish-setup cause");
   expect(setup.host.getSnapshot().machines).toHaveLength(before);
   // A reload keeps the workspace and its bar rather than asking again.
@@ -215,11 +215,11 @@ it("finishes a prepared attempt after renderer restart through enrollment instea
   });
   const before = setup.host.getSnapshot().machines.length;
   await render(setup);
-  await waitForText("Finish setting up this Mac", "the recovered setup bar");
+  await waitForText("This Mac isn’t connected yet", "the recovered setup bar");
   expect(setup.host.getSnapshot().machines).toHaveLength(before);
-  await act(async () => button("Finish setup").click());
-  await waitForText("Set up this Mac", "the setup form");
-  await act(async () => button("Continue").click());
+  await act(async () => button("Connect").click());
+  await waitForText("Connect this Mac to", "the setup form");
+  await act(async () => button("Connect").click());
   await waitForText("Let macOS allow it", "real enrollment followed by macOS setup");
   expect(
     setup.host.getSnapshot().machines.find((machine) => machine.id === prepared.runnerId)?.status,
@@ -252,8 +252,8 @@ it("leaves through desktop main and shows the removed screen, which never signs 
     setup.bridge.select({ deploymentId: DeploymentIdSchema.parse(deploymentId) }),
   ).rejects.toThrow("removed");
   // Main must resume authorization before selection can open setup.
-  await act(async () => button("Set up again").click());
-  await waitForText("Set up this Mac", "setup after Set up again");
+  await act(async () => button("Connect again").click());
+  await waitForText("Connect this Mac to", "setup after Connect again");
 });
 
 it("writes a switch against the revision on screen, and shows a newer one instead of overwriting it", async () => {

@@ -308,7 +308,7 @@ export class HostSession implements HostSessionRecovery {
     )
       throw new HostSessionError(
         "blocked",
-        "This device was signed out. Set it up again to reconnect.",
+        "This device was signed out. Connect it again to reconnect.",
       );
   }
 

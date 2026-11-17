@@ -696,6 +696,34 @@ describe("ComputerUseService", () => {
     await expect(second).rejects.toThrow("The database is unavailable");
   });
 
+  it("finishes recording a Stop pressed on the Mac before shutdown returns", async () => {
+    let finish!: () => void;
+    const written = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const recording = vi.fn(() => written);
+    const test = harness({
+      stops: { clear: async () => undefined, initial: [], record: recording },
+    });
+    await observe(test.service, callable, context);
+    const sessionId = test.service.sessionsForRunner(runnerId)[0]?.sessionId;
+    if (!sessionId) throw new Error("The session was not opened.");
+    test.service.handleHelperEvent(runnerId, {
+      event: "session.stopped",
+      params: { reason: "user", sessionId },
+    });
+    expect(recording).toHaveBeenCalledOnce();
+
+    const events: string[] = [];
+    const shutdown = test.service.shutdown().then(() => events.push("shutdown"));
+    // Every task the shutdown could finish on its own runs in this turn.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    events.push("recorded");
+    finish();
+    await shutdown;
+    expect(events).toEqual(["recorded", "shutdown"]);
+  });
+
   it("publishes a change when a session opens and throttles action counts", async () => {
     await observe(test.service, callable, context);
     expect(test.onSessionsChanged).toHaveBeenCalledTimes(1);
@@ -1705,45 +1733,6 @@ describe("display sessions on an Android phone", () => {
     );
     expect([...stops.rows.values()]).toEqual([{ runId: context.runId, runnerId: phoneId }]);
     await test.service.shutdown();
-  });
-
-  it("finishes recording a helper Stop before shutdown and ignores reports during shutdown", async () => {
-    vi.useFakeTimers();
-    const write = Promise.withResolvers<void>();
-    const stops = durableStops();
-    const ledger = stops.ledger();
-    const test = harness({
-      stops: {
-        ...ledger,
-        record: async (runId, deviceId) => {
-          await write.promise;
-          await ledger.record(runId, deviceId);
-        },
-      },
-    });
-    const report = {
-      event: "session.stopped",
-      params: { reason: "user", runId: context.runId, sessionId: mintComputerUseSessionId() },
-    } as const;
-
-    test.service.handleHelperEvent(phoneId, report);
-    const closing = test.service.shutdown();
-    let closed = false;
-    void closing.then(() => {
-      closed = true;
-    });
-    try {
-      await vi.advanceTimersByTimeAsync(0);
-      expect(closed, "Shutdown returned with a Stop write in flight").toBe(false);
-      test.service.handleHelperEvent(runnerId, report);
-    } finally {
-      vi.useRealTimers();
-      write.resolve();
-      await withTimeout(closing, 1_000, {
-        timeoutError: () => new Error("Shutdown never drained the Stop write"),
-      });
-    }
-    expect([...stops.rows.values()]).toEqual([{ runId: context.runId, runnerId: phoneId }]);
   });
 
   it("acknowledges a phone's Stop for a session it still holds once recorded, and again when re-sent", async () => {

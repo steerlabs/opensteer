@@ -223,6 +223,26 @@ describe("team synchronization", () => {
     }
   });
 
+  it("says why a thread could not open, and a newly selected thread starts without that failure", async () => {
+    const f = fixture();
+    try {
+      await f.client.load();
+      await vi.waitFor(() => expect(f.client.getSnapshot().connection).toBe("connected"), {
+        timeout: 1000,
+      });
+      f.client.selectThread(mockTeamChannelId, TeamMessageIdSchema.parse("404"));
+      await vi.waitFor(() => expect(f.client.getSnapshot().error).toBe("Unknown message."), {
+        timeout: 1000,
+      });
+      const root = f.host.post({ channelId: mockTeamChannelId, bodyMarkdown: "root" });
+      f.client.selectThread(mockTeamChannelId, root.id);
+      expect(f.client.getSnapshot().error).toBeNull();
+    } finally {
+      f.client.dispose();
+      f.host.dispose();
+    }
+  });
+
   it("reconciles recipient state across devices, snapshot and resume without inferring from requests", async () => {
     const f = fixture();
     const rootId = TeamMessageIdSchema.parse("1");

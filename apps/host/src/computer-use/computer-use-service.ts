@@ -545,6 +545,8 @@ export class ComputerUseService {
   /** A Runner chooses reported IDs; only an exact Run/Runner/session tuple may share a write. */
   readonly #unrecordedStops = new Map<string, HeldStop>();
   readonly #stopWrites = new Map<string, Promise<void>>();
+  /** Ledger writes nobody awaits; shutdown waits for them so none outlives the Host's database. */
+  readonly #writes = new Set<Promise<unknown>>();
   /** Sessions the Host has let go whose close the Mac has not yet answered. */
   readonly #undeliveredCloses = new Set<Session>();
   readonly #onPlaceActivity: ComputerUseServiceOptions["onPlaceActivity"];
@@ -1700,7 +1702,7 @@ export class ComputerUseService {
     for (const [key, stopped] of this.#unrecordedStops) {
       if (stopped.runId === runId) this.#unrecordedStops.delete(key);
     }
-    void this.#stops.clear(runId).catch(this.#onError);
+    void this.#write(this.#stops.clear(runId)).catch(this.#onError);
     for (const session of this.#snapshot()) {
       if (session.runId !== runId) continue;
       void this.#closeSession(session).catch(() => undefined);
@@ -1777,8 +1779,8 @@ export class ComputerUseService {
     event: ComputerUseHelperEvent,
     route?: DeviceDriverRoute,
   ): void {
-    if (this.#closed || event.event !== "session.stopped") return;
     if (route && !this.#hub.routeCurrent?.(route)) return;
+    if (event.event !== "session.stopped") return;
     const named = this.#snapshot().find(
       (candidate) => candidate.sessionId === event.params.sessionId,
     );
@@ -1894,11 +1896,8 @@ export class ComputerUseService {
     const key = stopReportKey(stop);
     const inFlight = this.#stopWrites.get(key);
     if (inFlight) return inFlight;
-    if (this.#closed)
-      return Promise.reject(new ComputerUseError("failed", "Opensteer is shutting down.", true));
-    const write = this.#stops
-      .record(stop.runId, stop.deviceId)
-      .then(() => {
+    const write = this.#write(
+      this.#stops.record(stop.runId, stop.deviceId).then(() => {
         const recorded = this.#unrecordedStops.get(key);
         if (!recorded) return;
         this.#unrecordedStops.delete(key);
@@ -1911,12 +1910,18 @@ export class ComputerUseService {
             })
             .catch(this.#onError);
         }
-      })
-      .finally(() => {
-        this.#stopWrites.delete(key);
-      });
+      }),
+    ).finally(() => {
+      this.#stopWrites.delete(key);
+    });
     this.#stopWrites.set(key, write);
     return write;
+  }
+
+  #write<T>(work: Promise<T>): Promise<T> {
+    const tracked = work.finally(() => this.#writes.delete(tracked));
+    this.#writes.add(tracked);
+    return tracked;
   }
 
   /**
@@ -2012,13 +2017,13 @@ export class ComputerUseService {
 
   /** The minute tick: sessions nobody is using, approvals nobody answered. */
   sweep(): void {
-    if (this.#closed) return;
     this.sweepIdle();
     for (const session of this.#undeliveredCloses) void this.#deliverClose(session);
     for (const stop of this.#unrecordedStops.values()) {
       void this.#recordStop(stop).catch((error: unknown) => this.#onError(error));
     }
-    void this.#expireSetupRequests?.().catch((error: unknown) => this.#onError(error));
+    if (this.#expireSetupRequests)
+      void this.#write(this.#expireSetupRequests()).catch((error: unknown) => this.#onError(error));
   }
 
   sweepIdle(): void {
@@ -2034,10 +2039,8 @@ export class ComputerUseService {
     this.#closed = true;
     clearInterval(this.#sweep);
     const sessions = [...this.#sessions.values()];
-    await Promise.allSettled([
-      ...this.#stopWrites.values(),
-      ...sessions.map((session) => this.#closeSession(session)),
-    ]);
+    await Promise.allSettled(sessions.map((session) => this.#closeSession(session)));
+    while (this.#writes.size > 0) await Promise.allSettled(this.#writes);
   }
 
   // ---- projection ------------------------------------------------------

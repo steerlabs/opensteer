@@ -18,6 +18,7 @@ import {
 } from "@opensteer/client/integrations";
 import { AccountNotificationDevicesClient } from "@opensteer/client/connections";
 import {
+  buildMobilePairingDeepLink,
   opensteerMobileAccountOAuthCallback,
   opensteerMobileHostOAuthCallback,
   opensteerMobileOAuthClientId,
@@ -32,13 +33,9 @@ import * as SecureStore from "expo-secure-store";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import * as WebBrowser from "expo-web-browser";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { AppState, Dimensions, Platform, StyleSheet, View } from "react-native";
-import {
-  NavigationContainerRefContext,
-  StackActions,
-  type InitialState,
-} from "@react-navigation/native";
+import { NavigationContainerRefContext, type InitialState } from "@react-navigation/native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -66,27 +63,17 @@ import {
   mockFamilyTeamOrigin,
 } from "./client/mock-mode.js";
 import { readMobileConfiguration } from "./config.js";
-import {
-  computerForTeam,
-  resolveApplicationLink,
-  routeComputerLink,
-  routePairingLink,
-} from "./links.js";
+import { resolveRefreshedApplicationLink, routeComputerLink } from "./links.js";
+import { PendingDestination } from "./pending-destination.js";
 import { Navigation, navigationTheme } from "./navigation.js";
 import { sideMemory } from "./side-memory.js";
 import { enterSide, forgetTeamSide, navigationRef } from "./navigation-ref.js";
 import { sidebarRef } from "./sidebar/sidebar-context.js";
 import {
-  agentAuthorizationRoot,
+  applicationLinkState,
   deploymentRoot,
   deploymentsRoot,
-  needsYouRoot,
-  linkedSelectionFailureIsCurrent,
-  selectionMayReconcileLinkedRoot,
   selectionRootTransition,
-  startupRoot,
-  threadRoot,
-  type PairingOffer,
 } from "./navigation-state.js";
 import { MobileNotifications } from "./notifications/mobile-notifications.js";
 import {
@@ -467,343 +454,163 @@ export function App(): ReactNode {
     readonly detail: string;
     readonly title: string;
   } | null>(null);
-  /**
-   * Links can arrive before either storage or the navigator is ready. One URL
-   * waits for storage; after it is validated, one destination waits for the
-   * navigator. Neither can make the catalog flash as an intermediate root.
-   */
-  const waiting = useRef<InitialState | null>(null);
-  const waitingUrl = useRef<string | null>(null);
-  /** A pairing link that arrived before the navigator; it opens over the first stack. */
-  const waitingPairing = useRef<PairingOffer | null>(null);
-  /** A team link that arrived before the navigator; it opens over the first stack. */
-  const waitingTeamLink = useRef<(() => void) | null>(null);
-  const initialized = useRef(false);
-  const observedRootSelection = useRef<string | null | undefined>(undefined);
-  const deferredRootSelection = useRef<string | null | undefined>(undefined);
-  // A Thread or agent link owns the visible stack until its named Deployment becomes
-  // the client's published local selection. A remembered selection may still
-  // be visible briefly while MobileClient serializes an earlier attachment;
-  // letting that stale value reconcile would erase the linked Thread route.
-  const linkedDeployment = useRef<string | null>(null);
-  const linkedSelectionAttempt = useRef(0);
-
-  const applyRootSelection = useCallback((deploymentId: string | null): boolean => {
-    if (!navigationRef.isReady()) return false;
-    const state = navigationRef.getRootState();
-    if (state === undefined) return false;
-    const active = state.routes[state.index];
-    const base = state.routes[0];
-    let baseDeploymentId: string | null = null;
-    if (
-      base?.name === "Home" &&
-      base.params !== undefined &&
-      "deploymentId" in base.params &&
-      typeof base.params.deploymentId === "string"
-    ) {
-      baseDeploymentId = base.params.deploymentId;
-    }
-    const transition = selectionRootTransition({
-      activeRouteName: active?.name ?? null,
-      baseDeploymentId,
-      baseRouteName: base?.name ?? null,
-      deploymentId,
-    });
-    if (transition === "defer") return false;
-    if (transition !== null) navigationRef.resetRoot(transition);
-    return true;
-  }, []);
-
-  const observeRootSelection = useCallback(() => {
-    const selection = client.getSnapshot().selection;
-    if (selection.status !== "ready") return;
-    const linked = linkedDeployment.current;
-    if (
-      !selectionMayReconcileLinkedRoot({
-        linkedDeploymentId: linked,
-        selectionDeploymentId: selection.deploymentId,
-      })
-    ) {
-      observedRootSelection.current = selection.deploymentId;
-      deferredRootSelection.current = undefined;
-      return;
-    }
-    if (linked !== null && linked === selection.deploymentId) {
-      linkedDeployment.current = null;
-      deferredRootSelection.current = undefined;
-    }
-    if (observedRootSelection.current === selection.deploymentId) return;
-    observedRootSelection.current = selection.deploymentId;
-    deferredRootSelection.current = applyRootSelection(selection.deploymentId)
-      ? undefined
-      : selection.deploymentId;
-  }, [applyRootSelection, client]);
-
-  const syncDeferredRootSelection = useCallback(() => {
-    const state = navigationRef.isReady() ? navigationRef.getRootState() : undefined;
-    if (state !== undefined) sideMemory.record(state);
-    const deploymentId = deferredRootSelection.current;
-    if (deploymentId === undefined) return;
-    if (applyRootSelection(deploymentId)) deferredRootSelection.current = undefined;
-  }, [applyRootSelection]);
-
-  /**
-   * The one way into a computer from its Connect code, for an operating-system
-   * link and a scanned code alike. It supersedes every link still waiting, so
-   * an older Thread link cannot take the stack back from it.
-   */
-  const openComputer = useCallback(
-    (id: string): void => {
-      waitingUrl.current = null;
-      waiting.current = null;
-      waitingPairing.current = null;
-      linkedDeployment.current = null;
-      linkedSelectionAttempt.current += 1;
-      deferredRootSelection.current = undefined;
-      observedRootSelection.current = undefined;
-      setLinkFailure(null);
-      client.openComputer(id);
-    },
-    [client],
-  );
-
-  /** A pairing link only ever fills in the pairing form; the person confirms it. */
-  const offerPairing = useCallback(
-    (offer: PairingOffer): void => {
-      if (client.getSnapshot().pendingComputer !== null) client.cancelOpenComputer();
-      setLinkFailure(null);
-      if (!navigationRef.isReady()) {
-        waitingPairing.current = offer;
-        return;
-      }
-      waitingPairing.current = null;
-      navigationRef.navigate("AddPersonal", { code: offer.code, origin: offer.origin });
-    },
-    [client],
+  const destinations = useMemo(
+    () =>
+      new PendingDestination({
+        receive: (url) => {
+          setLinkFailure(null);
+          if (broker.accept(url)) return "callback";
+          // Connect intent must exist before initialization's singleton-computer shortcut.
+          return routeComputerLink(url, (id) => client.openComputer(id));
+        },
+        resolve: async (url, current, release, externalIntent) => {
+          if (parseNativeIntegrationAuthorizationCallback(url) !== null) {
+            release();
+            setIntegrationNotice(null);
+            const result = await client.handleIntegrationAuthorizationCallback(url);
+            if (!current() || result === null) return null;
+            if (result.status === "completed") {
+              await client.getSnapshot().selection.hostClient?.refresh();
+              if (current())
+                setIntegrationNotice({
+                  detail: "The provider account is ready to use.",
+                  title: "Integration connected",
+                });
+            } else {
+              setIntegrationNotice({
+                detail:
+                  integrationAuthorizationError(result.status, result.failureCode) ??
+                  "The provider did not complete authorization. Try again.",
+                title: "Integration was not connected",
+              });
+            }
+            return null;
+          }
+          const outcome = await resolveRefreshedApplicationLink(url, {
+            knownDeployments: async () =>
+              (await client.catalog.load()).deployments.map(
+                ({ authority }) => authority.document.deploymentId,
+              ),
+            refreshDirectory: () => {
+              release();
+              return client.refreshDirectory();
+            },
+          });
+          if (!current() || outcome.kind === "ignore") return null;
+          if (outcome.kind === "unknown-deployment") {
+            setLinkFailure(outcome.detail);
+            return null;
+          }
+          if (outcome.kind === "pairing" && client.getSnapshot().pendingComputer !== null)
+            client.cancelOpenComputer();
+          return applicationLinkState(outcome, {
+            externalIntent,
+            selectedDeploymentId: client.getSnapshot().selection.deploymentId,
+            select: (id) =>
+              client.select(id).catch((error: unknown) => {
+                if (!current()) return;
+                destinations.selectionFailed();
+                setLinkFailure(
+                  operationDetail(
+                    error,
+                    "That deployment could not be opened. You can try again there.",
+                  ),
+                );
+                observeRootSelection();
+              }),
+            teams,
+          });
+        },
+        present: (state) => {
+          sidebarRef.current?.close();
+          const target = state.routes[1];
+          const base = state.routes[0];
+          const shown = navigationRef.getRootState()?.routes[0];
+          if (
+            target !== undefined &&
+            base?.name === "Home" &&
+            shown?.name === "Home" &&
+            base.params &&
+            "deploymentId" in base.params &&
+            shown.params &&
+            "deploymentId" in shown.params &&
+            base.params.deploymentId === shown.params.deploymentId
+          )
+            enterSide({ name: target.name, params: target.params ?? {} });
+          else navigationRef.resetRoot(state);
+        },
+        failed: (error) =>
+          setLinkFailure(
+            operationDetail(error, "That link could not be opened. Try opening it again."),
+          ),
+        settled: () => observeRootSelection(),
+      }),
+    [broker, client, teams],
   );
 
   const appLinks = useMemo<AppLinks>(
-    () => ({ offerPairing, openComputer }),
-    [offerPairing, openComputer],
+    () => ({
+      openComputer: (id) => {
+        void destinations
+          .submit(`com.opensteer.mobile:/open?d=${encodeURIComponent(id)}`)
+          .catch(() => undefined);
+      },
+      offerPairing: (offer) => {
+        void destinations.submit(buildMobilePairingDeepLink(offer)).catch(() => undefined);
+      },
+      captureNavigationIntent: destinations.capture,
+    }),
+    [destinations],
   );
 
-  const handleNavigatorReady = (): void => {
+  const observeRootSelection = useCallback((): void => {
+    const { selection } = client.getSnapshot();
+    if (
+      selection.status !== "ready" ||
+      !navigationRef.isReady() ||
+      !destinations.selectionToReconcile(selection.deploymentId)
+    )
+      return;
+    const state = navigationRef.getRootState();
+    if (state === undefined) return;
+    const base = state.routes[0];
+    const baseId = base?.params && "deploymentId" in base.params ? base.params.deploymentId : null;
+    const transition = selectionRootTransition({
+      activeRouteName: state.routes[state.index]?.name ?? null,
+      baseDeploymentId: typeof baseId === "string" ? baseId : null,
+      baseRouteName: base?.name ?? null,
+      deploymentId: selection.deploymentId,
+    });
+    if (transition === "defer") return;
+    destinations.reconciled(selection.deploymentId);
+    if (transition !== null) navigationRef.resetRoot(transition);
+  }, [client, destinations]);
+
+  const recordNavigation = (): void => {
     const state = navigationRef.getRootState();
     if (state !== undefined) sideMemory.record(state);
-    const destination = waiting.current;
-    if (destination !== null) {
-      waiting.current = null;
-      const target = destination.routes[1];
-      if (target !== undefined) enterSide({ name: target.name, params: target.params ?? {} });
-      else navigationRef.resetRoot(destination);
-    } else {
-      observeRootSelection();
-      syncDeferredRootSelection();
-    }
-    const pairing = waitingPairing.current;
-    if (pairing !== null) offerPairing(pairing);
-    const teamLink = waitingTeamLink.current;
-    waitingTeamLink.current = null;
-    teamLink?.();
+    observeRootSelection();
   };
 
   useEffect(() => {
-    // A build that may not run does not read this device's storage, does not
-    // open a socket and does not register for anything: it says why and stops.
     if (startupRefusal !== null) return;
     const detachBroker = broker.attach((url) => client.oauth.handleCallback(url));
-
-    /**
-     * One reader for everything the scheme delivers. The broker accepts only
-     * this build's two token callbacks; the integration reader requires an
-     * attempt this app started before it can use a return proof; `resolveApplicationLink` accepts
-     * only a Thread or agent-connection link naming a Deployment this phone already holds. Anything else
-     * is dropped, because a link is a destination, never an authority.
-     */
-    let applicationLinkGeneration = 0;
-    const openApplicationLink = async (url: string): Promise<void> => {
-      const generation = applicationLinkGeneration;
-      if (routeComputerLink(url, openComputer)) {
-        setLinkFailure(null);
-        return;
-      }
-      if (parseNativeIntegrationAuthorizationCallback(url) !== null) {
-        setIntegrationNotice(null);
-        const result = await client.handleIntegrationAuthorizationCallback(url);
-        if (result === null) return;
-        if (result.status === "completed") {
-          await client.getSnapshot().selection.hostClient?.refresh();
-          setIntegrationNotice({
-            detail: "The provider account is ready to use.",
-            title: "Integration connected",
-          });
-        } else {
-          setIntegrationNotice({
-            detail:
-              integrationAuthorizationError(result.status, result.failureCode) ??
-              "The provider did not complete authorization. Try again.",
-            title: "Integration was not connected",
-          });
-        }
-        setLinkFailure(null);
-        return;
-      }
-      const catalog = await client.catalog.load();
-      if (generation !== applicationLinkGeneration) return;
-      const outcome = resolveApplicationLink(
-        url,
-        catalog.deployments.map(({ authority }) => authority.document.deploymentId),
-      );
-      if (outcome.kind === "unknown-deployment") {
-        // A link this phone cannot act on is said where the person is. Taking
-        // them to the Deployments list would abandon whatever they were doing
-        // to answer a link that goes nowhere.
-        setLinkFailure(outcome.detail);
-        return;
-      }
-      if (outcome.kind === "ignore") return;
-      if (outcome.kind === "team" || outcome.kind === "team-notice") {
-        setLinkFailure(null);
-        const team = teams.teamAt(outcome.origin);
-        const shown = client.getSnapshot().selection.deploymentId;
-        const move =
-          team === null
-            ? null
-            : computerForTeam({ shown, computersInTeam: teams.computersIn(team.teamId) });
-        if (move !== null) await client.select(move).catch(() => undefined);
-        if (generation !== applicationLinkGeneration) return;
-        const open = (): void => {
-          if (outcome.kind === "team-notice" && team !== null)
-            enterSide({ name: "TeamNotices", params: { teamId: team.teamId } });
-          else if (outcome.kind === "team")
-            navigationRef.dispatch(StackActions.push("JoinTeam", { link: outcome.page }));
-        };
-        if (navigationRef.isReady()) open();
-        else waitingTeamLink.current = open;
-        return;
-      }
-      setLinkFailure(null);
-      const destination =
-        outcome.kind === "authorize-agent"
-          ? agentAuthorizationRoot(outcome.deploymentId, outcome.requestId)
-          : outcome.kind === "needs-you"
-            ? needsYouRoot(outcome.deploymentId)
-            : threadRoot({
-                deploymentId: outcome.deploymentId,
-                threadId: outcome.threadId,
-                // A link that names the exact update opens at it, rather than at
-                // whatever happens to be newest by the time the app gets there.
-                ...(outcome.messageId === undefined ? {} : { messageId: outcome.messageId }),
-                ...(outcome.requestId === null ? {} : { requestId: outcome.requestId }),
-              });
-      linkedDeployment.current = outcome.deploymentId;
-      const selectionAttempt = linkedSelectionAttempt.current + 1;
-      linkedSelectionAttempt.current = selectionAttempt;
-      deferredRootSelection.current = undefined;
-      // Release the old attachment immediately, then let the destination show
-      // the selected Host's honest connecting/offline/sign-in state while its
-      // probe finishes. A dead Host must not hold the launch screen up.
-      void client.select(outcome.deploymentId).catch((error: unknown) => {
-        if (
-          !linkedSelectionFailureIsCurrent({
-            currentAttempt: linkedSelectionAttempt.current,
-            failedAttempt: selectionAttempt,
-            failedDeploymentId: outcome.deploymentId,
-            linkedDeploymentId: linkedDeployment.current,
-          })
-        ) {
-          return;
-        }
-        linkedDeployment.current = null;
-        observedRootSelection.current = undefined;
-        setLinkFailure(
-          operationDetail(error, "That deployment could not be opened. You can try again there."),
-        );
-        observeRootSelection();
-      });
-      if (!navigationRef.isReady()) {
-        waiting.current = destination;
-        return;
-      }
-      sidebarRef.current?.close();
-      const target = destination.routes[1];
-      if (target !== undefined) enterSide({ name: target.name, params: target.params ?? {} });
-      else navigationRef.resetRoot(destination);
-    };
-
-    let waitingNeedsBroker = false;
-    const accept = (url: string): void => {
-      waitingNeedsBroker = false;
-      applicationLinkGeneration += 1;
-      waitingTeamLink.current = null;
-      // OAuth must be delivered immediately even while the catalog is loading.
-      // Thread routing waits because an unloaded catalog cannot say whether the
-      // link names a Deployment this phone holds.
-      broker.accept(url);
-      if (routeComputerLink(url, openComputer) || routePairingLink(url, offerPairing)) {
-        return;
-      }
-      if (!initialized.current) {
-        waitingUrl.current = url;
-        return;
-      }
-      void openApplicationLink(url).catch((error: unknown) => {
-        setLinkFailure(
-          operationDetail(error, "That link could not be read. Try opening it again."),
-        );
-      });
-    };
-
-    let receivedUrl = false;
+    const accept = (url: string): Promise<void> => destinations.submit(url);
     const subscription = Linking.addEventListener("url", ({ url }) => {
-      receivedUrl = true;
-      accept(url);
+      void accept(url).catch(() => undefined);
     });
-
-    /**
-     * A notification tap is the same event as a link: its validated deep link
-     * goes through the one reader above, so a notification can reach exactly
-     * the Threads a typed URL could and nothing it carries is ever an
-     * instruction to act on a Request.
-     */
-    const detachOpened = notifications.onOpened((destination) => {
-      receivedUrl = true;
-      accept(destination.deepLink);
-    });
-
+    const detachOpened = notifications.onOpened(({ deepLink }) => accept(deepLink));
     void Linking.getInitialURL()
-      .then(async (initialUrl) => {
-        // Register intent before startup can take its singleton shortcut.
-        if (!receivedUrl && initialUrl !== null) {
-          if (
-            !routeComputerLink(initialUrl, openComputer) &&
-            !routePairingLink(initialUrl, offerPairing)
-          ) {
-            waitingUrl.current = initialUrl;
-            waitingNeedsBroker = true;
-          }
-        }
+      .then(async (url) => {
+        if (!destinations.received && url !== null) void accept(url).catch(() => undefined);
         await client.initialize();
-        initialized.current = true;
-        // Thread routing needs the hydrated catalog; computer intent was registered above.
-        const url = waitingUrl.current;
-        waitingUrl.current = null;
-        if (url !== null) {
-          if (waitingNeedsBroker) broker.accept(url);
-          await openApplicationLink(url);
-        }
-
+        destinations.hydrated();
         setInitialNavigationState(
-          startupRoot({
-            destination: waiting.current,
-            pairing: waitingPairing.current,
-            selectedDeploymentId: client.getSnapshot().selection.deploymentId,
+          await destinations.initialState(() => {
+            const id = client.getSnapshot().selection.deploymentId;
+            return id === null ? deploymentsRoot() : deploymentRoot(id);
           }),
         );
-        // The initial state already contains these. A later URL can fill the
-        // refs again before onReady and is then applied over this stack.
-        waiting.current = null;
-        waitingPairing.current = null;
         await notifications.start();
       })
       .catch((error: unknown) => {
@@ -812,14 +619,13 @@ export function App(): ReactNode {
           title: "This device's storage did not answer",
         });
       });
-
     return () => {
       subscription.remove();
       detachOpened();
       detachBroker();
       notifications.stop();
     };
-  }, [broker, client, notifications, observeRootSelection, offerPairing, openComputer, teams]);
+  }, [broker, client, destinations, notifications]);
 
   useEffect(() => {
     if (startupRefusal !== null) return;
@@ -886,24 +692,21 @@ export function App(): ReactNode {
   useEffect(() => {
     const sync = (): void => {
       const snapshot = client.getSnapshot();
+      const subject = snapshot.account.account.identity?.subject ?? null;
+      sideMemory.account(subject);
       if (
-        sideMemory.account(snapshot.account.account.identity?.subject ?? null) &&
-        navigationRef.isReady()
+        destinations.account(subject) &&
+        navigationRef.isReady() &&
+        destinations.mayReconcileSelection(snapshot.selection.deploymentId)
       ) {
-        const deploymentId = snapshot.selection.deploymentId;
-        navigationRef.resetRoot(
-          deploymentId === null ? deploymentsRoot() : deploymentRoot(deploymentId),
-        );
+        const id = snapshot.selection.deploymentId;
+        navigationRef.resetRoot(id === null ? deploymentsRoot() : deploymentRoot(id));
       }
+      observeRootSelection();
     };
     sync();
     return client.subscribe(sync);
-  }, [client]);
-
-  useEffect(() => {
-    observeRootSelection();
-    return client.subscribe(observeRootSelection);
-  }, [client, observeRootSelection]);
+  }, [client, destinations, observeRootSelection]);
 
   useEffect(() => {
     if (startupRefusal !== null) return;
@@ -984,8 +787,11 @@ export function App(): ReactNode {
                         <MobileTeamsProvider entry={entry} teams={teams}>
                           <Navigation
                             initialState={initialNavigationState}
-                            onReady={handleNavigatorReady}
-                            onStateChange={syncDeferredRootSelection}
+                            onReady={() => {
+                              destinations.ready();
+                              recordNavigation();
+                            }}
+                            onStateChange={recordNavigation}
                             ref={navigationRef}
                             theme={navigationTheme}
                           />

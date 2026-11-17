@@ -99,6 +99,7 @@
     "apps/desktop/src/signed-helpers/signing-build.ts",
     "apps/desktop/tsconfig.json",
     "apps/desktop/vitest.config.ts",
+    "apps/runner/scripts/build-native-fs.ts",
     "apps/runner/src/attachments/attachment-cache.ts",
     "apps/runner/src/attachments/host-http.ts",
     "apps/runner/src/attachments/run-files.ts",

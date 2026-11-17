@@ -60,7 +60,8 @@
       ],
       "scripts": [
         "scripts/generate-apple-data-contracts.ts",
-        "apps/desktop/src/computer-use/lifecycle-lock-holder.fixture.ts"
+        "apps/desktop/src/computer-use/lifecycle-lock-holder.fixture.ts",
+        "apps/runner/scripts/build-native-fs.ts"
       ],
       "vitest": [
         "tests/helper-data-contracts.test.ts",
@@ -82,7 +83,8 @@
         "packages/runner-auth/fixtures/device-proofs.v1.json",
         "scripts/quarantine-runner.ts",
         "scripts/quarantine.ts",
-        "tests/quarantine.json"
+        "tests/quarantine.json",
+        "apps/runner/native-fs-helper"
       ],
       "lane": true
     },
