@@ -949,22 +949,19 @@ integration.sequential("Shared task Done", () => {
     );
     await setDone(f, true, "done-order-first");
     const page = await store.taskPageForUser({
-      done: true,
-      maxItems: 1,
-      userId: f.userId,
+      window: "done",
+      limit: 1,
+      viewerId: f.userId,
     });
-    expect(page.tasks.map(({ thread }) => thread.id)).toEqual([f.thread.id]);
-    expect(page.window).toMatchObject({
-      hasMore: true,
-      totalItems: 2,
-    });
+    expect(page.tasks.map(({ id }) => id)).toEqual([f.thread.id]);
+    expect(page.hasMore).toBe(true);
     const next = await store.taskPageForUser({
-      before: page.window.nextBefore!,
-      done: true,
-      maxItems: 1,
-      userId: f.userId,
+      before: page.nextBefore!,
+      window: "done",
+      limit: 1,
+      viewerId: f.userId,
     });
-    expect(next.tasks.map(({ thread }) => thread.id)).toEqual([later.id]);
+    expect(next.tasks.map(({ id }) => id)).toEqual([later.id]);
   });
   async function touched(f: Fixture, days: number) {
     await database

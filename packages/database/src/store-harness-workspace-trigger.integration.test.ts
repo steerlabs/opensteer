@@ -1310,7 +1310,10 @@ describeStore("PostgreSQL store", (it) => {
       title: "Inherited access",
     });
     expect(child.thread.accessMode).toBe("auto");
-    const beforeNoChange = await store.deploymentHead();
+    const { sequence: beforeNoChange } = await database
+      .selectFrom("clientSyncState")
+      .select("sequence")
+      .executeTakeFirstOrThrow();
     const noChange = await store.updateThreadAccessMode({
       accessMode: "auto",
       requestedBy: fixture.userId,

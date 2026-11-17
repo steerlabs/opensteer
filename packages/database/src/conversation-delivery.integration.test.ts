@@ -327,7 +327,7 @@ integration.sequential("conversation delivery", () => {
           "run.failed",
           "run.interrupted",
         ].includes(type) &&
-        !committed.wasDuplicate
+        !committed.replayed
       ) {
         const seed = await database
           .selectFrom("messages")
@@ -484,6 +484,7 @@ integration.sequential("conversation delivery", () => {
           requestFingerprint: `hmac-sha256-v1:1:${key}`,
         },
         threadId: f.thread.id,
+        expectedRevision: (await store.requests.revision(requestId as never))!,
         type: "request.respond",
       });
       const claimed = await store.claimCommand(response.command.id, `${f.suffix}-answers`);
@@ -1606,7 +1607,7 @@ integration.sequential("conversation delivery", () => {
     await emit(f, runId, "run.interrupted", { status: "interrupted" });
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      expect(await store.recoverThreadWorkQueues()).toEqual([]);
+      expect(await store.recoverThreadWorkQueues()).toBeUndefined();
       expect((await thread(f)).inputQueuePaused).toBe(true);
       expect(await input(queued.message.id)).toMatchObject({
         runId: null,
@@ -1627,7 +1628,7 @@ integration.sequential("conversation delivery", () => {
       seedInputId: queued.message.id,
       status: "queued",
     });
-    expect(await store.recoverThreadWorkQueues()).toEqual([]);
+    expect(await store.recoverThreadWorkQueues()).toBeUndefined();
     expect(await runsOf(f)).toHaveLength(2);
     await receipt("paused-task-recovery", f);
   });

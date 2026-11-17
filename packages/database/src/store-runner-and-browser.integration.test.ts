@@ -1,5 +1,5 @@
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { lockDeploymentEvents } from "./personal-transaction.js";
+import { lockPersonalSyncState } from "./personal-transaction.js";
 
 import { createId, type ThreadId, type UserId } from "@opensteer/core";
 import {
@@ -131,6 +131,7 @@ describeStore("PostgreSQL store", (it) => {
       runId: turn.run.id,
       sealedResponse: encrypted,
       threadId: thread.id,
+      expectedRevision: (await store.requests.revision(requestId))!,
       type: "request.respond" as const,
     };
     const firstResolution = await store.enqueueRunnerControl(secretControl);
@@ -169,13 +170,15 @@ describeStore("PostgreSQL store", (it) => {
       .where("id", "=", requestId)
       .executeTakeFirstOrThrow();
     expect(JSON.stringify(storedRequest.response)).not.toContain(secretAnswer);
-    const durableEvents = await database
-      .selectFrom("deploymentEvents")
-      .select(["data", "type"])
-      .where("runId", "=", turn.run.id)
+    const changes = await database
+      .selectFrom("clientChanges")
+      .select(["entityId", "operation", "payload"])
+      .where("scopeKey", "=", `thread:${thread.id}`)
       .execute();
-    expect(durableEvents.some((event) => event.type === "request.resolved")).toBe(true);
-    expect(JSON.stringify(durableEvents)).not.toContain(secretAnswer);
+    expect(changes).toContainEqual(
+      expect.objectContaining({ entityId: requestId, operation: "remove" }),
+    );
+    expect(JSON.stringify(changes)).not.toContain(secretAnswer);
     expect(
       await database
         .selectFrom("requests")
@@ -512,7 +515,7 @@ describeStore("PostgreSQL store", (it) => {
       announceDeploymentLock = resolve;
     });
     const blocker = database.transaction().execute(async (transaction) => {
-      await lockDeploymentEvents(transaction);
+      await lockPersonalSyncState(transaction);
       announceDeploymentLock();
       await releaseSignal;
     });
@@ -585,7 +588,7 @@ describeStore("PostgreSQL store", (it) => {
   it("projects a non-retryable dispatch failure exactly once without stranding queued work", async ({
     storeFixture,
   }) => {
-    const { createRunFixture, enqueueHumanTrigger, store, database } = storeFixture;
+    const { createRunFixture, enqueueHumanTrigger, store, database, reactions } = storeFixture;
     const { runnerId, thread, userId } = await createRunFixture("dispatch_failure");
     const turn = await enqueueHumanTrigger({
       content: [
@@ -624,10 +627,7 @@ describeStore("PostgreSQL store", (it) => {
       requestedBy: userId,
       threadId: thread.id,
     });
-    const failure = await store.failCommand(
-      turn.command.id,
-      "The selected AI engine is not available.",
-    );
+    await store.failCommand(turn.command.id, "The selected AI engine is not available.");
     const laterRun = await database
       .selectFrom("runs")
       .selectAll()
@@ -643,51 +643,26 @@ describeStore("PostgreSQL store", (it) => {
       run: laterRun,
       command: laterCommand,
     };
-    expect(failure).toMatchObject([
-      {
-        data: {
-          code: "dispatch_failed",
-          message: "The selected AI engine is not available.",
-          retryable: false,
-          status: "failed",
-        },
-        runId: turn.run.id,
-        type: "run.failed",
-      },
-      {
-        data: {
-          input: {
-            cancelReason: "run-ended-before-start",
-            state: "cancelled",
-          },
-        },
-        runId: turn.run.id,
-        type: "thread-input.updated",
-      },
-      {
-        type: "message.placed",
-        runId: later.run.id,
-      },
-      {
-        type: "run.queued",
-        runId: later.run.id,
-      },
-      // The queued Run hides the failed completion from unread on every device.
-      { type: "thread.state-changed", data: { latestRunCompletedAt: null } },
-      { type: "thread.state-changed", data: { latestRunCompletedAt: null } },
-    ]);
-    await expect(store.failCommand(turn.command.id, "ambiguous retry")).resolves.toEqual([]);
-    expect(JSON.stringify(failure)).not.toContain("top-secret-provider-token");
+    await expect(store.failCommand(turn.command.id, "ambiguous retry")).resolves.toBeUndefined();
     expect(
-      await database
-        .selectFrom("deploymentEvents")
-        .select(({ fn }) => fn.countAll<number>().as("count"))
-        .where("runId", "=", turn.run.id)
-        .where("type", "=", "run.failed")
-        .executeTakeFirstOrThrow(),
-    ).toEqual({
-      count: "1",
+      reactions.filter(
+        (reaction) => reaction.type === "runFinished" && reaction.runId === turn.run.id,
+      ),
+    ).toEqual([expect.objectContaining({ outcome: "failed" })]);
+    const failed = await database
+      .selectFrom("runs")
+      .select(["status", "failure"])
+      .where("id", "=", turn.run.id)
+      .executeTakeFirstOrThrow();
+    expect(failed).toMatchObject({
+      status: "failed",
+      failure: {
+        code: "dispatch_failed",
+        message: "The selected AI engine is not available.",
+        retryable: false,
+      },
     });
+    expect(JSON.stringify(failed)).not.toContain("top-secret-provider-token");
     await expect(
       database
         .selectFrom("runs")
@@ -716,19 +691,7 @@ describeStore("PostgreSQL store", (it) => {
       status: "running",
     });
     await store.claimCommand(later.command.id, "host-worker-retryable-dispatch");
-    const retryEvent = await store.retryCommand(
-      later.command.id,
-      new Error("Runner temporarily offline"),
-    );
-    expect(retryEvent).toMatchObject([
-      {
-        data: {
-          status: "queued",
-        },
-        runId: later.run.id,
-        type: "run.status",
-      },
-    ]);
+    await store.retryCommand(later.command.id, new Error("Runner temporarily offline"));
     await expect(
       database
         .selectFrom("runs")
@@ -748,12 +711,9 @@ describeStore("PostgreSQL store", (it) => {
       status: "pending",
     });
     expect(
-      await database
-        .selectFrom("deploymentEvents")
-        .select("eventId")
-        .where("runId", "=", later.run.id)
-        .where("type", "=", "run.failed")
-        .execute(),
+      reactions.filter(
+        (reaction) => reaction.type === "runFinished" && reaction.runId === later.run.id,
+      ),
     ).toEqual([]);
   });
   it("queues the next work item when the first queued Run fails before Runner start", async ({
@@ -813,16 +773,7 @@ describeStore("PostgreSQL store", (it) => {
       run: null,
     });
     await store.claimCommand(first.command.id, "preclaim-failure-dispatcher");
-    const events = await store.failCommand(first.command.id, "Failed before Runner start");
-    expect(events.map(({ type }) => type)).toEqual([
-      "run.failed",
-      "thread-input.updated",
-      "thread-input.updated",
-      "message.placed",
-      "run.queued",
-      "thread.state-changed",
-      "thread.state-changed",
-    ]);
+    await store.failCommand(first.command.id, "Failed before Runner start");
     await expect(
       database
         .selectFrom("runs")
@@ -854,7 +805,7 @@ describeStore("PostgreSQL store", (it) => {
   it("commits one terminal outcome when dispatch failure races a Runner terminal event", async ({
     storeFixture,
   }) => {
-    const { createRunFixture, enqueueHumanTrigger, store, database } = storeFixture;
+    const { createRunFixture, enqueueHumanTrigger, store, database, reactions } = storeFixture;
     const { environmentId, runnerId, thread, userId } =
       await createRunFixture("dispatch_failure_race");
     const turn = await enqueueHumanTrigger({
@@ -915,22 +866,18 @@ describeStore("PostgreSQL store", (it) => {
       store.failCommand(turn.command.id, "Dispatch failed concurrently"),
     ]);
     expect(outcomes[1]?.status).toBe("fulfilled");
-    const terminalEvents = await database
-      .selectFrom("deploymentEvents")
-      .select("type")
-      .where("runId", "=", turn.run.id)
-      .where("type", "in", ["run.completed", "run.failed"])
-      .execute();
+    const terminalEvents = reactions.filter(
+      (reaction) =>
+        reaction.type === "runFinished" && !reaction.attemptOnly && reaction.runId === turn.run.id,
+    );
     expect(terminalEvents).toHaveLength(1);
     const run = await database
       .selectFrom("runs")
       .select("status")
       .where("id", "=", turn.run.id)
       .executeTakeFirstOrThrow();
-    expect([
-      ["run.completed", "completed"],
-      ["run.failed", "failed"],
-    ]).toContainEqual([terminalEvents[0]?.type, run.status]);
+    expect(["completed", "failed"]).toContain(run.status);
+    expect(terminalEvents[0]).toMatchObject({ outcome: run.status });
   });
   it("fails active Runs only for the exact disconnected Runner boot", async ({ storeFixture }) => {
     const { createRunFixture, enqueueHumanTrigger, store, database } = storeFixture;
@@ -1016,7 +963,6 @@ describeStore("PostgreSQL store", (it) => {
         runnerId,
       }),
     ).resolves.toEqual({
-      events: [],
       terminatedRuns: [],
     });
     await expect(
@@ -1026,7 +972,6 @@ describeStore("PostgreSQL store", (it) => {
         runnerId,
       }),
     ).resolves.toEqual({
-      events: [],
       terminatedRuns: [],
     });
     const recovered = await store.failActiveRunsForRunnerDisconnect({
@@ -1041,14 +986,15 @@ describeStore("PostgreSQL store", (it) => {
         threadId: thread.id,
       },
     ]);
-    expect(recovered.events[0]).toMatchObject({
-      data: {
-        code: "runner_disconnected",
-        retryable: false,
-        status: "failed",
-      },
-      runId: turn.run.id,
-      type: "run.failed",
+    expect(
+      await database
+        .selectFrom("runs")
+        .select(["failure", "status"])
+        .where("id", "=", turn.run.id)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({
+      status: "failed",
+      failure: { code: "runner_disconnected", retryable: false },
     });
     const lateCancellation = await store.commitRunnerEvent({
       environmentId,
@@ -1067,7 +1013,7 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId: "boot-disconnect-recovery",
       runnerId,
     });
-    expect(lateCancellation.wasDuplicate).toBe(true);
+    expect(lateCancellation).toMatchObject({ replayed: false, throughOrdinal: 2 });
     const lateTerminal = await store.commitRunnerEvent({
       environmentId,
       event: pendingEvent({
@@ -1084,7 +1030,7 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId: "boot-disconnect-recovery",
       runnerId,
     });
-    expect(lateTerminal.wasDuplicate).toBe(true);
+    expect(lateTerminal).toMatchObject({ replayed: false, throughOrdinal: 3 });
     await expect(
       store.failActiveRunsForRunnerDisconnect({
         activeRunIds: [turn.run.id],
@@ -1092,7 +1038,6 @@ describeStore("PostgreSQL store", (it) => {
         runnerId,
       }),
     ).resolves.toEqual({
-      events: [],
       terminatedRuns: [],
     });
     expect(
@@ -1123,23 +1068,19 @@ describeStore("PostgreSQL store", (it) => {
     ).resolves.toMatchObject({
       status: "broken",
     });
-    await expect(
-      database
-        .selectFrom("deploymentEvents")
-        .select(["runnerBindingGeneration", "runnerBootId", "runnerId", "runnerOrdinal"])
-        .where("eventId", "=", recovered.events[0]!.eventId)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({
-      runnerBindingGeneration: null,
-      runnerBootId: null,
-      runnerId: null,
-      runnerOrdinal: null,
-    });
+    expect(
+      await database
+        .selectFrom("runnerEventReceipts")
+        .select("ordinal")
+        .where("runId", "=", turn.run.id)
+        .orderBy("ordinal")
+        .execute(),
+    ).toEqual([0, 1, 2, 3].map((ordinal) => ({ ordinal: String(ordinal) })));
   });
   it("recovers what a replaced Runner boot left, and fences a racing terminal outcome", async ({
     storeFixture,
   }) => {
-    const { createRunFixture, enqueueHumanTrigger, store, database } = storeFixture;
+    const { createRunFixture, enqueueHumanTrigger, store, database, reactions } = storeFixture;
     const { environmentId, runnerId, thread, userId } = await createRunFixture("restart_recovery");
     const abandoned = await enqueueHumanTrigger({
       content: [
@@ -1183,18 +1124,22 @@ describeStore("PostgreSQL store", (it) => {
         runnerBootId,
         runnerId,
       });
-    const startupEvents = (await attachAfterRestart("boot-after-restart")).events;
-    expect(startupEvents).toContainEqual(
+    await attachAfterRestart("boot-after-restart");
+    expect(reactions).toContainEqual(
       expect.objectContaining({
-        data: expect.objectContaining({
-          reason: "recovery",
-          attempt: 2,
-        }),
+        type: "runChanged",
         runId: abandoned.run.id,
-        type: "run.restarted",
+        transition: "restarted",
       }),
     );
-    expect(startupEvents.some((event) => event.type === "run.failed")).toBe(false);
+    expect(
+      reactions.filter(
+        (reaction) =>
+          reaction.type === "runFinished" &&
+          !reaction.attemptOnly &&
+          reaction.runId === abandoned.run.id,
+      ),
+    ).toEqual([]);
     await expect(
       database
         .selectFrom("runs")
@@ -1304,22 +1249,20 @@ describeStore("PostgreSQL store", (it) => {
       attachAfterRestart("boot-after-second-restart"),
     ]);
     expect(outcomes[1]?.status).toBe("fulfilled");
-    const terminalEvents = await database
-      .selectFrom("deploymentEvents")
-      .select(["type"])
-      .where("runId", "=", racing.run.id)
-      .where("type", "in", ["run.completed", "run.failed"])
-      .execute();
+    const terminalEvents = reactions.filter(
+      (reaction) =>
+        reaction.type === "runFinished" &&
+        !reaction.attemptOnly &&
+        reaction.runId === racing.run.id,
+    );
     expect(terminalEvents).toHaveLength(1);
     const run = await database
       .selectFrom("runs")
       .select("status")
       .where("id", "=", racing.run.id)
       .executeTakeFirstOrThrow();
-    expect([
-      ["run.completed", "completed"],
-      ["run.failed", "failed"],
-    ]).toContainEqual([terminalEvents[0]?.type, run.status]);
+    expect(["completed", "failed"]).toContain(run.status);
+    expect(terminalEvents[0]).toMatchObject({ outcome: run.status });
   });
   it("lists the owner's tasks and bounds messages while rejecting another person", async ({
     storeFixture: f,
@@ -1341,7 +1284,7 @@ describeStore("PostgreSQL store", (it) => {
         requestedBy: task.userId,
         threadId: child.id,
         idempotencyKey: `coordination-${i}`,
-        policy: "queue",
+        policy: "report",
         source: { kind: "human" },
         content: [{ type: "text", text: `Message ${i}` }],
       });
@@ -1676,7 +1619,6 @@ describeStore("PostgreSQL store", (it) => {
     await expect(store.revokeRunner(localRunnerId, ownerId)).resolves.toMatchObject({
       endedSessionIds: [],
       closedBrowserSessions: [],
-      events: [],
     });
     expect(
       await database

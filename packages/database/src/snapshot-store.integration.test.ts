@@ -343,11 +343,16 @@ describeStore("Deployment snapshot history", (it) => {
       })
       .where("id", "=", child.assignment.id)
       .execute();
+    await store.drainAssignmentReturn(child.assignment.id);
     expect(
-      (await store.drainAssignmentReturn(child.assignment.id)).some(
-        ({ type }) => type === "message.created",
-      ),
-    ).toBe(true);
+      await database
+        .selectFrom("delegations")
+        .select("resultMessageId")
+        .where("id", "=", child.assignment.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({
+      resultMessageId: expect.any(String),
+    });
     await unchanged();
     await store.enqueueThreadInput({
       content: [

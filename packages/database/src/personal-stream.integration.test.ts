@@ -168,7 +168,7 @@ test.each(["feed", "receipt"] as const)(
         );
       const table = sql.ref(failure === "feed" ? "client_changes" : "runner_event_receipts");
       const assertion = failure === "feed" ? sql`entity_kind <> 'item'` : sql`ordinal <> 1`;
-      await sql`alter table ${table} add constraint fixture_reject_commit check (${assertion})`.execute(
+      await sql`alter table ${table} add constraint fixture_reject_commit check (${assertion}) not valid`.execute(
         database,
       );
       await expect(write()).rejects.toThrow("fixture_reject_commit");
@@ -178,10 +178,16 @@ test.each(["feed", "receipt"] as const)(
       expect(await database.selectFrom("personalAttention").select("id").execute()).toEqual([]);
       expect(await database.selectFrom("toolCalls").select("id").execute()).toEqual([]);
       expect(await database.selectFrom("toolOutputImages").select("id").execute()).toEqual([]);
-      expect(await database.selectFrom("transcriptItems").select("id").execute()).toEqual([]);
-      expect(await database.selectFrom("runnerEventReceipts").select("ordinal").execute()).toEqual(
-        [],
-      );
+      expect(
+        await database
+          .selectFrom("transcriptItems")
+          .select("id")
+          .where("kind", "in", ["tool", "request"])
+          .execute(),
+      ).toEqual([]);
+      expect(await database.selectFrom("runnerEventReceipts").select("ordinal").execute()).toEqual([
+        { ordinal: "0" },
+      ]);
       expect(
         await database
           .selectFrom("runs")
@@ -310,6 +316,7 @@ test("commits provisional and final tool statements once while retaining one car
     const original = await database
       .selectFrom("transcriptItems")
       .select(["id", "position", "createdAt"])
+      .where("kind", "=", "tool")
       .executeTakeFirstOrThrow();
     expect(await write(first)).toEqual({ throughOrdinal: 1, replayed: true });
     await expect(
@@ -324,6 +331,7 @@ test("commits provisional and final tool statements once while retaining one car
       await database
         .selectFrom("transcriptItems")
         .select(["id", "position", "createdAt"])
+        .where("kind", "=", "tool")
         .execute(),
     ).toEqual([original]);
     const call = await database

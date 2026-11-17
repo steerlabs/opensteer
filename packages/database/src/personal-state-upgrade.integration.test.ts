@@ -8,7 +8,7 @@ import {
   migrationProvider,
   personalCurrentStateMigrationName,
 } from "./migrations.js";
-import { applyPersonalStateSchema } from "./personal-state-schema.js";
+import { preparePersonalConversion } from "./personal-state.test-support.js";
 import { finishPersonalStateUpgrade } from "./personal-state-upgrade.js";
 import type { DatabaseSchema } from "./schema.js";
 import { createStoreFixture, pendingEvent } from "./store.integration.test-support.js";
@@ -35,12 +35,18 @@ test.each(["empty", "personal", "team"] as const)(
     const fixture = await cloneTestDatabase("host");
     const database = createDatabase({ connectionString: fixture.url });
     try {
-      if (kind !== "empty")
-        await ensureDeployment(database, {
-          canonicalOrigin: "https://fixture.example.invalid",
-          hostInstanceId: createId("hostInstance"),
-          deploymentShape: { kind },
-        });
+      await sql`drop schema public cascade; create schema public`.execute(database);
+      await migrateToLatest(database, migrationProvider({ personalCurrentState: false }));
+      if (kind !== "empty") {
+        const id = createId("deployment");
+        await sql`insert into deployments (id,singleton_key,active_host_instance_id,canonical_origin,lifecycle,deployment_shape)
+          values (${id},'primary',${createId("hostInstance")},'https://fixture.example.invalid','active',
+            jsonb_build_object('kind',${kind}::text))`.execute(database);
+        if (kind === "personal")
+          await sql`insert into deployment_event_state(deployment_id) values (${id})`.execute(
+            database,
+          );
+      }
       const lineage = migrationProvider({ personalCurrentState: true });
       await Promise.all([migrateToLatest(database, lineage), migrateToLatest(database, lineage)]);
       const applied = await sql<{ name: string }>`select name from kysely_migration
@@ -65,7 +71,6 @@ test.each(["empty", "personal", "team"] as const)(
           canonicalOrigin: "https://fresh-fixture.example.invalid",
           hostInstanceId: createId("hostInstance"),
           deploymentShape: { kind: "personal" },
-          personalCurrentState: true,
         });
         const sync = await sql`select deployment_id, epoch, ready, sequence,
           pruned_through_sequence, retained_change_count, pending_request_count, needs_you_count,
@@ -161,6 +166,7 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
       }),
     });
 
+    await preparePersonalConversion(database, 905);
     const imagePath = "/disposable-fixture/screenshot.png";
     await sql`delete from deployment_events`.execute(database);
     const identity = { callId: "legacy-test", tool: { namespace: "native", name: "image" } };
@@ -217,9 +223,6 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
       select ${active.deploymentId},seq,'evt_fixture_'||seq,${active.threadId},${active.runId},${active.environmentId},
         'message.created',jsonb_build_object('message',jsonb_build_object('id',${prompt.id}::text))
       from generate_series(12,525) seq`.execute(database);
-    await sql`update deployment_event_state set sequence=905`.execute(database);
-
-    await database.transaction().execute(applyPersonalStateSchema);
     for (const boundary of ["settle", "message", "ledger", "verify", "finalize"] as const) {
       await expect(
         finishPersonalStateUpgrade(database, {
@@ -342,8 +345,12 @@ test.each(["missing card", "invalid preview"] as const)(
     const fixture = await createStoreFixture();
     const { database } = fixture;
     try {
-      const { threadId } = await fixture.startRunFixture("migration-parity");
-      await database.transaction().execute(applyPersonalStateSchema);
+      const { deploymentId, threadId } = await fixture.startRunFixture("migration-parity");
+      await preparePersonalConversion(database, 1);
+      await sql`insert into deployment_events (deployment_id,sequence,event_id,thread_id,type,data)
+        values (${deploymentId},1,${createId("event")},${threadId},'thread.created','{}')`.execute(
+        database,
+      );
 
       const stopBeforeVerify = new Error("Stop before verification");
       await expect(
@@ -415,7 +422,7 @@ test("conversion rebuilds pending Requests without moving an idle task into Acti
         },
       })
       .execute();
-    await database.transaction().execute(applyPersonalStateSchema);
+    await preparePersonalConversion(database);
     await finishPersonalStateUpgrade(database);
     expect(
       await database
@@ -447,7 +454,7 @@ test("resumes offline settlement of a Run with a large live node set", async () 
       from run_attempts cross join generate_series(1,140) n where run_id=${run.runId} and status='current'`.execute(
       database,
     );
-    await database.transaction().execute(applyPersonalStateSchema);
+    await preparePersonalConversion(database);
     const stopped = new Error("Stop after the first node batch");
     await expect(
       finishPersonalStateUpgrade(database, {
@@ -479,12 +486,13 @@ test("the current-state lineage refuses a team database with a private legacy fe
   const fixture = await cloneTestDatabase("host");
   const database = createDatabase({ connectionString: fixture.url });
   try {
-    const team = await ensureDeployment(database, {
-      canonicalOrigin: "https://team-fixture.example.invalid",
-      hostInstanceId: createId("hostInstance"),
-      deploymentShape: { kind: "team" },
-    });
-    await sql`insert into deployment_event_state (deployment_id) values (${team.id})`.execute(
+    await sql`drop schema public cascade; create schema public`.execute(database);
+    await migrateToLatest(database, migrationProvider({ personalCurrentState: false }));
+    const teamId = createId("deployment");
+    await sql`insert into deployments (id,singleton_key,active_host_instance_id,canonical_origin,lifecycle,deployment_shape)
+      values (${teamId},'primary',${createId("hostInstance")},'https://fixture.example.invalid','active','{"kind":"team"}');
+    `.execute(database);
+    await sql`insert into deployment_event_state(deployment_id) values (${teamId})`.execute(
       database,
     );
     await expect(

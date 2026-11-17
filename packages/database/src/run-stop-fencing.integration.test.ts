@@ -225,7 +225,7 @@ integration.sequential("Run stop fencing", () => {
       });
       return request;
     }
-    function answer(f: Fixture, runId: RunId, requestId: RequestId, key: string) {
+    async function answer(f: Fixture, runId: RunId, requestId: RequestId, key: string) {
       return store.enqueueRunnerControl({
         idempotencyKey: `answer-${key}`,
         requestId,
@@ -241,6 +241,7 @@ integration.sequential("Run stop fencing", () => {
           requestFingerprint: `hmac-sha256-v1:1:${key}`,
         },
         threadId: f.thread.id,
+        expectedRevision: (await store.requests.revision(requestId))!,
         type: "request.respond",
       });
     }

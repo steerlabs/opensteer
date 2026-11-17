@@ -1,5 +1,5 @@
+import { readTranscriptPage } from "./personal-sync-store.js";
 import { jsonValue } from "./store-primitives.js";
-import { readEmptyPersonalResources } from "./store.integration.test-support.js";
 import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
 
 import {
@@ -57,9 +57,7 @@ integration.sequential("thread input queue promotion", () => {
         close: () => database.destroy(),
       };
     });
-    const store = new OpensteerStore(database, {
-      readPersonalResources: readEmptyPersonalResources,
-    });
+    const store = new OpensteerStore(database, {});
     const attachments = new AttachmentStore(database);
     async function fixture(suffix: string) {
       const personal = await personalFixtureOwner(database, databaseUrl);
@@ -259,12 +257,13 @@ integration.sequential("thread input queue promotion", () => {
         .orderBy("sequence", "asc")
         .execute();
     }
-    async function threadEvents(f: Awaited<ReturnType<typeof fixture>>) {
-      const page = await store.threadEventPageForOwner({
-        ownerId: f.userId,
-        threadId: f.thread.id,
+    async function threadItems(f: Awaited<ReturnType<typeof fixture>>) {
+      const page = await readTranscriptPage(database, {
+        viewerId: f.userId,
+        scope: { kind: "thread", threadId: f.thread.id },
       });
-      return page?.events ?? [];
+      if (page.kind !== "page") throw new Error("Expected thread page");
+      return page.items;
     }
     async function enrollRunner(input: {
       environmentId: EnvironmentId;
@@ -327,7 +326,7 @@ integration.sequential("thread input queue promotion", () => {
       assistantReply,
       queuedRunSeed,
       messageSequences,
-      threadEvents,
+      threadItems,
       enrollRunner,
       databaseUrl,
     });
@@ -822,6 +821,7 @@ integration.sequential("thread input queue promotion", () => {
     const answered = await ask("voice-answered");
     await ask("voice-unanswered");
     await store.requests.resolveBrowserRequest({
+      expectedRevision: (await store.requests.revision(answered.request.id))!,
       requestId: answered.request.id,
       resolvedBy: f.ownerId,
       response: {
@@ -1610,19 +1610,6 @@ integration.sequential("thread input queue promotion", () => {
     };
     const cancelled = await store.cancelThreadInput(request);
     expect(cancelled).toMatchObject({
-      events: [
-        {
-          data: {
-            input: {
-              cancelReason: "withdrawn",
-              state: "cancelled",
-            },
-          },
-          runId: null,
-          threadId: f.thread.id,
-          type: "thread-input.updated",
-        },
-      ],
       input: {
         cancelReason: "withdrawn",
         messageId: accepted.message.id,
@@ -1648,7 +1635,6 @@ integration.sequential("thread input queue promotion", () => {
       items: [],
     });
     await expect(store.cancelThreadInput(request)).resolves.toMatchObject({
-      events: [],
       input: {
         cancelReason: "withdrawn",
         state: "cancelled",
@@ -1926,10 +1912,10 @@ integration.sequential("thread input queue promotion", () => {
       steerCommandId: null,
     });
   });
-  it("omits a withdrawn message from the Workspace snapshot but keeps it in the ledger", async ({
+  it("hides withdrawn and unassigned inputs while retaining their canonical messages", async ({
     storeFixture,
   }) => {
-    const { fixture, queued, store } = storeFixture;
+    const { fixture, queued, store, database } = storeFixture;
     const f = await fixture("snapshot");
     const withdrawn = await queued(f, "snapshot-withdrawn");
     const kept = await queued(f, "snapshot-kept");
@@ -1939,42 +1925,31 @@ integration.sequential("thread input queue promotion", () => {
       requestedBy: f.userId,
       threadId: f.thread.id,
     });
-    const snapshot = await store.deploymentSnapshot();
-    expect(snapshot.messages.map(({ id }) => id)).toEqual([f.initial.message.id, kept.message.id]);
-    expect(snapshot.messageWindows).toMatchObject([
-      {
-        hasMore: false,
-        itemCount: 2,
-        nextBefore: null,
-        threadId: f.thread.id,
-        totalItems: 2,
-      },
-    ]);
-    const ledger = await store.threadEventPageForOwner({
-      ownerId: f.userId,
-      threadId: f.thread.id,
+    const page = await readTranscriptPage(database, {
+      viewerId: f.userId,
+      scope: { kind: "thread", threadId: f.thread.id },
     });
-    expect(ledger?.events).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          data: expect.objectContaining({
-            message: expect.objectContaining({
-              id: withdrawn.message.id,
-            }),
-          }),
-          type: "message.created",
-        }),
-        expect.objectContaining({
-          data: {
-            input: expect.objectContaining({
-              cancelReason: "withdrawn",
-              messageId: withdrawn.message.id,
-              state: "cancelled",
-            }),
-          },
-          type: "thread-input.updated",
-        }),
-      ]),
+    if (page.kind !== "page") throw new Error("Expected thread page");
+    expect(page.items.filter(({ kind }) => kind === "message").map(({ id }) => id)).toEqual([
+      f.initial.message.id,
+    ]);
+    expect(page.hasMore).toBe(false);
+    expect(
+      await database
+        .selectFrom("threadInputs")
+        .select(["state", "cancelReason"])
+        .where("messageId", "=", withdrawn.message.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "cancelled", cancelReason: "withdrawn" });
+    expect(
+      await database
+        .selectFrom("messages")
+        .select(["id", "published"])
+        .where("id", "in", [withdrawn.message.id, kept.message.id])
+        .orderBy("id")
+        .execute(),
+    ).toEqual(
+      [withdrawn.message.id, kept.message.id].sort().map((id) => ({ id, published: false })),
     );
   });
 
@@ -2003,14 +1978,6 @@ integration.sequential("thread input queue promotion", () => {
     await expect(order(f)).resolves.toEqual([a.message.id, b.message.id, c.message.id]);
     const moved = await move(f, c.message.id, a.message.id, "move-arrange-1");
     expect(moved).toMatchObject({
-      events: [
-        {
-          data: {
-            paused: false,
-          },
-          type: "thread.input-queue-updated",
-        },
-      ],
       wasDuplicate: false,
     });
     await expect(order(f)).resolves.toEqual([c.message.id, a.message.id, b.message.id]);
@@ -2320,7 +2287,6 @@ integration.sequential("thread input queue promotion", () => {
     await move(f, b.message.id, null, "move-replay-2");
     await expect(order(f)).resolves.toEqual([a.message.id, b.message.id]);
     await expect(move(f, b.message.id, a.message.id, "move-replay-1")).resolves.toMatchObject({
-      events: [],
       wasDuplicate: true,
     });
     await expect(order(f)).resolves.toEqual([a.message.id, b.message.id]);
@@ -2398,7 +2364,7 @@ integration.sequential("thread input queue promotion", () => {
       complete,
       queuedRunSeed,
       messageSequences,
-      threadEvents,
+      threadItems,
       database,
       store,
     } = storeFixture;
@@ -2416,30 +2382,20 @@ integration.sequential("thread input queue promotion", () => {
       reply,
       b.message.id,
     ]);
-    const events = await threadEvents(f);
-    const placedAt = events.findIndex(
-      (event) => event.type === "message.placed" && event.data.message.id === b.message.id,
-    );
-    expect(events[placedAt]).toMatchObject({
-      data: {
-        message: {
-          id: b.message.id,
-          sequence: sequences.at(-1)!.sequence,
-        },
-      },
-    });
-    expect(
-      events.some(
-        (event) => event.type === "message.placed" && event.data.message.id === a.message.id,
-      ),
-    ).toBe(false);
-    // Placement precedes the Run it seeds, so a reader sees the message first.
-    expect(placedAt).toBe(events.findLastIndex((event) => event.type === "run.queued") - 1);
+    const items = await threadItems(f);
+    expect(items.filter(({ kind }) => kind === "message").map(({ id }) => id)).toEqual([
+      f.initial.message.id,
+      reply,
+      b.message.id,
+    ]);
+    const placedAt = items.findIndex(({ id }) => id === b.message.id);
+    expect(items[placedAt]).toMatchObject({ kind: "message", isTurnStart: true });
     const seededRun = await database
       .selectFrom("runs")
       .select("id")
       .where("seedInputId", "=", b.message.id)
       .executeTakeFirstOrThrow();
+    expect(items[placedAt + 1]).toMatchObject({ kind: "run", runId: seededRun.id });
     const command = await database
       .selectFrom("commands")
       .select("id")
@@ -2466,11 +2422,11 @@ integration.sequential("thread input queue promotion", () => {
     });
   });
   it("places a steered message where the running turn takes it", async ({ storeFixture }) => {
-    const { fixture, queued, assistantReply, store, messageSequences, threadEvents } = storeFixture;
+    const { fixture, queued, assistantReply, store, messageSequences, threadItems } = storeFixture;
     const f = await fixture("placed-steer");
     const a = await queued(f, "placed-steer");
     const reply = await assistantReply(f, 1);
-    await store.steerThreadInput({
+    const steer = await store.steerThreadInput({
       expectedRunId: f.initial.run!.id,
       idempotencyKey: "steer-placed",
       messageId: a.message.id,
@@ -2479,15 +2435,15 @@ integration.sequential("thread input queue promotion", () => {
     });
     const sequences = await messageSequences(f);
     expect(sequences.map(({ id }) => id)).toEqual([f.initial.message.id, reply, a.message.id]);
-    await expect(threadEvents(f)).resolves.toContainEqual(
+    expect((await threadItems(f)).map(({ id }) => id)).not.toContain(a.message.id);
+    expect(steer.command).not.toBeNull();
+    await store.claimCommand(steer.command!.id, "placed-steer-dispatcher");
+    await store.succeedCommand(steer.command!.id);
+    await expect(threadItems(f)).resolves.toContainEqual(
       expect.objectContaining({
-        data: {
-          message: expect.objectContaining({
-            id: a.message.id,
-            runId: f.initial.run!.id,
-          }),
-        },
-        type: "message.placed",
+        kind: "message",
+        messageId: a.message.id,
+        runId: f.initial.run!.id,
       }),
     );
   });

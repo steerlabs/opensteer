@@ -387,6 +387,13 @@ describeStore("PostgreSQL store", (it) => {
           ).rows.some(({ query }) => query.includes('from "runs"')),
         )
         .toBe(true);
+      expect(
+        await database
+          .selectFrom("delegations")
+          .select(["status", "cancellationRootId"])
+          .where("id", "=", delegated.assignment.id)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ status: "cancelled", cancellationRootId: delegated.assignment.id });
       finish.resolve();
       await worker;
       await cancellation;

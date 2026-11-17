@@ -49,7 +49,7 @@ describe("ExecutionCoordinator", () => {
     async (scope) => {
       const command = pendingCommand();
       const dispatch = vi.fn(async () => undefined);
-      const failCommand = vi.fn(async () => []);
+      const failCommand = vi.fn(async () => undefined);
       const coordinator = new ExecutionCoordinator({
         dispatcher: {
           dispatch,
@@ -77,8 +77,8 @@ describe("ExecutionCoordinator", () => {
           })),
           failCommand,
           listPendingCommands: vi.fn().mockResolvedValueOnce([command]).mockResolvedValue([]),
-          markSteerUnknown: vi.fn(async () => []),
-          retryCommand: vi.fn(async () => []),
+          markSteerUnknown: vi.fn(async () => undefined),
+          retryCommand: vi.fn(async () => undefined),
         },
       });
       coordinator.start();
@@ -182,13 +182,13 @@ describe("ExecutionCoordinator", () => {
       .fn<ExecutionCoordinatorStore["claimCommand"]>()
       .mockRejectedValueOnce(new Error("transient database lock failure"))
       .mockResolvedValueOnce(dispatched);
-    const failCommand = vi.fn(async () => []);
+    const failCommand = vi.fn(async () => undefined);
     const listPendingCommands = vi
       .fn<ExecutionCoordinatorStore["listPendingCommands"]>()
       .mockResolvedValueOnce([command])
       .mockResolvedValueOnce([command])
       .mockResolvedValue([]);
-    const retryCommand = vi.fn(async () => []);
+    const retryCommand = vi.fn(async () => undefined);
     const dispatch = vi.fn(async () => undefined);
     const coordinator = new ExecutionCoordinator({
       dispatcher: {
@@ -205,7 +205,7 @@ describe("ExecutionCoordinator", () => {
         claimCommand,
         failCommand,
         listPendingCommands,
-        markSteerUnknown: vi.fn(async () => []),
+        markSteerUnknown: vi.fn(async () => undefined),
         retryCommand,
       },
     });
@@ -255,10 +255,10 @@ describe("ExecutionCoordinator", () => {
       pollIntervalMs: 10_000,
       store: {
         claimCommand,
-        failCommand: vi.fn(async () => []),
+        failCommand: vi.fn(async () => undefined),
         listPendingCommands: vi.fn().mockResolvedValueOnce([first, second]).mockResolvedValue([]),
-        markSteerUnknown: vi.fn(async () => []),
-        retryCommand: vi.fn(async () => []),
+        markSteerUnknown: vi.fn(async () => undefined),
+        retryCommand: vi.fn(async () => undefined),
       },
     });
     coordinator.start();
@@ -304,13 +304,13 @@ describe("ExecutionCoordinator", () => {
       pollIntervalMs: 10_000,
       store: {
         claimCommand,
-        failCommand: vi.fn(async () => []),
+        failCommand: vi.fn(async () => undefined),
         listPendingCommands: vi
           .fn()
           .mockResolvedValueOnce([run, triggerProgram])
           .mockResolvedValue([]),
-        markSteerUnknown: vi.fn(async () => []),
-        retryCommand: vi.fn(async () => []),
+        markSteerUnknown: vi.fn(async () => undefined),
+        retryCommand: vi.fn(async () => undefined),
       },
     });
     coordinator.start();
@@ -364,10 +364,10 @@ describe("ExecutionCoordinator", () => {
       pollIntervalMs: 10_000,
       store: {
         claimCommand,
-        failCommand: vi.fn(async () => []),
+        failCommand: vi.fn(async () => undefined),
         listPendingCommands: vi.fn().mockResolvedValueOnce([turn, steer]).mockResolvedValue([]),
-        markSteerUnknown: vi.fn(async () => []),
-        retryCommand: vi.fn(async () => []),
+        markSteerUnknown: vi.fn(async () => undefined),
+        retryCommand: vi.fn(async () => undefined),
       },
     });
     coordinator.start();
@@ -490,9 +490,9 @@ describe("ExecutionCoordinator", () => {
       pollIntervalMs: 1,
       store: {
         claimCommand,
-        failCommand: vi.fn(async () => []),
+        failCommand: vi.fn(async () => undefined),
         listPendingCommands,
-        markSteerUnknown: vi.fn(async () => []),
+        markSteerUnknown: vi.fn(async () => undefined),
         retryCommand,
       } as unknown as ExecutionCoordinatorStore,
     });
@@ -571,10 +571,10 @@ describe("ExecutionCoordinator", () => {
           },
           events: [],
         })),
-        failCommand: vi.fn(async () => []),
+        failCommand: vi.fn(async () => undefined),
         listPendingCommands,
-        markSteerUnknown: vi.fn(async () => []),
-        retryCommand: vi.fn(async () => []),
+        markSteerUnknown: vi.fn(async () => undefined),
+        retryCommand: vi.fn(async () => undefined),
       } as unknown as ExecutionCoordinatorStore,
     });
     coordinator.start();
@@ -634,9 +634,9 @@ describe("ExecutionCoordinator", () => {
           },
           events: [],
         })),
-        failCommand: vi.fn(async () => []),
+        failCommand: vi.fn(async () => undefined),
         listPendingCommands,
-        markSteerUnknown: vi.fn(async () => []),
+        markSteerUnknown: vi.fn(async () => undefined),
         retryCommand,
       } as unknown as ExecutionCoordinatorStore,
     });
@@ -700,9 +700,9 @@ describe("ExecutionCoordinator", () => {
       pollIntervalMs: 1,
       store: {
         claimCommand,
-        failCommand: vi.fn(async () => []),
+        failCommand: vi.fn(async () => undefined),
         listPendingCommands,
-        markSteerUnknown: vi.fn(async () => []),
+        markSteerUnknown: vi.fn(async () => undefined),
         retryCommand,
       } as unknown as ExecutionCoordinatorStore,
     });
@@ -764,12 +764,12 @@ function backoffStore(pending: () => readonly PendingCommandRow[]) {
       events: [],
     };
   });
-  const failCommand = vi.fn(async () => []);
+  const failCommand = vi.fn(async () => undefined);
   const listPendingCommands = vi
     .fn<ExecutionCoordinatorStore["listPendingCommands"]>()
     .mockImplementation(async () => pending());
-  const retryCommand = vi.fn(async () => []);
-  const markSteerUnknown = vi.fn(async () => []);
+  const retryCommand = vi.fn(async () => undefined);
+  const markSteerUnknown = vi.fn(async () => undefined);
   return {
     listPendingCommands,
     markSteerUnknown,
@@ -791,13 +791,13 @@ function fakeStore(command: PendingCommandRow) {
     },
     events: [],
   }));
-  const failCommand = vi.fn(async () => []);
+  const failCommand = vi.fn(async () => undefined);
   const listPendingCommands = vi
     .fn<ExecutionCoordinatorStore["listPendingCommands"]>()
     .mockResolvedValueOnce([command])
     .mockResolvedValue([]);
-  const retryCommand = vi.fn(async () => []);
-  const markSteerUnknown = vi.fn(async () => []);
+  const retryCommand = vi.fn(async () => undefined);
+  const markSteerUnknown = vi.fn(async () => undefined);
   return {
     claimCommand,
     failCommand,

@@ -940,15 +940,13 @@ it("bounds Deployment-wide Needs you and rolls navigation up without changing Re
   expect(await f.database.selectFrom("requests").select("originatingThreadId").execute()).toEqual(
     Array.from({ length: 3 }, () => ({ originatingThreadId: child.id })),
   );
-  const { deploymentSnapshot } = await import("./snapshot-store.js");
-  const { NotificationStateStore } = await import("./notification-state.js");
+  const { readPersonalShellSnapshot } = await import("./snapshot-store.js");
   const ready = Promise.withResolvers<void>(),
     release = Promise.withResolvers<void>();
   let resourceCount = 0;
-  const snapshot = deploymentSnapshot(f.database, new NotificationStateStore(f.database), {
+  const snapshot = readPersonalShellSnapshot(f.database, {
     viewerId: f.userId,
-    omitMessages: true,
-    readResources: async ({ database }) => {
+    readResources: async (database) => {
       expect(database.isTransaction).toBe(true);
       resourceCount = Number(
         (
@@ -962,14 +960,7 @@ it("bounds Deployment-wide Needs you and rolls navigation up without changing Re
       await withTimeout(release.promise, 5_000, {
         timeoutError: () => new Error("Snapshot resource reader never released"),
       });
-      return {
-        tabs: { tabs: [], layout: { revision: 0, items: [] }, complete: true },
-        browser: {
-          available: false,
-          placements: [],
-          profiles: [],
-        },
-      };
+      return [];
     },
   });
   let snapshotError: unknown;
@@ -1013,11 +1004,11 @@ it("bounds Deployment-wide Needs you and rolls navigation up without changing Re
     release.resolve();
     const view = await snapshot;
     // The reader resumes after the snapshot's sequence, so it still hears the later Request.
-    expect(BigInt(view.sequence)).toBeLessThan(BigInt(committed.sequence));
+    expect(BigInt(view.state.sequence)).toBeLessThan(BigInt(committed.sequence));
+    if (view.kind !== "snapshot") throw new Error("Expected a shell snapshot");
     expect(resourceCount).toBe(3);
-    expect(view.needsYou.count).toBe(3);
-    expect(view.serializedBytes).toBeLessThanOrEqual(900 * 1024);
-    expect(view.serializedBytes).toBe(Buffer.byteLength(JSON.stringify(view)));
+    expect(view.snapshot.counts.needsYouCount).toBe(3);
+    expect(Buffer.byteLength(JSON.stringify(view.snapshot))).toBeLessThanOrEqual(96 * 1024);
     expect((await needsYouPage(f.database, { userId: f.userId })).count).toBe(4);
   } finally {
     release.resolve();
@@ -1343,7 +1334,7 @@ it("keeps a reply that says nothing out of the transcript, and a file-only reply
     );
   const before = await sequence();
   const blank = await reply([{ type: "text", text: " \n" }]);
-  expect(blank.committed.wasDuplicate).toBe(false);
+  expect(blank.committed.replayed).toBe(false);
   const blankReceipt = await f.database
     .selectFrom("runnerEventReceipts")
     .select("ordinal")

@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import {
   migrationProvider,
+  personalCurrentStateMigrationName,
   tabsAndAppsMigrationName,
   personalTeamBaselineName,
   teamKnowledgeNotesMigrationName,
@@ -36,6 +37,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0026_tabs_and_apps",
     "0027_message_origin",
     "0028_device_drivers",
+    personalCurrentStateMigrationName,
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());
@@ -70,6 +72,7 @@ it("keeps post-0025 migrations compatible with a running previous Host unless ma
       if (
         // Tabs/apps have an explicitly approved breaking storage migration.
         name === tabsAndAppsMigrationName ||
+        name === personalCurrentStateMigrationName ||
         Number(name.slice(0, 4)) <= 25 ||
         /(?:^|_)contract(?:_|$)/u.test(name)
       )
