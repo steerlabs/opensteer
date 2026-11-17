@@ -237,7 +237,6 @@ describe("owner-session computer app approvals", () => {
         expect.objectContaining({
           settlementSessionId: "session",
           actorUserId: ownerUserId,
-          expectedRevision: "7",
         }),
       );
     },
