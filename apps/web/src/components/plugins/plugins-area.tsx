@@ -1,4 +1,4 @@
-import { useDeferredValue, useId, useState } from "react";
+import { useId, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
 import {
   installPlugin,
@@ -13,7 +13,11 @@ import {
   type PluginEngineStateView,
   type PluginSummaryView,
 } from "@opensteer/client/plugins";
-import { usePagedList, usePluginEngine as usePluginEngineState } from "@opensteer/client/react";
+import {
+  useDebouncedValue,
+  usePagedList,
+  usePluginEngine as usePluginEngineState,
+} from "@opensteer/client/react";
 import { useShell } from "../app-shell.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
@@ -24,6 +28,7 @@ import { useSettingsRead } from "../settings/use-settings-read.js";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { AgentHomeSkills } from "./agent-home-skills.js";
 import { LocalTools, LocalToolPage } from "./local-tools.js";
+import { PluginAccounts } from "./plugin-accounts.js";
 import { PluginPage } from "./plugin-page.js";
 
 export const pluginsPath = "/settings/plugins";
@@ -31,6 +36,7 @@ export const pluginPath = (pluginId: string) =>
   `${pluginsPath}/installed/${encodeURIComponent(pluginId)}`;
 export const localToolPath = (id: string) => `${pluginsPath}/on-device/${encodeURIComponent(id)}`;
 const skillsPath = `${pluginsPath}/skills`;
+export const pluginAccountsPath = `${pluginsPath}/accounts`;
 
 /** The plugin engine's state for this Host. */
 export function usePluginEngine(initial: PluginEngineStateView | null) {
@@ -48,7 +54,12 @@ export function EngineNotice({ engine }: { readonly engine: PluginEngineStateVie
       {notice.tone === "progress" ? (
         <span aria-hidden className="plugin-engine-notice__dot" />
       ) : null}
-      {notice.text}
+      <span>
+        {notice.text}
+        {notice.detail ? (
+          <span className="plugin-engine-notice__detail">{notice.detail}</span>
+        ) : null}
+      </span>
     </p>
   );
 }
@@ -66,6 +77,7 @@ export function PluginsArea() {
   if (suffix[0] === "on-device" && suffix[1])
     return <LocalToolPage key={suffix[1]} id={decodeURIComponent(suffix[1])} />;
   if (suffix[0] === "skills") return <AgentHomeSkills />;
+  if (suffix[0] === "accounts") return <PluginAccounts />;
   return <InstalledPlugins />;
 }
 
@@ -138,6 +150,18 @@ function InstalledPlugins() {
       <section className="settings-group">
         <h2 className="settings-group__title">Your agent</h2>
         <div className="card">
+          <Link className="card__row plugins-link-row" to={pluginAccountsPath}>
+            <span aria-hidden className="plugins-link-row__glyph">
+              <Icon name="key" />
+            </span>
+            <span className="card__row-body">
+              <span className="card__row-title">Connected accounts</span>
+              <span className="card__row-detail">
+                The sign-ins and keys your plugins use, and removing them
+              </span>
+            </span>
+            <Icon name="chevron-right" />
+          </Link>
           <Link className="card__row plugins-link-row" to={skillsPath}>
             <span aria-hidden className="plugins-link-row__glyph">
               <Icon name="code" />
@@ -215,7 +239,8 @@ function PluginCatalog() {
   const { hostClient } = useShell();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
-  const search = useDeferredValue(query.trim());
+  // Each pause in typing is one read of the Host, not each keystroke.
+  const search = useDebouncedValue(query.trim());
   const installed = useSettingsRead(
     () => readInstalledPlugins(hostClient),
     "plugins-installed",

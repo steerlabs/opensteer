@@ -44,12 +44,17 @@ export function PluginConnectDialog({
     let alive = true;
     setLoadError(null);
     // One round trip for the review; a sign-in is prepared only when it offers one.
-    void readPluginAccountReview(hostClient, target).then(
-      (value) => alive && setReview(value),
-      (error: unknown) => alive && setLoadError(error),
-    );
+    // A change elsewhere re-reads it in place, keeping what the person entered.
+    const read = () =>
+      void readPluginAccountReview(hostClient, target).then(
+        (value) => alive && (setReview(value), setLoadError(null)),
+        (error: unknown) => alive && setLoadError(error),
+      );
+    read();
+    const unsubscribe = hostClient.subscribePluginsChanged(read);
     return () => {
       alive = false;
+      unsubscribe();
     };
   }, [hostClient, target, generation]);
   return (

@@ -15,7 +15,7 @@ import {
 import { useConnectedAgents, usePersonalRemoteAccess } from "@opensteer/client/react";
 import type { AgentConnection } from "@opensteer/protocol";
 import { useShell } from "../../app-shell.js";
-import { copyText } from "@opensteer/shared/clipboard";
+import { CopyBlock } from "../../copy-block.js";
 import { Dialog } from "../../dialog.js";
 import { Icon } from "../../icon.js";
 import { ProviderLogo } from "../../provider-brand.js";
@@ -204,7 +204,7 @@ function ExternalAgentSetup({
             <li>
               Copy this address.
               {address ? (
-                <AddressBlock
+                <CopyBlock className="external-agent-setup__address"
                   label={
                     !thisComputer
                       ? "Address"
@@ -216,7 +216,7 @@ function ExternalAgentSetup({
                 />
               ) : null}
               {thisComputer ? (
-                <AddressBlock label="From an app on this computer" value={thisComputer} />
+                <CopyBlock className="external-agent-setup__address" label="From an app on this computer" value={thisComputer} />
               ) : null}
             </li>
             <li>{guide.step}</li>
@@ -237,27 +237,3 @@ function ExternalAgentSetup({
   );
 }
 
-function AddressBlock({ label, value }: { readonly label: string; readonly value: string }) {
-  const [copied, setCopied] = useState(false);
-  const [failed, setFailed] = useState(false);
-  return (
-    <div className="computers-copy-block external-agent-setup__address">
-      <div>
-        <strong>{label}</strong>
-        <button
-          className="btn btn--ghost btn--small"
-          onClick={() =>
-            void copyText(value).then((success) => (success ? setCopied(true) : setFailed(true)))
-          }
-          type="button"
-        >
-          {copied ? "Copied" : "Copy"}
-        </button>
-      </div>
-      <code>{value}</code>
-      {failed ? (
-        <small className="field__hint">Copy was blocked. Select the address to copy it.</small>
-      ) : null}
-    </div>
-  );
-}

@@ -10,14 +10,17 @@ import {
   pluginScheduleText,
   pluginScheduledRunLabel,
   pluginStatusView,
+  pluginWebhookSetupCompletion,
+  pluginWebhookSetupForm,
+  pluginWebhookStatusText,
   pluginWorkflowRunLabel,
   pluginWorkflowRunLive,
   readPlugin,
   readPluginScheduleRuns,
   readPluginWebhookSetup,
-  readPluginWorkflowRuns,
   removePlugin,
   removePluginWebhook,
+  completePluginWebhookSetup,
   confirmPluginWebhookRemoval,
   setPluginAccess,
   startPluginWorkflow,
@@ -26,9 +29,10 @@ import {
   type InstalledPluginView,
   type PluginAccess,
 } from "@opensteer/client/plugins";
-import { usePluginEngine } from "@opensteer/client/react";
+import { usePluginEngine, usePluginWorkflowRuns } from "@opensteer/client/react";
 import type { HostClient } from "@opensteer/client/host";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import * as Clipboard from "expo-clipboard";
 import { useState, type ReactNode } from "react";
 import { Alert } from "react-native";
 import { AppFrame } from "../thread/app-frame.js";
@@ -72,20 +76,34 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
   const [starting, setStarting] = useState<Workflow | null>(null);
   const [pageOpen, setPageOpen] = useState(false);
   const [webhook, setWebhook] = useState<string | null>(null);
+  const [all, setAll] = useState<ReadonlySet<string>>(new Set());
   const hasSchedules = (detail.data?.schedules.length ?? 0) > 0;
-  const hasWorkflows = (detail.data?.workflows?.length ?? 0) > 0;
-  // Runs load only for a plugin that has them, so opening most plugins is one read.
+  // Scheduled runs load only for a plugin with schedules. Workflow runs load
+  // beside the detail, since they outlive the declarations it reports.
   const runs = useSettingsRead(
     host,
     async () => (hasSchedules ? readPluginScheduleRuns(host, pluginId) : { runs: [] }),
     `${pluginId}:${hasSchedules}`,
   );
-  const workflowRuns = useSettingsRead(
-    host,
-    async () =>
-      hasWorkflows ? readPluginWorkflowRuns(host, pluginId) : { runs: [], cursor: null },
-    `${pluginId}:${hasWorkflows}`,
-  );
+  const workflowRuns = usePluginWorkflowRuns(host, pluginId);
+  const preview = <T,>(key: string, items: readonly T[], limit: number) =>
+    all.has(key) ? items : items.slice(0, limit);
+  const showAll = (key: string, items: readonly unknown[], limit: number, noun: string) =>
+    items.length > limit
+      ? [
+          {
+            key: `${key}:all`,
+            kind: "button" as const,
+            label: all.has(key) ? "Show fewer" : `Show all ${items.length} ${noun}`,
+            onPress: () =>
+              setAll((shown) => {
+                const next = new Set(shown);
+                if (!next.delete(key)) next.add(key);
+                return next;
+              }),
+          },
+        ]
+      : [];
   const data = detail.data;
   if (!data) {
     const notice = engineSection(engine);
@@ -244,24 +262,29 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
           ]
         : data.tools.length === 0
           ? [{ key: "none", kind: "text", label: "This plugin has no tools." }]
-          : data.tools.map((tool) => ({
-              key: tool.name,
-              kind: "text" as const,
-              label: `${tool.name} · ${tool.readOnly ? "Reads" : "Writes"}`,
-              ...(tool.description ? { detail: tool.description } : {}),
-            })),
-    collapsed: (data.tools?.length ?? 0) > 8,
+          : [
+              ...preview("tools", data.tools, 8).map((tool) => ({
+                key: tool.name,
+                kind: "text" as const,
+                label: `${tool.name} · ${tool.readOnly ? "Reads" : "Writes"}`,
+                ...(tool.description ? { detail: tool.description } : {}),
+              })),
+              ...showAll("tools", data.tools, 8, "tools"),
+            ],
   });
   if (data.skills?.length)
     sections.push({
       key: "skills",
       title: "Skills",
-      rows: data.skills.map((skill) => ({
-        key: skill.name,
-        kind: "text",
-        label: skill.name,
-        ...(skill.description ? { detail: skill.description } : {}),
-      })),
+      rows: [
+        ...preview("skills", data.skills, 5).map((skill) => ({
+          key: skill.name,
+          kind: "text" as const,
+          label: skill.name,
+          ...(skill.description ? { detail: skill.description } : {}),
+        })),
+        ...showAll("skills", data.skills, 5, "skills"),
+      ],
     });
   if (hasSchedules) {
     const waiting = runs.data?.runs.filter((run) => run.status === "awaiting-approval") ?? [];
@@ -363,15 +386,16 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
           label: run.schedule,
           detail: `${pluginScheduledRunLabel(run)}${run.scheduledAt ? ` · ${when(run.scheduledAt)}` : ""}`,
         })),
+        ...runReadRows("schedule-runs", runs.error, runs.data !== null, () => void runs.reload()),
       ],
     });
   }
-  if (hasWorkflows)
+  if (data.workflows?.length || workflowRuns.visible.length || workflowRuns.error)
     sections.push({
       key: "workflows",
       title: "Workflows",
       rows: [
-        ...data.workflows!.map((workflow) => ({
+        ...(data.workflows ?? []).map((workflow) => ({
           key: workflow.name,
           kind: "button" as const,
           label: `Start ${workflow.name}`,
@@ -379,29 +403,57 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
           opens: true,
           onPress: () => setStarting(workflow),
         })),
-        ...(workflowRuns.data?.runs.slice(0, 6) ?? []).map((run): NativeSettingsRow => ({
-          key: run.id,
-          kind: "button",
-          label: run.workflow,
-          detail: `${pluginWorkflowRunLabel(run)} · ${when(run.createdAt)}`,
-          disabled: !pluginWorkflowRunLive(run) || action.pending !== null,
-          onPress: () => undefined,
-          ...(pluginWorkflowRunLive(run)
-            ? {
-                actions: [
-                  {
-                    label: "Stop",
-                    destructive: true,
-                    onPress: () =>
-                      action.run(`stop:${run.id}`, () =>
-                        stopPluginWorkflow(host, plugin.id, run.id).then(workflowRuns.reload),
-                      ),
-                  },
-                ],
-              }
-            : {}),
-        })),
+        ...workflowRuns.visible.map((run): NativeSettingsRow => {
+          const live = pluginWorkflowRunLive(run);
+          const stop = () =>
+            action.run(`stop:${run.id}`, () =>
+              stopPluginWorkflow(host, plugin.id, run.id).then(workflowRuns.retry),
+            );
+          return {
+            key: run.id,
+            kind: "button",
+            label: run.workflow,
+            detail: `${action.pending === `stop:${run.id}` ? "Stopping…" : pluginWorkflowRunLabel(run)} · ${when(run.createdAt)}`,
+            disabled: !live || action.pending !== null,
+            // A tap on a live run stops it after asking; the swipe action stops it at once.
+            onPress: () =>
+              confirmDestructive({
+                title: `Stop ${run.workflow}?`,
+                message: "It stops where it is. Steps it already finished stay done.",
+                confirm: "Stop",
+                onConfirm: stop,
+              }),
+            ...(live ? { actions: [{ label: "Stop", destructive: true, onPress: stop }] } : {}),
+          };
+        }),
+        ...(workflowRuns.loaded && workflowRuns.more
+          ? [
+              {
+                key: "runs:more",
+                kind: "button" as const,
+                label: workflowRuns.loadingMore ? "Loading…" : "Show more runs",
+                disabled: workflowRuns.loadingMore,
+                onPress: workflowRuns.showMore,
+              },
+            ]
+          : []),
+        ...runReadRows(
+          "workflow-runs",
+          workflowRuns.error,
+          workflowRuns.loaded,
+          workflowRuns.retry,
+        ),
       ],
+      ...(data.workflows === null
+        ? {
+            footer: {
+              text:
+                plugin.status === "ready"
+                  ? "This version's workflows couldn't be read, so none can be started. Runs already under way are listed."
+                  : "Workflows can be started once its accounts are connected and a version builds. Runs already under way are listed.",
+            },
+          }
+        : {}),
     });
   if (data.webhooks.length)
     sections.push({
@@ -410,18 +462,8 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
       rows: data.webhooks.map((entry) => ({
         key: entry.id,
         kind: "button",
-        label: entry.name,
-        detail: entry.failure
-          ? `Couldn't ${entry.failure === "register" ? "register with" : "unregister from"} the service`
-          : entry.status === "active"
-            ? "Receiving events"
-            : entry.status === "setup-required"
-              ? "Needs setup at the service"
-              : entry.status === "pending"
-                ? "Setting up"
-                : entry.status === "stopping"
-                  ? "Stopping"
-                  : "Stopped",
+        label: entry.status === "setup-required" ? `Finish setting up ${entry.name}` : entry.name,
+        detail: pluginWebhookStatusText(entry),
         opens: true,
         onPress: () => setWebhook(entry.id),
       })),
@@ -431,7 +473,8 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
     sections.push({
       key: "versions",
       title: "Versions",
-      rows: data.versions.map((version) => ({
+      rows: [
+        ...preview("versions", data.versions, 5).map((version): NativeSettingsRow => ({
         key: version.id,
         kind: "button" as const,
         label: version.createdAt ? when(version.createdAt) : version.id,
@@ -453,6 +496,8 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
             ],
           ),
       })),
+        ...showAll("versions", data.versions, 5, "versions"),
+      ],
       footer: { text: "Switching versions changes the plugin's code, not the data it has stored." },
     });
   sections.push({
@@ -478,7 +523,9 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
           }),
       },
     ],
-    footer: { text: "Agents lose its tools. Connected accounts stay saved for other plugins." },
+    footer: {
+      text: "Agents lose its tools. Connected accounts stay saved; remove them in Plugins → Connected accounts.",
+    },
   });
   return (
     <>
@@ -489,7 +536,7 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
           onClose={() => setStarting(null)}
           onStarted={() => {
             setStarting(null);
-            void workflowRuns.reload();
+            workflowRuns.retry();
           }}
           pluginId={plugin.id}
           workflow={starting}
@@ -567,93 +614,230 @@ function StartWorkflow(props: {
   );
 }
 
+/** A run read's state as rows: loading, or a failure with a retry, never an empty list. */
+function runReadRows(
+  key: string,
+  error: unknown,
+  loaded: boolean,
+  retry: () => void,
+): NativeSettingsRow[] {
+  if (error)
+    return [
+      {
+        key: `${key}:failed`,
+        kind: "status",
+        tone: "bad",
+        label: "Couldn't read these runs.",
+        ...(typeof error === "string"
+          ? { detail: error }
+          : error instanceof Error
+            ? { detail: error.message }
+            : {}),
+      },
+      { key: `${key}:retry`, kind: "button", label: "Try again", onPress: retry },
+    ];
+  return loaded ? [] : [{ key: `${key}:loading`, kind: "text", label: "Loading runs…" }];
+}
+
 function WebhookSetup(props: {
   host: HostClient;
   onClose: () => void;
   pluginId: string;
   webhookId: string;
 }) {
+  // Re-read on every plugins change; what the person typed lives here, not in the read.
   const setup = useSettingsRead(
     props.host,
     () => readPluginWebhookSetup(props.host, props.pluginId, props.webhookId),
     props.webhookId,
   );
   const action = usePluginAction(props.host);
+  const [answers, setAnswers] = useState<PluginFormAnswers>({});
+  const [secret, setSecret] = useState("");
+  const [copied, setCopied] = useState<string | null>(null);
+  const data = setup.data;
+  const copy = (key: string, value: string) =>
+    void Clipboard.setStringAsync(value).then(
+      () => setCopied(key),
+      () => action.setError("Copy was blocked. Select the text to copy it."),
+    );
+  const remove = () =>
+    confirmDestructive({
+      title: "Remove this webhook?",
+      message:
+        "Events stop reaching this plugin. If the service already has this address, you'll be asked to remove it there too.",
+      confirm: "Remove",
+      onConfirm: () =>
+        action.run("remove", () =>
+          removePluginWebhook(props.host, props.pluginId, props.webhookId).then(async () => {
+            const next = await readPluginWebhookSetup(
+              props.host,
+              props.pluginId,
+              props.webhookId,
+            ).catch(() => null);
+            if (next?.step === "remove") await setup.reload();
+            else props.onClose();
+          }),
+        ),
+    });
+  if (!data)
+    return (
+      <NativeSettingsPage
+        sheet={{ title: "Webhook", onClose: props.onClose }}
+        sections={[
+          {
+            key: "loading",
+            title: "",
+            rows: [{ key: "loading", kind: "text", label: setup.error ?? "Loading setup…" }],
+          },
+        ]}
+      />
+    );
+  const form = pluginWebhookSetupForm(data);
+  const completion = pluginWebhookSetupCompletion(props.pluginId, data, answers, secret);
+  const sections: NativeSettingsSection[] = [
+    {
+      key: "setup",
+      title: "",
+      rows: [
+        ...(data.unavailable
+          ? [
+              {
+                key: "unavailable",
+                kind: "status" as const,
+                tone: "attention" as const,
+                label: data.unavailable,
+              },
+            ]
+          : []),
+        ...(data.step === "done"
+          ? [
+              {
+                key: "done",
+                kind: "status" as const,
+                tone: "good" as const,
+                label: `This webhook is set up. ${pluginWebhookStatusText(data.webhook)}.`,
+              },
+            ]
+          : []),
+        ...(data.instructions
+          ? [{ key: "how", kind: "text" as const, label: data.instructions }]
+          : []),
+        ...(data.step !== "done"
+          ? [
+              {
+                key: "url",
+                kind: "button" as const,
+                label: copied === "url" ? "Address copied" : "Copy the address to give the service",
+                detail: data.callbackUrl,
+                onPress: () => copy("url", data.callbackUrl),
+              },
+            ]
+          : []),
+        ...(form.secret?.kind === "generated"
+          ? [
+              {
+                key: "secret",
+                kind: "button" as const,
+                label:
+                  copied === "secret" ? "Secret copied" : "Copy the signing secret to give the service",
+                detail: form.secret.value,
+                onPress: () => copy("secret", (form.secret as { value: string }).value),
+              },
+            ]
+          : []),
+      ],
+      ...(form.secret?.kind === "generated" && data.step === "configure"
+        ? { footer: { text: "The secret is shown only until setup is done." } }
+        : {}),
+    },
+  ];
+  if (data.step === "configure") {
+    const rows: NativeSettingsRow[] = [
+      ...(form.secret?.kind === "provider"
+        ? [
+            {
+              key: "provider-secret",
+              kind: "input" as const,
+              label: "Signing secret from the service",
+              secure: true,
+              value: secret,
+              onChange: setSecret,
+            },
+          ]
+        : []),
+      ...pluginFormRows(form.fields, answers, setAnswers),
+    ];
+    if (rows.length)
+      sections.push({ key: "fields", title: "What the service gave you", rows });
+  }
+  sections.push({
+    key: "actions",
+    title: "",
+    rows:
+      data.step === "configure"
+        ? [
+            {
+              key: "complete",
+              kind: "primary",
+              label: action.pending === "complete" ? "Finishing…" : "Done",
+              disabled: "problem" in completion || action.pending !== null,
+              onPress: () =>
+                "command" in completion &&
+                action.run("complete", () =>
+                  completePluginWebhookSetup(props.host, completion.command).then(props.onClose),
+                ),
+            },
+            {
+              key: "remove",
+              kind: "button",
+              label: "Remove webhook",
+              destructive: true,
+              disabled: action.pending !== null,
+              onPress: remove,
+            },
+          ]
+        : data.step === "remove"
+          ? [
+              {
+                key: "confirm",
+                kind: "button",
+                label: "I've removed it at the service",
+                destructive: true,
+                disabled: action.pending !== null,
+                onPress: () =>
+                  action.run("confirm", () =>
+                    confirmPluginWebhookRemoval(
+                      props.host,
+                      props.pluginId,
+                      props.webhookId,
+                    ).then(props.onClose),
+                  ),
+              },
+            ]
+          : [
+              {
+                key: "remove",
+                kind: "button",
+                label: "Remove webhook",
+                destructive: true,
+                disabled: action.pending !== null,
+                onPress: remove,
+              },
+            ],
+    ...(action.error
+      ? { footer: { text: action.error, tone: "danger" as const } }
+      : data.step === "configure" && form.fields.unsupported.length && "problem" in completion
+        ? { footer: { text: completion.problem } }
+        : {}),
+  });
   return (
     <NativeSettingsPage
       sheet={{
-        title: setup.data?.step === "remove" ? "Remove the webhook" : "Webhook",
+        title: data.step === "remove" ? "Remove the webhook" : `Set up ${data.webhook.name}`,
         onClose: props.onClose,
       }}
-      sections={[
-        {
-          key: "setup",
-          title: "",
-          rows: setup.data
-            ? [
-                ...(setup.data.unavailable
-                  ? [{ key: "unavailable", kind: "text" as const, label: setup.data.unavailable }]
-                  : []),
-                ...(setup.data.instructions
-                  ? [{ key: "how", kind: "text" as const, label: setup.data.instructions }]
-                  : []),
-                {
-                  key: "url",
-                  kind: "status",
-                  tone: "neutral",
-                  label: "Address to give the service",
-                  detail: setup.data.callbackUrl,
-                },
-                ...(setup.data.signingSecret
-                  ? [
-                      {
-                        key: "secret",
-                        kind: "status" as const,
-                        tone: "neutral" as const,
-                        label: "Signing secret",
-                        detail: setup.data.signingSecret,
-                      },
-                    ]
-                  : []),
-                {
-                  key: "remove",
-                  kind: "button",
-                  label:
-                    setup.data.step === "remove"
-                      ? "I've removed it at the service"
-                      : "Remove webhook",
-                  destructive: true,
-                  disabled: action.pending !== null,
-                  onPress: () => {
-                    if (setup.data?.step === "remove")
-                      action.run("confirm", () =>
-                        confirmPluginWebhookRemoval(
-                          props.host,
-                          props.pluginId,
-                          props.webhookId,
-                        ).then(props.onClose),
-                      );
-                    else
-                      action.run("remove", () =>
-                        removePluginWebhook(props.host, props.pluginId, props.webhookId).then(
-                          async () => {
-                            const next = await readPluginWebhookSetup(
-                              props.host,
-                              props.pluginId,
-                              props.webhookId,
-                            );
-                            if (next.step === "done") props.onClose();
-                            else await setup.reload();
-                          },
-                        ),
-                      );
-                  },
-                },
-              ]
-            : [{ key: "loading", kind: "text", label: setup.error ?? "Loading setup…" }],
-          ...(action.error ? { footer: { text: action.error, tone: "danger" as const } } : {}),
-        },
-      ]}
+      sections={sections}
     />
   );
 }
