@@ -30,6 +30,7 @@ type localPhone struct {
 	binding         string
 	reservation     *Reservation
 	sessionID       string
+	pairing         *ios.PairingAttempt
 	inspection      Inspection
 	readinessReason wire.Reason
 	routeCtx        context.Context
@@ -170,7 +171,21 @@ func (m *Manager) Call(ctx context.Context, r wire.Request) (interface{}, error)
 				return nil, err
 			}
 			defer unlock()
-			return wire.Empty{}, m.usb.Pair(ctx, m.device(phone))
+			m.mu.Lock()
+			if phone.pairing == nil {
+				phone.pairing = &ios.PairingAttempt{}
+			}
+			attempt := phone.pairing
+			m.mu.Unlock()
+			err = m.usb.Pair(ctx, m.device(phone), attempt)
+			if err == nil {
+				m.mu.Lock()
+				if phone.pairing == attempt {
+					phone.pairing = nil
+				}
+				m.mu.Unlock()
+			}
+			return wire.Empty{}, err
 		})
 	case "setup.prepareDeveloperServices":
 		params := p.(*wire.PrepareParams)
@@ -385,6 +400,7 @@ func (m *Manager) reconcile() error {
 	present := make(map[string]bool)
 	stale := []*Session{}
 	restore := []wire.PhoneRef{}
+	inspect := []wire.PhoneRef{}
 	for _, d := range devices {
 		identity := d.Properties.SerialNumber
 		diagnostic.Remember(identity)
@@ -424,6 +440,9 @@ func (m *Manager) reconcile() error {
 			phone.session = nil
 			phone.sessionID = ""
 		}
+		if changedRoute && d.Properties.ConnectionType == "USB" {
+			inspect = append(inspect, wire.PhoneRef{LocalPhoneID: id, NativeEpoch: phone.epoch})
+		}
 		phone.entry = d
 		state := m.wifi[identity]
 		if changedRoute && d.Properties.ConnectionType == "USB" && !state.Enabled && state.Changed && !m.restoring[id] {
@@ -456,6 +475,7 @@ func (m *Manager) reconcile() error {
 	for _, session := range stale {
 		_ = session.Close()
 	}
+	m.inspectCandidates(inspect)
 	for _, ref := range restore {
 		go m.restoreWifi(ref)
 	}
@@ -668,6 +688,7 @@ func (m *Manager) release(token string, forget bool) error {
 	p.session = nil
 	p.binding = ""
 	p.reservation = nil
+	p.pairing = nil
 	p.sessionID = ""
 	p.epoch++
 	p.readinessReason = ""

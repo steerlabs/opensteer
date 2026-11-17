@@ -553,3 +553,34 @@ it("recognizes an incomplete Xcode installation before Get Xcode is pressed", as
     action: "none",
   });
 });
+
+it("shows ineligible USB phones instead of asking to plug one in", async () => {
+  const f = await harness();
+  f.native.roster.candidates[0]!.reason = "unsupported-ios";
+  f.native.roster.revision++;
+  f.native.publish();
+  const initial = await f.setup.begin(ownerA);
+  expect(await stage(f, initial.setupId, "connect")).toMatchObject({
+    state: "decide",
+    action: "choose-phone",
+    reason: null,
+    candidates: [{ reason: "unsupported-ios" }],
+  });
+  expect(await f.store.records()).toEqual([]);
+});
+
+it("refreshes developer images in a blocked prepare stage before retrying", async () => {
+  const f = await harness();
+  f.native.failures.set(
+    "setup.prepareDeveloperServices",
+    new IphoneServiceError("developer-image-incompatible"),
+  );
+  const initial = await f.setup.begin(ownerA);
+  await stage(f, initial.setupId, "prepare");
+  f.native.images = [{ handle: "updated-xcode", build: "new" }];
+  f.native.failures.clear();
+  expect(await f.setup.retry(initial.setupId)).toMatchObject({ stage: "wifi" });
+  expect(
+    f.native.calls.filter((c) => c.method === "setup.prepareDeveloperServices").at(-1)?.params,
+  ).toMatchObject({ imageHandle: "updated-xcode" });
+});

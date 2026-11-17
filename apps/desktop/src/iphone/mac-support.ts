@@ -59,8 +59,8 @@ export const iphoneMacSupport: IphoneMacSupport = {
       xcodeApps,
       xcodeInstalling: present.length > xcodeApps.length,
       imageRoots: [
-        path.join(developerImages, "iOS_DDI/Restore"),
         ...bundled.filter((root): root is string => root !== null),
+        path.join(developerImages, "iOS_DDI/Restore"),
       ].slice(0, 8),
     };
   },

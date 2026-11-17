@@ -13,6 +13,21 @@ synthetic fixtures and never discover devices.
 
 Opensteer patches:
 
+- `ios.PairingAttempt` retains one private certificate set and HostID across pending
+  Trust responses, following upstream `ios/pair.go`'s same Pair request and save flow.
+  A changed device public key, BUID or Wi-Fi identity refuses reuse. The bridge drops
+  the attempt after acceptance or binding release; nothing is added to the wire.
+- Image identity lookup reports a typed incompatibility when no hardware identity
+  matches. A composite rejection permits trying another installed image only when
+  every mounter refused compatibility; network or uncertain mount failures stop.
+- The bridge's independent Instruments foreground reader follows MIT upstream
+  `ios/instruments/helper.go`, `instruments_deviceinfo.go` and DTX channel negotiation
+  over `com.apple.instruments.dtservicehub`. It requires an explicit
+  `foregroundRunning=true` and an exact executable-to-installed-app mapping;
+  missing or ambiguous flags never imply foreground. CoreDevice `appservice.ListProcesses`
+  only exposes PIDs and paths, so it cannot establish foreground by itself. The pinned
+  upstream maps no foreground field; current iOS flag availability remains unqualified.
+  No additional upstream packages or GPL source/tests are copied.
 - Context-owned usbmux/lockdown connections, typed pairing/session errors, fixed
   system usbmux socket, and explicit transfer of a service connection from setup
   to session lifetime. In-process service dialers return net.Conn; no localhost

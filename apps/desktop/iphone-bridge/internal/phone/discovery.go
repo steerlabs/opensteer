@@ -16,7 +16,7 @@ type MuxListener interface {
 type USB interface {
 	Listen(context.Context) (MuxListener, error)
 	List(context.Context) ([]ios.DeviceEntry, error)
-	Pair(context.Context, ios.DeviceEntry) error
+	Pair(context.Context, ios.DeviceEntry, *ios.PairingAttempt) error
 	Inspect(context.Context, ios.DeviceEntry) (Inspection, error)
 	Open(context.Context, context.Context, ios.DeviceEntry) (*Session, error)
 }
@@ -57,9 +57,9 @@ func (SystemUSB) List(ctx context.Context) ([]ios.DeviceEntry, error) {
 	}
 	return list.DeviceList, nil
 }
-func (SystemUSB) Pair(ctx context.Context, d ios.DeviceEntry) error {
+func (SystemUSB) Pair(ctx context.Context, d ios.DeviceEntry, attempt *ios.PairingAttempt) error {
 	d.Context = ctx
-	return ClassifyOrNil(ios.Pair(d), wire.PairingFailed)
+	return ClassifyOrNil(attempt.Pair(d), wire.PairingFailed)
 }
 func (SystemUSB) Open(lifetime, request context.Context, d ios.DeviceEntry) (*Session, error) {
 	inspection, err := (SystemUSB{}).Inspect(request, d)
@@ -151,4 +151,48 @@ func (i *Inventory) Has(d ios.DeviceEntry) bool {
 	defer i.mu.Unlock()
 	candidate, ok := i.routes[d.DeviceID]
 	return ok && candidate.Properties.SerialNumber == d.Properties.SerialNumber && candidate.Properties.ConnectionType == d.Properties.ConnectionType
+}
+
+// Discovery reads existing trust only; it never requests pairing or developer services.
+func (SystemUSB) PassiveInspect(ctx context.Context, d ios.DeviceEntry) (Inspection, error) {
+	return (SystemUSB{}).Inspect(ctx, d)
+}
+func (m *Manager) inspectCandidates(refs []wire.PhoneRef) {
+	inspector, ok := m.usb.(interface {
+		PassiveInspect(context.Context, ios.DeviceEntry) (Inspection, error)
+	})
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(m.workCtx, 3*time.Second)
+	defer cancel()
+	var work sync.WaitGroup
+	lanes := make(chan struct{}, 4)
+	for _, ref := range refs {
+		work.Go(func() {
+			select {
+			case lanes <- struct{}{}:
+				defer func() { <-lanes }()
+			case <-ctx.Done():
+				return
+			}
+			_, _ = m.withPhone(ctx, ref, func(ctx context.Context, p *localPhone) (interface{}, error) {
+				inspection, err := inspector.PassiveInspect(ctx, m.device(p))
+				if err != nil {
+					inspection.Reason = Classify(err, wire.NativeServiceFailed).Code
+				}
+				if inspection.Pairing != "paired" {
+					inspection = Inspection{Reason: inspection.Reason}
+				}
+				m.mu.Lock()
+				defer m.mu.Unlock()
+				if p.epoch == ref.NativeEpoch && ctx.Err() == nil {
+					p.inspection = inspection
+					m.revision++
+				}
+				return nil, nil
+			})
+		})
+	}
+	work.Wait()
 }

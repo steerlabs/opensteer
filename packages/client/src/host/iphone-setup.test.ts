@@ -97,7 +97,11 @@ it("reports dispatch failures and allows an idempotent retry", async () => {
     reason: "host-offline",
   });
   expect(f.platform.complete).not.toHaveBeenCalled();
-  await port.attach({ setupId: f.status.setupId });
+  await port.retry({ setupId: f.status.setupId });
+  expect(dispatch.mock.calls.map(([command]) => command)).toEqual([
+    f.status.attachCommand,
+    f.status.attachCommand,
+  ]);
   expect(f.platform.complete).toHaveBeenCalledOnce();
 });
 it("keeps a blocked add local without dispatching", async () => {

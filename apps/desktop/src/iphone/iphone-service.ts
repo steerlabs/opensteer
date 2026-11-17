@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   iphoneNativeRosterSchema,
+  iphoneScreenshotHiddenReason,
   iphoneNativeInspectionSchema,
   iphoneNativePhoneRefSchema,
   iphonePrivateIdentityResultSchema,
@@ -321,17 +322,26 @@ export class IphoneService {
   }
   async prepare(record: IphoneMapping, signal: AbortSignal): Promise<void> {
     await this.#connect();
-    const image = this.#images[0];
-    if (!image) throw new IphoneServiceError("developer-image-missing");
-    await (
-      await this.#connect()
-    ).request(
-      "setup.prepareDeveloperServices",
-      { ...this.#ref(record), imageHandle: image.handle },
-      iphoneNativeInspectionSchema,
-      { signal, timeoutMs: 120000 },
-    );
+    if (!this.#images.length) throw new IphoneServiceError("developer-image-missing");
+    for (const image of this.#images) {
+      try {
+        await (
+          await this.#connect()
+        ).request(
+          "setup.prepareDeveloperServices",
+          { ...this.#ref(record), imageHandle: image.handle },
+          iphoneNativeInspectionSchema,
+          { signal, timeoutMs: 120000 },
+        );
+        return;
+      } catch (error) {
+        if (!(error instanceof IphoneServiceError) || error.code !== "developer-image-incompatible")
+          throw error;
+      }
+    }
+    throw new IphoneServiceError("developer-image-incompatible");
   }
+
   async firstObserve(record: IphoneMapping, signal: AbortSignal): Promise<void> {
     const binding = await this.#binding(record, signal);
     const native = await this.#connect();
@@ -355,6 +365,8 @@ export class IphoneService {
         iphoneRunnerResults["iphone.observe"],
         { signal },
       );
+      if (observation.nativeEpoch !== binding.epoch)
+        throw new IphoneServiceError("stale-native-epoch");
       if (observation.state.lock !== "unlocked")
         throw new IphoneServiceError(
           observation.state.lock === "locked" ? "phone-locked" : "lock-state-unknown",
@@ -363,7 +375,14 @@ export class IphoneService {
         throw new IphoneServiceError(
           observation.state.display === "off" ? "screen-off" : "screen-state-unknown",
         );
-      if (!observation.screenshot) throw new IphoneServiceError("screenshot-failed");
+      if (
+        observation.geometry.rotation === null ||
+        observation.state.rotation !== observation.geometry.rotation ||
+        observation.state.displayId !== observation.geometry.displayId
+      )
+        throw new IphoneServiceError("geometry-unknown");
+      if (iphoneScreenshotHiddenReason(observation) || !observation.screenshot)
+        throw new IphoneServiceError("screenshot-failed");
     } finally {
       await native.request("session.close", { bindingToken: binding.token, sessionId }, empty, {
         timeoutMs: 2000,

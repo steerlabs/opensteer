@@ -17,6 +17,7 @@ import {
   type PhoneDisplayInstalledAppsParams,
 } from "@opensteer/protocol";
 import {
+  iphoneScreenshotHiddenReason,
   iphoneRunnerResults,
   type IphoneNativeAction,
   type IphoneNativeObservation,
@@ -414,18 +415,7 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
       native.state.displayId !== native.geometry.displayId
     )
       failure("unsupported", "The iPhone display geometry is unavailable.");
-    const hidden =
-      native.state.display === "off"
-        ? "screen-off"
-        : native.state.lock === "locked"
-          ? "locked"
-          : native.state.lock === "unknown" || native.state.display === "unknown"
-            ? "protected"
-            : native.foreground === null
-              ? "protected"
-              : native.foreground.appId === "com.opensteer.opensteer"
-                ? "opensteer-app"
-                : null;
+    const hidden = iphoneScreenshotHiddenReason(native);
     const observation = IphoneScreenObservationResultSchema.parse({
       observation: {
         capturedAt: new Date(this.#now()).toISOString(),

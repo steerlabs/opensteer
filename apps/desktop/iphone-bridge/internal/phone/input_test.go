@@ -44,13 +44,16 @@ func (f *fixtureChannel) ReceiveOnServerClientStream() (map[string]interface{}, 
 func (f *fixtureChannel) Close() error { f.closed = true; return nil }
 
 type fixtureScreen struct {
-	state          DeviceState
-	image          []byte
-	channel        *fixtureChannel
-	captures       int
-	captureDisplay string
-	launches       int
-	ax             AXSnapshot
+	foregroundReads []*Foreground
+	state           DeviceState
+	image           []byte
+	channel         *fixtureChannel
+	captures        int
+	captureDisplay  string
+	launches        int
+	foreground      *Foreground
+	axErr           error
+	ax              AXSnapshot
 }
 
 func (f *fixtureScreen) State(context.Context) (DeviceState, error) { return f.state, nil }
@@ -59,7 +62,15 @@ func (f *fixtureScreen) Capture(_ context.Context, display string) ([]byte, erro
 	f.captures++
 	return f.image, nil
 }
-func (f *fixtureScreen) AX(context.Context) (AXSnapshot, error)  { return f.ax, nil }
+func (f *fixtureScreen) AX(context.Context) (AXSnapshot, error) { return f.ax, f.axErr }
+func (f *fixtureScreen) Foreground(context.Context) (*Foreground, error) {
+	if len(f.foregroundReads) > 0 {
+		value := f.foregroundReads[0]
+		f.foregroundReads = f.foregroundReads[1:]
+		return value, nil
+	}
+	return f.foreground, nil
+}
 func (f *fixtureScreen) HID(context.Context) (xpcChannel, error) { return f.channel, nil }
 func (f *fixtureScreen) Launch(ctx context.Context, _ string, guard func() error) error {
 	if err := guard(); err != nil {
@@ -391,4 +402,36 @@ func TestEveryInputCloseDrainsAfterFinalRelease(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestObserveVerifiesForegroundWithoutAccessibility(t *testing.T) {
+	s, backend, _ := screenFixture(t)
+	backend.axErr = wire.Fail(wire.AccessibilityUnavailable)
+	backend.foreground = &Foreground{AppID: "example.app", Label: "Example"}
+	include := true
+	result, err := s.observe(context.Background(), &wire.ObserveParams{ScreenRef: wire.ScreenRef{NativeEpoch: 1}, IncludeScreenshot: &include}, okay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation := result.(*Observation)
+	if observation.Foreground == nil || observation.Foreground.AppID != "example.app" || observation.Screenshot == nil {
+		t.Fatal("AX failure hid a verified foreground screenshot")
+	}
+}
+
+func TestObserveRejectsForegroundChangeDuringCapture(t *testing.T) {
+	s, backend, _ := screenFixture(t)
+	backend.foregroundReads = []*Foreground{{AppID: "example.app"}, {AppID: "com.opensteer.opensteer"}}
+	include := true
+	_, err := s.observe(context.Background(), &wire.ObserveParams{ScreenRef: wire.ScreenRef{NativeEpoch: 1}, IncludeScreenshot: &include}, okay)
+	failure(t, err, wire.StaleObservation, "not-started")
+}
+
+func TestObserveRejectsConflictingSelfScreenIdentity(t *testing.T) {
+	s, backend, _ := screenFixture(t)
+	backend.foreground = &Foreground{AppID: "example.app"}
+	backend.ax.Foreground = &Foreground{AppID: "com.opensteer.opensteer"}
+	include := true
+	_, err := s.observe(context.Background(), &wire.ObserveParams{ScreenRef: wire.ScreenRef{NativeEpoch: 1}, IncludeScreenshot: &include}, okay)
+	failure(t, err, wire.StaleObservation, "not-started")
 }

@@ -52,6 +52,7 @@ export class IphoneSetup {
   readonly #service: IphoneService;
   readonly #mac: IphoneMacSupport;
   #revision = 0;
+  readonly #cancelled = new Set<(setupId: string) => void>();
   readonly #transactions = new Map<string, Transaction>();
   readonly #cancellations = new Map<string, { deploymentId: string; work: Promise<void> }>();
   constructor(service: IphoneService, mac: IphoneMacSupport = iphoneMacSupport) {
@@ -240,12 +241,19 @@ export class IphoneSetup {
       t.listeners.delete(listener);
     };
   }
+  onCancelled(listener: (setupId: string) => void): () => void {
+    this.#cancelled.add(listener);
+    return () => {
+      this.#cancelled.delete(listener);
+    };
+  }
   async cancel(setupId: string): Promise<void> {
     const pending = this.#cancellations.get(setupId);
     if (pending) return pending.work;
     const t = this.#transactions.get(setupId);
     if (!t) return;
     this.#transactions.delete(setupId);
+    for (const listener of this.#cancelled) listener(setupId);
     t.controller.abort();
     this.#dispose(t);
     t.listeners.clear();
@@ -376,9 +384,9 @@ export class IphoneSetup {
         );
         if (usable.length !== 1) {
           this.#set(t, {
-            state: usable.length ? "decide" : "waiting",
-            reason: usable.length ? null : "no-phone",
-            action: usable.length ? "choose-phone" : "none",
+            state: t.candidates.size ? "decide" : "waiting",
+            reason: t.candidates.size ? null : "no-phone",
+            action: t.candidates.size ? "choose-phone" : "none",
           });
           return;
         }
@@ -433,6 +441,10 @@ export class IphoneSetup {
             );
           this.#set(t, { stage: "prepare" });
         } else {
+          const support = await this.#mac.inspect();
+          this.#active(t);
+          await this.#service.refreshImages(support.imageRoots, signal);
+          this.#active(t);
           await this.#service.prepare(record, signal);
           this.#active(t);
           await this.#service.firstObserve(record, signal);

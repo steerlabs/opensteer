@@ -442,7 +442,7 @@ export function iphoneSetupWords(
       };
     case "host-offline":
       return {
-        detail: `Check this Mac’s connection, then try again. Nothing was added yet.`,
+        detail: `Check this Mac’s connection, then try again. It won’t be added twice.`,
         recovery: "check",
         title: `Couldn’t reach ${context.deploymentName}`,
         yours: false,

@@ -34,9 +34,9 @@ it("finds selected, indexed and Applications Xcodes and only existing bundled im
     xcodeApps: ["/Volumes/Tools/Xcode.app", "/Applications/Xcode.app"],
     xcodeInstalling: true,
     imageRoots: [
-      "/Library/Developer/DeveloperDiskImages/iOS_DDI/Restore",
       "/Volumes/Tools/Xcode.app/Contents/Resources/CoreDeviceDDIs/iOS_DDI/Restore",
       "/Applications/Xcode.app/Contents/Resources/CoreDeviceDDIs/iOS_DDI/Restore",
+      "/Library/Developer/DeveloperDiskImages/iOS_DDI/Restore",
     ],
   });
 });

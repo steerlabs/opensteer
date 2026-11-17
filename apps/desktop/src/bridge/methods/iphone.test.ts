@@ -103,5 +103,28 @@ it("authorizes every setup method, binds candidates to one renderer, and cancels
   selected = ownerB.deploymentId;
   changed!({ selectedDeploymentId: selected } as DeploymentAccessSnapshot);
   await expect(setup.status(next.setupId)).rejects.toMatchObject({ code: "cancelled" });
+  const attached = f.service.forSlot(ownerA).connect(() => undefined);
+  await attached.request("iphone.targets", { assignments: [] }, f.options());
+  selected = ownerA.deploymentId;
+  const lost = (await call(desktopBridgeChannels.iphoneSetupBegin, { deploymentId: selected })) as {
+    setupId: string;
+  };
+  attached.close();
+  await expect(
+    Promise.resolve().then(() =>
+      call(desktopBridgeChannels.iphoneSetupCancel, { setupId: lost.setupId }),
+    ),
+  ).resolves.toBeUndefined();
+  const reconnected = f.service.forSlot(ownerA).connect(() => undefined);
+  await reconnected.request("iphone.targets", { assignments: [] }, f.options());
+  const fresh = (await call(desktopBridgeChannels.iphoneSetupBegin, {
+    deploymentId: selected,
+  })) as { setupId: string };
+  expect(fresh.setupId).not.toBe(lost.setupId);
+  await setup.cancel(fresh.setupId);
+  expect(
+    await call(desktopBridgeChannels.iphoneSetupBegin, { deploymentId: selected }),
+  ).toMatchObject({ stage: "mac" });
+  reconnected.close();
   connection.close();
 });

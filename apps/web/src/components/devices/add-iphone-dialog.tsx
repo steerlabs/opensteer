@@ -221,10 +221,15 @@ export function AddIphoneDialog({
                 />
               </div>
             ),
-            detail:
-              "More than one iPhone is plugged into this Mac. Choose the one your agent will use.",
+            detail: status.candidates.every((candidate) => candidate.reason)
+              ? "These iPhones need attention before they can be added."
+              : "Choose the iPhone your agent will use.",
             step,
-            title: again ? `Which iPhone is ${againName}?` : "Which iPhone?",
+            title: status.candidates.every((candidate) => candidate.reason)
+              ? "Check the connected iPhone"
+              : again
+                ? `Which iPhone is ${againName}?`
+                : "Which iPhone?",
             tone: "you",
           };
         if (status.action === "choose-wifi")
@@ -645,7 +650,7 @@ function CandidateList({
               framed
               key={candidate.candidateId}
               leading={leading}
-              note={said.title}
+              note={`${said.title}. ${said.detail}`}
               title={title}
             />
           );

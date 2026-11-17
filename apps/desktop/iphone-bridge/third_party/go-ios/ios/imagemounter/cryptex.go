@@ -376,7 +376,7 @@ func (m buildManifest) findCryptexIdentity(chip cryptexChip) (buildIdentity, err
 		}
 		return i, nil
 	}
-	return buildIdentity{}, fmt.Errorf("findCryptexIdentity: no Cryptex1 identity for chip 0x%x, type 0x%x and product class 0x%x. Is this a recent developer disk image?", chip.fchp, chip.typ, chip.clas)
+	return buildIdentity{}, ErrImageIncompatible
 }
 
 // cryptexDigests computes the SHA-384 digests of all manifest entries that get
