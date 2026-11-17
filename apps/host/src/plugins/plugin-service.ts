@@ -140,6 +140,9 @@ export class PluginService {
   #state: PluginServiceState = { status: "stopped", generation: 0 };
   #closed = false;
   #starting: Promise<void> | undefined;
+  #resourceCheck: Promise<void> | undefined;
+  #resourcesReady = false;
+  #resourceAbort = new AbortController();
   #restart: ReturnType<typeof setTimeout> | undefined;
   #failures = 0;
   #healthySince: number | undefined;
@@ -218,16 +221,24 @@ export class PluginService {
       });
       return;
     }
-    const unavailable = await pluginEngineUnavailableReason();
-    if (this.#closed) return;
-    if (unavailable) {
-      this.#set({ status: "unavailable", generation: 0, reason: unavailable });
-      return;
-    }
+    await this.#checkResources();
+    if (this.#closed || this.#state.status === "unavailable") return;
     this.#idleCheck ??= setInterval(() => {
       if (this.#state.status === "ready") void this.stopIfIdle().catch(() => {});
     }, idleCheckMs).unref();
     await this.#wake();
+  }
+  #checkResources(): Promise<void> {
+    return (this.#resourceCheck ??= pluginEngineUnavailableReason(
+      undefined,
+      undefined,
+      undefined,
+      this.#resourceAbort.signal,
+    ).then((reason) => {
+      if (this.#closed) return;
+      if (reason) this.#set({ status: "unavailable", generation: this.#state.generation, reason });
+      else this.#resourcesReady = true;
+    }));
   }
   #launchOnce(): Promise<void> {
     if (this.#state.status === "ready" && this.#child) return Promise.resolve();
@@ -331,8 +342,11 @@ export class PluginService {
           "unavailable",
           this.#state.reason ?? "Plugin engine is unavailable",
         );
-      const waiting =
-        this.#state.status === "restarting" ? this.#changed.promise : this.#launchOnce();
+      const waiting = !this.#resourcesReady
+        ? this.#checkResources()
+        : this.#state.status === "restarting"
+          ? this.#changed.promise
+          : this.#launchOnce();
       await new Promise<void>((resolve, reject) => {
         const abort = () => reject(signal?.reason);
         signal?.addEventListener("abort", abort, { once: true });
@@ -786,6 +800,8 @@ export class PluginService {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#resourceAbort.abort();
+    await this.#resourceCheck;
     if (this.#restart) clearTimeout(this.#restart);
     if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
     if (this.#idleCheck) clearInterval(this.#idleCheck);

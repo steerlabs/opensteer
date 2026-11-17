@@ -17,6 +17,7 @@ export async function pluginEngineUnavailableReason(
     const module = createRequire(import.meta.url)("workerd") as { default: string };
     return module.default;
   },
+  signal?: AbortSignal,
 ): Promise<string | undefined> {
   // There is no native Windows arm64 binary; do not silently depend on x64 emulation.
   if (
@@ -28,11 +29,25 @@ export async function pluginEngineUnavailableReason(
     const binary = resolveBinary();
     await access(binary, platform === "win32" ? constants.F_OK : constants.X_OK);
     try {
-      await promisify(execFile)(binary, ["--version"], {
+      signal?.throwIfAborted();
+      const running = promisify(execFile)(binary, ["--version"], {
         timeout: 5_000,
+        signal,
         windowsHide: true,
         maxBuffer: 4_096,
       });
+      const force = setTimeout(() => running.child.kill("SIGKILL"), 7_000).unref();
+      const closed = new Promise<void>((resolve) =>
+        running.child.once("close", () => {
+          clearTimeout(force);
+          resolve();
+        }),
+      );
+      try {
+        await running;
+      } finally {
+        await closed;
+      }
     } catch {
       return `Plugins are unavailable: workerd cannot run on this ${platform}/${architecture} system`;
     }

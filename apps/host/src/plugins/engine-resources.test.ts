@@ -1,3 +1,4 @@
+import * as resources from "./engine-resources.js";
 import { expect, it, vi } from "vitest";
 import { pluginEngineEntry, pluginEngineUnavailableReason } from "./engine-resources.js";
 import { PluginService } from "./plugin-service.js";
@@ -46,4 +47,46 @@ it("reports an executable that the OS cannot load as unavailable", async () => {
   expect(await pluginEngineUnavailableReason("linux", "x64", () => "/")).toContain(
     "workerd cannot run",
   );
+});
+
+it("holds a first request behind the same pending runtime check as startup", async () => {
+  const checked = Promise.withResolvers<string | undefined>();
+  const check = vi
+    .spyOn(resources, "pluginEngineUnavailableReason")
+    .mockReturnValue(checked.promise);
+  const service = new PluginService({
+    deployment: "personal",
+    databaseUrl: "postgres://unused.invalid/unused",
+    dataDirectory: "/unused",
+    owner: "fixture",
+    origin: "https://fixture.invalid",
+    credentialKey: new Uint8Array(32),
+    processEntry: new URL("file:///missing/engine.mjs"),
+  });
+  const starting = service.start();
+  const result = service
+    .health({}, { caller: "fixture", mode: "automatic" })
+    .catch((error: unknown) => error);
+  try {
+    await Promise.resolve();
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(service.state().status).toBe("stopped");
+    const abort = new AbortController();
+    const reason = new Error("Cancelled fixture");
+    const cancelled = service
+      .health({}, { caller: "fixture", mode: "automatic" }, abort.signal)
+      .catch((error: unknown) => error);
+    abort.abort(reason);
+    expect(await cancelled).toBe(reason);
+    checked.resolve("Plugins are unavailable: workerd cannot run on this system");
+    await starting;
+    expect(await result).toMatchObject({ code: "unavailable" });
+    expect(service.state().pid).toBeUndefined();
+  } finally {
+    checked.resolve("Plugins are unavailable: workerd cannot run on this system");
+    await starting;
+    await service.close();
+    await result;
+    check.mockRestore();
+  }
 });
