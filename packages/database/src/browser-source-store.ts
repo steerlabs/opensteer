@@ -428,10 +428,31 @@ export class BrowserSourceStore {
     readonly deploymentId: DeploymentId;
     readonly site: string;
     readonly preferredSourceId: BrowserSourceId;
+    readonly requestReview?: {
+      readonly requestId: RequestId;
+      readonly revision: string;
+      readonly browserSessionId: string;
+      readonly settlementSessionId?: string;
+    };
   }): Promise<BrowserSiteGrantRecord> {
     return commitPersonalMutation(this.#database, async (transaction, mutation) => {
       await lockSiteGrants(transaction, input.ownerId);
+      if (
+        input.requestReview &&
+        !(await browserSignInRequestDeliverableInTransaction(transaction, {
+          ownerId: input.ownerId,
+          requestId: input.requestReview.requestId,
+          expectedRevision: input.requestReview.revision,
+          scope: { sessionId: input.requestReview.browserSessionId, site: input.site },
+        }))
+      )
+        throw new OpensteerError({ code: "conflict", message: "The sign-in Request changed." });
       const grant = await upsertGrantInTransaction(transaction, input, null);
+      await requestSettlementActor(
+        transaction,
+        input.ownerId,
+        input.requestReview?.settlementSessionId,
+      );
       mutation.bumpResource("browser-profile");
       return grant;
     });
@@ -477,6 +498,7 @@ export class BrowserSourceStore {
     readonly requireGrant: boolean;
     readonly rememberSite: boolean;
     readonly requestId: RequestId | null;
+    readonly expectedRequestRevision?: string;
     readonly settlementSessionId?: string;
   }): Promise<BrowserSignInFence | null> {
     return commitPersonalMutation(this.#database, async (transaction) => {
@@ -507,12 +529,16 @@ export class BrowserSourceStore {
         !(await browserSignInRequestDeliverableInTransaction(transaction, {
           ownerId: input.ownerId,
           requestId: input.requestId,
+          ...(input.expectedRequestRevision
+            ? { expectedRevision: input.expectedRequestRevision }
+            : {}),
           scope: { sessionId: input.sessionId, site: input.site },
         }))
       ) {
         return "request-closed";
       }
       if (input.rememberSite && !grant) await assertGrantCapacity(transaction, input.ownerId);
+      await requestSettlementActor(transaction, input.ownerId, input.settlementSessionId);
       return null;
     });
   }

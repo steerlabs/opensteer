@@ -129,3 +129,5 @@ export { drainRunFinish } from "./run-finalization.js";
 export { transcriptIdentity, toolCallId } from "./transcript-store.js";
 export { getThreadForOwner } from "./thread-store.js";
 export { requestFromRow } from "./request-persistence.js";
+export { executionNodeFromRow } from "./thread-row-mappers.js";
+export { isEligibleBrowserRunner } from "./browser-home-store.js";

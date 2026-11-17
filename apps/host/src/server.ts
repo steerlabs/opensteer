@@ -2130,6 +2130,9 @@ export async function createHostServer(
             policy: command.policy,
             idempotency: { key: command.idempotencyKey, requestedBy: userId },
             ...("runnerId" in command ? { legacyRunnerId: command.runnerId } : {}),
+            ...("requestReview" in command && command.requestReview
+              ? { requestReview: command.requestReview }
+              : {}),
           });
           if (result.outcome === "updated" && !result.replayed) {
             if (runnerId && result.changed.shell)

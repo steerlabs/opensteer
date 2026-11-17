@@ -131,6 +131,7 @@ type DeliveryInput = {
   /** Create the site's grant on success (an owner's own click), rather than only use it. */
   readonly rememberSite: boolean;
   readonly requestId: RequestId | null;
+  readonly expectedRequestRevision?: string;
   readonly settlementSessionId?: string;
   /** A standing sign-in stops if the site stops being allowed before import. */
   readonly requireGrant: boolean;
@@ -725,8 +726,16 @@ export class BrowserSourceService {
       preferredSourceId: source.id,
       site,
       deploymentId: this.#deploymentId,
+      requestReview: {
+        requestId: input.requestId,
+        revision: input.expectedRevision,
+        browserSessionId: request.payload.sessionId,
+        ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
+      },
     });
-    const delivered = await this.#deliverRequest(request, source, input.settlementSessionId);
+    const delivered = await this.#inTurn(`request\0${request.id}`, () =>
+      this.#deliverRequestInTurn(request, source, input),
+    );
     if (delivered.status === "request-closed") {
       throw new OpensteerError({ code: "conflict", message: "The sign-in Request is closed." });
     }
@@ -924,20 +933,16 @@ export class BrowserSourceService {
   }
 
   /** One Request delivers at a time, and never alongside its decline. */
-  #deliverRequest(
-    request: Request,
-    source: BrowserSourceRecord,
-    settlementSessionId?: string,
-  ): Promise<RequestDelivery> {
+  #deliverRequest(request: Request, source: BrowserSourceRecord): Promise<RequestDelivery> {
     return this.#inTurn(`request\0${request.id}`, () =>
-      this.#deliverRequestInTurn(request, source, settlementSessionId),
+      this.#deliverRequestInTurn(request, source),
     );
   }
 
   async #deliverRequestInTurn(
     request: Request,
     source: BrowserSourceRecord,
-    settlementSessionId?: string,
+    review?: { readonly settlementSessionId?: string; readonly expectedRevision: string },
   ): Promise<RequestDelivery> {
     if (request.payload.kind !== "browser.sign-in") throw new Error("Not a sign-in Request");
     const { site } = request.payload;
@@ -961,7 +966,8 @@ export class BrowserSourceService {
     if (!this.#isConnected(source.id)) return problem("chrome-offline", site, source.name);
     const delivered = await this.#deliver({
       actor: "request",
-      ...(settlementSessionId ? { settlementSessionId } : {}),
+      ...(review?.settlementSessionId ? { settlementSessionId: review.settlementSessionId } : {}),
+      ...(review ? { expectedRequestRevision: review.expectedRevision } : {}),
       invocationId: invocationUuid(`request:${request.id}`),
       ownerId: request.requestedBy,
       rememberSite: false,
@@ -1167,6 +1173,10 @@ export class BrowserSourceService {
       ownerId: input.ownerId,
       rememberSite: input.rememberSite,
       requestId: input.requestId,
+      ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
+      ...(input.expectedRequestRevision
+        ? { expectedRequestRevision: input.expectedRequestRevision }
+        : {}),
       requireGrant: input.requireGrant,
       sessionId: target.sessionId,
       site,

@@ -26,12 +26,14 @@ import {
   type RunnerPeer,
   type RunnerRegistryHooks,
 } from "./index.js";
+const commitThrough: RunnerRegistryHooks["onEvent"] = async (_identity, event) => event.ordinal;
+
 describe("Runner connection registry", () => {
   it("accepts background text only once from its live issuing connection and rejects foreign attempts", async () => {
     const registry = new RunnerRegistry({
       hooks: {
         authorize: async () => undefined,
-        onEvent: async () => undefined,
+        onEvent: commitThrough,
       },
     });
     const environmentId = createId("environment");
@@ -146,7 +148,7 @@ describe("Runner connection registry", () => {
     const registry = new RunnerRegistry({
       hooks: {
         authorize: vi.fn(async () => undefined),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
         onShellFullDiskAccess: hook,
       },
     });
@@ -200,7 +202,7 @@ describe("Runner connection registry", () => {
       const registry = new RunnerRegistry({
         hooks: {
           authorize: vi.fn(async () => undefined),
-          onEvent: vi.fn(async () => undefined),
+          onEvent: vi.fn(commitThrough),
           onShellFullDiskAccess: hook,
         },
       });
@@ -243,7 +245,7 @@ describe("Runner connection registry", () => {
       onDisconnect: vi.fn(
         async (_identity: RunnerIdentity, _scope: RunnerDisconnectScope) => undefined,
       ),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -275,7 +277,7 @@ describe("Runner connection registry", () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onDisconnect: vi.fn(async () => undefined),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -307,7 +309,7 @@ describe("Runner connection registry", () => {
     });
     const hooks = {
       authorize: vi.fn(async () => authorization),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -331,7 +333,7 @@ describe("Runner connection registry", () => {
     const registry = new RunnerRegistry({
       hooks: {
         authorize: vi.fn(async () => undefined),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
       },
     });
     const environmentId = createId("environment");
@@ -374,7 +376,7 @@ describe("Runner connection registry", () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onCommandAccepted: vi.fn(async () => undefined),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -426,7 +428,7 @@ describe("Runner connection registry", () => {
       hooks: {
         authorize: vi.fn(async () => undefined),
         onCommandAccepted,
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
       },
     });
     const environmentId = createId("environment");
@@ -459,7 +461,7 @@ describe("Runner connection registry", () => {
   it("survives its Runner disconnecting during an execute's last authority check", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -488,7 +490,7 @@ describe("Runner connection registry", () => {
   it("never sends an execute whose Run was stopped during its last authority check", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -540,7 +542,7 @@ describe("Runner connection registry", () => {
   it("fences only a concurrent execute while an inactive interrupt is being delivered", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -621,7 +623,7 @@ describe("Runner connection registry", () => {
   it("releases repeated active cancellation fences at terminal events and disconnect", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
       onTriggerResult: vi.fn(async () => undefined),
     };
     const registry = new RunnerRegistry({
@@ -786,7 +788,10 @@ describe("Runner connection registry", () => {
     });
     const hooks = {
       authorize: vi.fn(async () => undefined),
-      onEvent: vi.fn(async () => commit),
+      onEvent: vi.fn<RunnerRegistryHooks["onEvent"]>(async (_identity, event) => {
+        await commit;
+        return event.ordinal;
+      }),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -840,7 +845,7 @@ describe("Runner connection registry", () => {
     });
     const hooks = {
       authorize: vi.fn(async () => undefined),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
       onTriggerResult: vi.fn(async () => commit),
     };
     const registry = new RunnerRegistry({
@@ -893,7 +898,7 @@ describe("Runner connection registry", () => {
   it("fails closed without sending when the Runner cannot run the command harness", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -929,7 +934,7 @@ describe("Runner connection registry", () => {
   it("returns a retry disposition when Runner capacity rejects a command temporarily", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -961,7 +966,7 @@ describe("Runner connection registry", () => {
     const registry = new RunnerRegistry({
       hooks: {
         authorize: vi.fn(async () => undefined),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
       },
     });
     const runnerId = createId("runner");
@@ -987,7 +992,7 @@ describe("Runner connection registry", () => {
     const registry = new RunnerRegistry({
       hooks: {
         authorize: vi.fn(async () => undefined),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
       },
     });
     const environmentId = createId("environment");
@@ -1014,7 +1019,7 @@ describe("Runner connection registry", () => {
     const registry = new RunnerRegistry({
       hooks: {
         authorize: vi.fn(async () => undefined),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
       },
     });
     const environmentId = createId("environment");
@@ -1065,7 +1070,7 @@ describe("Runner connection registry", () => {
         },
       ]),
       onDisconnect: vi.fn(async () => undefined),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -1156,7 +1161,7 @@ describe("Runner connection registry", () => {
       authorize: vi.fn(async () => undefined),
       onAttach: vi.fn(async () => []),
       onDisconnect: vi.fn(async () => undefined),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -1191,7 +1196,7 @@ describe("Runner connection registry", () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onDisconnect: vi.fn(async () => undefined),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -1226,7 +1231,7 @@ describe("Runner connection registry", () => {
       commandAckTimeoutMs: 1_000,
       hooks: {
         authorize: vi.fn(async () => undefined),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
         onLive,
       },
     });
@@ -1320,7 +1325,7 @@ describe("Runner connection registry", () => {
       onDisconnect: vi.fn(
         async (_identity: RunnerIdentity, _scope: RunnerDisconnectScope) => undefined,
       ),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -1374,7 +1379,7 @@ describe("Runner connection registry", () => {
         .fn<(_identity: RunnerIdentity, scope: RunnerDisconnectScope) => Promise<void>>()
         .mockRejectedValueOnce(new Error("database temporarily unavailable"))
         .mockResolvedValue(undefined),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -1410,7 +1415,7 @@ describe("Runner connection registry", () => {
         .fn<() => Promise<void>>()
         .mockRejectedValueOnce(new Error("temporary recovery failure"))
         .mockImplementation(async () => hook),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -1449,7 +1454,7 @@ describe("Runner connection registry", () => {
         disconnectCount += 1;
         if (disconnectCount === 1) await firstDisconnect;
       }),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -1505,7 +1510,7 @@ describe("Runner connection registry", () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onDisconnect: vi.fn(async () => undefined),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -1527,7 +1532,7 @@ describe("Runner connection registry", () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onDisconnect: vi.fn(async () => undefined),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       hooks,
@@ -1553,7 +1558,7 @@ describe("Runner connection registry", () => {
       authorize: vi.fn(async () => {
         available.authorize = registry.isAvailable(environmentId);
       }),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
       onRegistered: vi.fn(async () => {
         available.registered = registry.isAvailable(environmentId);
         welcomed = peer.messages.some((message) => message.type === "host.welcome");
@@ -1580,7 +1585,7 @@ describe("Runner connection registry", () => {
   it("keeps a Runner connected when its registration hook fails", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
       onRegistered: vi.fn(async () => {
         throw new Error("Harness catalog capture failed");
       }),
@@ -1620,7 +1625,7 @@ describe("Runner connection registry", () => {
     ) {
       const hooks = {
         authorize: vi.fn(async () => undefined),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
         ...(onHarnessCatalogInvalidated
           ? {
               onHarnessCatalogInvalidated,
@@ -2476,7 +2481,7 @@ describe("MCP image rendering", () => {
     const registry = new RunnerRegistry({
       hooks: {
         authorize: vi.fn(async () => undefined),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
       },
     });
     const environmentId = createId("environment");
@@ -2622,7 +2627,7 @@ describe("Runner connection fences and leases", () => {
     const registry = new RunnerRegistry({
       hooks: {
         authorize: vi.fn(async () => undefined),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
       },
     });
     const runnerId = createId("runner");
@@ -2649,7 +2654,7 @@ describe("Runner connection fences and leases", () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onDisconnect: vi.fn(async () => undefined),
-      onEvent: vi.fn(async () => undefined),
+      onEvent: vi.fn(commitThrough),
     };
     const registry = new RunnerRegistry({
       connectionLeaseMs: 50,
@@ -2671,7 +2676,7 @@ describe("Runner connection fences and leases", () => {
     const registry = new RunnerRegistry({
       hooks: {
         authorize: vi.fn(async () => undefined),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
       },
     });
     const runnerId = createId("runner");
@@ -2729,7 +2734,7 @@ describe("Runner connection fences and leases", () => {
     const registry = new RunnerRegistry({
       hooks: {
         authorize: vi.fn(async () => undefined),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
       },
     });
     const peer = new MemoryRunnerPeer("runner");
@@ -2757,7 +2762,7 @@ describe("Runner auxiliary streams", () => {
     const registry = new RunnerRegistry({
       hooks: {
         authorize: vi.fn(async () => undefined),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
       },
     });
     const runnerId = createId("runner");
@@ -2781,7 +2786,7 @@ describe("Runner auxiliary streams", () => {
     const registry = new RunnerRegistry({
       hooks: {
         authorize: vi.fn(async () => undefined),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
       },
     });
     const peer = new MemoryRunnerPeer("runner");
@@ -2800,7 +2805,7 @@ describe("Runner auxiliary streams", () => {
       hooks: {
         authorize: vi.fn(async () => undefined),
         onAuxiliaryLost: (_stream, reason) => lost.push(reason),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
       },
     });
     const runnerId = createId("runner");
@@ -2836,7 +2841,7 @@ describe("Runner auxiliary streams", () => {
         authorize: vi.fn(async () => undefined),
         onAuxiliaryLost: (_stream, reason) => lost.push(reason),
         onDisconnect: vi.fn(async () => undefined),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
       },
       now: () => now,
     });
@@ -2868,7 +2873,7 @@ describe("disconnecting one named connection", () => {
       hooks: {
         authorize: vi.fn(async () => undefined),
         onDisconnect: vi.fn(async () => undefined),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
       },
     });
     const runnerId = createId("runner");
@@ -2911,7 +2916,7 @@ describe("disconnecting the computers that arrived over the route", () => {
         authorize: vi.fn(async () => undefined),
         onAuxiliaryLost: (_stream, reason) => lost.push(reason),
         onDisconnect: vi.fn(async () => undefined),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
       },
     });
     const mainId = createId("runner");
@@ -3044,7 +3049,7 @@ describe("Runner voice relay", () => {
     const registry = new RunnerRegistry({
       hooks: {
         authorize: vi.fn(async () => undefined),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
       },
     });
     const environmentId = createId("environment");
@@ -3209,7 +3214,7 @@ it("routes correlated app requests only to the folder computer and cancels pendi
   const registry = new RunnerRegistry({
     hooks: {
       authorize: async () => undefined,
-      onEvent: async () => undefined,
+      onEvent: commitThrough,
     },
   });
   const environmentId = createId("environment");
@@ -3338,7 +3343,7 @@ describe("long Request holds", () => {
     const registry = new RunnerRegistry({
       hooks: {
         authorize: vi.fn(async () => undefined),
-        onEvent: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
       },
     });
     const environmentId = createId("environment");

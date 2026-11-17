@@ -48,6 +48,7 @@ interface PersonalSyncPort {
     signal: AbortSignal,
   ): Promise<readonly Resource[]>;
   readLive?(scope: DetailScope, request?: LiveResync): readonly PersonalLiveUpdate[];
+  onFailure?(error: unknown): void;
   close(reason: string): void;
 }
 
@@ -410,8 +411,10 @@ export class PersonalSyncSocket {
       return;
     current.sending = true;
     void this.#drain(current)
-      .catch(() => {
-        if (this.#matches(current)) this.close("Personal scope delivery failed");
+      .catch((error: unknown) => {
+        if (!this.#matches(current)) return;
+        this.#port.onFailure?.(error);
+        this.close("Personal scope delivery failed");
       })
       .finally(() => {
         current.sending = false;
@@ -523,7 +526,7 @@ export class PersonalSyncSocket {
     if (!guard()) return false;
     const parsed = ScopedHostMessageSchema.safeParse(frame);
     if (!parsed.success) {
-      if (frame.type !== "host.changes") throw new Error("Invalid personal sync frame");
+      if (frame.type !== "host.changes") throw parsed.error;
       const sent = await this.#send(
         current,
         {

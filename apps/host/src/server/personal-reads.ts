@@ -1,7 +1,9 @@
 import { OpensteerError, SequenceSchema, ThreadIdSchema, type ThreadId } from "@opensteer/core";
 import {
+  executionNodeFromRow,
   findPersonalSettings,
   getThreadForOwner,
+  isEligibleBrowserRunner,
   readPersonalDetailSnapshot,
   readPersonalShellSnapshot,
   readPersonalTaskPage,
@@ -9,7 +11,11 @@ import {
   readTranscriptOverlays,
   readTranscriptPage,
 } from "@opensteer/database";
-import { personalScopeKey, withPersonalSyncRead } from "@opensteer/database/personal-sync-store";
+import {
+  itemView,
+  personalScopeKey,
+  withPersonalSyncRead,
+} from "@opensteer/database/personal-sync-store";
 import { hostApi, rpcSuccess, type HostApiHandlers } from "@opensteer/protocol";
 import {
   PersonalChangeSchema,
@@ -54,14 +60,18 @@ function changed(): never {
   });
 }
 
-function taskBoundary(before: string | undefined) {
+function taskBoundary(before: string | undefined, window: "recent" | "active" | "done") {
   if (!before) return {};
   try {
-    return {
-      before: z
-        .strictObject({ at: z.iso.datetime(), id: ThreadIdSchema })
-        .parse(JSON.parse(Buffer.from(before, "base64url").toString("utf8"))),
-    };
+    const cursor = z
+      .strictObject({
+        at: z.iso.datetime(),
+        id: ThreadIdSchema,
+        window: z.enum(["recent", "active", "done"]),
+      })
+      .parse(JSON.parse(Buffer.from(before, "base64url").toString("utf8")));
+    if (cursor.window !== window) throw new Error("Wrong task window");
+    return { before: cursor };
   } catch {
     throw new OpensteerError({ code: "bad_request", message: "Invalid task page cursor." });
   }
@@ -121,9 +131,32 @@ export function createPersonalReads(
       });
       if (cut.kind !== "snapshot") return cut;
       const thread = await getThreadForOwner(tx, scope.threadId, session.user.id);
-      return thread
-        ? { ...cut, snapshot: { ...cut.snapshot, thread: { ...cut.snapshot.thread, thread } } }
-        : cut;
+      if (!thread) return cut;
+      let snapshot = { ...cut.snapshot, thread: { ...cut.snapshot.thread, thread } };
+      if (scope.kind === "node") {
+        const node = await tx
+          .selectFrom("executionNodes as node")
+          .innerJoin("runs as run", "run.id", "node.runId")
+          .selectAll("node")
+          .where("node.id", "=", scope.nodeId)
+          .where("run.threadId", "=", scope.threadId)
+          .executeTakeFirst();
+        const card = await tx
+          .selectFrom("transcriptItems")
+          .selectAll()
+          .where("id", "=", `node:${scope.nodeId}`)
+          .where("threadId", "=", scope.threadId)
+          .executeTakeFirst();
+        if (node && card) {
+          const subject = itemView(card);
+          if (subject.kind === "node")
+            snapshot = {
+              ...snapshot,
+              nodeSubject: { ...subject, node: executionNodeFromRow(node) },
+            };
+        }
+      }
+      return { ...cut, snapshot };
     });
 
   const readCut = async (
@@ -241,56 +274,73 @@ export function createPersonalReads(
       );
     },
     "personal.readiness.get": async (input, context) => {
-      await withPersonalSyncRead(database, (tx) =>
-        resources.authorize(tx, requireSession(context).user.id),
-      );
-      const ready =
-        input.kind === "runner"
-          ? dependencies.runners.identityForEnvironment(input.environmentId)?.runnerId ===
-            input.runnerId
-          : (
-              await dependencies.browser.workspaceBootstrap(requireSession(context).user.id)
-            ).placements.some(
-              (entry) =>
-                entry.environmentIds.includes(input.environmentId) &&
-                entry.runtimeId === input.runtimeId &&
-                entry.available,
-            );
+      const viewerId = requireSession(context).user.id;
+      const ready = await withPersonalSyncRead(database, async (tx) => {
+        await resources.authorize(tx, viewerId);
+        const environment = await tx
+          .selectFrom("executionEnvironments")
+          .select("runnerId")
+          .where("id", "=", input.environmentId)
+          .executeTakeFirst();
+        const runnerId = environment?.runnerId;
+        if (!runnerId) return false;
+        if (input.kind === "runner")
+          return (
+            input.runnerId === runnerId &&
+            dependencies.runners.identityForEnvironment(input.environmentId)?.runnerId === runnerId
+          );
+        return (
+          (await isEligibleBrowserRunner(tx, viewerId, runnerId)) &&
+          dependencies.browser.isPlacementReady(runnerId, input.runtimeId)
+        );
+      });
       return rpcSuccess({ ready });
     },
     "tasks.page": async (input, context) => {
       const viewerId = requireSession(context).user.id;
-      const page = await readPersonalTaskPage(database, {
-        viewerId,
-        window: input.done ? "done" : "recent",
-        ...(input.limit ? { limit: input.limit } : {}),
-        ...taskBoundary(input.before),
+      const window = input.done ? "done" : "recent";
+      const result = await withPersonalSyncRead(database, async (tx) => {
+        const page = await readPersonalTaskPage(tx, {
+          viewerId,
+          window,
+          ...(input.limit ? { limit: input.limit } : {}),
+          ...taskBoundary(input.before, window),
+        });
+        const tasks = [];
+        let last: { at: string; id: ThreadId; window: typeof window } | null = null;
+        let byteCount = 2;
+        for (const task of page.tasks) {
+          const thread = await getThreadForOwner(tx, task.id, viewerId);
+          if (!thread) return unavailable();
+          const entry = {
+            thread,
+            failure: task.failurePreview?.slice(0, 280) ?? null,
+            lastReply: task.lastReplyPreview?.slice(0, 280) ?? null,
+          };
+          const bytes = Buffer.byteLength(JSON.stringify(entry)) + (tasks.length ? 1 : 0);
+          if (byteCount + bytes > 63 * 1024) {
+            if (!last) throw new Error("A single task exceeded the page budget");
+            break;
+          }
+          byteCount += bytes;
+          tasks.push(entry);
+          last = { at: task.cursorAt, id: task.id, window };
+        }
+        const hasMore = page.hasMore || tasks.length < page.tasks.length;
+        return {
+          asOfSequence: SequenceSchema.parse(page.revision),
+          tasks,
+          window: {
+            hasMore,
+            itemCount: tasks.length,
+            totalItems: tasks.length,
+            byteCount,
+            nextBefore:
+              hasMore && last ? Buffer.from(JSON.stringify(last)).toString("base64url") : null,
+          },
+        };
       });
-      const tasks = await Promise.all(
-        page.tasks.map(async (task) => {
-          const thread = await store.getThreadForOwner(task.id, viewerId);
-          return thread
-            ? {
-                thread,
-                failure: task.failurePreview?.slice(0, 280) ?? null,
-                lastReply: task.lastReplyPreview?.slice(0, 280) ?? null,
-              }
-            : null;
-        }),
-      );
-      return rpcSuccess({
-        asOfSequence: SequenceSchema.parse(page.revision),
-        tasks: tasks.filter((task) => task !== null),
-        window: {
-          hasMore: page.hasMore,
-          itemCount: tasks.filter((task) => task !== null).length,
-          totalItems: tasks.filter((task) => task !== null).length,
-          byteCount: Buffer.byteLength(JSON.stringify(tasks)),
-          nextBefore: page.nextBefore
-            ? Buffer.from(JSON.stringify(page.nextBefore)).toString("base64url")
-            : null,
-        },
-      });
+      return rpcSuccess(result);
     },
     "thread.snapshot.get": async (input, context) => {
       const cut = await detail(requireSession(context), detailScope(input));

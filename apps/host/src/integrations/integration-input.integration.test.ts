@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Request, RequestResponse } from "@opensteer/core";
 import { IntegrationPlatformStore } from "@opensteer/database";
+import type { PersonalCommitReaction } from "@opensteer/database/personal-mutation";
 import { LocalMcpServers } from "@opensteer/runner";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { testRpcData } from "../server/test-host-api-request.js";
@@ -125,6 +126,10 @@ integration("input from a computer's MCP server", () => {
         answers: { code: [], count: [], enabled: [], ratio: [], room: [] },
       },
     });
+    expect(s.reactions.filter((reaction) => reaction.requestId === request.id)).toEqual([
+      expect.objectContaining({ status: "pending", opened: true, kind: "integration.input" }),
+      expect.objectContaining({ status: "fulfilled", opened: false, kind: "integration.input" }),
+    ]);
     await assertNoAnswers(s.host, request, ["Q!Z?", "6723672367236723", "-13.75"]);
   }, 60_000);
 
@@ -384,7 +389,13 @@ async function scenario(longRequestHold = true) {
   const work = await mkdtemp(join(tmpdir(), "opensteer-integration-input-"));
   closers.push(() => rm(work, { recursive: true, force: true }));
   const plugin = await pluginFixture(work);
-  const host = await startPrivateMachineHost(database.url, { remoteAccess: true });
+  const reactions: Extract<PersonalCommitReaction, { type: "requestChanged" }>[] = [];
+  const host = await startPrivateMachineHost(database.url, {
+    remoteAccess: true,
+    onPersonalReaction: (reaction) => {
+      if (reaction.type === "requestChanged") reactions.push(reaction);
+    },
+  });
   closers.push(() => host.close());
   const caller = await connectCallerMachine(host, {
     name: "Caller",
@@ -466,6 +477,7 @@ async function scenario(longRequestHold = true) {
     platform,
     caller: toolCaller,
     callable,
+    reactions,
     computer,
     address: operation(search, "pair").address,
   };

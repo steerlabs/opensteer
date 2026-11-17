@@ -64,13 +64,13 @@ export function attachPersonalSocket(options: {
       try {
         return await reads.readCut(session, surface, scope, cursor, anchorItemId, selectedThreadId);
       } catch (error) {
-        options.logFailure(error);
         if (error instanceof OpensteerError && ["forbidden", "unauthorized"].includes(error.code))
           socket.close(authorityCloseCode, "Deployment subscription forbidden");
         throw error;
       }
     },
     readLive: (scope, request) => options.liveText?.read(scope, request) ?? [],
+    onFailure: options.logFailure,
     readResources: (kinds, installed, signal) =>
       resources.watched(session, kinds, installed, signal),
     send,

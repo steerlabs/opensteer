@@ -1,30 +1,25 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { expect, it } from "vitest";
 import WebSocket from "ws";
-import { createId } from "@opensteer/core";
 import { apiVersionHeaders } from "@opensteer/deployment-authority";
-import {
-  cloneTestDatabase,
-  ownTestDatabaseProducer,
-} from "@opensteer/database/test-support/database";
+import { cloneTestDatabase } from "@opensteer/database/test-support/database";
+import { createPersonalRunFixturePort } from "@opensteer/database/test-support/personal-run";
 import { ScopedHostMessageSchema, type ScopedHostMessage } from "@opensteer/protocol/personal-sync";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
-  startPersonalRuntime,
-  type PersonalRuntime,
-} from "../runtime/personal-startup.test-support.js";
+  claimPrivateMachineOwner,
+  startPrivateMachineHost,
+  type PrivateMachineHost,
+} from "../integrations/personal-machine.test-support.js";
 
 function deadline<T>(work: Promise<T>, purpose: string) {
   return withTimeout(work, 5_000, { timeoutError: () => new Error(purpose) });
 }
 
-async function connect(runtime: PersonalRuntime, cookie: string) {
-  const url = new URL("/v1/realtime", runtime.hostOrigin);
+async function connect(origin: URL, cookie: string) {
+  const url = new URL("/v1/realtime", origin);
   url.protocol = "ws:";
   const socket = new WebSocket(url, {
-    headers: { ...apiVersionHeaders("personal"), cookie, origin: runtime.hostOrigin.origin },
+    headers: { ...apiVersionHeaders("personal"), cookie, origin: origin.origin },
   });
   const frames: ScopedHostMessage[] = [];
   let terminal: Error | undefined;
@@ -70,8 +65,7 @@ async function connect(runtime: PersonalRuntime, cookie: string) {
 
 it("delivers an overlapping commit and replaces a held detail generation on a real Host socket", async () => {
   const database = await cloneTestDatabase("host");
-  const home = await mkdtemp(join(tmpdir(), "opensteer-scoped-socket-"));
-  let runtime: PersonalRuntime | undefined;
+  let runtime: PrivateMachineHost | undefined;
   const sockets: WebSocket[] = [];
   const held = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
@@ -79,42 +73,37 @@ it("delivers an overlapping commit and replaces a held detail generation on a re
   const releaseReplacement = Promise.withResolvers<void>();
   let cuts = 0;
   try {
-    const owned = await ownTestDatabaseProducer(database.url, async () => {
-      const runtime = await startPersonalRuntime({
-        databaseUrl: database.url,
-        agentHome: { computerId: createId("runner"), path: home },
-        hostLog: (line) => {
-          if (line.includes("Personal scope read failed")) console.error(line);
-        },
-        onPersonalScopeCut: async (scope) => {
-          if (scope.kind !== "thread") return;
-          switch (++cuts) {
-            case 1:
-              held.resolve();
-              await deadline(release.promise, "Test did not release the first Host cut");
-              break;
-            case 3:
-              replacing.resolve();
-              await deadline(releaseReplacement.promise, "Test did not release the replaced cut");
-              break;
-          }
-        },
-      });
-      return { runtime, close: () => runtime.close() };
+    runtime = await startPrivateMachineHost(database.url, {
+      logger: {
+        level: "warn",
+        stream: new Writable({
+          write(chunk: Buffer, _encoding, done) {
+            const entry = JSON.parse(chunk.toString());
+            if (entry.msg === "Personal scope read failed")
+              console.error(entry.msg, { code: entry.code, issuePaths: entry.issuePaths });
+            done();
+          },
+        }),
+      },
+      onPersonalScopeCut: async (scope) => {
+        if (scope.kind !== "thread") return;
+        switch (++cuts) {
+          case 1:
+            held.resolve();
+            await deadline(release.promise, "Test did not release the first Host cut");
+            break;
+          case 3:
+            replacing.resolve();
+            await deadline(releaseReplacement.promise, "Test did not release the replaced cut");
+            break;
+        }
+      },
     });
-    runtime = owned.runtime;
-    const model = runtime.initialCatalog.models[0]!;
-    const created = await runtime.api["commands.dispatch"]({
-      type: "thread.create",
-      idempotencyKey: crypto.randomUUID(),
-      environmentId: runtime.environmentId,
-      harnessInstanceId: runtime.harnessInstanceId,
-      modelSelection: { providerId: model.providerId, modelId: model.modelId, options: {} },
-      title: "Scoped socket task",
+    const { threadId } = await createPersonalRunFixturePort(runtime.store).createTask({
+      ownerId: runtime.ownerId,
+      suffix: "scoped-socket",
     });
-    if (!created.ok || created.data.type !== "thread.create") throw new Error("Task setup failed");
-    const threadId = created.data.thread.id;
-    const first = await connect(runtime, runtime.sessionCookie);
+    const first = await connect(runtime.origin, runtime.ownerHeaders.cookie);
     sockets.push(first.socket);
     const selected = {
       subscriptionId: "detail:0",
@@ -141,7 +130,10 @@ it("delivers an overlapping commit and replaces a held detail generation on a re
       ]),
       "Host did not register the selected scope",
     );
-    expect(first.frames.map(({ type }) => type)).toContain("host.synchronized");
+    await first.read(
+      (frame) => frame.type === "host.synchronized" && frame.scope.kind === "shell",
+      "The shell did not synchronize before the first detail cut",
+    );
     const changed = await runtime.api["commands.dispatch"]({
       type: "thread.done.set",
       threadId,
@@ -156,7 +148,9 @@ it("delivers an overlapping commit and replaces a held detail generation on a re
     );
     expect(overlap).toMatchObject({ generation: 1, scope: selected.scope });
 
-    const second = await connect(runtime, runtime.sessionCookie);
+    const secondOwner = await claimPrivateMachineOwner(runtime.runtime, runtime.config);
+    expect(secondOwner.cookie === runtime.ownerHeaders.cookie).toBe(false);
+    const second = await connect(runtime.origin, secondOwner.cookie);
     sockets.push(second.socket);
     second.send(attach);
     await deadline(replacing.promise, "The second socket did not enter its initial detail cut");
@@ -187,6 +181,6 @@ it("delivers an overlapping commit and replaces a held detail generation on a re
     for (const socket of sockets) socket.terminate();
     await runtime?.close();
     await database.drop();
-    await rm(home, { recursive: true, force: true });
   }
 });
+import { Writable } from "node:stream";

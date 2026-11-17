@@ -4214,6 +4214,7 @@ type BrowserSignInRequestScope = {
   readonly settlementSessionId?: string;
   readonly requestId: RequestId;
   readonly ownerId: UserId;
+  readonly expectedRevision?: string;
   readonly scope?: {
     readonly sessionId: string;
     readonly site: string;
@@ -4225,6 +4226,7 @@ function pendingBrowserSignInMatches(
 ): row is RequestRow {
   if (
     !row ||
+    (input.expectedRevision !== undefined && row.revision !== input.expectedRevision) ||
     row.kind !== "browser.sign-in" ||
     row.status !== "pending" ||
     row.requestedBy !== input.ownerId

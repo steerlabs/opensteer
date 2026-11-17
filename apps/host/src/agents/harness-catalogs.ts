@@ -48,6 +48,19 @@ export interface HarnessCatalogRecorder {
   }): Promise<readonly HarnessInstanceCatalog[]>;
 }
 
+interface HarnessCatalogReader {
+  listHarnessCatalogs(environmentIds: readonly EnvironmentId[]): Promise<
+    readonly {
+      readonly capturedAt: Date;
+      readonly catalog: HarnessInstanceCatalog;
+      readonly environmentId: EnvironmentId;
+      readonly harnessInstanceId: HarnessInstanceId;
+    }[]
+  >;
+}
+
+export const harnessCatalogMaxAgeMs = 30 * 60 * 1_000;
+
 export interface HarnessCatalogInventoryStore extends HarnessCatalogRecorder {
   listHarnessInstances(options?: {
     readonly environmentIds?: readonly EnvironmentId[];

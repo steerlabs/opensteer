@@ -3,6 +3,7 @@ import { deviceOwnershipIn } from "./machine-ownership.js";
 import type { DeviceId } from "@opensteer/core";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { fulfillDeviceAccessRequestsInTransaction } from "./request-store.js";
+import { assertRequestRevision } from "./request-persistence.js";
 import { type AgentEvent, deploymentPolicy } from "@opensteer/core";
 import { withDatabaseTransaction } from "./connection.js";
 import { type CommandRow, type DatabaseSchema } from "./schema.js";
@@ -20,6 +21,7 @@ import {
   type RunnerId,
   type RunId,
   type ThreadId,
+  type RequestId,
   OpensteerError,
   runnerRunsItsDeployment,
 } from "@opensteer/core";
@@ -274,6 +276,7 @@ export async function updateDeviceAccessPolicy(
     readonly policy: MachineAccessPolicy;
     readonly deviceId: DeviceId;
     readonly legacyRunnerId?: RunnerId;
+    readonly requestReview?: { readonly requestId: RequestId; readonly revision: string };
   },
 ): Promise<
   | { readonly outcome: "conflict"; readonly replayed: boolean }
@@ -292,6 +295,7 @@ export async function updateDeviceAccessPolicy(
   const request = {
     expectedRevision: input.expectedRevision,
     policy: input.policy,
+    ...(input.requestReview ? { requestReview: input.requestReview } : {}),
     ...(input.legacyRunnerId ? { runnerId: input.legacyRunnerId } : { deviceId: input.deviceId }),
   };
   return withPersonalTransaction(database, async (transaction) => {
@@ -353,6 +357,25 @@ export async function updateDeviceAccessPolicy(
       browser: input.policy.browser ?? previous.browser,
       apps: input.policy.apps ?? previous.apps,
     };
+    if (input.requestReview) {
+      const request = await transaction
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", input.requestReview.requestId)
+        .where("requestedBy", "=", input.ownerId)
+        .where("status", "=", "pending")
+        .executeTakeFirst();
+      if (
+        request?.payload.kind !== "device.access" ||
+        request.payload.machineId !== input.deviceId ||
+        !deviceAccess(policy)[request.payload.access]
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          message: "The device Request is unavailable",
+        });
+      assertRequestRevision(request, input.requestReview.revision);
+    }
     const self = await transaction
       .selectFrom("deviceDrivers")
       .select("runnerId")
