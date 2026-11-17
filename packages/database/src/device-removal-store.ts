@@ -131,28 +131,31 @@ export async function removeDevice(
   ownerId: UserId,
   options: { readonly administration?: AdministrationCommandIdentity } = {},
 ): Promise<DeviceRemovalEffects> {
-  return withPersonalTransaction(database, (transaction) =>
-    administrationCommand(transaction, options.administration, async () => {
-      const device = await transaction
-        .selectFrom("devices")
-        .selectAll()
-        .where("id", "=", deviceId)
-        .executeTakeFirst();
-      if (
-        !device ||
-        (device.ownerKind === "user" && device.ownerUserId !== ownerId) ||
-        (!device.removedAt &&
-          (await deviceOwnershipIn(transaction, deviceId))?.effectiveOwner !== ownerId)
-      )
-        throw new OpensteerError({ code: "not_found", message: "Device not found" });
-      const self = await transaction
-        .selectFrom("deviceDrivers")
-        .select("runnerId")
-        .where("deviceId", "=", deviceId)
-        .where("role", "=", "self")
-        .executeTakeFirst();
-      if (self)
-        return revokeRunner(transaction, links, self.runnerId, ownerId, { allowDeployment: true });
+  return withPersonalTransaction(database, async (transaction) => {
+    const device = await transaction
+      .selectFrom("devices")
+      .selectAll()
+      .where("id", "=", deviceId)
+      .executeTakeFirst();
+    if (
+      !device ||
+      (device.ownerKind === "user" && device.ownerUserId !== ownerId) ||
+      (!device.removedAt &&
+        (await deviceOwnershipIn(transaction, deviceId))?.effectiveOwner !== ownerId)
+    )
+      throw new OpensteerError({ code: "not_found", message: "Device not found" });
+    const self = await transaction
+      .selectFrom("deviceDrivers")
+      .select("runnerId")
+      .where("deviceId", "=", deviceId)
+      .where("role", "=", "self")
+      .executeTakeFirst();
+    if (self)
+      return revokeRunner(transaction, links, self.runnerId, ownerId, {
+        ...options,
+        allowDeployment: true,
+      });
+    return administrationCommand(transaction, options.administration, async () => {
       const effects = device.removedAt
         ? { removedDeviceIds: [deviceId], detachedDeviceBindings: [] as DeviceDriverIdentity[] }
         : await lockDeviceRemovalInTransaction(transaction, { deviceId });
@@ -207,6 +210,6 @@ export async function removeDevice(
         requestEvents: [...revoked.requestEvents, ...events],
         revokedComputerConnectionIds: revoked.connectionIds,
       };
-    }),
-  );
+    });
+  });
 }

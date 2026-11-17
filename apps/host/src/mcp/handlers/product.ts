@@ -1,4 +1,4 @@
-import { DeviceIdSchema } from "@opensteer/core";
+import { RunnerIdSchema } from "@opensteer/core";
 import type { TabServicePort } from "../../tabs/ports.js";
 import { PersonShowTargetSchema } from "@opensteer/core";
 type DelegationCall = ToolCall<"opensteer_task_delegate"> & {
@@ -1456,9 +1456,7 @@ export class ProductToolHandlers {
     if (input.access === "full_disk_access") {
       const result = await this.#machineFullDiskAccess.request({
         callId,
-        computerId: await this.#store.requireDeviceSelfRunnerId(
-          DeviceIdSchema.parse(input.computerId),
-        ),
+        computerId: RunnerIdSchema.parse(input.computerId),
         reason: input.reason,
         claims,
       });

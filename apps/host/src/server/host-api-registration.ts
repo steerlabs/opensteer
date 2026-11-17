@@ -12,7 +12,7 @@ import {
   type RpcDeclaration,
   type RpcResult,
 } from "@opensteer/protocol";
-import { OpensteerError, unsupportedVersionReason } from "@opensteer/core";
+import { deploymentPolicy, OpensteerError, unsupportedVersionReason } from "@opensteer/core";
 import { attachmentMaxBytes } from "@opensteer/core";
 import {
   apiCurrentQueryParameter,
@@ -285,7 +285,8 @@ function rpcInput<Declaration extends RpcDeclaration>(
     declaration.method === "POST" && !declaration.binaryRequest
       ? request.body
       : JSON.parse(z.strictObject({ input: z.string().max(262_144) }).parse(request.query).input);
-  if (kind === "personal") assertDeviceWireInput(raw, negotiatedHostApiVersion(request.headers)!);
+  if (deploymentPolicy({ kind }).services.personal)
+    assertDeviceWireInput(raw, negotiatedHostApiVersion(request.headers)!);
   return declaration.payload.parse(raw) as z.output<Declaration["payload"]>;
 }
 

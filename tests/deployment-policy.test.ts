@@ -433,6 +433,10 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
+  "packages/database/src/device-inventory-store.ts": {
+    counts: { "device?.form": 1 },
+    reason: "Classifying a Runner’s physical server form is not a Deployment-kind decision.",
+  },
   "packages/database/src/runner-store.ts": {
     counts: {
       "deployment.deploymentShape.kind": 1,
@@ -540,6 +544,34 @@ const sqlExceptions: Record<
   },
 };
 
+const policyFiles = execFileSync(
+  "git",
+  [
+    "ls-files",
+    "--cached",
+    "--others",
+    "--exclude-standard",
+    "--",
+    "*.ts",
+    "*.tsx",
+    "*.js",
+    "*.mjs",
+  ],
+  { cwd: repositoryRoot, encoding: "utf8" },
+)
+  .trim()
+  .split("\n")
+  .filter(
+    (file) =>
+      /^(apps|packages|scripts)\//u.test(file) &&
+      !file.includes(".test.") &&
+      !file.includes(".test-support.") &&
+      !file.includes("/test-support/") &&
+      !file.includes("/test-fixtures/") &&
+      existsSync(path.join(repositoryRoot, file)) &&
+      file !== "packages/core/src/deployment-policy.ts",
+  );
+
 describe("deployment policy boundary", () => {
   it("requires a named exception for a new SQL migration decision", () => {
     const current = readFileSync(
@@ -603,36 +635,10 @@ describe("deployment policy boundary", () => {
   it("does not build a syntax tree without a possible kind comparison", () => {
     expect(kindComparisons("fixture.ts", 'const kind: = "personal";')).toEqual([]);
   });
-  it("is a tripwire for ordinary Deployment-kind comparisons outside named exceptions", () => {
-    const files = execFileSync(
-      "git",
-      [
-        "ls-files",
-        "--cached",
-        "--others",
-        "--exclude-standard",
-        "--",
-        "*.ts",
-        "*.tsx",
-        "*.js",
-        "*.mjs",
-      ],
-      { cwd: repositoryRoot, encoding: "utf8" },
-    )
-      .trim()
-      .split("\n")
-      .filter(
-        (file) =>
-          /^(apps|packages|scripts)\//u.test(file) &&
-          !file.includes(".test.") &&
-          !file.includes(".test-support.") &&
-          !file.includes("/test-support/") &&
-          !file.includes("/test-fixtures/") &&
-          existsSync(path.join(repositoryRoot, file)),
-      );
-    const violations: string[] = [];
-    for (const file of files) {
-      if (file === "packages/core/src/deployment-policy.ts") continue;
+  it.each(policyFiles)(
+    "is a tripwire for ordinary Deployment-kind comparisons outside named exceptions: %s",
+    (file) => {
+      const violations: string[] = [];
       const text = readFileSync(path.join(repositoryRoot, file), "utf8");
       if (/^(?:apps\/(?:web|mobile|desktop)\/src|packages\/client\/src)\//u.test(file)) {
         const expected = clientPolicyDerivations[file]?.count ?? 0;
@@ -659,9 +665,9 @@ describe("deployment policy boundary", () => {
         violations.push(
           `${file}: expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`,
         );
-    }
-    expect(violations).toEqual([]);
-  });
+      expect(violations).toEqual([]);
+    },
+  );
 
   it("finds direct, aliased, reversed and switch comparisons without matching comments", () => {
     expect(
