@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { readTranscriptPage } from "@opensteer/database/personal-sync-store";
+import { PendingAgentEventV2Schema } from "@opensteer/protocol";
 import {
   harnessMinimumVersion,
   ModelSelectionSchema,
@@ -115,6 +116,7 @@ integration("Background work", () => {
       },
       harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 60_000,
+      runnerWire: {},
     });
     const threadId = await stack.createThread({
       modelSelection: codexSelection,
@@ -269,6 +271,7 @@ integration("Background work", () => {
         "The researcher is working in the background.",
         expect.stringMatching(/^Noted:[\s\S]*Also check the changelog$/u),
       ]);
+      expect(phaseReports(active, runId)).toEqual(["background", "turn", "background"]);
       expect(await runRow(active, runId)).toMatchObject({
         status: "completed",
         backgroundDeadlineAt: expect.any(Date),
@@ -317,6 +320,7 @@ integration("Background work", () => {
           status: "completed",
         },
       ]);
+      expect(phaseReports(active, runId)).toEqual(["background", "turn"]);
       expect(await runRow(active, runId)).toMatchObject({
         status: "completed",
         backgroundDeadlineAt: expect.any(Date),
@@ -818,6 +822,16 @@ function backgroundClaudeSdk(finished: Promise<void>): ClaudeAgentSdk {
   };
 }
 
+function phaseReports(active: VerticalStack, runId: RunId) {
+  const phases = new Map<number, string>();
+  for (const { frame, direction } of active.wire!.frames) {
+    if (direction !== "runner" || frame.type !== "runner.event") continue;
+    const decoded = PendingAgentEventV2Schema.safeParse(frame.event);
+    if (decoded.success && decoded.data.runId === runId && decoded.data.type === "run.phase")
+      phases.set(decoded.data.ordinal, decoded.data.data.phase);
+  }
+  return [...phases.values()];
+}
 async function clientView(
   active: VerticalStack,
   threadId: ThreadId,

@@ -359,20 +359,21 @@ integration("live streaming across the deployment", () => {
     );
     const [partial, interrupted] = await Promise.all([
       active.host.store.database
-        .selectFrom("messages")
-        .select("createdAt")
-        .where("runId", "=", runId)
-        .where("kind", "=", "assistant")
-        .orderBy("sequence", "desc")
+        .selectFrom("transcriptItems")
+        .innerJoin("messages", "messages.id", "transcriptItems.messageId")
+        .select("transcriptItems.revision")
+        .where("transcriptItems.runId", "=", runId)
+        .where("messages.kind", "=", "assistant")
+        .orderBy("transcriptItems.position", "desc")
         .limit(1)
         .executeTakeFirstOrThrow(),
       active.host.store.database
         .selectFrom("runs")
-        .select("completedAt")
+        .select("revision")
         .where("id", "=", runId)
         .executeTakeFirstOrThrow(),
     ]);
-    expect(partial.createdAt.getTime()).toBeLessThanOrEqual(interrupted.completedAt!.getTime());
+    expect(BigInt(partial.revision)).toBeLessThan(BigInt(interrupted.revision));
     expect(await liveAssistant(threadId)).toBeUndefined();
   }, 120_000);
   it("fails only the Run whose event the Host refuses, keeping the Runner and its other Runs", async () => {

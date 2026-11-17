@@ -1573,57 +1573,34 @@ describeStore("PostgreSQL store", (it) => {
       parentNodeId: null,
     });
   });
-  it("anchors an event page on a delivered message and retains nearby Run events", async ({
+  it("anchors a scoped page on the delivered seed and retains the nearby Run card", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, store } = storeFixture;
-    const fixture = await startRunFixture("event-message-anchor");
-    const page = await store.threadEventPageForOwner({
-      aroundMessageId: fixture.run.seedInputId,
-      maxItems: 20,
-      ownerId: fixture.userId,
-      threadId: fixture.thread.id,
-    });
-    expect(page?.events).toEqual(
+    const { startRunFixture, database } = storeFixture;
+    const fixture = await startRunFixture("message-anchor");
+    const read = {
+      viewerId: fixture.userId,
+      scope: { kind: "thread" as const, threadId: fixture.thread.id },
+      anchorItemId: fixture.run.seedInputId,
+    };
+    const page = await readTranscriptPage(database, { ...read, limit: 20 });
+    if (page.kind !== "page") throw new Error("The anchored page was unavailable");
+    expect(page.items).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          type: "message.placed",
+          kind: "message",
+          messageId: fixture.run.seedInputId,
           runId: fixture.run.id,
         }),
-        expect.objectContaining({
-          type: "run.started",
-          runId: fixture.run.id,
-        }),
+        expect.objectContaining({ kind: "run", runId: fixture.run.id }),
       ]),
     );
-    expect(page?.events.map((event) => event.sequence)).toEqual(
-      [...(page?.events ?? [])]
-        .map((event) => event.sequence)
-        .sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : 0)),
-    );
-    expect(page?.thread.id).toBe(fixture.thread.id);
-    expect(page?.thread.providerSessionId).toBe(fixture.thread.providerSessionId);
-    const anchor = page?.events.find((event) => event.type === "message.placed");
-    expect(anchor).toBeDefined();
-    const anchorBytes = Buffer.byteLength(JSON.stringify([anchor]), "utf8");
-    const bounded = await store.threadEventPageForOwner({
-      aroundMessageId: fixture.run.seedInputId,
-      maxBytes: anchorBytes,
-      maxItems: 20,
-      ownerId: fixture.userId,
-      threadId: fixture.thread.id,
-    });
-    expect(bounded?.events).toContainEqual(anchor);
-    await expect(
-      store.threadEventPageForOwner({
-        aroundMessageId: fixture.run.seedInputId,
-        maxBytes: anchorBytes - 1,
-        maxItems: 20,
-        ownerId: fixture.userId,
-        threadId: fixture.thread.id,
-      }),
-    ).rejects.toMatchObject({
-      code: "internal",
+    const positions = page.items.map((item) => BigInt(item.position!));
+    expect(positions).toEqual([...positions].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
+    const bounded = await readTranscriptPage(database, { ...read, limit: 1, maxBytes: 8192 });
+    expect(bounded).toMatchObject({
+      kind: "page",
+      items: [expect.objectContaining({ kind: "message", messageId: fixture.run.seedInputId })],
     });
   });
   it("anchors steer history on a rendered Message rather than its later delivery receipt", async ({
@@ -1664,18 +1641,15 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId: fixture.runnerBootId,
       runnerId: fixture.runnerId,
     });
-    const page = await store.threadEventPageForOwner({
-      aroundMessageId: steered.message.id,
-      maxItems: 1,
-      ownerId: fixture.userId,
-      threadId: fixture.thread.id,
+    const page = await readTranscriptPage(store.database, {
+      viewerId: fixture.userId,
+      scope: { kind: "thread", threadId: fixture.thread.id },
+      anchorItemId: steered.message.id,
+      limit: 1,
     });
-    expect(page?.events).toHaveLength(1);
-    expect(["message.created", "message.placed"]).toContain(page?.events[0]?.type);
-    expect(page?.events[0]?.data).toMatchObject({
-      message: {
-        id: steered.message.id,
-      },
+    expect(page).toMatchObject({
+      kind: "page",
+      items: [expect.objectContaining({ kind: "message", messageId: steered.message.id })],
     });
   });
   it("keeps a frozen handoff after native reference creation but before first acceptance", async ({

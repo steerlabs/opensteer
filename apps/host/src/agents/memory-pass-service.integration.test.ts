@@ -1018,12 +1018,18 @@ describeStore("managed memory passes", (it) => {
       nativeModelId: "native-light",
       options: {},
     });
-    const admitted = await wake(f, light, first.occurrence.id, "first-pass", {
+    await wake(f, light, first.occurrence.id, "first-pass", {
       harnessInstanceId: base.harnessInstance.id,
       harnessRevision: base.harnessInstance.runtimeRevision,
       modelSelection: lightModel,
     });
-    expect(admitted.events.map(({ type }) => type)).toContain("thread.execution-updated");
+    await expect(
+      f.database
+        .selectFrom("threads")
+        .select("modelSelection")
+        .where("id", "=", light.anchorThreadId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ modelSelection: lightModel });
     const [firstRun] = await runs();
     const firstSession = (await sessions()).find(({ active }) => active);
     expect(firstRun).toMatchObject({

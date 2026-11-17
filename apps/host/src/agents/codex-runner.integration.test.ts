@@ -156,15 +156,13 @@ integration("Host, Runner, and Codex harness integration", () => {
     });
 
     expect(turn.assistantText).toBe("Completed by Codex.");
-    const snapshot = await host.store.deploymentSnapshot();
-    expect(snapshot.threads).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: threadId,
-          status: "idle",
-        }),
-      ]),
-    );
+    await expect(
+      host.store.database
+        .selectFrom("threads")
+        .select("status")
+        .where("id", "=", threadId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: "idle" });
     const persistedRunnerEvents = await host.store.database
       .selectFrom("runnerEventReceipts")
       .select("ordinal")

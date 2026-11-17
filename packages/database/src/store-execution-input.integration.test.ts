@@ -764,7 +764,14 @@ describeStore("PostgreSQL store", (it) => {
       first.command.id,
       "thread-input-terminal-trigger-drain-dispatcher",
     );
-    expect(claimed?.events.map(({ type }) => type)).toEqual(["thread-input.updated", "run.status"]);
+    expect(claimed?.command.status).toBe("dispatched");
+    await expect(
+      database
+        .selectFrom("threadInputs")
+        .select("state")
+        .where("messageId", "=", first.run.seedInputId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ state: "claimed" });
     const runnerBootId = "boot-thread-input-terminal-trigger-drain";
     const binding = await store.acquireExecutionBinding({
       bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
@@ -1119,59 +1126,25 @@ describeStore("PostgreSQL store", (it) => {
         runId: turn.run.id,
         threadId: fixture.thread.id,
       });
-      const outcome = await store.attachRunnerExecutions({
+      await store.attachRunnerExecutions({
         dispatchingRunIds: [],
         executions: [],
         leaseExpiresAt: new Date(Date.now() + 60_000),
         runnerBootId: "omitted-binding-boot",
         runnerId: fixture.runnerId,
       });
-      if (lease === "live") {
-        expect(outcome.events).toContainEqual(
-          expect.objectContaining({
-            data: {
-              status: "queued",
-              startedAt: (
-                await database
-                  .selectFrom("runs")
-                  .select("createdAt")
-                  .where("id", "=", turn.run.id)
-                  .executeTakeFirstOrThrow()
-              ).createdAt.toISOString(),
-              personWaiting: true,
-              startedBy: {
-                displayName: "Alex",
-                kind: "human",
-                userId: fixture.userId,
-                principalId: await storeFixture.principalIdFor(fixture.userId),
-              },
-            },
-            runId: turn.run.id,
-            type: "run.status",
-          }),
-        );
-        await expect(
-          database
-            .selectFrom("runs")
-            .select(["status", "bindingGeneration"])
-            .where("id", "=", turn.run.id)
-            .executeTakeFirstOrThrow(),
-        ).resolves.toEqual({
-          bindingGeneration: null,
-          status: "queued",
+      const settled = await database
+        .selectFrom("runs")
+        .select(["status", "bindingGeneration", "failure"])
+        .where("id", "=", turn.run.id)
+        .executeTakeFirstOrThrow();
+      if (lease === "live")
+        expect(settled).toEqual({ bindingGeneration: null, status: "queued", failure: null });
+      else
+        expect(settled).toMatchObject({
+          status: "failed",
+          failure: { code: "execution_binding_expired", status: "failed" },
         });
-      } else {
-        expect(outcome.events).toContainEqual(
-          expect.objectContaining({
-            data: expect.objectContaining({
-              code: "execution_binding_expired",
-              status: "failed",
-            }),
-            runId: turn.run.id,
-            type: "run.failed",
-          }),
-        );
-      }
       await expect(
         database
           .selectFrom("commands")
@@ -1232,7 +1205,7 @@ describeStore("PostgreSQL store", (it) => {
         runnerBootId: fixture.runnerBootId,
         runnerId: fixture.runnerId,
       });
-      expect(outcome.events).toEqual([]);
+      expect(outcome.resumed).toEqual([]);
       await expect(
         database
           .selectFrom("runs")
@@ -1242,29 +1215,14 @@ describeStore("PostgreSQL store", (it) => {
       ).resolves.toEqual({
         status: "starting",
       });
-      expect(await store.recoverCommandsAfterHostRestart()).toContainEqual(
-        expect.objectContaining({
-          data: {
-            status: "queued",
-            startedAt: (
-              await database
-                .selectFrom("runs")
-                .select("createdAt")
-                .where("id", "=", next.run.id)
-                .executeTakeFirstOrThrow()
-            ).createdAt.toISOString(),
-            personWaiting: true,
-            startedBy: {
-              displayName: "Alex",
-              kind: "human",
-              userId: fixture.userId,
-              principalId: await storeFixture.principalIdFor(fixture.userId),
-            },
-          },
-          runId: next.run.id,
-          type: "run.status",
-        }),
-      );
+      await store.recoverCommandsAfterHostRestart();
+      await expect(
+        database
+          .selectFrom("runs")
+          .select("status")
+          .where("id", "=", next.run.id)
+          .executeTakeFirstOrThrow(),
+      ).resolves.toEqual({ status: "queued" });
     },
   );
 
