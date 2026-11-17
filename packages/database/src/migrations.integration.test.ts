@@ -1,6 +1,7 @@
 import { DeviceIdSchema } from "@opensteer/core";
 import { seedPrivatePublisher } from "./private-publisher.test-support.js";
 import {
+  AgentEventSchema,
   AgentEventViewSchema,
   createId,
   createToolOutput,
@@ -20,6 +21,7 @@ import {
   migrateToLatest,
   migrationProvider,
   personalTeamBaselineName,
+  personalCurrentStateMigrationName,
   teamKnowledgeNotesMigrationName,
   teamAgentMigrationName,
   teamAgentAsksMigrationName,
@@ -38,12 +40,7 @@ import {
 } from "./personal-team-requests-store.js";
 import { personalTeamRunOutcome } from "./personal-team-run-store.js";
 import { AccountDirectoryStore } from "./account-directory-store.js";
-import { DeploymentSnapshotSchema } from "@opensteer/protocol";
-import { eventFromRow } from "./deployment-events.js";
-import { readAgentThreadActivity, readAgentThreadRecent } from "./agent-thread-history.js";
-import { latestNativePlaces } from "./browser-session-store.js";
 import { resolvePersonalReferences } from "./reference-store.js";
-import { readEmptyPersonalResources } from "./store.integration.test-support.js";
 
 let clone: TestDatabase;
 let database: Kysely<DatabaseSchema>;
@@ -1393,24 +1390,23 @@ it("keeps pre-tabs/apps history and recent places readable without live tabs", a
       select deployment_id,sequence,${createId("event")},${publisher.threadId},${publisher.runId},${publisher.environmentId},${fixture.type},${JSON.stringify(fixture.data)}::jsonb from next`.execute(
       database,
     );
-  const before = await database
-    .selectFrom("deploymentEvents")
-    .selectAll()
-    .orderBy("sequence")
-    .execute();
-  // These are valid pre-0026 rows, but the new strict event reader cannot read them yet.
-  expect(() => eventFromRow(before[0]!)).toThrow();
-  await migrateToLatest(database);
-  const after = await database
-    .selectFrom("deploymentEvents")
-    .selectAll()
-    .orderBy("sequence")
-    .execute();
+  const legacyRows = async () =>
+    (
+      await sql<{ sequence: string; createdAt: Date; data: unknown }>`
+    select * from deployment_events order by sequence
+  `.execute(database)
+    ).rows;
+  const parseLegacy = (row: Awaited<ReturnType<typeof legacyRows>>[number]) =>
+    AgentEventSchema.parse({ ...row, createdAt: row.createdAt.toISOString() });
+  const before = await legacyRows();
+  expect(() => parseLegacy(before[0]!)).toThrow();
+  await migrateToLatest(database, migrationsBefore(personalCurrentStateMigrationName));
+  const after = await legacyRows();
   expect(after.map(({ data: _data, ...row }) => row)).toEqual(
     before.map(({ data: _data, ...row }) => row),
   );
   expect(after.slice(places.length)).toEqual(before.slice(places.length));
-  const events = after.map(eventFromRow);
+  const events = after.map(parseLegacy);
   for (const event of events) expect(AgentEventViewSchema.parse(event)).toEqual(event);
   const migrated = events.slice(0, places.length).map((event, index) => {
     const place = PlaceEnteredEventViewSchema.parse(event);
@@ -1427,50 +1423,28 @@ it("keeps pre-tabs/apps history and recent places readable without live tabs", a
   expect(ids[0]).toBe(browser.surfaceId);
   for (const id of [ids[1], ids[2]])
     expect(id).toMatch(/^tab_[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u);
-  const store = new OpensteerStore(database, {
-    readPersonalResources: readEmptyPersonalResources,
-  });
-  const owner = { ownerId: publisher.userId, threadId: publisher.threadId };
-  const page = await store.threadEventPageForOwner({ ...owner, placeEvents: "include" });
-  expect(page?.events).toEqual(events);
-  // These are the durable activity/recent-place readers used by opensteer_task_read.
-  const activity = await readAgentThreadActivity(database, { ...owner, limit: 100 });
-  expect(activity?.items).toEqual(
-    events
-      .toReversed()
-      .map((event) =>
-        event.type === "tool.started"
-          ? { ...event, data: { ...event.data, arguments: null } }
-          : event,
-      ),
-  );
-  const started = events.find((event) => event.type === "tool.started")!;
-  expect(
-    (await readAgentThreadActivity(database, { ...owner, limit: 1, itemId: started.sequence }))
-      ?.items,
-  ).toEqual([started]);
-  const recent = await readAgentThreadRecent(database, { ...owner, runLimit: 1 });
-  const placeEvents = events.filter((event) => event.type === "place.entered");
-  expect(recent?.places).toEqual(placeEvents.toReversed());
-  expect(await store.latestRunPlace(publisher.runId)).toEqual(placeEvents.at(-1));
-  const snapshot = await store.deploymentSnapshot({
-    viewerId: publisher.userId,
-    placeEvents: "include",
-    omitMessages: true,
-  });
-  expect(DeploymentSnapshotSchema.parse(snapshot).runPlaces).toEqual([placeEvents.at(-1)]);
-  expect(await latestNativePlaces(database, publisher.userId)).toMatchObject([
-    { taskId: publisher.threadId, tabId: "already-current" },
-  ]);
   for (const id of ids)
     expect(parseReferenceHref(tabReferenceHref(id))).toEqual({ kind: "tab", id });
   expect(await resolvePersonalReferences(database, { ownerId: publisher.userId, ids })).toEqual(
     [...new Set(ids)].map((id) => ({ id, status: "unavailable" })),
   );
+  await migrateToLatest(database, migrationsBefore(personalCurrentStateMigrationName));
+  expect(await legacyRows()).toEqual(after);
   await migrateToLatest(database);
   expect(
-    await database.selectFrom("deploymentEvents").selectAll().orderBy("sequence").execute(),
-  ).toEqual(after);
+    (
+      await sql<{
+        ledger: string | null;
+      }>`select to_regclass('deployment_events') as ledger`.execute(database)
+    ).rows,
+  ).toEqual([{ ledger: null }]);
+  expect(
+    await database
+      .selectFrom("toolCalls")
+      .select(["callId", "status"])
+      .where("runId", "=", publisher.runId)
+      .execute(),
+  ).toEqual([expect.objectContaining({ status: "completed" })]);
 });
 
 it("reaches the same tabs/apps schema fresh and after preserving existing publications", async () => {

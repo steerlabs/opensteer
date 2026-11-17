@@ -1103,14 +1103,14 @@ async function settled(active: VerticalStack, runId: RunId) {
     "the Run to end",
   ).catch(async (error: unknown) => {
     const events = await active.host.store.database
-      .selectFrom("deploymentEvents")
-      .select("type")
+      .selectFrom("runnerEventReceipts")
+      .select(["ordinal", "disposition"])
       .where("runId", "=", runId)
-      .orderBy("sequence", "asc")
+      .orderBy("ordinal", "asc")
       .execute();
     throw new Error(
       `${String(error)}\n${JSON.stringify({
-        events: events.map(({ type }) => type),
+        receipts: events,
         run: await runRow(active, runId),
       })}`,
     );

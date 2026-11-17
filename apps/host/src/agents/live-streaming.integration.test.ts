@@ -284,35 +284,38 @@ integration("live streaming across the deployment", () => {
       expect(tools.every((tool) => tool.state === "done")).toBe(true);
     }
 
-    // Nothing streamed reached the durable log: only completions did.
-    const stored = await active.host.store.database
-      .selectFrom("deploymentEvents")
-      .select(["runnerOrdinal", "type"])
-      .where("runId", "=", runId)
-      .where("runnerOrdinal", "is not", null)
-      .orderBy("runnerOrdinal", "asc")
-      .execute();
-    const storedTypes = stored.map((row) => row.type);
-    expect(storedTypes.filter((type) => type.endsWith(".delta"))).toEqual([]);
-    const counts = Object.fromEntries(
-      [...new Set(storedTypes)].map((type) => [type, storedTypes.filter((t) => t === type).length]),
-    );
-    expect(counts).toMatchObject({
-      "assistant.message": messages,
-      "reasoning.completed": messages,
-      "run.completed": 1,
-      "run.started": 1,
-      "tool.completed": messages * commandsPerMessage,
-      "tool.started": messages * commandsPerMessage,
-    });
-    expect(stored.map((row) => row.runnerOrdinal)).toEqual(stored.map((_row, index) => index));
+    const database = active.host.store.database;
+    const [receipts, retained, calls] = await Promise.all([
+      database
+        .selectFrom("runnerEventReceipts")
+        .select("ordinal")
+        .where("runId", "=", runId)
+        .orderBy("ordinal")
+        .execute(),
+      database
+        .selectFrom("transcriptItems")
+        .select("kind")
+        .where("runId", "=", runId)
+        .where("visible", "=", true)
+        .execute(),
+      database
+        .selectFrom("toolCalls")
+        .select(["startedAt", "status"])
+        .where("runId", "=", runId)
+        .execute(),
+    ]);
+    expect(receipts.map(({ ordinal }) => ordinal)).toEqual(receipts.map((_row, index) => index));
+    expect(retained.filter(({ kind }) => kind === "reasoning")).toHaveLength(messages);
+    expect(calls).toHaveLength(messages * commandsPerMessage);
+    expect(calls.every((call) => call.startedAt && call.status === "completed")).toBe(true);
     expect(liveDeltaCount).toBeGreaterThan(2_048);
     await writeFile(
       join(outputDirectory, "live-streaming.json"),
       JSON.stringify(
         {
-          durableRunnerEvents: stored.length,
-          durableTypeCounts: counts,
+          runnerReceipts: receipts.length,
+          reasoningItems: retained.filter(({ kind }) => kind === "reasoning").length,
+          toolCalls: calls.length,
           heldStreamCharacters: heldText.length,
           liveDeltasStreamed: liveDeltaCount,
           readers: ["early", "late", "reconnected"],
@@ -354,15 +357,22 @@ integration("live streaming across the deployment", () => {
       30_000,
       "durable partial answer",
     );
-    const stored = await active.host.store.database
-      .selectFrom("deploymentEvents")
-      .select("type")
-      .where("runId", "=", runId)
-      .where("runnerOrdinal", "is not", null)
-      .orderBy("runnerOrdinal", "asc")
-      .execute();
-    const types = stored.map((row) => row.type);
-    expect(types.indexOf("assistant.message")).toBeLessThan(types.indexOf("run.interrupted"));
+    const [partial, interrupted] = await Promise.all([
+      active.host.store.database
+        .selectFrom("messages")
+        .select("createdAt")
+        .where("runId", "=", runId)
+        .where("kind", "=", "assistant")
+        .orderBy("sequence", "desc")
+        .limit(1)
+        .executeTakeFirstOrThrow(),
+      active.host.store.database
+        .selectFrom("runs")
+        .select("completedAt")
+        .where("id", "=", runId)
+        .executeTakeFirstOrThrow(),
+    ]);
+    expect(partial.createdAt.getTime()).toBeLessThanOrEqual(interrupted.completedAt!.getTime());
     expect(await liveAssistant(threadId)).toBeUndefined();
   }, 120_000);
   it("fails only the Run whose event the Host refuses, keeping the Runner and its other Runs", async () => {
@@ -432,10 +442,10 @@ integration("live streaming across the deployment", () => {
       .executeTakeFirstOrThrow();
     expect(connectionAfter.connectionGeneration).toBe(connectionBefore.connectionGeneration);
     const healthyMessages = await active.host.store.database
-      .selectFrom("deploymentEvents")
-      .select("type")
+      .selectFrom("messages")
+      .select("id")
       .where("runId", "=", healthy)
-      .where("type", "=", "assistant.message")
+      .where("kind", "=", "assistant")
       .execute();
     expect(healthyMessages).toHaveLength(messages);
   }, 180_000);

@@ -103,7 +103,6 @@ function service(
     store: f.store,
     runners,
     readAgentInstructions: preview,
-    onEvent: vi.fn(),
     onChanged: vi.fn(),
     onError,
   });
@@ -437,7 +436,7 @@ describeStore("managed memory passes", (it) => {
     storeFixture: f,
   }) => {
     const base = await fixture(f, "rollback");
-    const tables = ["threads", "providerSessions", "commands", "deploymentEvents"] as const;
+    const tables = ["threads", "providerSessions", "commands", "clientChanges"] as const;
     const counts = () =>
       Promise.all(
         tables.map((table) =>
@@ -1427,7 +1426,6 @@ describeStore("managed memory passes", (it) => {
       store: f.store,
       runners: s.runners,
       readAgentInstructions: s.preview,
-      onEvent: vi.fn(),
       onChanged,
       onError: vi.fn(),
     });

@@ -155,10 +155,6 @@ integration("Host, Runner, and Codex harness integration", () => {
       threadId,
     });
 
-    // The answer streams as live progress; the durable log holds its completion.
-    expect(turn.events.map((event) => event.type)).toEqual(
-      expect.arrayContaining(["run.started", "assistant.message", "run.completed"]),
-    );
     expect(turn.assistantText).toBe("Completed by Codex.");
     const snapshot = await host.store.deploymentSnapshot();
     expect(snapshot.threads).toEqual(
@@ -170,22 +166,22 @@ integration("Host, Runner, and Codex harness integration", () => {
       ]),
     );
     const persistedRunnerEvents = await host.store.database
-      .selectFrom("deploymentEvents")
-      .select(["runnerOrdinal", "type"])
+      .selectFrom("runnerEventReceipts")
+      .select("ordinal")
       .where("runId", "=", turn.runId)
-      .where("runnerOrdinal", "is not", null)
-      .orderBy("runnerOrdinal", "asc")
+      .orderBy("ordinal", "asc")
       .execute();
-    expect(persistedRunnerEvents.map((event) => event.runnerOrdinal)).toEqual(
+    expect(persistedRunnerEvents.map((event) => event.ordinal)).toEqual(
       persistedRunnerEvents.map((_event, index) => index),
     );
     await expect(
       host.store.database
         .selectFrom("runs")
-        .select(["completedAt", "nextRunnerOrdinal", "status"])
+        .select(["startedAt", "completedAt", "nextRunnerOrdinal", "status"])
         .where("id", "=", turn.runId)
         .executeTakeFirstOrThrow(),
     ).resolves.toMatchObject({
+      startedAt: expect.any(Date),
       completedAt: expect.any(Date),
       nextRunnerOrdinal: persistedRunnerEvents.length,
       status: "completed",
@@ -316,12 +312,12 @@ integration("Host, Runner, and Codex harness integration", () => {
     );
     expect(await runStatus(active, runId)).toBe("failed");
     const failure = await active.host.store.database
-      .selectFrom("deploymentEvents")
-      .select("data")
-      .where("runId", "=", runId)
-      .where("type", "=", "run.failed")
+      .selectFrom("runs")
+      .select("failure")
+      .where("id", "=", runId)
+      .where("status", "=", "failed")
       .executeTakeFirstOrThrow();
-    expect(failure.data).toMatchObject({
+    expect(failure.failure).toMatchObject({
       code: "codex_harness_error",
       message: expect.stringContaining("thread/tokenUsage/updated"),
     });

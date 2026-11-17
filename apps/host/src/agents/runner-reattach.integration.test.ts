@@ -283,20 +283,28 @@ integration("Runs that outlive their connection", () => {
       .flatMap((entry) => entry.progress.items)
       .find((item) => item.stream === "assistant")?.text;
   }
-  async function storedRunnerEvents(active: VerticalStack, runId: RunId) {
+  function assistantRows(active: VerticalStack, runId: RunId) {
     return active.host.store.database
-      .selectFrom("deploymentEvents")
-      .select(["runnerOrdinal", "type"])
+      .selectFrom("messages")
+      .select("id")
       .where("runId", "=", runId)
-      .where("runnerOrdinal", "is not", null)
-      .orderBy("runnerOrdinal", "asc")
+      .where("kind", "=", "assistant")
+      .where("published", "=", true)
+      .execute();
+  }
+  async function storedRunnerReceipts(active: VerticalStack, runId: RunId) {
+    return active.host.store.database
+      .selectFrom("runnerEventReceipts")
+      .select(["ordinal", "disposition", "bindingGeneration", "reportedDigest"])
+      .where("runId", "=", runId)
+      .orderBy("ordinal", "asc")
       .execute();
   }
   async function expectCompletedExactlyOnce(active: VerticalStack, runId: RunId): Promise<void> {
-    const stored = await storedRunnerEvents(active, runId);
-    expect(stored.map((row) => row.runnerOrdinal)).toEqual(stored.map((_row, index) => index));
-    expect(stored.filter((row) => row.type === "run.completed")).toHaveLength(1);
-    expect(stored.filter((row) => row.type === "assistant.message")).toHaveLength(messages);
+    const stored = await storedRunnerReceipts(active, runId);
+    expect(stored.map((row) => row.ordinal)).toEqual(stored.map((_row, index) => index));
+    expect(await run(active, runId)).toEqual({ failure: null, status: "completed" });
+    expect(await assistantRows(active, runId)).toHaveLength(messages);
   }
   it("finishes a turn whose Runner connection dropped mid-stream, exactly once", async () => {
     const outputDirectory =
@@ -334,7 +342,7 @@ integration("Runs that outlive their connection", () => {
             before: String(before),
           },
           runId,
-          storedRunnerEvents: (await storedRunnerEvents(active, runId)).length,
+          storedRunnerReceipts: (await storedRunnerReceipts(active, runId)).length,
           verifiedAt: new Date().toISOString(),
         },
         null,
@@ -385,7 +393,7 @@ integration("Runs that outlive their connection", () => {
         ],
       },
     });
-    const lostEvents = await storedRunnerEvents(active, runId);
+    const lostEvents = await storedRunnerReceipts(active, runId);
 
     // Reattach retires the old binding and resumes this same Run before the next input.
     active.network.unblock();
@@ -403,14 +411,20 @@ integration("Runs that outlive their connection", () => {
     ).runId!;
     await waitFor(async () => (await run(active, next)).status === "completed", signal, "next");
     expect((await run(active, runId)).status).toBe("completed");
-    expect((await storedRunnerEvents(active, runId)).slice(0, lostEvents.length)).toEqual(
+    expect((await storedRunnerReceipts(active, runId)).slice(0, lostEvents.length)).toEqual(
       lostEvents,
     );
-    const recoveredEvents = await storedRunnerEvents(active, runId);
+    const recoveredEvents = await storedRunnerReceipts(active, runId);
     expect(recoveredEvents).toHaveLength(lostEvents.length + completedStreamEventTypes.length);
-    expect(recoveredEvents.slice(lostEvents.length).map((event) => event.type)).toEqual(
-      completedStreamEventTypes,
-    );
+    expect(
+      recoveredEvents
+        .slice(lostEvents.length)
+        .every(
+          (receipt) =>
+            receipt.bindingGeneration > lostEvents.at(-1)!.bindingGeneration &&
+            receipt.disposition === "applied",
+        ),
+    ).toBe(true);
     await expectCompletedExactlyOnce(active, runId);
   }, 180_000);
   it("recovers at once after a lost lease, though the engine never ended the stopped turn", async () => {
@@ -465,7 +479,7 @@ integration("Runs that outlive their connection", () => {
         ],
       },
     });
-    const lostEvents = await storedRunnerEvents(active, runId);
+    const lostEvents = await storedRunnerReceipts(active, runId);
     // The Runner stops the lost engine before recovering the same conversation.
     const reconnectedAt = Date.now();
     active.network.unblock();
@@ -490,11 +504,17 @@ integration("Runs that outlive their connection", () => {
     expect(Date.now() - reconnectedAt).toBeLessThan(requestTimeoutMs / 2);
     const [stuck, resumed] = await turnPids();
     expect(resumed).not.toBe(stuck);
-    const events = await storedRunnerEvents(active, runId);
+    const events = await storedRunnerReceipts(active, runId);
     expect(events).toHaveLength(lostEvents.length + completedStreamEventTypes.length);
-    expect(events.slice(lostEvents.length).map((event) => event.type)).toEqual(
-      completedStreamEventTypes,
-    );
+    expect(
+      events
+        .slice(lostEvents.length)
+        .every(
+          (receipt) =>
+            receipt.bindingGeneration > lostEvents.at(-1)!.bindingGeneration &&
+            receipt.disposition === "applied",
+        ),
+    ).toBe(true);
     expect(events.slice(0, lostEvents.length)).toEqual(lostEvents);
     await expectCompletedExactlyOnce(active, runId);
   }, 180_000);
@@ -655,7 +675,7 @@ integration("Runs that outlive their connection", () => {
             .orderBy("sequence", "asc")
             .execute(),
           notifications: active.notifications.filter((entry) => entry.runId === runId),
-          events: await storedRunnerEvents(active, runId),
+          events: await storedRunnerReceipts(active, runId),
           verifiedAt: new Date().toISOString(),
         },
         null,
@@ -883,16 +903,13 @@ integration("Runs that outlive their connection", () => {
     const holdDurationMs = Date.now() - holdStartedAt;
     expect(heldSnapshots.at(-1)!.run.status).toBe("queued");
     expect(heldSnapshots.at(-1)!.command.status).toBe("pending");
-    const heldEvents = await active.host.store.database
-      .selectFrom("deploymentEvents")
-      .select(["sequence", "type", "data"])
+    const heldAttempt = await active.host.store.database
+      .selectFrom("runAttempts")
+      .select(["firstEventAt", "endedAt"])
       .where("runId", "=", recoveringRunId)
-      .where("createdAt", ">=", recoveryInput.createdAt)
-      .orderBy("sequence", "asc")
-      .execute();
-    // At most the one claim and requeue of a dispatch that raced the attach-time inspection.
-    expect(heldEvents.filter((event) => event.type === "run.status").length).toBeLessThanOrEqual(2);
-    expect(heldEvents.filter((event) => event.type === "run.failed")).toEqual([]);
+      .where("status", "=", "current")
+      .executeTakeFirstOrThrow();
+    expect(heldAttempt).toEqual({ firstEventAt: null, endedAt: null });
     expect((await captured()).filter((record) => record.dispatchReadinessTurn)).toHaveLength(2);
     const frozenContext =
       heldSnapshots.find((snapshot) => snapshot.run.reportContext !== null)?.run ??
@@ -1108,17 +1125,16 @@ integration("Runs that outlive their connection", () => {
       runId: recoveringRunId,
     });
     const events = await active.host.store.database
-      .selectFrom("deploymentEvents")
-      .select(["sequence", "type", "runId", "data"])
-      .where("runId", "in", [parentSeedRunId, childRun.id, recoveringRunId])
-      .orderBy("sequence", "asc")
+      .selectFrom("runs")
+      .select(["id", "status", "completedAt", "failure"])
+      .where("id", "in", [parentSeedRunId, childRun.id, recoveringRunId])
+      .orderBy("id")
       .execute();
-    expect(
-      events.filter((event) => event.runId === recoveringRunId && event.type === "run.failed"),
-    ).toEqual([]);
-    expect(
-      events.filter((event) => event.runId === recoveringRunId && event.type === "run.completed"),
-    ).toHaveLength(1);
+    expect(events.find(({ id }) => id === recoveringRunId)).toMatchObject({
+      status: "completed",
+      failure: null,
+      completedAt: expect.any(Date),
+    });
     const evidenceDirectory = join(tmpdir(), "opensteer-e2e-artifacts", randomUUID());
     await mkdir(evidenceDirectory, {
       recursive: true,
@@ -1139,7 +1155,7 @@ integration("Runs that outlive their connection", () => {
           childFailure: (await run(active, childRun.id)).failure,
           holdDurationMs,
           heldSnapshots,
-          heldEvents,
+          heldAttempt,
           readyDispatchDelayMs,
           engineStartDelayAfterReconnectMs,
           events,
@@ -1273,10 +1289,7 @@ integration("Runs that outlive their connection", () => {
         .executeTakeFirst(),
     );
     await waitFor(
-      async () =>
-        (await storedRunnerEvents(active, streamingRun)).filter(
-          ({ type }) => type === "assistant.message",
-        ).length === 1,
+      async () => (await assistantRows(active, streamingRun)).length === 1,
       30_000,
       "sibling streaming",
     );
@@ -1288,17 +1301,13 @@ integration("Runs that outlive their connection", () => {
       }[];
     };
     const allow = presentation.options.find((option) => option.hint !== "reject-once")!;
-    await waitFor(
-      async () => {
-        const pending = await active.host.store.database
-          .selectFrom("threadStatePending")
-          .select("threadId")
-          .execute();
-        return pending.length === 0;
-      },
-      30_000,
-      "initial projections",
-    );
+    await expect(
+      active.host.store.database
+        .selectFrom("personalAttention")
+        .select("requestId")
+        .where("requestId", "=", request.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ requestId: request.id });
     // Observe each writer's own backend without changing its SQL or lock acquisition.
     const writer = new AsyncLocalStorage<"answer" | "sibling">();
     const backendPids = new Map<"answer" | "sibling", number>();
@@ -1312,7 +1321,8 @@ integration("Runs that outlive their connection", () => {
       if (
         role &&
         !backendPids.has(role) &&
-        statement === "select deployment_id from deployment_event_state for no key update"
+        statement?.includes('from "client_sync_state"') &&
+        statement.includes("for no key update")
       ) {
         backendPids.set(role, (this as PgClient & { processID: number }).processID);
       }
@@ -1334,7 +1344,7 @@ integration("Runs that outlive their connection", () => {
     const unlock = Promise.withResolvers<void>();
     const blocker = active.host.store.database.transaction().execute(async (transaction) => {
       await transaction
-        .selectFrom("deploymentEventState")
+        .selectFrom("clientSyncState")
         .select("deploymentId")
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
