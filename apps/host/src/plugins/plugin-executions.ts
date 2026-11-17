@@ -82,18 +82,11 @@ export class PluginExecutions {
       row = await this.options.records.execution(execution.id);
     }
     if (!row || terminal.has(row.state)) return;
-    const result = execution.result ? object.parse(execution.result) : null;
-    // Never retain an unbounded service result in personal snapshots or tool responses.
-    const bounded =
-      result && JSON.stringify(result).length > 48_000
-        ? {
-            truncated: true,
-            next: "Use plugin_execute to filter the result before returning it. Check current state before repeating writes.",
-          }
-        : result;
+    const result =
+      execution.state === "completed" && execution.result ? object.parse(execution.result) : null;
     await this.options.records.update(execution.id, {
       state: execution.state,
-      result: bounded,
+      result,
       reason: execution.reason ?? null,
     });
     if (
@@ -119,6 +112,7 @@ export class PluginExecutions {
       await this.options.records.update(row.id, {
         state: "interrupted",
         reason: pluginInterruptedReason,
+        result: null,
       });
       if (row.requestId) {
         for (const event of await this.options.store.requests.endPluginExecutionRequest(
@@ -263,13 +257,34 @@ export class PluginExecutions {
     return { caller: row.caller, mode: row.mode };
   }
   async #authorizeExecution(row: PluginExecutionRecord, operation: string) {
+    if (
+      !terminal.has(row.state) &&
+      row.mode === "automatic" &&
+      (await this.options.authority.currentMode(row.caller)) !== "automatic"
+    ) {
+      const reason = `Plugin authority changed. ${pluginInterruptedReason}`;
+      await this.options.records.update(row.id, { state: "interrupted", reason, result: null });
+      await this.options.service
+        .cancel({ execution: row.id }, this.#context(row))
+        .catch(() => undefined);
+      if (row.requestId)
+        for (const event of await this.options.store.requests.endPluginExecutionRequest(
+          row.requestId,
+          "plugin-interrupted",
+        ))
+          this.options.publish(event);
+      this.options.notify();
+      this.#changes.emit(row.id);
+      return false;
+    }
     const request = row.requestId ? await this.options.store.requests.get(row.requestId) : null;
     await this.options.authority.assert(
-      this.#context(row),
+      terminal.has(row.state) ? { caller: row.caller, mode: "ask" } : this.#context(row),
       operation,
       request?.presentation.plugin?.plugin.id,
-      row.id,
+      terminal.has(row.state) ? undefined : row.id,
     );
+    return true;
   }
   async #owned(caller: AgentCaller, id: string) {
     const row = await this.options.records.execution(id);
@@ -290,7 +305,7 @@ export class PluginExecutions {
           ? "pending"
           : row.state,
       ...(row.requestId ? { requestId: row.requestId } : {}),
-      ...(row.result && terminal.has(row.state) ? { result: row.result } : {}),
+      ...(row.result && row.state === "completed" ? { result: row.result } : {}),
       ...(row.reason ? { reason: row.reason } : {}),
       next:
         row.state === "completed"
@@ -305,7 +320,12 @@ export class PluginExecutions {
     this.options.authority.admit(caller);
     return this.#drive(id, async () => {
       let row = await this.#owned(caller, id);
-      await this.#authorizeExecution(row, "resume");
+      if (terminal.has(row.state)) {
+        await this.#authorizeExecution(row, "resume");
+        return this.result(row);
+      }
+      if (!(await this.#authorizeExecution(row, "resume")))
+        return this.result((await this.options.records.execution(id))!);
       if (caller.kind === "run" && (await this.#answerReady(row))) {
         await this.options.store.assertActiveGrant(caller.claims);
         row = await this.options.records.takeForRun(id, caller.claims.runId);
@@ -315,6 +335,8 @@ export class PluginExecutions {
   }
   async #resume(caller: AgentCaller, row: PluginExecutionRecord, signal?: AbortSignal) {
     if (terminal.has(row.state)) return this.result(row);
+    if (!(await this.#authorizeExecution(row, "resume")))
+      return this.result((await this.options.records.execution(row.id))!);
     if (!(await this.#answerReady(row))) return this.result(row);
     const execution = await this.options.service.resume(
       { execution: row.id },
@@ -376,7 +398,11 @@ export class PluginExecutions {
       const row = await this.options.records.execution(id);
       if (!row || terminal.has(row.state) || row.interactionId !== request.payload.interactionId)
         throw new OpensteerError({ code: "conflict", message: "Plugin interaction has ended." });
-      await this.#authorizeExecution(row, "answer");
+      if (!(await this.#authorizeExecution(row, "answer")))
+        throw new OpensteerError({
+          code: "conflict",
+          message: `Plugin authority changed. ${pluginInterruptedReason}`,
+        });
       const response =
         request.payload.kind === "plugin.approval"
           ? {
@@ -530,6 +556,7 @@ export class PluginExecutions {
       .catch(() => undefined);
     await this.options.records.update(row.id, {
       state: "cancelled",
+      result: null,
       reason:
         "The Run stopped. Earlier calls may have taken effect; check current state before repeating work.",
     });

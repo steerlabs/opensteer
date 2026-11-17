@@ -91,6 +91,10 @@ import {
   PluginServiceError,
   PluginBrokerError,
   JsonSchema,
+  executionResultBytes,
+  interactionBytes,
+  jsonBytes,
+  pluginResultTooLarge,
   type EngineInit,
   type PluginCaller,
   type PluginExecution,
@@ -401,6 +405,7 @@ export async function startEngine(
                   reason: "Interaction expired",
                 };
                 report(record.view);
+                executions.delete(record.view.id);
               }
             },
           },
@@ -466,17 +471,34 @@ export async function startEngine(
       });
     const update = (record: { view: PluginExecution }, value: Partial<PluginExecution>) => {
       record.view = { ...record.view, ...value };
+      if (!["running", "waiting", "answered", "completed"].includes(record.view.state))
+        delete record.view.result;
       report(record.view);
+      if (!["running", "waiting", "answered"].includes(record.view.state))
+        executions.delete(record.view.id);
       return record.view;
     };
-    const completed = (record: { view: PluginExecution }, result: McpExecutionResult) => {
-      const pending = result.status === "approval-required" || result.status === "input-required";
-      return update(record, {
-        state: pending ? "waiting" : "completed",
-        interaction: pending ? JSON.parse(JSON.stringify(result)) : null,
-        result: operations.execute.output.shape.result.parse(JSON.parse(JSON.stringify(result))),
+    const completed = (record: { view: PluginExecution }, result: McpExecutionResult) =>
+      Effect.gen(function* () {
+        const pending = result.status === "approval-required" || result.status === "input-required";
+        if (jsonBytes(result) > (pending ? interactionBytes : executionResultBytes)) {
+          if (pending)
+            yield* manager.discard(
+              record.view.caller,
+              Schema.decodeUnknownSync(InteractionId)(result.requestId),
+            );
+          return update(record, {
+            state: "failed",
+            interaction: null,
+            reason: pluginResultTooLarge,
+          });
+        }
+        return update(record, {
+          state: pending ? "waiting" : "completed",
+          interaction: pending ? JSON.parse(JSON.stringify(result)) : null,
+          result: operations.execute.output.shape.result.parse(JSON.parse(JSON.stringify(result))),
+        });
       });
-    };
     const perform = (
       operation: PluginOperation,
       raw: unknown,
@@ -542,70 +564,82 @@ export async function startEngine(
             );
           case "install": {
             const input = operations.install.input.parse(raw);
-            let files: Schema.Schema.Type<typeof SourceFiles>;
-            let name: string | undefined;
-            let app: AppId | undefined;
-            if (input.kind === "files") {
-              if (!Schema.is(SourceFiles)(input.files))
-                return {
-                  status: "build-error",
-                  error: {
-                    code: "invalid-source",
-                    message:
-                      "Plugin source requires unique relative paths and index.ts. Code must be UTF-8 text; binary files belong under ui/public/.",
-                  },
-                };
-              files = Schema.decodeUnknownSync(SourceFiles)(input.files);
-              name = input.name;
-              app = input.plugin === undefined ? undefined : AppId.make(input.plugin);
-            } else if (input.kind === "catalog") {
-              const prepared = yield* catalog.prepare({ entry: input.id });
-              files = prepared.files;
-              name = (yield* catalog.list).apps.find((entry) => entry.id === input.id)?.name;
-            } else if (input.kind === "mcp") {
-              files = (yield* catalog.custom({ ...input, kind: "mcp" })).files;
-              name = input.name;
-            } else if (input.kind === "graphql") {
-              files = (yield* graphqlAppSource({ name: input.name, url: input.url, methods: {} }))
-                .files;
-              name = input.name;
-            } else {
-              const client = yield* safeHttpClient(defaultUrlPolicy);
-              const response = yield* client.get(input.url);
-              const document = yield* response.json;
-              files = (yield* openapiAppSource({
-                name: input.name,
-                document: Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Unknown))(
-                  document,
-                ),
-                methods: {},
-                allowedOrigins: [new URL(input.url).origin],
-              })).files;
-              name = input.name;
-            }
-            const validSkills = yield* packagedSkills(files).pipe(Effect.result);
-            if (Result.isFailure(validSkills))
-              return {
-                status: "build-error",
-                error: { code: "invalid-skills", message: validSkills.failure.message },
-              };
-            return yield* engine.apps
-              .deploy({
-                owner,
-                ...(app === undefined ? { name: name ?? "Plugin" } : { app }),
-                files,
-              })
-              .pipe(
-                Effect.map((result) => ({
-                  status: "installed",
-                  plugin: result.app,
-                  version: result.version,
-                })),
-                Effect.catchTags({
-                  VersionBuildFailed: (error) => Effect.succeed({ status: "build-error", error }),
-                  BuildMemoryExceeded: (error) => Effect.succeed({ status: "build-error", error }),
-                }),
-              );
+            return yield* accountAdapter.once(
+              input.key,
+              "plugin",
+              Effect.gen(function* () {
+                let files: Schema.Schema.Type<typeof SourceFiles>;
+                let name: string | undefined;
+                let app: AppId | undefined;
+                if (input.kind === "files") {
+                  if (!Schema.is(SourceFiles)(input.files))
+                    return {
+                      status: "build-error",
+                      error: {
+                        code: "invalid-source",
+                        message:
+                          "Plugin source requires unique relative paths and index.ts. Code must be UTF-8 text; binary files belong under ui/public/.",
+                      },
+                    };
+                  files = Schema.decodeUnknownSync(SourceFiles)(input.files);
+                  name = input.name;
+                  app = input.plugin === undefined ? undefined : AppId.make(input.plugin);
+                } else if (input.kind === "catalog") {
+                  const prepared = yield* catalog.prepare({ entry: input.id });
+                  files = prepared.files;
+                  name = (yield* catalog.list).apps.find((entry) => entry.id === input.id)?.name;
+                } else if (input.kind === "mcp") {
+                  files = (yield* catalog.custom({ ...input, kind: "mcp" })).files;
+                  name = input.name;
+                } else if (input.kind === "graphql") {
+                  files = (yield* graphqlAppSource({
+                    name: input.name,
+                    url: input.url,
+                    methods: {},
+                  })).files;
+                  name = input.name;
+                } else {
+                  const client = yield* safeHttpClient(defaultUrlPolicy);
+                  const response = yield* client.get(input.url);
+                  const document = yield* response.json;
+                  files = (yield* openapiAppSource({
+                    name: input.name,
+                    document: Schema.decodeUnknownSync(
+                      Schema.Record(Schema.String, Schema.Unknown),
+                    )(document),
+                    methods: {},
+                    allowedOrigins: [new URL(input.url).origin],
+                  })).files;
+                  name = input.name;
+                }
+                const validSkills = yield* packagedSkills(files).pipe(Effect.result);
+                if (Result.isFailure(validSkills))
+                  return {
+                    status: "build-error",
+                    error: { code: "invalid-skills", message: validSkills.failure.message },
+                  };
+                return yield* engine.apps
+                  .deploy({
+                    owner,
+                    ...(app === undefined ? { name: name ?? "Plugin" } : { app }),
+                    files,
+                  })
+                  .pipe(
+                    Effect.map((result) => ({
+                      status: "installed",
+                      plugin: result.app,
+                      version: result.version,
+                    })),
+                    Effect.catchTags({
+                      VersionBuildFailed: (error) =>
+                        Effect.succeed({ status: "build-error", error }),
+                      BuildMemoryExceeded: (error) =>
+                        Effect.succeed({ status: "build-error", error }),
+                    }),
+                  );
+              }),
+              (receipt) => Effect.try(() => operations.install.output.parse(receipt.result)),
+            );
           }
           case "detail": {
             const app = AppId.make(operations.detail.input.parse(raw).plugin);
@@ -705,13 +739,19 @@ export async function startEngine(
             return yield* engine.accounts.list({ owner });
           case "createApiKeyAccount": {
             const input = operations.createApiKeyAccount.input.parse(raw);
-            return yield* engine.managedAccounts.add({
-              owner,
-              provider: ProviderId.make(input.provider),
-              method: input.method,
-              fields: Redacted.make(input.fields),
-              ...(input.label === undefined ? {} : { label: input.label }),
-            });
+            return yield* accountAdapter.once(
+              input.key,
+              "account",
+              engine.managedAccounts.add({
+                owner,
+                provider: ProviderId.make(input.provider),
+                method: input.method,
+                fields: Redacted.make(input.fields),
+                ...(input.label === undefined ? {} : { label: input.label }),
+              }),
+              (receipt) =>
+                Effect.try(() => operations.createApiKeyAccount.output.parse(receipt.result)),
+            );
           }
           case "removeAccount":
             return yield* engine.accounts.remove({
@@ -960,7 +1000,7 @@ export async function startEngine(
                   }),
                 ),
               );
-              return completed(record, result);
+              return yield* completed(record, result);
             } finally {
               record.driving = false;
               signal.removeEventListener("abort", abort);
@@ -1033,7 +1073,7 @@ export async function startEngine(
             const abort = () => record.controller.abort();
             signal.addEventListener("abort", abort, { once: true });
             try {
-              return completed(
+              return yield* completed(
                 record,
                 yield* Effect.tryPromise({
                   try: () =>

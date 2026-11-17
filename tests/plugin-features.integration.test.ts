@@ -169,7 +169,23 @@ beforeEach(async (testContext) => {
   testContext.onTestFinished(() => database.destroy());
   personal = await seedPersonalFixture(database, directory);
   records = new PluginAgentStore(database);
-  registry = await pluginFixtureRegistry(directory, undefined, files());
+  registry = await pluginFixtureRegistry(directory, undefined, files(), (request, response) => {
+    if (request.url !== "/openapi.json") return false;
+    response.setHeader("content-type", "application/json");
+    response.end(
+      JSON.stringify({
+        openapi: "3.0.3",
+        info: { title: "Replay", version: "1" },
+        servers: [{ url: registry.origin }],
+        paths: {
+          "/items": {
+            get: { operationId: "listItems", responses: { "200": { description: "Items" } } },
+          },
+        },
+      }),
+    );
+    return true;
+  });
   testContext.onTestFinished(() => registry.close());
   const authority = new PluginAuthority({
     store: new OpensteerStore(database),
@@ -234,6 +250,98 @@ beforeEach(async (testContext) => {
   };
   await service.start();
 });
+
+const freshOwnerApi = () =>
+  new PluginOwnerApi({
+    service,
+    settings: records,
+    assertOwner: (user) => requirePersonalOwner(database, user),
+    accountLinked: async () => {},
+    changed: () => {},
+  });
+
+test("account creation returns its original ID after owner cache loss and an engine restart", async () => {
+  const secured = await service.install(
+    {
+      kind: "files",
+      name: "Replay account",
+      files: pluginFixtureFiles(1, ["api.fixture.invalid"]),
+    },
+    owner,
+  );
+  if (secured.status !== "installed") throw new Error("Fixture failed");
+  const create = {
+    type: "plugins.account.create" as const,
+    idempotencyKey: randomUUID(),
+    provider: secured.plugin.requirements.accounts.service!.provider,
+    method: "key",
+    fields: { token: "never-in-receipts" },
+  };
+  const failedResponse = new PluginOwnerApi({
+    service,
+    settings: records,
+    assertOwner: (user) => requirePersonalOwner(database, user),
+    accountLinked: async () => {},
+    changed: () => {
+      throw new Error("Lost committed response");
+    },
+  });
+  await expect(failedResponse.command(create, context)).rejects.toThrow("Lost committed response");
+  const account = (await service.accounts({}, owner))[0]!;
+  expect(await service.stopIfIdle()).toBe(true);
+  expect(await freshOwnerApi().command(create, context)).toMatchObject({
+    type: "plugins.account.create",
+    account: { id: account.id, provider: account.provider, label: account.label },
+  });
+  expect(await service.accounts({}, owner)).toHaveLength(1);
+  const receipts = await sql`select * from plugin_engine.opensteer_resource_creations`.execute(
+    database,
+  );
+  const history = await database.selectFrom("commands").selectAll().execute();
+  expect(JSON.stringify([receipts.rows, history])).not.toContain("never-in-receipts");
+});
+
+test.each(["catalog", "url", "files"] as const)(
+  "%s installation replays its committed result after an engine restart",
+  async (kind) => {
+    const key = randomUUID();
+    const command = {
+      type: "plugins.install" as const,
+      source:
+        kind === "catalog"
+          ? { kind: "catalog" as const, catalogId: "fixture" }
+          : {
+              kind: "openapi" as const,
+              url: `${registry.origin}/openapi.json`,
+              name: "URL replay",
+            },
+      idempotencyKey: key,
+    };
+    const invoke = () =>
+      kind === "files"
+        ? service.install(
+            { kind: "files", name: "Files replay", files: pluginFixtureFiles(1), key },
+            owner,
+          )
+        : freshOwnerApi().command(command, context);
+    const first = await invoke();
+    expect(await service.stopIfIdle()).toBe(true);
+    expect(await invoke()).toEqual(first);
+    expect(await service.list({}, owner)).toHaveLength(1);
+    if (kind === "files") {
+      const plugin = (await service.list({}, owner))[0]!.id;
+      const update = {
+        kind: "files" as const,
+        plugin,
+        files: pluginFixtureFiles(2),
+        key: randomUUID(),
+      };
+      const deployed = await service.install(update, owner);
+      expect(await service.install(update, owner)).toEqual(deployed);
+      expect(await service.versions({ plugin }, owner)).toHaveLength(2);
+    }
+  },
+);
 
 test("owner reads and commands match real catalog, accounts, schedule approvals, versions and workflow runs", async () => {
   const fixture = await install("Owner fixture");

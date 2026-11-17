@@ -1129,7 +1129,20 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       .where("integrationConnections.runnerId", "is not", null)
       .orderBy("integrationConnections.runnerId", "asc")
       .execute();
-    return rows.flatMap(({ runnerId }) => (runnerId === null ? [] : [runnerId]));
+    const servers = await this.database
+      .selectFrom("integrationServers")
+      .select("transport")
+      .where("installationId", "=", installationId)
+      .execute();
+    return [
+      ...new Set([
+        ...rows.flatMap(({ runnerId }) => (runnerId === null ? [] : [runnerId])),
+        ...servers.flatMap(({ transport }) => {
+          const parsed = IntegrationServerTransportSchema.parse(transport);
+          return parsed.type === "runner" && parsed.runnerId ? [parsed.runnerId] : [];
+        }),
+      ]),
+    ].sort();
   }
 
   async listDiscoveryInventory(input: IntegrationDiscoveryRequester): Promise<

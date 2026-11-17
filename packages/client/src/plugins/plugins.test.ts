@@ -446,8 +446,21 @@ describe("words a person reads", () => {
         providerName: "Resend",
       }).map(({ text }) => text);
     expect(lines("value").join(" ")).not.toMatch(/only|sealed|Resend's code/u);
-    expect(lines("value")).toContain(
-      "This plugin's code receives your Resend credential itself and could send it to any site.",
+    expect(lines("value")).toEqual(
+      expect.arrayContaining([
+        "This plugin says it uses your Resend credential with api.resend.com, but its code can send it elsewhere.",
+        "This plugin's code receives your Resend credential itself and could send it to any site.",
+      ]),
+    );
+    const unnamed = pluginConsentLines({
+      consent: { digest: "a".repeat(64), credential: "value", sites: ["api.example.com"] },
+      author: "agent",
+      pluginName: "Example",
+      providerName: null,
+    });
+    expect(unnamed.find((line) => line.key === "sites")?.text).toContain("can send it elsewhere");
+    expect(unnamed.find((line) => line.key === "credential")?.text).toContain(
+      "receives the credential itself",
     );
     expect(lines("sealed")[0]).toBe("Your Resend credential can only be sent to api.resend.com.");
     expect(lines("sealed").join(" ")).not.toMatch(/sealed handle|Resend's code/u);

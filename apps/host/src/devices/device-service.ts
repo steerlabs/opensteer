@@ -490,7 +490,11 @@ export class DeviceService {
 
   async createGrant(input: CreateIntegrationGrantInput) {
     const create = () => this.#store.createGrant(input);
-    if (!input.connectionId) return create();
+    if (!input.connectionId)
+      return this.withRunnerAdmissions(
+        await this.#store.listComputerRunnerIdsForInstallation(input.installationId),
+        create,
+      );
     const computer = await this.#store.getComputerConnectionForCall({
       connectionId: input.connectionId,
       ownerUserId: input.ownerUserId,
@@ -533,7 +537,12 @@ export class DeviceService {
         this.#computerUse?.closeForConnection(computer.runnerId, holding);
       }
     };
-    await (computer ? this.#computerApps.withRunnerAdmission(computer.runnerId, revoke) : revoke());
+    const runners = computer
+      ? [computer.runnerId]
+      : grant
+        ? await this.#store.listComputerRunnerIdsForInstallation(grant.installationId)
+        : [];
+    await this.withRunnerAdmissions(runners, revoke);
   }
 
   computerToolEnabled(context: RunCapabilityClaims<string>): boolean | Promise<boolean> {
@@ -660,8 +669,10 @@ export class DeviceService {
       return { content: [{ type: "text", text: route }], isError: true };
     try {
       return await this.#finishComputerTool(
-        await admit(async (connection, access) =>
-          this.#computerApps.send({
+        await admit(async (connection, access) => {
+          await caller.authorize?.();
+          signal?.throwIfAborted();
+          return this.#computerApps.send({
             access,
             arguments: HostIntegrationsInvokeSchema.shape.arguments.parse(args),
             contract: computerAppOperationContract(operation),
@@ -671,8 +682,8 @@ export class DeviceService {
             operation: operation.name,
             runnerId: connection.runnerId,
             ...(signal ? { signal } : {}),
-          }),
-        ),
+          });
+        }),
         route,
         callable,
         operation,

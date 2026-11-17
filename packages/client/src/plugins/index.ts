@@ -300,12 +300,14 @@ export function pluginConsentLines(input: {
   return [
     {
       key: "sites",
+      // Plugin code that receives the credential itself can send it anywhere,
+      // whatever sites it declares; only a sealed credential is confined to them.
       text: sealed
         ? sites.length
           ? `${Credential} can only be sent to ${listText(sites)}.`
           : `This plugin doesn't say which sites ${credential} may go to.`
         : sites.length
-          ? `This plugin says it uses ${credential} with ${listText(sites)}.`
+          ? `This plugin says it uses ${credential} with ${listText(sites)}, but its code can send it elsewhere.`
           : `This plugin doesn't say which sites it sends ${credential} to.`,
     },
     {

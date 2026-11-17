@@ -6,7 +6,7 @@ import {
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createId } from "@opensteer/core";
+import { createId, type RunnerId } from "@opensteer/core";
 import { expect, vi } from "vitest";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { IntegrationPlatformStore, personalReachableGrant } from "@opensteer/database";
@@ -42,7 +42,10 @@ describeStore("plugin devices", (test) => {
       dataDirectory: directory,
       definitions: [],
       listConnections: async () => [],
-      computerApps: {} as DeviceServicesTestOptions["computerApps"],
+      computerApps: {
+        withRunnerAdmission: async <A>(_runner: RunnerId, work: () => Promise<A> | A): Promise<A> =>
+          work(),
+      } as DeviceServicesTestOptions["computerApps"],
       isRunnerConnected: () => false,
       secretVault: new AesGcmSecretVault(
         new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
@@ -299,6 +302,8 @@ describeStore("plugin devices", (test) => {
       definitions: [],
       listConnections: async () => [],
       computerApps: {
+        withRunnerAdmission: async <A>(_runner: RunnerId, work: () => Promise<A> | A): Promise<A> =>
+          work(),
         removePluginData: removeRunnerData,
       } as unknown as DeviceServicesTestOptions["computerApps"],
       isRunnerConnected: () => false,

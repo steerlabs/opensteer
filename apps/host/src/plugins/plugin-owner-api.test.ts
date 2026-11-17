@@ -450,14 +450,37 @@ describe("the person's plugin API", () => {
 
   it("records provenance for what it installs and activates", async () => {
     const { api, service, store, changed } = setup();
-    await run(api, { type: "plugins.install", source: { kind: "catalog", catalogId: "linear" } });
-    await run(api, {
-      type: "plugins.install",
-      source: { kind: "openapi", url: "https://api.example.com/openapi.json", name: "Example" },
-    });
+    await run(
+      api,
+      { type: "plugins.install", source: { kind: "catalog", catalogId: "linear" } },
+      "catalog-install",
+    );
+    await run(
+      api,
+      {
+        type: "plugins.install",
+        source: { kind: "openapi", url: "https://api.example.com/openapi.json", name: "Example" },
+      },
+      "url-install",
+    );
     expect(service.install.mock.calls.map(([input, context]) => [input, context])).toEqual([
-      [{ kind: "catalog", id: "linear" }, owner],
-      [{ kind: "openapi", url: "https://api.example.com/openapi.json", name: "Example" }, owner],
+      [
+        {
+          kind: "catalog",
+          id: "linear",
+          key: JSON.stringify([ownerId, "plugins.install", "catalog-install"]),
+        },
+        owner,
+      ],
+      [
+        {
+          kind: "openapi",
+          url: "https://api.example.com/openapi.json",
+          name: "Example",
+          key: JSON.stringify([ownerId, "plugins.install", "url-install"]),
+        },
+        owner,
+      ],
     ]);
     expect(store.recordInstall.mock.calls.map((call) => call.slice(1))).toEqual([
       ["new", "new-v1", "catalog"],
@@ -501,15 +524,24 @@ describe("the person's plugin API", () => {
       }),
     );
 
-    await run(api, {
-      type: "plugins.account.create",
-      provider: "linear",
-      method: "key",
-      fields: { token: "secret" },
-      link: { ...target, consent },
-    });
+    await run(
+      api,
+      {
+        type: "plugins.account.create",
+        provider: "linear",
+        method: "key",
+        fields: { token: "secret" },
+        link: { ...target, consent },
+      },
+      "create-account",
+    );
     expect(service.createApiKeyAccount).toHaveBeenCalledWith(
-      { provider: "linear", method: "key", fields: { token: "secret" } },
+      {
+        provider: "linear",
+        method: "key",
+        fields: { token: "secret" },
+        key: JSON.stringify([ownerId, "plugins.account.create", "create-account"]),
+      },
       owner,
     );
     expect(service.linkAccount).toHaveBeenLastCalledWith(
@@ -559,7 +591,12 @@ describe("the person's plugin API", () => {
       [
         {
           operation: "workflowRuns.start",
-          input: { app: "p0", workflow: "w", input: { a: 1 }, key: "wk" },
+          input: {
+            app: "p0",
+            workflow: "w",
+            input: { a: 1 },
+            key: JSON.stringify([ownerId, "plugins.workflow.start", "wk"]),
+          },
         },
         owner,
       ],

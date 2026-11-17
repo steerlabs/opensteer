@@ -206,9 +206,14 @@ export class PluginOAuthService {
     await this.options.store.save(key, owner, configuration);
     return configuration;
   }
-  async prepare(target: z.infer<typeof PluginOAuthTargetSchema>, owner: UserId) {
+  async prepare(target: z.infer<typeof PluginOAuthTargetSchema>, owner: UserId, key?: string) {
     await this.assertOwner(owner);
-    const prepared = await this.options.plugins.prepareOAuth(target, ownerCaller);
+    const prepared = await this.options.plugins.prepareOAuth(
+      { ...target, ...(key ? { key } : {}) },
+      ownerCaller,
+    );
+    if (key && (await this.options.store.read(prepared.connection, owner, sessionSchema)))
+      return this.methods(prepared.connection, owner);
     const account = await this.#account(owner);
     const session: Session = {
       ...prepared,
@@ -221,7 +226,7 @@ export class PluginOAuthService {
           ).href
         : this.#callback(),
     };
-    await this.options.store.save(prepared.connection, owner, session);
+    await this.options.store.save(prepared.connection, owner, session, null, true);
     return this.methods(prepared.connection, owner);
   }
   async #session(key: string, owner: UserId) {

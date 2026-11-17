@@ -6,6 +6,10 @@ import { deviceDefinitions } from "@opensteer/integration-catalog/devices";
 import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import { integrationToolEffect } from "@opensteer/integration-core/effect";
 import type { IntegrationInstallation } from "@opensteer/integration-core";
+import {
+  IntegrationConnectionIdSchema,
+  IntegrationServerIdSchema,
+} from "@opensteer/integration-core";
 import { androidPhoneDefinitionId } from "@opensteer/protocol";
 import { computerUseDefinitionId } from "../computer-use/computer-use-service.js";
 import { dataAppName } from "../devices/access-requests.js";
@@ -48,14 +52,31 @@ const requestAccess = (provider: Pick<Located, "kind" | "computer" | "requestNam
 
 interface LocalProvidersOptions {
   readonly store: IntegrationPlatformStore;
-  readonly devices: Pick<DeviceService, "withAvailability" | "callTool">;
+  readonly devices: Pick<DeviceService, "withAvailability" | "callTool" | "withRunnerAdmissions">;
   readonly localServers: Pick<LocalServerService, "callTool">;
-  readonly authority: Pick<PluginAuthority, "caller">;
+  readonly authority: Pick<PluginAuthority, "caller" | "authorize">;
 }
 export class LocalProviders {
   readonly #options: LocalProvidersOptions;
   constructor(options: LocalProvidersOptions) {
     this.#options = options;
+  }
+  async withAdmission<A>(owner: UserId, plugin: string, work: () => Promise<A>): Promise<A> {
+    const runner = plugin.startsWith("app_device_")
+      ? (
+          await this.#options.store.getComputerConnectionForCall({
+            ownerUserId: owner,
+            connectionId: IntegrationConnectionIdSchema.parse(plugin.slice("app_device_".length)),
+          })
+        )?.runnerId
+      : plugin.startsWith("app_server_")
+        ? (
+            await this.#options.store.localMcp.get(
+              IntegrationServerIdSchema.parse(plugin.slice("app_server_".length)),
+            )
+          )?.runnerId
+        : undefined;
+    return runner ? this.#options.devices.withRunnerAdmissions([runner], work) : work();
   }
 
   async providers(context: PluginCaller): Promise<PluginHostProvider[]> {
@@ -119,6 +140,36 @@ export class LocalProviders {
       run: caller.kind === "run" ? caller.claims : null,
       threadId: caller.kind === "run" ? caller.thread.id : caller.anchor.id,
       elicit,
+      authorize: async () => {
+        signal.throwIfAborted();
+        const permission = await this.#options.authority.authorize({ ...input, operation: "call" });
+        if (
+          !permission.allowed ||
+          permission.grants?.[input.plugin] === "off" ||
+          (permission.grants?.[input.plugin] === "read-only" && !tool.readOnly)
+        )
+          throw failure("Local tool authority changed while waiting; the call was not sent.");
+        const liveCaller = this.#options.authority.caller(input.caller);
+        if (!liveCaller)
+          throw failure("Local tool caller is no longer active; the call was not sent.");
+        const live = await this.#list(liveCaller);
+        const current = live.providers.find((entry) => entry.id === input.plugin);
+        if (
+          !current ||
+          current.unavailable ||
+          current.version !== provider.version ||
+          !live.callables.some(
+            (entry) =>
+              entry.grant.id === callable.grant.id &&
+              entry.tool.id === callable.tool.id &&
+              entry.tool.schemaDigest === callable.tool.schemaDigest,
+          )
+        )
+          throw failure(
+            "Local tool authority or identity changed while waiting; the call was not sent.",
+          );
+        signal.throwIfAborted();
+      },
     };
     let result: Awaited<ReturnType<Client["callTool"]>>;
     try {
