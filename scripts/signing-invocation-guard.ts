@@ -263,6 +263,9 @@ function reviewed(file: string, tool: string, span: string, source: string): boo
 export function auditSigningInvocations(files: readonly SigningSource[]): string[] {
   return files
     .filter(({ file }) => isAuditedSigningSource(file))
+    .filter(({ source }) =>
+      /codesign|find-identity|notarytool|productsign|electron-builder|notarize/u.test(source),
+    )
     .flatMap(({ file, source }) =>
       invocations(
         source,

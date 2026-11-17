@@ -1,20 +1,20 @@
+import { computerConnectionDeviceId, type DeviceComputerConnection } from "./device-drivers.js";
+import type { ComputerTargetId } from "../computer-apps/computer-app-hub.js";
 import {
   refused,
+  isPhoneDisplayDefinitionId,
   type ComputerAppIdentity,
-  type RunnerId,
   type TabId,
   type UserId,
   type WindowId,
 } from "@opensteer/core";
 import { WindowIdSchema } from "@opensteer/core";
 import type { ComputerView } from "@opensteer/protocol";
-import {
-  computerAppIdentitiesEqual,
-  type IntegrationConnectionSummary,
-} from "@opensteer/integration-core";
+import { computerAppIdentitiesEqual } from "@opensteer/integration-core";
 import type { ComputerViewService } from "./computer-view-service.js";
 import type {
   NativeTabTargetsPort,
+  DeviceNativeTabTargetsPort,
   NativeTabTargetState,
   NativeTargetAcquired,
   NativeTargetAcquiredHandler,
@@ -29,16 +29,22 @@ export interface NativeWindowQueryResult {
 }
 export interface NativeTabTargetsOptions {
   views: Pick<ComputerViewService, "openForTab" | "closeTabViews" | "list">;
-  connections(ownerId: UserId): Promise<readonly IntegrationConnectionSummary[]>;
-  owns(ownerId: UserId, computerId: RunnerId): Promise<boolean>;
-  connected(computerId: RunnerId): boolean;
+  connections(ownerId: UserId): Promise<readonly DeviceComputerConnection[]>;
+  owns(ownerId: UserId, computerId: ComputerTargetId): Promise<boolean>;
+  connected(computerId: ComputerTargetId): boolean;
   /** Lease-free window.resolve on the current authenticated helper connection. */
   queryWindow(
-    computerId: RunnerId,
+    computerId: ComputerTargetId,
     input: { windowId: WindowId } | { app: ComputerAppIdentity },
   ): Promise<NativeWindowQueryResult>;
-  users(ownerId: UserId, computerId: RunnerId, windowId?: WindowId): NativeTabTargetState["usedBy"];
-  phoneUnavailable(computerId: RunnerId): "paused" | "protected" | "unsupported" | null;
+  users(
+    ownerId: UserId,
+    computerId: ComputerTargetId,
+    windowId?: WindowId,
+  ): NativeTabTargetState["usedBy"];
+  phoneUnavailable(
+    computerId: ComputerTargetId,
+  ): "paused" | "protected" | "locked" | "unsupported" | null;
 }
 const unavailable = (
   unavailableCode: Extract<NativeTabTargetState, { state: "unavailable" }>["unavailableCode"],
@@ -57,16 +63,19 @@ export class NativeTabTargets implements NativeTabTargetsPort {
   constructor(options: NativeTabTargetsOptions) {
     this.#options = options;
   }
-  async #connections(ownerId: UserId, computerId: RunnerId) {
+  async #connections(ownerId: UserId, computerId: ComputerTargetId) {
     if (!(await this.#options.owns(ownerId, computerId)))
       throw refused("not_found", "This computer is unavailable.");
     return (await this.#options.connections(ownerId)).filter(
-      (entry) => entry.computer?.runnerId === computerId && !entry.computer.blockedAt,
+      (entry) =>
+        entry.computer &&
+        computerConnectionDeviceId(entry) === computerId &&
+        !entry.computer.blockedAt,
     );
   }
   async resolveWindow(
     ownerId: UserId,
-    computerId: RunnerId,
+    computerId: ComputerTargetId,
     target: { windowId: WindowId } | { bundleId: string },
   ): Promise<ResolvedTabWindow> {
     const connections = await this.#connections(ownerId, computerId);
@@ -110,10 +119,10 @@ export class NativeTabTargets implements NativeTabTargetsPort {
   }
   async windowState(
     ownerId: UserId,
-    computerId: RunnerId,
+    computerId: ComputerTargetId,
     windowId: WindowId,
   ): Promise<NativeTabTargetState> {
-    let connections: readonly IntegrationConnectionSummary[];
+    let connections: readonly DeviceComputerConnection[];
     try {
       connections = await this.#connections(ownerId, computerId);
     } catch {
@@ -162,8 +171,8 @@ export class NativeTabTargets implements NativeTabTargetsPort {
     );
     return { state: usedBy.length || viewed ? "open" : "asleep", usedBy };
   }
-  async phoneState(ownerId: UserId, computerId: RunnerId): Promise<NativeTabTargetState> {
-    let connections: readonly IntegrationConnectionSummary[];
+  async phoneState(ownerId: UserId, computerId: ComputerTargetId): Promise<NativeTabTargetState> {
+    let connections: readonly DeviceComputerConnection[];
     try {
       connections = await this.#connections(ownerId, computerId);
     } catch {
@@ -171,7 +180,7 @@ export class NativeTabTargets implements NativeTabTargetsPort {
     }
     if (!this.#options.connected(computerId))
       return unavailable("computer-offline", "This phone is offline.");
-    if (!connections.some((entry) => entry.definitionId === "android-phone"))
+    if (!connections.some((entry) => isPhoneDisplayDefinitionId(entry.definitionId)))
       return unavailable("access-denied", "This phone is unavailable.");
     const reason = this.#options.phoneUnavailable(computerId);
     if (reason) return unavailable(reason, `This phone is ${reason}.`);
@@ -194,7 +203,9 @@ export class NativeTabTargets implements NativeTabTargetsPort {
   }
   openOwnerView(
     ownerId: UserId,
-    input: Parameters<NativeTabTargetsPort["openOwnerView"]>[1],
+    input: Omit<Parameters<DeviceNativeTabTargetsPort["openOwnerView"]>[1], "computerId"> & {
+      computerId: ComputerTargetId;
+    },
     key: string,
   ): Promise<ComputerView> {
     return this.#options.views.openForTab(ownerId, input, key);
@@ -226,6 +237,6 @@ export class NativeTabTargets implements NativeTabTargetsPort {
   }
 }
 export type NativeReplTabTarget = { tabGeneration: number } & (
-  | { kind: "window"; computerId: RunnerId; windowId: WindowId; app: ComputerAppIdentity }
-  | { kind: "phone"; computerId: RunnerId }
+  | { kind: "window"; computerId: ComputerTargetId; windowId: WindowId; app: ComputerAppIdentity }
+  | { kind: "phone"; computerId: ComputerTargetId; driverGeneration?: number | undefined }
 );

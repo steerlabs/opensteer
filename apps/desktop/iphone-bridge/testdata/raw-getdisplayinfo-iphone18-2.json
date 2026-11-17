@@ -1,0 +1,254 @@
+{
+  "backlightState": "activeOn",
+  "current": true,
+  "displays": [
+    {
+      "availableModes": [
+        {
+          "bitDepth": 8,
+          "colorGamut": "displayP3",
+          "hdrMode": "standard",
+          "preferredUIScale": 3,
+          "refreshRate": 120,
+          "size": [1320, 2868]
+        }
+      ],
+      "backlightState": "activeOn",
+      "bounds": [
+        [0, 0],
+        [1320, 2868]
+      ],
+      "chromeIdentifier": "com.apple.dt.devicekit.chrome.phone12",
+      "currentMode": {
+        "bitDepth": 8,
+        "colorGamut": "displayP3",
+        "hdrMode": "standard",
+        "preferredUIScale": 3,
+        "refreshRate": 120,
+        "size": [1320, 2868]
+      },
+      "currentOrientation": "rot0",
+      "deviceName": "primary",
+      "displayId": 1,
+      "external": false,
+      "frame": [
+        [0, 0],
+        [1320, 2868]
+      ],
+      "framebufferMaskIdentifier": "REDACTED",
+      "logicalScale": [1, 1],
+      "name": "LCD",
+      "nativeOrientation": "rot0",
+      "nativeSize": [1320, 2868],
+      "physicalSize": [2.86956524848938, 6.234782695770264],
+      "pointScale": 3,
+      "primary": true,
+      "type": {
+        "integrated": {}
+      }
+    },
+    {
+      "availableModes": [],
+      "backlightState": "off",
+      "bounds": [
+        [0, 0],
+        [0, 0]
+      ],
+      "currentMode": {
+        "bitDepth": 8,
+        "colorGamut": "sRGB",
+        "hdrMode": "standard",
+        "preferredUIScale": 1,
+        "refreshRate": 0,
+        "size": [0, 0]
+      },
+      "currentOrientation": "rot0",
+      "deviceName": "external-0",
+      "displayId": 2,
+      "external": true,
+      "frame": [
+        [0, 0],
+        [0, 0]
+      ],
+      "logicalScale": [1, 1],
+      "name": "TVOut",
+      "nativeOrientation": "rot0",
+      "nativeSize": [0, 0],
+      "pointScale": 1,
+      "primary": false,
+      "type": {
+        "external": {}
+      }
+    },
+    {
+      "availableModes": [],
+      "backlightState": "off",
+      "bounds": [
+        [0, 0],
+        [0, 0]
+      ],
+      "currentMode": {
+        "bitDepth": 8,
+        "colorGamut": "sRGB",
+        "hdrMode": "standard",
+        "preferredUIScale": 1,
+        "refreshRate": 0,
+        "size": [0, 0]
+      },
+      "currentOrientation": "rot0",
+      "deviceName": "wireless0",
+      "displayId": 3,
+      "external": true,
+      "frame": [
+        [0, 0],
+        [0, 0]
+      ],
+      "logicalScale": [1, 1],
+      "name": "Wireless",
+      "nativeOrientation": "rot0",
+      "nativeSize": [0, 0],
+      "pointScale": 1,
+      "primary": false,
+      "type": {
+        "wireless": {}
+      }
+    },
+    {
+      "availableModes": [],
+      "backlightState": "off",
+      "bounds": [
+        [0, 0],
+        [0, 0]
+      ],
+      "currentMode": {
+        "bitDepth": 8,
+        "colorGamut": "sRGB",
+        "hdrMode": "standard",
+        "preferredUIScale": 1,
+        "refreshRate": 0,
+        "size": [0, 0]
+      },
+      "currentOrientation": "rot0",
+      "deviceName": "wireless1",
+      "displayId": 4,
+      "external": true,
+      "frame": [
+        [0, 0],
+        [0, 0]
+      ],
+      "logicalScale": [1, 1],
+      "name": "Wireless-1",
+      "nativeOrientation": "rot0",
+      "nativeSize": [0, 0],
+      "pointScale": 1,
+      "primary": false,
+      "type": {
+        "wireless": {}
+      }
+    },
+    {
+      "availableModes": [],
+      "backlightState": "off",
+      "bounds": [
+        [0, 0],
+        [0, 0]
+      ],
+      "currentMode": {
+        "bitDepth": 8,
+        "colorGamut": "sRGB",
+        "hdrMode": "standard",
+        "preferredUIScale": 1,
+        "refreshRate": 0,
+        "size": [0, 0]
+      },
+      "currentOrientation": "rot0",
+      "deviceName": "wireless2",
+      "displayId": 5,
+      "external": true,
+      "frame": [
+        [0, 0],
+        [0, 0]
+      ],
+      "logicalScale": [1, 1],
+      "name": "Wireless-2",
+      "nativeOrientation": "rot0",
+      "nativeSize": [0, 0],
+      "pointScale": 1,
+      "primary": false,
+      "type": {
+        "wireless": {}
+      }
+    },
+    {
+      "availableModes": [],
+      "backlightState": "off",
+      "bounds": [
+        [0, 0],
+        [0, 0]
+      ],
+      "currentMode": {
+        "bitDepth": 8,
+        "colorGamut": "sRGB",
+        "hdrMode": "standard",
+        "preferredUIScale": 1,
+        "refreshRate": 0,
+        "size": [0, 0]
+      },
+      "currentOrientation": "rot0",
+      "deviceName": "wireless3",
+      "displayId": 6,
+      "external": true,
+      "frame": [
+        [0, 0],
+        [0, 0]
+      ],
+      "logicalScale": [1, 1],
+      "name": "Wireless-3",
+      "nativeOrientation": "rot0",
+      "nativeSize": [0, 0],
+      "pointScale": 1,
+      "primary": false,
+      "type": {
+        "wireless": {}
+      }
+    },
+    {
+      "availableModes": [],
+      "backlightState": "off",
+      "bounds": [
+        [0, 0],
+        [0, 0]
+      ],
+      "currentMode": {
+        "bitDepth": 8,
+        "colorGamut": "sRGB",
+        "hdrMode": "standard",
+        "preferredUIScale": 1,
+        "refreshRate": 0,
+        "size": [0, 0]
+      },
+      "currentOrientation": "rot0",
+      "deviceName": "wireless4",
+      "displayId": 7,
+      "external": true,
+      "frame": [
+        [0, 0],
+        [0, 0]
+      ],
+      "logicalScale": [1, 1],
+      "name": "Wireless-4",
+      "nativeOrientation": "rot0",
+      "nativeSize": [0, 0],
+      "pointScale": 1,
+      "primary": false,
+      "type": {
+        "wireless": {}
+      }
+    }
+  ],
+  "orientation": {
+    "currentDeviceNonFlatOrientation": "portrait",
+    "currentDeviceOrientation": "faceUp",
+    "currentDeviceOrientationLocked": false
+  }
+}

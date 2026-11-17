@@ -167,7 +167,7 @@ if (realLocal && executable === 'pnpm') {
       write(path.join(bundle,'Contents/Info.plist'),'<?xml version="1.0"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict>'+Object.entries({CFBundleIdentifier:'com.opensteer.opensteer',CFBundleShortVersionString:'1.2.3',CFBundleVersion:'1.2.3',OpensteerSourceRevision:state.revision}).map(([key,value]) => '<key>'+key+'</key><string>'+value+'</string>').join('')+'</dict></plist>',0o640);
       fs.cpSync(env.OPENSTEER_PERSONAL_RUNTIME_SOURCE,path.join(resources,'personal-runtime'),{recursive:true});
       fs.cpSync(path.join(options.cwd,'apps/desktop/generated-resources/agent-phone'),path.join(resources,'agent-phone'),{recursive:true});
-      for (const [input,output] of [[env.OPENSTEER_PROCESS_SUPERVISOR_BINARY_SOURCE,'process-supervisor/opensteer-process-supervisor'],[env.OPENSTEER_CLOUDFLARED_BINARY_SOURCE,'cloudflared/cloudflared']]) write(path.join(resources,output),fs.readFileSync(input));
+      for (const [input,output] of [[env.OPENSTEER_IPHONE_BRIDGE_BINARY_SOURCE,'iphone-bridge/opensteer-iphone-bridge'],[env.OPENSTEER_PROCESS_SUPERVISOR_BINARY_SOURCE,'process-supervisor/opensteer-process-supervisor'],[env.OPENSTEER_CLOUDFLARED_BINARY_SOURCE,'cloudflared/cloudflared']]) write(path.join(resources,output),fs.readFileSync(input));
       fs.mkdirSync(path.join(resources,'computer-use/Opensteer Computer Use.app'),{recursive:true});
       fs.symlinkSync('Info.plist',path.join(bundle,'Contents','Current'));
       const metadata = spawnSync('/usr/bin/xattr',['-w','com.opensteer.fixture','preserved',path.join(bundle,'Contents/Info.plist')]);
@@ -564,6 +564,7 @@ if (mode === "phase" && directory) {
     keychainProfile: "test",
     passwordsProvisioningProfile: "/fixture/passwords.provisionprofile",
     personalRuntimeSource: "/fixture/runtime",
+    iphoneBridge: { path: "/fixture/iphone-bridge", sha256: "a".repeat(64), version: "1" },
     supervisor: { path: "/fixture/supervisor", sha256: "a".repeat(64), version: "1.0.0" },
     cloudflared: { path: "/fixture/cloudflared", sha256: "a".repeat(64), version: "2026.1.0" },
     targets: [
@@ -696,6 +697,11 @@ process.exit(${scenario.exitCode ?? 0});
       },
       cloudflared: {
         ...config.cloudflared,
+        path: helper,
+        sha256: createHash("sha256").update("helper").digest("hex"),
+      },
+      iphoneBridge: {
+        ...config.iphoneBridge,
         path: helper,
         sha256: createHash("sha256").update("helper").digest("hex"),
       },
@@ -862,7 +868,7 @@ process.exit(${scenario.exitCode ?? 0});
     );
     const helper = path.join(directory_, "helper");
     await writeFile(helper, "helper");
-    for (const binary of [local.supervisor, local.cloudflared]) {
+    for (const binary of [local.supervisor, local.cloudflared, local.iphoneBridge]) {
       binary.path = helper;
       binary.sha256 = createHash("sha256").update("helper").digest("hex");
     }
@@ -1046,7 +1052,7 @@ process.exit(${scenario.exitCode ?? 0});
     await mkdir(inputs);
     const helper = path.join(inputs, "helper");
     await writeFile(helper, "helper");
-    for (const binary of [local.supervisor, local.cloudflared]) {
+    for (const binary of [local.supervisor, local.cloudflared, local.iphoneBridge]) {
       binary.path = helper;
       binary.sha256 = createHash("sha256").update("helper").digest("hex");
     }

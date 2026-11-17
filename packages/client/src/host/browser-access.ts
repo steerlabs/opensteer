@@ -2,7 +2,7 @@ import type { BrowserAccessSuggestion, RequestResponse } from "@opensteer/core";
 import type { Request } from "@opensteer/core";
 import { profileHomeChoice, type ProfileHomeChoice } from "./browser-profile-settings.js";
 import type { HostSnapshot } from "./client.js";
-import type { HostApiCommandInput } from "@opensteer/protocol";
+import type { ClientCommandInput } from "./device-commands.js";
 
 /**
  * The owner's answer to a `browser.access` Request,
@@ -35,9 +35,9 @@ export function browserAccessResponse(
 }
 
 export function browserProfileHomeCommand(
-  command: HostApiCommandInput,
+  command: ClientCommandInput,
   homes: readonly string[] | undefined,
-): HostApiCommandInput {
+): ClientCommandInput {
   const selection = <Profile extends { readonly homeRunnerId?: unknown }>(profile: Profile) => {
     const { homeRunnerId, ...rest } = profile;
     return homes === undefined ? rest : { ...rest, homeRunnerId: homeRunnerId ?? null };

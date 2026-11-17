@@ -196,6 +196,11 @@ Enrollment and OS prompts need the iPhone; the owner can approve from any signed
 Read back uncertain approval outcomes rather than submitting again. Lowering or revocation works
 while the phone is offline, stops future use and cannot undo returned data.
 
+This app is its phone's `self` driver and never exposes the screen. Screen control is a separate
+Device driven by a Mac ([iPhone screens](computer-use.md#iphone-screens)): it is set up in Opensteer
+on that Mac, every client lists and manages it, and nothing links it to this app's Device, so one
+phone can appear as both.
+
 ## This phone as a device
 
 A phone becomes one of a personal Opensteer's devices only through Set up, which follows sign-in

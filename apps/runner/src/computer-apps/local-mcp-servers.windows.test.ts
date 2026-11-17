@@ -19,7 +19,7 @@ it("runs a package's .cmd shim found on the approved Path, through plugin-data r
   await mkdir(script, { recursive: true });
   await writeFile(path.join(script, "echo-argv.js"), echoMcpServerSource);
   await writeFile(path.join(bin, "echo-mcp.cmd"), generatedShims.npm.node);
-  const prepared = prepareIntegrationsModule({ dataDirectory: directory, platform: "win32" });
+  const prepared = await prepareIntegrationsModule({ dataDirectory: directory, platform: "win32" });
   expect(prepared?.providers).toEqual([]);
   expect(prepared?.descriptor).toMatchObject({ pluginDataRemoval: 1, platform: "win32" });
   const servers = prepared!.localMcp;
@@ -45,6 +45,6 @@ it("runs a package's .cmd shim found on the approved Path, through plugin-data r
     await expect(readFile(path.join(data, "pairing"))).rejects.toMatchObject({ code: "ENOENT" });
   } finally {
     servers.detach();
-    prepared?.close?.();
+    await prepared?.close?.();
   }
 });

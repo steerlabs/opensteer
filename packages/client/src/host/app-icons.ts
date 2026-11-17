@@ -7,7 +7,8 @@ const retryAfterMs = 60_000;
 function canReadAppIcons(machine: MachineSummary): boolean {
   return (
     machine.status === "online" &&
-    machine.device?.platform !== "android" &&
+    machine.selfRunnerId !== null &&
+    !machine.phoneDisplay &&
     (machine.computerUse?.state === "ready" ||
       machine.computerUse?.state === "permission-required") &&
     machine.apps?.some(

@@ -123,10 +123,10 @@ export function grade(
     );
   }
   for (const [i, match] of expect.notCallsArgMatch.entries()) {
-    const boundary = boundaryOf(match.after);
+    const boundary = match.after ? boundaryOf(match.after) : -1;
     add(
       `notCallsArgMatch[${i}]:${match.tool}`,
-      boundary >= 0 &&
+      (!match.after || boundary >= 0) &&
         !calls
           .slice(boundary + 1)
           .some(

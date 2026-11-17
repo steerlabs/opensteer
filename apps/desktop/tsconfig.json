@@ -49,6 +49,10 @@
     "scripts/build-personal-runtime.ts",
     "scripts/contributor-package.test.ts",
     "scripts/contributor-package-inputs.test.ts",
-    "scripts/contributor-helper-architecture.test.ts"
+    "scripts/contributor-helper-architecture.test.ts",
+    "scripts/build-iphone-bridge.ts",
+    "scripts/build-iphone-bridge.test.ts",
+    "scripts/iphone-bridge-release.test.ts",
+    "scripts/prepare-release-resources.ts"
   ]
 }

@@ -83,8 +83,8 @@ integration("MCP servers on a computer", () => {
       closers.unshift(() => caller.close());
       const desktop = await startFakeDesktop();
       closers.unshift(() => desktop.close());
-      const prepare = (dataDirectory: string) => {
-        const prepared = prepareIntegrationsModule({
+      const prepare = async (dataDirectory: string) => {
+        const prepared = await prepareIntegrationsModule({
           computerUseBridge: { token: desktop.token, url: desktop.url },
           dataDirectory,
           platform: "darwin",
@@ -97,7 +97,7 @@ integration("MCP servers on a computer", () => {
         return { computerUse, localMcp, providers: prepared.providers };
       };
       const runnerData = join(work, "runner");
-      const mac = prepare(runnerData);
+      const mac = await prepare(runnerData);
       const computer = await connectComputerAppMachine(host, mac.providers, {
         desktop: { computerUse: mac.computerUse, localMcp: mac.localMcp },
       });
@@ -127,6 +127,15 @@ integration("MCP servers on a computer", () => {
       const asked = await waitingRequest(host, server.id);
       expect(asked.server?.launch).toEqual(launch);
       expect(asked.definitionDigest).toBe(localMcpLaunchDigest(launch));
+      const persistedTarget = await host.store.database
+        .selectFrom("computerAppSetupRequests")
+        .select("runnerId as deviceId")
+        .where("id", "=", asked.id)
+        .executeTakeFirstOrThrow();
+      expect(persistedTarget.deviceId).toBe(
+        await host.store.requireSelfDeviceId(computer.runnerId),
+      );
+
       const summaries = await testRpcData(
         host.origin,
         "integration.computer.setup.list",
@@ -319,7 +328,7 @@ integration("MCP servers on a computer", () => {
 
       // Host-held exact-launch consent survives a fresh Runner instance.
       await computer.disconnectModule();
-      const restarted = prepare(join(work, "restarted-runner"));
+      const restarted = await prepare(join(work, "restarted-runner"));
       await computer.reconnectModule({
         computerUse: restarted.computerUse,
         localMcp: restarted.localMcp,
@@ -459,7 +468,7 @@ integration("MCP servers on a computer", () => {
         });
       const desktop = await startFakeDesktop();
       closers.unshift(() => desktop.close());
-      const prepared = prepareIntegrationsModule({
+      const prepared = await prepareIntegrationsModule({
         computerUseBridge: { token: desktop.token, url: desktop.url },
         dataDirectory: join(work, "runner"),
         platform: "darwin",

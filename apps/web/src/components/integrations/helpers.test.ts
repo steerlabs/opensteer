@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
 import type {
-  IntegrationConnectionSummary,
   IntegrationDashboard,
-} from "@opensteer/integration-core";
+  IntegrationConnectionSummary,
+} from "@opensteer/client/integrations";
+import { describe, expect, it } from "vitest";
+import type {} from "@opensteer/integration-core";
 import {
   catalogReadiness,
   connectionNeedsReconnect,

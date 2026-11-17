@@ -1,0 +1,42 @@
+[
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 30,
+    "timeoutMs": 10000,
+    "method": "images.refresh",
+    "params": {
+      "imageRoots": [
+        "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/DeviceSupport/Restore"
+      ]
+    }
+  },
+  {
+    "kind": "response",
+    "id": 30,
+    "result": {
+      "images": [
+        {
+          "handle": "refreshed-image",
+          "build": "27B52"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 31,
+    "timeoutMs": 10000,
+    "method": "setup.revealDeveloperMode",
+    "params": {
+      "localPhoneId": "fixture-phone",
+      "nativeEpoch": 3
+    }
+  },
+  {
+    "kind": "response",
+    "id": 31,
+    "result": {}
+  }
+]

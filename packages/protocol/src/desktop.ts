@@ -1924,6 +1924,7 @@ export interface OpensteerDesktopBridge {
   /** The Agent Phone app this build carries, or null when it carries none. */
   readAgentPhoneArtifact(): Promise<DesktopAgentPhoneArtifact | null>;
   agentPhoneAdb?: DesktopAgentPhoneAdbBridge;
+  iphoneSetup?: import("./desktop-iphone.js").DesktopIphoneSetupBridge;
   /** Several phones answered a WebUSB request from this page; the person picks one. */
   onUsbDeviceChoice(listener: (choice: DesktopUsbDeviceChoice) => void): () => void;
   /** Answers the open USB choice with the person's pick, or declines it. */
@@ -2078,3 +2079,5 @@ export interface OpensteerDesktopBridge {
   setUpDevice(input: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus>;
   unlinkPersonal(): Promise<void>;
 }
+
+export * from "./desktop-iphone.js";

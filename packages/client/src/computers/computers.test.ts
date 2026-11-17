@@ -1,3 +1,4 @@
+import { mockIphoneScreenDevice } from "../mock/mock-screen-devices.js";
 import type { MachineSummary } from "@opensteer/protocol";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -232,6 +233,7 @@ describe("what agents can use on a computer", () => {
 describe("an Android phone in the list", () => {
   const pixelId = "rnr_22222222-2222-4222-8222-222222222222";
   const pixel = machine({
+    kind: "agent-phone",
     allowedModules: ["integrations"],
     device: { form: "phone", platform: "android" },
     id: pixelId,
@@ -287,9 +289,10 @@ describe("computerStatus", () => {
     "names the installed app for an Android device that is %s",
     (status) => {
       const android = { form: "phone", platform: "android" } as const;
-      expect(computerStatus(machine({ device: android, name: "Pixel 7", status })).label).toBe(
-        "Update Agent Phone on Pixel 7.",
-      );
+      expect(
+        computerStatus(machine({ kind: "agent-phone", device: android, name: "Pixel 7", status }))
+          .label,
+      ).toBe("Update Agent Phone on Pixel 7.");
       expect(
         computerStatus(
           machine({ device: { ...android, app: "opensteer" }, name: "Pixel 9", status }),
@@ -411,4 +414,34 @@ describe("a device, as what lives on it names it", () => {
     ]);
     expect(orderDevices(devices, null)[0]?.name).toBe("Mac 9");
   });
+});
+
+it("distinguishes a detached phone from an offline driver and keeps files on the Mac", () => {
+  expect(computerStatus(mockIphoneScreenDevice("detached"))).toMatchObject({
+    label: "Not connected",
+    tone: "offline",
+  });
+  expect(computerStatus(mockIphoneScreenDevice("driver-offline"))).toMatchObject({
+    label: "Driver offline",
+    tone: "offline",
+  });
+  const phone = mockIphoneScreenDevice();
+  expect(deviceBrowser(phone, [])).toBeNull();
+  expect(
+    computerUses(
+      {
+        ...phone,
+        access: {
+          ...phone.access!,
+          policy: {
+            ...phone.access!.policy,
+            reach: "owner",
+            commands: true,
+            shares: [{ path: "/tmp/project", mode: "read" }],
+          },
+        },
+      },
+      null,
+    ),
+  ).toEqual([]);
 });

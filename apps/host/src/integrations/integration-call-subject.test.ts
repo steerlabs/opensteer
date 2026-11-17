@@ -1,4 +1,4 @@
-import { createId, type UserId } from "@opensteer/core";
+import { DeviceIdSchema, createId, type UserId } from "@opensteer/core";
 import type { CallableIntegrationTool } from "@opensteer/database";
 import type { PendingAgentEvent } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
@@ -132,6 +132,7 @@ describe("integrationCallSubject", () => {
         },
       },
       runnerId,
+      deviceId: DeviceIdSchema.parse(runnerId),
       runnerName: "Pixel 8",
       runnerRevoked: false,
     };

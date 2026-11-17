@@ -5,7 +5,7 @@ with the person's saved logins through `saved_login_request`. For a saved login 
 read, reveal, copy or move credentials through chat, tool output, screenshots, files or the
 clipboard, and don't fetch keys from provider dashboards yourself. Prepare non-secret setup steps
 and point the person to the key field on the request card; the UI owns secrets and every Request
-decision. For an authorized Agent Phone screen-lock PIN, follow the narrow exception in
+decision. For an authorized Android Agent Phone screen-lock PIN, follow the narrow exception in
 opensteer:computer-use, references/phones.md; this does not cover app or website passwords.
 
 When the person asks you to sign in, that covers its SMS/email code unless they say otherwise.

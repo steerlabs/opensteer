@@ -1,6 +1,6 @@
 import { createSettingsReadHandlers } from "./settings-read-handlers.js";
 import type { ComputerViewService } from "../computer-use/computer-view-service.js";
-import { OpensteerError, RunnerIdSchema } from "@opensteer/core";
+import { OpensteerError, DeviceIdSchema, RunnerIdSchema } from "@opensteer/core";
 import { requireSession } from "../integrations/integration-rpc-context.js";
 import {
   hostApi,
@@ -153,7 +153,7 @@ export function createHostApiHandlers(
     "plugins.detail.get": async (input, context) => {
       const machines = await coreHandlers["machines.list"]({}, context);
       if (!machines.ok) return machines;
-      const detail = await integrationPlatform.platform.store.settings.detail(
+      const detail = await integrationPlatform.platform.store.settings.deviceDetail(
         requireSession(context).user.id,
         input.target,
         new Set(machines.data.machines.filter((m) => m.status === "online").map((m) => m.id)),
@@ -161,7 +161,9 @@ export function createHostApiHandlers(
       detail.row = listedPluginRow(detail.row);
       const runnerIds = new Set<string>([
         ...detail.devices.map((d) => d.runnerId),
-        ...detail.accounts.flatMap((account) => (account.runnerId ? [account.runnerId] : [])),
+        ...detail.accounts.flatMap<string>((account) =>
+          account.deviceId ? [account.deviceId] : account.runnerId ? [account.runnerId] : [],
+        ),
       ]);
       if (runnerIds.size) {
         for (const machine of machines.data.machines.filter((entry) => runnerIds.has(entry.id))) {
@@ -185,14 +187,32 @@ export function createHostApiHandlers(
           }
         }
         detail.devices = machines.data.machines
-          .filter((machine) => runnerIds.has(machine.id))
+          .filter((machine) => runnerIds.has(machine.id) && machine.selfRunnerId !== null)
           .map((machine) => ({
-            runnerId: RunnerIdSchema.parse(machine.id),
+            runnerId: machine.selfRunnerId ?? RunnerIdSchema.parse(machine.id),
             name: machine.name.slice(0, 120),
             status: machine.status,
           }));
       }
-      return rpcSuccess(hostApi["plugins.detail.get"].success.parse(detail));
+      return rpcSuccess(
+        hostApi["plugins.detail.get"].success.parse({
+          ...detail,
+          accounts: detail.accounts.map((account) => ({
+            ...account,
+            runnerId: account.deviceId
+              ? (machines.data.machines.find((machine) => machine.id === account.deviceId)
+                  ?.selfRunnerId ?? null)
+              : account.runnerId,
+          })),
+          deviceTargets: machines.data.machines
+            .filter((machine) => runnerIds.has(machine.id) && machine.status !== "pending")
+            .map((machine) => ({
+              deviceId: DeviceIdSchema.parse(machine.id),
+              name: machine.name.slice(0, 120),
+              status: machine.status,
+            })),
+        }),
+      );
     },
     ...createSettingsReadHandlers({
       otherDevices: (owner, machines) =>

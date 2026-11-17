@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -5,7 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { HostClientRequestError, type HostSnapshot } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { computerReasonWords } from "@opensteer/client/integrations";
-import { RunnerIdSchema, WindowIdSchema, type Tab } from "@opensteer/core";
+import { WindowIdSchema, type Tab } from "@opensteer/core";
 import { OpenAppScreen } from "./open-app.js";
 
 const state = vi.hoisted(() => ({
@@ -200,7 +201,7 @@ function button(label: string) {
 async function press(label: string) {
   await act(async () => button(label).click());
 }
-it("groups own apps by named Mac and Agent Phone, with window counts", async () => {
+it("groups own apps by named Mac and phone, with window counts", async () => {
   const w = await setup();
   w.windows.mockImplementation(async (_machine, app) =>
     app.displayName === "Notes"
@@ -212,7 +213,7 @@ it("groups own apps by named Mac and Agent Phone, with window counts", async () 
   await w.render();
   expect(container.textContent).toContain("Studio Mac");
   expect(container.textContent).toContain("Mac mini");
-  expect(container.textContent).toContain("Agent Phone · Pixel 7");
+  expect(container.textContent).toContain("Phone · Pixel 7");
   expect(container.textContent).toContain("No windows open");
   expect(container.textContent).toContain("Shopping");
   expect(container.textContent).toContain("2 windows");
@@ -347,7 +348,7 @@ it("marks an app that already has a window tab as open", async () => {
   const w = await setup();
   await w.openTab({
     bundleId: "com.apple.Notes",
-    computerId: RunnerIdSchema.parse(w.app.machineId),
+    computerId: DeviceIdSchema.parse(w.app.machineId),
     kind: "window",
   });
   await w.render();

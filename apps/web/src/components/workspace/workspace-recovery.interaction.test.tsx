@@ -970,10 +970,10 @@ describe("a computer that can't show its apps, on the start page", () => {
   it("an offline computer folds into one quiet line after the rest; its apps are found but never opened, and unfold in their own place when it's back", async () => {
     await openStartPage();
     const asked = vi.spyOn(client, "openTab");
-    expect(captions()).toEqual(["Mac mini", "Studio Mac", "Phone"]);
+    expect(captions()).toEqual(["Mac mini", "Studio Mac", "Phone", "Phone"]);
 
     await setStatus("Studio Mac", "offline");
-    expect(captions()).toEqual(["Mac mini", "Phone", "Studio Mac"]);
+    expect(captions()).toEqual(["Mac mini", "Phone", "Phone", "Studio Mac"]);
     expect(captions(".start-apps__away")).toEqual(["Studio Mac"]);
     expect(document.querySelector(".start-tile[aria-label^='Keynote on Studio']")).toBeNull();
     const line = element<HTMLElement>(".start-apps__away .start-apps__row");
@@ -1007,11 +1007,11 @@ describe("a computer that can't show its apps, on the start page", () => {
     // A phone that goes is named, since its tile no longer is.
     await click(element(".start-page__clear"));
     await setStatus("Pixel 7", "offline");
-    expect(captions()).toEqual(["Mac mini", "Studio Mac", "Pixel 7"]);
+    expect(captions()).toEqual(["Mac mini", "Phone", "Studio Mac", "Pixel 7"]);
 
     await setStatus("Studio Mac", "online");
     await setStatus("Pixel 7", "online");
-    expect(captions()).toEqual(["Mac mini", "Studio Mac", "Phone"]);
+    expect(captions()).toEqual(["Mac mini", "Studio Mac", "Phone", "Phone"]);
     expect(document.querySelector(".start-apps__away")).toBeNull();
     await click(element(".start-tile[aria-label^='Keynote on Studio']"));
     await settle(120);
@@ -1024,7 +1024,7 @@ describe("a computer that can't show its apps, on the start page", () => {
     const mini = machine("Mac mini");
     await act(async () => client.setComputerUseReadiness(mini.id, "permission-required"));
     await settle();
-    expect(captions()).toEqual(["Studio Mac", "Phone", "Mac mini"]);
+    expect(captions()).toEqual(["Studio Mac", "Phone", "Phone", "Mac mini"]);
     const line = element<HTMLButtonElement>(".start-apps__away button.start-apps__row");
     expect(element(".start-apps__status", line).textContent).toBe("Needs permission");
     expect(line.getAttribute("aria-label")).toBe("Mac mini, Needs permission");

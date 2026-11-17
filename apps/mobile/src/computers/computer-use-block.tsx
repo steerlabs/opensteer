@@ -31,7 +31,10 @@ import {
   computerUseStopSentence,
   computerUseTakeBack,
   phoneUseIntroduction,
+  phoneScreenSetupLine,
+  phoneScreenStatus,
   phoneUseStatusLine,
+  setPhoneUseAccess,
   phoneUseTone,
   takeBackComputerUseApp,
   type ComputerUseAppRow,
@@ -265,7 +268,7 @@ export function ComputerUseBlock(props: {
   );
 }
 
-/** An Android phone's owner sets access from this client. */
+/** A phone's owner sets access from any client; a Mac-driven phone says where its setup is. */
 export function PhoneUseBlock(props: {
   /** False while the Host is unreachable: nothing is changed on a guess. */
   readonly canRespond: boolean;
@@ -292,30 +295,25 @@ export function PhoneUseBlock(props: {
           throw new Error("Phone access did not change.");
         return;
       }
-      const result = await hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey(`agent-phone-access:${machine.id}`),
-        input: {
-          access,
-          app: null,
-          definitionId: "android-phone",
-          kind: "app",
-          runnerId: machine.id,
-        },
-        type: "integration.computer.setup.set",
-      });
-      if (result.type !== "integration.computer.setup.set")
-        throw new Error("Phone access did not change.");
+      await setPhoneUseAccess(hostClient, machine, access);
     });
   };
+  const screen = phoneScreenStatus(machine);
+  const setup = screen?.needsSetup ? phoneScreenSetupLine(machine) : null;
 
   return (
     <View style={styles.block}>
       <View accessibilityRole="summary" style={styles.status}>
         <ToneDot tone={phoneUseTone(view)} />
         <AppText role="secondary" style={styles.statusText} tone="soft">
-          {phoneUseStatusLine(view, machine.name)}
+          {screen && screen.tone !== "online"
+            ? [screen.label, screen.fix].filter(Boolean).join(". ")
+            : phoneUseStatusLine(view, machine.name)}
         </AppText>
       </View>
+      {setup ? (
+        <AppText role="secondary" tone="muted">{`${setup.label}. ${setup.detail}`}</AppText>
+      ) : null}
       {view.access === null ? (
         <AppText role="secondary" tone="muted">
           {phoneUseIntroduction}
@@ -332,21 +330,23 @@ export function PhoneUseBlock(props: {
           />
         </View>
       )}
-      <View style={styles.section}>
-        <SectionLabel>Access</SectionLabel>
-        <RowGroup>
-          {([null, "read", "read-write"] as const).map((access) => (
-            <ChoiceRow
-              description={view.access === access ? "Current access" : "Set access"}
-              disabled={disabled || view.access === access}
-              key={access ?? "off"}
-              onPress={() => setAccess(access)}
-              title={access === null ? "Off" : computerUseAccessLabel[access]}
-            />
-          ))}
-        </RowGroup>
-        <FailureText detail={failureFor("access")} />
-      </View>
+      {view.driver?.attached === false ? null : (
+        <View style={styles.section}>
+          <SectionLabel>Access</SectionLabel>
+          <RowGroup>
+            {([null, "read", "read-write"] as const).map((access) => (
+              <ChoiceRow
+                description={view.access === access ? "Current access" : "Set access"}
+                disabled={disabled || view.access === access}
+                key={access ?? "off"}
+                onPress={() => setAccess(access)}
+                title={access === null ? "Off" : computerUseAccessLabel[access]}
+              />
+            ))}
+          </RowGroup>
+          <FailureText detail={failureFor("access")} />
+        </View>
+      )}
     </View>
   );
 }

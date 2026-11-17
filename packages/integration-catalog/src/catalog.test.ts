@@ -11,7 +11,10 @@ import {
   IntegrationDefinitionSchema,
   integrationDefinitionSummary,
 } from "@opensteer/integration-core";
-import { authorizationDigest } from "@opensteer/integration-core/digest";
+import {
+  authorizationDigest,
+  integrationDefinitionDigest,
+} from "@opensteer/integration-core/digest";
 import { parseComputerAppConfig } from "@opensteer/integration-core/computer-app";
 import { describe, expect, it } from "vitest";
 import { getIntegrationDefinition, integrationDefinitions } from "./index.js";
@@ -163,9 +166,15 @@ describe("first-party integration catalog", () => {
     }
   });
 
+  it("keeps the Android display definition digest unchanged", () => {
+    expect(integrationDefinitionDigest(getIntegrationDefinition("android-phone"))).toBe(
+      "rEYeiv1bBPbdl6H68nIese0meJZSBKz4jRxYB6qwnTI",
+    );
+  });
+
   it("contains all requested definitions with unique ids", () => {
     const ids = integrationDefinitions.map((definition) => definition.id);
-    expect(ids).toHaveLength(60);
+    expect(ids).toHaveLength(61);
     expect(ids).not.toContain("slack-mcp");
     expect(ids).toEqual(
       expect.arrayContaining([
@@ -178,6 +187,7 @@ describe("first-party integration catalog", () => {
         "iphone-photos",
         "macos-app",
         "android-phone",
+        "iphone-screen",
         "slack",
         "github",
         "figma-rest",

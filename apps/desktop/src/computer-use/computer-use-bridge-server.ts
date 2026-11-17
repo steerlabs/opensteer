@@ -1,3 +1,12 @@
+import {
+  iphoneRunnerBridgeHeader,
+  iphoneRunnerMethodSchema,
+  iphoneRunnerResults,
+  iphoneRunnerParams,
+  type IphoneRunnerPort,
+  type IphoneRunnerConnection,
+} from "@opensteer/protocol/iphone-bridge";
+import { IphoneServiceError } from "../iphone/iphone-store.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server as HttpServer } from "node:http";
 import { once } from "node:events";
@@ -202,6 +211,7 @@ export interface PasswordsAuthorityPort {
 }
 
 export interface ComputerUseBridgeServerOptions {
+  readonly iphone?: IphoneRunnerPort;
   readonly passwords?: PasswordsAuthorityPort;
   /** How long past a deadline to wait; `computerUseBridgeGraceMs` unless a test shortens it. */
   readonly graceMs?: number;
@@ -241,6 +251,7 @@ interface BridgeOwner {
   readonly videoProfile: 1 | undefined;
   readonly opening: Set<ComputerUseSessionId>;
   readonly passwords: Set<string>;
+  iphone?: IphoneRunnerConnection | undefined;
 }
 
 /** The slot's one authenticated connection, held from the upgrade on. */
@@ -273,6 +284,7 @@ type Outcome<Value> =
 export class ComputerUseBridgeServer {
   readonly #connections = new Set<BridgeConnection>();
   readonly #passwords: PasswordsAuthorityPort | undefined;
+  readonly #iphone: IphoneRunnerPort | undefined;
   readonly #graceMs: number;
   readonly #helper: ComputerUseBridgeHelperPort;
   readonly #httpServer: HttpServer;
@@ -479,6 +491,7 @@ export class ComputerUseBridgeServer {
 
   constructor(options: ComputerUseBridgeServerOptions) {
     this.#passwords = options.passwords;
+    this.#iphone = options.iphone;
     this.#graceMs = options.graceMs ?? computerUseBridgeGraceMs;
     this.#helper = options.helper;
     this.#log = options.log ?? (() => undefined);
@@ -537,6 +550,7 @@ export class ComputerUseBridgeServer {
           release,
           request.headers[computerUseBridgeOwnerInputHeader] === "2" ? 2 : undefined,
           request.headers[computerUseBridgeVideoProfileHeader] === "1" ? 1 : undefined,
+          request.headers[iphoneRunnerBridgeHeader] === "1",
         );
       });
     });
@@ -606,6 +620,7 @@ export class ComputerUseBridgeServer {
     releaseClaim: () => void,
     ownerInputVersion: 2 | undefined,
     videoProfile: 1 | undefined,
+    iphoneScreen: boolean,
   ): void {
     // The owner is the connection's identity for ownership and its liveness
     // fence in one object: `alive` is what tells an answer that arrived after
@@ -619,6 +634,10 @@ export class ComputerUseBridgeServer {
       opening: new Set(),
       passwords: new Set(),
     };
+    if (iphoneScreen)
+      owner.iphone = this.#iphone?.connect((event) => {
+        if (owner.alive) send(socket, event);
+      });
     const detachEvents = this.#helper.onEvent((event) => {
       if (event.event !== "session.stopped") {
         if (
@@ -681,6 +700,7 @@ export class ComputerUseBridgeServer {
     });
     socket.once("close", () => {
       owner.alive = false;
+      owner.iphone?.close();
       for (const id of owner.passwords) {
         this.#ownership.releasePassword(id, owner);
         void this.#passwords?.end(id).catch(() => undefined);
@@ -728,6 +748,47 @@ export class ComputerUseBridgeServer {
     const refuse = (code: ComputerUseErrorCode, message: string): void => {
       if (owner.alive) send(socket, { error: { code, message }, id, kind: "response" });
     };
+    const phoneMethod = iphoneRunnerMethodSchema.safeParse(method);
+    if (phoneMethod.success) {
+      if (!owner.iphone) {
+        refuse("unsupported", "iPhone control is unavailable on this connection.");
+        return;
+      }
+      try {
+        const call = owner.iphone.request(
+          phoneMethod.data,
+          iphoneRunnerParams[phoneMethod.data].parse(params),
+          { deadline },
+        );
+        const outcome = await this.#within(call, deadline);
+        if (outcome.kind === "answer")
+          answer(iphoneRunnerResults[phoneMethod.data].parse(outcome.value));
+        else if (outcome.kind === "late") {
+          const session = iphoneRunnerParams["iphone.session.close"].strip().safeParse(params);
+          if (session.success)
+            void owner.iphone
+              .request("iphone.cancel", session.data, {
+                deadline: this.#now() + sessionCloseTimeoutMs,
+              })
+              .catch(() => undefined);
+          refuse(
+            method === "iphone.perform" ? "outcome-unknown" : "failed",
+            "The iPhone did not answer in time.",
+          );
+        } else {
+          const failure = asFailure(outcome.error);
+          refuse(failure.code, failure.message);
+        }
+      } catch (error) {
+        const failure = asFailure(error);
+        refuse(failure.code, failure.message);
+      }
+      return;
+    }
+    if (method.startsWith("iphone.")) {
+      refuse("unsupported", "Unsupported iPhone operation.");
+      return;
+    }
     if (method === "passwords.capabilities") {
       if (!computerUseBridgePasswordsParams[method].safeParse(params).success) {
         answer({ authority: null, receiver: null });
@@ -1092,7 +1153,7 @@ export class ComputerUseBridgeServer {
       owner.opening.add(sessionId);
     }
     const outcome = await this.#within(
-      this.#helper.request(method, request.data.params, { deadline }),
+      this.#helper.request(request.data.method, request.data.params, { deadline }),
       deadline,
     );
     if (opening && sessionId) owner.opening.delete(sessionId);
@@ -1157,7 +1218,7 @@ export class ComputerUseBridgeServer {
 
   #refuseWith(
     refuse: (code: ComputerUseErrorCode, message: string) => void,
-    method: ComputerUseHelperMethod,
+    method: string,
     params: unknown,
     outcome: Exclude<Outcome<unknown>, { readonly kind: "answer" }>,
   ): void {
@@ -1237,6 +1298,19 @@ function asFailure(error: unknown): {
   readonly code: ComputerUseErrorCode;
   readonly message: string;
 } {
+  if (error instanceof IphoneServiceError) {
+    return {
+      code:
+        error.effect !== "not-started"
+          ? "outcome-unknown"
+          : error.code === "no-session" || error.code === "stale-native-epoch"
+            ? "no-session"
+            : error.code === "phone-in-use"
+              ? "busy"
+              : "failed",
+      message: `iPhone: ${error.code}.`,
+    };
+  }
   if (error instanceof ComputerUseHelperFailure) {
     return { code: error.code, message: error.message };
   }

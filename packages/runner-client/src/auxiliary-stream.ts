@@ -162,6 +162,7 @@ export async function openRunnerAuxiliaryStream(options: {
     }
   });
   const stream: RunnerModuleStream = {
+    ...(welcome.screenDrivers === 1 ? { screenDrivers: 1 } : {}),
     ...(welcome.loginText === 1 ? { loginText: 1 } : {}),
     ...(welcome.passwordSignIn === 2 ? { passwordSignIn: 2 } : {}),
     ...(welcome.browserWireVersion ? { browserWireVersion: welcome.browserWireVersion } : {}),

@@ -23,6 +23,7 @@ export * from "./computer-apps/provider.js";
 export * from "./computer-apps/helper-app-provider.js";
 export { ComputerUseBridgeError } from "./computer-apps/computer-use-bridge-client.js";
 export * from "./computer-apps/prepare.js";
+export * from "./computer-apps/phone-screen-driver.js";
 export * from "./messaging/prepare.js";
 export * from "./computer-apps/local-mcp-servers.js";
 export { ExecutionContainment, executionScopeVariable } from "./runtime/execution-containment.js";

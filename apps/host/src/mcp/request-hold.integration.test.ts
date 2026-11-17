@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { createId, type RequestId } from "@opensteer/core";
 import {
   describeStore,
@@ -34,6 +35,7 @@ async function setup(storeFixture: StoreFixture, suffix: string) {
     requests: store.requests,
     commands: { enqueueThreadInput: (input) => store.enqueueThreadInput(input) },
     integrations: {
+      selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
       listDiscoveryInventory: async () => [],
       listCallableTools: async () => [],
       computerUseMachines: async () => [],

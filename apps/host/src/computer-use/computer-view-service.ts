@@ -1,15 +1,23 @@
+import { sameDeviceDriver } from "./device-drivers.js";
+import type { DeviceDriverIdentity } from "@opensteer/core";
+import {
+  computerConnectionDeviceId,
+  type DeviceComputerConnection,
+  type DeviceDriverRoute,
+  type DeviceDisplayAuthorization,
+} from "./device-drivers.js";
+import type { ComputerTargetId } from "../computer-apps/computer-app-hub.js";
+import type { DeviceId } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
 import {
   OpensteerError,
+  DeviceIdSchema,
+  isPhoneDisplayDefinitionId,
   ComputerViewUnavailableReasonSchema,
   type ComputerViewRecord,
-  type RunnerId,
   type UserId,
 } from "@opensteer/core";
-import {
-  computerAppIdentitiesEqual,
-  type IntegrationConnectionSummary,
-} from "@opensteer/integration-core";
+import { computerAppIdentitiesEqual } from "@opensteer/integration-core";
 import {
   ComputerViewIdSchema,
   ComputerViewSchema,
@@ -33,7 +41,7 @@ import {
 import type { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 
 export interface PhoneViewDiagnostic {
-  readonly machineId: RunnerId;
+  readonly machineId: ComputerTargetId;
   readonly operation: "tab.view.open" | "computer.view.renew" | "computer.view.close";
   readonly viewId: ComputerView["viewId"] | null;
   readonly generation: number | null;
@@ -43,33 +51,36 @@ export interface PhoneViewDiagnostic {
 }
 
 interface Options {
+  readonly selfDeviceId?: (runnerId: import("@opensteer/core").RunnerId) => Promise<DeviceId>;
   readonly onPhoneView?: (status: PhoneViewDiagnostic) => void;
-  readonly hub: Pick<ComputerAppHub, "ownerViewSupported" | "withRunnerAdmission" | "attached"> & {
-    sendComputerView(input: {
-      runnerId: RunnerId;
-      request: {
-        viewId: string;
-        generation: number;
-        leaseDurationMs: number;
-        target: ComputerViewTarget;
-        operation: "open" | "renew" | "close";
-        timeoutMs: number;
-      };
-      signal?: AbortSignal;
-    }): Promise<
-      | { kind: "ok"; value: import("@opensteer/protocol").ComputerViewNativeResult }
-      | { kind: "error"; code: string; message: string }
-    >;
-    ownerWindows(
-      runnerId: RunnerId,
-      app: ComputerAppIdentity,
-      options: { timeoutMs: number; signal?: AbortSignal },
-    ): Promise<unknown>;
-  };
-  readonly connections: (owner: UserId) => Promise<readonly IntegrationConnectionSummary[]>;
+  readonly hub: Pick<ComputerAppHub, "ownerViewSupported" | "withRunnerAdmission" | "attached"> &
+    Partial<Pick<ComputerAppHub, "withDeviceAdmission" | "captureRoute" | "routeCurrent">> & {
+      sendComputerView(input: {
+        runnerId: ComputerTargetId;
+        route?: DeviceDriverRoute | undefined;
+        request: {
+          viewId: string;
+          generation: number;
+          leaseDurationMs: number;
+          target: ComputerViewTarget;
+          operation: "open" | "renew" | "close";
+          timeoutMs: number;
+        };
+        signal?: AbortSignal;
+      }): Promise<
+        | { kind: "ok"; value: import("@opensteer/protocol").ComputerViewNativeResult }
+        | { kind: "error"; code: string; message: string }
+      >;
+      ownerWindows(
+        deviceId: ComputerTargetId,
+        app: ComputerAppIdentity,
+        options: { timeoutMs: number; signal?: AbortSignal },
+      ): Promise<unknown>;
+    };
+  readonly connections: (owner: UserId) => Promise<readonly DeviceComputerConnection[]>;
   readonly owners: (
-    ids: readonly RunnerId[],
-  ) => Promise<ReadonlyMap<RunnerId, { readonly effectiveOwner: UserId | null }>>;
+    ids: readonly ComputerTargetId[],
+  ) => Promise<ReadonlyMap<ComputerTargetId, { readonly effectiveOwner: UserId | null }>>;
   readonly changed: (
     owner: UserId,
     message: Extract<
@@ -88,7 +99,7 @@ interface Options {
 type OpenViewCommand = {
   type: "tab.view.open";
   idempotencyKey: string;
-  machineId: RunnerId;
+  machineId: DeviceId;
   target: ComputerViewTarget;
   tabId: string;
   tabGeneration: number;
@@ -96,12 +107,14 @@ type OpenViewCommand = {
 type ViewCommand = OpenViewCommand | ComputerViewCloseCommand | ComputerViewRenewCommand;
 type ApprovedNativeApp = {
   connectionId: string;
-  machineId: RunnerId;
+  machineId: DeviceId;
   target: { kind: "app"; app: ComputerAppIdentity } | { kind: "phone"; display: string };
   name: string;
   iconPng: null;
 };
 interface HeldView {
+  route?: DeviceDriverRoute | undefined;
+  readonly deviceId: ComputerTargetId;
   record: ComputerViewRecord;
   timer: NodeJS.Timeout | null;
   tabId: string;
@@ -128,12 +141,13 @@ export class ComputerViewService {
     const owners = await this.#options.owners([
       ...new Set(
         connections.flatMap((connection) =>
-          connection.computer ? [connection.computer.runnerId] : [],
+          computerConnectionDeviceId(connection) ? [computerConnectionDeviceId(connection)!] : [],
         ),
       ),
     ]);
     return connections.flatMap((connection) =>
-      connection.computer && owners.get(connection.computer.runnerId)?.effectiveOwner === owner
+      connection.computer &&
+      owners.get(computerConnectionDeviceId(connection)!)?.effectiveOwner === owner
         ? (approvedApp(connection) ?? [])
         : [],
     );
@@ -141,21 +155,21 @@ export class ComputerViewService {
 
   async windows(
     owner: UserId,
-    machine: RunnerId,
+    machine: ComputerTargetId,
     app: ComputerAppIdentity,
   ): Promise<OwnerWindowInfo[]> {
     const target = { kind: "app" as const, app };
     try {
-      const { approved, outcome } = await this.#options.hub.withRunnerAdmission(
-        machine,
-        async () => {
-          const approved = await this.#approvedTarget(owner, machine, target);
-          return {
-            approved,
-            outcome: this.#options.hub.ownerWindows(machine, app, { timeoutMs: 8_000 }),
-          };
-        },
-      );
+      const { approved, outcome } = await (
+        this.#options.hub.withDeviceAdmission?.bind(this.#options.hub) ??
+        this.#options.hub.withRunnerAdmission.bind(this.#options.hub)
+      )(machine, async () => {
+        const approved = await this.#approvedTarget(owner, machine, target);
+        return {
+          approved,
+          outcome: this.#options.hub.ownerWindows(machine, app, { timeoutMs: 8_000 }),
+        };
+      });
       const windows = OwnerWindowInfoSchema.array().parse(await outcome);
       const current = await this.#approvedTarget(owner, machine, target);
       if (current.connectionId !== approved.connectionId)
@@ -172,12 +186,12 @@ export class ComputerViewService {
     }
   }
 
-  async list(owner: UserId, machine: RunnerId): Promise<ComputerView[]> {
+  async list(owner: UserId, machine: ComputerTargetId): Promise<ComputerView[]> {
     return [...this.#views.values()]
       .filter(
-        ({ record }) =>
+        ({ record, deviceId }) =>
           record.ownerUserId === owner &&
-          record.machineId === machine &&
+          deviceId === machine &&
           record.state !== "closed" &&
           record.state !== "expired" &&
           Date.parse(record.expiresAt) > this.#now(),
@@ -186,12 +200,10 @@ export class ComputerViewService {
   }
 
   /** Whether a view of this phone is live: one that ended cannot keep its tab open. */
-  holdsPhoneView(machine: RunnerId): boolean {
+  holdsPhoneView(machine: ComputerTargetId): boolean {
     return [...this.#views.values()].some(
       (view) =>
-        view.record.machineId === machine &&
-        view.record.target.kind === "phone" &&
-        this.#live(view),
+        view.deviceId === machine && view.record.target.kind === "phone" && this.#live(view),
     );
   }
 
@@ -200,7 +212,7 @@ export class ComputerViewService {
     input: {
       tabId: string;
       tabGeneration: number;
-      computerId: RunnerId;
+      computerId: ComputerTargetId;
       target: ComputerViewTarget;
     },
     key: string,
@@ -208,7 +220,7 @@ export class ComputerViewService {
     return this.command(owner, {
       type: "tab.view.open",
       idempotencyKey: key,
-      machineId: input.computerId,
+      machineId: DeviceIdSchema.parse(input.computerId),
       ...input,
     });
   }
@@ -231,7 +243,7 @@ export class ComputerViewService {
       command.type === "tab.view.open"
         ? command.target.kind === "phone"
         : held?.record.target.kind === "phone" && held.record.ownerUserId === owner;
-    const machineId = command.type === "tab.view.open" ? command.machineId : held?.record.machineId;
+    const machineId = command.type === "tab.view.open" ? command.machineId : held?.deviceId;
     const report = (
       state: PhoneViewDiagnostic["state"],
       view?: ComputerView,
@@ -322,9 +334,9 @@ export class ComputerViewService {
       )
         throw this.#refusal("computer-view-ended", "This tab was closed.");
       const held = [...this.#views.values()].find(
-        ({ record }) =>
+        ({ record, deviceId }) =>
           record.ownerUserId === owner &&
-          record.machineId === command.machineId &&
+          deviceId === command.machineId &&
           sameViewTarget(record.target, command.target) &&
           this.#views.get(record.viewId)?.tabId === command.tabId &&
           this.#views.get(record.viewId)?.tabGeneration === command.tabGeneration,
@@ -343,12 +355,13 @@ export class ComputerViewService {
       const now = this.#now();
       const view: HeldView = {
         timer: null,
+        deviceId: command.machineId,
         tabId: command.tabId,
         tabGeneration: command.tabGeneration,
         record: {
           ownerUserId: owner,
           connectionId: approved.connectionId,
-          machineId: command.machineId,
+          machineId: DeviceIdSchema.parse(command.machineId),
           target: command.target,
           window: null,
           viewId: held?.record.viewId ?? ComputerViewIdSchema.parse(`cvw_${randomUUID()}`),
@@ -470,17 +483,17 @@ export class ComputerViewService {
   async authorizeDisplay(
     source: Extract<DisplaySource, { kind: "owner-view" }>,
     owner: UserId,
-  ): Promise<RunnerId> {
+  ): Promise<DeviceDisplayAuthorization> {
     const held = this.#get(owner, source);
     await this.#authorize(held, owner);
     if (held.record.state !== "ready")
       throw this.#refusal("computer-view-ended", "That phone view has ended.");
-    return held.record.machineId;
+    return { deviceId: DeviceIdSchema.parse(held.deviceId), route: held.route };
   }
   async authorizeInput(
     source: Extract<DisplaySource, { kind: "owner-view" }>,
     owner: UserId,
-  ): Promise<RunnerId> {
+  ): Promise<DeviceDisplayAuthorization> {
     const held = this.#get(owner, source);
     await this.#authorize(held, owner);
     const connections = await this.#options.connections(owner);
@@ -491,28 +504,28 @@ export class ComputerViewService {
       approved?.status !== "connected" ||
       approved.computer?.access !== "read-write" ||
       approved.computer.blockedAt !== null ||
-      approved.computer.runnerId !== held.record.machineId ||
+      computerConnectionDeviceId(approved) !== held.deviceId ||
       (held.record.target.kind === "app"
         ? !approved.computer.app ||
           !computerAppIdentitiesEqual(approved.computer.app, held.record.target.app)
-        : approved.definitionId !== "android-phone" || approved.computer.app !== null)
+        : !isPhoneDisplayDefinitionId(approved.definitionId) || approved.computer.app !== null)
     )
       throw new OpensteerError({
         code: "forbidden",
         message: "Input requires a current read-write approval.",
       });
-    return held.record.machineId;
+    return { deviceId: DeviceIdSchema.parse(held.deviceId), route: held.route };
   }
   isDisplayLive(
     source: Extract<DisplaySource, { kind: "owner-view" }>,
     owner: UserId,
-    machine: RunnerId,
+    machine: ComputerTargetId,
   ): boolean {
     const held = this.#views.get(source.viewId);
     return (
       held !== undefined &&
       held.record.ownerUserId === owner &&
-      held.record.machineId === machine &&
+      held.deviceId === machine &&
       held.record.generation === source.generation &&
       held.record.state === "ready" &&
       this.#live(held)
@@ -520,12 +533,11 @@ export class ComputerViewService {
   }
   endDisplaySource(
     source: Extract<DisplaySource, { kind: "owner-view" }>,
-    machine: RunnerId,
+    machine: ComputerTargetId,
     reason: DisplayStreamReason,
   ): void {
     const held = this.#views.get(source.viewId);
-    if (!held || held.record.machineId !== machine || held.record.generation !== source.generation)
-      return;
+    if (!held || held.deviceId !== machine || held.record.generation !== source.generation) return;
     if (
       [
         "capacity",
@@ -564,9 +576,21 @@ export class ComputerViewService {
     );
   }
 
-  disconnect(machine: RunnerId): void {
+  forgetRunner(runnerId: import("@opensteer/core").RunnerId): void {
     for (const held of this.#views.values())
-      if (held.record.machineId === machine) this.#end(held, "disconnected");
+      if (held.route?.runnerId === runnerId || (!held.route && held.deviceId === runnerId))
+        this.#end(held, "disconnected");
+  }
+  forgetDriver(binding: DeviceDriverIdentity): void {
+    for (const held of this.#views.values())
+      if (sameDeviceDriver(held.route, binding)) this.#end(held, "disconnected");
+  }
+  forgetDevice(deviceId: ComputerTargetId): void {
+    this.disconnect(deviceId);
+  }
+  disconnect(machine: ComputerTargetId): void {
+    for (const held of this.#views.values())
+      if (held.deviceId === machine) this.#end(held, "disconnected");
   }
   async revalidate(): Promise<void> {
     await Promise.all(
@@ -590,7 +614,7 @@ export class ComputerViewService {
 
   async #approvedTarget(
     owner: UserId,
-    machine: RunnerId,
+    machine: ComputerTargetId,
     target: ApprovedNativeApp["target"],
   ): Promise<ApprovedNativeApp> {
     const [owners, connections] = await Promise.all([
@@ -623,7 +647,7 @@ export class ComputerViewService {
     if (!this.#live(view))
       throw this.#refusal("computer-view-ended", "The view ended. Reopen it explicitly.");
     try {
-      const approved = await this.#approvedTarget(owner, view.record.machineId, view.record.target);
+      const approved = await this.#approvedTarget(owner, view.deviceId, view.record.target);
       if (approved.connectionId !== view.record.connectionId)
         throw this.#refusal("computer-view-not-approved", "This approval changed.");
       if (!this.#live(view)) throw this.#refusal("computer-view-ended", "The view ended.");
@@ -644,6 +668,7 @@ export class ComputerViewService {
     return held;
   }
   #live(view: HeldView): boolean {
+    if (view.route && !this.#options.hub.routeCurrent?.(view.route)) return false;
     if (
       this.#closed ||
       this.#views.get(view.record.viewId) !== view ||
@@ -688,7 +713,7 @@ export class ComputerViewService {
       type: "host.computer-view.removed",
       viewId: view.record.viewId,
       generation: view.record.generation,
-      machineId: view.record.machineId,
+      machineId: DeviceIdSchema.parse(view.deviceId),
       reason,
     });
     if (reason !== "disconnected") void this.#send(view, "close").catch(() => undefined);
@@ -701,7 +726,10 @@ export class ComputerViewService {
     }
   }
   #public(view: HeldView): ComputerView {
-    return ComputerViewSchema.parse(view.record);
+    return ComputerViewSchema.parse({
+      ...view.record,
+      ...(view.route?.role === "screen" ? { driverGeneration: view.route.generation } : {}),
+    });
   }
   #log(view: HeldView, transition: string, reason?: string): void {
     this.#options.log?.("computer.view.lifecycle", {
@@ -724,34 +752,45 @@ export class ComputerViewService {
     });
   }
   #send(view: HeldView, operation: "open" | "close" | "renew", signal?: AbortSignal) {
-    return this.#options.hub
-      .withRunnerAdmission(view.record.machineId, async () => {
-        if (operation !== "close" && !this.#live(view))
-          throw this.#refusal("computer-view-ended", "The view ended.");
-        return {
-          outcome: this.#options.hub.sendComputerView({
-            runnerId: view.record.machineId,
-            request: {
-              viewId: view.record.viewId,
-              generation: view.record.generation,
-              leaseDurationMs: Math.max(
-                1,
-                Math.ceil(Date.parse(view.record.expiresAt) - this.#now()),
-              ),
-              target: view.record.target,
-              operation,
-              timeoutMs: 8_000,
-            },
-            ...(signal ? { signal } : {}),
-          }),
-        };
-      })
-      .then(async ({ outcome }) => {
-        const result = await outcome;
-        return result.kind === "error"
-          ? result
-          : { ...result, value: ComputerViewNativeResultSchema.parse(result.value) };
-      });
+    return (
+      this.#options.hub.withDeviceAdmission?.bind(this.#options.hub) ??
+      this.#options.hub.withRunnerAdmission.bind(this.#options.hub)
+    )(view.deviceId, async () => {
+      if (operation !== "close" && !this.#live(view))
+        throw this.#refusal("computer-view-ended", "The view ended.");
+      const route = await this.#options.hub.captureRoute?.(view.deviceId);
+      if (
+        view.route &&
+        (!this.#options.hub.routeCurrent?.(view.route) ||
+          route?.generation !== view.route.generation ||
+          route?.runnerId !== view.route.runnerId)
+      )
+        throw this.#refusal("computer-view-ended", "The Device driver changed. Reopen the view.");
+      view.route ??= route;
+      return {
+        outcome: this.#options.hub.sendComputerView({
+          runnerId: view.deviceId,
+          route: view.route,
+          request: {
+            viewId: view.record.viewId,
+            generation: view.record.generation,
+            leaseDurationMs: Math.max(
+              1,
+              Math.ceil(Date.parse(view.record.expiresAt) - this.#now()),
+            ),
+            target: view.record.target,
+            operation,
+            timeoutMs: 8_000,
+          },
+          ...(signal ? { signal } : {}),
+        }),
+      };
+    }).then(async ({ outcome }) => {
+      const result = await outcome;
+      return result.kind === "error"
+        ? result
+        : { ...result, value: ComputerViewNativeResultSchema.parse(result.value) };
+    });
   }
   #refusal(reason: ComputerViewRefusalReason, message: string): OpensteerError {
     return new OpensteerError({ code: "conflict", reason, message });
@@ -769,19 +808,20 @@ function sameApprovedTarget(
         computerAppIdentitiesEqual(left.app, right.app);
 }
 
-function approvedApp(connection: IntegrationConnectionSummary): ApprovedNativeApp | null {
+function approvedApp(connection: DeviceComputerConnection): ApprovedNativeApp | null {
   const computer = connection.computer;
   if (
     !computer ||
     connection.status !== "connected" ||
     computer.blockedAt ||
-    (connection.definitionId !== "macos-app" && connection.definitionId !== "android-phone") ||
+    (connection.definitionId !== "macos-app" &&
+      !isPhoneDisplayDefinitionId(connection.definitionId)) ||
     (connection.definitionId === "macos-app") !== (computer.app !== null)
   )
     return null;
   return {
     connectionId: connection.id,
-    machineId: computer.runnerId,
+    machineId: computerConnectionDeviceId(connection)!,
     target: computer.app ? { kind: "app", app: computer.app } : { kind: "phone", display: "main" },
     name: computer.app?.displayName ?? connection.displayName,
     iconPng: null,

@@ -124,6 +124,7 @@ interface PersonalDeploymentSupervisorOptions {
   readonly computerUse?: {
     startForSlot(
       deploymentId: string,
+      owner: { deploymentId: string; hostInstanceId: string; runnerId: string },
     ): Promise<{ readonly token: string; readonly url: URL } | null>;
     stopForSlot(deploymentId: string): Promise<void>;
   };
@@ -729,8 +730,13 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     const computerUseStart = this.#startupStep("computer-use", async () => {
       this.#computerUseSlotId = manifestInput.deploymentId;
       return (
-        (await this.#computerUse?.startForSlot(manifestInput.deploymentId).catch(() => null)) ??
-        null
+        (await this.#computerUse
+          ?.startForSlot(manifestInput.deploymentId, {
+            deploymentId: manifestInput.deploymentId,
+            hostInstanceId: manifestInput.hostInstanceId,
+            runnerId: manifestInput.runnerId,
+          })
+          .catch(() => null)) ?? null
       );
     });
     // Observe failures immediately, and retain ownership until every acquired handle can be stopped.

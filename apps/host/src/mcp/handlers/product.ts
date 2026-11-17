@@ -1,3 +1,4 @@
+import { RunnerIdSchema } from "@opensteer/core";
 import type { TabServicePort } from "../../tabs/ports.js";
 import { PersonShowTargetSchema } from "@opensteer/core";
 type DelegationCall = ToolCall<"opensteer_task_delegate"> & {
@@ -713,7 +714,7 @@ export class ProductToolHandlers {
             : [],
         ),
       ),
-      this.#store.effectiveMachineOwners(events.flatMap((event) => machineOf(event) ?? [])),
+      this.#store.effectiveDeviceOwners(events.flatMap((event) => machineOf(event) ?? [])),
       Promise.all(requestIds.map((id) => this.#store.requests.get(id))),
       this.#readableMessages(
         caller,
@@ -1455,7 +1456,7 @@ export class ProductToolHandlers {
     if (input.access === "full_disk_access") {
       const result = await this.#machineFullDiskAccess.request({
         callId,
-        computerId: input.computerId,
+        computerId: RunnerIdSchema.parse(input.computerId),
         reason: input.reason,
         claims,
       });

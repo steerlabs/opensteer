@@ -48,9 +48,9 @@ runs:
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
       with:
         path: ${{ steps.go-paths.outputs.paths }}
-        key: go-compiler-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-paths.outputs.version }}-${{ hashFiles('apps/runner/native-fs-helper/go.mod', 'apps/runner/native-fs-helper/go.sum', 'apps/desktop/process-supervisor/go.mod', 'apps/desktop/process-supervisor/go.sum') }}-${{ github.sha }}
+        key: go-compiler-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-paths.outputs.version }}-${{ hashFiles('apps/runner/native-fs-helper/go.mod', 'apps/runner/native-fs-helper/go.sum', 'apps/desktop/process-supervisor/go.mod', 'apps/desktop/process-supervisor/go.sum', 'apps/desktop/iphone-bridge/go.mod', 'apps/desktop/iphone-bridge/go.sum', 'apps/desktop/iphone-bridge/third_party/go-ios/go.mod', 'apps/desktop/iphone-bridge/third_party/go-ios/go.sum') }}-${{ github.sha }}
         restore-keys: |
-          go-compiler-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-paths.outputs.version }}-${{ hashFiles('apps/runner/native-fs-helper/go.mod', 'apps/runner/native-fs-helper/go.sum', 'apps/desktop/process-supervisor/go.mod', 'apps/desktop/process-supervisor/go.sum') }}-
+          go-compiler-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-paths.outputs.version }}-${{ hashFiles('apps/runner/native-fs-helper/go.mod', 'apps/runner/native-fs-helper/go.sum', 'apps/desktop/process-supervisor/go.mod', 'apps/desktop/process-supervisor/go.sum', 'apps/desktop/iphone-bridge/go.mod', 'apps/desktop/iphone-bridge/go.sum', 'apps/desktop/iphone-bridge/third_party/go-ios/go.mod', 'apps/desktop/iphone-bridge/third_party/go-ios/go.sum') }}-
     - shell: bash
       run: corepack enable
     - id: store

@@ -1,14 +1,20 @@
 import type {
   ComputerAppIdentity,
-  ComputerAppSetupSummary as ComputerAppSetupRequest,
   ComputerUseAppApproval,
   IntegrationAccess,
-  IntegrationConnectionSummary,
   IntegrationDefinitionSummaryView,
 } from "@opensteer/integration-core";
+import { isPhoneDisplayDefinitionId } from "@opensteer/core";
+import {
+  computerTargetId,
+  deviceMachine,
+  deviceReasonLabel,
+  type ClientComputerConnection,
+  type ClientComputerSetupRequest,
+} from "../host/device-projection.js";
+import type { PhoneDisplayView, DeviceCapabilityReason } from "@opensteer/protocol";
 import { computerAppIdentityKey } from "@opensteer/integration-core";
 import {
-  androidPhoneDefinitionId,
   type ComputerUsePermissions,
   type ComputerUseSessionSummary,
   type MachineSummary,
@@ -18,7 +24,7 @@ import { mutationIdempotencyKey, unwrapRpcResult } from "../host/host-session-cl
 import type { HostClient } from "../host/index.js";
 
 /**
- * Computer use on one Mac, and on one Android phone, as every client surface
+ * Computer use on a Mac or a Host-projected phone display, as every client surface
  * reasons about it.
  *
  * Computer use is the one computer app with many connections on one machine,
@@ -178,7 +184,7 @@ export interface ComputerUseAppRow {
 export interface ComputerUsePendingApp {
   readonly access: IntegrationAccess;
   readonly identity: ComputerAppIdentity;
-  readonly request: ComputerAppSetupRequest;
+  readonly request: ClientComputerSetupRequest;
 }
 
 export type ComputerUseState =
@@ -211,7 +217,10 @@ export function computerUseDefinition(
   return definitions.find((definition) => definition.computerApp?.kind === "gui") ?? null;
 }
 
-export function isAgentPhone(machine: Pick<MachineSummary, "device">): boolean {
+export function isAgentPhone(
+  machine: Pick<MachineSummary, "device" | "capabilities" | "phoneDisplay">,
+): boolean {
+  if (machine.capabilities) return machine.phoneDisplay?.definitionId === "android-phone";
   return machine.device?.platform === "android" && machine.device.app !== "opensteer";
 }
 
@@ -220,7 +229,10 @@ export function isAgentPhone(machine: Pick<MachineSummary, "device">): boolean {
  * Contacts and Reminders, and only while Opensteer is open on it. It turns its
  * apps on and answers requests for more access itself.
  */
-export function isIphone(machine: Pick<MachineSummary, "device">): boolean {
+export function isIphone(
+  machine: Pick<MachineSummary, "device" | "capabilities" | "phoneDisplay" | "kind">,
+): boolean {
+  if (machine.capabilities) return machine.kind === "phone" && machine.phoneDisplay === null;
   return machine.device?.platform === "ios";
 }
 
@@ -235,15 +247,17 @@ export function isIphone(machine: Pick<MachineSummary, "device">): boolean {
 export function computerUseView(input: {
   /** False when this client cannot confirm activity with its Host. */
   readonly hostConnected: boolean;
-  readonly connections: readonly IntegrationConnectionSummary[];
+  readonly connections: readonly ClientComputerConnection[];
   readonly definitions: readonly IntegrationDefinitionSummaryView[];
   readonly machine: MachineSummary;
-  readonly setupRequests?: readonly ComputerAppSetupRequest[];
+  readonly setupRequests?: readonly ClientComputerSetupRequest[];
 }): ComputerUseView | null {
   const definition = computerUseDefinition(input.definitions);
   if (!definition) return null;
   const { machine } = input;
-  if (isAgentPhone(machine)) return null;
+  if (deviceMachine(machine).phoneDisplay) return null;
+  if (machine.capabilities && (!machine.capabilities.apps.supported || machine.kind === "unknown"))
+    return null;
   const report = machine.computerUse ?? null;
   // A disconnected Runner cannot have a confirmed live session. Keep its
   // approved apps visible, but never describe an old report as active use.
@@ -258,7 +272,8 @@ export function computerUseView(input: {
       if (
         connection.status === "revoked" ||
         connection.definitionId !== definition.id ||
-        computer?.runnerId !== machine.id ||
+        !computer ||
+        computerTargetId(computer) !== machine.id ||
         !computer.app
       ) {
         return [];
@@ -281,7 +296,7 @@ export function computerUseView(input: {
     );
   const pending = (input.setupRequests ?? []).flatMap((request): ComputerUsePendingApp[] =>
     request.kind === "app" &&
-    request.runnerId === machine.id &&
+    computerTargetId(request) === machine.id &&
     request.definitionId === definition.id &&
     request.app
       ? [{ access: request.access, identity: request.app, request }]
@@ -458,7 +473,7 @@ export function computerUseAutomaticFootnote(view: ComputerUseView): string {
  */
 export function computerUseMachineLine(machine: MachineSummary, hostConnected: boolean): string {
   if (!hostConnected) return "Status unavailable";
-  if (isAgentPhone(machine)) return phoneUseMachineLine(machine);
+  if (deviceMachine(machine).phoneDisplay) return phoneUseMachineLine(machine);
   const state = computerUseState(machine);
   switch (state.kind) {
     case "offline":
@@ -483,7 +498,7 @@ export function computerUseMachineLine(machine: MachineSummary, hostConnected: b
 }
 
 /* ------------------------------------------------------------------------- *
- * An Android phone
+ * A phone display
  * ------------------------------------------------------------------------- */
 
 /**
@@ -492,12 +507,13 @@ export function computerUseMachineLine(machine: MachineSummary, hostConnected: b
  */
 export function phoneUseDefinition(
   definitions: readonly IntegrationDefinitionSummaryView[],
+  definitionId?: string,
 ): IntegrationDefinitionSummaryView | null {
   return (
     definitions.find(
       (definition) =>
-        definition.computerApp?.kind === "display" &&
-        definition.computerApp.platforms.includes("android"),
+        isPhoneDisplayDefinitionId(definition.id) &&
+        (definitionId === undefined || definition.id === definitionId),
     ) ?? null
   );
 }
@@ -522,6 +538,15 @@ export type PhoneUseState =
   | { readonly kind: "ready" };
 
 export interface PhoneUseView {
+  readonly driver?: PhoneDisplayView["driver"];
+  readonly reason?: DeviceCapabilityReason | null;
+  readonly setup?: PhoneDisplayView["setup"];
+  readonly navigationButtons?: PhoneDisplayView["navigationButtons"];
+  readonly actions?: PhoneDisplayView["actions"];
+  readonly wake?: boolean;
+  readonly lock?: boolean | null;
+  readonly canView?: boolean;
+  readonly canInput?: boolean;
   /** What agents may do on the phone; null when its owner turned access off. */
   readonly access: IntegrationAccess | null;
   readonly connectionId: string | null;
@@ -532,19 +557,32 @@ export interface PhoneUseView {
 }
 
 /**
- * One Android phone as its page draws it, or `null` for a machine that is
- * not a phone or a catalog with no phone definition.
+ * The Host-selected phone display and its current driver, access and hold.
  */
 export function phoneUseView(input: {
   /** False when this client cannot confirm activity with its Host. */
   readonly hostConnected: boolean;
-  readonly connections: readonly IntegrationConnectionSummary[];
+  readonly connections: readonly ClientComputerConnection[];
   readonly definitions: readonly IntegrationDefinitionSummaryView[];
   readonly machine: MachineSummary;
-}): PhoneUseView | null {
+}):
+  | (PhoneUseView &
+      PhoneDisplayView & {
+        readonly reason: DeviceCapabilityReason | null;
+        readonly canView: boolean;
+        readonly canInput: boolean;
+      })
+  | null {
   const { machine } = input;
-  if (!isAgentPhone(machine)) return null;
-  const definition = phoneUseDefinition(input.definitions);
+  const projection = deviceMachine(machine);
+  const display = projection.phoneDisplay;
+  if (
+    !display ||
+    !isPhoneDisplayDefinitionId(display.definitionId) ||
+    !["phone", "agent-phone"].includes(projection.kind ?? "unknown")
+  )
+    return null;
+  const definition = phoneUseDefinition(input.definitions, display.definitionId);
   if (!definition) return null;
   // A blocked connection grants nothing.
   const connection =
@@ -552,16 +590,23 @@ export function phoneUseView(input: {
       ({ computer, definitionId, status }) =>
         status !== "revoked" &&
         definitionId === definition.id &&
-        computer?.runnerId === machine.id &&
-        computer.blockedAt === null,
+        computerTargetId(computer) === machine.id &&
+        computer?.blockedAt === null,
     ) ?? null;
   const report = machine.computerUse ?? null;
   // A disconnected phone cannot have a confirmed live session.
   const session =
-    input.hostConnected && machine.status === "online"
+    input.hostConnected && display.control.state === "ready"
       ? (report?.sessions.find(({ display }) => display) ?? null)
       : null;
   return {
+    ...display,
+    reason: display.control.reason,
+    canView: input.hostConnected && display.view.state === "ready",
+    canInput:
+      input.hostConnected &&
+      display.input.state === "ready" &&
+      connection?.computer?.access === "read-write",
     access: connection?.computer?.access ?? null,
     connectionId: connection?.id ?? null,
     definition,
@@ -571,30 +616,45 @@ export function phoneUseView(input: {
 }
 
 export function phoneUseState(machine: MachineSummary): PhoneUseState {
-  if (machine.status === "needs-update")
-    return { kind: "needs-update", ...(machine.detail ? { detail: machine.detail } : {}) };
-  if (machine.status === "updating" || machine.status === "update-pending")
+  const display = deviceMachine(machine).phoneDisplay;
+  if (!display) return { kind: "unavailable", detail: "Screen control is not available." };
+  const android = display.setup.location === "android-usb";
+  const reason = display.control.reason;
+  if (reason?.kind === "driver-update-required") {
+    if (android && (machine.status === "updating" || machine.status === "update-pending"))
+      return {
+        kind: "unavailable",
+        detail:
+          machine.detail ??
+          (machine.status === "updating"
+            ? `Updating Agent Phone on ${machine.name}…`
+            : `Tap Update on ${machine.name}.`),
+      };
     return {
-      kind: "unavailable",
-      detail:
-        machine.detail ??
-        (machine.status === "updating"
-          ? `Updating Agent Phone on ${machine.name}…`
-          : `Tap Update on ${machine.name}.`),
+      kind: "needs-update",
+      ...(machine.detail
+        ? { detail: machine.detail }
+        : !android
+          ? { detail: deviceReasonLabel(reason) }
+          : {}),
     };
-  if (machine.status !== "online") return { kind: "offline" };
-  const report = machine.computerUse;
-  // Online with nothing reported is the moment between the phone connecting
-  // and its first status, which follows at once.
-  if (!report) return { detail: "Waiting for the phone to report.", kind: "unavailable" };
-  switch (report.state) {
-    case "ready":
-      return { kind: "ready" };
-    case "permission-required":
-      return { detail: report.detail ?? androidAccessibilityStep, kind: "permission-required" };
-    case "unavailable":
-      return { detail: report.detail ?? "The phone can’t be used right now.", kind: "unavailable" };
   }
+  if (display.control.state === "ready") return { kind: "ready" };
+  if (reason?.kind === "driver-offline" && display.driver?.role !== "screen")
+    return { kind: "offline" };
+  if (reason?.kind === "permission-required")
+    return {
+      kind: "permission-required",
+      detail:
+        machine.computerUse?.detail ??
+        (android ? androidAccessibilityStep : deviceReasonLabel(reason)),
+    };
+  if (reason?.kind === "unreported")
+    return { kind: "unavailable", detail: "Waiting for the phone to report." };
+  return {
+    kind: "unavailable",
+    detail: machine.computerUse?.detail ?? (reason ? deviceReasonLabel(reason) : "Unavailable"),
+  };
 }
 
 /** The phone's status line, under its block's title. */
@@ -670,13 +730,13 @@ function phoneUseMachineLine(machine: MachineSummary): string {
  * that Mac; phone access is an owner command available from any client.
  */
 export function computerAppAccessApproval(input: {
-  readonly definitionId: "android-phone" | "macos-app";
+  readonly definitionId: "android-phone" | "iphone-screen" | "macos-app";
   readonly machines: readonly Pick<MachineSummary, "id" | "name">[];
   readonly onThatMac: boolean;
-  readonly runnerId: string;
+  readonly deviceId: string;
 }): { readonly approveOn: string; readonly detail: string } {
-  const name = input.machines.find(({ id }) => id === input.runnerId)?.name;
-  if (input.definitionId === androidPhoneDefinitionId) {
+  const name = input.machines.find(({ id }) => id === input.deviceId)?.name;
+  if (isPhoneDisplayDefinitionId(input.definitionId)) {
     const where = name ?? "that phone";
     return {
       approveOn: "Allow on this device",
@@ -692,9 +752,9 @@ export function computerAppAccessApproval(input: {
 
 /** What a Mac's computer use block reads beyond the machine the snapshot carries. */
 export interface ComputerUseData {
-  readonly connections: readonly IntegrationConnectionSummary[];
+  readonly connections: readonly ClientComputerConnection[];
   readonly definitions: readonly IntegrationDefinitionSummaryView[];
-  readonly setupRequests: readonly ComputerAppSetupRequest[];
+  readonly setupRequests: readonly ClientComputerSetupRequest[];
 }
 
 export async function loadComputerUseData(
@@ -793,6 +853,12 @@ export interface WatchableComputerSession {
  * Macs capture an app window; phones capture their whole display.
  */
 export function canWatchComputer(machine: MachineSummary): boolean {
+  if (machine.capabilities)
+    return machine.phoneDisplay
+      ? ["phone", "agent-phone"].includes(machine.kind ?? "unknown") &&
+          machine.phoneDisplay.view.state === "ready"
+      : (machine.kind === "home" || machine.kind === "computer") &&
+          machine.computerUse?.displayStreamSupported === true;
   return machine.status === "online" && machine.computerUse?.displayStreamSupported === true;
 }
 
@@ -802,7 +868,7 @@ export function canWatchComputer(machine: MachineSummary): boolean {
  * Every client uses this transport for phones.
  */
 export function canStreamComputerDisplay(machine: MachineSummary): boolean {
-  return canWatchComputer(machine) && machine.computerUse?.displayStreamSupported === true;
+  return canWatchComputer(machine);
 }
 
 /**
@@ -925,4 +991,91 @@ export const computerUseStop = { busyLabel: "Stopping…", label: "Stop using Ma
  */
 export function computerUseStopLabel(machineName: string): string {
   return `${computerUseStop.label}, ${machineName}`;
+}
+
+export function phoneUseCardTitle(view: Pick<PhoneUseView, "driver">): string {
+  return view.driver?.role === "screen"
+    ? `Screen control through ${view.driver.runnerName}`
+    : "Screen control";
+}
+
+export function phoneUseSetupLocation(setup: PhoneDisplayView["setup"]): {
+  readonly label: string;
+  readonly detail: string;
+  readonly driverRunnerId: string | null;
+} {
+  switch (setup.location) {
+    case "driver-mac":
+      return {
+        label: `Set up on ${setup.driverRunnerName}`,
+        detail: `Open Opensteer on ${setup.driverRunnerName}, the Mac connected to this iPhone.`,
+        driverRunnerId: setup.driverRunnerId,
+      };
+    case "android-usb":
+      return { label: "Set up over USB", detail: addPhoneSteps("the phone"), driverRunnerId: null };
+    case "this-device":
+      return {
+        label: "Set up on this device",
+        detail: "Open Opensteer on this device to finish setup.",
+        driverRunnerId: null,
+      };
+  }
+}
+
+/** Whole-display approval belongs to the phone Device, independently of its driver. */
+export async function setPhoneUseAccess(
+  client: Pick<HostClient, "dispatch" | "refresh" | "getSnapshot">,
+  machine: MachineSummary,
+  access: IntegrationAccess,
+): Promise<void> {
+  const display = deviceMachine(machine).phoneDisplay;
+  if (!display) throw new Error("This device has no phone display.");
+  await setPhoneDisplayAccess(client, {
+    deviceId: machine.id,
+    definitionId: display.definitionId,
+    access,
+  });
+}
+
+export async function setPhoneDisplayAccess(
+  client: Pick<HostClient, "dispatch" | "refresh" | "getSnapshot">,
+  input: {
+    readonly deviceId: string;
+    readonly definitionId: "android-phone" | "iphone-screen";
+    readonly access: IntegrationAccess;
+  },
+): Promise<void> {
+  const snapshot = client.getSnapshot();
+  const current = snapshot.deviceDriversAvailable === true;
+  const machine = snapshot.machines.find(({ id }) => id === input.deviceId);
+  const selfRunnerId = machine ? deviceMachine(machine).selfRunnerId : null;
+  if (!current && !selfRunnerId)
+    throw new Error("Update this Opensteer to manage phone display access.");
+  const idempotencyKey = mutationIdempotencyKey("phone-access");
+  const result = current
+    ? await client.dispatch({
+        type: "integration.computer.setup.set",
+        idempotencyKey,
+        input: {
+          kind: "app",
+          deviceId: input.deviceId,
+          definitionId: input.definitionId,
+          app: null,
+          access: input.access,
+        },
+      })
+    : await client.dispatch({
+        type: "integration.computer.setup.set",
+        idempotencyKey,
+        input: {
+          kind: "app",
+          runnerId: selfRunnerId!,
+          definitionId: input.definitionId,
+          app: null,
+          access: input.access,
+        },
+      });
+  if (result.type !== "integration.computer.setup.set")
+    throw new Error("Phone access was not set.");
+  await client.refresh();
 }

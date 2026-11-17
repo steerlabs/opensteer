@@ -2376,6 +2376,66 @@ label.machine-access__grant-head {
   color: var(--text-soft);
 }
 
+/* Setup is watching for the person's move and carries on by itself once it
+   sees it: a ring that ripples outward, distinct from the agent's breathing
+   dot, with words saying what it waits for. Without motion it stays a ring. */
+.phone-setup__waiting {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8);
+  margin: var(--space-2) 0 0;
+  color: var(--text-soft);
+  font-size: var(--text-md);
+}
+
+.phone-setup__pulse {
+  position: relative;
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border: 1.5px solid var(--ember-bright);
+  border-radius: var(--radius-full);
+}
+
+.phone-setup__pulse::after {
+  position: absolute;
+  inset: -1.5px;
+  border: 1.5px solid var(--ember-bright);
+  border-radius: inherit;
+  animation: phone-setup-ripple 1.8s var(--ease-out) infinite;
+  content: "";
+}
+
+.phone-setup--working .phone-setup__pulse,
+.phone-setup--working .phone-setup__pulse::after {
+  border-color: var(--muted);
+}
+
+@keyframes phone-setup-ripple {
+  from {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(2.6);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .phone-setup__pulse::after {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+/* Setup's one celebratory moment: the finished title is set in the display face. */
+.phone-setup--done .phone-setup__title {
+  font-family: var(--font-display);
+  font-size: var(--display-sm);
+  font-weight: var(--weight-medium);
+}
+
 .phone-setup__actions {
   display: flex;
   flex-wrap: wrap;
@@ -2400,6 +2460,10 @@ label.machine-access__grant-head {
 
 .phone-setup__more p {
   margin: 0;
+}
+
+.phone-setup__more details > p + p {
+  margin-top: var(--space-6);
 }
 
 .phone-setup__more summary {

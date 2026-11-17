@@ -34,7 +34,7 @@ export function useAccessSwitch(
         const result = await hostClient.updateMachineAccess({
           expectedRevision: access.revision,
           policy: withDeviceSwitch(access.policy, capability, on),
-          runnerId: machine.id,
+          deviceId: machine.id,
         });
         if (result.outcome === "conflict") {
           await hostClient.refresh();
@@ -83,41 +83,18 @@ export function DeviceAccessSwitches({
       </h2>
       <div className="card device-uses__card">
         {switches.map((item) => {
-          const label = capabilityLabel[item.capability];
           const on = item.kind === "fixed" || item.on;
           const editor = on ? editors[item.capability] : null;
           const waiting = item.kind === "switch" && item.needsMacos;
           return (
             <div className="device-uses__item" key={item.capability}>
-              <div className="card__row device-uses__row">
-                <span className="card__row-body">
-                  <span className="card__row-title" id={`device-use-${item.capability}`}>
-                    {label}
-                  </span>
-                  <span
-                    className={`card__row-detail${waiting ? " device-uses__waiting" : ""}`}
-                    id={`device-use-${item.capability}-detail`}
-                  >
-                    {deviceSwitchDetail(item, machine, thisDevice)}
-                  </span>
-                </span>
-                <span className="card__row-actions">
-                  {item.kind === "fixed" ? (
-                    <span className="chip chip--ok">On</span>
-                  ) : (
-                    <input
-                      aria-describedby={`device-use-${item.capability}-detail`}
-                      aria-labelledby={`device-use-${item.capability}`}
-                      checked={item.on}
-                      className="switch"
-                      disabled={pending !== null || !machine.access}
-                      onChange={(event) => onSet(item.capability, event.currentTarget.checked)}
-                      role="switch"
-                      type="checkbox"
-                    />
-                  )}
-                </span>
-              </div>
+              <DeviceAccessSwitchRow
+                item={item}
+                machine={machine}
+                onSet={onSet}
+                pending={pending}
+                thisDevice={thisDevice}
+              />
               {waiting && remedy[item.capability] ? (
                 <div className="device-uses__remedy">{remedy[item.capability]}</div>
               ) : null}
@@ -126,14 +103,69 @@ export function DeviceAccessSwitches({
           );
         })}
       </div>
-      {notice ? (
-        <p
-          className={notice.conflict ? "notice device-uses__notice" : "notice notice--error"}
-          role={notice.conflict ? "status" : "alert"}
-        >
-          {notice.text}
-        </p>
-      ) : null}
+      {notice ? <DeviceAccessNotice notice={notice} /> : null}
     </section>
+  );
+}
+
+export function DeviceAccessSwitchRow({
+  item,
+  machine,
+  onSet,
+  pending,
+  thisDevice,
+}: {
+  readonly item: DeviceSwitch;
+  readonly machine: MachineSummary;
+  readonly onSet: (capability: DeviceCapability, on: boolean) => void;
+  readonly pending: DeviceCapability | null;
+  readonly thisDevice: boolean;
+}) {
+  const waiting = item.kind === "switch" && item.needsMacos;
+  return (
+    <div className="card__row device-uses__row">
+      <span className="card__row-body">
+        <span className="card__row-title" id={`device-use-${item.capability}`}>
+          {capabilityLabel[item.capability]}
+        </span>
+        <span
+          className={`card__row-detail${waiting ? " device-uses__waiting" : ""}`}
+          id={`device-use-${item.capability}-detail`}
+        >
+          {deviceSwitchDetail(item, machine, thisDevice)}
+        </span>
+      </span>
+      <span className="card__row-actions">
+        {item.kind === "fixed" ? (
+          <span className="chip chip--ok">On</span>
+        ) : (
+          <input
+            aria-describedby={`device-use-${item.capability}-detail`}
+            aria-labelledby={`device-use-${item.capability}`}
+            checked={item.on}
+            className="switch"
+            disabled={pending !== null || !machine.access}
+            onChange={(event) => onSet(item.capability, event.currentTarget.checked)}
+            role="switch"
+            type="checkbox"
+          />
+        )}
+      </span>
+    </div>
+  );
+}
+
+export function DeviceAccessNotice({
+  notice,
+}: {
+  readonly notice: { readonly conflict: boolean; readonly text: string };
+}) {
+  return (
+    <p
+      className={notice.conflict ? "notice device-uses__notice" : "notice notice--error"}
+      role={notice.conflict ? "status" : "alert"}
+    >
+      {notice.text}
+    </p>
   );
 }

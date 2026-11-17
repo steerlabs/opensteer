@@ -4,18 +4,25 @@ import {
   OpensteerError,
   type RunId,
   type RunnerId,
+  DeviceIdSchema,
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
 import { computerAppIdentityKey, type ComputerAppIdentity } from "@opensteer/integration-core";
 import {
+  RunnerAuxiliaryFrameFenceSchema,
+  type RunnerIntegrationsDeviceStatus,
   computerUseMaxTimeoutMs,
   mintComputerUseSessionId,
   type AndroidPhoneObservation,
+  type PhoneDisplayObservation,
+  getPhoneDisplayCodec,
+  PhoneDisplayObservationResultSchema,
   type ComputerUseObservation,
   type MachineAppStatus,
 } from "@opensteer/protocol";
 
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { readFileSync } from "node:fs";
 import type { WebSocket } from "ws";
 import { DisplayStreamHub } from "./display-stream-hub.js";
@@ -23,6 +30,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComputerAppPlatform } from "@opensteer/integration-core";
 import type {
   ComputerAppMachine,
+  ComputerTargetId,
   ComputerUseOutcome,
   ComputerUseSendInput,
 } from "../computer-apps/computer-app-hub.js";
@@ -63,14 +71,17 @@ function flakyStops(failures: number) {
 
 /** Stands in for the Stops table: what one Host records, the next one starts from. */
 function durableStops() {
-  const rows = new Map<string, { readonly runId: RunId; readonly runnerId: RunnerId }>();
+  const rows = new Map<string, { readonly runId: RunId; readonly runnerId: ComputerTargetId }>();
   return {
     rows,
     ledger: (): ComputerUseStopLedger => ({
       clear: async (runId) => {
         for (const [key, row] of rows) if (row.runId === runId) rows.delete(key);
       },
-      initial: [...rows.values()],
+      initial: [...rows.values()].map((row) => ({
+        runId: row.runId,
+        deviceId: DeviceIdSchema.parse(row.runnerId),
+      })),
       record: async (runId, runnerId) => {
         rows.set(`${runId}|${runnerId}`, { runId, runnerId });
       },
@@ -115,7 +126,10 @@ function observation(overrides: Partial<ComputerUseObservation> = {}): ComputerU
 }
 
 /** A computer as the hub lists it, with the platform the Runner registry records for it. */
-type ListedMachine = ComputerAppMachine & { readonly platform: ComputerAppPlatform };
+type ListedMachine = ComputerAppMachine & {
+  readonly platform: ComputerAppPlatform;
+  readonly definitionId?: "android-phone" | "iphone-screen";
+};
 
 /** What the Agent Phone app answers an observe with, screen on and nothing in the way. */
 function phoneObservation(
@@ -142,7 +156,7 @@ function phoneObservation(
 interface Harness {
   /** Every "Stop recorded" the Host told a computer, in order. */
   readonly acknowledged: {
-    readonly runnerId: RunnerId;
+    readonly runnerId: ComputerTargetId;
     readonly runId: RunId;
     readonly sessionId: string;
   }[];
@@ -169,6 +183,7 @@ function macosApp(): MachineAppStatus {
 
 function harness(
   options: {
+    readonly hub?: Partial<ComputerUseServiceOptions["hub"]>;
     readonly passwords?: ComputerUseServiceOptions["passwords"];
     readonly loginReceiver?: ComputerUseServiceOptions["loginReceiver"];
     readonly expireSetupRequests?: () => Promise<void>;
@@ -196,7 +211,12 @@ function harness(
     ...(options.expireSetupRequests ? { expireSetupRequests: options.expireSetupRequests } : {}),
     ...(options.onError ? { onError: options.onError } : {}),
     listMachines: async () =>
-      machines.map(({ name, platform, runnerId }) => ({ name, platform, runnerId })),
+      machines.map(({ name, platform, runnerId, definitionId }) => ({
+        name,
+        platform,
+        deviceId: DeviceIdSchema.parse(runnerId),
+        ...(definitionId ? { definitionId } : {}),
+      })),
     hub: {
       acknowledgeComputerUseStop: async (stoppedOn, stop) => {
         acknowledged.push({ runnerId: stoppedOn, ...stop });
@@ -208,7 +228,16 @@ function harness(
         sent.push(input);
         const gate = pending.shift();
         // A phone answers in a phone's shapes, exactly as its app does.
-        const observed = input.definitionId === undefined ? observation() : phoneObservation();
+        const observed =
+          input.definitionId === undefined
+            ? observation()
+            : input.definitionId === "iphone-screen"
+              ? PhoneDisplayObservationResultSchema.parse(
+                  getPhoneDisplayCodec("android-phone").decodeResult("observe", {
+                    observation: phoneObservation(),
+                  }),
+                ).observation
+              : phoneObservation();
         const next =
           outcomes.shift() ??
           (input.operation === "act"
@@ -227,6 +256,7 @@ function harness(
         return { outcome: gate ? gate.then(() => next) : Promise.resolve(next) };
       },
       withRunnerAdmission: async (_runnerId, task) => task(),
+      ...options.hub,
     },
     machineOwners: async (runnerIds) =>
       new Map(
@@ -689,8 +719,8 @@ describe("ComputerUseService", () => {
     );
 
     await expect(test.service.eligibleMachines(ownerUserId, "macos-app")).resolves.toEqual([
-      { name: "Alex's Mac", ready: true, state: "ready", runnerId },
-      { name: "Studio Mac", ready: false, state: "unavailable", runnerId: other },
+      { name: "Alex's Mac", ready: true, state: "ready", runnerId, deviceId: runnerId },
+      { name: "Studio Mac", ready: false, state: "unavailable", runnerId: other, deviceId: other },
     ]);
   });
 });
@@ -1444,7 +1474,7 @@ describe("display sessions on an Android phone", () => {
   async function observePhone(
     service: ComputerUseService,
     on: ComputerUseContext,
-  ): Promise<AndroidPhoneObservation> {
+  ): Promise<PhoneDisplayObservation> {
     const lease = await service.prepare(phone, on);
     let sent;
     try {
@@ -1879,9 +1909,10 @@ describe("display sessions on an Android phone", () => {
       message: "Only this computer's owner can do that.",
     });
     test.now += 120_000;
-    await expect(test.service.authorizeDisplay(session.sessionId, ownerUserId)).resolves.toBe(
-      phoneId,
-    );
+    await expect(test.service.authorizeDisplay(session.sessionId, ownerUserId)).resolves.toEqual({
+      deviceId: phoneId,
+      route: undefined,
+    });
     test.now += 61_000;
     test.service.sweepIdle();
     expect(test.service.isDisplaySessionLive(session.sessionId, phoneId)).toBe(false);
@@ -1947,10 +1978,17 @@ describe("display sessions on an Android phone", () => {
     );
 
     await expect(test.service.eligibleMachines(ownerUserId, "android-phone")).resolves.toEqual([
-      { name: "Pixel 8", ready: false, runnerId: phoneId, state: "unavailable" },
+      {
+        name: "Pixel 8",
+        ready: false,
+        runnerId: phoneId,
+        deviceId: phoneId,
+        definitionId: "android-phone",
+        state: "unavailable",
+      },
     ]);
     await expect(test.service.eligibleMachines(ownerUserId, "macos-app")).resolves.toEqual([
-      { name: "Alex's Mac", ready: true, runnerId, state: "ready" },
+      { name: "Alex's Mac", ready: true, runnerId, deviceId: runnerId, state: "ready" },
     ]);
   });
 });
@@ -2089,4 +2127,280 @@ describe("saved login batch admission", () => {
       });
     }
   }
+});
+
+it("keeps two screen Device holds and Stops independent from each other and Mac apps", async () => {
+  const first = DeviceIdSchema.parse(createId("device"));
+  const second = DeviceIdSchema.parse(createId("device"));
+  const stops = durableStops();
+  const host = harness({ stops: stops.ledger() });
+  const phoneTarget = {
+    kind: "display" as const,
+    definitionId: "iphone-screen" as const,
+    access: "read-write" as const,
+  };
+  const use = async (deviceId: typeof first, on = context) => {
+    const lease = await host.service.prepare({ deviceId, deviceName: "iPhone", ownerUserId }, on);
+    try {
+      const sent = await host.service.sendObserve(lease, phoneTarget, false);
+      await sent.settle();
+      return sent.sessionId;
+    } finally {
+      host.service.release(lease);
+    }
+  };
+  try {
+    const firstSession = await use(first);
+    await use(second);
+    await observe(host.service, callable, context);
+    host.service.handleHelperEvent(runnerId, {
+      event: "session.stopped",
+      params: { sessionId: firstSession, runId: context.runId, reason: "user" },
+    });
+    expect(stops.rows.size).toBe(0);
+    expect(host.service.sessionsForRunner(first)).toHaveLength(1);
+    const other = { ...context, runId: createId("run"), threadId: createId("thread") };
+    await expect(use(first, other)).rejects.toMatchObject({ code: "busy" });
+    await host.service.stop(firstSession, ownerUserId);
+    await expect(use(first)).rejects.toThrow(/stopped/);
+    await use(second);
+    expect(host.service.sessionsForRunner(runnerId)).toHaveLength(1);
+    expect([...stops.rows.values()]).toEqual([{ runId: context.runId, runnerId: first }]);
+    host.service.forgetDevice(first);
+    await expect(use(first)).rejects.toThrow(/stopped/);
+    const restarted = harness({ stops: stops.ledger() });
+    try {
+      await expect(
+        restarted.service.prepare({ deviceId: first, deviceName: "iPhone", ownerUserId }, context),
+      ).rejects.toThrow(/stopped/);
+    } finally {
+      await restarted.service.shutdown();
+    }
+  } finally {
+    await host.service.shutdown();
+  }
+});
+
+it("validates a no-session Stop's captured driver and retires pending acknowledgements on Device removal", async () => {
+  const deviceId = DeviceIdSchema.parse(createId("device"));
+  const { RunnerAuxiliaryFrameFenceSchema } = await import("@opensteer/protocol");
+  const route = {
+    deviceId,
+    runnerId,
+    role: "screen" as const,
+    generation: 4,
+    auxiliaryFence: RunnerAuxiliaryFrameFenceSchema.parse({
+      runnerId,
+      module: "integrations",
+      bootId: `rbt_${globalThis.crypto.randomUUID()}`,
+      auxiliaryStreamId: `rax_${globalThis.crypto.randomUUID()}`,
+      connectionGeneration: 1,
+      connectionId: `rcn_${globalThis.crypto.randomUUID()}`,
+      connectionLeaseId: `rls_${globalThis.crypto.randomUUID()}`,
+    }),
+  };
+  let finish!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const record = vi.fn(async () => waiting);
+  const host = harness({
+    hub: {
+      routeCurrent: (candidate) => candidate.generation === 4 && candidate.deviceId === deviceId,
+    },
+    stops: { initial: [], clear: async () => undefined, record },
+  });
+  const event = {
+    event: "session.stopped" as const,
+    params: {
+      sessionId: mintComputerUseSessionId(),
+      runId: context.runId,
+      reason: "user" as const,
+    },
+  };
+  try {
+    host.service.handleHelperEvent(deviceId, event, { ...route, generation: 3 });
+    expect(record).not.toHaveBeenCalled();
+    host.service.handleHelperEvent(deviceId, event, route);
+    expect(record).toHaveBeenCalledWith(context.runId, deviceId);
+    host.service.forgetDevice(deviceId, true);
+    finish();
+    await withTimeout(waiting, 1_000, {
+      timeoutError: () => new Error("The held Stop write never settled"),
+    });
+    await Promise.resolve();
+    expect(host.acknowledged).toEqual([]);
+  } finally {
+    finish();
+    await host.service.shutdown();
+  }
+});
+
+it("lists only the matching display definition and excludes the iPhone data app", async () => {
+  const host = harness();
+  const operation = { operation: "observe", state: "ready" as const, detail: null, remedy: null };
+  const screen = DeviceIdSchema.parse(createId("device"));
+  host.machines.push(
+    { name: "iPhone app", platform: "ios", runnerId: createId("runner"), status: null },
+    {
+      name: "Screen",
+      platform: "ios",
+      runnerId: screen,
+      definitionId: "iphone-screen",
+      status: { definitionId: "iphone-screen", operations: [operation] },
+    },
+    {
+      name: "Android",
+      platform: "android",
+      runnerId: createId("runner"),
+      status: { definitionId: "android-phone", operations: [operation] },
+    },
+  );
+  try {
+    expect(
+      (await host.service.eligibleMachines(ownerUserId, "iphone-screen")).map(({ name }) => name),
+    ).toEqual(["Screen"]);
+    expect(
+      (await host.service.eligibleMachines(ownerUserId, "android-phone")).map(({ name }) => name),
+    ).toEqual(["Android"]);
+  } finally {
+    await host.service.shutdown();
+  }
+});
+
+describe("iPhone agent readiness", () => {
+  function iphone() {
+    const deviceId = DeviceIdSchema.parse(createId("device"));
+    const route = {
+      deviceId,
+      runnerId,
+      role: "screen" as const,
+      generation: 1,
+      auxiliaryFence: RunnerAuxiliaryFrameFenceSchema.parse({
+        runnerId,
+        module: "integrations",
+        bootId: `rbt_${crypto.randomUUID()}`,
+        auxiliaryStreamId: `rax_${crypto.randomUUID()}`,
+        connectionGeneration: 1,
+        connectionId: `rcn_${crypto.randomUUID()}`,
+        connectionLeaseId: `rls_${crypto.randomUUID()}`,
+      }),
+    };
+    const status: RunnerIntegrationsDeviceStatus = {
+      ...route.auxiliaryFence,
+      module: "integrations",
+      type: "runner.integrations.device-status",
+      deviceId,
+      driverGeneration: 1,
+      definitionId: "iphone-screen",
+      availability: { state: "ready", reason: null },
+      operations: ["observe", "act", "close", "installed_apps"].map((operation) => ({
+        operation,
+        state: "ready",
+        detail: null,
+        remedy: null,
+      })),
+      actions: ["tap", "navigate", "launch", "wait"],
+      navigationButtons: [{ id: "home", label: "Home" }],
+      wake: false,
+      lock: false,
+      displayVersion: null,
+      ownerViewVersion: null,
+      inputVersion: null,
+      powerVersion: null,
+    };
+    let current = status;
+    const host = harness({
+      hub: {
+        captureRoute: async () => route,
+        routeCurrent: () => true,
+        deviceStatus: () => current,
+      },
+    });
+    const callable = { deviceId, deviceName: "iPhone", ownerUserId };
+    const target = {
+      kind: "display",
+      definitionId: "iphone-screen",
+      access: "read-write",
+    } as const;
+    const dispatch = async (
+      operation: (lease: ComputerUseLease) => Promise<ComputerUseDispatch>,
+    ) => {
+      const lease = await host.service.prepare(callable, context);
+      try {
+        return await (await operation(lease)).settle();
+      } finally {
+        host.service.release(lease);
+      }
+    };
+    return {
+      host,
+      status,
+      setStatus: (next: RunnerIntegrationsDeviceStatus) => {
+        current = next;
+      },
+      act: (actions: unknown) =>
+        dispatch((lease) =>
+          host.service.sendAct(lease, target, { observationId: "phone-obs-1", actions }, false),
+        ),
+      observe: () => dispatch((lease) => host.service.sendObserve(lease, target, false)),
+    };
+  }
+
+  it("taps, navigates and launches with production capabilities and no owner input stream", async () => {
+    const f = iphone();
+    try {
+      const result = await f.act([
+        { type: "tap", target: { x: 10, y: 20 } },
+        { type: "navigate", to: "home" },
+        { type: "launch", appId: "example.app" },
+      ]);
+      expect(result.error).toBeNull();
+      expect(f.host.sent[0]?.params).toMatchObject({
+        actions: [{ type: "tap" }, { type: "navigate" }, { type: "launch" }],
+      });
+      f.setStatus({
+        ...f.status,
+        inputVersion: 1,
+        operations: f.status.operations.map((operation) => ({
+          ...operation,
+          state: operation.operation === "act" ? "unavailable" : "ready",
+        })),
+      });
+      await expect(f.act([{ type: "navigate", to: "home" }])).rejects.toThrow(
+        "input is unavailable",
+      );
+      f.setStatus({ ...f.status, actions: ["wait"] });
+      await expect(f.act([{ type: "tap", target: { x: 10, y: 20 } }])).rejects.toThrow(
+        "does not advertise tap",
+      );
+      expect(f.host.sent).toHaveLength(1);
+    } finally {
+      await f.host.service.shutdown();
+    }
+  });
+
+  it.each(["locked", "protected"] as const)(
+    "observes again after %s without replacing the driver",
+    async (kind) => {
+      const f = iphone();
+      f.setStatus({
+        ...f.status,
+        availability: { state: "unavailable", reason: { kind } },
+        operations: f.status.operations.map((operation) => ({
+          ...operation,
+          state: "unavailable",
+        })),
+      });
+      try {
+        await expect(f.act([{ type: "navigate", to: "home" }])).rejects.toThrow("not ready");
+        expect((await f.observe()).error).toBeNull();
+        f.setStatus(f.status);
+        expect((await f.act([{ type: "navigate", to: "home" }])).error).toBeNull();
+        expect(f.host.sent.map(({ operation }) => operation)).toEqual(["observe", "act"]);
+      } finally {
+        await f.host.service.shutdown();
+      }
+    },
+  );
 });

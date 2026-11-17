@@ -1,3 +1,4 @@
+import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { createHash } from "node:crypto";
 import { BrowserRequestOutcomeSchema, OpensteerError, type Request } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
@@ -8,7 +9,6 @@ import {
 } from "@opensteer/integration-core";
 import type { CommandService } from "@opensteer/orchestration";
 import {
-  androidPhoneDefinitionId,
   PasswordSignInRequestResponseSchema,
   type PasswordSignInRequestResponse,
 } from "@opensteer/protocol";
@@ -38,8 +38,10 @@ type ThreadInputDisposition = Awaited<
 export type IntegrationInventorySource = Pick<
   IntegrationPlatformService,
   "listDiscoveryInventory" | "listCallableTools"
-> &
-  Pick<ComputerAppApprovalService, "computerUseMachines" | "computerUsePhones">;
+> & { readonly selfDeviceId: OpensteerStore["requireSelfDeviceId"] } & Pick<
+    ComputerAppApprovalService,
+    "computerUseMachines" | "computerUsePhones"
+  >;
 type IntegrationInventoryEntry = Awaited<
   ReturnType<IntegrationInventorySource["listDiscoveryInventory"]>
 >[number];
@@ -443,8 +445,9 @@ export async function continuationMessage(
       }
       if (
         entry.installation.sourceKind === "built-in" &&
-        CatalogProvenanceSchema.safeParse(entry.installation.provenance).data?.definitionId ===
-          androidPhoneDefinitionId
+        isPhoneDisplayDefinitionId(
+          CatalogProvenanceSchema.safeParse(entry.installation.provenance).data?.definitionId,
+        )
       ) {
         const connectionId =
           request.response.kind === "external" ? request.response.value?.connectionId : undefined;
@@ -505,9 +508,8 @@ export async function continuationMessage(
       const payload = request.payload;
       if (payload.app === null) {
         // A phone is asked for whole, so its continuation names the phone.
-        const phone = (await integrations.computerUsePhones(request.requestedBy)).find(
-          ({ runnerId }) => runnerId === payload.runnerId,
-        );
+        const phones = await integrations.computerUsePhones(request.requestedBy);
+        const phone = phones.find((phone) => phone.deviceId === payload.deviceId);
         if (request.status === "declined")
           return `Request ${request.id} was declined by the user. Continue the task without ${phone?.name ?? "that phone"} and do not request it again unless the user asks.`;
         return phone
@@ -517,7 +519,7 @@ export async function continuationMessage(
       const asked = payload.app;
       const { displayName } = asked;
       const machines = await integrations.computerUseMachines(request.requestedBy);
-      const machine = machines.find(({ runnerId }) => runnerId === payload.runnerId);
+      const machine = machines.find((machine) => machine.deviceId === payload.deviceId);
       const mac = machine?.name ?? "that Mac";
       if (request.status === "declined")
         return `Request ${request.id} was declined by the user. Continue the task without ${displayName} on ${mac} and do not request it again unless the user asks.`;

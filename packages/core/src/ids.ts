@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { DeviceId } from "./devices.js";
 
 const idPrefixes = {
   teamNotice: "tnt",
@@ -23,6 +24,7 @@ const idPrefixes = {
   command: "cmd",
   credential: "cred",
   deployment: "dep",
+  device: "dev",
   delegation: "dlg",
   environment: "env",
   event: "evt",
@@ -131,6 +133,7 @@ export interface IdByKind {
   readonly command: CommandId;
   readonly credential: CredentialId;
   readonly deployment: DeploymentId;
+  readonly device: DeviceId;
   readonly delegation: DelegationId;
   readonly environment: EnvironmentId;
   readonly event: EventId;
@@ -160,7 +163,7 @@ export interface IdByKind {
 
 const uuidPattern = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 
-export function idSchema<K extends IdKind>(kind: K): z.ZodType<IdByKind[K]> {
+export function idSchema<K extends IdKind>(kind: K): z.ZodType<IdByKind[K], string> {
   return z
     .string()
     .regex(new RegExp(`^${idPrefixes[kind]}_${uuidPattern}$`, "i"))

@@ -64,6 +64,7 @@ export type ShellHubStore = Pick<
   | "appendShellEvents"
   | "effectiveMachineOwner"
   | "endShellSession"
+  | "requireSelfDeviceId"
   | "getMachineAccessTarget"
   | "getThreadForOwner"
   | "reserveShellSession"
@@ -412,13 +413,19 @@ export class ShellHub implements ShellControlStreamHandler {
         throw new ShellConnectRejection(
           "device-offline",
           `${target.name} is offline (${describeMachineLastSeen(target.lastSeenAt, this.#now())}).`,
-          { machineId: input.target, capability: "files" },
+          {
+            machineId: await this.#options.store.requireSelfDeviceId(input.target),
+            capability: "files",
+          },
         );
       if (!deviceAccess(target.policy).files)
         throw new ShellConnectRejection(
           "device-access-off",
           `Files and commands are off on ${target.name}.`,
-          { machineId: input.target, capability: "files" },
+          {
+            machineId: await this.#options.store.requireSelfDeviceId(input.target),
+            capability: "files",
+          },
         );
     }
     if (!(await this.#reachAdmits(input.target, target.policy, scope))) {

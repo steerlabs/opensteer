@@ -186,6 +186,7 @@ export interface LocalRunnerServiceDependencies {
   readonly computerUse?: {
     startForSlot(
       deploymentId: string,
+      owner: { deploymentId: string; hostInstanceId: string; runnerId: string },
     ): Promise<{ readonly token: string; readonly url: URL } | null>;
     stopForSlot(deploymentId: string): Promise<void>;
   };
@@ -1527,6 +1528,12 @@ export class LocalRunnerService {
     }
     await mkdir(runnerDataDirectory, { mode: 0o700, recursive: true });
     await setPrivateDirectoryMode(runnerDataDirectory);
+    const runnerIdentity =
+      descriptor ??
+      (await new FileRunnerIdentityStore({
+        dataDirectory: runnerDataDirectory,
+        environmentless: !runAgents,
+      }).loadOrCreate());
     slot.state = "starting";
     slot.detail = "Connecting this Mac to Opensteer…";
     slot.environmentId = null;
@@ -1555,7 +1562,11 @@ export class LocalRunnerService {
     // carries the computer-use frame.
     const computerUse = membership?.confirmingSession
       ? undefined
-      : ((await this.#computerUse?.startForSlot(target.deploymentId)) ?? undefined);
+      : ((await this.#computerUse?.startForSlot(target.deploymentId, {
+          deploymentId: target.deploymentId,
+          hostInstanceId: target.authority.document.hostInstanceId,
+          runnerId: runnerIdentity.runnerId,
+        })) ?? undefined);
     slot.computerUseSlotId = computerUse ? target.deploymentId : undefined;
     if (!this.#intentIsCurrent(slot, intentGeneration)) {
       await stopSlotBrowser(slot, this.#log);

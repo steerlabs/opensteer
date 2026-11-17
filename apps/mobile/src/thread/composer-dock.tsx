@@ -4,6 +4,7 @@ import {
   useCallback,
   useMemo,
   useState,
+  type ComponentType,
   type ReactNode,
   type Ref,
 } from "react";
@@ -17,6 +18,7 @@ import {
 } from "react-native";
 import {
   KeyboardChatScrollView,
+  type KeyboardChatScrollViewProps,
   useReanimatedKeyboardAnimation,
 } from "react-native-keyboard-controller";
 import Animated, { useAnimatedStyle } from "react-native-reanimated";
@@ -24,6 +26,11 @@ import { space } from "../theme.js";
 import { move } from "../ui/motion.js";
 import { useContentInsets } from "../ui/pane.js";
 import { useReadingColumn } from "../ui/screen.js";
+
+// The controller still derives its ref from the pre-0.88 ScrollView class type.
+const KeyboardDockScrollView = KeyboardChatScrollView as ComponentType<
+  KeyboardChatScrollViewProps & { readonly ref?: Ref<ScrollViewInstance> }
+>;
 
 /** The resting bar and the air above it, until the dock has measured itself. */
 const firstGuess = 56;
@@ -148,7 +155,7 @@ export function DockScrollView(
     const { inverted: _inverted, onContentInsetChange: _onInset, ...rest } = props;
     return <ScrollView {...rest} />;
   }
-  return <KeyboardChatScrollView {...props} offset={settle} />;
+  return <KeyboardDockScrollView {...props} offset={settle} />;
 }
 
 const styles = StyleSheet.create({

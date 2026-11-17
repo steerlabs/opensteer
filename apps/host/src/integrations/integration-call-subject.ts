@@ -1,6 +1,7 @@
 import {
   IntegrationCallSubjectSchema,
   isIntegrationGatewayTool,
+  isPhoneDisplayDefinitionId,
   type IntegrationCallSubject,
   type RunId,
   type ThreadId,
@@ -8,7 +9,7 @@ import {
 } from "@opensteer/core";
 import type { CallableIntegrationTool, IntegrationPlatformStore } from "@opensteer/database";
 import { integrationToolEffect } from "@opensteer/integration-core/effect";
-import { androidPhoneDefinitionId, type PendingAgentEvent } from "@opensteer/protocol";
+import { type PendingAgentEvent } from "@opensteer/protocol";
 import { z } from "zod";
 import { computerUseDefinitionId } from "../computer-use/computer-use-service.js";
 import type { IntegrationPlatformService } from "./integration-platform-service.js";
@@ -24,7 +25,7 @@ const AddressingArgumentsSchema = z.object({
 export interface IntegrationCallSubjectSources {
   /** The gateway's own listing, cached per owner, so a call is named as it resolves. */
   readonly listCallableTools: IntegrationPlatformService["listCallableTools"];
-  readonly getComputerConnectionForCall: IntegrationPlatformStore["getComputerConnectionForCall"];
+  readonly getComputerConnectionForCall: IntegrationPlatformStore["getDeviceComputerConnectionForCall"];
   /** A lookup that failed; the event is still recorded, without a subject. */
   readonly onError: (error: unknown, event: PendingAgentEvent) => void;
   readonly runRequester: (input: {
@@ -116,7 +117,7 @@ async function computerSubject(
   if (
     transport.type !== "computer" ||
     (transport.definitionId !== computerUseDefinitionId &&
-      transport.definitionId !== androidPhoneDefinitionId)
+      !isPhoneDisplayDefinitionId(transport.definitionId))
   ) {
     return { computerApp: null, phone: undefined };
   }
@@ -125,11 +126,11 @@ async function computerSubject(
   const placement = await sources.getComputerConnectionForCall({ connectionId, ownerUserId });
   if (!placement) return undefined;
   const app = placement.connection.computer?.app ?? null;
-  if (transport.definitionId === androidPhoneDefinitionId) {
+  if (isPhoneDisplayDefinitionId(transport.definitionId)) {
     return app === null
       ? {
           computerApp: null,
-          phone: { computer: placement.runnerName, runnerId: placement.runnerId },
+          phone: { computer: placement.runnerName, runnerId: placement.deviceId },
         }
       : undefined;
   }
@@ -139,7 +140,7 @@ async function computerSubject(
       app: app.displayName,
       bundleId: app.bundleId,
       computer: placement.runnerName,
-      runnerId: placement.runnerId,
+      runnerId: placement.deviceId,
     },
     phone: undefined,
   };

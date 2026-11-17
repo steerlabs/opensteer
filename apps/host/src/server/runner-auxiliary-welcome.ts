@@ -1,3 +1,4 @@
+import { deviceDriverWelcomeFeatures } from "../computer-use/device-drivers.js";
 import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
 import { RunnerAuxiliaryWelcomeSchema, type RunnerAuxiliaryWelcome } from "@opensteer/protocol";
 
@@ -11,6 +12,7 @@ export function runnerAuxiliaryWelcome(
   return RunnerAuxiliaryWelcomeSchema.parse({
     ...stream.fence,
     ...fields,
+    ...deviceDriverWelcomeFeatures(stream),
     ...(module === "browser" ? { browserWireVersion: 2 } : {}),
     ...(module === "integrations" && stream.identity.modules.integrations?.loginText === 1
       ? { loginText: 1 }

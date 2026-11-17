@@ -41,9 +41,13 @@ pnpm --filter @opensteer/desktop build:passwords-broker
 pnpm --filter @opensteer/desktop build:dictation-helper
 pnpm --filter @opensteer/desktop build:passkeys-addon
 pnpm --filter @opensteer/desktop build:process-supervisor
+pnpm --filter @opensteer/desktop build:iphone-bridge
 ```
 
 The passkeys addon pins its toolchain and Node header digests in
 `apps/desktop/native/passkeys/toolchain.json` and builds a universal binary into `dist/passkeys`.
 Development bundling works without it; release bundling includes it only when both passkey signing
 inputs are supplied.
+
+The iPhone bridge build never discovers a phone. Run `pnpm --filter @opensteer/desktop test:iphone-bridge`
+for its synthetic Go suite; phone control requires the [iPhone qualification procedure](../../iphone-screen/SKILL.md).
