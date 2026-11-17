@@ -143,13 +143,6 @@ export class LocalProviders {
       elicit,
       authorize: async () => {
         signal.throwIfAborted();
-        const permission = await this.#options.authority.authorize({ ...input, operation: "call" });
-        if (
-          !permission.allowed ||
-          permission.grants?.[input.plugin] === "off" ||
-          (permission.grants?.[input.plugin] === "read-only" && !tool.readOnly)
-        )
-          throw failure("Local tool authority changed while waiting; the call was not sent.");
         const liveCaller = this.#options.authority.caller(input.caller);
         if (!liveCaller)
           throw failure("Local tool caller is no longer active; the call was not sent.");
@@ -169,7 +162,32 @@ export class LocalProviders {
           throw failure(
             "Local tool authority or identity changed while waiting; the call was not sent.",
           );
-        signal.throwIfAborted();
+        const permission = await this.#options.authority.authorize(
+          { ...input, operation: "call", admission: true, write: !tool.readOnly },
+          signal,
+        );
+        if (
+          !permission.allowed ||
+          permission.grants?.[input.plugin] === "off" ||
+          (permission.grants?.[input.plugin] === "read-only" && !tool.readOnly)
+        ) {
+          if (permission.lease)
+            await this.#options.authority.authorize({
+              ...input,
+              operation: "release",
+              lease: permission.lease,
+            });
+          throw failure("Local tool authority changed while waiting; the call was not sent.");
+        }
+        return permission.lease
+          ? () => {
+              void this.#options.authority.authorize({
+                ...input,
+                operation: "release",
+                lease: permission.lease,
+              });
+            }
+          : undefined;
       },
     };
     let result: Awaited<ReturnType<Client["callTool"]>>;

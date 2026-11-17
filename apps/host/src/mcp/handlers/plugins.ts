@@ -33,6 +33,7 @@ export class PluginToolHandlers {
     notify: () => void;
     /** Tells the owner's clients their plugins changed. */
     changed?: (owner: UserId) => void;
+    removed?: (plugin: string) => void;
   };
   constructor(options: PluginToolHandlers["options"]) {
     this.options = options;
@@ -58,6 +59,7 @@ export class PluginToolHandlers {
           cursor: c.input.cursor,
           max: 25,
         });
+    let versionCursor: string | null = null;
     return {
       // An agent sees one list: local tools are addressed as tools.<slug> like plugins.
       local: local
@@ -80,10 +82,22 @@ export class PluginToolHandlers {
             { caller: "personal", mode: "automatic" },
             c.signal,
           );
+          const versionPage = c.input.pluginId
+            ? await this.options.service.detailSection(
+                {
+                  plugin: plugin.id,
+                  section: "versions",
+                  ...(c.input.cursor ? { cursor: c.input.cursor } : {}),
+                },
+                { caller: "personal", mode: "automatic" },
+                c.signal,
+              )
+            : undefined;
+          if (versionPage) versionCursor = versionPage.cursor;
           const versions = z
             .array(z.object({ id: z.string().min(1), createdAt: z.string() }).passthrough())
             .catch([])
-            .parse(detail.versions)
+            .parse(versionPage?.items ?? detail.versions)
             .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
           return {
             id: plugin.id,
@@ -93,7 +107,7 @@ export class PluginToolHandlers {
             versions: versions
               .slice(0, c.input.pluginId ? 200 : 10)
               .map((version) => ({ id: version.id, active: version.id === plugin.activeVersion })),
-            versionCount: versions.length,
+            versionCount: detail.versionCount,
             requirements: Object.fromEntries(
               Object.entries(detail.plugin.requirements.accounts).map(([name, r]) => [
                 name,
@@ -108,7 +122,7 @@ export class PluginToolHandlers {
           };
         }),
       ),
-      cursor: page.cursor,
+      cursor: c.input.pluginId ? versionCursor : page.cursor,
     };
   }
   async install(c: ToolCall<"opensteer_plugin_install">) {
@@ -159,7 +173,25 @@ export class PluginToolHandlers {
       c.signal,
     );
     await c.checkLive?.();
-    await this.options.exportFiles(c.caller, c.input.directory, { kind: "files", files });
+    const permission = await this.options.authority.authorize(
+      { ...context, operation: "export", plugin: c.input.pluginId, admission: true },
+      c.signal,
+    );
+    if (!permission.allowed)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Task authority changed before exporting plugin source.",
+      });
+    try {
+      await this.options.exportFiles(c.caller, c.input.directory, { kind: "files", files });
+    } finally {
+      if (permission.lease)
+        await this.options.authority.authorize({
+          ...context,
+          operation: "release",
+          lease: permission.lease,
+        });
+    }
     return {
       directory: c.input.directory,
       files: files.length,
@@ -285,7 +317,7 @@ export class PluginToolHandlers {
   }
   handlers(): Partial<AgentToolHandlers> {
     const o = this.options;
-    return {
+    const handlers: Partial<AgentToolHandlers> = {
       opensteer_plugin_catalog: async (c) => {
         const page = await o.service.catalogList(
           { ...c.input, limit: c.input.limit ?? 20 },
@@ -312,7 +344,14 @@ export class PluginToolHandlers {
       opensteer_plugin_resource_update: async (c) => {
         await c.checkLive?.();
         const result = await o.service.resourcesUpdate(
-          c.input,
+          {
+            ...c.input,
+            key: JSON.stringify([
+              c.caller.userId,
+              o.authority.admit(c.caller).caller,
+              c.operationKey,
+            ]),
+          },
           o.authority.admit(c.caller),
           c.signal,
         );
@@ -339,10 +378,19 @@ export class PluginToolHandlers {
       },
       opensteer_plugin_remove: async (c) => {
         await o.service.remove({ plugin: c.input.pluginId }, o.authority.admit(c.caller), c.signal);
+        o.removed?.(c.input.pluginId);
         o.changed?.(c.caller.userId);
         return { ok: true };
       },
       plugin_account_request: (c) => this.accountRequest(c),
     };
+    const scope = <K extends keyof AgentToolHandlers>(name: K) => {
+      const handler = handlers[name] as ((c: ToolCall<K>) => Promise<unknown>) | undefined;
+      if (handler)
+        handlers[name] = ((c: ToolCall<K>) =>
+          o.authority.scoped(c.caller, () => handler(c))) as AgentToolHandlers[K];
+    };
+    for (const name of Object.keys(handlers) as (keyof AgentToolHandlers)[]) scope(name);
+    return handlers;
   }
 }

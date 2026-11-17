@@ -30,7 +30,8 @@ import {
 } from "./engine-protocol.js";
 
 const table = ["opensteer_account_links"];
-type CreationKind = "plugin" | "account" | "connection";
+type CreationKind =
+  "plugin" | "account" | "connection" | "oauth-client" | "schedule-run" | "schedule-configuration";
 const Creation = Context.Reference<{ key: string; kind: CreationKind } | undefined>(
   "opensteer/PluginCreation",
   { defaultValue: () => undefined },
@@ -570,10 +571,33 @@ export function engineAccounts(options: {
         ? rememberCreation("account", account)
         : Effect.fail(new StorageError()),
     accountRemoving: () => Effect.void,
+    oauthClientCreated: (client) => rememberCreation("oauth-client", client),
   };
   return {
     hooks,
     once,
+    committed: <A, E extends Error, R>(
+      key: string | undefined,
+      kind: CreationKind,
+      work: Effect.Effect<A, E, R>,
+    ) =>
+      Effect.gen(function* () {
+        const sdk = yield* engine;
+        return yield* sdk[StorageHost].transaction(
+          Effect.gen(function* () {
+            if (key)
+              yield* storage(
+                sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify([owner, kind, key])}, 0))`,
+              );
+            return yield* once(
+              key,
+              kind,
+              work.pipe(Effect.tap((result) => rememberCreation(kind, result))),
+              (receipt) => Effect.succeed(receipt.result),
+            );
+          }),
+        );
+      }),
     standing: (app: AppId) =>
       options.authorizeBackground(app).pipe(Effect.andThen(accounts(app)), Effect.asVoid),
     validateBinding,

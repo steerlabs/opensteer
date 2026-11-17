@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { acquireTaskPluginAdmission, pluginAdmissionKey } from "@opensteer/database";
 import { pluginOwnerId } from "./engine-protocol.js";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import { PluginAgentStore, TriggerStore, type OpensteerStore } from "@opensteer/database";
@@ -21,7 +23,14 @@ const discovery = new Set([
   "listSkills",
   "readSkill",
 ]);
-const management = new Set(["install", "export", "activate", "remove", "resourcesUpdate"]);
+const management = new Set([
+  "install",
+  "export",
+  "activate",
+  "remove",
+  "resourcesUpdate",
+  "resourcesStop",
+]);
 const personOnly = new Set([
   "installed",
   "pinOAuth",
@@ -43,6 +52,7 @@ const personOnly = new Set([
   "webhook",
   "accounts",
   "detail",
+  "detailSection",
   "versions",
   "skillFiles",
 ]);
@@ -59,6 +69,30 @@ export function pluginCaller(caller: AgentCaller): PluginCaller {
   };
 }
 export class PluginAuthority {
+  readonly #active = new Map<string, number>();
+  readonly #executions = new Map<string, string>();
+  async scoped<T>(caller: AgentCaller, work: () => Promise<T>): Promise<T> {
+    const key = this.admit(caller).caller;
+    this.#active.set(key, (this.#active.get(key) ?? 0) + 1);
+    try {
+      return await work();
+    } finally {
+      const count = (this.#active.get(key) ?? 1) - 1;
+      if (count) this.#active.set(key, count);
+      else this.#active.delete(key);
+      this.#retire(key);
+    }
+  }
+  execution(id: string, caller: string, live: boolean) {
+    if (live) this.#executions.set(id, caller);
+    else this.#executions.delete(id);
+    this.#retire(caller);
+  }
+  #retire(key: string) {
+    if (!this.#active.has(key) && ![...this.#executions.values()].includes(key))
+      this.#callers.delete(key);
+  }
+  readonly #leases = new Map<string, { caller: string; release: () => void }>();
   readonly #callers = new Map<string, AgentCaller>();
   readonly options: {
     store: OpensteerStore;
@@ -89,15 +123,72 @@ export class PluginAuthority {
       ? "automatic"
       : "ask";
   }
-  async authorize(input: PluginAuthorization) {
+  async authorize(
+    input: PluginAuthorization,
+    signal?: AbortSignal,
+  ): Promise<import("./engine-protocol.js").PluginAuthorizationResult> {
+    if (input.lease) {
+      const lease = this.#leases.get(input.lease);
+      if (lease?.caller !== input.caller) return { allowed: false };
+      lease.release();
+      this.#leases.delete(input.lease);
+      return { allowed: true };
+    }
+    if (input.admission) {
+      const caller = this.#callers.get(input.caller);
+      const releaseTask =
+        caller && caller.kind !== "connection"
+          ? await acquireTaskPluginAdmission(
+              this.options.store.database,
+              caller.kind === "run" ? caller.thread.id : caller.anchor.id,
+            )
+          : () => {};
+      let releasePlugin = () => {};
+      let abort: (() => void) | undefined;
+      const release = () => {
+        if (abort) signal?.removeEventListener("abort", abort);
+        releasePlugin();
+        releaseTask();
+      };
+      try {
+        if (input.plugin)
+          releasePlugin = await acquireTaskPluginAdmission(
+            this.options.store.database,
+            pluginAdmissionKey(await this.options.owner(), input.plugin),
+          );
+        signal?.throwIfAborted();
+        const permission = await this.authorize({ ...input, admission: false }, signal);
+        signal?.throwIfAborted();
+        if (!permission.allowed) {
+          release();
+          return permission;
+        }
+        const lease = randomUUID();
+        this.#leases.set(lease, { caller: input.caller, release });
+        abort = () => {
+          release();
+          this.#leases.delete(lease);
+        };
+        signal?.addEventListener("abort", abort, { once: true });
+        return { ...permission, lease };
+      } catch (error) {
+        release();
+        throw error;
+      }
+    }
     await this.options.beforeAuthorize?.();
     const owner = await this.options.owner();
     const settings = await this.options.settings.settings(owner);
     const grants = Object.fromEntries(settings.map((s) => [s.pluginId, s.access]));
+    if (input.plugin && input.write && (grants[input.plugin] ?? "all") !== "all")
+      return { allowed: false, grants };
     if (input.caller === pluginOwnerId) {
       const access = input.plugin ? (grants[input.plugin] ?? "all") : "all";
       return {
-        allowed: !["background", "page", "webhook"].includes(input.operation) || access !== "off",
+        allowed:
+          input.operation === "background"
+            ? access === "all"
+            : !["resolve", "page", "webhook"].includes(input.operation) || access !== "off",
         ...(input.operation === "background" ? { grants } : {}),
       };
     }
@@ -173,7 +264,12 @@ export class PluginAuthority {
     }
     if (personOnly.has(input.operation)) return { allowed: false };
     if (caller.kind === "program" && management.has(input.operation)) return { allowed: false };
-    if (input.plugin && grants[input.plugin] === "off" && input.operation !== "cancel")
+    if (
+      input.plugin &&
+      ((grants[input.plugin] === "off" &&
+        !["cancel", "resourcesStop", "resourcesRead"].includes(input.operation)) ||
+        (input.operation === "resourcesUpdate" && (grants[input.plugin] ?? "all") !== "all"))
+    )
       return { allowed: false, grants };
     return { allowed: true, grants };
   }

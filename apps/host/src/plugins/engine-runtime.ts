@@ -1,3 +1,5 @@
+import { CurrentPluginRequest, engineAdmission } from "./engine-authority.js";
+import { detailSection, detailPreview } from "./engine-detail.js";
 import {
   backgroundResourceChanges,
   engineOAuthAttempt,
@@ -28,6 +30,8 @@ import { SqlClient } from "effect/sql";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   createPluginEngine,
+  toEffectRuntime,
+  runtimeAdapter,
   makePluginEngineStorage,
   OwnerId,
   AppId,
@@ -174,7 +178,7 @@ export async function startEngine(
         phase("database");
         const sql = yield* SqlClient.SqlClient;
         // The reserved connection holds this session lock across the SDK's own migration transactions.
-        const database = yield* sql.reserve.pipe(
+        const storedDatabase = yield* sql.reserve.pipe(
           Effect.flatMap((connection) =>
             Effect.acquireUseRelease(
               connection.execute("SELECT pg_advisory_lock(735158023)", [], undefined),
@@ -196,6 +200,7 @@ export async function startEngine(
           ),
           Effect.scoped,
         );
+        const database = { ...storedDatabase, reactivity: { ...storedDatabase.reactivity } };
         phase("runtime");
         const owner = OwnerId.make(config.owner);
         const ready = yield* Deferred.make<PluginEngine>();
@@ -222,16 +227,20 @@ export async function startEngine(
           owner,
           blobs,
           authorizeBackground: (plugin) =>
-            callback("authorize", {
-              caller: config.owner,
-              mode: "automatic",
-              operation: "background",
-              plugin,
-            }).pipe(
+            Effect.flatMap(CurrentPluginRequest, (request) =>
+              callback("authorize", {
+                caller: config.owner,
+                mode: "automatic",
+                operation: request ? "resolve" : "background",
+                plugin,
+              }),
+            ).pipe(
               Effect.flatMap((permission) =>
-                permission.allowed && permission.grants?.[plugin] !== "off"
+                permission.allowed
                   ? Effect.void
-                  : Effect.fail(new PluginServiceError("forbidden", "Plugin is disabled")),
+                  : Effect.fail(
+                      new PluginServiceError("forbidden", "Plugin access does not allow this work"),
+                    ),
               ),
             ),
         });
@@ -326,6 +335,105 @@ export async function startEngine(
           Redacted.make(config.secret),
           globalThis.crypto,
         );
+        const authorizeEffect = (input: import("./engine-protocol.js").PluginAuthorization) =>
+          callback("authorize", input);
+        const nativeRuntime = toEffectRuntime(local.runtime, blobs);
+        const dispatch = <A, E, R>(app: string, write: boolean, work: Effect.Effect<A, E, R>) =>
+          Effect.gen(function* () {
+            const request = yield* CurrentPluginRequest;
+            const execution = request?.execution;
+            const operation =
+              request &&
+              ["resourcesUpdate", "resourcesStop", "resourcesRead"].includes(request.operation)
+                ? request.operation
+                : "callTool";
+            const authority = request
+              ? {
+                  ...request.context,
+                  operation,
+                  write,
+                  plugin: app,
+                  ...(execution ? { execution } : {}),
+                }
+              : {
+                  caller: config.owner,
+                  mode: "automatic" as const,
+                  operation: "background",
+                  write,
+                  plugin: app,
+                };
+            return yield* engineAdmission(authorizeEffect, authority, work);
+          });
+        const runtime = runtimeAdapter({
+          ...nativeRuntime,
+          call: (input) => dispatch(input.app, input.kind !== "query", nativeRuntime.call(input)),
+          query: (input) => dispatch(input.app, false, nativeRuntime.query(input)),
+          mutate: (input) => dispatch(input.app, true, nativeRuntime.mutate(input)),
+          webhook: (input) => dispatch(input.app, true, nativeRuntime.webhook(input)),
+          workflow: (input) =>
+            dispatch(
+              input.app,
+              input.command.operation !== "workflows",
+              nativeRuntime.workflow(input),
+            ),
+        });
+        // The final check shares the outer SQL transaction, after its waits and before commit.
+        const sourceOrm = database.orm;
+        database.orm = (version) => {
+          const db = sourceOrm(version);
+          return {
+            ...db,
+            transaction: (work) =>
+              Effect.gen(function* () {
+                const request = yield* CurrentPluginRequest;
+                const nested = yield* Effect.serviceOption(sql.transactionService);
+                if (
+                  !request ||
+                  Option.isSome(nested) ||
+                  !["resourcesUpdate", "resourcesStop", "install", "activate", "remove"].includes(
+                    request.operation,
+                  )
+                )
+                  return yield* db.transaction(work);
+                let lease: string | undefined;
+                const authority = {
+                  ...request.context,
+                  operation: request.operation,
+                  ...(request.plugin ? { plugin: request.plugin } : {}),
+                };
+                return yield* db
+                  .transaction(
+                    work.pipe(
+                      Effect.tap(() =>
+                        authorizeEffect({ ...authority, admission: true }).pipe(
+                          Effect.flatMap((permission) => {
+                            lease = permission.lease;
+                            return permission.allowed
+                              ? Effect.void
+                              : Effect.die(
+                                  new PluginServiceError(
+                                    "forbidden",
+                                    "Plugin authority changed before commit",
+                                  ),
+                                );
+                          }),
+                          Effect.orDie,
+                        ),
+                      ),
+                    ),
+                  )
+                  .pipe(
+                    Effect.ensuring(
+                      Effect.suspend(() =>
+                        lease
+                          ? authorizeEffect({ ...authority, lease }).pipe(Effect.orDie)
+                          : Effect.void,
+                      ),
+                    ),
+                  );
+              }),
+          };
+        };
         const engine = yield* createPluginEngine({
           database,
           secret: Redacted.make(config.secret),
@@ -336,11 +444,15 @@ export async function startEngine(
           markdown: markdownRefusals,
           hooks: accountAdapter.hooks,
           blobs,
-          runtime: local.runtime,
+          runtime,
           workflows: local.workflows,
           registry: memoryRegistry(),
           cache: { durable: local.declarations },
-          background: (work) => Effect.forkIn(work, hostScope).pipe(Effect.as(true)),
+          background: (work) =>
+            Effect.forkIn(
+              work.pipe(Effect.provideService(CurrentPluginRequest, undefined)),
+              hostScope,
+            ).pipe(Effect.as(true)),
           oauth,
           events: {
             sender: httpEventSender(egress),
@@ -526,9 +638,20 @@ export async function startEngine(
                 typeof raw.pluginId === "string"
               ? raw.pluginId
               : undefined;
+        const stop =
+          operation === "resourcesUpdate" &&
+          (() => {
+            const change = operations.resourcesUpdate.input.parse(raw).change;
+            return (
+              change.action === "workflow.stop" ||
+              change.action === "webhook.remove" ||
+              (change.action === "schedule.configure" && !change.enabled)
+            );
+          })();
+        const authorityOperation = stop ? "resourcesStop" : operation;
         yield* authorize(
           context,
-          operation,
+          authorityOperation,
           target,
           typeof raw === "object" &&
             raw !== null &&
@@ -577,7 +700,7 @@ export async function startEngine(
             );
           case "install": {
             const input = operations.install.input.parse(raw);
-            return yield* accountAdapter.once(
+            const installed = yield* accountAdapter.once(
               input.key,
               "plugin",
               Effect.gen(function* () {
@@ -587,7 +710,7 @@ export async function startEngine(
                 if (input.kind === "files") {
                   if (!Schema.is(SourceFiles)(input.files))
                     return {
-                      status: "build-error",
+                      status: "build-error" as const,
                       error: {
                         code: "invalid-source",
                         message:
@@ -628,7 +751,7 @@ export async function startEngine(
                 const validSkills = yield* packagedSkills(files).pipe(Effect.result);
                 if (Result.isFailure(validSkills))
                   return {
-                    status: "build-error",
+                    status: "build-error" as const,
                     error: { code: "invalid-skills", message: validSkills.failure.message },
                   };
                 return yield* engine.apps
@@ -639,20 +762,27 @@ export async function startEngine(
                   })
                   .pipe(
                     Effect.map((result) => ({
-                      status: "installed",
-                      plugin: { ...result.app, slug: pluginNamespace(result.app.slug) },
+                      status: "installed" as const,
+                      plugin: result.app,
                       version: result.version,
                     })),
                     Effect.catchTags({
                       VersionBuildFailed: (error) =>
-                        Effect.succeed({ status: "build-error", error }),
+                        Effect.succeed({ status: "build-error" as const, error }),
                       BuildMemoryExceeded: (error) =>
-                        Effect.succeed({ status: "build-error", error }),
+                        Effect.succeed({ status: "build-error" as const, error }),
                     }),
                   );
               }),
               (receipt) => Effect.try(() => operations.install.output.parse(receipt.result)),
             );
+            const result = operations.install.output.parse(JSON.parse(JSON.stringify(installed)));
+            return result.status === "installed"
+              ? {
+                  ...result,
+                  plugin: { ...result.plugin, slug: pluginNamespace(result.plugin.slug) },
+                }
+              : result;
           }
           case "detail": {
             const app = AppId.make(operations.detail.input.parse(raw).plugin);
@@ -660,7 +790,7 @@ export async function startEngine(
             const selected = yield* accountAdapter.accounts(app).pipe(Effect.option);
             const read = <A, E>(effect: Effect.Effect<A, E>) =>
               effect.pipe(Effect.catch(() => Effect.succeed(null)));
-            return {
+            return detailPreview({
               plugin: { ...plugin, slug: pluginNamespace(plugin.slug) },
               links: yield* accountAdapter.links(app),
               versions: yield* engine.apps.versions({ app, owner }),
@@ -687,7 +817,27 @@ export async function startEngine(
               hasPage: (yield* engine.apps.source({ app: plugin.id, owner })).files.some(
                 (file) => file.path === "ui/index.html",
               ),
-            };
+            });
+          }
+          case "detailSection": {
+            const input = operations.detailSection.input.parse(raw);
+            const app = AppId.make(input.plugin);
+            const plugin = yield* engine.apps.get({ app, owner });
+            const accounts =
+              input.section === "versions" ? undefined : yield* accountAdapter.accounts(app);
+            return detailSection(
+              {
+                plugin,
+                tools:
+                  input.section === "tools" ? yield* engine.tools.index({ app, accounts }) : null,
+                skills:
+                  input.section === "skills" ? yield* engine.skills.list({ app, accounts }) : null,
+                versions:
+                  input.section === "versions" ? yield* engine.apps.versions({ app, owner }) : [],
+              },
+              input.section,
+              input.cursor,
+            );
           }
           case "export": {
             const input = operations.export.input.parse(raw);
@@ -916,8 +1066,13 @@ export async function startEngine(
             });
           case "saveOAuthApp": {
             const input = operations.saveOAuthApp.input.parse(raw);
-            return yield* engine.oauthClients.register(
-              Schema.decodeUnknownSync(OAuthClientInputs.register)({ ...input, owner }),
+            return yield* accountAdapter.once(
+              input.key,
+              "oauth-client",
+              engine.oauthClients.register(
+                Schema.decodeUnknownSync(OAuthClientInputs.register)({ ...input, owner }),
+              ),
+              (receipt) => Effect.try(() => operations.saveOAuthApp.output.parse(receipt.result)),
             );
           }
           case "removeOAuthApp":
@@ -983,13 +1138,21 @@ export async function startEngine(
               const result = yield* Effect.tryPromise({
                 try: () =>
                   run(
-                    manager.execute(
-                      context.caller,
-                      backend(context, id),
-                      program,
-                      "result",
-                      context.mode === "automatic" ? "client" : "ask",
-                    ),
+                    manager
+                      .execute(
+                        context.caller,
+                        backend(context, id),
+                        program,
+                        "result",
+                        context.mode === "automatic" ? "client" : "ask",
+                      )
+                      .pipe(
+                        Effect.provideService(CurrentPluginRequest, {
+                          context,
+                          operation: "call",
+                          execution: id,
+                        }),
+                      ),
                     controller.signal,
                   ),
                 catch: (error) =>
@@ -1088,10 +1251,18 @@ export async function startEngine(
                 yield* Effect.tryPromise({
                   try: () =>
                     run(
-                      manager.resume(context.caller, backend(context, record.view.id), {
-                        requestId,
-                        response,
-                      }),
+                      manager
+                        .resume(context.caller, backend(context, record.view.id), {
+                          requestId,
+                          response,
+                        })
+                        .pipe(
+                          Effect.provideService(CurrentPluginRequest, {
+                            context,
+                            operation: "resume",
+                            execution: record.view.id,
+                          }),
+                        ),
                       record.controller.signal,
                     ),
                   catch: (error) =>
@@ -1112,7 +1283,12 @@ export async function startEngine(
             if (input.resource === "workflows") {
               const page = yield* manage({
                 operation: "workflowRuns.list",
-                input: { app, ...(input.cursor ? { cursor: input.cursor } : {}) },
+                input: {
+                  app,
+                  limit: 10,
+                  includeOutput: true,
+                  ...(input.cursor ? { cursor: input.cursor } : {}),
+                },
               });
               return {
                 ...z.record(z.string(), JsonSchema).parse(page),
@@ -1138,18 +1314,30 @@ export async function startEngine(
                     app,
                     name: input.schedule,
                     enabled: input.enabled,
+                    key: parsed.key ?? null,
                     ...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
                   },
                 });
               case "schedule.run":
-                return yield* manage({
-                  operation: "schedules.runNow",
-                  input: { app, name: input.schedule, copy: input.scheduleId },
-                });
+                return yield* accountAdapter.committed(
+                  parsed.key,
+                  "schedule-run",
+                  manage({
+                    operation: "schedules.runNow",
+                    input: { app, name: input.schedule, copy: input.scheduleId },
+                  }),
+                );
               case "workflow.start":
                 return yield* manage({
                   operation: "workflowRuns.start",
-                  input: { app, workflow: input.workflow, input: input.input, key: input.key },
+                  input: {
+                    app,
+                    workflow: input.workflow,
+                    input: input.input,
+                    key: createHash("sha256")
+                      .update(JSON.stringify([context.caller, app, input.key]))
+                      .digest("hex"),
+                  },
                 });
               case "workflow.stop":
                 return yield* manage({
@@ -1188,7 +1376,35 @@ export async function startEngine(
             return HttpServerResponse.toWeb(response);
           }
         }
-      }).pipe(Effect.provideService(CurrentActor, owner));
+      }).pipe(
+        Effect.provideService(CurrentActor, owner),
+        Effect.provideService(CurrentPluginRequest, {
+          context,
+          operation:
+            operation === "resourcesUpdate" &&
+            (() => {
+              const change = operations.resourcesUpdate.input.parse(raw).change;
+              return (
+                change.action === "workflow.stop" ||
+                change.action === "webhook.remove" ||
+                (change.action === "schedule.configure" && !change.enabled)
+              );
+            })()
+              ? "resourcesStop"
+              : operation,
+          ...(typeof raw === "object" &&
+          raw !== null &&
+          "pluginId" in raw &&
+          typeof raw.pluginId === "string"
+            ? { plugin: raw.pluginId }
+            : typeof raw === "object" &&
+                raw !== null &&
+                "plugin" in raw &&
+                typeof raw.plugin === "string"
+              ? { plugin: raw.plugin }
+              : {}),
+        }),
+      );
     const manage = (
       input: z.infer<typeof operations.manage.input>,
     ): Effect.Effect<unknown, Error> => {
@@ -1221,43 +1437,49 @@ export async function startEngine(
         case "schedules.list":
           return decode(ScheduleInputs.list).pipe(Effect.flatMap(engine.schedules.list));
         case "schedules.configure":
-          return Effect.gen(function* () {
-            const app = AppId.make(String(input.input.app));
-            const saved = (yield* engine.schedules.list({ app, owner })).find(
-              (schedule) =>
-                schedule.name === input.input.name &&
-                (schedule.actor === null || schedule.actor === owner),
-            );
-            if (saved)
-              return yield* engine.schedules.update({
-                app,
-                name: saved.name,
-                copy: saved.id,
-                owner,
-                enabled: input.input.enabled === true,
-                ...(input.input.approvalMode === undefined
-                  ? {}
-                  : {
-                      approvalMode: Schema.decodeUnknownSync(
-                        ScheduleInputs.configure.fields.approvalMode,
-                      )(input.input.approvalMode),
-                    }),
-              });
-            const definitions = yield* engine.schedules.definitions({
-              app,
-              actor: owner,
-              accounts: yield* accountAdapter.accounts(app),
-            });
-            const declaration = definitions.find((schedule) => schedule.name === input.input.name);
-            if (!declaration)
-              return yield* Effect.fail(
-                new PluginServiceError("invalid", "Plugin does not declare this schedule"),
+          return accountAdapter.committed(
+            typeof input.input.key === "string" ? input.input.key : undefined,
+            "schedule-configuration",
+            Effect.gen(function* () {
+              const app = AppId.make(String(input.input.app));
+              const saved = (yield* engine.schedules.list({ app, owner })).find(
+                (schedule) =>
+                  schedule.name === input.input.name &&
+                  (schedule.actor === null || schedule.actor === owner),
               );
-            return yield* Schema.decodeUnknownEffect(ScheduleInputs.configure)({
-              ...data,
-              ...(declaration.scope === "app" ? {} : { actor: owner }),
-            }).pipe(Effect.flatMap(engine.schedules.configure));
-          });
+              if (saved)
+                return yield* engine.schedules.update({
+                  app,
+                  name: saved.name,
+                  copy: saved.id,
+                  owner,
+                  enabled: input.input.enabled === true,
+                  ...(input.input.approvalMode === undefined
+                    ? {}
+                    : {
+                        approvalMode: Schema.decodeUnknownSync(
+                          ScheduleInputs.configure.fields.approvalMode,
+                        )(input.input.approvalMode),
+                      }),
+                });
+              const definitions = yield* engine.schedules.definitions({
+                app,
+                actor: owner,
+                accounts: yield* accountAdapter.accounts(app),
+              });
+              const declaration = definitions.find(
+                (schedule) => schedule.name === input.input.name,
+              );
+              if (!declaration)
+                return yield* Effect.fail(
+                  new PluginServiceError("invalid", "Plugin does not declare this schedule"),
+                );
+              return yield* Schema.decodeUnknownEffect(ScheduleInputs.configure)({
+                ...data,
+                ...(declaration.scope === "app" ? {} : { actor: owner }),
+              }).pipe(Effect.flatMap(engine.schedules.configure));
+            }),
+          );
         case "schedules.update":
           return decode(ScheduleInputs.update).pipe(Effect.flatMap(engine.schedules.update));
         case "schedules.remove":
@@ -1281,10 +1503,27 @@ export async function startEngine(
             const page = yield* ownerWorkflowRunIds(composed.sql, input.input);
             return {
               items: yield* Effect.forEach(page.ids, (id) =>
-                engine.apps.workflowRuns.get({
-                  app,
-                  run: Schema.decodeUnknownSync(WorkflowTarget.fields.run)(id),
-                }),
+                engine.apps.workflowRuns
+                  .get({
+                    app,
+                    run: Schema.decodeUnknownSync(WorkflowTarget.fields.run)(id),
+                  })
+                  .pipe(
+                    Effect.map((run) =>
+                      run.status === "complete"
+                        ? {
+                            ...run,
+                            output:
+                              input.input.includeOutput === true
+                                ? {
+                                    preview: JSON.stringify(run.output).slice(0, 512),
+                                    truncated: JSON.stringify(run.output).length > 512,
+                                  }
+                                : null,
+                          }
+                        : run,
+                    ),
+                  ),
               ),
               ...(page.next ? { next: page.next } : {}),
             };

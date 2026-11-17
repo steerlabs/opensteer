@@ -61,7 +61,13 @@ let homeFiles: AgentHomeFiles;
 const events = new EventEmitter();
 const errors: unknown[] = [];
 const enginePhases: string[] = [];
+let effects = 0;
 let current: AgentCaller;
+let authorizationWait:
+  | ((
+      input: import("../apps/host/src/plugins/engine-protocol.js").PluginAuthorization,
+    ) => Promise<void>)
+  | undefined;
 const activeCallers: RunCaller[] = [];
 
 async function run(mode: ThreadAccessMode = "approval-required"): Promise<RunCaller> {
@@ -154,7 +160,17 @@ beforeAll(async () => {
   store = new OpensteerStore(database);
   records = new PluginAgentStore(database);
   authority = new PluginAuthority({ store, settings: records, owner: async () => personal.userId });
-  registry = await pluginFixtureRegistry(directory, undefined, pluginFixtureFiles(1));
+  registry = await pluginFixtureRegistry(
+    directory,
+    undefined,
+    pluginFixtureFiles(1),
+    (request, response) => {
+      if (request.url !== "/effect") return false;
+      effects++;
+      response.end("ok");
+      return true;
+    },
+  );
   homeFiles = new AgentHomeFiles({
     agentHome: async () => personal.agentHome,
     helperPath: new URL("../apps/runner/native-fs-helper/opensteer-native-fs-test", import.meta.url)
@@ -172,7 +188,11 @@ beforeAll(async () => {
     selfOrigin: { origin: "https://api.fixture.invalid", address: registry.address },
     processEntry: new URL("../apps/host/dist/plugin-engine.js", import.meta.url),
     bridge: new URL("../apps/host/dist/plugin-engine-bridge.json", import.meta.url).pathname,
-    authorize: (input) => authority.authorize(input),
+    authorize: async (input, signal) => {
+      const result = await authority.authorize(input, signal);
+      await authorizationWait?.(input);
+      return result;
+    },
     onExecution: (e) => executions?.report(e),
     onDiagnostic: (phase) => enginePhases.push(phase),
     onState: (s) => events.emit(s.status),
@@ -205,10 +225,25 @@ beforeAll(async () => {
     file.path === "index.ts"
       ? {
           ...file,
-          content: file.content.replace(
-            "  wait: query",
-            `  input: query({ input: object({ label: string() }) }, async (ctx, { label }) => ({ label, response: await ctx.elicit({ mode: "form", message: "Name it", requestedSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } }) })),\n  wait: query`,
-          ),
+          content: file.content
+            .replace("number }", "number, userInterval, workflow }")
+            .replace(
+              "async (_ctx, { amount }) => amount + 1),\n  wait:",
+              'async (ctx, { amount }) => { await ctx.fetch("https://api.fixture.invalid/effect"); return amount + 1; }),\n  wait:',
+            )
+            .replace(
+              "export default defineApp",
+              'const periodic = mutation({ input: object({}) }, async () => "ran"); export default defineApp',
+            )
+            .replace("tools: router({", "tools: router({ periodic,")
+            .replace(
+              "}) });",
+              ' }), schedules: { periodic: userInterval({minutes:1}, periodic, {}) }, workflows: { quick: workflow({input:object({})}, async () => "done") } });',
+            )
+            .replace(
+              "  wait: query",
+              `  input: query({ input: object({ label: string() }) }, async (ctx, { label }) => ({ label, response: await ctx.elicit({ mode: "form", message: "Name it", requestedSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } }) })),\n  wait: query`,
+            ),
         }
       : file,
   );
@@ -977,7 +1012,7 @@ test("discovers a catalog entry, reads live skills and installs without asking t
   ).toContain("Fixture skill");
   expect(
     await call(caller, "plugin_resources", { pluginId: plugin, resource: "workflows" }),
-  ).toEqual({ items: [], definitions: [] });
+  ).toMatchObject({ items: [], definitions: [{ name: "quick" }] });
   expect(
     await call(caller, "opensteer_plugin_install", { source: "catalog", catalogId: id }),
   ).toMatchObject({ status: "installed" });
@@ -1042,3 +1077,219 @@ test("engine loss interrupts open and answered-but-unconsumed waits", async () =
     });
   }
 }, 30000);
+
+test("resource updates respect plugin settings and schedule run operations replay durably", async () => {
+  const caller = await run("full-access");
+  const configuration = {
+    pluginId: plugin,
+    change: { action: "schedule.configure", schedule: "periodic", enabled: true },
+  };
+  const configurationKey = randomUUID();
+  const configured = await call(
+    caller,
+    "opensteer_plugin_resource_update",
+    configuration,
+    false,
+    configurationKey,
+  );
+  const { sql } = await import("kysely");
+  await sql`update plugin_engine.plugin_engine_schedules set next_at = (now() at time zone 'UTC') + interval '1 hour', revision = 'configured' where app = ${plugin}`.execute(
+    database,
+  );
+  expect(
+    await call(caller, "opensteer_plugin_resource_update", configuration, false, configurationKey),
+  ).toEqual(configured);
+  const schedules = await service.manage(
+    { operation: "schedules.list", input: { app: plugin } },
+    ownerContext,
+  );
+  const schedule = z.array(z.object({ id: z.string() })).parse(schedules)[0]!;
+  const input = {
+    pluginId: plugin,
+    change: { action: "schedule.run", schedule: "periodic", scheduleId: schedule.id },
+  };
+  const key = randomUUID();
+  const first = await call(caller, "opensteer_plugin_resource_update", input, false, key);
+  // Simulate the scheduler consuming this intent; replay must return the saved revision.
+  await sql`update plugin_engine.plugin_engine_schedules set next_at = (now() at time zone 'UTC') + interval '1 hour', active_run = null, revision = 'consumed' where id = ${schedule.id}`.execute(
+    database,
+  );
+  expect(await call(caller, "opensteer_plugin_resource_update", input, false, key)).toEqual(first);
+  await records.setAccess(personal.userId, plugin, "read-only");
+  await expect(
+    call(caller, "opensteer_plugin_resource_update", {
+      pluginId: plugin,
+      change: { action: "workflow.start", workflow: "quick", input: {}, key: randomUUID() },
+    }),
+  ).rejects.toThrow();
+  await expect(call(caller, "opensteer_plugin_resource_update", input)).rejects.toThrow();
+  await expect(
+    call(caller, "opensteer_plugin_resource_update", {
+      pluginId: plugin,
+      change: { action: "schedule.configure", schedule: "periodic", enabled: false },
+    }),
+  ).resolves.toMatchObject({ enabled: false });
+});
+
+test.each(["cloud", "resource"] as const)(
+  "task narrowing during %s account resolution prevents dispatch or commit",
+  async (path) => {
+    const caller = await run("full-access");
+    let targetPlugin = plugin;
+    let toolPath = "tools.fixture.reviewed";
+    if (path === "cloud") {
+      const files = pluginFixtureFiles(1, ["api.fixture.invalid"]).map((file) =>
+        file.path === "index.ts"
+          ? {
+              ...file,
+              content: file.content.replace(
+                "async (_ctx, { amount }) => amount + 1),\n  wait:",
+                'async (ctx, { amount }) => { await ctx.fetch("https://api.fixture.invalid/effect"); return amount + 1; }),\n  wait:',
+              ),
+            }
+          : file,
+      );
+      const installed = await service.install(
+        { kind: "files", name: "Cloud admission", files },
+        ownerContext,
+      );
+      if (installed.status !== "installed")
+        throw new Error("Cloud admission fixture did not install");
+      targetPlugin = installed.plugin.id;
+      toolPath = `tools[${JSON.stringify(installed.plugin.slug)}].reviewed`;
+      const target = { plugin: targetPlugin, requirement: "service", scope: "user" as const };
+      const account = await service.createApiKeyAccount(
+        {
+          provider: installed.plugin.requirements.accounts.service!.provider,
+          method: "key",
+          fields: { token: "synthetic-admission-key" },
+        },
+        ownerContext,
+      );
+      await service.linkAccount(
+        {
+          ...target,
+          account: account.id,
+          consent: await service.reviewAccountLink(target, ownerContext),
+        },
+        ownerContext,
+      );
+    }
+    const entered = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    let armed = false;
+    const before = effects;
+    const history = await service.manage(
+      { operation: "workflowRuns.list", input: { app: plugin } },
+      ownerContext,
+    );
+    authorizationWait = async (input) => {
+      if (input.operation === (path === "cloud" ? "resumeInvocation" : "resourcesUpdate"))
+        armed = true;
+      if (armed && input.operation === "resolve" && input.plugin === targetPlugin) {
+        armed = false;
+        entered.resolve();
+        await deadline(released.promise, "Account resolution was never released");
+      }
+    };
+    const sent =
+      path === "cloud"
+        ? call(caller, "plugin_call", {
+            calls: { path: toolPath, input: { amount: 1 } },
+          })
+        : call(caller, "opensteer_plugin_resource_update", {
+            pluginId: plugin,
+            change: { action: "workflow.start", workflow: "quick", input: {}, key: randomUUID() },
+          });
+    const outcome = sent.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    try {
+      await deadline(
+        Promise.race([
+          entered.promise,
+          outcome.then((value) => {
+            throw new Error(`Call ended before account resolution: ${JSON.stringify(value)}`);
+          }),
+        ]),
+        "Call did not reach post-check account resolution",
+      );
+      await store.updateThreadAccessMode({
+        threadId: caller.thread.id,
+        requestedBy: personal.userId,
+        accessMode: "approval-required",
+      });
+      released.resolve();
+      const result = await deadline(outcome, "Narrowed call did not end");
+      if (path === "cloud") {
+        expect(result).not.toMatchObject({
+          value: { result: { execution: { value: { ok: true } } } },
+        });
+        expect(effects).toBe(before);
+      } else {
+        expect(result).toHaveProperty("error");
+        expect(
+          await service.manage(
+            { operation: "workflowRuns.list", input: { app: plugin } },
+            ownerContext,
+          ),
+        ).toEqual(history);
+      }
+    } finally {
+      authorizationWait = undefined;
+      released.resolve();
+      await outcome;
+    }
+  },
+);
+
+test("new plugin tools enforce their caller and standing-access matrix", async () => {
+  const connections = new AgentConnectionStore(database);
+  const connection = await connections.create({
+    userId: personal.userId,
+    label: "Matrix",
+    clientName: "Fixture",
+    accessMode: "full-access",
+    resource: "http://127.0.0.1/mcp",
+    expiresAt: new Date(Date.now() + 60000),
+  });
+  await connections.activate(connection.id, "matrix-token-hash");
+  const callers: AgentCaller[] = [
+    await run("full-access"),
+    await run("approval-required"),
+    await program("trigger", "full-access"),
+    await program("watch", "full-access"),
+    {
+      kind: "connection",
+      key: `connection:${connection.id}`,
+      userId: personal.userId,
+      accessMode: "full-access",
+      connectionId: connection.id,
+    },
+  ];
+  for (const access of ["all", "read-only", "off"] as const) {
+    await records.setAccess(personal.userId, plugin, access);
+    for (const caller of callers) {
+      const catalog = call(caller, "opensteer_plugin_catalog", { search: "fixture" });
+      if (caller.kind === "program") await expect(catalog).rejects.toThrow();
+      else await expect(catalog).resolves.toHaveProperty("items");
+      const skills = call(caller, "plugin_skills", { app: "fixture", name: "demo" });
+      if (access === "off") await expect(skills).rejects.toThrow();
+      else expect(JSON.stringify(await skills)).toContain("Fixture skill");
+      const resources = call(caller, "plugin_resources", {
+        pluginId: plugin,
+        resource: "workflows",
+      });
+      if (caller.kind === "program") await expect(resources).rejects.toThrow();
+      else await expect(resources).resolves.toHaveProperty("items");
+      const update = call(caller, "opensteer_plugin_resource_update", {
+        pluginId: plugin,
+        change: { action: "workflow.start", workflow: "quick", input: {}, key: randomUUID() },
+      });
+      if (caller.kind === "run" && caller.accessMode === "full-access" && access === "all")
+        await expect(update).resolves.toHaveProperty("id");
+      else await expect(update).rejects.toThrow();
+    }
+  }
+});

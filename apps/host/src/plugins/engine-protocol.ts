@@ -243,7 +243,17 @@ export const operations = {
       webhooks: z.array(EngineWebhookSchema),
       workflows: z.array(EngineWorkflowSchema).nullable(),
       hasPage: z.boolean(),
+      toolCount: z.number().int(),
+      skillCount: z.number().int(),
+      versionCount: z.number().int(),
     }),
+  },
+  detailSection: {
+    input: plugin.extend({
+      section: z.enum(["tools", "skills", "versions"]),
+      cursor: id.optional(),
+    }),
+    output: z.object({ items: z.array(object), cursor: z.string().nullable() }),
   },
   install: {
     input: z.discriminatedUnion("kind", [
@@ -337,7 +347,12 @@ export const operations = {
   cancelOAuth: { input: z.strictObject({ connection: id }), output: JsonSchema },
   oauthStatus: { input: z.strictObject({ connection: id }), output: object },
   saveOAuthApp: {
-    input: z.strictObject({ issuer: z.url(), clientId: id, clientSecret: id.optional() }),
+    input: z.strictObject({
+      issuer: z.url(),
+      clientId: id,
+      clientSecret: id.optional(),
+      key: id.optional(),
+    }),
     output: object,
   },
   removeOAuthApp: { input: z.strictObject({ client: id }), output: JsonSchema },
@@ -391,7 +406,10 @@ export const operations = {
     output: z.strictObject({ plugin: id, version: id, digest: id, files }),
   },
   resourcesRead: { input: plugin_resources.input, output: JsonSchema },
-  resourcesUpdate: { input: opensteer_plugin_resource_update.input, output: JsonSchema },
+  resourcesUpdate: {
+    input: opensteer_plugin_resource_update.input.extend({ key: id.optional() }),
+    output: JsonSchema,
+  },
   manage: { input: z.strictObject({ operation: management, input: object }), output: JsonSchema },
   webhook: {
     input: z.strictObject({ plugin: id, subscription: id, request: raw }),
@@ -408,10 +426,14 @@ export const AuthorizationSchema = z.strictObject({
   plugin: id.optional(),
   tool: id.optional(),
   execution: id.optional(),
+  admission: z.boolean().optional(),
+  write: z.boolean().optional(),
+  lease: id.optional(),
 });
 export type PluginAuthorization = z.infer<typeof AuthorizationSchema>;
 export const AuthorizationResultSchema = z.strictObject({
   allowed: z.boolean(),
+  lease: id.optional(),
   grants: z.record(z.string(), z.enum(["all", "read-only", "off"])).optional(),
 });
 export type PluginAuthorizationResult = z.infer<typeof AuthorizationResultSchema>;

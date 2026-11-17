@@ -1,3 +1,4 @@
+import { IntegrationGrantStore } from "@opensteer/database";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -44,6 +45,27 @@ integration("local servers as plugin tools", () => {
   }, 60_000);
 
   it("is registered by an agent, approved by the owner, asks each caller its own question and is removed with its data", async () => {
+    const enteredInventory = Promise.withResolvers<void>();
+    const releaseInventory = Promise.withResolvers<void>();
+    let awaitingInventory = false;
+    let callableReads = 0;
+    const inventory = IntegrationGrantStore.prototype.listCallableTools;
+    const inventorySpy = vi
+      .spyOn(IntegrationGrantStore.prototype, "listCallableTools")
+      .mockImplementation(async function (this: IntegrationGrantStore, input) {
+        const result = await inventory.call(this, input);
+        if (awaitingInventory && ++callableReads === 2) {
+          awaitingInventory = false;
+          enteredInventory.resolve();
+          await withTimeout(releaseInventory.promise, 10000, {
+            timeoutError: () => new Error("Callable inventory was not released"),
+          });
+        }
+        return result;
+      });
+    closers.push(async () => {
+      inventorySpy.mockRestore();
+    });
     const work = await mkdtemp(join(tmpdir(), "opensteer-local-server-tools-"));
     closers.push(() => rm(work, { recursive: true, force: true }));
     const server = await pairingServer(work);
@@ -234,6 +256,49 @@ integration("local servers as plugin tools", () => {
       releaseTurn.resolve();
       turn.mockRestore();
     }
+    const beforeNarrow = await readFile(join(work, "calls"), "utf8");
+    const nextTurn = ServerInput.prototype.turn;
+    const callSpy = vi.spyOn(ServerInput.prototype, "turn").mockImplementationOnce(async function (
+      this: ServerInput,
+      ...args
+    ) {
+      const release = await nextTurn.apply(this, args);
+      awaitingInventory = true;
+      return release;
+    });
+    const narrowing = gateway.call("plugin_call", {
+      calls: { path: pair, input: { mode: "queued" } },
+    });
+    try {
+      await withTimeout(
+        Promise.race([
+          enteredInventory.promise,
+          narrowing.then((value) => {
+            throw new Error(`Call ended before final inventory: ${JSON.stringify(value)}`);
+          }),
+        ]),
+        10000,
+        { timeoutError: () => new Error("Call did not reach final callable inventory") },
+      );
+      await host.store.updateThreadAccessMode({
+        threadId: first.threadId,
+        requestedBy: host.ownerId,
+        accessMode: "approval-required",
+      });
+      releaseInventory.resolve();
+      expect(JSON.stringify(await narrowing)).toMatch(/authority|unavailable/iu);
+      expect(await readFile(join(work, "calls"), "utf8")).toBe(beforeNarrow);
+    } finally {
+      releaseInventory.resolve();
+      callSpy.mockRestore();
+      inventorySpy.mockRestore();
+      await narrowing;
+    }
+    await host.store.updateThreadAccessMode({
+      threadId: first.threadId,
+      requestedBy: host.ownerId,
+      accessMode: "full-access",
+    });
     const failed = await withTimeout(
       gateway.call("plugin_call", {
         calls: { path: pair, input: { mode: "error" } },

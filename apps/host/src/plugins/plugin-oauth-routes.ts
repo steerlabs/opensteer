@@ -78,10 +78,13 @@ export async function handlePluginOAuthCommand(
     case "plugin.oauthApp.save":
       return {
         type: command.type,
-        client: await oauth.options.plugins.saveOAuthApp(command.input, {
-          caller: "personal",
-          mode: "automatic",
-        }),
+        client: await oauth.options.plugins.saveOAuthApp(
+          { ...command.input, key: JSON.stringify([owner, command.type, command.idempotencyKey]) },
+          {
+            caller: "personal",
+            mode: "automatic",
+          },
+        ),
       };
     case "plugin.oauthApp.remove":
       await oauth.options.plugins.removeOAuthApp(

@@ -1,3 +1,4 @@
+import { withTaskPluginAdmission, pluginAdmissionKey } from "./plugin-admission.js";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import { sql, type Kysely, type Selectable, type Insertable } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
@@ -22,11 +23,19 @@ export class PluginAgentStore {
     await requirePersonalOwner(this.database, owner);
     if (!["all", "read-only", "off"].includes(access))
       throw new OpensteerError({ code: "bad_request", message: "Choose all, read-only or off." });
-    await this.database
-      .insertInto("pluginAgentSettings")
-      .values({ ownerUserId: owner, pluginId: plugin, access, author: "agent", versionAuthors: {} })
-      .onConflict((c) => c.columns(["ownerUserId", "pluginId"]).doUpdateSet({ access }))
-      .execute();
+    await withTaskPluginAdmission(this.database, pluginAdmissionKey(owner, plugin), async () => {
+      await this.database
+        .insertInto("pluginAgentSettings")
+        .values({
+          ownerUserId: owner,
+          pluginId: plugin,
+          access,
+          author: "agent",
+          versionAuthors: {},
+        })
+        .onConflict((c) => c.columns(["ownerUserId", "pluginId"]).doUpdateSet({ access }))
+        .execute();
+    });
   }
   async recordInstall(owner: UserId, plugin: string, version: string, author: "catalog" | "agent") {
     await requirePersonalOwner(this.database, owner);

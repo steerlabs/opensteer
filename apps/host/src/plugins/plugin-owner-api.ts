@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   ownerManagementResults,
@@ -11,7 +12,6 @@ import {
 import { OpensteerError, type UserId } from "@opensteer/core";
 import {
   PluginIconSchema,
-  pluginDetailPageMax,
   pluginDetailPreview,
   pluginLocalToolsMax,
   pluginReads,
@@ -55,6 +55,7 @@ type Service = Pick<
   | "state"
   | "installed"
   | "detail"
+  | "detailSection"
   | "catalogList"
   | "catalogDetail"
   | "install"
@@ -263,7 +264,7 @@ function sections(detail: EngineDetail, row: Settings | undefined) {
           description: z.string().optional(),
           readOnly: z.boolean().optional(),
         }),
-        pluginToolsMax,
+        detail.tools.items.length,
       ).map((tool) => ({
         name: tool.name.slice(0, 240),
         description: (tool.description ?? "").slice(0, 2_000),
@@ -458,16 +459,16 @@ export class PluginOwnerApi {
       requirements: requirementViews,
       tools:
         tools && keysetPage(tools, nameKey, { scope: "", max: pluginDetailPreview.tools }).items,
-      toolCount: tools?.length ?? 0,
+      toolCount: detail.toolCount,
       skills:
         skills && keysetPage(skills, nameKey, { scope: "", max: pluginDetailPreview.skills }).items,
-      skillCount: skills?.length ?? 0,
+      skillCount: detail.skillCount,
       versions: keysetPage(versions, versionKey, {
         scope: "",
         max: pluginDetailPreview.versions,
         descending: true,
       }).items,
-      versionCount: versions.length,
+      versionCount: detail.versionCount,
       schedules: detail.schedules.slice(0, 50).map((schedule) => ({
         name: schedule.name.slice(0, 240),
         tool: schedule.tool.slice(0, 240),
@@ -502,9 +503,11 @@ export class PluginOwnerApi {
       backgroundUnavailable:
         row?.access === "off"
           ? "This plugin is off. Its schedules, webhooks and workflows cannot run."
-          : requirementViews.some((r) => r.links.some((link) => !link.current))
-            ? "Review and link the changed account declaration before this plugin can run."
-            : null,
+          : row?.access === "read-only"
+            ? "This plugin is read-only. Its schedules, webhooks and workflows cannot run."
+            : requirementViews.some((r) => r.links.some((link) => !link.current))
+              ? "Review and link the changed account declaration before this plugin can run."
+              : null,
       webhookUnavailable: await this.#webhookIssue(
         detail.webhooks.map((webhook) => webhook.callbackUrl),
       ),
@@ -706,38 +709,63 @@ export class PluginOwnerApi {
       },
       "plugins.tools.list": async (input, context) => {
         await this.#owner(context);
-        const detail = await this.#call(service.detail({ plugin: input.pluginId }, owner));
-        const page = keysetPage(sections(detail, undefined).tools ?? [], nameKey, {
-          scope: `tools\u0000${input.pluginId}\u0000${detail.plugin.activeVersion}`,
-          cursor: input.cursor,
-          max: pluginDetailPageMax,
+        const page = await this.#call(
+          service.detailSection(
+            {
+              plugin: input.pluginId,
+              section: "tools",
+              ...(input.cursor ? { cursor: input.cursor } : {}),
+            },
+            owner,
+          ),
+        );
+        return rpcSuccess({
+          tools: z
+            .array(z.object({ name: z.string(), description: z.string(), readOnly: z.boolean() }))
+            .parse(page.items),
+          cursor: page.cursor,
         });
-        return rpcSuccess({ tools: page.items, cursor: page.cursor });
       },
       "plugins.skills.list": async (input, context) => {
         await this.#owner(context);
-        const detail = await this.#call(service.detail({ plugin: input.pluginId }, owner));
-        const page = keysetPage(sections(detail, undefined).skills ?? [], nameKey, {
-          scope: `skills\u0000${input.pluginId}\u0000${detail.plugin.activeVersion}`,
-          cursor: input.cursor,
-          max: pluginDetailPageMax,
+        const page = await this.#call(
+          service.detailSection(
+            {
+              plugin: input.pluginId,
+              section: "skills",
+              ...(input.cursor ? { cursor: input.cursor } : {}),
+            },
+            owner,
+          ),
+        );
+        return rpcSuccess({
+          skills: z
+            .array(z.object({ name: z.string(), description: z.string() }))
+            .parse(page.items),
+          cursor: page.cursor,
         });
-        return rpcSuccess({ skills: page.items, cursor: page.cursor });
       },
       "plugins.versions.list": async (input, context) => {
         const session = await this.#owner(context);
-        const [detail, settings] = await Promise.all([
-          this.#call(service.detail({ plugin: input.pluginId }, owner)),
+        const [page, settings] = await Promise.all([
+          this.#call(
+            service.detailSection(
+              {
+                plugin: input.pluginId,
+                section: "versions",
+                ...(input.cursor ? { cursor: input.cursor } : {}),
+              },
+              owner,
+            ),
+          ),
           this.#settings(session.user.id),
         ]);
         const row = settings.find((entry) => entry.pluginId === input.pluginId);
-        const page = keysetPage(sections(detail, row).versions, versionKey, {
-          scope: `versions\u0000${input.pluginId}`,
-          cursor: input.cursor,
-          max: pluginDetailPageMax,
-          descending: true,
-        });
-        return rpcSuccess({ versions: page.items, cursor: page.cursor });
+        const versions = z
+          .array(z.object({ id: z.string(), createdAt: z.string(), active: z.boolean() }))
+          .parse(page.items)
+          .map((version) => ({ ...version, author: authorOf(row, version.id) }));
+        return rpcSuccess({ versions, cursor: page.cursor });
       },
       "plugins.catalog.list": async (input, context) => {
         await this.#owner(context);
@@ -981,6 +1009,7 @@ export class PluginOwnerApi {
         return { type: command.type };
       case "plugins.remove":
         await this.#call(service.remove({ plugin: command.pluginId }, owner));
+        this.pages?.forget(command.pluginId);
         changed();
         return { type: command.type };
       case "plugins.access.set":
@@ -1043,6 +1072,7 @@ export class PluginOwnerApi {
           app: command.pluginId,
           name: command.schedule,
           enabled: command.enabled,
+          key: creationKey,
           ...(command.approvalMode ? { approvalMode: command.approvalMode } : {}),
         });
         changed();
@@ -1057,7 +1087,7 @@ export class PluginOwnerApi {
             app: command.pluginId,
             workflow: command.workflow,
             input: command.input,
-            key: creationKey,
+            key: createHash("sha256").update(creationKey).digest("hex"),
           }),
         );
         changed();

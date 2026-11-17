@@ -670,9 +670,9 @@ export class DeviceService {
     try {
       return await this.#finishComputerTool(
         await admit(async (connection, access) => {
-          await caller.authorize?.();
           signal?.throwIfAborted();
           return this.#computerApps.send({
+            ...(caller.authorize ? { authorize: caller.authorize } : {}),
             access,
             arguments: HostIntegrationsInvokeSchema.shape.arguments.parse(args),
             contract: computerAppOperationContract(operation),

@@ -35,6 +35,13 @@ export class PluginPages {
   }) {
     this.options = options;
   }
+  forget(plugin: string) {
+    for (const [token, view] of this.#views)
+      if (view.plugin === plugin) {
+        this.#views.delete(token);
+        this.#tokens.delete(`${view.user}:${plugin}`);
+      }
+  }
   async authorize(user: UserId, plugin: string) {
     await this.options.assertOwner(user);
     const entry = await this.options.service.skillCache.get(plugin);

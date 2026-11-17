@@ -1,3 +1,4 @@
+import { withTaskPluginAdmission } from "./plugin-admission.js";
 import { lockThreadProviderSessions } from "./run-projection-locks.js";
 import { markThreadStatePending } from "./thread-state-pending.js";
 import { compactionReturnHint } from "./compaction-eligibility.js";
@@ -2048,7 +2049,15 @@ export async function applyGeneratedThreadName(
     (error) => error instanceof TransactionScopeChanged,
   );
 }
-export async function updateThreadAccessMode(
+export function updateThreadAccessMode(
+  database: Kysely<DatabaseSchema>,
+  input: Parameters<typeof updateThreadAccessModeAdmitted>[1],
+): Promise<ThreadUpdateResult> {
+  return withTaskPluginAdmission(database, input.threadId, () =>
+    updateThreadAccessModeAdmitted(database, input),
+  );
+}
+async function updateThreadAccessModeAdmitted(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly accessMode: ThreadAccessMode;

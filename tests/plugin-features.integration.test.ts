@@ -43,6 +43,8 @@ import { createPersonalRunFixturePort } from "../packages/database/src/personal-
 import { RunCapabilityTokenService } from "../apps/host/src/agents/run-capability.js";
 import { SignedTokenService } from "../apps/host/src/identity/host-keys.js";
 
+import { mutationIdempotencyKey } from "../packages/client/src/host/host-session-client.js";
+
 const owner = { caller: "personal", mode: "automatic" } as const;
 const deadline = <T>(work: Promise<T>, message: string) =>
   withTimeout(work, 12_000, { timeoutError: () => new Error(message) });
@@ -107,14 +109,23 @@ webhooks: { incoming: { account: { user: "service" }, config: object({}), state:
   ];
 }
 async function install(name: string, revision = 1, withWebhook = true) {
-  const source = files(revision).map((file) =>
-    file.path === "index.ts" && !withWebhook
-      ? {
-          ...file,
-          content: file.content.slice(0, file.content.indexOf("webhooks: { incoming:")) + "\n});",
-        }
-      : file,
-  );
+  const source = files(revision)
+    .map((file) =>
+      name === "Workflow history" && file.path === "index.ts"
+        ? {
+            ...file,
+            content: file.content.replace('async () => "done"', 'async () => "x".repeat(900000)'),
+          }
+        : file,
+    )
+    .map((file) =>
+      file.path === "index.ts" && !withWebhook
+        ? {
+            ...file,
+            content: file.content.slice(0, file.content.indexOf("webhooks: { incoming:")) + "\n});",
+          }
+        : file,
+    );
   const result = await service.install({ kind: "files", name, files: source }, owner);
   expect(result.status, JSON.stringify(result)).toBe("installed");
   if (result.status !== "installed") throw new Error("Fixture failed to build");
@@ -216,7 +227,7 @@ beforeEach(async (testContext) => {
     selfOrigin: { origin: "https://api.fixture.invalid", address: registry.address },
     processEntry: new URL("../apps/host/dist/plugin-engine.js", import.meta.url),
     bridge: new URL("../apps/host/dist/plugin-engine-bridge.json", import.meta.url).pathname,
-    authorize: (input) => authority.authorize(input),
+    authorize: (input, signal) => authority.authorize(input, signal),
     idleMs: 0,
     onState: (state) => states.emit(state.status, state),
     onResourcesChanged: () => states.emit("background"),
@@ -333,7 +344,7 @@ test.each(["catalog", "url", "files"] as const)(
     const invoke = () =>
       kind === "files"
         ? service.install(
-            { kind: "files", name: "Files replay", files: pluginFixtureFiles(1), key },
+            { kind: "files", name: "local-replay", files: pluginFixtureFiles(1), key },
             owner,
           )
         : freshOwnerApi().command(command, context);
@@ -1014,111 +1025,114 @@ test("active plugin skills are pinned by digest without waking the engine and fe
   ).toBe(false);
 });
 
-test("a saved schedule wakes a stopped engine and off plugins cannot do background work", async () => {
-  const fixture = await install("Wake fixture", 1, false);
-  await api.command(
-    {
-      type: "plugins.schedule.configure",
-      pluginId: fixture.plugin,
-      schedule: "tick",
-      enabled: true,
-      idempotencyKey: randomUUID(),
-    },
-    context,
-  );
-  await sql`UPDATE plugin_engine.plugin_engine_schedules SET next_at = (now() AT TIME ZONE 'UTC') + interval '3 minutes' WHERE app = ${fixture.plugin} AND name = 'tick'`.execute(
-    database,
-  );
-  await vi.waitFor(
-    async () => {
-      const demand = await engineDemand(url);
-      expect(demand.busy, "Schedule still has a claimed run").toBe(false);
-      expect(demand.dueInMs, "Unrelated webhook-source work has not settled").toBeGreaterThan(
-        120_000,
-      );
-    },
-    { timeout: 10_000 },
-  );
-  // Only the supervisor clock advances; the child and database still use real time.
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  try {
-    expect(await service.stopIfIdle()).toBe(true);
-    expect(service.state().status).toBe("idle");
-    await due(fixture.plugin, "tick");
-    const started = once(states, "starting");
-    await vi.advanceTimersByTimeAsync(180_000);
-    vi.useRealTimers();
-    await deadline(started, "Saved schedule never woke the supervisor");
-  } finally {
-    vi.useRealTimers();
-  }
-  await runs(fixture.plugin, "succeeded");
-  await api.command(
-    {
-      type: "plugins.access.set",
-      pluginId: fixture.plugin,
-      access: "off",
-      idempotencyKey: randomUUID(),
-    },
-    context,
-  );
-  await due(fixture.plugin, "tick");
-  await runs(fixture.plugin, "failed");
-  expect((await api.detail(personal.userId, fixture.plugin)).backgroundUnavailable).toContain(
-    "off",
-  );
-  await expect(
-    api.command(
+test.each(["off", "read-only"] as const)(
+  "a saved schedule wakes a stopped engine and %s plugins cannot do background work",
+  async (access) => {
+    const fixture = await install("Wake fixture", 1, false);
+    await api.command(
       {
-        type: "plugins.workflow.start",
+        type: "plugins.schedule.configure",
         pluginId: fixture.plugin,
-        workflow: "quick",
-        input: {},
+        schedule: "tick",
+        enabled: true,
         idempotencyKey: randomUUID(),
       },
       context,
-    ),
-  ).rejects.toThrow();
-  await api.command(
-    {
-      type: "plugins.access.set",
-      pluginId: fixture.plugin,
-      access: "all",
-      idempotencyKey: randomUUID(),
-    },
-    context,
-  );
-  const ticks = await service.page(
-    {
-      plugin: fixture.plugin,
-      request: {
-        url: "http://page.invalid" + queryPath,
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: Buffer.from(
-          JSON.stringify({ version: fixture.version, name: "ticks", input: {} }),
-        ).toString("base64"),
+    );
+    await sql`UPDATE plugin_engine.plugin_engine_schedules SET next_at = (now() AT TIME ZONE 'UTC') + interval '3 minutes' WHERE app = ${fixture.plugin} AND name = 'tick'`.execute(
+      database,
+    );
+    await vi.waitFor(
+      async () => {
+        const demand = await engineDemand(url);
+        expect(demand.busy, "Schedule still has a claimed run").toBe(false);
+        expect(demand.dueInMs, "Unrelated webhook-source work has not settled").toBeGreaterThan(
+          120_000,
+        );
       },
-    },
-    owner,
-  );
-  const chunks = [];
-  if (ticks.stream)
-    for await (const chunk of service.readStream(ticks.stream)) chunks.push(Buffer.from(chunk));
-  expect(JSON.parse(Buffer.concat(chunks).toString())).toEqual([
-    { account: fixture.account, source: "schedule" },
-  ]);
-  await api.command(
-    {
-      type: "plugins.schedule.configure",
-      pluginId: fixture.plugin,
-      schedule: "tick",
-      enabled: false,
-      idempotencyKey: randomUUID(),
-    },
-    context,
-  );
-});
+      { timeout: 10_000 },
+    );
+    // Only the supervisor clock advances; the child and database still use real time.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      expect(await service.stopIfIdle()).toBe(true);
+      expect(service.state().status).toBe("idle");
+      await due(fixture.plugin, "tick");
+      const started = once(states, "starting");
+      await vi.advanceTimersByTimeAsync(180_000);
+      vi.useRealTimers();
+      await deadline(started, "Saved schedule never woke the supervisor");
+    } finally {
+      vi.useRealTimers();
+    }
+    await runs(fixture.plugin, "succeeded");
+    await api.command(
+      {
+        type: "plugins.access.set",
+        pluginId: fixture.plugin,
+        access,
+        idempotencyKey: randomUUID(),
+      },
+      context,
+    );
+    await due(fixture.plugin, "tick");
+    await runs(fixture.plugin, "failed");
+    expect((await api.detail(personal.userId, fixture.plugin)).backgroundUnavailable).toContain(
+      access,
+    );
+    await expect(
+      api.command(
+        {
+          type: "plugins.workflow.start",
+          pluginId: fixture.plugin,
+          workflow: "quick",
+          input: {},
+          idempotencyKey: randomUUID(),
+        },
+        context,
+      ),
+    ).rejects.toThrow();
+    await api.command(
+      {
+        type: "plugins.access.set",
+        pluginId: fixture.plugin,
+        access: "all",
+        idempotencyKey: randomUUID(),
+      },
+      context,
+    );
+    const ticks = await service.page(
+      {
+        plugin: fixture.plugin,
+        request: {
+          url: "http://page.invalid" + queryPath,
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: Buffer.from(
+            JSON.stringify({ version: fixture.version, name: "ticks", input: {} }),
+          ).toString("base64"),
+        },
+      },
+      owner,
+    );
+    const chunks = [];
+    if (ticks.stream)
+      for await (const chunk of service.readStream(ticks.stream)) chunks.push(Buffer.from(chunk));
+    expect(JSON.parse(Buffer.concat(chunks).toString())).toEqual([
+      { account: fixture.account, source: "schedule" },
+    ]);
+    await api.command(
+      {
+        type: "plugins.schedule.configure",
+        pluginId: fixture.plugin,
+        schedule: "tick",
+        enabled: false,
+        idempotencyKey: randomUUID(),
+      },
+      context,
+    );
+  },
+);
 
 test("all workflow runs remain reachable live-first and newest-first when current declarations cannot be evaluated", async () => {
   const fixture = await install("Workflow history", 1, false);
@@ -1128,7 +1142,7 @@ test("all workflow runs remain reachable live-first and newest-first when curren
       pluginId: fixture.plugin,
       workflow: "hold",
       input: {},
-      idempotencyKey: randomUUID(),
+      idempotencyKey: mutationIdempotencyKey("plugins.workflow.start"),
     },
     context,
   );
