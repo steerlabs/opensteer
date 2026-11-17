@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -151,6 +152,7 @@ func (s *Server) Run(parent context.Context, input io.ReadCloser, output io.Writ
 			if err != nil || r.ID <= lastID {
 				return ErrProtocol
 			}
+			slog.Debug("bridge.request", "method", r.Method, "requestId", r.ID)
 			lastID = r.ID
 			if !hello {
 				if r.Method != "hello" {
@@ -215,7 +217,9 @@ func (s *Server) Run(parent context.Context, input io.ReadCloser, output io.Writ
 					}
 				}()
 				defer abort()
+				start := time.Now()
 				result, err := s.Handler.Call(callCtx, r)
+
 				if err != nil {
 					var failure *Failure
 					if !errors.As(err, &failure) {
@@ -244,6 +248,11 @@ func (s *Server) Run(parent context.Context, input io.ReadCloser, output io.Writ
 						result = ErrorResult{Fail(code)}
 					}
 				}
+				reason := ""
+				if failure, ok := result.(ErrorResult); ok {
+					reason = string(failure.Error.Code)
+				}
+				slog.Debug("bridge.response", "method", r.Method, "requestId", r.ID, "reason", reason, "durationMs", time.Since(start).Milliseconds())
 				s.mu.Lock()
 				delete(s.pending, r.ID)
 				s.mu.Unlock()
