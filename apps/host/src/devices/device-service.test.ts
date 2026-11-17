@@ -1776,6 +1776,7 @@ describe("DeviceService computer use gateway", () => {
     });
     return {
       callable,
+      runnerId,
       computerUse,
       lease,
       prepared,
@@ -1897,6 +1898,7 @@ describe("DeviceService computer use gateway", () => {
     "admits computer saved-login arguments from the published schema (phone=%s)",
     async (phone) => {
       const f = guiFixture({ operation: "act", phone });
+      const subjects = vi.spyOn(f.service.store.computerOperations, "start");
       const args = {
         ...(phone ? { observationId: "obs-1" } : { window: "window-1", snapshot: "obs-1" }),
         actions: [{ type: "type", text: { loginRef: `lgn_${"a".repeat(32)}`, field: "password" } }],
@@ -1948,6 +1950,15 @@ describe("DeviceService computer use gateway", () => {
           },
         });
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        if (phone)
+          expect(subjects).toHaveBeenCalledWith(
+            expect.objectContaining({
+              subject: expect.objectContaining({
+                computerApp: null,
+                phone: { computer: "Pixel 7", runnerId: DeviceIdSchema.parse(f.runnerId) },
+              }),
+            }),
+          );
       } finally {
         await client.close();
         await mcp?.close();
