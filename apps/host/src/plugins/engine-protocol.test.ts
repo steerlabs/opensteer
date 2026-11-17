@@ -1,8 +1,37 @@
 import { expect, test, vi } from "vitest";
-import { HostMessageSchema, EngineMessageSchema, operations } from "./engine-protocol.js";
+import {
+  HostMessageSchema,
+  EngineMessageSchema,
+  operations,
+  checkPluginOutputSize,
+  parseIpcMessage,
+} from "./engine-protocol.js";
 import { catalogPage } from "./catalog-page.js";
 
 test("parses every envelope at the IPC boundary and refuses malformed requests", () => {
+  expect(
+    EngineMessageSchema.safeParse({ type: "diagnostic", phase: "x".repeat(2 * 1024 * 1024) })
+      .success,
+  ).toBe(false);
+  expect(
+    HostMessageSchema.safeParse({
+      type: "callbackResult",
+      id: "large",
+      result: "x".repeat(2 * 1024 * 1024),
+    }).success,
+  ).toBe(false);
+  expect(
+    EngineMessageSchema.safeParse({
+      type: "execution",
+      execution: {
+        id: "large",
+        caller: "task",
+        state: "completed",
+        interaction: null,
+        result: { status: "completed", logs: ["字".repeat(30000)] },
+      },
+    }).success,
+  ).toBe(false);
   expect(
     HostMessageSchema.safeParse({
       type: "request",
@@ -49,6 +78,73 @@ test("parses every envelope at the IPC boundary and refuses malformed requests",
       .success,
   ).toBe(true);
 });
+test("source and HTTP payloads keep their own limits instead of the agent result limit", () => {
+  expect(() =>
+    parseIpcMessage(HostMessageSchema, {
+      type: "callbackResult",
+      id: "large",
+      result: "x".repeat(2 * 1024 * 1024),
+    }),
+  ).toThrow(/Earlier calls may have taken effect/u);
+  const files = [{ path: "index.ts", content: "x".repeat(3 * 1024 * 1024) }];
+  expect(
+    HostMessageSchema.safeParse({
+      type: "request",
+      id: "source",
+      operation: "install",
+      context: { caller: "personal", mode: "automatic" },
+      input: { kind: "files", files },
+    }).success,
+  ).toBe(true);
+  expect(
+    EngineMessageSchema.safeParse({
+      type: "result",
+      id: "source",
+      operation: "export",
+      result: files,
+    }).success,
+  ).toBe(true);
+  expect(() => checkPluginOutputSize("export", files)).not.toThrow();
+  expect(() => checkPluginOutputSize("describe", files)).toThrow(/result too large/iu);
+  expect(
+    HostMessageSchema.safeParse({
+      type: "request",
+      id: "page",
+      operation: "page",
+      context: { caller: "personal", mode: "automatic" },
+      input: {
+        plugin: "app_test",
+        request: {
+          url: "https://example.com",
+          method: "POST",
+          headers: {},
+          body: Buffer.alloc(1024 * 1024).toString("base64"),
+        },
+      },
+    }).success,
+  ).toBe(true);
+});
+
+test.each(["cancelled", "expired", "interrupted", "failed"] as const)(
+  "does not return a pending form as a %s execution result",
+  async (state) => {
+    const { PluginExecutions } = await import("./plugin-executions.js");
+    const executions = new PluginExecutions(
+      {} as ConstructorParameters<typeof PluginExecutions>[0],
+    );
+    const row = {
+      id: "ended",
+      state,
+      requestId: null,
+      result: {
+        status: "input-required",
+        elicitation: { requestedSchema: { enum: ["private choice"] } },
+      },
+    } as unknown as import("@opensteer/database").PluginExecutionRecord;
+    expect(executions.result(row)).not.toHaveProperty("result");
+  },
+);
+
 test("catalog cursors retain order and search and refuse changed listings and foreign cursors", () => {
   const entries = ["alpha", "beta", "gamma"].map((id) => ({ id, name: id, package: id }));
   const first = catalogPage(entries, { limit: 1 });

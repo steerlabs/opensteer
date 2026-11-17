@@ -5,6 +5,7 @@ import { createCredentialResponseRedactor } from "@opensteer/access/host";
 import type { LoadedAgentPluginServer } from "@opensteer/agent-plugins";
 import {
   OpensteerError,
+  UserIdSchema,
   isLoopbackHostname,
   refused,
   type RunId,
@@ -327,7 +328,41 @@ export class LocalServerService {
       signal,
       server?.runnerName ?? "its computer",
     );
+    let admissionError: Error | undefined;
+    const authorize = async () => {
+      try {
+        call.signal.throwIfAborted();
+        await caller.authorize?.();
+        const current = (
+          await this.#store.listCallableTools({
+            ownerUserId: UserIdSchema.parse(callable.grant.ownerUserId),
+            threadId: caller.threadId,
+          })
+        ).find(
+          (candidate) =>
+            candidate.grant.id === callable.grant.id &&
+            candidate.tool.id === callable.tool.id &&
+            candidate.tool.schemaDigest === callable.tool.schemaDigest &&
+            JSON.stringify(candidate.server.transport) ===
+              JSON.stringify(callable.server.transport),
+        );
+        if (!current)
+          throw refused(
+            "forbidden",
+            "Local tool authority changed while the call was queued; the call was not sent.",
+          );
+        call.signal.throwIfAborted();
+      } catch (error) {
+        admissionError =
+          error instanceof Error
+            ? error
+            : new Error("Local tool authority changed; the call was not sent.");
+        throw admissionError;
+      }
+    };
+    if (upstream.computer) upstream.computer.beforeToolCall = authorize;
     try {
+      if (!upstream.computer) await authorize();
       const result = await upstream.client.callTool(
         { arguments: { ...args }, name: callable.tool.name },
         undefined,
@@ -340,6 +375,10 @@ export class LocalServerService {
       return sanitizeToolResult(result, call.redactor());
     } catch (error) {
       responseRedactor = call.redactor();
+      if (admissionError)
+        return refusal(
+          "Local tool authority changed or the call was cancelled while queued; the call was not sent. Do not retry until access is restored.",
+        );
       if (answeredMcpError(error)) {
         // The server answered, with an error: nothing about it is uncertain.
         return refusal(
@@ -366,6 +405,8 @@ export class LocalServerService {
           : `${computer} did not answer. Try again.`,
       );
     } finally {
+      if (upstream.computer?.beforeToolCall === authorize)
+        upstream.computer.beforeToolCall = undefined;
       await this.inputRequests.finish(upstream.client, call);
       release();
     }

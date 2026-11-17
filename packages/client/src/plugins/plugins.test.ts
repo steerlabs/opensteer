@@ -15,7 +15,21 @@ import {
   pluginInputForm,
   pluginRequestView,
   type PluginsHost,
+  pluginConsentLines,
 } from "./index.js";
+
+it("discloses that a directly exposed credential is not confined to declared sites", () => {
+  const lines = pluginConsentLines({
+    consent: { digest: "a".repeat(64), credential: "value", sites: ["api.example.com"] },
+    author: "agent",
+    pluginName: "Example",
+    providerName: null,
+  });
+  expect(lines.find((line) => line.key === "sites")?.text).toContain("can send it elsewhere");
+  expect(lines.find((line) => line.key === "credential")?.text).toContain(
+    "receives the credential itself",
+  );
+});
 
 describe("plugin input forms", () => {
   const form = pluginInputForm(mockPluginRequests.input.schema);

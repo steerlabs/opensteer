@@ -74,6 +74,18 @@ export class PluginAuthority {
   caller(key: string) {
     return this.#callers.get(key);
   }
+  async currentMode(key: string): Promise<PluginCaller["mode"]> {
+    const caller = this.#callers.get(key);
+    if (!caller || caller.kind === "connection" || pluginCaller(caller).mode === "ask")
+      return "ask";
+    const thread = await this.options.store.getThreadForOwner(
+      caller.kind === "run" ? caller.thread.id : caller.anchor.id,
+      caller.userId,
+    );
+    return thread && (thread.accessMode === "auto" || thread.accessMode === "full-access")
+      ? "automatic"
+      : "ask";
+  }
   async authorize(input: PluginAuthorization) {
     await this.options.beforeAuthorize?.();
     const owner = await this.options.owner();
@@ -82,7 +94,7 @@ export class PluginAuthority {
     if (input.caller === pluginOwnerId) {
       const access = input.plugin ? (grants[input.plugin] ?? "all") : "all";
       return {
-        allowed: input.operation !== "background" || access !== "off",
+        allowed: !["background", "page", "webhook"].includes(input.operation) || access !== "off",
         ...(input.operation === "background" ? { grants } : {}),
       };
     }
@@ -95,6 +107,13 @@ export class PluginAuthority {
     }
     const caller = this.#callers.get(input.caller);
     if (!caller || caller.userId !== owner) return { allowed: false };
+    if (
+      input.mode === "automatic" &&
+      input.operation !== "cancel" &&
+      !discovery.has(input.operation) &&
+      (await this.currentMode(input.caller)) !== "automatic"
+    )
+      return { allowed: false };
     if (caller.kind === "program" && input.operation !== "cancel") {
       const triggers = new TriggerStore(this.options.store.database);
       try {
@@ -112,11 +131,18 @@ export class PluginAuthority {
         owner,
       );
       if (!thread) return { allowed: false };
+      const execution = input.execution
+        ? await this.options.settings.execution(input.execution)
+        : undefined;
+      if (
+        input.execution &&
+        (!execution ||
+          execution.ownerUserId !== owner ||
+          execution.caller !== input.caller ||
+          ["completed", "cancelled", "expired", "interrupted", "failed"].includes(execution.state))
+      )
+        return { allowed: false };
       if (caller.kind === "run" && input.operation !== "cancel") {
-        const execution = input.execution
-          ? await this.options.settings.execution(input.execution)
-          : undefined;
-        if (input.execution && !execution) return { allowed: false };
         if (!execution?.handoff) {
           try {
             await this.options.store.assertActiveGrant(caller.claims);

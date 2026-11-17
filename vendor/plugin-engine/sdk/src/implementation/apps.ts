@@ -635,6 +635,7 @@ export const makeApps = (
           const deployedApp = yield* Schema.decodeUnknownEffect(DeployedApp)(projected).pipe(
             Effect.mapError(() => new StorageError()),
           );
+          if (lifecycle?.appDeployed) yield* lifecycle.appDeployed(deployedApp, version);
           return { app: deployedApp, version };
         }),
       );

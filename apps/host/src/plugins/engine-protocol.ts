@@ -12,13 +12,36 @@ export const JsonSchema = z.json();
 export type PluginJson = z.infer<typeof JsonSchema>;
 const object = z.record(z.string(), JsonSchema);
 const id = z.string().min(1);
-const files = z.array(
-  z.union([
-    z.strictObject({ path: id, content: z.string() }),
-    z.strictObject({ path: id, content: z.string(), encoding: z.literal("base64") }),
-    z.strictObject({ path: id, object: id, size: z.number().int().nonnegative() }),
-  ]),
-);
+export const executionResultBytes = 48_000;
+export const interactionBytes = 60_000;
+export const ipcMessageBytes = 2 * 1024 * 1024;
+// A 24 MiB source package can expand sixfold when JSON escapes its text.
+const sourceEnvelopeBytes = 160 * 1024 * 1024;
+export const jsonBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value) ?? "", "utf8");
+export const pluginResultTooLarge =
+  "Plugin result too large. Return less from the program. Earlier calls may have taken effect; check current state with a safe read and never rerun writes blindly.";
+const files = z
+  .array(
+    z.union([
+      z.strictObject({ path: id, content: z.string() }),
+      z.strictObject({ path: id, content: z.string(), encoding: z.literal("base64") }),
+      z.strictObject({ path: id, object: id, size: z.number().int().nonnegative() }),
+    ]),
+  )
+  .max(10_000)
+  .refine(
+    (entries) =>
+      entries.reduce(
+        (size, file) =>
+          size +
+          ("content" in file
+            ? Buffer.byteLength(file.content, "encoding" in file ? "base64" : "utf8")
+            : file.size),
+        0,
+      ) <=
+      24 * 1024 * 1024,
+    "Plugin source exceeds 24 MiB",
+  );
 export const CallerSchema = z.strictObject({ caller: id, mode: z.enum(["ask", "automatic"]) });
 export type PluginCaller = z.infer<typeof CallerSchema>;
 /** The engine owner and caller id of the Deployment's one personal owner acting for themselves. */
@@ -137,8 +160,19 @@ export const ExecutionSchema = z.strictObject({
     "interrupted",
     "failed",
   ]),
-  interaction: interaction.nullable(),
-  result: agentResult.optional(),
+  interaction: interaction
+    .refine((value) => jsonBytes(value) <= interactionBytes, "Plugin interaction too large")
+    .nullable(),
+  result: agentResult
+    .refine(
+      (value) =>
+        jsonBytes(value) <=
+        (value.status === "approval-required" || value.status === "input-required"
+          ? interactionBytes
+          : executionResultBytes),
+      "Plugin result too large",
+    )
+    .optional(),
   reason: z.string().optional(),
 });
 export type PluginExecution = z.infer<typeof ExecutionSchema>;
@@ -217,12 +251,14 @@ export const operations = {
         files,
         plugin: id.optional(),
         name: id.optional(),
+        key: id.optional(),
       }),
-      z.strictObject({ kind: z.literal("catalog"), id }),
+      z.strictObject({ kind: z.literal("catalog"), id, key: id.optional() }),
       z.strictObject({
         kind: z.enum(["mcp", "openapi", "graphql"]),
         url: z.string().url(),
         name: id,
+        key: id.optional(),
       }),
     ]),
     output: z.discriminatedUnion("status", [
@@ -245,6 +281,7 @@ export const operations = {
       method: id,
       fields: object,
       label: z.string().optional(),
+      key: id.optional(),
     }),
     output: AccountSchema,
   },
@@ -265,7 +302,7 @@ export const operations = {
     output: z.null(),
   },
   prepareOAuth: {
-    input: z.strictObject(target),
+    input: z.strictObject({ ...target, key: id.optional() }),
     output: z.strictObject({
       connection: id,
       consent: ConsentSchema,
@@ -556,7 +593,7 @@ const callbackMembers = Object.entries(callbackOperations).map(([operation, sche
     input: schemas.input,
   }),
 );
-export const HostMessageSchema = z.union([
+const hostMessage = z.union([
   z.strictObject({ type: z.literal("init"), config: EngineInitSchema }),
   z.union(requestMembers),
   z.strictObject({ type: z.literal("cancel"), id }),
@@ -568,10 +605,15 @@ export const HostMessageSchema = z.union([
   z.strictObject({ type: z.literal("elicit"), id, callback: id, request: object }),
   z.strictObject({ type: z.literal("elicitCancel"), id }),
 ]);
-export const EngineMessageSchema = z.union([
+const engineMessage = z.union([
   z.strictObject({ type: z.literal("diagnostic"), phase: z.string() }),
   z.strictObject({ type: z.literal("ready"), pid: z.number().int(), startupMs: z.number() }),
-  z.strictObject({ type: z.literal("result"), id, result: JsonSchema }),
+  z.strictObject({
+    type: z.literal("result"),
+    id,
+    operation: z.enum(Object.keys(operations) as [PluginOperation, ...PluginOperation[]]),
+    result: JsonSchema,
+  }),
   z.strictObject({ type: z.literal("error"), id, error: EngineErrorSchema }),
   z.strictObject({ type: z.literal("fatal"), error: EngineErrorSchema }),
   z.union(callbackMembers),
@@ -587,3 +629,34 @@ export const EngineMessageSchema = z.union([
   z.strictObject({ type: z.literal("elicitResult"), id, response: answer }),
   z.strictObject({ type: z.literal("elicitError"), id, error: EngineErrorSchema }),
 ]);
+const envelope = z.unknown().superRefine((value, context) => {
+  const header = z
+    .object({ type: z.string(), operation: z.string().optional() })
+    .safeParse(value).data;
+  const maximum =
+    (header?.type === "result" &&
+      (header.operation === "export" || header.operation === "skillFiles")) ||
+    (header?.type === "request" && header.operation === "install")
+      ? sourceEnvelopeBytes
+      : ipcMessageBytes;
+  if (jsonBytes(value) > maximum)
+    context.addIssue({ code: "custom", message: "Plugin IPC message too large" });
+});
+export const HostMessageSchema = envelope.pipe(hostMessage);
+export const EngineMessageSchema = envelope.pipe(engineMessage);
+export function parseIpcMessage<S extends z.ZodType>(schema: S, value: unknown): z.output<S> {
+  const parsed = schema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  if (
+    parsed.error.issues.some(
+      (issue) => issue.code === "custom" && issue.message === "Plugin IPC message too large",
+    )
+  )
+    throw new PluginServiceError("tool", pluginResultTooLarge);
+  throw parsed.error;
+}
+export function checkPluginOutputSize(operation: PluginOperation, value: unknown) {
+  const maximum =
+    operation === "export" || operation === "skillFiles" ? sourceEnvelopeBytes : ipcMessageBytes;
+  if (jsonBytes(value) > maximum) throw new PluginServiceError("invalid", pluginResultTooLarge);
+}

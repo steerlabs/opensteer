@@ -35,6 +35,7 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
   context.onTestFinished(() => registry.close());
   const origin = registry.origin;
   let refused = false;
+  const interrupted: PluginExecution[] = [];
   const calls: { caller: string; execution: string }[] = [];
   const hostProvider: PluginHostProvider = {
     id: "app_host_fixture",
@@ -79,7 +80,10 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
         throw new Error("Invalid fixture value");
       return input.input.value * 2;
     },
-    onExecution: (execution) => events.emit("execution", execution),
+    onExecution: (execution) => {
+      events.emit("execution", execution);
+      if (execution.state === "interrupted") interrupted.push(execution);
+    },
     onState: (state) => events.emit(state.status, state),
   });
   await ownTestDatabaseProducer(clone.url, async () => ({ close: () => service.close() }));
@@ -249,13 +253,89 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
   process.kill(health.pid, "SIGKILL");
   await failure;
   await deadline(restarted, "Engine did not restart");
-  expect(
-    service
-      .listExecutions()
-      .some((execution: PluginExecution) => execution.state === "interrupted"),
-  ).toBe(true);
+  expect(interrupted.some((execution) => execution.state === "interrupted")).toBe(true);
   for (const row of old) expect(() => process.kill(row.pid, 0)).toThrow();
   const final = pluginFixtureProcesses(service.state().pid!);
   await service.close();
   for (const row of final) expect(() => process.kill(row.pid, 0)).toThrow();
+});
+
+async function outputFixture(context: import("vitest").TestContext) {
+  const clone = await cloneTestDatabase("host");
+  const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-output-"));
+  context.onTestFinished(() => rm(directory, { force: true, recursive: true }));
+  const registry = await pluginFixtureRegistry(directory);
+  context.onTestFinished(() => registry.close());
+  const service = new PluginService({
+    databaseUrl: clone.url,
+    dataDirectory: directory,
+    owner: "owner",
+    credentialKey: new Uint8Array(32).fill(1),
+    origin: "https://fixture.invalid",
+    npmRegistry: registry.origin,
+    catalogUrl: registry.origin + "/catalog",
+    processEntry: new URL("../apps/host/dist/plugin-engine.js", import.meta.url),
+    bridge: new URL("../apps/host/dist/plugin-engine-bridge.json", import.meta.url).pathname,
+  });
+  await ownTestDatabaseProducer(clone.url, async () => ({ close: () => service.close() }));
+  context.onTestFinished(() => service.close());
+  return service;
+}
+
+test("consent discloses a raw secret that reaches plugin code", async (context) => {
+  const service = await outputFixture(context);
+  const target = { requirement: "service", scope: "user" as const };
+  const exposed = await service.install(
+    {
+      kind: "files",
+      name: "Exposed",
+      files: pluginFixtureFiles(1, ["api.fixture.invalid"]).map((file) =>
+        file.path === "index.ts"
+          ? {
+              ...file,
+              content: file.content
+                .replace("string, query", "string, raw, query")
+                .replace("token: string()", "token: raw(string())")
+                .replace("amount + 1", "_ctx.user.accounts.service.fields.token"),
+            }
+          : file,
+      ),
+    },
+    caller,
+  );
+  if (exposed.status !== "installed") throw new Error("Raw fixture did not install");
+  const exposedTarget = { ...target, plugin: exposed.plugin.id };
+  const exposedConsent = await service.reviewAccountLink(exposedTarget, caller);
+  expect(exposedConsent.credential).toBe("value");
+  expect((await service.prepareOAuth(exposedTarget, caller)).consent).toEqual(exposedConsent);
+  const exposedAccount = await service.createApiKeyAccount(
+    {
+      provider: exposed.plugin.requirements.accounts.service!.provider,
+      method: "key",
+      fields: { token: "synthetic-raw-key" },
+    },
+    caller,
+  );
+  await service.linkAccount(
+    { ...exposedTarget, account: exposedAccount.id, consent: exposedConsent },
+    caller,
+  );
+  expect(
+    (await service.call({ calls: { path: "tools.exposed.read", input: { amount: 0 } } }, caller))
+      .result,
+  ).toMatchObject({ execution: { value: { value: "synthetic-raw-key" } } });
+});
+
+test("oversized execution results are refused before IPC and terminal state is pruned", async (context) => {
+  const service = await outputFixture(context);
+  for (const code of ['return "字".repeat(30000);', 'console.log("字".repeat(30000)); return 1;']) {
+    const oversized = await service.execute({ code }, caller);
+    expect(oversized).toMatchObject({
+      state: "failed",
+      reason: expect.stringMatching(/result too large/iu),
+    });
+    expect(JSON.stringify(oversized).length).toBeLessThan(2000);
+  }
+  expect(service.listExecutions()).toEqual([]);
+  expect(await service.request("executions", {}, caller)).toEqual([]);
 });

@@ -88,6 +88,11 @@ export interface PluginOwnerApiOptions {
   readonly assertOwner: (userId: UserId) => Promise<void>;
   /** The owner's device data apps and local servers in the plugin namespace, read live. */
   readonly localTools?: (owner: UserId) => Promise<readonly LocalTool[]>;
+  readonly accessAdmission?: <A>(
+    owner: UserId,
+    plugin: string,
+    work: () => Promise<A>,
+  ) => Promise<A>;
   /** Tells the owner's clients to reread what they show. */
   readonly changed: (owner: UserId) => void;
 }
@@ -765,6 +770,7 @@ export class PluginOwnerApi {
     sessionId: string,
   ): Promise<PluginCommandResult> {
     const { service, settings } = this.#options;
+    const creationKey = JSON.stringify([userId, command.type, command.idempotencyKey]);
     const changed = () => this.#options.changed(userId);
     const manage = async (operation: keyof typeof ownerManagementResults, input: object) =>
       ownerManagementResults[operation].parse(
@@ -778,8 +784,8 @@ export class PluginOwnerApi {
         const result = await this.#call(
           service.install(
             source.kind === "catalog"
-              ? { kind: "catalog", id: source.catalogId }
-              : { kind: source.kind, url: source.url, name: source.name },
+              ? { kind: "catalog", id: source.catalogId, key: creationKey }
+              : { kind: source.kind, url: source.url, name: source.name, key: creationKey },
             owner,
           ),
         );
@@ -818,7 +824,11 @@ export class PluginOwnerApi {
         changed();
         return { type: command.type };
       case "plugins.access.set":
-        await settings.setAccess(userId, command.pluginId, command.access);
+        if (this.#options.accessAdmission)
+          await this.#options.accessAdmission(userId, command.pluginId, () =>
+            settings.setAccess(userId, command.pluginId, command.access),
+          );
+        else await settings.setAccess(userId, command.pluginId, command.access);
         changed();
         return { type: command.type, access: command.access };
       case "plugins.account.create": {
@@ -828,6 +838,7 @@ export class PluginOwnerApi {
               provider: command.provider,
               method: command.method,
               fields: command.fields,
+              key: creationKey,
               ...(command.label ? { label: command.label } : {}),
             },
             owner,
@@ -886,7 +897,7 @@ export class PluginOwnerApi {
             app: command.pluginId,
             workflow: command.workflow,
             input: command.input,
-            key: command.idempotencyKey,
+            key: creationKey,
           }),
         );
         return { type: command.type, runId: run.id };

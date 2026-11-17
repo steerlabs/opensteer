@@ -270,9 +270,12 @@ export function pluginConsentLines(input: {
   return [
     {
       key: "sites",
-      text: sites.length
-        ? `${credential[0]!.toUpperCase()}${credential.slice(1)} may only be sent to ${listText(sites)}.`
-        : `${input.pluginName} doesn't say which sites ${credential} may go to.`,
+      text:
+        sites.length && consent.credential === "sealed"
+          ? `${credential[0]!.toUpperCase()}${credential.slice(1)} may only be sent to ${listText(sites)}.`
+          : sites.length
+            ? `${input.pluginName} declares ${listText(sites)}, but its code receives ${credential} and can send it elsewhere.`
+            : `${input.pluginName} doesn't say which sites ${credential} may go to.`,
     },
     {
       key: "credential",

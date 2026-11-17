@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { ComputerAppHub } from "../apps/host/src/computer-apps/computer-app-hub.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { ComputerUseBridgeError, createHelperAppProvider } from "../apps/runner/src/index.js";
 import { TriggerStore } from "../packages/database/src/index.js";
 import type { AgentCaller } from "../apps/host/src/mcp/agent-caller.js";
@@ -115,6 +117,55 @@ integration("device data apps as plugin tools", () => {
     });
     return { host, helper, computer, gateway, calendar, reminders, run };
   }
+
+  it("refuses device plugin access revoked while waiting for Runner admission", async () => {
+    const { host, helper, gateway, calendar } = await start();
+    const path = await pluginPath(gateway, "list_events", "list_events");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const original = ComputerAppHub.prototype.withRunnerAdmission;
+    const admission = vi
+      .spyOn(ComputerAppHub.prototype, "withRunnerAdmission")
+      .mockImplementationOnce(async function (this: ComputerAppHub, runner, work) {
+        entered.resolve();
+        await withTimeout(release.promise, 10000, {
+          timeoutError: () => new Error("Device admission was not released"),
+        });
+        return original.call(this, runner, work);
+      });
+    const before = helper.invocations.length;
+    try {
+      const pending = gateway.call("plugin_call", {
+        calls: { path, input: { start: "2026-10-01", end: "2026-10-02" } },
+      });
+      await withTimeout(entered.promise, 10000, {
+        timeoutError: () => new Error("Device call did not enter admission"),
+      });
+      await testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "plugins.access.set",
+          idempotencyKey: randomUUID(),
+          pluginId: `app_device_${calendar.connection.id}`,
+          access: "off",
+        },
+        { headers: host.ownerHeaders },
+      );
+      release.resolve();
+      expect(
+        JSON.stringify(
+          await withTimeout(pending, 10000, {
+            timeoutError: () => new Error("Revoked device call did not end"),
+          }),
+        ),
+      ).toMatch(/authority changed|unavailable/iu);
+      expect(helper.invocations).toHaveLength(before);
+    } finally {
+      release.resolve();
+      admission.mockRestore();
+    }
+  });
 
   it("finds, describes and calls device tools, mixes them with a cloud plugin, and refuses what approvals do not allow", async () => {
     const { host, helper, computer, gateway, calendar, reminders } = await start();
