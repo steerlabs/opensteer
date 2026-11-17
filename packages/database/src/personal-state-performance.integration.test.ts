@@ -14,7 +14,7 @@ import {
   buildPersonalDetailSnapshot,
 } from "./personal-snapshot-store.js";
 import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
-import { createStoreFixture, pendingEvent } from "./store.integration.test-support.js";
+import { createStoreFixture } from "./store.integration.test-support.js";
 import { ownTestDatabaseProducer } from "./test-database.test-support.js";
 
 const enabled = process.env.OPENSTEER_PERSONAL_STATE_PERF === "1";
@@ -31,7 +31,7 @@ function distribution(values: number[]) {
 
 async function measure(events: number) {
   const fixture = await createStoreFixture();
-  const { database, store } = fixture;
+  const { database } = fixture;
   try {
     const run = await fixture.startRunFixture(`personal-perf-${events}`);
     const current = await database
@@ -70,20 +70,16 @@ async function measure(events: number) {
       .set({ nextRunnerOrdinal: events + 1 })
       .where("id", "=", run.runId)
       .execute();
-    await store.commitRunnerEvent({
-      runnerId: run.runnerId,
-      runnerBootId: run.runnerBootId,
-      environmentId: run.environmentId,
-      event: pendingEvent({
-        type: "run.completed",
-        data: { status: "completed" },
-        runId: run.runId,
-        threadId: run.threadId,
-        bindingGeneration: run.bindingGeneration,
-        environmentId: run.environmentId,
-        ordinal: events + 1,
-      }),
-    });
+    await sql`insert into provider_sessions(id,thread_id,harness_instance_id,active,state_layout,binding_generation,status)
+      select 'perf-retired-session-'||n,thread_id,harness_instance_id,false,state_layout,n,'stopped'
+      from provider_sessions cross join generate_series(1,512) n
+      where thread_id=${run.threadId} and active`.execute(database);
+    await sql`insert into commands(id,environment_id,thread_id,run_id,requested_by,actor_principal_id,authority_source,idempotency_key,type,payload,status)
+      select 'perf-retired-command-'||n,environment_id,thread_id,run_id,requested_by,actor_principal_id,
+        authority_source,idempotency_key||':retired:'||n,type,payload,'failed'
+      from commands cross join generate_series(1,512) n where id=${run.turn.command.id}`.execute(
+      database,
+    );
     await database.transaction().execute(applyPersonalStateSchema);
     const start = performance.now();
     globalThis.gc?.();
@@ -122,6 +118,12 @@ async function measure(events: number) {
       const target = createDatabase<PersonalStateSchema>({ connectionString: fixture.databaseUrl });
       return { target, close: () => target.destroy() };
     });
+    const settled = await target
+      .selectFrom("runs")
+      .select("status")
+      .where("id", "=", run.runId)
+      .executeTakeFirstOrThrow();
+    expect(settled.status).toBe("interrupted");
     const counts = (
       await sql<{ items: string; tools: string }>`select
       (select count(*) from transcript_items where visible) as items,
@@ -200,6 +202,7 @@ async function measure(events: number) {
         sql`select reported_digest from runner_event_receipts where run_id=${run.runId} and ordinal=0 limit 1`,
       ),
     };
+    expect(JSON.stringify(plans.detail)).toContain("transcript_root");
     expect(shellBytes).toBeLessThanOrEqual(96 * 1024);
     expect(detailBytes).toBeLessThanOrEqual(128 * 1024);
     return {
