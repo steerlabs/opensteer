@@ -5,7 +5,12 @@ import type { AddressInfo } from "node:net";
 import type { BrowserSurfaceId } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { cleanup } from "./browser-test-lifecycle.js";
-import { asRecord, rootCdpNavigate, startFollowSession } from "./chromium.test-support.js";
+import {
+  asRecord,
+  redBoxInFrame,
+  rootCdpNavigate,
+  startFollowSession,
+} from "./chromium.test-support.js";
 
 const viewer = randomUUID();
 const size = { width: 800, height: 600 };
@@ -22,7 +27,7 @@ async function popupSite() {
       url.pathname === "/popup"
         ? "<title>Popup</title>"
         : url.pathname === "/frame"
-          ? `<body style="margin:0"><button style="width:400px;height:200px" onclick="window.open('/popup','_blank','width=400,height=300')">open</button><script>parent.postMessage("ready","*")</script>`
+          ? `<body style="margin:0"><button style="width:400px;height:200px;background:rgb(255,0,0)" onclick="window.open('/popup','_blank','width=400,height=300')">open</button><script>parent.postMessage("ready","*")</script>`
           : `<body style="margin:0">`,
     );
   });
@@ -109,6 +114,21 @@ describe("a popup follows the viewer whose input opened it", () => {
         JSON.stringify(await page.agent("Target.getTargets")),
         "the frame has its own target",
       ).toContain(`"type":"iframe"`);
+    }, step);
+    // A frame's scripts and target precede its compositor surface becoming hit-testable.
+    await vi.waitFor(async () => {
+      const frame = page.frames.findLast((frame) => frame.header.surfaceId === page.id);
+      const button = frame
+        ? await redBoxInFrame((expression) => page.read(page.id, expression), frame)
+        : null;
+      expect(
+        button &&
+          button.left < inButton.x * button.width &&
+          button.right > inButton.x * button.width &&
+          button.top < inButton.y * button.height &&
+          button.bottom > inButton.y * button.height,
+        "the streamed frame shows the button at the click point",
+      ).toBe(true);
     }, step);
     await page.click();
     await vi.waitFor(() => expect(page.opened(), "a click in the frame").toHaveLength(2), step);

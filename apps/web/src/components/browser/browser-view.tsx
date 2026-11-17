@@ -979,3 +979,12 @@ function placeEnded(
   if (viewerError) return { detail: viewerError, title: "This tab can’t be shown" };
   return null;
 }
+
+export function BrowserOpening({ address }: { readonly address: string }) {
+  return (
+    <>
+      <span aria-label={`Opening ${address}`} className="spinner" />
+      <p className="place-state__title">Opening…</p>
+    </>
+  );
+}

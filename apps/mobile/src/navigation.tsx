@@ -74,7 +74,8 @@ import { SubagentScreen } from "./screens/subagent.js";
 import { ThreadStepScreen } from "./screens/thread-step.js";
 import { MessageHistoryScreen } from "./screens/message-history.js";
 import { ThreadScreen } from "./screens/thread.js";
-import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
+import type { OpeningTabRoute } from "./browser/open-tab.js";
+import { OpeningTabScreen, WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { SidebarShell } from "./sidebar/sidebar-shell.js";
 import { DoneTasksScreen } from "./screens/done-tasks.js";
 import {
@@ -265,6 +266,7 @@ const RootStack = createNativeStackNavigator({
     // Exactly one tab of any kind, by its tabId, from Tabs, the sidebar or a
     // conversation. The native Back (and swipe, and Android's back) returns,
     // and leaving stops nothing.
+    OpeningTab: { screen: OpeningTabScreen, options: { title: "Opening…" } },
     WorkspaceBrowser: { screen: WorkspaceBrowserScreen, options: { title: "Tabs" } },
     // The one tab list, from the tab button in a page's bar, with that page
     // marked. It opens at half height and grows for many.
@@ -883,6 +885,7 @@ type OpensteerRootParamList = {
     readonly nodeId?: string;
     readonly threadId: string;
   };
+  readonly OpeningTab: OpeningTabRoute;
   readonly WorkspaceBrowser: TabRoute;
   readonly BrowserTabs: {
     readonly deploymentId: string;

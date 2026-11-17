@@ -390,6 +390,7 @@ export interface WorkspaceNavigation {
   readonly openSide: (side: string) => void;
   /** Changes on a place choice, including reselecting the current tab. */
   readonly placeOpening: number;
+  readonly pendingPlace: string | null;
   /** Where a conversation-area page is, keeping the place in the middle. */
   readonly conversationHref: (to: string) => To;
   /**
@@ -457,9 +458,12 @@ export interface WorkspaceNavigation {
    * address as it is when the answer lands, so the conversation open then stays.
    */
   readonly beginPlaceOperation: (options?: {
+    readonly address?: string;
     /** The answer takes the start page's own history entry, as a new tab's page does. */
     readonly replace?: boolean;
-  }) => (destination: SurfaceDestination) => void;
+  }) => ((destination: SurfaceDestination) => void) & {
+    readonly launcher: (options: { address: string; open: boolean }) => void;
+  };
 }
 
 interface Address {
@@ -477,6 +481,11 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
   const { search } = location;
   const { deploymentId, userId } = scope;
   const [placeOpening, setPlaceOpening] = useState(0);
+  const [pending, setPending] = useState<{
+    address: string;
+    operation: number;
+    epoch: number;
+  } | null>(null);
   const { surface } = useTeams();
   const viewers = useTeamViewers();
   const scopeKey = sideMemoryKey(scope);
@@ -536,8 +545,12 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
   );
   if (seen.current !== location) {
     if (
-      placeOnly(seen.current.search).toString() !== placeOnly(search).toString() ||
-      workspaceSide(seen.current.pathname) !== workspaceSide(location.pathname)
+      (latest.current.search !== location.search ||
+        latest.current.pathname !== location.pathname ||
+        navigationType === "POP") &&
+      (placeOnly(seen.current.search).toString() !== placeOnly(search).toString() ||
+        workspaceSide(seen.current.pathname) !== workspaceSide(location.pathname) ||
+        navigationType === "POP")
     )
       placeEpoch.current += 1;
     if (!isSettingsPath(seen.current.pathname) && navigationType !== "REPLACE")
@@ -740,19 +753,38 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
     [choosePlace, deploymentId, userId],
   );
   const beginPlaceOperation = useCallback(
-    (options: { readonly replace?: boolean } = {}) => {
+    (options: { readonly replace?: boolean; readonly address?: string } = {}) => {
       operation.current += 1;
       const mine = operation.current;
+      if (options.address !== undefined) showLauncher({ address: options.address, open: false });
       const epoch = placeEpoch.current;
-      return (destination: SurfaceDestination) => {
-        if (operation.current !== mine || placeEpoch.current !== epoch) return;
-        choosePlace({ kind: "place", destination }, undefined, {
-          replace: options.replace === true,
-        });
-      };
+      setPending(
+        options.address === undefined ? null : { address: options.address, operation: mine, epoch },
+      );
+      const current = () => operation.current === mine && placeEpoch.current === epoch;
+      return Object.assign(
+        (destination: SurfaceDestination) => {
+          if (!current()) return;
+          setPending(null);
+          choosePlace({ kind: "place", destination }, undefined, {
+            replace: options.address !== undefined || options.replace === true,
+          });
+        },
+        {
+          launcher: (failure: { address: string; open: boolean }) => {
+            if (!current()) return;
+            setPending(null);
+            showLauncher({ ...failure, replace: true });
+          },
+        },
+      );
     },
-    [choosePlace],
+    [choosePlace, showLauncher],
   );
+  const pendingPlace =
+    pending?.operation === operation.current && pending.epoch === placeEpoch.current
+      ? pending.address
+      : null;
 
   const address = useCallback(() => latest.current, []);
   return useMemo(
@@ -761,6 +793,7 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
       sides,
       openSide,
       placeOpening,
+      pendingPlace,
       beginPlaceOperation,
       conversationHref,
       hideComputer,
@@ -782,6 +815,7 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
       sides,
       openSide,
       placeOpening,
+      pendingPlace,
       beginPlaceOperation,
       conversationHref,
       hideComputer,

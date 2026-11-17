@@ -6,7 +6,11 @@ import type { HostClient, PlaceItem } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, type TabId } from "@opensteer/core";
 import { useHostSelector, usePlace, usePlaceActivity, usePlaceList } from "@opensteer/client/react";
 import { usePageVisible } from "../../ui-utils.js";
-import { PlaceBrowserView, type BrowserChromeSignIn } from "../browser/browser-view.js";
+import {
+  BrowserOpening,
+  PlaceBrowserView,
+  type BrowserChromeSignIn,
+} from "../browser/browser-view.js";
 import { useBrowserThreadPair } from "../browser/browser-thread-pair.js";
 import { Icon } from "../icon.js";
 import { useToastToolbar } from "../toast.js";
@@ -264,6 +268,24 @@ function SelectedPlace({
       />
     ) : null;
 
+  if (nav.pendingPlace !== null) {
+    return (
+      <section aria-label="Opening tab" className="place place--page">
+        <div className="browser-view">
+          <div className="browser-toolbar surface-row">
+            {leading}
+            <span className="browser-pending-address">{nav.pendingPlace}</span>
+            {trailing}
+          </div>
+          <div className="browser-stage">
+            <div className="place-state" role="status">
+              <BrowserOpening address={nav.pendingPlace} />
+            </div>
+          </div>
+        </div>
+      </section>
+    );
+  }
   if (selection.kind === "talk") return null;
   if (selection.kind === "launcher") {
     return (
@@ -331,7 +353,7 @@ function SelectedPlace({
                   ) : null}
                 </>
               ) : (
-                <span aria-label={`Opening ${place.title}`} className="spinner" />
+                <BrowserOpening address={place.title} />
               )}
             </div>
           </div>
