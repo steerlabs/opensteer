@@ -54,6 +54,7 @@ import { configureDesktopApplicationPaths } from "../src/app/application-paths.j
 import { installDesktopAppProtocol, registerDesktopAppScheme } from "../src/app/app-protocol.js";
 import { createDesktopApplicationMenu } from "../src/app/application-menu.js";
 import { ElectronHostNetwork } from "../src/app/electron-host-network.js";
+import { forwardHostRoute } from "../src/app/host-route.js";
 import {
   configureDesktopSession,
   ElectronWindowFactory,
@@ -947,7 +948,12 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
     access.dispose();
   });
   const bridgeToken = randomBytes(32).toString("base64url");
-  const uninstallProtocol = installDesktopAppProtocol(protocol, path.join(desktop, "dist/web"));
+  const uninstallProtocol = installDesktopAppProtocol(
+    protocol,
+    path.join(desktop, "dist/web"),
+    undefined,
+    { host: (request) => forwardHostRoute(request, transport) },
+  );
   cleanup.push(function uninstallDesktopProtocol() {
     uninstallProtocol();
   });
@@ -1138,7 +1144,7 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
     let denial: unknown = null;
     try {
       await evaluateApp(
-        "window.opensteerDesktop.hostRequest({method:'GET',path:'/.well-known/opensteer',headers:{accept:'application/json'}})",
+        `fetch(${JSON.stringify(`app://opensteer/host/${manifest.deploymentId}/.well-known/opensteer`)}).then((response) => { if (!response.ok) throw new Error("refused with " + response.status); })`,
       );
     } catch (error) {
       denial = errorText(error);

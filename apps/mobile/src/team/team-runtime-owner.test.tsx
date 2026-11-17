@@ -75,28 +75,20 @@ it.each(kinds)("retires owned %s before its delivery boundary", async (kind) => 
   };
   try {
     if (kind === "binary/file transfer") {
-      const closed = vi.fn(async () => ({ ok: true, data: null }));
-      const bridge = {
-        onHostWebSocketEvent: () => () => {},
-        hostBinaryOpen: async () => ({ ok: true, data: { transferId: "transfer" } }),
-        hostBinaryRead: async () => {
+      let signal: AbortSignal | null | undefined;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (_url: unknown, init?: RequestInit) => {
+          signal = init?.signal;
           started.resolve();
           await gate.promise;
-          return {
-            ok: true,
-            data: {
-              status: 200,
-              bytes: new Uint8Array([65]),
-              contentType: "application/octet-stream",
-              done: true,
-            },
-          };
-        },
-        hostBinaryClose: closed,
-      } as unknown as OpensteerDesktopBridge;
+          return new Response(new Uint8Array([65]));
+        }),
+      );
+      const bridge = { onHostWebSocketEvent: () => () => {} } as unknown as OpensteerDesktopBridge;
       const session = desktopTeamSession({ bridge, scope, origin: host.origin, owner });
       pending = session.readFile!(file, "original").then(delivered);
-      verify = () => expect(closed).toHaveBeenCalled();
+      verify = () => expect(signal?.aborted).toBe(true);
     } else if (kind === "preview") {
       const urls = new TeamPreviewUrls(owner);
       const create = vi.fn(() => "blob:private-A");

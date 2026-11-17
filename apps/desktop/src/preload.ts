@@ -92,14 +92,6 @@ import type {
   DesktopFullDiskAccessStatus,
   DesktopOpenComputerUsePermissionsPanelResult,
   DesktopOpenComputerUseSettingsInput,
-  DesktopHostHttpRequest,
-  DesktopHostResult,
-  DesktopHostHttpResponse,
-  DesktopHostBinaryOpenInput,
-  DesktopHostBinaryOpenResult,
-  DesktopHostBinaryWriteInput,
-  DesktopHostBinaryTransferInput,
-  DesktopHostBinaryReadResult,
   DesktopHostWebSocketCommand,
   DesktopHostWebSocketEvent,
   DesktopLocalExecutionStatus,
@@ -157,14 +149,6 @@ import {
   DesktopOpenComputerUseSettingsInputSchema,
   DesktopConnectPrivateDeploymentInputSchema,
   DesktopFullDiskAccessStatusSchema,
-  DesktopHostHttpRequestSchema,
-  DesktopHostHttpResultSchema,
-  DesktopHostVoidResultSchema,
-  DesktopHostBinaryOpenInputSchema,
-  DesktopHostBinaryOpenResponseSchema,
-  DesktopHostBinaryWriteInputSchema,
-  DesktopHostBinaryTransferInputSchema,
-  DesktopHostBinaryReadResponseSchema,
   DesktopHostWebSocketCommandSchema,
   DesktopHostWebSocketEventSchema,
   DesktopLocalExecutionInputSchema,
@@ -817,48 +801,6 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     invoke<DesktopLocalExecutionStatus>(
       desktopBridgeChannels.getLocalExecutionStatus,
       DesktopLocalExecutionInputSchema.parse(input),
-    ),
-  hostRequest: async (input: DesktopHostHttpRequest) =>
-    DesktopHostHttpResultSchema.parse(
-      await invoke<DesktopHostResult<DesktopHostHttpResponse>>(
-        desktopBridgeChannels.hostRequest,
-        DesktopHostHttpRequestSchema.parse(input),
-      ),
-    ),
-  hostBinaryOpen: async (input: DesktopHostBinaryOpenInput) =>
-    DesktopHostBinaryOpenResponseSchema.parse(
-      await invoke<DesktopHostResult<DesktopHostBinaryOpenResult>>(
-        desktopBridgeChannels.hostBinaryOpen,
-        DesktopHostBinaryOpenInputSchema.parse(input),
-      ),
-    ),
-  hostBinaryWrite: async (input: DesktopHostBinaryWriteInput) =>
-    DesktopHostVoidResultSchema.parse(
-      await invoke<DesktopHostResult<null>>(
-        desktopBridgeChannels.hostBinaryWrite,
-        DesktopHostBinaryWriteInputSchema.parse(input),
-      ),
-    ),
-  hostBinaryFinish: async (input: DesktopHostBinaryTransferInput) =>
-    DesktopHostHttpResultSchema.parse(
-      await invoke<DesktopHostResult<DesktopHostHttpResponse>>(
-        desktopBridgeChannels.hostBinaryFinish,
-        DesktopHostBinaryTransferInputSchema.parse(input),
-      ),
-    ),
-  hostBinaryRead: async (input: DesktopHostBinaryTransferInput) =>
-    DesktopHostBinaryReadResponseSchema.parse(
-      await invoke<DesktopHostResult<DesktopHostBinaryReadResult>>(
-        desktopBridgeChannels.hostBinaryRead,
-        DesktopHostBinaryTransferInputSchema.parse(input),
-      ),
-    ),
-  hostBinaryClose: async (input: DesktopHostBinaryTransferInput) =>
-    DesktopHostVoidResultSchema.parse(
-      await invoke<DesktopHostResult<null>>(
-        desktopBridgeChannels.hostBinaryClose,
-        DesktopHostBinaryTransferInputSchema.parse(input),
-      ),
     ),
   onDeploymentAccessSnapshotChanged: (listener: (snapshot: DeploymentAccessSnapshot) => void) => {
     const receive = (_event: Electron.IpcRendererEvent, value: unknown) => {

@@ -111,13 +111,8 @@ export function desktopTeamSessions(
     if (!origin) throw new Error("Open the team on this computer first.");
     const client = createHttpHostApiClient({
       baseUrl: new URL(origin),
-      bufferedResponses: true,
       fetch: (url, init) =>
-        createDesktopHostFetch(
-          bridge,
-          origin,
-          teamDeploymentId,
-        )(url, {
+        createDesktopHostFetch(origin, teamDeploymentId)(url, {
           ...init,
           ...(owner
             ? { signal: AbortSignal.any([owner.signal, ...(init?.signal ? [init.signal] : [])]) }

@@ -1,15 +1,14 @@
 import { TeamRuntimeOwner } from "@opensteer/client/team";
-import * as privateFiles from "@opensteer/shared/privateFiles";
-import { promises as fs } from "node:fs";
+import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { HostTransport as SharedHostTransport } from "@opensteer/client/connections";
 import { createDesktopHostFetch } from "../../../web/src/desktop/desktop-host-transport.js";
 import { readComputerFacts } from "../../../web/src/desktop/computer-facts.js";
 import type { DeploymentAccessDeployment } from "@opensteer/protocol/desktop";
-import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import type { DesktopHostWebSocketEvent } from "@opensteer/protocol/desktop";
 import { createId, type DeploymentId, type HostInstanceId } from "@opensteer/core";
 import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
 import { describe, expect, it, vi } from "vitest";
+import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import {
   DeploymentCatalogSchema,
   DeploymentConnectionSchema,
@@ -28,6 +27,7 @@ import {
 import type { HostSessionRecovery } from "@opensteer/client/auth";
 import { DesktopAccessProjection } from "./access-projection.js";
 import { DesktopHostTransport } from "./host-transport.js";
+import { forwardHostRoute } from "../app/host-route.js";
 import type {
   PersonalHostRuntimeRecord,
   PersonalHostRuntimeSource,
@@ -36,106 +36,38 @@ import { testPersonalHostRuntime } from "../supervisor/personal-host-runtime-tes
 import { DesktopLocalRunnerTargetResolver } from "../supervisor/local-runner-authority.js";
 
 describe("DesktopHostTransport", () => {
-  it.each(["open", "read", "close", "cancel-close", "write", "finish-close"] as const)(
-    "withholds binary IPC delivery after Account invalidation during %s",
-    async (stage) => {
-      const team = deployment("Team", "https://team.example");
-      const catalog = catalogStore([team], team.authority.document.deploymentId);
-      const owner = new TeamRuntimeOwner(null);
-      const transport = desktopHostTransport({
-        catalog,
-        credentials: {
-          teamRuntime: () => owner,
-          authorizationHeader: async () => "Bearer team",
-        },
-        network: {
-          request: async () => new Response("private bytes"),
-          openWebSocket: () => socket(),
-        },
-      });
-      const upload = stage === "write" || stage === "finish-close";
-      if (stage === "open") {
-        const mode = privateFiles.setPrivateFileMode;
-        const spy = vi
-          .spyOn(privateFiles, "setPrivateFileMode")
-          .mockImplementation(async (...args) => {
-            await mode(...args);
-            owner.retire();
-          });
-        try {
-          await expect(
-            transport.openBinary(1, {
-              expectedDeploymentId: team.authority.document.deploymentId,
-              method: "GET",
-              path: "/v1/team/files/test/original",
-              headers: {},
+  it("ends a team response mid-body when its Account owner retires", async () => {
+    const team = deployment("Team", "https://team.example");
+    const id = team.authority.document.deploymentId;
+    const owner = new TeamRuntimeOwner(null);
+    let body!: ReadableStreamDefaultController<Uint8Array>;
+    const transport = desktopHostTransport({
+      catalog: catalogStore([team], id),
+      credentials: { teamRuntime: () => owner, authorizationHeader: async () => "Bearer team" },
+      network: {
+        openWebSocket: () => socket(),
+        request: async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start: (controller) => {
+                body = controller;
+              },
             }),
-          ).rejects.toMatchObject({ code: "deployment-changed" });
-        } finally {
-          spy.mockRestore();
-          transport.dispose();
-        }
-        return;
-      }
-      const transfer = await transport.openBinary(1, {
-        expectedDeploymentId: team.authority.document.deploymentId,
-        method: upload ? "POST" : "GET",
-        path: upload ? "/v1/team/files/upload/tch_test" : "/v1/team/files/test/original",
-        headers: upload ? { contentType: "application/octet-stream" } : {},
-      });
-      try {
-        if (stage === "write") {
-          const append = fs.appendFile.bind(fs);
-          vi.spyOn(fs, "appendFile").mockImplementation(async (...args) => {
-            await append(...args);
-            owner.retire();
-          });
-        } else if (stage === "finish-close") {
-          const rm = fs.rm.bind(fs);
-          vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
-            await rm(...args);
-            owner.retire();
-          });
-        } else {
-          const open = fs.open.bind(fs);
-          vi.spyOn(fs, "open").mockImplementation(async (...args) => {
-            const handle = await open(...args);
-            if (stage === "read") {
-              const read = handle.read.bind(handle);
-              vi.spyOn(handle, "read").mockImplementation(
-                async (...input: Parameters<typeof read>) => {
-                  const result = await read(...input);
-                  owner.retire();
-                  return result;
-                },
-              );
-            } else {
-              const close = handle.close.bind(handle);
-              vi.spyOn(handle, "close").mockImplementation(async () => {
-                await close();
-                if (stage === "cancel-close") await transport.closeBinary(1, transfer);
-                else owner.retire();
-              });
-            }
-            return handle;
-          });
-        }
-        const pending =
-          stage === "write"
-            ? transport.writeBinary(1, { ...transfer, bytes: new Uint8Array([1]) })
-            : upload
-              ? transport.finishBinary(1, transfer)
-              : transport.readBinary(1, transfer);
-        await expect(pending).rejects.toMatchObject({
-          code: stage === "cancel-close" ? "cancelled" : "deployment-changed",
-        });
-      } finally {
-        vi.restoreAllMocks();
-        await transport.closeBinaryForOwner(1);
-        transport.dispose();
-      }
-    },
-  );
+          ),
+      },
+    });
+    try {
+      const response = await hostFetch(transport, id)(`${routeOrigin}/v1/team/files/test/original`);
+      const reader = response.body!.getReader();
+      body.enqueue(new TextEncoder().encode("first"));
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe("first");
+      owner.retire();
+      body.enqueue(new TextEncoder().encode("private"));
+      await expect(reader.read()).rejects.toThrow("The Account identity changed.");
+    } finally {
+      transport.dispose();
+    }
+  });
 
   it.each([
     ["desktop", "credential"],
@@ -221,29 +153,28 @@ describe("DesktopHostTransport", () => {
         },
       });
       try {
-        await transport.openWebSocket(1, { path: "/v1/realtime" }, () => {});
+        await transport.openWebSocket(
+          1,
+          { expectedDeploymentId: personal.authority.document.deploymentId, path: "/v1/realtime" },
+          () => {},
+        );
         if (withTeam)
           await transport.openWebSocket(
             2,
             { expectedDeploymentId: team.authority.document.deploymentId, path: "/v1/realtime" },
             () => {},
           );
-        const request = { headers: {}, method: "POST", path: "/v1/rpc/attention.get", body: "{}" };
-        const selected = expect(transport.request(request)).resolves.toBeDefined();
+        const request = (id: DeploymentId) =>
+          send(transport, id, "/v1/rpc/attention.get", { method: "POST", body: "{}" });
+        const selected = expect(
+          request(personal.authority.document.deploymentId),
+        ).resolves.toBeDefined();
         const summary = expect(
-          transport.request({
-            ...request,
-            expectedDeploymentId: manual.authority.document.deploymentId,
-          }),
+          request(manual.authority.document.deploymentId),
         ).resolves.toBeDefined();
         void selected.catch(() => {});
         void summary.catch(() => {});
-        const teamRequest = withTeam
-          ? transport.request({
-              ...request,
-              expectedDeploymentId: team.authority.document.deploymentId,
-            })
-          : null;
+        const teamRequest = withTeam ? request(team.authority.document.deploymentId) : null;
         const rejected = teamRequest
           ? expect(teamRequest).rejects.toMatchObject({ code: "deployment-changed" })
           : null;
@@ -263,49 +194,59 @@ describe("DesktopHostTransport", () => {
     },
   );
 
-  it("observes binding only after a successful Host command, using the request's exact Deployment", async () => {
+  it("records an issued enrollment before the renderer can read it, using the request's exact Deployment", async () => {
     const selected = deployment("Home", "https://home.connect.opensteer.test");
-    const observeCommand = vi.fn(async () => undefined);
+    const id = selected.authority.document.deploymentId;
+    const order: string[] = [];
+    const observeCommand = vi.fn(async () => {
+      order.push("observed");
+    });
+    const issued = {
+      type: "runner.enrollment.createLocal",
+      enrollmentId: "enrollment-1",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      token: "t".repeat(64),
+    };
     let accepted = true;
     const transport = desktopHostTransport({
-      catalog: catalogStore([selected], selected.authority.document.deploymentId),
+      catalog: catalogStore([selected], id),
       observeCommand,
       network: {
         openWebSocket: () => socket(),
         request: async () =>
           Response.json(
             accepted
-              ? { ok: true, data: { type: "machine.session.bind" } }
+              ? { ok: true, data: issued }
               : { ok: false, error: { code: "forbidden", message: "refused" } },
           ),
       },
     });
     const command = {
-      type: "machine.session.bind",
-      machineId: createId("runner"),
-      proof: { issuedAt: new Date().toISOString(), signature: "s".repeat(86) },
-      idempotencyKey: "bind-device-session",
+      type: "runner.enrollment.createLocal",
+      allowedModules: ["shell"],
+      name: "Mac",
+      idempotencyKey: "enroll-this-mac",
     };
-    const request = {
-      headers: {},
-      method: "POST",
-      path: "/v1/rpc/commands.dispatch",
-      body: JSON.stringify(command),
-    };
-    await transport.request(request);
-    expect(observeCommand).toHaveBeenCalledExactlyOnceWith(
-      selected.authority.document.deploymentId,
-      command,
-      { type: "machine.session.bind" },
-    );
+    const dispatch = () =>
+      send(transport, id, "/v1/rpc/commands.dispatch", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(command),
+      }).then((response) => {
+        order.push("renderer");
+        return response;
+      });
+    await expect(dispatch()).resolves.toMatchObject({ status: 200 });
+    expect(observeCommand).toHaveBeenCalledExactlyOnceWith(id, command, issued);
+    expect(order).toEqual(["observed", "renderer"]);
     accepted = false;
-    await transport.request(request);
+    await dispatch();
     expect(observeCommand).toHaveBeenCalledOnce();
     transport.dispose();
   });
 
   it("notifies session loss before a renderer can recover the closed realtime socket", async () => {
-    const selected = deployment("Home", "https://home.connect.opensteer.test");
+    const selected = deployment("Home", "https://home.connect.opensteer.test", "personal");
     let networkEvents: HostNetworkSocketEvents | undefined;
     const order: string[] = [];
     const transport = desktopHostTransport({
@@ -324,16 +265,20 @@ describe("DesktopHostTransport", () => {
         },
       },
     });
-    await transport.openWebSocket(7, { path: "/v1/realtime" }, (event) => {
-      if (event.type === "close") order.push("renderer");
-    });
+    await transport.openWebSocket(
+      7,
+      { expectedDeploymentId: selected.authority.document.deploymentId, path: "/v1/realtime" },
+      (event) => {
+        if (event.type === "close") order.push("renderer");
+      },
+    );
     networkEvents?.close(4003, "Session ended");
     expect(order).toEqual(["lifecycle", "renderer"]);
     transport.dispose();
   });
 
   it.each([false, true])(
-    "bounds silence while buffering a slow desktop response; stall: %s",
+    "bounds silence while streaming a slow desktop response; stall: %s",
     async (stall) => {
       vi.useFakeTimers();
       try {
@@ -356,11 +301,12 @@ describe("DesktopHostTransport", () => {
             },
           },
         });
-        const pending = transport.request({
-          headers: {},
-          method: "GET",
-          path: "/v1/rpc/auth.config",
-        });
+        const response = hostFetch(
+          transport,
+          selected.authority.document.deploymentId,
+        )(`${routeOrigin}/v1/rpc/auth.config`);
+        await vi.advanceTimersByTimeAsync(0);
+        const pending = response.then((value) => value.text());
         const outcome = pending.catch((error: unknown) => error);
         await vi.advanceTimersByTimeAsync(0);
         for (let index = 0; index < 3; index++) {
@@ -374,7 +320,7 @@ describe("DesktopHostTransport", () => {
           expect(signal?.aborted).toBe(true);
         } else {
           body.close();
-          await expect(pending).resolves.toMatchObject({ body: "   ", status: 200 });
+          await expect(pending).resolves.toBe("   ");
         }
         expect(vi.getTimerCount()).toBe(0);
       } finally {
@@ -396,12 +342,18 @@ describe("DesktopHostTransport", () => {
     try {
       const first = await transport.openWebSocket(
         7,
-        { path: `/v1/browser-sessions/${sessionId}/connect` },
+        {
+          expectedDeploymentId: selected.authority.document.deploymentId,
+          path: `/v1/browser-sessions/${sessionId}/connect`,
+        },
         vi.fn(),
       );
       const second = await transport.openWebSocket(
         7,
-        { path: `/v1/browser-sessions/${sessionId}/connect?mode=watch` },
+        {
+          expectedDeploymentId: selected.authority.document.deploymentId,
+          path: `/v1/browser-sessions/${sessionId}/connect?mode=watch`,
+        },
         vi.fn(),
       );
       for (const { connectionId } of [first, second])
@@ -453,6 +405,7 @@ describe("DesktopHostTransport", () => {
     const { connectionId } = await transport.openWebSocket(
       7,
       {
+        expectedDeploymentId: selected.authority.document.deploymentId,
         path: `/v1/browser-sessions/${sessionId}/connect?mode=watch&token=PRIVATE-TICKET&surfaceId=PRIVATE-SURFACE`,
       },
       vi.fn(),
@@ -515,7 +468,7 @@ describe("DesktopHostTransport", () => {
   ])(
     "delivers one terminal close for $initiator ($expected)",
     async ({ initiator, code, expected, reason, networkCode }) => {
-      const selected = deployment("Home", "https://home.connect.opensteer.test");
+      const selected = deployment("Home", "https://home.connect.opensteer.test", "personal");
       const networkSocket = socket();
       let events: HostNetworkSocketEvents | null = null;
       const received: DesktopHostWebSocketEvent[] = [];
@@ -531,8 +484,10 @@ describe("DesktopHostTransport", () => {
           request: vi.fn(async () => new Response("{}")),
         },
       });
-      const { connectionId } = await transport.openWebSocket(7, { path: "/v1/realtime" }, (event) =>
-        received.push(event),
+      const { connectionId } = await transport.openWebSocket(
+        7,
+        { expectedDeploymentId: selected.authority.document.deploymentId, path: "/v1/realtime" },
+        (event) => received.push(event),
       );
       events!.open();
       received.length = 0;
@@ -588,7 +543,7 @@ describe("DesktopHostTransport", () => {
   it.each(["before-bind", "after-bind"])(
     "ends a socket when generation moves %s during open",
     async (timing) => {
-      const selected = deployment("Home", "https://home.connect.opensteer.test");
+      const selected = deployment("Home", "https://home.connect.opensteer.test", "personal");
       const networkSocket = socket();
       let events: HostNetworkSocketEvents | null = null;
       const transport = desktopHostTransport({
@@ -609,7 +564,11 @@ describe("DesktopHostTransport", () => {
         return network;
       });
       const received = vi.fn();
-      const { connectionId } = await transport.openWebSocket(7, { path: "/v1/realtime" }, received);
+      const { connectionId } = await transport.openWebSocket(
+        7,
+        { expectedDeploymentId: selected.authority.document.deploymentId, path: "/v1/realtime" },
+        received,
+      );
       expect(received).toHaveBeenCalledExactlyOnceWith({
         connectionId,
         type: "close",
@@ -642,9 +601,13 @@ describe("DesktopHostTransport", () => {
         request: vi.fn(async () => new Response("{}")),
       },
     });
-    await expect(transport.openWebSocket(7, { path: "/v1/realtime" }, received)).rejects.toThrow(
-      "Network unavailable",
-    );
+    await expect(
+      transport.openWebSocket(
+        7,
+        { expectedDeploymentId: selected.authority.document.deploymentId, path: "/v1/realtime" },
+        received,
+      ),
+    ).rejects.toThrow("Network unavailable");
     transport.closeAllSockets();
     expect(received).not.toHaveBeenCalled();
     expect(log).not.toHaveBeenCalled();
@@ -671,7 +634,11 @@ describe("DesktopHostTransport", () => {
         request: vi.fn(async () => new Response("{}")),
       },
     });
-    const { connectionId } = await transport.openWebSocket(7, { path: "/v1/realtime" }, received);
+    const { connectionId } = await transport.openWebSocket(
+      7,
+      { expectedDeploymentId: selected.authority.document.deploymentId, path: "/v1/realtime" },
+      received,
+    );
     expect(() => events!.open()).not.toThrow();
     expect(received.mock.calls.map(([event]) => event.type)).toEqual(["open", "error", "close"]);
     expect(networkSocket.close).toHaveBeenCalledExactlyOnceWith(4_011, "Client unavailable");
@@ -705,7 +672,11 @@ describe("DesktopHostTransport", () => {
         request: vi.fn(async () => new Response("{}")),
       },
     });
-    await transport.openWebSocket(7, { path }, received);
+    await transport.openWebSocket(
+      7,
+      { expectedDeploymentId: selected.authority.document.deploymentId, path },
+      received,
+    );
     events!.close(1_000, "stop\n" + "😀".repeat(1_000));
     const reason = "stop " + "😀".repeat(248);
     expect(log).toHaveBeenCalledExactlyOnceWith("desktop.host-socket.closed", {
@@ -742,9 +713,24 @@ describe("DesktopHostTransport", () => {
     });
     const sessionId = "bsn_00000000-0000-4000-8000-000000000001";
     const path = `/v1/browser-sessions/${sessionId}/connect`;
-    const first = await transport.openWebSocket(7, { path }, vi.fn());
-    const second = await transport.openWebSocket(7, { path }, vi.fn());
-    await transport.openWebSocket(8, { path: `${path}?mode=watch` }, vi.fn());
+    const first = await transport.openWebSocket(
+      7,
+      { expectedDeploymentId: selected.authority.document.deploymentId, path },
+      vi.fn(),
+    );
+    const second = await transport.openWebSocket(
+      7,
+      { expectedDeploymentId: selected.authority.document.deploymentId, path },
+      vi.fn(),
+    );
+    await transport.openWebSocket(
+      8,
+      {
+        expectedDeploymentId: selected.authority.document.deploymentId,
+        path: `${path}?mode=watch`,
+      },
+      vi.fn(),
+    );
     const snapshot = JSON.stringify({
       access: "read-write",
       dialog: null,
@@ -790,11 +776,16 @@ describe("DesktopHostTransport", () => {
     });
     const summary = JSON.stringify({ windowMs: 3000, triggers: { load: 6 }, starts: { load: 6 } });
     const read = (bootstrapDiagnostics?: string) =>
-      transport.request({
-        headers: { bootstrapDiagnostics },
-        method: "GET",
-        path: "/v1/rpc/bootstrap.get?input=%7B%7D",
-      });
+      send(
+        transport,
+        selected.authority.document.deploymentId,
+        "/v1/rpc/bootstrap.get?input=%7B%7D",
+        {
+          headers: bootstrapDiagnostics
+            ? { [bootstrapDiagnosticHeader]: bootstrapDiagnostics }
+            : {},
+        },
+      );
     await read();
     await read(
       JSON.stringify({ windowMs: 1, triggers: {}, starts: { load: 6 }, url: "PRIVATE-VALUE" }),
@@ -843,27 +834,31 @@ describe("DesktopHostTransport", () => {
       ],
       selectedDeploymentId: first.authority.document.deploymentId,
     });
-    await expect(
-      transport.request({
-        headers: { accept: "application/json", idempotencyKey: "workspace:test" },
+    const response = await send(
+      transport,
+      first.authority.document.deploymentId,
+      "/v1/workspaces?source=desktop",
+      {
+        headers: {
+          accept: "application/json",
+          authorization: "Bearer renderer",
+          cookie: "session=renderer",
+          "idempotency-key": "workspace:test",
+        },
         method: "POST",
-        path: "/v1/workspaces?source=desktop",
-      }),
-    ).resolves.toEqual({
-      body: '{"ok":true}',
-      headers: { contentType: "application/json" },
-      status: 200,
-    });
+      },
+    );
+    expect(response).toMatchObject({ body: '{"ok":true}', status: 200 });
+    expect(response.headers.get("content-type")).toBe("application/json");
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({
       authorization: "Bearer main-process-only",
       canonicalOrigin: first.authority.document.canonicalOrigin,
       deploymentId: first.authority.document.deploymentId,
       url: `${first.authority.document.canonicalOrigin}/v1/workspaces?source=desktop`,
+      request: { headers: { accept: "application/json", idempotencyKey: "workspace:test" } },
     });
-    await expect(
-      transport.request({ headers: {}, method: "GET", path: "https://attacker.test/v1/bootstrap" }),
-    ).rejects.toThrow();
+    expect(JSON.stringify(requests[0]!.request.headers)).not.toContain("renderer");
   });
 
   it("uses an explicitly selected verified direct route without an implicit fallback", async () => {
@@ -905,7 +900,7 @@ describe("DesktopHostTransport", () => {
         },
       ],
     });
-    await transport.request({ headers: {}, method: "GET", path: "/v1/bootstrap" });
+    await get(transport, "/v1/bootstrap");
     expect(requests.at(-1)?.url).toBe(`${directOrigin}/v1/bootstrap`);
     await expect(transport.integrationAuthorizationOrigin()).resolves.toBe(
       canonical.authority.document.canonicalOrigin,
@@ -915,7 +910,7 @@ describe("DesktopHostTransport", () => {
       deploymentId: selected.authority.document.deploymentId,
       origin: null,
     });
-    await transport.request({ headers: {}, method: "GET", path: "/v1/bootstrap" });
+    await get(transport, "/v1/bootstrap");
     expect(requests.at(-1)?.url).toBe(
       `${canonical.authority.document.canonicalOrigin}/v1/bootstrap`,
     );
@@ -1010,29 +1005,17 @@ describe("DesktopHostTransport", () => {
       },
     });
 
-    await expect(
-      transport.request({ headers: {}, method: "GET", path: "/v1/bootstrap" }),
-    ).rejects.toThrow("Select an Opensteer deployment");
-    await expect(
-      transport.request({ headers: {}, method: "GET", path: "/internal/secrets" }),
-    ).rejects.toThrow();
-    await expect(
-      transport.request({ headers: {}, method: "GET", path: "/v1/%252e%252e/internal" }),
-    ).rejects.toThrow();
-    await expect(
-      transport.request({
-        headers: { authorization: "Bearer renderer" },
-        method: "GET",
-        path: "/v1/bootstrap",
-      }),
-    ).rejects.toThrow();
+    await expect(get(transport, "/v1/bootstrap")).rejects.toThrow("Select an Opensteer deployment");
+    await expect(send(transport, createId("deployment"), "/v1/bootstrap")).rejects.toMatchObject({
+      code: "deployment-changed",
+    });
   });
 
   it.each(["/v1/realtime", "/v1/computer-use/sessions/cus_display/display"])(
     "binds %s sockets to one renderer and closes them when Deployment selection changes",
     async (path) => {
-      const first = deployment("Home", "https://home.connect.opensteer.test");
-      const second = deployment("Cloud", "https://cloud.opensteer.test");
+      const first = deployment("Home", "https://home.connect.opensteer.test", "personal");
+      const second = deployment("Cloud", "https://cloud.opensteer.test", "personal");
       const catalog = catalogStore([first, second], first.authority.document.deploymentId);
       const networkSocket = socket();
       let events: HostNetworkSocketEvents | null = null;
@@ -1047,7 +1030,11 @@ describe("DesktopHostTransport", () => {
         },
       });
       const received: unknown[] = [];
-      const opened = await transport.openWebSocket(7, { path }, (event) => received.push(event));
+      const opened = await transport.openWebSocket(
+        7,
+        { expectedDeploymentId: first.authority.document.deploymentId, path },
+        (event) => received.push(event),
+      );
       events!.open();
       events!.message("hello");
       expect(received).toEqual([
@@ -1136,15 +1123,17 @@ describe("DesktopHostTransport", () => {
       };
 
       await expect(transport.selection()).resolves.toMatchObject(selection);
-      await expect(
-        transport.request({ headers: {}, method: "GET", path: "/v1/bootstrap" }),
-      ).rejects.toThrow("no live remote access route");
+      await expect(get(transport, "/v1/bootstrap")).rejects.toThrow("no live remote access route");
       expect(request).not.toHaveBeenCalled();
       expect(openWebSocket).not.toHaveBeenCalled();
 
       catalog.replace([live, other], selectedId);
       await transport.selection();
-      await transport.openWebSocket(7, { path: "/v1/realtime" }, vi.fn());
+      await transport.openWebSocket(
+        7,
+        { expectedDeploymentId: selectedId, path: "/v1/realtime" },
+        vi.fn(),
+      );
       expect(transport.currentKey()).not.toBeNull();
 
       catalog.replace([unavailable, other], selectedId);
@@ -1152,9 +1141,7 @@ describe("DesktopHostTransport", () => {
       expect(transport.currentKey()).toBeNull();
       expect(networkSocket.close).toHaveBeenCalledExactlyOnceWith(4_001, "Deployment changed");
       await transport.selection();
-      await expect(
-        transport.request({ headers: {}, method: "GET", path: "/v1/bootstrap" }),
-      ).rejects.toThrow("no live remote access route");
+      await expect(get(transport, "/v1/bootstrap")).rejects.toThrow("no live remote access route");
       expect(networkSocket.close).toHaveBeenCalledTimes(1);
       expect(request).not.toHaveBeenCalled();
 
@@ -1166,7 +1153,7 @@ describe("DesktopHostTransport", () => {
         ],
         selectedDeploymentId: selectedId,
       });
-      await transport.request({ headers: {}, method: "GET", path: "/v1/bootstrap" });
+      await get(transport, "/v1/bootstrap");
       expect(request).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ url: `${routeOrigin}/v1/bootstrap` }),
       );
@@ -1201,7 +1188,11 @@ describe("DesktopHostTransport", () => {
       },
     });
     await transport.selection();
-    await transport.openWebSocket(7, { path: "/v1/realtime" }, vi.fn());
+    await transport.openWebSocket(
+      7,
+      { expectedDeploymentId: selected.authority.document.deploymentId, path: "/v1/realtime" },
+      vi.fn(),
+    );
 
     catalog.replace([], null);
     await expect(transport.selection()).resolves.toMatchObject({
@@ -1223,7 +1214,11 @@ describe("DesktopHostTransport", () => {
       },
     });
     await transport.selection();
-    await transport.openWebSocket(7, { path: "/v1/realtime" }, vi.fn());
+    await transport.openWebSocket(
+      7,
+      { expectedDeploymentId: selected.authority.document.deploymentId, path: "/v1/realtime" },
+      vi.fn(),
+    );
     const before = transport.currentKey();
     // A new Host instance behind the same origin is a different Host, and the
     // one fence has to notice that without an endpoint list to compare.
@@ -1305,7 +1300,11 @@ describe("DesktopHostTransport", () => {
       },
     });
 
-    await transport.openWebSocket(7, { path: "/v1/realtime" }, (event) => received.push(event));
+    await transport.openWebSocket(
+      7,
+      { expectedDeploymentId: selected.authority.document.deploymentId, path: "/v1/realtime" },
+      (event) => received.push(event),
+    );
     expect(() => events!.message("😀".repeat(300_000))).not.toThrow();
     expect(networkSocket.close).toHaveBeenCalledWith(4_002, "Invalid Host frame");
     expect(received).toEqual([
@@ -1323,8 +1322,8 @@ describe("DesktopHostTransport", () => {
     const fixture = cloudFixture();
 
     const [first, second] = await Promise.all([
-      fixture.transport.request({ headers: {}, method: "GET", path: "/v1/bootstrap" }),
-      fixture.transport.request({ headers: {}, method: "GET", path: "/v1/workspaces" }),
+      send(fixture.transport, fixture.id, "/v1/bootstrap"),
+      send(fixture.transport, fixture.id, "/v1/workspaces"),
     ]);
 
     expect(first).toMatchObject({ body: '{"ok":true}', status: 200 });
@@ -1341,8 +1340,9 @@ describe("DesktopHostTransport", () => {
   it("gives session recovery its own time after reading a refusal", async () => {
     vi.useFakeTimers();
     try {
-      const selected = deployment("Home", "https://home.connect.opensteer.test");
+      const selected = deployment("Home", "https://home.connect.opensteer.test", "personal");
       let requests = 0;
+      const bodies: string[] = [];
       const recoverUnauthorized = vi.fn(
         () => new Promise<"recovered">((resolve) => setTimeout(() => resolve("recovered"), 25_000)),
       );
@@ -1350,22 +1350,29 @@ describe("DesktopHostTransport", () => {
         catalog: catalogStore([selected], selected.authority.document.deploymentId),
         network: {
           openWebSocket: () => socket(),
-          request: async () =>
-            ++requests === 1
+          request: async (input) => {
+            if (input.request.body instanceof Blob)
+              bodies.push(new Uint8Array(await input.request.body.arrayBuffer()).join(","));
+            return ++requests === 1
               ? new Response('{"error":"unauthorized"}', { status: 401 })
-              : new Response('{"ok":true}'),
+              : new Response('{"ok":true}');
+          },
         },
         sessions: { recoverUnauthorized },
       });
-      const pending = transport.request({
-        headers: {},
-        method: "GET",
-        path: "/v1/rpc/auth.config",
+      const pending = send(transport, selected.authority.document.deploymentId, "/v1/uploads", {
+        body: new Uint8Array([0xff, 0x00, 0xfe]),
+        method: "POST",
       });
       const outcome = pending.catch((error: unknown) => error);
+      await vi.waitFor(() => expect(recoverUnauthorized).toHaveBeenCalledOnce(), {
+        timeout: 1_000,
+      });
       await vi.advanceTimersByTimeAsync(25_000);
       expect(await outcome).toMatchObject({ body: '{"ok":true}', status: 200 });
       expect(recoverUnauthorized).toHaveBeenCalledTimes(1);
+      // Main read the body before the refusal, so the replay carries the same bytes.
+      expect(bodies).toEqual(["255,0,254", "255,0,254"]);
     } finally {
       vi.useRealTimers();
     }
@@ -1374,12 +1381,13 @@ describe("DesktopHostTransport", () => {
   it("returns a refused Host response untouched instead of retrying it", async () => {
     const fixture = cloudFixture({ redemptionStatus: 403 });
 
-    await expect(
-      fixture.transport.request({ headers: {}, method: "GET", path: "/v1/bootstrap" }),
-    ).resolves.toMatchObject({ body: '{"error":"unauthorized"}', status: 401 });
-    await expect(
-      fixture.transport.request({ headers: {}, method: "GET", path: "/v1/bootstrap" }),
-    ).resolves.toMatchObject({ status: 401 });
+    await expect(send(fixture.transport, fixture.id, "/v1/bootstrap")).resolves.toMatchObject({
+      body: '{"error":"unauthorized"}',
+      status: 401,
+    });
+    await expect(send(fixture.transport, fixture.id, "/v1/bootstrap")).resolves.toMatchObject({
+      status: 401,
+    });
 
     expect(fixture.recoverUnauthorized).toHaveBeenCalledTimes(2);
     expect(fixture.hostRequests).toEqual(["/v1/bootstrap", "/v1/bootstrap"]);
@@ -1404,11 +1412,19 @@ describe("DesktopHostTransport", () => {
       sessions: { recoverUnauthorized },
     });
 
-    await transport.openWebSocket(3, { path: "/v1/realtime" }, () => undefined);
+    await transport.openWebSocket(
+      3,
+      { expectedDeploymentId: selected.authority.document.deploymentId, path: "/v1/realtime" },
+      () => undefined,
+    );
     events!.close(1_006, "");
     expect(recoverUnauthorized).not.toHaveBeenCalled();
 
-    const owned = await transport.openWebSocket(3, { path: "/v1/realtime" }, () => undefined);
+    const owned = await transport.openWebSocket(
+      3,
+      { expectedDeploymentId: selected.authority.document.deploymentId, path: "/v1/realtime" },
+      () => undefined,
+    );
     transport.closeWebSocket(3, { connectionId: owned.connectionId });
     events!.close(1_000, "");
     expect(recoverUnauthorized).not.toHaveBeenCalled();
@@ -1417,9 +1433,7 @@ describe("DesktopHostTransport", () => {
   it("never spends an Account grant for a Deployment that owns its authorization", async () => {
     const fixture = cloudFixture({ kind: "team" });
 
-    await expect(
-      fixture.transport.request({ headers: {}, method: "GET", path: "/v1/bootstrap" }),
-    ).resolves.toMatchObject({ status: 401 });
+    await expect(get(fixture.transport, "/v1/bootstrap")).resolves.toMatchObject({ status: 401 });
 
     expect(fixture.recoverUnauthorized).toHaveBeenCalledOnce();
     expect(fixture.hostRequests).toEqual(["/v1/bootstrap"]);
@@ -1463,7 +1477,52 @@ function cloudFixture(
     },
     sessions: { recoverUnauthorized },
   });
-  return { hostRequests, recoverUnauthorized, selected, transport };
+  return {
+    hostRequests,
+    id: selected.authority.document.deploymentId,
+    recoverUnauthorized,
+    selected,
+    transport,
+  };
+}
+
+const routeOrigin = "https://renderer.invalid";
+
+/** Main's Host route as the bundled app's frame reaches it. */
+function routeFetch(
+  transport: DesktopHostTransport,
+  initiatorOrigin = "app://opensteer",
+): typeof globalThis.fetch {
+  return async (input, init) => {
+    const request = Object.assign(new Request(input, init), { initiatorOrigin });
+    const response = await forwardHostRoute(request, transport);
+    // As fetch does, a caller's abort wins over whatever main answers.
+    request.signal.throwIfAborted();
+    return response;
+  };
+}
+
+/** The renderer's own adapter over that route, pinned to one Deployment. */
+function hostFetch(transport: DesktopHostTransport, deploymentId: DeploymentId) {
+  return createDesktopHostFetch(routeOrigin, deploymentId, routeFetch(transport));
+}
+
+async function send(
+  transport: DesktopHostTransport,
+  deploymentId: DeploymentId,
+  path: string,
+  init: RequestInit = {},
+) {
+  const response = await hostFetch(transport, deploymentId)(`${routeOrigin}${path}`, init);
+  return { body: await response.text(), headers: response.headers, status: response.status };
+}
+
+/** The shared transport alone, for routing and recovery rules that do not depend on the route. */
+function get(transport: SharedHostTransport, path: string) {
+  return transport.exchange({ headers: {}, method: "GET", path }, async (response) => ({
+    body: await response.text(),
+    status: response.status,
+  }));
 }
 
 function deployment(name: string, canonicalOrigin: string, kind: "personal" | "team" = "team") {
@@ -1632,7 +1691,10 @@ it("keeps a passkey request's origin, options and client data in main", async ()
   try {
     await transport.openWebSocket(
       7,
-      { path: `/v1/browser-sessions/${sessionId}/connect?passkeys=native` },
+      {
+        expectedDeploymentId: selected.authority.document.deploymentId,
+        path: `/v1/browser-sessions/${sessionId}/connect?passkeys=native`,
+      },
       (event) => {
         if (event.type === "text") renderer.push(JSON.parse(event.data));
       },
@@ -1704,7 +1766,10 @@ it("holds passkey messages in main before renderer delivery and binds native inp
   try {
     const { connectionId } = await transport.openWebSocket(
       7,
-      { path: `/v1/browser-sessions/${sessionId}/connect?passkeys=native` },
+      {
+        expectedDeploymentId: selected.authority.document.deploymentId,
+        path: `/v1/browser-sessions/${sessionId}/connect?passkeys=native`,
+      },
       (event) => {
         if (event.type === "text") trace.push("renderer");
       },
@@ -1937,7 +2002,7 @@ it("bounds app streams independently so a full app pool leaves ordinary Host req
     };
     for (let index = 0; index < 32; index++) responses.push(await transport.streamApp(appRequest));
     expect(
-      await transport.request({ path: "/v1/rpc/auth.config", method: "GET", headers: {} }),
+      await send(transport, selected.authority.document.deploymentId, "/v1/rpc/auth.config"),
     ).toMatchObject({ status: 200, body: "ordinary response" });
     await expect(transport.streamApp(appRequest)).rejects.toThrow(/app.*limit/i);
 
@@ -1961,13 +2026,10 @@ it("refuses a return proof when main selects B before processing renderer A's re
     network: { request, openWebSocket: () => socket() },
   });
   await transport.current();
-  const bridge = {
-    hostRequest: async (input: unknown) => ({ ok: true, data: await transport.request(input) }),
-  } as unknown as OpensteerDesktopBridge;
   const fetch = createDesktopHostFetch(
-    bridge,
     first.authority.document.canonicalOrigin,
     deploymentId,
+    routeFetch(transport),
   );
   await catalog.select(second.authority.document.deploymentId);
   try {
@@ -1999,6 +2061,118 @@ it("refuses a return proof when main selects B before processing renderer A's re
   }
 });
 
+describe("Desktop Host route", () => {
+  it("delivers a file's exact bytes and content headers, and uploads exact bytes", async () => {
+    const selected = deployment("Home", "https://home.connect.opensteer.test", "personal");
+    const id = selected.authority.document.deploymentId;
+    // Not valid UTF-8 and larger than any IPC chunk: a text path would refuse or alter it.
+    const image = Uint8Array.from(
+      { length: 512 * 1_024 + 7 },
+      (_, index) => (index * 37 + 0x80) & 255,
+    );
+    image.set([0xef, 0xbb, 0xbf], 0);
+    const requests: HostNetworkRequest[] = [];
+    const uploads: Uint8Array[] = [];
+    const transport = desktopHostTransport({
+      catalog: catalogStore([selected], id),
+      network: {
+        openWebSocket: () => socket(),
+        request: async (input) => {
+          requests.push(input);
+          if (input.request.path.startsWith("/v1/rpc/attachment.upload")) {
+            uploads.push(new Uint8Array(await (input.request.body as Blob).arrayBuffer()));
+            return Response.json({ ok: false, error: { code: "conflict", message: "seen" } });
+          }
+          return new Response(image, {
+            headers: {
+              "content-type": "image/png",
+              etag: '"rev-1"',
+              "last-modified": "Tue, 17 Nov 2026 10:00:00 GMT",
+              "set-cookie": "host-session=secret; HttpOnly",
+              "x-opensteer-file-size": String(image.byteLength),
+            },
+          });
+        },
+      },
+    });
+    const rpc = createHttpHostApiClient({
+      baseUrl: new URL(routeOrigin),
+      fetch: hostFetch(transport, id),
+      onAuthenticationRequired: () => undefined,
+    });
+    try {
+      const file = await rpc["file.content"]({
+        threadId: null,
+        resource: { kind: "home", key: "Pictures/screenshot.png", revision: "rev-1" },
+      });
+      expect(file.ok, file.ok ? "" : file.error.message).toBe(true);
+      if (!file.ok) return;
+      expect(Buffer.from(file.data.bytes).equals(image)).toBe(true);
+      expect(file.data.metadata).toMatchObject({
+        contentType: "image/png",
+        etag: '"rev-1"',
+        modifiedAt: "2026-11-17T10:00:00.000Z",
+        sizeBytes: image.byteLength,
+      });
+      const raw = await hostFetch(transport, id)(`${routeOrigin}/v1/rpc/file.content?input=%7B%7D`);
+      expect(raw.headers.get("set-cookie")).toBeNull();
+      expect(raw.headers.get("content-security-policy")).toContain("sandbox");
+      await raw.body?.cancel();
+
+      await rpc["attachment.upload"](
+        { attachmentId: createId("attachment") },
+        { body: new Blob([image]) },
+      );
+      expect(uploads).toHaveLength(1);
+      expect(Buffer.from(uploads[0]!).equals(image)).toBe(true);
+      expect(requests.at(-1)!.request.headers.contentType).toBe("application/octet-stream");
+    } finally {
+      transport.dispose();
+    }
+  });
+
+  it.each(["before headers", "mid-body"] as const)(
+    "aborts the Host request when the renderer cancels %s",
+    async (stage) => {
+      const selected = deployment("Home", "https://home.connect.opensteer.test", "personal");
+      const id = selected.authority.document.deploymentId;
+      const headers = Promise.withResolvers<Response>();
+      let upstream: AbortSignal | undefined;
+      const transport = desktopHostTransport({
+        catalog: catalogStore([selected], id),
+        network: {
+          openWebSocket: () => socket(),
+          request: async (input) => {
+            upstream = input.signal;
+            return headers.promise;
+          },
+        },
+      });
+      try {
+        const controller = new AbortController();
+        const pending = hostFetch(transport, id)(
+          `${routeOrigin}/v1/rpc/file.content?input=%7B%7D`,
+          {
+            signal: controller.signal,
+          },
+        );
+        await vi.waitFor(() => expect(upstream).toBeDefined(), { timeout: 1_000 });
+        if (stage === "before headers") {
+          controller.abort(new Error("Viewer closed"));
+          await expect(pending).rejects.toThrow("Viewer closed");
+        } else {
+          headers.resolve(new Response(new ReadableStream<Uint8Array>({ start: () => undefined })));
+          await (await pending).body!.cancel();
+        }
+        await vi.waitFor(() => expect(upstream!.aborted).toBe(true), { timeout: 1_000 });
+      } finally {
+        headers.resolve(new Response(null));
+        transport.dispose();
+      }
+    },
+  );
+});
+
 describe("joined team routing", () => {
   it("pins RPC, sockets and file bytes to each team while Personal selection changes", async () => {
     const personal = deployment("Personal", "http://127.0.0.1:4310", "personal");
@@ -2025,7 +2199,9 @@ describe("joined team routing", () => {
       network: {
         request: async (input) => {
           requests.push(input);
-          return new Response(input.request.body ?? "team-file");
+          return new Response(
+            input.request.body instanceof Blob ? input.request.body : "team-file",
+          );
         },
         openWebSocket: (input) => {
           const network = socket();
@@ -2038,43 +2214,26 @@ describe("joined team routing", () => {
       for (const team of teams) {
         const expectedDeploymentId = team.authority.document.deploymentId;
         const origin = team.authority.document.canonicalOrigin;
-        await transport.request({
-          expectedDeploymentId,
-          headers: { apiVersion: "999" },
-          method: "GET",
-          path: "/v1/rpc/team.bootstrap",
-        });
+        const fetch = hostFetch(transport, expectedDeploymentId);
+        const version = { [teamApiVersionHeader]: "999" };
+        await fetch(`${routeOrigin}/v1/rpc/team.bootstrap`, { headers: version });
         await transport.openWebSocket(7, { expectedDeploymentId, path: "/v1/realtime" }, vi.fn());
-        const download = await transport.openBinary(7, {
-          expectedDeploymentId,
-          headers: { apiVersion: "999" },
-          method: "GET",
-          path: "/v1/team/files/file_1/original",
+        const download = await fetch(`${routeOrigin}/v1/team/files/file_1/original`, {
+          headers: version,
         });
-        expect(await transport.readBinary(7, download)).toMatchObject({
-          bytes: new TextEncoder().encode("team-file"),
-          done: true,
-        });
-        await transport.closeBinary(7, download);
+        expect(await download.text()).toBe("team-file");
         const metadata = '{"filename":"example.txt"}';
-        const upload = await transport.openBinary(7, {
-          expectedDeploymentId,
+        const upload = await fetch(`${routeOrigin}/v1/team/files/upload/channel_1`, {
+          body: new Blob(["uploaded-file"]),
           headers: {
-            apiVersion: "999",
-            contentType: "application/octet-stream",
-            teamUpload: metadata,
+            ...version,
+            "content-type": "application/octet-stream",
+            "x-opensteer-team-upload": metadata,
           },
           method: "POST",
-          path: "/v1/team/files/upload/channel_1",
         });
-        await transport.writeBinary(7, {
-          ...upload,
-          bytes: new TextEncoder().encode("uploaded-file"),
-        });
-        expect(await transport.finishBinary(7, upload)).toMatchObject({
-          body: "uploaded-file",
-          status: 200,
-        });
+        expect(upload.status).toBe(200);
+        expect(await upload.text()).toBe("uploaded-file");
         const routed = requests.filter((input) => input.deploymentId === expectedDeploymentId);
         expect(routed).toHaveLength(3);
         for (const input of routed) {
@@ -2097,15 +2256,10 @@ describe("joined team routing", () => {
       }
       await transport.select({ deploymentId: other.authority.document.deploymentId });
       expect(sockets.every(({ network }) => network.close.mock.calls.length === 0)).toBe(true);
-      await transport.request({ headers: {}, method: "GET", path: "/v1/rpc/bootstrap.get" });
+      await send(transport, other.authority.document.deploymentId, "/v1/rpc/bootstrap.get");
       expect(requests.at(-1)!.deploymentId).toBe(other.authority.document.deploymentId);
       for (const team of teams)
-        await transport.request({
-          expectedDeploymentId: team.authority.document.deploymentId,
-          headers: {},
-          method: "GET",
-          path: "/v1/rpc/team.bootstrap",
-        });
+        await send(transport, team.authority.document.deploymentId, "/v1/rpc/team.bootstrap");
       expect(sockets.every(({ network }) => network.close.mock.calls.length === 0)).toBe(true);
     } finally {
       transport.dispose();
@@ -2133,14 +2287,14 @@ describe("joined team routing", () => {
     const transport = desktopHostTransport({ catalog, network });
     try {
       const expectedDeploymentId = second.authority.document.deploymentId;
-      const bridge = {
-        hostRequest: async (input: unknown) => ({ ok: true, data: await transport.request(input) }),
-      } as unknown as OpensteerDesktopBridge;
       await expect(
-        readComputerFacts(bridge, {
-          id: expectedDeploymentId,
-          canonicalOrigin: second.authority.document.canonicalOrigin,
-        } as DeploymentAccessDeployment),
+        readComputerFacts(
+          {
+            id: expectedDeploymentId,
+            canonicalOrigin: second.authority.document.canonicalOrigin,
+          } as DeploymentAccessDeployment,
+          routeFetch(transport),
+        ),
       ).resolves.toEqual({ homeName: null, needsYou: 3, unread: true, teams: [] });
       expect(network.request.mock.calls.map(([request]) => request.request.method)).toEqual([
         "POST",
@@ -2155,20 +2309,10 @@ describe("joined team routing", () => {
       );
       expect(network.openWebSocket).not.toHaveBeenCalled();
       await expect(
-        transport.request({
-          expectedDeploymentId,
-          headers: {},
-          method: "GET",
-          path: "/v1/rpc/tasks.list",
-        }),
+        send(transport, expectedDeploymentId, "/v1/rpc/tasks.list"),
       ).rejects.toMatchObject({ code: "deployment-changed" });
       await expect(
-        transport.request({
-          expectedDeploymentId,
-          headers: {},
-          method: "GET",
-          path: "/v1/rpc/attention.get",
-        }),
+        send(transport, expectedDeploymentId, "/v1/rpc/attention.get"),
       ).rejects.toMatchObject({ code: "deployment-changed" });
       expect(network.request).toHaveBeenCalledTimes(2);
     } finally {
@@ -2193,23 +2337,10 @@ describe("joined team routing", () => {
         second.authority.document.deploymentId,
       ]) {
         await expect(
-          transport.request({
-            expectedDeploymentId,
-            headers: {},
-            method: "GET",
-            path: "/v1/rpc/bootstrap.get",
-          }),
+          send(transport, expectedDeploymentId, "/v1/rpc/bootstrap.get"),
         ).rejects.toMatchObject({ code: "deployment-changed" });
         await expect(
           transport.openWebSocket(7, { expectedDeploymentId, path: "/v1/realtime" }, vi.fn()),
-        ).rejects.toMatchObject({ code: "deployment-changed" });
-        await expect(
-          transport.openBinary(7, {
-            expectedDeploymentId,
-            headers: {},
-            method: "GET",
-            path: "/v1/team/files/file_1/original",
-          }),
         ).rejects.toMatchObject({ code: "deployment-changed" });
       }
       expect(network.request).not.toHaveBeenCalled();
@@ -2245,44 +2376,6 @@ it("refuses a pinned Personal socket if selection changes during the final crede
       ),
     ).rejects.toMatchObject({ code: "deployment-changed" });
     expect(openWebSocket).not.toHaveBeenCalled();
-  } finally {
-    transport.dispose();
-  }
-});
-
-it("admits team originals beyond the Personal transfer limit and keeps previews bounded", async () => {
-  const team = deployment("Acme", "https://acme.example");
-  const expectedDeploymentId = team.authority.document.deploymentId;
-  const size = 25 * 1024 * 1024 + 1;
-  const transport = desktopHostTransport({
-    catalog: catalogStore([team], expectedDeploymentId),
-    network: {
-      openWebSocket: () => socket(),
-      request: async (input) =>
-        new Response(
-          new Uint8Array(input.request.path.endsWith("/preview") ? 64 * 1024 + 1 : size),
-        ),
-    },
-  });
-  try {
-    const original = await transport.openBinary(7, {
-      expectedDeploymentId,
-      method: "GET",
-      headers: {},
-      path: "/v1/team/files/file_1/original",
-    });
-    expect(await transport.readBinary(7, original)).toMatchObject({ sizeBytes: size, done: false });
-    await transport.closeBinary(7, original);
-    const preview = await transport.openBinary(7, {
-      expectedDeploymentId,
-      method: "GET",
-      headers: {},
-      path: "/v1/team/files/file_1/preview",
-    });
-    await expect(transport.readBinary(7, preview)).rejects.toMatchObject({
-      code: "response-too-large",
-    });
-    await transport.closeBinary(7, preview);
   } finally {
     transport.dispose();
   }

@@ -27,11 +27,11 @@ import {
   type BrowserServerMessage,
 } from "@opensteer/protocol";
 import {
+  parseDesktopHostRoute,
   DesktopHostWebSocketEventSchema,
   DesktopOpenHostWebSocketResultSchema,
   DisplayClientDiagnosticSchema,
   type DesktopCloseHostWebSocketInput,
-  type DesktopHostHttpRequest,
   type DesktopHostWebSocketCommand,
   type DesktopHostWebSocketEvent,
   type DesktopOpenHostWebSocketInput,
@@ -53,7 +53,6 @@ import { assertAuthorizedRenderer, type DesktopBridgeContext } from "../src/brid
 import { desktopBridgeChannels } from "../src/bridge/desktop-bridge-channels.js";
 import {
   handleCloseHostWebSocket,
-  handleHostRequest,
   handleOpenHostWebSocket,
   handleSendHostWebSocket,
 } from "../src/bridge/methods/host.js";
@@ -164,24 +163,6 @@ const bridge = {
   options: {
     bridgeToken: token,
     hostTransport: {
-      request: async (input: DesktopHostHttpRequest) => {
-        const response = await fetch(new URL(input.path, fixtureOrigin), {
-          method: input.method,
-          ...(input.body === undefined ? {} : { body: input.body }),
-          headers: {
-            ...(input.headers.accept ? { accept: input.headers.accept } : {}),
-            ...(input.headers.contentType ? { "content-type": input.headers.contentType } : {}),
-            ...(input.headers.apiVersion
-              ? { [hostApiVersionHeader]: input.headers.apiVersion }
-              : {}),
-          },
-        });
-        return {
-          status: response.status,
-          headers: { contentType: response.headers.get("content-type") },
-          body: await response.text(),
-        };
-      },
       openWebSocket: async (
         owner: number,
         input: DesktopOpenHostWebSocketInput,
@@ -229,12 +210,10 @@ const bridge = {
         if (held?.owner === owner) held.socket.close(input.code, input.reason);
       },
       closeSocketsForOwner: closeHostSockets,
-      closeBinaryForOwner: async () => {},
     },
   },
 } as unknown as DesktopBridgeContext;
 const hostHandlers = [
-  [desktopBridgeChannels.hostRequest, handleHostRequest(bridge)],
   [desktopBridgeChannels.openHostWebSocket, handleOpenHostWebSocket(bridge)],
   [desktopBridgeChannels.sendHostWebSocket, handleSendHostWebSocket(bridge)],
   [desktopBridgeChannels.closeHostWebSocket, handleCloseHostWebSocket(bridge)],
@@ -391,6 +370,18 @@ async function main() {
       "remote editor",
     );
     protocol.handle("app", async (request) => {
+      const route = parseDesktopHostRoute(request.url);
+      if (route)
+        return fetch(new URL(route.path, fixtureOrigin), {
+          method: request.method,
+          ...(request.body ? { body: await request.arrayBuffer() } : {}),
+          headers: Object.fromEntries(
+            ["accept", "content-type", hostApiVersionHeader].flatMap((name) => {
+              const value = request.headers.get(name);
+              return value === null ? [] : [[name, value]];
+            }),
+          ),
+        });
       const url = new URL(request.url);
       if (url.pathname === "/viewer.js" || url.pathname === "/viewer.css")
         return new Response(

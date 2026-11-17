@@ -76,12 +76,6 @@ import {
 } from "./methods/connections.js";
 import {
   handleCloseHostWebSocket,
-  handleHostRequest,
-  handleHostBinaryOpen,
-  handleHostBinaryWrite,
-  handleHostBinaryFinish,
-  handleHostBinaryRead,
-  handleHostBinaryClose,
   handleOpenHostWebSocket,
   handleSendHostWebSocket,
 } from "./methods/host.js";
@@ -339,12 +333,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     handleGetDeploymentAccessSnapshot(context),
   );
   register(desktopBridgeChannels.getLocalExecutionStatus, handleGetLocalExecutionStatus(context));
-  register(desktopBridgeChannels.hostRequest, handleHostRequest(context));
-  register(desktopBridgeChannels.hostBinaryOpen, handleHostBinaryOpen(context));
-  register(desktopBridgeChannels.hostBinaryWrite, handleHostBinaryWrite(context));
-  register(desktopBridgeChannels.hostBinaryFinish, handleHostBinaryFinish(context));
-  register(desktopBridgeChannels.hostBinaryRead, handleHostBinaryRead(context));
-  register(desktopBridgeChannels.hostBinaryClose, handleHostBinaryClose(context));
   register(
     desktopBridgeChannels.issuePersonalAccountLinkChallenge,
     handleIssuePersonalAccountLinkChallenge(context),

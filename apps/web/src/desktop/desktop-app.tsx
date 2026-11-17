@@ -250,18 +250,21 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       ...(bridge.iphoneSetup ? { iphoneSetup: bridge.iphoneSetup } : {}),
       baseUrl: selected.canonicalOrigin,
       capabilities: selectedConnection?.capabilities ?? null,
-      fetch: createDesktopHostFetch(bridge, selected.canonicalOrigin, selected.id),
-      bufferedResponses: true,
+      fetch: createDesktopHostFetch(selected.canonicalOrigin, selected.id),
       // Desktop main holds the sockets; hiding or covering the window never closes them.
       lifecycle: browserClientLifecycle({ socketTrustWindowMs: Number.POSITIVE_INFINITY }),
-      webSocketFactory: createDesktopHostWebSocketFactory(bridge, selected.canonicalOrigin),
+      webSocketFactory: createDesktopHostWebSocketFactory(
+        bridge,
+        selected.canonicalOrigin,
+        selected.id,
+      ),
     });
   }, [bridge, hostTransportIdentity, passkeyMode]);
 
   useEffect(() => () => hostClient?.dispose(), [hostClient]);
 
   const facts = useMemo(
-    () => new ComputerFactsStore((computer) => readComputerFacts(bridge, computer)),
+    () => new ComputerFactsStore((computer) => readComputerFacts(computer)),
     [bridge],
   );
   const places = useMemo<DesktopPlaces | null>(

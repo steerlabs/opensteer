@@ -790,26 +790,6 @@ function runnerController() {
 
 function hostTransport(deploymentId = createId("deployment")) {
   return {
-    closeBinary: vi.fn(async () => undefined),
-    closeBinaryForOwner: vi.fn(async () => undefined),
-    openBinary: vi.fn(async () => ({ transferId: crypto.randomUUID() })),
-    writeBinary: vi.fn(async () => undefined),
-    finishBinary: vi.fn(async () => ({
-      body: "{}",
-      headers: { contentType: "application/json" },
-      status: 200,
-    })),
-    readBinary: vi.fn(async () => ({
-      bytes: new Uint8Array(),
-      contentType: "application/octet-stream",
-      done: true,
-      etag: null,
-      fileSizeBytes: null,
-      fileTruncated: null,
-      lastModified: null,
-      sizeBytes: 0,
-      status: 200,
-    })),
     closeSocketsForOwner: vi.fn(),
     closeWebSocket: vi.fn(),
     current: vi.fn(
@@ -820,11 +800,6 @@ function hostTransport(deploymentId = createId("deployment")) {
     ),
     integrationAuthorizationOrigin: vi.fn(async () => "https://host.example.test"),
     openWebSocket: vi.fn(),
-    request: vi.fn(async () => ({
-      body: "{}",
-      headers: { contentType: "application/json" },
-      status: 200,
-    })),
     sendWebSocket: vi.fn(),
   };
 }

@@ -1,9 +1,6 @@
 import { DeploymentIdSchema } from "@opensteer/core";
 import { createHttpHostApiClient, unwrapRpcResult } from "@opensteer/client/host";
-import type {
-  DeploymentAccessDeployment,
-  OpensteerDesktopBridge,
-} from "@opensteer/protocol/desktop";
+import type { DeploymentAccessDeployment } from "@opensteer/protocol/desktop";
 import { createDesktopHostFetch } from "./desktop-host-transport.js";
 
 export interface ComputerFacts {
@@ -19,15 +16,15 @@ export interface ComputerFacts {
 }
 
 export async function readComputerFacts(
-  bridge: OpensteerDesktopBridge,
   computer: DeploymentAccessDeployment,
+  fetch?: typeof globalThis.fetch,
 ): Promise<ComputerFacts> {
   const rpc = createHttpHostApiClient({
     baseUrl: new URL(computer.canonicalOrigin),
     fetch: createDesktopHostFetch(
-      bridge,
       computer.canonicalOrigin,
       DeploymentIdSchema.parse(computer.id),
+      fetch,
     ),
     kind: "personal",
     onAuthenticationRequired: () => undefined,
@@ -44,7 +41,7 @@ export async function readComputerFacts(
       .map(async (link) => {
         const team = createHttpHostApiClient({
           baseUrl: new URL(link.origin),
-          fetch: createDesktopHostFetch(bridge, link.origin, DeploymentIdSchema.parse(link.teamId)),
+          fetch: createDesktopHostFetch(link.origin, DeploymentIdSchema.parse(link.teamId), fetch),
           kind: "team",
           onAuthenticationRequired: () => undefined,
         });

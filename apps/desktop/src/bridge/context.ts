@@ -173,17 +173,10 @@ export interface DesktopBridgeOptions {
   readonly hostTransport: Pick<
     DesktopHostTransport,
     | "closeSocketsForOwner"
-    | "closeBinaryForOwner"
-    | "openBinary"
-    | "writeBinary"
-    | "finishBinary"
-    | "readBinary"
-    | "closeBinary"
     | "closeWebSocket"
     | "current"
     | "integrationAuthorizationOrigin"
     | "openWebSocket"
-    | "request"
     | "sendWebSocket"
   >;
   readonly ipcMain: Pick<IpcMain, "handle" | "removeHandler">;

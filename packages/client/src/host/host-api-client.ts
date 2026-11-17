@@ -48,8 +48,6 @@ export interface HttpHostApiClientOptions {
   readonly baseUrl: URL;
   readonly kind?: "personal" | "team";
   readonly fetch: Fetch;
-  /** IPC adapters return buffered bodies together with their headers. */
-  readonly bufferedResponses?: boolean;
   readonly assertResponseCurrent?: (response: Response) => void;
   readonly onAuthenticationRequired: () => void;
   readonly onVersionMismatch?: () => void;
@@ -199,15 +197,13 @@ async function request<Name extends keyof typeof hostApi>(
     "type" in payload &&
     (payload.type === "tab.open" || payload.type === "tab.activate")
       ? 25_000
-      : options.bufferedResponses
-        ? bufferedHostResponseTimeoutMs(maximumBytes)
-        : "binaryRequest" in declaration
-          ? bufferedHostResponseTimeoutMs(
-              call?.body instanceof Uint8Array
-                ? call.body.byteLength
-                : (call?.body?.size ?? attachmentMaxBytes),
-            )
-          : hostResponseHeadersTimeoutMs;
+      : "binaryRequest" in declaration
+        ? bufferedHostResponseTimeoutMs(
+            call?.body instanceof Uint8Array
+              ? call.body.byteLength
+              : (call?.body?.size ?? attachmentMaxBytes),
+          )
+        : hostResponseHeadersTimeoutMs;
   const stallTimeoutMs = hostResponseStallTimeoutMs;
   // Only a failure before any response arrived says the Host is out of reach;
   // a response that then can't be read is a broken answer, not a lost connection.

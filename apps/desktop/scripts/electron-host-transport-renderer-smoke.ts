@@ -1,23 +1,19 @@
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
-import { HostTransportError } from "@opensteer/client/connections";
-import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
+import { createId, DeploymentIdSchema } from "@opensteer/core";
 import { createDesktopHostFetch } from "../../web/src/desktop/desktop-host-transport.js";
 
 declare global {
   interface Window {
-    hostTransportSmoke: (origin: string, action: "rpc" | "abort" | "binary") => Promise<unknown>;
+    hostTransportSmoke: (
+      origin: string,
+      deploymentId: string,
+      action: "rpc" | "abort" | "binary",
+    ) => Promise<unknown>;
   }
 }
 
-window.hostTransportSmoke = async (origin, action) => {
-  const bridge = Reflect.get(window, "opensteerDesktop") as OpensteerDesktopBridge;
-  const fetch = createDesktopHostFetch(
-    {
-      ...bridge,
-      hostRequest: (input) => bridge.hostRequest({ ...input, timeoutMs: 500 }),
-    },
-    origin,
-  );
+window.hostTransportSmoke = async (origin, deploymentId, action) => {
+  const fetch = createDesktopHostFetch(origin, DeploymentIdSchema.parse(deploymentId));
   if (action === "abort") {
     const controller = new AbortController();
     const reason = new DOMException("Caller stopped this request.", "AbortError");
@@ -31,19 +27,15 @@ window.hostTransportSmoke = async (origin, action) => {
       return { callerReasonPreserved: true };
     }
   }
-  if (action === "binary") {
-    try {
-      const response = await fetch(`${origin}/v1/rpc/attachment.content?input=%7B%7D`);
-      await response.arrayBuffer();
-      throw new Error("Oversized binary response was accepted.");
-    } catch (error) {
-      if (!(error instanceof HostTransportError)) throw error;
-      return { code: error.code, retryable: error.retryable };
-    }
-  }
-  return createHttpHostApiClient({
+  const client = createHttpHostApiClient({
     baseUrl: new URL(origin),
     fetch,
     onAuthenticationRequired: () => undefined,
-  })["auth.config"]({});
+  });
+  if (action === "binary") {
+    const result = await client["attachment.content"]({ attachmentId: createId("attachment") });
+    if (result.ok) throw new Error("Oversized binary response was accepted.");
+    return { code: result.error.reason, retryable: result.error.retryable };
+  }
+  return client["auth.config"]({});
 };

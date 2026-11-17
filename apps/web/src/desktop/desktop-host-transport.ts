@@ -1,193 +1,52 @@
 import type { DeploymentId } from "@opensteer/core";
-import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { HostTransportError } from "@opensteer/client/connections";
 import {
-  hostApiCurrentHeader,
-  hostApiVersionHeader,
-  teamApiVersionHeader,
-} from "@opensteer/protocol";
-import type {
-  DesktopCloseHostWebSocketInput,
-  DesktopHostWebSocketEvent,
-  DesktopHostResult,
-  OpensteerDesktopBridge,
+  DesktopHostTransportErrorCodeSchema,
+  desktopHostRouteUrl,
+  desktopHostTransportErrorHeader,
+  type DesktopCloseHostWebSocketInput,
+  type DesktopHostWebSocketEvent,
+  type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import type { WebSocketClient } from "@opensteer/client/host";
 
 const socketRegistries = new WeakMap<OpensteerDesktopBridge, DesktopHostSocketRegistry>();
 
+/**
+ * Host HTTP for the bundled UI: the same request, sent to desktop main's Host
+ * route for this Deployment, which answers with the Host's own response.
+ */
 export function createDesktopHostFetch(
-  bridge: OpensteerDesktopBridge,
   canonicalOrigin: string,
-  expectedDeploymentId?: DeploymentId,
+  deploymentId: DeploymentId,
+  fetch: typeof globalThis.fetch = (input, init) => globalThis.fetch(input, init),
 ): typeof globalThis.fetch {
   const origin = new URL(canonicalOrigin).origin;
   return async (input, init) => {
     const request = new Request(input, init);
-    request.signal.throwIfAborted();
     const url = new URL(request.url);
     if (url.origin !== origin) {
       throw new Error("The bundled UI cannot contact a Host other than the selected Deployment.");
     }
-    const headers = hostRequestHeaders(request.headers);
-    if (
-      url.pathname === "/v1/rpc/attachment.upload" ||
-      url.pathname === "/v1/rpc/attachment.content"
-    ) {
-      return binaryHostRequest(bridge, request, url, headers);
-    }
-    const body = request.method === "GET" ? undefined : await request.text();
-    request.signal.throwIfAborted();
-    const result = await hostBridgeResult(
-      bridge.hostRequest({
-        ...(expectedDeploymentId ? { expectedDeploymentId } : {}),
-        ...(body ? { body } : {}),
-        headers: {
-          ...headers,
-          contentType: headers.contentType === "application/json" ? "application/json" : undefined,
-        },
-        method: hostMethod(request.method),
-        path: `${url.pathname}${url.search}`,
-      }),
-      request.signal,
+    const response = await fetch(desktopHostRouteUrl(deploymentId, url), {
+      // Plain bytes reach main's handler as one upload element, whatever the caller sent.
+      ...(request.body ? { body: await request.arrayBuffer() } : {}),
+      headers: request.headers,
+      method: request.method,
+      signal: request.signal,
+    });
+    const failure = DesktopHostTransportErrorCodeSchema.safeParse(
+      response.headers.get(desktopHostTransportErrorHeader),
     );
-    return new Response(result.status === 204 ? null : result.body, {
-      headers: result.headers.contentType ? { "content-type": result.headers.contentType } : {},
-      status: result.status,
-    });
+    if (failure.success) throw new HostTransportError(failure.data);
+    return response;
   };
-}
-
-async function binaryHostRequest(
-  bridge: OpensteerDesktopBridge,
-  request: Request,
-  url: URL,
-  headers: ReturnType<typeof hostRequestHeaders>,
-): Promise<Response> {
-  const upload = url.pathname === "/v1/rpc/attachment.upload";
-  if (upload && request.method !== "POST") throw new Error("Attachment upload requires POST.");
-  if (!upload && request.method !== "GET") throw new Error("Attachment content requires GET.");
-  const opened = await bridge.hostBinaryOpen({
-    headers: {
-      ...(headers.accept ? { accept: headers.accept } : {}),
-      ...(headers.apiVersion ? { apiVersion: headers.apiVersion } : {}),
-      ...(headers.apiCurrent ? { apiCurrent: headers.apiCurrent } : {}),
-      ...(upload ? { contentType: "application/octet-stream" as const } : {}),
-    },
-    method: upload ? "POST" : "GET",
-    path: `${url.pathname}${url.search}`,
-    timeoutMs: 120_000,
-  });
-  const { transferId } = unwrapHostResult(opened);
-  const transfer = { transferId };
-  let closed = false;
-  const close = async (): Promise<void> => {
-    if (closed) return;
-    closed = true;
-    request.signal.removeEventListener("abort", abort);
-    await bridge.hostBinaryClose(transfer).catch(() => undefined);
-  };
-  const abort = (): void => {
-    void close();
-  };
-  request.signal.addEventListener("abort", abort, { once: true });
-  try {
-    request.signal.throwIfAborted();
-    if (upload) {
-      if (!request.body) throw new Error("Attachment upload has no body.");
-      for await (const part of request.body) {
-        if (request.signal.aborted) throw request.signal.reason;
-        for (let offset = 0; offset < part.byteLength; offset += 256 * 1_024) {
-          await hostBridgeResult(
-            bridge.hostBinaryWrite({
-              bytes: part.subarray(offset, offset + 256 * 1_024),
-              transferId,
-            }),
-            request.signal,
-          );
-        }
-      }
-      const result = await hostBridgeResult(bridge.hostBinaryFinish(transfer), request.signal);
-      closed = true;
-      return new Response(result.status === 204 ? null : result.body, {
-        headers: result.headers.contentType ? { "content-type": result.headers.contentType } : {},
-        status: result.status,
-      });
-    }
-    const first = await hostBridgeResult(bridge.hostBinaryRead(transfer), request.signal);
-    let next: typeof first | null = first;
-    const stream = new ReadableStream<Uint8Array>({
-      async pull(controller) {
-        try {
-          if (request.signal.aborted) throw request.signal.reason;
-          const current =
-            next ?? (await hostBridgeResult(bridge.hostBinaryRead(transfer), request.signal));
-          next = null;
-          if (current.bytes.byteLength > 0) controller.enqueue(current.bytes);
-          if (current.done) {
-            controller.close();
-            await close();
-          }
-        } catch (error) {
-          controller.error(request.signal.aborted ? request.signal.reason : error);
-          await close();
-        }
-      },
-      async cancel() {
-        await close();
-      },
-    });
-    return new Response(stream, {
-      headers: {
-        ...(first.contentType ? { "content-type": first.contentType } : {}),
-        ...(first.etag ? { etag: first.etag } : {}),
-        ...(first.lastModified ? { "last-modified": first.lastModified } : {}),
-        ...(first.fileSizeBytes !== null
-          ? { "x-opensteer-file-size": String(first.fileSizeBytes) }
-          : {}),
-        ...(first.fileTruncated !== null
-          ? { "x-opensteer-file-truncated": String(first.fileTruncated) }
-          : {}),
-      },
-      status: first.status,
-    });
-  } catch (error) {
-    await close();
-    if (request.signal.aborted) throw request.signal.reason;
-    throw error;
-  } finally {
-    if (upload) request.signal.removeEventListener("abort", abort);
-  }
-}
-
-function unwrapHostResult<Data>(result: DesktopHostResult<Data>): Data {
-  if (!result.ok) throw new HostTransportError(result.error.code);
-  return result.data;
-}
-
-async function hostBridgeResult<Data>(
-  pending: Promise<DesktopHostResult<Data>>,
-  signal: AbortSignal,
-): Promise<Data> {
-  let abort: (() => void) | undefined;
-  try {
-    const abandoned = new Promise<never>((_resolve, reject) => {
-      abort = () => reject(signal.reason);
-      if (signal.aborted) abort();
-      else signal.addEventListener("abort", abort, { once: true });
-    });
-    const result = await Promise.race([pending, abandoned]);
-    signal.throwIfAborted();
-    return unwrapHostResult(result);
-  } finally {
-    if (abort) signal.removeEventListener("abort", abort);
-  }
 }
 
 export function createDesktopHostWebSocketFactory(
   bridge: OpensteerDesktopBridge,
   canonicalOrigin: string,
-  expectedDeploymentId?: DeploymentId,
+  expectedDeploymentId: DeploymentId,
 ): (url: string) => WebSocketClient {
   const registry = desktopHostSocketRegistry(bridge);
   const origin = new URL(canonicalOrigin).origin;
@@ -234,13 +93,13 @@ class DesktopHostSocketRegistry {
     });
   }
 
-  create(path: string, expectedDeploymentId?: DeploymentId): DesktopHostWebSocket {
+  create(path: string, expectedDeploymentId: DeploymentId): DesktopHostWebSocket {
     const socket = new DesktopHostWebSocket(this.#bridge, (connectionId) => {
       if (this.#sockets.get(connectionId) === socket) this.#sockets.delete(connectionId);
     });
     this.#opening += 1;
     void this.#bridge
-      .openHostWebSocket({ path, ...(expectedDeploymentId ? { expectedDeploymentId } : {}) })
+      .openHostWebSocket({ path, expectedDeploymentId })
       .then(({ connectionId }) => {
         this.#sockets.set(connectionId, socket);
         const pending = this.#pending.get(connectionId) ?? [];
@@ -426,50 +285,4 @@ interface SocketEventMap {
   readonly error: Event;
   readonly message: MessageEvent<unknown>;
   readonly open: Event;
-}
-
-function hostMethod(value: string): "DELETE" | "GET" | "PATCH" | "POST" | "PUT" {
-  if (
-    value === "DELETE" ||
-    value === "GET" ||
-    value === "PATCH" ||
-    value === "POST" ||
-    value === "PUT"
-  )
-    return value;
-  throw new Error("The bundled UI requested an unsupported Host method.");
-}
-
-function hostRequestHeaders(headers: Headers): {
-  accept?: string;
-  apiVersion?: string;
-  apiCurrent?: string;
-  bootstrapDiagnostics?: string;
-  contentType?: "application/json" | "application/octet-stream";
-  idempotencyKey?: string;
-} {
-  const output: {
-    accept?: string;
-    apiVersion?: string;
-    apiCurrent?: string;
-    bootstrapDiagnostics?: string;
-    contentType?: "application/json" | "application/octet-stream";
-    idempotencyKey?: string;
-  } = {};
-  for (const [name, value] of headers) {
-    if (name === "accept") output.accept = value;
-    else if (name === bootstrapDiagnosticHeader) output.bootstrapDiagnostics = value;
-    // The main process names the header by the Host's signed kind.
-    else if (name === hostApiVersionHeader || name === teamApiVersionHeader)
-      output.apiVersion = value;
-    else if (name === hostApiCurrentHeader) output.apiCurrent = value;
-    else if (
-      name === "content-type" &&
-      (value === "application/json" || value === "application/octet-stream")
-    )
-      output.contentType = value;
-    else if (name === "idempotency-key") output.idempotencyKey = value;
-    else throw new Error(`The bundled UI cannot set the Host header ${name}.`);
-  }
-  return output;
 }

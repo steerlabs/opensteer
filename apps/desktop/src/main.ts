@@ -9,6 +9,7 @@ import {
   iphoneOwnershipRoot,
 } from "./iphone/bridge-paths.js";
 import { forwardMedia } from "./app/media-protocol.js";
+import { forwardHostRoute } from "./app/host-route.js";
 import { deploymentPolicy } from "@opensteer/core";
 import { DesktopTeamLinks } from "./app/team-links.js";
 import {
@@ -334,7 +335,10 @@ async function runDesktop(
     protocol,
     path.join(import.meta.dirname, "web"),
     (request) => reportEvent("desktop.app-protocol.slow", request),
-    (request) => forwardMedia(request, (id) => hostTransport.mediaTransport(id)),
+    {
+      host: (request) => forwardHostRoute(request, hostTransport),
+      media: (request) => forwardMedia(request, (id) => hostTransport.mediaTransport(id)),
+    },
   );
   const updater = new DesktopUpdater({
     updates: loaded.config.updates,

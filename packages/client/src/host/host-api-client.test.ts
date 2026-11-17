@@ -388,7 +388,7 @@ it("cancels a pending body read immediately with the caller's reason", async () 
   }
 });
 
-it("bounds buffered browser-open RPC headers independently of the generic response allowance", async () => {
+it("bounds browser-open RPC headers independently of the generic response allowance", async () => {
   vi.useFakeTimers();
   let signal: AbortSignal | null | undefined;
   const fetch = vi.fn<typeof globalThis.fetch>((_url, init) => {
@@ -398,7 +398,6 @@ it("bounds buffered browser-open RPC headers independently of the generic respon
   const client = createHttpHostApiClient({
     baseUrl: new URL("https://host.test"),
     fetch,
-    bufferedResponses: true,
     onAuthenticationRequired: vi.fn(),
   });
   try {

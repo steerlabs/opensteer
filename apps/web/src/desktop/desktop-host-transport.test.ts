@@ -1,5 +1,4 @@
 import { createId } from "@opensteer/core";
-import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import type {
   DesktopHostWebSocketEvent,
   OpensteerDesktopBridge,
@@ -122,81 +121,49 @@ describe("Desktop Host renderer adapter", () => {
     expect(replacement.readyState).toBe(1);
   });
 
-  it("converts selected-origin fetches into typed bridge requests", async () => {
-    const hostRequest = vi.fn(async () => ({
-      ok: true,
-      data: {
-        body: '{"ok":true}',
-        headers: { contentType: "application/json" },
-        status: 200,
-      },
-    }));
+  it("rewrites a selected-origin fetch onto main's pinned Host route and returns its response", async () => {
+    const answer = new Response(new Uint8Array([0xff, 0xfe, 0x00]), {
+      headers: { etag: '"v1"' },
+    });
+    const route = vi.fn<typeof globalThis.fetch>(async () => answer);
     const fetch = createDesktopHostFetch(
-      { hostRequest } as unknown as OpensteerDesktopBridge,
       "https://home.connect.opensteer.test",
       deploymentId,
+      route,
     );
 
     const response = await fetch("https://home.connect.opensteer.test/v1/workspaces?limit=10", {
       body: '{"name":"Home"}',
-      headers: {
-        accept: "application/json",
-        "content-type": "application/json",
-        "idempotency-key": "workspace:test",
-      },
+      headers: { "content-type": "application/json", "idempotency-key": "workspace:test" },
       method: "POST",
     });
 
-    expect(hostRequest).toHaveBeenCalledWith({
-      expectedDeploymentId: deploymentId,
-      body: '{"name":"Home"}',
-      headers: {
-        accept: "application/json",
-        contentType: "application/json",
-        idempotencyKey: "workspace:test",
-      },
-      method: "POST",
-      path: "/v1/workspaces?limit=10",
-    });
-    await expect(response.json()).resolves.toEqual({ ok: true });
-  });
-
-  it("relays bootstrap summaries through the existing request bridge", async () => {
-    const hostRequest = vi.fn(async () => ({
-      ok: true,
-      data: { body: "{}", headers: { contentType: "application/json" }, status: 200 },
-    }));
-    const fetch = createDesktopHostFetch(
-      { hostRequest } as unknown as OpensteerDesktopBridge,
-      "https://home.test",
-      deploymentId,
-    );
-    const summary = JSON.stringify({ windowMs: 3000, triggers: { load: 6 }, starts: { load: 6 } });
-    await fetch("https://home.test/v1/rpc/bootstrap.get", {
-      headers: { [bootstrapDiagnosticHeader]: summary },
-    });
-    expect(hostRequest).toHaveBeenCalledWith(
-      expect.objectContaining({
-        headers: expect.objectContaining({ bootstrapDiagnostics: summary }),
-      }),
-    );
-  });
-
-  it("rejects cross-Deployment requests and renderer-controlled privileged headers", async () => {
-    const fetch = createDesktopHostFetch(
-      { hostRequest: vi.fn() } as unknown as OpensteerDesktopBridge,
-      "https://home.connect.opensteer.test",
-      deploymentId,
-    );
-
+    expect(response).toBe(answer);
+    const [url, init] = route.mock.calls[0]!;
+    expect(url).toBe(`app://opensteer/host/${deploymentId}/v1/workspaces?limit=10`);
+    expect(init?.method).toBe("POST");
+    expect(new Headers(init?.headers).get("idempotency-key")).toBe("workspace:test");
+    expect(new TextDecoder().decode(init?.body as ArrayBuffer)).toBe('{"name":"Home"}');
     await expect(fetch("https://attacker.test/v1/bootstrap")).rejects.toThrow(
       "other than the selected Deployment",
     );
-    await expect(
-      fetch("https://home.connect.opensteer.test/v1/bootstrap", {
-        headers: { authorization: "Bearer renderer-controlled" },
-      }),
-    ).rejects.toThrow("cannot set the Host header authorization");
+    expect(route).toHaveBeenCalledOnce();
+  });
+
+  it("raises the transport failure main names instead of returning its placeholder", async () => {
+    const fetch = createDesktopHostFetch(
+      "https://home.test",
+      deploymentId,
+      async () =>
+        new Response(null, {
+          status: 502,
+          headers: { "x-opensteer-desktop-transport-error": "deployment-changed" },
+        }),
+    );
+    await expect(fetch("https://home.test/v1/rpc/bootstrap.get")).rejects.toMatchObject({
+      name: "HostTransportError",
+      code: "deployment-changed",
+    });
   });
 
   it("adapts sockets through one bridge listener and rejects cross-Deployment targets", async () => {
@@ -215,15 +182,21 @@ describe("Desktop Host renderer adapter", () => {
     const firstFactory = createDesktopHostWebSocketFactory(
       bridge,
       "https://home.connect.opensteer.test",
+      deploymentId,
     );
-    createDesktopHostWebSocketFactory(bridge, "https://home.connect.opensteer.test");
+    createDesktopHostWebSocketFactory(bridge, "https://home.connect.opensteer.test", deploymentId);
     expect(onHostWebSocketEvent).toHaveBeenCalledTimes(1);
     expect(() => firstFactory("wss://attacker.test/v1/realtime")).toThrow("another Deployment");
 
     const socket = firstFactory("wss://home.connect.opensteer.test/v1/realtime");
     const opened = vi.fn();
     socket.addEventListener("open", opened);
-    await vi.waitFor(() => expect(bridge.openHostWebSocket).toHaveBeenCalled());
+    await vi.waitFor(() =>
+      expect(bridge.openHostWebSocket).toHaveBeenCalledWith({
+        expectedDeploymentId: deploymentId,
+        path: "/v1/realtime",
+      }),
+    );
     receive!({ connectionId, type: "open" });
     expect(opened).toHaveBeenCalledTimes(1);
     socket.send("subscribe");
@@ -262,6 +235,7 @@ describe("Desktop Host renderer adapter", () => {
     const socket = createDesktopHostWebSocketFactory(
       bridge,
       "https://binary.connect.opensteer.test",
+      deploymentId,
     )("wss://binary.connect.opensteer.test/v1/computer-use/sessions/cus_1/display");
     socket.binaryType = "arraybuffer";
     const received: unknown[] = [];
@@ -296,7 +270,11 @@ function socketFixture() {
     }),
     sendHostWebSocket: vi.fn(async () => undefined),
   } as unknown as OpensteerDesktopBridge;
-  const factory = createDesktopHostWebSocketFactory(bridge, "https://home.connect.opensteer.test");
+  const factory = createDesktopHostWebSocketFactory(
+    bridge,
+    "https://home.connect.opensteer.test",
+    deploymentId,
+  );
   return {
     bridge,
     connectionId,
@@ -315,33 +293,3 @@ function socketFixture() {
     ) => receive!({ connectionId, ...event }),
   };
 }
-
-it("withholds IPC when authorization ends while the renderer reads a request body", async () => {
-  const controller = new AbortController();
-  const hostRequest = vi.fn();
-  const read = Request.prototype.text;
-  const reading = vi.spyOn(Request.prototype, "text").mockImplementation(async function (
-    this: Request,
-  ) {
-    const body = await read.call(this);
-    controller.abort(new Error("Account changed"));
-    return body;
-  });
-  try {
-    const fetch = createDesktopHostFetch(
-      { hostRequest } as unknown as OpensteerDesktopBridge,
-      "https://team.example",
-    );
-    await expect(
-      fetch("https://team.example/v1/rpc/commands.dispatch", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: "{}",
-        signal: controller.signal,
-      }),
-    ).rejects.toThrow("Account changed");
-    expect(hostRequest).not.toHaveBeenCalled();
-  } finally {
-    reading.mockRestore();
-  }
-});
