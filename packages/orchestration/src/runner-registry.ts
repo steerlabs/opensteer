@@ -2660,7 +2660,7 @@ export class RunnerRegistry {
           sessionBound: ack.sessionBound,
           throughOrdinal: ack.throughOrdinal,
         })),
-        type: "host.events.acked",
+        type: "host.executions.acked",
       })
       .catch(() => undefined);
   }

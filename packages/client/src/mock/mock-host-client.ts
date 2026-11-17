@@ -2481,15 +2481,10 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       rpcSuccess(
         hostApi["resources.detail.get"].success.parse({
           revision: String(client.getSnapshot().revision),
-          data: mockScopedResource(
-            hostApi["bootstrap.get"].success.parse(client.bootstrap()),
-            kind,
-          ),
+          data: mockScopedResource(client.bootstrap(), kind),
           next: null,
         }),
       ),
-    "bootstrap.get": async () =>
-      rpcSuccess(hostApi["bootstrap.get"].success.parse(client.bootstrap())),
     "tabs.get": async ({ tabId }) => {
       try {
         client.publishedSnapshot();

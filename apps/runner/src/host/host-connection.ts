@@ -1422,7 +1422,7 @@ export class AgentsWorkSession implements RunnerWorkSession {
       case "host.live.resync":
         this.#options.agents.runtime.resynchronizeLive(message.runId);
         return;
-      case "host.events.acked":
+      case "host.executions.acked":
         this.#options.agents.runtime.acknowledge(message.acks);
         return;
       case "host.executions.renewed":
@@ -2013,7 +2013,7 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
         // A computer that runs no agents holds no Runs to stop, resume or renew.
         case "host.runs.revoked":
         case "host.executions.attached":
-        case "host.events.acked":
+        case "host.executions.acked":
         case "host.executions.renewed":
           return;
       }

@@ -2077,7 +2077,7 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
       )
       .min(1)
       .max(1_000),
-    type: z.literal("host.events.acked"),
+    type: z.literal("host.executions.acked"),
   }),
   /**
    * The Host renewed these Runs' leases for `leaseMs` from the heartbeat sent

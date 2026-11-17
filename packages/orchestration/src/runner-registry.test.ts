@@ -1132,8 +1132,8 @@ describe("Runner connection registry", () => {
       },
       type: "runner.event",
     });
-    await waitFor(() => peer.messages.some((message) => message.type === "host.events.acked"));
-    expect(peer.messages.find((message) => message.type === "host.events.acked")).toEqual(
+    await waitFor(() => peer.messages.some((message) => message.type === "host.executions.acked"));
+    expect(peer.messages.find((message) => message.type === "host.executions.acked")).toEqual(
       expect.objectContaining({
         acks: [
           {

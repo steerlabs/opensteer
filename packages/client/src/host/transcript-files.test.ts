@@ -152,10 +152,8 @@ it("bounds UTF-8 cached text to 4 MiB and evicts the least recently used preview
 it("downloads schema-checked bytes on demand and coalesces identical resource revisions", async () => {
   const { controller, openFile, readFile } = setup();
   const resource = {
-    kind: "output-image" as const,
-    sequence: "123" as import("@opensteer/core").Sequence,
-    index: 1,
-    revision: "revision",
+    kind: "transcript-image" as const,
+    imageId: "transcript-image-1",
   };
   const threadId = createId("thread");
   const [first, second] = await Promise.all([

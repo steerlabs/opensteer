@@ -2008,7 +2008,7 @@ export class RunnerRuntime {
 
   /** Forgets what the Host has committed; nothing acknowledged is replayed again. */
   acknowledge(
-    acks: Extract<HostToRunnerMessage, { readonly type: "host.events.acked" }>["acks"],
+    acks: Extract<HostToRunnerMessage, { readonly type: "host.executions.acked" }>["acks"],
   ): void {
     for (const ack of acks) {
       const active = this.#runs.get(ack.runId) ?? this.#settledRuns.get(ack.runId);

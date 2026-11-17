@@ -641,7 +641,7 @@ export class ScopedThreadReader implements ThreadViewSource {
       value.item.nodeId !== item.nodeId ||
       value.item.runId !== item.runId ||
       value.item.attemptId !== item.attemptId ||
-      !matchesBody(item, value.body) ||
+      !(value.body === null ? value.truncated : matchesBody(item, value.body)) ||
       (value.body?.kind === "message" && value.body.message.threadId !== scope.threadId)
     )
       return;
@@ -650,7 +650,7 @@ export class ScopedThreadReader implements ThreadViewSource {
   }
 }
 
-function matchesBody(item: TranscriptItem, body: TranscriptItemResult["body"]) {
+function matchesBody(item: TranscriptItem, body: NonNullable<TranscriptItemResult["body"]>) {
   switch (item.kind) {
     case "message":
       return body.kind === "message" && body.message.id === item.messageId;
@@ -665,8 +665,8 @@ function matchesBody(item: TranscriptItem, body: TranscriptItemResult["body"]) {
       return body.kind === "run" && body.run.id === item.runId;
     case "assignment":
       return body.kind === "assignment" && body.assignment.id === item.delegationId;
-    default:
-      return false;
+    case "place":
+      return body.kind === "place";
   }
 }
 

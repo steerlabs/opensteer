@@ -35,10 +35,19 @@ it("carries pending profile erasure through the mock catalog and clears complete
     };
     client.setBrowserProfileDeletions([deletion]);
     expect(client.getSnapshot().browserProfileDeletions).toEqual([deletion]);
-    const catalog = unwrap(await client.rpc["bootstrap.get"]({}));
-    expect(catalog.browser.profileDeletions).toEqual([deletion]);
+    const readDeletions = async () => {
+      const kind = "browser-profile";
+      const { revision } = unwrap(await client.rpc["resources.get"]({ kind }));
+      const { data } = unwrap(await client.rpc["resources.detail.get"]({
+        kind,
+        expectedRevision: revision,
+      }));
+      if (data.kind !== kind) throw new Error("Expected browser profiles");
+      return data.deletions;
+    };
+    expect(await readDeletions()).toEqual([deletion]);
     client.setBrowserProfileDeletions([]);
-    expect(unwrap(await client.rpc["bootstrap.get"]({})).browser.profileDeletions).toEqual([]);
+    expect(await readDeletions()).toEqual([]);
   } finally {
     client.dispose();
   }

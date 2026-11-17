@@ -102,11 +102,7 @@ export class TranscriptFileController {
       threadId: threadId === null ? null : ThreadIdSchema.parse(threadId),
       source: FileSourceSchema.parse(source),
     };
-    const key = JSON.stringify([
-      input.threadId,
-      input.source.kind,
-      input.source.kind === "path" ? input.source.path : input.source.attachmentId,
-    ]);
+    const key = JSON.stringify([input.threadId, input.source]);
     return this.#share(this.#opens, key, signal, async (controller, generation) => {
       try {
         const value = TranscriptFileOpenSchema.parse(

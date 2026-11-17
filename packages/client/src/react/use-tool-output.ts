@@ -12,7 +12,7 @@ export function useToolOutput(client: HostClient | null, threadId: string | null
     revision: tool.itemRevision,
     enabled: cut,
   });
-  const body = state.data?.body.kind === "tool" ? state.data.body : null;
+  const body = state.data?.body?.kind === "tool" ? state.data.body : null;
   const shown: ToolEntry = body
     ? {
         ...tool,
