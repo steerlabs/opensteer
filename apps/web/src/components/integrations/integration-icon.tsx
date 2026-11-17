@@ -43,7 +43,7 @@ export function IntegrationIcon({
         </svg>
       </span>
     );
-  if (icon && /^https?:\/\//u.test(icon)) {
+  if (icon && /^(?:https?:\/\/|data:image\/)/u.test(icon)) {
     return (
       <span className={className}>
         <img alt="" src={icon} />

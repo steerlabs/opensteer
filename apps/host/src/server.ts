@@ -371,6 +371,8 @@ const HarnessAuthenticationParamsSchema = z.strictObject({
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
+  /** The owner's plugin API; personal Hosts only. */
+  readonly plugins?: import("./plugins/plugin-owner-api.js").PluginOwnerApi;
   readonly pluginRequests?: Pick<
     import("./plugins/plugin-executions.js").PluginExecutions,
     "respond"
@@ -2540,6 +2542,7 @@ export async function createHostServer(
       coreRpcHandlers,
       handleCoreCommand,
       dependencies.computerViews,
+      dependencies.plugins,
     ),
     ...(dependencies.connections
       ? createConnectionRpcHandlers(dependencies.connections)

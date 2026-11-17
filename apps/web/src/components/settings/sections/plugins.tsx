@@ -86,8 +86,7 @@ export function PluginsSection({ view }: { readonly view: SettingsView }) {
     ["integrationAttempt", "provider"].some((key) => new URLSearchParams(search).has(key)),
   );
   const suffix = pathname.slice("/settings/plugins".length).split("/").filter(Boolean);
-  // The catalog lives on this page; its old address still lands on it.
-  if (suffix[0] === "add") return <PluginOverview view={view} showCatalog />;
+  if (suffix[0] === "local") return <PluginOverview view={view} local />;
   if (suffix.length === 2) {
     const target = pluginTargetFromPath(
       suffix[0]!,
@@ -104,13 +103,19 @@ export function PluginsSection({ view }: { readonly view: SettingsView }) {
     );
   return <PluginOverview view={view} />;
 }
+/**
+ * The overview from before plugins ran in the plugin engine. `local` keeps
+ * only what that engine does not replace: device apps, local servers and
+ * skills, with no service catalog.
+ */
 function PluginOverview({
   view,
-  showCatalog = false,
+  local = false,
 }: {
   readonly view: SettingsView;
-  readonly showCatalog?: boolean;
+  readonly local?: boolean;
 }) {
+  const [addingOwn, setAddingOwn] = useState(false);
   const { hostClient } = useShell();
   const overview = useSettingsRead(
     () => hostClient.rpc["plugins.overview.get"]({}).then(unwrapRpcResult),
@@ -135,7 +140,9 @@ function PluginOverview({
       element?.focus();
     }
   });
-  const rows = overview.data?.rows;
+  const rows = local
+    ? overview.data?.rows.filter((row) => row.target.kind !== "service")
+    : overview.data?.rows;
   const groups = pluginGroups(pluginsPageRows(rows ?? []), search);
   const toAdd = useMemo(
     () =>
@@ -152,7 +159,15 @@ function PluginOverview({
           focused.current = event.target.getAttribute("aria-label");
         }}
       >
-        <SectionHeader title="Plugins" lead="Accounts, apps and skills your agents can use." />
+        {local ? <Link to="/settings/plugins">All plugins</Link> : null}
+        <SectionHeader
+          title={local ? "Device apps, local servers and skills" : "Plugins"}
+          lead={
+            local
+              ? "What your agents reach on your computers and phones, and the skills in Agent home."
+              : "Accounts, apps and skills your agents can use."
+          }
+        />
         <label className="settings-plugin-search">
           <Icon name="search" />
           <input
@@ -210,17 +225,44 @@ function PluginOverview({
         {directory.data?.requests.length || directory.data?.hasMoreRequests ? (
           <DirectoryRequests />
         ) : null}
-        <PluginCatalog
-          error={directory.error}
-          onChanged={() => {
-            overview.reload();
-            directory.reload();
-          }}
-          products={toAdd}
-          query={search}
-          reveal={showCatalog}
-          view={view}
-        />
+        {local ? (
+          <button
+            className="settings-catalog__own"
+            onClick={() => setAddingOwn(true)}
+            type="button"
+          >
+            <span aria-hidden className="settings-catalog__own-glyph">
+              <Icon name="plus" />
+            </span>
+            <span className="card__row-body">
+              <span className="card__row-title">Add your own</span>
+              <span className="card__row-detail">A plugin folder on {view.name}</span>
+            </span>
+          </button>
+        ) : null}
+        {addingOwn ? (
+          <AddYourOwn
+            onAdded={() => {
+              overview.reload();
+              directory.reload();
+            }}
+            onClose={() => setAddingOwn(false)}
+            view={view}
+          />
+        ) : null}
+        {local ? null : (
+          <PluginCatalog
+            error={directory.error}
+            onChanged={() => {
+              overview.reload();
+              directory.reload();
+            }}
+            products={toAdd}
+            query={search}
+            reveal={false}
+            view={view}
+          />
+        )}
       </div>
       <PluginSecrets />
     </>

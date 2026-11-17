@@ -1,9 +1,10 @@
 import { PluginAuthority } from "../plugins/plugin-authority.js";
 import { PluginExecutions } from "../plugins/plugin-executions.js";
-import { PluginAgentStore } from "@opensteer/database";
+import { PluginAgentStore, requirePersonalOwner } from "@opensteer/database";
 import { PluginToolHandlers } from "../mcp/handlers/plugins.js";
 import { pluginSourceFiles, exportPluginSource } from "../plugins/plugin-source.js";
 import { PluginService } from "../plugins/plugin-service.js";
+import { PluginOwnerApi, pluginEngineStateView } from "../plugins/plugin-owner-api.js";
 import { TabStore, AgentToolActivityStore, appendHostDeploymentEvent } from "@opensteer/database";
 import { TabService } from "../tabs/tab-service.js";
 import { NativeTabTargets } from "../computer-use/native-tab-targets.js";
@@ -1071,6 +1072,7 @@ export async function createHostRuntime(
       owner: async () => (await personalSettings(database)).ownerId,
       beforeAuthorize: () => pluginExecutions?.settled() ?? Promise.resolve(),
     });
+    let lastEngineStatus: string | undefined;
     pluginService = new PluginService({
       deployment: "personal",
       databaseUrl: config.databaseUrl,
@@ -1079,6 +1081,15 @@ export async function createHostRuntime(
       authorize: (input) => pluginAuthority.authorize(input),
       onExecution: (execution) => pluginExecutions?.report(execution),
       onState: (state) => {
+        const engine = pluginEngineStateView(state);
+        if (engine.status !== lastEngineStatus) {
+          lastEngineStatus = engine.status;
+          void personalSettings(database)
+            .then(({ ownerId }) =>
+              realtime.sendToUsers([ownerId], { type: "host.plugin-engine", engine }),
+            )
+            .catch(() => undefined);
+        }
         if (state.status === "restarting" || state.status === "unavailable")
           void pluginExecutions
             ?.recover()
@@ -2631,6 +2642,7 @@ export async function createHostRuntime(
       settings: pluginAgentStore,
       publish: publishDeploymentEvent,
       notify: () => continuations.notify(),
+      changed: (owner) => realtime.sendToUsers([owner], { type: "host.plugins-changed" }),
       folder: async (caller, directory) => {
         requirePluginRun(caller);
         return withFolderPluginPackage({ directory, files, install: pluginSourceFiles });
@@ -2644,6 +2656,13 @@ export async function createHostRuntime(
           files.options.helperPath!,
         );
       },
+    });
+    const pluginOwnerApi = new PluginOwnerApi({
+      service: pluginService,
+      settings: pluginAgentStore,
+      accountLinked: (input) => pluginTools.accountLinked(input),
+      assertOwner: (userId) => requirePersonalOwner(database, userId),
+      changed: (owner) => realtime.sendToUsers([owner], { type: "host.plugins-changed" }),
     });
     const agentTools = new OpensteerMcpService({
       pluginExecutions,
@@ -2857,6 +2876,7 @@ export async function createHostRuntime(
         teamLinks: async () => (await ensureLinks()).links,
         harnessAuthenticationCoordinator,
         pluginRequests: pluginExecutions,
+        plugins: pluginOwnerApi,
         integrations: {
           authAttempts: integrationAuthAttempts,
           continuations,

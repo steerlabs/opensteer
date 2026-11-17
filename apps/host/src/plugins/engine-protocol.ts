@@ -177,6 +177,18 @@ export const operations = {
   catalogList: { input: CatalogPageInputSchema, output: CatalogPageSchema },
   catalogDetail: { input: z.strictObject({ id }), output: CatalogEntrySchema },
   list: { input: z.strictObject({}), output: z.array(PluginSummarySchema) },
+  /** The person's installed list: every plugin with its requirements and account links. */
+  installed: {
+    input: z.strictObject({}),
+    output: z.array(
+      z.strictObject({
+        plugin: PluginSchema,
+        links: z.array(
+          z.strictObject({ requirement: id, scope: z.enum(["app", "user"]), account: id }),
+        ),
+      }),
+    ),
+  },
   detail: {
     input: plugin,
     output: z.strictObject({

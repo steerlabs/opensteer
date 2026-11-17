@@ -17,7 +17,7 @@ import { NodeDetailStore, type NodeDetailSubscription } from "./node-detail.js";
 import { executionNodeEntry } from "./subagent-model.js";
 import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
 import { BrowserCursorStore } from "./browser-cursor.js";
-import type { PersonShowMessage } from "@opensteer/protocol";
+import type { PersonShowMessage, PluginEngineStateView } from "@opensteer/protocol";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { drawnTranscriptRowKeys } from "./transcript-projection.js";
 import type { BootstrapReason } from "@opensteer/shared/bootstrapDiagnostics";
@@ -786,6 +786,7 @@ export class HttpHostClient {
   #viewerGeneration = 0;
   #savedViewReadiness = emptySavedViewReadiness();
   readonly #notificationListeners = new Set<(notification: NotificationView) => void>();
+  readonly #pluginEngineListeners = new Set<(engine: PluginEngineStateView) => void>();
   readonly #pluginsChangedListeners = new Set<
     (message: { type: "host.plugins-changed" }) => void
   >();
@@ -2227,6 +2228,10 @@ export class HttpHostClient {
   ): () => void {
     this.#pluginsChangedListeners.add(listener);
     return () => this.#pluginsChangedListeners.delete(listener);
+  }
+  subscribePluginEngine(listener: (engine: PluginEngineStateView) => void): () => void {
+    this.#pluginEngineListeners.add(listener);
+    return () => this.#pluginEngineListeners.delete(listener);
   }
   subscribePersonalRemoteAccess(listener: () => void): () => void {
     this.#personalRemoteAccessListeners.add(listener);
@@ -4466,6 +4471,10 @@ export class HttpHostClient {
     }
     if (message.type === "host.plugins-changed") {
       for (const listener of this.#pluginsChangedListeners) listener(message);
+      return;
+    }
+    if (message.type === "host.plugin-engine") {
+      for (const listener of this.#pluginEngineListeners) listener(message.engine);
       return;
     }
     if (message.type === "host.requests-changed") {
