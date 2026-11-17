@@ -13,6 +13,7 @@ import { TeamEntryRefusedError, TeamIdentityGrantUnsupportedError } from "@opens
 import { AccountRequestError } from "@opensteer/client/connections";
 import {
   createHttpHostApiClient,
+  operationFailure,
   PersonalTeamLinks,
   unwrapRpcResult,
   type HostClient,
@@ -208,7 +209,7 @@ export function personalTeamLinksPort(hostClient: HostClient): PersonalTeamLinks
       try {
         return { kind: "joined", link: await links.join(offer) };
       } catch (error) {
-        if (error instanceof TypeError) return { kind: "offline" };
+        if (operationFailure(error) === "unavailable") return { kind: "offline" };
         throw error;
       }
     },

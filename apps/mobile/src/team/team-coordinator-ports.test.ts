@@ -45,8 +45,22 @@ describe("phone team ports", () => {
       ({
         rpc: { "commands.dispatch": () => Promise.reject(failure) },
       }) as unknown as HostClient;
-    const offline = mobilePersonalTeamLinks(() =>
-      answering(new TypeError("Network request failed")),
+    // What the client returns when no answer came back from the computer.
+    const offline = mobilePersonalTeamLinks(
+      () =>
+        ({
+          rpc: {
+            "commands.dispatch": async () => ({
+              ok: false,
+              error: {
+                code: "internal",
+                message: "The Host could not be reached.",
+                reason: "transport-unreachable",
+                retryable: true,
+              },
+            }),
+          },
+        }) as unknown as HostClient,
     );
     expect(await offline.join(personal, "offer")).toEqual({ kind: "offline" });
     expect(await mobilePersonalTeamLinks(() => null).join(personal, "offer")).toEqual({

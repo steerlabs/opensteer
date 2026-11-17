@@ -8,6 +8,7 @@ import {
 } from "@opensteer/client/connections";
 import {
   HostClientRequestError,
+  operationFailure,
   PersonalTeamLinks,
   unwrapRpcResult,
   type HostClient,
@@ -64,6 +65,8 @@ export type TeamState =
   | "loading"
   | "live"
   | "offline"
+  /** A call failed for a reason other than the team being out of reach. */
+  | "failed"
   | "update-app"
   | "update-server"
   | "removed"
@@ -1120,10 +1123,9 @@ export function teamFailure(error: unknown): TeamState {
     const version = teamVersionRefusal(error.reason);
     if (version) return version;
     if (error.code === "unauthorized") return "signed-out";
-    if (error.code === "forbidden" || error.code === "not_found") return "offline";
   }
   if (error instanceof TeamAccessError) return "removed";
-  return "offline";
+  return operationFailure(error) === "unavailable" ? "offline" : "failed";
 }
 
 /**

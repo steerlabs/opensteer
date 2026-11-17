@@ -1,12 +1,25 @@
 import { useEffect, useEffectEvent, useState } from "react";
 import { useSearchParams } from "react-router";
-import { OpensteerError, RequestIdSchema, type Request } from "@opensteer/core";
-import { HostClientRequestError, requestReceipt, type HostClient } from "@opensteer/client/host";
+import { RequestIdSchema, type Request } from "@opensteer/core";
+import {
+  operationFailure,
+  requestReceipt,
+  type ClientNetworkState,
+  type HostClient,
+  type OperationFailure,
+} from "@opensteer/client/host";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { Unavailable } from "./unavailable.js";
 
-type Shown = Request | { readonly state: "unavailable" | "offline"; readonly id: string };
+type Shown =
+  | Request
+  | {
+      readonly state: "unavailable";
+      readonly failure: OperationFailure;
+      readonly network: ClientNetworkState;
+      readonly id: string;
+    };
 
 /**
  * The Request a link named with `?requestId=`. The address is released at
@@ -42,7 +55,9 @@ export function useLinkedRequest(
     setShown(null);
     if (!target || target.threadId !== threadId) return;
     const parsed = RequestIdSchema.safeParse(target.id);
-    if (!parsed.success) return setShown({ state: "unavailable", id: target.id });
+    const unavailable = (id: string, failure: OperationFailure = "gone") =>
+      setShown({ state: "unavailable", failure, network: hostClient.getSnapshot().network, id });
+    if (!parsed.success) return unavailable(target.id);
     const requestId = parsed.data;
     let current = true;
     void hostClient.readRequest(threadId, requestId).then(
@@ -50,15 +65,16 @@ export function useLinkedRequest(
         if (!current) return;
         if (!request) {
           hostClient.references.unavailable(requestId);
-          return setShown({ state: "unavailable", id: requestId });
+          return unavailable(requestId);
         }
         if (request.status === "pending") pending(request.id);
         else setShown(request);
       },
       (error: unknown) => {
         if (!current) return;
-        if (notFound(error)) hostClient.references.unavailable(requestId);
-        setShown({ state: notFound(error) ? "unavailable" : "offline", id: requestId });
+        const failure = operationFailure(error);
+        if (failure === "gone") hostClient.references.unavailable(requestId);
+        unavailable(requestId, failure);
       },
     );
     return () => {
@@ -72,14 +88,6 @@ export function useLinkedRequest(
       request={shown}
     />
   ) : null;
-}
-
-/** Whether the Host refused a read because the thing is gone or not this reader's. */
-export function notFound(error: unknown): boolean {
-  return (
-    (error instanceof HostClientRequestError && (error.status === 403 || error.status === 404)) ||
-    (error instanceof OpensteerError && (error.code === "forbidden" || error.code === "not_found"))
-  );
 }
 
 /**
@@ -100,7 +108,8 @@ function LinkedRequest({
       <Dialog onClose={onClose} title="Request">
         <Unavailable
           backLabel="Close"
-          offline={request.state === "offline"}
+          failure={request.failure}
+          network={request.network}
           onBack={onClose}
           onRetry={() => onRetry(request.id)}
         />

@@ -162,6 +162,8 @@ function noticeFor(team: MobileTeam): {
       return null;
     case "offline":
       return { title: `Can't reach ${team.name}`, detail: null, action: "retry" };
+    case "failed":
+      return { title: `Couldn't open ${team.name}`, detail: null, action: "retry" };
     case "signed-out":
       return {
         title: `Sign in to ${team.name}`,

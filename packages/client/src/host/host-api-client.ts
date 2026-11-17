@@ -26,7 +26,7 @@ import {
   hostResponseHeadersTimeoutMs,
   hostResponseStallTimeoutMs,
 } from "../connections/host-response-deadline.js";
-import { HostTransportError } from "../connections/host-transport-error.js";
+import { HostTransportError, isGatewayFailure } from "../connections/host-transport-error.js";
 
 type Fetch = typeof globalThis.fetch;
 type HostApiHandler<Name extends keyof typeof hostApi> = (
@@ -209,6 +209,9 @@ async function request<Name extends keyof typeof hostApi>(
             )
           : hostResponseHeadersTimeoutMs;
   const stallTimeoutMs = hostResponseStallTimeoutMs;
+  // Only a failure before any response arrived says the Host is out of reach;
+  // a response that then can't be read is a broken answer, not a lost connection.
+  let answered = false;
   try {
     call?.signal?.throwIfAborted();
     deadline.reset(headersTimeoutMs);
@@ -243,6 +246,7 @@ async function request<Name extends keyof typeof hostApi>(
       }),
     );
     deadline.controller.signal.throwIfAborted();
+    answered = true;
     // The refusal is known from its status; a body that then stalls must not
     // turn a sign-in prompt into a transport error.
     if (response.status === 401) options.onAuthenticationRequired();
@@ -290,6 +294,10 @@ async function request<Name extends keyof typeof hostApi>(
         options.onVersionMismatch?.();
       return parsed.data as RpcOutput<(typeof hostApi)[Name]>;
     }
+    if (isGatewayFailure(response.status)) {
+      const failure = new HostTransportError("unreachable");
+      return rpcError(`transport-${failure.code}`, failure.message, failure.retryable);
+    }
     // A Host from before this method answers its framework's plain 404; a
     // server fault may answer without an envelope; anything else is a body
     // this client cannot read, which no retry will change.
@@ -313,16 +321,16 @@ async function request<Name extends keyof typeof hostApi>(
     // is the only portable evidence.
     if (call?.signal?.aborted) throw call.signal.reason ?? error;
     if (error instanceof Error && error.name === "AbortError") throw error;
-    if (error instanceof z.ZodError || error instanceof RangeError) {
-      return rpcError("invalid-response", "The Host returned an incompatible response.", false);
-    }
     const failure =
       error instanceof HostTransportError
         ? error
-        : new HostTransportError(
-            error instanceof Error && error.name === "TimeoutError" ? "timed-out" : "unreachable",
-            { cause: error },
-          );
+        : error instanceof Error && error.name === "TimeoutError"
+          ? new HostTransportError("timed-out", { cause: error })
+          : answered || error instanceof z.ZodError || error instanceof RangeError
+            ? null
+            : new HostTransportError("unreachable", { cause: error });
+    if (failure === null)
+      return rpcError("invalid-response", "The Host returned an incompatible response.", false);
     return rpcError(`transport-${failure.code}`, failure.message, failure.retryable);
   } finally {
     deadline.dispose();

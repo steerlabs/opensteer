@@ -454,6 +454,8 @@ export function teamStatus(team: MobileTeam): string | null {
       return null;
     case "offline":
       return "Offline";
+    case "failed":
+      return "Couldn't open";
     case "signed-out":
       return "Signed out";
     case "update-app":

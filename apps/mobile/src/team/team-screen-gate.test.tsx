@@ -64,6 +64,7 @@ const states: readonly TeamState[] = [
   "loading",
   "live",
   "offline",
+  "failed",
   "update-app",
   "update-server",
   "removed",
@@ -105,7 +106,7 @@ it.each([
         const label =
           state === "signed-out"
             ? "Sign in"
-            : state === "offline"
+            : state === "offline" || state === "failed"
               ? "Retry"
               : "Remove from this phone";
         const action = [...host.querySelectorAll("button")].find(
@@ -114,7 +115,7 @@ it.each([
         expect(action).toBeTruthy();
         await act(async () => action.click());
         expect(
-          state === "signed-out" || state === "offline" ? h.select : h.forget,
+          state === "signed-out" || state === "offline" || state === "failed" ? h.select : h.forget,
         ).toHaveBeenCalledWith("dep_test");
       }
     } finally {

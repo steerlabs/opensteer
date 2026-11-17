@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import { bufferedHostResponseTimeoutMs } from "../connections/host-response-deadline.js";
 import { createHttpHostApiClient } from "./host-api-client.js";
+import { unwrapRpcResult } from "./host-session-client.js";
 
 describe("HTTP Host rpc response parsing", () => {
   it("strips additive fields from the response envelope and its data", async () => {
@@ -76,10 +77,46 @@ describe("HTTP Host rpc response parsing", () => {
       ok: false,
       error: { code: "not_found", reason: "unknown-method" },
     });
-    await expect(answering("<html>", 502)["auth.config"]({})).resolves.toMatchObject({
+    await expect(answering("<html>", 500)["auth.config"]({})).resolves.toMatchObject({
       ok: false,
-      error: { code: "internal" },
+      error: { code: "internal", retryable: false },
     });
+  });
+
+  it("reads a gateway's page for an unreachable Host as the Host being out of reach", async () => {
+    // Connect's tunnel answers 530 while the computer sleeps; a proxy answers 502-504.
+    for (const status of [502, 503, 504, 530]) {
+      const client = createHttpHostApiClient({
+        baseUrl: new URL("https://opensteer.example"),
+        fetch: async () => new Response("<html>Cloudflare Tunnel error</html>", { status }),
+        onAuthenticationRequired: vi.fn(),
+      });
+      await expect(client["auth.config"]({})).resolves.toMatchObject({
+        ok: false,
+        error: { reason: "transport-unreachable", retryable: true },
+      });
+    }
+  });
+
+  it("calls an answer that arrived but can't be read a broken answer, not a lost connection", async () => {
+    const answering = (response: () => Response) =>
+      createHttpHostApiClient({
+        baseUrl: new URL("https://opensteer.example"),
+        fetch: async () => response(),
+        onAuthenticationRequired: vi.fn(),
+      })["auth.config"]({});
+    const unreadable = () =>
+      new Response(
+        new ReadableStream({
+          pull: (controller) => controller.error(new TypeError("The body could not be decoded.")),
+        }),
+      );
+    const misshapen = () => Response.json({ data: { unexpected: true }, ok: true });
+    for (const response of [unreadable, misshapen])
+      await expect(answering(response)).resolves.toMatchObject({
+        ok: false,
+        error: { code: "internal", reason: "invalid-response", retryable: false },
+      });
   });
 });
 
@@ -123,19 +160,24 @@ describe("bounded Host rpc requests", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("returns bridge rejection as a per-call transport error without a status callback", async () => {
-    const client = createHttpHostApiClient({
-      baseUrl: new URL("https://opensteer.example"),
-      fetch: async () => {
-        throw new Error("IPC schema refused this request");
-      },
-      onAuthenticationRequired: vi.fn(),
-    });
-    const result = await client["auth.config"]({});
-    expect(result).toMatchObject({
-      ok: false,
-      error: { reason: "transport-unreachable", retryable: true },
-    });
+  it("returns a request no answer came back for as a per-call transport error", async () => {
+    for (const rejection of [
+      new TypeError("Failed to fetch"),
+      new Error("IPC schema refused this request"),
+    ]) {
+      const client = createHttpHostApiClient({
+        baseUrl: new URL("https://opensteer.example"),
+        fetch: async () => {
+          throw rejection;
+        },
+        onAuthenticationRequired: vi.fn(),
+      });
+      const result = await client["auth.config"]({});
+      expect(result).toMatchObject({
+        ok: false,
+        error: { reason: "transport-unreachable", retryable: true },
+      });
+    }
   });
 
   it("preserves a Host operation refusal without treating it as network loss", async () => {
@@ -148,10 +190,13 @@ describe("bounded Host rpc requests", () => {
         ),
       onAuthenticationRequired: vi.fn(),
     });
-    expect(await client["auth.config"]({})).toEqual({
+    const result = await client["auth.config"]({});
+    expect(result).toEqual({
       error: { code: "internal", message: "Failed operation.", retryable: true },
       ok: false,
     });
+    // The Host's own word on retrying reaches the error a surface reads.
+    expect(() => unwrapRpcResult(result)).toThrow(expect.objectContaining({ retryable: true }));
   });
 });
 

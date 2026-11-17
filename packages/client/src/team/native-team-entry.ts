@@ -30,6 +30,7 @@ import {
   type DeploymentConnection,
   type VerifiedHostEndpoint,
 } from "../connections/deployment-catalog.js";
+import { HostTransportError } from "../connections/host-transport-error.js";
 import { ClientOperationError } from "../connections/operation-error.js";
 import type { VerifiedTeam } from "./team-coordinator.js";
 
@@ -79,6 +80,8 @@ export async function previewTeamInvite(
     method: "POST",
     redirect: "error",
     referrerPolicy: "no-referrer",
+  }).catch((error: unknown) => {
+    throw new HostTransportError("unreachable", { cause: error });
   });
   const body: unknown = await response.json().catch(() => null);
   if (response.ok) return TeamInvitePreviewResponseSchema.parse(body);

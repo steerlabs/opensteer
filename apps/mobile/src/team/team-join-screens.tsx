@@ -1,5 +1,11 @@
 import { HostVersionMismatchError } from "@opensteer/client/connections";
-import { HostClientRequestError, unwrapRpcResult } from "@opensteer/client/host";
+import {
+  HostClientRequestError,
+  operationFailure,
+  unwrapRpcResult,
+  type HostSnapshot,
+  type OperationFailure,
+} from "@opensteer/client/host";
 import { DeploymentIdSchema } from "@opensteer/core";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
@@ -11,7 +17,7 @@ import { useAppLinks } from "../ui/app-links-context.js";
 import { enterSide } from "../navigation-ref.js";
 import type { RootParamList } from "../navigation.js";
 import { color, radius, space, type } from "../theme.js";
-import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
+import { useHostValue, useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { ConnectOpensteerBody, JoinSheetBody, type ConnectView, type InviteView } from "./join.js";
 import type { TeamTileView } from "./team-models.js";
@@ -21,7 +27,7 @@ import {
   teamFailure,
   type TeamLinkIntent,
 } from "./mobile-teams.js";
-import { readFailure, UnavailableState } from "../ui/unavailable-state.js";
+import { UnavailableState } from "../ui/unavailable-state.js";
 import { useCoordinatorSnapshot, useMobileTeams, useTeam, useTeamEntry } from "./team-context.js";
 import { openTeamGeneral } from "./mobile-team-entry.js";
 
@@ -232,7 +238,7 @@ function inviteFailure(error: unknown, host: string, team: TeamTileView): Invite
       (error.code === "not_found" || error.code === "forbidden" || error.code === "conflict"))
   )
     return { kind: "no-longer-works", team, inviter: null };
-  if (error instanceof TypeError) return { kind: "unreachable", host };
+  if (operationFailure(error) === "unavailable") return { kind: "unreachable", host };
   const state = teamFailure(error);
   if (state === "update-app" || state === "update-server") return { kind: state, team };
   return {
@@ -240,6 +246,8 @@ function inviteFailure(error: unknown, host: string, team: TeamTileView): Invite
     detail: error instanceof Error ? error.message : "Joining didn't finish.",
   };
 }
+
+const selectNetwork = (snapshot: HostSnapshot) => snapshot.network;
 
 /** A team page, opened once the team says the reader may see it. */
 function OpenPlace(props: {
@@ -250,7 +258,8 @@ function OpenPlace(props: {
   const navigation = useNavigation<Navigation>();
   const teams = useMobileTeams();
   const { captureNavigationIntent } = useAppLinks();
-  const [failure, setFailure] = useState<"unavailable" | "offline" | null>(null);
+  const [failure, setFailure] = useState<OperationFailure | null>(null);
+  const network = useHostValue(useMobileState().selection.hostClient, selectNetwork, "unknown");
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let mounted = true;
@@ -282,11 +291,7 @@ function OpenPlace(props: {
     void open().catch(
       (error: unknown) =>
         current() &&
-        setFailure(
-          !(error instanceof TeamAccessError) && readFailure(error) === "offline"
-            ? "offline"
-            : "unavailable",
-        ),
+        setFailure(error instanceof TeamAccessError ? "gone" : operationFailure(error)),
     );
     return () => {
       mounted = false;
@@ -300,8 +305,10 @@ function OpenPlace(props: {
     </View>
   ) : (
     <UnavailableState
+      failure={failure}
+      network={network}
       onBack={() => navigation.goBack()}
-      onRetry={failure === "offline" ? () => setAttempt((count) => count + 1) : undefined}
+      onRetry={() => setAttempt((count) => count + 1)}
     />
   );
 }
