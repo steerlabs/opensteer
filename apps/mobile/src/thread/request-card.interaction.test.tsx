@@ -342,11 +342,14 @@ describe("RequestCard", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
-  it("holds every answer while the Host is out of reach", async () => {
-    await render(surfaceOf(approval()), { canRespond: false });
+  it("keeps every answer usable while the Host is out of reach, and sends none", async () => {
+    const dispatch = vi.fn();
+    await render(surfaceOf(approval()), { canRespond: false, dispatch });
     settleArrival();
-    expect(button("Allow").disabled).toBe(true);
-    expect(button("Don’t Allow").disabled).toBe(true);
+    expect(button("Don’t Allow").disabled).toBe(false);
+    await press("Allow");
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(text()).toContain("Not sent.");
     expect(text()).not.toContain("Reconnecting");
   });
 

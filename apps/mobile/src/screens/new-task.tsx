@@ -1,8 +1,10 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
+import { clientIssue } from "@opensteer/client/feedback";
+import { useClientConnection } from "@opensteer/client/react";
+import { ActionLine, issueLine, type ActionLineValue } from "../ui/action-line.js";
+import { notSentIssue } from "../ui/connection-live.js";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { provisionalThreadTitle, type BrowserPageContentPart, type UserId } from "@opensteer/core";
 import {
-  canRespondToRequests,
   accessModeConflict,
   placementForSelection,
   isHostRefusal,
@@ -139,7 +141,9 @@ function NewTask(props: {
   const sentAt = useRef(0);
   const keyboardDown = useRef<Promise<void>>(Promise.resolve());
   const reduceMotion = useReducedMotion();
-  const [failure, setFailure] = useState<string | null>(null);
+  // What Send came to when no task was started: said above the composer,
+  // with the draft kept, until the words change or Send is pressed again.
+  const [line, setLine] = useState<ActionLineValue | null>(null);
   const [draftFailure, setDraftFailure] = useState<string | null>(null);
   const inFlight = useRef(false);
   const mounted = useRef(true);
@@ -160,11 +164,11 @@ function NewTask(props: {
   const { placements, selection } = execution;
   const blocker = firstMessageBlocker({
     attachmentsReady: staged.items.every((item) => draftAttachmentPart(item) !== null),
-    connected: canRespondToRequests(snapshot),
     execution,
   });
 
   const changeText = (next: string): void => {
+    setLine(null);
     void drafts.writeDraft(deploymentId, userId, draftKey, next).then(
       () => setDraftFailure(null),
       () => setDraftFailure("This draft could not be saved on this phone."),
@@ -192,6 +196,13 @@ function NewTask(props: {
       requestedSelection: ExecutionSelection | null = null,
     ): Promise<void> => {
       if (inFlight.current) return;
+      // Offline a new task isn't started: nothing is written down or sent,
+      // and the draft stays where it is.
+      const unsent = existing === null ? notSentIssue(hostClient, "started") : null;
+      if (unsent !== null) {
+        setLine(issueLine(unsent, `not-started:${Date.now()}`));
+        return;
+      }
       // The field's last keystroke can still be on its way to React: read what it holds now.
       const field = input.current;
       let words = text.trim();
@@ -206,7 +217,7 @@ function NewTask(props: {
       if (!mounted.current || inFlight.current) return;
       inFlight.current = true;
       setSending(true);
-      setFailure(null);
+      setLine(null);
       let claimed = existing;
       try {
         if (claimed === null) {
@@ -216,13 +227,14 @@ function NewTask(props: {
             requestedSelection === null
               ? liveExecution.selection
               : resolveExecutionSelection(requestedSelection, liveExecution.placements);
-          if (chosen === null) throw new Error("Choose which AI runs this task before sending.");
+          if (chosen === null)
+            throw new NotStarted("Choose which AI runs this task before sending.");
           const placement = placementForSelection(liveExecution.placements, chosen);
           const accessReason =
             placement === null
               ? null
               : accessModeConflict(live.executionPreferences.accessMode, placement);
-          if (accessReason !== null) throw new Error(accessReason);
+          if (accessReason !== null) throw new NotStarted(accessReason);
           const idempotencyKey = mutationIdempotencyKey("message");
           const attachments = staged.items.flatMap((item) => {
             const part = draftAttachmentPart(item);
@@ -340,7 +352,18 @@ function NewTask(props: {
             () => undefined,
           );
         }
-        setFailure(presentActionFailure(error, "The task could not be started."));
+        // A refusal or a reason of this screen's own is said; an answer that
+        // was lost leaves the message held, waiting to go once it can.
+        if (mounted.current) {
+          const key = `start:${Date.now()}`;
+          if (error instanceof NotStarted)
+            setLine({ key, text: error.message, tone: "muted", haptic: "warning" });
+          else if (claimed === null) setLine(issueLine({ code: "storage-unavailable" }, key));
+          else if (isHostRefusal(error)) {
+            const issue = clientIssue(error, { operation: "action", label: "start this task" });
+            if (issue !== null) setLine(issueLine({ ...issue, done: "started" }, key));
+          }
+        }
       } finally {
         inFlight.current = false;
         setSending(false);
@@ -364,6 +387,18 @@ function NewTask(props: {
       userId,
     ],
   );
+
+  // A message already handed over under its keys goes on by itself: on
+  // arrival, and each time the connection is ready again.
+  const { phase, readyRevision } = useClientConnection(hostClient.connection);
+  const resume = useRef(send);
+  resume.current = send;
+  const heldKey = held?.idempotencyKey ?? null;
+  useEffect(() => {
+    if (heldKey === null || phase !== "ready") return;
+    const record = drafts.readTaskStart(deploymentId, userId, draftKey);
+    if (record !== null) void resume.current(record);
+  }, [deploymentId, draftKey, drafts, heldKey, phase, readyRevision, userId]);
 
   // Once the task has faded in over this screen, it is Home again underneath.
   useEffect(() => {
@@ -421,14 +456,7 @@ function NewTask(props: {
           hostClient={hostClient}
           key={sent.idempotencyKey}
           message={sent}
-          onRetry={held === null || sending ? null : () => void send(held)}
-          state={
-            sending || held === null
-              ? "sending"
-              : canRespondToRequests(snapshot)
-                ? "failed"
-                : "offline"
-          }
+          phase={sending || held === null ? "sending" : "waiting"}
           userId={userId}
         />
       ) : (
@@ -450,12 +478,8 @@ function NewTask(props: {
               }}
             />
           ) : null}
-          {failure === null ? null : (
-            <Notice
-              action={{ label: "Dismiss", onPress: () => setFailure(null) }}
-              detail={failure}
-              title="The task was not started"
-            />
+          {line === null ? null : (
+            <ActionLine line={line} numberOfLines={2} onDismiss={() => setLine(null)} />
           )}
           {draftFailure === null ? null : (
             <Notice detail={draftFailure} title="This draft is not being saved" tone="neutral" />
@@ -467,6 +491,9 @@ function NewTask(props: {
 }
 
 function noop(): void {}
+
+/** A reason this screen itself has for not starting the task; nothing was written down. */
+class NotStarted extends Error {}
 
 /**
  * What a new task reads — Agent home, the AI it would start on and whether

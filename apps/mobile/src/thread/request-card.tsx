@@ -204,7 +204,8 @@ function AnswerCard(props: RequestCardProps): ReactNode {
 
   // While this card's own answer is in flight the busy control already says so.
   const reason = session.pendingId === null ? props.disabledReason : null;
-  const locked = !props.canRespond || session.pendingId !== null;
+  // Offline, the answers stay: a tap says it didn't go out, under them.
+  const locked = session.pendingId !== null;
 
   const send = (choice: CardChoice): void => {
     if (!settled()) return;
@@ -286,8 +287,8 @@ function AnswerCard(props: RequestCardProps): ReactNode {
             </AppText>
           )}
           {session.failure === null ? null : (
-            <AppText role="caption" tone="danger">
-              {session.failure}
+            <AppText role="caption" tone={session.failure.tone}>
+              {session.failure.text}
             </AppText>
           )}
         </View>

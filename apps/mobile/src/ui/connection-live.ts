@@ -5,9 +5,8 @@ import {
   type ClientConnectionState,
 } from "@opensteer/client/connections";
 import type { ClientIssue } from "@opensteer/client/feedback";
-import type { HostClient } from "@opensteer/client/host";
-import { useIsFocused } from "@react-navigation/native";
-import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { canRespondToRequests, type HostClient } from "@opensteer/client/host";
+import { useCallback, useSyncExternalStore } from "react";
 
 /**
  * How screens and the shell ask a connection for something: try now, refresh
@@ -75,36 +74,6 @@ export function connectionIssueKey(issue: ClientIssue): string {
   return `${issue.code}:${issue.reason ?? ""}`;
 }
 
-/** Gates explaining a focused route; while any is up, the pill steps aside. */
-const gates = new Set<object>();
-const gateListeners = new Set<() => void>();
-export const subscribeGates = (listener: () => void) => {
-  gateListeners.add(listener);
-  return () => gateListeners.delete(listener);
-};
-export const gated = () => gates.size > 0;
-function changedGates(): void {
-  for (const listener of gateListeners) listener();
-}
-
-/**
- * Said by a screen while it shows a gate, or a sheet that already explains the
- * connection: the pill would only repeat it.
- */
-export function useShellGate(shown: boolean): void {
-  const focused = useIsFocused();
-  useEffect(() => {
-    if (!shown || !focused) return;
-    const token = {};
-    gates.add(token);
-    changedGates();
-    return () => {
-      gates.delete(token);
-      changedGates();
-    };
-  }, [focused, shown]);
-}
-
 /**
  * Whether marks that claim "happening right now" may move: through the quiet
  * hold they do, and once the pill shows they hold still at full colour until
@@ -121,4 +90,42 @@ const noSubscribe = () => () => undefined;
 
 function showsLiveWhile(state: ClientConnectionState): boolean {
   return state.phase === "ready" || showsClientLive(state);
+}
+
+/**
+ * An action known not to go out, decided before anything is dispatched: the
+ * Host isn't connected and signed in for this reader. Null when it may go.
+ */
+export function notSentIssue(client: HostClient, done: string): ClientIssue | null {
+  const snapshot = client.getSnapshot();
+  if (canRespondToRequests(snapshot)) return null;
+  return notSent(done, {
+    name: snapshot.identityConfig?.deployment.name ?? null,
+    network: snapshot.network,
+    target: "computer",
+  });
+}
+
+/** "Not {done}." for why it can't go now, from what the connection last knew. */
+export function notSent(
+  done: string,
+  state?: {
+    readonly name: string | null;
+    readonly network: string;
+    readonly target: "computer" | "team";
+  },
+): ClientIssue {
+  return {
+    code: "not-sent",
+    done,
+    reason: state?.network === "offline" ? "offline" : "unreachable",
+    ...(state?.name ? { name: state.name } : {}),
+    ...(state ? { target: state.target } : {}),
+  };
+}
+
+/** Whether the connection is ready right now, re-rendering only when that changes. */
+export function useConnectionReady(connection: ClientConnection): boolean {
+  const read = useCallback(() => connection.getSnapshot().phase === "ready", [connection]);
+  return useSyncExternalStore(connection.subscribe, read, read);
 }

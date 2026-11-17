@@ -443,7 +443,6 @@ describe("Expo engine/account/model journeys", () => {
         <FirstMessageComposer
           blocker={firstMessageBlocker({
             attachmentsReady: true,
-            connected: true,
             execution,
           })}
           held={false}

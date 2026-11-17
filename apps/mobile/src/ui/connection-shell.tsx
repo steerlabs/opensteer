@@ -5,8 +5,8 @@ import {
   type ClientIssue,
 } from "@opensteer/client/feedback";
 import { useClientConnection } from "@opensteer/client/react";
-import * as Linking from "expo-linking";
 import { useCallback, useMemo, useRef, useSyncExternalStore, type ReactNode } from "react";
+import { Linking } from "react-native";
 import type { MobileClient } from "../client/mobile-client.js";
 import { navigationRef } from "../navigation-ref.js";
 import { routeSide, type SideId } from "../side-memory.js";
@@ -19,11 +19,10 @@ import { useMobileClient, useMobileState } from "./mobile-client-context.js";
 import {
   connectionIssueKey,
   downloadPage,
-  gated,
   retryConnection,
   shellIssue,
-  subscribeGates,
 } from "./connection-live.js";
+import { gated, subscribeGates } from "./shell-gate.js";
 
 /**
  * The shell's one voice for each connection the person is using: the pill,

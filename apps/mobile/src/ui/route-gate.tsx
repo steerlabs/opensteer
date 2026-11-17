@@ -5,7 +5,7 @@ import {
   type ClientIssue,
 } from "@opensteer/client/feedback";
 import { useCallback, useSyncExternalStore, type ReactNode } from "react";
-import * as Linking from "expo-linking";
+import { Linking } from "react-native";
 import {
   ConnectionGate,
   type ConnectionGateButton,
@@ -16,8 +16,8 @@ import {
   downloadPage,
   retryConnection,
   shellIssue,
-  useShellGate,
 } from "./connection-live.js";
+import { useShellGate } from "./shell-gate.js";
 
 /** Before a connection exists: connecting, quietly, to a computer not yet named. */
 const unstarted: ClientConnectionState = {

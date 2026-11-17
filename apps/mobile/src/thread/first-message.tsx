@@ -1,3 +1,4 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { hostMessageOutbox } from "@opensteer/client/host";
 import { VoiceDock, VoiceMic } from "../voice/controls.js";
 import { useVoiceAvailable } from "../voice/use-voice-value.js";
@@ -160,15 +161,14 @@ export interface FirstMessageBlocker {
   readonly reason: string;
 }
 
+const filesWaitReason = presentClientIssue({ code: "preparation-required" }).detail ?? "";
+
 export function firstMessageBlocker(input: {
   readonly attachmentsReady: boolean;
-  /** Whether the Host is attached and has confirmed this reader. */
-  readonly connected: boolean;
   readonly execution: FirstMessageExecution;
 }): FirstMessageBlocker | null {
   const wait = (reason: string): FirstMessageBlocker => ({ choose: false, reason });
   const { blocked, blockedPlacement, placements, runnable, selection } = input.execution;
-  if (!input.connected) return wait("Reconnect to send. What you write here is kept.");
   if (runnable.length === 0) {
     // An account getting ready, as one does after its computer starts, is
     // only a wait: naming it keeps the person from hunting for a fault. Their
@@ -212,7 +212,7 @@ export function firstMessageBlocker(input: {
     };
   }
   if (input.execution.accessReason !== null) return wait(input.execution.accessReason);
-  if (!input.attachmentsReady) return wait("Waiting for your files to finish uploading.");
+  if (!input.attachmentsReady) return wait(filesWaitReason);
   return null;
 }
 

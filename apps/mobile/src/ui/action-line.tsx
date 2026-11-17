@@ -1,3 +1,4 @@
+import { presentClientIssue, type ClientIssue } from "@opensteer/client/feedback";
 import * as Haptics from "expo-haptics";
 import { memo, useEffect, useRef, type ReactNode } from "react";
 import { AccessibilityInfo, Pressable, StyleSheet, View } from "react-native";
@@ -18,6 +19,25 @@ export interface ActionLineValue {
     readonly onPress: () => void;
   } | null;
   readonly haptic?: "warning" | "error" | null;
+}
+
+/**
+ * An action's outcome as its line: muted and felt as a warning when it never
+ * went out or can't be confirmed, danger and felt as an error when refused.
+ */
+export function issueLine(
+  issue: ClientIssue,
+  key: string,
+  link?: ActionLineValue["link"],
+): ActionLineValue {
+  const refused = issue.code === "rejected" || issue.code === "storage-unavailable";
+  return {
+    haptic: refused ? "error" : "warning",
+    key,
+    link: link ?? null,
+    text: presentClientIssue(issue).title,
+    tone: refused ? "danger" : "muted",
+  };
 }
 
 /**

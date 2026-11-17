@@ -1980,6 +1980,10 @@ describe("a conversation with a page", () => {
     expect(
       hostMessageOutbox(host.client)?.getSnapshot().messages[0]?.command.content,
     ).toContainEqual(included);
+    // The message stands in the transcript and says it waits; the bar says nothing.
+    await settle();
+    expect(text(container)).toContain("Waiting to send");
+    expect(text(container)).not.toContain("offline");
   });
 
   it("includes a page Ask handed to its own screen until the person removes it, for good", async () => {
@@ -5217,7 +5221,7 @@ it("never saves a moment holding neither the words sent nor the message they bec
   expect(saved.slice(first).every((content) => content.includes("Compare quotes"))).toBe(true);
 });
 
-it("keeps New task creation and message keys when Ask is left after a lost creation answer", async () => {
+it("resumes New task creation under the same keys when Ask is opened again after a lost answer", async () => {
   const { NewTaskPane } = await import("../screens/new-task.js");
   const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
   const thread = host.client.getSnapshot().threads.find(({ id }) => id === workId)!;
@@ -5245,9 +5249,8 @@ it("keeps New task creation and message keys when Ask is left after a lost creat
   const held = drafts.readTaskStart(deploymentId, userId, newTaskDraftKey(newDraftId))!;
   expect(held).not.toBeNull();
   await act(async () => root.render(<div />));
+  // Already handed over under its keys, it goes on by itself; nothing asks again.
   await act(async () => root.render(draw()));
-  expect(createThread).toHaveBeenCalledTimes(1);
-  await press(container, "Send this message again");
   expect(createThread).toHaveBeenCalledTimes(2);
   expect(createThread.mock.calls[1]).toEqual(createThread.mock.calls[0]);
   expect(host.dispatch.mock.calls.map(([command]) => command)).toContainEqual(
@@ -5256,6 +5259,36 @@ it("keeps New task creation and message keys when Ask is left after a lost creat
       idempotencyKey: held.idempotencyKey,
       content: expect.arrayContaining([included]),
     }),
+  );
+});
+
+it("doesn't start a new task offline, says so above the composer and keeps the draft", async () => {
+  const { NewTaskPane } = await import("../screens/new-task.js");
+  const host = fakeHost({
+    ...snapshotFor({ entries: [], run: null, threadId: workId }),
+    network: "offline",
+  });
+  const createThread = vi.fn();
+  Object.assign(host.client, { createThread });
+  const { container, drafts, root } = await mount(host, workId);
+  await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(newDraftId), "Research this");
+  await act(async () =>
+    root.render(
+      <NewTaskPane
+        autoFocus={false}
+        deploymentId={deploymentId}
+        hostClient={host.client}
+        onStarted={() => false}
+        underHeader={false}
+      />,
+    ),
+  );
+  await press(container, "Send message");
+  expect(text(container)).toContain("Not started. You're offline.");
+  expect(createThread).not.toHaveBeenCalled();
+  expect(drafts.readTaskStart(deploymentId, userId, newTaskDraftKey(newDraftId))).toBeNull();
+  expect(drafts.readDraft(deploymentId, userId, newTaskDraftKey(newDraftId))?.text).toBe(
+    "Research this",
   );
 });
 

@@ -50,9 +50,12 @@ export function owedSince(idempotencyKey: string): number {
   return since;
 }
 
-/** True the first time an owed message is drawn, and never for the Host's copy of it. */
-export function risesOnce(messageId: string): boolean {
-  if (!isOwedMessage(messageId) || risen.has(messageId)) return false;
+/**
+ * True the first time a message this phone holds is drawn (owed, or still in
+ * the outbox), and never for the Host's copy that takes its place.
+ */
+export function risesOnce(messageId: string, held = false): boolean {
+  if (!(held || isOwedMessage(messageId)) || risen.has(messageId)) return false;
   risen.add(messageId);
   return true;
 }

@@ -1,4 +1,5 @@
 import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
+import { presentMessageDelivery } from "@opensteer/client/feedback";
 import { useNavigation } from "@react-navigation/native";
 import { sideMemory } from "../side-memory.js";
 import { useTeamsSnapshot } from "../team/team-context.js";
@@ -26,6 +27,7 @@ import {
   type ActivityTone,
   type AgentCard,
   type AgentGroup,
+  type MessageDeliveryAction,
   type MessageEntry,
   type ReasoningEntry,
   type RunEntry,
@@ -79,6 +81,12 @@ import { EditedMark } from "./edited-mark.js";
 import type { LinkAction } from "./link-context.js";
 import { MessageHold, MessageMore, WaitingHold } from "./message-hold.js";
 import { risesOnce } from "./owed-message-model.js";
+import {
+  deliveryMenu,
+  MessageDelivery,
+  MessageDeliveryContext,
+  rejectedBubble,
+} from "./message-delivery.js";
 import { MessagePages, MessagePlaces, ReplySurfaces, TracePlace } from "./surface-chips.js";
 import { trace as traceStyle } from "./trace-styles.js";
 
@@ -1332,7 +1340,9 @@ export function Message(props: {
   const body = preview.truncated && !open ? preview.text : message.body;
   // What the reader sends rises once, as it is written down here; the Host's
   // copy that later takes its place is already where the eye left it.
-  const [arrived] = useState(() => props.queued !== true && risesOnce(message.id));
+  const [arrived] = useState(
+    () => props.queued !== true && risesOnce(message.id, message.localDelivery !== undefined),
+  );
   if (message.messageKind === "assistant") {
     return props.conversation ? (
       <ReplyBubble
@@ -1354,6 +1364,7 @@ export function Message(props: {
   }
   const mine = author.kind === "human" && author.userId === props.viewerUserId;
   const update = props.conversation && !mine;
+  const delivery = message.localDelivery ?? null;
 
   const fold = (
     <MessageFold
@@ -1377,6 +1388,20 @@ export function Message(props: {
       )}
     </MessageFold>
   );
+
+  // A refused message is drawn on the plate, in the reading ink.
+  const refusedFold =
+    delivery?.phase === "rejected" ? (
+      <MessageFold
+        lines={messageFoldLines(message, props.viewerUserId)}
+        mine={false}
+        more={preview.truncated}
+        onToggle={props.onToggle}
+        open={open}
+      >
+        <Markdown look="reading" profile="person" text={message.body} />
+      </MessageFold>
+    ) : null;
 
   return (
     <Animated.View
@@ -1415,7 +1440,25 @@ export function Message(props: {
       <MessagePages pages={message.pages ?? []} />
       <MessagePlaces places={message.places ?? []} />
       <MessageAttachments attachments={message.attachments ?? []} />
-      {!message.body ? null : mine && !props.queued ? (
+      {!message.body ? null : mine && !props.queued && delivery !== null ? (
+        <PendingMessage
+          bubble={
+            <Bubble
+              fill={delivery.phase === "rejected" ? rejectedBubble.fill : color.bubble}
+              fit={bubbleFit(message.body)}
+              side="mine"
+              style={[
+                props.conversation ? undefined : styles.bubbleCorner,
+                delivery.phase === "rejected" ? rejectedBubble.style : undefined,
+              ]}
+              tail={props.conversation && props.continued !== true}
+            >
+              {delivery.phase === "rejected" ? refusedFold : fold}
+            </Bubble>
+          }
+          entry={message}
+        />
+      ) : !message.body ? null : mine && !props.queued ? (
         <MessageHold
           previewBottomEndRadius={props.conversation ? undefined : radius.xs}
           previewRadius={bubble.radius}
@@ -1424,11 +1467,7 @@ export function Message(props: {
           <Bubble
             fill={color.bubble}
             // Lists, headings and code take the bubble's whole measure, as a reply's do.
-            fit={
-              notOnlyParagraphs.test(message.body) || /^ {0,3}(?:`{3}|~{3})/mu.test(message.body)
-                ? null
-                : message.body
-            }
+            fit={bubbleFit(message.body)}
             side="mine"
             // Messages' tail is a conversation's; a task keeps the bubble's corner instead.
             style={props.conversation ? undefined : styles.bubbleCorner}
@@ -1485,6 +1524,54 @@ export function Message(props: {
         </View>
       ) : null}
     </Animated.View>
+  );
+}
+
+/** A bubble fits its words unless they hold lists, headings or code, which take its whole measure. */
+function bubbleFit(body: string): string | null {
+  return notOnlyParagraphs.test(body) || /^ {0,3}(?:`{3}|~{3})/mu.test(body) ? null : body;
+}
+
+/**
+ * The reader's own message still on this phone, where the delivered one will
+ * stand: its status under it, and Edit, Delete or Don't send where it may be
+ * taken back, on a long press as well as under a refused one.
+ */
+function PendingMessage(props: { readonly bubble: ReactNode; readonly entry: MessageEntry }) {
+  const controls = useContext(MessageDeliveryContext);
+  const delivery = props.entry.localDelivery;
+  const key = props.entry.clientSendKey ?? props.entry.id;
+  const since = useMemo(() => Date.parse(props.entry.createdAt), [props.entry.createdAt]);
+  if (delivery === undefined) return props.bubble;
+  const act = (action: MessageDeliveryAction) => controls?.act(key, action);
+  const menu = deliveryMenu(delivery.phase, delivery.attempted);
+  const status = (
+    <MessageDelivery
+      attempted={delivery.attempted}
+      onAction={controls === null ? undefined : act}
+      phase={delivery.phase}
+      rejection={
+        delivery.phase === "rejected" ? presentMessageDelivery("rejected", delivery.issue) : null
+      }
+      showStatus={controls?.statusShown(key) ?? true}
+      since={Number.isNaN(since) ? Date.now() : since}
+    >
+      {props.bubble}
+    </MessageDelivery>
+  );
+  return menu.length === 0 || controls === null ? (
+    status
+  ) : (
+    <WaitingHold
+      actions={menu}
+      onAction={(id) => {
+        if (id === "edit" || id === "delete" || id === "dont-send") act(id);
+      }}
+      previewBottomEndRadius={radius.xs}
+      previewRadius={bubble.radius}
+    >
+      {status}
+    </WaitingHold>
   );
 }
 

@@ -1211,9 +1211,10 @@ describe("an app's card and its tab", () => {
       f.openTab.mockRejectedValueOnce(new Error("This Host cannot open app tabs."));
       await act(async () => press(f.container, "Open"));
       expect(f.tabs.show).not.toHaveBeenCalled();
-      expect(f.container.querySelector('[role="alert"]')?.textContent).toContain(
-        "This Host cannot open app tabs.",
-      );
+      // Said in the app's own words, never the exception's.
+      const alert = f.container.querySelector('[role="alert"]')?.textContent ?? "";
+      expect(alert).toContain("This app could not open as a tab");
+      expect(alert).not.toContain("This Host cannot open app tabs.");
       expect(frame(f.container)).not.toBeNull();
 
       await act(async () => press(f.container, "Try again"));
