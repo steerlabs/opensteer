@@ -335,21 +335,17 @@ export function DesktopChooser({
   const [signingOut, setSigningOut] = useState(false);
   const [confirmingStart, setConfirmingStart] = useState(false);
   usePlaceChecks(bridge, true);
-  const facts = useComputerFacts(
-    places.facts,
-    snapshot.deployments.filter((row) => deploymentPolicy({ kind: row.kind }).services.personal),
+  const personal = snapshot.deployments.filter(
+    (row) => deploymentPolicy({ kind: row.kind }).services.personal,
   );
+  const facts = useComputerFacts(places.facts, personal);
   const rows = placeRows(snapshot, { thisComputer: thisComputerLabel(), facts });
   const thisMac = thisComputerLabel().replace(/^This /u, "this ");
   // Opensteers elsewhere this person could mean instead of a new one here. An
   // Account listing that can't be opened right now still counts: its kind is
   // unknown, and it may well be their Opensteer.
   const others = [
-    ...snapshot.deployments
-      .filter(
-        (row) => deploymentPolicy({ kind: row.kind }).services.personal && !row.onThisComputer,
-      )
-      .map(({ name }) => name),
+    ...personal.filter((row) => !row.onThisComputer).map(({ name }) => name),
     ...snapshot.unavailable.map(({ name }) => name),
   ];
   // A list that couldn't be read may hold one too, so Start waits for it.
