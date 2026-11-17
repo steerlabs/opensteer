@@ -65,12 +65,11 @@ describe("computer access", () => {
   });
   it("lists pending Mac apps without a bindable connection id and keeps version facts explicit", async () => {
     let version: number | undefined = 2;
+    let state = "ready";
     const platform = {
       computerAppApprovals: {
         computerUseInventory: async () => ({
-          machines: [
-            { runnerId: "rnr_mac", name: "Mac", state: "ready", appApproval: "ask", apps: [] },
-          ],
+          machines: [{ runnerId: "rnr_mac", name: "Mac", state, appApproval: "ask", apps: [] }],
           phones: [],
         }),
         computerAppHolders: () => new Map(),
@@ -100,6 +99,9 @@ describe("computer access", () => {
     version = undefined;
     const outdated = await gatherComputerAccess(platform, input);
     expect(outdated.machine(outdated.machines[0]!)?.blocked.code).toBe("update_required");
+    state = "offline";
+    const offline = await gatherComputerAccess(platform, input);
+    expect(offline.machine(offline.machines[0]!)?.blocked.code).toBe("computer_offline");
   });
   it("requires a personal grant even when the phone connection exists", () => {
     expect(phoneDiscovery(phone)).toEqual({

@@ -1,3 +1,4 @@
+import { computerMachineProblem } from "./computer-use-discovery.js";
 import { gatherComputerAccess } from "./computer-access.js";
 import { agentToolFailureResult } from "@opensteer/agent-tools";
 import { randomUUID } from "node:crypto";
@@ -2873,6 +2874,91 @@ export class IntegrationPlatformService {
     const run = caller.run;
     if (!run || !this.#computerUse)
       throw refused("forbidden", "Computer use requires a running task.");
+    try {
+      return await this.#callComputerOperation(
+        caller,
+        target,
+        operation,
+        args,
+        signal,
+        deadline,
+        beforeAcquired,
+        facts,
+      );
+    } catch (error) {
+      if (
+        !(error instanceof ComputerUseError) ||
+        operation === "release" ||
+        !["offline", "busy", "incompatible-version", "permission-required"].includes(error.code)
+      )
+        throw error;
+      const access = await this.computerAccess(
+        { ownerUserId: run.requestedBy, threadId: caller.threadId },
+        run,
+      );
+      const phone = access.phones.find((entry) => entry.connection?.connectionId === target);
+      const machine = access.machines.find((entry) =>
+        entry.apps.some((app) => app.connectionId === target),
+      );
+      const app = machine?.apps.find((entry) => entry.connectionId === target);
+      const state = phone
+        ? access.phone(phone)
+        : machine && app
+          ? access.app(machine, { displayName: app.name, bundleId: app.bundleId })
+          : undefined;
+      const name = phone?.name ?? machine?.name;
+      const fallback =
+        name && error.code !== "busy"
+          ? computerMachineProblem({
+              name,
+              state:
+                error.code === "offline"
+                  ? "offline"
+                  : error.code === "permission-required"
+                    ? "permission-required"
+                    : "ready",
+              ...(error.code === "incompatible-version" ? { computerUseVersion: null } : {}),
+            })?.blocked
+          : undefined;
+      const problem =
+        state?.blocked ??
+        fallback ??
+        (error.code === "busy"
+          ? {
+              code: "busy",
+              message: error.message,
+              next: "Other work can continue; try again when the computer is free.",
+            }
+          : undefined);
+      if (!problem) throw error;
+      throw Object.assign(
+        new OpensteerError({
+          code: "forbidden",
+          reason: problem.code,
+          message: problem.message,
+          next: problem.next,
+        }),
+        {
+          ...("performed" in error ? { performed: error.performed } : {}),
+          ...("content" in error ? { content: error.content } : {}),
+          ...("value" in error ? { value: error.value } : {}),
+        },
+      );
+    }
+  }
+  async #callComputerOperation(
+    caller: ToolCaller,
+    target: IntegrationConnectionId,
+    operation: string,
+    args: Readonly<Record<string, unknown>>,
+    signal?: AbortSignal,
+    deadline?: number,
+    beforeAcquired?: () => Promise<void>,
+    facts?: Awaited<ReturnType<IntegrationPlatformService["computerAccess"]>>,
+  ): Promise<ReplReply> {
+    const run = caller.run;
+    if (!run || !this.#computerUse)
+      throw refused("forbidden", "Computer use requires a running task.");
     const row =
       operation === "release"
         ? "release"
@@ -3094,7 +3180,11 @@ export class IntegrationPlatformService {
       const stoppedBecause = result?.error?.message ?? null;
       const headline =
         row === "observe"
-          ? computerUseHeadline({ appName, performed: stoppedBecause ? [] : null, stoppedBecause })
+          ? computerUseHeadline({
+              appName,
+              performed: stoppedBecause ? [] : null,
+              stoppedBecause,
+            })
           : computerUseActHeadline({
               performed: operation === "release" ? [`Released ${placement.runnerName}`] : performed,
               stoppedBecause,
@@ -3174,34 +3264,16 @@ export class IntegrationPlatformService {
       return { value: z.json().parse(JSON.parse(JSON.stringify(value))), content };
     } catch (caught) {
       const error =
-        caught instanceof ComputerUseError && caught.code === "permission-required" && mac
+        caught instanceof ComputerUseError && caught.code === "outcome-unknown"
           ? Object.assign(
               new ComputerUseError(
                 caught.code,
-                computerAppSentence(caught.message, placement.runnerName),
+                `${caught.message} The actions may already have taken effect. Do not repeat them. Observe the ${mac ? "app" : "phone"} before deciding the next action.`,
                 caught.retryable,
               ),
               { performed: result?.performed ?? [] },
             )
-          : caught instanceof ComputerUseError && caught.code === "incompatible-version" && mac
-            ? Object.assign(
-                new ComputerUseError(
-                  caught.code,
-                  computerUseUpdateMacSentence(placement.runnerName),
-                  caught.retryable,
-                ),
-                { performed: result?.performed ?? [] },
-              )
-            : caught instanceof ComputerUseError && caught.code === "outcome-unknown"
-              ? Object.assign(
-                  new ComputerUseError(
-                    caught.code,
-                    `${caught.message} The actions may already have taken effect. Do not repeat them. Observe the ${mac ? "app" : "phone"} before deciding the next action.`,
-                    caught.retryable,
-                  ),
-                  { performed: result?.performed ?? [] },
-                )
-              : caught;
+          : caught;
       if (started) {
         const record = started;
         const known =

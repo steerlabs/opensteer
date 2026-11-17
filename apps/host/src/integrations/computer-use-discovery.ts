@@ -64,6 +64,12 @@ export function computerMachineProblem(machine: {
   computerToolEnabled?: boolean;
   computerUseVersion?: number | null;
 }): { blocked: Blocked } | null {
+  if (machine.state === "offline")
+    return blocked(
+      "computer_offline",
+      `${machine.name} is offline.`,
+      "The person can bring it online; other work can continue.",
+    );
   if (
     machine.computerToolEnabled === false ||
     (machine.computerUseVersion !== undefined && machine.computerUseVersion !== 2)
@@ -72,12 +78,6 @@ export function computerMachineProblem(machine: {
       "update_required",
       `${machine.name} needs an Opensteer update.`,
       "The person can update Opensteer on the task's computer and the target computer.",
-    );
-  if (machine.state === "offline")
-    return blocked(
-      "computer_offline",
-      `${machine.name} is offline.`,
-      "The person can bring it online; other work can continue.",
     );
   if (machine.state === "permission-required")
     return blocked(
@@ -94,10 +94,8 @@ export function computerMachineProblem(machine: {
   return null;
 }
 export function pendingOnComputerNextAction(machine: string): string {
-  return `The owner can answer the pending request for ${machine} from any Opensteer app. A pending request grants nothing yet; you'll be told when they answer.`;
+  return `The owner can answer the pending request for ${machine} from any Opensteer app. A pending request grants nothing yet. Its outcome goes to the task that opened it; a running task can call app_access_request if it needs its own continuation. Automation occurrences receive no continuation.`;
 }
-export const pendingPhoneAccessNextAction = pendingOnComputerNextAction("the phone");
-export const pendingPersonalGrantNextAction = pendingOnComputerNextAction("access");
 interface CommonFacts {
   readonly callable: boolean;
   readonly canAct?: boolean;

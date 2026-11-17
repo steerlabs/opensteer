@@ -2054,22 +2054,28 @@ describe("computer use discovery", () => {
       expect.any(Array),
     );
     expect(answer).toMatchObject({
-      computer: { computerId: mac.runnerId },
+      computer: {
+        computerId: mac.runnerId,
+        apps: [
+          {
+            name: "Notes",
+            bundleId: "com.apple.Notes",
+            blocked: { code: "blocked_by_owner" },
+          },
+          {
+            name: "Notepad",
+            bundleId: "example.Notepad",
+            blocked: {
+              code: "access_required",
+              next: expect.stringContaining("app_access_request"),
+            },
+          },
+        ],
+      },
       total: 20,
       nextCursor: "6",
-      apps: [
-        {
-          name: "Notes",
-          bundleId: "com.apple.Notes",
-          blocked: { code: "blocked_by_owner" },
-        },
-        {
-          name: "Notepad",
-          bundleId: "example.Notepad",
-          blocked: { code: "access_required", next: expect.stringContaining("app_access_request") },
-        },
-      ],
     });
+    expect(answer).not.toHaveProperty("apps");
     expect(JSON.stringify(answer)).not.toContain("teamId");
     expect(JSON.stringify(answer)).not.toContain("iconPng");
   });

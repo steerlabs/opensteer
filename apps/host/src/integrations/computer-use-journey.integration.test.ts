@@ -2275,7 +2275,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     // 2. Search with computerId: installed apps, each with its own next step.
     const installed = json(await a.call("integration_search", { computerId: world.macId }));
     expect(installed).toMatchObject({ total: 4, nextCursor: null });
-    expect(installed.apps).toContainEqual({
+    expect(installed.computer.apps).toContainEqual({
       name: "Notes",
       bundleId: "com.apple.Notes",
       blocked: expect.objectContaining({ code: "access_required" }),
@@ -2283,7 +2283,11 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     const filtered = json(
       await a.call("integration_search", { computerId: world.macId, query: "note", limit: 1 }),
     );
-    expect(filtered).toMatchObject({ total: 1, nextCursor: null, apps: [{ name: "Notes" }] });
+    expect(filtered).toMatchObject({
+      total: 1,
+      nextCursor: null,
+      computer: { apps: [{ name: "Notes" }] },
+    });
 
     // 3. Request under ask: pending, and the Mac is told to review it now.
     const pending = await a.call("app_access_request", {
@@ -2308,9 +2312,9 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     });
     await vi.waitFor(() => expect(world.fakeMac.reviews).toEqual([setup!.id]));
 
-    // Searching again while it waits must not invite a second request.
+    // Discovery reports pending access while the owner has not answered.
     const waiting = json(await a.call("integration_search", { computerId: world.macId }));
-    expect(waiting.apps.find(({ name }: { name: string }) => name === "Notes")).toEqual({
+    expect(waiting.computer.apps.find(({ name }: { name: string }) => name === "Notes")).toEqual({
       name: "Notes",
       bundleId: "com.apple.Notes",
       blocked: expect.objectContaining({ code: "access_pending" }),
@@ -2323,7 +2327,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
 
     // 5. The continuation names the app selector the model will use.
     const approved = json(await a.call("integration_search", { computerId: world.macId }));
-    const notes = approved.apps.find(({ name }: { name: string }) => name === "Notes");
+    const notes = approved.computer.apps.find(({ name }: { name: string }) => name === "Notes");
     expect(notes).toEqual({
       name: "Notes",
       bundleId: "com.apple.Notes",
@@ -2403,12 +2407,14 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     const runB = await world.startRun("Weekly review");
     const b = await world.gateway(runB);
     const held = json(await b.call("integration_search", { computerId: world.macId }));
-    expect(held.apps.find(({ name }: { name: string }) => name === "Notes")).toMatchObject({
-      blocked: expect.objectContaining({
-        code: "in_use",
-        message: expect.stringContaining("Shopping list"),
-      }),
-    });
+    expect(held.computer.apps.find(({ name }: { name: string }) => name === "Notes")).toMatchObject(
+      {
+        blocked: expect.objectContaining({
+          code: "in_use",
+          message: expect.stringContaining("Shopping list"),
+        }),
+      },
+    );
     expect(await b.call("computer_use", { code: 'await (await app("Notes")).window()' })).toEqual(
       refusal(`in_use: Notes on ${mac} is in use by another task (Shopping list).`),
     );
@@ -2559,6 +2565,9 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       }),
     );
     expect(calendar).toMatchObject({
+      computerId: world.macId,
+      computer: mac,
+      app: { displayName: "Calendar", bundleId: "com.apple.iCal" },
       kind: "computer.app.access",
       requestId: null,
       status: "fulfilled",
@@ -2681,7 +2690,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       refusal(`blocked_by_owner: Calendar on ${mac} is blocked by its owner.`),
     );
     const listing = json(await a.call("integration_search", { computerId: world.macId }));
-    expect(listing.apps).toEqual([
+    expect(listing.computer.apps).toEqual([
       expect.objectContaining({
         name: "Notes",
       }),
@@ -2745,13 +2754,13 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(await world.persistence.listComputerAppSetupRequests(world.owner.userId)).toEqual(
       setupRequests,
     );
-    expect(await a.call("integration_search", { computerId: world.macId })).toEqual(
-      toolRefusal("conflict", `${mac} is offline.`),
-    );
+    const offlineSearch = json(await a.call("integration_search", { computerId: world.macId }));
     const offlineCatalog = json(await a.call("integration_search", { query: "Computer use" }));
     expect(macRow(offlineCatalog).computers[0]).toMatchObject({
       blocked: { code: "computer_offline" },
     });
+    expect(offlineSearch.computer.blocked).toEqual(macRow(offlineCatalog).computers[0]!.blocked);
+    expect(offlineSearch).not.toHaveProperty("apps");
     expect(JSON.stringify(offlineCatalog)).not.toContain("toolRef");
     expect(
       await a.call("computer_use", { code: 'await (await app("Notes")).windows()' }),
@@ -3897,9 +3906,13 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     release();
     fakePhone.gate = null;
 
-    expect(await phoneCode(gateway, "await p.observe()")).toEqual(
-      refusal(`offline: ${phone} is offline. It will work again when it is back.`),
-    );
+    const offline = json(await gateway.call("integration_search", { query: "Android phone" }));
+    const blocked = offline.catalog.find((row: { phones?: unknown[] }) => row.phones?.length)
+      .phones[0].blocked;
+    expect(await phoneCode(gateway, "await p.observe()")).toMatchObject({
+      isError: true,
+      structuredContent: { error: { ...blocked, performed: [] } },
+    });
 
     await fakePhone.attach();
     fakePhone.gate = new Promise<void>((resolve) => {
@@ -4033,6 +4046,7 @@ function macRow(search: { readonly catalog: readonly CatalogRow[] }): CatalogRow
 function json(result: ToolResult) {
   const value = JSON.parse(text(result));
   const targets = [
+    ...(value.computer?.apps ?? []),
     ...(value.apps ?? []).filter((app: { bundleId?: string }) => app.bundleId),
     ...(value.catalog ?? []).flatMap(
       (row: {
@@ -5174,7 +5188,7 @@ async function createWorld(
     isRunnerConnected: (runnerId) =>
       (runnerId !== macId && runnerId !== phoneId) || hub.attached(runnerId),
     computerToolEnabled: async () => executionCapability.on,
-    computerUseVersion: () => macVersion.value,
+    computerUseVersion: (runnerId) => (hub.attached(runnerId) ? macVersion.value : undefined),
     ...(options.computerReplTime ? { computerReplTime: options.computerReplTime } : {}),
     mcpImageContent: async () => imageGate.on,
     mcpOauth: { providerFor: vi.fn() },

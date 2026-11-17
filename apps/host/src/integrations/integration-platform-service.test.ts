@@ -48,7 +48,6 @@ import {
   type Request,
 } from "@opensteer/core";
 import {
-  computerUseUpdateMacSentence,
   computerUseUpdateSentence,
   mintComputerUseSessionId,
   type MachineAppStatus,
@@ -4320,6 +4319,44 @@ describe("IntegrationPlatformService computer use gateway", () => {
     }
   });
 
+  it.each([false, true])(
+    "uses the listing blocker when a granted target goes offline (phone=%s)",
+    async (phone) => {
+      const f = guiFixture({
+        phone,
+        settleRefusal: new ComputerUseError("offline", "Disconnected"),
+      });
+      const who = runCaller(context);
+      const inventory = await f.service.computerAppApprovals.computerUseInventory(
+        who.run!.requestedBy,
+      );
+      vi.spyOn(f.service.computerAppApprovals, "computerUseInventory").mockResolvedValue({
+        machines: inventory.machines.map((machine) => ({
+          ...machine,
+          state: "offline",
+          ready: false,
+        })),
+        phones: inventory.phones.map((entry) => ({ ...entry, state: "offline", ready: false })),
+      });
+      try {
+        const access = await f.service.computerAccess(
+          { ownerUserId: who.run!.requestedBy, threadId: who.threadId },
+          who.run!,
+        );
+        const state = phone
+          ? access.phone(access.phones[0]!)
+          : access.appEntries(access.machines[0]!)[0]!;
+        await expect(operate(f.service, f.callable, {}, who)).rejects.toMatchObject({
+          reason: state.blocked!.code,
+          message: state.blocked!.message,
+          next: state.blocked!.next,
+        });
+      } finally {
+        await f.service.close();
+      }
+    },
+  );
+
   it("authorizes callable operations without gathering discovery facts", async () => {
     const f = guiFixture({ operation: "observe" });
     const access = vi
@@ -4561,30 +4598,24 @@ describe("IntegrationPlatformService computer use gateway", () => {
     });
   });
 
-  /*
-   * A refusal for want of permission is said in the computer's own words.
-   * Failure modes:
-   * - a phone's sentence, already a whole sentence about the phone — paused
-   *   or a task that may only look — gets " on Pixel 7" bolted on
-   *   after its full stop;
-   * - a Mac's sentence, which names only the app, loses the Mac it is about.
-   */
   it.each([
     ["a paused phone", "This phone is paused. Resume it in the Opensteer Agent Phone app."],
     ["a task that may only look", "This task may look at the phone but not operate it."],
-  ])("says a phone's refusal for %s in the phone's own sentence", async (_name, sentence) => {
+  ])("normalizes a phone permission failure for %s", async (_name, sentence) => {
     const { callable, service } = guiFixture({
       phone: true,
       settleRefusal: new ComputerUseError("permission-required", sentence),
     });
 
     await expect(operate(service, callable, {}, runCaller(context))).rejects.toMatchObject({
-      code: "permission-required",
-      message: sentence,
+      code: "forbidden",
+      reason: "permission_required",
+      message: "Pixel 7 needs computer-use permissions.",
+      next: expect.any(String),
     });
   });
 
-  it("names the Mac after an app's refusal for want of permission", async () => {
+  it("normalizes an app permission failure with the Mac identity", async () => {
     const { callable, service } = guiFixture({
       settleRefusal: new ComputerUseError(
         "permission-required",
@@ -4593,8 +4624,10 @@ describe("IntegrationPlatformService computer use gateway", () => {
     });
 
     await expect(operate(service, callable, {}, runCaller(context))).rejects.toMatchObject({
-      code: "permission-required",
-      message: "Notes needs Accessibility permission on Alex's Mac.",
+      code: "forbidden",
+      reason: "permission_required",
+      message: "Alex's Mac needs computer-use permissions.",
+      next: expect.any(String),
     });
   });
 
@@ -4604,8 +4637,10 @@ describe("IntegrationPlatformService computer use gateway", () => {
     });
 
     await expect(operate(service, callable, {}, runCaller(context))).rejects.toMatchObject({
-      code: "incompatible-version",
-      message: computerUseUpdateMacSentence("Alex's Mac"),
+      code: "forbidden",
+      reason: "update_required",
+      message: "Alex's Mac needs an Opensteer update.",
+      next: expect.any(String),
     });
   });
 
@@ -5266,13 +5301,14 @@ describe("computer app request matrix", () => {
     await test.service.computerAppApprovals.requestComputerAppAccess(test.input);
     expect(test.threadReadInsideAdmission).toEqual([false]);
   });
-  it("returns already available and toolRefs when the requested access is callable", async () => {
+  it("returns the resolved target when the requested access is callable", async () => {
     const test = fixture({ connectionAccess: "read-write", callableAccess: "read-write" });
     expect(
       await test.service.computerAppApprovals.requestComputerAppAccess(test.input),
     ).toMatchObject({
-      status: "already-available",
-      toolRefs: { observe: expect.any(String), act: expect.any(String) },
+      status: "fulfilled",
+      app: { displayName: expect.any(String), bundleId: expect.any(String) },
+      computerId: expect.any(String),
     });
     expect(test.requestComputerAppAccess).not.toHaveBeenCalled();
   });
