@@ -17,7 +17,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentCaller, RunCaller } from "./agent-caller.js";
 import type { AgentToolHandlers } from "./handlers/types.js";
 import { RequestHold } from "./request-hold.js";
-import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 import { ProductToolHandlers } from "./handlers/product.js";
 
@@ -243,11 +242,20 @@ describe("Opensteer MCP spine", () => {
         originatingRunId: state === "other-run" ? createId("run") : f.run.claims.runId,
       })),
     });
-    const pending = { requestId, kind: "browser.access", status: "pending", replayed: false };
+    const pending = {
+      requestId,
+      kind: "browser.access",
+      status: "pending",
+      replayed: false,
+      next: "The person was asked.",
+    };
     Object.assign(f.handlers, {
       saved_login_request: async () => ({
         status: "pending",
         site: "https://example.com",
+        kind: "browser.password-sign-in",
+        loginStatus: "pending",
+        next: "The person was asked.",
         requestId,
         replayed: false,
       }),
@@ -329,7 +337,7 @@ describe("Opensteer MCP spine", () => {
       expect(response.headers.get("x-opensteer-request-pending")).toBeNull();
       if (state.startsWith("pending"))
         expect(body.result.content.map((part: { text: string }) => part.text).join("\n")).toContain(
-          requestPendingGuidance,
+          "The person was asked.",
         );
       if (state === "integration") expect(f.options.store.requests.get).not.toHaveBeenCalled();
     } finally {
@@ -359,6 +367,7 @@ describe("Opensteer MCP spine", () => {
         browser_profile_request: async () => ({
           requestId: request.id,
           kind: "browser.access",
+          next: "The person was asked.",
           status: "pending",
           replayed: false,
         }),
@@ -389,8 +398,8 @@ describe("Opensteer MCP spine", () => {
         Object.assign(request, { status: "declined" });
         const result = await call;
         expect(result).toMatchObject({
-          structuredContent: { status: "declined" },
-          content: [expect.anything(), { type: "text", text: "Answered declined" }],
+          structuredContent: { status: "declined", next: "Answered declined" },
+          content: [expect.objectContaining({ type: "text" })],
         });
         expect(f.markToolDelivered).toHaveBeenCalledOnce();
         expect(wait.mock.calls[0]?.[0].limitMs).toBe(requestHoldLimitMs);
@@ -516,6 +525,7 @@ describe("Opensteer MCP spine", () => {
         return {
           requestId: request.id,
           kind: "browser.access",
+          next: "The person was asked.",
           status: "pending",
           replayed: false,
         };

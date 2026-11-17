@@ -834,6 +834,7 @@ export async function createHostRuntime(
       // each serves is the catalog's to say, by the platform it reports.
       listMachines: async (ownerId) => {
         const drivers = await store.listDeviceDrivers({ includeDetached: true });
+        const runnerNames = new Map<RunnerId, string>();
         const selfRunners = new Map<RunnerId, import("@opensteer/protocol").RunnerModules>();
         let runnerCursor: RunnerId | undefined;
         do {
@@ -843,7 +844,10 @@ export async function createHostRuntime(
             limit: 100,
             ...(runnerCursor ? { after: runnerCursor } : {}),
           });
-          for (const runner of page.runners) selfRunners.set(runner.id, runner.moduleDescriptors);
+          for (const runner of page.runners) {
+            selfRunners.set(runner.id, runner.moduleDescriptors);
+            runnerNames.set(runner.id, runner.name);
+          }
           runnerCursor = page.nextCursor ?? undefined;
         } while (runnerCursor);
         const machines: {
@@ -851,6 +855,8 @@ export async function createHostRuntime(
           platform: ComputerAppPlatform;
           deviceId: DeviceId;
           definitionId?: "android-phone" | "iphone-screen";
+          availability?: import("@opensteer/protocol").DeviceAvailability;
+          setup?: import("@opensteer/protocol").PhoneDisplayView["setup"];
         }[] = [];
         let after: DeviceId | undefined;
         do {
@@ -862,7 +868,7 @@ export async function createHostRuntime(
           });
           for (const device of page.devices) {
             const bindings = drivers.filter((binding) => binding.deviceId === device.id);
-            const screen = bindings.some((binding) => binding.role === "screen");
+            const screen = bindings.find((binding) => binding.role === "screen");
             const self = bindings.find((binding) => binding.role === "self" && !binding.detachedAt);
             const platform = screen
               ? "ios"
@@ -874,6 +880,46 @@ export async function createHostRuntime(
                 name: device.name,
                 platform,
                 deviceId: device.id,
+                ...(screen
+                  ? {
+                      availability: screen.detachedAt
+                        ? {
+                            state: "unavailable" as const,
+                            reason: { kind: "not-connected" as const },
+                          }
+                        : !runnerRegistry?.isRunnerConnected(screen.runnerId)
+                          ? {
+                              state: "unavailable" as const,
+                              reason: { kind: "driver-offline" as const },
+                            }
+                          : !device.accessPolicy.apps
+                            ? {
+                                state: "disabled" as const,
+                                reason: { kind: "access-off" as const },
+                              }
+                            : (computerApps.deviceStatus(device.id)?.availability ?? {
+                                state: "unavailable" as const,
+                                reason: { kind: "unreported" as const },
+                              }),
+                      setup: {
+                        location: "driver-mac" as const,
+                        driverRunnerId: screen.runnerId,
+                        driverRunnerName: runnerNames.get(screen.runnerId) ?? "its driving Mac",
+                      },
+                    }
+                  : platform === "android"
+                    ? {
+                        setup: { location: "android-usb" as const },
+                        ...(!device.accessPolicy.apps
+                          ? {
+                              availability: {
+                                state: "disabled" as const,
+                                reason: { kind: "access-off" as const },
+                              },
+                            }
+                          : {}),
+                      }
+                    : {}),
                 ...(screen
                   ? { definitionId: "iphone-screen" as const }
                   : platform === "android"
@@ -2382,7 +2428,7 @@ export async function createHostRuntime(
       passwordSignIn: (operationId) => passwordSignIns.continuationState(operationId),
       commands,
       integrations: {
-        selfDeviceId: (runnerId) => store.requireSelfDeviceId(runnerId),
+        computerAccess: (input, run) => integrationPlatform.computerAccess(input, run),
         computerUseMachines: (ownerUserId) =>
           integrationPlatform.computerAppApprovals.computerUseMachines(ownerUserId),
         computerUsePhones: (ownerUserId) =>

@@ -1177,7 +1177,7 @@ describe("ComputerUseService thread and run scoping", () => {
 });
 
 describe("per-app sessions", () => {
-  it("allows two Runs on different apps and names only the holder of the busy app", async () => {
+  it("allows two Runs on different apps without disclosing the busy app holder", async () => {
     const test = harness({
       threadTitle: async (id) => (id === context.threadId ? "Tidy the notes" : "Plan the week"),
     });
@@ -1189,11 +1189,8 @@ describe("per-app sessions", () => {
     expect(test.sent[1]?.threadTitle).toBe("Tidy the notes");
     expect(test.service.holders(runnerId)).toEqual(
       new Map([
-        [computerAppIdentityKey(calendar), { runId: second.runId, threadTitle: "Plan the week" }],
-        [
-          computerAppIdentityKey(callable.app),
-          { runId: context.runId, threadTitle: "Tidy the notes" },
-        ],
+        [computerAppIdentityKey(calendar), { runId: second.runId }],
+        [computerAppIdentityKey(callable.app), { runId: context.runId }],
       ]),
     );
     test.outcomes.push({
@@ -1202,9 +1199,11 @@ describe("per-app sessions", () => {
       message: "This app is already being used by another task.",
       retryable: false,
     });
-    await expect(observe(test.service, callable, third)).rejects.toThrow(
-      "This app is already being used by another task. (Task: Tidy the notes)",
-    );
+    await expect(observe(test.service, callable, third)).rejects.toMatchObject({
+      code: "busy",
+      message:
+        "This app is already being used by another task. Continue with other work, or tell the person it is busy; do not retry in a loop.",
+    });
     expect(test.service.sessionsForRunner(runnerId)).toHaveLength(2);
     // Busy on a new app leaves the existing Calendar session alive.
     test.outcomes.push({

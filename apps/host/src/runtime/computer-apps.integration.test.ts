@@ -33,7 +33,7 @@ import {
   requestComputerAppSetup,
   setComputerApp,
   toolText,
-  toolReadiness,
+  toolBlocked,
 } from "./computer-apps.test-support.js";
 import {
   connectCallerMachine,
@@ -257,7 +257,7 @@ integration("computer apps", () => {
       account: "Studio Mac",
       connectionId: enabled.connection.id,
     });
-    expect(toolReadiness(readSearch, "query_messages").code).toBe("READY");
+    expect(toolBlocked(readSearch, "query_messages")).toBeUndefined();
     expect(operations(readSearch).some(({ name }) => name === "send_message")).toBe(false);
     await expect(
       gateway.call("integration_call", {
@@ -421,14 +421,16 @@ integration("computer apps", () => {
     );
 
     const offline = await gateway.call("integration_search", { query: "Messages" });
-    expect(toolReadiness(offline, "query_messages")).toMatchObject({
-      code: "INTEGRATION_UNAVAILABLE",
-      detail: "Opensteer's integrations service is unavailable on Studio Mac.",
+    expect(toolBlocked(offline, "query_messages")).toMatchObject({
+      code: "unavailable",
+      message:
+        "apple-messages is unavailable: Opensteer's integrations service is unavailable on Studio Mac.",
+      next: "Continue without it and tell the person what the message says.",
     });
     await computer.reconnectModule();
     await waitForCondition(async () => {
       const searched = await gateway.call("integration_search", { query: "Messages" });
-      return toolReadiness(searched, "query_messages").code === "READY";
+      return toolBlocked(searched, "query_messages") === undefined;
     });
 
     await testRpcData(
@@ -624,7 +626,7 @@ integration("computer apps", () => {
     const searched = await gateway.call("integration_search", { query: "Messages" });
     const list = operation(searched, "query_messages");
     expect(list).toMatchObject({ account: "Studio Mac", connectionId: enabled.connection.id });
-    expect(toolReadiness(searched, "query_messages").code).toBe("READY");
+    expect(toolBlocked(searched, "query_messages")).toBeUndefined();
     await expect(
       gateway.call("integration_call", { arguments: { sql: "SELECT 1" }, ...list.address }),
     ).resolves.toMatchObject({ columns: ["guid"], rows: [["chat-1"]], truncated: false });
@@ -721,23 +723,26 @@ integration("computer apps", () => {
       // 1. Full access not yet allowed.
       await waitForCondition(async () => {
         const searched = await gateway.call("integration_search", { query: "Calendar" });
-        return toolReadiness(searched, "list_events").code === "INTEGRATION_UNAVAILABLE";
+        return toolBlocked(searched, "list_events")?.code === "unavailable";
       });
-      const blocked = toolReadiness(
+      const blocked = toolBlocked(
         await gateway.call("integration_search", { query: "Calendar" }),
         "list_events",
       );
       record("calendar before its grant", blocked);
-      expect(blocked.detail).toBe(
-        "Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.",
-      );
+      expect(blocked).toEqual({
+        code: "unavailable",
+        message:
+          "apple-calendar is unavailable: Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.",
+        next: "Continue without it and tell the person what the message says.",
+      });
 
       // 2. The person allows it on the Mac.
       helper.grants.calendars = "granted";
       helper.grants.reminders = "granted";
       await waitForCondition(async () => {
         const searched = await gateway.call("integration_search", { query: "Calendar" });
-        return toolReadiness(searched, "list_events").code === "READY";
+        return toolBlocked(searched, "list_events") === undefined;
       });
       const calendarSearch = await gateway.call("integration_search", { query: "Calendar" });
       record(

@@ -1,3 +1,4 @@
+import { OpensteerError } from "@opensteer/core";
 import { DeviceIdSchema } from "@opensteer/core";
 import { createId } from "@opensteer/core";
 import { DeviceAccessRefusal } from "../../administration/device-access.js";
@@ -219,6 +220,36 @@ describe("computer REPL worker boundary", () => {
     expect((await pending).isError).toBe(true);
     await service.endRun(context.runId);
     expect((await run('return "ended"')).isError).toBe(true);
+  });
+  it("preserves the blocked phone recommendation when selected by computerId", async () => {
+    const blocked = {
+      code: "access_required",
+      message: "Pixel needs access for this task.",
+      next: 'Use app_access_request {computerId:"rnr_pixel", access:"read-write", reason:"Check calendar"}.',
+    };
+    const { run } = setup(async () => ({
+      value: [{ id: "connection", computerId: "rnr_pixel", name: "Pixel", blocked }],
+    }));
+    const result = await run('await phone("rnr_pixel")');
+    expect(result.structuredContent).toEqual({ error: { ...blocked, performed: [] } });
+  });
+  it("preserves typed Host refusal details in the same REPL failure shape", async () => {
+    const { run } = setup(async () => {
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: "access_pending",
+        message: "Access is pending.",
+        next: "The owner can answer the request.",
+      });
+    });
+    expect((await run("await apps()")).structuredContent).toEqual({
+      error: {
+        code: "access_pending",
+        message: "Access is pending.",
+        next: "The owner can answer the request.",
+        performed: [],
+      },
+    });
   });
   it("serializes Promise.all, shares window snapshots and preserves emission order", async () => {
     const calls: string[] = [];

@@ -18,8 +18,8 @@ interface alone can do.
 
 ## Bind
 
-`await phones()` lists the phones this task may use, each with `name`, `computerId`, `platform`
-(`android` or `ios`), `navigation` (button ids), `actions` and `availability` (`{ state, reason }`).
+`await phones()` lists visible phones, including blocked ones, each with `name`, `computerId`, `platform`
+(`android` or `ios`), `definitionId`, `navigation` (button ids), `actions` and either `access` (`read` or `read-write`) or `blocked: {code,message,next}`. Blocked targets throw that same error when bound; follow `next`.
 `const p = await phone(nameOrComputerId)` binds one; when two share a name, it lists their
 computerIds. `tab(tabId)` binds a phone tab exactly. `computer_list` shows each phone's
 `phoneDisplay`, including the Mac driving an iPhone.
@@ -56,10 +56,10 @@ phone's screen lock; app and website passwords use [app sign-in](sign-in.md).
 
 ## Unavailable
 
-An unavailable phone is the person's to fix. Say once what they need to do, then continue other
+The shared access contract maps device reasons into `blocked` errors with a concrete `next` action. An unavailable phone is the person's to fix. Say once what they need to do, then continue other
 work or stop; never poll, loop or reach it through its Mac.
 
-| Reason                                                                                                     | Ask the person to                                                  |
+| Underlying device reason                                                                                   | Ask the person to                                                  |
 | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
 | `locked`                                                                                                   | unlock the iPhone                                                  |
 | `not-connected`                                                                                            | connect the iPhone to its Mac with a cable, or join the same Wi‑Fi |

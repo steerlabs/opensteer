@@ -1876,6 +1876,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
               connectionRequirement: server.connectionRequirement,
               connections,
               hasAccess: hasInstallationAccess,
+              runAccess: requesterAccess.runAccess,
               installationStatus: installation.status,
               providerAuthorization:
                 server.connectionRequirement.kind === "provider"
@@ -1912,6 +1913,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
                   connectionRequirement: server.connectionRequirement,
                   connections,
                   hasAccess: hasInstallationAccess,
+                  runAccess: requesterAccess.runAccess,
                   installationStatus: installation.status,
                   providerAuthorization:
                     server.connectionRequirement.kind === "provider"

@@ -1,3 +1,4 @@
+import { integration_search } from "@opensteer/agent-tools/integrations";
 import {
   apiVersionQueryParameter,
   apiCurrentQueryParameter,
@@ -458,6 +459,48 @@ integration("iPhone screen routing on an authenticated Mac", () => {
       type: "text",
       text: '["tap","navigate","launch","wait"]',
     });
+    const phoneRow = async () => {
+      const result = await callMcpTool(host.origin, run.toolsToken, "integration_search", {
+        query: "Phone display",
+      });
+      const data = integration_search.output.parse(result.structuredContent);
+      return data
+        .catalog!.find((row) => row.definitionId === "iphone-screen")!
+        .phones!.find((row) => row.computerId === first.deviceId)!;
+    };
+    expect(await phoneRow()).toEqual({
+      computerId: first.deviceId,
+      definitionId: "iphone-screen",
+      name: "First iPhone",
+      access: "read-write",
+    });
+    await port.status(first.deviceId, { state: "unavailable", reason: { kind: "locked" } }, null);
+    await vi.waitFor(
+      () =>
+        expect(computerApps.deviceStatus(first.deviceId)?.availability.reason?.kind).toBe("locked"),
+      { timeout: 5_000 },
+    );
+    const locked = await phoneRow();
+    expect(locked).toEqual({
+      computerId: first.deviceId,
+      definitionId: "iphone-screen",
+      name: "First iPhone",
+      blocked: {
+        code: "permission_required",
+        message: "First iPhone is locked.",
+        next: "Ask the person to unlock the iPhone physically, then observe again. Never enter or ask for its passcode.",
+      },
+    });
+    const bindLocked = await callMcpTool(host.origin, run.toolsToken, "computer_use", {
+      code: `await phone(${JSON.stringify(first.deviceId)})`,
+    });
+    expect(bindLocked.isError).toBe(true);
+    expect(bindLocked.structuredContent).toMatchObject({ error: locked.blocked });
+    await port.status(first.deviceId, { state: "ready", reason: null }, null);
+    await vi.waitFor(
+      () => expect(computerApps.deviceStatus(first.deviceId)?.availability.state).toBe("ready"),
+      { timeout: 5_000 },
+    );
     const firstSession = await observe(first.deviceId);
     await observe(second.deviceId);
     expect(port.observes.map(({ deviceId }) => deviceId)).toEqual([
