@@ -293,3 +293,48 @@ test("resumes conversion with exact tools, images and admitted seeds", async () 
     await fixture.close();
   }
 });
+
+test("a parity failure keeps the source ledger and the unready cursor", async () => {
+  const fixture = await createStoreFixture();
+  const { database } = fixture;
+  try {
+    const { threadId } = await fixture.createRunFixture("migration-parity");
+    await database.transaction().execute(applyPersonalStateSchema);
+
+    const stopBeforeVerify = new Error("Stop before verification");
+    await expect(
+      finishPersonalStateUpgrade(database, {
+        afterBatch(stage) {
+          if (stage === "attention-links") throw stopBeforeVerify;
+        },
+      }),
+    ).rejects.toBe(stopBeforeVerify);
+
+    const {
+      rows: [removed],
+    } = await sql<{ id: string }>`
+      delete from transcript_items where id = (
+        select id from transcript_items where thread_id = ${threadId} and kind = 'message'
+        order by id limit 1
+      ) returning id
+    `.execute(database);
+    expect(removed).toBeDefined();
+
+    const readSource = () =>
+      sql<{ count: string; ready: boolean; stage: string }>`
+      select (select count(*) from deployment_events)::text as count,
+        ready, upgrade_cursor->>'stage' as stage from client_sync_state
+    `
+        .execute(database)
+        .then(({ rows }) => rows[0]);
+    const source = await readSource();
+    expect(source).toMatchObject({ ready: false, stage: "verify" });
+    expect(Number(source?.count)).toBeGreaterThan(0);
+
+    await expect(finishPersonalStateUpgrade(database)).rejects.toThrow("parity check failed");
+    expect(await legacyState(database)).toEqual({ legacy: true, cursor: true });
+    expect(await readSource()).toEqual(source);
+  } finally {
+    await fixture.close();
+  }
+});
