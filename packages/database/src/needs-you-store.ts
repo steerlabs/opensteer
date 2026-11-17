@@ -1,6 +1,7 @@
 import { boundedSerializedPrefix } from "./message-window.js";
 import {
   OpensteerError,
+  IsoDateTimeSchema,
   PendingRequestViewSchema,
   type ThreadId,
   type RequestId,
@@ -9,8 +10,8 @@ import {
 } from "@opensteer/core";
 import { NeedsYouPageSchema, type NeedsYouPage, type NeedsYouEntry } from "@opensteer/protocol";
 import { sql, type Kysely } from "kysely";
-import { requirePersonalOwner } from "./personal-settings-store.js";
-import { executionDate, withPersonalReadTransaction } from "./personal-transaction.js";
+import { readAttentionKeys, requireFreshPersonalAttention } from "./personal-attention-store.js";
+import { authorizedSyncState, withPersonalSyncRead } from "./personal-sync-store.js";
 import { requestFromRow } from "./request-persistence.js";
 import type { DatabaseSchema } from "./schema.js";
 import {
@@ -18,7 +19,6 @@ import {
   boundedWindowLimit,
   decodeWindowCursor,
   encodeWindowCursor,
-  safeCount,
 } from "./store-primitives.js";
 
 export function needsYouPage(
@@ -29,77 +29,47 @@ export function needsYouPage(
     readonly before?: string;
     readonly limit?: number;
     readonly maxBytes?: number;
+    readonly awaitDeadlineWork?: () => Promise<void>;
   },
 ): Promise<NeedsYouPage> {
   const limit = boundedWindowLimit(input.limit, 50);
   const maxBytes = boundedWindowBytes(input.maxBytes, 256 * 1024);
   const cursor = input.before ? decodeWindowCursor(input.before, "request", input.userId) : null;
-  return withPersonalReadTransaction(
-    database,
-    async (transaction) => {
-      await requirePersonalOwner(transaction, input.userId);
-      let pending = transaction.selectFrom("requests").where("status", "=", "pending");
-      if (input.deviceAccessRequests !== "include")
-        pending = pending.where("kind", "!=", "device.access");
-      let query = pending
-        .selectAll()
-        .orderBy("createdAt", "desc")
-        .orderBy("id", "desc")
-        .limit(limit + 1);
-      if (cursor)
-        query = query.where((eb) =>
-          eb.or([
-            eb("createdAt", "<", cursor.timestamp),
-            eb.and([eb("createdAt", "=", cursor.timestamp), sql<boolean>`id < ${cursor.id}`]),
-          ]),
-        );
-      const asks = transaction
-        .selectFrom("personalTeamRequests")
-        .where("kind", "=", "ask")
-        .where((eb) =>
-          eb.or([
-            eb.and([
-              eb(
-                "teamDeploymentId",
-                "in",
-                transaction
-                  .selectFrom("personalTeamLinks")
-                  .select("teamDeploymentId")
-                  .where("state", "in", ["active", "unreachable", "needs_update"]),
-              ),
-              eb("remoteState", "=", "awaiting_approval"),
-              eb("localDecision", "is", null),
-              eb("terminalState", "is", null),
-              eb("consentExpiresAt", ">", executionDate(transaction)),
-            ]),
-            eb.and([
-              eb("terminalState", "=", "failed"),
-              eb("releasedAt", "is", null),
-              eb("blockedReason", "is not", null),
-            ]),
-          ]),
-        );
-      let askQuery = asks
-        .selectAll()
-        .orderBy("createdAt", "desc")
-        .orderBy("teamDeploymentId", "desc")
-        .orderBy("requestId", "desc")
-        .limit(limit + 1);
-      if (cursor)
-        askQuery = askQuery.where((eb) =>
-          eb.or([
-            eb("createdAt", "<", cursor.timestamp),
-            eb.and([
-              eb("createdAt", "=", cursor.timestamp),
-              sql<boolean>`concat('team:', team_deployment_id, ':', request_id) < ${cursor.id}`,
-            ]),
-          ]),
-        );
-      const [rows, total, askRows, askTotal] = await Promise.all([
-        query.execute(),
-        pending.select(({ fn }) => fn.countAll<string>().as("count")).executeTakeFirstOrThrow(),
-        askQuery.execute(),
-        asks.select(({ fn }) => fn.countAll<string>().as("count")).executeTakeFirstOrThrow(),
+  const cursorAt = input.before
+    ? IsoDateTimeSchema.parse(
+        JSON.parse(Buffer.from(input.before, "base64url").toString()).timestamp,
+      )
+    : null;
+  const read = () =>
+    withPersonalSyncRead(database, async (transaction) => {
+      const state = await authorizedSyncState(transaction, input.userId);
+      await requireFreshPersonalAttention(transaction);
+      const excludeDeviceAccess = input.deviceAccessRequests !== "include";
+      const keys = await readAttentionKeys(transaction, {
+        limit,
+        excludeDeviceAccess,
+        ...(cursor && cursorAt ? { before: { at: cursorAt, id: cursor.id } } : {}),
+      });
+      const requestIds = keys.flatMap((key) => (key.requestId ? [key.requestId] : []));
+      const asks = keys.filter((key) => key.kind !== "request");
+      const [rows, askRows] = await Promise.all([
+        requestIds.length
+          ? transaction.selectFrom("requests").selectAll().where("id", "in", requestIds).execute()
+          : [],
+        asks.length
+          ? transaction
+              .selectFrom("personalTeamRequests")
+              .selectAll()
+              .where(
+                sql<boolean>`(team_deployment_id,request_id) in (${sql.join(
+                  asks.map(
+                    ({ teamDeploymentId, teamRequestId }) =>
+                      sql`(${teamDeploymentId},${teamRequestId})`,
+                  ),
+                )})`,
+              )
+              .execute()
+          : [],
       ]);
       const askInputIds = askRows.flatMap((row) => (row.localInputId ? [row.localInputId] : []));
       const askMessages = askInputIds.length
@@ -150,58 +120,44 @@ export function needsYouPage(
           purpose: target.purpose,
         };
       });
-      const candidates: { entry: NeedsYouEntry; createdAt: string; id: string }[] = [
-        ...requests.map((entry) => ({
-          entry,
-          createdAt: entry.request.createdAt,
-          id: entry.request.id,
-        })),
-        ...askRows.map((row) => ({
-          entry: {
-            kind: "team-ask" as const,
-            teamId: row.teamDeploymentId,
-            requestId: row.requestId,
-            presentation: row.presentation!,
-            ...(row.localTaskId && row.localInputId
-              ? {
-                  task: {
-                    threadId: row.localTaskId,
-                    messageId: row.localInputId,
-                    revision: revisionById.get(row.localInputId) ?? 0,
-                  },
-                }
-              : {}),
-            createdAt: row.createdAt.toISOString(),
-            consentExpiresAt: row.consentExpiresAt!.toISOString(),
-            ...(!row.releasedAt && row.blockedReason ? { failureReason: row.blockedReason } : {}),
-          },
+      const byId = new Map<string, NeedsYouEntry>(
+        requests.map((entry) => [`request:${entry.request.id}`, entry]),
+      );
+      for (const row of askRows) {
+        byId.set(`team:${row.teamDeploymentId}:${row.requestId}`, {
+          kind: "team-ask",
+          teamId: row.teamDeploymentId,
+          requestId: row.requestId,
+          presentation: row.presentation!,
+          ...(row.localTaskId && row.localInputId
+            ? {
+                task: {
+                  threadId: row.localTaskId,
+                  messageId: row.localInputId,
+                  revision: revisionById.get(row.localInputId) ?? 0,
+                },
+              }
+            : {}),
           createdAt: row.createdAt.toISOString(),
-          id: `team:${row.teamDeploymentId}:${row.requestId}`,
-        })),
-      ].sort((a, b) =>
-        a.createdAt === b.createdAt
-          ? a.id < b.id
-            ? 1
-            : a.id > b.id
-              ? -1
-              : 0
-          : a.createdAt < b.createdAt
-            ? 1
-            : -1,
-      );
-      const bounded = boundedSerializedPrefix(
-        candidates.map((item) => item.entry),
-        limit,
-        maxBytes,
-      );
+          consentExpiresAt: row.consentExpiresAt!.toISOString(),
+          ...(!row.releasedAt && row.blockedReason ? { failureReason: row.blockedReason } : {}),
+        });
+      }
+      const candidates = keys.map((key) => {
+        const entry = byId.get(key.id);
+        if (!entry) throw new Error("Attention lost its canonical source");
+        return entry;
+      });
+      const bounded = boundedSerializedPrefix(candidates, limit, maxBytes);
       if (candidates.length && !bounded.items.length)
         throw new OpensteerError({
           code: "resource_exhausted",
           message: "A pending Request exceeds the page byte limit.",
         });
       const entries = [...bounded.items];
-      const last = candidates[entries.length - 1];
-      const count = safeCount(total.count) + safeCount(askTotal.count);
+      const last = keys[entries.length - 1];
+      const count =
+        state.needsYouCount - (excludeDeviceAccess ? state.pendingDeviceAccessRequestCount : 0);
       return NeedsYouPageSchema.parse({
         count,
         entries,
@@ -212,11 +168,15 @@ export function needsYouPage(
           totalItems: count,
           nextBefore:
             candidates.length > entries.length && last
-              ? encodeWindowCursor("request", input.userId, last.createdAt, last.id)
+              ? encodeWindowCursor("request", input.userId, last.at, last.id)
               : null,
         },
       });
-    },
-    "repeatable read",
-  );
+    });
+  return read().catch(async (error: unknown) => {
+    if (!(error instanceof OpensteerError) || !error.retryable || !input.awaitDeadlineWork)
+      throw error;
+    await input.awaitDeadlineWork();
+    return read();
+  });
 }

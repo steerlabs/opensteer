@@ -1,6 +1,5 @@
 import {
   OpensteerError,
-  type AgentEvent,
   type RequestId,
   type RequestResponse,
   type RunnerId,
@@ -9,7 +8,6 @@ import {
 import type { OpensteerStore } from "@opensteer/database";
 import type { RequestCreationResult } from "@opensteer/protocol";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
-import type { ContinuationService } from "../agents/continuation-service.js";
 
 type FullAccessStore = Pick<OpensteerStore, "listReachableMachines" | "requireSelfDeviceId"> & {
   readonly requests: Pick<
@@ -20,17 +18,9 @@ type FullAccessStore = Pick<OpensteerStore, "listReachableMachines" | "requireSe
 
 export class MachineFullDiskAccessService {
   readonly #store: FullAccessStore;
-  readonly #onDeploymentEvent: (event: AgentEvent) => void;
-  readonly #continuations: Pick<ContinuationService, "notify">;
 
-  constructor(options: {
-    readonly store: FullAccessStore;
-    readonly onDeploymentEvent: (event: AgentEvent) => void;
-    readonly continuations: Pick<ContinuationService, "notify">;
-  }) {
+  constructor(options: { readonly store: FullAccessStore }) {
     this.#store = options.store;
-    this.#onDeploymentEvent = options.onDeploymentEvent;
-    this.#continuations = options.continuations;
   }
 
   async request(input: {
@@ -83,7 +73,6 @@ export class MachineFullDiskAccessService {
       originatingRunId: claims.runId,
       requestedBy: claims.requestedBy,
     });
-    for (const event of created.events) this.#onDeploymentEvent(event);
     return {
       kind,
       replayed: created.replayed,
@@ -94,18 +83,15 @@ export class MachineFullDiskAccessService {
 
   async decline(input: {
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly response: RequestResponse;
   }) {
     const result = await this.#store.requests.declineMachineFullDiskAccessRequest(input);
-    for (const event of result.events) this.#onDeploymentEvent(event);
-    this.#continuations.notify();
     return result;
   }
 
   async fulfillForMachine(machineId: RunnerId): Promise<void> {
-    const result = await this.#store.requests.fulfillMachineFullDiskAccessRequests(machineId);
-    for (const event of result.events) this.#onDeploymentEvent(event);
-    if (result.requests.length > 0) this.#continuations.notify();
+    await this.#store.requests.fulfillMachineFullDiskAccessRequests(machineId);
   }
 }

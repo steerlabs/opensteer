@@ -4,17 +4,15 @@ import {
   createId,
   type DeploymentId,
   type TeamAgentRequestId,
-  type AgentEvent,
   type EventId,
   type NotificationId,
   type NotificationKind,
 } from "@opensteer/core";
-import {
-  mayNotify,
-  replyPushGraceMilliseconds,
-  type DecidedNotification,
-  type NotificationPublication,
-  type NotificationStore,
+import type {
+  DecidedNotification,
+  NotificationPublication,
+  NotificationStore,
+  NotificationTransition,
 } from "@opensteer/database";
 import { delay } from "@opensteer/shared/delay";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -40,6 +38,7 @@ export interface NotificationDispatcherOptions {
     Partial<Pick<NotificationStore, "teamAsk">>;
 }
 
+const replyPushGraceMilliseconds = 5_000;
 const retryDelays = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
 
 /** Best-effort alerts belong to this process; the conversation remains durable. */
@@ -54,10 +53,11 @@ export class NotificationDispatcher {
     this.#now = options.now ?? (() => new Date());
   }
 
-  dispatch(event: AgentEvent): void {
-    if (this.#stop.signal.aborted || !mayNotify(event)) return;
-    const pending = this.#decide(event).catch(() => {
-      this.#report("onError", { eventId: event.eventId, reason: "Notification decision failed" });
+  dispatch(change: NotificationTransition): void {
+    if (this.#stop.signal.aborted) return;
+    const eventId = createId("event");
+    const pending = this.#decide(change, eventId).catch(() => {
+      this.#report("onError", { eventId, reason: "Notification decision failed" });
     });
     this.#pending.add(pending);
     void pending.finally(() => this.#pending.delete(pending));
@@ -96,18 +96,18 @@ export class NotificationDispatcher {
     await this.drain();
   }
 
-  async #decide(event: AgentEvent): Promise<void> {
-    const decisions = await this.#options.store.decide(event);
+  async #decide(change: NotificationTransition, eventId: EventId): Promise<void> {
+    const decisions = await this.#options.store.decide(change);
     if (this.#stop.signal.aborted) return;
     await Promise.all(
-      decisions.map(async (decision) => {
+      decisions.map(async ({ sequence, ...decision }) => {
         if (this.#remaining(decision.view.occurredAt) <= 0) return;
         this.#options.onLive(decision);
         if (!this.#options.client) return;
         const entry: NotificationPublication = {
           ...decision.view,
-          eventId: event.eventId,
-          sequence: event.sequence,
+          eventId,
+          sequence,
           userId: decision.userId,
           occurredAt: new Date(decision.view.occurredAt),
           expiresAt: new Date(

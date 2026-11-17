@@ -1,3 +1,4 @@
+import { RequestDeadlines } from "../agents/request-deadlines.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import { gate } from "@opensteer/shared/test-support/observation";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -27,7 +28,7 @@ import {
   type PasswordSignInServiceOptions,
 } from "./password-sign-in-service.js";
 
-const services: PasswordSignInService[] = [];
+const services: Pick<PasswordSignInService, "close">[] = [];
 afterEach(async () => {
   for (const service of services.splice(0)) await service.close();
   vi.useRealTimers();
@@ -56,6 +57,7 @@ describe("Passwords wait authority", () => {
         ),
       ).toBe(true);
       await h.service.respond({
+        expectedRevision: "1",
         ownerId: h.call.ownerId,
         requestId: h.request().id,
         sessionId: "test-session",
@@ -85,8 +87,7 @@ describe("Passwords wait authority", () => {
     h.event({ kind: "result", outcome: { kind: "busy" } });
     expect(await first).toMatchObject({ status: "unavailable", reason: "busy" });
 
-    vi.setSystemTime(Date.parse(start.expiresAt));
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(Date.parse(start.expiresAt) - Date.now());
     expect(h.service.join({ ...h.call, site: h.site })).toBeNull();
   });
 });
@@ -192,6 +193,7 @@ function harness() {
   let workspaceActive = true;
   const requests = {
     get: vi.fn(async () => request),
+    revision: vi.fn(async () => "1"),
     hasActiveRunPasswordSignInAuthority: vi.fn(async () => runActive),
     hasDurablePasswordSignInRequestAuthority: vi.fn(
       async ({ ownerId, requestId }) =>
@@ -209,7 +211,7 @@ function harness() {
             id: createId("request"),
             status: "pending",
           } as unknown as Request;
-        return { request, events: [], replayed: false };
+        return { request, replayed: false };
       },
     ),
     settlePasswordSignInRequest: vi.fn<
@@ -239,7 +241,7 @@ function harness() {
             ? { sessionId: input.settlementSessionId, deviceLabel: "Test phone" }
             : null,
       } as unknown as Request;
-      return { request, events: [], replayed: false };
+      return { request, replayed: false };
     }),
   } satisfies PasswordSignInServiceOptions["requests"];
   const pins = vi.fn();
@@ -250,16 +252,27 @@ function harness() {
     requests,
     agentWaitMs: 1_000,
     declineAnswerMs: 50,
-    reconcileIntervalMs: 10_000,
     describe: async () => ({
       deploymentId: call.deploymentId,
       deploymentName: "Test",
       threadTitle: "Test",
     }),
-    onRequestResolved: resolved,
-    onDeploymentEvent: () => undefined,
+    onContinuationReady: resolved,
+    onDeadlineChanged: () => deadlines.changed(),
   });
-  services.push(service);
+  const deadlines = new RequestDeadlines({
+    next: async () => service.nextDeadline(),
+    settle: () => service.settleDeadlines(),
+    onError: (error) => {
+      throw error;
+    },
+  });
+  services.push({
+    close: async () => {
+      await deadlines.close();
+      await service.close();
+    },
+  });
   return {
     call,
     pins,
@@ -461,6 +474,7 @@ describe("human Passwords settlement", () => {
   } as const;
   function answer(h: Awaited<ReturnType<typeof pending>>, revalidate = async () => {}) {
     return h.service.respond({
+      expectedRevision: "1",
       ownerId: h.call.ownerId,
       requestId: h.request().id,
       sessionId: "test-session",
@@ -791,36 +805,31 @@ describe("human Passwords settlement", () => {
         expect.objectContaining({ type: "login.cancel" }),
       );
     });
-  it.each(["interruption-write", "announcement"] as const)(
+  it.each(["interruption-write"] as const)(
     "retries interruption after %s fails, preserving provenance",
-    async (failure) => {
+    async () => {
       const h = await pending();
       replies(h);
       const send = h.hub.sendPasswordSignIn.getMockImplementation()!;
       h.hub.sendPasswordSignIn.mockImplementation(async (runner, command) =>
         command.type === "login.commit"
-          ? { type: "login.committed", committed: failure === "announcement" }
+          ? { type: "login.committed", committed: false }
           : send(runner, command),
       );
       const settle = h.requests.settlePasswordSignInRequest.getMockImplementation()!;
-      if (failure === "interruption-write")
-        h.requests.settlePasswordSignInRequest
-          .mockImplementationOnce(settle)
-          .mockRejectedValueOnce(new Error("Interruption write failed"));
-      else
-        h.resolved.mockImplementationOnce(() => {
-          throw new Error("Announcement failed after broker commit");
-        });
+      h.requests.settlePasswordSignInRequest
+        .mockImplementationOnce(settle)
+        .mockRejectedValueOnce(new Error("Interruption write failed"));
       await answer(h);
       expect(h.service.leaseForOperation(h.operationId())).toBeNull();
       expect(h.service.continuationState(h.operationId())).toEqual({ publishing: true });
-      expect(h.resolved).toHaveBeenCalledTimes(failure === "announcement" ? 1 : 0);
+      expect(h.resolved).toHaveBeenCalledTimes(0);
       await vi.advanceTimersByTimeAsync(10_000);
       expect(h.request()).toMatchObject({
         response: { kind: "external", value: { outcome: "interrupted" } },
         settlementProvenance: { sessionId: "test-session", deviceLabel: "Test phone" },
       });
-      expect(h.resolved).toHaveBeenCalledTimes(failure === "announcement" ? 2 : 1);
+      expect(h.resolved).toHaveBeenCalledTimes(1);
       expect(h.service.continuationState(h.operationId())).toEqual({
         publishing: false,
         loginRef: undefined,
@@ -848,6 +857,7 @@ describe("human Passwords settlement", () => {
     );
     await expect(
       h.service.respond({
+        expectedRevision: "1",
         ownerId,
         requestId: h.request().id,
         sessionId: "session",
@@ -882,6 +892,7 @@ describe("human Passwords settlement", () => {
     let settled = false;
     const declined = h.service
       .respond({
+        expectedRevision: "1",
         ownerId: h.call.ownerId,
         requestId: h.request().id,
         sessionId: "declining-session",
@@ -897,6 +908,7 @@ describe("human Passwords settlement", () => {
   it("records the declining session without inventing an automatic approver", async () => {
     const h = await pending();
     await h.service.respond({
+      expectedRevision: "1",
       ownerId: h.call.ownerId,
       requestId: h.request().id,
       sessionId: "declining-session",
@@ -935,6 +947,7 @@ describe("card personal lifecycle", () => {
     }));
     await expect(
       h.service.respond({
+        expectedRevision: "1",
         ownerId: h.call.ownerId,
         requestId: h.request().id,
         sessionId: "phone",
@@ -975,6 +988,7 @@ describe("card personal lifecycle", () => {
       return { type: "login.cancelled" };
     });
     await h.service.respond({
+      expectedRevision: "1",
       ownerId: h.call.ownerId,
       requestId: h.request().id,
       sessionId: "phone",

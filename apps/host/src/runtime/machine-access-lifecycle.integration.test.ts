@@ -30,7 +30,6 @@ import {
   connectTargetMachine,
   dispatchCallerRun,
   enrollmentToken,
-  followPersonalDeployment,
   setUpCallerLaunchDirectory,
   startMachineAccessWireHost,
   type ShellAccessScenario,
@@ -546,10 +545,10 @@ integration("Machine access across a Run's authority", () => {
     const grants = await runGrants(host, runId);
     const rows = await shellSessionRows(host);
     const terminal = await host.store.database
-      .selectFrom("deploymentEvents")
-      .select(["createdAt", "type"])
-      .where("runId", "=", runId)
-      .where("type", "in", ["run.completed", "run.failed", "run.interrupted"])
+      .selectFrom("runs")
+      .select(["completedAt", "status"])
+      .where("id", "=", runId)
+      .where("completedAt", "is not", null)
       .executeTakeFirst();
     const journey: AuthorityJourney = {
       grants: grants.map((grant) => ({
@@ -573,13 +572,15 @@ integration("Machine access across a Run's authority", () => {
           endedAfterRevocationMs:
             endedAt !== null && revokedAt !== null ? endedAt - revokedAt : null,
           endedBeforeTerminalMs:
-            endedAt !== null && terminal ? terminal.createdAt.getTime() - endedAt : null,
+            endedAt !== null && terminal?.completedAt
+              ? terminal.completedAt.getTime() - endedAt
+              : null,
           id: session.id,
           openedUnderBindingGeneration: session.openedUnderBindingGeneration,
           shimExitCode: session.shimExitCode,
         };
       }),
-      terminalEvent: terminal?.type ?? null,
+      terminalEvent: terminal ? `run.${terminal.status}` : null,
     };
     journeys.push(journey);
     return journey;
@@ -591,13 +592,10 @@ integration("Machine access across a Run's authority", () => {
       .select(["bindingGeneration", "status"])
       .where("id", "=", runId)
       .executeTakeFirstOrThrow();
-    const terminal = await host.store.database
-      .selectFrom("deploymentEvents")
-      .select("type")
-      .where("runId", "=", runId)
-      .where("type", "in", ["run.completed", "run.failed", "run.interrupted"])
-      .execute();
-    return { ...run, terminalEvents: terminal.map((event) => event.type) };
+    const terminalEvents = ["completed", "failed", "interrupted"].includes(run.status)
+      ? [`run.${run.status}`]
+      : [];
+    return { ...run, terminalEvents };
   }
 
   it("ends a stopped Run's command and forward at the revocation, before the Run reports its end", async () => {
@@ -892,8 +890,6 @@ integration("Machine access across a Run's authority", () => {
       // The first Run's engine is also waiting on its requester, so its stop
       // has something to tell the clients following its Workspace.
       const request = await first.openLiveRequest();
-      const feed = await followPersonalDeployment(host);
-      closers.push(() => feed.close());
       await host.store.database
         .updateTable("runs")
         .set({ backgroundDeadlineAt: new Date(Date.now() - 1_000) })
@@ -916,13 +912,18 @@ integration("Machine access across a Run's authority", () => {
       const firstExit = await firstShim.exited;
       expect(firstExit.code).not.toBe(0);
       expect(firstExit.stdout).not.toContain("late");
-      // Its clients heard the stop live, though the sweep failed after it.
+      // The committed removal is visible even though the sweep failed after this stop.
       await waitForCondition(async () =>
-        feed.live.some(
-          (event) =>
-            event.type === "request.cancelled" &&
-            event.runId === first.runId &&
-            (event.data as { readonly requestId?: unknown }).requestId === request,
+        Boolean(
+          await host.store.database
+            .selectFrom("clientChanges")
+            .select("sequence")
+            .where("scopeKey", "=", `thread:${first.threadId}`)
+            .where("entityKind", "=", "request")
+            .where("entityId", "=", request)
+            .where("operation", "=", "remove")
+            .limit(1)
+            .executeTakeFirst(),
         ),
       );
       expect(await grantStates(second)).toEqual([["active", null]]);

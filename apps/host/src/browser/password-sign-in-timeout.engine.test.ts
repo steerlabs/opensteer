@@ -151,18 +151,16 @@ describe.each(holdEngines)("$label held MCP", (engine) => {
       expect(marker).not.toBe("");
       // The model may say what it is doing before the call; its reply is the last line.
       expect(turn.assistantText.trim().split("\n").at(-1)).toBe(marker);
-      const started = turn.events
-        .filter((event) => event.type === "tool.started")
-        .filter((event) => event.data.tool.name === "saved_login_request");
-      // Claude restates a streamed call once with its full arguments, under the same id.
-      expect(new Set(started.map((event) => event.data.callId)).size).toBe(1);
-      const callId = started[0]?.data.callId;
-      const completed = turn.events.filter(
-        (event) => event.type === "tool.completed" && event.data.callId === callId,
-      );
-      expect(completed).toMatchObject([
-        { data: { isError: false, output: { text: expect.stringContaining(marker) } } },
+      const storedCalls = await stack.host.store.database
+        .selectFrom("toolCalls")
+        .select(["callId", "tool", "status", "isError", "output"])
+        .where("runId", "=", turn.runId)
+        .execute();
+      const loginCalls = storedCalls.filter(({ tool }) => tool?.name === "saved_login_request");
+      expect(loginCalls).toMatchObject([
+        { status: "completed", isError: false, output: { text: expect.stringContaining(marker) } },
       ]);
+      const callId = loginCalls[0]?.callId;
       if (engine.driverKind === "codex") {
         const holdEnteredAt = enteredAt;
         const holdReleasedAt = releasedAt;

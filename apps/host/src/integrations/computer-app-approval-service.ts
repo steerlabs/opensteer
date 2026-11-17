@@ -3,7 +3,6 @@ import type { AdministrationCommandIdentity } from "@opensteer/database";
 import {
   OpensteerError,
   RequestResponseSchema,
-  type AgentEvent,
   type Request,
   type RequestId,
   type RequestResponse,
@@ -164,7 +163,6 @@ export interface ComputerAppApprovalServiceOptions {
     readonly launchDigest: string;
     readonly serverId: IntegrationServerId;
   }) => void;
-  readonly publishRequestEvents: (events: readonly AgentEvent[]) => void;
   readonly store: IntegrationPlatformStore;
 }
 
@@ -190,7 +188,6 @@ export class ComputerAppApprovalService {
   readonly #onConnectionsChanged: () => void;
   readonly #onInputAccessWithdrawn: (deviceId: DeviceId) => void | Promise<void>;
   readonly #onLocalServerApproved: ComputerAppApprovalServiceOptions["onLocalServerApproved"];
-  readonly #publishRequestEvents: (events: readonly AgentEvent[]) => void;
   readonly #store: IntegrationPlatformStore;
 
   constructor(options: ComputerAppApprovalServiceOptions) {
@@ -204,7 +201,6 @@ export class ComputerAppApprovalService {
     this.#onConnectionsChanged = options.onConnectionsChanged;
     this.#onInputAccessWithdrawn = options.onInputAccessWithdrawn ?? (() => undefined);
     this.#onLocalServerApproved = options.onLocalServerApproved;
-    this.#publishRequestEvents = options.publishRequestEvents;
     this.#store = options.store;
   }
 
@@ -411,11 +407,10 @@ export class ComputerAppApprovalService {
           code: "not_found",
           message: "Computer use is unavailable on this Deployment.",
         });
-      const { request, settlement } = await this.#store.requestDeviceComputerAppSetup({
+      const { request } = await this.#store.requestDeviceComputerAppSetup({
         ...input,
         definitionDigest: integrationDefinitionDigest(definition),
       });
-      this.#publishRequestEvents(settlement.requestEvents);
       this.#onConnectionsChanged();
       return request;
     }
@@ -486,11 +481,7 @@ export class ComputerAppApprovalService {
         deviceId: input.deviceId,
       });
     };
-    const { request, settlement } = await this.#computerApps.withAdmission(
-      input.deviceId,
-      createRequest,
-    );
-    this.#publishRequestEvents(settlement.requestEvents);
+    const { request } = await this.#computerApps.withAdmission(input.deviceId, createRequest);
     this.#onConnectionsChanged();
     return request;
   }
@@ -506,7 +497,6 @@ export class ComputerAppApprovalService {
   async expireComputerAppSetupRequests(): Promise<void> {
     const settled = await this.#store.expireDeviceComputerAppSetupRequests();
     if (settled.requestIds.length === 0) return;
-    this.#publishRequestEvents(settled.requestEvents);
     this.#onConnectionsChanged();
   }
 
@@ -515,8 +505,7 @@ export class ComputerAppApprovalService {
     readonly requestId: string;
     readonly ownerUserId: UserId;
   }) {
-    const settlement = await this.#store.cancelDeviceComputerAppSetup(input);
-    this.#publishRequestEvents(settlement.requestEvents);
+    await this.#store.cancelDeviceComputerAppSetup(input);
     this.#onConnectionsChanged();
   }
 
@@ -630,7 +619,6 @@ export class ComputerAppApprovalService {
         throw error;
       }
     });
-    this.#publishRequestEvents(mutation.requestEvents);
     this.#onConnectionsChanged();
     // A change can settle, use up or reissue this app's waiting approval; the
     // Mac shows only what its latest list holds.
@@ -648,7 +636,7 @@ export class ComputerAppApprovalService {
     if (!connection) {
       throw new OpensteerError({ code: "not_found", message: "Computer app not found" });
     }
-    const mutation = await this.#computerApps.withAdmission(connection.deviceId, async () => {
+    await this.#computerApps.withAdmission(connection.deviceId, async () => {
       const policy =
         connection.connection.definitionId === computerUseDefinitionId
           ? await this.#store.getDeviceComputerUsePolicy({
@@ -666,7 +654,6 @@ export class ComputerAppApprovalService {
       await endComputerUseSessions(this.#computerUse, this.#definitions, revoked.removedApps);
       return revoked;
     });
-    this.#publishRequestEvents(mutation.requestEvents);
     this.#onConnectionsChanged();
     return { notice: null, revokedUpstream: false };
   }
@@ -681,15 +668,11 @@ export class ComputerAppApprovalService {
     );
     if (!connection?.computer || connection.definitionId !== computerUseDefinitionId)
       throw new OpensteerError({ code: "not_found", message: "Computer app not found" });
-    const mutation = await this.#computerApps.withAdmission(
-      connection.computer.deviceId,
-      async () => {
-        const mutation = await this.#store.blockComputerApp(input);
-        await endComputerUseSessions(this.#computerUse, this.#definitions, mutation.removedApps);
-        return mutation;
-      },
-    );
-    this.#publishRequestEvents(mutation.requestEvents);
+    await this.#computerApps.withAdmission(connection.computer.deviceId, async () => {
+      const mutation = await this.#store.blockComputerApp(input);
+      await endComputerUseSessions(this.#computerUse, this.#definitions, mutation.removedApps);
+      return mutation;
+    });
     this.#onConnectionsChanged();
   }
 
@@ -923,6 +906,7 @@ export class ComputerAppApprovalService {
   async declineComputerAppAccess(input: {
     readonly settlementSessionId?: string;
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly response: RequestResponse;
   }): Promise<{ readonly request: Request }> {
@@ -930,9 +914,9 @@ export class ComputerAppApprovalService {
       actorUserId: input.resolvedBy,
       ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
       requestId: input.requestId,
+      expectedRevision: input.expectedRevision,
       response: RequestResponseSchema.parse(input.response),
     });
-    this.#publishRequestEvents(declined.events);
     this.#onConnectionsChanged();
     return { request: declined.request };
   }
@@ -1164,7 +1148,6 @@ export class ComputerAppApprovalService {
         tools: (connectionId) => computerAppTools(definition, input.access, connectionId),
       });
     });
-    this.#publishRequestEvents(decision.requestEvents);
     switch (decision.kind) {
       case "approved":
         this.#onConnectionsChanged();

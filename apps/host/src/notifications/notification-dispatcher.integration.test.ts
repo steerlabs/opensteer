@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  AgentEventSchema,
   ModelSelectionSchema,
   createId,
   notificationPushWindowMilliseconds,
@@ -137,34 +136,59 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
             });
       const runId = queued.runId;
       if (!runId) throw new Error("Expected a Run");
-      const row = await vi.waitFor(
+      const { event, publicationTime, replyMessageId } = await vi.waitFor(
         async () => {
-          const observed = await database
-            .selectFrom("deploymentEvents")
-            .selectAll()
-            .where("runId", "=", runId)
-            .where("type", "=", change === "answer" ? "request.opened" : "run.completed")
-            .executeTakeFirst();
-          expect(observed, "Producer did not commit its notification event").toBeDefined();
-          return observed!;
+          if (change === "answer") {
+            const request = await database
+              .selectFrom("requests")
+              .select(["id", "kind", "createdAt"])
+              .where("originatingRunId", "=", runId)
+              .where("status", "=", "pending")
+              .limit(1)
+              .executeTakeFirstOrThrow();
+            return {
+              event: {
+                type: "requestChanged" as const,
+                requestId: request.id,
+                kind: request.kind,
+                status: "pending" as const,
+                opened: true,
+                runId,
+                threadId,
+              },
+              publicationTime: request.createdAt,
+              replyMessageId: null,
+            };
+          }
+          const run = await database
+            .selectFrom("runs")
+            .select("terminalReplyMessageId")
+            .where("id", "=", runId)
+            .where("status", "=", "completed")
+            .executeTakeFirstOrThrow();
+          if (!run.terminalReplyMessageId)
+            throw new Error("Producer did not commit the terminal reply");
+          const message = await database
+            .selectFrom("messages")
+            .select("createdAt")
+            .where("id", "=", run.terminalReplyMessageId)
+            .executeTakeFirstOrThrow();
+          return {
+            event: {
+              type: "runFinished" as const,
+              runId,
+              threadId,
+              outcome: "completed" as const,
+              attemptId: null,
+              bindingGeneration: null,
+            },
+            publicationTime: message.createdAt,
+            replyMessageId: run.terminalReplyMessageId,
+          };
         },
         { timeout: 20_000, interval: 50 },
       );
-      const event = AgentEventSchema.parse({
-        ...row,
-        createdAt: row.createdAt.toISOString(),
-      });
       const state = new NotificationStateStore(database);
-      const publicationTime =
-        event.type === "run.completed" && event.data.replyMessageId
-          ? (
-              await database
-                .selectFrom("messages")
-                .select("createdAt")
-                .where("id", "=", event.data.replyMessageId)
-                .executeTakeFirstOrThrow()
-            ).createdAt
-          : new Date(event.createdAt);
       const clock = new ManualClock(publicationTime.getTime());
       const now = () => new Date(clock.now());
       const notifications = new NotificationStore(database, {
@@ -187,16 +211,10 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
       const errors: unknown[] = [];
       const mutate = async () => {
         if (change === "read") {
-          if (event.type !== "run.completed" || !event.data.replyMessageId)
-            throw new Error("Expected a reply");
-          const message = await database
-            .selectFrom("messages")
-            .select("createdAt")
-            .where("id", "=", event.data.replyMessageId)
-            .executeTakeFirstOrThrow();
+          if (!replyMessageId) throw new Error("Expected a reply");
           await state.visit({
             threadId,
-            visitedAt: message.createdAt.toISOString(),
+            visitedAt: publicationTime.toISOString(),
             userId: recipientId,
           });
         }
@@ -298,22 +316,26 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
       text: "Expiry boundary [[reply Expire this reply]]",
       threadId,
     });
-    const row = await stack.host.store.database
-      .selectFrom("deploymentEvents")
-      .selectAll()
-      .where("runId", "=", turn.runId)
-      .where("type", "=", "run.completed")
+    if (!turn.runId) throw new Error("Expected a Run");
+    const run = await stack.host.store.database
+      .selectFrom("runs")
+      .select("terminalReplyMessageId")
+      .where("id", "=", turn.runId)
+      .where("status", "=", "completed")
       .executeTakeFirstOrThrow();
-    const event = AgentEventSchema.parse({
-      ...row,
-      createdAt: row.createdAt.toISOString(),
-    });
-    if (event.type !== "run.completed" || !event.data.replyMessageId)
-      throw new Error("Expected a completed reply");
+    if (!run.terminalReplyMessageId) throw new Error("Expected a completed reply");
+    const event = {
+      type: "runFinished" as const,
+      runId: turn.runId,
+      threadId,
+      outcome: "completed" as const,
+      attemptId: null,
+      bindingGeneration: null,
+    };
     const message = await stack.host.store.database
       .selectFrom("messages")
       .select("createdAt")
-      .where("id", "=", event.data.replyMessageId)
+      .where("id", "=", run.terminalReplyMessageId)
       .executeTakeFirstOrThrow();
     const clock = new ManualClock(message.createdAt.getTime());
     const now = () => new Date(clock.now());
@@ -338,8 +360,8 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
       const entry = {
         ...decision.view,
         userId: decision.userId,
-        eventId: event.eventId,
-        sequence: event.sequence,
+        eventId: createId("event"),
+        sequence: decision.sequence,
         occurredAt: new Date(decision.view.occurredAt),
         expiresAt: new Date(
           Date.parse(decision.view.occurredAt) + notificationPushWindowMilliseconds,

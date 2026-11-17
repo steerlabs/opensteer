@@ -1,10 +1,5 @@
-import {
-  OpensteerError,
-  RequestIdSchema,
-  type AgentEvent,
-  type RequestId,
-  type ThreadId,
-} from "@opensteer/core";
+import type { PersonalCommitReaction } from "@opensteer/database/personal-mutation";
+import { OpensteerError, type RequestId, type ThreadId } from "@opensteer/core";
 import {
   cancelSettledTaskQuestionNotice,
   deliverTaskQuestionNotice,
@@ -13,7 +8,6 @@ import {
 import type { Kysely } from "kysely";
 interface TaskQuestionNoticeOptions {
   readonly database: Kysely<DatabaseSchema>;
-  readonly publish: (event: AgentEvent) => void;
   readonly wake: () => void;
   readonly onError: (error: unknown) => void;
 }
@@ -45,18 +39,10 @@ export class TaskQuestionNotices {
       resolve(requestId);
     };
   }
-  observe(event: AgentEvent): void {
-    if (this.#closed || !event.type.startsWith("request.")) return;
-    const id =
-      "request" in event.data
-        ? event.data.request.id
-        : "requestId" in event.data
-          ? event.data.requestId
-          : undefined;
-    const parsed = RequestIdSchema.safeParse(id);
-    if (!parsed.success) return;
-    const waiting = [...this.#waiting].filter(({ threadId }) => threadId === event.threadId);
-    this.#enqueue(parsed.data, waiting);
+  requestChanged(change: Extract<PersonalCommitReaction, { type: "requestChanged" }>): void {
+    if (this.#closed || change.kind !== "harness.input") return;
+    const waiting = [...this.#waiting].filter(({ threadId }) => threadId === change.threadId);
+    this.#enqueue(change.requestId, waiting);
   }
   #enqueue(requestId: RequestId, observedWaits: readonly QuestionWait[] = []): void {
     const previous = this.#pending.get(requestId) ?? Promise.resolve();
@@ -69,21 +55,13 @@ export class TaskQuestionNotices {
           })),
         );
         if (this.#closed && observedWaits.some((entry) => this.#waiting.has(entry))) return;
-        const events = await deliverTaskQuestionNotice(
-          this.#options.database,
-          requestId,
-          (parentThreadId) =>
-            delivered.some(
-              (entry) => entry.parentThreadId === parentThreadId && entry.requestId === requestId,
-            ),
+        await deliverTaskQuestionNotice(this.#options.database, requestId, (parentThreadId) =>
+          delivered.some(
+            (entry) => entry.parentThreadId === parentThreadId && entry.requestId === requestId,
+          ),
         );
-        for (const event of events) this.#options.publish(event);
-        for (const event of await cancelSettledTaskQuestionNotice(
-          this.#options.database,
-          requestId,
-        ))
-          this.#options.publish(event);
-        if (events.length) this.#options.wake();
+        await cancelSettledTaskQuestionNotice(this.#options.database, requestId);
+        this.#options.wake();
       })
       .catch((error: unknown) => {
         if (!(

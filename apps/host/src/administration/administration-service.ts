@@ -51,7 +51,6 @@ export type AdministrationDependencies = Pick<
   | "deviceDrivers"
 > & {
   readonly reconcileIdleCompaction?: () => Promise<void>;
-  readonly publishDeploymentEvent: (event: import("@opensteer/core").AgentEvent) => void;
   readonly integrations: Pick<
     HostServerDependencies["integrations"],
     "platform" | "service" | "continuations"

@@ -96,6 +96,7 @@ integration.sequential("unified integration access Requests", () => {
     const installed = await platform.requests.installForIntegrationAccessRequest({
       preparedFulfillment: prepared,
       requestId: opened.request.id,
+      expectedRevision: (await platform.requests.revision(opened.request.id))!,
       resolvedBy: fixture.userId,
     });
     expect(installed).toMatchObject({
@@ -110,16 +111,12 @@ integration.sequential("unified integration access Requests", () => {
         },
         status: "pending",
       },
-      requestEvents: expect.arrayContaining([
-        expect.objectContaining({
-          type: "request.updated",
-        }),
-      ]),
     });
     await expect(platform.requests.listPendingContinuations()).resolves.toEqual([]);
     const resolved = await platform.requests.resolveIntegrationAccessRequest({
       providerAuthorizations: {},
       requestId: opened.request.id,
+      expectedRevision: (await platform.requests.revision(opened.request.id))!,
       resolvedBy: fixture.userId,
       response: {
         kind: "external",
@@ -162,6 +159,7 @@ integration.sequential("unified integration access Requests", () => {
       platform.requests.installForIntegrationAccessRequest({
         preparedFulfillment: changed,
         requestId: opened.request.id,
+        expectedRevision: (await platform.requests.revision(opened.request.id))!,
         resolvedBy: fixture.userId,
       }),
     ).rejects.toMatchObject({
@@ -193,6 +191,7 @@ integration.sequential("unified integration access Requests", () => {
       platform.requests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: opened.request.id,
+        expectedRevision: (await platform.requests.revision(opened.request.id))!,
         resolvedBy: fixture.userId,
         response: {
           kind: "external",
@@ -248,6 +247,7 @@ integration.sequential("unified integration access Requests", () => {
     await expect(
       platform.requests.tryBindExistingIntegrationAccessInstallation({
         requestId: opened.request.id,
+        expectedRevision: (await platform.requests.revision(opened.request.id))!,
         resolvedBy: fixture.userId,
       }),
     ).resolves.toMatchObject({
@@ -317,6 +317,7 @@ integration.sequential("unified integration access Requests", () => {
       platform.requests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: opened.request.id,
+        expectedRevision: (await platform.requests.revision(opened.request.id))!,
         resolvedBy: fixture.userId,
         response: {
           kind: "external",
@@ -391,6 +392,7 @@ integration.sequential("unified integration access Requests", () => {
       platform.requests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: opened.request.id,
+        expectedRevision: (await platform.requests.revision(opened.request.id))!,
         resolvedBy: fixture.userId,
         response: {
           kind: "external",
@@ -426,10 +428,11 @@ integration.sequential("unified integration access Requests", () => {
       reason: "Read the calendar once",
       requestedServerId: prepared.material.servers[0]!.id,
     });
-    const resolve = () =>
+    const resolve = async () =>
       platform.requests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: opened.request.id,
+        expectedRevision: (await platform.requests.revision(opened.request.id))!,
         resolvedBy: fixture.userId,
         response: {
           kind: "external" as const,
@@ -510,6 +513,7 @@ integration.sequential("unified integration access Requests", () => {
       platform.requests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: broad.request.id,
+        expectedRevision: (await platform.requests.revision(broad.request.id))!,
         resolvedBy: fixture.userId,
         response: {
           kind: "external",
@@ -530,6 +534,7 @@ integration.sequential("unified integration access Requests", () => {
     await expect(
       platform.requests.selectIntegrationAccessServer({
         requestId: broad.request.id,
+        expectedRevision: (await platform.requests.revision(broad.request.id))!,
         requestedServerId: material.servers[0]!.id,
         resolvedBy: otherUserId,
       }),
@@ -538,6 +543,7 @@ integration.sequential("unified integration access Requests", () => {
     });
     const selected = await platform.requests.selectIntegrationAccessServer({
       requestId: broad.request.id,
+      expectedRevision: (await platform.requests.revision(broad.request.id))!,
       requestedServerId: material.servers[0]!.id,
       resolvedBy: fixture.userId,
     });
@@ -558,6 +564,7 @@ integration.sequential("unified integration access Requests", () => {
     await expect(
       platform.requests.selectIntegrationAccessServer({
         requestId: broad.request.id,
+        expectedRevision: (await platform.requests.revision(broad.request.id))!,
         requestedServerId: otherServer.id,
         resolvedBy: fixture.userId,
       }),
@@ -567,6 +574,7 @@ integration.sequential("unified integration access Requests", () => {
     await platform.requests.resolveIntegrationAccessRequest({
       providerAuthorizations: {},
       requestId: broad.request.id,
+      expectedRevision: (await platform.requests.revision(broad.request.id))!,
       resolvedBy: fixture.userId,
       response: {
         kind: "external",

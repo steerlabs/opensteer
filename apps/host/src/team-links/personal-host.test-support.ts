@@ -90,7 +90,6 @@ export async function linkedPersonalHost(
       admission: new TaskAdmissionService({
         database,
         execution: async () => execution,
-        publish() {},
         revokeGrants() {},
       }),
       runs: { outcome: (request) => personalTeamRunOutcome(database, request) },

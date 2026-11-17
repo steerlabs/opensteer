@@ -10,8 +10,8 @@ import {
   type UserId,
   type TeamAskDecision,
 } from "@opensteer/core";
-import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
-import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
+import type { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
+import type { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import {
   TeamAgentRequestSchema,
   TeamMarkdownSchema,

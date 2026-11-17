@@ -507,6 +507,7 @@ async function deriveAttentionLinks(tx: Tx, source: Source, cursor: UpgradeCurso
   }
   await sql`update client_sync_state set
       pending_request_count=(select count(*) from personal_attention where kind='request'),
+      pending_device_access_request_count=(select count(*) from requests where status='pending' and kind='device.access'),
       needs_you_count=(select count(*) from personal_attention where kind in ('request','failed-ask'))
         + coalesce((select sum(approval_attention_count) from personal_team_links
           where state in ('active','unreachable','needs_update')),0),

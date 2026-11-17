@@ -1,11 +1,6 @@
 import { ManualClock } from "@opensteer/shared/test-support/clock";
-import {
-  AgentEventSchema,
-  createId,
-  notificationPushWindowMilliseconds,
-  type AgentEvent,
-} from "@opensteer/core";
-import type { DecidedNotification } from "@opensteer/database";
+import { createId, notificationPushWindowMilliseconds } from "@opensteer/core";
+import type { DecidedNotification, NotificationTransition } from "@opensteer/database";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   NotificationDispatcher,
@@ -16,27 +11,20 @@ const instant = new Date("2026-10-01T12:00:00Z");
 function fixture(kind: "reply-published" | "request-opened" = "reply-published") {
   const messageId = createId("message");
   const requestId = createId("request");
-  const event = AgentEventSchema.parse({
-    createdAt: instant.toISOString(),
-    data: {
-      replyMessageId: messageId,
-      startedAt: "2026-08-09T09:00:00.000Z",
-      personWaiting: true,
-      startedBy: {
-        displayName: "Alex",
-        kind: "human",
-        userId: createId("user"),
-        principalId: "test-principal",
-      },
-      status: "completed",
-    },
-    environmentId: createId("environment"),
-    eventId: createId("event"),
-    runId: createId("run"),
-    sequence: "3",
-    threadId: createId("thread"),
-    type: "run.completed",
-  });
+  const runId = createId("run");
+  const threadId = createId("thread");
+  const change: NotificationTransition =
+    kind === "reply-published"
+      ? { type: "replyPublished", runId, threadId, messageId }
+      : {
+          type: "requestChanged",
+          runId,
+          threadId,
+          requestId,
+          kind: "person.question",
+          status: "pending",
+          opened: true,
+        };
   const decided: DecidedNotification = {
     userId: createId("user"),
     view: {
@@ -44,15 +32,15 @@ function fixture(kind: "reply-published" | "request-opened" = "reply-published")
       id: createId("notification"),
       kind,
       messageId: kind === "reply-published" ? messageId : null,
-      occurredAt: event.createdAt,
+      occurredAt: instant.toISOString(),
       requestId: kind === "request-opened" ? requestId : null,
-      runId: event.runId,
-      threadId: event.threadId,
+      runId,
+      threadId,
       title: "Opensteer",
     },
   };
   return {
-    event,
+    change,
     decided,
   };
 }
@@ -65,7 +53,7 @@ function setup(
     readonly noTarget?: boolean;
   } = {},
 ) {
-  const { event, decided } = fixture(input.kind);
+  const { change, decided } = fixture(input.kind);
   const calls: {
     at: number;
     body: Record<string, unknown>;
@@ -112,7 +100,7 @@ function setup(
     );
   });
   const store = {
-    decide: vi.fn(async (_event: AgentEvent) => [decided]),
+    decide: vi.fn(async (_change: NotificationTransition) => [{ ...decided, sequence: "3" }]),
     publicationSkipReason: vi.fn(async () => null as string | null),
     accountSubjects: vi.fn(async () => [`acct_${crypto.randomUUID()}`] as readonly string[]),
   };
@@ -135,7 +123,7 @@ function setup(
   });
   return {
     dispatcher,
-    event,
+    change,
     decided,
     store,
     target,
@@ -150,7 +138,7 @@ const dispatchers: NotificationDispatcher[] = [];
 function start(input: Parameters<typeof setup>[0] = {}) {
   const result = setup(input);
   dispatchers.push(result.dispatcher);
-  result.dispatcher.dispatch(result.event);
+  result.dispatcher.dispatch(result.change);
   return result;
 }
 beforeEach(() => {
@@ -216,7 +204,7 @@ describe("NotificationDispatcher", () => {
     });
     dispatchers.push(answered.dispatcher);
     answered.store.publicationSkipReason.mockResolvedValue("answered");
-    answered.dispatcher.dispatch(answered.event);
+    answered.dispatcher.dispatch(answered.change);
     await vi.advanceTimersByTimeAsync(0);
     expect(answered.calls).toEqual([]);
   });
@@ -224,16 +212,15 @@ describe("NotificationDispatcher", () => {
     const f = setup();
     dispatchers.push(f.dispatcher);
     vi.setSystemTime(instant.getTime() + notificationPushWindowMilliseconds);
-    f.dispatcher.dispatch(f.event);
+    f.dispatcher.dispatch(f.change);
     await vi.advanceTimersByTimeAsync(0);
     expect(f.onLive).not.toHaveBeenCalled();
     expect(f.calls).toEqual([]);
   });
-  it("uses the Host publication clock when the Runner event is stale", async () => {
+  it("uses the committed reply time for the push window", async () => {
     const f = setup();
     dispatchers.push(f.dispatcher);
-    f.event.createdAt = "2001-01-01T00:00:00.000Z";
-    f.dispatcher.dispatch(f.event);
+    f.dispatcher.dispatch(f.change);
     await vi.advanceTimersByTimeAsync(5000);
     expect(f.onLive).toHaveBeenCalledExactlyOnceWith(f.decided);
     expect(f.calls).toHaveLength(1);
@@ -387,13 +374,13 @@ describe("NotificationDispatcher", () => {
           );
         }),
     );
-    f.dispatcher.dispatch(f.event);
+    f.dispatcher.dispatch(f.change);
     await vi.advanceTimersByTimeAsync(0);
     expect(f.fetch).toHaveBeenCalledTimes(1);
     await f.dispatcher.close();
     expect(finished).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
-    f.dispatcher.dispatch(f.event);
+    f.dispatcher.dispatch(f.change);
     await vi.advanceTimersByTimeAsync(0);
     expect(f.onLive).toHaveBeenCalledTimes(1);
     expect(f.onError).not.toHaveBeenCalled();

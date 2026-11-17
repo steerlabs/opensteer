@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { EventId, Request, RequestResponse } from "@opensteer/core";
+import type { Request, RequestResponse } from "@opensteer/core";
 import { IntegrationPlatformStore } from "@opensteer/database";
 import { LocalMcpServers } from "@opensteer/runner";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -82,6 +82,7 @@ integration("input from a computer's MCP server", () => {
     await expect(
       s.host.store.requests.settleIntegrationInput({
         requestId: request.id,
+        expectedRevision: (await s.host.store.requests.revision(request.id))!,
         resolvedBy: s.host.ownerId,
         action: "accept",
         caller: { ...s.caller.run, bindingGeneration: s.caller.run.bindingGeneration + 1 },
@@ -161,9 +162,9 @@ integration("input from a computer's MCP server", () => {
     await respond(s.host, request, { kind: "choice", optionId: "decline" });
     await later;
     const events = await s.host.store.database
-      .selectFrom("deploymentEvents")
+      .selectFrom("clientChanges")
       .selectAll()
-      .where("threadId", "=", s.run.threadId)
+      .where("scopeKey", "=", `thread:${s.run.threadId}`)
       .execute();
     expect(JSON.stringify(events)).not.toContain("Q!Z?");
   }, 60_000);
@@ -231,16 +232,14 @@ integration("input from a computer's MCP server", () => {
     await expect(
       respond(s.host, request, { kind: "form", answers: { code: ["Q!Z?"] } }),
     ).rejects.toThrow("no longer pending");
-    // Keep old marker collisions in the full scan of unrelated IDs and timestamps.
     await s.host.store.database
-      .updateTable("deploymentEvents")
-      .set({
-        eventId: "evt_f1867319-d42f-4d69-b727-5a8d77c76723" as EventId,
-        createdAt: new Date("2026-11-07T14:32:13.750Z"),
-      })
-      .where("threadId", "=", s.run.threadId)
-      .where("type", "=", "request.opened")
-      .returning("eventId")
+      .updateTable("clientChanges")
+      .set({ createdAt: new Date("2026-11-07T14:32:13.750Z") })
+      .where("scopeKey", "=", `thread:${s.run.threadId}`)
+      .where("entityKind", "=", "request")
+      .where("entityId", "=", request.id)
+      .where("operation", "=", "upsert")
+      .returning("sequence")
       .executeTakeFirstOrThrow();
     expect((await s.host.store.requests.get(request.id))?.response).toBeNull();
     await assertNoAnswers(s.host, request, ["Q!Z?", "6723672367236723", "-13.75"]);
@@ -498,8 +497,13 @@ function dispatch(host: MachineAccessHost, command: Record<string, unknown>) {
     { headers: host.ownerHeaders },
   );
 }
-function respond(host: MachineAccessHost, request: Request, response: RequestResponse) {
-  return dispatch(host, { type: "request.respond", requestId: request.id, response });
+async function respond(host: MachineAccessHost, request: Request, response: RequestResponse) {
+  return dispatch(host, {
+    type: "request.respond",
+    requestId: request.id,
+    expectedRevision: (await host.store.requests.revision(request.id))!,
+    response,
+  });
 }
 function bounded<T>(promise: Promise<T>, message: string) {
   return withTimeout(promise, 15_000, { timeoutError: () => new Error(message) });
@@ -515,9 +519,9 @@ async function assertNoAnswers(
     .where("id", "=", request.id)
     .execute();
   const events = await host.store.database
-    .selectFrom("deploymentEvents")
+    .selectFrom("clientChanges")
     .selectAll()
-    .where("threadId", "=", request.originatingThreadId)
+    .where("scopeKey", "=", `thread:${request.originatingThreadId}`)
     .execute();
   const commands = await host.store.database
     .selectFrom("commands")
@@ -531,7 +535,14 @@ async function assertNoAnswers(
     .execute();
   for (const secret of secrets)
     expect(JSON.stringify({ rows, events, commands, history })).not.toContain(secret);
-  expect(events.filter((event) => event.type === "request.opened")).toHaveLength(1);
+  expect(
+    events.filter(
+      (change) =>
+        change.entityKind === "request" &&
+        change.entityId === request.id &&
+        change.operation === "upsert",
+    ),
+  ).toHaveLength(1);
   expect(
     await host.store.database
       .selectFrom("requestContinuations")

@@ -15,12 +15,13 @@ import {
 import { z } from "zod";
 import type { Kysely, Transaction } from "kysely";
 import "./connection.js";
-import { requestFromRow, requestRevision } from "./request-persistence.js";
+import { assertRequestRevision, requestFromRow } from "./request-persistence.js";
 import type { DatabaseSchema } from "./schema.js";
+import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
 import { threadExecutionIsAvailableToUser } from "./store-primitives.js";
 import { assertThreadCaller, type ThreadCallerAuthority } from "./thread-caller.js";
 export const AgentRequestResponderSchema = z.object({
-  expectedRevision: z.string().min(1).max(128),
+  expectedRevision: PersonalRevisionSchema,
   authority: z.object({
     kind: z.literal("run"),
     userId: UserIdSchema,
@@ -68,6 +69,7 @@ export async function assertAgentRequestTarget(
 export function assertAgentRequestAnswer(
   request: Request,
   responder: z.infer<typeof AgentRequestResponderSchema>,
+  revision: string,
 ): void {
   if (
     !requestIsAgentAnswerable(request) ||
@@ -77,17 +79,18 @@ export function assertAgentRequestAnswer(
       code: "forbidden",
       message: "This Request needs the person to answer",
     });
-  if (request.status !== "pending" || requestRevision(request) !== responder.expectedRevision)
+  if (request.status !== "pending")
     throw new OpensteerError({
       code: "conflict",
       message: "Request changed; read it again before answering",
     });
+  assertRequestRevision({ revision }, responder.expectedRevision);
 }
 export function readAgentRequest(
   database: Kysely<DatabaseSchema>,
   authority: ThreadCallerAuthority,
   requestId: RequestId,
-): Promise<Request> {
+): Promise<{ readonly request: Request; readonly revision: string }> {
   return withPersonalReadTransaction(database, async (transaction) => {
     const row = await transaction
       .selectFrom("requests")
@@ -102,7 +105,7 @@ export function readAgentRequest(
     await assertAgentRequestTarget(transaction, authority, row.originatingThreadId, {
       readOnly: true,
     });
-    return requestFromRow(row);
+    return { request: requestFromRow(row), revision: row.revision };
   }).catch((error: unknown) => {
     if (
       error instanceof OpensteerError &&
@@ -115,4 +118,3 @@ export function readAgentRequest(
     throw error;
   });
 }
-export { requestRevision } from "./request-persistence.js";

@@ -1,8 +1,8 @@
+import type { PersonalCommitReaction } from "@opensteer/database/personal-mutation";
 import { BrowserSessionIdSchema } from "@opensteer/protocol/browser";
 import { randomUUID } from "node:crypto";
 import {
   OpensteerError,
-  type AgentEvent,
   type Request,
   type RequestId,
   type RunId,
@@ -43,12 +43,13 @@ interface PasswordSignInComputer {
 }
 
 const defaultDeclineAnswerMs = 10_000;
-const defaultReconcileIntervalMs = 10_000;
+const settlementRetryMs = 10_000;
 const sweepPageSize = 64;
 
 type PasswordSignInRequests = Pick<
   RequestStore,
   | "get"
+  | "revision"
   | "hasActiveRunPasswordSignInAuthority"
   | "hasDurablePasswordSignInRequestAuthority"
   | "listPendingPasswordSignIns"
@@ -100,6 +101,8 @@ interface OperationShared {
   pendingLease: PasswordLoginLease | null;
   deciding: boolean;
   settlementSessionId?: string | undefined;
+  expectedRequestRevision?: string | undefined;
+  settlementRetryAt?: number | undefined;
 }
 
 export type PasswordSignInContinuationState =
@@ -130,20 +133,19 @@ export class PasswordSignInService {
   readonly #now: () => number;
   readonly #onPendingBrowserPins: PasswordSignInServiceOptions["onPendingBrowserPins"];
   readonly #onError: (error: unknown) => void;
-  readonly #onRequestResolved: () => void;
-  readonly #onDeploymentEvent: (event: AgentEvent) => void;
   readonly #leases = new Map<string, PasswordLoginLease>();
   readonly #operations = new Map<string, Operation>();
   readonly #calls = new Map<string, Operation>();
   readonly #bySite = new Map<string, Operation>();
   readonly #admissions = new Map<string, Promise<void>>();
   readonly #requests: PasswordSignInRequests;
-  readonly #reconcile: ReturnType<typeof setInterval>;
+  readonly #onDeadlineChanged: () => void;
+  readonly #onContinuationReady: (requestId: RequestId) => void;
   readonly #unsubscribe: () => void;
   readonly #background = new Set<Promise<unknown>>();
   #closePromise: Promise<void> | undefined;
   #closed = false;
-  #reconciling = false;
+  #reconciling: Promise<void> | undefined;
 
   constructor(options: PasswordSignInServiceOptions) {
     this.#authority = options.authority;
@@ -173,17 +175,51 @@ export class PasswordSignInService {
     this.#now = options.now ?? Date.now;
     this.#onPendingBrowserPins = options.onPendingBrowserPins;
     this.#onError = options.onError ?? (() => undefined);
-    this.#onRequestResolved = options.onRequestResolved;
-    this.#onDeploymentEvent = options.onDeploymentEvent;
+    this.#onDeadlineChanged = options.onDeadlineChanged ?? (() => undefined);
+    this.#onContinuationReady = options.onContinuationReady ?? (() => undefined);
     this.#requests = options.requests;
     this.#unsubscribe = this.#authority.onPasswordSignIn((runnerId, event) => {
       if (!this.#closed)
         void this.#track(this.#onAuthorityEvent(runnerId, event).catch(this.#onError));
     });
-    this.#reconcile = setInterval(() => {
-      void this.#track(this.#reconcileOperations().catch(this.#onError));
-    }, options.reconcileIntervalMs ?? defaultReconcileIntervalMs);
-    this.#reconcile.unref();
+  }
+
+  nextDeadline(): Date | null {
+    let deadline = Infinity;
+    for (const lease of this.#leases.values()) deadline = Math.min(deadline, lease.expiresAt);
+    for (const operation of this.#operations.values()) {
+      if (operation.requestId && operation.settlement && !operation.settled && !operation.settling)
+        deadline = Math.min(deadline, operation.settlementRetryAt ?? operation.expiresAt);
+      if (!operation.settlement || !operation.requestId)
+        deadline = Math.min(
+          deadline,
+          operation.cancelledAt === null || operation.settlement
+            ? operation.expiresAt
+            : operation.cancelledAt + this.#declineAnswerMs,
+        );
+    }
+    return Number.isFinite(deadline) ? new Date(deadline) : null;
+  }
+
+  async settleDeadlines(): Promise<void> {
+    await this.#reconcileOperations();
+  }
+
+  requestChanged(change: Extract<PersonalCommitReaction, { type: "requestChanged" }>): void {
+    if (change.kind !== "browser.password-sign-in" || change.status === "pending") return;
+    const operation = [...this.#operations.values()].find(
+      (item) => item.requestId === change.requestId,
+    );
+    if (!operation || operation.settlement) return;
+    void this.#track(
+      this.#cancel(operation, change.status === "withdrawn" ? "withdrawn" : "authority-lost").catch(
+        this.#onError,
+      ),
+    );
+  }
+
+  authorityChanged(): void {
+    void this.#track(this.#reconcileOperations().catch(this.#onError));
   }
 
   async sweepAfterRestart(): Promise<void> {
@@ -193,7 +229,7 @@ export class PasswordSignInService {
       for (const request of page) {
         if ([...this.#operations.values()].some((operation) => operation.requestId === request.id))
           continue;
-        const result = await this.#requests.settlePasswordSignInRequest({
+        await this.#requests.settlePasswordSignInRequest({
           ownerId: request.requestedBy,
           requestId: request.id,
           settlement: {
@@ -207,7 +243,6 @@ export class PasswordSignInService {
             },
           },
         });
-        if (result) this.#announce(result);
       }
       if (page.length < sweepPageSize) return;
       after = page.at(-1)?.id ?? null;
@@ -513,6 +548,7 @@ export class PasswordSignInService {
         deciding: false,
       };
       this.#operations.set(operation.id, operation);
+      this.#onDeadlineChanged();
       this.#bySite.set(key, operation);
       this.#recordCall(operation, input);
       void this.#track(
@@ -592,6 +628,7 @@ export class PasswordSignInService {
   async respond(input: {
     ownerId: UserId;
     requestId: RequestId;
+    expectedRevision: string;
     sessionId: string;
     revalidate: () => Promise<void>;
     decision:
@@ -614,6 +651,11 @@ export class PasswordSignInService {
       });
     }
     if (request.status !== "pending") return { status: request.status };
+    if ((await this.#requests.revision(input.requestId)) !== input.expectedRevision)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Sign-in Request changed. Open it again.",
+      });
     const operation = this.#operations.get(
       request.payload.kind === "browser.password-sign-in" ? request.payload.operationId : "",
     );
@@ -641,6 +683,7 @@ export class PasswordSignInService {
         !(await this.#requests.hasDurablePasswordSignInRequestAuthority({
           ownerId: request.requestedBy,
           requestId: request.id,
+          expectedRevision: input.expectedRevision,
         }))
       )
         throw new OpensteerError({
@@ -649,6 +692,7 @@ export class PasswordSignInService {
         });
       await input.revalidate();
       operation.settlementSessionId = input.sessionId;
+      operation.expectedRequestRevision = input.expectedRevision;
       const choice =
         input.decision.kind === "approve-card"
           ? {
@@ -678,6 +722,7 @@ export class PasswordSignInService {
       }
       if (!result.result.ok) {
         operation.settlementSessionId = undefined;
+        operation.expectedRequestRevision = undefined;
         return { status: "pending", card: result.result.card, message: result.result.message };
       }
       if (operation.settling) await operation.settling;
@@ -691,6 +736,7 @@ export class PasswordSignInService {
     readonly ownerId: UserId;
     readonly settlementSessionId?: string | undefined;
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
   }): Promise<Request["status"]> {
     const request = await this.#requests.get(input.requestId);
     if (
@@ -703,15 +749,16 @@ export class PasswordSignInService {
     if (request.status !== "pending") return request.status;
     const operation = this.#operations.get(request.payload.operationId);
     if (!operation) {
-      const result = await this.#requests.settlePasswordSignInRequest({
+      await this.#requests.settlePasswordSignInRequest({
         ownerId: input.ownerId,
         requestId: input.requestId,
         settlement: { status: "declined" },
+        expectedRevision: input.expectedRevision,
         ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
       });
-      if (result) this.#announce(result);
     } else {
       operation.settlementSessionId = input.settlementSessionId;
+      operation.expectedRequestRevision = input.expectedRevision;
       await this.#cancel(operation, "declined");
       await this.#wait(operation, this.#declineAnswerMs, true);
       if (!operation.settlement) await this.#finish(operation, { status: "declined" });
@@ -723,7 +770,6 @@ export class PasswordSignInService {
   close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
-    clearInterval(this.#reconcile);
     this.#unsubscribe();
     this.#leases.clear();
     this.#closePromise = (async () => {
@@ -828,7 +874,6 @@ export class PasswordSignInService {
           .map((call) => call.callId),
       });
       operation.requestId = created.request.id;
-      for (const event of created.events) this.#onDeploymentEvent(event);
       if (operation.settlement) await this.#finish(operation, operation.settlement);
       else if (created.request.status !== "pending")
         await this.#cancel(operation, "authority-lost");
@@ -974,59 +1019,64 @@ export class PasswordSignInService {
     );
   }
 
-  async #reconcileOperations(): Promise<void> {
-    if (this.#reconciling || this.#closed) return;
-    this.#reconciling = true;
-    try {
-      for (const lease of this.#leases.values()) this.#liveLease(lease.loginRef);
-      for (const operation of this.#operations.values()) {
-        if (operation.settlement) {
-          if (operation.requestId && !operation.settled)
-            await this.#finish(operation, operation.settlement);
-          if (
-            !operation.opening &&
-            (operation.requestId
-              ? operation.authorityEnded && operation.settled
-              : this.#now() >= operation.expiresAt)
-          )
-            this.#forget(operation);
-          continue;
-        }
-        const now = this.#now();
-        if (!operation.cancelSent && now >= operation.expiresAt) {
-          await this.#cancel(operation, "expired");
-          await this.#finish(operation, { status: "fulfilled", response: { outcome: "expired" } });
-          continue;
-        }
-        if (operation.cancelSent) {
-          if (
-            operation.cancelledAt !== null &&
-            now >= operation.cancelledAt + this.#declineAnswerMs
-          ) {
-            await this.#finish(
-              operation,
-              operation.cancelSent === "declined" ? { status: "declined" } : interrupted(),
-            );
-          }
-          continue;
-        }
-        if (operation.requestId) {
-          const request = await this.#requests.get(operation.requestId);
-          if (operation.settlement) continue;
-          if (!request || request.status !== "pending")
-            await this.#cancel(
-              operation,
-              request?.status === "withdrawn" ? "withdrawn" : "authority-lost",
-            );
-        } else {
-          const permitted = await this.#requests.hasActiveRunPasswordSignInAuthority(
-            authority(operation.starter),
-          );
-          if (!operation.settlement && !permitted) await this.#cancel(operation, "authority-lost");
-        }
+  #reconcileOperations(): Promise<void> {
+    if (this.#closed) return Promise.resolve();
+    return (this.#reconciling ??= this.#reconcileCurrentOperations().finally(() => {
+      this.#reconciling = undefined;
+    }));
+  }
+
+  async #reconcileCurrentOperations() {
+    for (const lease of this.#leases.values()) this.#liveLease(lease.loginRef);
+    for (const operation of this.#operations.values()) {
+      if (operation.settlement) {
+        if (
+          operation.requestId &&
+          !operation.settled &&
+          (operation.settlementRetryAt ?? 0) <= this.#now()
+        )
+          await this.#finish(operation, operation.settlement);
+        if (
+          !operation.opening &&
+          (operation.requestId
+            ? operation.authorityEnded && operation.settled
+            : this.#now() >= operation.expiresAt)
+        )
+          this.#forget(operation);
+        continue;
       }
-    } finally {
-      this.#reconciling = false;
+      const now = this.#now();
+      if (!operation.cancelSent && now >= operation.expiresAt) {
+        await this.#cancel(operation, "expired");
+        await this.#finish(operation, { status: "fulfilled", response: { outcome: "expired" } });
+        continue;
+      }
+      if (operation.cancelSent) {
+        if (
+          operation.cancelledAt !== null &&
+          now >= operation.cancelledAt + this.#declineAnswerMs
+        ) {
+          await this.#finish(
+            operation,
+            operation.cancelSent === "declined" ? { status: "declined" } : interrupted(),
+          );
+        }
+        continue;
+      }
+      if (operation.requestId) {
+        const request = await this.#requests.get(operation.requestId);
+        if (operation.settlement) continue;
+        if (!request || request.status !== "pending")
+          await this.#cancel(
+            operation,
+            request?.status === "withdrawn" ? "withdrawn" : "authority-lost",
+          );
+      } else {
+        const permitted = await this.#requests.hasActiveRunPasswordSignInAuthority(
+          authority(operation.starter),
+        );
+        if (!operation.settlement && !permitted) await this.#cancel(operation, "authority-lost");
+      }
     }
   }
 
@@ -1036,6 +1086,7 @@ export class PasswordSignInService {
     operation.cancelSent = reason;
     operation.authorityEnded = true;
     operation.cancelledAt = this.#now();
+    this.#onDeadlineChanged();
     void this.#track(
       this.#authority
         .sendPasswordSignIn(operation.target.runnerId, {
@@ -1087,7 +1138,7 @@ export class PasswordSignInService {
     }
     operation.settling = (async (): Promise<Finish> => {
       try {
-        let result = await this.#requests.settlePasswordSignInRequest({
+        const result = await this.#requests.settlePasswordSignInRequest({
           ownerId: operation.starter.ownerId,
           requestId: operation.requestId!,
           settlement: operation.settlement!,
@@ -1095,13 +1146,17 @@ export class PasswordSignInService {
           (operation.settlement!.status === "declined" ||
             (operation.settlement!.status === "fulfilled" &&
               operation.settlement!.response.outcome === "authorized"))
-            ? { settlementSessionId: operation.settlementSessionId }
+            ? {
+                settlementSessionId: operation.settlementSessionId,
+                ...(operation.expectedRequestRevision !== undefined
+                  ? { expectedRevision: operation.expectedRequestRevision }
+                  : {}),
+              }
             : {}),
         });
         if (!result) {
           operation.settled = true;
           await this.#cancel(operation, "authority-lost");
-          this.#onRequestResolved();
           return "ended-elsewhere";
         }
         if (operation.pendingLease && !operation.cancelSent && !operation.authorityEnded) {
@@ -1135,22 +1190,28 @@ export class PasswordSignInService {
           await this.#cancel(operation, "authority-lost");
           // The approval remains in durable history with its original provenance;
           // the current Request must describe the unusable authorization instead.
-          result = await this.#requests.settlePasswordSignInRequest({
+          await this.#requests.settlePasswordSignInRequest({
             ownerId: operation.starter.ownerId,
             requestId: operation.requestId!,
             settlement: operation.settlement,
           });
         }
         operation.settled = true;
-        if (result) this.#announce(result);
-        else this.#onRequestResolved();
+        operation.settlementRetryAt = undefined;
+        try {
+          this.#onContinuationReady(operation.requestId!);
+        } catch (error) {
+          this.#onError(error);
+        }
         this.#notify(operation);
         return mine ? "settled" : "ended-elsewhere";
       } catch (error) {
         this.#onError(error);
         operation.settled = false;
+        operation.settlementRetryAt = this.#now() + settlementRetryMs;
         operation.pendingLease = null;
         operation.settlementSessionId = undefined;
+        operation.expectedRequestRevision = undefined;
         operation.settlement = interrupted();
         await this.#cancel(operation, "authority-lost");
         return mine ? "retrying" : "ended-elsewhere";
@@ -1160,6 +1221,9 @@ export class PasswordSignInService {
       return await operation.settling;
     } finally {
       operation.settling = null;
+      if (operation.settlementRetryAt !== undefined) this.#onDeadlineChanged();
+      else if (operation.settled && operation.authorityEnded && !operation.opening)
+        this.#forget(operation);
     }
   }
 
@@ -1186,6 +1250,7 @@ export class PasswordSignInService {
     // Without a durable Request, this is the only replay record for a refused call.
     if (!operation.requestId && this.#now() < operation.expiresAt) return;
     this.#operations.delete(operation.id);
+    this.#onDeadlineChanged();
     for (const identity of operation.calls.keys()) {
       if (this.#calls.get(identity) === operation) this.#calls.delete(identity);
     }
@@ -1246,10 +1311,6 @@ export class PasswordSignInService {
       });
     }
   }
-  #announce(result: { readonly events: readonly AgentEvent[] }): void {
-    for (const event of result.events) this.#onDeploymentEvent(event);
-    this.#onRequestResolved();
-  }
 }
 
 export interface PasswordSignInServiceOptions {
@@ -1261,7 +1322,6 @@ export interface PasswordSignInServiceOptions {
   readonly resolveAuthority: (ownerId: UserId) => Promise<PasswordSignInComputer | null>;
   readonly agentWaitMs?: number;
   readonly declineAnswerMs?: number;
-  readonly reconcileIntervalMs?: number;
   readonly describe: (input: {
     readonly ownerId: UserId;
     readonly threadId: ThreadId;
@@ -1281,8 +1341,8 @@ export interface PasswordSignInServiceOptions {
     }[],
   ) => void;
   readonly onError?: (error: unknown) => void;
-  readonly onRequestResolved: () => void;
-  readonly onDeploymentEvent: (event: AgentEvent) => void;
+  readonly onDeadlineChanged?: () => void;
+  readonly onContinuationReady?: (requestId: RequestId) => void;
   readonly requests: PasswordSignInRequests;
 }
 

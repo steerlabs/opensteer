@@ -81,6 +81,7 @@ export async function refreshRequestAttention(
       .where("id", "=", source.originatingThreadId)
       .execute();
     mutation.count("pendingRequestCount", delta);
+    if (source.kind === "device.access") mutation.count("pendingDeviceAccessRequestCount", delta);
     mutation.count("needsYouCount", delta);
   }
   if (pending || previous) {
@@ -102,15 +103,16 @@ export async function refreshRequestAttention(
         : null,
     );
     needsYouChanged(mutation);
-    mutation.react({
-      type: "requestChanged",
-      requestId,
-      kind: source.kind,
-      status: source.status,
-      threadId: source.originatingThreadId,
-      runId: source.originatingRunId,
-    });
   }
+  mutation.react({
+    type: "requestChanged",
+    requestId,
+    kind: source.kind,
+    status: source.status,
+    opened: pending && previous === undefined,
+    threadId: source.originatingThreadId,
+    runId: source.originatingRunId,
+  });
 }
 
 export async function refreshTeamAskAttention(
@@ -197,6 +199,7 @@ export async function refreshTeamAskAttention(
     );
     if (visible) needsYouChanged(mutation);
   }
+  if (source.kind === "ask") mutation.react({ type: "deadlinesChanged" });
 }
 
 export function updateAttentionLinkContribution(
@@ -299,11 +302,15 @@ export async function readAttentionKeys(
   input: {
     readonly before?: { readonly at: string; readonly id: string };
     readonly limit: number;
+    readonly excludeDeviceAccess?: boolean;
   },
 ) {
   const limit = Math.max(1, Math.min(input.limit, 50)) + 1;
   const seek = input.before
     ? sql`and (sort_at,id)<(${input.before.at}::timestamptz,${input.before.id})`
+    : sql``;
+  const deviceFilter = input.excludeDeviceAccess
+    ? sql`and not exists (select 1 from requests r where r.id = personal_attention.request_id and r.kind = 'device.access')`
     : sql``;
   return (
     await sql<{
@@ -320,7 +327,7 @@ export async function readAttentionKeys(
     }>`
     with selected as materialized (
       (select id,kind,request_id,team_deployment_id,team_request_id,sort_at from personal_attention
-       where kind in ('request','failed-ask') ${seek} order by sort_at desc,id desc limit ${limit})
+       where kind in ('request','failed-ask') ${seek} ${deviceFilter} order by sort_at desc,id desc limit ${limit})
       union all
       (select ask.id,ask.kind,ask.request_id,ask.team_deployment_id,ask.team_request_id,ask.sort_at
        from personal_team_links link cross join lateral (

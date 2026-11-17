@@ -745,7 +745,6 @@ describe("IntegrationPlatformService computer connections", () => {
         requestEvents: [requestEvent],
       };
     });
-    const onDeploymentEvent = vi.fn();
     const service = platform({
       adapters: [],
       computerApps: {
@@ -761,7 +760,6 @@ describe("IntegrationPlatformService computer connections", () => {
           }
         }),
       },
-      onDeploymentEvent,
       store: {
         getComputerConnectionForCall: vi.fn(async () => ({
           access: "read" as const,
@@ -781,7 +779,6 @@ describe("IntegrationPlatformService computer connections", () => {
         requestId: "disconnect-computer",
       }),
     ).resolves.toEqual({ notice: null, revokedUpstream: false });
-    expect(onDeploymentEvent).toHaveBeenCalledWith(requestEvent);
   });
 });
 
@@ -2479,6 +2476,7 @@ describe("IntegrationPlatformService Request resolution", () => {
 
     await expect(
       service.resolveRequest({
+        expectedRevision: "1",
         requestId: pending.id,
         resolvedBy: pending.requestedBy,
         response: { kind: "external", value: { connectionId, decision: "fulfilled" } },
@@ -2539,6 +2537,7 @@ describe("IntegrationPlatformService Request resolution", () => {
 
     await expect(
       service.resolveRequest({
+        expectedRevision: "1",
         requestId: pending.id,
         resolvedBy: pending.requestedBy,
         response: { kind: "external", value: { connectionId, decision: "fulfilled" } },
@@ -2567,10 +2566,8 @@ describe("IntegrationPlatformService Request resolution", () => {
     }));
     const resolveIntegrationAccessRequest = vi.fn();
     const installForIntegrationAccessRequest = vi.fn();
-    const onDeploymentEvent = vi.fn();
     const service = platform({
       adapters: [],
-      onDeploymentEvent,
       store: {
         requests: {
           get: vi.fn(async () => pending),
@@ -2583,6 +2580,7 @@ describe("IntegrationPlatformService Request resolution", () => {
 
     await expect(
       service.resolveRequest({
+        expectedRevision: "1",
         requestId: pending.id,
         resolvedBy: pending.requestedBy,
         response: { kind: "choice", optionId: `server:${requestedServerId}` },
@@ -2599,7 +2597,6 @@ describe("IntegrationPlatformService Request resolution", () => {
     });
     expect(resolveIntegrationAccessRequest).not.toHaveBeenCalled();
     expect(installForIntegrationAccessRequest).not.toHaveBeenCalled();
-    expect(onDeploymentEvent).toHaveBeenCalledWith(event);
   });
 
   it("binds an already reviewed installation without fetching its source again", async () => {
@@ -2628,10 +2625,8 @@ describe("IntegrationPlatformService Request resolution", () => {
     const loadManifest = vi.fn();
     const install = vi.fn();
     const reuse = vi.fn(async () => ({ installation, request: pending, requestEvents: [event] }));
-    const onDeploymentEvent = vi.fn();
     const service = platform({
       adapters: [],
-      onDeploymentEvent,
       store: {
         listTools: vi.fn(async () => []),
         requests: {
@@ -2644,6 +2639,7 @@ describe("IntegrationPlatformService Request resolution", () => {
     });
     await expect(
       service.resolveRequest({
+        expectedRevision: "1",
         requestId: pending.id,
         resolvedBy: pending.requestedBy,
         response: { kind: "choice", optionId: "installed" },
@@ -2652,7 +2648,6 @@ describe("IntegrationPlatformService Request resolution", () => {
     expect(reuse).toHaveBeenCalledOnce();
     expect(loadManifest).not.toHaveBeenCalled();
     expect(install).not.toHaveBeenCalled();
-    expect(onDeploymentEvent).toHaveBeenCalledWith(event);
   });
 
   it("installs a preinstall access choice but keeps the access Request pending", async () => {
@@ -2707,11 +2702,9 @@ describe("IntegrationPlatformService Request resolution", () => {
       }),
     );
     const resolveIntegrationAccessRequest = vi.fn();
-    const onDeploymentEvent = vi.fn();
     const service = platform({
       adapters: [adapterWithInvoke(async () => ({ kind: "ok", value: {} }))],
       definitions: [definition],
-      onDeploymentEvent,
       store: {
         listInstallations: vi.fn(async () => []),
         listTools: vi.fn(async () => []),
@@ -2726,6 +2719,7 @@ describe("IntegrationPlatformService Request resolution", () => {
     });
 
     const result = await service.resolveRequest({
+      expectedRevision: "1",
       requestId: pending.id,
       resolvedBy: pending.requestedBy,
       response: { kind: "choice", optionId: "installed" },
@@ -2743,7 +2737,6 @@ describe("IntegrationPlatformService Request resolution", () => {
       }),
     );
     expect(resolveIntegrationAccessRequest).not.toHaveBeenCalled();
-    expect(onDeploymentEvent).toHaveBeenCalledWith(installEvent);
   });
 
   it("proves the saved account still works before it tells the agent the account is connected", async () => {
@@ -2777,6 +2770,7 @@ describe("IntegrationPlatformService Request resolution", () => {
     });
 
     await service.resolveRequest({
+      expectedRevision: "1",
       requestId: pending.id,
       resolvedBy: pending.requestedBy,
       response: { kind: "external", value: { connectionId, decision: "fulfilled" } },
@@ -2812,6 +2806,7 @@ describe("IntegrationPlatformService Request resolution", () => {
 
     await expect(
       service.resolveRequest({
+        expectedRevision: "1",
         requestId: pending.id,
         resolvedBy: pending.requestedBy,
         response: { kind: "external", value: { connectionId, decision: "fulfilled" } },
@@ -2846,6 +2841,7 @@ describe("IntegrationPlatformService Request resolution", () => {
 
     await expect(
       service.resolveRequest({
+        expectedRevision: "1",
         requestId: pending.id,
         resolvedBy: pending.requestedBy,
         response: { kind: "external", value: { connectionId, decision: "fulfilled" } },
@@ -2878,6 +2874,7 @@ describe("IntegrationPlatformService Request resolution", () => {
 
     await expect(
       service.resolveRequest({
+        expectedRevision: "1",
         requestId: pending.id,
         resolvedBy: pending.requestedBy,
         response: { kind: "external", value: { connectionId, decision: "fulfilled" } },
@@ -2909,6 +2906,7 @@ describe("IntegrationPlatformService Request resolution", () => {
     });
 
     await service.resolveRequest({
+      expectedRevision: "1",
       requestId: pending.id,
       resolvedBy: pending.requestedBy,
       response: { kind: "external", value: { decision: "declined" } },
@@ -2967,6 +2965,7 @@ describe("IntegrationPlatformService Request resolution", () => {
 
     await expect(
       service.resolveRequest({
+        expectedRevision: "1",
         requestId: pending.id,
         resolvedBy: createId("user"),
         response: { kind: "choice", optionId: "installed" },
@@ -3015,10 +3014,8 @@ describe("IntegrationPlatformService Request resolution", () => {
         };
       },
     );
-    const onDeploymentEvent = vi.fn();
     const service = platform({
       adapters: [openApiAdapter],
-      onDeploymentEvent,
       store: {
         listInstallations: vi.fn(async () => []),
         listTools: vi.fn(async () => []),
@@ -3031,14 +3028,13 @@ describe("IntegrationPlatformService Request resolution", () => {
     });
 
     const result = await service.resolveRequest({
+      expectedRevision: "1",
       requestId: pending.id,
       resolvedBy: createId("user"),
       response: { kind: "choice", optionId: "installed" },
     });
 
     expect(result.installation).toMatchObject({ sourceKind: "proposed", status: "active" });
-    expect(onDeploymentEvent).toHaveBeenNthCalledWith(1, cancelledAccessEvent);
-    expect(onDeploymentEvent).toHaveBeenNthCalledWith(2, event);
     expect(resolveIntegrationInstallRequest).toHaveBeenCalledWith(
       expect.objectContaining({
         preparedFulfillment: expect.objectContaining({
@@ -3054,7 +3050,6 @@ describe("IntegrationPlatformService Request resolution", () => {
         response: { kind: "choice", optionId: "installed" },
       }),
     );
-    expect(onDeploymentEvent).toHaveBeenCalledWith(event);
   });
 });
 
@@ -3069,13 +3064,11 @@ describe("IntegrationPlatformService personal access Request fulfillment", () =>
       grant: null,
       request: { ...pending, resolvedAt: now, status: "fulfilled" as const },
     }));
-    const onDeploymentEvent = vi.fn();
     const service = platform({
       adapters: [],
       materializeForAdapter: vi
         .fn<IntegrationAdapterCredentialMaterializer["materializeForAdapter"]>()
         .mockResolvedValue(materialized),
-      onDeploymentEvent,
       store: {
         getConnectionKind: vi.fn(async () => "provider-account" as const),
 
@@ -3122,7 +3115,6 @@ describe("IntegrationPlatformService personal access Request fulfillment", () =>
         },
       },
     });
-    expect(onDeploymentEvent).toHaveBeenCalledWith(event);
   });
 
   it("fulfills a connection-only Request with the exact arriving connection", async () => {
@@ -3604,29 +3596,11 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       response: null,
       status: "pending",
     } as Request;
-    const openedEvent = {
-      createdAt: now,
-      data: { request },
-      id: createId("event"),
-      runId,
-      threadId,
-      type: "request.opened",
-    } as unknown as AgentEvent;
-    const replacementEvent = {
-      createdAt: now,
-      data: { requestId: createId("request") },
-      id: createId("event"),
-      runId,
-      threadId,
-      type: "request.resolved",
-    } as unknown as AgentEvent;
-    const onDeploymentEvent = vi.fn();
-    const onRequestsChanged = vi.fn();
     const requestComputerAppAccess = vi.fn(async (): Promise<ComputerAppAccessDecision> => ({
       kind: "computer",
       replayed: false,
       request,
-      requestEvents: [replacementEvent, openedEvent],
+
       setupRequest: {} as never,
     }));
     const service = platform({
@@ -3653,8 +3627,6 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
         })),
       } as unknown as ComputerUseGateway,
       definitions: [guiDefinitionCandidate],
-      onRequestsChanged,
-      onDeploymentEvent,
       store: {
         requestDeviceComputerAppAccess: requestComputerAppAccess,
         getDeviceComputerUsePolicy: async () => ({
@@ -3675,15 +3647,11 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       threadId,
     });
 
-    expect(onDeploymentEvent).toHaveBeenNthCalledWith(1, replacementEvent);
-    expect(onDeploymentEvent).toHaveBeenNthCalledWith(2, openedEvent);
-    expect(onRequestsChanged).toHaveBeenCalledOnce();
-
     requestComputerAppAccess.mockResolvedValueOnce({
       kind: "computer",
       replayed: true,
       request,
-      requestEvents: [],
+
       setupRequest: {} as never,
     });
     await service.computerAppApprovals.requestComputerAppAccess({
@@ -3695,8 +3663,6 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       runnerId,
       threadId,
     });
-    expect(onDeploymentEvent).toHaveBeenCalledTimes(2);
-    expect(onRequestsChanged).toHaveBeenCalledOnce();
   });
 
   it.each(["offline", "connecting", "absent", "reported"] as const)(
@@ -3783,13 +3749,9 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       requestIds: [createId("request")],
       deviceId: null,
     }));
-    const onDeploymentEvent = vi.fn();
-    const onRequestsChanged = vi.fn();
     const service = platform({
       adapters: [],
       definitions: [computerDefinition],
-      onRequestsChanged,
-      onDeploymentEvent,
       store: {
         cancelDeviceComputerAppSetup: cancelComputerAppSetup,
         requestDeviceComputerAppSetup: requestComputerAppSetup,
@@ -3808,10 +3770,6 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       ownerUserId: createId("user"),
       requestId: "setup-request",
     });
-
-    expect(onDeploymentEvent).toHaveBeenNthCalledWith(1, replacementEvent);
-    expect(onDeploymentEvent).toHaveBeenNthCalledWith(2, cancellationEvent);
-    expect(onRequestsChanged).toHaveBeenCalledTimes(2);
   });
 
   it("declines the Requests of approvals nobody answered and delivers their continuations", async () => {
@@ -3827,31 +3785,23 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       requestIds: [createId("request")],
       deviceIds: [],
     }));
-    const onDeploymentEvent = vi.fn();
-    const onRequestsChanged = vi.fn();
     const onConnectionsChanged = vi.fn();
     const service = platform({
       adapters: [],
       onConnectionsChanged,
-      onRequestsChanged,
-      onDeploymentEvent,
       store: { expireDeviceComputerAppSetupRequests: expireComputerAppSetupRequests },
     });
 
     await service.computerAppApprovals.expireComputerAppSetupRequests();
 
     expect(expireComputerAppSetupRequests).toHaveBeenCalledOnce();
-    expect(onDeploymentEvent).toHaveBeenCalledWith(requestEvent);
     // The same two a cancel fires: the Thread hears, and the list is stale.
-    expect(onRequestsChanged).toHaveBeenCalledOnce();
     expect(onConnectionsChanged).toHaveBeenCalledOnce();
   });
 
   it("says nothing when no approval had expired", async () => {
-    const onRequestsChanged = vi.fn();
     const service = platform({
       adapters: [],
-      onRequestsChanged,
       store: {
         expireDeviceComputerAppSetupRequests: vi.fn(async () => ({
           grants: [],
@@ -3863,8 +3813,6 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
     });
 
     await service.computerAppApprovals.expireComputerAppSetupRequests();
-
-    expect(onRequestsChanged).not.toHaveBeenCalled();
   });
 });
 
@@ -4626,12 +4574,10 @@ function platform(input: {
   readonly mcpOauth?: ConstructorParameters<typeof IntegrationPlatformService>[0]["mcpOauth"];
   readonly markAdapterAuthorizationRequired?: () => Promise<void>;
   readonly materializeForAdapter?: IntegrationAdapterCredentialMaterializer["materializeForAdapter"];
-  readonly onDeploymentEvent?: (event: AgentEvent) => void;
   readonly onConnectionsChanged?: () => void;
   readonly onSettingsChanged?: ConstructorParameters<
     typeof IntegrationPlatformService
   >[0]["onSettingsChanged"];
-  readonly onRequestsChanged?: () => void;
   readonly store?: Partial<IntegrationPlatformStore>;
 }): IntegrationPlatformService {
   const service = new IntegrationPlatformService({
@@ -4707,10 +4653,8 @@ function platform(input: {
     mcpOauth: input.mcpOauth ?? {
       providerFor: vi.fn(async () => Promise.reject(new Error("unused"))),
     },
-    onDeploymentEvent: input.onDeploymentEvent ?? vi.fn(),
     onConnectionsChanged: input.onConnectionsChanged ?? vi.fn(),
     onSettingsChanged: input.onSettingsChanged ?? vi.fn(async () => undefined),
-    onRequestsChanged: input.onRequestsChanged ?? vi.fn(),
     store: (input.store
       ? {
           connections: { assertOwner: vi.fn(async () => undefined) },
@@ -5127,16 +5071,15 @@ describe("computer app request matrix", () => {
             return {
               connection: deviceConnection(connection),
               kind: "approved",
-              requestEvents: [],
             };
           case "personal-grant":
-            return { kind: "personal-grant", replayed: false, request, requestEvents: [] };
+            return { kind: "personal-grant", replayed: false, request };
           case "computer":
             return {
               kind: "computer",
               replayed: false,
               request,
-              requestEvents: [],
+
               setupRequest: setupRequest as never,
             };
         }

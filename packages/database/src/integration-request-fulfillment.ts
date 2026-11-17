@@ -1,8 +1,7 @@
 import { ResolvedRequestSchema } from "@opensteer/core";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
 import {
   RequestResponseSchema,
-  type AgentEvent,
+  type RequestId,
   type RequestSettlementProvenance,
   type UserId,
 } from "@opensteer/core";
@@ -13,8 +12,7 @@ import type {
   IntegrationServerId,
 } from "@opensteer/integration-core";
 import type { Transaction } from "kysely";
-import { assignmentActivityEventsForRun } from "./assignment-store.js";
-import { requestFromRow, requestOriginEnvironment } from "./request-persistence.js";
+import { refreshRequestState, requestFromRow } from "./request-persistence.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 
@@ -29,10 +27,10 @@ export async function fulfillPendingIntegrationAccessRequestsInTransaction(
     readonly ownerUserId: UserId;
     readonly serverId: IntegrationServerId;
   },
-): Promise<readonly AgentEvent[]> {
+): Promise<readonly RequestId[]> {
   const pendingQuery = pendingIntegrationAccessRequests(transaction, input);
   const pending = await pendingQuery.forNoKeyUpdate("requests").execute();
-  const events: AgentEvent[] = [];
+  const settled: RequestId[] = [];
   const now = new Date();
   for (const row of pending) {
     const response = RequestResponseSchema.parse({
@@ -73,20 +71,10 @@ export async function fulfillPendingIntegrationAccessRequestsInTransaction(
         .onConflict((conflict) => conflict.column("requestId").doNothing())
         .execute();
     }
-    events.push(
-      await appendHostDeploymentEvent(transaction, {
-        data: { request },
-        environmentId: await requestOriginEnvironment(transaction, request),
-        runId: request.originatingRunId,
-        threadId: request.originatingThreadId,
-        type: "request.resolved",
-      }),
-    );
-    if (request.originatingRunId) {
-      events.push(...(await assignmentActivityEventsForRun(transaction, request.originatingRunId)));
-    }
+    await refreshRequestState(transaction, request.id);
+    settled.push(request.id);
   }
-  return events;
+  return settled;
 }
 
 export function pendingIntegrationAccessRequests(

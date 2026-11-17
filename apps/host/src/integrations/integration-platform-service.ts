@@ -148,7 +148,6 @@ import {
   refused,
   RequestResponseSchema,
   UserIdSchema,
-  type AgentEvent,
   type Request,
   type RequestId,
   type RequestResponse,
@@ -386,13 +385,11 @@ export class IntegrationPlatformService {
   readonly #localSecrets: LocalMcpSecrets;
   readonly #personal: boolean;
   readonly #mcpOauth: Pick<McpOAuthService, "providerFor">;
-  readonly #onDeploymentEvent: (event: AgentEvent) => void;
   readonly #onConnectionsChanged: () => void;
   readonly #onSettingsChanged: (input: {
     installationId?: string;
     ownerUserId?: UserId;
   }) => Promise<void>;
-  readonly #onRequestsChanged: () => void;
   readonly #isRunnerConnected: (runnerId: RunnerId) => boolean;
   readonly #computerUse: DeviceComputerUseGateway | null;
   readonly #deviceApps: DeviceComputerAppsPort;
@@ -477,14 +474,12 @@ export class IntegrationPlatformService {
     readonly longRequestHold?: (run: RunCapabilityClaims<string>) => Promise<boolean>;
     readonly definitions?: readonly IntegrationDefinition[];
     readonly mcpOauth: Pick<McpOAuthService, "providerFor">;
-    readonly onDeploymentEvent: (event: AgentEvent) => void;
     readonly onConnectionsChanged: () => void;
     readonly onSettingsChanged?: (input: {
       installationId?: string;
       ownerUserId?: UserId;
     }) => Promise<void>;
     readonly onInputAccessWithdrawn?: (runnerId: RunnerId) => void;
-    readonly onRequestsChanged: () => void;
     readonly isRunnerConnected: (runnerId: RunnerId) => boolean;
     /**
      * How the Host reaches providers, proposal sources and remote MCP servers:
@@ -519,10 +514,8 @@ export class IntegrationPlatformService {
     this.#credentialMaterializer = options.credentialMaterializer;
     this.#definitions = options.definitions ?? integrationDefinitions;
     this.#mcpOauth = options.mcpOauth;
-    this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#onConnectionsChanged = options.onConnectionsChanged;
     this.#onSettingsChanged = options.onSettingsChanged ?? (async () => undefined);
-    this.#onRequestsChanged = options.onRequestsChanged;
     this.#isRunnerConnected = options.isRunnerConnected;
     this.#computerUse =
       options.deviceComputerUse ??
@@ -540,7 +533,6 @@ export class IntegrationPlatformService {
     this.inputRequests = new IntegrationInput({
       requests: options.store.requests,
       longRequestHold: options.longRequestHold ?? (async () => false),
-      publish: (events) => this.#publishRequestEvents(events),
     });
     this.#computerToolEnabled = options.computerToolEnabled ?? (() => false);
     this.#computerUseVersion = options.computerUseVersion ?? (() => undefined);
@@ -571,7 +563,6 @@ export class IntegrationPlatformService {
           console.warn("An approved MCP server could not be started", error),
         );
       },
-      publishRequestEvents: (events) => this.#publishRequestEvents(events),
       store: this.#store,
     });
   }
@@ -837,6 +828,7 @@ export class IntegrationPlatformService {
         const resolved = await this.#store.requests.resolveIntegrationAccessRequest({
           providerAuthorizations,
           requestId: detail.request.id,
+          expectedRevision: detail.revision,
           resolvedBy: input.ownerUserId,
           response: {
             kind: "external",
@@ -851,7 +843,6 @@ export class IntegrationPlatformService {
             },
           },
         });
-        for (const event of resolved.events) this.#onDeploymentEvent(event);
         fulfilled.push(resolved.request.id);
       } catch (error) {
         if (error instanceof OpensteerError && error.code === "conflict") continue;
@@ -914,6 +905,7 @@ export class IntegrationPlatformService {
 
   async resolveRequest(input: {
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
@@ -934,13 +926,13 @@ export class IntegrationPlatformService {
       if (response.kind === "choice" && response.optionId.startsWith("server:")) {
         const selected = await this.#store.requests.selectIntegrationAccessServer({
           requestId: input.requestId,
+          expectedRevision: input.expectedRevision,
           resolvedBy: input.resolvedBy,
           ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
           requestedServerId: IntegrationServerIdSchema.parse(
             response.optionId.slice("server:".length),
           ),
         });
-        for (const event of selected.events) this.#onDeploymentEvent(event);
         return { grant: null, installation: null, request: selected.request };
       }
       if (response.kind === "choice" && response.optionId === "installed") {
@@ -951,6 +943,7 @@ export class IntegrationPlatformService {
           const preparedFulfillment = await this.#prepareInstallationFromManifest(manifest);
           installed = await this.#store.requests.installForIntegrationAccessRequest({
             requestId: input.requestId,
+            expectedRevision: input.expectedRevision,
             resolvedBy: input.resolvedBy,
             ...(input.settlementSessionId
               ? { settlementSessionId: input.settlementSessionId }
@@ -959,7 +952,6 @@ export class IntegrationPlatformService {
           });
         }
         this.#invalidateInstallation(installed.installation.id);
-        for (const event of installed.requestEvents) this.#onDeploymentEvent(event);
         return { grant: null, installation: installed.installation, request: installed.request };
       }
       if (pending.payload.kind !== "integration.access") {
@@ -995,6 +987,7 @@ export class IntegrationPlatformService {
             input.resolvedBy,
           ),
           requestId: input.requestId,
+          expectedRevision: input.expectedRevision,
           resolvedBy: input.resolvedBy,
           ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
           response,
@@ -1010,7 +1003,6 @@ export class IntegrationPlatformService {
       const resolved = computer
         ? await this.#deviceApps.withAdmission(computer.deviceId, resolve)
         : await resolve();
-      for (const event of resolved.events) this.#onDeploymentEvent(event);
       return { grant: resolved.grant, installation: null, request: resolved.request };
     }
     if (response.kind !== "choice" || !["installed", "declined"].includes(response.optionId)) {
@@ -1034,13 +1026,12 @@ export class IntegrationPlatformService {
     const resolved = await this.#store.requests.resolveIntegrationInstallRequest({
       ...(preparedFulfillment ? { preparedFulfillment } : {}),
       requestId: input.requestId,
+      expectedRevision: input.expectedRevision,
       resolvedBy: input.resolvedBy,
       ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
       response,
     });
     if (resolved.installation) this.#invalidateInstallation(resolved.installation.id);
-    this.#publishRequestEvents(resolved.requestEvents);
-    for (const event of resolved.events) this.#onDeploymentEvent(event);
     return { grant: null, installation: resolved.installation, request: resolved.request };
   }
 
@@ -1718,7 +1709,6 @@ export class IntegrationPlatformService {
       await endComputerUseSessions(this.#computerUse, this.#definitions, removed.removedApps);
       return removed;
     });
-    this.#publishRequestEvents(mutation.requestEvents);
     for (const serverId of mutation.removedServerIds) this.#dropClient(serverId);
     this.#onConnectionsChanged();
     return {
@@ -1958,7 +1948,6 @@ export class IntegrationPlatformService {
   #acceptInstallMutation(
     mutation: Awaited<ReturnType<IntegrationPlatformStore["install"]>>,
   ): IntegrationInstallation {
-    this.#publishRequestEvents(mutation.requestEvents);
     this.#invalidateInstallation(mutation.installation.id);
     return mutation.installation;
   }
@@ -3021,7 +3010,8 @@ export class IntegrationPlatformService {
         );
     }
     let lease: ComputerUseLease | undefined;
-    let started: Extract<AgentEvent, { type: "tool.started" }> | undefined;
+    let started:
+      Awaited<ReturnType<IntegrationPlatformStore["computerOperations"]["start"]>> | undefined;
     let result: DeviceComputerResult | undefined;
     let released = false;
     let audit: Promise<readonly string[]> | undefined;
@@ -3058,7 +3048,7 @@ export class IntegrationPlatformService {
         subject,
         ...(typeof args.window === "number" ? { window: args.window } : {}),
       });
-      const callId = started.data.callId;
+      const callId = started.toolCallId;
       let resolve!: () => void;
       let reject!: (error: unknown) => void;
       const done = new Promise<void>((yes, no) => {
@@ -3074,7 +3064,6 @@ export class IntegrationPlatformService {
         if (error === undefined) resolve();
         else reject(error);
       };
-      this.#onDeploymentEvent(started);
     };
     const membershipRevision =
       operation === "bind" ? await this.#nativeTabs?.captureMembership(ownerUserId) : undefined;
@@ -3149,12 +3138,11 @@ export class IntegrationPlatformService {
               stoppedBecause,
             });
       if (started) {
-        const event = await this.#store.computerOperations.complete(started, {
+        await this.#store.computerOperations.complete(started, {
           status: signal?.aborted ? "cancelled" : result?.error ? "failed" : "succeeded",
           headline,
           performed,
         });
-        if (event) this.#onDeploymentEvent(event);
       }
       const content: ReplContent[] = performed.map((text) => ({ type: "text", text }));
       if (result?.observation && operation !== "bind" && args.emit !== false) {
@@ -3265,7 +3253,7 @@ export class IntegrationPlatformService {
         // Run-end finalization waits for this bounded, fenced audit lifetime.
         auditCompletion = (async () => {
           const performed = (await audit) ?? known;
-          const event = await this.#store.computerOperations.complete(record, {
+          await this.#store.computerOperations.complete(record, {
             status: signal?.aborted ? "cancelled" : "failed",
             headline: computerUseActHeadline({
               performed,
@@ -3273,7 +3261,6 @@ export class IntegrationPlatformService {
             }),
             performed,
           });
-          if (event) this.#onDeploymentEvent(event);
         })();
       }
       throw error;
@@ -3509,8 +3496,7 @@ export class IntegrationPlatformService {
         .filter((record) => record.runId === runId)
         .map((record) => record.done),
     );
-    for (const event of await this.#store.computerOperations.finalize(runId))
-      this.#onDeploymentEvent(event);
+    await this.#store.computerOperations.finalize(runId);
   }
 
   resetComputerGeneration(runId: RunId, generation: number): void {
@@ -4020,11 +4006,6 @@ export class IntegrationPlatformService {
     for (const [key, open] of this.#clients) {
       if (key.startsWith(prefix)) this.#letGo(key, open);
     }
-  }
-
-  #publishRequestEvents(events: readonly AgentEvent[]): void {
-    for (const event of events) this.#onDeploymentEvent(event);
-    if (events.length > 0) this.#onRequestsChanged();
   }
 }
 
