@@ -14,7 +14,7 @@ import {
   type Sequence,
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
-import { lockDeploymentEvents } from "./personal-transaction.js";
+import { isOfflineSettlement, lockDeploymentEvents } from "./personal-transaction.js";
 import type { DatabaseSchema, DeploymentEventRow } from "./schema.js";
 
 export type HostDeploymentEventInput = AgentEvent extends infer Event
@@ -30,6 +30,15 @@ export async function appendHostDeploymentEvent(
   transaction: Transaction<DatabaseSchema>,
   input: HostDeploymentEventInput,
 ): Promise<AgentEvent> {
+  if (isOfflineSettlement(transaction)) {
+    return AgentEventSchema.parse({
+      ...input,
+      data: await stampRunContext(transaction, input.type, input.runId, input.data),
+      createdAt: new Date().toISOString(),
+      eventId: createId("event"),
+      sequence: "0",
+    });
+  }
   await lockDeploymentEvents(transaction);
   const state = await transaction
     .updateTable("deploymentEventState")

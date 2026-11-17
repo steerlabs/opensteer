@@ -23,6 +23,26 @@ export function inheritExecutionClock<Schema>(
 }
 
 const held = new WeakSet<object>();
+const offlineSettlements = new WeakSet<object>();
+
+export function isOfflineSettlement(transaction: Transaction<DatabaseSchema>): boolean {
+  return offlineSettlements.has(transaction);
+}
+
+/** The converter already holds the renamed deployment fence. */
+export async function runOfflineSettlement<Result>(
+  transaction: Transaction<DatabaseSchema>,
+  settle: () => Promise<Result>,
+): Promise<Result> {
+  await sql`select singleton_key from personal_settings for no key update`.execute(transaction);
+  held.add(transaction);
+  offlineSettlements.add(transaction);
+  try {
+    return await settle();
+  } finally {
+    offlineSettlements.delete(transaction);
+  }
+}
 
 export function withPersonalReadTransaction<Result, Schema = DatabaseSchema>(
   database: Kysely<Schema>,

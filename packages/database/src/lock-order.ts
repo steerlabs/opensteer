@@ -10,6 +10,7 @@
  * ordered, and it refuses MERGE and data-modifying WITH, whose locks it cannot see.
  */
 export const databaseLockOrder = [
+  "client_sync_state",
   "deployment_event_state",
   "personal_settings",
   // BEGIN team authority and content lock order.
@@ -255,6 +256,12 @@ export const databaseLockOrder = [
   // Deferred invalidations and sorted generation updates follow all source mutations.
   "integration_authority_pending",
   "integration_authority_generations",
+  "tool_calls",
+  "transcript_items",
+  "tool_output_images",
+  "runner_event_receipts",
+  "personal_attention",
+  "client_changes",
   // Account-service tables are separate physical resources from identically named Host tables.
   "control-plane:auth_accounts",
   "control-plane:auth_jwks",

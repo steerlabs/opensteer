@@ -27,6 +27,7 @@ import { settleAssignmentAfterRun, threadOrAssignmentHasPendingWork } from "./as
 import { endLiveExecutionNodes } from "./execution-nodes.js";
 import { endOpenAttempts } from "./run-attempts.js";
 import { revokeRunGrants, type RevokedRunGrant, runWasStopped } from "./run-grants.js";
+import { isOfflineSettlement } from "./personal-transaction.js";
 interface FinalizeRunRequest {
   readonly requestCancellationReason?: RequestCancellationReason;
   readonly completedAt: Date;
@@ -75,6 +76,7 @@ export async function finalizeRunTransaction(
     .forNoKeyUpdate("runs")
     .executeTakeFirst();
   if (!run || !["queued", "starting", "running", "waiting"].includes(run.runStatus)) return [];
+  const offline = isOfflineSettlement(transaction);
   // A Run someone stopped ended because they stopped it, whatever the Host
   // found first: a lost Runner, an expired lease, a refused dispatch. What a
   // Runner reports is its own record and stands.
@@ -189,6 +191,7 @@ export async function finalizeRunTransaction(
     completedAt: input.completedAt,
     failure: input.failure,
     requestCancellationReason: input.requestCancellationReason ?? "run-ended",
+    retireBinding: offline && run.bindingGeneration !== null,
     run: {
       ...run,
       status: run.runStatus,
@@ -374,11 +377,13 @@ export async function finalizeRunTransaction(
 
   // A corrupt selection must not roll back an already accepted terminal event.
   // Pending work remains queued until an explicit engine selection repairs it.
-  const followOn = await ensureQueuedRun(transaction, thread, {
-    onInvalidSelection: "defer",
-  });
-  events.push(...followOn.events);
-  events.push(...(await projectThreadState(transaction, run.threadId, input.completedAt, true)));
+  if (!offline) {
+    const followOn = await ensureQueuedRun(transaction, thread, {
+      onInvalidSelection: "defer",
+    });
+    events.push(...followOn.events);
+    events.push(...(await projectThreadState(transaction, run.threadId, input.completedAt, true)));
+  }
   // Nodes and attempts rank last; the Run's lock already orders these writes.
   await cleanup.finish(() => endOpenAttempts(transaction, run.id, input.status));
   return events;
