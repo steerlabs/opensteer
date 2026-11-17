@@ -19,12 +19,23 @@ export async function personalTeamRunOutcome(
     .transaction()
     .setIsolationLevel("repeatable read")
     .execute(async (tx) => {
-      await requirePersonalOwner(tx, (await personalSettings(tx)).ownerId);
+      const { ownerId } = await personalSettings(tx);
+      await requirePersonalOwner(tx, ownerId);
       const receipt = await tx
         .selectFrom("personalTeamRequests")
         .selectAll()
         .where("teamDeploymentId", "=", request.teamId)
         .where("requestId", "=", request.requestId)
+        .where(
+          "localTaskId",
+          "in",
+          tx
+            .selectFrom("threads")
+            .select("id")
+            .where("id", "=", request.taskId)
+            .where("createdBy", "=", ownerId)
+            .where("removedAt", "is", null),
+        )
         .executeTakeFirst();
       if (
         !receipt ||
@@ -52,6 +63,7 @@ export async function personalTeamRunOutcome(
         .select(["id", "status", "terminalReplyMessageId"])
         .where("threadId", "=", receipt.localTaskId)
         .where("seedInputId", "=", receipt.localInputId)
+        .where("requestedBy", "=", ownerId)
         .where(sql<string>`reply_target->>'requestId'`, "=", request.requestId)
         .where(sql<string>`reply_target->>'teamId'`, "=", request.teamId)
         .limit(1)
