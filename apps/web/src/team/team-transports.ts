@@ -177,7 +177,7 @@ export function desktopTeamSession(input: {
   const deploymentId = DeploymentIdSchema.parse(input.scope.teamDeploymentId);
   const owner = input.owner;
   const socket = createDesktopHostWebSocketFactory(input.bridge, input.origin, deploymentId);
-  const fetch = createDesktopHostFetch(input.origin, deploymentId);
+  const fetch = createDesktopHostFetch(input.bridge, input.origin, deploymentId);
   const owned = ownedSignal(owner);
   return {
     scope: input.scope,

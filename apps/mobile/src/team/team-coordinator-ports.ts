@@ -4,7 +4,7 @@ import {
   type VerifiedHostEndpoint,
 } from "@opensteer/client/connections";
 import {
-  operationFailure,
+  hostUnanswered,
   PersonalTeamLinks,
   unwrapRpcResult,
   type HostClient,
@@ -102,8 +102,9 @@ export function mobilePersonalTeamLinks(
       try {
         return { kind: "joined", link: await new PersonalTeamLinks(host.rpc).join(offer) };
       } catch (error) {
-        // Out of reach for now, so their agent connects later; a refusal or a fault is reported.
-        if (operationFailure(error) === "unavailable") return { kind: "offline" };
+        // Out of reach for now, so their agent connects later. A refusal or a fault it
+        // answers, even that it can't reach the team, is reported.
+        if (hostUnanswered(error)) return { kind: "offline" };
         throw error;
       }
     },

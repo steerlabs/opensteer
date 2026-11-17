@@ -1,5 +1,6 @@
 import type { WebContents } from "electron";
 import {
+  DesktopCancelHostRequestInputSchema,
   DesktopCloseHostWebSocketInputSchema,
   DesktopHostWebSocketCommandSchema,
   DesktopOpenHostWebSocketInputSchema,
@@ -11,6 +12,15 @@ import {
   type DesktopBridgeContext,
   type DesktopBridgeHandler,
 } from "../context.js";
+
+export const handleCancelHostRequest =
+  (context: DesktopBridgeContext): DesktopBridgeHandler =>
+  (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    context.options.hostTransport.cancelRequest(
+      DesktopCancelHostRequestInputSchema.parse(envelope.input),
+    );
+  };
 
 export const handleOpenHostWebSocket =
   (context: DesktopBridgeContext): DesktopBridgeHandler =>

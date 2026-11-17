@@ -85,7 +85,10 @@ it.each(kinds)("retires owned %s before its delivery boundary", async (kind) => 
           return new Response(new Uint8Array([65]));
         }),
       );
-      const bridge = { onHostWebSocketEvent: () => () => {} } as unknown as OpensteerDesktopBridge;
+      const bridge = {
+        cancelHostRequest: async () => undefined,
+        onHostWebSocketEvent: () => () => {},
+      } as unknown as OpensteerDesktopBridge;
       const session = desktopTeamSession({ bridge, scope, origin: host.origin, owner });
       pending = session.readFile!(file, "original").then(delivered);
       verify = () => expect(signal?.aborted).toBe(true);

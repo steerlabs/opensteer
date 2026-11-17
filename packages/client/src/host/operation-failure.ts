@@ -1,4 +1,5 @@
 import { OpensteerError } from "@opensteer/core";
+import { HostTransportError } from "../connections/host-transport-error.js";
 import { ClientOperationError } from "../connections/operation-error.js";
 import { HostClientRequestError } from "./client.js";
 import type { ClientNetworkState } from "./lifecycle.js";
@@ -10,7 +11,11 @@ import type { ClientNetworkState } from "./lifecycle.js";
  */
 export type OperationFailure = "gone" | "unavailable" | "signed-out" | "failed";
 
-/** Reads the failure's own classification; an unclassified throw is a failure, not a lost connection. */
+/**
+ * Reads the failure's own classification. Only a typed failure to reach is
+ * "unavailable": a Host that answered, even with "try again", was reached, and
+ * an unclassified throw is a failure, not a lost connection.
+ */
 export function operationFailure(error: unknown): OperationFailure {
   if (error instanceof HostClientRequestError || error instanceof OpensteerError) {
     if (error.code === "unauthorized") return "signed-out";
@@ -19,7 +24,7 @@ export function operationFailure(error: unknown): OperationFailure {
       error.reason !== "unknown-method"
     )
       return "gone";
-    return error.retryable || error.code === "runner_offline" || error.code === "timeout"
+    return hostUnanswered(error) || error.code === "runner_offline" || error.code === "timeout"
       ? "unavailable"
       : "failed";
   }
@@ -27,6 +32,16 @@ export function operationFailure(error: unknown): OperationFailure {
   if (error instanceof ClientOperationError)
     return error.classification === "transient" ? "unavailable" : "failed";
   return "failed";
+}
+
+/** Whether the request never got the Host's answer, as opposed to the Host answering no. */
+export function hostUnanswered(error: unknown): boolean {
+  if (error instanceof HostTransportError)
+    return error.code === "unreachable" || error.code === "timed-out";
+  return (
+    (error instanceof HostClientRequestError || error instanceof OpensteerError) &&
+    (error.reason === "transport-unreachable" || error.reason === "transport-timed-out")
+  );
 }
 
 export interface FailureNotice {

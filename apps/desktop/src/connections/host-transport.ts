@@ -1,11 +1,15 @@
 import { unwrapRpcResult } from "@opensteer/client/host";
 import { BootstrapNoticeDiagnostics } from "@opensteer/shared/bootstrapDiagnostics";
 import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
-import { readBoundedResponse, readBoundedText } from "@opensteer/shared/boundedJson";
+import {
+  forEachBoundedResponseChunk,
+  readBoundedResponse,
+  readBoundedText,
+} from "@opensteer/shared/boundedJson";
 import { streamBoundedResponse } from "@opensteer/shared/responseStream";
 import { createHmac, randomBytes } from "node:crypto";
 import { z } from "zod";
-import type { DeploymentId } from "@opensteer/core";
+import { attachmentMaxBytes, type DeploymentId } from "@opensteer/core";
 import {
   hostApi,
   HostApiErrorSchema,
@@ -17,7 +21,11 @@ import {
   teamPreviewMaxBytes,
   teamUploadMaxBytes,
 } from "@opensteer/protocol";
-import type { HostAttachment, HostSessionRecovery } from "@opensteer/client/auth";
+import type {
+  HostAttachment,
+  HostSessionRecovery,
+  SelectedAttachment,
+} from "@opensteer/client/auth";
 import {
   bufferedHostResponseTimeoutMs,
   HostTransport,
@@ -29,8 +37,11 @@ import {
   type HostNetworkSocket,
 } from "@opensteer/client/connections";
 import {
+  DesktopCancelHostRequestInputSchema,
   DesktopCloseHostWebSocketInputSchema,
   DesktopDeploymentSelectionSchema,
+  desktopHostRequestIdHeader,
+  DesktopHostRequestIdSchema,
   desktopHostTransportErrorHeader,
   DesktopHostWebSocketCommandSchema,
   DesktopHostWebSocketEventSchema,
@@ -68,8 +79,16 @@ export type DesktopBrowserControlObservation =
         | { readonly type: "presentation"; readonly surfaceId: string | null }
       ));
 
-// The largest body any Host route accepts: a team original with its preview.
-const maximumRequestBytes = teamUploadMaxBytes + teamPreviewMaxBytes;
+const forwardedMethods = ["DELETE", "GET", "PATCH", "POST", "PUT"];
+// The Host's own body limits: Fastify's default for JSON, and its binary routes'.
+const maximumJsonRequestBytes = 1_024 * 1_024;
+const teamFilesPath = "/v1/team/files/";
+const teamUploadPath = "/v1/team/files/upload/";
+// A partner team's file is fetched and verified before the team Host sends headers.
+const teamFileHeadersTimeoutMs = 120_000;
+// Requests one transport admits before reading their bodies, as its exchange admits them.
+const maximumForwardedRequests = 32;
+const maximumEarlyCancellations = 64;
 const maximumCommandResponseBytes = 1_024 * 1_024;
 const forwardedRequestHeaders = {
   accept: "accept",
@@ -154,6 +173,10 @@ export class DesktopHostTransport extends HostTransport {
   readonly #browserSocketListeners = new Set<(event: DesktopBrowserSocketObservation) => void>();
   readonly #ownerGenerations = new Map<number, number>();
   readonly #socketGenerations = new WeakMap<HostTransport, number>();
+  readonly #forwarded = new Map<string, AbortController>();
+  readonly #forwardedBy = new WeakMap<HostTransport, number>();
+  /** A cancel can overtake its request on the way to main. */
+  readonly #cancelledEarly = new Set<string>();
   #selectedDeploymentId: DeploymentId | null = null;
   #disposed = false;
   readonly #bootstrapDiagnostics = new BootstrapNoticeDiagnostics();
@@ -286,50 +309,94 @@ export class DesktopHostTransport extends HostTransport {
    * request replayed. A transport failure is named in a header.
    */
   async forward(deploymentId: DeploymentId, path: string, request: Request): Promise<Response> {
+    const requestId = DesktopHostRequestIdSchema.safeParse(
+      request.headers.get(desktopHostRequestIdHeader),
+    );
+    if (!requestId.success || this.#forwarded.has(requestId.data))
+      return new Response(null, { status: 400 });
+    const id = requestId.data;
+    const controller = new AbortController();
+    this.#forwarded.set(id, controller);
+    if (this.#cancelledEarly.delete(id)) controller.abort(new HostTransportError("cancelled"));
+    const { signal } = controller;
+    let admitted: HostTransport | null = null;
+    let settled: Promise<void> = Promise.resolve();
     try {
-      if (!["DELETE", "GET", "PATCH", "POST", "PUT"].includes(request.method))
-        return new Response(null, { status: 405 });
-      const body =
-        request.body === null
-          ? undefined
-          : new Blob([
-              await readBoundedResponse(new Response(request.body), {
-                maximumBytes: maximumRequestBytes,
-                signal: request.signal,
-                sizeError: () => new HostTransportError("response-too-large"),
-              }),
-            ]);
+      if (!forwardedMethods.includes(request.method)) return new Response(null, { status: 405 });
       const headers: Partial<Record<ForwardedHeader, string>> = {};
       for (const [name, field] of Object.entries(forwardedRequestHeaders)) {
         const value = request.headers.get(name);
         if (value !== null) headers[field] = value;
       }
       const teamUpload = request.headers.get("x-opensteer-team-upload");
-      const pathname = path.split("?", 1)[0];
+      const pathname = path.split("?", 1)[0]!;
       if (pathname === "/v1/rpc/bootstrap.get") this.#reportBootstrap(headers.bootstrapDiagnostics);
       const summary =
         request.method === "POST" &&
         (pathname === "/v1/rpc/attention.get" || pathname === "/v1/rpc/teams.links.list");
       const transport = await this.#transport(deploymentId, summary);
+      const active = this.#forwardedBy.get(transport) ?? 0;
+      if (active >= maximumForwardedRequests)
+        return hostRefusal(429, "resource_exhausted", "Too many Host requests are open.", true);
+      this.#forwardedBy.set(transport, active + 1);
+      admitted = transport;
+      let body: Blob | undefined;
+      let attachment: SelectedAttachment | undefined;
+      if (request.body) {
+        // The body can take a while; the Account and route it was sent under are fixed first.
+        attachment = await transport.current();
+        if (attachment.resolved.deploymentId !== deploymentId)
+          throw new HostTransportError("deployment-changed");
+        const assertCurrent = transport.retainAuthorization(attachment);
+        const read = await readRequestBody(request, requestByteLimit(pathname), signal);
+        if (!read) return hostRefusal(413, "bad_request", "Request body is too large", false);
+        body = read;
+        assertCurrent();
+      }
+      const timeoutMs = Math.max(
+        pathname.startsWith(teamFilesPath) ? teamFileHeadersTimeoutMs : 0,
+        body ? bufferedHostResponseTimeoutMs(body.size) : 0,
+      );
       const forwarded = {
         expectedDeploymentId: deploymentId,
+        ...(attachment ? { expectedAttachmentKey: attachment.resolved.key } : {}),
         headers: {
           ...headers,
           ...(teamUpload ? { additional: { "x-opensteer-team-upload": teamUpload } } : {}),
         },
         method: request.method,
         path,
-        signal: request.signal,
-        ...(body ? { body, timeoutMs: bufferedHostResponseTimeoutMs(body.size) } : {}),
+        signal,
+        ...(body ? { body } : {}),
+        ...(timeoutMs ? { timeoutMs } : {}),
       };
       const command =
         pathname === "/v1/rpc/commands.dispatch" && body ? await enrollmentCommand(body) : null;
-      return command
-        ? await this.#forwardEnrollment(transport, command, forwarded)
-        : await relay(transport, forwarded);
+      if (command) return await this.#forwardEnrollment(transport, command, forwarded);
+      const relayed = relay(transport, forwarded);
+      settled = relayed.settled;
+      return await relayed.response;
     } catch (error) {
       return transportFailure(error);
+    } finally {
+      void settled.finally(() => {
+        this.#forwarded.delete(id);
+        if (admitted) this.#forwardedBy.set(admitted, (this.#forwardedBy.get(admitted) ?? 1) - 1);
+      });
     }
+  }
+
+  /** A renderer's abort: Electron gives the protocol handler a Request without its signal. */
+  cancelRequest(input: unknown): void {
+    const { requestId } = DesktopCancelHostRequestInputSchema.parse(input);
+    const controller = this.#forwarded.get(requestId);
+    if (controller) {
+      controller.abort(new HostTransportError("cancelled"));
+      return;
+    }
+    this.#cancelledEarly.add(requestId);
+    if (this.#cancelledEarly.size > maximumEarlyCancellations)
+      this.#cancelledEarly.delete(this.#cancelledEarly.values().next().value!);
   }
 
   /**
@@ -339,28 +406,26 @@ export class DesktopHostTransport extends HostTransport {
   async #forwardEnrollment(
     transport: HostTransport,
     command: HostApiCommandInput,
-    request: Parameters<HostTransport["exchange"]>[0],
+    request: Parameters<HostTransport["exchange"]>[0] & {
+      readonly expectedDeploymentId: DeploymentId;
+    },
   ): Promise<Response> {
-    const selected = await transport.current();
+    const deploymentId = request.expectedDeploymentId;
     const exchange = async () => {
-      const response = await transport.exchange(
-        { ...request, expectedAttachmentKey: selected.resolved.key },
-        async (response, progress) => ({
-          bytes: await readBoundedResponse(response, {
-            ...progress,
-            maximumBytes: maximumCommandResponseBytes,
-            sizeError: () => new HostTransportError("response-too-large"),
-          }),
-          headers: responseHeaders(response.headers),
-          status: response.status,
+      const response = await transport.exchange(request, async (response, progress) => ({
+        bytes: await readBoundedResponse(response, {
+          ...progress,
+          maximumBytes: maximumCommandResponseBytes,
+          sizeError: () => new HostTransportError("response-too-large"),
         }),
-      );
+        headers: responseHeaders(response.headers),
+        status: response.status,
+      }));
       if (response.status === 200 && this.#observeCommand) {
         const envelope = z
           .object({ ok: z.literal(true), data: hostApi["commands.dispatch"].success })
           .safeParse(parseJson(response.bytes));
-        if (envelope.success)
-          await this.#observeCommand(selected.resolved.deploymentId, command, envelope.data.data);
+        if (envelope.success) await this.#observeCommand(deploymentId, command, envelope.data.data);
       }
       return new Response(response.bytes, {
         status: response.status,
@@ -368,7 +433,7 @@ export class DesktopHostTransport extends HostTransport {
       });
     };
     return this.#withPreparedEnrollment
-      ? this.#withPreparedEnrollment(selected.resolved.deploymentId, command, exchange)
+      ? this.#withPreparedEnrollment(deploymentId, command, exchange)
       : exchange();
   }
 
@@ -941,9 +1006,9 @@ type ForwardedHeader = (typeof forwardedRequestHeaders)[keyof typeof forwardedRe
 function relay(
   transport: HostTransport,
   request: Parameters<HostTransport["exchange"]>[0],
-): Promise<Response> {
+): { readonly response: Promise<Response>; readonly settled: Promise<void> } {
   const ready = Promise.withResolvers<Response>();
-  void transport
+  const settled = transport
     .exchange(request, async (response, progress) => {
       const init = { status: response.status, headers: responseHeaders(response.headers) };
       if (!response.body || [204, 205, 304].includes(response.status)) {
@@ -958,7 +1023,45 @@ function relay(
       await done;
     })
     .catch((error: unknown) => ready.resolve(transportFailure(error)));
-  return ready.promise;
+  return { response: ready.promise, settled };
+}
+
+class RequestBodyTooLargeError extends Error {}
+
+/** The body read once, under its route's limit, as the one copy a 401 replay sends again. */
+async function readRequestBody(
+  request: Request,
+  maximumBytes: number,
+  signal: AbortSignal,
+): Promise<Blob | null> {
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
+  const length = request.headers.get("content-length");
+  try {
+    await forEachBoundedResponseChunk(
+      new Response(request.body, length === null ? {} : { headers: { "content-length": length } }),
+      { maximumBytes, signal, sizeError: () => new RequestBodyTooLargeError() },
+      (chunk) => {
+        chunks.push(chunk as Uint8Array<ArrayBuffer>);
+      },
+    );
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) return null;
+    throw error;
+  }
+  return new Blob(chunks);
+}
+
+function requestByteLimit(pathname: string): number {
+  if (pathname.startsWith(teamUploadPath)) return teamUploadMaxBytes + teamPreviewMaxBytes;
+  const name = pathname.startsWith("/v1/rpc/") ? pathname.slice("/v1/rpc/".length) : "";
+  return Object.hasOwn(hostApi, name) && "binaryRequest" in hostApi[name as keyof typeof hostApi]
+    ? attachmentMaxBytes
+    : maximumJsonRequestBytes;
+}
+
+/** Main's own refusal, in the envelope and status the Host gives the same refusal. */
+function hostRefusal(status: number, code: string, message: string, retryable: boolean): Response {
+  return Response.json({ ok: false, error: { code, message, retryable } }, { status });
 }
 
 function responseHeaders(source: Headers): Headers {

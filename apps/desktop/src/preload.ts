@@ -92,6 +92,7 @@ import type {
   DesktopFullDiskAccessStatus,
   DesktopOpenComputerUsePermissionsPanelResult,
   DesktopOpenComputerUseSettingsInput,
+  DesktopCancelHostRequestInput,
   DesktopHostWebSocketCommand,
   DesktopHostWebSocketEvent,
   DesktopLocalExecutionStatus,
@@ -149,6 +150,7 @@ import {
   DesktopOpenComputerUseSettingsInputSchema,
   DesktopConnectPrivateDeploymentInputSchema,
   DesktopFullDiskAccessStatusSchema,
+  DesktopCancelHostRequestInputSchema,
   DesktopHostWebSocketCommandSchema,
   DesktopHostWebSocketEventSchema,
   DesktopLocalExecutionInputSchema,
@@ -763,6 +765,11 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       await invoke<DesktopFullDiskAccessStatus>(desktopBridgeChannels.checkFullDiskAccess),
     ),
   closeFullDiskAccessPanel: () => invoke<void>(desktopBridgeChannels.closeFullDiskAccessPanel),
+  cancelHostRequest: (input: DesktopCancelHostRequestInput) =>
+    invoke<void>(
+      desktopBridgeChannels.cancelHostRequest,
+      DesktopCancelHostRequestInputSchema.parse(input),
+    ),
   closeHostWebSocket: (input: DesktopCloseHostWebSocketInput) =>
     invoke<void>(
       desktopBridgeChannels.closeHostWebSocket,

@@ -462,6 +462,8 @@ export function desktopPreviewBridge(
       });
     },
 
+    // The simulated route reads the page's own Request, abort signal included.
+    cancelHostRequest: async () => undefined,
     closeHostWebSocket: async (input) => {
       const path = socketPaths.get(input.connectionId);
       if (!path) return;

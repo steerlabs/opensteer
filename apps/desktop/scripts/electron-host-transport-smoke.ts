@@ -6,7 +6,7 @@ import { createServer, type RequestListener } from "node:http";
 import { createServer as createSecureServer } from "node:https";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { app, BrowserWindow, protocol, session } from "electron";
+import { app, BrowserWindow, ipcMain, protocol, session } from "electron";
 import { z } from "zod";
 import { createId } from "@opensteer/core";
 import {
@@ -32,6 +32,9 @@ import { registerDesktopAppScheme } from "../src/app/app-protocol.js";
 import { desktopWebPreferences } from "../src/app/electron-window.js";
 import { ElectronHostNetwork } from "../src/app/electron-host-network.js";
 import { forwardHostRoute } from "../src/app/host-route.js";
+import type { DesktopBridgeContext } from "../src/bridge/context.js";
+import { desktopBridgeChannels } from "../src/bridge/desktop-bridge-channels.js";
+import { handleCancelHostRequest } from "../src/bridge/methods/host.js";
 import { DesktopHostTransport } from "../src/connections/host-transport.js";
 
 const root = mkdtempSync(
@@ -540,6 +543,13 @@ async function run(): Promise<void> {
     cases.push({ case: "attachment-fence", code: "deployment-changed" });
 
     const bridgeToken = randomBytes(32).toString("base64url");
+    // The renderer's abort reaches main only through this call.
+    ipcMain.handle(
+      desktopBridgeChannels.cancelHostRequest,
+      handleCancelHostRequest({
+        options: { bridgeToken, hostTransport: transport },
+      } as unknown as DesktopBridgeContext),
+    );
     protocol.handle("app", (request) =>
       new URL(request.url).pathname.startsWith("/host/")
         ? forwardHostRoute(request, transport)
@@ -619,6 +629,7 @@ async function run(): Promise<void> {
     } finally {
       window.destroy();
       protocol.unhandle("app");
+      ipcMain.removeHandler(desktopBridgeChannels.cancelHostRequest);
     }
   } finally {
     secureServer.closeAllConnections();

@@ -52,6 +52,7 @@ import { registerDesktopAppScheme } from "../src/app/app-protocol.js";
 import { assertAuthorizedRenderer, type DesktopBridgeContext } from "../src/bridge/context.js";
 import { desktopBridgeChannels } from "../src/bridge/desktop-bridge-channels.js";
 import {
+  handleCancelHostRequest,
   handleCloseHostWebSocket,
   handleOpenHostWebSocket,
   handleSendHostWebSocket,
@@ -210,10 +211,13 @@ const bridge = {
         if (held?.owner === owner) held.socket.close(input.code, input.reason);
       },
       closeSocketsForOwner: closeHostSockets,
+      // The fixture route answers at once; there is nothing to abandon.
+      cancelRequest: () => undefined,
     },
   },
 } as unknown as DesktopBridgeContext;
 const hostHandlers = [
+  [desktopBridgeChannels.cancelHostRequest, handleCancelHostRequest(bridge)],
   [desktopBridgeChannels.openHostWebSocket, handleOpenHostWebSocket(bridge)],
   [desktopBridgeChannels.sendHostWebSocket, handleSendHostWebSocket(bridge)],
   [desktopBridgeChannels.closeHostWebSocket, handleCloseHostWebSocket(bridge)],

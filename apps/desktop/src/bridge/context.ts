@@ -172,6 +172,7 @@ export interface DesktopBridgeOptions {
   };
   readonly hostTransport: Pick<
     DesktopHostTransport,
+    | "cancelRequest"
     | "closeSocketsForOwner"
     | "closeWebSocket"
     | "current"

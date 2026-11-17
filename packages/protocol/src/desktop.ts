@@ -1123,6 +1123,16 @@ export const DesktopHostTransportErrorCodeSchema = z.enum([
   "cancelled",
   "unreachable",
 ]);
+/**
+ * Electron hands main a fresh Request without the renderer's abort signal, so
+ * each request carries an unguessable id the renderer cancels it by.
+ */
+export const desktopHostRequestIdHeader = "x-opensteer-desktop-request";
+export const DesktopHostRequestIdSchema = z.uuid();
+export const DesktopCancelHostRequestInputSchema = z.strictObject({
+  requestId: DesktopHostRequestIdSchema,
+});
+export type DesktopCancelHostRequestInput = z.infer<typeof DesktopCancelHostRequestInputSchema>;
 
 export function desktopHostRouteUrl(deploymentId: DeploymentId, hostUrl: URL): string {
   return `${desktopHostRouteOrigin}${desktopHostRoutePrefix}${deploymentId}${hostUrl.pathname}${hostUrl.search}`;
@@ -1897,6 +1907,8 @@ export interface OpensteerDesktopBridge {
   closeComputerUsePermissionsPanel(): Promise<void>;
   addDirect(input: DesktopAddDirectRouteInput): Promise<void>;
   cancel(): Promise<void>;
+  /** Abandons one Host request main is forwarding for this renderer. */
+  cancelHostRequest(input: DesktopCancelHostRequestInput): Promise<void>;
   closeHostWebSocket(input: DesktopCloseHostWebSocketInput): Promise<void>;
   connectPrivate(input: DesktopConnectPrivateDeploymentInput): Promise<void>;
   createPersonalDeployment(input?: DesktopCreatePersonalDeploymentInput): Promise<void>;

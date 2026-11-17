@@ -79,7 +79,7 @@ describe("HTTP Host rpc response parsing", () => {
     });
     await expect(answering("<html>", 500)["auth.config"]({})).resolves.toMatchObject({
       ok: false,
-      error: { code: "internal", retryable: false },
+      error: { code: "internal", reason: "invalid-response", retryable: false },
     });
   });
 
@@ -118,7 +118,19 @@ describe("HTTP Host rpc response parsing", () => {
     });
     const misshapen = () => Response.json({ data: { unexpected: true }, ok: true });
     const notJson = () => new Response("<html>sign in</html>", { status: 200 });
-    for (const response of [misshapen, notJson])
+    // A refusal envelope but for one invalid UTF-8 byte, which a lenient decode would repair.
+    const notUtf8 = () =>
+      new Response(
+        Uint8Array.from([
+          ...new TextEncoder().encode(
+            '{"ok":false,"error":{"code":"conflict","retryable":false,"message":"no',
+          ),
+          0xff,
+          ...new TextEncoder().encode('"}}'),
+        ]),
+        { status: 409 },
+      );
+    for (const response of [misshapen, notJson, notUtf8])
       await expect(answering(response)).resolves.toMatchObject({
         ok: false,
         error: { code: "internal", reason: "invalid-response", retryable: false },

@@ -5,16 +5,20 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { app, BrowserWindow, protocol } from "electron";
+import { app, BrowserWindow, ipcMain, protocol } from "electron";
 import { createId, type HostInstanceId } from "@opensteer/core";
 import { DeploymentConnectionSchema } from "@opensteer/client/connections";
 import { testDiscoveryEnvelope } from "@opensteer/client/test-support";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { hostApiVersionHeader } from "@opensteer/protocol";
+import { desktopHostRequestIdHeader } from "@opensteer/protocol/desktop";
 import { desktopWebPreferences } from "../src/app/electron-window.js";
 import { registerDesktopAppScheme } from "../src/app/app-protocol.js";
 import { ElectronHostNetwork } from "../src/app/electron-host-network.js";
 import { forwardHostRoute } from "../src/app/host-route.js";
+import type { DesktopBridgeContext } from "../src/bridge/context.js";
+import { desktopBridgeChannels } from "../src/bridge/desktop-bridge-channels.js";
+import { handleCancelHostRequest } from "../src/bridge/methods/host.js";
 import { DesktopHostTransport } from "../src/connections/host-transport.js";
 
 const profile = mkdtempSync(path.join(tmpdir(), "opensteer-attachment-electron-"));
@@ -154,6 +158,14 @@ async function run(): Promise<object> {
         read: async () => ({ deployments: [], revision: 1, selectedDeploymentId: deploymentId }),
       },
     });
+    const bridgeToken = randomBytes(32).toString("base64url");
+    // Electron's protocol handler never sees the renderer's abort; this call carries it.
+    ipcMain.handle(
+      desktopBridgeChannels.cancelHostRequest,
+      handleCancelHostRequest({
+        options: { bridgeToken, hostTransport: transport },
+      } as unknown as DesktopBridgeContext),
+    );
     protocol.handle("app", (request) =>
       new URL(request.url).pathname.startsWith("/host/")
         ? forwardHostRoute(request, transport)
@@ -165,12 +177,21 @@ async function run(): Promise<object> {
       show: false,
       webPreferences: desktopWebPreferences(
         { mode: "production" },
-        randomBytes(32).toString("base64url"),
+        bridgeToken,
         path.resolve("dist/preload.cjs"),
       ),
     });
     try {
       await window.loadURL("app://opensteer/");
+      // As the bundled app's adapter does: an id on each request, cancelled by it until headers arrive.
+      await window.webContents.executeJavaScript(`window.hostFetch = (url, init = {}) => {
+        const requestId = crypto.randomUUID();
+        const headers = new Headers(init.headers);
+        headers.set("${desktopHostRequestIdHeader}", requestId);
+        const cancel = () => window.opensteerDesktop.cancelHostRequest({ requestId });
+        init.signal?.addEventListener("abort", cancel, { once: true });
+        return fetch(url, { ...init, headers }).finally(() => init.signal?.removeEventListener("abort", cancel));
+      }; undefined`);
       const route = `app://opensteer/host/${deploymentId}`;
       const result: {
         uploadStatus: number;
@@ -181,18 +202,18 @@ async function run(): Promise<object> {
       } = await window.webContents.executeJavaScript(`(async () => {
         const input = encodeURIComponent(JSON.stringify({ attachmentId: "att_smoke" }));
         const source = Uint8Array.from({ length: ${source.byteLength} }, (_, i) => (i * 37 + 13) & 255);
-        const uploaded = await fetch("${route}/v1/rpc/attachment.upload?input=" + input, {
+        const uploaded = await hostFetch("${route}/v1/rpc/attachment.upload?input=" + input, {
           method: "POST",
           body: new Blob([source]),
           headers: { "content-type": "application/octet-stream", "${hostApiVersionHeader}": "${hostApiVersion}", authorization: "Bearer renderer" },
         });
         await uploaded.arrayBuffer();
-        const download = await fetch("${route}/v1/rpc/file.content?input=" + input);
+        const download = await hostFetch("${route}/v1/rpc/file.content?input=" + input);
         const bytes = new Uint8Array(await download.arrayBuffer());
         const digest = await crypto.subtle.digest("SHA-256", bytes);
         const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
         const headers = Object.fromEntries(["content-type", "etag", "last-modified", "set-cookie", "x-opensteer-file-size"].map((name) => [name, download.headers.get(name)]));
-        const stale = await fetch("app://opensteer/host/${createId("deployment")}/v1/rpc/file.content?input=" + input);
+        const stale = await hostFetch("app://opensteer/host/${createId("deployment")}/v1/rpc/file.content?input=" + input);
         return { uploadStatus: uploaded.status, downloadHash: hash, downloadedBytes: bytes.length, headers, staleStatus: stale.status };
       })()`);
       assert.equal(result.uploadStatus, 200);
@@ -218,7 +239,7 @@ async function run(): Promise<object> {
       for (const stall of ["mid-body", "before-headers"] as const) {
         await window.webContents.executeJavaScript(`(async () => {
           const controller = new AbortController();
-          const pending = fetch("${route}/v1/rpc/file.content?case=${stall}", { signal: controller.signal });
+          const pending = hostFetch("${route}/v1/rpc/file.content?case=${stall}", { signal: controller.signal });
           if ("${stall}" === "mid-body") {
             const reader = (await pending).body.getReader();
             await reader.read();
@@ -240,6 +261,7 @@ async function run(): Promise<object> {
     } finally {
       if (!window.isDestroyed()) window.destroy();
       protocol.unhandle("app");
+      ipcMain.removeHandler(desktopBridgeChannels.cancelHostRequest);
       transport.dispose();
     }
   } finally {

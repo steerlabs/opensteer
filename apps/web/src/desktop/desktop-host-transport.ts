@@ -2,6 +2,7 @@ import type { DeploymentId } from "@opensteer/core";
 import { HostTransportError } from "@opensteer/client/connections";
 import {
   DesktopHostTransportErrorCodeSchema,
+  desktopHostRequestIdHeader,
   desktopHostRouteUrl,
   desktopHostTransportErrorHeader,
   type DesktopCloseHostWebSocketInput,
@@ -17,6 +18,7 @@ const socketRegistries = new WeakMap<OpensteerDesktopBridge, DesktopHostSocketRe
  * route for this Deployment, which answers with the Host's own response.
  */
 export function createDesktopHostFetch(
+  bridge: Pick<OpensteerDesktopBridge, "cancelHostRequest">,
   canonicalOrigin: string,
   deploymentId: DeploymentId,
   fetch: typeof globalThis.fetch = (input, init) => globalThis.fetch(input, init),
@@ -28,18 +30,31 @@ export function createDesktopHostFetch(
     if (url.origin !== origin) {
       throw new Error("The bundled UI cannot contact a Host other than the selected Deployment.");
     }
-    const response = await fetch(desktopHostRouteUrl(deploymentId, url), {
-      // Plain bytes reach main's handler as one upload element, whatever the caller sent.
-      ...(request.body ? { body: await request.arrayBuffer() } : {}),
-      headers: request.headers,
-      method: request.method,
-      signal: request.signal,
-    });
-    const failure = DesktopHostTransportErrorCodeSchema.safeParse(
-      response.headers.get(desktopHostTransportErrorHeader),
-    );
-    if (failure.success) throw new HostTransportError(failure.data);
-    return response;
+    const { signal } = request;
+    // A Blob is handed on by reference rather than read into this renderer again.
+    const body = request.body ? await request.blob() : null;
+    signal.throwIfAborted();
+    const requestId = crypto.randomUUID();
+    const headers = new Headers(request.headers);
+    headers.set(desktopHostRequestIdHeader, requestId);
+    // Main never sees this signal; until headers arrive, it learns of an abort only here.
+    const cancel = () => void bridge.cancelHostRequest({ requestId }).catch(() => undefined);
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      const response = await fetch(desktopHostRouteUrl(deploymentId, url), {
+        ...(body ? { body } : {}),
+        headers,
+        method: request.method,
+        signal,
+      });
+      const failure = DesktopHostTransportErrorCodeSchema.safeParse(
+        response.headers.get(desktopHostTransportErrorHeader),
+      );
+      if (failure.success) throw new HostTransportError(failure.data);
+      return response;
+    } finally {
+      signal.removeEventListener("abort", cancel);
+    }
   };
 }
 

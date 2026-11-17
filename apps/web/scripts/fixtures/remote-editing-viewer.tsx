@@ -67,7 +67,7 @@ if (mode === "host") {
     : (url: string) => new WebSocket(url);
   const host = createBrowserHostClient({
     baseUrl,
-    ...(bridge ? { fetch: createDesktopHostFetch(baseUrl, deploymentId) } : {}),
+    ...(bridge ? { fetch: createDesktopHostFetch(bridge, baseUrl, deploymentId) } : {}),
     capabilities: query.has("baseline")
       ? []
       : async () =>

@@ -790,6 +790,7 @@ function runnerController() {
 
 function hostTransport(deploymentId = createId("deployment")) {
   return {
+    cancelRequest: vi.fn(),
     closeSocketsForOwner: vi.fn(),
     closeWebSocket: vi.fn(),
     current: vi.fn(

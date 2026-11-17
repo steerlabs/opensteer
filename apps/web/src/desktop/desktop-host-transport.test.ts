@@ -126,24 +126,34 @@ describe("Desktop Host renderer adapter", () => {
       headers: { etag: '"v1"' },
     });
     const route = vi.fn<typeof globalThis.fetch>(async () => answer);
+    const bridge = { cancelHostRequest: vi.fn(async () => undefined) };
     const fetch = createDesktopHostFetch(
+      bridge,
       "https://home.connect.opensteer.test",
       deploymentId,
       route,
     );
 
+    const caller = new AbortController();
     const response = await fetch("https://home.connect.opensteer.test/v1/workspaces?limit=10", {
       body: '{"name":"Home"}',
       headers: { "content-type": "application/json", "idempotency-key": "workspace:test" },
       method: "POST",
+      signal: caller.signal,
     });
 
     expect(response).toBe(answer);
     const [url, init] = route.mock.calls[0]!;
     expect(url).toBe(`app://opensteer/host/${deploymentId}/v1/workspaces?limit=10`);
     expect(init?.method).toBe("POST");
-    expect(new Headers(init?.headers).get("idempotency-key")).toBe("workspace:test");
-    expect(new TextDecoder().decode(init?.body as ArrayBuffer)).toBe('{"name":"Home"}');
+    const headers = new Headers(init?.headers);
+    expect(headers.get("idempotency-key")).toBe("workspace:test");
+    expect(headers.get("x-opensteer-desktop-request")).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(init?.body).toBeInstanceOf(Blob);
+    expect(await (init!.body as Blob).text()).toBe('{"name":"Home"}');
+    // Once headers arrive the renderer's own fetch carries an abort; main needs no call.
+    caller.abort();
+    expect(bridge.cancelHostRequest).not.toHaveBeenCalled();
     await expect(fetch("https://attacker.test/v1/bootstrap")).rejects.toThrow(
       "other than the selected Deployment",
     );
@@ -152,6 +162,7 @@ describe("Desktop Host renderer adapter", () => {
 
   it("raises the transport failure main names instead of returning its placeholder", async () => {
     const fetch = createDesktopHostFetch(
+      { cancelHostRequest: async () => undefined },
       "https://home.test",
       deploymentId,
       async () =>

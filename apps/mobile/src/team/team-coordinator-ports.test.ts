@@ -76,6 +76,20 @@ describe("phone team ports", () => {
       ),
     );
     await expect(refused.join(personal, "offer")).rejects.toThrow("That code expired.");
+    // The computer answered that it couldn't reach the team: it is online, and says why.
+    const teamOutOfReach = mobilePersonalTeamLinks(() =>
+      answering(
+        new HostClientRequestError({
+          code: "runner_offline",
+          message: "Team link operation is unavailable",
+          retryable: true,
+          status: 503,
+        }),
+      ),
+    );
+    await expect(teamOutOfReach.join(personal, "offer")).rejects.toThrow(
+      "Team link operation is unavailable",
+    );
   });
 
   it("never reports leaving a team on a computer it couldn't ask", async () => {

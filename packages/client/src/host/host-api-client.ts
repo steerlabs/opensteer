@@ -274,12 +274,13 @@ async function request<Name extends keyof typeof hostApi>(
         ok: true,
       } as RpcOutput<(typeof hostApi)[Name]>;
     }
-    const body: unknown = await Promise.resolve()
-      .then(() => JSON.parse(new TextDecoder().decode(bytes)) as unknown)
-      .catch((error: unknown) => {
-        if (error instanceof SyntaxError) return null;
-        throw error;
-      });
+    let body: unknown = null;
+    try {
+      // Invalid UTF-8 is a broken answer, not text to repair into one.
+      body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    } catch {
+      // Neither decodes to an envelope; the status below says what kind of answer it was.
+    }
     options.assertResponseCurrent?.(response);
     const parsed = responseEnvelopes.get(name)!.safeParse(body);
     if (parsed.success) {
@@ -294,18 +295,17 @@ async function request<Name extends keyof typeof hostApi>(
       const failure = new HostTransportError("unreachable");
       return rpcError(`transport-${failure.code}`, failure.message, failure.retryable);
     }
-    // A Host from before this method answers its framework's plain 404; a
-    // server fault may answer without an envelope; anything else is a body
-    // this client cannot read, which no retry will change.
+    // A Host from before this method answers its framework's plain 404;
+    // anything else, a server fault's page included, is a complete answer this
+    // client cannot read, which no retry will change.
     const missing = response.status === 404;
-    const fault = response.status >= 500;
     return {
       error: HostApiErrorSchema.parse({
         code: missing ? "not_found" : "internal",
         message: missing
           ? "This Host doesn’t offer that yet."
           : "The Host returned an incompatible response.",
-        ...(missing ? { reason: "unknown-method" } : fault ? {} : { reason: "invalid-response" }),
+        reason: missing ? "unknown-method" : "invalid-response",
         retryable: false,
       }),
       ok: false,

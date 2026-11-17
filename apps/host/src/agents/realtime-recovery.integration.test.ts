@@ -93,6 +93,7 @@ interface DesktopTransport {
   }>;
   sendWebSocket(ownerId: number, input: unknown): void;
   closeWebSocket(ownerId: number, input: unknown): void;
+  cancelRequest(input: unknown): void;
   selection(): Promise<unknown>;
 }
 interface DesktopApp {
@@ -351,6 +352,7 @@ async function desktopApp(
     },
     {
       createDesktopHostFetch: (
+        bridge: OpensteerDesktopBridge,
         canonicalOrigin: string,
         deploymentId: string,
         fetch: typeof globalThis.fetch,
@@ -584,6 +586,7 @@ async function desktopApp(
     return structuredClone(await operation());
   };
   const bridge = {
+    cancelHostRequest: (input: unknown) => invoke(() => transport.cancelRequest(input)),
     closeHostWebSocket: (input: unknown) => invoke(() => transport.closeWebSocket(ownerId, input)),
     onHostWebSocketEvent: (listener: (event: unknown) => void) => {
       listeners.add(listener);
@@ -596,7 +599,7 @@ async function desktopApp(
   const client = new HttpHostClient({
     baseUrl: new URL(canonicalOrigin),
     // Main's Host route, reached the way the bundled app's frame reaches it.
-    fetch: web.createDesktopHostFetch(canonicalOrigin, deploymentId, async (input, init) =>
+    fetch: web.createDesktopHostFetch(bridge, canonicalOrigin, deploymentId, async (input, init) =>
       forwardHostRoute(
         Object.assign(new Request(input, init), { initiatorOrigin: "app://opensteer" }),
         transport,

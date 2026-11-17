@@ -88,6 +88,7 @@ export const desktopBridgeChannels = {
   passwordsStatusChanged: "opensteer.desktop.passwords.status-changed",
   openPasswords: "opensteer.desktop.passwords.open",
   checkDeployments: "opensteer.desktop.access.check-deployments",
+  cancelHostRequest: "opensteer.desktop.host.request.cancel",
   closeHostWebSocket: "opensteer.desktop.host.websocket.close",
   connectPrivate: "opensteer.desktop.access.connect-private",
   createPersonalDeployment: "opensteer.desktop.access.create-personal",

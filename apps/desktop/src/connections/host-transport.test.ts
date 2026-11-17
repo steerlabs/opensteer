@@ -4,7 +4,11 @@ import { HostTransport as SharedHostTransport } from "@opensteer/client/connecti
 import { createDesktopHostFetch } from "../../../web/src/desktop/desktop-host-transport.js";
 import { readComputerFacts } from "../../../web/src/desktop/computer-facts.js";
 import type { DeploymentAccessDeployment } from "@opensteer/protocol/desktop";
-import type { DesktopHostWebSocketEvent } from "@opensteer/protocol/desktop";
+import {
+  desktopHostRequestIdHeader,
+  desktopHostTransportErrorHeader,
+  type DesktopHostWebSocketEvent,
+} from "@opensteer/protocol/desktop";
 import { createId, type DeploymentId, type HostInstanceId } from "@opensteer/core";
 import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
 import { describe, expect, it, vi } from "vitest";
@@ -64,6 +68,60 @@ describe("DesktopHostTransport", () => {
       owner.retire();
       body.enqueue(new TextEncoder().encode("private"));
       await expect(reader.read()).rejects.toThrow("The Account identity changed.");
+    } finally {
+      transport.dispose();
+    }
+  });
+
+  it("sends an upload under the Account it arrived with, never one that replaced it mid-body", async () => {
+    const team = deployment("Team", "https://team.example");
+    const id = team.authority.document.deploymentId;
+    let owner = new TeamRuntimeOwner(null);
+    let account = "Bearer original";
+    const request = vi.fn(async () => Response.json({}));
+    const transport = desktopHostTransport({
+      catalog: catalogStore([team], id),
+      credentials: { teamRuntime: () => owner, authorizationHeader: async () => account },
+      network: { openWebSocket: () => socket(), request },
+    });
+    let upload!: ReadableStreamDefaultController<Uint8Array>;
+    const reading = Promise.withResolvers<void>();
+    // Pulled only once main is reading the body, so the Account changes mid-upload.
+    const body = new ReadableStream<Uint8Array>(
+      {
+        start: (controller) => {
+          upload = controller;
+        },
+        pull: () => reading.resolve(),
+      },
+      { highWaterMark: 0 },
+    );
+    try {
+      const pending = forwardHostRoute(
+        Object.assign(
+          new Request(`app://opensteer/host/${id}/v1/team/files/upload/channel_1`, {
+            body,
+            duplex: "half",
+            headers: {
+              "content-type": "application/octet-stream",
+              [desktopHostRequestIdHeader]: crypto.randomUUID(),
+            },
+            method: "POST",
+          } as RequestInit),
+          { initiatorOrigin: "app://opensteer" },
+        ),
+        transport,
+      );
+      await reading.promise;
+      upload.enqueue(new TextEncoder().encode("first part"));
+      owner.retire();
+      owner = new TeamRuntimeOwner(null);
+      account = "Bearer replacement";
+      upload.enqueue(new TextEncoder().encode("rest"));
+      upload.close();
+      const response = await pending;
+      expect(response.headers.get(desktopHostTransportErrorHeader)).toBe("deployment-changed");
+      expect(request).not.toHaveBeenCalled();
     } finally {
       transport.dispose();
     }
@@ -1488,23 +1546,50 @@ function cloudFixture(
 
 const routeOrigin = "https://renderer.invalid";
 
-/** Main's Host route as the bundled app's frame reaches it. */
+/**
+ * Main's Host route as the bundled app's frame reaches it. Electron builds the
+ * handler a fresh Request with the same bytes and headers but never the
+ * caller's signal, while the caller's own fetch still rejects on its abort.
+ */
 function routeFetch(
   transport: DesktopHostTransport,
   initiatorOrigin = "app://opensteer",
 ): typeof globalThis.fetch {
   return async (input, init) => {
-    const request = Object.assign(new Request(input, init), { initiatorOrigin });
-    const response = await forwardHostRoute(request, transport);
-    // As fetch does, a caller's abort wins over whatever main answers.
-    request.signal.throwIfAborted();
-    return response;
+    const caller = new Request(input, init);
+    const request = Object.assign(
+      new Request(caller.url, {
+        body: caller.body ? await caller.arrayBuffer() : null,
+        headers: caller.headers,
+        method: caller.method,
+      }),
+      { initiatorOrigin },
+    );
+    const aborted = Promise.withResolvers<never>();
+    caller.signal.addEventListener("abort", () => aborted.reject(caller.signal.reason), {
+      once: true,
+    });
+    caller.signal.throwIfAborted();
+    return Promise.race([forwardHostRoute(request, transport), aborted.promise]);
+  };
+}
+
+/** The renderer's preload bridge, as main's handler answers it. */
+function cancelBridge(transport: DesktopHostTransport) {
+  return {
+    cancelHostRequest: async (input: { readonly requestId: string }) =>
+      transport.cancelRequest(structuredClone(input)),
   };
 }
 
 /** The renderer's own adapter over that route, pinned to one Deployment. */
 function hostFetch(transport: DesktopHostTransport, deploymentId: DeploymentId) {
-  return createDesktopHostFetch(routeOrigin, deploymentId, routeFetch(transport));
+  return createDesktopHostFetch(
+    cancelBridge(transport),
+    routeOrigin,
+    deploymentId,
+    routeFetch(transport),
+  );
 }
 
 async function send(
@@ -2027,6 +2112,7 @@ it("refuses a return proof when main selects B before processing renderer A's re
   });
   await transport.current();
   const fetch = createDesktopHostFetch(
+    cancelBridge(transport),
     first.authority.document.canonicalOrigin,
     deploymentId,
     routeFetch(transport),
@@ -2173,6 +2259,103 @@ describe("Desktop Host route", () => {
   );
 });
 
+describe("Desktop Host route admission", () => {
+  const fixture = () => {
+    const selected = deployment("Home", "https://home.connect.opensteer.test", "personal");
+    const id = selected.authority.document.deploymentId;
+    const gate = Promise.withResolvers<void>();
+    const request = vi.fn(async (_input: HostNetworkRequest) => {
+      await gate.promise;
+      return Response.json({ ok: true, data: {} });
+    });
+    const transport = desktopHostTransport({
+      catalog: catalogStore([selected], id),
+      network: { openWebSocket: () => socket(), request },
+    });
+    const route = (path: string, init: RequestInit = {}, requestId: string = crypto.randomUUID()) =>
+      forwardHostRoute(
+        Object.assign(
+          new Request(`app://opensteer/host/${id}${path}`, {
+            ...init,
+            headers: { ...init.headers, [desktopHostRequestIdHeader]: requestId },
+          }),
+          { initiatorOrigin: "app://opensteer" },
+        ),
+        transport,
+      );
+    return { gate, id, request, route, transport };
+  };
+
+  it("refuses a request its renderer already cancelled, or one it can't cancel, before sending it", async () => {
+    const { gate, request, route, transport } = fixture();
+    gate.resolve();
+    try {
+      const requestId = crypto.randomUUID();
+      // The cancel overtook its request on the way to main.
+      transport.cancelRequest({ requestId });
+      const cancelled = await route("/v1/rpc/bootstrap.get", {}, requestId);
+      expect(cancelled.headers.get(desktopHostTransportErrorHeader)).toBe("cancelled");
+      expect((await route("/v1/rpc/bootstrap.get", {}, "not-an-id")).status).toBe(400);
+      expect(request).not.toHaveBeenCalled();
+    } finally {
+      transport.dispose();
+    }
+  });
+
+  it("bounds each body by its route's Host limit and refuses an oversized one as the Host would", async () => {
+    const { gate, request, route, transport } = fixture();
+    gate.resolve();
+    try {
+      const tooLarge = await route("/v1/rpc/commands.dispatch", {
+        body: "x".repeat(1_024 * 1_024 + 1),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(tooLarge.status).toBe(413);
+      expect(await tooLarge.json()).toMatchObject({
+        ok: false,
+        error: { code: "bad_request", retryable: false },
+      });
+      // An attachment larger than any JSON body is within its own route's limit.
+      const upload = await route(
+        `/v1/rpc/attachment.upload?input=${encodeURIComponent('{"attachmentId":"a"}')}`,
+        {
+          body: new Uint8Array(2 * 1_024 * 1_024),
+          headers: { "content-type": "application/octet-stream" },
+          method: "POST",
+        },
+      );
+      expect(upload.status).toBe(200);
+      await upload.body?.cancel();
+      expect(request).toHaveBeenCalledOnce();
+      expect((request.mock.calls[0]![0].request.body as Blob).size).toBe(2 * 1_024 * 1_024);
+    } finally {
+      transport.dispose();
+    }
+  });
+
+  it("refuses a request over the transport's limit before reading its body", async () => {
+    const { gate, request, route, transport } = fixture();
+    try {
+      const held = Array.from({ length: 32 }, () => route("/v1/rpc/bootstrap.get"));
+      await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(32), { timeout: 1_000 });
+      const pull = vi.fn();
+      const refused = await route("/v1/rpc/attachment.upload", {
+        body: new ReadableStream<Uint8Array>({ pull }, { highWaterMark: 0 }),
+        duplex: "half",
+        method: "POST",
+      } as RequestInit);
+      expect(refused.status).toBe(429);
+      expect(pull).not.toHaveBeenCalled();
+      gate.resolve();
+      for (const response of await Promise.all(held)) expect(response.status).toBe(200);
+    } finally {
+      gate.resolve();
+      transport.dispose();
+    }
+  });
+});
+
 describe("joined team routing", () => {
   it("pins RPC, sockets and file bytes to each team while Personal selection changes", async () => {
     const personal = deployment("Personal", "http://127.0.0.1:4310", "personal");
@@ -2247,6 +2430,12 @@ describe("joined team routing", () => {
         expect(routed[2]!.request.headers.additional).toMatchObject({
           "x-opensteer-team-upload": metadata,
         });
+        // A team Host fetches a partner's file before it answers; other reads keep the usual wait.
+        expect(routed.map(({ request }) => request.timeoutMs)).toEqual([
+          undefined,
+          120_000,
+          120_000,
+        ]);
         expect(sockets.at(-1)!.input).toMatchObject({
           deploymentId: expectedDeploymentId,
           authorization: `Bearer credential-${expectedDeploymentId}`,
@@ -2289,6 +2478,7 @@ describe("joined team routing", () => {
       const expectedDeploymentId = second.authority.document.deploymentId;
       await expect(
         readComputerFacts(
+          cancelBridge(transport),
           {
             id: expectedDeploymentId,
             canonicalOrigin: second.authority.document.canonicalOrigin,

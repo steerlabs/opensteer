@@ -209,6 +209,7 @@ async function run(): Promise<void> {
       subscribe,
     },
     hostTransport: {
+      cancelRequest: unused,
       closeSocketsForOwner: unused,
       closeWebSocket: unused,
       current: unused,

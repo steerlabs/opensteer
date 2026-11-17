@@ -1,5 +1,6 @@
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import { createId, DeploymentIdSchema } from "@opensteer/core";
+import { desktopBridge } from "../../web/src/desktop/desktop-bridge.js";
 import { createDesktopHostFetch } from "../../web/src/desktop/desktop-host-transport.js";
 
 declare global {
@@ -13,7 +14,9 @@ declare global {
 }
 
 window.hostTransportSmoke = async (origin, deploymentId, action) => {
-  const fetch = createDesktopHostFetch(origin, DeploymentIdSchema.parse(deploymentId));
+  const bridge = desktopBridge();
+  if (!bridge) throw new Error("The desktop preload bridge is missing.");
+  const fetch = createDesktopHostFetch(bridge, origin, DeploymentIdSchema.parse(deploymentId));
   if (action === "abort") {
     const controller = new AbortController();
     const reason = new DOMException("Caller stopped this request.", "AbortError");

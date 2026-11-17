@@ -75,6 +75,7 @@ import {
   handleUnlinkPersonal,
 } from "./methods/connections.js";
 import {
+  handleCancelHostRequest,
   handleCloseHostWebSocket,
   handleOpenHostWebSocket,
   handleSendHostWebSocket,
@@ -325,6 +326,7 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.agentPhoneAdbClose, handleAgentPhoneAdbClose(context));
   register(desktopBridgeChannels.chooseUsbDevice, handleChooseUsbDevice(context));
   register(desktopBridgeChannels.closeFullDiskAccessPanel, handleCloseFullDiskAccessPanel(context));
+  register(desktopBridgeChannels.cancelHostRequest, handleCancelHostRequest(context));
   register(desktopBridgeChannels.closeHostWebSocket, handleCloseHostWebSocket(context));
   register(desktopBridgeChannels.connectPrivate, handleConnectPrivate(context));
   register(desktopBridgeChannels.createPersonalDeployment, handleCreatePersonalDeployment(context));

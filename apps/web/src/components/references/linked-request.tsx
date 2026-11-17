@@ -8,6 +8,7 @@ import {
   type HostClient,
   type OperationFailure,
 } from "@opensteer/client/host";
+import { useHostSelector } from "@opensteer/client/react";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { Unavailable } from "./unavailable.js";
@@ -17,7 +18,6 @@ type Shown =
   | {
       readonly state: "unavailable";
       readonly failure: OperationFailure;
-      readonly network: ClientNetworkState;
       readonly id: string;
     };
 
@@ -38,6 +38,8 @@ export function useLinkedRequest(
     null,
   );
   const [shown, setShown] = useState<Shown | null>(null);
+  // Whether the device is offline now, not when the read failed: reconnecting changes the words.
+  const network = useHostSelector(hostClient, (snapshot) => snapshot.network);
   const pending = useEffectEvent(onPending);
   useEffect(() => {
     if (!named) return;
@@ -56,7 +58,7 @@ export function useLinkedRequest(
     if (!target || target.threadId !== threadId) return;
     const parsed = RequestIdSchema.safeParse(target.id);
     const unavailable = (id: string, failure: OperationFailure = "gone") =>
-      setShown({ state: "unavailable", failure, network: hostClient.getSnapshot().network, id });
+      setShown({ state: "unavailable", failure, id });
     if (!parsed.success) return unavailable(target.id);
     const requestId = parsed.data;
     let current = true;
@@ -83,6 +85,7 @@ export function useLinkedRequest(
   }, [hostClient, target, threadId]);
   return shown ? (
     <LinkedRequest
+      network={network}
       onClose={() => setShown(null)}
       onRetry={(id) => setTarget({ id, threadId })}
       request={shown}
@@ -95,10 +98,12 @@ export function useLinkedRequest(
  * never offered to be answered again; one still waiting opens in the dock instead.
  */
 function LinkedRequest({
+  network,
   onClose,
   onRetry,
   request,
 }: {
+  readonly network: ClientNetworkState;
   readonly onClose: () => void;
   readonly onRetry: (id: string) => void;
   readonly request: Shown;
@@ -109,7 +114,7 @@ function LinkedRequest({
         <Unavailable
           backLabel="Close"
           failure={request.failure}
-          network={request.network}
+          network={network}
           onBack={onClose}
           onRetry={() => onRetry(request.id)}
         />
