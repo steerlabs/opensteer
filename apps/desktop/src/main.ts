@@ -1,6 +1,7 @@
 import { IphoneService } from "./iphone/iphone-service.js";
 import { IphoneStore } from "./iphone/iphone-store.js";
 import { IphoneSetup } from "./iphone/iphone-setup.js";
+import { iphoneMacSupport } from "./iphone/mac-support.js";
 import { IphoneBridgeClient } from "./iphone/bridge-client.js";
 import {
   bundledIphoneBridgePath,
@@ -429,10 +430,7 @@ async function runDesktop(
         binary,
         supervisorExecutable: readPersonalProcessSupervisorRelease(resourcesDirectory),
         privateRoot: iphoneFiles.root,
-        imageRoots: [
-          "/Library/Developer/DeveloperDiskImages/iOS_DDI/Restore",
-          "/Applications/Xcode.app/Contents/Resources/CoreDeviceDDIs/iOS_DDI/Restore",
-        ],
+        imageRoots: (await iphoneMacSupport.inspect()).imageRoots,
         environment: {
           [processSupervisorExecutableVariable]:
             readPersonalProcessSupervisorRelease(resourcesDirectory),

@@ -182,10 +182,15 @@ serves `iphone-screen` for the Devices assigned to it. The phone's UDID stays in
 the bridge; the Runner, renderer and Host see only the Device ID. One Deployment at a time reserves
 a phone on a Mac, so two supervised Deployments cannot both drive it.
 
-- Setup starts over USB and accepts iOS 27 only. Afterwards the phone can be driven over the same
+- Setup starts over USB and accepts iOS 27 and newer. Afterwards the phone can be driven over the same
   Wi‑Fi as its Mac; there is no off-network or cellular path.
 - Developer services need Developer Mode and a developer image installed with Xcode on that Mac.
-  Opensteer neither bundles nor downloads one.
+  Opensteer neither bundles nor downloads one. Desktop main drives setup, watches for Xcode's
+  support files to appear, and follows the same phone through Developer Mode's restart. The
+  renderer makes the phone, Wi-Fi and name decisions and dispatches the prepared Host command;
+  closing setup releases temporary ownership. A dispatched attach stays durable so reopening
+  setup can recover the same operation after a crash. Existing Devices can be set up again
+  without removing them.
 - iOS drops HID input without an active screen media session, so control holds one while it is
   authorized even though no video is published.
 - Opensteer never enters a passcode. A locked, unknown-lock or Opensteer-foreground screen hides its

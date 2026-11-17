@@ -4,7 +4,8 @@ import {
   DesktopIphoneDetachCompleteSchema,
   DesktopIphoneDetachStatusSchema,
   DesktopIphoneSetupChooseSchema,
-  DesktopIphoneSetupAdvanceSchema,
+  DesktopIphoneSetupAddSchema,
+  DesktopIphoneSetupHelpSchema,
   DesktopIphoneSetupCompleteSchema,
   DesktopIphoneSetupFailureSchema,
   DesktopIphoneSetupIdSchema,
@@ -496,11 +497,25 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
           DesktopIphoneSetupChooseSchema.parse(input),
         ),
       ),
-    advance: async (input) =>
+    add: async (input) =>
       DesktopIphoneSetupStatusSchema.parse(
         await invoke(
-          desktopBridgeChannels.iphoneSetupAdvance,
-          DesktopIphoneSetupAdvanceSchema.parse(input),
+          desktopBridgeChannels.iphoneSetupAdd,
+          DesktopIphoneSetupAddSchema.parse(input),
+        ),
+      ),
+    help: async (input) =>
+      DesktopIphoneSetupStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneSetupHelp,
+          DesktopIphoneSetupHelpSchema.parse(input),
+        ),
+      ),
+    retry: async (input) =>
+      DesktopIphoneSetupStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneSetupRetry,
+          DesktopIphoneSetupIdSchema.parse(input),
         ),
       ),
     complete: async (input) =>

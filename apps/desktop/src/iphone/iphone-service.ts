@@ -56,6 +56,7 @@ export class IphoneService {
   readonly #bindings = new Map<string, Binding>();
   readonly #bindingWork = new Map<string, Promise<Binding>>();
   readonly #sessions = new Map<string, Session>();
+  readonly #changed = new Set<() => void>();
   readonly #invalidatedSlots = new Set<(deploymentId: string) => void>();
   readonly #listeners = new Set<(deploymentId: string, event: IphoneRunnerEvent) => void>();
   readonly #cleanups = new Set<Promise<unknown>>();
@@ -89,6 +90,49 @@ export class IphoneService {
     if (generation !== this.#nativeGeneration || native !== this.#native || this.#stopped) return;
     this.#reconcile(roster);
   }
+  onChanged(listener: () => void): () => void {
+    this.#changed.add(listener);
+    return () => {
+      this.#changed.delete(listener);
+    };
+  }
+  async refreshImages(imageRoots: string[], signal: AbortSignal): Promise<boolean> {
+    const native = await this.#connect();
+    const { images } = await native.request(
+      "images.refresh",
+      { imageRoots },
+      z.strictObject({
+        images: z.array(z.strictObject({ handle: z.string(), build: z.string() })).max(8),
+      }),
+      { signal },
+    );
+    if (signal.aborted || native !== this.#native) throw new IphoneServiceError("cancelled");
+    this.#images = images;
+    return images.length > 0;
+  }
+  async revealDeveloperMode(record: IphoneMapping, signal: AbortSignal): Promise<void> {
+    await (
+      await this.#connect()
+    ).request("setup.revealDeveloperMode", this.#ref(record), empty, { signal });
+  }
+  async reconnect(record: IphoneMapping, signal: AbortSignal): Promise<IphoneMapping> {
+    const native = await this.#connect();
+    for (const candidate of this.#roster) {
+      const { udid } = await native.request(
+        "phone.identity",
+        { candidateId: candidate.localPhoneId },
+        iphonePrivateIdentityResultSchema,
+        { signal },
+      );
+      if (signal.aborted) throw new IphoneServiceError("cancelled");
+      if (udid !== record.udid) continue;
+      if (record.localPhoneId === candidate.localPhoneId) return record;
+      const updated = { ...record, localPhoneId: candidate.localPhoneId };
+      await this.save(updated);
+      return updated;
+    }
+    throw new IphoneServiceError("phone-disconnected");
+  }
   candidates(): readonly Candidate[] {
     return this.#roster;
   }
@@ -117,7 +161,9 @@ export class IphoneService {
       "phone.identity",
       { candidateId },
       iphonePrivateIdentityResultSchema,
+      signal ? { signal } : {},
     );
+    if (signal?.aborted) throw new IphoneServiceError("cancelled");
     const previous = this.#records.find((r) => r.udid === udid && r.setupId !== setupId);
     if (previous && sameOwner(previous, owner)) {
       const assigned = this.#slots
@@ -129,20 +175,23 @@ export class IphoneService {
         target?.kind !== "existing" ||
         previous.deviceId !== target.deviceId ||
         previous.phase !== "bound" ||
-        assigned
+        (assigned &&
+          this.#roster.find((c) => c.localPhoneId === previous.localPhoneId)?.capabilities
+            ?.observe === null)
       )
         throw new IphoneServiceError("phone-already-added");
-      // The Host detached this phone's Device; its old native ownership must go before a new one.
+      // Re-setup replaces stale native ownership while preserving the Host Device.
       await this.#release(previous, true);
       await this.store.remove(previous);
       this.#records = await this.store.records();
     }
+    if (signal?.aborted) throw new IphoneServiceError("cancelled");
     const record = await this.store.reserve({
       ...owner,
       udid,
       localPhoneId: candidateId,
       setupId,
-      userLabel: safeLabel(candidate.name),
+      userLabel: previous?.userLabel ?? safeLabel(candidate.name),
       deviceId: null,
       driverGeneration: null,
       phase: "reserved",
@@ -154,7 +203,9 @@ export class IphoneService {
     this.#records = await this.store.records();
     try {
       await this.#binding(record, signal);
+      if (signal?.aborted) throw new IphoneServiceError("cancelled");
     } catch (error) {
+      await this.#release(record, true);
       if (record.phase === "reserved") {
         await this.store.remove(record);
         this.#records = await this.store.records();
@@ -269,6 +320,7 @@ export class IphoneService {
     }
   }
   async prepare(record: IphoneMapping, signal: AbortSignal): Promise<void> {
+    await this.#connect();
     const image = this.#images[0];
     if (!image) throw new IphoneServiceError("developer-image-missing");
     await (
@@ -281,7 +333,7 @@ export class IphoneService {
     );
   }
   async firstObserve(record: IphoneMapping, signal: AbortSignal): Promise<void> {
-    const binding = await this.#binding(record);
+    const binding = await this.#binding(record, signal);
     const native = await this.#connect();
     const sessionId = record.setupId;
     try {
@@ -303,14 +355,15 @@ export class IphoneService {
         iphoneRunnerResults["iphone.observe"],
         { signal },
       );
-      if (
-        observation.state.lock !== "unlocked" ||
-        observation.state.display !== "on" ||
-        observation.screenshot === null
-      )
+      if (observation.state.lock !== "unlocked")
         throw new IphoneServiceError(
-          observation.state.lock === "locked" ? "phone-locked" : "screen-state-unknown",
+          observation.state.lock === "locked" ? "phone-locked" : "lock-state-unknown",
         );
+      if (observation.state.display !== "on")
+        throw new IphoneServiceError(
+          observation.state.display === "off" ? "screen-off" : "screen-state-unknown",
+        );
+      if (!observation.screenshot) throw new IphoneServiceError("screenshot-failed");
     } finally {
       await native.request("session.close", { bindingToken: binding.token, sessionId }, empty, {
         timeoutMs: 2000,
@@ -409,7 +462,12 @@ export class IphoneService {
           driverGeneration: r.driverGeneration!,
           nativeEpoch: candidate?.nativeEpoch ?? 0,
           ready: candidate?.capabilities?.observe === null,
-          reason: candidate ? candidate.reason : "phone-disconnected",
+          reason: candidate
+            ? (candidate.reason ??
+              (candidate.capabilities?.observe === null
+                ? null
+                : (candidate.capabilities?.observe ?? "not-initialized")))
+            : "phone-disconnected",
           ...(candidate?.capabilities ? { capabilities: candidate.capabilities } : {}),
         };
       });
@@ -482,6 +540,7 @@ export class IphoneService {
                   ),
               ))
                 await this.#probe(record);
+              for (const listener of this.#changed) listener();
               return iphoneRunnerResults[method].parse({
                 targets: await this.targets(deploymentId),
               }) as IphoneRunnerResult<M>;
@@ -732,6 +791,7 @@ export class IphoneService {
         "phone.identity",
         { candidateId: ref.localPhoneId },
         iphonePrivateIdentityResultSchema,
+        signal ? { signal } : {},
       );
       if (signal?.aborted) throw new IphoneServiceError("cancelled");
       if (identity.udid !== record.udid) throw new IphoneServiceError("identity-mismatch");
@@ -765,6 +825,11 @@ export class IphoneService {
   async #release(record: IphoneMapping, forget: boolean): Promise<void> {
     await this.#bindingWork.get(record.udid)?.catch(() => undefined);
     const binding = this.#bindings.get(record.udid);
+    if (
+      binding &&
+      (binding.record.setupId !== record.setupId || !sameOwner(binding.record, record))
+    )
+      return;
     if (!binding) {
       if (forget && !this.#stopped)
         await (
@@ -863,6 +928,7 @@ export class IphoneService {
     }
     this.#roster = roster.candidates;
     this.#revision = roster.revision;
+    for (const listener of this.#changed) listener();
     for (const record of probe) this.#cleanup(this.#probe(record));
     const generation = this.#nativeGeneration;
     for (const slot of this.#slots.keys())
@@ -900,6 +966,7 @@ export class IphoneService {
           this.#roster = [];
           this.#revision = -1;
           this.#bindings.clear();
+          for (const listener of this.#changed) listener();
           for (const detach of this.#detachNative.splice(0)) detach();
         }),
       ];
@@ -999,6 +1066,7 @@ export class IphoneService {
       this.#slots.clear();
       this.#listeners.clear();
       this.#invalidatedSlots.clear();
+      this.#changed.clear();
     })();
     return this.#stopping;
   }

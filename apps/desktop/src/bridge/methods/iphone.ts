@@ -5,7 +5,8 @@ import {
   DesktopIphoneDetachCompleteSchema,
   DesktopIphoneDetachStatusSchema,
   DesktopIphoneSetupChooseSchema,
-  DesktopIphoneSetupAdvanceSchema,
+  DesktopIphoneSetupAddSchema,
+  DesktopIphoneSetupHelpSchema,
   DesktopIphoneSetupCompleteSchema,
   DesktopIphoneSetupFailureSchema,
   DesktopIphoneSetupIdSchema,
@@ -141,7 +142,7 @@ export function iphoneHandlers(context: DesktopBridgeContext): {
         handler(async (event, envelope) => {
           const input = DesktopIphoneSetupWifiSchema.parse(envelope.input);
           owned(input.setupId, event.senderFrame);
-          return port!.setup.wifi(input.setupId, input.action);
+          return port!.setup.wifi(input.setupId, input.choice);
         }),
       ],
       [
@@ -250,11 +251,27 @@ export function iphoneHandlers(context: DesktopBridgeContext): {
         }),
       ],
       [
-        desktopBridgeChannels.iphoneSetupAdvance,
+        desktopBridgeChannels.iphoneSetupAdd,
         handler(async (event, envelope) => {
-          const input = DesktopIphoneSetupAdvanceSchema.parse(envelope.input);
+          const input = DesktopIphoneSetupAddSchema.parse(envelope.input);
           owned(input.setupId, event.senderFrame);
-          return port!.setup.advance(input.setupId, input.step, input.name);
+          return port!.setup.add(input.setupId, input.name);
+        }),
+      ],
+      [
+        desktopBridgeChannels.iphoneSetupHelp,
+        handler(async (event, envelope) => {
+          const input = DesktopIphoneSetupHelpSchema.parse(envelope.input);
+          owned(input.setupId, event.senderFrame);
+          return port!.setup.help(input.setupId, input.action);
+        }),
+      ],
+      [
+        desktopBridgeChannels.iphoneSetupRetry,
+        handler(async (event, envelope) => {
+          const input = DesktopIphoneSetupIdSchema.parse(envelope.input);
+          owned(input.setupId, event.senderFrame);
+          return port!.setup.retry(input.setupId);
         }),
       ],
       [

@@ -485,3 +485,29 @@ it.each([false, true])(
     }
   },
 );
+
+it("does not release a replacement binding when an old setup's cancellation finishes late", async () => {
+  const f = await fixture();
+  cleanups.push(f.cleanup);
+  const old = await f.service.reserve(ownerA, "candidate", crypto.randomUUID());
+  const withdrawal = Promise.withResolvers<void>();
+  f.native.held.set("setup.withdrawWifi", withdrawal.promise);
+  const cancelled = f.service.cancelSetup(old);
+  try {
+    await vi.waitFor(
+      () => expect(f.native.calls.some((c) => c.method === "setup.withdrawWifi")).toBe(true),
+      { timeout: 1000 },
+    );
+    await f.service.finishSetup(old);
+    await f.store.remove(old);
+    const current = await f.service.reserve(ownerB, "candidate", crypto.randomUUID());
+    const released = f.native.calls.filter((c) => c.method === "binding.release").length;
+    withdrawal.resolve();
+    await cancelled;
+    expect(f.native.calls.filter((c) => c.method === "binding.release")).toHaveLength(released);
+    expect(await f.store.records()).toEqual([current]);
+  } finally {
+    withdrawal.resolve();
+    await cancelled;
+  }
+});

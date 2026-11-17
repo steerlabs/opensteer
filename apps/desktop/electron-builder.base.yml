@@ -104,7 +104,7 @@ mac:
     NSDesktopFolderUsageDescription: Opensteer reads your Desktop only for folders you share with agents on your other computers.
     NSDocumentsFolderUsageDescription: Opensteer reads your Documents only for folders you share with agents on your other computers.
     NSDownloadsFolderUsageDescription: Opensteer reads your Downloads only for folders you share with agents on your other computers. Opensteer saves files you download there.
-    NSLocalNetworkUsageDescription: Opensteer connects to your other computers and to model servers you add on your network, such as Ollama or LM Studio.
+    NSLocalNetworkUsageDescription: Opensteer connects to your other computers, controls an iPhone over the same Wi-Fi, and connects to model servers you add on your network, such as Ollama or LM Studio.
     NSBonjourServices:
       - _remotepairing._tcp
     NSPhotoLibraryUsageDescription: Opensteer reads your photo library only for folders you share with agents on your other computers.

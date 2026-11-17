@@ -1,77 +1,496 @@
-import { afterEach, expect, it, vi } from "vitest";
-import { createId } from "@opensteer/core";
-import { fixture, ownerA } from "./test-support.js";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { type DeviceId, createId } from "@opensteer/core";
+import type { DesktopIphoneSetupStatus } from "@opensteer/protocol/desktop";
+import { fixture, ownerA, ownerB, FakeIphoneMacSupport } from "./test-support.js";
 import { IphoneSetup } from "./iphone-setup.js";
 import { IphoneServiceError } from "./iphone-store.js";
 
 const cleanups: (() => Promise<void>)[] = [];
+beforeEach(() =>
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] }),
+);
 afterEach(async () => {
-  for (const cleanup of cleanups.splice(0)) await cleanup();
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+  vi.useRealTimers();
 });
-async function boundAfterSetup(f: Awaited<ReturnType<typeof fixture>>) {
-  await f.bind();
-  await f.service.save({ ...(await f.store.records())[0]!, setupComplete: true });
-}
-it("persists an idempotent pending attach before dispatch and recovers a failed local save", async () => {
+async function harness() {
   const f = await fixture();
-  cleanups.push(f.cleanup);
-  const setup = new IphoneSetup(f.service);
-  const state = await setup.begin(ownerA);
-  await setup.choose(state.setupId, state.candidates[0]!.candidateId);
-  await setup.advance(state.setupId, "trust");
-  await setup.advance(state.setupId, "developer-mode");
-  await setup.advance(state.setupId, "prepare");
-  await setup.advance(state.setupId, "observe");
-  await setup.wifi(state.setupId, "skip");
-  const pending = await setup.advance(state.setupId, "attach");
-  expect((await f.store.records())[0]?.phase).toBe("pending-attach");
-  const command = pending.attachCommand!;
-  f.failWrite();
-  const failed = await setup.complete(state.setupId, {
-    type: "iphone.screen.attach",
-    deviceId: f.deviceId,
-    generation: 1,
+  const mac = new FakeIphoneMacSupport();
+  const setup = new IphoneSetup(f.service, mac);
+  cleanups.push(f.cleanup, () => setup.stop());
+  return { ...f, setup, mac };
+}
+function until(
+  setup: IphoneSetup,
+  setupId: string,
+  predicate: (s: DesktopIphoneSetupStatus) => boolean,
+) {
+  return new Promise<DesktopIphoneSetupStatus>((resolve, reject) => {
+    let off = () => {};
+    let settled = false;
+    const deadline = setTimeout(() => {
+      off();
+      reject(new Error("Setup never reached the expected status"));
+    }, 1000);
+    off = setup.subscribe(setupId, (state) => {
+      if (!predicate(state)) return;
+      settled = true;
+      clearTimeout(deadline);
+      off();
+      resolve(state);
+    });
+    if (settled) off();
   });
-  expect(failed.reason).toBe("local-mapping-save-failed");
-  expect((await setup.advance(state.setupId, "attach")).attachCommand).toEqual(command);
-  await setup.complete(state.setupId, {
-    type: "iphone.screen.attach",
-    deviceId: f.deviceId,
-    generation: 1,
-  });
-  expect((await f.store.records())[0]?.phase).toBe("bound");
-  expect((await setup.status(state.setupId)).step).toBe("confirm");
+}
+const stage = (
+  f: Awaited<ReturnType<typeof harness>>,
+  id: string,
+  expected: DesktopIphoneSetupStatus["stage"],
+) => until(f.setup, id, (s) => s.stage === expected && s.state !== "working");
+async function wifiReady(f: Awaited<ReturnType<typeof harness>>) {
+  const initial = await f.setup.begin(ownerA);
+  return stage(f, initial.setupId, "wifi");
+}
+async function assign(f: Awaited<ReturnType<typeof harness>>, generation = 1) {
+  const connection = f.service.forSlot(ownerA).connect(() => undefined);
+  cleanups.push(async () => connection.close());
+  await connection.request(
+    "iphone.targets",
+    {
+      assignments: [
+        { deviceId: f.deviceId, generation, role: "screen", definitionId: "iphone-screen" },
+      ],
+    },
+    f.options(),
+  );
+  return connection;
+}
+const result = (deviceId: DeviceId, generation = 1) => ({
+  type: "iphone.screen.attach" as const,
+  deviceId,
+  generation,
 });
 
-it("offers Wi-Fi only after first observe and persists only a confirmed choice", async () => {
-  const f = await fixture();
-  cleanups.push(f.cleanup);
-  const setup = new IphoneSetup(f.service);
-  const state = await setup.begin(ownerA);
-  await setup.choose(state.setupId, state.candidates[0]!.candidateId);
-  await expect(setup.wifi(state.setupId, "enable")).rejects.toMatchObject({ code: "no-session" });
-  for (const step of ["trust", "developer-mode", "prepare", "observe"] as const)
-    await setup.advance(state.setupId, step);
-  expect(await setup.status(state.setupId)).toMatchObject({
-    step: "wifi",
-    personAction: "choose-wifi",
+it("drives every stage, publishes progress, and completes on assignment without renderer polling", async () => {
+  const f = await harness();
+  const initial = await f.setup.begin(ownerA);
+  expect(initial).toMatchObject({ stage: "mac", state: "working" });
+  const stages: string[] = [];
+  f.setup.subscribe(initial.setupId, (s) => stages.push(s.stage));
+  const wifi = await stage(f, initial.setupId, "wifi");
+  expect(wifi).toMatchObject({
+    state: "decide",
+    action: "choose-wifi",
+    suggestedName: "Test phone screen",
+    phone: { name: "Test phone" },
+  });
+  expect(f.native.calls.some((c) => c.method === "setup.enableWifi")).toBe(false);
+  expect(await f.setup.wifi(initial.setupId, "usb-only")).toMatchObject({
+    stage: "add",
+    action: "name-phone",
+  });
+  const pending = await f.setup.add(initial.setupId);
+  expect(pending.attachCommand).toMatchObject({
+    idempotencyKey: initial.setupId,
+    target: { kind: "new", name: "Test phone screen" },
+  });
+  expect((await f.store.records())[0]?.phase).toBe("pending-attach");
+  expect(await f.setup.complete(initial.setupId, result(f.deviceId))).toMatchObject({
+    stage: "add",
+    state: "waiting",
+    reason: "assignment-pending",
+  });
+  const done = stage(f, initial.setupId, "done");
+  await assign(f);
+  expect(await done).toMatchObject({ state: "done", action: "none", reason: null });
+  expect([...new Set(stages)]).toEqual([
+    "mac",
+    "connect",
+    "trust",
+    "developer-mode",
+    "prepare",
+    "wifi",
+    "add",
+    "done",
+  ]);
+  expect(await f.store.records()).toMatchObject([{ setupComplete: true }]);
+  expect(f.mac.listeners.size).toBe(0);
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("detects missing Xcode before any phone, opens the offered helper, and resumes when support appears", async () => {
+  const f = await harness();
+  f.mac.xcodeApps = [];
+  f.native.images = [];
+  const initial = await f.setup.begin(ownerA);
+  expect(await stage(f, initial.setupId, "mac")).toMatchObject({
+    state: "waiting",
+    reason: "xcode-missing",
+    action: "get-xcode",
+    candidates: [],
+  });
+  expect(f.native.calls.some((c) => c.method === "phone.identity")).toBe(false);
+  await f.setup.help(initial.setupId, "get-xcode");
+  await stage(f, initial.setupId, "mac");
+  f.mac.xcodeApps = ["/Applications/Xcode-Beta.app"];
+  const required = until(f.setup, initial.setupId, (s) => s.reason === "xcode-setup-required");
+  f.mac.changed();
+  expect(await required).toMatchObject({ action: "open-xcode" });
+  await f.setup.help(initial.setupId, "open-xcode");
+  await stage(f, initial.setupId, "mac");
+  f.native.images = [{ handle: "fresh", build: "test" }];
+  const ready = stage(f, initial.setupId, "wifi");
+  f.mac.changed();
+  await ready;
+  expect(f.mac.helps).toEqual(["get-xcode", "open-xcode"]);
+  expect(
+    f.native.calls.find((c) => c.method === "setup.prepareDeveloperServices")?.params,
+  ).toMatchObject({ imageHandle: "fresh" });
+});
+
+it("waits for a USB roster event and automatically chooses the only usable phone", async () => {
+  const f = await harness();
+  const candidate = f.native.roster.candidates[0]!;
+  f.native.roster = { revision: 2, candidates: [] };
+  f.native.publish();
+  const initial = await f.setup.begin(ownerA);
+  expect(await stage(f, initial.setupId, "connect")).toMatchObject({
+    state: "waiting",
+    reason: "no-phone",
+  });
+  expect(vi.getTimerCount()).toBe(0);
+  const ready = stage(f, initial.setupId, "wifi");
+  f.native.roster = { revision: 3, candidates: [candidate] };
+  f.native.publish();
+  await ready;
+});
+
+it("offers several usable phones, preserves candidate IDs, and reserves only the choice", async () => {
+  const f = await harness();
+  f.native.identities.set("candidate", "synthetic-other-phone");
+  f.native.roster.candidates.push({
+    ...f.native.roster.candidates[0]!,
+    localPhoneId: "other",
+    name: "Other phone",
+  });
+  f.native.roster.revision++;
+  f.native.publish();
+  const initial = await f.setup.begin(ownerA);
+  const choice = await stage(f, initial.setupId, "connect");
+  expect(choice).toMatchObject({ state: "decide", action: "choose-phone", reason: null });
+  const next = until(
+    f.setup,
+    initial.setupId,
+    (s) => s.stage === "connect" && s.state === "decide" && s.candidates[1]?.name === "Renamed",
+  );
+  f.native.roster.candidates[1]!.name = "Renamed";
+  f.native.roster.revision++;
+  f.native.publish();
+  expect((await next).candidates.map((c) => c.candidateId)).toEqual(
+    choice.candidates.map((c) => c.candidateId),
+  );
+  expect(await f.setup.choose(initial.setupId, choice.candidates[1]!.candidateId)).toMatchObject({
+    stage: "wifi",
+    phone: { name: "Renamed" },
+  });
+  expect((await f.store.records())[0]?.localPhoneId).toBe("other");
+});
+
+it("rechecks pending trust internally and continues as soon as pairing succeeds", async () => {
+  const f = await harness();
+  f.native.inspection.pairing = "unknown";
+  f.native.failures.set("setup.pair", new IphoneServiceError("trust-pending"));
+  const initial = await f.setup.begin(ownerA);
+  expect(await stage(f, initial.setupId, "trust")).toMatchObject({
+    state: "waiting",
+    reason: "trust-pending",
+  });
+  f.native.failures.delete("setup.pair");
+  f.native.inspection.pairing = "paired";
+  await vi.advanceTimersByTimeAsync(2000);
+  await stage(f, initial.setupId, "wifi");
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("retries denied trust only on request", async () => {
+  const f = await harness();
+  f.native.inspection.pairing = "unknown";
+  f.native.failures.set("setup.pair", new IphoneServiceError("trust-denied"));
+  const initial = await f.setup.begin(ownerA);
+  expect(await stage(f, initial.setupId, "trust")).toMatchObject({
+    state: "blocked",
+    reason: "trust-denied",
+    action: "retry",
+  });
+  expect(vi.getTimerCount()).toBe(0);
+  f.native.failures.delete("setup.pair");
+  f.native.inspection.pairing = "paired";
+  expect(await f.setup.retry(initial.setupId)).toMatchObject({ stage: "wifi" });
+});
+
+it("reveals Developer Mode and follows the same private identity through restart and a new epoch and local ID", async () => {
+  const f = await harness();
+  f.native.inspection.developerMode = "disabled";
+  const initial = await f.setup.begin(ownerA);
+  expect(await stage(f, initial.setupId, "developer-mode")).toMatchObject({
+    state: "waiting",
+    reason: "developer-mode-required",
+  });
+  expect(f.native.calls).toContainEqual({
+    method: "setup.revealDeveloperMode",
+    params: { localPhoneId: "candidate", nativeEpoch: 1 },
+  });
+  const disconnected = until(f.setup, initial.setupId, (s) => s.reason === "phone-disconnected");
+  const candidate = f.native.roster.candidates[0]!;
+  f.native.roster = { revision: f.native.roster.revision + 1, candidates: [] };
+  f.native.publish();
+  await disconnected;
+  f.native.inspection.developerMode = "enabled";
+  f.native.epoch = 2;
+  const ready = stage(f, initial.setupId, "wifi");
+  f.native.roster = {
+    revision: f.native.roster.revision + 1,
+    candidates: [{ ...candidate, localPhoneId: "reconnected", nativeEpoch: 2 }],
+  };
+  f.native.publish();
+  await ready;
+  expect(f.native.calls).toContainEqual({
+    method: "setup.revealDeveloperMode",
+    params: { localPhoneId: "reconnected", nativeEpoch: 2 },
+  });
+  expect((await f.store.records())[0]?.localPhoneId).toBe("reconnected");
+});
+
+it("maps locked preparation to a phone wait and personalization failure to a retriable block", async () => {
+  const f = await harness();
+  f.native.failures.set("setup.prepareDeveloperServices", new IphoneServiceError("phone-locked"));
+  const initial = await f.setup.begin(ownerA);
+  expect(await stage(f, initial.setupId, "prepare")).toMatchObject({
+    state: "waiting",
+    reason: "phone-locked",
+  });
+  f.native.failures.set(
+    "setup.prepareDeveloperServices",
+    new IphoneServiceError("personalization-network-unavailable"),
+  );
+  expect(await f.setup.retry(initial.setupId)).toMatchObject({
+    state: "blocked",
+    reason: "personalization-network-unavailable",
+    action: "retry",
+  });
+  f.native.failures.delete("setup.prepareDeveloperServices");
+  expect(await f.setup.retry(initial.setupId)).toMatchObject({ stage: "wifi" });
+});
+
+it("discards late results and releases reservations when cancelled mid-stage", async () => {
+  const f = await harness();
+  const held = Promise.withResolvers<void>();
+  f.native.held.set("setup.prepareDeveloperServices", held.promise);
+  const initial = await f.setup.begin(ownerA);
+  await vi.waitFor(
+    () =>
+      expect(f.native.calls.some((c) => c.method === "setup.prepareDeveloperServices")).toBe(true),
+    { timeout: 1000 },
+  );
+  const states: DesktopIphoneSetupStatus[] = [];
+  f.setup.subscribe(initial.setupId, (s) => states.push(s));
+  const cancelled = f.setup.cancel(initial.setupId);
+  const count = states.length;
+  held.resolve();
+  await cancelled;
+  expect(states).toHaveLength(count);
+  expect(f.native.calls.some((c) => c.method === "phone.observe")).toBe(false);
+  expect(await f.store.records()).toEqual([]);
+  await expect(f.setup.status(initial.setupId)).rejects.toMatchObject({ code: "cancelled" });
+  expect(f.mac.listeners.size).toBe(0);
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("cleans up a late binding acquisition on slot invalidation", async () => {
+  const f = await harness();
+  const connection = f.service.forSlot(ownerA).connect(() => undefined);
+  await connection.request("iphone.targets", { assignments: [] }, f.options());
+  const held = Promise.withResolvers<void>();
+  f.native.held.set("binding.acquire", held.promise);
+  const initial = await f.setup.begin(ownerA);
+  await vi.waitFor(
+    () => expect(f.native.calls.some((c) => c.method === "binding.acquire")).toBe(true),
+    { timeout: 1000 },
+  );
+  const stopped = f.service.stopForSlot(ownerA.deploymentId);
+  held.resolve();
+  await stopped;
+  await f.setup.stop();
+  expect(await f.store.records()).toEqual([]);
+  expect(f.native.calls.some((c) => c.method === "binding.release")).toBe(true);
+  await expect(f.setup.status(initial.setupId)).rejects.toMatchObject({ code: "cancelled" });
+  connection.close();
+});
+
+it("persists Wi-Fi only after pairing and keeps a failed choice optional", async () => {
+  const f = await harness();
+  const ready = await wifiReady(f);
+  f.native.failures.set("setup.pairWifi", new IphoneServiceError("wifi-pairing-required"));
+  expect(await f.setup.wifi(ready.setupId, "wifi")).toMatchObject({
+    stage: "wifi",
+    reason: "wifi-pairing-required",
     wifiEnabled: false,
   });
-  expect(f.native.calls.some(({ method }) => method === "setup.enableWifi")).toBe(false);
+  expect((await f.store.records())[0]?.wifiEnabledByOpensteer).toBe(false);
+  expect(f.native.calls.some((c) => c.method === "setup.withdrawWifi")).toBe(true);
+  expect(await f.setup.wifi(ready.setupId, "usb-only")).toMatchObject({
+    stage: "add",
+    reason: null,
+  });
+});
+
+it("retains a dispatched attach across cancellation and restart with the same command", async () => {
+  const f = await harness();
+  const ready = await wifiReady(f);
+  await f.setup.wifi(ready.setupId, "wifi");
+  const pending = await f.setup.add(ready.setupId, "Chosen name");
+  await f.setup.cancel(ready.setupId);
+  expect(await f.store.records()).toMatchObject([
+    { phase: "pending-attach", wifiEnabledByOpensteer: false },
+  ]);
+  const restarted = await f.setup.begin(ownerA);
+  const resumed = await stage(f, restarted.setupId, "add");
+  expect(resumed.attachCommand).toEqual(pending.attachCommand);
+  expect(resumed.setupId).toBe(ready.setupId);
+  expect(await f.setup.add(resumed.setupId, "Changed too late")).toMatchObject({
+    reason: "attach-conflict",
+    attachCommand: pending.attachCommand,
+  });
+  expect((await f.setup.add(resumed.setupId, "Chosen name")).attachCommand).toEqual(
+    pending.attachCommand,
+  );
+});
+
+it("recovers local completion persistence and confirms an assignment that arrived before the reply", async () => {
+  const f = await harness();
+  const ready = await wifiReady(f);
+  await f.setup.wifi(ready.setupId, "usb-only");
+  await f.setup.add(ready.setupId);
+  await assign(f);
+  f.failWrite();
+  expect(await f.setup.complete(ready.setupId, result(f.deviceId))).toMatchObject({
+    reason: "local-mapping-save-failed",
+    action: "retry",
+  });
+  expect(await f.setup.retry(ready.setupId)).toMatchObject({ stage: "done" });
+  expect(await f.service.targets(ownerA.deploymentId)).toMatchObject([
+    { ready: true, reason: null },
+  ]);
+});
+
+it("sets up an attached Device that needs setup without detaching or renaming it", async () => {
+  const f = await harness();
+  await f.bind();
+  await f.service.save({ ...(await f.store.records())[0]!, setupComplete: true });
+  f.native.roster.candidates[0]!.reason = "developer-mode-required";
+  f.native.roster.candidates[0]!.capabilities!.observe = "developer-mode-required";
+  // A setup-capable USB candidate is selectable even when its assigned driver needs setup.
+  f.native.roster.candidates[0]!.reason = null;
+  f.native.roster.revision++;
+  f.native.publish();
+  const target = { kind: "existing" as const, deviceId: f.deviceId, expectedGeneration: 1 };
+  f.native.calls = [];
+  const initial = await f.setup.begin(ownerA, target);
+  const ready = await stage(f, initial.setupId, "wifi");
+  expect(ready.target).toEqual(target);
+  expect(ready.suggestedName).toBe("Test phone");
+  const forget = f.native.calls.findIndex(
+    (c) => c.method === "binding.release" && (c.params as { forget?: boolean }).forget,
+  );
+  expect(forget).toBeGreaterThanOrEqual(0);
+  expect(forget).toBeLessThan(f.native.calls.findIndex((c) => c.method === "binding.acquire"));
+  await f.setup.wifi(initial.setupId, "usb-only");
+  expect((await f.setup.add(initial.setupId, "Ignored")).attachCommand?.target).toEqual(target);
+  expect((await f.store.records())[0]?.userLabel).toBe("Test phone");
+});
+
+it("refuses a phone assigned to another Device or still ready for this Device", async () => {
+  const f = await harness();
+  await f.bind();
+  await f.service.save({ ...(await f.store.records())[0]!, setupComplete: true });
+  for (const target of [
+    { kind: "existing" as const, deviceId: createId("device"), expectedGeneration: 1 },
+    { kind: "existing" as const, deviceId: f.deviceId, expectedGeneration: 1 },
+  ]) {
+    const initial = await f.setup.begin(ownerA, target);
+    expect(await stage(f, initial.setupId, "connect")).toMatchObject({
+      state: "blocked",
+      reason: "phone-already-added",
+    });
+  }
+  expect(await f.store.records()).toMatchObject([{ phase: "bound", deviceId: f.deviceId }]);
+  expect(f.native.calls.some((c) => c.method === "binding.forget")).toBe(false);
+});
+
+it("rejects another Deployment's private reservation", async () => {
+  const f = await harness();
+  await wifiReady(f);
+  const initial = await f.setup.begin(ownerB);
+  expect(await stage(f, initial.setupId, "connect")).toMatchObject({
+    reason: "owned-by-another-deployment",
+  });
+});
+
+it("blocks at Mac prerequisites when the bridge is unavailable and retries that stage", async () => {
+  const f = await harness();
+  const discover = vi
+    .spyOn(f.service, "discover")
+    .mockRejectedValueOnce(new IphoneServiceError("bridge-not-built"));
+  const initial = await f.setup.begin(ownerA);
+  expect(await stage(f, initial.setupId, "mac")).toMatchObject({
+    state: "blocked",
+    reason: "bridge-not-built",
+    action: "retry",
+    candidates: [],
+  });
+  expect(f.native.calls.some((c) => c.method === "phone.identity")).toBe(false);
+  expect(await f.setup.retry(initial.setupId)).toMatchObject({ stage: "wifi" });
+  discover.mockRestore();
+});
+
+it("resumes a reserved phone after a crash and a completed attach awaiting assignment", async () => {
+  const f = await harness();
+  const reservation = await f.service.reserve(ownerA, "candidate", crypto.randomUUID());
+  const initial = await f.setup.begin(ownerA);
+  expect(initial.setupId).toBe(reservation.setupId);
+  await stage(f, initial.setupId, "wifi");
+  await f.setup.wifi(initial.setupId, "usb-only");
+  await f.setup.add(initial.setupId);
+  await f.setup.complete(initial.setupId, result(f.deviceId));
+  await f.setup.cancel(initial.setupId);
+  const resumed = await f.setup.begin(ownerA);
+  expect(await stage(f, resumed.setupId, "add")).toMatchObject({
+    reason: "assignment-pending",
+    attachCommand: null,
+    deviceId: f.deviceId,
+  });
+  const done = stage(f, resumed.setupId, "done");
+  await assign(f);
+  await done;
+});
+
+it("does not persist Wi-Fi enabled before both native enablement and pairing finish", async () => {
+  const f = await harness();
+  const ready = await wifiReady(f);
   const enabled = Promise.withResolvers<void>();
   const paired = Promise.withResolvers<void>();
   f.native.held.set("setup.enableWifi", enabled.promise);
   f.native.held.set("setup.pairWifi", paired.promise);
-  const enabling = setup.wifi(state.setupId, "enable");
+  const enabling = f.setup.wifi(ready.setupId, "wifi");
   try {
     await vi.waitFor(
-      () => expect(f.native.calls.some(({ method }) => method === "setup.enableWifi")).toBe(true),
+      () => expect(f.native.calls.some((c) => c.method === "setup.enableWifi")).toBe(true),
       { timeout: 1000 },
     );
     expect((await f.store.records())[0]?.wifiEnabledByOpensteer).toBe(false);
     enabled.resolve();
     await vi.waitFor(
-      () => expect(f.native.calls.some(({ method }) => method === "setup.pairWifi")).toBe(true),
+      () => expect(f.native.calls.some((c) => c.method === "setup.pairWifi")).toBe(true),
       { timeout: 1000 },
     );
     expect((await f.store.records())[0]?.wifiEnabledByOpensteer).toBe(false);
@@ -79,230 +498,5 @@ it("offers Wi-Fi only after first observe and persists only a confirmed choice",
     enabled.resolve();
     paired.resolve();
   }
-  expect(await enabling).toMatchObject({ step: "attach", reason: null, wifiEnabled: true });
-  expect((await f.store.records())[0]?.wifiEnabledByOpensteer).toBe(true);
-});
-
-it("keeps failed Wi-Fi optional and carries the chosen name in the stable attach command", async () => {
-  const f = await fixture();
-  cleanups.push(f.cleanup);
-  const setup = new IphoneSetup(f.service);
-  const state = await setup.begin(ownerA, { kind: "new", name: "Initial name" });
-  await setup.choose(state.setupId, state.candidates[0]!.candidateId);
-  for (const step of ["trust", "developer-mode", "prepare", "observe"] as const)
-    await setup.advance(state.setupId, step);
-  f.native.failures.set("setup.pairWifi", new IphoneServiceError("wifi-pairing-required"));
-  expect(await setup.wifi(state.setupId, "enable")).toMatchObject({
-    step: "wifi",
-    reason: "wifi-pairing-required",
-    wifiEnabled: false,
-  });
-  expect(f.native.calls.some(({ method }) => method === "setup.withdrawWifi")).toBe(true);
-  f.native.calls = [];
-  await setup.wifi(state.setupId, "skip");
-  expect(f.native.calls.some(({ method }) => method === "setup.withdrawWifi")).toBe(true);
-  const attached = await setup.advance(state.setupId, "attach", "Chosen name");
-  expect(attached.attachCommand).toMatchObject({
-    idempotencyKey: state.setupId,
-    target: { kind: "new", name: "Chosen name" },
-  });
-  expect((await f.store.records())[0]?.userLabel).toBe("Chosen name");
-  expect(await setup.advance(state.setupId, "attach", "Changed too late")).toMatchObject({
-    reason: "attach-conflict",
-    attachCommand: attached.attachCommand,
-  });
-  expect((await setup.advance(state.setupId, "attach", "Chosen name")).attachCommand).toEqual(
-    attached.attachCommand,
-  );
-});
-
-it("withdraws Wi-Fi on cancel even after partial enablement and disconnection", async () => {
-  const f = await fixture();
-  cleanups.push(f.cleanup);
-  const setup = new IphoneSetup(f.service);
-  const state = await setup.begin(ownerA);
-  await setup.choose(state.setupId, state.candidates[0]!.candidateId);
-  for (const step of ["trust", "developer-mode", "prepare", "observe"] as const)
-    await setup.advance(state.setupId, step);
-  f.native.failures.set("setup.pairWifi", new IphoneServiceError("wifi-pairing-required"));
-  await setup.wifi(state.setupId, "enable");
-  f.native.roster = { revision: f.native.roster.revision + 1, candidates: [] };
-  f.native.publish();
-  f.native.calls = [];
-  await setup.cancel(state.setupId);
-  expect(f.native.calls).toContainEqual({
-    method: "setup.withdrawWifi",
-    params: expect.objectContaining({ udid: "synthetic-private-phone", deviceId: state.setupId }),
-  });
-  expect(await f.store.records()).toEqual([]);
-});
-
-it("cancels temporary setup on navigation without discarding a dispatched attach", async () => {
-  const f = await fixture();
-  cleanups.push(f.cleanup);
-  const setup = new IphoneSetup(f.service);
-  const state = await setup.begin(ownerA);
-  await setup.choose(state.setupId, state.candidates[0]!.candidateId);
-  await setup.cancel(state.setupId);
-  expect(await f.store.records()).toEqual([]);
-  await expect(setup.status(state.setupId)).rejects.toMatchObject({ code: "cancelled" });
-});
-
-it.each(["trust-pending", "trust-denied"] as const)(
-  "retries pairing after %s when the person checks again",
-  async (reason) => {
-    const f = await fixture();
-    cleanups.push(f.cleanup);
-    const setup = new IphoneSetup(f.service);
-    const state = await setup.begin(ownerA);
-    await setup.choose(state.setupId, state.candidates[0]!.candidateId);
-    f.native.failures.set("setup.inspect", new IphoneServiceError("trust-required"));
-    f.native.failures.set("setup.pair", new IphoneServiceError(reason));
-    expect(await setup.advance(state.setupId, "trust")).toMatchObject({ step: "trust", reason });
-    f.native.failures.delete("setup.pair");
-    const pair = vi.spyOn(f.service, "pair").mockImplementationOnce(async () => {
-      f.native.failures.delete("setup.inspect");
-    });
-    expect(await setup.advance(state.setupId, "trust")).toMatchObject({
-      step: "developer-mode",
-      reason: null,
-    });
-    expect(pair).toHaveBeenCalledOnce();
-  },
-);
-
-it("probes the completed mapping when the Host assignment arrives before the attach reply", async () => {
-  const f = await fixture();
-  cleanups.push(f.cleanup);
-  const setup = new IphoneSetup(f.service);
-  const state = await setup.begin(ownerA);
-  await setup.choose(state.setupId, state.candidates[0]!.candidateId);
-  for (const step of ["trust", "developer-mode", "prepare", "observe"] as const)
-    await setup.advance(state.setupId, step);
-  await setup.wifi(state.setupId, "skip");
-  await setup.advance(state.setupId, "attach");
-  const connection = f.service.forSlot(ownerA).connect(() => undefined);
-  try {
-    await connection.request(
-      "iphone.targets",
-      {
-        assignments: [
-          { deviceId: f.deviceId, generation: 1, role: "screen", definitionId: "iphone-screen" },
-        ],
-      },
-      f.options(),
-    );
-    await setup.complete(state.setupId, {
-      type: "iphone.screen.attach",
-      deviceId: f.deviceId,
-      generation: 1,
-    });
-    expect(await f.service.targets(ownerA.deploymentId)).toMatchObject([
-      { ready: true, reason: null },
-    ]);
-  } finally {
-    connection.close();
-  }
-});
-
-it("withdraws Wi-Fi on cancel while retaining an already dispatched attach", async () => {
-  const f = await fixture();
-  cleanups.push(f.cleanup);
-  const setup = new IphoneSetup(f.service);
-  const state = await setup.begin(ownerA);
-  await setup.choose(state.setupId, state.candidates[0]!.candidateId);
-  for (const step of ["trust", "developer-mode", "prepare", "observe"] as const)
-    await setup.advance(state.setupId, step);
-  await setup.wifi(state.setupId, "enable");
-  await setup.advance(state.setupId, "attach");
-  f.native.calls = [];
-  await setup.cancel(state.setupId);
-  expect(await f.store.records()).toMatchObject([
-    { phase: "pending-attach", wifiEnabledByOpensteer: false },
-  ]);
-  expect(f.native.calls.some(({ method }) => method === "setup.withdrawWifi")).toBe(true);
-});
-
-it("sets an existing Device up again on its stale phone, keeping its name and forgetting the old binding", async () => {
-  const f = await fixture();
-  cleanups.push(f.cleanup);
-  await boundAfterSetup(f);
-  const detached = f.service.forSlot(ownerA).connect(() => undefined);
-  await detached.request("iphone.targets", { assignments: [] }, f.options());
-  const setup = new IphoneSetup(f.service);
-  const target = { kind: "existing" as const, deviceId: f.deviceId, expectedGeneration: 1 };
-  const state = await setup.begin(ownerA, target);
-  expect(state.target).toEqual(target);
-  f.native.calls = [];
-  expect(await setup.choose(state.setupId, state.candidates[0]!.candidateId)).toMatchObject({
-    step: "trust",
-    reason: null,
-  });
-  const forget = f.native.calls.findIndex(({ method }) => method === "binding.forget");
-  expect(f.native.calls[forget]?.params).toMatchObject({
-    deviceId: f.deviceId,
-    driverGeneration: 1,
-  });
-  expect(forget).toBeLessThan(
-    f.native.calls.findIndex(({ method }) => method === "binding.acquire"),
-  );
-  expect(await f.store.records()).toMatchObject([{ setupId: state.setupId, phase: "reserved" }]);
-  for (const step of ["trust", "developer-mode", "prepare", "observe"] as const)
-    await setup.advance(state.setupId, step);
-  await setup.wifi(state.setupId, "skip");
-  const attached = await setup.advance(state.setupId, "attach");
-  expect(attached.attachCommand).toMatchObject({ driverRunnerId: ownerA.runnerId, target });
-  expect((await f.store.records())[0]?.userLabel).toBe("Test phone");
-  await setup.complete(state.setupId, {
-    type: "iphone.screen.attach",
-    deviceId: f.deviceId,
-    generation: 2,
-  });
-  await detached.request(
-    "iphone.targets",
-    {
-      assignments: [
-        { deviceId: f.deviceId, generation: 2, role: "screen", definitionId: "iphone-screen" },
-      ],
-    },
-    f.options(),
-  );
-  expect(await setup.status(state.setupId)).toMatchObject({ step: "done", target });
-  expect(await f.store.records()).toMatchObject([
-    { deviceId: f.deviceId, driverGeneration: 2, phase: "bound", setupComplete: true },
-  ]);
-  detached.close();
-});
-
-it("refuses a phone that is already another Device, or still drives this one", async () => {
-  const f = await fixture();
-  cleanups.push(f.cleanup);
-  await boundAfterSetup(f);
-  const setup = new IphoneSetup(f.service);
-  const other = await setup.begin(ownerA, {
-    kind: "existing",
-    deviceId: createId("device"),
-    expectedGeneration: 3,
-  });
-  expect(await setup.choose(other.setupId, other.candidates[0]!.candidateId)).toMatchObject({
-    step: "choose",
-    reason: "phone-already-added",
-  });
-  const same = await setup.begin(ownerA, {
-    kind: "existing",
-    deviceId: f.deviceId,
-    expectedGeneration: 1,
-  });
-  expect(await setup.choose(same.setupId, same.candidates[0]!.candidateId)).toMatchObject({
-    step: "choose",
-    reason: "phone-already-added",
-  });
-  const fresh = await setup.begin(ownerA);
-  expect(await setup.choose(fresh.setupId, fresh.candidates[0]!.candidateId)).toMatchObject({
-    reason: "phone-already-added",
-  });
-  expect(await f.store.records()).toMatchObject([
-    { deviceId: f.deviceId, driverGeneration: 1, phase: "bound" },
-  ]);
-  expect(f.native.calls.some(({ method }) => method === "binding.forget")).toBe(false);
+  expect(await enabling).toMatchObject({ stage: "add", wifiEnabled: true });
 });
