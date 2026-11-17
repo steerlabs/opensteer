@@ -1251,7 +1251,7 @@ describe("mobile pages", () => {
     });
   });
 
-  it("says a page refused an action until its feed is admitted again, then gives the page's reason", async () => {
+  it("says nothing of the connection when a page refuses a control, then gives the page's own reason", async () => {
     const sendBrowserCommand = vi.fn(() => {
       throw new Error("The targeted browser control is not synchronized.");
     });
@@ -1266,10 +1266,10 @@ describe("mobile pages", () => {
     state.snapshot = snapshot([chosen]);
     await render();
     expect(() => press(container, "Reload")).not.toThrow();
-    expect(container.textContent).toContain("The page is reconnecting");
+    expect(container.textContent).not.toContain("reconnecting");
+    expect(container.textContent).not.toContain("Page unavailable");
     feed = { ...liveFeed, admissionId: "admission-2", inputError: "A dialog is open on the page." };
     await render();
-    expect(container.textContent).not.toContain("The page is reconnecting");
     expect(container.textContent).toContain("A dialog is open on the page.");
   });
 

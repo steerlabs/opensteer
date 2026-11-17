@@ -97,8 +97,6 @@ import { systemBrowserLabel } from "./system-browser.js";
 
 /** The shape a page takes before its first picture says otherwise. */
 const defaultPageAspect = 16 / 9;
-/** A command the page refused: its feed went away after the view last drew. */
-const refusedNotice = "The page is reconnecting. Try again in a moment.";
 /** How long a fill that did not happen is said, over a page the person is still using. */
 const fillNoticeMs = 5000;
 /** Where a page's bar moves from under it to over it, as Safari's does on iPad. */
@@ -440,9 +438,9 @@ export function BrowserPage(props: {
   );
   const picture = pictureBox(rested, aspect);
 
-  // A refusal belongs to the feed admission it met; the next admission has recovered.
-  const [refusedAdmission, setRefusedAdmission] = useState<string | null>(null);
-  const refused = refusedAdmission !== null && refusedAdmission === feed.admissionId;
+  // A control the page refused because its feed went away: the stale picture's
+  // chip acknowledges it, rather than any words about the connection.
+  const [refusals, setRefusals] = useState(0);
   const send = (command: BrowserCommand): boolean => {
     if (!ready) return false;
     if (command.type.startsWith("navigation.")) {
@@ -457,7 +455,7 @@ export function BrowserPage(props: {
       props.onSteer?.();
     const targeted = { ...command, surfaceId };
     const taken = submitBrowserCommand(hostClient, session.id, targeted);
-    if (!taken) setRefusedAdmission(feed.admissionId ?? null);
+    if (!taken) setRefusals((count) => count + 1);
     return taken;
   };
   latestSend.current = send;
@@ -1009,6 +1007,7 @@ export function BrowserPage(props: {
                     setMayType(true);
                   }}
                   session={session}
+                  stalePulse={refusals}
                 />
               </Animated.View>
             </Animated.View>
@@ -1064,7 +1063,6 @@ export function BrowserPage(props: {
               />
             ) : null}
             {pageProblem === null &&
-            !refused &&
             !feed.inputError &&
             !passkey &&
             !fillNotice &&
@@ -1075,12 +1073,8 @@ export function BrowserPage(props: {
                     <AppText role="secondary">{passkeyNotice}</AppText>
                   </View>
                 ) : null}
-                {pageProblem !== null || refused ? (
-                  <Notice
-                    detail={pageProblem ?? refusedNotice}
-                    title="Page unavailable"
-                    tone="neutral"
-                  />
+                {pageProblem !== null ? (
+                  <Notice detail={pageProblem} title="Page unavailable" tone="neutral" />
                 ) : feed.inputError ? (
                   // The page refused a touch or key, and says why; the next one clears it.
                   <Notice

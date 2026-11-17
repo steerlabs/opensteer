@@ -1473,6 +1473,7 @@ function ThreadPaneForUser(
               <VoiceDock slot />
               {onCall ? null : (
                 <VoiceStartBar
+                  hostClient={hostClient}
                   modelHold={settingsDisabledReason({
                     canRespond,
                     hasRun: threadRuns.length > 0,

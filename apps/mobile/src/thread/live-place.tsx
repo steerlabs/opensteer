@@ -8,19 +8,15 @@ import {
 } from "@opensteer/client/host";
 import { useRunPlaceDisplay, type RunPlaceView } from "@opensteer/client/react";
 import type { TabKind } from "@opensteer/core";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { Image, StyleSheet, View } from "react-native";
-import Animated, {
-  useAnimatedStyle,
-  useSharedValue,
-  withSequence,
-  withTiming,
-} from "react-native-reanimated";
+import Animated from "react-native-reanimated";
 import { BrowserStream } from "../browser/browser-stream.js";
 import { ComputerDisplay } from "../computers/phone-display.js";
 import { macWindowVideoSupported } from "../computers/phone-display-native.js";
-import { color, material, radius, space } from "../theme.js";
+import { color, radius, space } from "../theme.js";
 import { appear, dim, exit } from "../ui/motion.js";
+import { LastPictureChip } from "../ui/last-picture-chip.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 
@@ -178,30 +174,6 @@ export function PictureCover(props: {
   );
 }
 
-/**
- * The picture's own fact while it shows the place as it last was. Input is
- * off then, so a tap on the picture pulses this instead of doing nothing.
- */
-function LastPictureChip(props: { readonly pulse: number }): ReactNode {
-  const scale = useSharedValue(1);
-  useEffect(() => {
-    if (props.pulse === 0) return;
-    scale.value = withSequence(withTiming(0.96, { duration: 0 }), withTiming(1, { duration: 120 }));
-  }, [props.pulse, scale]);
-  const pulsed = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
-  return (
-    <Animated.View
-      accessibilityElementsHidden
-      importantForAccessibility="no-hide-descendants"
-      style={[styles.chip, pulsed]}
-    >
-      <AppText numberOfLines={1} role="caption" tone="soft">
-        Last picture
-      </AppText>
-    </Animated.View>
-  );
-}
-
 /** How a picture is described while it shows the place as it last was. */
 export function pictureWords(picture: RunPlacePicture): string {
   return picture.usable && !picture.fresh ? ", last picture" : "";
@@ -245,15 +217,6 @@ const styles = StyleSheet.create({
     gap: space[4],
     justifyContent: "center",
     paddingHorizontal: space[24],
-  },
-  chip: {
-    ...material.float,
-    borderRadius: radius.full,
-    bottom: space[10],
-    left: space[10],
-    paddingHorizontal: space[10],
-    paddingVertical: space[4],
-    position: "absolute",
   },
   // Enough to read as "not now" on a bright page, never enough to hide it.
   stale: { backgroundColor: "rgba(8, 8, 8, 0.3)" },
