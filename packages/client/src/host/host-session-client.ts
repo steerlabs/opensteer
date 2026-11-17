@@ -4,7 +4,10 @@ import { needsYouEntryKey, refreshNeedsYou, settleTeamAsk } from "./needs-you.js
 import { withThreadNames } from "./optimistic-command-patches.js";
 import { ScopedThreadReader, TranscriptBodies } from "./scoped-thread-reader.js";
 import { nodeTranscriptCard } from "./transcript-item-view.js";
-import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
+import {
+  scopedPersonalApiVersion,
+  affectedPersonalSubscriptions,
+} from "@opensteer/protocol/personal-sync";
 import type { PersonalResourceKind } from "@opensteer/protocol/resources";
 import { ScopedPersonalStream } from "./scoped-personal-stream.js";
 import type { ClientCommandInput } from "./device-commands.js";
@@ -71,6 +74,7 @@ import {
   type ExecutionPreferences,
   type NotificationView,
   type Request,
+  type RunId,
   type Sequence,
   type Thread,
   type ThreadAccessMode,
@@ -1173,9 +1177,22 @@ export class HttpHostClient {
     if (!scope || this.#threadReaders.has(threadId)) return;
     const detail = this.#stream.detail(scope);
     this.#reader(threadId);
+    let placeItems: ReturnType<typeof detail.transcript.getSnapshot>["items"] | undefined;
+    let placeQueue: NonNullable<
+      ReturnType<typeof detail.transcript.getSnapshot>["snapshot"]
+    >["queue"];
+    let placedRuns = new Set<RunId>();
+    const clearPlaces = () => {
+      for (const runId of placedRuns) this.#runPlaces.forget(runId);
+      placedRuns.clear();
+      placeItems = undefined;
+      placeQueue = undefined;
+      this.#runPlaces.flush();
+    };
     const release = detail.transcript.subscribe(() => {
       const state = detail.transcript.getSnapshot();
       if (state.removed) {
+        clearPlaces();
         const threads = this.#snapshot.threads.filter(({ id }) => id !== threadId);
         this.#update({
           ...this.#snapshot,
@@ -1194,11 +1211,43 @@ export class HttpHostClient {
         if (threads !== this.#snapshot.threads) this.#update({ ...this.#snapshot, threads });
       }
       if (!state.synchronized || !this.#showsThread(threadId)) return;
+      if (placeItems !== state.items || placeQueue !== state.snapshot?.queue) {
+        placeItems = state.items;
+        placeQueue = state.snapshot?.queue;
+        const next = new Set<RunId>();
+        const runIds = new Set(placeQueue?.runs.map(({ id }) => id));
+        for (let i = state.ids.length - 1; i >= 0 && next.size < runIds.size; i--) {
+          const item = state.items.get(state.ids[i]!);
+          if (
+            item?.kind !== "place" ||
+            !item.place ||
+            !item.runId ||
+            !runIds.has(item.runId) ||
+            next.has(item.runId)
+          )
+            continue;
+          next.add(item.runId);
+          this.#runPlaces.accept(
+            { runId: item.runId, sequence: SequenceSchema.parse(item.revision), data: item.place },
+            false,
+          );
+        }
+        for (const runId of placedRuns) {
+          if (!runIds.has(runId)) this.#runPlaces.end(runId, false);
+          else next.add(runId);
+        }
+        placedRuns = next;
+        this.#runPlaces.flush();
+      }
+
       this.#ensureAssignments(threadId);
       this.#ensureAutomations(threadId);
       this.#ensureBrowserUsage(threadId, "missing");
     });
-    this.#threadReaders.set(threadId, release);
+    this.#threadReaders.set(threadId, () => {
+      release();
+      clearPlaces();
+    });
   }
 
   #releaseDetail(threadId: string) {
@@ -2992,13 +3041,22 @@ export class HttpHostClient {
         (event.code === 4003 && event.reason === "Session ended")
       )
         this.#expireSession();
-      else if (event.reason === "Personal authority changed") {
-        this.#stream.clear(true);
-        this.#bodies.clear();
-        this.#resourceRevisions.clear();
-        this.#update({ ...emptySnapshot(this.#tabs), connection: "connecting" });
+      else {
+        const affected = affectedPersonalSubscriptions(event.reason ?? "");
+        if (affected !== null) {
+          this.#viewerGeneration++;
+          if (affected.length === 0 || affected.includes("shell")) {
+            this.#stream.clear(true);
+            this.#resourceRevisions.clear();
+            this.#update({ ...emptySnapshot(this.#tabs), connection: "connecting" });
+          } else {
+            this.#stream.revokeDetails(affected);
+          }
+          this.#bodies.clear();
+          this.#clearAttachmentReads();
+        }
         this.#socketFailed();
-      } else this.#socketFailed();
+      }
     });
     socket.addEventListener("error", () => {
       if (this.#socket === socket) this.#socketFailed();

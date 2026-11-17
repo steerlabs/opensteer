@@ -469,3 +469,23 @@ export type PersonalResumeCursor = z.infer<typeof PersonalResumeCursorSchema>;
 export type PersonalChange = z.infer<typeof PersonalChangeSchema>;
 export type ScopedHostMessage = z.infer<typeof ScopedHostMessageSchema>;
 export type ScopedClientMessage = z.infer<typeof ScopedClientMessageSchema>;
+
+const authorityChanged = "Personal authority changed";
+export type PersonalSubscriptionId = z.infer<typeof PersonalSubscriptionIdSchema>;
+
+export function personalAuthorityChangedReason(affected: readonly PersonalSubscriptionId[]) {
+  return affected.length ? `${authorityChanged}: ${affected.join(",")}` : authorityChanged;
+}
+
+export function affectedPersonalSubscriptions(
+  reason: string,
+): readonly PersonalSubscriptionId[] | null {
+  if (reason === authorityChanged) return [];
+  if (!reason.startsWith(`${authorityChanged}: `)) return null;
+  const ids = z
+    .array(PersonalSubscriptionIdSchema)
+    .min(1)
+    .max(5)
+    .safeParse(reason.slice(authorityChanged.length + 2).split(","));
+  return ids.success ? ids.data : [];
+}

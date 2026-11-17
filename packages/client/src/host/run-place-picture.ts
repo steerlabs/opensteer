@@ -1,4 +1,4 @@
-import { type PlaceEnteredEventView } from "@opensteer/core";
+import type { RunPlace } from "./run-place.js";
 import {
   computerDisplayAuthorityKey,
   computerDisplayScope,
@@ -37,7 +37,7 @@ class PictureOwner {
   #runId: string | null = null;
   #holds = 0;
   #displayHolds = 0;
-  #entry: PlaceEnteredEventView | null = null;
+  #entry: RunPlace | null = null;
   #stops: (() => void)[] = [];
   #streamStops: (() => void)[] = [];
   #streamKey: string | null = null;

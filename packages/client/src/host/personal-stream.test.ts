@@ -684,3 +684,36 @@ test("evicts inactive scope previews before they exceed the structural budget", 
   expect(f.stream.detail(scopes.at(-1)!) === details.at(-1)).toBe(true);
   expect(f.detail.transcript.getSnapshot().items.get(item.id)?.id).toBe(item.id);
 });
+
+test("reconnects from unaffected complete cuts when an authority close names a revoked slot", () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const other = { kind: "thread", threadId: createId("thread") } as const;
+  const release = f.stream.observe(other);
+  const otherAttach = f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
+  const otherAddress = {
+    scope: other,
+    generation: otherAttach.generation,
+    subscriptionId: otherAttach.subscriptionId,
+  };
+  f.stream.receive({
+    ...f.detailSnapshot(),
+    ...otherAddress,
+    snapshot: {
+      ...f.detailSnapshot().snapshot,
+      thread: { ...task, id: other.threadId },
+      nextBefore: null,
+    },
+  });
+  f.stream.receive({ ...otherAddress, type: "host.synchronized", throughSequence: "1" });
+  f.stream.revokeDetails([otherAddress.subscriptionId]);
+  f.stream.attach((frame) => f.sent.push(frame));
+  const recent = f.sent.filter((frame) => frame.type === "client.attach").at(-1);
+  expect(recent?.cursor?.afterSequence).toBe("1");
+  expect(recent?.selected?.cursor?.afterSequence).toBe("1");
+  const replaced = f.sent.at(-1);
+  expect(replaced).toMatchObject({ type: "client.subscribe", scope: other });
+  expect(replaced && "cursor" in replaced).toBe(false);
+  release();
+});

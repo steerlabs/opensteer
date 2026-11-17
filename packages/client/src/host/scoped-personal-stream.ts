@@ -7,6 +7,7 @@ import {
   PersonalShellSnapshotSchema,
   type PersonalResumeCursor,
   type PersonalScope,
+  type PersonalSubscriptionId,
   type ScopedClientMessage,
   type ScopedHostMessage,
 } from "@opensteer/protocol/personal-sync";
@@ -265,6 +266,23 @@ export class ScopedPersonalStream {
     this.#earlyBytes = 0;
     for (const detail of this.#slots.values()) this.#deactivate(detail);
     this.shell.begin(++this.#generation, true);
+  }
+
+  revokeDetails(affected: readonly PersonalSubscriptionId[]) {
+    for (const id of affected) {
+      if (id === "shell") continue;
+      const detail = this.#slots.get(id);
+      if (!detail) continue;
+      detail.transcript.apply({
+        type: "host.removed",
+        scope: detail.scope,
+        subscriptionId: id,
+        generation: detail.transcript.getSnapshot().generation,
+        reason: "unavailable",
+      });
+      this.#deactivate(detail);
+      this.#removeCheckpoint(detail.scope);
+    }
   }
 
   setBackground(background: boolean) {

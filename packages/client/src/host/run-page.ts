@@ -1,4 +1,4 @@
-import type { PlaceEnteredEventView } from "@opensteer/core";
+import type { RunPlace } from "./run-place.js";
 import type { HostSnapshot } from "./client.js";
 
 export interface RunPageMemory {
@@ -109,7 +109,7 @@ export function runPageSize(input: {
  * is never inferred from its app, so two windows of one app stay apart.
  */
 export function runPlaceActing(
-  entry: PlaceEnteredEventView,
+  entry: RunPlace,
   snapshot: Pick<HostSnapshot, "tabs">,
   activity: readonly { readonly threadId: string }[],
   threadId: string,

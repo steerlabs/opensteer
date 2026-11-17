@@ -35,7 +35,6 @@ import type {
   ModelSelection,
   NotificationView,
   PhoneContentPart,
-  PlaceEnteredEventView,
   ProviderContinuationIdentity,
   Request,
   RequestResponse,
@@ -1318,7 +1317,7 @@ export interface HostClient extends TabsClient {
   placeActivity(placeKey: string): readonly PlaceActivity[];
   subscribePlaceActivity(placeKey: string, listener: () => void): () => void;
   /** Newest ordered place.entered for this nonterminal Run, independent of loaded history. */
-  runPlace(runId: string): PlaceEnteredEventView | null;
+  runPlace(runId: string): import("./run-place.js").RunPlace | null;
   subscribeRunPlace(runId: string, listener: () => void): () => void;
   readBrowserContextCandidate(sessionId: string, tabId: string): Promise<BrowserContextCandidate>;
   browserPresentationDeadline?(sessionId: string, tabId: string): number | null;

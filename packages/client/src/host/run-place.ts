@@ -7,13 +7,15 @@ import {
 import type { HostSnapshot } from "./client.js";
 import type { TabDestination } from "./surfaces.js";
 
+export type RunPlace = Pick<PlaceEnteredEventView, "runId" | "sequence" | "data">;
+
 /** Current Run places live outside every transcript window and catalog. */
 export class RunPlaceStore {
-  readonly #values = new Map<string, PlaceEnteredEventView>();
+  readonly #values = new Map<string, RunPlace>();
   readonly #ended = new Set<string>();
   readonly #listeners = new Map<string, Set<() => void>>();
   readonly #changed = new Set<string>();
-  readonly get = (runId: string): PlaceEnteredEventView | null => this.#values.get(runId) ?? null;
+  readonly get = (runId: string): RunPlace | null => this.#values.get(runId) ?? null;
   readonly subscribe = (runId: string, listener: () => void): (() => void) => {
     const listeners = this.#listeners.get(runId) ?? new Set();
     listeners.add(listener);
@@ -23,7 +25,7 @@ export class RunPlaceStore {
       if (!listeners.size) this.#listeners.delete(runId);
     };
   };
-  accept(event: PlaceEnteredEventView, notify = true): void {
+  accept(event: RunPlace, notify = true): void {
     const previous = this.#values.get(event.runId);
     if (
       this.#ended.has(event.runId) ||
@@ -34,11 +36,11 @@ export class RunPlaceStore {
     this.#changed.add(event.runId);
     if (notify) this.flush();
   }
-  seed(events: readonly PlaceEnteredEventView[], notify = true): void {
+  seed(events: readonly RunPlace[], notify = true): void {
     for (const event of events) this.accept(event, false);
     if (notify) this.flush();
   }
-  reconcile(sequence: Sequence, events: readonly PlaceEnteredEventView[]): void {
+  reconcile(sequence: Sequence, events: readonly RunPlace[]): void {
     const present = new Set(events.map((event) => event.runId));
     for (const event of this.#values.values())
       if (compareSequence(event.sequence, sequence) <= 0 && !present.has(event.runId))
@@ -49,8 +51,11 @@ export class RunPlaceStore {
     this.#ended.add(runId);
     // Like the Run queue, fence late reads without retaining every past Run forever.
     if (this.#ended.size > 4096) this.#ended.delete(this.#ended.values().next().value!);
-    if (this.#values.delete(runId)) this.#changed.add(runId);
+    this.forget(runId);
     if (notify) this.flush();
+  }
+  forget(runId: string): void {
+    if (this.#values.delete(runId)) this.#changed.add(runId);
   }
   /** Publish after the Host snapshot, so terminal Runs and reply chips change together. */
   flush(): void {
