@@ -1,4 +1,5 @@
-import type { AgentEvent, RunId, TeamStatusStepKindSchema } from "@opensteer/core";
+import type { PersonalCommitReaction } from "@opensteer/database/personal-mutation";
+import type { RunId, TeamStatusStepKindSchema } from "@opensteer/core";
 import type { z } from "zod";
 
 type StepKind = z.infer<typeof TeamStatusStepKindSchema>;
@@ -24,19 +25,13 @@ export class TeamRunEvents {
     this.#onError = options.onError;
   }
 
-  observe(event: AgentEvent): void {
-    if (
-      this.#closed ||
-      event.type === "run.delivery-updated" ||
-      event.runId === null ||
-      !(
-        event.type.startsWith("run.") ||
-        event.type.startsWith("request.") ||
-        event.type === "tool.started"
-      )
-    )
-      return;
-    const runId = event.runId;
+  observe(
+    change:
+      | Extract<PersonalCommitReaction, { type: "requestChanged" | "runFinished" | "teamStep" }>
+      | { readonly type: "runChanged"; readonly runId: RunId },
+  ): void {
+    if (this.#closed || !change.runId) return;
+    const runId = change.runId;
     const run = this.#runs.get(runId) ?? {
       counts: new Map<StepKind, number>(),
       dirty: false,
@@ -44,13 +39,15 @@ export class TeamRunEvents {
       sending: null,
     };
     this.#runs.set(runId, run);
-    const kind = stepKind(event);
+    const kind =
+      change.type === "requestChanged" && change.opened
+        ? "asked_you"
+        : change.type === "teamStep"
+          ? stepKind(change.toolName, change.isIntegration)
+          : null;
     if (kind)
       run.counts.set(kind, Math.min(Number.MAX_SAFE_INTEGER, (run.counts.get(kind) ?? 0) + 1));
-    run.terminal ||=
-      event.type === "run.completed" ||
-      event.type === "run.failed" ||
-      event.type === "run.interrupted";
+    run.terminal ||= change.type === "runFinished";
     run.dirty = true;
     this.#schedule(runId, run);
   }
@@ -85,11 +82,8 @@ export class TeamRunEvents {
   }
 }
 
-function stepKind(event: AgentEvent): StepKind | null {
-  if (event.type === "request.opened") return "asked_you";
-  if (event.type !== "tool.started") return null;
-  const name = event.data.tool.name;
-  if (event.data.integration) return "used_integration";
+function stepKind(name: string, isIntegration: boolean): StepKind | null {
+  if (isIntegration) return "used_integration";
   if (/^browser(?:_|$)/u.test(name)) return "browsed";
   if (name === "opensteer_team_read" || name === "opensteer_team_search") return "searched_team";
   if (/^(?:computer_use|integration_call)$/u.test(name)) return "used_integration";

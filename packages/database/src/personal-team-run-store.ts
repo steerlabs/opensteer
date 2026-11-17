@@ -1,8 +1,6 @@
 import { MessageContentSchema, OpensteerError, type MessageId, type RunId } from "@opensteer/core";
 import type { PersonalTeamRequest } from "@opensteer/protocol";
 import { sql, type Kysely } from "kysely";
-import { runReply } from "./run-reply.js";
-import { eventFromRow } from "./deployment-events.js";
 import { requirePersonalOwner, personalSettings } from "./personal-settings-store.js";
 import type { DatabaseSchema } from "./schema.js";
 
@@ -51,11 +49,12 @@ export async function personalTeamRunOutcome(
         });
       const run = await tx
         .selectFrom("runs")
-        .select(["id", "status"])
+        .select(["id", "status", "terminalReplyMessageId"])
         .where("threadId", "=", receipt.localTaskId)
         .where("seedInputId", "=", receipt.localInputId)
         .where(sql<string>`reply_target->>'requestId'`, "=", request.requestId)
         .where(sql<string>`reply_target->>'teamId'`, "=", request.teamId)
+        .limit(1)
         .executeTakeFirst();
       const runId = run?.id ?? null;
       if (input.state === "cancelled" || receipt.terminalState === "cancelled")
@@ -77,36 +76,30 @@ export async function personalTeamRunOutcome(
                   : "working";
       if (!["done", "failed", "stopped"].includes(state))
         return { runId, state, finalMessage: null, answerMessageId: null };
-      const terminalRow = await tx
-        .selectFrom("deploymentEvents")
-        .selectAll()
-        .where("runId", "=", run.id)
-        .where("type", "=", "run.completed")
-        .orderBy("sequence", "desc")
-        .executeTakeFirst();
-      const terminal = terminalRow ? eventFromRow(terminalRow) : null;
-      // Only the completion projection chooses a publishable answer; later private turns cannot replace it.
-      const messageId = terminal?.type === "run.completed" ? terminal.data.replyMessageId : null;
-      const message =
-        state !== "done"
-          ? await runReply(tx, { id: run.id, threadId: receipt.localTaskId })
-          : messageId
-            ? await tx
-                .selectFrom("messages")
-                .select("content")
-                .where("id", "=", messageId)
-                .where("threadId", "=", receipt.localTaskId)
-                .where("runId", "=", run.id)
-                .where("kind", "=", "assistant")
-                .where("addressedToUserId", "is", null)
-                .executeTakeFirst()
-            : null;
+      const messageId = state === "done" ? run.terminalReplyMessageId : null;
+      const message = messageId
+        ? await tx
+            .selectFrom("messages")
+            .select("content")
+            .where("id", "=", messageId)
+            .where("threadId", "=", receipt.localTaskId)
+            .where("runId", "=", run.id)
+            .where("kind", "=", "assistant")
+            .where("addressedToUserId", "is", null)
+            .where("published", "=", true)
+            .executeTakeFirst()
+        : null;
       const text = message
         ? MessageContentSchema.parse(message.content)
             .flatMap((part) => (part.type === "text" ? [part.text] : []))
             .join("\n")
             .trim()
         : "";
-      return { runId, state, finalMessage: text || null, answerMessageId: messageId ?? null };
+      return {
+        runId,
+        state,
+        finalMessage: text || null,
+        answerMessageId: message ? messageId : null,
+      };
     });
 }

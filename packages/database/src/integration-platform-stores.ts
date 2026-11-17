@@ -11,11 +11,8 @@ import {
 } from "./device-inventory-store.js";
 import { deviceOwnershipIn } from "./machine-ownership.js";
 import { DeviceIdSchema, isPhoneDisplayDefinitionId, type DeviceId } from "@opensteer/core";
-import {
-  lockDeploymentEvents,
-  withPersonalReadTransaction,
-  withPersonalTransaction,
-} from "./personal-transaction.js";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { integrationAccountLabel } from "@opensteer/integration-core";
 import {
   administrationCommand,
@@ -99,7 +96,6 @@ import {
 import {
   OpensteerError,
   createId,
-  type AgentEvent,
   type RequestId,
   type ThreadId,
   type UserId,
@@ -234,7 +230,6 @@ export interface SetComputerConnectionResult {
    * has to be asked about again.
    */
   readonly reissuedSetupRequestId: string | null;
-  readonly requestEvents: readonly AgentEvent[];
   /**
    * The live session this change ended, if any: the one holding this app on a
    * Mac, or the one holding a phone's display. Null for a change that left
@@ -498,7 +493,6 @@ export interface InstallIntegrationInput {
 
 export interface InstallIntegrationMutation {
   readonly installation: IntegrationInstallation;
-  readonly requestEvents: readonly AgentEvent[];
 }
 
 export interface UninstallIntegrationInput {
@@ -514,7 +508,6 @@ export interface UninstallIntegrationMutation {
   readonly removedConnectionIds: readonly IntegrationConnectionId[];
   readonly removedApps: readonly RemovedComputerApp[];
   readonly removedServerIds: readonly IntegrationServerId[];
-  readonly requestEvents: readonly AgentEvent[];
 }
 
 export type RevokeComputerConnectionSelector =
@@ -537,7 +530,6 @@ export interface RevokeComputerConnectionsMutation {
   readonly connectionIds: readonly IntegrationConnectionId[];
   /** The apps whose approval this removal took back, `(deviceId, appKey)` and all. */
   readonly removedApps: readonly RemovedComputerApp[];
-  readonly requestEvents: readonly AgentEvent[];
 }
 
 export type { ComputerAppAccessSettlement } from "./computer-app-approvals.js";
@@ -663,7 +655,7 @@ export async function revokeComputerConnectionsInTransaction(
       .where("revokedAt", "is", null)
       .execute();
   }
-  const declined = await declineComputerAppAccessRequestsInTransaction(transaction, {
+  await declineComputerAppAccessRequestsInTransaction(transaction, {
     setupRequestIds: revokedSetupRequestIds,
   });
   const removedApps = connections.flatMap((connection): readonly RemovedComputerApp[] =>
@@ -684,7 +676,6 @@ export async function revokeComputerConnectionsInTransaction(
       cancelledRequestIds: [],
       connectionIds: [],
       removedApps: [],
-      requestEvents: declined.requestEvents,
     };
   }
   await transaction
@@ -738,7 +729,7 @@ export async function revokeComputerConnectionsInTransaction(
     for (const request of pending) requestIds.add(request.id);
   }
   const cancelledRequestIds = [...requestIds];
-  const requestEvents = await cancelPending(transaction, {
+  await cancelPending(transaction, {
     reason: "resource-deleted",
     requestIds: cancelledRequestIds,
     resolvedAt: now,
@@ -768,11 +759,11 @@ export async function revokeComputerConnectionsInTransaction(
     .where("connectionId", "in", connectionIds)
     .execute();
 
+  await integrationChanged(transaction);
   return {
     cancelledRequestIds,
     connectionIds,
     removedApps,
-    requestEvents: [...declined.requestEvents, ...requestEvents],
   };
 }
 
@@ -877,7 +868,7 @@ export async function uninstallIntegrationInTransaction(
     .forNoKeyUpdate("requests")
     .execute();
   const remainingCancelledRequestIds = pendingAccessRequests.map(({ id }) => id);
-  const remainingRequestEvents = await cancelPending(transaction, {
+  await cancelPending(transaction, {
     reason: "resource-deleted",
     requestIds: remainingCancelledRequestIds,
     resolvedAt: now,
@@ -888,7 +879,6 @@ export async function uninstallIntegrationInTransaction(
       ...remainingCancelledRequestIds,
     ]),
   ];
-  const requestEvents = [...revokedComputerConnections.requestEvents, ...remainingRequestEvents];
   const removedConnectionIds = [
     ...new Set([...revokedComputerConnections.connectionIds, ...uninstallIds]),
   ];
@@ -997,13 +987,13 @@ export async function uninstallIntegrationInTransaction(
       targetType: "integration-installation",
     })
     .executeTakeFirstOrThrow();
+  await integrationChanged(transaction);
   return {
     cancelledRequestIds,
     installation,
     removedConnectionIds,
     removedApps: revokedComputerConnections.removedApps,
     removedServerIds: serverIds,
-    requestEvents,
   };
 }
 
@@ -1083,7 +1073,6 @@ export async function installIntegrationInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: InstallIntegrationInput,
 ): Promise<InstallIntegrationMutation> {
-  await lockDeploymentEvents(transaction);
   const adapterSnapshot = validateAdapterInstallation(input);
   await lockIntegrationInstallationIdentityInTransaction(transaction, input.installation);
   const current = await transaction
@@ -1309,7 +1298,7 @@ export async function installIntegrationInTransaction(
     input.installation.status !== "active" || installationAuthorityChanged
       ? pendingAccessRequests.map(({ id }) => id)
       : [];
-  const requestEvents = await cancelPending(transaction, {
+  await cancelPending(transaction, {
     reason: "authority-revoked",
     requestIds: invalidatedRequestIds,
     resolvedAt: now,
@@ -1331,7 +1320,22 @@ export async function installIntegrationInTransaction(
       targetType: "integration-installation",
     })
     .executeTakeFirstOrThrow();
-  return { installation: installationFromRow(installation), requestEvents };
+  await integrationChanged(transaction);
+  return { installation: installationFromRow(installation) };
+}
+
+function integrationChanged(tx: Transaction<DatabaseSchema>) {
+  return commitPersonalMutation(tx, async (_, mutation) => {
+    mutation.change(
+      {
+        scopeKey: "shell",
+        entityKind: "collection",
+        entityId: "integrations",
+        operation: "invalidate",
+      },
+      () => ({ revision: mutation.sequence }),
+    );
+  });
 }
 
 function exactCatalogDefinitionId(
@@ -1344,7 +1348,7 @@ function exactCatalogDefinitionId(
 
 export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
   async install(input: InstallIntegrationInput): Promise<InstallIntegrationMutation> {
-    return withPersonalTransaction(this.database, async (transaction) =>
+    return commitPersonalMutation(this.database, async (transaction) =>
       administrationCommand(transaction, input.administration, async () => {
         await input.beforeInstall?.(transaction);
         const mutation = await installIntegrationInTransaction(transaction, input);
@@ -1356,7 +1360,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
   }
 
   async uninstall(input: UninstallIntegrationInput): Promise<UninstallIntegrationMutation> {
-    return withPersonalTransaction(this.database, (transaction) =>
+    return commitPersonalMutation(this.database, (transaction) =>
       administrationCommand(transaction, input.administration, () =>
         uninstallIntegrationInTransaction(transaction, input),
       ),
@@ -1384,7 +1388,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       .execute();
     let repaired = 0;
     for (const { id } of candidates) {
-      repaired += await withPersonalTransaction(this.database, async (transaction) => {
+      repaired += await commitPersonalMutation(this.database, async (transaction) => {
         const row = await transaction
           .selectFrom("integrationInstallations")
           .selectAll()
@@ -1462,7 +1466,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       .orderBy("id", "asc")
       .execute();
     for (const { id } of candidates) {
-      await withPersonalTransaction(this.database, async (transaction) => {
+      await commitPersonalMutation(this.database, async (transaction) => {
         const row = await transaction
           .selectFrom("integrationInstallations")
           .select(["manifest", "adapterSnapshot"])
@@ -1531,7 +1535,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     const failures: { error: unknown; serverId: IntegrationServerId }[] = [];
     for (const { id, installationId } of candidates) {
       try {
-        await withPersonalTransaction(this.database, async (transaction) => {
+        await commitPersonalMutation(this.database, async (transaction) => {
           await transaction
             .selectFrom("integrationInstallations")
             .select("id")
@@ -1601,7 +1605,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       } catch (error) {
         failures.push({ error, serverId: id });
         // Only what nothing else holds unavailable, so clearing this reason restores exactly it.
-        await withPersonalTransaction(this.database, async (transaction) => {
+        await commitPersonalMutation(this.database, async (transaction) => {
           const now = new Date();
           await transaction
             .updateTable("integrationInstallations")
@@ -1626,7 +1630,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     installationId: IntegrationInstallationId,
     reason: string,
   ): Promise<void> {
-    await withPersonalTransaction(this.database, (transaction) =>
+    await commitPersonalMutation(this.database, (transaction) =>
       markNeedsAttentionInTransaction(transaction, installationId, reason),
     );
   }
@@ -1705,7 +1709,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     readonly serverId: IntegrationServerId;
     readonly catalog: IntegrationToolCatalog;
   }): Promise<void> {
-    await withPersonalTransaction(this.database, async (transaction) => {
+    await commitPersonalMutation(this.database, async (transaction) => {
       const server = await transaction
         .selectFrom("integrationServers")
         .selectAll()
@@ -2248,7 +2252,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
         }
     ),
   ): Promise<{ readonly appApproval: "ask" | "automatic"; readonly revision: number }> {
-    return withPersonalTransaction(this.database, async (transaction) => {
+    return commitPersonalMutation(this.database, async (transaction) => {
       await this.#computerUsePolicyOwner(transaction, input.deviceId, input.ownerUserId);
       const now = new Date();
       const deployment = await transaction
@@ -2414,7 +2418,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
           }
         : requestInput;
     assertComputerAppPresence(input);
-    return withPersonalTransaction(this.database, async (transaction) => {
+    return commitPersonalMutation(this.database, async (transaction, mutation) => {
       const runner = await lockComputerApprovalScopeInTransaction(transaction, {
         deviceId: input.deviceId,
       });
@@ -2438,6 +2442,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
           deviceId: input.deviceId,
           task: null,
         });
+        mutation.react({ type: "deadlinesChanged" });
         return { request: computerAppSetupRequestFromRow(row), settlement };
       }
       // The policy approval has no Requests waiting on it, so replacing it
@@ -2471,6 +2476,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
         ownerUserId: input.actorUserId,
         deviceId: input.deviceId,
       });
+      mutation.react({ type: "deadlinesChanged" });
       return {
         request: computerAppSetupRequestFromRow(row),
         settlement: emptyComputerAppAccessSettlement,
@@ -2484,7 +2490,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly requestId: string;
     readonly ownerUserId: UserId;
   }): Promise<ComputerAppAccessSettlement & { readonly deviceId: DeviceId | null }> {
-    return withPersonalTransaction(this.database, async (transaction) => {
+    return commitPersonalMutation(this.database, async (transaction) => {
       const request = await transaction
         .selectFrom("computerAppSetupRequests")
         .select("runnerId as deviceId")
@@ -2526,41 +2532,48 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
    * minute tick calls this, and every other path that removes a row settles
    * its Requests too.
    */
-  async expireDeviceComputerAppSetupRequests(
-    now = new Date(),
-  ): Promise<ComputerAppAccessSettlement & { readonly deviceIds: readonly DeviceId[] }> {
+  async expireDeviceComputerAppSetupRequests(now = new Date()): Promise<
+    Pick<ComputerAppAccessSettlement, "grants" | "requestIds"> & {
+      readonly deviceIds: readonly DeviceId[];
+    }
+  > {
     // One Mac per transaction, each under that Mac's approval scope, so the
     // sweep takes its locks in the order every approval does.
     const expiring = await this.database
       .selectFrom("computerAppSetupRequests")
-      .select("runnerId as deviceId")
-      .distinct()
+      .select(["id", "runnerId as deviceId"])
       .where("expiresAt", "<=", now)
-      .orderBy("runnerId", "asc")
+      .orderBy("expiresAt")
+      .orderBy("id")
+      .limit(128)
       .execute();
     const grants: IntegrationGrant[] = [];
-    const requestEvents: AgentEvent[] = [];
     const requestIds: RequestId[] = [];
     const deviceIds: DeviceId[] = [];
-    for (const { deviceId } of expiring) {
-      const settled = await withPersonalTransaction(this.database, async (transaction) => {
+    for (const [deviceId, approvals] of Map.groupBy(expiring, (approval) => approval.deviceId)) {
+      const settled = await commitPersonalMutation(this.database, async (transaction) => {
         await lockComputerApprovalScopeInTransaction(transaction, { deviceId });
         const expired = await transaction
           .deleteFrom("computerAppSetupRequests")
           .where("runnerId", "=", deviceId)
+          .where(
+            "id",
+            "in",
+            approvals.map(({ id }) => id),
+          )
           .where("expiresAt", "<=", now)
           .returning("id")
           .execute();
+        if (expired.length) await integrationChanged(transaction);
         return declineComputerAppAccessRequestsInTransaction(transaction, {
           setupRequestIds: expired.map(({ id }) => id),
         });
       });
       grants.push(...settled.grants);
-      requestEvents.push(...settled.requestEvents);
       requestIds.push(...settled.requestIds);
       deviceIds.push(deviceId);
     }
-    return { grants, requestEvents, requestIds, deviceIds };
+    return { grants, requestIds, deviceIds };
   }
 
   /**
@@ -2578,7 +2591,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
   async setDeviceComputerConnection(
     input: SetComputerConnectionInput,
   ): Promise<SetComputerConnectionResult> {
-    return withPersonalTransaction(this.database, async (transaction) => {
+    return commitPersonalMutation(this.database, async (transaction) => {
       const runner = await lockComputerOwnerInTransaction(transaction, {
         ...input,
       });
@@ -2635,7 +2648,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
   async approveDeviceComputerAppAutomatically(
     input: AutomaticComputerAppApprovalInput,
   ): Promise<SetComputerConnectionResult> {
-    return withPersonalTransaction(this.database, async (transaction) => {
+    return commitPersonalMutation(this.database, async (transaction) => {
       const runner = await lockComputerOwnerInTransaction(transaction, {
         ...input,
       });
@@ -2660,7 +2673,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly ownerUserId: UserId;
     readonly requestId: string;
   }): Promise<RevokeComputerConnectionsMutation> {
-    return withPersonalTransaction(this.database, async (transaction) =>
+    return commitPersonalMutation(this.database, async (transaction) =>
       administrationCommand(transaction, input.administration, async () => {
         const connection = await transaction
           .selectFrom("integrationConnections")
@@ -2714,7 +2727,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly ownerUserId: UserId;
     readonly requestId: string;
   }): Promise<RevokeComputerConnectionsMutation> {
-    return withPersonalTransaction(this.database, async (transaction) =>
+    return commitPersonalMutation(this.database, async (transaction) =>
       administrationCommand(transaction, input.administration, async () => {
         const named = await transaction
           .selectFrom("integrationConnections")
@@ -2885,7 +2898,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly serverId: IntegrationServerId;
     readonly tools: readonly IntegrationToolMaterial[];
   }): Promise<void> {
-    await withPersonalTransaction(this.database, async (transaction) => {
+    await commitPersonalMutation(this.database, async (transaction) => {
       if (input.accountBinding)
         await checkIntegrationAccountBinding(transaction, input.ownerUserId, input.accountBinding);
       await transaction
@@ -3162,7 +3175,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly ownerUserId: UserId;
     readonly requestId: string;
   }): Promise<void> {
-    await withPersonalTransaction(this.database, async (transaction) =>
+    await commitPersonalMutation(this.database, async (transaction) =>
       administrationCommand(transaction, input.administration, async () => {
         const now = new Date();
         const connection = await transaction
@@ -3211,7 +3224,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly ownerUserId: UserId;
     readonly statusDetail: string;
   }): Promise<boolean> {
-    return withPersonalTransaction(this.database, async (transaction) => {
+    return commitPersonalMutation(this.database, async (transaction) => {
       const current = await transaction
         .selectFrom("integrationConnections")
         .select("id")
@@ -3252,7 +3265,7 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
   >();
 
   async createGrant(input: CreateIntegrationGrantInput): Promise<IntegrationGrant> {
-    return withPersonalTransaction(this.database, async (transaction) => {
+    return commitPersonalMutation(this.database, async (transaction) => {
       // Standalone grants have no Request/approval transaction to fence their
       // parents. Hold those fences before the grant scope, then validate current
       // membership and resource state in createGrantInTransaction.
@@ -3293,7 +3306,9 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     transaction: Transaction<DatabaseSchema>,
     input: CreateIntegrationGrantInput,
   ): Promise<IntegrationGrant> {
-    return writeIntegrationGrantInTransaction(transaction, input);
+    const grant = await writeIntegrationGrantInTransaction(transaction, input);
+    await integrationChanged(transaction);
+    return grant;
   }
 
   async listGrants(input: { readonly ownerUserId: UserId }): Promise<readonly IntegrationGrant[]> {
@@ -3358,7 +3373,7 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     readonly ownerUserId: UserId;
     readonly requestId: string;
   }): Promise<void> {
-    await withPersonalTransaction(this.database, async (transaction) =>
+    await commitPersonalMutation(this.database, async (transaction) =>
       administrationCommand(transaction, input.administration, async () => {
         const row = await transaction
           .updateTable("integrationGrants")
@@ -4417,7 +4432,7 @@ async function finishComputerConnectionChangeInTransaction(
     reissueWaiting: input.reissueWaiting,
     scope,
   });
-  const pendingRequestEvents =
+  const pendingRequestIds =
     input.created || input.widened
       ? await fulfillPendingIntegrationAccessRequestsInTransaction(transaction, {
           settlementActor,
@@ -4459,13 +4474,13 @@ async function finishComputerConnectionChangeInTransaction(
     })
     .executeTakeFirstOrThrow();
   await requestSettlementActor(transaction, input.actorUserId, input.actorSessionId);
+  await integrationChanged(transaction);
   return {
     connection: integrationConnectionFromRow(input.row),
     created: input.created,
-    fulfilledRequestIds: settlement.requestIds,
+    fulfilledRequestIds: [...new Set([...settlement.requestIds, ...pendingRequestIds])],
     grants: settlement.grants,
     reissuedSetupRequestId: settlement.reissuedSetupRequestId,
-    requestEvents: [...pendingRequestEvents, ...settlement.requestEvents],
   };
 }
 

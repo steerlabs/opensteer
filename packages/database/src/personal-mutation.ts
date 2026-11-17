@@ -22,6 +22,7 @@ import type {
   PersonalResourceKind,
   PersonalScopeKey,
 } from "./personal-state-schema.js";
+import type { RevokedRunGrant } from "./run-grants.js";
 
 const retainedRows = 4_096;
 const maxCommitRows = 128;
@@ -34,7 +35,8 @@ type TargetDb = Kysely<DatabaseSchema>;
 export type PersonalMutationTransaction = Transaction<DatabaseSchema>;
 type ScopeAuthority = PersonalScopeKey | "deployment";
 type State = Selectable<ClientSyncStateTable>;
-type Counter = "pendingRequestCount" | "needsYouCount" | "unreadTaskCount";
+type Counter =
+  "pendingRequestCount" | "pendingDeviceAccessRequestCount" | "needsYouCount" | "unreadTaskCount";
 
 interface ChangeIdentity {
   readonly scopeKey: PersonalScopeKey;
@@ -79,11 +81,15 @@ interface CommitNotice {
 }
 
 export type PersonalCommitReaction =
+  | { readonly type: "deadlinesChanged" }
+  | { readonly type: "grantsRevoked"; readonly grants: readonly RevokedRunGrant[] }
+  | { readonly type: "authorityChanged"; readonly scopes: ReadonlySet<ScopeAuthority> }
   | {
       readonly type: "requestChanged";
       readonly requestId: RequestId;
       readonly kind: DatabaseSchema["requests"]["kind"];
       readonly status: DatabaseSchema["requests"]["status"];
+      readonly opened: boolean;
       readonly threadId: ThreadId;
       readonly runId: RunId | null;
     }
@@ -164,7 +170,12 @@ class Mutation {
   readonly #ownerReactions: PersonalCommitReaction[] = [];
   readonly #observations = new Set<() => void>();
   readonly #receipts: ((head: string) => Promise<void>)[] = [];
-  readonly #counters = { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 };
+  readonly #counters = {
+    pendingRequestCount: 0,
+    pendingDeviceAccessRequestCount: 0,
+    needsYouCount: 0,
+    unreadTaskCount: 0,
+  };
   #scopeChanges = 0;
   #scopeBytes = 0;
   #privacyPurge = false;
@@ -402,6 +413,8 @@ class Mutation {
           lastCommitAt: this.hasVisibleChange ? at : state.lastCommitAt,
           resourceRevisions: revisions,
           pendingRequestCount: state.pendingRequestCount + this.#counters.pendingRequestCount,
+          pendingDeviceAccessRequestCount:
+            state.pendingDeviceAccessRequestCount + this.#counters.pendingDeviceAccessRequestCount,
           needsYouCount: state.needsYouCount + this.#counters.needsYouCount,
           unreadTaskCount: state.unreadTaskCount + this.#counters.unreadTaskCount,
         })
@@ -429,6 +442,10 @@ class Mutation {
     if (listener?.react)
       for (const reaction of this.#ownerReactions)
         notify(listener, "reaction", () => listener.react?.(reaction));
+    if (listener?.react && this.authorityScopes.size)
+      notify(listener, "reaction", () =>
+        listener.react?.({ type: "authorityChanged", scopes: this.authorityScopes }),
+      );
   }
 }
 

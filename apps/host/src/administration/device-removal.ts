@@ -46,9 +46,6 @@ export async function finishDeviceRemoval(
   for (const sessionId of removed.closedBrowserSessions)
     dependencies.browser.abandonSession(sessionId);
   await dependencies.browser.profilesRemoved(removed.deletedBrowserProfiles);
-  for (const event of [...removed.events, ...removed.requestEvents])
-    dependencies.publishDeploymentEvent(event);
-  if (removed.cancelledRequestIds.length) dependencies.integrations.continuations.notify();
   dependencies.authenticator.identity.announceSessionsEnded(removed.endedSessionIds, afterResponse);
   notifyMachinesChanged(dependencies.realtime, "machine.command");
 }

@@ -1,3 +1,4 @@
+import { expiredPersonalSignInRequests, nextPersonalRequestDeadline } from "./request-deadlines.js";
 import { computerConnectionDeviceId } from "./integration-store.js";
 import type {
   IntegrationConnectionSummary as LegacyIntegrationConnectionSummary,
@@ -10,7 +11,7 @@ import { deviceOwnershipIn } from "./machine-ownership.js";
 import { getDeviceSelfRunnerId } from "./device-inventory-store.js";
 import { getBrowserSessionForOwner } from "./browser-session-store.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
 import { lockBrowserHomeRunner } from "./browser-home-store.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { enqueueChannelConversationStatus } from "./channel-deliveries.js";
@@ -21,7 +22,6 @@ import {
   BrowserProfileIdSchema,
   OpensteerError,
   PendingRequestSchema,
-  ResolvedRequestSchema,
   RequestIdSchema,
   RequestJsonObjectSchema,
   RequestPresentationSchema,
@@ -31,7 +31,6 @@ import {
   browserSessionClosedReason,
   createId,
   requestFormAnswersProblem,
-  type AgentEvent,
   type BrowserProfileId,
   type BrowserSourceId,
   type HeldAssignment,
@@ -88,7 +87,6 @@ import {
 import { sql, type ExpressionBuilder, type Kysely, type Transaction } from "kysely";
 import { isDeepStrictEqual } from "node:util";
 import {
-  assignmentActivityEventsForRun,
   assignmentClosedToRequestsMessage,
   runAssignmentAcceptsRequests,
 } from "./assignment-store.js";
@@ -115,12 +113,17 @@ import {
 import { deviceAccessStates } from "./device-store.js";
 import { machineIsManagedBy } from "./machine-ownership.js";
 import { cancelPending } from "./request-cancellation.js";
-import { requestFromRow, requestInsert, requestOriginEnvironment } from "./request-persistence.js";
+import {
+  assertRequestRevision,
+  refreshRequestState,
+  requestFromRow,
+  requestInsert,
+} from "./request-persistence.js";
 import { insertBrowserProfileOnLockedHome } from "./browser-session-store.js";
 import { runHasActiveGrant } from "./run-grants.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { jsonValue, threadPathLinks, type ChannelLinks } from "./store-primitives.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 export { cancelPending } from "./request-cancellation.js";
 export { requestFromRow, requestInsert } from "./request-persistence.js";
 export interface IntegrationRequestDetailInput {
@@ -164,20 +167,17 @@ export type DeviceComputerAppAccessDecision =
   | {
       readonly connection: IntegrationConnectionSummary;
       readonly kind: "approved";
-      readonly requestEvents: readonly AgentEvent[];
     }
   | {
       readonly kind: "personal-grant";
       readonly replayed: boolean;
       readonly request: Request;
-      readonly requestEvents: readonly AgentEvent[];
     }
   | {
       /** The ask waits on the computer itself: the Mac's panel, or the phone in its owner's hand. */
       readonly kind: "computer";
       readonly replayed: boolean;
       readonly request: Request;
-      readonly requestEvents: readonly AgentEvent[];
       readonly setupRequest: ComputerAppSetupRequest;
     };
 
@@ -205,12 +205,10 @@ type IntegrationRequestSubject =
       readonly proposalDigest: string;
     };
 export interface RequestMutation {
-  readonly events: readonly AgentEvent[];
   readonly replayed: boolean;
   readonly request: Request;
 }
 export interface ResolvedBrowserRequest {
-  readonly events: readonly AgentEvent[];
   readonly profile: {
     readonly homeRunnerId: RunnerId | null;
     readonly id: BrowserProfileId;
@@ -226,6 +224,7 @@ interface PendingRequestContinuation {
   readonly status: "waiting" | "queued" | "undeliverable";
 }
 interface PendingIntegrationAccessRequest {
+  readonly revision: string;
   readonly access: IntegrationAccess;
   readonly installationId: IntegrationInstallationId;
   readonly request: Request;
@@ -233,23 +232,18 @@ interface PendingIntegrationAccessRequest {
   readonly requestedServerId: IntegrationServerId | null;
 }
 interface ResolvedIntegrationAccessRequest {
-  readonly events: readonly AgentEvent[];
   readonly request: Request;
   readonly grant: IntegrationGrant | null;
 }
 interface ResolvedIntegrationInstallRequest {
-  readonly events: readonly AgentEvent[];
   readonly installation: InstallIntegrationMutation["installation"] | null;
   readonly request: Request;
-  readonly requestEvents: readonly AgentEvent[];
 }
 interface BoundIntegrationAccessInstallation {
   readonly installation: InstallIntegrationMutation["installation"];
   readonly request: Request;
-  readonly requestEvents: readonly AgentEvent[];
 }
 interface SelectedIntegrationAccessServer {
-  readonly events: readonly AgentEvent[];
   readonly request: Request;
 }
 
@@ -316,7 +310,6 @@ export class RequestStore {
       .executeTakeFirst();
     return row
       ? {
-          events: [],
           replayed: true,
           request: requestFromRow(row),
         }
@@ -334,7 +327,7 @@ export class RequestStore {
     },
     isOnline: () => boolean,
   ): Promise<RequestMutation> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const machine = await transaction
         .selectFrom("devices")
         .select("name")
@@ -374,10 +367,11 @@ export class RequestStore {
   }
   async declineDeviceAccessRequest(input: {
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
-  }): Promise<{ events: readonly AgentEvent[]; request: Request }> {
+  }): Promise<{ request: Request }> {
     const value = input.response.kind === "external" ? input.response.value : undefined;
     if (!value || Object.keys(value).length !== 1 || value.decision !== "declined")
       throw new OpensteerError({
@@ -385,7 +379,7 @@ export class RequestStore {
         message:
           "Turn device access on through machine.access.update; this response can only decline.",
       });
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const row = await transaction
         .selectFrom("requests")
         .selectAll()
@@ -407,6 +401,7 @@ export class RequestStore {
           code: "conflict",
           message: "Computer access Request is no longer pending",
         });
+      assertRequestRevision(row, input.expectedRevision);
       await lockActiveDurableRequestAuthority(transaction, requestFromRow(row));
       const now = new Date();
       const resolved = await transaction
@@ -428,7 +423,7 @@ export class RequestStore {
       const request = requestFromRow(resolved);
       await enqueueContinuation(transaction, request, now);
       await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-      return { events: await terminalEvents(transaction, request), request };
+      return { request: await refreshRequestState(transaction, request.id) };
     });
   }
   /**
@@ -438,10 +433,11 @@ export class RequestStore {
    */
   async answerPersonQuestion(input: {
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
-  }): Promise<{ events: readonly AgentEvent[]; request: Request }> {
+  }): Promise<{ request: Request }> {
     const declined =
       input.response.kind === "external" &&
       input.response.value !== undefined &&
@@ -452,7 +448,7 @@ export class RequestStore {
         code: "bad_request",
         message: "Answer a question with its answers, or dismiss it.",
       });
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const row = await transaction
         .selectFrom("requests")
         .selectAll()
@@ -468,6 +464,7 @@ export class RequestStore {
           code: "forbidden",
           message: "Only the person it asked can answer this question.",
         });
+      assertRequestRevision(row, input.expectedRevision);
       const pending = requestFromRow(row);
       if (pending.presentation.kind !== "form")
         throw new Error("A person question is presented as a form");
@@ -500,11 +497,11 @@ export class RequestStore {
       const request = requestFromRow(resolved);
       await enqueueContinuation(transaction, request, now);
       await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-      return { events: await terminalEvents(transaction, request), request };
+      return { request: await refreshRequestState(transaction, request.id) };
     });
   }
   async create(input: CreateRequestInput): Promise<RequestMutation> {
-    return withPersonalTransaction(this.#database, async (personalTransaction) => {
+    return commitPersonalMutation(this.#database, async (personalTransaction) => {
       await (async (transaction) => {
         await lockRequestOrigin(transaction, input);
       })(personalTransaction);
@@ -587,11 +584,12 @@ export class RequestStore {
   async resolveIntegrationAccessRequest(input: {
     readonly providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>;
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
   }): Promise<ResolvedIntegrationAccessRequest> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const observed = await transaction
         .selectFrom("requests")
         .innerJoin(
@@ -620,6 +618,7 @@ export class RequestStore {
           message: "Integration Request is no longer pending",
         });
       }
+      assertRequestRevision(observed, input.expectedRevision);
       const observedRequest = requestFromRow(observed);
       await lockActiveDurableRequestAuthority(transaction, observedRequest);
       const response = withoutClientIntegrationAccount(RequestResponseSchema.parse(input.response));
@@ -676,8 +675,8 @@ export class RequestStore {
         const declined = requestFromRow(declinedRow);
         await enqueueContinuation(transaction, declined, now);
         await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+        await refreshRequestState(transaction, declined.id);
         return {
-          events: await terminalEvents(transaction, declined),
           grant: null,
           request: declined,
         };
@@ -836,7 +835,6 @@ export class RequestStore {
         decision.decision === "fulfilled" && "access" in decision
           ? decision.access
           : row.detailAccess;
-      const coveredEvents: AgentEvent[] = [];
       if (decision.decision === "fulfilled" && grantedAccess === "read-write") {
         const covered = await transaction
           .selectFrom("requests")
@@ -881,12 +879,12 @@ export class RequestStore {
           if (!coveredRow) continue;
           const coveredRequest = requestFromRow(coveredRow);
           await enqueueContinuation(transaction, coveredRequest, now);
-          coveredEvents.push(...(await terminalEvents(transaction, coveredRequest)));
+          await refreshRequestState(transaction, coveredRequest.id);
         }
       }
       await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+      await refreshRequestState(transaction, resolved.id);
       return {
-        events: [...coveredEvents, ...(await terminalEvents(transaction, resolved))],
         grant,
         request: resolved,
       };
@@ -895,11 +893,12 @@ export class RequestStore {
   async resolveIntegrationInstallRequest(input: {
     readonly preparedFulfillment?: PreparedIntegrationInstallFulfillment;
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
   }): Promise<ResolvedIntegrationInstallRequest> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const observed = await transaction
         .selectFrom("requests")
         .innerJoin(
@@ -970,6 +969,7 @@ export class RequestStore {
         });
       }
       await requirePersonalOwner(transaction, input.resolvedBy);
+      assertRequestRevision(row, input.expectedRevision);
       if (
         input.preparedFulfillment &&
         !isDeepStrictEqual(
@@ -1010,11 +1010,10 @@ export class RequestStore {
       const request = requestFromRow(resolvedRow);
       await enqueueContinuation(transaction, request, now);
       await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+      await refreshRequestState(transaction, request.id);
       return {
-        events: await terminalEvents(transaction, request),
         installation: installationMutation?.installation ?? null,
         request,
-        requestEvents: installationMutation?.requestEvents ?? [],
       };
     });
   }
@@ -1066,10 +1065,11 @@ export class RequestStore {
   }
   async tryBindExistingIntegrationAccessInstallation(input: {
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
   }): Promise<BoundIntegrationAccessInstallation | null> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const observed = await transaction
         .selectFrom("requests")
         .innerJoin(
@@ -1096,6 +1096,7 @@ export class RequestStore {
           message: "Integration access installation is no longer pending",
         });
       }
+      assertRequestRevision(observed, input.expectedRevision);
       await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
       await requirePersonalOwner(transaction, input.resolvedBy);
       const manifest = IntegrationInstallManifestSchema.parse(observed.detailManifest);
@@ -1125,7 +1126,6 @@ export class RequestStore {
       if (!current || !installedIntegrationMatchesReviewedManifest(current, manifest)) return null;
       const bound = await bindIntegrationAccessInstallation(transaction, {
         installation: integrationInstallationFromRequestRow(current),
-        requestEvents: [],
         requestId: input.requestId,
       });
       await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
@@ -1135,10 +1135,11 @@ export class RequestStore {
   async installForIntegrationAccessRequest(input: {
     readonly preparedFulfillment: PreparedIntegrationInstallFulfillment;
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
   }): Promise<BoundIntegrationAccessInstallation> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const observed = await transaction
         .selectFrom("requests")
         .innerJoin(
@@ -1221,6 +1222,7 @@ export class RequestStore {
       }
       const exactCurrent =
         current && currentIntegrationMatchesPrepared(current, input.preparedFulfillment.material);
+      assertRequestRevision(row, input.expectedRevision);
       const installationMutation = exactCurrent
         ? {
             installation: IntegrationInstallationSchema.parse({
@@ -1238,7 +1240,6 @@ export class RequestStore {
               updatedAt: current.updatedAt.toISOString(),
               version: current.version,
             }),
-            requestEvents: [] as readonly AgentEvent[],
           }
         : await installIntegrationInTransaction(transaction, {
             ...input.preparedFulfillment.material,
@@ -1247,7 +1248,6 @@ export class RequestStore {
           });
       const bound = await bindIntegrationAccessInstallation(transaction, {
         installation: installationMutation.installation,
-        requestEvents: installationMutation.requestEvents,
         requestId: input.requestId,
       });
       await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
@@ -1256,11 +1256,12 @@ export class RequestStore {
   }
   async selectIntegrationAccessServer(input: {
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly requestedServerId: IntegrationServerId;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
   }): Promise<SelectedIntegrationAccessServer> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const observed = await transaction
         .selectFrom("requests")
         .innerJoin(
@@ -1339,6 +1340,7 @@ export class RequestStore {
           message: "Integration server selection is no longer available",
         });
       }
+      assertRequestRevision(row, input.expectedRevision);
       await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
       const previous = requestFromRow(row);
       if (previous.payload.kind !== "integration.access")
@@ -1365,19 +1367,7 @@ export class RequestStore {
         .returningAll()
         .executeTakeFirstOrThrow();
       const request = requestFromRow(updated);
-      const event = await appendHostDeploymentEvent(transaction, {
-        data: {
-          request: PendingRequestSchema.parse(request),
-        },
-        environmentId: await requestOriginEnvironment(transaction, request),
-        runId: request.originatingRunId,
-        threadId: request.originatingThreadId,
-        type: "request.updated",
-      });
-      return {
-        events: [event],
-        request,
-      };
+      return { request: await refreshRequestState(transaction, request.id) };
     });
   }
   async get(id: RequestId): Promise<Request | null> {
@@ -1388,14 +1378,23 @@ export class RequestStore {
       .executeTakeFirst();
     return row ? requestFromRow(row) : null;
   }
+  async revision(id: RequestId): Promise<string | null> {
+    const row = await this.#database
+      .selectFrom("requests")
+      .select("revision")
+      .where("id", "=", id)
+      .executeTakeFirst();
+    return row?.revision ?? null;
+  }
   async settleIntegrationInput(input: {
     readonly caller: Parameters<typeof assertActiveGrant>[1];
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly action: "accept" | "decline" | "cancel";
   }): Promise<RequestMutation> {
-    return withPersonalTransaction(this.#database, async (personalTransaction) => {
+    return commitPersonalMutation(this.#database, async (personalTransaction) => {
       await (async (transaction) => {
         const request = await transaction
           .selectFrom("requests")
@@ -1428,6 +1427,7 @@ export class RequestStore {
             code: "conflict",
             message: "Device input is no longer pending",
           });
+        assertRequestRevision(observed, input.expectedRevision);
         const pending = requestFromRow(observed);
         await lockActiveDurableRequestAuthority(transaction, pending);
         await assertActiveGrant(transaction, input.caller, this.#executionNow);
@@ -1473,34 +1473,37 @@ export class RequestStore {
             message: "Device input is no longer pending",
           });
         await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-        const request = requestFromRow(row);
-        return {
-          request,
-          events: await terminalEvents(transaction, request),
-          replayed: false,
-        };
+        return { request: await refreshRequestState(transaction, row.id), replayed: false };
       })(personalTransaction);
     });
   }
   async cancelIntegrationInputs(
     reason: RequestCancellationReason,
     requestId?: RequestId,
-  ): Promise<readonly AgentEvent[]> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
-      const rows = await transaction
-        .selectFrom("requests")
-        .select("id")
-        .where("kind", "=", "integration.input")
-        .where("status", "=", "pending")
-        .$if(requestId !== undefined, (query) => query.where("id", "=", requestId!))
-        .execute();
-      return cancelPending(transaction, {
-        reason,
-        resolvedAt: new Date(),
-        requestIds: rows.map(({ id }) => id),
+  ): Promise<readonly RequestId[]> {
+    const cancelled: RequestId[] = [];
+    for (;;) {
+      const batch = await commitPersonalMutation(this.#database, async (transaction) => {
+        const rows = await transaction
+          .selectFrom("requests")
+          .select("id")
+          .where("kind", "=", "integration.input")
+          .where("status", "=", "pending")
+          .$if(requestId !== undefined, (query) => query.where("id", "=", requestId!))
+          .orderBy("id")
+          .limit(128)
+          .execute();
+        return cancelPending(transaction, {
+          reason,
+          resolvedAt: new Date(),
+          requestIds: rows.map(({ id }) => id),
+        });
       });
-    });
+      cancelled.push(...batch);
+      if (batch.length < 128) return cancelled;
+    }
   }
+
   async listPendingIntegrationAccessRequests(
     requestedBy: UserId,
   ): Promise<readonly PendingIntegrationAccessRequest[]> {
@@ -1527,6 +1530,7 @@ export class RequestStore {
               access: row.detailAccess,
               installationId: row.detailInstallationId,
               request: requestFromRow(row),
+              revision: row.revision,
               requestedConnectionId: row.detailRequestedConnectionId,
               requestedServerId: row.detailRequestedServerId,
             },
@@ -1860,7 +1864,7 @@ export class RequestStore {
         message: "A computer app access Request originates from exactly one Run or Occurrence",
       });
     }
-    return withPersonalTransaction(this.#database, async (personalTransaction) => {
+    return commitPersonalMutation(this.#database, async (personalTransaction) => {
       await ((transaction) => lockRequestOrigin(transaction, origin))(personalTransaction);
       return (async (transaction) => {
         const runner = await lockComputerApprovalScopeInTransaction(transaction, {
@@ -1948,7 +1952,6 @@ export class RequestStore {
           return {
             connection: approved.connection,
             kind: "approved",
-            requestEvents: approved.requestEvents,
           };
         }
         if (current && covered) {
@@ -1973,10 +1976,9 @@ export class RequestStore {
             kind: "personal-grant",
             replayed: mutation.replayed,
             request: mutation.request,
-            requestEvents: mutation.events,
           };
         }
-        const { row, settlement } = await askForComputerAppApprovalInTransaction(transaction, {
+        const { row } = await askForComputerAppApprovalInTransaction(transaction, {
           access,
           app,
           definitionDigest: input.definitionDigest,
@@ -2024,7 +2026,6 @@ export class RequestStore {
           kind: "computer",
           replayed: mutation.replayed,
           request: mutation.request,
-          requestEvents: [...settlement.requestEvents, ...mutation.events],
           setupRequest,
         };
       })(personalTransaction);
@@ -2035,9 +2036,9 @@ export class RequestStore {
     readonly actorUserId: UserId;
     readonly settlementSessionId?: string;
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly response?: RequestResponse;
   }): Promise<{
-    events: readonly AgentEvent[];
     request: Request;
   }> {
     const response = RequestResponseSchema.parse(
@@ -2055,7 +2056,7 @@ export class RequestStore {
         message: "Computer app access is approved on that Mac; from here it can only be declined.",
       });
     }
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const noLongerPending = () =>
         new OpensteerError({
           code: "conflict",
@@ -2089,6 +2090,7 @@ export class RequestStore {
         throw new Error("Computer app access Request payload does not match its kind");
       }
       await lockActiveDurableRequestAuthority(transaction, observedRequest);
+      assertRequestRevision(observed, input.expectedRevision);
       const setupRequestId = observedRequest.payload.setupRequestId;
       // Another Thread may still be waiting on this same approval, and its
       // card is authority to keep the row. Only the last decline takes it.
@@ -2135,19 +2137,19 @@ export class RequestStore {
       const request = requestFromRow(row);
       await enqueueContinuation(transaction, request, now);
       await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
+      await refreshRequestState(transaction, request.id);
       return {
-        events: await terminalEvents(transaction, request),
         request,
       };
     });
   }
   async declineMachineFullDiskAccessRequest(input: {
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
   }): Promise<{
-    events: readonly AgentEvent[];
     request: Request;
   }> {
     // Only "not now" is a person's to say; the grant itself arrives from the
@@ -2161,7 +2163,7 @@ export class RequestStore {
         message: "macOS Full Disk Access Requests can only be declined by a person",
       });
     }
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const observed = await transaction
         .selectFrom("requests")
         .selectAll()
@@ -2178,6 +2180,7 @@ export class RequestStore {
           message: "macOS Full Disk Access Request is no longer pending for this requester",
         });
       }
+      assertRequestRevision(observed, input.expectedRevision);
       await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
       const now = new Date();
       const row = await transaction
@@ -2205,17 +2208,16 @@ export class RequestStore {
       const request = requestFromRow(row);
       await enqueueContinuation(transaction, request, now);
       await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+      await refreshRequestState(transaction, request.id);
       return {
-        events: await terminalEvents(transaction, request),
         request,
       };
     });
   }
   async fulfillMachineFullDiskAccessRequests(machineId: RunnerId): Promise<{
-    events: AgentEvent[];
     requests: Request[];
   }> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const rows = await transaction
         .selectFrom("requests")
         .selectAll()
@@ -2225,7 +2227,6 @@ export class RequestStore {
         .orderBy("id", "asc")
         .forNoKeyUpdate()
         .execute();
-      const events: AgentEvent[] = [];
       const requests: Request[] = [];
       for (const row of rows) {
         try {
@@ -2256,22 +2257,22 @@ export class RequestStore {
         if (!resolved) continue;
         const request = requestFromRow(resolved);
         await enqueueContinuation(transaction, request, now);
-        events.push(...(await terminalEvents(transaction, request)));
+        await refreshRequestState(transaction, request.id);
         requests.push(request);
       }
       return {
-        events,
         requests,
       };
     });
   }
   async resolveBrowserRequest(input: {
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
   }): Promise<ResolvedBrowserRequest> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const observed = await transaction
         .selectFrom("requests")
         .selectAll()
@@ -2330,6 +2331,7 @@ export class RequestStore {
           message: "Browser Request is no longer pending",
         });
       }
+      assertRequestRevision(row, input.expectedRevision);
       const request = requestFromRow(row);
       const response = RequestResponseSchema.parse(input.response);
       if (response.kind !== "external" || !response.value) {
@@ -2402,8 +2404,8 @@ export class RequestStore {
       const resolved = requestFromRow(resolvedRow);
       await enqueueContinuation(transaction, resolved, now);
       await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+      await refreshRequestState(transaction, resolved.id);
       return {
-        events: await terminalEvents(transaction, resolved),
         profile,
         request: resolved,
       };
@@ -2413,10 +2415,11 @@ export class RequestStore {
   /** The owner said no: the agent is told not to ask for this site again. */
   async declineBrowserSignInRequest(input: {
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
   }): Promise<RequestMutation> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const observed = await transaction
         .selectFrom("requests")
         .selectAll()
@@ -2429,7 +2432,6 @@ export class RequestStore {
         observed.resolvedBy === input.resolvedBy
       ) {
         return {
-          events: [],
           replayed: true,
           request: requestFromRow(observed),
         };
@@ -2445,6 +2447,7 @@ export class RequestStore {
           message: "The sign-in Request is no longer pending",
         });
       }
+      assertRequestRevision(observed, input.expectedRevision);
       await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
       const now = new Date();
       const resolvedRow = await transaction
@@ -2478,8 +2481,8 @@ export class RequestStore {
       const resolved = requestFromRow(resolvedRow);
       await enqueueContinuation(transaction, resolved, now);
       await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+      await refreshRequestState(transaction, resolved.id);
       return {
-        events: await terminalEvents(transaction, resolved),
         replayed: false,
         request: resolved,
       };
@@ -2493,10 +2496,9 @@ export class RequestStore {
     readonly settlementSessionId?: string;
     readonly response: BrowserSignInRequestResponse;
   }): Promise<{
-    readonly events: readonly AgentEvent[];
     readonly request: Request;
   } | null> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const result = await fulfilBrowserSignInRequestInTransaction(transaction, input);
       await requestSettlementActor(transaction, input.ownerId, input.settlementSessionId);
       return result;
@@ -2612,6 +2614,7 @@ export class RequestStore {
   async hasDurablePasswordSignInRequestAuthority(input: {
     readonly ownerId: UserId;
     readonly requestId: RequestId;
+    readonly expectedRevision?: string;
   }): Promise<boolean> {
     return withPersonalReadTransaction(this.#database, async (transaction) => {
       const row = await transaction
@@ -2621,6 +2624,7 @@ export class RequestStore {
         .executeTakeFirst();
       if (
         !row ||
+        (input.expectedRevision !== undefined && row.revision !== input.expectedRevision) ||
         row.kind !== "browser.password-sign-in" ||
         row.status !== "pending" ||
         row.requestedBy !== input.ownerId ||
@@ -2672,7 +2676,7 @@ export class RequestStore {
         message: "Only a password sign-in can join an open Request",
       });
     }
-    return withPersonalTransaction(this.#database, async (personalTransaction) => {
+    return commitPersonalMutation(this.#database, async (personalTransaction) => {
       await ((transaction) => lockRequestOrigin(transaction, input))(personalTransaction);
       return (async (transaction) => {
         const recordJoins = async (mutation: RequestMutation): Promise<RequestMutation> => {
@@ -2700,7 +2704,6 @@ export class RequestStore {
         const joined = await joinedRequest(transaction, input.originatingRunId, input.callId);
         if (joined)
           return recordJoins({
-            events: [],
             replayed: true,
             request: joined,
           });
@@ -2742,7 +2745,6 @@ export class RequestStore {
               })
               .execute();
             return recordJoins({
-              events: [],
               replayed: true,
               request: requestFromRow(open),
             });
@@ -2786,10 +2788,34 @@ export class RequestStore {
    * replace an authorized outcome with interruption without changing the saved
    * human decision's provenance or its durable event.
    */
+  nextDeadline() {
+    return nextPersonalRequestDeadline(this.#database);
+  }
+
+  async expirePasswordSignIns(now: Date) {
+    const due = await expiredPersonalSignInRequests(this.#database, now);
+    for (const { id, requestedBy } of due) {
+      const result = await this.settlePasswordSignInRequest({
+        requestId: id,
+        ownerId: requestedBy,
+        settlement: { status: "fulfilled", response: { outcome: "expired" } },
+      });
+      if (result) continue;
+      await commitPersonalMutation(this.#database, (tx) =>
+        cancelPending(tx, {
+          requestIds: [id],
+          reason: "authority-revoked",
+          resolvedAt: now,
+        }),
+      );
+    }
+  }
+
   async settlePasswordSignInRequest(input: {
     readonly ownerId: UserId;
     readonly settlementSessionId?: string;
     readonly requestId: RequestId;
+    readonly expectedRevision?: string;
     readonly settlement:
       | {
           readonly status: "declined";
@@ -2799,10 +2825,9 @@ export class RequestStore {
           readonly response: PasswordSignInRequestResponse;
         };
   }): Promise<{
-    readonly events: readonly AgentEvent[];
     readonly request: Request;
   } | null> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const eligible = (row: RequestRow | undefined): row is RequestRow =>
         row?.kind === "browser.password-sign-in" &&
         row.requestedBy === input.ownerId &&
@@ -2833,6 +2858,7 @@ export class RequestStore {
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!eligible(row)) return null;
+      if (input.expectedRevision !== undefined) assertRequestRevision(row, input.expectedRevision);
       if (
         input.settlement.status === "fulfilled" &&
         input.settlement.response.outcome === "authorized" &&
@@ -2877,8 +2903,8 @@ export class RequestStore {
       const resolved = requestFromRow(resolvedRow);
       await enqueueContinuation(transaction, resolved, now);
       await requestSettlementActor(transaction, input.ownerId, input.settlementSessionId);
+      await refreshRequestState(transaction, resolved.id);
       return {
-        events: await terminalEvents(transaction, resolved),
         request: resolved,
       };
     });
@@ -2888,7 +2914,7 @@ export class RequestStore {
     readonly threadId: ThreadId;
     readonly withdrawnBy: UserId;
   }): Promise<RequestMutation> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const pending = await transaction
         .selectFrom("requests")
         .selectAll()
@@ -2909,7 +2935,6 @@ export class RequestStore {
         pending.resolvedBy === input.withdrawnBy
       ) {
         return {
-          events: [],
           replayed: true,
           request: requestFromRow(pending),
         };
@@ -2946,8 +2971,8 @@ export class RequestStore {
         .executeTakeFirstOrThrow();
       const request = requestFromRow(row);
       await enqueueContinuation(transaction, request, now);
+      await refreshRequestState(transaction, request.id);
       return {
-        events: await terminalEvents(transaction, request),
         replayed: false,
         request,
       };
@@ -2957,8 +2982,8 @@ export class RequestStore {
     runId: RunId,
     reason: RequestCancellationReason,
     resolvedAt = new Date(),
-  ): Promise<readonly AgentEvent[]> {
-    return withPersonalTransaction(this.#database, (transaction) =>
+  ): Promise<readonly RequestId[]> {
+    return commitPersonalMutation(this.#database, (transaction) =>
       cancelPending(transaction, {
         reason,
         resolvedAt,
@@ -3020,7 +3045,7 @@ export class RequestStore {
     requestId: RequestId,
     claims: Parameters<typeof assertActiveGrant>[1],
   ): Promise<"delivered" | "already-delivered" | "refused"> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const run = await transaction
         .selectFrom("runs")
         .select(["phase", "voiceSessionId"])
@@ -3322,7 +3347,6 @@ async function createRequestInTransaction(
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
     return {
-      events: [],
       replayed: true,
       request: requestFromRow(replay),
     };
@@ -3412,7 +3436,7 @@ async function createRequestInTransaction(
       .orderBy("createdAt")
       .orderBy("id")
       .executeTakeFirst();
-    if (duplicate) return { replayed: true, request: requestFromRow(duplicate), events: [] };
+    if (duplicate) return { replayed: true, request: requestFromRow(duplicate) };
     const state = deviceAccessStates(
       device.accessPolicy,
       runner?.allowedModules ?? ["integrations"],
@@ -3501,7 +3525,6 @@ async function createRequestInTransaction(
       .executeTakeFirst();
     if (duplicate) {
       return {
-        events: [],
         replayed: true,
         request: requestFromRow(duplicate),
       };
@@ -3524,7 +3547,7 @@ async function createRequestInTransaction(
       .orderBy("id", "asc")
       .limit(1)
       .executeTakeFirst();
-    if (duplicate) return { events: [], replayed: true, request: requestFromRow(duplicate) };
+    if (duplicate) return { replayed: true, request: requestFromRow(duplicate) };
   }
   if (input.payload.kind === "computer.app.access") {
     // The same ask for the same app is the same card, whatever call identity
@@ -3557,7 +3580,6 @@ async function createRequestInTransaction(
       .executeTakeFirst();
     if (duplicate) {
       return {
-        events: [],
         replayed: true,
         request: requestFromRow(duplicate),
       };
@@ -3601,7 +3623,6 @@ async function createRequestInTransaction(
       .where(callIdentityFilter(input))
       .executeTakeFirstOrThrow();
     return {
-      events: [],
       replayed: true,
       request: requestFromRow(replay),
     };
@@ -3633,25 +3654,7 @@ async function createRequestInTransaction(
       });
     }
   }
-  const event = await appendHostDeploymentEvent(transaction, {
-    data: {
-      request: PendingRequestSchema.parse(canonical),
-    },
-    environmentId: origin.environmentId,
-    runId: origin.runId,
-    threadId: origin.threadId,
-    type: "request.opened",
-  });
-  return {
-    events: [
-      event,
-      ...(canonical.originatingRunId
-        ? await assignmentActivityEventsForRun(transaction, canonical.originatingRunId)
-        : []),
-    ],
-    replayed: false,
-    request: canonical,
-  };
+  return { replayed: false, request: await refreshRequestState(transaction, canonical.id) };
 }
 
 /**
@@ -3772,7 +3775,6 @@ async function bindIntegrationAccessInstallation(
   transaction: Transaction<DatabaseSchema>,
   input: {
     readonly installation: InstallIntegrationMutation["installation"];
-    readonly requestEvents: readonly AgentEvent[];
     readonly requestId: RequestId;
   },
 ): Promise<BoundIntegrationAccessInstallation> {
@@ -3835,19 +3837,9 @@ async function bindIntegrationAccessInstallation(
     .returningAll()
     .executeTakeFirstOrThrow();
   const request = requestFromRow(updatedRow);
-  const event = await appendHostDeploymentEvent(transaction, {
-    data: {
-      request: PendingRequestSchema.parse(request),
-    },
-    environmentId: await requestOriginEnvironment(transaction, request),
-    runId: request.originatingRunId,
-    threadId: request.originatingThreadId,
-    type: "request.updated",
-  });
   return {
     installation: input.installation,
-    request,
-    requestEvents: [...input.requestEvents, event],
+    request: await refreshRequestState(transaction, request.id),
   };
 }
 async function validateIntegrationRequestDetail(
@@ -4218,29 +4210,6 @@ async function insertIntegrationDetail(
     })
     .executeTakeFirstOrThrow();
 }
-async function terminalEvents(
-  transaction: Transaction<DatabaseSchema>,
-  request: Request,
-): Promise<readonly AgentEvent[]> {
-  if (request.status === "pending" || request.status === "cancelled") {
-    throw new Error("Request resolution event requires a non-cancellation terminal state");
-  }
-  const event = await appendHostDeploymentEvent(transaction, {
-    data: {
-      request: ResolvedRequestSchema.parse(request),
-    },
-    environmentId: await requestOriginEnvironment(transaction, request),
-    runId: request.originatingRunId,
-    threadId: request.originatingThreadId,
-    type: "request.resolved",
-  });
-  return [
-    event,
-    ...(request.originatingRunId
-      ? await assignmentActivityEventsForRun(transaction, request.originatingRunId)
-      : []),
-  ];
-}
 type BrowserSignInRequestScope = {
   readonly settlementSessionId?: string;
   readonly requestId: RequestId;
@@ -4315,7 +4284,6 @@ export async function fulfilBrowserSignInRequestInTransaction(
     readonly response: BrowserSignInRequestResponse;
   },
 ): Promise<{
-  readonly events: readonly AgentEvent[];
   readonly request: Request;
 } | null> {
   const matches = (row: RequestRow | undefined): row is RequestRow =>
@@ -4358,8 +4326,8 @@ export async function fulfilBrowserSignInRequestInTransaction(
     .executeTakeFirstOrThrow();
   const resolved = requestFromRow(resolvedRow);
   await enqueueContinuation(transaction, resolved, now);
+  await refreshRequestState(transaction, resolved.id);
   return {
-    events: await terminalEvents(transaction, resolved),
     request: resolved,
   };
 }
@@ -4804,7 +4772,7 @@ export async function fulfillDeviceAccessRequestsInTransaction(
   transaction: Transaction<DatabaseSchema>,
   machineId: DeviceId,
   policy: MachineAccessPolicy,
-): Promise<readonly AgentEvent[]> {
+): Promise<readonly RequestId[]> {
   const access = deviceAccess(policy);
   const ownership = await deviceOwnershipIn(transaction, machineId);
   const rows = await transaction
@@ -4815,7 +4783,7 @@ export async function fulfillDeviceAccessRequestsInTransaction(
     .where(sql<string>`payload->>'machineId'`, "=", machineId)
     .orderBy("id")
     .execute();
-  const events: AgentEvent[] = [];
+  const settled: RequestId[] = [];
   for (const row of rows) {
     const request = requestFromRow(row);
     if (request.payload.kind !== "device.access") throw new Error("Device access payload mismatch");
@@ -4827,7 +4795,7 @@ export async function fulfillDeviceAccessRequestsInTransaction(
       authorized = false;
     }
     if (!authorized) {
-      events.push(
+      settled.push(
         ...(await cancelPending(transaction, {
           requestIds: [request.id],
           reason: "authority-revoked",
@@ -4853,7 +4821,8 @@ export async function fulfillDeviceAccessRequestsInTransaction(
     if (!resolved) continue;
     const fulfilled = requestFromRow(resolved);
     await enqueueContinuation(transaction, fulfilled, now);
-    events.push(...(await terminalEvents(transaction, fulfilled)));
+    await refreshRequestState(transaction, fulfilled.id);
+    settled.push(fulfilled.id);
   }
-  return events;
+  return settled;
 }

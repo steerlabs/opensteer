@@ -1,3 +1,4 @@
+import type { PersonalCommitReaction } from "@opensteer/database/personal-mutation";
 import { randomUUID } from "node:crypto";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
@@ -10,7 +11,6 @@ import {
   OpensteerError,
   RequestPresentationSchema,
   RequestResponseSchema,
-  type AgentEvent,
   type RequestId,
   type RequestResponse,
   type RequestCancellationReason,
@@ -106,7 +106,6 @@ interface IntegrationInputOptions {
     "create" | "settleIntegrationInput" | "cancelIntegrationInputs"
   >;
   readonly longRequestHold: (run: RunCapabilityClaims<string>) => Promise<boolean>;
-  readonly publish: (events: readonly AgentEvent[]) => void;
 }
 
 /** Pairing answers live only as long as the upstream client that received them. */
@@ -177,15 +176,16 @@ export class IntegrationInput {
       }
   }
 
-  observe(event: AgentEvent): void {
-    if (event.type === "request.cancelled")
-      this.#waiters.get(event.data.requestId)?.resolve({ action: "cancel" });
-    if (event.type === "request.resolved" && event.data.request.status === "withdrawn")
-      this.#waiters.get(event.data.request.id)?.resolve({ action: "cancel" });
+  requestChanged(change: Extract<PersonalCommitReaction, { type: "requestChanged" }>): void {
+    if (
+      change.kind === "integration.input" &&
+      (change.status === "cancelled" || change.status === "withdrawn")
+    )
+      this.#waiters.get(change.requestId)?.resolve({ action: "cancel" });
   }
 
   async recover(): Promise<void> {
-    this.#options.publish(await this.#options.requests.cancelIntegrationInputs("source-closed"));
+    await this.#options.requests.cancelIntegrationInputs("source-closed");
   }
 
   async close(): Promise<void> {
@@ -196,6 +196,7 @@ export class IntegrationInput {
 
   async respond(input: {
     readonly requestId: RequestId;
+    readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
@@ -207,14 +208,14 @@ export class IntegrationInput {
     const result = inputResult(waiter.schema, response);
     waiter.responding = true;
     try {
-      const settled = await this.#options.requests.settleIntegrationInput({
+      await this.#options.requests.settleIntegrationInput({
         caller: waiter.call.caller.run,
         requestId: input.requestId,
+        expectedRevision: input.expectedRevision,
         resolvedBy: input.resolvedBy,
         ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
         action: result.action,
       });
-      this.#options.publish(settled.events);
       if (result.action === "accept" && response.kind === "form") {
         waiter.call.remember(Object.values(response.answers).flat());
         waiter.call.remember(Object.values(result.content ?? {}).map(String));
@@ -279,7 +280,6 @@ export class IntegrationInput {
       });
       onAbort = () => resolve({ action: "cancel" });
       ended.addEventListener("abort", onAbort, { once: true });
-      this.#options.publish(opened.events);
       if (ended.aborted || opened.request.status !== "pending") resolve({ action: "cancel" });
       return await answer;
     } catch (error) {
@@ -289,9 +289,7 @@ export class IntegrationInput {
       if (onAbort) ended.removeEventListener("abort", onAbort);
       if (requestId) {
         this.#waiters.delete(requestId);
-        this.#options.publish(
-          await this.#options.requests.cancelIntegrationInputs(call.cancellationReason, requestId),
-        );
+        await this.#options.requests.cancelIntegrationInputs(call.cancellationReason, requestId);
       }
     }
   }

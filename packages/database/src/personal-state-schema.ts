@@ -65,6 +65,7 @@ export interface ClientSyncStateTable {
   lastCommitAt: Timestamp;
   resourceRevisions: Generated<PersonalResourceRevisions>;
   pendingRequestCount: Generated<number>;
+  pendingDeviceAccessRequestCount: Generated<number>;
   needsYouCount: Generated<number>;
   unreadTaskCount: Generated<number>;
 }
@@ -211,6 +212,8 @@ const retainedStateDdl = `
     add column last_commit_at timestamptz not null default clock_timestamp(),
     add column resource_revisions jsonb not null default '${JSON.stringify(emptyPersonalResourceRevisions)}',
     add column pending_request_count integer not null default 0 check (pending_request_count >= 0),
+    add column pending_device_access_request_count integer not null default 0
+      check (pending_device_access_request_count between 0 and pending_request_count),
     add column needs_you_count integer not null default 0 check (needs_you_count >= pending_request_count),
     add column unread_task_count integer not null default 0 check (unread_task_count >= 0),
     add column upgrade_cursor jsonb,
@@ -470,6 +473,12 @@ const currentStateIndexes = `
   create index requests_current_run_end on requests(originating_run_id,id)
     where status = 'pending' and (mode = 'live' or kind = 'integration.input');
   create index requests_current_thread on requests(originating_thread_id,id) where status = 'pending' and originating_node_id is null;
+  create index requests_password_sign_in_deadline on requests((payload->>'expiresAt'),id)
+    where kind='browser.password-sign-in' and status='pending';
+  create index personal_team_requests_consent_deadline
+    on personal_team_requests(consent_expires_at,team_deployment_id,request_id)
+    where kind='ask' and terminal_state is null and local_decision is null and consent_expires_at is not null;
+  create index computer_app_setup_requests_deadline on computer_app_setup_requests(expires_at,id);
   create index requests_current_node on requests(originating_node_id,id) where status = 'pending' and originating_node_id is not null;
   create index run_attempts_binding on run_attempts(run_id,binding_generation,id);
   create index execution_nodes_current_run on execution_nodes(run_id,id) where status = 'running';

@@ -1,7 +1,7 @@
 import { stripRefs } from "@opensteer/shared/stripRefs";
 import { OpensteerError, type DeploymentId, type RunId, type TeamBlobId } from "@opensteer/core";
-import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
-import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
+import type { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
+import type { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
 import { TeamMarkdownSchema, TeamSearchInputSchema } from "@opensteer/protocol";
 import { teamMentionHandles } from "@opensteer/shared/teamMentions";
 import type { z } from "zod";
