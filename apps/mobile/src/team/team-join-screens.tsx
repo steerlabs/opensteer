@@ -1,5 +1,5 @@
 import { HostVersionMismatchError } from "@opensteer/client/connections";
-import { HostClientRequestError, unwrapRpcResult } from "@opensteer/client/host";
+import { unwrapRpcResult } from "@opensteer/client/host";
 import { DeploymentIdSchema } from "@opensteer/core";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
@@ -231,8 +231,8 @@ function inviteFailure(error: unknown, host: string, team: TeamTileView): Invite
     reason === "invite-invalid" ||
     reason === "invite-expired" ||
     reason === "invite-used-up" ||
-    (error instanceof HostClientRequestError &&
-      (error.code === "not_found" || error.code === "forbidden" || error.code === "conflict"))
+    (classifyClientFailure(error).kind === "rejection" &&
+      ["not_found", "forbidden", "conflict"].includes(classifyClientFailure(error).code))
   )
     return { kind: "no-longer-works", team, inviter: null };
   if (error instanceof TypeError) return { kind: "unreachable", host };

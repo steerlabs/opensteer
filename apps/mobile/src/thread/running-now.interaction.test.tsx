@@ -5,6 +5,7 @@ import { MockHostClient, type MockSubagentScene } from "@opensteer/client/mock";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { testHostConnection } from "@opensteer/client/test-support";
 
 /*
  * Running now on a phone: a capsule over the composer while anything works
@@ -135,6 +136,7 @@ async function scene(name: MockSubagentScene) {
       return () => listeners.delete(listener);
     },
   } as unknown as HostClient;
+  Object.assign(hostClient, { connection: testHostConnection(hostClient) });
   harness.hostClient = hostClient;
   const move = (next: HostSnapshot) => {
     current = next;

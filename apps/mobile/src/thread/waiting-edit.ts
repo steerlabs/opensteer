@@ -1,7 +1,6 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
+import { classifyClientFailure } from "@opensteer/client/connections";
 import {
   followWaitingDraft,
-  HostClientRequestError,
   openWaitingDraft,
   reloadWaitingDraft,
   removeWaitingDraftPart,
@@ -17,6 +16,13 @@ import type { ContentPart } from "@opensteer/core";
 import * as Haptics from "expo-haptics";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { dismissKeyboard } from "../ui/composer-editor.js";
+import { failureWords } from "../ui/client-feedback.js";
+
+const editWords = {
+  label: "save your edit",
+  done: "saved",
+  happened: "your edit was saved",
+} as const;
 
 /** One waiting message open in place on this phone. */
 export interface WaitingEdit {
@@ -142,7 +148,8 @@ export function useWaitingEdit(
             shown?.messageId === messageId
               ? {
                   ...shown,
-                  failure: presentActionFailure(error, "This message can’t be edited right now."),
+                  failure:
+                    failureWords(error, editWords, "This message can’t be edited right now.") ?? "",
                   phase: "refused",
                 }
               : shown,
@@ -297,17 +304,16 @@ export function useWaitingEdit(
       }
       const away = !activeRef.current;
       if (away) letGo();
-      const settled =
-        error instanceof HostClientRequestError &&
-        (error.code === "conflict" || error.code === "not_found");
+      const { code, kind } = classifyClientFailure(error);
+      const settled = kind === "rejection" && (code === "conflict" || code === "not_found");
       setKept((current) =>
         current?.messageId !== shown.messageId
           ? current
           : {
               ...current,
               failure: settled
-                ? presentActionFailure(error, "This message changed before your edit was saved.")
-                : presentActionFailure(error, "Your edit wasn’t saved. Try again."),
+                ? failureWords(error, editWords, "This message changed before your edit was saved.")
+                : failureWords(error, editWords, "Your edit wasn’t saved. Try again."),
               phase: away ? "away" : "open",
             },
       );

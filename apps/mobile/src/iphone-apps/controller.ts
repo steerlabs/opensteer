@@ -1,7 +1,6 @@
 import { classifyClientFailure } from "@opensteer/client/connections";
 import { isIphoneAppId } from "./model.js";
 import {
-  HostClientRequestError,
   isHostRefusal,
   mutationIdempotencyKey,
   unwrapRpcResult,
@@ -1687,7 +1686,7 @@ function mintFailure(error: unknown): IphoneAddFailure {
     return { kind: nativeCode };
   }
   if (nativeCode === "enrollment-refused") return { kind: "failed" };
-  if (error instanceof HostClientRequestError && error.reason === "personal-remote-access-off") {
+  if (classifyClientFailure(error).reason === "personal-remote-access-off") {
     return { kind: "remote-access-off" };
   }
   if (isHostRefusal(error) && error instanceof Error && error.message.trim() !== "") {

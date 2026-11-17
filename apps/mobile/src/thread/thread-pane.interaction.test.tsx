@@ -3731,7 +3731,7 @@ describe("a task", () => {
     );
     await settle();
     expect(editField(container)?.value).toBe("Words typed on a slow connection");
-    expect(text(container)).toContain("Couldn't complete this action.");
+    expect(text(container)).toContain("This message can’t be edited right now.");
     expect(hasButton(container, "Discard")).toBe(true);
 
     await press(container, "Try again");

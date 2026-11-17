@@ -5,8 +5,13 @@ import {
   type ClientActionSpec,
   type ClientActionState,
 } from "@opensteer/client/actions";
-import { ClientOperationError, type ClientSession } from "@opensteer/client/connections";
 import {
+  classifyClientFailure,
+  ClientOperationError,
+  type ClientSession,
+} from "@opensteer/client/connections";
+import {
+  clientIssue,
   clientIssueActions,
   presentClientIssue,
   type ClientIssue,
@@ -117,6 +122,51 @@ export function refusal(reason: string, message: string): ClientOperationError {
     reason,
     retryable: false,
   });
+}
+
+/** An action as the presenter says it: "close this tab", "closed", "this tab closed". */
+export interface ActionWords {
+  readonly label: string;
+  readonly done?: string;
+  readonly happened?: string;
+}
+
+/**
+ * What work a screen ran itself came to, in the presenter's words for that
+ * action; null when it was cancelled. A refusal or a failure on this device
+ * says the screen's own sentence, `own`, where it has one; a lost answer or
+ * the connection's state is always the presenter's.
+ */
+export function failureWords(error: unknown, words: ActionWords, own?: string): string | null {
+  const issue = clientIssue(error, { operation: "action", label: words.label });
+  if (issue === null) return null;
+  if (own !== undefined && ownsFailure(error)) return own;
+  return presentClientIssue({
+    ...issue,
+    ...(words.done ? { done: words.done } : {}),
+    ...(words.happened ? { happened: words.happened } : {}),
+  }).title;
+}
+
+const ownsFailure = (error: unknown): boolean =>
+  ["rejection", "local", "unexpected"].includes(classifyClientFailure(error).kind);
+
+/** The same, as a line beside the control: danger when refused or failed here. */
+export function failureLine(
+  error: unknown,
+  words: ActionWords,
+  key: string,
+  own?: string,
+): ActionLineValue | null {
+  const text = failureWords(error, words, own);
+  if (text === null) return null;
+  const danger = ownsFailure(error) && classifyClientFailure(error).kind !== "unexpected";
+  return {
+    haptic: danger ? "error" : "warning",
+    key: `${key}:${++serial}`,
+    text,
+    tone: danger ? "danger" : "muted",
+  };
 }
 
 /**

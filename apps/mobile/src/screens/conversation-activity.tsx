@@ -1,11 +1,10 @@
+import { classifyClientFailure } from "@opensteer/client/connections";
 import { presentClientIssue } from "@opensteer/client/feedback";
 import { TranscriptImageContext } from "@opensteer/client/react";
 import {
   conversationActivityTurn,
   formatClockTime,
   groupTranscriptEntries,
-  HostClientRequestError,
-  showsHostLive,
   visibleTranscript,
   withoutOwnAssignment,
   type HostClient,
@@ -39,6 +38,7 @@ import { useGutter } from "../ui/screen.js";
 import { UnavailableState } from "../ui/unavailable-state.js";
 import { ActionLine } from "../ui/action-line.js";
 import { PlaceholderRows } from "../ui/placeholder.js";
+import { useShowsLive } from "../ui/connection-live.js";
 
 export type ConversationActivityScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -109,7 +109,7 @@ function useRunLoad(
       (error: unknown) =>
         current &&
         setState(
-          error instanceof HostClientRequestError && (error.status === 403 || error.status === 404)
+          ["forbidden", "not_found"].includes(classifyClientFailure(error).code)
             ? "unavailable"
             : "failed",
         ),
@@ -163,7 +163,7 @@ function ReplyActivity(props: {
   const load = useRunLoad(hostClient, threadId, run, activity !== null);
   const environment = snapshot.environments.find(({ id }) => id === thread?.environmentId);
   const engine = threadEngine(snapshot, threadId);
-  const live = showsHostLive(snapshot) && environment?.status === "connected";
+  const live = useShowsLive(hostClient.connection) && environment?.status === "connected";
   const openStep = useCallback(
     (entryId: string) => navigation.navigate("ThreadStep", { deploymentId, entryId, threadId }),
     [deploymentId, navigation, threadId],

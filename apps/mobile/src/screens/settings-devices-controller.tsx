@@ -1,4 +1,3 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
 import { SettingsComputerEnrollment } from "./settings-computer-enrollment.js";
 import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
@@ -18,6 +17,7 @@ import {
   settingsFooter,
   useScreenAction,
   useScreenRead,
+  failureWords,
 } from "../ui/client-feedback.js";
 import { useMobileClient, useHostValue, useMobileState } from "../ui/mobile-client-context.js";
 import { useLeaveSheets } from "./leave-sheets.js";
@@ -149,7 +149,11 @@ export function DevicesSettingsController(): ReactNode {
               navigation.navigate("SetUpPhone", { deploymentId }),
             ).catch((error: unknown) =>
               setFailure(
-                presentActionFailure(error, `This ${thisPhoneNoun} couldn't leave ${elsewhere}.`),
+                failureWords(
+                  error,
+                  { label: `move this ${thisPhoneNoun}`, done: "moved" },
+                  `This ${thisPhoneNoun} couldn't leave ${elsewhere}.`,
+                ),
               ),
             );
           },

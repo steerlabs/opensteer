@@ -1,11 +1,10 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
 import type { QuietTaskDays } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
 import Constants from "expo-constants";
 import { useCallback, useRef, useState, type ReactNode } from "react";
 import { Linking } from "react-native";
 import type { NotificationPreferences } from "../notifications/push-registration.js";
-import { notDone, settingsFooter, useScreenAction } from "../ui/client-feedback.js";
+import { notDone, settingsFooter, useScreenAction, failureWords } from "../ui/client-feedback.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { useMobileNotifications, usePushRegistration } from "../ui/notifications-context.js";
 import { GeneralSettingsForm } from "./settings-general-form.js";
@@ -68,7 +67,9 @@ export function GeneralSettingsController(): ReactNode {
     setNotificationError(null);
     setNotificationWorking(true);
     void operation()
-      .catch((error: unknown) => setNotificationError(presentActionFailure(error, fallback)))
+      .catch((error: unknown) =>
+        setNotificationError(failureWords(error, { label: "finish that" }, fallback)),
+      )
       .finally(() => {
         notificationInFlight.current = false;
         setNotificationWorking(false);

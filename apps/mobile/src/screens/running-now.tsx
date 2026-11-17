@@ -1,4 +1,4 @@
-import { showsHostLive, type HostClient, type RunningNow } from "@opensteer/client/host";
+import { type HostClient, type RunningNow } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useCallback, useEffect, type ReactNode } from "react";
@@ -11,6 +11,7 @@ import { useGutter } from "../ui/screen.js";
 import { RunningCommandView, RunningRowView, useRunningNow } from "../thread/running-now.js";
 import { AgentEngine, AgentGround, threadEngine } from "../thread/agent-mark.js";
 import { AgentsLive } from "../thread/subagent-rows.js";
+import { useShowsLive } from "../ui/connection-live.js";
 
 export type RunningNowScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -59,17 +60,19 @@ function RunningList(props: {
   const navigation = useNavigation();
   const insets = useContentInsets();
   const gutter = useGutter();
-  const reachable = useHostSelector(
+  const live = useShowsLive(hostClient.connection);
+  const connected = useHostSelector(
     hostClient,
     useCallback(
       (snapshot) => {
         const thread = snapshot.threads.find(({ id }) => id === threadId);
         const environment = snapshot.environments.find(({ id }) => id === thread?.environmentId);
-        return showsHostLive(snapshot) && environment?.status === "connected";
+        return environment?.status === "connected";
       },
       [threadId],
     ),
   );
+  const reachable = live && connected;
   const engine = useHostSelector(
     hostClient,
     useCallback((snapshot) => threadEngine(snapshot, threadId), [threadId]),

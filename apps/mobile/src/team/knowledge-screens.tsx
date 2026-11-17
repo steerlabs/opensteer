@@ -38,12 +38,7 @@ import { Markdown } from "../markdown/markdown.js";
 import type { RootParamList } from "../navigation.js";
 import { color, controlFontScaleLimit, radius, space } from "../theme.js";
 import { NativeMenu } from "../thread/composer-menu.js";
-import {
-  clientIssue,
-  clientIssueActions,
-  presentActionFailure,
-  presentClientIssue,
-} from "@opensteer/client/feedback";
+import { clientIssue, clientIssueActions, presentClientIssue } from "@opensteer/client/feedback";
 import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
 import { PlaceholderRows } from "../ui/placeholder.js";
 import { AppText, Notice, SecondaryButton, SectionLabel } from "../ui/primitives.js";
@@ -63,6 +58,7 @@ import {
 } from "./knowledge-parts.js";
 import { useTeamSession } from "./team-context.js";
 import { Avatar } from "./team-marks.js";
+import { failureWords } from "../ui/client-feedback.js";
 
 type Navigation = NativeStackNavigationProp<RootParamList>;
 
@@ -84,7 +80,13 @@ function readWords(error: unknown, resource: string): string {
 function changeWords(error: unknown): string {
   if (isNoteChangedConflict(error))
     return "Someone changed this note. You're seeing the newest version now.";
-  return presentActionFailure(error) || "Couldn't confirm this change.";
+  return (
+    failureWords(error, {
+      label: "change this note",
+      done: "changed",
+      happened: "this note changed",
+    }) ?? ""
+  );
 }
 
 function failedLine(text: string, retry?: () => void): ActionLineValue {

@@ -1,3 +1,4 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
 import type { TeamAskOwnerControl } from "@opensteer/client/team";
 import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
@@ -254,6 +255,11 @@ function AskDecisionControl(props: {
   );
 }
 
+const unconfirmedMessage = presentClientIssue({
+  code: "unconfirmed",
+  happened: "your message was sent",
+}).title;
+
 /**
  * A message this phone still holds, drawn where the delivered one will stand,
  * through the team's own ordered delivery: waiting, sending, refused, or sent
@@ -271,11 +277,10 @@ function Delivery(props: {
     <MessageDelivery
       // The team's owner takes back only refused messages: a waiting one offers nothing.
       attempted
-      copy={send.kind === "retryable" ? { waiting: "Couldn't confirm this message sent." } : {}}
+      copy={send.kind === "retryable" ? { waiting: unconfirmedMessage } : {}}
       onAction={(action) => actions.onUnsent(message.id, action === "edit" ? "edit" : "delete")}
       phase={send.kind === "failed" ? "rejected" : send.kind === "sending" ? "sending" : "waiting"}
-      // The team's delivery owner keeps presented words, not the refusal's reason.
-      rejection={send.kind === "failed" ? "Not sent. The team didn't accept it." : null}
+      rejection={send.kind === "failed" ? `Not sent. ${send.reason}` : null}
       showStatus
       since={send.since}
     >

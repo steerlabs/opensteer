@@ -10,7 +10,7 @@ import type {
   TranscriptEntry,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
+import { tabFixture, tabStoreFixture, testHostConnection } from "@opensteer/client/test-support";
 import { createId, RunIdSchema, TabIdSchema, ThreadIdSchema } from "@opensteer/core";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -293,6 +293,7 @@ function fakeHost(initial: HostSnapshot) {
       return () => listeners.delete(listener);
     },
   } as unknown as HostClient;
+  Object.assign(client, { connection: testHostConnection(client) });
   harness.hostClient = client;
   return {
     client,

@@ -1,4 +1,4 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
+import { classifyClientFailure } from "@opensteer/client/connections";
 import {
   attachmentMaxBytes,
   attachmentMessageMaxBytes,
@@ -6,7 +6,7 @@ import {
   type ArtifactContentPart,
   type Attachment,
 } from "@opensteer/core";
-import { HostClientRequestError, stageAttachment, type HostClient } from "@opensteer/client/host";
+import { stageAttachment, type HostClient } from "@opensteer/client/host";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { type DraftAttachment, type ThreadDraftStore } from "../client/thread-drafts.js";
 import type { PastedImages } from "../../modules/composer-editor/index.js";
@@ -20,6 +20,8 @@ import {
   type LocalAttachmentDraftScope,
   type PickedAttachmentSource,
 } from "../platform/attachment-draft-files.js";
+import { failureWords } from "../ui/client-feedback.js";
+import { useConnectionReady } from "../ui/connection-live.js";
 
 /**
  * One file on the draft. `localUri` names this phone's private copy; it is
@@ -36,6 +38,8 @@ export interface ComposerAttachment extends DraftAttachment {
 
 export interface DraftAttachments {
   readonly items: readonly ComposerAttachment[];
+  /** Out of reach: files not yet uploaded wait, and go by themselves once it is back. */
+  readonly waiting: boolean;
   /** Why a file was not added, until the next pick. */
   readonly notice: string | null;
   pick(kind: "file" | "photo"): Promise<void>;
@@ -127,6 +131,10 @@ export function useDraftAttachments(options: {
 }): DraftAttachments {
   const { client, draftKey, drafts } = options;
   const { deploymentId, userId } = options.files;
+  // Out of reach, a file waits to upload rather than failing; it goes once the connection is back.
+  const ready = useConnectionReady(client.connection);
+  const readyNow = useRef(ready);
+  readyNow.current = ready;
   const draftVersion = useSyncExternalStore(drafts.subscribe, drafts.getVersion);
   // The scope is held by its own parts so that a caller's fresh object each
   // render does not restart uploads. A local scope is never a Thread scope.
@@ -201,7 +209,7 @@ export function useDraftAttachments(options: {
     (item: ComposerAttachment) => {
       if (!mounted.current) return;
       const key = attachmentKey(item);
-      if (controllers.current.has(key)) return;
+      if (controllers.current.has(key) || !readyNow.current) return;
       const controller = new AbortController();
       if (!acquireUpload(drafts, ownerKey(key), controller)) return;
       controllers.current.set(key, controller);
@@ -221,8 +229,14 @@ export function useDraftAttachments(options: {
         },
         (error: unknown) => {
           if (controller.signal.aborted) return;
+          if (!readyNow.current && classifyClientFailure(error).kind === "transport") {
+            update(key, { error: null, status: "staged" });
+            return;
+          }
           update(key, {
-            error: presentActionFailure(error, "This file could not be uploaded."),
+            error:
+              failureWords(error, uploadWords, "This file could not be uploaded.") ??
+              "This file could not be uploaded.",
             retryable: retryable(error),
             status: "error",
           });
@@ -328,7 +342,7 @@ export function useDraftAttachments(options: {
 
   useEffect(() => {
     resume();
-  }, [items, resume]);
+  }, [items, ready, resume]);
 
   /** Adds one file a picker or a paste produced, unless the message is full. */
   const add = (picked: PickedAttachmentSource): boolean => {
@@ -379,7 +393,7 @@ export function useDraftAttachments(options: {
       picked = kind === "photo" ? await pickChatPhoto(files) : await pickChatFile(files);
     } catch (error) {
       if (mounted.current)
-        setNotice(presentActionFailure(error, "That file could not be attached."));
+        setNotice(failureWords(error, attachWords, "That file could not be attached."));
       return;
     }
     if (picked !== null) add(picked);
@@ -395,7 +409,7 @@ export function useDraftAttachments(options: {
         try {
           picked = await importPastedImage(files, image);
         } catch (error) {
-          problem = presentActionFailure(error, "A pasted image could not be attached.");
+          problem = failureWords(error, attachWords, "A pasted image could not be attached.");
           continue;
         }
       } else discardPastedImage(image.uri);
@@ -468,7 +482,7 @@ export function useDraftAttachments(options: {
     for (const item of added) upload(item);
   };
 
-  return { items, notice, paste, pick, release, remove, restore, retry };
+  return { items, notice, paste, pick, release, remove, restore, retry, waiting: !ready };
 }
 
 /** What a message carries for a file the Host holds, or null while it does not. */
@@ -537,9 +551,11 @@ function forgetCopy(scope: LocalAttachmentDraftScope, localUri: string): void {
   }
 }
 
+const uploadWords = { label: "upload this file", done: "uploaded" } as const;
+const attachWords = { label: "attach this file", done: "attached" } as const;
+
+/** Only a refusal of this very file stops it; anything else may go next time. */
 function retryable(error: unknown): boolean {
-  if (!(error instanceof HostClientRequestError)) return true;
-  return (
-    error.status >= 500 || error.status === 404 || error.status === 408 || error.status === 429
-  );
+  const failure = classifyClientFailure(error);
+  return failure.kind !== "rejection" || failure.code === "not_found";
 }

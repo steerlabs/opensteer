@@ -1,6 +1,6 @@
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import { hostMessageOutbox } from "@opensteer/client/host";
-import { clientIssue, presentActionFailure, presentClientIssue } from "@opensteer/client/feedback";
+import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
 import { issueLine } from "../ui/client-feedback.js";
 import { notSent, notSentIssue, useConnectionReady } from "../ui/connection-live.js";
@@ -52,14 +52,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import {
-  AccessibilityInfo,
-  Alert,
-  Pressable,
-  StyleSheet,
-  useWindowDimensions,
-  View,
-} from "react-native";
+import { AccessibilityInfo, Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 import Animated from "react-native-reanimated";
 import { pageIdentity } from "../browser/surface-route.js";
 import type {
@@ -92,6 +85,7 @@ import { QuestionRequestCard } from "./question-card.js";
 import { RequestCard } from "./request-card.js";
 import type { ThreadMutationClaim, ThreadMutationGate } from "./thread-mutation-gate.js";
 import { UsageNotice } from "./usage-notice.js";
+import { setTaskDone, useTaskDoneLine } from "../threads/task-row.js";
 
 /**
  * The one surface at the bottom of a Thread: the composer, and whatever
@@ -210,6 +204,7 @@ export function Composer(props: {
   // What Send or Stop came to, beside the bar: a message that couldn't be
   // written down here, or a Stop that didn't go out.
   const [failure, setFailure] = useState<ActionLineValue | null>(null);
+  const reopenLine = useTaskDoneLine(threadId);
   const [draftFailure, setDraftFailure] = useState<string | null>(null);
   const [focused, setFocused] = useState(false);
   const input = useRef<ComposerEditorHandle>(null);
@@ -705,22 +700,15 @@ export function Composer(props: {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Reopen"
-            accessibilityState={{ disabled: !props.canRespond }}
             style={styles.reopen}
-            disabled={!props.canRespond}
-            onPress={() =>
-              void hostClient
-                .setTaskDone(threadId, false)
-                .catch((error: unknown) =>
-                  Alert.alert("Task not reopened", presentActionFailure(error)),
-                )
-            }
+            onPress={() => setTaskDone(hostClient, threadId, false)}
           >
             <AppText role="secondary" style={type.secondaryMedium}>
               Reopen
             </AppText>
           </Pressable>
         </View>
+        {reopenLine === null ? null : <ActionLine line={reopenLine} numberOfLines={2} />}
       </View>
     );
   return (
@@ -813,6 +801,7 @@ export function Composer(props: {
           notice={staged.notice}
           onRemove={staged.remove}
           onRetry={staged.retry}
+          waiting={staged.waiting}
         />
       )}
       {done === "reopens" ? (
@@ -975,7 +964,11 @@ export function Composer(props: {
                     {!dictating ? (
                       <View>
                         {view.action === "voice" ? (
-                          <VoiceMic disabled={readOnly || textHidden} face="disc" />
+                          <VoiceMic
+                            disabled={readOnly || textHidden}
+                            face="disc"
+                            onLine={setFailure}
+                          />
                         ) : view.action === "stop" ? (
                           <ComposerAction
                             busy={stopping || props.runStopping}

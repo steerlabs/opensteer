@@ -41,6 +41,11 @@ vi.mock("../platform/attachment-draft-files.js", () => ({
 const deploymentId = "dep_0192f4a1-1111-4000-8000-000000000001";
 const userId = "usr_0192f4a1-aaaa-4000-8000-00000000000a";
 const threadId = "thr_0192f4a1-2222-4000-8000-000000000002";
+const readyConnection = {
+  getSnapshot: () => ({ phase: "ready" }),
+  subscribe: () => () => undefined,
+  retry: () => undefined,
+};
 
 it("pasted images join the strip like picked photos, up to the message's file limit", async () => {
   const drafts = createThreadDraftStore({
@@ -49,7 +54,7 @@ it("pasted images join the strip like picked photos, up to the message's file li
     privateFiles: new MemoryPrivateFilesystem(),
   });
   await drafts.load();
-  const client = {} as HostClient;
+  const client = { connection: readyConnection } as unknown as HostClient;
   let staged: DraftAttachments | null = null;
   function Harness() {
     staged = useDraftAttachments({

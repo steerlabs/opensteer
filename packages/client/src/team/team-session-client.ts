@@ -1,9 +1,5 @@
 import { observeRpcAuthentication } from "../host/host-api-client.js";
-import {
-  presentActionFailure,
-  presentMessageRejection,
-  presentReadFailure,
-} from "../feedback/client-issue.js";
+import { presentActionFailure, presentReadFailure } from "../feedback/client-issue.js";
 import {
   createConnectionController,
   type ConnectionAttempt,
@@ -1224,13 +1220,8 @@ export class TeamSessionClient {
   }
   async #fail(sends: readonly PendingTeamSend[], error: OpensteerError): Promise<void> {
     const ids = new Set(sends.map((row) => row.command.clientMessageId));
-    const { name, target } = this.connection.getSnapshot();
-    const failure = presentMessageRejection({
-      code: "rejected",
-      reason: error.reason ?? error.code,
-      ...(name ? { name } : {}),
-      target,
-    });
+    // The reason code, worded by the presenter wherever the message is drawn.
+    const failure = error.reason ?? error.code;
     this.#update({
       pending: this.#snapshot.pending.map((row) =>
         ids.has(row.command.clientMessageId) ? { ...row, failure } : row,

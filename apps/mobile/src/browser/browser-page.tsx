@@ -1,4 +1,3 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
 import { useTabSuggestions } from "./tab-suggestions.js";
 import { BrowserPageMenu, type BrowserPageMenuAction } from "./browser-page-menu.js";
 import { editingClipboardMaxBytes } from "@opensteer/protocol/editing";
@@ -94,6 +93,8 @@ import { useContentInsets } from "../ui/pane.js";
 import type { PagePresence } from "../ui/page-presence.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "./toolbar.js";
 import { systemBrowserLabel } from "./system-browser.js";
+import { failureWords, refusal } from "../ui/client-feedback.js";
+import { tabActionSpecs } from "../tabs/tab-actions.js";
 
 /** The shape a page takes before its first picture says otherwise. */
 const defaultPageAspect = 16 / 9;
@@ -496,11 +497,12 @@ export function BrowserPage(props: {
       .closeTabs([surfaceId])
       .then((result) => {
         const failed = result.failed.find((item) => item.tabId === surfaceId);
-        if (failed) setProblem(failed.error.message);
+        if (failed)
+          setProblem(
+            failureWords(refusal(failed.error.code, failed.error.message), tabActionSpecs.close),
+          );
       })
-      .catch((error: unknown) =>
-        setProblem(presentActionFailure(error, "This tab could not be closed.")),
-      );
+      .catch((error: unknown) => setProblem(failureWords(error, tabActionSpecs.close)));
   };
   const openTab = () => {
     props.onSteer?.();

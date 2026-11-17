@@ -1,4 +1,3 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
 import { MenuView, type MenuAction } from "@expo/ui/community/menu";
 import type { HostClient, WaitingInput } from "@opensteer/client/host";
 import type { ContentPart } from "@opensteer/core";
@@ -25,6 +24,7 @@ import { EditedMark } from "./edited-mark.js";
 import type { LinkAction } from "./link-context.js";
 import { Message } from "./transcript.js";
 import type { WaitingEdit, WaitingEditController } from "./waiting-edit.js";
+import { failureWords } from "../ui/client-feedback.js";
 
 /**
  * Everything waiting to reach the agent, at the foot of a task, in the order it
@@ -65,7 +65,7 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
       void Haptics.selectionAsync();
     } catch (error) {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setFailure(presentActionFailure(error, fallback));
+      setFailure(failureWords(error, { label: "finish that" }, fallback));
     } finally {
       busy.current = false;
       setBusyId(null);

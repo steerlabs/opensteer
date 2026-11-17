@@ -1,4 +1,3 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
 import { AiSharing } from "@opensteer/client/ai-sharing";
 import { AiSharingProvider } from "./ui/ai-sharing.js";
 import { readAiSharing } from "./client/ai-sharing-storage.js";
@@ -115,6 +114,7 @@ import { AppLinksProvider, type AppLinks } from "./ui/app-links-context.js";
 import { MobileClientProvider, useMobileState } from "./ui/mobile-client-context.js";
 import { MobileNotificationsProvider } from "./ui/notifications-context.js";
 import { AppText, Notice } from "./ui/primitives.js";
+import { failureWords } from "./ui/client-feedback.js";
 
 /**
  * The composition root, and the only place any of this is wired.
@@ -516,10 +516,11 @@ export function App(): ReactNode {
                 if (!current()) return;
                 destinations.selectionFailed();
                 setLinkFailure(
-                  presentActionFailure(
+                  failureWords(
                     error,
-                    "That deployment could not be opened. You can try again there.",
-                  ),
+                    { label: "open that computer", done: "opened" },
+                    "That computer could not be opened. You can try again there.",
+                  ) ?? "",
                 );
                 observeRootSelection();
               }),
@@ -546,7 +547,11 @@ export function App(): ReactNode {
         },
         failed: (error) =>
           setLinkFailure(
-            presentActionFailure(error, "That link could not be opened. Try opening it again."),
+            failureWords(
+              error,
+              { label: "open that link", done: "opened" },
+              "That link could not be opened. Try opening it again.",
+            ) ?? "",
           ),
         settled: () => observeRootSelection(),
       }),
@@ -620,7 +625,12 @@ export function App(): ReactNode {
       })
       .catch((error: unknown) => {
         setStartupFailure({
-          detail: presentActionFailure(error, "Opensteer could not read this device's storage."),
+          detail:
+            failureWords(
+              error,
+              { label: "read this device's storage" },
+              "Opensteer could not read this device's storage.",
+            ) ?? "Opensteer could not read this device's storage.",
           title: "This device's storage did not answer",
         });
       });

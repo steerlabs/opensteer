@@ -421,6 +421,7 @@ function NewTask(props: {
       autoFocus={props.autoFocus}
       blocker={blocker}
       voice={props.voice === true}
+      onVoiceLine={setLine}
       held={held !== null}
       execution={execution}
       hostClient={hostClient}

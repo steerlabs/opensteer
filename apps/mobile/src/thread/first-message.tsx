@@ -68,6 +68,7 @@ import {
   beginFirstMessagePickerAttempt,
   cancelFirstMessagePickerAttempt,
 } from "./first-message-picker-attempt.js";
+import { type ActionLineValue } from "../ui/action-line.js";
 
 /**
  * A first message: words written before the task they start exists.
@@ -353,6 +354,8 @@ export interface FirstMessageExample {
  * the composer docked below, where every later message is written too.
  */
 export function FirstMessageComposer(props: {
+  /** Where a voice call that can't start says so. */
+  readonly onVoiceLine?: (line: ActionLineValue | null) => void;
   /** Opens the keyboard as it appears: set where writing is why it opened. */
   readonly autoFocus?: boolean;
   readonly blocker: FirstMessageBlocker | null;
@@ -610,6 +613,7 @@ export function FirstMessageComposer(props: {
             notice={staged.notice}
             onRemove={staged.remove}
             onRetry={staged.retry}
+            waiting={staged.waiting}
           />
           {blocker === null ? null : (
             <AppText role="caption" style={styles.reason} tone="muted">
@@ -655,7 +659,7 @@ export function FirstMessageComposer(props: {
               // With nothing typed the circle is voice where it exists, as in a
               // thread's own bar, rather than a Send that cannot be pressed.
               voiceReady && !written ? (
-                <VoiceMic disabled={held} face="disc" />
+                <VoiceMic disabled={held} face="disc" onLine={props.onVoiceLine} />
               ) : (
                 <ComposerAction
                   // What was sent already shows it is on its way; the circle does not repeat it.

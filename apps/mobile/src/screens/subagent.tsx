@@ -3,7 +3,6 @@ import {
   canRespondToRequests,
   conversationName,
   deriveSurface,
-  showsHostLive,
   subagentDetail,
   subagentFooter,
   subagentSiblings,
@@ -75,6 +74,7 @@ import { Screen, useGutter, useReadingColumn } from "../ui/screen.js";
 import { useContentInsets } from "../ui/pane.js";
 import { Symbol } from "../ui/symbol.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
+import { useShowsLive } from "../ui/connection-live.js";
 
 export type SubagentScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -161,17 +161,19 @@ function AttachedSubagent(props: {
   );
   const snapshot = watched.snapshot;
   // Out of reach of the conversation's computer, everything here is what was last known.
-  const live = useHostSelector(
+  const streaming = useShowsLive(hostClient.connection);
+  const connected = useHostSelector(
     hostClient,
     useCallback(
       (host: HostSnapshot) => {
         const thread = host.threads.find(({ id }) => id === threadId);
         const environment = host.environments.find(({ id }) => id === thread?.environmentId);
-        return showsHostLive(host) && environment?.status === "connected";
+        return environment?.status === "connected";
       },
       [threadId],
     ),
   );
+  const live = streaming && connected;
   const select = useCallback(
     (host: HostSnapshot): SubagentDetail | null => {
       const summary =

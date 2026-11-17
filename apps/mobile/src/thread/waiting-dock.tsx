@@ -1,4 +1,3 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
 import {
   waitingDraftSave,
   type HostClient,
@@ -14,6 +13,7 @@ import { AppText } from "../ui/primitives.js";
 import { AnswerPill } from "./answer-pill.js";
 import { ComposerBar, composerLaneHeight } from "./composer-bar.js";
 import type { WaitingEditController } from "./waiting-edit.js";
+import { failureWords } from "../ui/client-feedback.js";
 
 /**
  * A docked decision that has just arrived ignores taps for this long, as a
@@ -63,12 +63,16 @@ export function useAskDecisions(hostClient: HostClient): AskDecisions {
         );
       } catch (error) {
         if (!mounted.current) return;
-        const detail = presentActionFailure(
-          error,
-          decision === "approve"
-            ? "Your answer didn’t reach the team."
-            : "This ask wasn’t declined.",
-        );
+        const detail =
+          failureWords(
+            error,
+            decision === "approve"
+              ? { label: "send your answer", done: "sent", happened: "your answer was sent" }
+              : { label: "decline this ask", done: "declined", happened: "this ask was declined" },
+            decision === "approve"
+              ? "Your answer didn’t reach the team."
+              : "This ask wasn’t declined.",
+          ) ?? "";
         setFailure({ detail, messageId: ask.messageId });
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         void AccessibilityInfo.announceForAccessibility(detail);

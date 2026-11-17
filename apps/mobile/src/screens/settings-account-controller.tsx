@@ -1,4 +1,3 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
 import { remoteAccessDisconnectWarning, unwrapRpcResult } from "@opensteer/client/host";
 import { useClientRead, usePersonalRemoteAccess, useRemoteAccess } from "@opensteer/client/react";
 import { createClientRead } from "@opensteer/client/reads";
@@ -10,7 +9,13 @@ import { Alert, Linking } from "react-native";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import { mobileRemoteAccessPort } from "../client/remote-access-port.js";
-import { notDone, readLine, settingsFooter, useScreenAction } from "../ui/client-feedback.js";
+import {
+  notDone,
+  readLine,
+  settingsFooter,
+  useScreenAction,
+  failureWords,
+} from "../ui/client-feedback.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import { phoneLeaves } from "./device-page-model.js";
@@ -100,7 +105,9 @@ function AccountSettingsContent(props: {
     setAccountError(null);
     setAccountWorking(true);
     void operation()
-      .catch((error: unknown) => setAccountError(presentActionFailure(error, fallback)))
+      .catch((error: unknown) =>
+        setAccountError(failureWords(error, { label: "finish that" }, fallback)),
+      )
       .finally(() => {
         accountInFlight.current = false;
         setAccountWorking(false);
