@@ -1053,6 +1053,9 @@ export interface RequestTable {
   /** Exactly one origin is present; a Trigger Occurrence creates no Run row. */
   originatingRunId: RunId | null;
   originatingOccurrenceId: TriggerOccurrenceId | null;
+  originatingWatchActivationId: Generated<
+    import("@opensteer/core").TriggerWatchActivationId | null
+  >;
   /** The subagent of the originating Run that asked, if not its own agent. */
   originatingNodeId: Generated<ExecutionNodeId | null>;
   callId: string;
@@ -1938,6 +1941,39 @@ export interface AgentConnectionTable {
 }
 
 export interface DatabaseSchema {
+  pluginAgentSettings: {
+    ownerUserId: UserId;
+    pluginId: string;
+    access: "all" | "read-only" | "off";
+    author: "catalog" | "agent";
+    versionAuthors: JsonColumn<Record<string, "catalog" | "agent">>;
+  };
+  pluginExecutions: {
+    id: string;
+    ownerUserId: UserId;
+    threadId: ThreadId;
+    runId: RunId | null;
+    occurrenceId: TriggerOccurrenceId | null;
+    watchActivationId: import("@opensteer/core").TriggerWatchActivationId | null;
+    caller: string;
+    mode: "ask" | "automatic";
+    state:
+      | "running"
+      | "waiting"
+      | "answered"
+      | "completed"
+      | "cancelled"
+      | "expired"
+      | "interrupted"
+      | "failed";
+    requestId: RequestId | null;
+    interactionId: string | null;
+    handoff: boolean;
+    result: JsonColumn<Record<string, z.infer<ReturnType<typeof z.json>>> | null>;
+    reason: string | null;
+    createdAt: Generated<Date>;
+    updatedAt: Generated<Date>;
+  };
   deviceSetupRetirements: { runnerId: RunnerId; publicKeyPem: string };
   agentHomeSkillInventory: {
     computerId: RunnerId;

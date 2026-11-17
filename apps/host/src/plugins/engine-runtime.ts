@@ -27,6 +27,7 @@ import {
   VersionId,
   ProviderId,
   SourceFiles,
+  publicFileKey,
   CurrentActor,
   ToolApprovalTtlMs,
   RepositoryHost,
@@ -191,12 +192,13 @@ export async function startEngine(
         });
         phase("sdk");
         const hostScope = yield* Scope.Scope;
+        const repositories = nativeRepositories(join(config.directory, "repositories"), systemGit);
         const engine = yield* createPluginEngine({
           database,
           secret: Redacted.make(config.secret),
           origin: config.origin,
           // Source backend construction point: replace this adapter to remove the system git dependency.
-          git: nativeRepositories(join(config.directory, "repositories"), systemGit),
+          git: repositories,
           markdown: markdownRefusals,
           hooks: accountAdapter.hooks,
           blobs,
@@ -281,16 +283,32 @@ export async function startEngine(
           },
         );
         const pages = enginePages(engine, local.runtime, blobs, database, accountAdapter);
-        return { engine, owner, accountAdapter, scheduler, catalog, manager, executions, pages };
+        return {
+          engine,
+          owner,
+          accountAdapter,
+          scheduler,
+          catalog,
+          manager,
+          executions,
+          pages,
+          blobs,
+        };
       }),
     );
-    const { engine, owner, accountAdapter, catalog, manager, executions } = composed;
+    const { engine, owner, accountAdapter, catalog, manager, executions, blobs } = composed;
     const startupMs = performance.now() - started;
-    const authorize = (context: PluginCaller, operation: string, plugin?: string) =>
+    const authorize = (
+      context: PluginCaller,
+      operation: string,
+      plugin?: string,
+      execution?: string,
+    ) =>
       callback("authorize", {
         ...context,
         operation,
         ...(plugin === undefined ? {} : { plugin }),
+        ...(execution === undefined ? {} : { execution }),
       }).pipe(
         Effect.flatMap((result) =>
           result.allowed
@@ -336,7 +354,24 @@ export async function startEngine(
       signal: AbortSignal,
     ): Effect.Effect<unknown, Error, Scope.Scope> =>
       Effect.gen(function* () {
-        yield* authorize(context, operation);
+        const target =
+          typeof raw === "object" &&
+          raw !== null &&
+          "plugin" in raw &&
+          typeof raw.plugin === "string"
+            ? raw.plugin
+            : undefined;
+        yield* authorize(
+          context,
+          operation,
+          target,
+          typeof raw === "object" &&
+            raw !== null &&
+            "execution" in raw &&
+            typeof raw.execution === "string"
+            ? raw.execution
+            : undefined,
+        );
         switch (operation) {
           case "health":
             return { pid: process.pid, rss: process.memoryUsage().rss, startupMs };
@@ -356,14 +391,27 @@ export async function startEngine(
               );
             return entry;
           }
-          case "list":
-            return yield* engine.apps.list({ owner });
+          case "list": {
+            const permission = yield* callback("authorize", { ...context, operation: "list" });
+            return (yield* engine.apps.list({ owner })).filter(
+              (app) => permission.grants?.[app.id] !== "off",
+            );
+          }
           case "install": {
             const input = operations.install.input.parse(raw);
             let files: Schema.Schema.Type<typeof SourceFiles>;
             let name: string | undefined;
             let app: AppId | undefined;
             if (input.kind === "files") {
+              if (!Schema.is(SourceFiles)(input.files))
+                return {
+                  status: "build-error",
+                  error: {
+                    code: "invalid-source",
+                    message:
+                      "Plugin source requires unique relative paths and index.ts. Code must be UTF-8 text; binary files belong under ui/public/.",
+                  },
+                };
               files = Schema.decodeUnknownSync(SourceFiles)(input.files);
               name = input.name;
               app = input.plugin === undefined ? undefined : AppId.make(input.plugin);
@@ -443,7 +491,39 @@ export async function startEngine(
               owner,
               ...(input.version === undefined ? {} : { version: VersionId.make(input.version) }),
             });
-            return source.files;
+            const size = source.files.reduce(
+              (total, file) =>
+                total +
+                ("object" in file
+                  ? file.size
+                  : Buffer.byteLength(file.content, "encoding" in file ? "base64" : "utf8")),
+              0,
+            );
+            if (size > 24 * 1024 * 1024)
+              return yield* Effect.fail(
+                new PluginServiceError("invalid", "Plugin source exceeds the 24 MiB export limit"),
+              );
+            return yield* Effect.forEach(source.files, (file) =>
+              "object" in file
+                ? blobs.get(publicFileKey(source.code, file.object)).pipe(
+                    Effect.flatMap((found) =>
+                      Option.isSome(found) && found.value.length === file.size
+                        ? Effect.succeed(found.value)
+                        : Effect.fail(
+                            new PluginServiceError(
+                              "invalid",
+                              "Plugin asset is unavailable; export cannot preserve all source files",
+                            ),
+                          ),
+                    ),
+                    Effect.map((bytes) => ({
+                      path: file.path,
+                      content: Buffer.from(bytes).toString("base64"),
+                      encoding: "base64" as const,
+                    })),
+                  )
+                : Effect.succeed(file),
+            );
           }
           case "versions":
             return yield* engine.apps.versions({
@@ -622,7 +702,7 @@ export async function startEngine(
             const requestId = Schema.decodeUnknownSync(InteractionId)(interaction.requestId);
             const pending = yield* manager.pendingInteraction(context.caller, requestId);
             if (pending)
-              yield* backend(context).authorizeElicitation(
+              yield* backend(context, record.view.id).authorizeElicitation(
                 pending.status === "approval-required"
                   ? { app: pending.invocation.app, tool: pending.invocation.tool }
                   : pending.tool,

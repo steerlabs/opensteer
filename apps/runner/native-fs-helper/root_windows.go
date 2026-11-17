@@ -665,3 +665,35 @@ func platformPublicError(err error) (string, string, bool) {
 		return "", "", false
 	}
 }
+
+func (root *filesystemRoot) createDirectoryAt(parent nodeHandle, name string) (nodeHandle, nodeStat, error) {
+	handle, err := ntOpenAt(parent, name, windows.FILE_LIST_DIRECTORY|windows.FILE_TRAVERSE|windows.FILE_READ_ATTRIBUTES, windows.FILE_CREATE, windows.FILE_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT)
+	if err != nil {
+		return windows.InvalidHandle, nodeStat{}, err
+	}
+	stat, err := statForHandle(handle, false)
+	if err != nil {
+		closeNode(handle)
+		return windows.InvalidHandle, nodeStat{}, err
+	}
+	return handle, stat, nil
+}
+
+func (root *filesystemRoot) createBinaryFileAt(parent nodeHandle, name string, content []byte) (string, error) {
+	handle, err := ntOpenAt(parent, name, windows.GENERIC_WRITE|windows.SYNCHRONIZE, windows.FILE_CREATE, windows.FILE_NON_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT)
+	if isAlreadyExists(err) {
+		return "", userError("already-exists", "Destination file already exists")
+	}
+	if err != nil {
+		return "", err
+	}
+	file := os.NewFile(uintptr(handle), name)
+	defer file.Close()
+	if _, err := file.Write(content); err != nil {
+		return "", err
+	}
+	if err := file.Sync(); err != nil {
+		return "sync-uncertain", nil
+	}
+	return "synced", nil
+}

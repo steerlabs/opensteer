@@ -192,7 +192,7 @@ describe("TriggerControlService", () => {
         name: "Nightly report",
         operation: "create",
         program: {
-          toolContractVersion: 4,
+          toolContractVersion: 5,
           language: "javascript",
           source: "export default () => {}",
         },
@@ -254,7 +254,7 @@ function makeService(options: {
   ) => Promise<readonly ReturnType<typeof environment>[]>;
   manage?: (owner: typeof ownerId, input: TriggerControlInput) => Promise<unknown>;
   store?: Readonly<Record<string, unknown>>;
-  toolContractVersion?: 4;
+  toolContractVersion?: 5;
 }) {
   const anchor = thread();
   const claims = {
@@ -270,7 +270,7 @@ function makeService(options: {
     runnerBootId: "boot-1",
     runnerId,
     threadId,
-    toolContractVersion: options.toolContractVersion ?? 4,
+    toolContractVersion: options.toolContractVersion ?? 5,
   };
   const listEnvironmentsForUser = vi.fn(
     options.listEnvironmentsForUser ?? (async () => [environment(environmentId)]),

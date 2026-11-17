@@ -140,7 +140,7 @@ const triggerScope = {
   runnerBootId: scope.runnerBootId,
   runnerId: scope.runnerId,
   threadId: scope.threadId,
-  toolContractVersion: 4,
+  toolContractVersion: 5,
 } satisfies IntegrationToolsTriggerScope;
 
 describe("Opensteer MCP integration access classes", () => {

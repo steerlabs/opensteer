@@ -1,0 +1,262 @@
+import { z } from "zod";
+import { OpensteerError, type UserId } from "@opensteer/core";
+import type { OpensteerStore, PluginAgentStore } from "@opensteer/database";
+import type { AgentToolHandlers, ToolCall } from "./types.js";
+import { requireRun } from "../operations.js";
+import type { AgentCaller } from "../agent-caller.js";
+import type { PluginService } from "../../plugins/plugin-service.js";
+import type { PluginAuthority } from "../../plugins/plugin-authority.js";
+import type { PluginExecutions } from "../../plugins/plugin-executions.js";
+import { operations, type PluginConsent, type PluginInput } from "../../plugins/engine-protocol.js";
+
+export class PluginToolHandlers {
+  readonly options: {
+    service: PluginService;
+    authority: PluginAuthority;
+    executions: PluginExecutions;
+    store: OpensteerStore;
+    settings: PluginAgentStore;
+    folder: (
+      caller: AgentCaller,
+      directory: string,
+    ) => Promise<Extract<PluginInput<"install">, { kind: "files" }>>;
+    exportFiles: (
+      caller: AgentCaller,
+      directory: string,
+      files: PluginInput<"install"> & { kind: "files" },
+    ) => Promise<void>;
+    publish: (event: import("@opensteer/core").AgentEvent) => void;
+    notify: () => void;
+  };
+  constructor(options: PluginToolHandlers["options"]) {
+    this.options = options;
+  }
+  async list(c: ToolCall<"opensteer_plugin_list">) {
+    const context = this.options.authority.admit(c.caller);
+    const settings = await this.options.settings.settings(c.caller.userId);
+    const plugins = await this.options.service.list({}, context, c.signal);
+    return {
+      plugins: await Promise.all(
+        plugins.slice(0, 100).map(async (plugin) => {
+          const detail = await this.options.service.detail(
+            { plugin: plugin.id },
+            { caller: "personal", mode: "automatic" },
+            c.signal,
+          );
+          return {
+            ...plugin,
+            versions: Array.isArray(detail.versions)
+              ? detail.versions
+                  .slice(0, 50)
+                  .flatMap((version) =>
+                    version &&
+                    typeof version === "object" &&
+                    !Array.isArray(version) &&
+                    typeof version.id === "string"
+                      ? [{ id: version.id, active: version.id === plugin.activeVersion }]
+                      : [],
+                  )
+              : [],
+            requirements: Object.fromEntries(
+              Object.entries(detail.plugin.requirements.accounts).map(([name, r]) => [
+                name,
+                { scope: r.scope, provider: r.provider },
+              ]),
+            ),
+            access: settings.find((s) => s.pluginId === plugin.id)?.access ?? "all",
+            links: detail.links.slice(0, 100),
+            status: plugin.activeVersion ? "active" : "unavailable",
+          };
+        }),
+      ),
+    };
+  }
+  async install(c: ToolCall<"opensteer_plugin_install">) {
+    const context = this.options.authority.admit(c.caller);
+    await this.options.authority.assert(context, "install", c.input.pluginId);
+    const i = c.input;
+    const input = operations.install.input.parse(
+      i.source === "folder"
+        ? {
+            ...(await this.options.folder(c.caller, z.string().min(1).parse(i.directory))),
+            ...(i.pluginId ? { plugin: i.pluginId } : {}),
+            ...(i.name ? { name: i.name } : {}),
+          }
+        : i.source === "catalog"
+          ? { kind: "catalog", id: i.catalogId }
+          : { kind: i.source, url: i.url, name: i.name },
+    );
+    await c.checkLive?.();
+    const result = await this.options.service.install(input, context, c.signal);
+    if (result.status === "installed")
+      await this.options.settings.recordInstall(
+        c.caller.userId,
+        result.plugin.id,
+        result.version.id,
+        i.source === "catalog" ? "catalog" : "agent",
+      );
+    return {
+      ...result,
+      ...(result.status === "build-error"
+        ? {
+            next: "Fix the reported source/build errors in the draft folder and call opensteer_plugin_install again. No new version became active.",
+          }
+        : {}),
+    };
+  }
+  async export(c: ToolCall<"opensteer_plugin_export">) {
+    const context = this.options.authority.admit(c.caller);
+    const files = await this.options.service.export(
+      { plugin: c.input.pluginId, ...(c.input.versionId ? { version: c.input.versionId } : {}) },
+      context,
+      c.signal,
+    );
+    await c.checkLive?.();
+    await this.options.exportFiles(c.caller, c.input.directory, { kind: "files", files });
+    return {
+      directory: c.input.directory,
+      files: files.length,
+      next: `Edit the draft, then call opensteer_plugin_install with source:folder and pluginId:${c.input.pluginId}.`,
+    };
+  }
+  async accountRequest(c: ToolCall<"plugin_account_request">) {
+    const caller = requireRun(c.caller);
+    const context = this.options.authority.admit(caller);
+    await this.options.authority.assert(context, "account-request", c.input.pluginId);
+    const target = {
+      plugin: c.input.pluginId,
+      requirement: c.input.requirement,
+      scope: c.input.scope,
+    };
+    const owner = { caller: "personal", mode: "automatic" as const };
+    const consent = await this.options.service.reviewAccountLink(target, owner, c.signal);
+    const detail = await this.options.service.detail({ plugin: target.plugin }, owner, c.signal);
+    const author =
+      (await this.options.settings.settings(caller.userId)).find(
+        (s) => s.pluginId === target.plugin,
+      )?.author ?? "agent";
+    const created = await this.options.store.requests.create({
+      callId: `plugin-account:${c.operationKey}`,
+      kind: "plugin.account",
+      mode: "durable",
+      originatingRunId: caller.claims.runId,
+      originatingThreadId: caller.thread.id,
+      requestedBy: caller.userId,
+      requiredActor: "owner",
+      payload: { kind: "plugin.account", ...target, consent },
+      presentation: {
+        kind: "external",
+        title: `Connect ${detail.plugin.name}`.slice(0, 240),
+        detail: `${c.input.reason}\nLinking trusts this plugin's code. Setup runs with the account before tool approval.`,
+        subject: { kind: "plugin.account", id: target.plugin },
+        plugin: {
+          plugin: { id: target.plugin, name: detail.plugin.name.slice(0, 240), author },
+          decision: {
+            kind: "account",
+            requirement: target.requirement,
+            scope: target.scope,
+            consent,
+          },
+        },
+      },
+    });
+    for (const event of created.events) this.options.publish(event);
+    return {
+      status: created.request.status,
+      requestId: created.request.id,
+      next: "Waiting on the person in Needs you to connect or link an account. Do not collect credentials or repeat the Request; continue other work.",
+    };
+  }
+  /** Called after a person-reviewed link commits, including an OAuth completion. */
+  async accountLinked(input: {
+    owner: UserId;
+    plugin: string;
+    requirement: string;
+    scope: "app" | "user";
+    consent: PluginConsent;
+    settlementSessionId?: string;
+  }) {
+    const current = await this.options.service.reviewAccountLink(
+      { plugin: input.plugin, requirement: input.requirement, scope: input.scope },
+      {
+        caller: "personal",
+        mode: "automatic",
+      },
+    );
+    if (current.digest !== input.consent.digest)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Plugin consent changed; review the account link again.",
+      });
+    const detail = await this.options.service.detail(
+      { plugin: input.plugin },
+      { caller: "personal", mode: "automatic" },
+    );
+    if (
+      !detail.links.some(
+        (link) =>
+          link.requirement === input.requirement &&
+          link.scope === input.scope &&
+          link.consent !== null &&
+          typeof link.consent === "object" &&
+          !Array.isArray(link.consent) &&
+          link.consent.digest === current.digest,
+      )
+    )
+      return;
+    const pending = await this.options.store.database
+      .selectFrom("requests")
+      .select("id")
+      .where("kind", "=", "plugin.account")
+      .where("status", "=", "pending")
+      .where("requestedBy", "=", input.owner)
+      .execute();
+    for (const row of pending) {
+      const request = await this.options.store.requests.get(row.id);
+      const p = request?.payload;
+      if (
+        p?.kind !== "plugin.account" ||
+        p.plugin !== input.plugin ||
+        p.requirement !== input.requirement ||
+        p.scope !== input.scope ||
+        p.consent.digest !== input.consent.digest
+      )
+        continue;
+      const result = await this.options.store.requests.settlePluginRequest({
+        requestId: row.id,
+        resolvedBy: input.owner,
+        decision: "fulfilled",
+        ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
+      });
+      for (const event of result.events) this.options.publish(event);
+    }
+    this.options.notify();
+  }
+  handlers(): Partial<AgentToolHandlers> {
+    const o = this.options;
+    return {
+      plugin_search: (c) => o.service.search(c.input, o.authority.admit(c.caller), c.signal),
+      plugin_describe: (c) => o.service.describe(c.input, o.authority.admit(c.caller), c.signal),
+      plugin_call: (c) => o.executions.execute(c.caller, "call", c.input, c.signal),
+      plugin_execute: (c) => o.executions.execute(c.caller, "execute", c.input, c.signal),
+      plugin_resume: (c) => o.executions.resume(c.caller, c.input.executionId, c.signal),
+      opensteer_plugin_list: (c) => this.list(c),
+      opensteer_plugin_install: (c) => this.install(c),
+      opensteer_plugin_export: (c) => this.export(c),
+      opensteer_plugin_activate: async (c) => {
+        await o.service.activate(
+          { plugin: c.input.pluginId, version: c.input.versionId },
+          o.authority.admit(c.caller),
+          c.signal,
+        );
+        await o.settings.recordActivation(c.caller.userId, c.input.pluginId, c.input.versionId);
+        return { ok: true };
+      },
+      opensteer_plugin_remove: async (c) => {
+        await o.service.remove({ plugin: c.input.pluginId }, o.authority.admit(c.caller), c.signal);
+        return { ok: true };
+      },
+      plugin_account_request: (c) => this.accountRequest(c),
+    };
+  }
+}

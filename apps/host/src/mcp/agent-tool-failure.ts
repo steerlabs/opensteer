@@ -6,6 +6,7 @@ import { z } from "zod";
 import { ComputerMcpSessionError } from "../computer-apps/computer-app-hub.js";
 import { ComputerUseError } from "../computer-use/computer-use-service.js";
 import { IntegrationAuthorizationRequiredError } from "../devices/integration-authorization-required.js";
+import { PluginServiceError } from "../plugins/plugin-service.js";
 
 export const internalToolFailureCode = "internal";
 
@@ -15,6 +16,28 @@ export const internalToolFailureCode = "internal";
  * retry is safe follows the tool: the Host never repeats an uncertain effect.
  */
 export function agentToolFailure(error: unknown, access: AgentToolAccess): AgentToolFailure {
+  if (error instanceof PluginServiceError)
+    return {
+      code:
+        error.code === "forbidden"
+          ? "access_denied"
+          : error.code === "interrupted"
+            ? "outcome_unknown"
+            : "plugin_unavailable",
+      message:
+        error.code === "forbidden"
+          ? "Plugin operation is unavailable to this caller."
+          : error.code === "interrupted"
+            ? "Plugin engine stopped; the program was interrupted."
+            : ["invalid", "consent-changed", "unavailable"].includes(error.code)
+              ? error.message
+              : "Plugin operation could not complete.",
+      next:
+        error.code === "forbidden"
+          ? "Continue with the access currently available; the person controls plugin access."
+          : "Earlier calls may have taken effect. Check current state with a safe read before starting new work; never repeat a write or program blindly.",
+      retryable: false,
+    };
   if (error instanceof Error && error.name === "AbortError")
     return {
       code: "outcome_unknown",

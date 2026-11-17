@@ -58,7 +58,7 @@ If they still have not stopped, read the existing `opensteer:automations` remind
 (`references/reminders.md`), then call `opensteer_automation_create` for a one-shot reminder
 named `Reminder: finish deleting memory`,
 on this task, a few minutes later using the person's context time zone and an ISO-8601 instant
-with its date's offset. Declare `toolContractVersion: 4`; its program is:
+with its date's offset. Declare `toolContractVersion: 5`; its program is:
 
 ```ts
 export default async function ({ event, opensteer }) {

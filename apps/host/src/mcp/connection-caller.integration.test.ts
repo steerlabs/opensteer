@@ -235,9 +235,6 @@ async function serveMcp(
         list: async (actor: { readonly caller: { readonly userId: UserId } }) =>
           new AppStore(store.database).list(actor.caller.userId),
       } as never,
-      pluginInstall: async () => {
-        throw new Error("Unexpected install");
-      },
       teamRequestForRun: async () => null,
       personalContextForRun: async () => true,
     }),

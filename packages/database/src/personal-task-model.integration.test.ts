@@ -522,7 +522,7 @@ it("keeps Voice in personal settings and uses real task anchors for Triggers", a
     },
     program: {
       language: "typescript",
-      toolContractVersion: 4,
+      toolContractVersion: 5,
       source: "export default async function () {}",
     },
   });
@@ -540,7 +540,7 @@ it("keeps Voice in personal settings and uses real task anchors for Triggers", a
       },
       program: {
         language: "typescript",
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         source: "export default async function () {}",
       },
     }),
@@ -576,7 +576,7 @@ it("owns independent memory jobs and includes ordinary and team tasks with captu
       pauseReason: null,
       program: {
         language: "typescript",
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         source: "export default async function () {}",
       },
       source: {
@@ -834,7 +834,7 @@ it("keeps external-agent and Trigger turns on a bound task free of team request 
     },
     program: {
       language: "javascript",
-      toolContractVersion: 4,
+      toolContractVersion: 5,
       source: "export default async () => null",
     },
   });

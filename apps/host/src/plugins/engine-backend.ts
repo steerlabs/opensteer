@@ -301,6 +301,8 @@ export function compositeBackend(
   const grant = Effect.gen(function* () {
     const allowed = yield* checked("grant");
     const grants = allowed.grants;
+    const apps = grants === undefined ? [] : yield* engine.apps.list({ owner });
+    const providers = grants === undefined ? [] : yield* host.providers();
     return {
       id: GrantId.make(context.caller),
       target: { kind: "mcp", mode: context.mode === "automatic" ? "automatic" : "model" },
@@ -310,7 +312,8 @@ export function compositeBackend(
           : {
               kind: "tools",
               approval: "client",
-              apps: Object.entries(grants)
+              apps: [...apps.map((app) => app.id), ...providers.map((provider) => provider.id)]
+                .map((app) => [app, grants[app] ?? "all"] as const)
                 .filter(([, access]) => access !== "off")
                 .map(([app, access]) => ({
                   app: AppId.make(app),

@@ -48,23 +48,16 @@ Files grant no access and keep no process alive. Use ordinary access Requests fo
 use `opensteer:automations` for requested recurring work and verify the returned state. Remove
 obsolete instructions when the person's requirements change.
 
-## Package a repeated procedure as a plugin
+## Package service tools as a plugin
 
-When repeated work needs skills, scripts or MCP servers together, package it as an Agent Plugins
-1.0 folder inside Agent home: `plugin.json`, `skills/<name>/SKILL.md`, scripts, and an optional
-`mcp.json`. Test the scripts on disposable inputs and run the skill's steps before calling
-`opensteer_plugin_install` with the folder's path relative to Agent home. Symlinks are refused. Its skills
-turn on here; connections still need grants, and local MCP servers need the computer owner's launch
-approval.
+A sandboxed service plugin is TypeScript source with an exact apps dependency, a defineApp export,
+and optional skills under skills/<name>/SKILL.md. Read opensteer:plugins before writing or changing
+one. Deploy a folder in Agent home with opensteer_plugin_install using source:"folder"; include
+pluginId for a new version. The folder is a draft, and the deployed version is the truth.
 
-Name plugins specifically (`tapo-camera`, not `camera`). To change one, edit its folder and call
-`opensteer_plugin_install` on it again, never on a renamed copy.
-
-A program server that needs a password, key or token declares it in `plugin.json`, never in
-`mcp.json`, files or chat: `"extensions": {"com.opensteer": {"secrets": {"<server>": [{"name":
-"CAMERA_PASSWORD", "title": "Camera password", "description": "Where to find it"}]}}}`. The computer's
-owner enters each value when approving the server, and the program reads it from that environment
-variable. The owner changes values in Settings, Plugins.
+Loose procedures and scripts can remain ordinary Agent home skills. Device and local MCP server
+packages still use their own registration and launch-consent flow in Settings; the sandboxed
+plugin installer does not register plugin.json/mcp.json packages or grant device access.
 
 ## Hand repeated work to a delegated task
 
@@ -73,9 +66,9 @@ call `opensteer_task_delegate` with a message naming the skill. When the work ne
 model, such as a fast one for simple steps, choose `model` and `aiAccountId` from
 `opensteer_ai_account_list`. Continue the task with `taskId` to keep its context.
 
-`opensteer_plugin_list` lists plugins. With full access, `opensteer_plugin_update` enables or
-disables a plugin, `opensteer_plugin_install` updates one from its folder, and
-`opensteer_plugin_remove` removes one. Enabling grants no resource access.
+`opensteer_plugin_list` lists deployed service plugins. Full-access Runs can install, export,
+activate an earlier code version or remove one. Only the person changes agent access and links
+accounts. Use opensteer:plugins for those tools and their approval behavior.
 
 - Read [durable context](references/durable-context.md) when choosing where a correction, fact or task state belongs.
 - Read [skills](references/skills.md) when authoring procedures.

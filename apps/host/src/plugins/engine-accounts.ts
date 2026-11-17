@@ -18,7 +18,7 @@ import {
   type VersionId,
 } from "@opensteer/plugin-engine-sdk/core";
 import { appProtocol } from "@opensteer/plugin-engine-sdk/node";
-import { PluginServiceError, type PluginConsent } from "./engine-protocol.js";
+import { ConsentSchema, PluginServiceError, type PluginConsent } from "./engine-protocol.js";
 
 const table = ["opensteer_account_links"];
 const rows = Schema.Array(
@@ -358,6 +358,14 @@ export function engineAccounts(options: {
     review,
     link,
     unlink,
-    links: (app: AppId) => Effect.flatMap(engine, (sdk) => read(sdk, app)),
+    links: (app: AppId) =>
+      Effect.flatMap(engine, (sdk) => read(sdk, app)).pipe(
+        Effect.map((links) =>
+          links.map((link) => ({
+            ...link,
+            consent: ConsentSchema.parse(JSON.parse(link.consent)),
+          })),
+        ),
+      ),
   };
 }

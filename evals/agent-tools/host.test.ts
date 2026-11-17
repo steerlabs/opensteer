@@ -144,22 +144,28 @@ it("validates prompt overhaul case inputs and mocked positive calls with product
     const cases = parseCases(
       await readFile(new URL(`./cases/${file}.ndjson`, import.meta.url), "utf8"),
     );
-    for (const c of cases.filter((c) => commits.includes(c.source.commit))) {
+    for (const c of cases.filter(
+      (c) => commits.includes(c.source.commit) && c.expect.calls.length > 0,
+    )) {
       const host = await startFakeHost(c);
-      const clients: Client[] = [];
+      const clients = new Map<string, Client>();
       try {
         for (const required of c.expect.calls) {
           const endpoint = [...host.endpoints].find(([, endpoint]) =>
             endpoint.tools.some((t) => t.name === required.tool),
           );
           expect(endpoint, `${c.id}: ${required.tool} is offered`).toBeDefined();
-          const client = new Client({ name: "eval-case-validation", version: "1" });
-          clients.push(client);
-          await client.connect(
-            new StreamableHTTPClientTransport(new URL(`/${endpoint![0]}`, host.url), {
-              requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
-            }) as unknown as Transport,
-          );
+          const name = endpoint![0];
+          let client = clients.get(name);
+          if (!client) {
+            client = new Client({ name: "eval-case-validation", version: "1" });
+            clients.set(name, client);
+            await client.connect(
+              new StreamableHTTPClientTransport(new URL(`/${name}`, host.url), {
+                requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+              }) as unknown as Transport,
+            );
+          }
           const args =
             required.tool === "computer_use"
               ? { code: 'return await app("Notes")' }
@@ -178,7 +184,7 @@ it("validates prompt overhaul case inputs and mocked positive calls with product
           expect(host.calls.at(-1)?.valid, `${c.id}: ${required.tool} args`).toBe(true);
         }
       } finally {
-        await Promise.allSettled(clients.map((c) => c.close()));
+        await Promise.allSettled([...clients.values()].map((c) => c.close()));
         await host.close();
       }
     }
@@ -298,7 +304,7 @@ it("preserves production action validation before consuming mocks", async () => 
         source: { kind: "schedule", cron: "*/30 8-22 * * *", timezone: "America/New_York" },
         program: {
           language: "javascript",
-          toolContractVersion: 4,
+          toolContractVersion: 5,
           source: "export default async function () {}",
         },
       },
@@ -388,7 +394,7 @@ it("reads back successful automation changes and the requested one-shot time", a
         source: { kind: "schedule", at: "2027-01-01T09:05:00-05:00" },
         program: {
           language: "typescript",
-          toolContractVersion: 4,
+          toolContractVersion: 5,
           source: "export default async function () {}",
         },
       },

@@ -11,6 +11,7 @@ import {
   RunnerIdSchema,
   ThreadIdSchema,
   TriggerOccurrenceIdSchema,
+  TriggerWatchActivationIdSchema,
   UserIdSchema,
   type UserId,
   type ExecutionNodeId,
@@ -36,6 +37,9 @@ export const RequestKindSchema = z.enum([
   "device.access",
   "computer.app.access",
   "integration.input",
+  "plugin.account",
+  "plugin.approval",
+  "plugin.input",
   "person.question",
 ]);
 type RequestKind = z.infer<typeof RequestKindSchema>;
@@ -68,6 +72,8 @@ export const RequestCancellationReasonSchema = z.enum([
   "task-deleted",
   "resource-deleted",
   "authority-revoked",
+  "plugin-interrupted",
+  "plugin-expired",
 ]);
 export type RequestCancellationReason = z.infer<typeof RequestCancellationReasonSchema>;
 
@@ -187,9 +193,45 @@ export function requestFormAnswersProblem(
  */
 const RequestAgentProposedSchema = z.literal(true).optional();
 
+export const PluginRequestContextSchema = z.strictObject({
+  id: RequestIdentifierSchema,
+  name: z.string().min(1).max(240),
+  author: z.enum(["catalog", "agent"]),
+});
+export const PluginAccountConsentSchema = z.strictObject({
+  digest: z.string().regex(/^[a-f0-9]{64}$/u),
+  sites: z.array(z.string().max(2048)).max(100),
+  credential: z.enum(["sealed", "value"]),
+});
+const pluginPresentation = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("account"),
+    requirement: RequestIdentifierSchema,
+    scope: z.enum(["app", "user"]),
+    consent: PluginAccountConsentSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("approval"),
+    executionId: RequestIdentifierSchema,
+    tool: RequestIdentifierSchema,
+    arguments: z.json(),
+  }),
+  z.strictObject({
+    kind: z.literal("input"),
+    executionId: RequestIdentifierSchema,
+    tool: RequestIdentifierSchema,
+    schema: z.record(z.string(), z.json()),
+  }),
+]);
+const pluginContext = z.strictObject({
+  plugin: PluginRequestContextSchema,
+  decision: pluginPresentation,
+});
+
 const requestPresentationVariants = [
   z.strictObject({
     agentProposed: RequestAgentProposedSchema,
+    plugin: pluginContext.optional(),
     detail: z.string().max(requestTextMaxLength).optional(),
     kind: z.literal("choice"),
     options: z.array(RequestOptionSchema).min(1).max(32),
@@ -198,6 +240,7 @@ const requestPresentationVariants = [
   }),
   z.strictObject({
     agentProposed: RequestAgentProposedSchema,
+    plugin: pluginContext.optional(),
     detail: z.string().max(requestTextMaxLength).optional(),
     fields: z.array(RequestFormFieldSchema).min(1).max(16),
     kind: z.literal("form"),
@@ -205,6 +248,7 @@ const requestPresentationVariants = [
   }),
   z.strictObject({
     agentProposed: RequestAgentProposedSchema,
+    plugin: pluginContext.optional(),
     detail: z.string().max(requestTextMaxLength).optional(),
     kind: z.literal("external"),
     subject: z.strictObject({
@@ -450,6 +494,23 @@ const requestPayloadVariants = [
    * the form's fields; the answer wakes the task that asked, however late.
    */
   z.strictObject({ kind: z.literal("person.question") }),
+  z.strictObject({
+    kind: z.literal("plugin.account"),
+    plugin: RequestIdentifierSchema,
+    requirement: RequestIdentifierSchema,
+    scope: z.enum(["app", "user"]),
+    consent: PluginAccountConsentSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("plugin.approval"),
+    executionId: RequestIdentifierSchema,
+    interactionId: RequestIdentifierSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("plugin.input"),
+    executionId: RequestIdentifierSchema,
+    interactionId: RequestIdentifierSchema,
+  }),
 ] as const;
 export const RequestPayloadSchema = z.discriminatedUnion("kind", requestPayloadVariants);
 const RequestPayloadViewSchema = z.discriminatedUnion("kind", [
@@ -471,6 +532,9 @@ const RequestPayloadViewSchema = z.discriminatedUnion("kind", [
   z.object(requestPayloadVariants[9].shape),
   z.object(requestPayloadVariants[10].shape),
   z.object(requestPayloadVariants[11].shape),
+  z.object(requestPayloadVariants[12].shape),
+  z.object(requestPayloadVariants[13].shape),
+  z.object(requestPayloadVariants[14].shape),
 ]);
 export type RequestPayload = z.infer<typeof RequestPayloadSchema>;
 
@@ -513,6 +577,7 @@ const requestBaseShape = {
    * nullable and the pair carries the invariant instead.
    */
   originatingOccurrenceId: TriggerOccurrenceIdSchema.nullable(),
+  originatingWatchActivationId: TriggerWatchActivationIdSchema.nullable().optional(),
   /** The subagent of the originating Run that asked; absent for the Run's own agent. */
   originatingNodeId: ExecutionNodeIdSchema.optional(),
   originatingRunId: RunIdSchema.nullable(),
@@ -534,6 +599,7 @@ function validateRequestInvariants(
     readonly kind: RequestKind;
     readonly mode: RequestMode;
     readonly originatingOccurrenceId: string | null;
+    readonly originatingWatchActivationId?: string | null | undefined;
     readonly originatingRunId: string | null;
     readonly payload: RequestPayload;
     readonly resolvedBy?: UserId | null;
@@ -558,11 +624,17 @@ function validateRequestInvariants(
       });
     }
   }
-  if ((request.originatingRunId === null) === (request.originatingOccurrenceId === null)) {
+  if (
+    [
+      request.originatingRunId,
+      request.originatingOccurrenceId,
+      request.originatingWatchActivationId,
+    ].filter((id) => id != null).length !== 1
+  ) {
     context.addIssue({
       code: "custom",
       message:
-        "A Request originates from exactly one of a Run or a Trigger Occurrence, never both and never neither",
+        "A Request originates from exactly one of a Run, a Trigger Occurrence or a Watch activation",
       path: ["originatingRunId"],
     });
   }
@@ -795,6 +867,9 @@ export function requestIsAgentAnswerable(
     "device.access": false,
     "computer.app.access": false,
     "integration.input": false,
+    "plugin.account": false,
+    "plugin.approval": false,
+    "plugin.input": false,
     // It asks the person by name; another agent answering would be a guess.
     "person.question": false,
   };

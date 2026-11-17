@@ -124,6 +124,8 @@ export class ContinuationService {
       request.status === "withdrawn" ||
       (request.status === "cancelled" &&
         request.cancellationReason !== "resource-deleted" &&
+        request.cancellationReason !== "plugin-interrupted" &&
+        request.cancellationReason !== "plugin-expired" &&
         request.cancellationReason !== "authority-revoked")
         ? `Request ${request.id} ended as ${request.status}.`
         : await continuationMessage(request, this.#integrations, loginRef);
@@ -301,6 +303,12 @@ export async function continuationMessage(
   integrations: IntegrationInventorySource,
   loginRef?: string,
 ): Promise<string> {
+  if (request.payload.kind === "plugin.approval" || request.payload.kind === "plugin.input") {
+    const execution = request.payload.executionId;
+    if (request.status === "cancelled")
+      return `Plugin execution ${execution} was ${request.cancellationReason === "plugin-expired" ? "expired" : "interrupted"}. Earlier calls may have taken effect. Check current state with a safe read; never rerun the program blindly.`;
+    return `The person ${request.status === "fulfilled" ? "answered" : "declined"} plugin Request ${request.id}. Call plugin_resume({executionId:${JSON.stringify(execution)}}) to collect the execution's result. Do not repeat the call or program; earlier effects are not rolled back.`;
+  }
   if (request.mode === "durable" && request.status === "cancelled") {
     return `Request ${request.id} was cancelled (${request.cancellationReason}). The requested resource or authority is no longer available. Continue without it; opensteer_request_answer shows status, not the answer.`;
   }
@@ -311,6 +319,13 @@ export async function continuationMessage(
     throw new Error("The Request continuation outbox contains an ineligible Request");
   }
   switch (request.kind) {
+    case "plugin.account":
+      return request.status === "fulfilled"
+        ? `Plugin account Request ${request.id} was fulfilled. Discover the plugin's current tools with plugin_search and continue.`
+        : `The person declined plugin account Request ${request.id}. Continue without this account; do not request it again unless asked.`;
+    case "plugin.approval":
+    case "plugin.input":
+      throw new Error("Plugin execution continuation needs its execution payload");
     case "device.access": {
       if (request.payload.kind !== "device.access")
         throw new Error("Device access Request payload is invalid");

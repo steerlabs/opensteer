@@ -92,7 +92,7 @@ describeStore("personal reference handlers", (it) => {
       program: {
         language: "javascript",
         source: "export default async () => null",
-        toolContractVersion: 4,
+        toolContractVersion: 5,
       },
       source: {
         kind: "schedule",

@@ -216,7 +216,7 @@ describeStore("Assignment result delivery", (it) => {
                 kind: "watch",
               },
               program: {
-                toolContractVersion: 4,
+                toolContractVersion: 5,
                 language: "javascript",
                 source: "export default async () => null",
               },

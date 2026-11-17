@@ -39,7 +39,7 @@ describe("NativeFsHelper", () => {
 
     expect(result).toMatchObject({
       binaryIdentity: "opensteer-native-fs",
-      binaryVersion: "1.6.0",
+      binaryVersion: "1.7.0",
       containment:
         process.platform === "linux"
           ? "linux-openat2"
@@ -229,7 +229,7 @@ describe("NativeFsHelper", () => {
       const malformed = await executable(
         root,
         "malformed-base64",
-        `process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(JSON.stringify({binaryIdentity:'opensteer-native-fs',binaryVersion:'1.6.0',containment:${JSON.stringify(
+        `process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(JSON.stringify({binaryIdentity:'opensteer-native-fs',binaryVersion:'1.7.0',containment:${JSON.stringify(
           process.platform === "linux" ? "linux-openat2" : "posix-openat-nofollow",
         )},ok:true,platform:${JSON.stringify(process.platform)},result:{contentBase64:'YQ',path:'a.txt',size:1}})));`,
       );
@@ -252,7 +252,7 @@ describe("NativeFsHelper", () => {
         "streaming",
         `const fs=require('node:fs'); process.stdin.resume(); process.stdin.on('end',()=>{fs.writeFileSync(${JSON.stringify(
           pidFile,
-        )},String(process.pid)); const header={binaryIdentity:'opensteer-native-fs',binaryVersion:'1.6.0',containment:${JSON.stringify(
+        )},String(process.pid)); const header={binaryIdentity:'opensteer-native-fs',binaryVersion:'1.7.0',containment:${JSON.stringify(
           process.platform === "linux" ? "linux-openat2" : "posix-openat-nofollow",
         )},ok:true,platform:${JSON.stringify(process.platform)},result:{length:1048576,metadata:{modifiedAt:null,mode:420,revision:'${"a".repeat(
           43,

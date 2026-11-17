@@ -63,6 +63,13 @@ const WriteResultSchema = z.strictObject({
   durability: z.enum(["sync-uncertain", "synced"]),
   path: z.string().min(1).max(4_096),
 });
+const BinaryWriteResultSchema = WriteResultSchema.extend({
+  bytesWritten: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(24 * 1024 * 1024),
+});
 const ReplaceResultSchema = z.strictObject({
   durability: z.enum(["sync-uncertain", "synced"]),
   occurrencesReplaced: z
@@ -106,14 +113,14 @@ export interface NativeFileDownload {
 }
 const ProbeResultSchema = z.strictObject({
   binaryIdentity: z.literal("opensteer-native-fs"),
-  binaryVersion: z.literal("1.6.0"),
+  binaryVersion: z.literal("1.7.0"),
   containment: z.enum(["linux-openat2", "posix-openat-nofollow", "windows-nt-relative-noreparse"]),
   platform: z.enum(["darwin", "linux", "windows"]),
 });
 const ResponseEnvelopeSchema = z.discriminatedUnion("ok", [
   z.strictObject({
     binaryIdentity: z.literal("opensteer-native-fs"),
-    binaryVersion: z.literal("1.6.0"),
+    binaryVersion: z.literal("1.7.0"),
     containment: ProbeResultSchema.shape.containment,
     error: z.strictObject({
       code: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
@@ -124,7 +131,7 @@ const ResponseEnvelopeSchema = z.discriminatedUnion("ok", [
   }),
   z.strictObject({
     binaryIdentity: z.literal("opensteer-native-fs"),
-    binaryVersion: z.literal("1.6.0"),
+    binaryVersion: z.literal("1.7.0"),
     containment: ProbeResultSchema.shape.containment,
     ok: z.literal(true),
     platform: ProbeResultSchema.shape.platform,
@@ -371,6 +378,35 @@ export class NativeFsHelper implements NativeFilesystem, NativeFilesAuthority {
   write(input: Parameters<NativeFilesystem["write"]>[0], signal: AbortSignal) {
     return this.#request({ ...input, operation: "write" }, WriteResultSchema, signal);
   }
+  createDirectory(
+    input: { root: string; path: string; expectedRootIdentity: NativeDirectoryIdentity },
+    signal: AbortSignal,
+  ) {
+    return this.#request(
+      { ...input, operation: "create-directory" },
+      z.strictObject({
+        identity: NativeDirectoryIdentitySchema,
+        path: z.string().min(1).max(4096),
+      }),
+      signal,
+    );
+  }
+  writeBinary(
+    input: {
+      root: string;
+      path: string;
+      contentBase64: string;
+      expectedRootIdentity: NativeDirectoryIdentity;
+    },
+    signal: AbortSignal,
+  ) {
+    const { contentBase64, ...target } = input;
+    return this.#request(
+      { ...target, content: contentBase64, operation: "write-binary" },
+      BinaryWriteResultSchema,
+      signal,
+    );
+  }
 
   async #request<Result>(
     request: Record<string, unknown>,
@@ -526,7 +562,10 @@ function encodeHelperRequest(
   rootPolicy: HelperRootPolicy,
 ): Buffer {
   const encoded = Buffer.from(JSON.stringify({ ...request, rootPolicy }), "utf8");
-  if (encoded.byteLength > maxHelperRequestBytes) {
+  if (
+    encoded.byteLength >
+    (request.operation === "write-binary" ? 34 * 1024 * 1024 : maxHelperRequestBytes)
+  ) {
     throw new Error("Native filesystem helper request exceeds its byte limit");
   }
   return encoded;

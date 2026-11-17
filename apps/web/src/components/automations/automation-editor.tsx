@@ -112,7 +112,7 @@ function EditorForm({ editing }: { readonly editing: TriggerDetail }) {
       const program: TriggerProgram = {
         language: draft.language,
         source: draft.source,
-        toolContractVersion: 4,
+        toolContractVersion: 5,
       };
       await hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`trigger-update:${editing.trigger.id}`),

@@ -2,7 +2,6 @@ import { appToolHandlers } from "./apps.js";
 import { TabToolHandlers } from "./tabs.js";
 import { administrationToolHandlers, type AdministrationToolHandlers } from "./administration.js";
 import type { AppService } from "../../apps/app-service.js";
-import type { RunToolScope } from "../../agents/run-tool-tokens.js";
 
 import type { ProductToolHandlers } from "./product.js";
 import type { IntegrationToolHandlers } from "./integrations.js";
@@ -13,6 +12,7 @@ import type { RunId, TeamAgentRequestId, ThreadId } from "@opensteer/core";
 
 export type { AgentToolHandlers, ToolCall, ToolInput } from "./types.js";
 import type { AgentToolHandlers, ToolCall } from "./types.js";
+import type { PluginToolHandlers } from "./plugins.js";
 export function agentToolHandlers(options: {
   readonly administration: AdministrationToolHandlers;
   readonly product: ProductToolHandlers;
@@ -20,10 +20,7 @@ export function agentToolHandlers(options: {
   readonly triggers: TriggerToolHandlers;
   readonly apps: Pick<AppService, "publish" | "list" | "start" | "stop" | "delete">;
   readonly tabs: TabToolHandlers;
-  readonly pluginInstall: (
-    scope: RunToolScope,
-    directory: string,
-  ) => Promise<Record<string, unknown>>;
+  readonly plugins?: PluginToolHandlers;
   readonly team?: TeamToolPort;
   readonly knowledge?: TeamKnowledgePort;
   /** Whether a Run may still use its owner's personal context, rechecked per call. */
@@ -37,7 +34,8 @@ export function agentToolHandlers(options: {
     i = options.integrations,
     t = options.triggers;
   const handlers: Partial<AgentToolHandlers> = {
-    ...administrationToolHandlers(options.administration, options.pluginInstall),
+    ...administrationToolHandlers(options.administration),
+    ...options.plugins?.handlers(),
     ...appToolHandlers(options.apps),
     tab_list: (c) => options.tabs.tab_list(c),
     tab_open: (c) => options.tabs.tab_open(c),

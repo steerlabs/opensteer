@@ -6221,7 +6221,7 @@ class MockHostState {
           name: worker.title,
           program: {
             language: "typescript",
-            toolContractVersion: 4,
+            toolContractVersion: 5,
             source: "export default async () => null",
           },
           source: {

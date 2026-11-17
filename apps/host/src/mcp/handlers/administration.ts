@@ -19,8 +19,7 @@ import {
 import { isIntegrationAdministrationCommand } from "../../integrations/integration-administration.js";
 import type { AgentCaller } from "../agent-caller.js";
 import { computerIds } from "../computer-ids.js";
-import { operationId, requireRun } from "../operations.js";
-import type { RunToolScope } from "../../agents/run-tool-tokens.js";
+import { operationId } from "../operations.js";
 import type { ToolCall, AgentToolHandlers } from "./types.js";
 
 type AdministrationToolName =
@@ -37,11 +36,7 @@ type AdministrationToolName =
   | "integration_remove"
   | "opensteer_messaging_bridge_list"
   | "opensteer_messaging_bridge_update"
-  | "opensteer_messaging_bridge_remove"
-  | "opensteer_plugin_list"
-  | "opensteer_plugin_install"
-  | "opensteer_plugin_update"
-  | "opensteer_plugin_remove";
+  | "opensteer_messaging_bridge_remove";
 export type AdministrationHandlers = Pick<AgentToolHandlers, AdministrationToolName>;
 
 function command(value: Record<string, unknown>): AdministrationCommand {
@@ -224,30 +219,7 @@ export class AdministrationToolHandlers {
           status: i.paused ? "paused" : "connected",
         });
   }
-  pluginCommand(
-    c:
-      | ToolCall<"opensteer_plugin_install">
-      | ToolCall<"opensteer_plugin_update">
-      | ToolCall<"opensteer_plugin_remove">,
-  ) {
-    const i = c.input;
-    if ("directory" in i)
-      return this.#write(c, "opensteer_plugin_install", {
-        type: "plugin.update",
-        pluginId: i.pluginId,
-        input: { directory: i.directory, ...(i.computerId ? { runnerId: i.computerId } : {}) },
-      });
-    if ("enabled" in i)
-      return this.#write(c, "opensteer_plugin_update", {
-        type: "plugin.activation.set",
-        pluginId: i.pluginId,
-        active: i.enabled,
-      });
-    return this.#write(c, "opensteer_plugin_remove", {
-      type: "plugin.remove",
-      pluginId: i.pluginId,
-    });
-  }
+
   async execute(caller: AgentCaller, command: AdministrationCommand) {
     return { ...(await this.service.execute(caller, command)), ok: true as const };
   }
@@ -371,13 +343,6 @@ export class AdministrationToolHandlers {
       }),
     };
   }
-  async opensteer_plugin_list({ caller }: ToolCall<"opensteer_plugin_list">) {
-    await this.service.actor(caller);
-    const { integrations } = this.service.dependencies;
-    return {
-      plugins: await integrations.platform.store.plugins.listForUser(caller.userId),
-    };
-  }
 }
 function defaultsView(preferences: z.output<typeof ExecutionPreferencesViewSchema>) {
   const latest = preferences.history[0];
@@ -397,11 +362,6 @@ function defaultsView(preferences: z.output<typeof ExecutionPreferencesViewSchem
 }
 export function administrationToolHandlers(
   admin: AdministrationToolHandlers,
-  /** Installs a plugin folder from the Run's Agent home. */
-  installFromAgentHome: (
-    scope: RunToolScope,
-    directory: string,
-  ) => Promise<Record<string, unknown>>,
 ): AdministrationHandlers {
   const mutation = <Name extends AdministrationToolName>(
     parse: (call: ToolCall<Name>) => AdministrationCommand | Promise<AdministrationCommand>,
@@ -433,23 +393,5 @@ export function administrationToolHandlers(
     opensteer_messaging_bridge_list: (c) => admin.opensteer_messaging_bridge_list(c),
     opensteer_messaging_bridge_update: mutation((c) => admin.bridgeCommand(c)),
     opensteer_messaging_bridge_remove: mutation((c) => admin.bridgeCommand(c)),
-    opensteer_plugin_list: (c) => admin.opensteer_plugin_list(c),
-    opensteer_plugin_install: Object.assign(
-      async (c: ToolCall<"opensteer_plugin_install">) =>
-        c.input.pluginId === undefined
-          ? await installFromAgentHome(requireRun(c.caller).claims, c.input.directory)
-          : {
-              ...(await admin.execute(c.caller, admin.pluginCommand(c))),
-              pluginId: c.input.pluginId,
-            },
-      {
-        authorize: async (c: ToolCall<"opensteer_plugin_install">) => {
-          if (c.input.pluginId === undefined) requireRun(c.caller);
-          else await admin.service.authorize(c.caller, admin.pluginCommand(c));
-        },
-      },
-    ),
-    opensteer_plugin_update: mutation((c) => admin.pluginCommand(c)),
-    opensteer_plugin_remove: mutation((c) => admin.pluginCommand(c)),
   };
 }
