@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { AttachmentIdSchema, type ArtifactContentPart } from "@opensteer/core";
 import type { HostClient } from "@opensteer/client/host";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
 import { saveFile } from "../file-actions.js";
 import { Icon } from "../icon.js";
 import { attachmentDetail, isInlineImage } from "./attachment-parts.js";
@@ -205,11 +205,12 @@ function useDownload(
     if (pending) return;
     setPending(true);
     setError(null);
-    void client
-      .readAttachment(part.artifactId)
+    void act(client, { label: "download this file", done: "downloaded" }, () =>
+      client.readAttachment(part.artifactId),
+    )
       .then((bytes) => saveFile(bytes, part.name))
       .catch((reason: unknown) => {
-        if (mounted.current) setError(actionErrorMessage(reason));
+        if (mounted.current) setError(failureWords(reason));
       })
       .finally(() => {
         if (mounted.current) setPending(false);

@@ -1,7 +1,7 @@
+import { act, failureWords } from "../components/use-action.js";
 import { Fragment, useState, type ReactNode } from "react";
 import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { useTeamAttachment, useTeamSession, useTeams } from "./team-attachments.js";
-import { actionErrorMessage } from "../ui-utils.js";
 
 /** All team routes, including settings and knowledge, share the same recovery boundary. */
 export function TeamPaneGate({
@@ -48,14 +48,10 @@ function TeamPane({ teamId, children }: { readonly teamId: string; readonly chil
   const attempt = () => {
     setBusy(true);
     setError(null);
-    void (
-      surface === "team-web"
-        ? Promise.resolve(window.location.reload())
-        : enter
-          ? enter(teamId)
-          : reload()
+    void act(null, { label: "open this team", done: "opened" }, async () =>
+      surface === "team-web" ? window.location.reload() : enter ? enter(teamId) : reload(),
     )
-      .catch((failure: unknown) => setError(actionErrorMessage(failure)))
+      .catch((failure: unknown) => setError(failureWords(failure)))
       .finally(() => setBusy(false));
   };
   return (

@@ -1,7 +1,8 @@
 import { useEffect, useEffectEvent, useState } from "react";
 import { useSearchParams } from "react-router";
-import { OpensteerError, RequestIdSchema, type Request } from "@opensteer/core";
-import { HostClientRequestError, requestReceipt, type HostClient } from "@opensteer/client/host";
+import { RequestIdSchema, type Request } from "@opensteer/core";
+import { requestReceipt, type HostClient } from "@opensteer/client/host";
+import { classifyClientFailure } from "@opensteer/client/connections";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { Unavailable } from "./unavailable.js";
@@ -76,10 +77,8 @@ export function useLinkedRequest(
 
 /** Whether the Host refused a read because the thing is gone or not this reader's. */
 export function notFound(error: unknown): boolean {
-  return (
-    (error instanceof HostClientRequestError && (error.status === 403 || error.status === 404)) ||
-    (error instanceof OpensteerError && (error.code === "forbidden" || error.code === "not_found"))
-  );
+  const { code } = classifyClientFailure(error);
+  return code === "forbidden" || code === "not_found";
 }
 
 /**

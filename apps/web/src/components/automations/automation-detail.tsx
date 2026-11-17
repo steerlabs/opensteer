@@ -1,3 +1,4 @@
+import { act as owned, failureWords } from "../use-action.js";
 import { presentClientIssue } from "@opensteer/client/feedback";
 import {
   useCallback,
@@ -26,7 +27,7 @@ import { LoadingRows } from "../loading-rows.js";
 import { PageHeader, PageTopbar } from "../page-header.js";
 import { Popover } from "../popover.js";
 import { useToast } from "../toast.js";
-import { actionErrorMessage, conversationPath, useMinuteClock } from "../../ui-utils.js";
+import { conversationPath, useMinuteClock } from "../../ui-utils.js";
 import {
   automationShape,
   runOutcome,
@@ -183,10 +184,11 @@ function AutomationView({
   const act = async (work: () => Promise<string | null>) => {
     setPending(true);
     try {
-      const done = await work();
+      const done = await owned(client, { label: "change this automation", done: "changed" }, work);
       if (done) toast.success(done);
     } catch (reason) {
-      toast.error(actionErrorMessage(reason));
+      const words = failureWords(reason);
+      if (words) toast.error(words);
     } finally {
       setPending(false);
     }

@@ -52,7 +52,7 @@ import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opens
 import { useComputerUseStop } from "@opensteer/client/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
 
 import { AppMark } from "./app-icons.js";
 
@@ -111,11 +111,11 @@ export function ComputerUseBlock({
     setBusy(key);
     setFailure(null);
     try {
-      await operation();
+      await act(hostClient, { label: "change this", done: "changed" }, operation);
       // A failed reload after a successful mutation does not undo the change.
       await onChanged().catch(() => undefined);
     } catch (reason) {
-      setFailure({ key, message: actionErrorMessage(reason) });
+      setFailure({ key, message: failureWords(reason) ?? "" });
     } finally {
       acting.current = false;
       setBusy(null);
@@ -491,14 +491,16 @@ function PermissionSteps({
   function setUp(actions: ComputerUseLocalActions) {
     const attempt = ++setupAttempt.current;
     setSetupFailure(null);
-    void actions.openPermissions().then(
+    void act(null, { label: "open System Settings", done: "opened" }, () =>
+      actions.openPermissions(),
+    ).then(
       (result) => {
         if (attempt === setupAttempt.current) {
           setSetupFailure(result.opened ? null : unsignedBuildSentence);
         }
       },
       (reason: unknown) => {
-        if (attempt === setupAttempt.current) setSetupFailure(actionErrorMessage(reason));
+        if (attempt === setupAttempt.current) setSetupFailure(failureWords(reason));
       },
     );
   }
@@ -600,14 +602,17 @@ function AddAppDialog({
       const current = ++generation.current;
       setLoading(true);
       setLoadError(null);
-      hostClient.rpc["integration.computer.apps.installed"]({
-        icons: true,
-        limit: pickerPageSize,
-        offset,
-        query: search,
-        runnerId: machine.id,
-      })
-        .then(unwrapRpcResult)
+      void act(hostClient, { label: "list apps" }, async () =>
+        unwrapRpcResult(
+          await hostClient.rpc["integration.computer.apps.installed"]({
+            icons: true,
+            limit: pickerPageSize,
+            offset,
+            query: search,
+            runnerId: machine.id,
+          }),
+        ),
+      )
         .then((result) => {
           if (current !== generation.current) return;
           if (result.unavailableReason) {
@@ -629,7 +634,7 @@ function AddAppDialog({
           }));
         })
         .catch((reason: unknown) => {
-          if (current === generation.current) setLoadError(actionErrorMessage(reason));
+          if (current === generation.current) setLoadError(failureWords(reason));
         })
         .finally(() => {
           if (current === generation.current) setLoading(false);
@@ -658,10 +663,12 @@ function AddAppDialog({
     setAsking({ access, bundleId: app.identity.bundleId });
     setAskError(null);
     try {
-      await onApprove({ access, app: app.identity });
+      await act(hostClient, { label: "add this app", done: "added" }, () =>
+        onApprove({ access, app: app.identity }),
+      );
       await onDone();
     } catch (reason) {
-      setAskError({ key: app.identity.bundleId, message: actionErrorMessage(reason) });
+      setAskError({ key: app.identity.bundleId, message: failureWords(reason) ?? "" });
       setAsking(null);
     }
   }

@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useMemo, type ReactNode } from "react";
 import type { TabId } from "@opensteer/core";
 import type { HostClient, PlaceItem } from "@opensteer/client/host";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, toastFailure } from "../use-action.js";
 import { useToast } from "../toast.js";
 
 /**
@@ -38,13 +38,21 @@ export function TabCloserProvider({
   const close = useCallback(
     (tabIds: readonly TabId[]) => {
       if (!tabIds.length) return;
-      void hostClient
-        .closeTabs([...tabIds])
+      void act(
+        hostClient,
+        { label: "close", done: "closed", thing: tabIds.length === 1 ? "this tab" : "these tabs" },
+        () => hostClient.closeTabs([...tabIds]),
+      )
         .then((result) => {
+          // Each tab the Host refused is said once, in the app's words.
           if (result.failed.length)
-            toast.error(result.failed.map((failure) => failure.error.message).join("\n"));
+            toast.error(
+              result.failed.length === 1
+                ? "Couldn't close this tab."
+                : `Couldn't close ${result.failed.length} tabs.`,
+            );
         })
-        .catch((error: unknown) => toast.error(actionErrorMessage(error)));
+        .catch((error: unknown) => toastFailure(toast)(error));
     },
     [hostClient, toast],
   );

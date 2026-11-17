@@ -1,3 +1,4 @@
+import { classifyClientFailure } from "@opensteer/client/connections";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import {
   AttachmentMediaTypeSchema,
@@ -8,12 +9,7 @@ import {
   type ArtifactContentPart,
   type Attachment,
 } from "@opensteer/core";
-import {
-  HostClientRequestError,
-  mutationIdempotencyKey,
-  stageAttachment,
-  type HostClient,
-} from "@opensteer/client/host";
+import { mutationIdempotencyKey, stageAttachment, type HostClient } from "@opensteer/client/host";
 import { formatBytes } from "../../app-model.js";
 import { composerDrafts, type DraftFile } from "../composer-drafts.js";
 import { artifactPart, isInlineImage } from "./attachment-parts.js";
@@ -293,7 +289,7 @@ class StagedFiles {
           if (controller.signal.aborted) return;
           record.controller = null;
           this.#patch(localId, {
-            error: uploadFailure(error),
+            error: uploadFailure(),
             retryable: retryable(error),
             status: "failed",
           });
@@ -561,22 +557,19 @@ function defaultName(mediaType: string): string {
   return subtype ? `pasted.${subtype}` : "pasted-file";
 }
 
-function uploadFailure(error: unknown): string {
-  if (error instanceof HostClientRequestError) return error.message;
-  if (error instanceof TypeError) {
-    return "The upload did not finish. Check your connection and try again.";
-  }
-  return error instanceof Error && error.message ? error.message : "The upload did not finish.";
+/** The file's own fact, never the exception's text or the connection's. */
+function uploadFailure(): string {
+  return "Couldn’t upload this file.";
 }
 
 function isNotFound(error: unknown): boolean {
-  return error instanceof HostClientRequestError && error.status === 404;
+  return classifyClientFailure(error).code === "not_found";
 }
 
 function retryable(error: unknown): boolean {
   if (error instanceof UploadPreparationError) return false;
-  if (!(error instanceof HostClientRequestError)) return true;
-  return (
-    error.status >= 500 || error.status === 404 || error.status === 408 || error.status === 429
-  );
+  const failure = classifyClientFailure(error);
+  // Anything the Host did not answer, such as a dropped connection, may work next time.
+  if (failure.provenance !== "host") return true;
+  return failure.retryable || failure.code === "not_found";
 }

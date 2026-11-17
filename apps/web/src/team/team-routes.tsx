@@ -1,3 +1,4 @@
+import { readWords, toastError } from "../components/use-action.js";
 import { TeamPaneGate } from "./team-pane-gate.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams, useSearchParams } from "react-router";
@@ -15,7 +16,6 @@ import { ChannelGlyph, PeopleOnlyBadge } from "../components/team/team-marks.js"
 import { TeamSearch, noSearchFilters } from "../components/team/team-search.js";
 import type { SearchFilters } from "../components/team/team-models.js";
 import { useToast } from "../components/toast.js";
-import { actionErrorMessage } from "../ui-utils.js";
 import { ChannelRoute, TeamUnavailable } from "./channel-route.js";
 import { useTeamAttachment, useTeamSession } from "./team-attachments.js";
 import { TeamReferences } from "../components/references/reference-scope.js";
@@ -142,7 +142,7 @@ function TeamSearchPage({ view }: { readonly view: TeamView }) {
         ...(filters.hasFile ? { hasFile: true } : {}),
         ...(filters.inThreads ? { threadsOnly: true } : {}),
       })
-      .catch((error: unknown) => toast.error(actionErrorMessage(error)));
+      .catch((error: unknown) => toastError(toast)(error));
   }, [view.client, query, filters, view.snapshot.sidebar?.accessRevision]);
   const directory = usePagedList(
     (cursor) =>
@@ -182,9 +182,7 @@ function TeamSearchPage({ view }: { readonly view: TeamView }) {
       onQuery={(next) => run(next, filters)}
       hasMore={view.snapshot.search?.hasMore ?? false}
       onMore={() =>
-        void view.client
-          .loadMoreSearch()
-          .catch((error: unknown) => toast.error(actionErrorMessage(error)))
+        void view.client.loadMoreSearch().catch((error: unknown) => toastError(toast)(error))
       }
       people={people}
       query={query}
@@ -247,7 +245,7 @@ function BrowseChannels({ view }: { readonly view: TeamView }) {
     void view.client.rpc["commands.dispatch"]({ type: "team.channel.join", channelId: channel.id })
       .then(unwrapRpcResult)
       .then(() => void navigate(channelPath(teamId, channel.id)))
-      .catch((error: unknown) => toast.error(actionErrorMessage(error)))
+      .catch((error: unknown) => toastError(toast)(error))
       .finally(() => setJoining(null));
   };
   const first = channels[0];
@@ -301,7 +299,7 @@ function BrowseChannels({ view }: { readonly view: TeamView }) {
         <LoadingRows label="Loading channels" />
       ) : directory.error !== null && directory.items.length === 0 ? (
         <div className="team-browse__empty" role="alert">
-          <p>{actionErrorMessage(directory.error)}</p>
+          <p>{readWords(directory.error)}</p>
           <button className="btn btn--small" onClick={directory.retry} type="button">
             Try again
           </button>

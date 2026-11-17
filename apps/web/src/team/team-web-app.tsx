@@ -1,3 +1,4 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { useEffect, useMemo, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useParams } from "react-router";
 import {
@@ -72,7 +73,11 @@ async function readEntry(): Promise<Entry> {
   const result = await rpc["team.bootstrap.get"]({});
   if (result.ok) return { kind: "ready", bootstrap: result.data };
   if (bootstrapMembershipRefused(result.error)) return { kind: "not-member" };
-  if (!signedOut) return { kind: "failed", message: result.error.message };
+  if (!signedOut)
+    return {
+      kind: "failed",
+      message: presentClientIssue({ code: "read-failed", resource: "this team" }).title,
+    };
   const state = await fetch("/v1/team/setup/state", { headers: versionHeaders });
   const setUp = state.ok && ((await state.json()) as { complete?: unknown }).complete === true;
   return { kind: "signed-out", setUp };

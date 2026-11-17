@@ -8,7 +8,7 @@ import {
   type ExecutionSelection,
   type ThreadPlacementOption,
 } from "@opensteer/client/host";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act as owned, failureWords } from "../use-action.js";
 import { useShell } from "../app-shell.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
@@ -111,10 +111,12 @@ export function SetupAiStep({
     setSaving(true);
     setError(null);
     try {
-      await hostClient.rememberExecution({ selection });
+      await owned(hostClient, { label: "save this", done: "saved" }, () =>
+        hostClient.rememberExecution({ selection }),
+      );
       onNext();
     } catch (reason) {
-      setError(actionErrorMessage(reason));
+      setError(failureWords(reason));
       setSaving(false);
     }
   }

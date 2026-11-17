@@ -16,8 +16,6 @@ export function fromLivePage(event: {
   );
 }
 
-export { presentActionFailure as actionErrorMessage } from "@opensteer/client/feedback";
-
 /**
  * Whether this window is in front of the person: visible *and* holding focus.
  * A visible window behind another app or another window shows messages nobody

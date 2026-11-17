@@ -11,7 +11,7 @@ import {
 import { otherDeviceLine, pluginPath } from "@opensteer/client/settings";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import { isAgentPhone } from "@opensteer/client/integrations";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
 import { useShell } from "../app-shell.js";
 import { computerIcon } from "../computers/device-art.js";
 import { HerePin } from "../computers/here-pin.js";
@@ -62,12 +62,13 @@ export function DevicesSection() {
     if (signingOut) return;
     setSigningOut(row.session.id);
     setError(null);
-    void hostClient
-      .dispatch({
+    void act(hostClient, { label: "sign out", thing: "this device", done: "signed out" }, () =>
+      hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`session:${row.session.id}`),
         sessionId: row.session.id,
         type: "session.revoke",
-      })
+      }),
+    )
       .then(() => {
         if (row.session.current) {
           window.location.assign("/");
@@ -76,7 +77,7 @@ export function DevicesSection() {
         sessions.reload();
         toast.success(`${row.label} is signed out.`);
       })
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+      .catch((reason: unknown) => setError(failureWords(reason)))
       .finally(() => setSigningOut(null));
   }
 

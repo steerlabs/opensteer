@@ -19,7 +19,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { connectPhoneForSetup } from "../../computers/agent-phone-connection.js";
 import { loadAgentPhoneArtifact } from "../../computers/agent-phone-setup.js";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { SetupStage, type SetupStageProps as StageProps } from "./setup-stage.js";
@@ -109,7 +109,9 @@ export function AddPhoneDialog({
       setPhase({ kind: "unsupported" });
       return () => abort.abort();
     }
-    void loadAgentPhoneArtifact({ bridge: desktopBridge, signal: abort.signal }).then(
+    void act(null, { label: "prepare the phone app" }, () =>
+      loadAgentPhoneArtifact({ bridge: desktopBridge, signal: abort.signal }),
+    ).then(
       (loaded) => {
         if (abort.signal.aborted) return;
         setArtifact(loaded);
@@ -117,7 +119,7 @@ export function AddPhoneDialog({
       },
       (reason: unknown) => {
         if (!abort.signal.aborted)
-          setPhase({ kind: "failed", message: actionErrorMessage(reason) });
+          setPhase({ kind: "failed", message: failureWords(reason) ?? "" });
       },
     );
     return () => abort.abort();
@@ -156,7 +158,7 @@ export function AddPhoneDialog({
       if (phaseRef.current.kind !== "disconnected") return;
       const serial = device.current?.serial;
       const session = beginAttempt();
-      void grantedAgentPhones(usb).then(
+      void act(null, { label: "find this phone" }, () => grantedAgentPhones(usb)).then(
         (devices) => {
           if (!isCurrent(session)) return;
           const again = devices.find(
@@ -167,7 +169,7 @@ export function AddPhoneDialog({
           }
         },
         (reason: unknown) => {
-          if (isCurrent(session)) setPhase({ kind: "failed", message: actionErrorMessage(reason) });
+          if (isCurrent(session)) setPhase({ kind: "failed", message: failureWords(reason) ?? "" });
         },
       );
     };
@@ -234,9 +236,9 @@ export function AddPhoneDialog({
     setPhase({ choice: null, kind: "choosing" });
     let chosen: AgentPhoneUsbDevice | null;
     try {
-      chosen = await chooseAgentPhone(usb);
+      chosen = await act(null, { label: "choose a phone" }, () => chooseAgentPhone(usb));
     } catch (reason) {
-      if (isCurrent(session)) setPhase({ kind: "failed", message: actionErrorMessage(reason) });
+      if (isCurrent(session)) setPhase({ kind: "failed", message: failureWords(reason) ?? "" });
       return;
     }
     if (!isCurrent(session)) return;
@@ -258,15 +260,17 @@ export function AddPhoneDialog({
     device.current = chosen;
     setPhase({ kind: "running", question: null, step: "connect" });
     try {
-      const connection = await connectPhoneForSetup(chosen, {
-        native: desktopBridge?.agentPhoneAdb,
-        onAuthorizePrompt: () => {
-          if (isCurrent(session)) {
-            setPhase({ kind: "running", question: null, step: "authorize" });
-          }
-        },
-        signal: abort.signal,
-      });
+      const connection = await act(null, { label: "connect to this phone" }, () =>
+        connectPhoneForSetup(chosen, {
+          native: desktopBridge?.agentPhoneAdb,
+          onAuthorizePrompt: () => {
+            if (isCurrent(session)) {
+              setPhase({ kind: "running", question: null, step: "authorize" });
+            }
+          },
+          signal: abort.signal,
+        }),
+      );
       if (!isCurrent(session)) {
         if (connection.kind === "connected") await connection.close().catch(() => undefined);
         return;
@@ -279,26 +283,28 @@ export function AddPhoneDialog({
         session.close = () => undefined;
         void connection.close().catch(() => undefined);
       };
-      const result = await setupAgentPhone({
-        adb: connection.adb,
-        artifact: loaded,
-        confirmUninstall: () => ask({ kind: "uninstall" }, session),
-        confirmUnpair: ({ hostUrl }) => ask({ hostUrl, kind: "unpair" }, session),
-        enrollments,
-        host: agentPhoneSetupHost(client),
-        onStep: (step) => {
-          if (!isCurrent(session)) return;
-          if (step.step === "inspect" && step.phone) setPhone(step.phone);
-          if (step.step === "done") return;
-          setPhase({
-            kind: "running",
-            question: null,
-            step: wizardStep(step),
-          });
-        },
-        runnerName: phoneName ?? (chosen.name?.trim() || "Android phone"),
-        signal: abort.signal,
-      });
+      const result = await act(null, { label: "set up this phone" }, () =>
+        setupAgentPhone({
+          adb: connection.adb,
+          artifact: loaded,
+          confirmUninstall: () => ask({ kind: "uninstall" }, session),
+          confirmUnpair: ({ hostUrl }) => ask({ hostUrl, kind: "unpair" }, session),
+          enrollments,
+          host: agentPhoneSetupHost(client),
+          onStep: (step) => {
+            if (!isCurrent(session)) return;
+            if (step.step === "inspect" && step.phone) setPhone(step.phone);
+            if (step.step === "done") return;
+            setPhase({
+              kind: "running",
+              question: null,
+              step: wizardStep(step),
+            });
+          },
+          runnerName: phoneName ?? (chosen.name?.trim() || "Android phone"),
+          signal: abort.signal,
+        }),
+      );
       session.close();
       if (!isCurrent(session)) return;
       // The page's list also follows the Host's own change events; a refresh
@@ -314,7 +320,7 @@ export function AddPhoneDialog({
       session.close();
       // An unplugged phone or a closed dialog already said what happened.
       if (!isCurrent(session)) return;
-      setPhase({ kind: "failed", message: actionErrorMessage(reason) });
+      setPhase({ kind: "failed", message: failureWords(reason) ?? "" });
     }
   }
 
@@ -326,11 +332,11 @@ export function AddPhoneDialog({
   function answerChoice(choice: DesktopUsbDeviceChoice, deviceId: string | null) {
     const session = attempt.current;
     if (!desktopBridge || !session) return;
-    void desktopBridge
-      .chooseUsbDevice({ choiceId: choice.choiceId, deviceId })
-      .catch((reason: unknown) => {
-        if (isCurrent(session)) setPhase({ kind: "failed", message: actionErrorMessage(reason) });
-      });
+    void act(null, { label: "choose this phone" }, () =>
+      desktopBridge.chooseUsbDevice({ choiceId: choice.choiceId, deviceId }),
+    ).catch((reason: unknown) => {
+      if (isCurrent(session)) setPhase({ kind: "failed", message: failureWords(reason) ?? "" });
+    });
     setPhase({ choice: null, kind: "choosing" });
   }
 

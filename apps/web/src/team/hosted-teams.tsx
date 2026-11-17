@@ -1,3 +1,4 @@
+import { act, failureWords, toastError } from "../components/use-action.js";
 import {
   createContext,
   useCallback,
@@ -41,7 +42,6 @@ import { Icon } from "../components/icon.js";
 import { OptionRow } from "../components/option-row.js";
 import { TeamTile } from "../components/team/team-marks.js";
 import { useToast } from "../components/toast.js";
-import { actionErrorMessage } from "../ui-utils.js";
 import { useTeamSessionValue, useTeams, type TeamAttachment } from "./team-attachments.js";
 import { teamTile } from "./team-people.js";
 import { teamPath } from "./team-paths.js";
@@ -517,7 +517,7 @@ function SetupDialog({
     setBusy(true);
     void coordinator
       ?.deleteHostedTeam(team.id)
-      .catch((error: unknown) => toast.error(actionErrorMessage(error)))
+      .catch((error: unknown) => toastError(toast)(error))
       .finally(() => setBusy(false));
   };
   return (
@@ -540,7 +540,7 @@ function SetupDialog({
               onClick={() =>
                 void coordinator
                   ?.retryHostedTeam(team.id)
-                  .catch((error: unknown) => toast.error(actionErrorMessage(error)))
+                  .catch((error: unknown) => toastError(toast)(error))
               }
               type="button"
             >
@@ -661,7 +661,7 @@ function JoinDialog({ onClose, url }: { readonly onClose: () => void; readonly u
           joining: false,
           error: null,
         }),
-      (error: unknown) => live && setState({ kind: "failed", message: actionErrorMessage(error) }),
+      () => live && setState({ kind: "failed", message: "Couldn’t read this invite. Try again." }),
     );
     return () => {
       live = false;
@@ -675,11 +675,11 @@ function JoinDialog({ onClose, url }: { readonly onClose: () => void; readonly u
       return;
     }
     setState({ ...state, joining: true, error: null });
-    void coordination.coordinator
-      .joinWithInvite({ inviteUrl: url, personalDeploymentId: personal })
-      .then(onClose, (error: unknown) =>
-        setState({ ...state, joining: false, error: actionErrorMessage(error) }),
-      );
+    void act(null, { label: "join", thing: "this team", done: "joined" }, () =>
+      coordination.coordinator.joinWithInvite({ inviteUrl: url, personalDeploymentId: personal }),
+    ).then(onClose, (error: unknown) =>
+      setState({ ...state, joining: false, error: failureWords(error) }),
+    );
   };
   // An older team has the person join in the browser; coming back to this window continues.
   const inBrowser =
@@ -851,7 +851,7 @@ export function InvitePanel({ client }: { readonly client: TeamSessionClient }) 
         if (current) setInvite(current);
         else await reset(7, null);
       })
-      .catch((failure: unknown) => live && setError(actionErrorMessage(failure)));
+      .catch(() => live && setError("Couldn’t load this invite link. Try again."));
     return () => {
       live = false;
     };
@@ -883,9 +883,7 @@ export function InvitePanel({ client }: { readonly client: TeamSessionClient }) 
           className="btn btn--primary"
           disabled={busy}
           onClick={() =>
-            void makeSingleUse().catch((failure: unknown) =>
-              toast.error(actionErrorMessage(failure)),
-            )
+            void makeSingleUse().catch((failure: unknown) => toastError(toast)(failure))
           }
           type="button"
         >
@@ -942,7 +940,7 @@ export function InvitePanel({ client }: { readonly client: TeamSessionClient }) 
                 onChange={(event) =>
                   void reset(Number(event.currentTarget.value) as TeamInviteExpiryDays, invite.id)
                     .then(() => toast.success("New link made"))
-                    .catch((failure: unknown) => toast.error(actionErrorMessage(failure)))
+                    .catch((failure: unknown) => toastError(toast)(failure))
                 }
                 value={invite.expiresInDays}
               >
@@ -960,7 +958,7 @@ export function InvitePanel({ client }: { readonly client: TeamSessionClient }) 
               onClick={() =>
                 void reset(invite.expiresInDays, invite.id)
                   .then(() => toast.success("New invite link made"))
-                  .catch((failure: unknown) => toast.error(actionErrorMessage(failure)))
+                  .catch((failure: unknown) => toastError(toast)(failure))
               }
               type="button"
             >
@@ -1035,7 +1033,7 @@ export function useConnectAgent(team: TeamAttachment | null): (() => void) | nul
         origin: team.origin,
         personalDeploymentId: personal,
       })
-      .catch((error: unknown) => toast.error(actionErrorMessage(error)));
+      .catch((error: unknown) => toastError(toast)(error));
   };
 }
 
@@ -1172,7 +1170,7 @@ function TransferTeamDialog({
         if (found.length === 1) setChosen(found[0]!.accountId);
       },
       (failure: unknown) => {
-        if (!controller.signal.aborted) setError(actionErrorMessage(failure));
+        if (!controller.signal.aborted && failure) setError("Couldn’t load the team’s owners.");
       },
     );
     return () => controller.abort();
@@ -1184,7 +1182,9 @@ function TransferTeamDialog({
     if (!person) return;
     setBusy(true);
     setError(null);
-    void coordinator.transferHostedTeam(hostedTeamId, person.accountId).then(
+    void act(null, { label: "hand over", thing: "this team", done: "handed over" }, () =>
+      coordinator.transferHostedTeam(hostedTeamId, person.accountId),
+    ).then(
       () => {
         toast.success(`${person.displayName || person.email} now holds ${name}`);
         onTransferred();
@@ -1192,7 +1192,7 @@ function TransferTeamDialog({
       },
       (failure: unknown) => {
         setBusy(false);
-        setError(actionErrorMessage(failure));
+        setError(failureWords(failure));
       },
     );
   };

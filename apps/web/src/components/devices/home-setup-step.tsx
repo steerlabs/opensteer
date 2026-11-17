@@ -3,7 +3,7 @@ import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { deviceAccess } from "@opensteer/protocol";
 import { hostsDeployment, withDeviceSwitch } from "@opensteer/client/computers";
 import { mutationIdempotencyKey } from "@opensteer/client/host";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
 import { useShell } from "../app-shell.js";
 import { SetupFooter, SetupFrame } from "../first-run/setup-frame.js";
 import { SetupList } from "../first-run/setup-list.js";
@@ -45,23 +45,35 @@ export function HomeSetupStep({
     try {
       const next = name.trim();
       if (home && next && next !== home.name) {
-        const result = await hostClient.dispatch({
-          idempotencyKey: mutationIdempotencyKey("device-rename"),
-          machineId: home.id,
-          name: next,
-          type: "machine.rename",
-        });
-        if (result.type !== "machine.rename") throw new Error("The rename didn’t finish.");
+        const result = await act(
+          hostClient,
+          { label: "rename", thing: "this Mac", done: "renamed" },
+          () =>
+            hostClient.dispatch({
+              idempotencyKey: mutationIdempotencyKey("device-rename"),
+              machineId: home.id,
+              name: next,
+              type: "machine.rename",
+            }),
+        );
+        if (result.type !== "machine.rename") {
+          setError("The rename didn’t finish.");
+          return;
+        }
       }
-      if (switchable && home?.access && deviceAccess(home.access.policy).apps !== apps) {
-        const result = await hostClient.updateMachineAccess({
-          expectedRevision: home.access.revision,
-          policy: withDeviceSwitch(home.access.policy, "apps", apps),
-          runnerId: home.id,
-        });
+      const access = home?.access;
+      if (switchable && home && access && deviceAccess(access.policy).apps !== apps) {
+        const result = await act(hostClient, { label: "change this", done: "changed" }, () =>
+          hostClient.updateMachineAccess({
+            expectedRevision: access.revision,
+            policy: withDeviceSwitch(access.policy, "apps", apps),
+            runnerId: home.id,
+          }),
+        );
         if (result.outcome === "conflict") {
           await hostClient.refresh();
-          throw new Error("Apps changed on another device. Check it and continue.");
+          setError("Apps changed on another device. Check it and continue.");
+          return;
         }
       }
       if (deploymentId) setDeviceNotifications(deploymentId, notifications);
@@ -69,7 +81,7 @@ export function HomeSetupStep({
       if (apps || !switchable) setPhase("macos");
       else onNext();
     } catch (reason) {
-      setError(actionErrorMessage(reason));
+      setError(failureWords(reason));
     } finally {
       setSaving(false);
     }

@@ -258,3 +258,21 @@ export function refusalReason(reason: unknown): string | null {
     ? reason.outcome.issue.reason
     : null;
 }
+
+/**
+ * A toast for a failure whose control is gone, from work that did not run
+ * through `act`: classified once by the shared presenter, never its own text.
+ */
+export function toastError(
+  toast: { readonly error: (message: string) => void },
+  label = "do this",
+) {
+  return (reason: unknown): void => {
+    if (reason instanceof ActionNotDone) {
+      toastFailure(toast)(reason);
+      return;
+    }
+    const issue = clientIssue(reason, { operation: "action", label });
+    if (issue) toast.error(presentClientIssue(issue).title);
+  };
+}

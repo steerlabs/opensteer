@@ -25,7 +25,7 @@ import { NativeBrowserOverlay } from "../native-browser-overlays.js";
 import { Icon } from "../icon.js";
 import { SiteMark } from "../site-mark.js";
 import { useToast } from "../toast.js";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, toastFailure } from "../use-action.js";
 import { PlaceMark } from "../workspace/place-mark.js";
 import { AppMark } from "../computer-apps/app-icons.js";
 
@@ -230,10 +230,11 @@ export function useOmnibox(options: {
     options.onChoose(row);
   }
   function remove(row: StartPageResult) {
-    if (!row.historyUrl) return;
-    void hostClient.browserHistory
-      .remove(profileId, row.historyUrl)
-      .catch((error: unknown) => toast.error(actionErrorMessage(error)));
+    const historyUrl = row.historyUrl;
+    if (!historyUrl) return;
+    void act(hostClient, { label: "remove this", done: "removed" }, () =>
+      hostClient.browserHistory.remove(profileId, historyUrl),
+    ).catch((error: unknown) => toastFailure(toast)(error));
     setHighlight(null);
     setFrozen(null);
     setCompletion(null);

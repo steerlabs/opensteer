@@ -1,3 +1,4 @@
+import { act, failureWords, toastError } from "../components/use-action.js";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useLocation, useNavigate } from "react-router";
 import {
@@ -49,7 +50,7 @@ import { useToast } from "../components/toast.js";
 import { useWorkspace } from "../components/workspace/workspace-context.js";
 import { DrawerButton } from "../components/workspace/place-stage.js";
 import { SidebarRestoreButton } from "../components/sidebar-chrome.js";
-import { actionErrorMessage, fromLivePage } from "../ui-utils.js";
+import { fromLivePage } from "../ui-utils.js";
 import { useConnectAgent, WelcomeCard } from "./hosted-teams.js";
 import { useTeams, useTeamSession } from "./team-attachments.js";
 import { channelPath } from "./team-paths.js";
@@ -268,7 +269,7 @@ function ChannelScreenFor({
   const { links, surface } = useTeams();
   const connectAgent = useConnectAgent(team);
   const toast = useToast();
-  const report = (error: unknown) => toast.error(actionErrorMessage(error));
+  const report = (error: unknown) => toastError(toast)(error);
   const docked = selection.kind === "place";
   const channel = channelView(view, timeline?.channel ?? null, channelId);
   const entry = snapshot.sidebar?.channels.find((row) => row.channel.id === channelId);
@@ -366,8 +367,9 @@ function ChannelScreenFor({
           previewUrl,
         },
       ]);
-      const done = prepareTeamUpload(channelId, file)
-        .then((upload) => client.upload(upload))
+      const done = act(client, { label: "upload this file", done: "uploaded" }, () =>
+        prepareTeamUpload(channelId, file).then((upload) => client.upload(upload)),
+      )
         .then((uploaded) => {
           if (generation !== uploadGeneration.current) return null;
           setStaged(rootId, (current) =>
@@ -381,7 +383,7 @@ function ChannelScreenFor({
           if (generation !== uploadGeneration.current) return null;
           setStaged(rootId, (current) =>
             current.map((row) =>
-              row.id === id ? { ...row, status: "failed", error: actionErrorMessage(error) } : row,
+              row.id === id ? { ...row, status: "failed", error: failureWords(error) ?? "" } : row,
             ),
           );
           return null;
@@ -1012,7 +1014,7 @@ function ChannelDetailsPane({
   readonly view: TeamView;
 }) {
   const toast = useToast();
-  const report = (error: unknown) => toast.error(actionErrorMessage(error));
+  const report = (error: unknown) => toastError(toast)(error);
   const dispatch = (command: Parameters<(typeof view.client.rpc)["commands.dispatch"]>[0]) =>
     view.client.rpc["commands.dispatch"](command).then(unwrapRpcResult).catch(report);
   const level: NotifyLevel =

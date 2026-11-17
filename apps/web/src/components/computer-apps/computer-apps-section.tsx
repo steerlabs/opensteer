@@ -33,7 +33,7 @@ import {
 } from "@opensteer/client/integrations";
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
 
 import { type ComputerUseLocalActions } from "./computer-use-section.js";
 
@@ -54,11 +54,13 @@ export function useComputerAppData(hostClient: HostClient, revision: number) {
     if (!source.active) return;
     const current = ++source.request;
     try {
-      const [dashboard, platform, setup] = await Promise.all([
-        hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
-        hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
-        hostClient.rpc["integration.computer.setup.list"]({}).then(unwrapRpcResult),
-      ]);
+      const [dashboard, platform, setup] = await act(hostClient, { label: "load apps" }, () =>
+        Promise.all([
+          hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
+          hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
+          hostClient.rpc["integration.computer.setup.list"]({}).then(unwrapRpcResult),
+        ]),
+      );
       if (!source.active || current !== source.request) return;
       setResult({
         client: hostClient,
@@ -75,7 +77,7 @@ export function useComputerAppData(hostClient: HostClient, revision: number) {
         setResult((previous) => ({
           client: hostClient,
           data: previous?.client === hostClient ? previous.data : null,
-          error: actionErrorMessage(reason),
+          error: failureWords(reason),
         }));
       }
       throw reason;
@@ -234,10 +236,11 @@ export function ComputerAppsSection({
     if (pendingIds.current.has(definitionId)) return;
     begin(definitionId, optimisticAccess);
     try {
-      await operation();
+      await act(hostClient, { label: "change this app", done: "changed" }, operation);
       await onChanged();
     } catch (reason) {
-      setErrors((current) => new Map(current).set(definitionId, actionErrorMessage(reason)));
+      const words = failureWords(reason);
+      if (words) setErrors((current) => new Map(current).set(definitionId, words));
     } finally {
       finish(definitionId);
     }

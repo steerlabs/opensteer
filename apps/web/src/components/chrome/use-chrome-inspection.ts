@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import type { BrowserSourceInspection } from "@opensteer/protocol/browser-sources";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { runRead } from "../use-action.js";
 
 const everyMs = 4_000;
 
@@ -26,16 +26,14 @@ export function useChromeInspection(
   const refresh = useCallback(() => {
     if (!url) return;
     const current = ++generation.current;
-    void client.rpc["browser.sources.inspect"]({ url })
-      .then(unwrapRpcResult)
-      .then((result) => {
-        if (current !== generation.current) return;
-        setInspection(result);
-        setError(null);
-      })
-      .catch((reason: unknown) => {
-        if (current === generation.current) setError(actionErrorMessage(reason));
-      });
+    void runRead(null, {
+      resource: "your Chromes",
+      read: async () => unwrapRpcResult(await client.rpc["browser.sources.inspect"]({ url })),
+    }).then((result) => {
+      if (current !== generation.current) return;
+      if (result.ok) setInspection(result.value);
+      setError(result.ok ? null : result.words);
+    });
   }, [client, url]);
 
   useEffect(() => {

@@ -22,7 +22,7 @@ import {
 } from "@opensteer/client/integrations";
 import { DeploymentIdSchema, DeviceIdSchema, TabTargetSchema } from "@opensteer/core";
 import type { ComputerAppSetupSummary as ComputerAppSetupRequest } from "@opensteer/client/integrations";
-import { actionErrorMessage } from "../../ui-utils.js";
+import { act, failureWords } from "../use-action.js";
 import { useShell } from "../app-shell.js";
 import {
   ComputerAppsSection,
@@ -106,7 +106,9 @@ function PendingDeviceDetail({
     setCancelling(true);
     setError(null);
     try {
-      const outcome = await cancelDeviceSetup(hostClient, enrollmentId);
+      const outcome = await act(hostClient, { label: "cancel this setup", done: "cancelled" }, () =>
+        cancelDeviceSetup(hostClient, enrollmentId),
+      );
       if (outcome === "joined") {
         setConfirming(false);
         setError(`${machine.name} already joined. Remove it from Devices instead.`);
@@ -115,7 +117,7 @@ function PendingDeviceDetail({
       void navigate(devicesRoute);
     } catch (reason) {
       setConfirming(false);
-      setError(actionErrorMessage(reason));
+      setError(failureWords(reason));
     } finally {
       setCancelling(false);
     }
@@ -299,10 +301,11 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
   function openScreen() {
     if (!workspace || !screenTab.success) return;
     const show = workspace.nav.beginPlaceOperation();
-    void hostClient
-      .openTab(screenTab.data)
+    void act(hostClient, { label: "open this screen", done: "opened" }, () =>
+      hostClient.openTab(screenTab.data),
+    )
       .then((tab) => show({ kind: "tab", tabId: tab.tabId }))
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)));
+      .catch((reason: unknown) => setError(failureWords(reason)));
   }
 
   async function disconnectScreen() {
@@ -311,11 +314,13 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
     setRemoving(true);
     setError(null);
     try {
-      await hostClient.detachIphoneScreen({ deviceId: machine.id, expectedGeneration: generation });
+      await act(hostClient, { label: "remove this screen", done: "removed" }, () =>
+        hostClient.detachIphoneScreen({ deviceId: machine.id, expectedGeneration: generation }),
+      );
       await hostClient.refresh();
       setConfirming(null);
     } catch (reason) {
-      setError(actionErrorMessage(reason));
+      setError(failureWords(reason));
       setConfirming(null);
     } finally {
       setRemoving(false);
@@ -328,17 +333,25 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
     setSavingName(true);
     setError(null);
     try {
-      const result = await hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey("device-rename"),
-        machineId: machine.id,
-        name: next,
-        type: "machine.rename",
-      });
-      if (result.type !== "machine.rename") throw new Error("The rename didn’t finish.");
+      const result = await act(
+        hostClient,
+        { label: "rename", thing: "this device", done: "renamed" },
+        () =>
+          hostClient.dispatch({
+            idempotencyKey: mutationIdempotencyKey("device-rename"),
+            machineId: machine.id,
+            name: next,
+            type: "machine.rename",
+          }),
+      );
+      if (result.type !== "machine.rename") {
+        setError("The rename didn’t finish.");
+        return;
+      }
       await hostClient.refresh();
       setRenaming(false);
     } catch (reason) {
-      setError(actionErrorMessage(reason));
+      setError(failureWords(reason));
     } finally {
       setSavingName(false);
     }
@@ -394,19 +407,27 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
       if (leavesHere) {
         // Desktop main fences this Mac and delivers the signed leave; the
         // window then shows it signed out.
-        await device?.leave();
+        await act(null, { label: "leave", thing: "this Mac", done: "left" }, () => device?.leave());
         return;
       }
-      const result = await hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey(`device-remove:${machine.id}`),
-        machineId: machine.id,
-        type: "machine.revoke",
-      });
-      if (result.type !== "machine.revoke") throw new Error("Removing it didn’t finish.");
+      const result = await act(
+        hostClient,
+        { label: "remove", thing: "this device", done: "removed" },
+        () =>
+          hostClient.dispatch({
+            idempotencyKey: mutationIdempotencyKey(`device-remove:${machine.id}`),
+            machineId: machine.id,
+            type: "machine.revoke",
+          }),
+      );
+      if (result.type !== "machine.revoke") {
+        setError("Removing it didn’t finish.");
+        return;
+      }
       await hostClient.refresh();
       void navigate(devicesRoute);
     } catch (reason) {
-      setError(actionErrorMessage(reason));
+      setError(failureWords(reason));
       setConfirming(null);
     } finally {
       setRemoving(false);
@@ -755,7 +776,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
         <MacOsPermissionReviewDialog
           bridge={desktopBridge}
           onClose={() => setPermissionReview(false)}
-          onError={(reason) => setError(actionErrorMessage(reason))}
+          onError={setError}
         />
       ) : null}
     </div>

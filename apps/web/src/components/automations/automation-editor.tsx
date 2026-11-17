@@ -1,3 +1,4 @@
+import { act, failureWords, runRead } from "../use-action.js";
 import { useEffect, useState, type FormEvent } from "react";
 import { useParams } from "react-router";
 import {
@@ -16,7 +17,7 @@ import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
 import { PageHeader, PageTopbar } from "../page-header.js";
-import { actionErrorMessage, automationPath } from "../../ui-utils.js";
+import { automationPath } from "../../ui-utils.js";
 import { describeRepeating } from "@opensteer/client/host";
 import { AreaLink, useAreaNavigate } from "../workspace/area-link.js";
 
@@ -44,13 +45,14 @@ export function AutomationEditorPage() {
 
   useEffect(() => {
     let current = true;
-    void hostClient.rpc["triggers.get"]({ triggerId })
-      .then((result) => {
-        if (current) setEditing(unwrapRpcResult(result));
-      })
-      .catch((reason: unknown) => {
-        if (current) setLoadError(actionErrorMessage(reason));
-      });
+    void runRead(hostClient, {
+      resource: "this automation",
+      read: async () => unwrapRpcResult(await hostClient.rpc["triggers.get"]({ triggerId })),
+    }).then((result) => {
+      if (!current) return;
+      if (result.ok) setEditing(result.value);
+      else setLoadError(result.words);
+    });
     return () => {
       current = false;
     };
@@ -114,20 +116,22 @@ function EditorForm({ editing }: { readonly editing: TriggerDetail }) {
         source: draft.source,
         toolContractVersion: 4,
       };
-      await hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey(`trigger-update:${editing.trigger.id}`),
-        input: {
-          expectedRevisionId: editing.revision.id,
-          name: draft.name.trim(),
-          program,
-          source: sourceFrom(draft, editing),
-        },
-        triggerId: editing.trigger.id,
-        type: "trigger.update",
-      });
+      await act(hostClient, { label: "save this automation", done: "saved" }, () =>
+        hostClient.dispatch({
+          idempotencyKey: mutationIdempotencyKey(`trigger-update:${editing.trigger.id}`),
+          input: {
+            expectedRevisionId: editing.revision.id,
+            name: draft.name.trim(),
+            program,
+            source: sourceFrom(draft, editing),
+          },
+          triggerId: editing.trigger.id,
+          type: "trigger.update",
+        }),
+      );
       void navigate(automationPath(editing.trigger.id));
     } catch (reason) {
-      setError(actionErrorMessage(reason));
+      setError(failureWords(reason));
       setPending(false);
     }
   };

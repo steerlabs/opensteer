@@ -1,3 +1,4 @@
+import { toastError } from "../components/use-action.js";
 import { useId, useRef, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router";
 import { createId, TeamChannelIdSchema, type UserId } from "@opensteer/core";
@@ -18,7 +19,6 @@ import { OptionRow } from "../components/option-row.js";
 import { PersonAvatar } from "../components/team/team-marks.js";
 import { firstName } from "../components/team/team-models.js";
 import { useToast } from "../components/toast.js";
-import { actionErrorMessage } from "../ui-utils.js";
 import { channelPath } from "./team-paths.js";
 import { useTeamView, type TeamView } from "./team-view.js";
 import { person } from "./team-view-models.js";
@@ -80,8 +80,8 @@ export function NewChannelDialog({
         if (!shown.current) return;
         setBusy(false);
         if (isChannelNameTaken(error))
-          setRefusal({ name: words, message: actionErrorMessage(error) });
-        else toast.error(actionErrorMessage(error));
+          setRefusal({ name: words, message: "Another channel already has this name." });
+        else toastError(toast)(error);
       });
   };
   const nameError = joined ? (
@@ -235,7 +235,7 @@ export function NewMessageDialog({
       .catch((error: unknown) => {
         if (!shown.current) return;
         setBusy(false);
-        toast.error(actionErrorMessage(error));
+        toastError(toast)(error);
       });
   };
   const first = chosen[0] ? firstName(person(view.words, chosen[0])) : null;

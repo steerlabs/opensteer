@@ -1,3 +1,4 @@
+import { classifyClientFailure } from "@opensteer/client/connections";
 import { hostMessageOutbox } from "@opensteer/client/host";
 import {
   memo,
@@ -12,7 +13,6 @@ import {
 import type { ContentPart, TeamSource } from "@opensteer/core";
 import {
   followWaitingDraft,
-  HostClientRequestError,
   messageAuthorName,
   mutationIdempotencyKey,
   openWaitingDraft,
@@ -389,7 +389,7 @@ function useInPlaceEdit(
 }
 
 function isConflict(error: unknown): boolean {
-  return error instanceof HostClientRequestError && error.code === "conflict";
+  return classifyClientFailure(error).code === "conflict";
 }
 
 function WaitingRow({
