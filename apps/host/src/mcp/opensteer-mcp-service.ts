@@ -1,4 +1,3 @@
-import { requestResult } from "./request-result.js";
 import { productToolOutput } from "./tool-output.js";
 import { IntegrationCallOutputSchema } from "@opensteer/agent-tools/outputs";
 import { z } from "zod";
@@ -555,13 +554,7 @@ export class OpensteerMcpService {
       ) => Promise<unknown>;
       identity.signal?.throwIfAborted();
       const handled = await handler(call);
-      const raw =
-        requestTools.has(tool.name) &&
-        handled &&
-        typeof handled === "object" &&
-        !Array.isArray(handled)
-          ? requestResult(tool.name, handled as Record<string, unknown>)
-          : handled;
+      const raw = handled;
       identity.signal?.throwIfAborted();
       const output = tool.output.safeParse(
         /^(opensteer_(task|delegation|subagent|request|automation|app)_|person_)/.test(tool.name)

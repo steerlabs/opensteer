@@ -629,13 +629,7 @@ export class IntegrationToolHandlers {
         return [{ relevance, tool, toolReadiness }];
       });
       return {
-        accounts: accounts.map(({ readiness: accountReadiness, ...account }) => {
-          const status =
-            accountReadiness ??
-            readiness.servers.find(({ connectionId }) => connectionId === account.connectionId);
-          const blocked = integrationBlocked(status, installation.name);
-          return { ...account, ...(blocked ? { blocked } : {}) };
-        }),
+        accounts,
         integration: installation.title,
         name: installation.name,
         installationId: installation.id,

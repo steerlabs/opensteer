@@ -243,11 +243,20 @@ describe("Opensteer MCP spine", () => {
         originatingRunId: state === "other-run" ? createId("run") : f.run.claims.runId,
       })),
     });
-    const pending = { requestId, kind: "browser.access", status: "pending", replayed: false };
+    const pending = {
+      requestId,
+      kind: "browser.access",
+      status: "pending",
+      replayed: false,
+      next: "The person was asked.",
+    };
     Object.assign(f.handlers, {
       saved_login_request: async () => ({
         status: "pending",
         site: "https://example.com",
+        kind: "browser.password-sign-in",
+        loginStatus: "pending",
+        next: "The person was asked.",
         requestId,
         replayed: false,
       }),
@@ -359,6 +368,7 @@ describe("Opensteer MCP spine", () => {
         browser_profile_request: async () => ({
           requestId: request.id,
           kind: "browser.access",
+          next: "The person was asked.",
           status: "pending",
           replayed: false,
         }),
@@ -516,6 +526,7 @@ describe("Opensteer MCP spine", () => {
         return {
           requestId: request.id,
           kind: "browser.access",
+          next: "The person was asked.",
           status: "pending",
           replayed: false,
         };

@@ -898,7 +898,26 @@ describe("Opensteer MCP integration access classes", () => {
         })),
       },
     };
-    const { handler } = await createHarness({ inventory: [unavailable] as never });
+    const secondServer = {
+      ...entry.servers[0]!,
+      id: createIntegrationId("server"),
+      name: "secondary",
+    };
+    const { handler } = await createHarness({
+      inventory: [
+        {
+          ...unavailable,
+          servers: [...entry.servers, secondServer],
+          readiness: {
+            ...unavailable.readiness,
+            servers: [
+              ...unavailable.readiness.servers,
+              { ...entry.readiness.servers[0]!, serverId: secondServer.id },
+            ],
+          },
+        },
+      ] as never,
+    });
     const searched = result(
       await handler(
         { params: { arguments: { query: "Linear" }, name: "integration_search" } },
@@ -906,6 +925,11 @@ describe("Opensteer MCP integration access classes", () => {
       ),
     );
 
+    const accounts = (searched.results as { accounts: Record<string, unknown>[] }[])[0]!.accounts;
+    expect(accounts).toEqual(entry.accounts);
+    expect(accounts[0]).not.toHaveProperty("blocked");
+    const servers = (searched.results as { servers: Record<string, unknown>[] }[])[0]!.servers;
+    expect(servers[1]).not.toHaveProperty("blocked");
     expect(searched).toMatchObject({
       results: [
         {
@@ -916,6 +940,7 @@ describe("Opensteer MCP integration access classes", () => {
                 message: expect.stringContaining("The OpenAPI document could not be compiled."),
               },
             },
+            { serverId: secondServer.id },
           ],
         },
       ],

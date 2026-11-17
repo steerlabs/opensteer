@@ -321,14 +321,15 @@ export const BrowserProfileListOutputSchema = z.object({
 const BrowserRequestOutputSchema = RequestCreationOutputSchema.omit({ replayed: true }).extend({
   replayed: z.boolean().optional(),
   site: z.string(),
-  outcome: z.enum(["ready", "copied", "unavailable", "needs-approval"]).optional(),
   reason: z.string().optional(),
 });
 export const CopyChromeCookiesOutputSchema = BrowserRequestOutputSchema.extend({
+  cookiesStatus: z.enum(["pending", "declined", "copied", "unavailable"]),
   sourceName: z.string().optional(),
   profileName: z.string().nullable().optional(),
 });
 export const UseSavedLoginOutputSchema = BrowserRequestOutputSchema.extend({
+  loginStatus: z.enum(["pending", "declined", "ready", "unavailable"]),
   loginRef: z.string().optional(),
   account: z.string().optional(),
 });
@@ -538,6 +539,7 @@ export const ThreadReadOutputSchema = z
   );
 
 export const UseCardOutputSchema = BrowserRequestOutputSchema.extend({
+  cardStatus: z.enum(["pending", "declined", "ready", "unavailable", "needs-approval"]),
   cardRef: z.string().optional(),
   brand: z.string().optional(),
   lastFour: z.string().optional(),

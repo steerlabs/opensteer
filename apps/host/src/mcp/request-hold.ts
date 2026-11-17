@@ -1,3 +1,8 @@
+import {
+  savedLoginAgentResult,
+  cardAgentResult,
+  chromeCookiesAgentResult,
+} from "../browser/agent-request-results.js";
 import { requestResult } from "./request-result.js";
 import { OpensteerError, RequestIdSchema, type Request } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
@@ -141,20 +146,18 @@ function outcomeRecord(
       : undefined;
   if (tool === "saved_login_request" && request.payload.kind === "browser.password-sign-in") {
     if (response?.outcome === "authorized" && loginRef)
-      return requestResult(
-        tool,
+      return savedLoginAgentResult(
         { status: "ready", site: request.payload.site, loginRef, account: response.account },
         request,
       );
-    return requestResult(tool, savedLoginRequestResult(request), request);
+    return savedLoginAgentResult(savedLoginRequestResult(request), request);
   }
   if (tool === "chrome_cookies_request" && request.payload.kind === "browser.sign-in")
-    return requestResult(tool, chromeCookiesResult(request, false), request);
+    return chromeCookiesAgentResult(chromeCookiesResult(request, false), request);
   if (tool === "card_request" && request.payload.kind === "browser.password-sign-in") {
     const site = request.payload.site;
     if (response?.outcome === "authorized" && loginRef && outcome.publicCard)
-      return requestResult(
-        tool,
+      return cardAgentResult(
         { status: "ready", site, cardRef: loginRef, ...outcome.publicCard },
         request,
       );
@@ -163,13 +166,21 @@ function outcomeRecord(
       response?.outcome === "interrupted" ||
       response?.outcome === "session-closed"
     )
-      return requestResult(
-        tool,
-        { status: "unavailable", site, reason: response.outcome },
-        request,
-      );
-    return requestResult(tool, { site }, request);
+      return cardAgentResult({ status: "unavailable", site, reason: response.outcome }, request);
+    return cardAgentResult(
+      {
+        status: request.status === "declined" ? "declined" : "unavailable",
+        site,
+        reason: "interrupted",
+      },
+      request,
+    );
   }
-  const record: Record<string, unknown> = { ...pending, status: request.status };
-  return requestResult(tool, { ...record, next: undefined }, request);
+  return {
+    ...pending,
+    ...requestResult(
+      request,
+      `The request was ${request.status}. Continue using the delivered outcome.`,
+    ),
+  };
 }

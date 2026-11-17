@@ -12,7 +12,7 @@ export function integrationBlocked(
     integration,
     ...(readiness.connectionId ? { account: readiness.connectionId } : {}),
     server: readiness.serverId,
-    access: readiness.requiredAccess ?? "read-write",
+    access: readiness.requiredAccess ?? "<read|read-write>",
     reason: "<why you need it>",
   };
   const next = `Call integration_request ${JSON.stringify(args)}.`;

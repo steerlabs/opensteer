@@ -143,7 +143,11 @@ export function passwordsAnywhereJourneys() {
                 arguments: { tabId, site: passwordFixture.site, reason: "Read the account" },
               });
               expect(result.structuredContent, JSON.stringify(result.structuredContent)).toEqual({
-                status: "unavailable",
+                status: "fulfilled",
+                requestId: null,
+                kind: "browser.password-sign-in",
+                next: "No saved login was released. Continue without it and report the reason.",
+                loginStatus: "unavailable",
                 site: passwordFixture.site,
                 reason: "runtime-outdated",
               });
@@ -303,7 +307,11 @@ export function passwordsAnywhereJourneys() {
                     },
                   })
                 ).structuredContent,
-              ).toMatchObject({ status: "ready", loginRef: start.loginRef });
+              ).toMatchObject({
+                status: "fulfilled",
+                loginStatus: "ready",
+                loginRef: start.loginRef,
+              });
               await resumed.complete();
               await evidence.write("request.json", fulfilled);
               await evidence.write("continuation.json", continuation);
@@ -311,7 +319,12 @@ export function passwordsAnywhereJourneys() {
               const first = await held;
               await evidence.write("tool-result.json", first);
               const ready = z
-                .object({ status: z.literal("ready"), loginRef: z.string(), account: z.string() })
+                .object({
+                  status: z.literal("fulfilled"),
+                  loginStatus: z.literal("ready"),
+                  loginRef: z.string(),
+                  account: z.string(),
+                })
                 .parse(first.structuredContent);
               expect(ready.account).toBe(passwordFixture.account);
               if (name === "same-personal-reuse") {
@@ -332,7 +345,10 @@ export function passwordsAnywhereJourneys() {
                 authority.status(false);
                 await new Promise<void>((resolve) => setImmediate(resolve));
                 const next = await signIn();
-                expect(next.structuredContent).toMatchObject({ status: "unavailable" });
+                expect(next.structuredContent).toMatchObject({
+                  status: "fulfilled",
+                  loginStatus: "unavailable",
+                });
                 expect(next.structuredContent).not.toHaveProperty("loginRef");
               }
             }

@@ -167,6 +167,7 @@ describe("Opensteer tool registry", () => {
       kind: "browser.password-sign-in",
       requestId: null,
       next: "Use the login reference.",
+      loginStatus: "ready",
       site: "https://example.com",
       loginRef: `lgn_${"1".repeat(32)}`,
       account: "a•••@example.com",

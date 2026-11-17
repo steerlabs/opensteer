@@ -92,7 +92,6 @@ export const IntegrationSearchOutputSchema = z.object({
             status: z.string().optional(),
             // null: the owner holds no grant to the account.
             access: z.string().nullable().optional(),
-            blocked: BlockedSchema.optional(),
           }),
         ),
         integration: z.string(),

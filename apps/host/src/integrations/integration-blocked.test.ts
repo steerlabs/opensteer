@@ -43,3 +43,16 @@ describe("integration blocker projection", () => {
     }
   });
 });
+
+it.each([
+  "USER_AUTHORIZATION_REQUIRED",
+  "REAUTHORIZATION_REQUIRED",
+  "ADMIN_CONFIGURATION_REQUIRED",
+] as const)("leaves access to the agent when %s has no required access", (code) => {
+  const blocked = integrationBlocked(
+    { code, serverId, connectionId, requiredAccess: null, provider: null, detail: null },
+    "gmail",
+  );
+  const args = JSON.parse(blocked!.next.slice("Call integration_request ".length, -1));
+  expect(args.access).toBe("<read|read-write>");
+});

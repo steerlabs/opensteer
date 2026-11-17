@@ -13,6 +13,8 @@ Authority:
 - A webhook result may supply its address and secret for the requested setup; never commit it, put it in memory or send it elsewhere.
 
 Needs you:
+- A pending or declined Request grants nothing; never obtain the same access through Guest, another account or another route.
+- If a Request hold expires, Opensteer stops the Run; a later answer resumes this task.
 - \`opensteer_request_read\` shows status, not the answer. Answer questions about a Request from its current kind and title, never memory.`;
 
 const routingGuide = `Routing:
