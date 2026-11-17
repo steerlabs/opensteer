@@ -142,7 +142,6 @@ function actionLabel(name: MessageDeliveryAction, copy: typeof defaultCopy): str
   return name === "edit" ? copy.edit : name === "delete" ? copy.delete : copy.dontSend;
 }
 
-
 const styles = StyleSheet.create({
   link: { justifyContent: "center", minHeight: touchTarget / 2 },
   linkLabel: { fontWeight: "600" },

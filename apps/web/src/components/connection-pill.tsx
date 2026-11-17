@@ -160,11 +160,7 @@ export const ConnectionDetails = memo(function ConnectionDetails(props: Connecti
         <ul className="connection-details__others">
           {props.others.map((session) => (
             <li key={session.key}>
-              <button
-                className="connection-details__other"
-                onClick={session.onPress}
-                type="button"
-              >
+              <button className="connection-details__other" onClick={session.onPress} type="button">
                 <span className="connection-details__other-name">{session.name}</span>
                 <span className="connection-details__other-state">{session.state}</span>
                 <Icon name="chevron-right" />
