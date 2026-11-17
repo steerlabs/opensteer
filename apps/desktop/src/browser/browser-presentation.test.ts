@@ -71,7 +71,7 @@ function onPlatform(platform: NodeJS.Platform): void {
   });
 }
 function fixture(
-  onError = (error: unknown) => {
+  onError: (error: unknown) => void = (error: unknown) => {
     throw error;
   },
 ) {

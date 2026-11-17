@@ -677,7 +677,7 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
 
   close(): Promise<void> {
     this.#closePromise ??= this.#close().catch((error: unknown) => {
-      this.#closePromise = undefined;
+      this.#closePromise = null;
       throw error;
     });
     return this.#closePromise;
@@ -1103,6 +1103,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
    * and closing a page still needs it to remove listeners and report closed.
    */
   readonly #webContents: WebContents;
+  readonly #onPageCleanupFailure: (() => void) | undefined;
   #closePromise: Promise<void> | undefined;
   #passkeyBridge: PasskeyBridge | undefined;
   readonly #hub: ElectronDebuggerHub;
@@ -1173,12 +1174,13 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     }),
     identity?: BrowserIdentity,
     acceptLanguage?: string,
-    private readonly onPageCleanupFailure?: () => void,
+    onPageCleanupFailure?: () => void,
   ) {
     this.view = view;
     this.initialLoad = initialLoad;
     this.#restingHost = host;
     this.#webContents = view.webContents;
+    this.#onPageCleanupFailure = onPageCleanupFailure;
     this.#protection = protection(view.webContents);
     // Electron installs a native message-box listener even with Page enabled.
     // The debugger and ledger own these dialogs for the page's entire lifetime.
@@ -2127,7 +2129,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     this.#cancelPaint();
     this.#syncRenderingDemand();
     // Closing the page ends commands still waiting for that renderer.
-    const cleanup = this.#hub.close().catch(() => this.onPageCleanupFailure?.());
+    const cleanup = this.#hub.close().catch(() => this.#onPageCleanupFailure?.());
     await this.#disposeContents();
     await cleanup;
   }

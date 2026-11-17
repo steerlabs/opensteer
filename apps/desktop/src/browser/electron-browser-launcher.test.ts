@@ -322,7 +322,7 @@ it("attributes renderer memory to its own frame trees and keeps unassigned count
     metric(7, 250),
     metric(8, 500, "GPU"),
   ];
-  const usage = (launcher: ElectronBrowserLauncher, sample = metrics) => {
+  const usage = (launcher: InstanceType<typeof ElectronBrowserLauncher>, sample = metrics) => {
     vi.mocked(app.getAppMetrics).mockReturnValueOnce(sample);
     vi.mocked(webContents.getAllWebContents).mockReturnValueOnce([
       firstContents,
