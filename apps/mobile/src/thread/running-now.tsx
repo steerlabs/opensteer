@@ -78,7 +78,7 @@ export const RunningNowCapsule = memo(function RunningNowCapsule(props: {
         accessibilityLabel={`${model.name}. Show the list`}
         accessibilityRole="button"
         onPress={() => {
-          dismissKeyboard();
+          void dismissKeyboard();
           props.onOpen();
         }}
         style={({ pressed }) => [styles.target, pressed && styles.pressed]}

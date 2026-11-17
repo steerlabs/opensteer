@@ -45,7 +45,7 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
   const onStarted = useCallback(
     (threadId: string): boolean => {
       if (!navigation.isFocused()) return false;
-      dismissKeyboard();
+      void dismissKeyboard();
       navigation.dispatch(StackActions.push("Thread", { deploymentId, threadId }));
       return true;
     },

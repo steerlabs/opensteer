@@ -173,7 +173,7 @@ export function useWaitingEdit(
     // field lets go first: Android hands the focus of a field that disappears
     // to the composer, which keeps the keyboard up as if a message were still
     // being written.
-    if (editRef.current !== null) dismissKeyboard();
+    if (editRef.current !== null) void dismissKeyboard();
     setKept(null);
   }, [letGo]);
 
@@ -299,7 +299,7 @@ export function useWaitingEdit(
       // Only the edit this save came from closes; it ended the lease itself.
       if (lease.current === held) {
         lease.current = null;
-        dismissKeyboard();
+        void dismissKeyboard();
         setKept(null);
       }
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);

@@ -159,7 +159,7 @@ export function installPersonalMutationHooks(database: TargetDb, listener: Perso
 function notify(
   listener: PersonalMutationHooks | undefined,
   operation: Parameters<PersonalMutationHooks["onFailure"]>[1],
-  callback: () => void | Promise<void>,
+  callback: () => void | Promise<unknown>,
 ) {
   const onFailure = (error: unknown) => {
     try {
@@ -183,7 +183,7 @@ class Mutation {
   readonly authorityScopes = new Set<ScopeAuthority>();
   readonly #scopes = new Map<PersonalScopeKey, Map<string, Change>>();
   readonly #invalidated = new Set<PersonalScopeKey>();
-  readonly #reactions = new Set<() => void>();
+  readonly #reactions = new Set<() => void | Promise<unknown>>();
   readonly #ownerReactions: PersonalCommitReaction[] = [];
   readonly #observations = new Set<() => void>();
   readonly #receipts: ((head: string) => Promise<void>)[] = [];
@@ -329,7 +329,7 @@ class Mutation {
   observation(install: () => void) {
     this.#observations.add(install);
   }
-  reaction(dispatch: () => void) {
+  reaction(dispatch: () => void | Promise<unknown>) {
     this.#reactions.add(dispatch);
   }
   react(reaction: PersonalCommitReaction) {

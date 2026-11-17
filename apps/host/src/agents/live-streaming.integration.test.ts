@@ -164,7 +164,10 @@ integration("live streaming across the deployment", () => {
     const body = (await client.readTranscriptItem(threadId, entry.itemId!))?.body;
     expect(body?.kind).toBe("message");
     return body?.kind === "message"
-      ? body.message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("")
+      ? body.message.content
+          .flatMap((part) => (part.type === "text" ? [part.text] : []))
+          .join("")
+          .trim()
       : undefined;
   }
   it("streams a long turn live without storing deltas, to early, late and reconnecting readers alike", async () => {

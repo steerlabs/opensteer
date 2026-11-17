@@ -3,7 +3,6 @@ import {
   OpensteerError,
   type DeploymentId,
   type ExecutionNodeId,
-  type PlaceView,
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
@@ -13,6 +12,7 @@ import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type {
   ClientChangesTable,
   PersonalScopeKey,
+  PlaceView,
   TranscriptItemTable,
 } from "./personal-state-schema.js";
 

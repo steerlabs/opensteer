@@ -238,7 +238,7 @@ export async function startPersonalRuntime(input: {
       runnerStop?.abort();
       connection?.close();
       await connecting;
-      runnerIntegrations?.close?.();
+      await runnerIntegrations?.close?.();
     }
   }
   async function startRunner() {
