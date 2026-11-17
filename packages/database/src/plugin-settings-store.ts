@@ -153,8 +153,7 @@ export class PluginSettingsStore {
       const accounts = connections.filter((row) => row.integrationDefinitionId === definitionId);
       const ownGrants = grants.filter((row) => row.installationId === installation.id);
       const saved = settings.find(
-        (row) =>
-          row.target.kind === "device-app" && row.target.definitionId === definitionId,
+        (row) => row.target.kind === "device-app" && row.target.definitionId === definitionId,
       );
       const adding = opening?.kind === "device-app" && opening.definitionId === definitionId;
       if (!accounts.length && !ownGrants.length && !saved && !adding) continue;

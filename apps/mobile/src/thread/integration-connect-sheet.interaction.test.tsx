@@ -175,22 +175,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const hosted = {
-  brokerIssuer: "https://oauth.opensteer.test",
-  kind: "hosted-oauth" as const,
-  providerApplicationRevision: 1,
-};
-const personalAppId = "ipa_00000000-0000-4000-8000-000000000001";
-const personalSource = {
-  callbackUrl: "https://deployment.test/v1/integrations/oauth/callback/slack",
-  kind: "deployment-oauth" as const,
-  providerApplicationId: personalAppId,
-  providerApplicationRevision: 3,
-};
-
 describe("IntegrationConnectCard", () => {
   it("does not render for streaming updates in an unrelated thread", async () => {
-    const client = fakeClient({ sources: [hosted] });
+    const client = fakeClient({});
     await render(client);
     const before = cardRenders.mock.calls.length;
     await act(async () => client.streamUnrelatedThread());
@@ -198,7 +185,7 @@ describe("IntegrationConnectCard", () => {
   });
 
   it("installs from the access sheet without resolving the request", async () => {
-    const client = fakeClient({ isAdministrator: true, sources: [] });
+    const client = fakeClient({ isAdministrator: true });
     await render(client, preinstallRequest());
 
     expect(text()).toContain("Test Calendar");
@@ -218,7 +205,7 @@ describe("IntegrationConnectCard", () => {
   });
 
   it("pins a singleton server before showing account or access controls", async () => {
-    const client = fakeClient({ sources: [] });
+    const client = fakeClient({});
     await render(client, unpinnedRequest());
 
     expect(text()).toContain("Choose server");
@@ -242,7 +229,7 @@ describe("IntegrationConnectCard", () => {
    * a write about a computer, so the request it answers can be finished here.
    */
   it("requests local approval without granting access or finishing the agent request", async () => {
-    const client = fakeClient({ machines: [mac()], requirementKind: "computer", sources: [] });
+    const client = fakeClient({ machines: [mac()], requirementKind: "computer" });
     await render(client);
 
     expect(text()).toContain("Choose a computer");
@@ -267,7 +254,6 @@ describe("IntegrationConnectCard", () => {
     const client = fakeClient({
       machines: [mac({ apps: [messagesNeedsFullDiskAccess()] })],
       requirementKind: "computer",
-      sources: [],
     });
     await render(client);
 
@@ -314,7 +300,6 @@ describe("IntegrationConnectCard", () => {
         }),
       ],
       requirementKind: "computer",
-      sources: [],
     });
     await render(client);
 
@@ -355,7 +340,6 @@ describe("IntegrationConnectCard", () => {
         }),
       ],
       requirementKind: "computer",
-      sources: [],
     });
     await render(client);
 
@@ -371,7 +355,7 @@ describe("IntegrationConnectCard", () => {
   });
 
   it("keeps a Mac-only app's desktop-app steps once no Mac offers it", async () => {
-    const client = fakeClient({ machines: [mac()], requirementKind: "computer", sources: [] });
+    const client = fakeClient({ machines: [mac()], requirementKind: "computer" });
     await render(client);
 
     await click("Choose a computer");
@@ -386,7 +370,6 @@ describe("IntegrationConnectCard", () => {
     const client = fakeClient({
       machines: [mac()],
       requirementKind: "computer",
-      sources: [],
     });
     await render(client);
 
@@ -407,7 +390,6 @@ describe("IntegrationConnectCard", () => {
       connections: [computerConnection("read")],
       machines: [mac()],
       requirementKind: "computer",
-      sources: [],
     });
     await render(client, request("read"));
 
@@ -431,7 +413,6 @@ describe("IntegrationConnectCard", () => {
       machines: [mac()],
       requestPendingAfterComputerSet: false,
       requirementKind: "computer",
-      sources: [],
     });
     await render(client, request("read"), { onClose, onResponded });
 
@@ -451,7 +432,6 @@ describe("IntegrationConnectCard", () => {
       machines: [mac()],
       requestPendingAfterComputerSet: true,
       requirementKind: "computer",
-      sources: [],
     });
     await render(client, request("read-write"), { onResponded });
 
@@ -462,16 +442,6 @@ describe("IntegrationConnectCard", () => {
     expect(text()).toContain("Setup requested");
   });
 
-  it("only offers declining a request for an account Opensteer no longer connects", async () => {
-    const client = fakeClient({ selected: hosted, sources: [hosted] });
-    await render(client);
-
-    expect(text()).toContain("Accounts are connected through Plugins now.");
-    expect(buttons()).toEqual(expect.arrayContaining(["Not now"]));
-    expect(buttons()).not.toContain("Connect");
-    expect(buttons()).not.toContain("Allow");
-  });
-
   it("keeps the chosen computer visible while its setup request awaits approval", async () => {
     const macBookId = "rnr_00000000-0000-4000-8000-0000000000a2";
     const client = fakeClient({
@@ -479,7 +449,6 @@ describe("IntegrationConnectCard", () => {
       connections: [computerConnection("read")],
       machines: [mac(), mac({ id: macBookId, name: "MacBook" })],
       requirementKind: "computer",
-      sources: [],
     });
     await render(client);
 
@@ -494,7 +463,6 @@ describe("IntegrationConnectCard", () => {
     const client = fakeClient({
       machines: [mac(), mac({ id: macBookId, name: "MacBook" })],
       requirementKind: "computer",
-      sources: [],
     });
     await render(client);
 
@@ -517,7 +485,6 @@ describe("IntegrationConnectCard", () => {
       computerSetGate: gate,
       machines: [mac()],
       requirementKind: "computer",
-      sources: [],
     });
     await render(client, request(), { onClose, onResponded });
 
@@ -544,7 +511,6 @@ describe("IntegrationConnectCard", () => {
       connections: [computerConnection("read")],
       machines: [mac()],
       requirementKind: "computer",
-      sources: [],
     });
     await render(client, request("read-write"));
 
@@ -564,7 +530,7 @@ describe("IntegrationConnectCard", () => {
   });
 
   it("allows a no-account integration without claiming an account is missing", async () => {
-    const client = fakeClient({ requirementKind: "none", sources: [] });
+    const client = fakeClient({ requirementKind: "none" });
     await render(client);
 
     expect(text()).not.toContain("No account is connected yet");
@@ -582,7 +548,7 @@ describe("IntegrationConnectCard", () => {
   });
 
   // The ways it could fail: the person closes the sheet while an install, a
-  // server choice, a key or an MCP sign-in is still out, and opens it again;
+  // server choice is still out, and opens it again;
   // the old operation's failure, arriving now, lands on the fresh sheet.
   it.each<{
     readonly client: () => ReturnType<typeof fakeClient>;
@@ -591,7 +557,7 @@ describe("IntegrationConnectCard", () => {
     readonly start: (client: ReturnType<typeof fakeClient>, held: Promise<never>) => Promise<void>;
   }>([
     {
-      client: () => fakeClient({ isAdministrator: true, sources: [] }),
+      client: () => fakeClient({ isAdministrator: true }),
       operation: "an install",
       request: preinstallRequest,
       start: async (client, held) => {
@@ -600,7 +566,7 @@ describe("IntegrationConnectCard", () => {
       },
     },
     {
-      client: () => fakeClient({ sources: [] }),
+      client: () => fakeClient({}),
       operation: "a server choice",
       request: unpinnedRequest,
       start: async (client, held) => {
@@ -724,11 +690,11 @@ function request(
       access,
       installationId: "iin_00000000-0000-4000-8000-000000000001",
       kind: "integration.access",
-      reason: "Read the deals channel.",
+      reason: "Read the calendar.",
       requestedConnectionId,
       requestedServerId: "isv_00000000-0000-4000-8000-000000000001",
     },
-    presentation: { kind: "external", title: "Connect Slack" },
+    presentation: { kind: "external", title: "Allow Calendar" },
     status: "pending",
   } as never;
 }
@@ -758,12 +724,11 @@ function preinstallRequest() {
       kind: "integration.access",
       manifest: {
         definition: {
-          adapter: "openapi",
-          authMethods: [{ id: "none", kind: "none", label: "No authentication" }],
+          ...calendarPlatform().installations[0]!.installation.manifest.definition,
           description: "Scheduling for the test suite.",
           id: "test-calendar",
           name: "Test Calendar",
-          provider: "google",
+          provider: "apple-calendar",
         },
         digest: "c".repeat(43),
         kind: "catalog",
@@ -776,30 +741,19 @@ function preinstallRequest() {
 }
 
 function fakeClient(input: {
-  readonly applications?: readonly ReturnType<typeof application>[];
-  readonly connections?: readonly (
-    | ReturnType<typeof connection>
-    | ReturnType<typeof computerConnection>
-    | ReturnType<typeof keyConnection>
-  )[];
-  readonly saved?: ReturnType<typeof application>;
-  readonly selected?: typeof hosted | typeof personalSource;
+  readonly connections?: readonly ReturnType<typeof computerConnection>[];
   readonly machines?: readonly ReturnType<typeof mac>[];
   readonly computerSetGate?: Promise<void>;
   /** The installed apps the Host lists, when not one of `platform`'s fixtures. */
   readonly installedPlatform?: ReturnType<typeof calendarPlatform>;
   readonly computerSetVisible?: boolean;
   readonly requestPendingAfterComputerSet?: boolean;
-  readonly sources: readonly (typeof hosted | typeof personalSource)[];
-  readonly requirementKind?: "api-key" | "computer" | "mcp-oauth" | "none" | "provider";
+  readonly requirementKind?: "computer" | "none";
   readonly isAdministrator?: boolean;
   readonly multipleServers?: boolean;
-  readonly provider?: "github" | "slack";
   /** Attached from another device, as a phone always is to a Personal Opensteer. */
   readonly remote?: boolean;
 }) {
-  const provider = input.provider ?? "slack";
-  let sources = input.sources;
   const connections = [...(input.connections ?? [])];
   let requestPending = true;
   const listeners = new Set<() => void>();
@@ -816,10 +770,6 @@ function fakeClient(input: {
     }) => {
       if (command.type === "request.respond" && command.response?.kind === "external")
         requestPending = false;
-      if (command.type === "integration.providerApplication.save") {
-        sources = input.sources;
-        return { application: input.saved, type: command.type };
-      }
       if (command.type === "integration.computer.setup.request") {
         await input.computerSetGate;
         return { type: command.type, request: { id: "test-setup-request" } };
@@ -847,53 +797,18 @@ function fakeClient(input: {
       "integration.platform.get": async () => {
         const data =
           input.installedPlatform ??
-          platform(input.requirementKind ?? "provider", input.multipleServers ?? false, provider);
+          platform(input.requirementKind ?? "none", input.multipleServers ?? false);
         return {
           ok: true,
           data: input.remote ? { ...data, authorizationSurface: "personal-remote" } : data,
         };
       },
-      "integration.repositoryAccess.check": vi.fn(
-        async (): Promise<
-          | { readonly data: unknown; readonly ok: true }
-          | { readonly error: unknown; readonly ok: false }
-        > => ({ data: { installationUrl: null, installations: [], ready: false }, ok: true }),
-      ),
       "integrations.get": async () => ({
         ok: true,
         data: {
-          applications: input.applications ?? [application({ id: personalAppId, revision: 3 })],
           authorizationSurface: "canonical",
-          callbackUrls: {
-            [provider]: `https://deployment.test/v1/integrations/oauth/callback/${provider}`,
-          },
           connections,
-          hostedOAuthDisclosure: "Opensteer brokers the authorization only.",
           isAdministrator: input.isAdministrator ?? false,
-          providerAuthorizations: {
-            [provider]: {
-              availableSources: sources,
-              code: (input.selected ?? sources[0]) ? "READY" : "PROVIDER_APPLICATION_REQUIRED",
-              detail: input.selected
-                ? "Ready to connect"
-                : "Configure and enable this deployment's OAuth application",
-              hostedOAuthStatus: "available",
-              selectedSource: input.selected ?? sources[0] ?? null,
-              selectedSourceKind: input.selected?.kind ?? null,
-            },
-          },
-          providers: [
-            {
-              description: "Slack apps",
-              hostedOAuthCapable: true,
-              label: "Slack",
-              provider,
-              secretFields: ["clientSecret"],
-              setupLabel: "Slack app",
-              setupSteps: ["Create an app from a manifest."],
-              setupUrl: "https://api.slack.com/apps",
-            },
-          ],
         },
       }),
       "thread.requests.list": async () => ({
@@ -923,13 +838,8 @@ function fakeClient(input: {
   };
 }
 
-function platform(
-  requirementKind: "api-key" | "computer" | "mcp-oauth" | "none" | "provider",
-  multipleServers = false,
-  provider: "github" | "slack" = "slack",
-) {
+function platform(requirementKind: "computer" | "none", multipleServers = false) {
   if (requirementKind === "computer") return computerPlatform();
-  const name = provider === "github" ? "GitHub" : "Slack";
   return {
     authorizationSurface: "canonical",
     catalog: [],
@@ -938,107 +848,18 @@ function platform(
       {
         installation: {
           id: "iin_00000000-0000-4000-8000-000000000001",
-          manifest: {
-            definition: {
-              adapter: "openapi",
-              apiKey:
-                requirementKind === "api-key"
-                  ? { destinations: ["https://slack.com"], check: false }
-                  : null,
-              authMethods:
-                requirementKind === "api-key"
-                  ? [
-                      {
-                        id: "api-key",
-                        inputs: [{ label: "API token", secret: true, variable: "apiKey" }],
-                        kind: "api-key",
-                        label: "API key",
-                        placements: [
-                          { carrier: "header", name: "Authorization", variable: "apiKey" },
-                        ],
-                      },
-                    ]
-                  : [
-                      {
-                        id: "oauth",
-                        kind: "oauth",
-                        label: "Install Slack app",
-                        oauth: {
-                          authorizationUrl: "https://slack.com/oauth/v2/authorize",
-                          clientAuth: "body",
-                          identity: { identityPath: "bot_user_id", source: "token-response" },
-                          scopeSeparator: ",",
-                          scopes: ["channels:history", "chat:write"],
-                          tokenUrl: "https://slack.com/api/oauth.v2.access",
-                          usesPkce: false,
-                        },
-                        placements: [
-                          { carrier: "header", name: "Authorization", variable: "accessToken" },
-                        ],
-                      },
-                    ],
-              description: "Read conversations and post messages in Slack workspaces.",
-              id: provider,
-              name,
-              provider,
-            },
-          },
+          manifest: { name: "calendar-server" },
           status: "active",
-          title: name,
+          title: "Calendar server",
         },
-        servers: [
-          {
-            connectionRequirement:
-              requirementKind === "none"
-                ? { kind: "none" }
-                : requirementKind === "mcp-oauth"
-                  ? { kind: "mcp-oauth" }
-                  : {
-                      definitionId: provider,
-                      kind: "provider",
-                      provider,
-                      providerApplicationRequired: requirementKind !== "api-key",
-                    },
-            id: "isv_00000000-0000-4000-8000-000000000001",
-            name: "live",
-            status: "active",
-          },
-          ...(multipleServers
-            ? [
-                {
-                  connectionRequirement: { kind: "none" as const },
-                  id: "isv_00000000-0000-4000-8000-000000000002",
-                  name: "archive",
-                  status: "active" as const,
-                },
-              ]
-            : []),
-        ],
+        servers: ["live", ...(multipleServers ? ["archive"] : [])].map((name, index) => ({
+          connectionRequirement: { kind: "none" },
+          id: `isv_00000000-0000-4000-8000-00000000000${index + 1}`,
+          name,
+          status: "active",
+        })),
         skills: [],
-        tools: [
-          {
-            annotations: { readOnlyHint: true },
-            connectionId: null,
-            description: "Read messages",
-            id: "itl_00000000-0000-4000-8000-000000000001",
-            name: "export_attachment",
-            schemaDigest: "d".repeat(43),
-            serverId: "isv_00000000-0000-4000-8000-000000000001",
-            status: "active",
-            title: "Read messages",
-          },
-          {
-            annotations: { readOnlyHint: false },
-            connectionId: null,
-            description: "Post messages",
-            id: "itl_00000000-0000-4000-8000-000000000002",
-            name: "post_messages",
-            schemaDigest: "e".repeat(43),
-            serverId: "isv_00000000-0000-4000-8000-000000000001",
-            status: "active",
-            title: "Post messages",
-          },
-        ],
+        tools: [],
       },
     ],
   };
@@ -1114,9 +935,7 @@ function computerConnection(
 ) {
   return {
     accountIdentifier: null,
-    applicationSource: null,
     authMethodId: "computer",
-    authorizationDigest: null,
     computer: { access, runnerId: overrides.runnerId ?? macMiniId },
     connectionMethod: "computer",
     createdAt: "2026-09-17T00:00:00.000Z",
@@ -1127,7 +946,6 @@ function computerConnection(
     grantedScopes: [],
     id: overrides.id ?? messagesConnectionId,
     provider: "apple-messages",
-    providerApplicationId: null,
     status: "connected",
     statusDetail: null,
     updatedAt: "2026-09-17T00:00:00.000Z",
@@ -1151,7 +969,6 @@ function calendarPlatform() {
           manifest: {
             definition: {
               adapter: "computer",
-              apiKey: null,
               authMethods: [{ id: "computer", kind: "computer", label: "This Mac" }],
               computerApp: {
                 accessLabels: { read: "Can read", readWrite: "Can read and change" },
@@ -1245,71 +1062,6 @@ function computerPlatform() {
         ],
       },
     ],
-  };
-}
-
-function application(input: { readonly id: string; readonly revision: number }) {
-  return {
-    availability: "personal",
-    callbackUrl: "https://deployment.test/v1/integrations/oauth/callback/slack",
-    canManage: true,
-    clientId: "1234567890.987",
-    configuredSecretFields: ["clientSecret"],
-    createdAt: "2026-09-17T00:00:00.000Z",
-    displayName: "Mattress Deal Finder Bot",
-    id: input.id,
-    ownerUserId: "usr_1",
-    provider: "slack",
-    revision: input.revision,
-    status: "active",
-    updatedAt: "2026-09-17T00:00:00.000Z",
-  };
-}
-
-function keyConnection(
-  id: string,
-  createdAt: string,
-  state: {
-    readonly status: "connected" | "needs-attention";
-    readonly statusDetail: string | null;
-  } = {
-    status: "connected",
-    statusDetail: null,
-  },
-) {
-  return {
-    ...connection(id, "Slack"),
-    accountIdentifier: null,
-    applicationSource: { kind: "api-key" as const },
-    authMethodId: "api-key",
-    connectionMethod: "api-key",
-    createdAt,
-    externalIdentityId: null,
-    externalTenantId: null,
-    grantedScopes: [],
-    ...state,
-  };
-}
-
-function connection(id: string, displayName = "Oversteer") {
-  return {
-    accountIdentifier: "oversteer.slack.com",
-    applicationSource: hosted,
-    authMethodId: "oauth",
-    authorizationDigest: "a".repeat(43),
-    connectionMethod: "managed-oauth",
-    createdAt: "2026-09-17T00:00:00.000Z",
-    definitionId: "slack",
-    displayName,
-    externalIdentityId: "B01BOT",
-    externalTenantId: "T01ABCDEF",
-    grantedScopes: ["chat:write"],
-    id,
-    provider: "slack",
-    providerApplicationId: null,
-    status: "connected",
-    statusDetail: null as string | null,
-    updatedAt: "2026-09-17T00:00:00.000Z",
   };
 }
 

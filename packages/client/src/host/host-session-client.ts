@@ -1444,6 +1444,12 @@ export class HttpHostClient {
     );
     return { title: view.app.name, url: view.entryUrl ?? this.#url(view.path) };
   }
+  async viewPluginPage(pluginId: string, theme: "light" | "dark", signal?: AbortSignal) {
+    const view = unwrapRpcResult(
+      await this.rpc["plugins.page.view"]({ pluginId, theme }, signal ? { signal } : undefined),
+    );
+    return { title: pluginId, url: view.entryUrl ?? this.#url(view.path) };
+  }
 
   async getAttachment(attachmentId: string): Promise<Attachment> {
     return unwrapRpcResult(await this.rpc["attachment.get"]({ attachmentId }));

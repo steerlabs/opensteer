@@ -49,7 +49,10 @@ function command(value: Record<string, unknown>): AdministrationCommand {
 export class AdministrationToolHandlers {
   readonly service: AdministrationService;
   readonly canExecute: (environmentId: EnvironmentId) => boolean;
-  constructor(service: AdministrationService, canExecute: (environmentId: EnvironmentId) => boolean) {
+  constructor(
+    service: AdministrationService,
+    canExecute: (environmentId: EnvironmentId) => boolean,
+  ) {
     this.service = service;
     this.canExecute = canExecute;
   }

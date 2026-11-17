@@ -27,7 +27,7 @@ const commands = [
   { type: "tab.close", tabIds: ["tab-from-list"] },
   { type: "app.delete", appId: `app_${crypto.randomUUID()}` },
   {
-    type: "integration.authorization.return",
+    type: "plugin.authorization.return",
     attemptId: createIntegrationId("oauthAttempt"),
     returnProof: "r".repeat(43),
   },
@@ -42,7 +42,7 @@ const commands = [
     },
   },
   { type: "session.revoke", sessionId: createId("authSession") },
-  { type: "integration.uninstall", installationId: createIntegrationId("installation") },
+  { type: "plugins.remove", pluginId: "plg_fixture" },
   {
     type: "channel.connection.status.set",
     connectionId: createIntegrationId("connection"),

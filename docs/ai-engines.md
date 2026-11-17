@@ -165,14 +165,15 @@ other tool activity during the hold; source inspection alone does not qualify th
 Claude defers Opensteer tool schemas through ToolSearch, which must stay available in every mode.
 Its synthetic project root supplies loose skills without the real project settings, though CLAUDE.md
 and `.claude/rules` can still load. An organization-managed Claude policy overrides Opensteer's
-per-Run settings, so Opensteer's guarantees assume none. Plugin permission callbacks become Requests
-in every access mode.
+per-Run settings, so Opensteer's guarantees assume none. Engine permission callbacks become Requests
+in every access mode. Plugin-tool approvals follow the separate [plugin execution policy](plugins.md).
 
 ## Instructions and skills
 
 Skills have unique full names (`plugin:skill`, or bare for loose folder skills); duplicates fail
 the Run, and no layer shadows another. Instructions supplement the engine's system prompt and never
-confer Host authority. Cross-tool routing stays in the Run guide so Claude can choose tools before
+confer Host authority. Plugin skills come from the active deployment's cached source, so planning
+a Run does not wake the plugin engine; see [Plugins](plugins.md). Cross-tool routing stays in the Run guide so Claude can choose tools before
 loading deferred schemas. ACP engines differ in resume and cancellation, so each driver declares
 its own rather than inferring it from the ACP version.
 

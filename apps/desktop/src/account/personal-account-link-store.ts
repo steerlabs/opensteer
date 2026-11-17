@@ -52,7 +52,6 @@ export const PersonalAccountUnlinkStepSchema = z.enum([
   "revoke-account-sessions",
   "revoke-connect-resource",
   "remove-host-link",
-  "repair-hosted-oauth-connections",
   "retain-local-data",
 ]);
 export type PersonalAccountUnlinkStep = z.infer<typeof PersonalAccountUnlinkStepSchema>;
@@ -361,7 +360,6 @@ const currentUnlinkOrder = [
   "revoke-account-sessions",
   "revoke-connect-resource",
   "remove-host-link",
-  "repair-hosted-oauth-connections",
   "retain-local-data",
 ] as const;
 

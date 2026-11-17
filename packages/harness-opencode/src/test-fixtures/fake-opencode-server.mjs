@@ -726,14 +726,14 @@ function runScenario(id, payload) {
       emit("session.idle", { sessionID: id });
       return;
     case "streamed-tool-arguments":
-      toolPart("call_gateway", "opensteer_integrations_integration_call", "running", {
+      toolPart("call_gateway", "opensteer_plugin_call", "running", {
         input: {},
       });
-      toolPart("call_gateway", "opensteer_integrations_integration_call", "completed", {
+      toolPart("call_gateway", "opensteer_plugin_call", "completed", {
         input: { toolRef: "igr_grant.itl_tool.digest", arguments: { query: "hello" } },
         output: "done",
       });
-      toolPart("call_gateway", "opensteer_integrations_integration_call", "completed", {
+      toolPart("call_gateway", "opensteer_plugin_call", "completed", {
         output: "done",
       });
       toolPart("call_bash", "bash", "running", {

@@ -58,7 +58,7 @@ export function computerUseNextAction(machine: {
 }): string {
   return (
     unusableMachineNextAction(machine) ??
-    `Search with computerId to list installed apps on ${machine.name}. Request an app with ${computerAppRequestShape}; ${approvalOutcome(machine)}`
+    `Pass computerId to computer_apps to list installed apps on ${machine.name}. Request an app with ${computerAppRequestShape}; ${approvalOutcome(machine)}`
   );
 }
 

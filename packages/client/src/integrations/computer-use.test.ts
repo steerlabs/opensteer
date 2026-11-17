@@ -99,7 +99,7 @@ describe("a live Computer use line", () => {
       runId: session([notes]).runId,
       state: "running",
       streamText: "",
-      tool: { name: "integration_call", namespace: "opensteer.integrations" },
+      tool: { name: "plugin_call", namespace: "opensteer.integrations" },
       ...overrides,
     };
   }

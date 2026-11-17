@@ -21,7 +21,10 @@ import type { HostAuthenticator } from "../identity/auth.js";
 import type { LocalServerRegistry } from "../local-servers/local-server-registry.js";
 import type { LocalServerService } from "../local-servers/local-server-service.js";
 import { requirePersonalSession, requireSurface } from "../server/rpc-context.js";
-import { executeDeviceAdministration, isDeviceAdministrationCommand } from "./device-administration.js";
+import {
+  executeDeviceAdministration,
+  isDeviceAdministrationCommand,
+} from "./device-administration.js";
 import type { DeviceService } from "./device-service.js";
 
 export interface DeviceRpcOptions {
@@ -79,7 +82,7 @@ export function createDeviceRpcHandlers(
           IntegrationPlatformDashboardSchema.parse({
             authorizationSurface: requireSurface(context),
             catalog: options.definitions.map((definition) => ({
-              definition: integrationDefinitionSummary(definition, null),
+              definition: integrationDefinitionSummary(definition),
               digest: integrationDefinitionDigest(definition),
               installationId:
                 installations.find(

@@ -1,446 +1,364 @@
-import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
-import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { createId, type RunnerId } from "@opensteer/core";
-import {
-  RunnerBootIdSchema,
-  machineAccessPolicyDefault,
-  projectDeviceAccessRequestEvent,
-} from "@opensteer/protocol";
 import { expect } from "vitest";
-import { devicesLegacyReaders } from "./device-request-legacy-readers.test-support.js";
-import { NotificationStore } from "./notification-store.js";
-import { needsYouPage } from "./needs-you-store.js";
+import { sql } from "kysely";
 import {
-  describeStore,
-  enrollTestRunner,
-  pendingEvent,
-  type StoreFixture,
-} from "./store.integration.test-support.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
-import { personalReachableGrant, phoneRunnerGrant } from "./runner-store.js";
+  IntegrationDefinitionSchema,
+  integrationDefinitionSummary,
+} from "@opensteer/integration-core/adapter";
+import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
+import { IntegrationPlatformStore } from "./integration-platform-store.js";
+import type { PreparedIntegrationInstallFulfillment } from "./integration-request-store.js";
+import { describeStore } from "./store.integration.test-support.js";
 
-type Started = Awaited<ReturnType<StoreFixture["startRunFixture"]>>;
-async function device(f: StoreFixture, run: Started, phone: "ios" | "android" | false = false) {
-  const runnerId = createId("runner");
-  await f.database
-    .insertInto("personalRemoteAccess")
-    .values({
-      singletonKey: "personal",
-      mode: "private",
-      generation: 1,
-      routeOrigin: "https://devices.invalid",
-      updatedAt: new Date(),
-    })
-    .onConflict((c) => c.column("singletonKey").doUpdateSet({ mode: "private" }))
-    .execute();
-  if (phone) {
-    const key = generateKeyPairSync("ed25519");
-    const tokenHash = `sha256:${randomUUID()}`;
-    await f.store.createRunnerEnrollment({
-      allowedModules: phoneRunnerGrant,
-      createdBy: run.userId,
-      ...(phone === "ios" ? { deviceProfile: "iphone" as const } : {}),
-      expiresAt: new Date(Date.now() + 60_000),
-      id: `ren_${randomUUID()}`,
-      idempotencyKey: runnerId,
-      name: "Phone",
-      requestFingerprint: runnerId,
-      runnerKind: "local",
-      tokenHash,
-    });
-    await f.store.enrollRunnerConnection({
-      descriptor: {
-        runnerId,
-        runnerKind: "local",
-        name: "Phone",
-        bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
-        runtimeVersion: "test",
-        capabilities: [],
-        device: { form: "phone", platform: phone, app: "opensteer" },
-        modules: {
-          browser: { runtimeId: runnerId, wireVersion: 2 },
-          ...(phone === "ios"
-            ? { integrations: { platform: "ios" as const, protocolVersion: 2 } }
-            : {}),
+function preparedDevice(): PreparedIntegrationInstallFulfillment {
+  const definition = IntegrationDefinitionSchema.parse({
+    id: "apple-calendar",
+    name: "Calendar",
+    provider: "apple-calendar",
+    description: "Calendar on a computer",
+    adapter: "computer",
+    authMethods: [{ id: "computer", kind: "computer", label: "This computer" }],
+    config: {
+      accessLabels: { read: "Read", readWrite: "Read and write" },
+      accessSummaries: { read: "Read events", readWrite: "Change events" },
+      platforms: ["darwin"],
+      operations: [
+        {
+          name: "list_events",
+          title: "List events",
+          description: "Read events",
+          effect: "read",
+          inputSchema: {},
+          outputSchema: null,
         },
-      },
-      enrollmentTokenHash: tokenHash,
-      publicKeyPem: key.publicKey.export({ format: "pem", type: "spki" }).toString(),
-      publicKeyFingerprint: `sha256:${runnerId}`,
-    });
-  } else
-    await enrollTestRunner(f.store, {
-      runnerId,
-      runnerKind: "local",
-      createdBy: run.userId,
-      name: "Laptop",
-      environmentId: createId("environment"),
-      allowedModules: personalReachableGrant,
-      modules: {
-        integrations: { platform: "darwin" },
-        browser: { runtimeId: runnerId, wireVersion: 2 },
-      },
-      tokenSuffix: runnerId,
-    });
-  await f.store.updateMachineAccessPolicy({
-    runnerId,
-    ownerId: run.userId,
-    allowDeployment: true,
-    expectedRevision: 1,
-    policy: { ...machineAccessPolicyDefault, browser: false, apps: false },
-  });
-  return runnerId;
-}
-function ask(
-  f: StoreFixture,
-  run: Started,
-  machineId: RunnerId,
-  callId = "ask",
-  access: "browser" | "apps" | "files" = "browser",
-  online = true,
-) {
-  return f.store.requests.createDeviceAccessRequest(
-    {
-      callId,
-      machineId,
-      access,
-      reason: "Read the task's files",
-      originatingRunId: run.run.id,
-      originatingThreadId: run.thread.id,
-      requestedBy: run.userId,
+      ],
     },
-    () => online,
-  );
+  });
+  const digest = integrationDefinitionDigest(definition);
+  const summary = integrationDefinitionSummary(definition);
+  return {
+    approvalManifest: { kind: "catalog", definition: summary, digest },
+    material: {
+      installation: {
+        id: createIntegrationId("installation"),
+        name: definition.id,
+        title: definition.name,
+        description: definition.description,
+        sourceKind: "built-in",
+        trust: "built-in",
+        status: "active",
+        manifest: { definition: summary },
+        provenance: {
+          definitionId: definition.id,
+          definitionDigest: digest,
+          maintainedBy: "opensteer",
+        },
+        version: digest,
+      },
+      servers: [
+        {
+          id: createIntegrationId("server"),
+          name: definition.id,
+          status: "active",
+          statusDetail: null,
+          connectionRequirement: { kind: "computer", definitionId: definition.id },
+          transport: { type: "computer", definitionId: definition.id },
+          catalog: { definitions: {}, tools: [] },
+        },
+      ],
+    },
+  };
 }
-const decline = { kind: "external", value: { decision: "declined" } } as const;
-describeStore("device access Requests", (it) => {
-  it("projects new Requests out of legacy pages and snapshots without settling the durable wait", async ({
-    storeFixture: f,
+
+describeStore("Device and local-server access settlement", (it) => {
+  it("refuses prepared device material whose digest differs from the reviewed manifest", async ({
+    storeFixture,
   }) => {
-    const old = await devicesLegacyReaders();
-    const run = await f.startRunFixture("device-legacy-reader");
-    const target = await device(f, run);
-    const ordinary = await f.store.requests.create({
-      callId: "legacy-browser",
-      kind: "browser.access",
-      mode: "durable",
-      originatingRunId: run.run.id,
-      originatingThreadId: run.thread.id,
-      requestedBy: run.userId,
-      requiredActor: "requester",
-      payload: {
-        kind: "browser.access",
-        reason: "Read a source",
-        suggestion: { kind: "user_choice" },
-      },
-      presentation: {
-        kind: "external",
-        title: "Choose a profile",
-        subject: { kind: "task", id: run.thread.id },
-      },
+    const fixture = await storeFixture.startRunFixture("device-digest");
+    const platform = new IntegrationPlatformStore(storeFixture.database);
+    const reviewed = preparedDevice();
+    const opened = await platform.integrationRequests.createIntegrationAccessRequest({
+      originatingRunId: fixture.runId,
+      originatingThreadId: fixture.threadId,
+      requestedBy: fixture.userId,
+      callId: "device-digest",
+      access: "read",
+      installationId: null,
+      manifest: reviewed.approvalManifest,
+      reason: "Read Calendar",
+      requestedConnectionId: null,
+      requestedServerId: null,
     });
-    const opened = await ask(f, run, target);
-    expect(old.PendingRequestViewSchema.safeParse(opened.request).success).toBe(false);
-    const notifications = new NotificationStore(f.database);
-    const event = opened.events.find(({ type }) => type === "request.opened")!;
-    const [notification] = await notifications.decide(event);
-    expect(notification).toMatchObject({ deviceAccessRequests: "include" });
-    expect(
-      await notifications.publicationSkipReason({
-        ...notification!.view,
-        userId: run.userId,
-        eventId: event.eventId,
-        sequence: event.sequence,
-        occurredAt: new Date(event.createdAt),
-        expiresAt: new Date(Date.parse(event.createdAt) + 60_000),
+    const changed = structuredClone(reviewed);
+    changed.material.installation.provenance = {
+      ...changed.material.installation.provenance,
+      definitionDigest: "x".repeat(43),
+    };
+    await expect(
+      platform.integrationRequests.installForIntegrationAccessRequest({
+        requestId: opened.request.id,
+        resolvedBy: fixture.userId,
+        preparedFulfillment: changed,
       }),
-    ).toBeNull();
-
-    const legacy = await needsYouPage(f.database, { userId: run.userId, limit: 1 });
-    expect(old.NeedsYouPageSchema.safeParse(legacy).success).toBe(true);
-    expect(legacy).toMatchObject({
-      count: 1,
-      entries: [{ request: { id: ordinary.request.id } }],
-      window: { hasMore: false, itemCount: 1, totalItems: 1 },
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await platform.requests.get(opened.request.id)).toMatchObject({ status: "pending" });
+    expect(await platform.listInstallations()).toEqual([]);
+    const installed = await platform.integrationRequests.installForIntegrationAccessRequest({
+      requestId: opened.request.id,
+      resolvedBy: fixture.userId,
+      preparedFulfillment: reviewed,
     });
-    const listed = await f.store.requests.waitingOnUserPage({ userId: run.userId, limit: 1 });
-    expect(listed.requests.map(({ request }) => request.id)).toEqual([ordinary.request.id]);
-    expect(listed.window).toMatchObject({ itemCount: 1, totalItems: 1, hasMore: false });
-    const threadRequests = await f.store.requests.originatingPendingPage({
-      threadId: run.thread.id,
-      limit: 1,
+    expect(installed.request).toMatchObject({
+      status: "pending",
+      payload: { installationId: reviewed.material.installation.id },
     });
-    expect(threadRequests.requests.map(({ id }) => id)).toEqual([ordinary.request.id]);
-    expect(threadRequests.window).toMatchObject({ itemCount: 1, totalItems: 1, hasMore: false });
-    for (const { request } of listed.requests)
-      expect(old.PendingRequestViewSchema.safeParse(request).success).toBe(true);
-    const modernListed = await f.store.requests.waitingOnUserPage({
-      userId: run.userId,
-      limit: 100,
-      deviceAccessRequests: "include",
-    });
-    expect(modernListed.requests.map(({ request }) => request.id)).toContain(opened.request.id);
-    expect(modernListed.window.totalItems).toBe(2);
+    expect(await platform.listGrants({ ownerUserId: fixture.userId })).toEqual([]);
     expect(
-      (
-        await f.store.requests.originatingPendingPage({
-          threadId: run.thread.id,
-          limit: 100,
-          deviceAccessRequests: "include",
-        })
-      ).requests.map(({ id }) => id),
-    ).toContain(opened.request.id);
-    expect(
-      await f.store.notificationState.attention(run.userId, { deviceAccessRequests: "include" }),
-    ).toMatchObject({ needsYou: 2 });
-    const states = await f.store.drainPendingThreadStates();
-    const state = states.find(({ type }) => type === "thread.state-changed")!;
-    expect(state.data).toMatchObject({ pendingRequests: 2, pendingDeviceAccessRequests: 1 });
-    expect(projectDeviceAccessRequestEvent(state, false).data).toMatchObject({
-      pendingRequests: 1,
-    });
-    expect(projectDeviceAccessRequestEvent(state, true).data).toMatchObject({ pendingRequests: 2 });
-    const historyInput = { threadId: run.thread.id, ownerId: run.userId };
-    expect((await f.store.threadEventPageForOwner(historyInput))?.thread.pendingRequests).toBe(1);
-    expect(
-      (await f.store.threadEventPageForOwner({ ...historyInput, deviceAccessRequests: "include" }))
-        ?.thread.pendingRequests,
-    ).toBe(2);
-    expect(await f.store.notificationState.attention(run.userId)).toMatchObject({ needsYou: 1 });
-    const snapshot = await f.store.deploymentSnapshot({ viewerId: run.userId });
-    expect(old.DeploymentSnapshotSchema.safeParse(snapshot).success).toBe(true);
-    expect(snapshot.threads.find(({ id }) => id === run.thread.id)?.pendingRequests).toBe(1);
-    expect(snapshot.pendingRequests.map(({ id }) => id)).toEqual([ordinary.request.id]);
-    expect(snapshot.pendingRequestWindow).toMatchObject({ itemCount: 1, totalItems: 1 });
-    expect(
-      snapshot.tasks!.recent.tasks.find(({ thread }) => thread.id === run.thread.id)?.thread
-        .pendingRequests,
-    ).toBe(1);
-    expect(
-      (await f.store.taskPageForUser({ userId: run.userId })).tasks.find(
-        ({ thread }) => thread.id === run.thread.id,
-      )?.thread.pendingRequests,
-    ).toBe(1);
-    expect(
-      (
-        await f.store.taskPageForUser({ userId: run.userId, deviceAccessRequests: "include" })
-      ).tasks.find(({ thread }) => thread.id === run.thread.id)?.thread.pendingRequests,
-    ).toBe(2);
-    const supported = await needsYouPage(f.database, {
-      userId: run.userId,
-      deviceAccessRequests: "include",
-    });
-    expect(
-      supported.entries
-        .filter((entry) => entry.kind === "request")
-        .map(({ request }) => request.id),
-    ).toContain(opened.request.id);
-    const modern = await f.store.deploymentSnapshot({
-      viewerId: run.userId,
-      deviceAccessRequests: "include",
-    });
-    expect(modern.threads.find(({ id }) => id === run.thread.id)?.pendingRequests).toBe(2);
-    expect(modern.pendingRequests.map(({ id }) => id)).toContain(opened.request.id);
-    expect(old.DeploymentSnapshotSchema.safeParse(modern).success).toBe(false);
-    expect(await f.store.requests.get(opened.request.id)).toMatchObject({ status: "pending" });
-    await f.store.updateMachineAccessPolicy({
-      runnerId: target,
-      ownerId: run.userId,
-      allowDeployment: true,
-      expectedRevision: 2,
-      policy: { ...machineAccessPolicyDefault, browser: true },
-    });
-    expect(await f.store.requests.get(opened.request.id)).toMatchObject({ status: "fulfilled" });
-    expect(await f.database.selectFrom("requestContinuations").selectAll().execute()).toHaveLength(
-      1,
-    );
-  });
-
-  it("deduplicates an owned off phone and never adds it to reachable shell routes", async ({
-    storeFixture: f,
-  }) => {
-    const run = await f.startRunFixture("device-access");
-    const target = await device(f, run, "ios");
-    const [a, b] = await Promise.all([ask(f, run, target), ask(f, run, target, "again")]);
-    expect(a.request.id).toBe(b.request.id);
-    expect(a.request).toMatchObject({
-      kind: "device.access",
-      mode: "durable",
-      requiredActor: "owner",
-      payload: { machineId: target, machineName: "Phone", access: "browser" },
-    });
-    expect(await f.store.listReachableMachines(run.userId, run.runnerId)).toEqual([]);
-    await expect(ask(f, run, run.runnerId, "home-files", "files")).rejects.toMatchObject({
-      reason: "device-access-on",
-    });
-    const android = await device(f, run, "android");
-    await expect(ask(f, run, android, "unsupported-apps", "apps")).rejects.toMatchObject({
-      reason: "device-access-unsupported",
-    });
-  });
-  it("rechecks online state, ownership and the effective switch before creating", async ({
-    storeFixture: f,
-  }) => {
-    const run = await f.startRunFixture("device-recheck");
-    const target = await device(f, run);
-    await expect(ask(f, run, target, "offline", "browser", false)).rejects.toMatchObject({
-      reason: "device-offline",
-      details: { machineId: target, capability: "browser" },
-    });
-    await f.store.updateMachineAccessPolicy({
-      runnerId: target,
-      ownerId: run.userId,
-      allowDeployment: true,
-      expectedRevision: 2,
-      policy: { ...machineAccessPolicyDefault, browser: true },
-    });
-    await expect(ask(f, run, target, "already-on")).rejects.toMatchObject({
-      reason: "device-access-on",
-    });
-    await f.database
-      .updateTable("runners")
-      .set({ ownerKind: "deployment", ownerUserId: null })
-      .where("id", "=", target)
-      .execute();
-    await expect(ask(f, run, target, "not-owned", "apps")).rejects.toMatchObject({
-      code: "forbidden",
-    });
-    expect(
-      await f.database
-        .selectFrom("requests")
-        .select("id")
-        .where("kind", "=", "device.access")
+      await storeFixture.database
+        .selectFrom("requestContinuations")
+        .selectAll()
+        .where("requestId", "=", opened.request.id)
         .execute(),
     ).toEqual([]);
   });
-  it("fulfills and queues its continuation in the access transaction, with rollback and replay", async ({
-    storeFixture: f,
-  }) => {
-    const run = await f.startRunFixture("device-fulfil");
-    const target = await device(f, run);
-    const opened = await ask(f, run, target);
-    const update = {
-      runnerId: target,
-      ownerId: run.userId,
-      allowDeployment: true,
-      expectedRevision: 2,
-      policy: { ...machineAccessPolicyDefault, browser: true },
-      idempotency: { key: "enable", requestedBy: run.userId },
-    };
-    await expect(
-      withPersonalTransaction(f.database, async (tx) => {
-        const { updateMachineAccessPolicy } = await import("./machine-store.js");
-        await updateMachineAccessPolicy(tx, update);
-        expect(await tx.selectFrom("requestContinuations").selectAll().execute()).toHaveLength(1);
-        throw new Error("rollback");
-      }),
-    ).rejects.toThrow("rollback");
-    expect((await f.store.requests.get(opened.request.id))?.status).toBe("pending");
-    expect(await f.database.selectFrom("requestContinuations").selectAll().execute()).toEqual([]);
-    expect(
-      await f.store.updateMachineAccessPolicy({
-        ...update,
-        expectedRevision: 1,
-        idempotency: { key: "stale-enable", requestedBy: run.userId },
-      }),
-    ).toMatchObject({ outcome: "conflict" });
-    expect((await f.store.requests.get(opened.request.id))?.status).toBe("pending");
-    const updated = await f.store.updateMachineAccessPolicy(update);
-    expect(updated).toMatchObject({
-      outcome: "updated",
-      requestEvents: [expect.objectContaining({ type: "request.resolved" })],
+
+  it("declines an uninstalled device app without installing it", async ({ storeFixture }) => {
+    const fixture = await storeFixture.startRunFixture("decline-uninstalled-device");
+    const platform = new IntegrationPlatformStore(storeFixture.database);
+    const opened = await platform.integrationRequests.createIntegrationAccessRequest({
+      originatingRunId: fixture.runId,
+      originatingThreadId: fixture.threadId,
+      requestedBy: fixture.userId,
+      callId: "decline-uninstalled-device",
+      access: "read",
+      installationId: null,
+      manifest: preparedDevice().approvalManifest,
+      reason: "Read Calendar",
+      requestedConnectionId: null,
+      requestedServerId: null,
     });
-    expect((await f.store.requests.get(opened.request.id))?.status).toBe("fulfilled");
-    expect(await f.store.updateMachineAccessPolicy(update)).toMatchObject({
-      replayed: true,
-      requestEvents: [],
-    });
-    expect(await f.database.selectFrom("requestContinuations").selectAll().execute()).toHaveLength(
-      1,
-    );
-  });
-  it("keeps Not now for the task and checks real machine-management authority", async ({
-    storeFixture: f,
-  }) => {
-    const run = await f.startRunFixture("device-decline");
-    const target = await device(f, run);
-    const opened = await ask(f, run, target);
-    await expect(
-      f.store.requests.declineDeviceAccessRequest({
-        requestId: opened.request.id,
-        resolvedBy: createId("user"),
-        response: decline,
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await f.store.requests.declineDeviceAccessRequest({
+    await platform.integrationRequests.resolveIntegrationAccessRequest({
       requestId: opened.request.id,
-      resolvedBy: run.userId,
-      response: decline,
+      resolvedBy: fixture.userId,
+      response: { kind: "external", value: { decision: "declined" } },
     });
-    const ordinal = await f.database
-      .selectFrom("runs")
-      .select("nextRunnerOrdinal")
-      .where("id", "=", run.run.id)
-      .executeTakeFirstOrThrow();
-    await f.store.commitRunnerEvent({
-      environmentId: run.environmentId,
-      runnerId: run.runnerId,
-      runnerBootId: run.runnerBootId,
-      event: pendingEvent({
-        type: "run.completed",
-        data: { status: "completed" },
-        environmentId: run.environmentId,
-        runId: run.run.id,
-        threadId: run.thread.id,
-        bindingGeneration: run.bindingGeneration,
-        ordinal: ordinal.nextRunnerOrdinal,
-      }),
-    });
-    const turn = await f.enqueueHumanTrigger({
-      threadId: run.thread.id,
-      requestedBy: run.userId,
-      content: [{ type: "text", text: "Continue the task" }],
-      idempotencyKey: "later-task-turn",
-    });
-    const later = { ...run, ...(await startPersonalQueuedRunFixture(f.store, turn.run.id)) };
-    const again = await ask(f, later, target, "new-call");
-    expect(again).toMatchObject({
-      replayed: true,
-      request: { id: opened.request.id, status: "declined" },
-    });
-    const another = await f.startRunFixture("different-task");
-    expect((await ask(f, another, target)).request.id).not.toBe(opened.request.id);
+    expect(await platform.requests.get(opened.request.id)).toMatchObject({ status: "declined" });
+    expect(await platform.listInstallations()).toEqual([]);
   });
-  it("cancels on device removal and on loss of the origin's authority", async ({
-    storeFixture: f,
+
+  it("binds an already installed exact device definition without installing it again", async ({
+    storeFixture,
   }) => {
-    const run = await f.startRunFixture("device-cancel");
-    const target = await device(f, run);
-    const opened = await ask(f, run, target);
-    const removed = await f.store.revokeRunner(target, run.userId);
-    expect(removed.cancelledRequestIds).toContain(opened.request.id);
-    expect(await f.store.requests.get(opened.request.id)).toMatchObject({
-      status: "cancelled",
-      cancellationReason: "resource-deleted",
+    const fixture = await storeFixture.startRunFixture("bind-installed-device");
+    const platform = new IntegrationPlatformStore(storeFixture.database);
+    const prepared = preparedDevice();
+    await platform.install({
+      ...prepared.material,
+      actorUserId: fixture.userId,
+      requestId: "device-first-install",
     });
-    await expect(ask(f, run, target, "removed")).rejects.toMatchObject({ code: "forbidden" });
-    const nextTarget = await device(f, run);
-    const next = await ask(f, run, nextTarget, "authority");
-    await f.database
-      .updateTable("runners")
-      .set({ ownerKind: "deployment", ownerUserId: null })
-      .where("id", "=", nextTarget)
-      .execute();
-    const { fulfillDeviceAccessRequestsInTransaction } = await import("./request-store.js");
-    await withPersonalTransaction(f.database, (tx) =>
-      fulfillDeviceAccessRequestsInTransaction(tx, nextTarget, {
-        ...machineAccessPolicyDefault,
-        browser: true,
-      }),
-    );
-    expect(await f.store.requests.get(next.request.id)).toMatchObject({
-      status: "cancelled",
-      cancellationReason: "authority-revoked",
+    const opened = await platform.integrationRequests.createIntegrationAccessRequest({
+      originatingRunId: fixture.runId,
+      originatingThreadId: fixture.threadId,
+      requestedBy: fixture.userId,
+      callId: "bind-installed-device",
+      access: "read",
+      installationId: null,
+      manifest: prepared.approvalManifest,
+      reason: "Read Calendar",
+      requestedConnectionId: null,
+      requestedServerId: null,
     });
+    const bound = await platform.integrationRequests.tryBindExistingIntegrationAccessInstallation({
+      requestId: opened.request.id,
+      resolvedBy: fixture.userId,
+    });
+    expect(bound?.request).toMatchObject({
+      status: "pending",
+      payload: { installationId: prepared.material.installation.id },
+    });
+    expect(await platform.listInstallations()).toHaveLength(1);
+    expect(await platform.listGrants({ ownerUserId: fixture.userId })).toEqual([]);
+  });
+
+  for (const local of [false, true]) {
+    it(`settles concurrent ${local ? "local-server" : "device app"} fulfilments exactly once`, async ({
+      storeFixture,
+    }) => {
+      const fixture = await storeFixture.startRunFixture(`access-race-${local}`);
+      const { database } = storeFixture;
+      const platform = new IntegrationPlatformStore(database);
+      const deviceMaterial = preparedDevice().material;
+      const server = local
+        ? {
+            ...deviceMaterial.servers[0]!,
+            connectionRequirement: { kind: "none" as const },
+            transport: {
+              type: "runner" as const,
+              runnerId: null,
+              launch: { type: "stdio" as const, command: "node", args: [], env: {}, cwd: "/tmp" },
+            },
+          }
+        : deviceMaterial.servers[0]!;
+      const otherServer = { ...server, id: createIntegrationId("server"), name: "other" };
+      const material = {
+        ...deviceMaterial,
+        installation: local
+          ? { ...deviceMaterial.installation, manifest: {}, provenance: {} }
+          : deviceMaterial.installation,
+        servers: local ? [server, otherServer] : [server],
+      };
+      await platform.install({
+        ...material,
+        actorUserId: fixture.userId,
+        requestId: "race-install",
+      });
+      const connectionId = local ? null : createIntegrationId("connection");
+      const otherConnectionId = local ? null : createIntegrationId("connection");
+      for (const candidate of [connectionId, otherConnectionId])
+        if (candidate)
+          await sql`insert into integration_connections
+        (id,owner_user_id,connection_kind,provider,connection_method,status,display_name,capabilities,integration_definition_id,integration_server_id,computer_access)
+        values(${candidate},${fixture.userId},'computer','apple-calendar','computer','connected','Calendar','[]','apple-calendar',${server.id},'read-write')`.execute(
+            database,
+          );
+      const opened = await platform.integrationRequests.createIntegrationAccessRequest({
+        originatingRunId: fixture.runId,
+        originatingThreadId: fixture.threadId,
+        requestedBy: fixture.userId,
+        callId: "access-race",
+        access: "read",
+        installationId: material.installation.id,
+        reason: "Read records",
+        requestedConnectionId: connectionId,
+        requestedServerId: server.id,
+      });
+      const other = await platform.integrationRequests.createIntegrationAccessRequest({
+        originatingRunId: fixture.runId,
+        originatingThreadId: fixture.threadId,
+        requestedBy: fixture.userId,
+        callId: "other-access",
+        access: "read",
+        installationId: material.installation.id,
+        reason: "Read another source",
+        requestedConnectionId: otherConnectionId,
+        requestedServerId: local ? otherServer.id : server.id,
+      });
+      if (!local)
+        await expect(
+          platform.integrationRequests.resolveIntegrationAccessRequest({
+            requestId: opened.request.id,
+            resolvedBy: fixture.userId,
+            response: {
+              kind: "external",
+              value: {
+                decision: "fulfilled",
+                connectionId: otherConnectionId,
+                access: "read-write",
+                alias: "Wrong computer",
+                isDefault: false,
+              },
+            },
+          }),
+        ).rejects.toMatchObject({
+          code: "forbidden",
+          message: "Integration access requires the requested account",
+        });
+      const resolve = () =>
+        platform.integrationRequests.resolveIntegrationAccessRequest({
+          requestId: opened.request.id,
+          resolvedBy: fixture.userId,
+          response: {
+            kind: "external",
+            value: {
+              decision: "fulfilled",
+              connectionId,
+              access: "read-write",
+              alias: "Records",
+              isDefault: false,
+            },
+          },
+        });
+      const results = await Promise.allSettled([resolve(), resolve()]);
+      expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+      const rejected = results.find((result) => result.status === "rejected");
+      expect(rejected).toMatchObject({ reason: { code: "conflict" } });
+      expect(await platform.requests.get(opened.request.id)).toMatchObject({ status: "fulfilled" });
+      expect(await platform.requests.get(other.request.id)).toMatchObject({ status: "pending" });
+      if (local)
+        await storeFixture.database
+          .updateTable("integrationServers")
+          .set({ status: "disabled" })
+          .where("id", "=", otherServer.id)
+          .execute();
+      else
+        await storeFixture.database
+          .updateTable("integrationConnections")
+          .set({ status: "paused" })
+          .where("id", "=", otherConnectionId!)
+          .execute();
+      await platform.integrationRequests.resolveIntegrationAccessRequest({
+        requestId: other.request.id,
+        resolvedBy: fixture.userId,
+        response: { kind: "external", value: { decision: "declined" } },
+      });
+      expect(await platform.requests.get(other.request.id)).toMatchObject({ status: "declined" });
+
+      expect(await platform.listGrants({ ownerUserId: fixture.userId })).toHaveLength(1);
+      expect(
+        await database
+          .selectFrom("requestContinuations")
+          .selectAll()
+          .where("requestId", "=", opened.request.id)
+          .execute(),
+      ).toHaveLength(1);
+    });
+  }
+
+  it("switches a device app's default grant without leaving two defaults", async ({
+    storeFixture,
+  }) => {
+    const fixture = await storeFixture.startRunFixture("device-default");
+    const { database } = storeFixture;
+    const platform = new IntegrationPlatformStore(database);
+    const material = preparedDevice().material;
+    await platform.install({
+      ...material,
+      actorUserId: fixture.userId,
+      requestId: "default-install",
+    });
+    const connections = [createIntegrationId("connection"), createIntegrationId("connection")];
+    for (const connectionId of connections) {
+      await sql`insert into integration_connections
+        (id,owner_user_id,connection_kind,provider,connection_method,status,display_name,capabilities,integration_definition_id,integration_server_id,computer_access)
+        values(${connectionId},${fixture.userId},'computer','apple-calendar','computer','connected','Calendar','[]','apple-calendar',${material.servers[0]!.id},'read-write')`.execute(
+        database,
+      );
+      await platform.createGrant({
+        access: "read",
+        alias: "Calendar",
+        connectionId,
+        createdBy: fixture.userId,
+        ownerUserId: fixture.userId,
+        installationId: material.installation.id,
+        isDefault: false,
+      });
+    }
+    for (const connectionId of connections) {
+      await platform.createGrant({
+        access: "read",
+        alias: "Calendar",
+        connectionId,
+        createdBy: fixture.userId,
+        ownerUserId: fixture.userId,
+        installationId: material.installation.id,
+        isDefault: true,
+      });
+      expect(
+        (await platform.listGrants({ ownerUserId: fixture.userId }))
+          .filter(({ isDefault }) => isDefault)
+          .map(({ connectionId }) => connectionId),
+      ).toEqual([connectionId]);
+    }
   });
 });

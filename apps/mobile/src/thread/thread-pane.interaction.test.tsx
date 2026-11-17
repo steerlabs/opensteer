@@ -1014,7 +1014,7 @@ function clickingInNotes(runId: string, running: boolean): ToolEntry {
     runId,
     state: running ? "running" : "done",
     streamText: "",
-    tool: { name: "integration_call", namespace: "opensteer.integrations" },
+    tool: { name: "computer.click", namespace: "opensteer.integrations" },
   } as ToolEntry;
 }
 function notesSession(runId: string): ComputerUseSessionSummary {

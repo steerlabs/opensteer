@@ -54,7 +54,9 @@ export type AccessRequestOutcome =
   | { readonly kind: "granted"; readonly access: IntegrationAccess; readonly name: string }
   | { readonly kind: "request"; readonly request: Request; readonly replayed: boolean };
 
-type InventoryEntry = Awaited<ReturnType<IntegrationPlatformStore["listDiscoveryInventory"]>>[number];
+type InventoryEntry = Awaited<
+  ReturnType<IntegrationPlatformStore["listDiscoveryInventory"]>
+>[number];
 
 /** What agents type for a device data app: its definition id without the vendor prefix. */
 export function dataAppName(definition: Pick<IntegrationDefinition, "id">): string {
@@ -105,7 +107,7 @@ export class AccessRequests {
         `No device data app is named ${input.dataApp}. These are: ${this.dataApps().join(", ")}.`,
       );
     const manifest = {
-      definition: integrationDefinitionSummary(definition, null),
+      definition: integrationDefinitionSummary(definition),
       digest: integrationDefinitionDigest(definition),
       kind: "catalog" as const,
     };
@@ -134,6 +136,13 @@ export class AccessRequests {
         });
         if (connection?.runnerId === input.computerId) requestedConnectionId = connectionId;
       }
+    if (input.computerId && requestedConnectionId === null)
+      return this.#create(asker, input.access, {
+        installationId: installed.installation.id,
+        manifest: null,
+        requestedConnectionId: null,
+        requestedServerId: installed.servers.length === 1 ? installed.servers[0]!.id : null,
+      });
     return this.#grantOrRequest(asker, input.access, installed, requestedConnectionId);
   }
 
@@ -301,8 +310,8 @@ export class AccessRequests {
         kind: "granted",
         access: grant.access,
         name:
-          entry.accounts.find(({ connectionId }) => connectionId === grant.connectionId)
-            ?.account ?? entry.installation.title,
+          entry.accounts.find(({ connectionId }) => connectionId === grant.connectionId)?.account ??
+          entry.installation.title,
       };
     }
     return this.#create(asker, access, {

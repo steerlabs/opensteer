@@ -19,7 +19,6 @@ import {
   RunnerIntegrationsDisplayInputResultSchema,
   RunnerIntegrationsDisplayPowerResultSchema,
   agentPhonePackageName,
-  androidPhoneDefinitionId,
   androidIntegrationsProtocolVersion,
   displayDemandGraceMs,
   hostApiVersionHeader,
@@ -27,6 +26,7 @@ import {
   type ComputerViewId,
   type DisplayInputEvent,
   type DisplayViewerState,
+  androidPhoneDefinitionId,
 } from "@opensteer/protocol";
 import { delay } from "@opensteer/shared/delay";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -804,29 +804,19 @@ it.each([
     };
     cleanup.push(finishInitial);
     async function phoneRow(gateway = agent.gateway) {
-      const catalog = z
+      const listing = z
         .object({
-          catalog: z.array(
+          phones: z.array(
             z.object({
-              definitionId: z.string(),
-              phones: z
-                .array(
-                  z.object({
-                    runnerId: z.string(),
-                    name: z.string(),
-                    access: z.enum(["read", "read-write"]).optional(),
-                    toolRefs: z.never().optional(),
-                  }),
-                )
-                .optional(),
+              computerId: z.string(),
+              name: z.string(),
+              access: z.enum(["read", "read-write"]).optional(),
             }),
           ),
         })
-        .parse(resultJson(await gateway.call("integration_search", { query: "Android phone" })));
-      const row = catalog.catalog
-        .find(({ definitionId }) => definitionId === androidPhoneDefinitionId)
-        ?.phones?.find((candidate) => candidate.runnerId === runnerId);
-      if (!row) throw new Error("The Android phone entry does not list the phone");
+        .parse(resultJson(await gateway.call("computer_apps", {})));
+      const row = listing.phones.find((candidate) => candidate.computerId === runnerId);
+      if (!row) throw new Error("computer_apps does not list the phone");
       return row;
     }
     const discoveredPhone = await phoneRow();

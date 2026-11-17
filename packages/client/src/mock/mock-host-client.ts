@@ -320,13 +320,11 @@ import { MockComputerViews } from "./mock-computer-views.js";
 import {
   createInitialIntegrationState,
   mockAgentPhoneRunnerId,
-  mockCatalogTools,
   mockComputerAppInstallation,
   mockComputerAppTools,
   mockComputerUseApps,
   mockComputerUseDefinition,
   mockIntegrationDefinitions,
-  mockIntegrationInstallation,
   mockIphoneAppDefinitions,
   mockMessagesRunnerId,
   mockNotesServer,
@@ -2269,10 +2267,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       rpcSuccess(hostApi["channels.get"].success.parse(await client.loadChannels())),
     "plugins.overview.get": async () => {
       const deploymentId = DeploymentIdSchema.parse(client.getSnapshot().deploymentId!);
-      client.settings.syncServices(deploymentId, await client.loadIntegrationPlatform());
-      client.settings.syncPackages(deploymentId, await client.listPlugins(deploymentId), (id) =>
-        client.pluginDevice(id),
-      );
       const overview = client.settings.overview(deploymentId);
       return rpcSuccess({ ...overview, rows: overview.rows.map(listedMockRow) });
     },
@@ -2308,7 +2302,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "voice.say": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.stop": async () => rpcSuccess({}),
     ...client.enginePlugins.signInReads(),
-    "integration.authorization.get": unsupportedMockRpc,
     "integration.grants.list": async () =>
       rpcSuccess({
         grants: await client.loadIntegrationGrants(client.getSnapshot().deploymentId!),
@@ -2353,12 +2346,10 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
           requests: client.listComputerAppSetupRequests(),
         }),
       ),
-    "plugin.list": unsupportedMockRpc,
     "integration.platform.get": async () =>
       rpcSuccess(
         hostApi["integration.platform.get"].success.parse(await client.loadIntegrationPlatform()),
       ),
-    "integration.repositoryAccess.check": unsupportedMockRpc,
     "integrations.get": async () =>
       rpcSuccess(hostApi["integrations.get"].success.parse(await client.loadIntegrations())),
     // The preview keeps no durable session history to page back through.
@@ -4266,6 +4257,11 @@ export class MockHostClient implements HostClient {
       binaryChunks(input.source, input.signal),
     );
   }
+  async viewPluginPage(pluginId: string, theme: "light" | "dark", signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const view = unwrapRpcResult(await this.rpc["plugins.page.view"]({ pluginId, theme }));
+    return { title: pluginId, url: view.entryUrl ?? view.path };
+  }
   async viewApp(
     _appId: string,
     _theme: "light" | "dark",
@@ -5263,10 +5259,6 @@ class MockHostState {
           machine.ownership !== "deployment" || machine.allowedModules.includes("agents"),
       ),
     }),
-    (definitionId) =>
-      this.integrations.connections.filter(
-        (connection) => connection.definitionId === definitionId,
-      ),
   );
   readonly enginePlugins = new MockPlugins({
     changed: () => {
@@ -8757,10 +8749,8 @@ class MockHostState {
           displayName,
           externalIdentityId: null,
           externalTenantId: null,
-          grantedScopes: [],
           id: createIntegrationId("connection"),
           provider: definition.provider,
-          providerApplicationId: null,
           status: "connected",
           statusDetail: null,
           statusReason: null,
@@ -12086,21 +12076,6 @@ function mockComputerUseThreadTranscript(
       state,
     }),
   ];
-  // New Host receipts share the historical subjects and headline format; the
-  // outer engine tool is a separate compact step and has no computer subject.
-  for (const entry of entries) {
-    if (
-      entry.kind === "tool" &&
-      entry.tool?.name === "integration_call" &&
-      entry.integration?.computerApp
-    ) {
-      entry.tool = {
-        name: `computer.${entry.integration.operation.name === "act" ? "click" : "observe"}`,
-        namespace: "opensteer.integrations",
-      };
-      entry.arguments = { window: 101 };
-    }
-  }
   entries.splice(2, 0, {
     kind: "tool",
     id: `tool:${runId}:computer-code`,
@@ -13266,8 +13241,7 @@ const mockPasswordSignInThreadId = "thr_00000000-0000-4000-8000-000000000004";
 /** A built-in service wears its listing's name, as the Host's own rows do. */
 function listedMockRow(row: PluginRow): PluginRow {
   const listed =
-    row.source.kind === "built-in" &&
-    (row.target.kind === "service" || row.target.kind === "device-app")
+    row.source.kind === "built-in" && row.target.kind === "device-app"
       ? mockCatalogProducts[row.target.definitionId]
       : undefined;
   return listed ? { ...row, title: listed.title } : row;
@@ -13277,13 +13251,6 @@ function listedMockRow(row: PluginRow): PluginRow {
 const mockCatalogProducts: Readonly<
   Record<string, { title: string; category: string; popular: boolean }>
 > = {
-  slack: { title: "Slack", category: "communication", popular: true },
-  "google-gmail": { title: "Gmail", category: "communication", popular: true },
-  resend: { title: "Resend", category: "communication", popular: false },
-  notion: { title: "Notion", category: "work", popular: true },
-  "google-calendar": { title: "Google Calendar", category: "work", popular: true },
-  linear: { title: "Linear", category: "developer", popular: true },
-  github: { title: "GitHub", category: "developer", popular: true },
   "apple-messages": { title: "iMessage", category: "devices", popular: false },
   "apple-contacts": { title: "Contacts", category: "devices", popular: false },
   "apple-calendar": { title: "Calendar", category: "devices", popular: false },

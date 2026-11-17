@@ -165,7 +165,9 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
       title: "Dentist",
     });
     expect(readOnly.failure).toContain("allows reading only");
-    expect(readOnly.failure).toContain(`account \\"${calendar.connection.id}\\"`);
+    expect(readOnly.failure).toContain(`computerId \\"${computer.runnerId}\\"`);
+    expect(readOnly.failure).toContain('dataApp \\"calendar\\"');
+    expect(readOnly.failure).toContain('access \\"read-write\\"');
     expect(helper.invocations).toHaveLength(sent);
 
     // The person sees both apps in Plugins with what agents type, and sets Reminders to

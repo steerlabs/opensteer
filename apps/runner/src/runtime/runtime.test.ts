@@ -88,7 +88,6 @@ const testAgentSkills = {
   paths: {
     "opensteer:skills": "/runner/agent-skills/skills/skills",
     "opensteer:memory": "/runner/agent-skills/skills/memory",
-    "opensteer:integrations": "/runner/agent-skills/skills/integrations",
     "opensteer:plugins": "/runner/agent-skills/skills/plugins",
     "opensteer:browser": "/runner/agent-skills/skills/browser",
     "opensteer:computer-use": "/runner/agent-skills/skills/computer-use",
@@ -140,7 +139,9 @@ describe("RunnerRuntime", () => {
         request.on("end", () => {
           response.writeHead(200, {
             "content-type": "application/json",
-            ...(body.includes("integration_request") ? { "x-opensteer-request-pending": "1" } : {}),
+            ...(body.includes("plugin_account_request")
+              ? { "x-opensteer-request-pending": "1" }
+              : {}),
           });
           response.end('{"jsonrpc":"2.0","id":1,"result":{"content":[]}}');
         });
@@ -182,7 +183,7 @@ describe("RunnerRuntime", () => {
               authorization: `Bearer ${context.agentTools.token}`,
               "content-type": "application/json",
             },
-            body: '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"integration_request"}}',
+            body: '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"plugin_account_request"}}',
           })
         ).arrayBuffer();
         const initialSteer = await runtime.handleCommand(
@@ -4014,9 +4015,9 @@ describe("RunnerRuntime", () => {
           },
           {
             plugin: "opensteer",
-            localName: "integrations",
-            fullName: "opensteer:integrations",
-            path: "/runner/agent-skills/skills/integrations",
+            localName: "plugins",
+            fullName: "opensteer:plugins",
+            path: "/runner/agent-skills/skills/plugins",
           },
           {
             plugin: "opensteer",
@@ -4710,7 +4711,7 @@ describe("RunnerRuntime", () => {
 
     it.each(cases)("fits tool arguments: $name", async (testCase) => {
       const tool = testCase.integration
-        ? { namespace: "opensteer.integrations", name: "integration_call" }
+        ? { namespace: "opensteer.integrations", name: "plugin_call" }
         : { namespace: "test", name: "shell" };
       const started = (args: unknown): HarnessEvent => ({
         data: { arguments: args, callId: "same-call", tool },
@@ -5938,7 +5939,7 @@ function executeCommand(
         instructions: "Host Opensteer instructions",
         skills: [
           "opensteer:skills",
-          "opensteer:integrations",
+          "opensteer:plugins",
           "opensteer:computer-use",
           "opensteer:browser",
           "opensteer:computers",

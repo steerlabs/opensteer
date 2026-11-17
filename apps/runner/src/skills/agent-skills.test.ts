@@ -74,10 +74,10 @@ describe("Runner Agent Skills", () => {
       readFile(join(bundle.paths[name], "SKILL.md"), "utf8");
     const computers = await read("opensteer:computers");
     const computerUse = await read("opensteer:computer-use");
-    const integrations = await read("opensteer:integrations");
+    const plugins = await read("opensteer:plugins");
     const computerMetadata = parseHarnessSkillMetadata(computers, "computers");
     const computerUseMetadata = parseHarnessSkillMetadata(computerUse, "computer-use");
-    const integrationMetadata = parseHarnessSkillMetadata(integrations, "integrations");
+    const integrationMetadata = parseHarnessSkillMetadata(plugins, "plugins");
     expect(computerMetadata.description).toContain(
       "Use Opensteer SSH access for another computer’s files, commands or forwarded ports.",
     );
@@ -99,7 +99,7 @@ describe("Runner Agent Skills", () => {
     expect(computerUse).toContain(
       "not by reading an app's private data files or using AppleScript, `screencapture`, SSH or synthetic events.",
     );
-    expect(integrations).toContain("never with `integration_call`.");
+    expect(plugins).toContain("computer_use");
     const api = await readFile(
       join(bundle.paths["opensteer:computer-use"], "references", "api.md"),
       "utf8",

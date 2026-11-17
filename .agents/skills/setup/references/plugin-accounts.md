@@ -37,7 +37,7 @@ and verify redirects, issuer and PKCE pins.
   revision's installation URL; user authorization and repository selection stay separate.
 
 ```sh
-pnpm exec vitest run packages/integration-auth/src/oauth.test.ts apps/control-plane/src/auth/hosted-oauth-broker-contract.test.ts apps/host/src/integrations/integration-auth-attempt-service.test.ts
+pnpm exec vitest run apps/control-plane/src/auth/provider-oauth.test.ts apps/control-plane/src/auth/hosted-oauth-broker-service.test.ts apps/host/src/access/integration-auth-attempt-service.test.ts
 pnpm test:integration -- tests/plugin-oauth.integration.test.ts apps/control-plane/src/auth/hosted-oauth-broker-store.integration.test.ts
 ```
 

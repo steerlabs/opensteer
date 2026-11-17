@@ -193,11 +193,7 @@ it.each(["personal", "team"] as const)(
         expect(personal.statusCode).toBe(404);
       } else {
         expect(constructions).toEqual(
-          expect.arrayContaining([
-            "RunnerRegistry",
-            "BrowserService",
-            "DeviceService",
-          ]),
+          expect.arrayContaining(["RunnerRegistry", "BrowserService", "DeviceService"]),
         );
         const refused = await runtime.app.inject({
           method: "POST",

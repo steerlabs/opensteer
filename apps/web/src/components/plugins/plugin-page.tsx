@@ -20,6 +20,8 @@ import {
   readPluginWebhookSetup,
   readPluginWorkflowRuns,
   removePlugin,
+  removePluginWebhook,
+  confirmPluginWebhookRemoval,
   setPluginAccess,
   startPluginWorkflow,
   stopPluginWorkflow,
@@ -27,6 +29,8 @@ import {
   type InstalledPluginView,
   type PluginRequirementTarget,
 } from "@opensteer/client/plugins";
+import { useAppView } from "@opensteer/client/react";
+import { AppFrame, AppLoading, AppLoadFailure, useAppTheme } from "../apps/app-frame.js";
 import { useShell } from "../app-shell.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
@@ -98,6 +102,7 @@ function PluginContent({
   const { plugin } = data;
   const status = pluginStatusView(plugin);
   const active = data.versions.find((version) => version.active);
+  const [pageOpen, setPageOpen] = useState(false);
   return (
     <>
       <div className="settings-add-hero">
@@ -131,27 +136,59 @@ function PluginContent({
         <div className="plugin-page__open">
           <button
             className="btn"
-            disabled={data.page.url === null}
-            onClick={() => data.page?.url && window.open(data.page.url, "_blank", "noopener")}
+            disabled={Boolean(data.page.unavailable) || !data.page.reference}
+            onClick={() => setPageOpen(true)}
             type="button"
           >
             <Icon name="globe" />
-            Open {plugin.name}'s page
+            Open page
           </button>
           {data.page.unavailable ? (
             <span className="settings-footnote">{data.page.unavailable}</span>
           ) : null}
         </div>
       ) : null}
+      {pageOpen && data.page?.reference && !data.page.unavailable ? (
+        <PluginPageView
+          pluginId={data.page.reference.pluginId}
+          title={plugin.name}
+          onClose={() => setPageOpen(false)}
+        />
+      ) : null}
       <AccessSection data={data} />
       <AccountsSection data={data} reload={reload} />
       <ToolsSection data={data} />
       {data.schedules.length ? <SchedulesSection data={data} /> : null}
       {data.workflows?.length ? <WorkflowsSection data={data} /> : null}
-      {data.webhooks.length ? <WebhooksSection data={data} /> : null}
+      {data.webhooks.length ? <WebhooksSection data={data} reload={reload} /> : null}
       <VersionsSection data={data} />
       <RemoveSection data={data} />
     </>
+  );
+}
+
+function PluginPageView({
+  pluginId,
+  title,
+  onClose,
+}: {
+  readonly pluginId: string;
+  readonly title: string;
+  readonly onClose: () => void;
+}) {
+  const { hostClient } = useShell();
+  const theme = useAppTheme();
+  const { view, failed, retry } = useAppView(hostClient, pluginId, theme, true, "plugin");
+  return (
+    <Dialog title={title} wide onClose={onClose}>
+      {view ? (
+        <AppFrame title={title} url={view.url} theme={theme} retry={retry} />
+      ) : failed ? (
+        <AppLoadFailure retry={retry} />
+      ) : (
+        <AppLoading />
+      )}
+    </Dialog>
   );
 }
 
@@ -619,7 +656,15 @@ function StartWorkflow({
   );
 }
 
-function WebhooksSection({ data }: { readonly data: InstalledPluginView }) {
+function WebhooksSection({
+  data,
+  reload,
+}: {
+  readonly data: InstalledPluginView;
+  readonly reload: () => void;
+}) {
+  const { hostClient } = useShell();
+  const action = useAction();
   const [setup, setSetup] = useState<string | null>(null);
   return (
     <section className="settings-group">
@@ -643,28 +688,53 @@ function WebhooksSection({ data }: { readonly data: InstalledPluginView }) {
                         : "Stopped"
             }
             action={
-              webhook.status === "setup-required" ? (
+              webhook.status === "setup-required" || webhook.status === "stopping" ? (
                 <button
                   className="btn btn--small btn--primary"
                   onClick={() => setSetup(webhook.id)}
                   type="button"
                 >
-                  Finish setup
+                  {webhook.status === "stopping" ? "Finish removal" : "Finish setup"}
                 </button>
               ) : (
-                <span className={`chip${webhook.status === "active" ? " chip--ok" : ""}`}>
-                  {webhook.status === "active" ? "On" : webhook.status.replace("-", " ")}
-                </span>
+                <button
+                  className="btn btn--small btn--ghost"
+                  disabled={action.pending !== null}
+                  type="button"
+                  onClick={() =>
+                    action.run(webhook.id, () =>
+                      removePluginWebhook(hostClient, data.plugin.id, webhook.id).then(async () => {
+                        const next = await readPluginWebhookSetup(
+                          hostClient,
+                          data.plugin.id,
+                          webhook.id,
+                        );
+                        reload();
+                        if (next.step === "remove") setSetup(webhook.id);
+                      }),
+                    )
+                  }
+                >
+                  Remove
+                </button>
               )
             }
           />
         ))}
       </div>
-      <p className="settings-footnote">
-        Webhook events reach this computer once Opensteer's webhook route is set up for it.
-      </p>
+      <SettingsError message={action.error} />
+      {data.webhookUnavailable ? (
+        <p className="settings-footnote">{data.webhookUnavailable}</p>
+      ) : null}
       {setup ? (
-        <WebhookSetup onClose={() => setSetup(null)} pluginId={data.plugin.id} webhookId={setup} />
+        <WebhookSetup
+          onClose={() => {
+            setSetup(null);
+            reload();
+          }}
+          pluginId={data.plugin.id}
+          webhookId={setup}
+        />
       ) : null}
     </section>
   );
@@ -685,14 +755,37 @@ function WebhookSetup({
     `webhook:${webhookId}`,
   );
   const titleId = useId();
+  const action = useAction();
   return (
     <Dialog
       labelledBy={titleId}
       onClose={onClose}
-      title={<span id={titleId}>Set up the webhook</span>}
+      footer={
+        setup.data?.step === "remove" ? (
+          <button
+            className="btn btn--danger"
+            type="button"
+            disabled={action.pending !== null}
+            onClick={() =>
+              action.run("confirm", () =>
+                confirmPluginWebhookRemoval(hostClient, pluginId, webhookId).then(onClose),
+              )
+            }
+          >
+            I've removed it at the service
+          </button>
+        ) : undefined
+      }
+      title={
+        <span id={titleId}>
+          {setup.data?.step === "remove" ? "Remove the webhook" : "Set up the webhook"}
+        </span>
+      }
     >
       <div className="plugins-form">
-        <SettingsError message={setup.error ? actionErrorMessage(setup.error) : null} />
+        <SettingsError
+          message={action.error ?? (setup.error ? actionErrorMessage(setup.error) : null)}
+        />
         {setup.data ? (
           <>
             {setup.data.instructions ? <p>{setup.data.instructions}</p> : null}

@@ -713,26 +713,6 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     if (linked) await this.#executeAccountOperation(linked, afterResponse);
   }
 
-  async markHostedOAuthConnectionsForRepair(caller: {
-    readonly session: AuthenticatedSession;
-  }): Promise<void> {
-    await requirePersonalAdministrator(this.#database, caller.session);
-    await this.#database.transaction().execute(async (transaction) => {
-      await transaction
-        .updateTable("integrationConnections")
-        .set({
-          status: "needs-attention",
-          statusDetail: "Link Opensteer Account or Use your own OAuth app",
-          statusReason: null,
-          updatedAt: this.#now(),
-        })
-        .where(sql<boolean>`application_source ->> 'kind' = 'hosted-oauth'`)
-        .where("status", "!=", "revoked")
-        .execute();
-      await requestSettlementActor(transaction, caller.session.user.id, caller.session.id);
-    });
-  }
-
   /**
    * Whether this Deployment can honour Account-brokered session grants at all.
    * The verifier exists only once the Deployment is linked to an Account

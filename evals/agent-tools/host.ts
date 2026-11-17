@@ -97,9 +97,8 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     computer_update: async () => unavailable(),
     computer_remove: async () => unavailable(),
     computer_use: async () => unavailable(),
+    computer_apps: async () => unavailable(),
     computer_access_request: async () => unavailable(),
-    integration_list: async () => unavailable(),
-    integration_remove: async () => unavailable(),
     opensteer_messaging_bridge_list: async () => unavailable(),
     opensteer_messaging_bridge_update: async () => unavailable(),
     opensteer_messaging_bridge_remove: async () => unavailable(),
@@ -162,12 +161,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     opensteer_automation_create: (call) => triggers.write(call),
     opensteer_automation_update: (call) => triggers.write(call),
     opensteer_automation_control: (call) => triggers.write(call),
-    integration_search: async () => unavailable(),
-    integration_describe: async () => unavailable(),
-    integration_call: async () => unavailable(),
-    integration_request: async () => unavailable(),
     app_access_request: async () => unavailable(),
-    custom_integration_request: async () => unavailable(),
     opensteer_team_read: async () => unavailable(),
     opensteer_team_file_download: async () => unavailable(),
     opensteer_team_search: async () => unavailable(),
@@ -432,7 +426,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
             ),
           };
         calls[index] = { at: calls[index]?.at ?? Date.now(), tool: name, args, valid, result };
-        if (name === "integration_describe" || !isRecord(result)) {
+        if (name === "plugin_describe" || !isRecord(result)) {
           return { content: [{ type: "text", text: JSON.stringify(result) }] };
         }
         return agentToolRecordResult(result);
@@ -528,8 +522,10 @@ const automationWriteTools = new Set([
 
 function defaultResult(name: string): unknown {
   switch (name) {
-    case "integration_search":
-      return { operations: [], integrations: [], catalog: [], total: 0 };
+    case "plugin_search":
+      return { items: [], namespaces: [], remaining: 0, next: null };
+    case "computer_apps":
+      return { computers: [], phones: [] };
     case "opensteer_task_list":
       return { tasks: [], nextCursor: null };
     case "opensteer_request_list":

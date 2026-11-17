@@ -31,10 +31,7 @@ export interface PrivatePasswordsGrants {
 export class PrivateResourceStore implements PrivateResourceStorePort {
   private readonly database: Kysely<DatabaseSchema>;
   private readonly passwords: PrivatePasswordsGrants;
-  constructor(
-    database: Kysely<DatabaseSchema>,
-    passwords: PrivatePasswordsGrants,
-  ) {
+  constructor(database: Kysely<DatabaseSchema>, passwords: PrivatePasswordsGrants) {
     this.database = database;
     this.passwords = passwords;
   }

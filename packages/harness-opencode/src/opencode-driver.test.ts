@@ -157,10 +157,7 @@ describe("OpenCode access modes", () => {
   });
 
   it("approves Opensteer's own tools without a prompt in every mode", () => {
-    const openSteerTools = [
-      "opensteer_opensteer_task_read",
-      "opensteer_integrations_integration_call",
-    ];
+    const openSteerTools = ["opensteer_opensteer_task_read", "opensteer_plugin_call"];
     for (const mode of ["approval-required", "auto-accept-edits", "full-access"] as const) {
       const permission = opencodeAccessModeConfiguration(mode, openSteerTools);
       for (const tool of openSteerTools) expect(permission[tool]).toBe("allow");
@@ -207,33 +204,25 @@ describe("OpenCode child permission copying (T3 Code, MIT)", () => {
 });
 
 describe("OpenCode tool identity", () => {
-  it("splits the flat tool id on the longest Opensteer server name", () => {
+  it("keeps underscores in Opensteer tool names", () => {
     expect(opencodeToolIdentity("opensteer_opensteer_task_read")).toEqual({
       name: "opensteer_task_read",
       namespace: "opensteer",
     });
-    expect(opencodeToolIdentity("opensteer_integrations_integration_call")).toEqual({
-      name: "integration_call",
-      namespace: "opensteer.integrations",
+    expect(opencodeToolIdentity("opensteer_plugin_call")).toEqual({
+      name: "plugin_call",
+      namespace: "opensteer",
     });
     expect(opencodeToolIdentity("bash")).toEqual({ name: "bash", namespace: "opencode" });
   });
 
-  it("is unambiguous for every tool the two Opensteer servers actually offer", () => {
-    // The split only works because no agent tool name begins with
-    // `integrations_`; assert that over the real lists rather than trusting it.
+  it("recognizes every tool the Opensteer server offers", () => {
     for (const { name } of agentTools.filter((tool) => tool.callers.includes("run"))) {
-      expect(name.startsWith("integrations_")).toBe(false);
       expect(opencodeToolIdentity(`opensteer_${name}`)).toEqual({
         name,
         namespace: "opensteer",
       });
     }
-    // A historical transcript's integration call still reads as an Opensteer tool.
-    expect(opencodeToolIdentity("opensteer_integrations_integration_call")).toEqual({
-      name: "integration_call",
-      namespace: "opensteer.integrations",
-    });
   });
 });
 
@@ -772,12 +761,12 @@ describe("OpenCode sessions", () => {
       {
         arguments: {},
         callId: "call_gateway",
-        tool: { name: "integration_call", namespace: "opensteer.integrations" },
+        tool: { name: "plugin_call", namespace: "opensteer" },
       },
       {
         arguments: { toolRef: "igr_grant.itl_tool.digest", arguments: { query: "hello" } },
         callId: "call_gateway",
-        tool: { name: "integration_call", namespace: "opensteer.integrations" },
+        tool: { name: "plugin_call", namespace: "opensteer" },
       },
       {
         arguments: { command: "echo hi", description: "A full input" },
@@ -926,7 +915,7 @@ describe("OpenCode sessions", () => {
     // The model is told the names it must type, not just the servers: OpenCode
     // renames every MCP tool to `<server>_<tool>`.
     expect(instructions).toContain("opensteer_opensteer_task_read");
-    expect(instructions).toContain("opensteer_integration_call");
+    expect(instructions).toContain("opensteer_plugin_call");
   });
 
   it("refuses to load two Agent Skills of one name", async () => {

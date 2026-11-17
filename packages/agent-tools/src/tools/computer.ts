@@ -115,7 +115,7 @@ export const computer_access_request = defineAgentTool({
 
 export const ComputerAppsInputSchema = z.strictObject({
   computerId: RunnerIdSchema.optional().describe(
-    "A Mac or phone from this listing, to list its installed apps.",
+    "computerId from this listing or computer_list; omit to list Macs and Agent Phones.",
   ),
   query: z.string().trim().max(240).default("").describe("Filters a computer's installed apps."),
   limit: z.number().int().min(1).max(50).default(20),
@@ -145,7 +145,7 @@ export const computer_apps = defineAgentTool({
 export const AppAccessRequestInputSchema = z
   .strictObject({
     computerId: RunnerIdSchema.optional().describe(
-      "The Mac, iPhone or phone; omit for an app on the Mac this task runs on.",
+      "computerId from computer_apps or computer_list. Omit for a Mac app on this task’s computer; for dataApp, the person chooses its computer if it has no connection yet. Omit for server.",
     ),
     app: z
       .string()

@@ -117,7 +117,7 @@ it("uses production worker wakes and requires a brief outcome for task wakes", a
 it("requires quiet background work and one valid notification for important news", async () => {
   const cases = await memoryCases();
   const quiet = cases.find((c) => c.id === "memory-nothing-new")!.expect;
-  const mail = { tool: "integration_call", args: quiet.calls[0]!.args, valid: true };
+  const mail = { tool: "plugin_call", args: quiet.calls[0]!.args, valid: true };
   expect(grade(quiet, [mail], "", "").every((c) => c.pass)).toBe(true);
   expect(grade(quiet, [mail], "", "Done.").every((c) => c.pass)).toBe(true);
   expect(

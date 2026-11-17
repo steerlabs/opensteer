@@ -26,7 +26,6 @@ export interface ConnectCardAction {
   readonly label: string;
 }
 
-
 /**
  * An access Request for a device data app or a local server, as both cards show
  * it. Presentation only: a committed Host connection is the only connected state.

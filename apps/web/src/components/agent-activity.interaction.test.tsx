@@ -486,7 +486,7 @@ describe("a Computer use row", () => {
     );
     expect(heads).toEqual([
       'Listed apps on a Macfor "Computer use" and "Slack"· 1 failed',
-      "Used Slack9 steps on Alex's MacBook Pro· 1 failed",
+      "Used Slack10 steps on Alex's MacBook Pro· 1 failed",
     ]);
     for (const reference of mockComputerUseToolRefs) {
       expect(container.innerHTML).not.toContain(reference);
@@ -504,7 +504,10 @@ describe("a Computer use row", () => {
     expect(stop?.querySelector("title")?.textContent).toBe("Stopped");
     expect(stop?.querySelector(".trace-errors")).toBeNull();
     // The row counts the error once; the step's own mark says which one it was.
-    const broken = button(container, "Couldn't use Slack");
+    const broken = button(
+      container,
+      "Invalid Act arguments at $.actions[0]: must match exactly one allowed schema",
+    );
     expect(broken?.querySelector("title")?.textContent).toBe("Returned an error");
     expect(broken?.querySelector(".trace-errors")).toBeNull();
     expect(timeline?.querySelectorAll(".trace-errors")).toHaveLength(0);
@@ -512,7 +515,7 @@ describe("a Computer use row", () => {
 
     click(stop);
     const detail = stop?.closest(".trace-step")?.querySelector(".trace-step__body");
-    const observation = button(detail as HTMLElement, "Observation");
+    const observation = button(detail as HTMLElement, "Output");
     const input = button(detail as HTMLElement, "Input");
     expect(observation?.getAttribute("aria-expanded")).toBe("false");
     expect(input?.getAttribute("aria-expanded")).toBe("false");
@@ -523,7 +526,7 @@ describe("a Computer use row", () => {
     );
     // A failure that never reached the app says why in prose, with nothing verbatim open.
     click(broken);
-    const reason = broken?.closest(".trace-step")?.querySelector(".trace-step__summary");
+    const reason = broken?.querySelector(".trace-step__label");
     expect(reason?.textContent).toBe(
       "Invalid Act arguments at $.actions[0]: must match exactly one allowed schema",
     );
@@ -547,7 +550,7 @@ describe("a Computer use row", () => {
     expect(steps.at(-2)?.textContent).toBe('Clicked "Opensteer", then waited 500 ms');
   });
 
-  it("keeps a lookup's output, full of references, closed until asked for", () => {
+  it("keeps installed-app output closed until asked for", () => {
     const container = mount(slack("settled"));
     click(status(container));
     click(button(container, "Listed apps on a Mac"));
@@ -559,7 +562,9 @@ describe("a Computer use row", () => {
     expect(detail?.querySelector("pre")).toBeNull();
     expect(container.innerHTML).not.toMatch(/igr_|itl_/u);
     click(output);
-    expect(detail?.querySelector("pre")?.textContent).toContain("toolRefs");
+    expect(detail?.querySelector("pre")?.textContent).toContain(
+      '"bundleId":"com.tinyspeck.slackmacgap"',
+    );
   });
 });
 

@@ -11,9 +11,7 @@ import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
 import { expect } from "vitest";
 
-import {
-  OpensteerStore,
-} from "./index.js";
+import { OpensteerStore } from "./index.js";
 import {
   describeStore,
   testContinuationIdentity,

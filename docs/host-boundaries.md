@@ -1,7 +1,7 @@
 # Host boundaries
 
-Deployment configuration, Host authentication, the Host API and compatibility. Integration OAuth is
-in [Integration OAuth](integration-oauth.md); client routing is in [Connections](connections.md).
+Deployment configuration, Host authentication, the Host API and compatibility. Plugin account OAuth is
+in [Plugin accounts](plugin-accounts.md); client routing is in [Connections](connections.md).
 
 Both desktop update channels use the Account `https://accounts.opensteer.com` and portal
 `https://app.opensteer.com`. Account authentication and forms trust only the Account origin; portal
@@ -35,7 +35,7 @@ credentials are not ambient and need no Origin. CORS is not authorization, route
 who is calling, and Origin checks cannot protect a stolen non-browser credential.
 
 The supervisor's process-launch capability creates an ordinary owner session, never extra user
-powers. Executor and tunnel credentials remain on its private channel, outside session and status
+powers. Runner and tunnel credentials remain on its private channel, outside session and status
 payloads. [Session authority](../packages/identity/src/identity-service.ts) checks revocation on
 every call; native OAuth revocation ends the session, not just a refresh token.
 
@@ -84,7 +84,7 @@ keep credentials out of compression length oracles and preserve streaming.
 Personal Connect forwards the whole tunnel hostname without path restrictions. `connect-projection`
 publishes signed route state; it is not a traffic proxy. Runtime listeners and development proxies
 must both admit display data traffic. Display data tickets are single-use and bind the live
-integrations fence, producer incarnation and exact Mac window; a failed upgrade never makes a
+device authority fence, producer incarnation and exact Mac window; a failed upgrade never makes a
 consumed ticket reusable ([DisplayStreamHub](../apps/host/src/computer-use/display-stream-hub.ts)).
 
 ## Compatibility

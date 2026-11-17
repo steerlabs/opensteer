@@ -1,6 +1,6 @@
 # Agent Phone
 
-Agent Phone is a dedicated Android 11+ phone whose whole display is one computer integration. It is
+Agent Phone is a dedicated Android 11+ phone whose whole display is one computer-use target. It is
 not the [mobile client](mobile.md), never runs agents and offers no SSH. [Computers](computers.md)
 owns membership. Procedures are in the [agent-phone skill](../.agents/skills/agent-phone/SKILL.md).
 
@@ -64,9 +64,9 @@ erase a replacement identity. Bare close 4010 wipes identity and keys and stops 
 server time on a monotonic clock so wall-clock changes cannot move leases. See
 [runner](../apps/agent-phone/app/src/main/kotlin/com/opensteer/agentphone/runner).
 
-The phone grant is exactly `integrations`; computer presets must not add shell or messaging. The
+The phone grant enables exactly the Runner `integrations` device module; computer presets must not add shell or messaging. The
 Host refuses protocol-incompatible phones before registration or enrollment consumption. Bump the
-Android integrations protocol in [runner.ts](../packages/protocol/src/runner.ts) for new baseline
+Android device protocol in [runner.ts](../packages/protocol/src/runner.ts) for new baseline
 operations, newly required observation fields, changed authority or unnegotiated frame changes;
 optional extensions negotiate instead.
 

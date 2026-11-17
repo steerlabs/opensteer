@@ -159,8 +159,8 @@ const McpImageBlockSchema = z.looseObject({
  * `{data, mimeType}` pair, so a picture crosses unchanged and reaches the
  * model. MCP's other kinds — audio, embedded resources, resource links — have
  * no place in a Pi tool result and are left out rather than handed to a
- * provider serializer that has never seen them; Opensteer's own two servers
- * answer with text and images only.
+ * provider serializer that has never seen them; Opensteer's server answers
+ * with text and images only.
  */
 export function piToolContent(content: unknown): readonly PiToolContent[] {
   if (!Array.isArray(content)) return [];

@@ -953,9 +953,9 @@ describe("Cursor approvals", () => {
       { toolRef: "igr_existing.itl_tool.digest" },
     ]);
     expect(starts.map((event) => event.data.tool)).toEqual([
-      { name: "integration_call", namespace: "opensteer.integrations" },
-      { name: "integration_call", namespace: "opensteer.integrations" },
-      { name: "integration_call", namespace: "opensteer.integrations" },
+      { name: "plugin_call", namespace: "opensteer" },
+      { name: "plugin_call", namespace: "opensteer" },
+      { name: "plugin_call", namespace: "opensteer" },
     ]);
     expect(observer.events.filter((event) => event.type === "tool.completed")).toHaveLength(2);
     await fixture.adapter.close();

@@ -21,12 +21,7 @@ export const mcpPresentationScenarios = [
   ],
   ["computer_list", {}, "Looking up computers", "Looked up computers"],
   ["computer_remove", { target: "computer" }, "Removing a computer", "Removed a computer"],
-  [
-    "integration_remove",
-    { target: "account" },
-    "Disconnecting an integration",
-    "Disconnected an integration",
-  ],
+  ["local_server_remove", { name: "tv" }, "Removing a local server", "Removed a local server"],
   [
     "opensteer_messaging_bridge_update",
     { paused: true },
@@ -39,7 +34,7 @@ export const mcpPresentationScenarios = [
     "Deleting a browser profile",
     "Deleted a browser profile",
   ],
-  ["integration_search", { query: "mail" }, "Searching integrations", "Searched integrations"],
+  ["plugin_search", { query: "mail" }, "Finding plugin tools", "Found plugin tools"],
   ["computer_use", {}, "Running computer code", "Ran computer code"],
 ] as const;
 

@@ -117,7 +117,6 @@ describe("accessPlan, for an app on a computer", () => {
 describe("definitions stored in manifests", () => {
   const newerApp = {
     ...messages(),
-    apiKey: null,
     computerApp: {
       ...messages().computerApp!,
       platforms: ["darwin", "ios", "future-phone-os"],
@@ -134,7 +133,7 @@ describe("definitions stored in manifests", () => {
     const stored: Record<string, unknown> = { ...messages() };
     delete stored["apiKey"];
     const plan = accessPlan(withManifestDefinition(stored), null);
-    expect(plan?.definition).toMatchObject({ apiKey: null, id: "apple-messages" });
+    expect(plan?.definition).toMatchObject({ id: "apple-messages" });
   });
 
   it("reviews and matches a newer Host's catalog install", () => {
@@ -302,9 +301,6 @@ function computerConnection(input: {
 }) {
   return {
     accountIdentifier: null,
-    applicationSource: null,
-    authMethodId: "computer",
-    authorizationDigest: null,
     computer: { access: input.access, runnerId: input.runnerId },
     connectionMethod: "computer",
     createdAt: "2026-09-02T10:20:00.000Z",
@@ -312,10 +308,8 @@ function computerConnection(input: {
     displayName: input.name,
     externalIdentityId: null,
     externalTenantId: null,
-    grantedScopes: [],
     id: input.id,
     provider: "apple-messages",
-    providerApplicationId: null,
     status: "connected",
     statusDetail: null,
     updatedAt: "2026-09-02T10:20:00.000Z",

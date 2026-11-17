@@ -4,9 +4,7 @@ const prefixes = {
   connection: "con",
   grant: "igr",
   installation: "iin",
-  mcpOauthAttempt: "imo",
   oauthAttempt: "ioa",
-  providerApplication: "ipa",
   server: "isv",
   tool: "itl",
 } as const;
@@ -17,9 +15,7 @@ type Brand<T, Name extends string> = T & { readonly __brand: Name };
 export type IntegrationConnectionId = Brand<string, "IntegrationConnectionId">;
 export type IntegrationGrantId = Brand<string, "IntegrationGrantId">;
 export type IntegrationInstallationId = Brand<string, "IntegrationInstallationId">;
-export type McpOAuthAttemptId = Brand<string, "McpOAuthAttemptId">;
 export type IntegrationOAuthAttemptId = Brand<string, "IntegrationOAuthAttemptId">;
-export type IntegrationProviderApplicationId = Brand<string, "IntegrationProviderApplicationId">;
 export type IntegrationServerId = Brand<string, "IntegrationServerId">;
 export type IntegrationToolId = Brand<string, "IntegrationToolId">;
 
@@ -27,9 +23,7 @@ interface IdByKind {
   readonly connection: IntegrationConnectionId;
   readonly grant: IntegrationGrantId;
   readonly installation: IntegrationInstallationId;
-  readonly mcpOauthAttempt: McpOAuthAttemptId;
   readonly oauthAttempt: IntegrationOAuthAttemptId;
-  readonly providerApplication: IntegrationProviderApplicationId;
   readonly server: IntegrationServerId;
   readonly tool: IntegrationToolId;
 }
@@ -50,8 +44,6 @@ export function createIntegrationId<K extends IntegrationIdKind>(kind: K): IdByK
 export const IntegrationConnectionIdSchema = schema("connection");
 export const IntegrationGrantIdSchema = schema("grant");
 export const IntegrationInstallationIdSchema = schema("installation");
-export const McpOAuthAttemptIdSchema = schema("mcpOauthAttempt");
 export const IntegrationOAuthAttemptIdSchema = schema("oauthAttempt");
-export const IntegrationProviderApplicationIdSchema = schema("providerApplication");
 export const IntegrationServerIdSchema = schema("server");
 export const IntegrationToolIdSchema = schema("tool");

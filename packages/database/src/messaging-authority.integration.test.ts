@@ -20,7 +20,7 @@ it("fences Messaging binding edits, idempotent ingress and queued replies to cur
     const identityId = createChannelId("identity");
     const principalId = createChannelId("principal");
     const store = new ChannelStore(database);
-    await sql`insert into integration_connections(id,owner_user_id,connection_kind,provider,connection_method,status,display_name,capabilities,granted_scopes,runner_id,transport_kind) values(${connectionId},${p.userId},'channel','telegram','api-token','connected','Bot','[]','[]',${p.runnerId},'polling')`.execute(
+    await sql`insert into integration_connections(id,owner_user_id,connection_kind,provider,connection_method,status,display_name,capabilities,runner_id,transport_kind) values(${connectionId},${p.userId},'channel','telegram','api-token','connected','Bot','[]',${p.runnerId},'polling')`.execute(
       database,
     );
     await sql`insert into channel_accounts(id,connection_id,provider,external_account_id,display_name,routing_mode,status,metadata) values(${accountId},${connectionId},'telegram','bot','Bot','shared','connected','{}')`.execute(

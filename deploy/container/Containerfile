@@ -149,8 +149,6 @@ COPY packages/harness-opencode/package.json ./packages/harness-opencode/package.
 COPY packages/harness-pi/package.json ./packages/harness-pi/package.json
 COPY packages/harness/package.json ./packages/harness/package.json
 COPY packages/identity/package.json ./packages/identity/package.json
-COPY packages/integration-adapters/package.json ./packages/integration-adapters/package.json
-COPY packages/integration-auth/package.json ./packages/integration-auth/package.json
 COPY packages/integration-catalog/package.json ./packages/integration-catalog/package.json
 COPY packages/integration-core/package.json ./packages/integration-core/package.json
 COPY packages/messaging-module/package.json ./packages/messaging-module/package.json
@@ -306,8 +304,6 @@ COPY packages/harness-opencode/package.json ./packages/harness-opencode/package.
 COPY packages/harness-pi/package.json ./packages/harness-pi/package.json
 COPY packages/harness/package.json ./packages/harness/package.json
 COPY packages/identity/package.json ./packages/identity/package.json
-COPY packages/integration-adapters/package.json ./packages/integration-adapters/package.json
-COPY packages/integration-auth/package.json ./packages/integration-auth/package.json
 COPY packages/integration-catalog/package.json ./packages/integration-catalog/package.json
 COPY packages/integration-core/package.json ./packages/integration-core/package.json
 COPY packages/messaging-module/package.json ./packages/messaging-module/package.json

@@ -198,7 +198,7 @@ export class OpensteerStore {
   readonly #executionNow: () => number;
   readonly #readPersonalResources: snapshotStore.PersonalSnapshotResourcesReader | undefined;
   readonly requests: RequestStore;
-  /** Service integration install and access Requests, which `requests` creates and settles. */
+  /** Device data app and local-server access Requests, settled with their grants. */
   readonly integrationRequests: IntegrationRequestStore;
   readonly notificationState: NotificationStateStore;
   readonly ownerProfile: OwnerProfileStore;

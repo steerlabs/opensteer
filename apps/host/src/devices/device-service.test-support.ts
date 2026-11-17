@@ -267,10 +267,7 @@ export function computerCallable(
   };
 }
 
-export function integrationRequest(
-  kind: "integration.access" | "integration.install",
-  status: "pending",
-): Request {
+export function integrationRequest(kind: "integration.access", status: "pending"): Request {
   return {
     callId: crypto.randomUUID(),
     cancellationReason: null,
@@ -282,40 +279,27 @@ export function integrationRequest(
     originatingRunId: createId("run"),
     originatingThreadId: createId("thread"),
 
-    payload:
-      kind === "integration.install"
-        ? { kind, manifest: { kind: "catalog" }, reason: "Install the connector" }
-        : {
-            access: "read",
-            installationId: createIntegrationId("installation"),
-            kind,
-            manifest: null,
-            reason: "Use the connector",
-            requestedConnectionId: null,
-            requestedServerId: null,
-          },
-    presentation:
-      kind === "integration.install"
-        ? {
-            kind: "choice",
-            options: [
-              { hint: "confirm", id: "installed", label: "Install" },
-              { hint: "cancel", id: "declined", label: "Decline" },
-            ],
-            title: "Install integration?",
-          }
-        : {
-            kind: "external",
-            subject: { id: "integration", kind: "integration-installation" },
-            title: "Integration access",
-          },
+    payload: {
+      access: "read",
+      installationId: createIntegrationId("installation"),
+      kind,
+      manifest: null,
+      reason: "Use the app",
+      requestedConnectionId: null,
+      requestedServerId: null,
+    },
+    presentation: {
+      kind: "external",
+      subject: { id: "app", kind: "integration.access" },
+      title: "App access",
+    },
     requestedBy: createId("user"),
     requiredActor: "requester",
     resolvedAt: null,
     resolvedBy: null,
     response: null,
     status,
-  } as Request;
+  };
 }
 
 /** A tool row as the platform lists it: its schemas only digested. */

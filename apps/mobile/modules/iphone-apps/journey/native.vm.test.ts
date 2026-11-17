@@ -20,9 +20,9 @@ import {
 } from "../../../../host/src/runtime/machine-access.test-support.js";
 import {
   integrationGateway,
-  operation,
+  pluginCall,
+  pluginPath,
   requestComputerAppSetup,
-  toolText,
 } from "../../../../host/src/runtime/computer-apps.test-support.js";
 
 const packagePath = fileURLToPath(new URL("../ios", import.meta.url));
@@ -358,9 +358,9 @@ suite.sequential("production Swift core against real Host and PostgreSQL", () =>
       gateway = await integrationGateway(run.integrationTools);
       for (const app of approvedApps) {
         stage = `${app.definitionId}-agent-access`;
-        await gateway.call("integration_request", {
+        await gateway.call("app_access_request", {
           access: app.access,
-          integration: app.definitionId,
+          dataApp: app.definitionId.replace(/^apple-/u, ""),
           reason: `Exercise the native ${app.name} dispatcher`,
         });
         const pending = await host.store.integrationRequests.listPendingIntegrationAccessRequests(
@@ -389,23 +389,20 @@ suite.sequential("production Swift core against real Host and PostgreSQL", () =>
           { headers: host.ownerHeaders },
         );
       }
-      stage = "integration-search";
-      const search = await gateway.call("integration_search", { query: "Calendar" });
+      stage = "plugin-search";
+      const calendarListPath = await pluginPath(gateway, "Calendar", "list_calendars");
+      const calendarCreatePath = await pluginPath(gateway, "Calendar", "create_event");
       stage = "calendar-list";
-      const listed = await gateway.call("integration_call", {
-        arguments: {},
-        toolRef: operation(search, "list_calendars").toolRef,
-      });
+      const listed = (await pluginCall(gateway, calendarListPath, {})).value;
       expect(listed).toMatchObject({ calendars: [expect.objectContaining({ id: "vm-calendar" })] });
       stage = "calendar-create";
-      const created = await gateway.call("integration_call", {
-        arguments: {
+      const created = (
+        await pluginCall(gateway, calendarCreatePath, {
           title: "Native VM event",
           start: "2030-01-01T10:00:00Z",
           end: "2030-01-01T11:00:00Z",
-        },
-        toolRef: operation(search, "create_event").toolRef,
-      });
+        })
+      ).value;
       expect(created).toMatchObject({
         event: expect.objectContaining({ title: "Native VM event" }),
       });
@@ -413,11 +410,9 @@ suite.sequential("production Swift core against real Host and PostgreSQL", () =>
       expect(afterCreate.fakeCalendarSaveCount).toBe(1);
       expect(afterCreate.workTransitions).toEqual(expect.arrayContaining([1, 0]));
       stage = "location-current";
-      const locationSearch = await gateway.call("integration_search", { query: "Location" });
-      const location = await gateway.call("integration_call", {
-        arguments: { maxAgeSeconds: 0 },
-        toolRef: operation(locationSearch, "current_location").toolRef,
-      });
+      const locationPath = await pluginPath(gateway, "Location", "current_location");
+      const location = (await pluginCall(gateway, locationPath, { maxAgeSeconds: 0 }))
+        .value as Record<string, unknown>;
       expect(location).toEqual({
         latitude: 40.7128,
         longitude: -74.006,
@@ -427,11 +422,8 @@ suite.sequential("production Swift core against real Host and PostgreSQL", () =>
       });
       expect(Number.isFinite(Date.parse(String(location.capturedAt)))).toBe(true);
       stage = "photos-list-assets";
-      const photosSearch = await gateway.call("integration_search", { query: "Photos" });
-      const photos = await gateway.call("integration_call", {
-        arguments: {},
-        toolRef: operation(photosSearch, "list_assets").toolRef,
-      });
+      const photosPath = await pluginPath(gateway, "Photos", "list_assets");
+      const photos = (await pluginCall(gateway, photosPath, {})).value;
       expect(photos).toEqual({
         scope: "selected",
         assets: [
@@ -454,15 +446,12 @@ suite.sequential("production Swift core against real Host and PostgreSQL", () =>
       expect(providerSnapshot.fakePhotosAssetFetches).toBeGreaterThan(0);
       expect((await native.command({ command: "drop-next-answer" })).kind).toBe("armed");
       stage = "lost-answer";
-      const lost = await gateway.callRaw("integration_call", {
-        arguments: {
-          title: "Native VM lost-answer event",
-          start: "2030-01-02T10:00:00Z",
-          end: "2030-01-02T11:00:00Z",
-        },
-        toolRef: operation(search, "create_event").toolRef,
+      const lost = await pluginCall(gateway, calendarCreatePath, {
+        title: "Native VM lost-answer event",
+        start: "2030-01-02T10:00:00Z",
+        end: "2030-01-02T11:00:00Z",
       });
-      expect(toolText(lost)).toContain("did not confirm this");
+      expect(lost.failure).toContain("did not confirm this");
       expect((await native.command({ command: "snapshot" })).fakeCalendarSaveCount).toBe(2);
       const previousInvoke = bridge.lastInvoke;
       expect(previousInvoke).not.toBeNull();
@@ -481,10 +470,7 @@ suite.sequential("production Swift core against real Host and PostgreSQL", () =>
       await waitForCondition(async () => bridge!.synchronized || bridge!.failure !== null);
       if (bridge.failure) throw bridge.failure;
       stage = "reauthenticated-list";
-      const afterReauthentication = await gateway.call("integration_call", {
-        arguments: {},
-        toolRef: operation(search, "list_calendars").toolRef,
-      });
+      const afterReauthentication = (await pluginCall(gateway, calendarListPath, {})).value;
       expect(afterReauthentication).toMatchObject({
         calendars: [expect.objectContaining({ id: "vm-calendar" })],
       });

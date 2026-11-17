@@ -60,12 +60,7 @@ it("queues plugin cleanup atomically, gates old Runners, acknowledges and replay
         },
       }),
     );
-    const dispatch = (
-      input: Extract<
-        HostApiCommand,
-        { type: "plugin.install" | "plugin.remove" | "integration.uninstall" }
-      >,
-    ) =>
+    const dispatch = (input: Extract<HostApiCommand, { type: "plugin.remove" }>) =>
       testRpcData(
         host.origin,
         "commands.dispatch",

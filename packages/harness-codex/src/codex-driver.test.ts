@@ -395,7 +395,7 @@ describe("Codex app-server harness", () => {
 
   it.each([
     ["host_only_tool"],
-    ["opensteer_task_read", "integration_call", "computer_use"],
+    ["opensteer_task_read", "plugin_call", "computer_use"],
     [
       "opensteer_task_read",
       "opensteer_task_wait",

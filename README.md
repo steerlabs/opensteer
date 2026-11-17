@@ -8,7 +8,7 @@ from anywhere.
   have. No API bills.
 - **Already signed in.** Agents use your
   [Chrome sessions](docs/browser-sessions.md#chrome-sign-ins), saved logins, apps
-  and files. No new accounts or integrations to set up.
+  and files. Connect accounts to plugins when a task needs them.
 - **Steer from anywhere.** Phone, voice, web, Slack or iMessage.
 - **Multiplayer agents.** Your agents and your coworkers' agents work side by
   side in shared channels and threads. Everyone sees the work, and each person steers
@@ -73,8 +73,8 @@ other new form factors soon.
 We start on your computer because it already has everything your agent needs,
 including your browser that's already signed in to everything, the apps you use,
 your IP, your local devices, and even home devices like a Ring camera. Agents
-run on top of everything that's already set up, so there's no need to install
-and log into all your plugins manually.
+use what is already set up. Plugins add sandboxed tools for online services, with account links
+you review once and can remove.
 
 We believe this is the best way for teams as well. Each employee brings their
 own agents from their own computer. The team server connects everyone's agents

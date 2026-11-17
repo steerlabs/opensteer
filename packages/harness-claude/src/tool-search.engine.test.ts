@@ -158,7 +158,7 @@ describe("Claude deferred Opensteer tools", () => {
       );
     };
     const prompt =
-      "Use ToolSearch if needed to find and call Opensteer's opensteer_task_list tool and integration_search tool (query calendar). Do both now, then reply with their proof values. Do not delegate.";
+      "Use ToolSearch if needed to find and call Opensteer's opensteer_task_list tool and plugin_search tool (query calendar). Do both now, then reply with their proof values. Do not delegate.";
     try {
       const baseline = await run("always-load", prompt, options(true));
       const baselineCalls = calls.splice(0);
@@ -167,21 +167,21 @@ describe("Claude deferred Opensteer tools", () => {
       const fresh = await run("deferred-fresh", prompt, options(false));
       slow = false;
       expect(calls.map(({ name }) => name)).toContain("opensteer:opensteer_task_list");
-      expect(calls.map(({ name }) => name)).toContain("opensteer:integration_search");
+      expect(calls.map(({ name }) => name)).toContain("opensteer:plugin_search");
       const init = fresh.find(
         ({ message }) => message.type === "system" && message.subtype === "init",
       )?.message;
       if (init?.type !== "system" || init.subtype !== "init") throw new Error("No session init");
       expect(init.tools).toContain("ToolSearch");
-      expect(init.tools).toContain("mcp__opensteer__thread_list");
-      expect(init.tools).toContain("mcp__opensteer__integration_search");
+      expect(init.tools).toContain("mcp__opensteer__opensteer_task_list");
+      expect(init.tools).toContain("mcp__opensteer__plugin_search");
       const resumed = await run(
         "deferred-resumed",
-        "Find and call Opensteer's opensteer_task_read tool for this task, and integration_describe. Use ToolSearch to load their schemas. Reply with their proof values.",
+        "Find and call Opensteer's opensteer_task_read tool for this task, and plugin_describe for the path tools.fixture.read. Use ToolSearch to load their schemas. Reply with their proof values.",
         { ...options(false), resume: init.session_id },
       );
       expect(calls.map(({ name }) => name)).toContain("opensteer:opensteer_task_read");
-      expect(calls.map(({ name }) => name)).toContain("opensteer:integration_describe");
+      expect(calls.map(({ name }) => name)).toContain("opensteer:plugin_describe");
       await run(
         "deferred-subagent",
         "Start one foreground Agent subagent. Instruct it to use ToolSearch to find and call Opensteer's opensteer_task_list tool, then return its proof. Do not call opensteer_task_list yourself.",
@@ -194,7 +194,8 @@ describe("Claude deferred Opensteer tools", () => {
             message.type === "assistant" &&
             message.parent_tool_use_id !== null &&
             message.message.content.some(
-              (part) => part.type === "tool_use" && part.name === "mcp__opensteer__thread_list",
+              (part) =>
+                part.type === "tool_use" && part.name === "mcp__opensteer__opensteer_task_list",
             ),
         ),
       ).toBe(true);

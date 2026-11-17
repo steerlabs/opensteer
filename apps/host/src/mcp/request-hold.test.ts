@@ -49,7 +49,7 @@ function fixture() {
       selectedAuth: "oauth",
       authNote: "Keep this",
     },
-    tool: "custom_integration_request",
+    tool: "local_server_add",
     admittedAt: Date.now(),
     steersAtAdmission: 0,
     limitMs: 45_000,

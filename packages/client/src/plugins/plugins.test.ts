@@ -3,6 +3,11 @@ import { RequestSchema } from "@opensteer/core";
 import { MockPlugins, mockPluginRequests } from "../mock/mock-plugins.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import {
+  readPluginPageView,
+  readPluginWebhookSetup,
+  removePluginWebhook,
+  confirmPluginWebhookRemoval,
+  setPluginAccess,
   pluginAccountComplete,
   pluginAccountValues,
   pluginCatalogReader,
@@ -251,5 +256,34 @@ describe("mock Host plugin Requests", () => {
       consent: view.consent,
     });
     expect(pending().some((request) => request.id === account.id)).toBe(false);
+  });
+});
+
+describe("plugin page and webhook clients", () => {
+  it("obtains a viewing reference, respects unavailable pages, and completes webhook cleanup once", async () => {
+    const mock = new MockPlugins({ changed: () => {}, accountLinked: () => {} });
+    const host: PluginsHost = {
+      rpc: mock.reads() as PluginsHost["rpc"],
+      dispatch: (input) => mock.command(input as Parameters<MockPlugins["command"]>[0]),
+    };
+    const page = await readPluginPageView(host, "plg_linear", "dark");
+    expect(page.entryUrl).toMatch(/^data:text\/html,/);
+    await setPluginAccess(host, "plg_linear", "off");
+    await expect(readPluginPageView(host, "plg_linear", "dark")).rejects.toThrow(
+      "Turn on this plugin",
+    );
+    await setPluginAccess(host, "plg_linear", "all");
+    await expect(
+      confirmPluginWebhookRemoval(host, "plg_linear", "whk_linear_issues"),
+    ).rejects.toThrow("Remove the webhook before");
+    await removePluginWebhook(host, "plg_linear", "whk_linear_issues");
+    expect(await readPluginWebhookSetup(host, "plg_linear", "whk_linear_issues")).toMatchObject({
+      step: "remove",
+      webhook: { status: "stopping" },
+    });
+    await confirmPluginWebhookRemoval(host, "plg_linear", "whk_linear_issues");
+    await expect(readPluginWebhookSetup(host, "plg_linear", "whk_linear_issues")).rejects.toThrow(
+      "gone",
+    );
   });
 });

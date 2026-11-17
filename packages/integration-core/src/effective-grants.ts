@@ -1,8 +1,5 @@
 import { intersectResourceAccess, type ThreadAccessMode, type UserId } from "@opensteer/core";
-import {
-  type IntegrationConnectionId,
-  type IntegrationInstallationId,
-} from "./ids.js";
+import { type IntegrationConnectionId, type IntegrationInstallationId } from "./ids.js";
 import type { IntegrationAccess } from "./access.js";
 import type {
   IntegrationConnectionRequirement,

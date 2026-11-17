@@ -472,7 +472,7 @@ export function engineAccounts(options: {
     appAccountConnected: (input) =>
       Effect.gen(function* () {
         const claim =
-          yield* sql`select attempt.id from public.integration_auth_attempts attempt join opensteer_oauth_connections pin on pin.local_attempt = attempt.id where pin.connection = ${input.connection} and attempt.status = 'claimed' and attempt.expires_at > clock_timestamp() for update of attempt`.pipe(
+          yield* sql`select attempt.id from public.integration_auth_attempts attempt join opensteer_oauth_connections pin on pin.local_attempt = attempt.id where pin.connection = ${input.connection} and attempt.status = 'claimed' and attempt.expires_at > clock_timestamp() for no key update of attempt`.pipe(
             storage,
           );
         if (claim.length !== 1) return yield* Effect.fail(new StorageError());

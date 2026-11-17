@@ -40,6 +40,7 @@ import {
 import { personalTeamRunOutcome } from "./personal-team-run-store.js";
 import { AccountDirectoryStore } from "./account-directory-store.js";
 import { DeploymentSnapshotSchema } from "@opensteer/protocol";
+import { requestFromRow } from "./request-persistence.js";
 import { eventFromRow } from "./deployment-events.js";
 import { readAgentThreadActivity, readAgentThreadRecent } from "./agent-thread-history.js";
 import { latestNativePlaces } from "./browser-session-store.js";
@@ -829,10 +830,15 @@ describe("fresh personal/team lineage", () => {
         values ('read', ${id}, ${userId}, ${installationId}, ${connectionId}, ${id}, false, ${userId},
           'active')`.execute(database);
     await installation("device", "built-in", null);
-    await server("device-server", "device", { type: "computer", definitionId: "apple-calendar" }, {
-      kind: "computer",
-      definitionId: "apple-calendar",
-    });
+    await server(
+      "device-server",
+      "device",
+      { type: "computer", definitionId: "apple-calendar" },
+      {
+        kind: "computer",
+        definitionId: "apple-calendar",
+      },
+    );
     await installation("local", "plugin", "local-plugin");
     await server(
       "local-server",
@@ -841,12 +847,17 @@ describe("fresh personal/team lineage", () => {
       { kind: "none" },
     );
     await installation("gmail", "built-in", null);
-    await server("gmail-server", "gmail", { type: "adapter", adapter: "openapi", definitionId: "gmail" }, {
-      kind: "provider",
-      definitionId: "gmail",
-      provider: "google",
-      providerApplicationRequired: true,
-    });
+    await server(
+      "gmail-server",
+      "gmail",
+      { type: "adapter", adapter: "openapi", definitionId: "gmail" },
+      {
+        kind: "provider",
+        definitionId: "gmail",
+        provider: "google",
+        providerApplicationRequired: true,
+      },
+    );
     await installation("remote", "remote-mcp", null);
     await server(
       "remote-server",
@@ -860,6 +871,24 @@ describe("fresh personal/team lineage", () => {
     await connection("mcp-account", "mcp-oauth", "remote-server");
     await sql`insert into mcp_oauth_credentials values ('mcp-account');
       insert into integration_provider_applications values ('google-app')`.execute(database);
+    const channelCredential = createId("credential");
+    const serviceCredential = createId("credential");
+    for (const [id, connectionId] of [
+      [channelCredential, "channel-connection"],
+      [serviceCredential, "google-account"],
+    ] as const) {
+      await sql`insert into credentials(id,owner_id,name,provider,encrypted_payload,encryption_key_version,metadata)
+        values(${id},${userId},${connectionId},'fixture',${Buffer.from("sealed-fixture")},1,'{}')`.execute(
+        database,
+      );
+      await sql`update integration_connections set credential_id=${id} where id=${connectionId}`.execute(
+        database,
+      );
+      await sql`insert into credential_access_audit(id,actor_id,credential_id,connection_id,purpose)
+        values(${connectionId},${userId},${id},${connectionId},'channel-transport')`.execute(
+        database,
+      );
+    }
     await grant("device-grant", "device", "computer-connection");
     await grant("local-grant", "local", null);
     await grant("gmail-grant", "gmail", "google-account");
@@ -870,11 +899,138 @@ describe("fresh personal/team lineage", () => {
       database,
     );
 
+    await sql`create unique index if not exists integration_connections_definition_identity_unique
+      on integration_connections(integration_definition_id, external_tenant_id, external_identity_id)
+      nulls not distinct where connection_kind='provider-account' and external_identity_id is not null and status<>'revoked'`.execute(
+      database,
+    );
+    const store = new OpensteerStore(database);
+    const runs = createPersonalRunFixturePort(store);
+    const task = await runs.createTask({ ownerId: userId, suffix: "service-upgrade" });
+    const { run } = await runs.startTask(task.threadId, "Existing task");
+    const removedRequests: string[] = [];
+    const keptRequests: string[] = [];
+    for (const [kind, installationId, manifest] of [
+      ["integration.install", "gmail", null],
+      ["integration.input", "remote", null],
+      ["integration.access", "gmail", null],
+      [
+        "integration.access",
+        null,
+        { kind: "catalog", definition: { id: "gmail", adapter: "openapi" } },
+      ],
+      ["integration.access", "device", null],
+      ["integration.access", "local", null],
+    ] as const) {
+      const id = createId("request");
+      const keep = installationId === "device" || installationId === "local";
+      (keep ? keptRequests : removedRequests).push(id);
+      const payload = {
+        kind,
+        access: "read",
+        installationId,
+        manifest,
+        reason: "Existing request",
+        requestedConnectionId: null,
+        requestedServerId: null,
+      };
+      await sql`insert into requests (id,kind,mode,status,originating_thread_id,originating_run_id,call_id,requested_by,required_actor,presentation,payload)
+        values (${id},${kind},'durable','pending',${task.threadId},${run.id},${id},${userId},'requester',
+        '{"kind":"external","title":"Existing request","subject":{"kind":"integration.access","id":"app"}}',${JSON.stringify(payload)}::jsonb)`.execute(
+        database,
+      );
+      await sql`insert into integration_request_details(request_id,access,installation_id,manifest) values(${id},'read',${installationId},${JSON.stringify(manifest)}::jsonb)`.execute(
+        database,
+      );
+      await sql`insert into request_continuations(request_id,status) values(${id},'waiting')`.execute(
+        database,
+      );
+      const row = await database
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", id)
+        .executeTakeFirstOrThrow();
+      const request = keep ? requestFromRow(row) : { id, kind, payload };
+      for (const type of [
+        "request.opened",
+        "request.updated",
+        "request.resolved",
+        "request.cancelled",
+      ]) {
+        await sql`update deployment_event_state set sequence=sequence+1`.execute(database);
+        await sql`insert into deployment_events(deployment_id,sequence,event_id,thread_id,run_id,environment_id,type,data)
+          select deployment_id,sequence,${createId("event")},${task.threadId},${run.id},${run.environmentId},${type},
+          ${JSON.stringify(type === "request.cancelled" ? { requestId: id, reason: "resource-deleted" } : { request: type === "request.resolved" ? { ...request, status: "declined", resolvedAt: new Date().toISOString(), resolvedBy: userId, response: { kind: "external", value: { decision: "declined" } } } : request })}::jsonb from deployment_event_state`.execute(
+          database,
+        );
+      }
+    }
+    for (const [kind, payload] of [
+      ["integration.install", {}],
+      ["integration.input", {}],
+      ["integration.access", { installationId: "gmail", manifest: null }],
+      [
+        "integration.access",
+        { installationId: null, manifest: { kind: "catalog", definition: { adapter: "openapi" } } },
+      ],
+    ] as const) {
+      const id = createId("request");
+      for (const [type, data] of [
+        ["request.opened", { request: { id, kind, payload } }],
+        ["request.cancelled", { requestId: id, reason: "resource-deleted" }],
+      ] as const) {
+        await sql`update deployment_event_state set sequence=sequence+1`.execute(database);
+        await sql`insert into deployment_events(deployment_id,sequence,event_id,thread_id,run_id,environment_id,type,data)
+          select deployment_id,sequence,${createId("event")},${task.threadId},${run.id},${run.environmentId},${type},
+          ${JSON.stringify(data)}::jsonb from deployment_event_state`.execute(database);
+      }
+    }
+    await sql`create schema plugin_engine; create table plugin_engine.kept_data(id text primary key);
+      insert into plugin_engine.kept_data values('engine-data')`.execute(database);
+    const toolEventId = createId("event");
+    await sql`update deployment_event_state set sequence=sequence+1`.execute(database);
+    await sql`insert into deployment_events(deployment_id,sequence,event_id,thread_id,run_id,environment_id,type,data)
+      select deployment_id,sequence,${toolEventId},${task.threadId},${run.id},${run.environmentId},'tool.started',
+      '{"callId":"old-call","tool":{"name":"integration_call","namespace":"opensteer"},"arguments":{},"integration":{"integration":"Gmail"}}' from deployment_event_state`.execute(
+      database,
+    );
     await migrateToLatest(database);
 
+    expect(
+      (await database.selectFrom("requests").select("id").execute()).map(({ id }) => id).sort(),
+    ).toEqual(keptRequests.sort());
+    expect(
+      (await database.selectFrom("integrationRequestDetails").select("requestId").execute())
+        .map(({ requestId }) => requestId)
+        .sort(),
+    ).toEqual(keptRequests.sort());
+    const historical = await database
+      .selectFrom("deploymentEvents")
+      .selectAll()
+      .where("type", "in", [
+        "request.opened",
+        "request.updated",
+        "request.resolved",
+        "request.cancelled",
+      ])
+      .execute();
+    expect(historical).toHaveLength(8);
+    for (const row of historical) expect(() => eventFromRow(row)).not.toThrow();
+    const oldTool = await database
+      .selectFrom("deploymentEvents")
+      .select("data")
+      .where("eventId", "=", toolEventId)
+      .executeTakeFirstOrThrow();
+    expect(oldTool.data).toMatchObject({ tool: { name: "retired_service", namespace: "history" } });
+    expect(oldTool.data).not.toHaveProperty("integration");
+    expect((await sql`select * from plugin_engine.kept_data`.execute(database)).rows).toEqual([
+      { id: "engine-data" },
+    ]);
+    await sql`drop schema plugin_engine cascade`.execute(database);
     const ids = async (table: string) =>
-      (await sql<{ id: string }>`select id from ${sql.table(table)} order by id`.execute(database))
-        .rows.map(({ id }) => id);
+      (
+        await sql<{ id: string }>`select id from ${sql.table(table)} order by id`.execute(database)
+      ).rows.map(({ id }) => id);
     expect(await ids("integration_installations")).toEqual(["device", "local"]);
     expect(await ids("integration_servers")).toEqual(["device-server", "local-server"]);
     expect(await ids("integration_connections")).toEqual([
@@ -882,9 +1038,20 @@ describe("fresh personal/team lineage", () => {
       "computer-connection",
     ]);
     expect(await ids("integration_grants")).toEqual(["device-grant", "local-grant"]);
+    expect(await ids("credentials")).toEqual([channelCredential]);
     expect(
-      await database.selectFrom("pluginOwnerSettings").select("targetKey").execute(),
-    ).toEqual([{ targetKey: '["device-app","apple-calendar"]' }]);
+      (
+        await sql<{
+          name: string | null;
+        }>`select to_regclass('public.integration_connections_definition_identity_unique')::text as name`.execute(
+          database,
+        )
+      ).rows,
+    ).toEqual([{ name: null }]);
+    expect(await ids("credential_access_audit")).toEqual(["channel-connection"]);
+    expect(await database.selectFrom("pluginOwnerSettings").select("targetKey").execute()).toEqual([
+      { targetKey: '["device-app","apple-calendar"]' },
+    ]);
     expect(
       (
         await sql`select table_name, column_name from information_schema.columns where table_schema='public'

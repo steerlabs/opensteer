@@ -49,7 +49,7 @@ describe("Agent Plugins 1.0 loader", () => {
             env: { API_KEY: "plaintext" },
             type: "stdio",
           },
-          remote: { type: "streamable-http", url: "https://example.com/mcp" },
+          remote: { type: "streamable-http", url: "http://127.0.0.1:39000/mcp" },
         },
       }),
     );
@@ -111,7 +111,7 @@ describe("Agent Plugins 1.0 loader", () => {
           camera: { command: "node", type: "stdio" },
           clash: { command: "node", env: { CAMERA_HOST: "192.168.1.42" }, type: "stdio" },
           plain: { command: "node", env: { API_KEY: "plaintext" }, type: "stdio" },
-          remote: { type: "streamable-http", url: "https://example.com/mcp" },
+          remote: { type: "streamable-http", url: "http://127.0.0.1:39000/mcp" },
         },
       }),
     );

@@ -123,9 +123,9 @@ integration("files between a Run and an app on another computer", () => {
     const gateway = await integrationGateway(run.integrationTools);
     closers.unshift(() => gateway.close());
     const held = await startHeldRequest(host, run.runId, () =>
-      gateway.call("integration_request", {
+      gateway.call("app_access_request", {
         access: "read-write",
-        integration: "apple-messages",
+        dataApp: "messages",
         reason: "Work with a photo",
       }),
     );

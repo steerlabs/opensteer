@@ -884,7 +884,7 @@ export class DeviceService {
         "forbidden",
         row === "act"
           ? "This task does not have read-write access to this app or phone. Request read-write access before acting."
-          : "This app or phone is no longer approved for this task. Search integrations for current access.",
+          : "This app or phone is no longer approved for this task. Call computer_apps for current access.",
       );
     }
     const {
@@ -1539,7 +1539,7 @@ export class DeviceService {
     readonly definition: ComputerAppDefinition;
   }): PreparedIntegrationMaterial {
     const { definition } = input;
-    const summary = integrationDefinitionSummary(definition, null);
+    const summary = integrationDefinitionSummary(definition);
     const digest = integrationDefinitionDigest(definition);
     return {
       computerConnectionTools: (connectionId: IntegrationConnectionId, access: IntegrationAccess) =>

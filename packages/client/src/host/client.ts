@@ -1124,6 +1124,11 @@ export interface HostClient extends TabsClient {
     theme: "light" | "dark",
     signal?: AbortSignal,
   ): Promise<{ readonly title: string; readonly url: string }>;
+  viewPluginPage(
+    pluginId: string,
+    theme: "light" | "dark",
+    signal?: AbortSignal,
+  ): Promise<{ readonly title: string; readonly url: string }>;
   getAttachment(attachmentId: string): Promise<Attachment>;
   readAttachment(attachmentId: string, signal?: AbortSignal): Promise<Blob>;
   discardAttachment(attachmentId: string): Promise<void>;

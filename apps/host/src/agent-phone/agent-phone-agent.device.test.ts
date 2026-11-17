@@ -591,7 +591,7 @@ describe.skipIf(requestedEngine === undefined)(
             event.type === "tool.started" ? [toolCall(event)] : [],
           );
           const listedApps = calls.filter(
-            (call) => call.name === "integration_search" && call.runnerId === runnerId,
+            (call) => call.name === "computer_apps" && call.runnerId === runnerId,
           );
           const onPhone = calls.filter((call) => call.phoneRunnerId === runnerId);
           await writeArtifact(
@@ -757,22 +757,22 @@ interface ToolCallSeen {
   /** For an Android phone's operation, the operation and the phone it addressed. */
   readonly operation: string | null;
   readonly phoneRunnerId: string | null;
-  /** The `runnerId` an `integration_search` named, which lists that computer's apps. */
+  /** The `runnerId` an `computer_apps` named, which lists that computer's apps. */
   readonly runnerId: string | null;
 }
 
-const SearchArgumentsSchema = z.object({ runnerId: z.string().optional() }).loose();
+const SearchArgumentsSchema = z.object({ computerId: z.string().optional() }).loose();
 
 function toolCall(event: Extract<AgentEvent, { type: "tool.started" }>): ToolCallSeen {
   const search =
-    event.data.tool.name === "integration_search"
+    event.data.tool.name === "computer_apps"
       ? SearchArgumentsSchema.safeParse(event.data.arguments)
       : null;
   return {
     name: event.data.tool.name,
     operation: event.data.integration?.phone ? event.data.integration.operation.name : null,
     phoneRunnerId: event.data.integration?.phone?.runnerId ?? null,
-    runnerId: search?.success ? (search.data.runnerId ?? null) : null,
+    runnerId: search?.success ? (search.data.computerId ?? null) : null,
   };
 }
 

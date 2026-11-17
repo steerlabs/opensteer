@@ -3,12 +3,12 @@ import { mcpToolCallId } from "./call-id.js";
 
 describe("mcpToolCallId", () => {
   it("replays only the same protocol call identity", () => {
-    const first = mcpToolCallId("run_1", "session_1", 17, "integration_request");
+    const first = mcpToolCallId("run_1", "session_1", 17, "app_access_request");
 
-    expect(mcpToolCallId("run_1", "session_1", 17, "integration_request")).toBe(first);
-    expect(mcpToolCallId("run_1", "session_1", 18, "integration_request")).not.toBe(first);
-    expect(mcpToolCallId("run_1", "session_2", 17, "integration_request")).not.toBe(first);
-    expect(mcpToolCallId("run_2", "session_1", 17, "integration_request")).not.toBe(first);
+    expect(mcpToolCallId("run_1", "session_1", 17, "app_access_request")).toBe(first);
+    expect(mcpToolCallId("run_1", "session_1", 18, "app_access_request")).not.toBe(first);
+    expect(mcpToolCallId("run_1", "session_2", 17, "app_access_request")).not.toBe(first);
+    expect(mcpToolCallId("run_2", "session_1", 17, "app_access_request")).not.toBe(first);
     expect(mcpToolCallId("run_1", "session_1", 17, "browser_profile_request")).not.toBe(first);
   });
 

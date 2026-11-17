@@ -356,12 +356,12 @@ function provider(input: {
   };
 }
 
-/**
- * The Messages definition's pinned text still names the skill its reference lived in; the
- * reference is now in opensteer:plugins, and the definition's digest cannot change.
- */
+// Native contracts pin this text in their digests; change only its agent-facing skill reference.
 function skillReference(description: string): string {
-  return description.replace("reference in opensteer:integrations", "reference in opensteer:plugins");
+  return description.replace(
+    "reference in opensteer:integrations",
+    "reference in opensteer:plugins",
+  );
 }
 
 /** A registered server's own name, which registration keeps unique per person. */

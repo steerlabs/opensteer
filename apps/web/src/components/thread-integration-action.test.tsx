@@ -113,30 +113,6 @@ describe("ThreadIntegrationAction for a local server", () => {
   });
 });
 
-describe("ThreadIntegrationAction for an account Opensteer no longer connects", () => {
-  it("says to decline, and offers nothing else", async () => {
-    const loaded = localServerRequest({ kind: "mcp-oauth" });
-    shellState.current = {
-      hostClient: {
-        dispatch: vi.fn(),
-        getSnapshot: () => shellSnapshot(),
-        refresh: async () => undefined,
-        rpc: {
-          "integration.platform.get": async () => ({ data: loaded.platform, ok: true as const }),
-          "integrations.get": async () => ({ data: loaded.dashboard, ok: true as const }),
-        },
-      },
-      snapshot: shellSnapshot(),
-    };
-    const container = await mountThreadAction(requestRecord(loaded, "Connect Notion"));
-
-    expect(notes(container).join(" ")).toContain("Accounts are connected through Plugins now.");
-    expect(
-      [...container.querySelectorAll(".connect-card__actions button")].map((b) => b.textContent),
-    ).toEqual(["Not now"]);
-  });
-});
-
 describe("resolveIntegrationAccess", () => {
   it("sends the full grant decision", async () => {
     const dispatch = vi.fn(async () => ({ type: "request.respond" as const }));
@@ -325,9 +301,7 @@ function shellSnapshot() {
   return { machines: [] } as unknown as HostSnapshot;
 }
 
-function localServerRequest(
-  requirement: { readonly kind: "none" | "mcp-oauth" } = { kind: "none" },
-): LoadedAccessRequest {
+function localServerRequest(): LoadedAccessRequest {
   return {
     dashboard: { connections: [], isAdministrator: true },
     platform: {
@@ -336,7 +310,7 @@ function localServerRequest(
         {
           installation: { id: "iin_tv", manifest: {}, title: "TV remote" },
           servers: [
-            { connectionRequirement: requirement, id: "isv_tv", name: "tv", status: "active" },
+            { connectionRequirement: { kind: "none" }, id: "isv_tv", name: "tv", status: "active" },
           ],
           tools: [
             {

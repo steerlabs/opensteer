@@ -47,7 +47,9 @@ export interface DeviceServicesTestHarness {
   close(): Promise<void>;
 }
 
-export function createDeviceServices(options: DeviceServicesTestOptions): DeviceServicesTestHarness {
+export function createDeviceServices(
+  options: DeviceServicesTestOptions,
+): DeviceServicesTestHarness {
   const definitions = options.definitions ?? deviceDefinitions;
   const onSettingsChanged =
     options.onSettingsChanged ??

@@ -1,8 +1,8 @@
-import { z } from "zod";
 import {
   IntegrationDefinitionSummaryViewSchema,
   type IntegrationDefinitionSummaryView,
 } from "@opensteer/integration-core/adapter";
+import { IntegrationInstallManifestViewSchema } from "@opensteer/integration-core";
 import type {
   IntegrationAccess,
   IntegrationConnectionRequirement,
@@ -58,18 +58,11 @@ export async function integrationRequestStillPending(
   return false;
 }
 
-/** The one install an access Request can still carry: a device app from Opensteer's catalog. */
-const CatalogManifestSchema = z.object({
-  kind: z.literal("catalog"),
-  definition: IntegrationDefinitionSummaryViewSchema,
-  digest: z.string(),
-});
-
 /** The catalog definition an access Request would install, or null. */
 export function catalogInstallDefinition(
   manifest: unknown,
 ): IntegrationDefinitionSummaryView | null {
-  const parsed = CatalogManifestSchema.safeParse(manifest);
+  const parsed = IntegrationInstallManifestViewSchema.safeParse(manifest);
   return parsed.success ? parsed.data.definition : null;
 }
 
@@ -86,7 +79,7 @@ export function matchingInstallationForManifest(
   platform: IntegrationPlatformDashboardView,
   manifest: unknown,
 ) {
-  const parsed = CatalogManifestSchema.safeParse(manifest);
+  const parsed = IntegrationInstallManifestViewSchema.safeParse(manifest);
   if (!parsed.success) return null;
   return (
     platform.installations.find(

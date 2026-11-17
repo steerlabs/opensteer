@@ -550,20 +550,8 @@ export async function revokeComputerConnectionsInTransaction(
 }
 
 /**
- * Uninstalling removes the installation outright rather than disabling it: a
- * disabled row keeps the deployment-unique name, so the same integration could
- * never be installed again.
- *
- * Accounts follow the definition, not the installation. A proposed integration's
- * definition exists nowhere but this row, so its connections (and the credentials
- * they point at) are removed with it; a catalog definition outlives the
- * installation, so its connections stay connected and a reinstall finds them.
- * MCP OAuth connections name a server of this installation directly, so they
- * cannot outlive it either.
- *
- * Resolved Requests keep their history: their detail rows are detached from the
- * installation rather than deleted, and only pending access Requests are
- * cancelled.
+ * Disabled rows retain their unique name, so uninstall deletes them to permit reinstalling.
+ * Resolved Request details detach to preserve their history; pending Requests are cancelled.
  */
 export async function uninstallIntegrationInTransaction(
   transaction: Transaction<DatabaseSchema>,
@@ -782,16 +770,18 @@ async function uninstallConnectionIds(
 ): Promise<readonly IntegrationConnectionId[]> {
   if (!serverIds.length) return [];
   return (
-    await transaction
-      .selectFrom("integrationConnections")
-      .select("id")
-      .where("connectionKind", "=", "computer")
-      .where("integrationServerId", "in", [...serverIds])
-      .orderBy("id", "asc")
-      // FOR UPDATE: Uninstall deletes these servers' computer connections.
-      .forUpdate()
-      .execute()
-  ).map(({ id }) => id);
+    (
+      await transaction
+        .selectFrom("integrationConnections")
+        .select("id")
+        .where("connectionKind", "=", "computer")
+        .where("integrationServerId", "in", [...serverIds])
+        .orderBy("id", "asc")
+        // FOR UPDATE: Uninstall deletes these servers' computer connections.
+        .forUpdate()
+        .execute()
+    ).map(({ id }) => id)
+  );
 }
 
 export async function lockIntegrationCatalogDefinitionInTransaction(
@@ -1102,7 +1092,6 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     );
   }
 
-  /** Restore omitted managed qualification only under the original reviewed catalog contract. */
   async markNeedsAttention(
     installationId: IntegrationInstallationId,
     reason: string,
@@ -1297,11 +1286,6 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     );
   }
 
-  /**
-   * The connect paths resolve a definition the static catalog may never have carried — an
-   * administrator-approved proposal exists only as this row — so the installed definition is
-   * readable by definition id, not just by installation id.
-   */
   async listServers(
     installationId: IntegrationInstallationId,
   ): Promise<readonly IntegrationServer[]> {
@@ -1401,6 +1385,13 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
         .orderBy("id", "asc")
         .forShare()
         .execute();
+      if (input.connectionId)
+        await transaction
+          .selectFrom("integrationConnections")
+          .select("id")
+          .where("id", "=", input.connectionId)
+          .forShare()
+          .executeTakeFirst();
       return this.createGrantInTransaction(transaction, input);
     });
   }
@@ -1502,7 +1493,9 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     );
   }
 
-  async listCallableTools(input: IntegrationRequester): Promise<readonly CallableIntegrationTool[]> {
+  async listCallableTools(
+    input: IntegrationRequester,
+  ): Promise<readonly CallableIntegrationTool[]> {
     const authority = await resolveResourceAccess(this.database, input);
     const permitted = (tools: readonly CallableIntegrationTool[]) =>
       tools.filter(

@@ -76,11 +76,9 @@ it("registers before browser launch and refuses another attached Deployment", as
   } as unknown as IpcMainInvokeEvent;
   const open = (input: unknown) =>
     handleOpenIntegrationAuthorization(context)(event, { bridgeToken: "b".repeat(43), input });
-  await expect(open({ ...started, launchTicket: "t".repeat(43) })).resolves.toEqual(
-    {
-      opened: true,
-    },
-  );
+  await expect(open({ ...started, launchTicket: "t".repeat(43) })).resolves.toEqual({
+    opened: true,
+  });
   await expect(
     open({
       ...started,

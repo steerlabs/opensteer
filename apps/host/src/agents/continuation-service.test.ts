@@ -18,7 +18,6 @@ const ownerId = createId("user");
 const threadId = createId("thread");
 
 const definitionId = "google-gmail";
-const proposalDigest = "0123456789abcdef0123456789abcdef0123456789a";
 const installationId = createIntegrationId("installation");
 const serverId = createIntegrationId("server");
 const accountConnectionId = createIntegrationId("connection");
@@ -854,18 +853,12 @@ function triggerOriginatedRequest(): Request {
   });
 }
 function fulfilledRequest(
-  kind:
-    "browser.access" | "integration.access" | "integration.install" | "machine.full-disk-access",
-  account?:
-    | {
-        readonly accountIdentifier: string | null;
-        readonly displayName: string;
-      }
-    | {
-        readonly proposal: true;
-      },
+  kind: "browser.access" | "integration.access" | "machine.full-disk-access",
+  account?: {
+    readonly accountIdentifier: string | null;
+    readonly displayName: string;
+  },
 ) {
-  const proposal = account !== undefined && "proposal" in account;
   const pending = PendingRequestSchema.parse({
     callId: crypto.randomUUID(),
     cancellationReason: null,
@@ -876,35 +869,14 @@ function fulfilledRequest(
     originatingOccurrenceId: null,
     originatingRunId: createId("run"),
     originatingThreadId: threadId,
-    payload: payloadFor(kind, proposal),
-    presentation:
-      kind === "integration.install"
-        ? {
-            kind: "choice",
-            options: [
-              {
-                hint: "confirm",
-                id: "installed",
-                label: "Install",
-              },
-              {
-                hint: "cancel",
-                id: "declined",
-                label: "Decline",
-              },
-            ],
-            title: "Install Gmail?",
-          }
-        : {
-            kind: "external",
-            subject: {
-              id: threadId,
-              kind: "thread",
-            },
-            title: "Request",
-          },
+    payload: payloadFor(kind),
+    presentation: {
+      kind: "external",
+      subject: { id: threadId, kind: "thread" },
+      title: "Request",
+    },
     requestedBy: ownerId,
-    requiredActor: kind === "integration.install" ? "owner" : "requester",
+    requiredActor: "requester",
     resolvedAt: null,
     resolvedBy: null,
     response: null,
@@ -914,32 +886,18 @@ function fulfilledRequest(
     ...pending,
     resolvedAt: now,
     resolvedBy: ownerId,
-    response:
-      kind === "integration.install"
-        ? {
-            kind: "choice",
-            optionId: "installed",
-          }
-        : {
-            kind: "external",
-            value: {
-              ...(account && !proposal
-                ? {
-                    account,
-                  }
-                : {}),
-              connectionId: account && !proposal ? accountConnectionId : null,
-              decision: "fulfilled",
-            },
-          },
+    response: {
+      kind: "external",
+      value: {
+        ...(account ? { account } : {}),
+        connectionId: account ? accountConnectionId : null,
+        decision: "fulfilled",
+      },
+    },
     status: "fulfilled",
   });
 }
-function payloadFor(
-  kind:
-    "browser.access" | "integration.access" | "integration.install" | "machine.full-disk-access",
-  proposal: boolean,
-) {
+function payloadFor(kind: "browser.access" | "integration.access" | "machine.full-disk-access") {
   switch (kind) {
     case "browser.access":
       return {
@@ -958,35 +916,6 @@ function payloadFor(
         reason: "Need records",
         requestedConnectionId: null,
         requestedServerId: null,
-      };
-    case "integration.install":
-      return {
-        kind,
-        manifest: proposal
-          ? {
-              kind: "proposal",
-              proposal: {
-                authMethods: ["api-key"],
-                digest: proposalDigest,
-                kind: "openapi",
-                preview: {
-                  title: "Weather API",
-                },
-                source: {
-                  origin: "https://weather.example.test",
-                  type: "url",
-                },
-              },
-            }
-          : {
-              definition: {
-                id: definitionId,
-                name: "Gmail",
-              },
-              digest: proposalDigest,
-              kind: "catalog",
-            },
-        reason: "Need records",
       };
     case "machine.full-disk-access":
       return {
