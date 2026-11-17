@@ -433,7 +433,7 @@ function Place(props: {
         lastReadMessageId: newLineAt,
         pending: snapshot.pending,
         sendErrors: snapshot.sendErrors,
-        connected: !snapshot.unreachable,
+        connected: snapshot.connection === "connected",
         now: new Date(),
         ...(rootId === null ? {} : { skipId: rootId }),
         asks,
