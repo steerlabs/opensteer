@@ -283,3 +283,29 @@ it("keeps the previous Host's writes readable after expanding the device model",
     ).rows,
   ).toHaveLength(1);
 });
+
+it("discards disposable orphan targets and authority rows before adding constraints", async () => {
+  await previous();
+  const fixture = await seedPrivatePublisher(db);
+  const missing = createId("runner");
+  await sql`insert into computer_use_stops(run_id,runner_id) values(${createId("run")},${fixture.runnerId}),(${fixture.runId},${missing})`.execute(
+    db,
+  );
+  await sql`insert into computer_use_policies(deployment_id,runner_id,owner_user_id,app_approval,revision) values(${createId("deployment")},${fixture.runnerId},${fixture.userId},'automatic',1),(${fixture.deploymentId},${missing},${createId("user")},'automatic',1)`.execute(
+    db,
+  );
+  await sql`insert into computer_app_setup_requests(id,kind,deployment_id,owner_user_id,runner_id,definition_id,definition_digest,access) values(${crypto.randomUUID()},'app',${createId("deployment")},${fixture.userId},${fixture.runnerId},'android-phone','digest','read'),(${crypto.randomUUID()},'app',${fixture.deploymentId},${createId("user")},${missing},'android-phone','digest','read')`.execute(
+    db,
+  );
+  await sql`insert into personal_tabs(id,owner_id,kind,computer_id,title,opened_by) values(${createId("tab")},${fixture.userId},'phone',${missing},'Orphan','"person"')`.execute(
+    db,
+  );
+  await migrateToLatest(db);
+  for (const table of [
+    "computerUseStops",
+    "computerUsePolicies",
+    "computerAppSetupRequests",
+    "personalTabs",
+  ] as const)
+    expect(await db.selectFrom(table).selectAll().execute()).toEqual([]);
+});
