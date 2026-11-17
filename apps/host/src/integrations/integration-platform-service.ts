@@ -2896,7 +2896,9 @@ export class IntegrationPlatformService {
         { ownerUserId: run.requestedBy, threadId: caller.threadId },
         run,
       );
-      const phone = access.phones.find((entry) => entry.connection?.connectionId === target);
+      const phone = access.phones.find(
+        (entry) => (entry.connectionId ?? entry.connection?.connectionId) === target,
+      );
       const machine = access.machines.find((entry) =>
         entry.apps.some((app) => app.connectionId === target),
       );
@@ -2984,7 +2986,9 @@ export class IntegrationPlatformService {
           run,
           tools,
         ));
-      const phone = access.phones.find((entry) => entry.connection?.connectionId === target);
+      const phone = access.phones.find(
+        (entry) => (entry.connectionId ?? entry.connection?.connectionId) === target,
+      );
       const machine = access.machines.find((entry) =>
         entry.apps.some((app) => app.connectionId === target),
       );
@@ -3308,7 +3312,7 @@ export class IntegrationPlatformService {
   }
 
   async computerAccess(
-    input: IntegrationRequester,
+    input: IntegrationRequester & { readonly runId?: RunId },
     run?: RunCapabilityClaims<string>,
     tools?: readonly CallableIntegrationTool[],
   ) {

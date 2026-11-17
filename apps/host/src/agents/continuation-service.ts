@@ -315,6 +315,7 @@ export async function continuationMessage(
     (computerFacts ??= integrations.computerAccess({
       ownerUserId: request.requestedBy,
       threadId: request.originatingThreadId,
+      ...(request.originatingRunId ? { runId: request.originatingRunId } : {}),
     }));
   switch (request.kind) {
     case "device.access": {

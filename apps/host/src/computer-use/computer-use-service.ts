@@ -1239,10 +1239,9 @@ export class ComputerUseService {
     const owners = this.#appOwners.get(session.runnerId) ?? new Map<string, Session>();
     const holder = owners.get(key);
     if (holder && holder !== session) {
-      const title = holder.threadTitle;
       throw new ComputerUseError(
         "busy",
-        `${session.runnerName} is already being used by another task.${title ? ` (Task: ${title})` : ""} ${computerUseBusyNextStep}`,
+        `${session.runnerName} is already being used by another task. ${computerUseBusyNextStep}`,
         true,
       );
     }
@@ -1297,11 +1296,6 @@ export class ComputerUseService {
     if (session.confirmed) this.#onSessionsChanged();
   }
 
-  /**
-   * The computer's own sentence, plus the Thread when this Host is the one
-   * holding the session. `busy` names no other Deployment's Thread, because
-   * only the Host that opened a session knows what it is for.
-   */
   #sentence(
     session: Session,
     scope: ComputerUseScope,
@@ -1314,11 +1308,7 @@ export class ComputerUseService {
       return `Computer use for this task on ${session.runnerName} ended before this call ran. Observe the ${scopeWords(scope).subject} again to continue.`;
     }
     if (code !== "busy") return message;
-    const holder = this.#appOwners
-      .get(session.runnerId)
-      ?.get(computerUseHolderKey(holdingOf(scope)));
-    const title = holder?.runId !== session.runId ? holder?.threadTitle : null;
-    return `${title ? `${message} (Task: ${title})` : message} ${computerUseBusyNextStep}`;
+    return `${message} ${computerUseBusyNextStep}`;
   }
 
   // ---- Mac operations --------------------------------------------------
@@ -1479,14 +1469,9 @@ export class ComputerUseService {
   }
 
   /** The Run holding each app, or the display, on this computer, keyed by `computerUseHolderKey`. */
-  holders(
-    runnerId: RunnerId,
-  ): ReadonlyMap<string, { readonly runId: RunId; readonly threadTitle: string | null }> {
+  holders(runnerId: RunnerId): ReadonlyMap<string, { readonly runId: RunId }> {
     return new Map(
-      [...(this.#appOwners.get(runnerId) ?? [])].map(([app, { runId, threadTitle }]) => [
-        app,
-        { runId, threadTitle },
-      ]),
+      [...(this.#appOwners.get(runnerId) ?? [])].map(([app, { runId }]) => [app, { runId }]),
     );
   }
 

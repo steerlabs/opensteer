@@ -100,7 +100,7 @@ interface CommonFacts {
   readonly callable: boolean;
   readonly canAct?: boolean;
   readonly pendingPersonalGrant: boolean;
-  readonly heldByAnotherRun: { readonly threadTitle: string | null } | null;
+  readonly heldByAnotherRun: boolean;
 }
 interface ComputerAppDiscoveryFacts extends CommonFacts {
   readonly app: string;
@@ -128,7 +128,7 @@ export function computerAppDiscovery(facts: ComputerAppDiscoveryFacts): Computer
     );
   const problem = computerMachineProblem(facts.machine);
   if (problem) return problem;
-  if (facts.heldByAnotherRun) return busy(name, facts.heldByAnotherRun);
+  if (facts.heldByAnotherRun) return busy(name);
   if (facts.callable) return { access: facts.canAct ? "read-write" : "read" };
   if (facts.pendingOnMac || facts.pendingPersonalGrant)
     return blocked(
@@ -153,10 +153,10 @@ export interface PhoneDiscoveryFacts extends CommonFacts {
   readonly pendingPhoneAccess: boolean;
   readonly blockedByOwner?: boolean;
 }
-function busy(name: string, holder: { threadTitle: string | null }): ComputerAccess {
+function busy(name: string): ComputerAccess {
   return blocked(
     "in_use",
-    `${name} is in use by another task${holder.threadTitle ? ` (${holder.threadTitle})` : ""}.`,
+    `${name} is in use by another task.`,
     "Other work can continue while the holding task finishes.",
   );
 }
@@ -170,7 +170,7 @@ export function phoneDiscovery(facts: PhoneDiscoveryFacts): ComputerAccess {
     );
   const problem = computerMachineProblem(facts.phone);
   if (problem) return problem;
-  if (facts.heldByAnotherRun) return busy(name, facts.heldByAnotherRun);
+  if (facts.heldByAnotherRun) return busy(name);
   if (facts.callable) return { access: facts.canAct ? "read-write" : "read" };
   if (facts.pendingPhoneAccess || facts.pendingPersonalGrant)
     return blocked(
