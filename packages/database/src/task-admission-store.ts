@@ -62,7 +62,9 @@ export async function findTeamTaskAdmission(
     .selectFrom("threads")
     .select(["teamId", "channelId", "threadRootId"])
     .where("id", "=", existing.localTaskId)
-    .executeTakeFirstOrThrow();
+    .where("removedAt", "is", null)
+    .executeTakeFirst();
+  if (!task) return null;
   if (
     task.teamId !== input.origin.teamId ||
     task.channelId !== input.origin.channelId ||

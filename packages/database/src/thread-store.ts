@@ -949,22 +949,25 @@ export async function getThreadForOwner(
   threadId: ThreadId,
   ownerId: UserId,
 ): Promise<Thread | null> {
-  await requirePersonalOwner(database, ownerId);
-  const row = await database
-    .selectFrom("threads")
-    .selectAll("threads")
-    .select([
-      threadPendingRequestsSelection,
-      threadVisitSelection,
-      threadProviderSessionSelection,
-      threadContinuationIdentitySelection,
-    ])
-    .where("threads.id", "=", threadId)
-    .where("threads.createdBy", "=", ownerId)
-    .executeTakeFirst();
-  return row
-    ? { ...threadFromRow(row), returnHint: await compactionReturnHint(database, threadId) }
-    : null;
+  return withPersonalReadTransaction(database, async (tx) => {
+    await requirePersonalOwner(tx, ownerId);
+    const row = await tx
+      .selectFrom("threads")
+      .selectAll("threads")
+      .select([
+        threadPendingRequestsSelection,
+        threadVisitSelection,
+        threadProviderSessionSelection,
+        threadContinuationIdentitySelection,
+      ])
+      .where("threads.id", "=", threadId)
+      .where("threads.createdBy", "=", ownerId)
+      .where("threads.removedAt", "is", null)
+      .executeTakeFirst();
+    return row
+      ? { ...threadFromRow(row), returnHint: await compactionReturnHint(tx, threadId) }
+      : null;
+  });
 }
 export function admitRunToolCall(
   database: Kysely<DatabaseSchema>,
