@@ -1,4 +1,4 @@
-import { lockThreadProviderSessions } from "./run-projection-locks.js";
+import { lockThreadProviderSession } from "./run-projection-locks.js";
 import { markThreadStatePending } from "./thread-state-pending.js";
 import { compactionReturnHint } from "./compaction-eligibility.js";
 import { projectDeviceAccessAssignment } from "@opensteer/protocol";
@@ -1408,10 +1408,7 @@ export async function updateThreadExecutionSelection(
         message: "AI engine continuation identity does not match its driver",
       });
     }
-    const selected =
-      (await lockThreadProviderSessions(transaction, thread.id)).find(
-        (session) => session.active,
-      ) ?? null;
+    const selected = (await lockThreadProviderSession(transaction, thread.id)) ?? null;
     const compatible =
       selected !== null &&
       (selected.continuationIdentity

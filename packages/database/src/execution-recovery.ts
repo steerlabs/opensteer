@@ -2,7 +2,7 @@ import { withPersonalTransaction } from "./personal-transaction.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import { recoverLostRunTransaction } from "./run-recovery.js";
-import { lockRunProjectionRows, lockThreadProviderSessions } from "./run-projection-locks.js";
+import { lockRunProjectionRows, lockThreadProviderSession } from "./run-projection-locks.js";
 import "./connection.js";
 import * as commandStore from "./command-store.js";
 import { resendableControlCommandTypes } from "./command-delivery.js";
@@ -140,8 +140,10 @@ async function recoverAbandonedRuns(
         return null;
       }
       await lockThreadRow(transaction, run.threadId);
-      const session = (await lockThreadProviderSessions(transaction, run.threadId)).find(
-        ({ id }) => id === run.providerSessionId,
+      const session = await lockThreadProviderSession(
+        transaction,
+        run.threadId,
+        run.providerSessionId,
       );
       if (
         recovery.kind === "runner-disconnect" &&
@@ -238,8 +240,10 @@ export async function failRunForRefusedRunnerEvent(
       .executeTakeFirst();
     if (!run || !["starting", "running", "waiting"].includes(run.status)) return [];
     await lockThreadRow(transaction, run.threadId);
-    const session = (await lockThreadProviderSessions(transaction, run.threadId)).find(
-      ({ id }) => id === run.providerSessionId,
+    const session = await lockThreadProviderSession(
+      transaction,
+      run.threadId,
+      run.providerSessionId,
     );
     if (
       !session?.active ||
@@ -487,8 +491,10 @@ export async function recoverCommandsAfterHostRestart(
         .executeTakeFirst();
       if (run?.status !== "starting") return null;
       await lockThreadRow(transaction, run.threadId);
-      const session = (await lockThreadProviderSessions(transaction, run.threadId)).find(
-        ({ id }) => id === run.providerSessionId,
+      const session = await lockThreadProviderSession(
+        transaction,
+        run.threadId,
+        run.providerSessionId,
       );
       if (
         session &&
@@ -790,8 +796,11 @@ async function recoverLostExecutions(
         };
       }
       await lockThreadRow(transaction, run.threadId);
-      const sessions = await lockThreadProviderSessions(transaction, run.threadId);
-      const session = sessions.find(({ id }) => id === run.providerSessionId);
+      const session = await lockThreadProviderSession(
+        transaction,
+        run.threadId,
+        run.providerSessionId,
+      );
       if (
         !session?.active ||
         session.runnerId !== runnerId ||
@@ -1149,14 +1158,18 @@ export async function recoverRunsWithExpiredExecutionBindings(
       if (!run || !["starting", "running", "waiting"].includes(run.status)) return null;
       if (run.bindingGeneration === null) return null;
       await lockThreadRow(transaction, run.threadId);
-      const expired = (await lockThreadProviderSessions(transaction, run.threadId)).find(
-        (session) =>
-          session.id === run.providerSessionId &&
-          session.bindingGeneration === run.bindingGeneration &&
-          session.leaseExpiresAt !== null &&
-          session.leaseExpiresAt < now,
+      const session = await lockThreadProviderSession(
+        transaction,
+        run.threadId,
+        run.providerSessionId,
       );
-      if (!expired) return null;
+      if (
+        !session ||
+        session.bindingGeneration !== run.bindingGeneration ||
+        session.leaseExpiresAt === null ||
+        session.leaseExpiresAt >= now
+      )
+        return null;
       const recovered = await recoverLostRunTransaction(transaction, {
         now,
         failure: {

@@ -94,6 +94,7 @@ export async function finalizeRunTransaction(
     .executeTakeFirstOrThrow();
   await lockRunProjectionRows(transaction, {
     runIds: [run.id],
+    ...(input.expectedCommandId ? { commandIds: [input.expectedCommandId] } : {}),
     threadIds: [run.threadId],
   });
   if (input.expectedCommandId) {

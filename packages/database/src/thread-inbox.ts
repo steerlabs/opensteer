@@ -1821,6 +1821,7 @@ export async function settleSteer(
   // A refusal can return the hand-offs behind this one as well.
   await lockRunProjectionRows(transaction, {
     runIds: [run.id],
+    commandIds: [commandId],
     threadIds: [observed.threadId],
   });
   const command = await transaction

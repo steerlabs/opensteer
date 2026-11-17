@@ -450,6 +450,7 @@ async function succeedCommandInTransaction(
   if (responsePayload && observed.runId && observed.threadId)
     await lockRunProjectionRows(transaction, {
       runIds: [observed.runId],
+      commandIds: [commandId],
       threadIds: [observed.threadId],
     });
   const pending =
@@ -1258,6 +1259,7 @@ export async function dispatchRequestResponse(
       await lockThreadRow(transaction, observed.threadId);
       await lockRunProjectionRows(transaction, {
         runIds: [observed.runId],
+        commandIds: [commandId],
         threadIds: [observed.threadId],
       });
       const requestRow = await transaction
