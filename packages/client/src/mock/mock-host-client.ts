@@ -38,6 +38,9 @@ import { TabIdSchema, type App, type TabId, type TabTarget } from "@opensteer/co
 import type {
   AppCommand,
   AppCommandResult,
+  PluginCommand,
+  PluginEngineStateView,
+  PluginRequirementTarget,
   TabCommand,
   TabCommandResult,
 } from "@opensteer/protocol";
@@ -82,6 +85,8 @@ import {
   type OwnerProfileView,
 } from "@opensteer/protocol";
 import { MockDesktopUpdates, type MockDesktopUpdateScenario } from "./mock-desktop-updates.js";
+import { MockPlugins, mockPluginAccountConsent, mockPluginRequests } from "./mock-plugins.js";
+import type { PluginSignIn } from "../plugins/index.js";
 import { MockSettingsFixtures } from "./settings-fixtures.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import { BrowserCursorStore } from "../host/browser-cursor.js";
@@ -398,6 +403,41 @@ const mockVapiReason =
 // key form and the rejected key, against an integration not yet installed.
 const mockTmdbThreadId = mockTmdbProposal.threadId;
 const mockTmdbRunId = "run_00000000-0000-4000-8000-000000000009";
+// Three tasks waiting on a plugin: an account to link, a write to approve and a
+// tool's own form, each answered inline and from Needs you.
+const mockPluginTasks = [
+  {
+    kind: "account" as const,
+    threadId: "thr_00000000-0000-4000-8000-0000000000e1",
+    runId: "run_00000000-0000-4000-8000-0000000000e1",
+    requestId: "req_00000000-0000-4000-8000-0000000000e1",
+    messageId: "msg_00000000-0000-4000-8000-0000000000e1",
+    title: "Triage my GitHub notifications",
+    body: "Go through my GitHub notifications and summarise what needs me.",
+    createdAt: "2026-11-16T20:10:00.000Z",
+  },
+  {
+    kind: "approval" as const,
+    threadId: "thr_00000000-0000-4000-8000-0000000000e2",
+    runId: "run_00000000-0000-4000-8000-0000000000e2",
+    requestId: "req_00000000-0000-4000-8000-0000000000e2",
+    messageId: "msg_00000000-0000-4000-8000-0000000000e2",
+    title: "Close ENG-412 in Linear",
+    body: "ENG-412 shipped yesterday, close it out and give it to Sam for follow-up.",
+    createdAt: "2026-11-16T20:20:00.000Z",
+  },
+  {
+    kind: "input" as const,
+    threadId: "thr_00000000-0000-4000-8000-0000000000e3",
+    runId: "run_00000000-0000-4000-8000-0000000000e3",
+    requestId: "req_00000000-0000-4000-8000-0000000000e3",
+    messageId: "msg_00000000-0000-4000-8000-0000000000e3",
+    title: "File the login crash in Linear",
+    body: "File a Linear issue for the login crash we saw this morning.",
+    createdAt: "2026-11-16T20:30:00.000Z",
+  },
+];
+
 const mockTmdbReason =
   "Set up read-only TMDB lookups for movies and TV shows with your own API Read Access Token.";
 
@@ -1931,6 +1971,7 @@ function mockReaderThread<Thread extends { readonly id: string; readonly pending
 function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): HostApiHandlers {
   let referenceFailurePending = failureId !== undefined;
   const handlers: Partial<HostApiHandlers> = {
+    ...client.enginePlugins.reads(),
     "references.resolve": async ({ ids }) => {
       const snapshot = client.getSnapshot();
       if (snapshot.session !== "authenticated")
@@ -2801,6 +2842,7 @@ async function executeMockCommand(
   client: MockHostState,
   command: HostApiCommand,
 ): Promise<Awaited<ReturnType<HostApiClient["commands.dispatch"]>>> {
+  if (isMockPluginCommand(command)) return rpcSuccess(await client.enginePlugins.command(command));
   switch (command.type) {
     case "teams.link.join": {
       const offer = parseTeamLinkOffer(command.link);
@@ -3799,6 +3841,12 @@ export class MockHostClient implements HostClient {
   ): () => void {
     this.#state.settings.listeners.add(listener);
     return () => this.#state.settings.listeners.delete(listener);
+  }
+  subscribePluginEngine(listener: (engine: PluginEngineStateView) => void): () => void {
+    return this.#state.enginePlugins.subscribeEngine(listener);
+  }
+  get pluginSignIn(): PluginSignIn {
+    return this.#state.enginePlugins.signIn;
   }
   readonly #personShowListeners = new Set<(message: PersonShowMessage) => void>();
   subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void {
@@ -5377,6 +5425,27 @@ class MockHostState {
         (connection) => connection.definitionId === definitionId,
       ),
   );
+  readonly enginePlugins = new MockPlugins({
+    changed: () => {
+      for (const listener of this.settings.listeners) listener({ type: "host.plugins-changed" });
+    },
+    accountLinked: (target) => this.settlePluginAccount(target),
+  });
+  /** A link the person made answers every Request waiting on that requirement. */
+  private settlePluginAccount(target: PluginRequirementTarget): void {
+    for (const request of Object.values(this.snapshot.requests).flat()) {
+      const decision = request.presentation.plugin?.decision;
+      if (
+        request.status === "pending" &&
+        request.kind === "plugin.account" &&
+        request.presentation.plugin?.plugin.id === target.pluginId &&
+        decision?.kind === "account" &&
+        decision.requirement === target.requirement &&
+        decision.scope === target.scope
+      )
+        this.settleComputerAppAccess(request, "fulfilled");
+    }
+  }
   private readonly plugins: MockPlugin[] = [];
   private readonly devicePlugins: MockDevicePlugin[] = [];
   /** A device plugin's declaration and setup task, as the Host derives them from its records. */
@@ -11723,6 +11792,23 @@ class MockHostState {
           throw mockConflict("Turn device access on through its access settings.");
       }
     }
+    if (request.kind === "plugin.account") {
+      // Linking an account is what fulfils it; the only direct answer is no.
+      if (input.response.kind !== "external" || input.response.value?.["decision"] !== "declined")
+        throw mockConflict("Link an account to answer this Request.");
+      this.settleComputerAppAccess(request, "declined");
+      return;
+    }
+    if (request.kind === "plugin.approval" || request.kind === "plugin.input") {
+      this.settleComputerAppAccess(
+        request,
+        (input.response.kind === "choice" && input.response.optionId === "accept") ||
+          (input.response.kind === "external" && input.response.value?.["action"] === "accept")
+          ? "fulfilled"
+          : "declined",
+      );
+      return;
+    }
     if (request.kind === "computer.app.access") {
       // Only that Mac can approve; anywhere else the one answer is no.
       if (input.response.kind !== "external" || input.response.value?.["decision"] !== "declined") {
@@ -13037,6 +13123,31 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
         status: "waiting",
       },
     ],
+    ...Object.fromEntries(
+      mockPluginTasks.map((task) => [
+        task.threadId,
+        [
+          {
+            author: mockHumanAuthor(),
+            body: task.body,
+            createdAt: task.createdAt,
+            id: task.messageId,
+            kind: "message" as const,
+            messageKind: "input" as const,
+            runId: null,
+          },
+          {
+            createdAt: task.createdAt,
+            error: null,
+            id: `run:${task.runId}`,
+            kind: "run" as const,
+            replyMessageId: null,
+            runId: task.runId,
+            status: "waiting" as const,
+          },
+        ],
+      ]),
+    ),
     [mockStatementsThreadId]: [
       {
         author: mockHumanAuthor(),
@@ -13425,6 +13536,9 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
           status: "pending",
         }),
       ],
+      ...Object.fromEntries(
+        mockPluginTasks.map((task) => [task.threadId, [mockPluginRequest(task)]]),
+      ),
     },
     // The Host calls a Thread running or waiting only while a Run of it is,
     // so every seeded Thread at work holds that Run here too.
@@ -13471,6 +13585,13 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
         threadId: mockTmdbThreadId,
         runOrdinal: 0,
       },
+      ...mockPluginTasks.map((task) => ({
+        createdAt: task.createdAt,
+        id: task.runId,
+        status: "waiting" as const,
+        threadId: task.threadId,
+        runOrdinal: 0,
+      })),
     ],
     browserAvailable: false,
     browserPlacements: [],
@@ -13938,6 +14059,31 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
         unread: false,
         updatedAt: "2026-08-09T10:02:00.000Z",
       },
+      ...mockPluginTasks.map((task) => ({
+        lastVisitedAt: null,
+        latestRunCompletedAt: null,
+        teamOrigin: null,
+        accessMode: DEFAULT_THREAD_ACCESS_MODE,
+        continuationIdentity: mockCodexContinuationIdentity,
+        providerSessionId: createId("providerSession"),
+        createdAt: task.createdAt,
+        environmentId: "env_00000000-0000-4000-8000-000000000001",
+        harnessInstanceId: mockCodexHarnessInstanceId,
+        harnessLabel: "Codex",
+        id: task.threadId,
+        inputQueuePaused: false,
+        listed: true,
+        modelLabel: "GPT-5.6-Sol",
+        modelSelection: mockCodexModelSelection,
+        parentThreadId: null,
+        pendingRequests: 1,
+        purpose: "task" as const,
+        runnerLabel: "Home Mac",
+        status: "waiting" as const,
+        title: task.title,
+        unread: false,
+        updatedAt: task.createdAt,
+      })),
     ]),
     transcriptWindows: Object.fromEntries(
       Object.entries(transcripts).map(([threadId, entries]) => [
@@ -14099,4 +14245,83 @@ export function mockCardUseScenario(
           ? { status: "unavailable", site, reason: state === "expired" ? "expired" : "interrupted" }
           : { status: "pending", site, requestId: request.id },
   };
+}
+
+function isMockPluginCommand(command: HostApiCommand): command is PluginCommand {
+  return command.type.startsWith("plugins.");
+}
+
+function mockPluginRequest(task: (typeof mockPluginTasks)[number]): Request {
+  const base = {
+    callId: `mock-plugin-${task.kind}`,
+    cancellationReason: null,
+    createdAt: task.createdAt,
+    id: task.requestId,
+    kind: `plugin.${task.kind}`,
+    mode: "durable",
+    originatingOccurrenceId: null,
+    originatingRunId: task.runId,
+    originatingThreadId: task.threadId,
+    requestedBy: mockUserId,
+    requiredActor: "owner",
+    resolvedAt: null,
+    resolvedBy: null,
+    response: null,
+    status: "pending",
+  };
+  if (task.kind === "account") {
+    const { pluginId, pluginName, requirement } = mockPluginRequests.account;
+    const consent = mockPluginAccountConsent();
+    return RequestSchema.parse({
+      ...base,
+      payload: { kind: "plugin.account", plugin: pluginId, requirement, scope: "app", consent },
+      presentation: {
+        kind: "external",
+        title: `Connect ${pluginName}`,
+        detail:
+          "I need your GitHub account to read your notifications.\nLinking trusts this plugin's code. Setup runs with the account before tool approval.",
+        subject: { kind: "plugin.account", id: pluginId },
+        plugin: {
+          plugin: { id: pluginId, name: pluginName, author: "catalog" },
+          decision: { kind: "account", requirement, scope: "app", consent },
+        },
+      },
+    });
+  }
+  if (task.kind === "approval") {
+    const { pluginId, pluginName, tool, arguments: args } = mockPluginRequests.approval;
+    return RequestSchema.parse({
+      ...base,
+      payload: { kind: "plugin.approval", executionId: "exe_mock_approval", interactionId: "int_1" },
+      presentation: {
+        kind: "choice",
+        title: `${pluginName}: ${tool}`,
+        detail:
+          "Review the exact arguments below. Earlier code in this tool or program may already have run.",
+        options: [
+          { id: "accept", label: "Allow once", hint: "allow-once" },
+          { id: "decline", label: "Decline", hint: "reject-once" },
+        ],
+        plugin: {
+          plugin: { id: pluginId, name: pluginName, author: "catalog" },
+          decision: { kind: "approval", executionId: "exe_mock_approval", tool, arguments: args },
+        },
+      },
+    });
+  }
+  const { pluginId, pluginName, tool, message, schema } = mockPluginRequests.input;
+  return RequestSchema.parse({
+    ...base,
+    payload: { kind: "plugin.input", executionId: "exe_mock_input", interactionId: "int_1" },
+    presentation: {
+      kind: "external",
+      title: `${pluginName}: ${tool}`,
+      detail: message,
+      subject: { kind: "plugin.input", id: "exe_mock_input" },
+      plugin: {
+        plugin: { id: pluginId, name: pluginName, author: "catalog" },
+        decision: { kind: "input", executionId: "exe_mock_input", tool, schema },
+      },
+    },
+  });
 }

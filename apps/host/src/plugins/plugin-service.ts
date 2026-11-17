@@ -606,6 +606,7 @@ export class PluginService {
   readonly catalogList = this.#method("catalogList");
   readonly catalogDetail = this.#method("catalogDetail");
   readonly list = this.#method("list");
+  readonly installed = this.#method("installed");
   readonly detail = this.#method("detail");
   readonly install = this.#method("install");
   readonly export = this.#method("export");

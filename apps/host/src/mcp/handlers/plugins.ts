@@ -27,6 +27,8 @@ export class PluginToolHandlers {
     ) => Promise<void>;
     publish: (event: import("@opensteer/core").AgentEvent) => void;
     notify: () => void;
+    /** Tells the owner's clients their plugins changed. */
+    changed?: (owner: UserId) => void;
   };
   constructor(options: PluginToolHandlers["options"]) {
     this.options = options;
@@ -95,6 +97,7 @@ export class PluginToolHandlers {
         result.version.id,
         i.source === "catalog" ? "catalog" : "agent",
       );
+    if (result.status === "installed") this.options.changed?.(c.caller.userId);
     return {
       ...result,
       ...(result.status === "build-error"
@@ -231,6 +234,7 @@ export class PluginToolHandlers {
       for (const event of result.events) this.options.publish(event);
     }
     this.options.notify();
+    this.options.changed?.(input.owner);
   }
   handlers(): Partial<AgentToolHandlers> {
     const o = this.options;
@@ -250,10 +254,12 @@ export class PluginToolHandlers {
           c.signal,
         );
         await o.settings.recordActivation(c.caller.userId, c.input.pluginId, c.input.versionId);
+        o.changed?.(c.caller.userId);
         return { ok: true };
       },
       opensteer_plugin_remove: async (c) => {
         await o.service.remove({ plugin: c.input.pluginId }, o.authority.admit(c.caller), c.signal);
+        o.changed?.(c.caller.userId);
         return { ok: true };
       },
       plugin_account_request: (c) => this.accountRequest(c),

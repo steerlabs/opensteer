@@ -19,6 +19,7 @@ const discovery = new Set([
 ]);
 const management = new Set(["install", "export", "activate", "remove"]);
 const personOnly = new Set([
+  "installed",
   "createApiKeyAccount",
   "removeAccount",
   "reviewAccountLink",

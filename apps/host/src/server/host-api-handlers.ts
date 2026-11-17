@@ -9,6 +9,7 @@ import {
   type HostApiCommandOutput,
   type HostApiHandlers,
   type HostApiServerContext,
+  type PluginCommand,
 } from "@opensteer/protocol";
 import { listedPluginRow } from "../integrations/catalog-presentation.js";
 import type { IdentityRpcHandlers } from "../identity/identity-routes.js";
@@ -30,6 +31,7 @@ import {
   type IntegrationPlatformRpcOptions,
 } from "../integrations/integration-platform-routes.js";
 import { handleChannelCommand, type ChannelCommand } from "../channels/channel-handlers.js";
+import { isPluginCommand, type PluginOwnerApi } from "../plugins/plugin-owner-api.js";
 import type { ChannelService } from "../channels/channel-service.js";
 
 import {
@@ -128,6 +130,7 @@ export function createHostApiHandlers(
     context: HostApiServerContext,
   ) => Promise<HostApiCommandOutput>,
   computerViews?: ComputerViewService,
+  plugins?: PluginOwnerApi,
 ): Omit<
   HostApiHandlers,
   | "personal.remoteAccess.get"
@@ -220,6 +223,7 @@ export function createHostApiHandlers(
       const owner = requireSession(context).user.id;
       return rpcSuccess({ apps: computerViews ? await computerViews.approved(owner) : [] });
     },
+    ...(plugins?.reads() ?? pluginsUnavailable()),
     ...identityHandlers,
     ...triggerHandlers,
     ...integrationHandlers,
@@ -247,6 +251,13 @@ export function createHostApiHandlers(
             type: command.type,
             view: await computerViews.command(owner, command),
           }),
+        );
+      }
+      if (isPluginCommand(command)) {
+        if (!plugins)
+          throw new OpensteerError({ code: "not_found", message: "Plugins are unavailable." });
+        return rpcSuccess(
+          hostApi["commands.dispatch"].success.parse(await plugins.command(command, context)),
         );
       }
       if (isBrowserSourceCommand(command)) {
@@ -316,7 +327,25 @@ export type CoreCommand = Exclude<
   | IntegrationPlatformCommand
   | ChannelCommand
   | BrowserSourceCommand
+  | PluginCommand
 >;
+
+function pluginsUnavailable(): ReturnType<PluginOwnerApi["reads"]> {
+  const refuse = async (): Promise<never> => {
+    throw new OpensteerError({ code: "not_found", message: "Plugins are unavailable." });
+  };
+  return {
+    "plugins.installed.list": refuse,
+    "plugins.get": refuse,
+    "plugins.catalog.list": refuse,
+    "plugins.catalog.get": refuse,
+    "plugins.accounts.list": refuse,
+    "plugins.account.review": refuse,
+    "plugins.schedule.runs": refuse,
+    "plugins.workflow.runs": refuse,
+    "plugins.webhook.setup.get": refuse,
+  };
+}
 
 type TeamCommand = Extract<HostApiCommand, { readonly type: `team.${string}` }>;
 function isTeamCommand(command: HostApiCommand): command is TeamCommand {

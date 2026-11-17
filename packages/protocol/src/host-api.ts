@@ -46,6 +46,7 @@ import {
   SettingsPluginEnableCommandSchema,
   SettingsPluginEnableResultSchema,
 } from "./settings.js";
+import { PluginCommandResultSchema, PluginCommandSchema, pluginReads } from "./plugins.js";
 import { CardApprovalSchema } from "./card-use.js";
 import { PasswordSignInCardViewSchema, PasswordSignInApprovalSchema } from "./password-sign-in.js";
 import { ComputerUseResolvedAppSchema } from "./computer-use.js";
@@ -1131,6 +1132,7 @@ const commandInputSchema = z.discriminatedUnion("type", [
   ...AppCommandSchema.options,
   ...TeamCommandSchema.options,
   SettingsPluginEnableCommandSchema,
+  ...PluginCommandSchema.options,
   ...otherCommandInputSchema.options,
 ]);
 
@@ -1139,6 +1141,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   ...AppCommandResultSchema.options,
   ...TeamCommandResultViewSchema.options,
   SettingsPluginEnableResultSchema,
+  ...PluginCommandResultSchema.options,
   ComputerViewCloseResultSchema,
   ComputerViewRenewResultSchema,
   z.object({ type: z.literal("attachment.upload.create"), attachment: AttachmentSchema }),
@@ -1845,6 +1848,47 @@ const hostApiGroup3 = defineRpc({
   ),
   "plugins.directory.get": declaration("GET", z.strictObject({}), PluginsDirectoryViewSchema),
   "devices.overview.get": declaration("GET", z.strictObject({}), DevicesOverviewViewSchema),
+  "plugins.installed.list": declaration(
+    "GET",
+    pluginReads["plugins.installed.list"].input,
+    pluginReads["plugins.installed.list"].output,
+  ),
+  "plugins.get": declaration("GET", pluginReads["plugins.get"].input, pluginReads["plugins.get"].output),
+  "plugins.catalog.list": declaration(
+    "GET",
+    pluginReads["plugins.catalog.list"].input,
+    pluginReads["plugins.catalog.list"].output,
+  ),
+  "plugins.catalog.get": declaration(
+    "GET",
+    pluginReads["plugins.catalog.get"].input,
+    pluginReads["plugins.catalog.get"].output,
+  ),
+  "plugins.accounts.list": declaration(
+    "GET",
+    pluginReads["plugins.accounts.list"].input,
+    pluginReads["plugins.accounts.list"].output,
+  ),
+  "plugins.account.review": declaration(
+    "GET",
+    pluginReads["plugins.account.review"].input,
+    pluginReads["plugins.account.review"].output,
+  ),
+  "plugins.schedule.runs": declaration(
+    "GET",
+    pluginReads["plugins.schedule.runs"].input,
+    pluginReads["plugins.schedule.runs"].output,
+  ),
+  "plugins.workflow.runs": declaration(
+    "GET",
+    pluginReads["plugins.workflow.runs"].input,
+    pluginReads["plugins.workflow.runs"].output,
+  ),
+  "plugins.webhook.setup.get": declaration(
+    "GET",
+    pluginReads["plugins.webhook.setup.get"].input,
+    pluginReads["plugins.webhook.setup.get"].output,
+  ),
   "commands.dispatch": declaration("POST", commandInputSchema, commandOutputSchema),
   "assignment.get": declaration(
     "GET",

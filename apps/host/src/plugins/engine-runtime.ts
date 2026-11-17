@@ -401,6 +401,19 @@ export async function startEngine(
               (app) => permission.grants?.[app.id] !== "off",
             );
           }
+          case "installed":
+            return yield* Effect.forEach(yield* engine.apps.list({ owner }), (plugin) =>
+              accountAdapter.links(plugin.id).pipe(
+                Effect.map((links) => ({
+                  plugin,
+                  links: links.map(({ requirement, scope, account }) => ({
+                    requirement,
+                    scope,
+                    account,
+                  })),
+                })),
+              ),
+            );
           case "install": {
             const input = operations.install.input.parse(raw);
             let files: Schema.Schema.Type<typeof SourceFiles>;

@@ -1,6 +1,6 @@
 import type { TabsClient } from "./tabs-contract.js";
 import type { TeamRunDelivery, TeamSource } from "@opensteer/core";
-import type { PersonShowMessage } from "@opensteer/protocol";
+import type { PersonShowMessage, PluginEngineStateView } from "@opensteer/protocol";
 import type { DesktopUpdates } from "../connections/desktop-updates-contract.js";
 import type {
   ChannelAccessPolicy,
@@ -1108,6 +1108,8 @@ export interface HostClient extends TabsClient {
   readonly references: import("../references/store.js").ReferenceStore;
   readonly transcriptFiles: import("./transcript-files.js").TranscriptFileController;
   readonly rpc: HostApiClient;
+  /** OAuth sign-in for plugin accounts, when this Host offers it. */
+  readonly pluginSignIn?: import("../plugins/index.js").PluginSignIn;
   createAttachment(input: {
     readonly name: string;
     readonly mediaType: string;
@@ -1162,6 +1164,8 @@ export interface HostClient extends TabsClient {
   subscribePluginsChanged(
     listener: (message: { type: "host.plugins-changed" }) => void,
   ): () => void;
+  /** The plugin engine's state as the Host reports it; nothing to reread. */
+  subscribePluginEngine(listener: (engine: PluginEngineStateView) => void): () => void;
   subscribePersonalRemoteAccess(listener: () => void): () => void;
   /** Told when this person approves or revokes a connected agent on any device. */
   subscribeConnectionsChanged(listener: () => void): () => void;
