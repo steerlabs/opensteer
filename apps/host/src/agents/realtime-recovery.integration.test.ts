@@ -614,7 +614,6 @@ async function desktopApp(
     reconnectBaseDelayMs: 20,
     reconnectMaxDelayMs: 200,
     // The person's app polls; the poll must not be what repairs a channel.
-    refreshIntervalMs: 60_000,
     webSocketFactory: web.createDesktopHostWebSocketFactory(bridge, canonicalOrigin),
   });
   const realtimeSockets = () => sockets.filter((record) => record.path === "/v1/realtime");

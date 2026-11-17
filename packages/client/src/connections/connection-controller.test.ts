@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConnectionController, type ConnectionLease } from "./connection-controller.js";
-import { classifyClientFailure } from "./operation-error.js";
+import { classifyClientFailure, ClientOperationError } from "./operation-error.js";
 import { HostTransportError } from "./host-transport-error.js";
 import type {
   ClientLifecycle,
@@ -144,6 +144,55 @@ describe("session recovery owner", () => {
     });
     blocked.dispose();
   });
+  it.each(["unauthorized", "forbidden", "identity-mismatch"])(
+    "evicts session scope atomically after %s",
+    async (reason) => {
+      vi.useFakeTimers();
+      let fail!: (failure: ReturnType<typeof classifyClientFailure>) => void;
+      const connection = createConnectionController({
+        driver: {
+          connect: async (attempt) => {
+            attempt.acceptScope({
+              authorityKey: "verified",
+              deploymentId: "deployment",
+              viewerId: "viewer",
+              loginId: "login",
+            });
+            return {
+              ...lease(),
+              closed: new Promise((resolve) => {
+                fail = resolve;
+              }),
+            };
+          },
+        },
+      });
+      connection.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(connection.getSnapshot().scope).not.toBeNull();
+      const seen: unknown[] = [];
+      connection.subscribe(() => seen.push(connection.getSnapshot().scope));
+      fail(
+        classifyClientFailure(
+          new ClientOperationError("PRIVATE denial", "blocked", {
+            code: reason === "identity-mismatch" ? "verification-failed" : reason,
+            reason,
+            provenance: reason === "identity-mismatch" ? "protocol" : "host",
+            kind: "session",
+            retryable: false,
+          }),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(connection.getSnapshot()).toMatchObject({
+        phase: "blocked",
+        scope: null,
+        showInterruption: true,
+      });
+      expect(seen.every((scope) => scope === null)).toBe(true);
+      connection.dispose();
+    },
+  );
   it("closes a late lease instead of publishing a superseded attachment", async () => {
     vi.useFakeTimers();
     let finish!: (value: ConnectionLease) => void;

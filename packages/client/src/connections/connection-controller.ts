@@ -394,7 +394,12 @@ class SessionConnectionController implements ConnectionController {
       Date.now() - this.#state.lastConnectedAt >= 10_000
     )
       this.#attempt = 0;
-    this.#cancel(failure.code === "unauthorized");
+    const accessLost =
+      failure.code === "unauthorized" ||
+      (!failure.retryable &&
+        ((failure.provenance === "host" && ["forbidden", "not_found"].includes(failure.code)) ||
+          failure.reason === "identity-mismatch"));
+    this.#cancel(accessLost);
     if (!this.#desired) return;
     if (!failure.retryable && failure.kind !== "cancelled") {
       this.#clearHold();
@@ -403,8 +408,11 @@ class SessionConnectionController implements ConnectionController {
         phase: "blocked",
         showInterruption: true,
         trying: false,
-        issue: issue?.code === "unconfirmed" ? { code: "access-lost" } : issue,
-        ...(failure.code === "unauthorized" ? { scope: null } : {}),
+        issue:
+          (accessLost && failure.code !== "unauthorized") || issue?.code === "unconfirmed"
+            ? { code: "access-lost" }
+            : issue,
+        ...(accessLost ? { scope: null } : {}),
       });
       return;
     }
