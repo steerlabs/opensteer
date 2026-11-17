@@ -67,6 +67,7 @@
     "@yume-chan/adb": "2.6.4",
     "@yume-chan/adb-server-node-tcp": "2.5.2",
     "pg": "catalog:",
+    "playwright-core": "1.62.1",
     "tsup": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",
