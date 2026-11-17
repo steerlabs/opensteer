@@ -195,7 +195,7 @@ describe("PersonalDeploymentSupervisor", () => {
     expect(fixture.processes.specs).toHaveLength(0);
   });
 
-  it("keeps a returning Personal deployment behind startup progress until its full stack is ready", async () => {
+  it("resumes a returning Personal deployment through Host readiness", async () => {
     const configured = deploymentManifest({ databaseInitialized: true, ownerInitialized: true });
     const fixture = supervisorFixture(configured);
     const states: string[] = [];
@@ -212,6 +212,75 @@ describe("PersonalDeploymentSupervisor", () => {
     expect(states).toContain("starting");
     expect(states.at(-1)).toBe("ready");
     expect(fixture.catalog.upsertAndSelect).toHaveBeenCalledOnce();
+    await fixture.supervisor.stop();
+  });
+
+  it("publishes the owned Host before Runner connection and cancels the pending tail on stop", async () => {
+    const fixture = supervisorFixture(null);
+    fixture.host.waitForRunner.mockReturnValueOnce(new Promise(() => undefined));
+    const starting = fixture.supervisor.start();
+    await vi.waitFor(() => expect(fixture.host.waitForRunner).toHaveBeenCalledOnce());
+    expect(fixture.supervisor.status.state).toBe("ready");
+    expect(fixture.catalog.upsertAndSelect).toHaveBeenCalledOnce();
+    expect(fixture.supervisor.ownsHostSession({ access: "owner" })).toBe(true);
+    expect(fixture.supervisor.start()).toBe(starting);
+    await fixture.supervisor.stop();
+    await starting;
+    expect(fixture.supervisor.status.state).toBe("stopped");
+    expect(fixture.browsers[0]?.stop).toHaveBeenCalledOnce();
+    expect(fixture.computerUse.stopForSlot).toHaveBeenCalledOnce();
+    expect(fixture.host.ensureAgentHome).not.toHaveBeenCalled();
+  });
+
+  it("starts browser, shell environment and computer use before PostgreSQL readiness", async () => {
+    const resolve = vi.fn(async () => ({ PATH: "/usr/bin" }));
+    const fixture = supervisorFixture(null, { resolve });
+    const postgres = deferred<Awaited<ReturnType<MemoryProcesses["run"]>>>();
+    vi.spyOn(fixture.processes, "run").mockReturnValueOnce(postgres.promise);
+    const starting = fixture.supervisor.start();
+    await vi.waitFor(() => expect(fixture.processes.run).toHaveBeenCalledOnce());
+    expect(fixture.localRuntimes.startBrowser).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(fixture.computerUse.startForSlot).toHaveBeenCalledOnce();
+    expect(fixture.host.waitForHost).not.toHaveBeenCalled();
+    fixture.supervisor.quiesce();
+    postgres.resolve({ code: 0, signal: null, stderr: "", stdout: "" });
+    await starting;
+    await fixture.supervisor.stop();
+  });
+
+  it("cleans up independent startup handles that finish after Host launch fails", async () => {
+    const fixture = supervisorFixture(null);
+    const browser = deferred<TestLocalBrowserHandle>();
+    const computer = deferred<{ token: string; url: URL }>();
+    fixture.localRuntimes.startBrowser.mockReturnValueOnce(browser.promise);
+    fixture.computerUse.startForSlot.mockReturnValueOnce(computer.promise);
+    fixture.host.waitForHost.mockRejectedValueOnce(new Error("Host launch failed"));
+    const starting = fixture.supervisor.start();
+    const rejected = expect(starting).rejects.toThrow("Host launch failed");
+    await vi.waitFor(() => expect(fixture.host.waitForHost).toHaveBeenCalledOnce());
+    const handle = new TestLocalBrowserHandle(fixture.lifecycle, "desktop-browser");
+    browser.resolve(handle);
+    computer.resolve({ token: "test", url: new URL("http://127.0.0.1:7788") });
+    await rejected;
+    expect(handle.stop).toHaveBeenCalledOnce();
+    expect(fixture.computerUse.stopForSlot).toHaveBeenCalledOnce();
+    expect(fixture.processes.kills).toEqual(["host:SIGTERM", "postgresql:SIGTERM"]);
+    await fixture.supervisor.stop();
+  });
+
+  it("recovers a Runner crash during the ready startup tail through degraded backoff", async () => {
+    const fixture = supervisorFixture(null);
+    const observed = observeStatus(fixture.supervisor);
+    fixture.host.waitForRunner.mockReturnValueOnce(new Promise(() => undefined));
+    const starting = fixture.supervisor.start();
+    const rejected = expect(starting).rejects.toThrow(/Runner/u);
+    await vi.waitFor(() => expect(fixture.host.waitForRunner).toHaveBeenCalledOnce());
+    expect(fixture.supervisor.status.state).toBe("ready");
+    childrenOf(fixture, "runner")[0]!.emit("exit", 1, null);
+    await rejected;
+    await waitForRecovery(fixture, observed);
+    expect(childrenOf(fixture, "runner")).toHaveLength(2);
     await fixture.supervisor.stop();
   });
 
@@ -390,7 +459,7 @@ describe("PersonalDeploymentSupervisor", () => {
     await fixture.supervisor.stop();
   });
 
-  it("waits for the Browser placement before publishing ready", async () => {
+  it("keeps browser placement progressing after publishing Host readiness", async () => {
     const fixture = supervisorFixture(null);
     const placement = deferred<void>();
     fixture.host.waitForBrowserPlacement.mockReturnValueOnce(placement.promise);
@@ -398,7 +467,7 @@ describe("PersonalDeploymentSupervisor", () => {
     await vi.waitFor(() => {
       expect(fixture.supervisor.status).toMatchObject({
         components: { browser: { state: "starting" } },
-        state: "starting",
+        state: "ready",
       });
     });
     expect(fixture.catalog.upsertAndSelect).toHaveBeenCalledOnce();
@@ -460,8 +529,9 @@ describe("PersonalDeploymentSupervisor", () => {
     await expect(fixture.supervisor.start()).rejects.toThrow(/Browser Runtime/u);
     expect(fixture.supervisor.status).toMatchObject({
       issue: { code: "browser-unavailable", component: "browser" },
-      state: "repair-required",
+      state: "degraded",
     });
+    await fixture.supervisor.stop();
     expect(fixture.browsers[0]?.stop).toHaveBeenCalledOnce();
     expect(fixture.processes.kills).toEqual([
       "runner:SIGTERM",
@@ -483,19 +553,21 @@ describe("PersonalDeploymentSupervisor", () => {
     expect(call[1]).toBe(fixture.supervisor.status.deploymentId);
     expect(call[2]).toBe(fixture.supervisor.status.environmentId);
     expect(call[3]).toBe("desktop-browser");
+    await fixture.supervisor.stop();
   });
 
   it("tears down every child when this computer's browser cannot start", async () => {
     const fixture = supervisorFixture(null);
+    const observed = observeStatus(fixture.supervisor);
     fixture.localRuntimes.startBrowser.mockRejectedValueOnce(new Error("browser bridge failed"));
     await expect(fixture.supervisor.start()).rejects.toThrow("browser bridge failed");
     expect(fixture.supervisor.status).toMatchObject({
       issue: { code: "browser-unavailable", component: "browser" },
-      state: "repair-required",
+      state: "degraded",
     });
-    // The browser comes up before the Runner that relays it, so a failed
-    // bridge leaves only the Host and its database to tear down.
+    await waitForRecovery(fixture, observed);
     expect(fixture.processes.kills).toEqual(["host:SIGTERM", "postgresql:SIGTERM"]);
+    await fixture.supervisor.stop();
   });
 
   it("initializes PostgreSQL from a staged password file that is removed afterwards", async () => {
@@ -779,6 +851,7 @@ describe("PersonalDeploymentSupervisor", () => {
     await expect(starting).rejects.toThrow(/runner could not enroll/u);
     expect(fixture.supervisor.status.issue?.detail).toContain("credential=[redacted]");
     expect(fixture.supervisor.status.issue?.detail).not.toContain("private-value");
+    await fixture.supervisor.stop();
   });
 
   it("names the service that failed, not the release, when its output mentions release words", async () => {
@@ -796,8 +869,9 @@ describe("PersonalDeploymentSupervisor", () => {
     expect(fixture.supervisor.status).toMatchObject({
       canStart: true,
       issue: { code: "runner-unavailable", component: "runner" },
-      state: "repair-required",
+      state: "degraded",
     });
+    await fixture.supervisor.stop();
   });
 
   it("fails safely when a persisted private port is occupied without changing authority", async () => {
