@@ -756,7 +756,7 @@ test("one-click completion commits a reviewed managed link, fulfils its Request 
   );
   expect(result.result?.execution?.value, JSON.stringify(result)).toMatchObject({
     ok: true,
-    value: { token: expect.stringMatching(/^oscred/u), refused: "blocked" },
+    value: { token: "[redacted]", refused: "blocked" },
   });
   expect(JSON.stringify(result)).not.toContain("renewed-test-token");
   expect(apiTokens).toEqual(["Bearer renewed-test-token"]);

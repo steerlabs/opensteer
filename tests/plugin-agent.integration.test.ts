@@ -1,5 +1,5 @@
 import { beforeAll, afterAll, afterEach, test, expect, vi } from "vitest";
-import { mkdtemp, rm, mkdir, writeFile, readFile, symlink } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -42,6 +42,7 @@ import { continuationMessage } from "../apps/host/src/agents/continuation-servic
 import { pendingEvent } from "../packages/database/src/store.integration.test-support.js";
 import { ContinuationService } from "../apps/host/src/agents/continuation-service.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { NativeFsHelper } from "@opensteer/shared/files/native-fs-helper";
 
 const deadline = <T>(promise: Promise<T>, message: string) =>
   withTimeout(promise, 15000, { timeoutError: () => new Error(message) });
@@ -857,6 +858,47 @@ test("task and plugin settings commit while source export is in flight", async (
   } finally {
     exportWait = undefined;
     release.resolve();
+    await pending;
+  }
+});
+
+test("cancelling an export during the root lookup leaves no draft", async () => {
+  const caller = await run("full-access");
+  current = caller;
+  const controller = new AbortController();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const original = NativeFsHelper.prototype.directoryIdentity;
+  const lookup = vi
+    .spyOn(NativeFsHelper.prototype, "directoryIdentity")
+    .mockImplementationOnce(async function (this: NativeFsHelper, ...args) {
+      const identity = await original.apply(this, args);
+      entered.resolve();
+      await deadline(release.promise, "Export root lookup was never released");
+      return identity;
+    });
+  const pending = mcp
+    .callTool(
+      "token",
+      "opensteer_plugin_export",
+      { pluginId: plugin, directory: "cancelled-export" },
+      { caller, operationKey: randomUUID(), signal: controller.signal },
+    )
+    .then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+  try {
+    await deadline(entered.promise, "Export never looked up its root");
+    controller.abort();
+    release.resolve();
+    expect(await deadline(pending, "Cancelled export never returned")).toHaveProperty("error");
+    await expect(stat(join(directory, "cancelled-export"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  } finally {
+    release.resolve();
+    lookup.mockRestore();
     await pending;
   }
 });

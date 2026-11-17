@@ -513,8 +513,8 @@ test.for(["versions, codemode and sealed credentials", "brokered OAuth"] as cons
       expect(probed).toMatchObject({
         status: "completed",
         value: {
-          token: expect.stringMatching(/^oscred/),
-          echo: expect.stringContaining("oscred"),
+          token: "[redacted]",
+          echo: expect.stringContaining("[redacted]"),
           blocked: expect.stringContaining("other.fixture.invalid"),
         },
       });
@@ -581,7 +581,7 @@ test.for(["versions, codemode and sealed credentials", "brokered OAuth"] as cons
       expect(brokerCall).toMatchObject({
         status: "completed",
         value: {
-          token: expect.stringMatching(/^oscred/u),
+          token: "[redacted]",
           blocked: expect.stringContaining("other.fixture.invalid"),
         },
       });
