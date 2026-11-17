@@ -1037,16 +1037,10 @@ integration("Host vertical slice", () => {
       }),
     ]);
 
+    realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
+    const disconnected = observeRunnerDisconnect(realtimeSocket, environmentId);
     runnerSocket.close();
-    await waitForCondition(async () => {
-      const refreshed = await testResourceData(origin, "environment", {
-        headers: authorization(accessToken),
-      });
-      return refreshed.environments.some(
-        (environment: { connected: boolean; id: string }) =>
-          environment.id === environmentId && !environment.connected,
-      );
-    });
+    await disconnected;
     const exactRetry = await testRpcRequest(
       origin,
       "commands.dispatch",
@@ -1494,18 +1488,10 @@ integration("Host vertical slice", () => {
 
     const disconnectRecovery = vi.spyOn(runtime.store, "failActiveRunsForRunnerDisconnect");
     stopCatalogResponder();
+    realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
+    const disconnected = observeRunnerDisconnect(realtimeSocket, environmentId);
     runnerSocket.terminate();
-    await waitForCondition(async () => {
-      const read = await testRpcData(
-        `http://127.0.0.1:${hostPort}`,
-        "resources.get",
-        { kind: "environment" },
-        { headers: authorization(accessToken) },
-      );
-      return read.view.entries.some(
-        ({ id, status }) => id === environmentId && status === "disconnected",
-      );
-    });
+    await disconnected;
     const runStatus = async () =>
       (
         await runtime?.store.database
@@ -3444,6 +3430,45 @@ async function attachThreadSocket(socket: WebSocket, threadId: ThreadId) {
     }),
   );
   await ready;
+}
+
+function observeRunnerDisconnect(socket: WebSocket, environmentId: EnvironmentId) {
+  const disconnected = waitForMessage(socket, (raw) => {
+    const parsed = ScopedHostMessageSchema.safeParse(raw);
+    if (!parsed.success) return false;
+    const frame = parsed.data;
+    if (frame.type === "host.snapshot" || frame.type === "host.changes") {
+      const { subscriptionId, generation, throughSequence } = frame;
+      socket.send(
+        JSON.stringify({ type: "client.ack", subscriptionId, generation, throughSequence }),
+      );
+    }
+    const resources =
+      frame.type === "host.resource"
+        ? [frame]
+        : frame.type === "host.snapshot" &&
+            frame.scope.kind === "shell" &&
+            "resources" in frame.snapshot
+          ? (frame.snapshot.resources ?? [])
+          : [];
+    return resources.some(
+      ({ kind, view }) =>
+        kind === "environment" &&
+        view.entries.some(({ id, status }) => id === environmentId && status === "disconnected"),
+    );
+  });
+  socket.send(
+    JSON.stringify({
+      type: "client.attach",
+      apiVersion: hostApiVersion,
+      generation: 1,
+      interests: ["environment"],
+      installed: {},
+    }),
+  );
+  return disconnected.catch((cause: unknown) => {
+    throw new Error(`No disconnected observation arrived for ${environmentId}`, { cause });
+  });
 }
 
 async function waitForRunItem(socket: WebSocket, status: "failed" | "completed") {
