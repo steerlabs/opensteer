@@ -84,6 +84,57 @@ it("checks every four hours and only checks on resume when the last attempt is s
   expect(vi.getTimerCount()).toBe(0);
 });
 
+it.each([false, true])(
+  "checks after a resume during a failed download unless a queued manual check satisfies it (%s)",
+  async (manualCheck) => {
+    vi.useFakeTimers();
+    const updater = new DesktopUpdater({ updates: insider, log: vi.fn() });
+    const controller = new AbortController();
+    const transfer = Promise.withResolvers<string[]>();
+    mocks.updater.checkForUpdates.mockResolvedValue(offer("0.1.397"));
+    mocks.updater.downloadUpdate.mockReturnValue(transfer.promise);
+    updater.start(controller.signal);
+    try {
+      await vi.advanceTimersByTimeAsync(desktopUpdateFirstCheckMs);
+      const download = updater.download();
+      expect(updater.state().status).toBe("downloading");
+      vi.setSystemTime(Date.now() + 5 * 60 * 60_000);
+      mocks.power.emit("resume");
+      mocks.power.emit("resume");
+      expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(1);
+      const manual = manualCheck ? updater.check() : undefined;
+      transfer.reject(new Error("offline"));
+      await download;
+      await manual;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(2);
+    } finally {
+      controller.abort();
+    }
+  },
+);
+
+it("spaces checks after a large backward clock adjustment", async () => {
+  vi.useFakeTimers();
+  const updater = new DesktopUpdater({ updates: insider, log: vi.fn() });
+  const controller = new AbortController();
+  const schedule = vi.spyOn(globalThis, "setTimeout");
+  const interval = 4 * 60 * 60_000;
+  mocks.updater.checkForUpdates.mockResolvedValue(current);
+  updater.start(controller.signal);
+  try {
+    await vi.advanceTimersByTimeAsync(desktopUpdateFirstCheckMs);
+    vi.setSystemTime(Date.now() - 4_000_000_000);
+    schedule.mockClear();
+    await vi.advanceTimersByTimeAsync(interval);
+    expect(schedule.mock.calls.some(([, delay]) => (delay ?? 0) > interval)).toBe(false);
+    await vi.advanceTimersByTimeAsync(interval);
+    expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(2);
+  } finally {
+    controller.abort();
+  }
+});
+
 it("sets the channel before refusing downgrades, and leaves downloading to the person", () => {
   const order: string[] = [];
   const values: Record<string, unknown> = {};

@@ -132,18 +132,42 @@ export class DesktopUpdater {
   /** Background checks omit `checking`, and a failed one keeps the last state. */
   start(signal: AbortSignal): void {
     if (!this.#enabled || signal.aborted) return;
-    const untilStale = () =>
-      this.#lastCheckAt === null
-        ? 0
-        : desktopUpdateCheckIntervalMs - (Date.now() - this.#lastCheckAt);
-    const tick = () => {
-      clearTimeout(timer);
-      const remaining = untilStale();
-      timer = setTimeout(tick, remaining > 0 ? remaining : desktopUpdateCheckIntervalMs);
-      if (remaining <= 0 && !this.#reservation && !this.#operation && this.#checkable())
-        void this.#check(false);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let waiting: Promise<void> | null = null;
+    const untilStale = () => {
+      if (this.#lastCheckAt === null) return 0;
+      const now = Date.now();
+      if (this.#lastCheckAt > now) this.#lastCheckAt = now;
+      return desktopUpdateCheckIntervalMs - (now - this.#lastCheckAt);
     };
-    let timer = setTimeout(tick, desktopUpdateFirstCheckMs);
+    const schedule = (delay: number) => {
+      clearTimeout(timer);
+      timer = setTimeout(tick, delay);
+    };
+    const tick = () => {
+      if (signal.aborted) return;
+      const remaining = untilStale();
+      if (remaining > 0) {
+        schedule(remaining);
+        return;
+      }
+      const busy = this.#reservation?.done ?? this.#operation;
+      if (busy) {
+        clearTimeout(timer);
+        if (waiting === busy) return;
+        waiting = busy;
+        void busy.then(() => {
+          if (signal.aborted || waiting !== busy) return;
+          waiting = null;
+          // A manual check waiting on the same reservation may satisfy this one.
+          schedule(0);
+        });
+        return;
+      }
+      schedule(desktopUpdateCheckIntervalMs);
+      if (this.#checkable()) void this.#check(false);
+    };
+    schedule(desktopUpdateFirstCheckMs);
     const resume = () => {
       if (untilStale() <= 0) tick();
     };
