@@ -6,9 +6,10 @@ import { color } from "../theme.js";
 import { ExternalAgentMark } from "./external-agent-mark.js";
 import {
   ActionRow,
-  ErrorText,
+  Footer,
   LinkRow,
   NoteRow,
+  PlaceholderRow,
   Section,
 } from "./settings-form-primitives.android.js";
 import type { ExternalAgentsFormProps } from "./settings-external-agents-form.types.js";
@@ -17,8 +18,11 @@ export function ExternalAgentsForm(props: ExternalAgentsFormProps): ReactNode {
   return (
     <>
       <NoteRow text={externalAgentsLead} />
-      {props.connections.length === 0 ? null : (
+      {props.connections.length === 0 && !(props.loading && props.line === null) ? null : (
         <Section title="Connected">
+          {props.loading && props.line === null
+            ? [0, 1, 2].map((index) => <PlaceholderRow key={index} label="Not loaded yet" />)
+            : null}
           {props.connections.map((connection) => (
             <LinkRow
               detail={connection.removing ? "Removing…" : connection.detail}
@@ -36,6 +40,9 @@ export function ExternalAgentsForm(props: ExternalAgentsFormProps): ReactNode {
             />
           ))}
         </Section>
+      )}
+      {props.line === null ? null : (
+        <Footer link={props.line.link ?? null} text={props.line.text} tone={props.line.tone} />
       )}
       {props.notice === null ? null : (
         <Section>
@@ -61,7 +68,6 @@ export function ExternalAgentsForm(props: ExternalAgentsFormProps): ReactNode {
           />
         ))}
       </Section>
-      <ErrorText detail={props.error} />
     </>
   );
 }

@@ -1,13 +1,15 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
 import { computerTargetId } from "@opensteer/client/host";
 import { SettingsDeviceCapabilities } from "./settings-device-capabilities.js";
 import { ComputerSetupApprovals } from "../computers/computer-app-approval.js";
-import { ActivityIndicator, ScrollView, View } from "react-native";
+import { ScrollView, View } from "react-native";
 import { ComputerUseBlock, PhoneUseBlock } from "../computers/computer-use-block.js";
 import { DeviceBrowserRow } from "../computers/device-browser-row.js";
 import { IphoneAppsBlock } from "../iphone-apps/iphone-apps-block.js";
 import { RemoteIphoneAppsBlock } from "../iphone-apps/remote-iphone-apps-block.js";
-import { AppText, Notice, SecondaryButton, StatusDot } from "../ui/primitives.js";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { readLine, useScreenAction } from "../ui/client-feedback.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
+import { AppText, SecondaryButton, StatusDot } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 
 import { canRespondToRequests, type HostClient, type HostSnapshot } from "@opensteer/client/host";
@@ -39,7 +41,7 @@ import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 
 import { opensteerOn } from "../iphone-apps/model.js";
 
-import { color, space } from "../theme.js";
+import { space } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 
 import { useListContentInsets, useReadingColumn } from "../ui/screen.js";
@@ -65,7 +67,7 @@ export function ComputerScreen(props: ComputerScreenProps): ReactNode {
   const client = useMobileClient();
   const { rows, selection } = useMobileState();
   const [opening, setOpening] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
+  const [failure, setFailure] = useState<ActionLineValue | null>(null);
   const row = rows.find((candidate) => candidate.deploymentId === deploymentId);
   const hostClient =
     selection.deploymentId === deploymentId && row?.signIn === null ? selection.hostClient : null;
@@ -79,7 +81,7 @@ export function ComputerScreen(props: ComputerScreenProps): ReactNode {
               ? "This deployment is no longer on this phone."
               : `Open ${row.name} to see this computer.`}
           </AppText>
-          {failure === null ? null : <Notice detail={failure} title="That did not open" />}
+          {failure === null ? null : <ActionLine line={failure} numberOfLines={2} />}
           {row === undefined ? null : (
             <SecondaryButton
               busy={opening}
@@ -89,10 +91,8 @@ export function ComputerScreen(props: ComputerScreenProps): ReactNode {
                 setFailure(null);
                 void client
                   .openDeployment(deploymentId)
-                  .catch((error: unknown) =>
-                    setFailure(
-                      presentActionFailure(error, "That deployment still could not be opened."),
-                    ),
+                  .catch(() =>
+                    setFailure({ key: "open", text: `Couldn't open ${row.name}.`, tone: "muted" }),
                   )
                   .finally(() => setOpening(false));
               }}
@@ -120,8 +120,6 @@ function ComputerDetail(props: {
   readonly machineId: string;
 }): ReactNode {
   const navigation = useNavigation();
-  const [openingPhone, setOpeningPhone] = useState(false);
-  const [openFailure, setOpenFailure] = useState<string | null>(null);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -130,31 +128,31 @@ function ComputerDetail(props: {
     };
   }, []);
   const phoneTab = TabTargetSchema.safeParse({ kind: "phone", computerId: props.machineId });
-  const openPhone = async () => {
-    setOpeningPhone(true);
-    setOpenFailure(null);
-    try {
-      // The phone's one tab; showing it is the person's Open, which may wake it.
-      if (!phoneTab.success) return;
-      const tab = await props.hostClient.openTab(phoneTab.data);
-      if (mounted.current && navigation.isFocused())
-        navigation.dispatch(
-          StackActions.push("WorkspaceBrowser", tabRoute(props.deploymentId, tab.tabId)),
-        );
-    } catch (error) {
-      if (mounted.current)
-        setOpenFailure(presentActionFailure(error, "The phone could not be opened."));
-    } finally {
-      if (mounted.current) setOpeningPhone(false);
-    }
-  };
+  // The phone's one tab; showing it is the person's Open, which may wake it.
+  const phoneOpening = useScreenAction<void, void>(
+    props.hostClient,
+    `open-phone:${props.machineId}`,
+    {
+      label: "open",
+      done: "opened",
+      thing: "the phone",
+      execute: async () => {
+        if (!phoneTab.success) return;
+        const tab = await props.hostClient.openTab(phoneTab.data);
+        if (mounted.current && navigation.isFocused())
+          navigation.dispatch(
+            StackActions.push("WorkspaceBrowser", tabRoute(props.deploymentId, tab.tabId)),
+          );
+      },
+      retry: () => void phoneOpening.run(),
+    },
+  );
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
   const machines = useHostSelector(props.hostClient, selectMachines);
-  const revision = useHostSelector(props.hostClient, selectMachineRevision);
   const canRespond = useHostSelector(props.hostClient, canRespondToRequests);
   const machine = machines.find((candidate) => candidate.id === props.machineId) ?? null;
-  const data = useComputerUseData(props.hostClient, revision);
+  const data = useComputerUseData(props.hostClient);
   const iphoneApps = useIphoneApps();
   const enrollment = useIphoneAppsState(iphoneApps).snapshot.enrollment;
   // This iPhone is the one added to this Deployment as this computer; any
@@ -241,14 +239,20 @@ function ComputerDetail(props: {
           />
         ) : phone !== null ? (
           <View style={styles.summary}>
-            {canRespond && phone.canView && phoneTab.success ? (
+            {phone.canView && phoneTab.success ? (
               <SecondaryButton
-                busy={openingPhone}
+                busy={phoneOpening.running}
                 label="Open phone"
-                onPress={() => void openPhone()}
+                onPress={() => void phoneOpening.run()}
               />
             ) : null}
-            {openFailure ? <Notice title="That did not open" detail={openFailure} /> : null}
+            {phoneOpening.line === null ? null : (
+              <ActionLine
+                line={phoneOpening.line}
+                numberOfLines={2}
+                onDismiss={phoneOpening.dismiss}
+              />
+            )}
             <PhoneUseBlock
               canRespond={canRespond}
               hostClient={props.hostClient}
@@ -276,19 +280,12 @@ function ComputerDetail(props: {
               view={view}
             />
           </>
-        ) : data.error !== null ? (
-          <Notice
-            action={{
-              label: "Try again",
-              onPress: () => void data.reload().catch(() => undefined),
-            }}
-            detail={data.error}
-            title="Computer use could not be loaded"
-          />
         ) : data.data === null ? (
-          <View accessibilityLabel="Loading computer use" style={styles.loading}>
-            <ActivityIndicator color={color.muted} />
-          </View>
+          data.read.status === "failed" ? (
+            <ActionLine line={readLine(data.read, data.read.refresh)!} />
+          ) : (
+            <PlaceholderRows />
+          )
         ) : (
           <AppText role="secondary" tone="muted">
             {computerUsesChosenElsewhere(machine)}
@@ -329,12 +326,10 @@ function ComputerSummary(props: {
 }
 
 const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;
-const selectMachineRevision = (snapshot: HostSnapshot) => snapshot.machineRevision;
 
 const styles = StyleSheet.create({
   away: { gap: space[12], paddingTop: space[24] },
   status: { alignItems: "center", flexDirection: "row", gap: space[8] },
   summary: { gap: space[6] },
   content: { gap: space[20], paddingTop: space[16] },
-  loading: { alignItems: "center", paddingVertical: space[40] },
 });

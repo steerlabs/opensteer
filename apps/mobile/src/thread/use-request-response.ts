@@ -1,9 +1,7 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
 import type { CardChoice } from "@opensteer/protocol";
 import {
   browserSiteLabel,
   browserSignInProblemMessage,
-  HostClientRequestError,
   mutationIdempotencyKey,
   type HostClient,
   type PasswordSignInAccount,
@@ -14,22 +12,18 @@ import type { BrowserSignInDecision } from "@opensteer/protocol/browser-sources"
 import * as Haptics from "expo-haptics";
 import { useEffect, useRef } from "react";
 import { AccessibilityInfo } from "react-native";
+import { integrationRequestStillPending } from "@opensteer/client/integrations";
+import type { ActionLineValue } from "../ui/action-line.js";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
+import { actionLine, useScreenAction } from "../ui/client-feedback.js";
 import { authenticatePasswordApproval } from "./password-approval-auth.js";
 import { nextRequestSubmission } from "./request-form-model.js";
 import { updateRequestSession, useRequestSession, type RequestSession } from "./request-session.js";
 import type { ThreadMutationGate } from "./thread-mutation-gate.js";
 
-/**
- * Whatever went wrong, the answer may still have landed: a timeout or a lost
- * reply looks the same from here as a refusal that never reached the Host.
- */
-export const unconfirmedDetail = "Could not confirm your answer was sent.";
-
-function requestFailureDetail(error: unknown): string {
-  return error instanceof HostClientRequestError
-    ? presentActionFailure(error, unconfirmedDetail)
-    : unconfirmedDetail;
+/** Words this client wrote itself for why an answer stopped, as a line under the answers. */
+export function requestStopLine(text: string): ActionLineValue {
+  return { key: `stop:${text}`, text, tone: "danger", haptic: "error" };
 }
 
 export interface RequestResponder {
@@ -48,7 +42,8 @@ export interface RequestResponder {
     busyId: string,
     options: { readonly shareWithAi: boolean },
     act: () => Promise<void>,
-    describe?: (error: unknown) => string,
+    /** Words for a failure this client caused itself, before the Host heard; null otherwise. */
+    describe?: (error: unknown) => string | null,
   ) => Promise<void>;
 }
 
@@ -69,7 +64,8 @@ export function useRequestResponse(input: {
   readonly onAdmitted?: () => void;
   readonly surface: SurfaceModel;
 }): RequestResponder {
-  const { canRespond, canStartResponse, gate, hostClient, onAdmitted, surface } = input;
+  // `canRespond` never locks answers: a tap while unreachable is answered "Not sent".
+  const { canStartResponse, gate, hostClient, onAdmitted, surface } = input;
   const { request } = surface;
   const session = useRequestSession(request, hostClient.getSnapshot().user?.id ?? null);
   const aiSharing = useAiSharing();
@@ -88,20 +84,33 @@ export function useRequestResponse(input: {
     if (mounted.current) onAdmitted?.();
   };
 
-  const fail = (detail: string): void => {
-    updateRequestSession(session, { failure: detail });
-    if (!mounted.current) return;
-    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-    void AccessibilityInfo.announceForAccessibility(detail);
+  // One answer per Request on this phone, whichever surface sent it.
+  const answering = useScreenAction<() => Promise<string | null>, string | null>(
+    hostClient,
+    `request-answer:${request.id}`,
+    {
+      label: "send",
+      done: "sent",
+      thing: "your answer",
+      execute: (act) => act(),
+    },
+  );
+  const fail = (line: ActionLineValue): void => {
+    updateRequestSession(session, { failure: line });
+  };
+  // A lost answer is settled by the Request: once it is no longer waiting the
+  // card goes by itself; while it waits, sending it again reuses its key.
+  const check = (): void => {
+    void integrationRequestStillPending(hostClient, request.originatingThreadId, request.id).then(
+      (pending) => {
+        if (!pending) updateRequestSession(session, { failure: null });
+      },
+      () => undefined,
+    );
   };
 
-  const attempt: RequestResponder["attempt"] = async (
-    busyId,
-    options,
-    act,
-    describe = requestFailureDetail,
-  ) => {
-    if (session.responding || !answerable || !canRespond || !canStartResponse()) return;
+  const attempt: RequestResponder["attempt"] = async (busyId, options, act, describe) => {
+    if (session.responding || !answerable || !canStartResponse()) return;
     if (options.shareWithAi && !(await authorizeAiSharing(aiSharing, hostClient))) return;
     if (!mounted.current || session.responding || !canStartResponse()) return;
     const claim = gate.acquire("request");
@@ -109,9 +118,25 @@ export function useRequestResponse(input: {
     updateRequestSession(session, { failure: null, pendingId: busyId, responding: true });
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
-      await act();
-    } catch (error) {
-      fail(describe(error));
+      const outcome = await answering.run(async () => {
+        try {
+          await act();
+          return null;
+        } catch (error) {
+          const words = describe?.(error) ?? null;
+          if (words !== null) return words;
+          throw error;
+        }
+      });
+      if (outcome.kind === "confirmed") {
+        if (outcome.value !== null) fail(requestStopLine(outcome.value));
+      } else {
+        const line = actionLine(
+          { key: busyId, running: false, outcome, issue: outcome.issue },
+          { check },
+        );
+        if (line !== null) fail(line);
+      }
     } finally {
       gate.release(claim);
       updateRequestSession(session, { pendingId: null, responding: false });
@@ -191,12 +216,14 @@ export function useRequestResponse(input: {
         return;
       }
       fail(
-        browserSignInProblemMessage(outcome.problem, {
-          connectHere: false,
-          context: "request",
-          site: payload.site,
-          sourceName: outcome.sourceName,
-        }),
+        requestStopLine(
+          browserSignInProblemMessage(outcome.problem, {
+            connectHere: false,
+            context: "request",
+            site: payload.site,
+            sourceName: outcome.sourceName,
+          }),
+        ),
       );
     });
   };
@@ -246,14 +273,14 @@ export function useRequestResponse(input: {
         });
         if (result.type !== "browser.password-sign-in.respond") return;
         updateRequestSession(session, {
-          ...(result.message ? { failure: result.message } : {}),
+          ...(result.message ? { failure: requestStopLine(result.message) } : {}),
           ...(result.status === "pending" ? { heldPasswordKey: null } : {}),
           passwordCard: result.card ?? session.passwordCard,
         });
         if (result.status !== "pending") admitted();
       },
-      (error) =>
-        !authenticated && error instanceof Error ? error.message : requestFailureDetail(error),
+      // Before the Host heard, only this phone's own unlock can have stopped it.
+      (error) => (!authenticated && error instanceof Error ? error.message : null),
     );
   };
 

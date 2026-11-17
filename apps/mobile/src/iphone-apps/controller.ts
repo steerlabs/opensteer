@@ -1,3 +1,4 @@
+import { classifyClientFailure } from "@opensteer/client/connections";
 import { isIphoneAppId } from "./model.js";
 import {
   HostClientRequestError,
@@ -337,7 +338,7 @@ export class IphoneAppsController {
             if (!fence.current()) return;
             this.#failures.set(app, {
               kind: "not-allowed",
-              message: error instanceof Error ? error.message : "It wasn't turned on. Try again.",
+              message: ownWords(error) ?? "It wasn't turned on. Try again.",
             });
           },
         );
@@ -805,7 +806,11 @@ export class IphoneAppsController {
   }): Promise<IphoneApprovalOutcome> {
     const host = this.#host;
     if (!host || host.deploymentId !== this.#bridge.getSnapshot().enrollment?.deploymentId)
-      return { kind: "unavailable", message: "Open this iPhone's Deployment to answer." };
+      return {
+        kind: "unavailable",
+        message: "Switch to the computer this iPhone is added to, then answer.",
+      };
+    let sent = false;
     try {
       const review = unwrapRpcResult(
         await host.hostClient.rpc["integration.computer.setup.review"]({
@@ -817,6 +822,7 @@ export class IphoneAppsController {
         review.request.access !== input.expected.access
       )
         return { kind: "refused", message: "This request changed. Review it again." };
+      sent = true;
       await host.hostClient.dispatch({
         type: "integration.computer.setup.respond",
         idempotencyKey: mutationIdempotencyKey(`iphone-answer:${input.setupRequestId}`),
@@ -828,9 +834,10 @@ export class IphoneAppsController {
     } catch (error) {
       if (isHostRefusal(error) && error instanceof Error)
         return { kind: "refused", message: error.message };
+      // Not refused: once sent the answer may have landed, so it is never said to have failed.
       return {
         kind: "unavailable",
-        message: error instanceof Error ? error.message : "Couldn't send this answer.",
+        message: sent ? "Couldn't confirm this answer was sent." : "Couldn't send this answer.",
       };
     }
   }
@@ -1612,6 +1619,16 @@ function covers(
       computer.runnerId === runnerId &&
       (computer.access === "read-write" || access === "read"),
   );
+}
+
+/** This app's own words for a step it stopped itself; never a lower layer's error text. */
+function ownWords(error: unknown): string | null {
+  return error instanceof Error &&
+    error.constructor === Error &&
+    classifyClientFailure(error).kind === "unexpected" &&
+    error.message.trim() !== ""
+    ? error.message
+    : null;
 }
 
 function notAllowed(error: unknown, fallback: string): IphoneAllowOutcome {

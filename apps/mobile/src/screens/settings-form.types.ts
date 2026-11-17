@@ -1,3 +1,4 @@
+import type { NativeSettingsFooter } from "./native-settings-page.types.js";
 import type { AutomaticModelsView } from "@opensteer/protocol";
 import type { DeploymentUpdateModel } from "./use-deployment-update.js";
 import type {
@@ -6,10 +7,11 @@ import type {
   PasswordsSettingsModel,
 } from "./settings-model.js";
 
-/** What runs Opensteer's own background jobs, from settings.json; null view while loading. */
+/** What runs Opensteer's own background jobs, from settings.json; null view until it arrives. */
 export interface BackgroundModelsForm {
   readonly view: AutomaticModelsView | null;
-  readonly error: string | null;
+  /** Why nothing arrived, with Try again; null while waiting or once loaded. */
+  readonly line: NativeSettingsFooter | null;
 }
 
 export interface AiAccountAction {
@@ -40,7 +42,8 @@ export interface AiAccountsForm {
   /** The account whose action is under way; every other action waits for it. */
   readonly busyId: string | null;
   readonly confirmation: string | null;
-  readonly error: string | null;
+  /** The last action's outcome or a sign-in that didn't finish. */
+  readonly line: NativeSettingsFooter | null;
   readonly groups: readonly AiEngineAccounts[];
   readonly locationId: string | null;
   /** Empty with only one computer to choose. */
@@ -83,7 +86,8 @@ export type SettingsPage =
 /** After how long quiet tasks move to Done, on a Host that moves them. */
 export interface QuietTasksSetting {
   readonly days: import("@opensteer/core").QuietTaskDays;
-  readonly error: string | null;
+  /** The last change's outcome, said under the choice. */
+  readonly line: NativeSettingsFooter | null;
   readonly onChange: (days: import("@opensteer/core").QuietTaskDays) => void;
 }
 

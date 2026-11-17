@@ -10,6 +10,7 @@ import { AccessibilityInfo, Pressable, StyleSheet } from "react-native";
 import Animated, { useAnimatedStyle } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { controlFontScaleLimit, material, radius, space } from "../theme.js";
+import { useForegroundTeamNotice } from "../team/team-connection-pill.js";
 import { headerBottom } from "./header-clearance.js";
 import { useSelectedHostClient } from "./mobile-client-context.js";
 import { appear, descend, exit, move } from "./motion.js";
@@ -149,6 +150,9 @@ function useConnectionAnnouncements(
 /** Today's Host connection line, until the shell's connection presenter replaces it. */
 export function ConnectionPill(): ReactNode {
   const hostClient = useSelectedHostClient();
+  // A team screen in front: the pill speaks for that team, not the personal computer.
+  const team = useForegroundTeamNotice();
+  if (team !== undefined) return <ConnectionPillView notice={team} />;
   return hostClient === null ? null : <HostConnectionPill hostClient={hostClient} />;
 }
 

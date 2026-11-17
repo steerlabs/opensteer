@@ -1,4 +1,4 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
+import { clientIssue } from "@opensteer/client/feedback";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import {
   browserSignInProblemCopy,
@@ -159,11 +159,14 @@ export function ChromeSignInAction(props: {
       attempt.current = null;
       await settle(response.outcome, left);
     } catch (error) {
+      // A lost answer may have signed in; the same key makes Try again safe either way.
+      const unconfirmed =
+        clientIssue(error, { operation: "action", label: "sign in" })?.code !== "rejected";
       show(
         {
-          fix: presentActionFailure(error, "Try again."),
+          fix: "Try again.",
           kind: "problem",
-          title: "Sign-in didn’t finish",
+          title: unconfirmed ? "Couldn’t confirm the sign-in" : "Sign-in didn’t finish",
         },
         left,
       );

@@ -20,7 +20,12 @@ import {
   type ReactNode,
 } from "react";
 import type { MobileTeam, MobileTeams, MobileTeamsSnapshot } from "./mobile-teams.js";
+import type { ActionLineValue } from "../ui/action-line.js";
+import { readLine, useScreenRead } from "../ui/client-feedback.js";
+import { publishForegroundTeams } from "./team-connection-pill.js";
 import type { MemberDirectory } from "./team-views.js";
+
+const noMembers: readonly TeamMember[] = [];
 
 const MobileTeamsContext = createContext<MobileTeams | null>(null);
 
@@ -37,6 +42,11 @@ export function MobileTeamsProvider(props: {
   readonly entry: TeamEntry;
   readonly children: ReactNode;
 }): ReactNode {
+  const { teams } = props;
+  useEffect(() => {
+    publishForegroundTeams(teams);
+    return () => publishForegroundTeams(null);
+  }, [teams]);
   return (
     <MobileTeamsContext value={props.teams}>
       <TeamEntryContext value={props.entry}>{props.children}</TeamEntryContext>
@@ -111,22 +121,15 @@ export function useTeamSession(teamId: string): {
   readonly team: MobileTeam | null;
   readonly session: TeamSessionClient | null;
   readonly snapshot: TeamSessionSnapshot;
-  readonly failure: string | null;
 } {
   const teams = useMobileTeams();
   const team = useTeam(teamId);
-  const [failure, setFailure] = useState<string | null>(null);
   useFocusEffect(
     useCallback(() => {
-      let current = true;
       void teams.select(teamId);
-      void teams.session(teamId).then(
-        () => current && setFailure(null),
-        (error: unknown) =>
-          current && setFailure(error instanceof Error ? error.message : "The team didn't answer."),
-      );
+      // Its outcome shows as the team's state: the gate and the pill say it.
+      void teams.session(teamId).catch(() => undefined);
       return () => {
-        current = false;
         if (teams.getSnapshot().selected === teamId) void teams.select(null);
       };
     }, [teamId, teams]),
@@ -138,7 +141,7 @@ export function useTeamSession(teamId: string): {
   );
   const read = useCallback(() => session?.getSnapshot() ?? emptySnapshot, [session]);
   const snapshot = useSyncExternalStore(subscribe, read, read);
-  return { team, session, snapshot, failure: failure ?? team?.detail ?? null };
+  return { team, session, snapshot };
 }
 
 /** The team's people, for names, faces, handles and the @ list. */
@@ -150,18 +153,12 @@ export function useTeamMembers(
   readonly directory: MemberDirectory;
   /** Whether `members` has been read yet, so an empty list can be told from one not read. */
   readonly status: "reading" | "read" | "failed";
-  /** The list didn't load; `members` holds what was read before, if anything. */
-  readonly failure: string | null;
+  /** Only when nothing was ever read: the one line saying so, with Try again. */
+  readonly line: ActionLineValue | null;
   /** Reads the list again from the team, as after changing someone's role. */
   readonly reload: () => void;
 } {
   const teams = useMobileTeams();
-  const [read, setRead] = useState<{
-    readonly members: readonly TeamMember[];
-    readonly status: "reading" | "read" | "failed";
-    readonly failure: string | null;
-  }>({ members: [], status: "reading", failure: null });
-  const [generation, setGeneration] = useState(0);
   const session = useTeam(teamId)?.session ?? null;
   const subscribePeople = useCallback(
     (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
@@ -169,31 +166,28 @@ export function useTeamMembers(
   );
   // The list is read again once the team's access has moved since it was read, even while this
   // screen was away. Renames arrive as the session's member updates, laid over it below.
-  const readDirectoryKey = useCallback(() => {
-    const sidebar = session?.getSnapshot().sidebar;
-    return sidebar?.accessRevision ?? null;
-  }, [session]);
-  const directoryKey = useSyncExternalStore(subscribePeople, readDirectoryKey, readDirectoryKey);
-  useEffect(() => {
-    let current = true;
-    void teams.members(teamId, directoryKey).then(
-      (people) => current && setRead({ members: people, status: "read", failure: null }),
-      (error: unknown) =>
-        current &&
-        setRead((held) => ({
-          members: held.members,
-          status: held.status === "read" ? "read" : "failed",
-          failure: error instanceof Error ? error.message : "The team didn't answer.",
-        })),
-    );
-    return () => {
-      current = false;
-    };
-  }, [directoryKey, generation, teamId, teams]);
+  const read = useScreenRead<readonly TeamMember[]>(session, {
+    key: `team-members:${teamId}`,
+    label: "people",
+    read: () => teams.members(teamId, session?.getSnapshot().sidebar?.accessRevision ?? null),
+    subscribeInvalidation: (invalidate) => {
+      let revision = session?.getSnapshot().sidebar?.accessRevision ?? null;
+      return (
+        session?.subscribe(() => {
+          const next = session.getSnapshot().sidebar?.accessRevision ?? null;
+          if (next === revision) return;
+          revision = next;
+          invalidate();
+        }) ?? (() => undefined)
+      );
+    },
+  });
+  const refresh = read.refresh;
   const reload = useCallback(() => {
     teams.forgetMembers(teamId);
-    setGeneration((next) => next + 1);
-  }, [teamId, teams]);
+    refresh();
+  }, [refresh, teamId, teams]);
+  const held = read.data ?? noMembers;
   const readPeople = useCallback(() => {
     const snapshot = session?.getSnapshot();
     return channelId ? snapshot?.peopleByChannel?.[channelId] : snapshot?.people;
@@ -210,14 +204,14 @@ export function useTeamMembers(
   const members = useMemo(
     () =>
       updates
-        ? read.members.map((member) => {
+        ? held.map((member) => {
             const renamed = updates[member.userId];
             return renamed && (renamed.nameRevision ?? 0) > (member.nameRevision ?? 0)
               ? { ...member, displayName: renamed.displayName, nameRevision: renamed.nameRevision }
               : member;
           })
-        : read.members,
-    [read.members, updates],
+        : held,
+    [held, updates],
   );
   const directory = useMemo(
     () => teamPeopleDirectory(members, remotePeople, handles),
@@ -226,8 +220,8 @@ export function useTeamMembers(
   return {
     members,
     directory,
-    status: read.status,
-    failure: read.failure,
+    status: read.status === "ready" ? "read" : read.status === "failed" ? "failed" : "reading",
+    line: readLine(read, reload),
     reload,
   };
 }

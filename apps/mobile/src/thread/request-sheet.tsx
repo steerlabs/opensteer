@@ -1,4 +1,5 @@
 import { setPhoneDisplayAccess } from "@opensteer/client/integrations";
+import { classifyClientFailure } from "@opensteer/client/connections";
 import {
   browserAccessChoices,
   browserAccessGrantable,
@@ -29,6 +30,7 @@ import {
   type PasswordSignInAccountGroup,
   type RequestAsker,
   type SurfaceModel,
+  unwrapRpcResult,
 } from "@opensteer/client/host";
 import { computerAppAccessApproval, computerUseAccessLabel } from "@opensteer/client/integrations";
 import { useHostSelector, useHostSnapshot } from "@opensteer/client/react";
@@ -69,7 +71,10 @@ import { HomeMenu } from "../screens/profile-home-menu.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Chip, monoFontFamily, Notice, StatusDot } from "../ui/primitives.js";
-import { readFailure, UnavailableState } from "../ui/unavailable-state.js";
+import { UnavailableState } from "../ui/unavailable-state.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { readLine, useScreenRead } from "../ui/client-feedback.js";
 import { SheetBarButton } from "../ui/sheet-bar.js";
 import { Symbol } from "../ui/symbol.js";
 import { AnswerPill, AnswerRow } from "./answer-pill.js";
@@ -124,6 +129,13 @@ export function RequestSheetScreen(props: RequestSheetScreenProps): ReactNode {
   const navigation = useNavigation();
   const { deploymentId, opened, reason, requestId, threadId } = props.route.params;
   const { selection } = useMobileState();
+  // The same computer, still attaching: its content arrives in this place.
+  if (selection.deploymentId === deploymentId && selection.hostClient === null)
+    return (
+      <View style={styles.gone}>
+        <PlaceholderRows count={2} />
+      </View>
+    );
   if (selection.deploymentId !== deploymentId || selection.hostClient === null) {
     return <Gone onClose={() => navigation.goBack()} />;
   }
@@ -186,11 +198,6 @@ function SubscribedRequestSheet(props: {
   );
 }
 
-type TargetedRead =
-  | { readonly state: "loading" }
-  | { readonly state: "read"; readonly request: Request | null }
-  | { readonly state: "offline" | "failed" };
-
 /**
  * A Request a link named, which may have been settled long ago. One still
  * waiting opens as any approval does, and closes once answered; one that has
@@ -205,8 +212,6 @@ function ReferencedRequest(props: {
 }): ReactNode {
   const { deploymentId, hostClient, requestId, threadId } = props;
   const navigation = useNavigation();
-  const [attempt, setAttempt] = useState(0);
-  const [read, setRead] = useState<TargetedRead>({ state: "loading" });
   // The conversation's Requests stay live while it is open, so an answer given here shows.
   useEffect(() => hostClient.observeThread(threadId), [hostClient, threadId]);
   const held = useHostSelector(
@@ -216,21 +221,16 @@ function ReferencedRequest(props: {
       snapshot.waitingRequests.find(({ request }) => request.id === requestId)?.request ??
       null,
   );
-  useEffect(() => {
-    let current = true;
-    setRead({ state: "loading" });
-    hostClient.readRequest(threadId, requestId).then(
-      (request) => current && setRead({ state: "read", request }),
-      (error: unknown) => {
-        if (!current) return;
-        const failure = readFailure(error);
-        setRead(failure === "unavailable" ? { state: "read", request: null } : { state: failure });
-      },
-    );
-    return () => {
-      current = false;
-    };
-  }, [attempt, hostClient, requestId, threadId]);
+  // Absent or not the reader's is an answer (null); only a lost answer is retried.
+  const read = useScreenRead(hostClient, {
+    key: `request:${threadId}:${requestId}`,
+    label: "this request",
+    read: () =>
+      hostClient.readRequest(threadId, requestId).catch((error: unknown) => {
+        if (classifyClientFailure(error).kind === "rejection") return null;
+        throw error;
+      }),
+  });
   if (held?.status === "pending")
     return (
       <SubscribedRequestSheet
@@ -241,7 +241,7 @@ function ReferencedRequest(props: {
         threadId={threadId}
       />
     );
-  const request = held ?? (read.state === "read" ? read.request : null);
+  const request = held ?? read.data;
   if (request !== null)
     return (
       <SettledRequest
@@ -253,18 +253,26 @@ function ReferencedRequest(props: {
         request={request}
       />
     );
-  if (read.state === "loading")
+  if (read.status === "failed") {
+    const line = readLine(read, read.refresh);
     return (
       <View style={[styles.gone, styles.referenced]}>
-        <ActivityIndicator color={color.muted} />
+        {line === null ? null : <ActionLine line={line} numberOfLines={2} />}
+        <AnswerRow>
+          <AnswerPill label="Back" onPress={() => navigation.goBack()} tone="secondary" />
+        </AnswerRow>
+      </View>
+    );
+  }
+  if (read.status !== "ready")
+    return (
+      <View style={[styles.gone, styles.referenced]}>
+        <PlaceholderRows count={2} />
       </View>
     );
   return (
     <View style={styles.referenced}>
-      <UnavailableState
-        onBack={() => navigation.goBack()}
-        onRetry={read.state === "read" ? undefined : () => setAttempt((count) => count + 1)}
-      />
+      <UnavailableState onBack={() => navigation.goBack()} />
     </View>
   );
 }
@@ -375,7 +383,7 @@ function Gone(props: { readonly onClose: () => void }): ReactNode {
   return (
     <View style={styles.gone}>
       <Notice
-        detail="This deployment is no longer open."
+        detail="It belongs to a computer that isn't open here now."
         title="Can’t answer this here"
         tone="neutral"
       />
@@ -453,7 +461,7 @@ export function RequestSheetContent(props: {
     formAnswers !== null &&
     session.held !== null &&
     sameRequestResponse(session.held.response, { answers: formAnswers, kind: "form" });
-  const canSend = props.canRespond && session.pendingId === null;
+  const canSend = session.pendingId === null;
   const sendForm = (): void => {
     if (formAnswers === null) return;
     Keyboard.dismiss();
@@ -601,7 +609,7 @@ export function RequestSheetContent(props: {
         >
           <AnswerPill
             busy={session.pendingId === answers.decline.id}
-            disabled={!props.canRespond || session.pendingId !== null}
+            disabled={session.pendingId !== null}
             label={requestOptionLabel(request, answers.decline)}
             onPress={() =>
               void responder.submit(
@@ -613,7 +621,7 @@ export function RequestSheetContent(props: {
           />
           <AnswerPill
             busy={session.pendingId === answers.allow.id}
-            disabled={!props.canRespond || session.pendingId !== null}
+            disabled={session.pendingId !== null}
             label={`${requestOptionLabel(request, answers.allow)}${answers.highRisk ? "…" : ""}`}
             onPress={() =>
               answers.highRisk
@@ -673,7 +681,7 @@ function RequestDetail(props: { readonly mono: boolean; readonly text: string })
 
 /** Why the action beside it cannot run, and what the last attempt came to. */
 function ResponseStatus(props: {
-  readonly failure: string | null;
+  readonly failure: ActionLineValue | null;
   readonly reason: string | null;
 }): ReactNode {
   if (props.failure === null && props.reason === null) return null;
@@ -684,11 +692,7 @@ function ResponseStatus(props: {
           {props.reason}
         </AppText>
       )}
-      {props.failure === null ? null : (
-        <AppText role="caption" tone="danger">
-          {props.failure}
-        </AppText>
-      )}
+      {props.failure === null ? null : <ActionLine line={props.failure} numberOfLines={2} />}
     </View>
   );
 }
@@ -752,7 +756,7 @@ function RequestBody(props: {
             {options.map((option, index) => (
               <ChoiceOptionRow
                 busy={session.pendingId === option.id}
-                disabled={!canRespond || session.pendingId !== null}
+                disabled={session.pendingId !== null}
                 key={option.id}
                 onPress={() => choose(option)}
                 option={option}
@@ -789,7 +793,7 @@ function RequestBody(props: {
           <AnswerRow>
             <AnswerPill
               busy={session.pendingId === "full-disk-access-decline"}
-              disabled={!canRespond || session.pendingId !== null}
+              disabled={session.pendingId !== null}
               label={fullAccessDeclineLabel}
               onPress={() => decline("full-disk-access-decline")}
               tone="secondary"
@@ -888,7 +892,7 @@ function RequestBody(props: {
  */
 function BrowserAccessBody(props: {
   readonly canRespond: boolean;
-  readonly failure: string | null;
+  readonly failure: ActionLineValue | null;
   readonly hostClient: HostClient;
   readonly onRespond: (
     selection: BrowserAccessSelection | null,
@@ -920,7 +924,7 @@ function BrowserAccessBody(props: {
     ? (homes.options.find(({ id }) => id === session.browserHome)?.id ?? homes.initial)
     : null;
   const busy = props.pendingId !== null;
-  const disabled = !props.canRespond || busy;
+  const disabled = busy;
   const choose = (next: BrowserAccessSelection): void => {
     void Haptics.selectionAsync();
     updateRequestSession(session, { browserSelection: next });
@@ -1125,7 +1129,7 @@ function BrowserSignInBody(props: {
       <AnswerRow>
         <AnswerPill
           busy={session.pendingId === "browser-sign-in-decline"}
-          disabled={!props.canRespond || busy}
+          disabled={busy}
           label={declineLabel}
           onPress={() =>
             void responder.respondSignIn({ decision: "decline" }, "browser-sign-in-decline")
@@ -1135,7 +1139,7 @@ function BrowserSignInBody(props: {
         {session.allowed === null ? (
           <AnswerPill
             busy={session.pendingId === "browser-sign-in-allow"}
-            disabled={!props.canRespond || busy || selected === undefined}
+            disabled={busy || selected === undefined}
             label="Allow"
             onPress={() => {
               if (selected !== undefined) allow(selected.sourceId);
@@ -1173,23 +1177,17 @@ function PasswordSignInBody(props: {
     const timer = setInterval(() => setNow(new Date()), expiryTickMs);
     return () => clearInterval(timer);
   }, []);
+  // Retained through an outage and read again on recovery; the card is the one copy answers use.
+  const passwordCard = useScreenRead(hostClient, {
+    key: `password-sign-in:${requestId}`,
+    label: "this sign-in",
+    read: () => hostClient.rpc["browser.password-sign-in.get"]({ requestId }).then(unwrapRpcResult),
+  });
   useEffect(() => {
-    if (!canRespond) return;
-    let live = true;
-    hostClient.rpc["browser.password-sign-in.get"]({ requestId })
-      .then((result) => {
-        if (!live) return;
-        if (result.ok) updateRequestSession(session, { passwordCard: result.data });
-        else updateRequestSession(session, { failure: result.error.message });
-      })
-      .catch(() => {
-        if (live)
-          updateRequestSession(session, { failure: "Opensteer Passwords could not be reached." });
-      });
-    return () => {
-      live = false;
-    };
-  }, [canRespond, hostClient, requestId, session]);
+    if (passwordCard.data) updateRequestSession(session, { passwordCard: passwordCard.data });
+  }, [passwordCard.data, session]);
+  const cardLine =
+    session.passwordCard === null ? readLine(passwordCard, passwordCard.refresh) : null;
   if (props.payload.credential === "card") {
     return (
       <CardUseBody
@@ -1197,6 +1195,7 @@ function PasswordSignInBody(props: {
         chosenId={chosenId}
         now={now}
         onChoose={setChosenId}
+        cardLine={cardLine}
         payload={props.payload}
         reason={props.reason}
         responder={responder}
@@ -1208,9 +1207,7 @@ function PasswordSignInBody(props: {
   const chosen = accounts.length === 1 ? accounts[0] : accounts.find(({ id }) => id === chosenId);
   const groups = passwordSignInAccountList(accounts, query);
   const disabled =
-    !canRespond ||
-    session.pendingId !== null ||
-    Date.parse(props.payload.expiresAt) <= now.getTime();
+    session.pendingId !== null || Date.parse(props.payload.expiresAt) <= now.getTime();
   const renderGroups = (list: readonly PasswordSignInAccountGroup[]): ReactNode =>
     list.map((group, index) => (
       <View key={group.host ?? index} style={styles.accounts}>
@@ -1300,7 +1297,7 @@ function PasswordSignInBody(props: {
       <AppText role="caption" tone="muted">
         {passwordSignInExpiry(props.payload.expiresAt, now)}
       </AppText>
-      <ResponseStatus failure={session.failure} reason={props.reason} />
+      <ResponseStatus failure={session.failure ?? cardLine} reason={props.reason} />
       <AnswerRow>
         <AnswerPill
           accessibilityLabel={declineLabel}
@@ -1341,6 +1338,8 @@ function CardUseBody(props: {
   readonly payload: Extract<RequestPayload, { kind: "browser.password-sign-in" }>;
   readonly reason: string | null;
   readonly responder: RequestResponder;
+  /** Why the card's details are missing, once their read gave up. */
+  readonly cardLine: ActionLineValue | null;
 }): ReactNode {
   const { responder } = props;
   const { session } = responder;
@@ -1348,7 +1347,7 @@ function CardUseBody(props: {
   const cards = card?.stage === "card-approval" ? card.cards : [];
   const chosen: CardChoice | undefined =
     cards.length === 1 ? cards[0] : cards.find(({ id }) => id === props.chosenId);
-  const locked = !props.canRespond || session.pendingId !== null;
+  const locked = session.pendingId !== null;
   const expired = Date.parse(props.payload.expiresAt) <= props.now.getTime();
   return (
     <View style={styles.section}>
@@ -1387,7 +1386,7 @@ function CardUseBody(props: {
       <AppText role="caption" tone="muted">
         {passwordSignInExpiry(props.payload.expiresAt, props.now)}
       </AppText>
-      <ResponseStatus failure={session.failure} reason={props.reason} />
+      <ResponseStatus failure={session.failure ?? props.cardLine} reason={props.reason} />
       <AnswerRow>
         <AnswerPill
           disabled={locked}
@@ -1416,7 +1415,7 @@ function ComputerAppAccessBody(props: {
   readonly access: "read" | "read-write";
   readonly canRespond: boolean;
   readonly definitionId: "android-phone" | "iphone-screen" | "macos-app";
-  readonly failure: string | null;
+  readonly failure: ActionLineValue | null;
   readonly machines: readonly MachineSummary[];
   readonly onAllow: () => void;
   readonly onDecline: () => void;
@@ -1432,7 +1431,7 @@ function ComputerAppAccessBody(props: {
     onThatMac: false,
     deviceId: props.deviceId,
   });
-  const locked = !props.canRespond || props.pendingId !== null;
+  const locked = props.pendingId !== null;
   return (
     <View style={styles.section}>
       <Notice
@@ -1464,13 +1463,13 @@ function ComputerAppAccessBody(props: {
 /** Needs you: one switch on one device, turned on here or left off; the Host's words say which. */
 function DeviceAccessBody(props: {
   readonly canRespond: boolean;
-  readonly failure: string | null;
+  readonly failure: ActionLineValue | null;
   readonly onDecline: () => void;
   readonly onTurnOn: () => void;
   readonly pendingId: string | null;
   readonly reason: string | null;
 }): ReactNode {
-  const locked = !props.canRespond || props.pendingId !== null;
+  const locked = props.pendingId !== null;
   return (
     <View style={styles.section}>
       <ResponseStatus failure={props.failure} reason={props.reason} />

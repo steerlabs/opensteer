@@ -21,7 +21,10 @@ import {
   teamFailure,
   type TeamLinkIntent,
 } from "./mobile-teams.js";
-import { readFailure, UnavailableState } from "../ui/unavailable-state.js";
+import { classifyClientFailure } from "@opensteer/client/connections";
+import { clientIssueActions, presentClientIssue } from "@opensteer/client/feedback";
+import { ConnectionGate } from "../ui/connection-gate.js";
+import { teamFailureWords } from "./team-feedback.js";
 import { useCoordinatorSnapshot, useMobileTeams, useTeam, useTeamEntry } from "./team-context.js";
 import { openTeamGeneral } from "./mobile-team-entry.js";
 
@@ -235,10 +238,7 @@ function inviteFailure(error: unknown, host: string, team: TeamTileView): Invite
   if (error instanceof TypeError) return { kind: "unreachable", host };
   const state = teamFailure(error);
   if (state === "update-app" || state === "update-server") return { kind: state, team };
-  return {
-    kind: "failed",
-    detail: error instanceof Error ? error.message : "Joining didn't finish.",
-  };
+  return { kind: "failed", detail: teamFailureWords(error, "Joining didn't finish.") };
 }
 
 /** A team page, opened once the team says the reader may see it. */
@@ -283,7 +283,8 @@ function OpenPlace(props: {
       (error: unknown) =>
         current() &&
         setFailure(
-          !(error instanceof TeamAccessError) && readFailure(error) === "offline"
+          !(error instanceof TeamAccessError) &&
+            (error instanceof TypeError || classifyClientFailure(error).kind === "transport")
             ? "offline"
             : "unavailable",
         ),
@@ -299,9 +300,47 @@ function OpenPlace(props: {
       </AppText>
     </View>
   ) : (
-    <UnavailableState
+    <OpenPlaceGate
+      failure={failure}
+      host={new URL(intent.origin).host}
       onBack={() => navigation.goBack()}
-      onRetry={failure === "offline" ? () => setAttempt((count) => count + 1) : undefined}
+      onRetry={() => setAttempt((count) => count + 1)}
+    />
+  );
+}
+
+/** Why a team page didn't open: gone or not the reader's, or the team out of reach. */
+function OpenPlaceGate(props: {
+  readonly failure: "unavailable" | "offline";
+  readonly host: string;
+  readonly onBack: () => void;
+  readonly onRetry: () => void;
+}): ReactNode {
+  const back = { label: "Back", onPress: props.onBack };
+  if (props.failure === "unavailable")
+    return (
+      <ConnectionGate
+        detail="It may have been deleted, or you don't have access."
+        primary={back}
+        stateKey="unavailable"
+        symbol={null}
+        title="This isn't available"
+      />
+    );
+  const copy = presentClientIssue({
+    code: "connection",
+    reason: "unreachable",
+    name: props.host,
+    target: "team",
+  });
+  return (
+    <ConnectionGate
+      detail="Your own tasks still work."
+      primary={{ label: clientIssueActions.tryAgain, onPress: props.onRetry }}
+      secondary={back}
+      stateKey="unreachable"
+      symbol="computer"
+      title={copy.title}
     />
   );
 }
@@ -361,8 +400,7 @@ function AgentLink(props: {
               (error: unknown) =>
                 setState({
                   kind: "failed",
-                  detail:
-                    error instanceof Error ? error.message : "Your Opensteer couldn't connect.",
+                  detail: teamFailureWords(error, "Your Opensteer couldn't connect."),
                 }),
             );
           }}
@@ -453,9 +491,7 @@ export function ConnectOpensteerScreen(
             },
             (error: unknown) => {
               setConnecting(null);
-              setFailure(
-                error instanceof Error ? error.message : "Your Opensteer couldn't connect.",
-              );
+              setFailure(teamFailureWords(error, "Your Opensteer couldn't connect."));
             },
           );
       }}

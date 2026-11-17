@@ -90,9 +90,10 @@ vi.mock("expo-application", () => ({ nativeApplicationVersion: "1.0.0" }));
 vi.mock("../ui/ai-sharing.js", () => import("../../test-support/ai-sharing.js"));
 vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => true) }));
 vi.mock("expo-haptics", () => ({ selectionAsync: vi.fn(async () => undefined) }));
-vi.mock("../client/mobile-client.js", () => ({
-  operationDetail: (_error: unknown, fallback: string) => fallback,
-}));
+vi.mock(
+  "../ui/placeholder.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).placeholder,
+);
 vi.mock("../ui/mobile-client-context.js", () => ({
   useHostUserId: () => null,
   useMobileState: () => ({
@@ -489,7 +490,7 @@ describe("Run details", () => {
       />,
     );
     expect(around).toHaveBeenCalledWith(taskId, askA.id);
-    expect(sheet.textContent).toContain("Loading");
+    expect(sheet.querySelector('[aria-label="Not loaded yet"]')).not.toBeNull();
     host.move(snapshotWith(replying));
     await act(async () => loaded());
     expect(sheet.textContent).toContain(noteA.body);

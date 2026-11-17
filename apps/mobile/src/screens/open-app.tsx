@@ -1,6 +1,4 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
 import {
-  HostClientRequestError,
   newTabProfiles,
   newTabTarget,
   profileAwayWords,
@@ -35,7 +33,10 @@ import { color, controlFontScaleLimit, material, radius, space, touchTarget } fr
 import { NativeMenu } from "../thread/composer-menu.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { useContentInsets } from "../ui/pane.js";
-import { AppText, Notice, StatusDot } from "../ui/primitives.js";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { readLine, useScreenAction, useScreenRead } from "../ui/client-feedback.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
+import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { computerSymbols } from "./settings-model.js";
 
@@ -57,11 +58,6 @@ export function OpenAppScreen(props: OpenAppScreenProps): ReactNode {
   return <OpenApp deploymentId={deploymentId} hostClient={selection.hostClient} />;
 }
 
-type Approved =
-  | { readonly kind: "loading" }
-  | { readonly kind: "failed"; readonly detail: string }
-  | { readonly kind: "ready"; readonly apps: readonly ApprovedComputerApp[] };
-
 /** An app's windows as its Mac last said, or null while unknown or unreadable. */
 type Windows = ReadonlyMap<string, readonly OwnerWindowInfo[] | null>;
 
@@ -72,7 +68,6 @@ interface Section {
 }
 
 const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;
-const selectConnected = (snapshot: HostSnapshot) => snapshot.connection === "connected";
 const selectConnection = (snapshot: HostSnapshot) => snapshot.connection;
 const selectProfiles = (snapshot: HostSnapshot) => snapshot.browserProfiles;
 const selectHomes = (snapshot: HostSnapshot) => snapshot.browserProfileHomes;
@@ -83,17 +78,25 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
   const navigation = useNavigation();
   const insets = useContentInsets();
   const machines = useHostSelector(hostClient, selectMachines);
-  const connected = useHostSelector(hostClient, selectConnected);
   const openKeys = useOpenTabKeys(hostClient.getSnapshot().tabs);
   const browserProfiles = useHostSelector(hostClient, selectProfiles);
   const browserProfileHomes = useHostSelector(hostClient, selectHomes);
   const browsing = useHostSelector(hostClient, selectBrowsing);
   const connection = useHostSelector(hostClient, selectConnection);
   const hereId = useHereDeviceId(deploymentId);
-  const [approved, setApproved] = useState<Approved>({ kind: "loading" });
+  const approved = useScreenRead(hostClient, {
+    key: "approved-computer-apps",
+    label: "your apps",
+    read: () => hostClient.listApprovedComputerApps(),
+  });
+  const approvedApps = approved.data;
   const [windows, setWindows] = useState<Windows>(new Map());
-  const [opening, setOpening] = useState<string | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
+  const [opening, setOpening] = useState<{
+    readonly key: string;
+    readonly name: string;
+    readonly machineId: string | null;
+    readonly phone: boolean;
+  } | null>(null);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -102,34 +105,17 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
     };
   }, []);
 
-  const load = useCallback(() => {
-    setApproved({ kind: "loading" });
-    void hostClient.listApprovedComputerApps().then(
-      (apps) => {
-        if (mounted.current) setApproved({ kind: "ready", apps });
-      },
-      (error: unknown) => {
-        if (mounted.current)
-          setApproved({
-            kind: "failed",
-            detail: presentActionFailure(error, "Your apps could not be listed."),
-          });
-      },
-    );
-  }, [hostClient]);
-  useEffect(load, [load]);
-
   // Regrouped as the computers change; a streamed reply leaves them, and this, alone.
   const groups = useMemo(
     () =>
-      approved.kind === "ready"
-        ? startPageIndex({
+      approvedApps === null
+        ? []
+        : startPageIndex({
             snapshot: { ...hostClient.getSnapshot(), machines },
-            approvedApps: approved.apps,
+            approvedApps,
             places: [],
-          }).groups
-        : [],
-    [approved, hostClient, machines],
+          }).groups,
+    [approvedApps, hostClient, machines],
   );
 
   // Each ready Mac app's windows, asked once per listing, all at once.
@@ -188,33 +174,44 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
     },
     [deploymentId, navigation],
   );
+  // Opening makes a tab; a lost answer may have made one, which the tab list then shows.
+  const opener = useScreenAction<TabTarget, void>(hostClient, "open-app-sheet", {
+    label: "open",
+    done: "opened",
+    thing: "it",
+    execute: async (target) => {
+      const tab = await hostClient.openTab(target);
+      if (stillHere()) show(tab.tabId, target.kind === "page");
+    },
+  });
   /** Opens the target as a tab and shows it, unless the person left meanwhile. */
   const openTarget = useCallback(
     async (target: TabTarget, key: string, name: string, phone: boolean) => {
-      setOpening(key);
-      setFailure(null);
-      try {
-        const tab = await hostClient.openTab(target);
-        if (stillHere()) show(tab.tabId, target.kind === "page");
-      } catch (error) {
-        if (!mounted.current) return;
-        const machineId = "computerId" in target ? target.computerId : null;
-        const machine = hostClient.getSnapshot().machines.find(({ id }) => id === machineId);
-        setFailure(
-          error instanceof HostClientRequestError && error.reason !== undefined
-            ? computerReasonWords(error.reason, {
-                machine: machine?.name ?? "This computer",
-                phone,
-                target: name,
-              })
-            : presentActionFailure(error, `${name} didn’t open.`),
-        );
-      } finally {
-        if (mounted.current) setOpening(null);
-      }
+      const machineId = "computerId" in target ? target.computerId : null;
+      setOpening({ key, machineId: machineId ?? null, name, phone });
+      await opener.run(target);
     },
-    [hostClient, show, stillHere],
+    [opener],
   );
+  const line = useMemo((): ActionLineValue | null => {
+    const { outcome, issue } = opener.state;
+    // The target computer's own reason, said about it, where the Host gave one.
+    if (outcome?.kind === "rejected" && issue?.reason !== undefined && opening !== null) {
+      const machine = hostClient.getSnapshot().machines.find(({ id }) => id === opening.machineId);
+      return {
+        key: `rejected:${issue.reason}`,
+        text: computerReasonWords(issue.reason, {
+          machine: machine?.name ?? "This computer",
+          phone: opening.phone,
+          target: opening.name,
+        }),
+        tone: "danger",
+        haptic: "error",
+      };
+    }
+    return opener.line;
+  }, [hostClient, opener.line, opener.state, opening]);
+  const openingKey = opener.running ? (opening?.key ?? null) : null;
   const openTab = useCallback(
     (profile: StartPageProfileChoice) => {
       const input = newTabTarget({ browserProfileHomes, machines }, profile.identity, hereId);
@@ -248,17 +245,17 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
     ({ index, item, section }: { index: number; item: ApprovedComputerApp; section: Section }) => (
       <AppRow
         app={item}
-        disabled={!connected || section.group.readiness !== null || opening !== null}
+        disabled={section.group.readiness !== null || openingKey !== null}
         first={index === 0}
         hostClient={hostClient}
         last={index === section.data.length - 1}
         onOpen={open}
         open={openKeys.has(openKey(item))}
-        opening={opening}
+        opening={openingKey}
         windows={windows.get(item.connectionId)}
       />
     ),
-    [connected, hostClient, open, openKeys, opening, windows],
+    [hostClient, open, openKeys, openingKey, windows],
   );
 
   return (
@@ -270,16 +267,14 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
         contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + space[16] }]}
         keyExtractor={(app) => app.connectionId}
         ListEmptyComponent={
-          approved.kind === "loading" ? (
-            <View accessibilityLabel="Finding your apps" style={styles.empty}>
-              <ActivityIndicator color={color.muted} />
-            </View>
-          ) : approved.kind === "failed" ? (
-            <Notice
-              action={{ label: "Try again", onPress: load }}
-              detail={approved.detail}
-              title="Your apps could not be listed"
-            />
+          approvedApps === null ? (
+            approved.status === "failed" ? (
+              <View style={styles.notice}>
+                <ActionLine line={readLine(approved, approved.refresh)!} />
+              </View>
+            ) : (
+              <PlaceholderRows />
+            )
           ) : (
             <View style={styles.empty}>
               <View style={styles.emptyGlyph}>
@@ -295,9 +290,9 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
         }
         ListHeaderComponent={
           <>
-            {failure === null ? null : (
+            {line === null ? null : (
               <View style={styles.notice}>
-                <Notice detail={failure} title="That didn’t open" />
+                <ActionLine line={line} numberOfLines={2} onDismiss={opener.dismiss} />
               </View>
             )}
             {profiles.length === 0 ? null : (

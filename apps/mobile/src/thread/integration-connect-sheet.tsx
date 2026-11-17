@@ -1,3 +1,4 @@
+import { classifyClientFailure } from "@opensteer/client/connections";
 import { computerTargetId } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import {
@@ -46,6 +47,9 @@ import { ActivityIndicator, Linking, Pressable, StyleSheet, View } from "react-n
 import * as Haptics from "expo-haptics";
 import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
 import { Symbol } from "../ui/symbol.js";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { readLine, useScreenAction, useScreenRead } from "../ui/client-feedback.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
 import {
   AppText,
   ChoiceRow,
@@ -95,9 +99,9 @@ export function IntegrationConnectCard(props: {
   const [connecting, setConnecting] = useState(false);
   const signingIn = useRef<AbortController | null>(null);
   const [cancelUnconfirmed, setCancelUnconfirmed] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  /** Something this card itself found stops the connection, in its own words. */
+  const [stop, setStop] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [reload, setReload] = useState(0);
   const [accountId, setAccountId] = useState<string | null>(null);
   const [allowChanges, setAllowChanges] = useState(false);
   const [connected, setConnected] = useState<AccessRequestAccount | null>(null);
@@ -131,6 +135,43 @@ export function IntegrationConnectCard(props: {
   );
   const snapshot = useHostSelector(props.hostClient, selectCardHostState, sameCardHostState);
   const { deploymentName } = snapshot;
+  const access = useScreenRead(props.hostClient, {
+    key: `integration-access:${props.request.id}`,
+    label: "this connection",
+    read:
+      payload === null
+        ? null
+        : () =>
+            Promise.all([
+              props.hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
+              props.hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
+            ]).then(([dashboard, platform]) => ({ dashboard, platform })),
+  });
+  const refresh = access.refresh;
+  const answering = useScreenAction<() => Promise<string | null>, string | null>(
+    props.hostClient,
+    `integration-request:${props.request.id}`,
+    {
+      label: "finish",
+      done: "finished",
+      thing: "this connection",
+      execute: (operation) => operation(),
+      // A lost answer is settled by the Request itself: answered, or still waiting.
+      reconcile: async () => {
+        refresh();
+        return (await integrationRequestStillPending(
+          props.hostClient,
+          props.request.originatingThreadId,
+          props.request.id,
+        ))
+          ? null
+          : { kind: "confirmed", value: null };
+      },
+    },
+  );
+  const error = stop ?? answering.line?.text ?? null;
+  const errorLine: ActionLineValue | null =
+    stop !== null ? { key: `stop:${stop}`, text: stop, tone: "danger" } : answering.line;
   const plan = useMemo(
     () => (loaded === null ? null : accessPlan(loaded, accountId)),
     [loaded, accountId],
@@ -186,7 +227,7 @@ export function IntegrationConnectCard(props: {
     setBusy(false);
     setConnecting(false);
     setCancelUnconfirmed(false);
-    setError(null);
+    setStop(null);
     setNotice(null);
     setAccountId(null);
     setAllowChanges(false);
@@ -203,32 +244,18 @@ export function IntegrationConnectCard(props: {
     };
   }, [props.hostClient, props.request.id]);
   useEffect(() => {
-    if (!payload) return;
-    let cancelled = false;
-    Promise.all([
-      props.hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
-      props.hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
-    ])
-      .then(([dashboard, platform]) => {
-        if (!cancelled)
-          setLoaded((current) => ({
-            dashboard,
-            platform,
-            request:
-              current &&
-              ((payload.installationId === null && current.request.installationId !== null) ||
-                (payload.requestedServerId === null && current.request.requestedServerId !== null))
-                ? current.request
-                : payload,
-          }));
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) setError(describe(reason));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [props.hostClient, payload, reload]);
+    const data = access.data;
+    if (!data || !payload) return;
+    setLoaded((current) => ({
+      ...data,
+      request:
+        current &&
+        ((payload.installationId === null && current.request.installationId !== null) ||
+          (payload.requestedServerId === null && current.request.requestedServerId !== null))
+          ? current.request
+          : payload,
+    }));
+  }, [access.data, payload]);
 
   const showForm = (next: Step): void => {
     setStep(next);
@@ -260,11 +287,21 @@ export function IntegrationConnectCard(props: {
     responding.current = true;
     const generation = ++operationGeneration.current;
     setBusy(true);
-    setError(null);
+    setStop(null);
+    answering.dismiss();
     try {
-      await operation(generation);
-    } catch (reason) {
-      if (generation === operationGeneration.current) setError(describe(reason));
+      const outcome = await answering.run(async () => {
+        try {
+          await operation(generation);
+          return null;
+        } catch (reason) {
+          const stopped = stopWords(reason);
+          if (stopped !== null) return stopped;
+          throw reason;
+        }
+      });
+      if (outcome.kind === "confirmed" && outcome.value !== null)
+        if (generation === operationGeneration.current) setStop(outcome.value);
     } finally {
       responding.current = false;
       if (claim) props.mutationGate?.release(claim);
@@ -289,11 +326,11 @@ export function IntegrationConnectCard(props: {
     const next = { ...current, dashboard, platform };
     const nextPlan = accessPlan(next, connectionId);
     if (!nextPlan?.selectedAccount || nextPlan.selectedAccount.id !== connectionId)
-      throw new Error(
+      throw new ConnectStop(
         "Authorization finished without recording the requested account. Start the connection again.",
       );
     if (computerAccessUpgrade(nextPlan, effectiveAccess))
-      throw new Error("Allow changes on this computer before allowing this request.");
+      throw new ConnectStop("Allow changes on this computer before allowing this request.");
     if (
       await integrationRequestStillPending(
         props.hostClient,
@@ -318,7 +355,9 @@ export function IntegrationConnectCard(props: {
         props.request.id,
       )
     )
-      throw new Error("The account is connected, but this request is still waiting. Try again.");
+      throw new ConnectStop(
+        "The account is connected, but this request is still waiting. Try again.",
+      );
     if (generation !== operationGeneration.current) return;
     setLoaded(next);
     setAccountId(connectionId);
@@ -349,15 +388,17 @@ export function IntegrationConnectCard(props: {
       const next = dashboard ? repositoryAccountStep(dashboard, connectionId) : null;
       if (next?.kind === "connected") await finish(connectionId, generation);
       else if (next?.kind === "sign-in") {
-        setError(next.detail ?? describe(reason));
+        if (next.detail === null || next.detail === undefined) throw reason;
+        setStop(next.detail);
         setStep("review");
         if (presented.current) {
           presented.current = false;
           props.onClose?.();
         }
       } else {
-        setError(describe(reason));
         showForm("repository-access");
+        // A check is only a read: nothing changed at the Host, so it can be said plainly.
+        throw new ConnectStop("GitHub repository access could not be checked. Try again.");
       }
       return null;
     }
@@ -392,18 +433,18 @@ export function IntegrationConnectCard(props: {
     const status =
       started && (await integrationAuthorizationSettled(started, () => setCancelUnconfirmed(true)));
     if (generation !== operationGeneration.current) return;
-    if (!status) throw new Error("Open integration settings to finish this connection.");
+    if (!status) throw new ConnectStop("Open integration settings to finish this connection.");
     const outcome = integrationAuthorizationError(status.status, status.failureCode);
-    if (outcome) throw new Error(outcome);
+    if (outcome) throw new ConnectStop(outcome);
     if (!status.connectionId)
-      throw new Error(
+      throw new ConnectStop(
         "Authorization finished without recording an account. Start the connection again.",
       );
     const dashboard = unwrapRpcResult(await props.hostClient.rpc["integrations.get"]({}));
     if (generation !== operationGeneration.current) return;
     const connection = authorizationConnection(dashboard, status.connectionId);
     if (nextPlan.requirement.kind === "provider" && !connection)
-      throw new Error(
+      throw new ConnectStop(
         `${nextPlan.integrationName} reported success, but no connected account is recorded here. Start the connection again.`,
       );
     if (connection?.provider === "github") {
@@ -445,11 +486,11 @@ export function IntegrationConnectCard(props: {
         updated = page.requests.find((candidate) => candidate.id === props.request.id);
         if (updated || !page.window.hasMore) break;
         if (!page.window.nextBefore)
-          throw new Error("Thread Request page is missing its continuation cursor.");
+          throw new ConnectStop("Thread Request page is missing its continuation cursor.");
         before = page.window.nextBefore;
       } while (before);
       if (updated?.payload.kind !== "integration.access")
-        throw new Error("This connection request is no longer available.");
+        throw new ConnectStop("This connection request is no longer available.");
       const [dashboard, platform] = await Promise.all([
         props.hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
         props.hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
@@ -498,7 +539,7 @@ export function IntegrationConnectCard(props: {
       } else {
         // Back to the card, where the saved account waits for Use.
         close();
-        setReload((value) => value + 1);
+        refresh();
       }
     });
   const recheckRepositories = () =>
@@ -518,11 +559,11 @@ export function IntegrationConnectCard(props: {
       const computer = snapshot.machines.find((machine) => machine.id === input.runnerId);
       // The owner sets a phone's access here; a Mac app is approved on that Mac.
       if (isPhoneDisplayDefinitionId(plan.definition.id)) {
-        if (!computer) throw new Error("That phone isn't one of your devices any more.");
+        if (!computer) throw new ConnectStop("That phone isn't one of your devices any more.");
         await setPhoneUseAccess(props.hostClient, computer, input.access);
         if (generation !== operationGeneration.current) return;
         setNotice(`Agents can now use ${computer.name} at the access you chose.`);
-        setReload((value) => value + 1);
+        refresh();
         return;
       }
       const command = {
@@ -542,12 +583,12 @@ export function IntegrationConnectCard(props: {
         type: "integration.computer.setup.request",
       });
       if (result.type !== "integration.computer.setup.request")
-        throw new Error("Integration computer command mismatch.");
+        throw new ConnectStop("Integration computer command mismatch.");
       if (generation !== operationGeneration.current) return;
       setNotice(
         `Setup requested. On ${computer?.name ?? "that computer"}, open Opensteer → Settings → Computers to approve ${plan.definition.name}.`,
       );
-      setReload((value) => value + 1);
+      refresh();
     });
   const chooseServer = (serverId: string) =>
     run(async (generation) => {
@@ -559,7 +600,7 @@ export function IntegrationConnectCard(props: {
       });
       if (generation !== operationGeneration.current) return;
       setStep("review");
-      setReload((value) => value + 1);
+      refresh();
     });
   const decline = () =>
     run(async (generation) => {
@@ -601,12 +642,13 @@ export function IntegrationConnectCard(props: {
     if (!card) return;
     switch (card.primary?.kind) {
       case "retry":
-        setError(null);
+        setStop(null);
+        answering.dismiss();
         if (step === "repository-access") void recheckRepositories();
         else if (lastAction.current === "allow" && plan?.selectedAccount) void allow();
         else if (loaded?.request.installationId === null) void install();
         else if (plan) openConnect();
-        else setReload((value) => value + 1);
+        else refresh();
         break;
       case "install":
         void install();
@@ -633,28 +675,27 @@ export function IntegrationConnectCard(props: {
         break;
     }
   };
-  if (!card)
+  if (!card) {
+    // Only a read that never arrived says so; waiting is the card's own still shape.
+    const failed = access.status === "failed" ? readLine(access, refresh) : null;
     return (
       <View style={styles.body}>
-        <AppText role="secondary">{error ?? "Checking account access…"}</AppText>
-        {error ? (
-          <SecondaryButton
-            label="Not now"
-            disabled={busy || (props.disabled ?? false)}
-            onPress={() => void decline()}
-          />
-        ) : null}
-        {error ? (
-          <PrimaryButton
-            label="Try again"
-            onPress={() => {
-              setError(null);
-              setReload((value) => value + 1);
-            }}
-          />
+        {failed === null ? <PlaceholderRows count={2} /> : <ActionLine line={failed} />}
+        {failed !== null || errorLine !== null ? (
+          <>
+            {errorLine === null ? null : (
+              <ActionLine line={errorLine} numberOfLines={2} onDismiss={answering.dismiss} />
+            )}
+            <SecondaryButton
+              label="Not now"
+              disabled={busy || (props.disabled ?? false)}
+              onPress={() => void decline()}
+            />
+          </>
         ) : null}
       </View>
     );
+  }
   if (card.phase === "connected")
     return (
       <View accessibilityRole="summary" style={styles.result}>
@@ -700,9 +741,17 @@ export function IntegrationConnectCard(props: {
           ) : null}
         </View>
       </View>
-      {card.error ? (
-        <Notice detail={card.error} title="This connection did not finish" tone="danger" />
-      ) : null}
+      {errorLine === null ? (
+        card.error ? (
+          <ActionLine line={{ key: `card:${card.error}`, text: card.error, tone: "danger" }} />
+        ) : null
+      ) : (
+        <ActionLine
+          line={errorLine}
+          numberOfLines={2}
+          onDismiss={stop === null ? answering.dismiss : () => setStop(null)}
+        />
+      )}
       {props.disabledReason ? (
         <AppText role="secondary" tone="muted">
           {props.disabledReason}
@@ -712,11 +761,7 @@ export function IntegrationConnectCard(props: {
         <>
           <Notice detail={notice} title="Saved" tone="neutral" />
           {plan?.requirement.kind === "computer" ? (
-            <SecondaryButton
-              label="Check setup"
-              disabled={busy}
-              onPress={() => setReload((value) => value + 1)}
-            />
+            <SecondaryButton label="Check setup" disabled={busy} onPress={refresh} />
           ) : null}
         </>
       ) : null}
@@ -934,18 +979,18 @@ export function IntegrationConnectCard(props: {
         }
       >
         <View style={styles.body}>
-          {error ? (
-            <Notice detail={error} title="This connection did not finish" tone="danger" />
-          ) : null}
+          {errorLine === null ? null : (
+            <ActionLine
+              line={errorLine}
+              numberOfLines={2}
+              onDismiss={stop === null ? answering.dismiss : () => setStop(null)}
+            />
+          )}
           {notice ? (
             <>
               <Notice detail={notice} title="Saved" tone="neutral" />
               {plan?.requirement.kind === "computer" ? (
-                <SecondaryButton
-                  label="Check setup"
-                  disabled={busy}
-                  onPress={() => setReload((value) => value + 1)}
-                />
+                <SecondaryButton label="Check setup" disabled={busy} onPress={refresh} />
               ) : null}
             </>
           ) : null}
@@ -1267,8 +1312,22 @@ function RepositoryAccessStep({
   );
 }
 
-function describe(reason: unknown): string {
-  return reason instanceof Error ? reason.message : "This deployment could not be reached.";
+/** A step this card found can't go on, in words written for the person. */
+class ConnectStop extends Error {}
+
+/**
+ * Words written for the person: this card's own stops, and the shared
+ * integration steps' plain errors. Anything typed (a lost or refused answer)
+ * is said by the action's outcome instead, never as its raw text.
+ */
+function stopWords(reason: unknown): string | null {
+  if (reason instanceof ConnectStop) return reason.message;
+  return reason instanceof Error &&
+    reason.constructor === Error &&
+    classifyClientFailure(reason).kind === "unexpected" &&
+    reason.message.trim() !== ""
+    ? reason.message
+    : null;
 }
 const styles = StyleSheet.create({
   actionPrimary: { flex: 1.4 },

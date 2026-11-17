@@ -1,3 +1,4 @@
+import { testHostConnection } from "@opensteer/client/test-support";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -151,6 +152,7 @@ describe("Expo engine/account/model journeys", () => {
       updateThreadExecution: execution,
       rememberExecution: remember,
     } as unknown as HostClient;
+    Object.assign(mobile.hostClient, { connection: testHostConnection(mobile.hostClient) });
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);

@@ -84,14 +84,16 @@ export interface StagedAttachmentView {
   readonly refused: string | null;
 }
 
+/** A message this phone still holds; `since` is when it was written, in epoch milliseconds. */
 export type SendState =
-  | { readonly kind: "retryable"; readonly reason: string }
   | { readonly kind: "sent" }
-  /** Not confirmed after a moment: "Sending…" takes the time's place. */
-  | { readonly kind: "sending" }
+  /** Its answer was lost: it may be on the team, and Try again resends the same message. */
+  | { readonly kind: "retryable"; readonly reason: string; readonly since: number }
+  | { readonly kind: "sending"; readonly since: number }
   /** Offline: it sends, in order, when the team is reachable again. */
-  | { readonly kind: "queued" }
-  | { readonly kind: "failed"; readonly reason: string };
+  | { readonly kind: "queued"; readonly since: number }
+  /** The team refused it; `reason` is the presenter's. */
+  | { readonly kind: "failed"; readonly reason: string; readonly since: number };
 
 /** Under a root message: who replied, how many, and the one live fact. */
 export interface ThreadSummaryView {
@@ -261,13 +263,6 @@ export interface JumpView {
   readonly direction: "up" | "down";
   /** "6 new", "6 new since 9:12". */
   readonly label: string;
-}
-
-export interface ConnectionBannerView {
-  /** "Reconnecting to Acme…", "Your MacBook Pro is offline. Asks to your agent start when it's back". */
-  readonly text: string;
-  readonly tone: "muted" | "amber" | "danger";
-  readonly action: { readonly label: string; readonly onPress: () => void } | null;
 }
 
 /** One channel row in the drawer. */

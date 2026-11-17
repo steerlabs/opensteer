@@ -1,18 +1,16 @@
-import { useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import type { StaticScreenProps } from "@react-navigation/native";
-import {
-  canRespondToRequests,
-  mutationIdempotencyKey,
-  unwrapRpcResult,
-  type HostClient,
-} from "@opensteer/client/host";
+import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import { Alert } from "react-native";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
-import { useSettingsRead, useSettingsLease, type SettingsRpcData } from "./use-settings-read.js";
+import { useClientRead } from "@opensteer/client/react";
+import { createClientRead } from "@opensteer/client/reads";
+import { notDone, readLine, settingsFooter, useScreenAction } from "../ui/client-feedback.js";
+import type { SettingsRpcData } from "./settings-rpc.js";
 
 type Dashboard = SettingsRpcData<"channels.get">;
 type Policy = Dashboard["bindings"][number]["accessPolicy"];
@@ -35,13 +33,20 @@ export function SettingsMessagingScreen({
   );
 }
 function Messaging({ host }: { readonly host: HostClient }) {
-  const isCurrent = useSettingsLease(host);
-  const dashboard = useSettingsRead(host, async () =>
-    unwrapRpcResult(await host.rpc["channels.get"]({})),
+  const resource = useMemo(
+    () =>
+      createClientRead(host, {
+        key: "channels",
+        label: "messaging",
+        read: async () => unwrapRpcResult(await host.rpc["channels.get"]({})),
+      }),
+    [host],
   );
-  const [pending, setPending] = useState(false);
-  const busy = useRef(false);
-  const [error, setError] = useState<string | null>(null);
+  const dashboard = useClientRead(resource);
+  const [actedOn, setActedOn] = useState<string | null>(null);
+  const [note, setNote] = useState<{ readonly section: string; readonly text: string } | null>(
+    null,
+  );
   const [providerId, setProvider] = useState<string | null>(null);
   const [repair, setRepair] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
@@ -50,30 +55,69 @@ function Messaging({ host }: { readonly host: HostClient }) {
   const [conversation, setConversation] = useState("");
   const [code, setCode] = useState("");
   const [shared, setShared] = useState(false);
-  const run = (operation: () => Promise<unknown>) => {
-    if (busy.current || !isCurrent()) return;
-    busy.current = true;
-    setPending(true);
-    setError(null);
-    void operation()
-      .then(() => {
-        if (!isCurrent()) return;
-        setCredentials({});
-        setCode("");
-        setProvider(null);
-        setRepair(null);
-      })
-      .catch(() => {
-        if (isCurrent())
-          setError("That change could not be confirmed. Refresh before trying again.");
-      })
-      .finally(() => {
-        void dashboard.reload();
-        busy.current = false;
-        setPending(false);
-      });
+  const change = useScreenAction(host, "channel-change", {
+    label: "save",
+    done: "saved",
+    thing: "the change",
+    execute: async (command: HostApiCommandInput) => {
+      await host.dispatch(command);
+    },
+    // Read the messaging settings again; where they show the change's effect, that settles it.
+    reconcile: async (command) => {
+      await resource.refresh();
+      const data = resource.getSnapshot().data;
+      if (data === null) return null;
+      const settled = changeSettled(data, command);
+      return settled === null
+        ? null
+        : settled
+          ? { kind: "confirmed", value: undefined }
+          : notDone({ label: "save", done: "saved" });
+    },
+  });
+  const check = useScreenAction(host, "channel-check", {
+    label: "check",
+    done: "checked",
+    thing: "the connection",
+    execute: async (connectionId: string) =>
+      unwrapRpcResult(await host.rpc["channel.connection.check"]({ connectionId })).ready,
+    reconcile: async (connectionId) => ({
+      kind: "confirmed",
+      value: unwrapRpcResult(await host.rpc["channel.connection.check"]({ connectionId })).ready,
+    }),
+  });
+  const pending = change.running || check.running;
+  const dispatch = (command: HostApiCommandInput, section: string) => {
+    if (pending) return;
+    setActedOn(section);
+    setNote(null);
+    check.dismiss();
+    void change.run(command).then((outcome) => {
+      if (outcome.kind !== "confirmed") return;
+      setCredentials({});
+      setCode("");
+      setProvider(null);
+      setRepair(null);
+      resource.invalidate();
+    });
   };
-  const dispatch = (command: HostApiCommandInput) => run(() => host.dispatch(command));
+  const checkConnection = (connectionId: string, section: string) => {
+    if (pending) return;
+    setActedOn(section);
+    setNote(null);
+    change.dismiss();
+    void check.run(connectionId).then((outcome) => {
+      if (outcome.kind === "confirmed" && !outcome.value)
+        setNote({ section, text: "Not ready yet. Finish its setup, then check again." });
+      resource.invalidate();
+    });
+  };
+  /** The answer to the last action, under the section it was asked in. */
+  const footerFor = (section: string) =>
+    actedOn !== section
+      ? undefined
+      : (settingsFooter(change.line ?? check.line) ??
+        (note?.section === section ? { text: note.text } : undefined));
   const button = (
     key: string,
     label: string,
@@ -84,7 +128,7 @@ function Messaging({ host }: { readonly host: HostClient }) {
     kind: "button",
     label,
     onPress,
-    disabled: pending || !canRespondToRequests(host.getSnapshot()),
+    disabled: pending,
     destructive,
   });
   const text = (key: string, label: string): NativeSettingsRow => ({ key, kind: "text", label });
@@ -96,20 +140,21 @@ function Messaging({ host }: { readonly host: HostClient }) {
     secure = false,
   ): NativeSettingsRow => ({ key, kind: "input", label, value, onChange, secure });
   const sections: NativeSettingsSection[] = [];
-  if (error || dashboard.error)
-    sections.push({
-      key: "error",
-      title: "Needs you",
-      rows: [text("error", error ?? dashboard.error ?? "")],
-    });
+  const loaded = readLine(dashboard, dashboard.refresh);
   sections.push({
     key: "refresh",
     title: "Messaging",
     rows: [
-      button("refresh", "Refresh", () => {
-        void dashboard.reload();
-      }),
+      button("refresh", "Refresh", dashboard.refresh),
+      ...(dashboard.data === null && loaded === null
+        ? [0, 1, 2].map((index) => ({
+            key: `placeholder:${index}`,
+            kind: "placeholder" as const,
+            label: "Not loaded yet",
+          }))
+        : []),
     ],
+    ...(loaded ? { footer: settingsFooter(loaded)! } : {}),
   });
   if (dashboard.data) {
     const data = dashboard.data;
@@ -161,33 +206,43 @@ function Messaging({ host }: { readonly host: HostClient }) {
       rows.push(
         button("save", repair ? "Replace credentials" : "Connect", () => {
           const idempotencyKey = mutationIdempotencyKey("channel-connect");
+          const section = `setup:${provider.provider}:${repair ?? "new"}`;
           if (repair)
-            dispatch({
-              type: "channel.connection.credentials.replace",
-              connectionId: repair,
-              credentials,
-              idempotencyKey,
-            });
+            dispatch(
+              {
+                type: "channel.connection.credentials.replace",
+                connectionId: repair,
+                credentials,
+                idempotencyKey,
+              },
+              section,
+            );
           else if (computer)
-            dispatch({
-              type: "channel.connection.computer.create",
-              provider: provider.provider,
-              runnerId,
-              ownerHandles: handles
-                .split(",")
-                .map((v) => v.trim())
-                .filter(Boolean),
-              idempotencyKey,
-            });
+            dispatch(
+              {
+                type: "channel.connection.computer.create",
+                provider: provider.provider,
+                runnerId,
+                ownerHandles: handles
+                  .split(",")
+                  .map((v) => v.trim())
+                  .filter(Boolean),
+                idempotencyKey,
+              },
+              section,
+            );
           else
-            dispatch({
-              type: "channel.connection.create",
-              provider: provider.provider,
-              credentials,
-              routingMode: shared ? "shared" : "dedicated",
-              accessPolicy: policy(),
-              idempotencyKey,
-            });
+            dispatch(
+              {
+                type: "channel.connection.create",
+                provider: provider.provider,
+                credentials,
+                routingMode: shared ? "shared" : "dedicated",
+                accessPolicy: policy(),
+                idempotencyKey,
+              },
+              section,
+            );
         }),
       );
       rows.push(
@@ -197,22 +252,15 @@ function Messaging({ host }: { readonly host: HostClient }) {
           setRepair(null);
         }),
       );
-      sections.push({
-        key: `setup:${provider.provider}:${repair ?? "new"}`,
-        title: provider.label,
-        rows,
-      });
+      const section = `setup:${provider.provider}:${repair ?? "new"}`;
+      const footer = footerFor(section);
+      sections.push({ key: section, title: provider.label, rows, ...(footer ? { footer } : {}) });
     }
     for (const account of data.accounts) {
       const rows: NativeSettingsRow[] = [
         text("status", account.status),
         button("check", "Check connection", () =>
-          run(async () => {
-            const result = unwrapRpcResult(
-              await host.rpc["channel.connection.check"]({ connectionId: account.connectionId }),
-            );
-            if (!result.ready) throw new Error("Setup incomplete");
-          }),
+          checkConnection(account.connectionId, account.id),
         ),
         button("repair", "Repair", () => {
           setCredentials({});
@@ -220,30 +268,36 @@ function Messaging({ host }: { readonly host: HostClient }) {
           setRepair(account.connectionId);
         }),
         button("pause", account.status === "paused" ? "Resume" : "Pause", () =>
-          dispatch({
-            type: "channel.connection.status.set",
-            connectionId: account.connectionId,
-            status: account.status === "paused" ? "connected" : "paused",
-            idempotencyKey: mutationIdempotencyKey("channel-status"),
-          }),
+          dispatch(
+            {
+              type: "channel.connection.status.set",
+              connectionId: account.connectionId,
+              status: account.status === "paused" ? "connected" : "paused",
+              idempotencyKey: mutationIdempotencyKey("channel-status"),
+            },
+            account.id,
+          ),
         ),
       ];
       rows.push(input("conversation", "Conversation ID", conversation, setConversation));
       rows.push(
         button("bind", "Add route", () =>
-          dispatch({
-            type: "channel.binding.create",
-            accountId: account.id,
-            selector: {
-              conversationId: conversation.trim(),
-              conversationType: null,
-              scopeId: null,
-              threadId: null,
+          dispatch(
+            {
+              type: "channel.binding.create",
+              accountId: account.id,
+              selector: {
+                conversationId: conversation.trim(),
+                conversationType: null,
+                scopeId: null,
+                threadId: null,
+              },
+              accessPolicy: policy(),
+              executionPolicy: { harness: "default", harnessInstanceId: null },
+              idempotencyKey: mutationIdempotencyKey("channel-route"),
             },
-            accessPolicy: policy(),
-            executionPolicy: { harness: "default", harnessInstanceId: null },
-            idempotencyKey: mutationIdempotencyKey("channel-route"),
-          }),
+            account.id,
+          ),
         ),
       );
       rows.push(
@@ -260,19 +314,28 @@ function Messaging({ host }: { readonly host: HostClient }) {
                   text: "Remove",
                   style: "destructive",
                   onPress: () =>
-                    dispatch({
-                      type: "channel.connection.status.set",
-                      connectionId: account.connectionId,
-                      status: "revoked",
-                      idempotencyKey: mutationIdempotencyKey("channel-remove"),
-                    }),
+                    dispatch(
+                      {
+                        type: "channel.connection.status.set",
+                        connectionId: account.connectionId,
+                        status: "revoked",
+                        idempotencyKey: mutationIdempotencyKey("channel-remove"),
+                      },
+                      account.id,
+                    ),
                 },
               ],
             ),
           true,
         ),
       );
-      sections.push({ key: account.id, title: account.displayName, rows });
+      const footer = footerFor(account.id);
+      sections.push({
+        key: account.id,
+        title: account.displayName,
+        rows,
+        ...(footer ? { footer } : {}),
+      });
     }
     for (const binding of data.bindings) {
       const rows: NativeSettingsRow[] = [
@@ -287,16 +350,19 @@ function Messaging({ host }: { readonly host: HostClient }) {
             mode,
             `${binding.accessPolicy.directMessages.mode === mode ? "✓ " : ""}Direct messages: ${mode}`,
             () =>
-              dispatch({
-                type: "channel.binding.update",
-                bindingId: binding.id,
-                expectedRevision: binding.revision,
-                accessPolicy: {
-                  ...binding.accessPolicy,
-                  directMessages: { ...binding.accessPolicy.directMessages, mode },
+              dispatch(
+                {
+                  type: "channel.binding.update",
+                  bindingId: binding.id,
+                  expectedRevision: binding.revision,
+                  accessPolicy: {
+                    ...binding.accessPolicy,
+                    directMessages: { ...binding.accessPolicy.directMessages, mode },
+                  },
+                  idempotencyKey: mutationIdempotencyKey("channel-policy"),
                 },
-                idempotencyKey: mutationIdempotencyKey("channel-policy"),
-              }),
+                binding.id,
+              ),
           ),
         );
       for (const mode of ["off", "owner", "approved", "anyone"] as const)
@@ -305,19 +371,22 @@ function Messaging({ host }: { readonly host: HostClient }) {
             `channels:${mode}`,
             `${binding.accessPolicy.channels.sender.mode === mode ? "✓ " : ""}Channel senders: ${mode}`,
             () =>
-              dispatch({
-                type: "channel.binding.update",
-                bindingId: binding.id,
-                expectedRevision: binding.revision,
-                accessPolicy: {
-                  ...binding.accessPolicy,
-                  channels: {
-                    ...binding.accessPolicy.channels,
-                    sender: { ...binding.accessPolicy.channels.sender, mode },
+              dispatch(
+                {
+                  type: "channel.binding.update",
+                  bindingId: binding.id,
+                  expectedRevision: binding.revision,
+                  accessPolicy: {
+                    ...binding.accessPolicy,
+                    channels: {
+                      ...binding.accessPolicy.channels,
+                      sender: { ...binding.accessPolicy.channels.sender, mode },
+                    },
                   },
+                  idempotencyKey: mutationIdempotencyKey("channel-policy"),
                 },
-                idempotencyKey: mutationIdempotencyKey("channel-policy"),
-              }),
+                binding.id,
+              ),
           ),
         );
       for (const scope of ["off", "selected", "all"] as const)
@@ -326,26 +395,29 @@ function Messaging({ host }: { readonly host: HostClient }) {
             `scope:${scope}`,
             `${binding.accessPolicy.channels.scope === scope ? "✓ " : ""}Channels: ${scope}`,
             () =>
-              dispatch({
-                type: "channel.binding.update",
-                bindingId: binding.id,
-                expectedRevision: binding.revision,
-                accessPolicy: {
-                  ...binding.accessPolicy,
-                  channels: {
-                    ...binding.accessPolicy.channels,
-                    scope,
-                    conversationIds:
-                      scope === "selected"
-                        ? conversation
-                            .split(",")
-                            .map((value) => value.trim())
-                            .filter(Boolean)
-                        : binding.accessPolicy.channels.conversationIds,
+              dispatch(
+                {
+                  type: "channel.binding.update",
+                  bindingId: binding.id,
+                  expectedRevision: binding.revision,
+                  accessPolicy: {
+                    ...binding.accessPolicy,
+                    channels: {
+                      ...binding.accessPolicy.channels,
+                      scope,
+                      conversationIds:
+                        scope === "selected"
+                          ? conversation
+                              .split(",")
+                              .map((value) => value.trim())
+                              .filter(Boolean)
+                          : binding.accessPolicy.channels.conversationIds,
+                    },
                   },
+                  idempotencyKey: mutationIdempotencyKey("channel-policy"),
                 },
-                idempotencyKey: mutationIdempotencyKey("channel-policy"),
-              }),
+                binding.id,
+              ),
           ),
         );
       rows.push(
@@ -361,20 +433,27 @@ function Messaging({ host }: { readonly host: HostClient }) {
           "revoke",
           "Remove route",
           () =>
-            dispatch({
-              type: "channel.binding.revoke",
-              bindingId: binding.id,
-              idempotencyKey: mutationIdempotencyKey("channel-route-revoke"),
-            }),
+            dispatch(
+              {
+                type: "channel.binding.revoke",
+                bindingId: binding.id,
+                idempotencyKey: mutationIdempotencyKey("channel-route-revoke"),
+              },
+              binding.id,
+            ),
           true,
         ),
       );
-      sections.push({ key: binding.id, title: "Route", rows });
+      const footer = footerFor(binding.id);
+      sections.push({ key: binding.id, title: "Route", rows, ...(footer ? { footer } : {}) });
     }
-    for (const grant of data.accessGrants)
+    for (const grant of data.accessGrants) {
+      const key = `${grant.bindingId}:${grant.externalUserId}`;
+      const footer = footerFor(key);
       sections.push({
-        key: `${grant.bindingId}:${grant.externalUserId}`,
+        key,
         title: grant.displayName,
+        ...(footer ? { footer } : {}),
         rows: [
           text("status", grant.status === "pending" ? "Waiting for approval" : grant.status),
           ...(["approved", "declined", "revoked"] as const).map((decision) =>
@@ -382,30 +461,39 @@ function Messaging({ host }: { readonly host: HostClient }) {
               decision,
               decision === "approved" ? "Approve" : decision === "declined" ? "Decline" : "Revoke",
               () =>
-                dispatch({
-                  type: "channel.access.review",
-                  bindingId: grant.bindingId,
-                  externalUserId: grant.externalUserId,
-                  expectedRevision: grant.revision,
-                  decision,
-                  idempotencyKey: mutationIdempotencyKey("channel-sender"),
-                }),
+                dispatch(
+                  {
+                    type: "channel.access.review",
+                    bindingId: grant.bindingId,
+                    externalUserId: grant.externalUserId,
+                    expectedRevision: grant.revision,
+                    decision,
+                    idempotencyKey: mutationIdempotencyKey("channel-sender"),
+                  },
+                  key,
+                ),
             ),
           ),
         ],
       });
+    }
   }
+  const linkFooter = footerFor("link");
   sections.push({
     key: "link",
     title: "Link your messaging account",
+    ...(linkFooter ? { footer: linkFooter } : {}),
     rows: [
       input("code", "Link code", code, setCode, true),
       button("link", "Link account", () =>
-        dispatch({
-          type: "channel.identity.link",
-          code,
-          idempotencyKey: mutationIdempotencyKey("channel-link"),
-        }),
+        dispatch(
+          {
+            type: "channel.identity.link",
+            code,
+            idempotencyKey: mutationIdempotencyKey("channel-link"),
+          },
+          "link",
+        ),
       ),
     ],
   });
@@ -431,4 +519,30 @@ function Messaging({ host }: { readonly host: HostClient }) {
       </Sheet>
     </>
   );
+}
+
+/** Whether the messaging settings show a change took: null where they can't tell. */
+function changeSettled(data: Dashboard, command: HostApiCommandInput): boolean | null {
+  switch (command.type) {
+    case "channel.connection.status.set": {
+      const account = data.accounts.find((row) => row.connectionId === command.connectionId);
+      if (account === undefined) return command.status === "revoked" ? true : null;
+      return account.status === command.status;
+    }
+    case "channel.binding.revoke":
+      return !data.bindings.some((binding) => binding.id === command.bindingId);
+    case "channel.binding.update": {
+      const binding = data.bindings.find((row) => row.id === command.bindingId);
+      return binding === undefined ? null : binding.revision > command.expectedRevision;
+    }
+    case "channel.access.review": {
+      const grant = data.accessGrants.find(
+        (row) =>
+          row.bindingId === command.bindingId && row.externalUserId === command.externalUserId,
+      );
+      return grant === undefined ? null : grant.revision > command.expectedRevision;
+    }
+    default:
+      return null;
+  }
 }

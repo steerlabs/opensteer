@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import {
   computerConnectionCommands,
   runnerDistributionPrefix,
@@ -7,10 +7,9 @@ import {
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { Text, View } from "react-native";
 import { NativeSettingsPage } from "./native-settings-page.js";
-import { useSettingsLease } from "./use-settings-read.js";
+import { notDone, settingsFooter, useScreenAction } from "../ui/client-feedback.js";
 
 export function SettingsComputerEnrollment({ host }: { readonly host: HostClient }) {
-  const current = useSettingsLease(host);
   const [name, setName] = useState("New computer");
   const [issued, setIssued] = useState<{
     enrollmentId: string;
@@ -18,9 +17,26 @@ export function SettingsComputerEnrollment({ host }: { readonly host: HostClient
     expiresAt: string;
     hostOrigin: string;
   } | null>(null);
-  const [pending, setPending] = useState(false);
-  const busy = useRef(false);
-  const [error, setError] = useState<string | null>(null);
+  const creation = useScreenAction(host, "computer-enrollment", {
+    label: "create",
+    done: "created",
+    thing: "the command",
+    execute: async (computerName: string) => {
+      const target = unwrapRpcResult(await host.rpc["agentPhone.target.get"]({}));
+      const result = await host.dispatch({
+        type: "runner.enrollment.createLocal",
+        allowedModules: ["agents", "shell"],
+        name: computerName,
+        idempotencyKey: mutationIdempotencyKey("computer-add"),
+      });
+      // Handed straight to this sheet, never kept as the action's outcome: the token is a secret.
+      if (result.type === "runner.enrollment.createLocal")
+        setIssued({ ...result, hostOrigin: target.hostUrl });
+    },
+    // Its one-time token is never read back, so a lost answer leaves nothing to run.
+    reconcile: async () => notDone({ label: "create", done: "created" }),
+    retry: () => void create(),
+  });
   const snapshot = host.getSnapshot();
   const revision = process.env.EXPO_PUBLIC_OPENSTEER_RUNNER_SOURCE_REVISION;
   const commands =
@@ -39,26 +55,8 @@ export function SettingsComputerEnrollment({ host }: { readonly host: HostClient
         })
       : null;
   async function create() {
-    if (busy.current || !current() || !name.trim()) return;
-    busy.current = true;
-    setPending(true);
-    setError(null);
-    try {
-      const target = unwrapRpcResult(await host.rpc["agentPhone.target.get"]({}));
-      const result = await host.dispatch({
-        type: "runner.enrollment.createLocal",
-        allowedModules: ["agents", "shell"],
-        name: name.trim(),
-        idempotencyKey: mutationIdempotencyKey("computer-add"),
-      });
-      if (current() && result.type === "runner.enrollment.createLocal")
-        setIssued({ ...result, hostOrigin: target.hostUrl });
-    } catch {
-      if (current()) setError("Couldn’t create the command. Try again.");
-    } finally {
-      busy.current = false;
-      if (current()) setPending(false);
-    }
+    if (creation.running || !name.trim()) return;
+    await creation.run(name.trim());
   }
   return (
     <View style={{ minHeight: 260 }}>
@@ -67,33 +65,31 @@ export function SettingsComputerEnrollment({ host }: { readonly host: HostClient
           {
             key: "computer",
             title: "Computer",
-            rows: [
-              ...(issued
-                ? [
-                    {
-                      key: "expiry",
-                      kind: "text" as const,
-                      label: `Command expires ${issued.expiresAt}`,
-                    },
-                  ]
-                : [
-                    {
-                      key: "name",
-                      kind: "input" as const,
-                      label: "Computer name",
-                      value: name,
-                      onChange: setName,
-                    },
-                    {
-                      key: "create",
-                      kind: "button" as const,
-                      label: "Create connection command",
-                      disabled: pending || !name.trim(),
-                      onPress: () => void create(),
-                    },
-                  ]),
-              ...(error ? [{ key: "error", kind: "text" as const, label: error }] : []),
-            ],
+            rows: issued
+              ? [
+                  {
+                    key: "expiry",
+                    kind: "text" as const,
+                    label: `Command expires ${issued.expiresAt}`,
+                  },
+                ]
+              : [
+                  {
+                    key: "name",
+                    kind: "input" as const,
+                    label: "Computer name",
+                    value: name,
+                    onChange: setName,
+                  },
+                  {
+                    key: "create",
+                    kind: "button" as const,
+                    label: "Create connection command",
+                    disabled: creation.running || !name.trim(),
+                    onPress: () => void create(),
+                  },
+                ],
+            ...(creation.line ? { footer: settingsFooter(creation.line)! } : {}),
           },
         ]}
       />

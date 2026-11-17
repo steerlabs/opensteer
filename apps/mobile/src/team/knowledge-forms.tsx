@@ -44,7 +44,9 @@ import { AppText, Field, Notice, PrimaryButton, RowGroup, SectionLabel } from ".
 import { Screen } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
 import { SearchField } from "./channel-details.js";
-import { failureWords, levelWords } from "./knowledge-model.js";
+import { levelWords } from "./knowledge-model.js";
+import { ActionLine, ActionLineSlot, type ActionLineValue } from "../ui/action-line.js";
+import { teamOutcome, teamOutcomeLine } from "./team-feedback.js";
 import {
   knowledgeStyles,
   Loading,
@@ -268,9 +270,10 @@ function useDirectory(teamId: string, wanted: boolean): Directory | null {
     wanted ? session : null,
     async (team) => unwrapRpcResult(await team.rpc["team.groups.list"]({})).groups,
     teamId,
+    "groups",
   );
   // Without the groups a list still shows; a group is then named only "Group".
-  if (groups.value === null && groups.failure === null) return null;
+  if (groups.value === null && groups.line === null) return null;
   return { members, people: directory, groups: groups.value ?? [] };
 }
 
@@ -299,6 +302,7 @@ export function TeamTopicAccessScreen(
     async (session) =>
       unwrapRpcResult(await session.rpc["team.knowledge.topic.access.get"]({ topicId })),
     topicId,
+    "who can see this topic",
   );
   const held = read.value?.entries ?? null;
   const shown = draft?.entries ?? held;
@@ -311,24 +315,29 @@ export function TeamTopicAccessScreen(
     if (session === null || read.value === null || draft === null || !dirty) return;
     setSaving(true);
     setFailure(null);
-    void teamCommand(session, {
-      type: "team.knowledge.topic.access.set",
-      topicId,
-      expectedRevision: SequenceSchema.parse(draft.revision),
-      access: [...draft.entries],
-    })
-      .then(
-        () => {
+    let stale = false;
+    void teamOutcome(session, { label: "save this list", done: "saved" }, () =>
+      teamCommand(session, {
+        type: "team.knowledge.topic.access.set",
+        topicId,
+        expectedRevision: SequenceSchema.parse(draft.revision),
+        access: [...draft.entries],
+      }).catch((error: unknown) => {
+        stale = isTopicAccessConflict(error);
+        throw error;
+      }),
+    )
+      .then((outcome) => {
+        if (outcome.kind === "confirmed") {
           void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           navigation.goBack();
-        },
-        (error: unknown) =>
+        } else
           setFailure(
-            isTopicAccessConflict(error)
+            stale
               ? { text: "This list changed; reload it.", stale: true }
-              : { text: failureWords(error, "The list wasn't saved."), stale: false },
-          ),
-      )
+              : { text: teamOutcomeLine(outcome)?.text ?? "", stale: false },
+          );
+      })
       .finally(() => setSaving(false));
   };
 
@@ -351,7 +360,7 @@ export function TeamTopicAccessScreen(
   if (session === null || read.value === null || shown === null || directory === null)
     return (
       <Screen>
-        <Loading failure={read.failure} />
+        <Loading line={read.line} />
       </Screen>
     );
   const edit = (next: AccessList): void => {
@@ -381,24 +390,27 @@ export function TeamTopicAccessScreen(
             tone="neutral"
           />
         ) : null}
-        {failure === null ? null : (
-          <Notice
-            detail={
-              failure.stale ? "Someone saved a change to it after you opened it." : failure.text
-            }
-            title={failure.stale ? failure.text : "That didn't work"}
-            {...(failure.stale
-              ? {
-                  action: {
+        {failure === null || failure.text === "" ? null : (
+          <ActionLine
+            line={{
+              key: failure.text,
+              text: failure.stale
+                ? "Someone saved a change to it after you opened it."
+                : failure.text,
+              tone: "danger",
+              haptic: "error",
+              link: failure.stale
+                ? {
                     label: "Reload",
                     onPress: () => {
                       setDraft(null);
                       setFailure(null);
                       read.reload();
                     },
-                  },
-                }
-              : {})}
+                  }
+                : null,
+            }}
+            numberOfLines={2}
           />
         )}
         <RowGroup>
@@ -505,7 +517,7 @@ export function TeamTopicFormScreen(
   const directory = useDirectory(teamId, existing === null && !everyone);
   const [chosen, setChosen] = useState<AccessList>([]);
   const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
+  const [failure, setFailure] = useState<ActionLineValue | null>(null);
   const loaded = useRef(false);
   const read = useFocusedRead(
     session,
@@ -520,6 +532,7 @@ export function TeamTopicFormScreen(
       return topic;
     },
     existing ?? "new",
+    "this topic",
   );
   useLayoutEffect(
     () => navigation.setOptions({ title: existing === null ? "New topic" : "Edit topic" }),
@@ -528,7 +541,7 @@ export function TeamTopicFormScreen(
   if (session === null || name === null)
     return (
       <Screen>
-        <Loading failure={read.failure} />
+        <Loading line={read.line} />
       </Screen>
     );
   const words = name.trim();
@@ -537,7 +550,7 @@ export function TeamTopicFormScreen(
     setBusy(true);
     setFailure(null);
     const id = existing ?? createId("knowledgeTopic");
-    const sent =
+    const sent = () =>
       existing === null
         ? teamCommand(session, {
             type: "team.knowledge.topic.create",
@@ -552,15 +565,19 @@ export function TeamTopicFormScreen(
             name: words,
             description: description.trim(),
           });
-    void sent
-      .then(
-        () => {
-          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          if (existing === null) navigation.popTo("TeamKnowledge", { teamId, topicId: id });
-          else navigation.goBack();
-        },
-        (error: unknown) => setFailure(failureWords(error, "The topic wasn't saved.")),
-      )
+    void teamOutcome(
+      session,
+      existing === null
+        ? { label: "make this topic", done: "made" }
+        : { label: "save this topic", done: "saved" },
+      () => sent(),
+    )
+      .then((outcome) => {
+        if (outcome.kind !== "confirmed") return setFailure(teamOutcomeLine(outcome));
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        if (existing === null) navigation.popTo("TeamKnowledge", { teamId, topicId: id });
+        else navigation.goBack();
+      })
       .finally(() => setBusy(false));
   };
   const teamName = team?.name ?? "the team";
@@ -645,11 +662,7 @@ export function TeamTopicFormScreen(
             />
           </>
         ) : null}
-        {failure === null ? null : (
-          <AppText role="secondary" tone="danger">
-            {failure}
-          </AppText>
-        )}
+        <ActionLineSlot line={failure} onDismiss={() => setFailure(null)} />
         <PrimaryButton
           busy={busy}
           disabled={words === ""}

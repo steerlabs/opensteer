@@ -28,6 +28,8 @@ vi.mock("react-native", () => ({
 }));
 vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ bottom: 0 }) }));
 vi.mock("../ui/primitives.js", () => ({}));
+vi.mock("../ui/action-line.js", () => ({}));
+vi.mock("../ui/placeholder.js", () => ({}));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -141,6 +143,16 @@ it.each(kinds)("retires owned %s before its delivery boundary", async (kind) => 
       };
     } else if (kind === "read hook") {
       const session = new TeamSessionClient(options);
+      owner.own(() => session.dispose());
+      // Reads start only on a ready connection.
+      session.connect();
+      await vi.waitFor(
+        () => {
+          if (session.connection.getSnapshot().phase !== "ready")
+            throw new Error("The team session never became ready.");
+        },
+        { timeout: 1000 },
+      );
       const node = document.createElement("div"),
         root = createRoot(node);
       function Note({ current }: { current: TeamSessionClient | null }) {
@@ -153,6 +165,7 @@ it.each(kinds)("retires owned %s before its delivery boundary", async (kind) => 
             return "Private note A";
           },
           "private-note",
+          "note",
         );
         return <p>{read.value}</p>;
       }

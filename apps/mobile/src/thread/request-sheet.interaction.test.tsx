@@ -1,6 +1,7 @@
+// @vitest-environment happy-dom
+import { controlledClientSession } from "@opensteer/client/test-support";
 import { DeviceIdSchema } from "@opensteer/core";
 import { authenticatePasswordApproval } from "./password-approval-auth.js";
-// @vitest-environment happy-dom
 
 import type { SurfaceModel } from "@opensteer/client/host";
 import {
@@ -26,6 +27,14 @@ vi.mock("./agent-mark.js", () => ({
 vi.mock("./password-approval-auth.js", () => ({
   authenticatePasswordApproval: vi.fn(async () => true),
 }));
+vi.mock(
+  "../ui/action-line.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).actionLine,
+);
+vi.mock(
+  "../ui/placeholder.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).placeholder,
+);
 vi.mock("expo-haptics", () => ({
   ImpactFeedbackStyle: { Medium: "medium" },
   NotificationFeedbackType: { Error: "error", Success: "success" },
@@ -335,7 +344,7 @@ describe("RequestSheetContent computer owner approvals", () => {
     await render(surface(request), vi.fn(), { review });
     await click("Allow");
     await closeAndReopen();
-    expect(text()).not.toContain("Could not confirm your answer was sent.");
+    expect(text()).not.toContain("Couldn't confirm your answer sent.");
     expect(button("Allow").disabled).toBe(false);
   });
 });
@@ -557,7 +566,7 @@ describe("RequestSheetContent saved-password sign-ins", () => {
     await render(surface(passwordSignInRequest()), dispatch);
 
     await click("Don’t Allow");
-    expect(text()).toContain("Could not confirm your answer was sent.");
+    expect(text()).toContain("Couldn't confirm your answer sent.");
     await click("Don’t Allow");
     expect(dispatch).toHaveBeenCalledTimes(2);
     expect(dispatch.mock.calls[0]?.[0].idempotencyKey).toBe(
@@ -750,7 +759,7 @@ describe("RequestSheetContent external requests", () => {
       }),
     );
     expect(refresh).toHaveBeenCalled();
-    expect(text()).toContain("Could not confirm your answer was sent.");
+    expect(text()).toContain("Couldn't confirm your answer sent.");
     expect(button("Turn it on").disabled).toBe(false);
     succeeds = true;
     await click("Turn it on");
@@ -804,14 +813,15 @@ describe("RequestSheetContent external requests", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
-  it("keeps decline visible but disabled while the Host is offline", async () => {
+  it("answers decline while offline beside it, without sending", async () => {
     const dispatch = vi.fn(async () => ({ type: "request.respond" }));
     await render(surface(fullDiskAccessRequest()), dispatch, { canRespond: false });
 
     const decline = button("Not now");
-    expect(decline.disabled).toBe(true);
-    decline.click();
+    expect(decline.disabled).toBe(false);
+    await click("Not now");
     expect(dispatch).not.toHaveBeenCalled();
+    expect(text()).toContain("Not sent. You're offline.");
   });
 
   it("retries a failed decline with the same idempotency key", async () => {
@@ -822,7 +832,7 @@ describe("RequestSheetContent external requests", () => {
     await render(surface(fullDiskAccessRequest()), dispatch);
 
     await click("Not now");
-    expect(text()).toContain("Could not confirm your answer was sent.");
+    expect(text()).toContain("Couldn't confirm your answer sent.");
     await click("Not now");
 
     expect(dispatch).toHaveBeenCalledTimes(2);
@@ -973,6 +983,8 @@ async function render(
     readonly snapshot?: object;
   } = {},
 ): Promise<void> {
+  const session = controlledClientSession();
+  if (options.canRespond === false) session.change({ network: "offline", phase: "recovering" });
   const container = document.createElement("div");
   document.body.append(container);
   const root = options.root ?? createRoot(container);
@@ -995,6 +1007,7 @@ async function render(
         gate={options.gate ?? createThreadMutationGate(null, () => undefined)}
         hostClient={
           {
+            connection: session.connection,
             dispatch,
             load: async () => undefined,
             refresh: options.refresh ?? (async () => undefined),

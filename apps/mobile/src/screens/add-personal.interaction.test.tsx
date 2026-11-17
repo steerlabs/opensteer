@@ -63,9 +63,10 @@ vi.mock("../ui/screen.js", () => ({
 vi.mock("../ui/mobile-client-context.js", () => ({ useMobileClient: () => state.client }));
 vi.mock("./add-deployment.js", () => ({ DeploymentDoorSymbol: () => null }));
 vi.mock("../navigation-ref.js", () => ({ resetToDeployment: state.reset }));
-vi.mock("../client/mobile-client.js", () => ({
-  operationDetail: (_error: unknown, fallback: string) => fallback,
-}));
+vi.mock(
+  "../ui/action-line.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).actionLine,
+);
 vi.mock("../client/add-deployment.js", () => ({
   addPersonalDeployment: state.add,
   defaultDeploymentName: () => "Personal computer",

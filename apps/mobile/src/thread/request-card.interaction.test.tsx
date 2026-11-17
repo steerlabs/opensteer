@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { controlledClientSession } from "@opensteer/client/test-support";
 
 import type { SurfaceModel } from "@opensteer/client/host";
 import type { Request } from "@opensteer/core";
@@ -22,6 +23,14 @@ vi.mock("./agent-mark.js", () => ({
 vi.mock("./password-approval-auth.js", () => ({
   authenticatePasswordApproval: vi.fn(async () => true),
 }));
+vi.mock(
+  "../ui/action-line.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).actionLine,
+);
+vi.mock(
+  "../ui/placeholder.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).placeholder,
+);
 vi.mock("expo-haptics", () => ({
   ImpactFeedbackStyle: { Medium: "medium" },
   NotificationFeedbackType: { Error: "error", Success: "success" },
@@ -153,6 +162,8 @@ async function render(
   } = {},
 ): Promise<ReturnType<typeof vi.fn>> {
   const dispatch = options.dispatch ?? vi.fn(async () => ({ type: "request.respond" }));
+  const session = controlledClientSession();
+  if (options.canRespond === false) session.change({ network: "offline", phase: "recovering" });
   const snapshot = {
     harnesses: [{ driverKind: options.driverKind ?? "antigravity", id: "h1" }],
     threads: [{ harnessInstanceId: "h1", id: threadId }],
@@ -173,6 +184,7 @@ async function render(
         highlighted={false}
         hostClient={
           {
+            connection: session.connection,
             dispatch,
             getSnapshot: () => snapshot,
             refresh: async () => undefined,
@@ -342,11 +354,14 @@ describe("RequestCard", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
-  it("holds every answer while the Host is out of reach", async () => {
-    await render(surfaceOf(approval()), { canRespond: false });
+  // Disabled buttons with no reason read as broken: a tap is answered beside them instead.
+  it("answers a tap while offline without sending it", async () => {
+    const dispatch = await render(surfaceOf(approval()), { canRespond: false });
     settleArrival();
-    expect(button("Allow").disabled).toBe(true);
-    expect(button("Don’t Allow").disabled).toBe(true);
+    expect(button("Allow").disabled).toBe(false);
+    await press("Allow");
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(text()).toContain("Not sent. You're offline.");
     expect(text()).not.toContain("Reconnecting");
   });
 
@@ -358,7 +373,7 @@ describe("RequestCard", () => {
     await render(surfaceOf(approval()), { dispatch });
     settleArrival();
     await press("Allow");
-    expect(text()).toContain("Could not confirm your answer was sent.");
+    expect(text()).toContain("Couldn't confirm your answer sent.");
     await press("Allow");
     expect(dispatch).toHaveBeenCalledTimes(2);
     expect(dispatch.mock.calls[0]?.[0].idempotencyKey).toBe(

@@ -1,9 +1,10 @@
-import { Button, HStack, Image, Spacer, Text, VStack } from "@expo/ui/swift-ui";
+import { Button, Capsule, HStack, Image, Spacer, Text, VStack } from "@expo/ui/swift-ui";
 import {
   accessibilityAddTraits,
   accessibilityHidden,
   accessibilityLabel,
   background,
+  buttonStyle,
   contentShape,
   disabled,
   font,
@@ -15,6 +16,7 @@ import type { ReactNode } from "react";
 import { color, deploymentPaint } from "../theme.js";
 import type { DeploymentMark } from "../threads/deployment-identity.js";
 import type { SFSymbolName } from "../ui/symbol.js";
+import type { NativeSettingsFooter } from "./native-settings-page.types.js";
 import { type SettingsActionModel } from "./settings-model.js";
 
 const secondary = foregroundStyle({ type: "hierarchical", style: "secondary" });
@@ -170,5 +172,56 @@ export function ErrorText(props: { readonly detail: string | null }): ReactNode 
     >
       {props.detail}
     </Text>
+  );
+}
+
+/** Two still bars in a row's shape: never a shimmer, which reads as loading forever. */
+export function PlaceholderRow({ label }: { readonly label: string }) {
+  return (
+    <VStack
+      alignment="leading"
+      spacing={8}
+      modifiers={[accessibilityLabel(label), frame({ maxWidth: Infinity, alignment: "leading" })]}
+    >
+      <Capsule
+        modifiers={[foregroundStyle(color.surfaceRaised), frame({ width: 160, height: 10 })]}
+      />
+      <Capsule
+        modifiers={[foregroundStyle(color.surfaceRaised), frame({ width: 96, height: 10 })]}
+      />
+    </VStack>
+  );
+}
+
+/** A section's last line, with its one link, such as Try again or Check. */
+export function LineFooter({ footer }: { readonly footer: NativeSettingsFooter }): ReactNode {
+  const link = footer.link ?? null;
+  const text = (
+    <Text
+      modifiers={[
+        footnote,
+        footer.tone === "danger"
+          ? foregroundStyle(color.red)
+          : foregroundStyle({ type: "hierarchical", style: "secondary" }),
+      ]}
+    >
+      {footer.text}
+    </Text>
+  );
+  if (link === null) return text;
+  return (
+    <HStack alignment="firstTextBaseline" spacing={6}>
+      {text}
+      <Button onPress={link.onPress} modifiers={[buttonStyle("plain")]}>
+        <Text
+          modifiers={[
+            font({ textStyle: "footnote", weight: "semibold" }),
+            foregroundStyle(color.ember),
+          ]}
+        >
+          {link.label}
+        </Text>
+      </Button>
+    </HStack>
   );
 }

@@ -54,11 +54,17 @@ import { IntegrationIcon } from "../ui/integration-icon.js";
 import type {
   NativeSettingsPageProps,
   NativeSettingsRow,
-  NativeSettingsSection,
   NativeSettingsStep,
   NativeSettingsTone,
 } from "./native-settings-page.types.js";
-import { Chevron, IdentityMark, Lines, Tile } from "./settings-form-primitives.ios.js";
+import {
+  Chevron,
+  IdentityMark,
+  LineFooter,
+  Lines,
+  PlaceholderRow,
+  Tile,
+} from "./settings-form-primitives.ios.js";
 
 const toneColor: Record<NativeSettingsTone, string> = {
   neutral: color.muted,
@@ -66,7 +72,6 @@ const toneColor: Record<NativeSettingsTone, string> = {
   attention: color.amber,
   bad: color.red,
 };
-const footnote = font({ textStyle: "footnote" });
 export function NativeSettingsPage(props: NativeSettingsPageProps) {
   const query = useNativeState("");
   const navigation = useNavigation();
@@ -83,7 +88,7 @@ export function NativeSettingsPage(props: NativeSettingsPageProps) {
         <Section
           key={section.key}
           title={section.collapsed ? "" : section.title}
-          {...(section.footer ? { footer: <Footer footer={section.footer} /> } : {})}
+          {...(section.footer ? { footer: <LineFooter footer={section.footer} /> } : {})}
         >
           {section.collapsed ? (
             <DisclosureGroup label={section.title}>
@@ -267,24 +272,6 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
   return <Input row={row} />;
 }
 
-/** Two still bars in a row's shape: never a shimmer, which reads as loading forever. */
-function PlaceholderRow({ label }: { readonly label: string }) {
-  return (
-    <VStack
-      alignment="leading"
-      spacing={8}
-      modifiers={[accessibilityLabel(label), frame({ maxWidth: Infinity, alignment: "leading" })]}
-    >
-      <Capsule
-        modifiers={[foregroundStyle(color.surfaceRaised), frame({ width: 160, height: 10 })]}
-      />
-      <Capsule
-        modifiers={[foregroundStyle(color.surfaceRaised), frame({ width: 96, height: 10 })]}
-      />
-    </VStack>
-  );
-}
-
 /** A switch whose state never arrived: its track with no knob, never drawn as off. */
 function UnknownToggleRow({
   row,
@@ -307,42 +294,6 @@ function UnknownToggleRow({
         ]}
       />
     </HStack>
-  );
-}
-
-function Footer({ footer }: { readonly footer: NonNullable<NativeSettingsSection["footer"]> }) {
-  const link = footer.link ?? null;
-  if (link !== null)
-    return (
-      <HStack alignment="firstTextBaseline" spacing={6}>
-        <FooterText footer={footer} />
-        <Button onPress={link.onPress} modifiers={[buttonStyle("plain")]}>
-          <Text
-            modifiers={[
-              font({ textStyle: "footnote", weight: "semibold" }),
-              foregroundStyle(color.ember),
-            ]}
-          >
-            {link.label}
-          </Text>
-        </Button>
-      </HStack>
-    );
-  return <FooterText footer={footer} />;
-}
-
-function FooterText({ footer }: { readonly footer: NonNullable<NativeSettingsSection["footer"]> }) {
-  return (
-    <Text
-      modifiers={[
-        footnote,
-        footer.tone === "danger"
-          ? foregroundStyle(color.red)
-          : foregroundStyle({ type: "hierarchical", style: "secondary" }),
-      ]}
-    >
-      {footer.text}
-    </Text>
   );
 }
 

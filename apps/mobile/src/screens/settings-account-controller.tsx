@@ -1,14 +1,16 @@
 import { presentActionFailure } from "@opensteer/client/feedback";
-import { remoteAccessDisconnectWarning } from "@opensteer/client/host";
-import { usePersonalRemoteAccess, useRemoteAccess } from "@opensteer/client/react";
+import { remoteAccessDisconnectWarning, unwrapRpcResult } from "@opensteer/client/host";
+import { useClientRead, usePersonalRemoteAccess, useRemoteAccess } from "@opensteer/client/react";
+import { createClientRead } from "@opensteer/client/reads";
 import { sessionActivityLine, settingsSessionRows } from "@opensteer/client/settings";
 import type { AuthSessionSummary } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { Alert, Linking } from "react-native";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import { mobileRemoteAccessPort } from "../client/remote-access-port.js";
+import { notDone, readLine, settingsFooter, useScreenAction } from "../ui/client-feedback.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import { phoneLeaves } from "./device-page-model.js";
@@ -17,7 +19,6 @@ import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings
 import { accountSettingsModel, signOutAccountInOrder } from "./settings-model.js";
 import { remoteAccessSections, type RemoteAccessRowAction } from "./settings-remote-access.js";
 import { useSettingsHost } from "./use-settings-host.js";
-import { useSettingsLease } from "./use-settings-read.js";
 
 /** Account: who you are, using this computer from anywhere, and where you're signed in. */
 export function AccountSettingsController(props: { readonly sessionId?: string } = {}): ReactNode {
@@ -45,11 +46,38 @@ function AccountSettingsContent(props: {
     rows.find((row) => row.deploymentId === enrolledIn && row.accountManaged) ?? null;
   const host = selection.hostClient;
   const snapshot = useSettingsHost(host);
-  const isCurrent = useSettingsLease(host);
   const remote = usePersonalRemoteAccess(snapshot !== null ? host : null);
-  const [sessions, setSessions] = useState<readonly AuthSessionSummary[] | null>(null);
-  const [sessionsError, setSessionsError] = useState<string | null>(null);
-  const [removing, setRemoving] = useState(false);
+  const sessionsRead = useMemo(
+    () =>
+      host === null
+        ? null
+        : createClientRead(host, {
+            key: "auth-sessions",
+            label: "where you're signed in",
+            read: async () =>
+              settingsSessionRows(unwrapRpcResult(await host.rpc["sessions.list"]({})).sessions),
+          }),
+    [host],
+  );
+  const sessionsState = useClientRead(sessionsRead);
+  const sessions = sessionsState.data;
+  const sessionsLine = settingsFooter(readLine(sessionsState, sessionsState.refresh));
+  const signOutDevice = useScreenAction(host, "session-sign-out", {
+    label: "sign out",
+    done: "signed out",
+    thing: "that device",
+    execute: (session: AuthSessionSummary) => client.removeHostSession(session),
+    reconcile: async (session) => {
+      await sessionsRead?.refresh();
+      const listed = sessionsRead?.getSnapshot().data;
+      if (!listed) return null;
+      return listed.some((row) => row.id === session.id)
+        ? notDone({ label: "sign out", done: "signed out" })
+        : { kind: "confirmed", value: undefined };
+    },
+  });
+  const removing = signOutDevice.running;
+  const sessionsFooter = settingsFooter(signOutDevice.line) ?? sessionsLine;
   const [accountError, setAccountError] = useState<string | null>(null);
   const [accountWorking, setAccountWorking] = useState(false);
   const accountInFlight = useRef(false);
@@ -65,21 +93,6 @@ function AccountSettingsContent(props: {
     remote,
     signedIn: account.account.identity !== null,
   });
-
-  useEffect(() => {
-    setSessions(null);
-    setSessionsError(null);
-    if (!host) return;
-    void host.rpc["sessions.list"]({})
-      .then((result) => {
-        if (!isCurrent() || client.getSnapshot().selection.hostClient !== host) return;
-        if (result.ok) setSessions(settingsSessionRows(result.data.sessions));
-        else setSessionsError(result.error.message);
-      })
-      .catch(() => {
-        if (isCurrent()) setSessionsError("This phone couldn’t load where you’re signed in.");
-      });
-  }, [client, host, isCurrent]);
 
   const runAccount = useCallback((operation: () => Promise<void>, fallback: string) => {
     if (accountInFlight.current) return;
@@ -136,20 +149,12 @@ function AccountSettingsContent(props: {
           text: "Sign out",
           style: "destructive",
           onPress: () => {
-            if (removing || !isCurrent()) return;
-            setRemoving(true);
-            setSessionsError(null);
-            void client
-              .removeHostSession(session)
-              .then(() => {
-                if (!isCurrent()) return;
-                setSessions((current) => current?.filter((row) => row.id !== session.id) ?? null);
-                if (props.sessionId !== undefined) navigation.goBack();
-              })
-              .catch((error: unknown) =>
-                setSessionsError(presentActionFailure(error, "Sign-out didn’t finish. Try again.")),
-              )
-              .finally(() => setRemoving(false));
+            if (removing) return;
+            void signOutDevice.run(session).then((outcome) => {
+              if (outcome.kind !== "confirmed") return;
+              sessionsRead?.invalidate();
+              if (props.sessionId !== undefined) navigation.goBack();
+            });
           },
         },
       ],
@@ -204,12 +209,11 @@ function AccountSettingsContent(props: {
             key: "session",
             title: "",
             rows: [
-              {
-                key: "missing",
-                kind: "text",
-                label: sessions === null ? "Loading…" : "This device is no longer signed in.",
-              },
+              sessions === null
+                ? { key: "missing", kind: "placeholder", label: "Not loaded yet" }
+                : { key: "missing", kind: "text", label: "This device is no longer signed in." },
             ],
+            ...(sessionsLine ? { footer: sessionsLine } : {}),
           }
         : {
             key: "session",
@@ -230,13 +234,11 @@ function AccountSettingsContent(props: {
                 onPress: () => signOutSession(session),
               },
             ],
-            footer: sessionsError
-              ? { text: sessionsError, tone: "danger" }
-              : {
-                  text: session.current
-                    ? `Signing out here removes ${computer} from this phone.`
-                    : `It will need to sign in again to open ${computer}.`,
-                },
+            footer: sessionsFooter ?? {
+              text: session.current
+                ? `Signing out here removes ${computer} from this phone.`
+                : `It will need to sign in again to open ${computer}.`,
+            },
           },
     );
     return <NativeSettingsPage sections={sections} />;
@@ -305,15 +307,21 @@ function AccountSettingsContent(props: {
         act,
       ),
     );
-  if (host && (sessions === null || sessions.length > 0 || sessionsError))
+  if (host && (sessions === null || sessions.length > 0))
     sections.push({
       key: "sessions",
       title: "Where you’re signed in",
       rows:
         sessions === null
-          ? [{ key: "loading", kind: "text", label: sessionsError ? "Couldn’t load" : "Loading…" }]
+          ? sessionsLine
+            ? []
+            : [0, 1, 2].map((index) => ({
+                key: `placeholder:${index}`,
+                kind: "placeholder" as const,
+                label: "Not loaded yet",
+              }))
           : sessions.map(sessionRow),
-      ...(sessionsError ? { footer: { text: sessionsError, tone: "danger" as const } } : {}),
+      ...(sessionsFooter ? { footer: sessionsFooter } : {}),
     });
   if (accountModel?.action?.kind === "sign-out")
     sections.push({
@@ -368,7 +376,7 @@ function AccountSettingsContent(props: {
                   onPress: () => {
                     const origin = privateAddress.trim();
                     setPrivateAddress(null);
-                    if (isCurrent()) remoteAccess.setPrivateNetwork(origin);
+                    remoteAccess.setPrivateNetwork(origin);
                   },
                 },
               ],

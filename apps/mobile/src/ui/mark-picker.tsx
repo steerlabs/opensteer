@@ -1,16 +1,24 @@
-import { mutationIdempotencyKey, threadMark, type HostClient } from "@opensteer/client/host";
+import {
+  mutationIdempotencyKey,
+  threadInDirectory,
+  threadMark,
+  type HostClient,
+} from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
 import type { IconName } from "@opensteer/core";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { KeyboardAvoidingView, Modal, Platform, StyleSheet, View } from "react-native";
 import { color, space } from "../theme.js";
+import { ActionLineSlot, type ActionLineValue } from "./action-line.js";
+import { notDone, useScreenAction } from "./client-feedback.js";
 import { IconChoices } from "./mark-choices.js";
 import { AppText, SecondaryButton } from "./primitives.js";
 
 function PickerSheet(props: {
   readonly children: ReactNode;
   readonly closing?: boolean;
-  readonly error: string | null;
+  readonly line: ActionLineValue | null;
+  readonly onDismissLine: () => void;
   readonly onClose: () => void;
   readonly title: string;
   readonly onDismiss?: (() => void) | undefined;
@@ -48,11 +56,7 @@ function PickerSheet(props: {
             </AppText>
             <SecondaryButton compact label="Close" onPress={() => setOpen(false)} />
           </View>
-          {props.error === null ? null : (
-            <View accessibilityRole="alert">
-              <AppText tone="danger">{props.error}</AppText>
-            </View>
-          )}
+          <ActionLineSlot line={props.line} onDismiss={props.onDismissLine} />
           {props.children}
         </View>
       </KeyboardAvoidingView>
@@ -69,34 +73,41 @@ export function TaskIconPicker(props: {
   const { snapshot } = useHostSnapshot(props.hostClient);
   const mark = threadMark(props.threadId, snapshot);
   const [closing, setClosing] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const inFlight = useRef(false);
+  const chosen = useRef<IconName | null>(null);
+  const spec = { label: "change", done: "changed", thing: "the icon" } as const;
+  const change = useScreenAction<IconName | null, void>(
+    props.hostClient,
+    `thread-icon:${props.threadId}`,
+    {
+      ...spec,
+      execute: (icon) =>
+        props.hostClient
+          .dispatch({
+            type: "thread.icon.set",
+            threadId: props.threadId,
+            icon,
+            idempotencyKey: mutationIdempotencyKey("thread-icon"),
+          })
+          .then(() => undefined),
+      // The task's own mark says whether a lost answer changed it.
+      reconcile: async (icon) =>
+        (threadInDirectory(props.threadId, props.hostClient.getSnapshot())?.icon ?? null) === icon
+          ? { kind: "confirmed", value: undefined }
+          : notDone(spec),
+      retry: () => void choose(chosen.current),
+    },
+  );
   const choose = async (icon: IconName | null) => {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setSaving(true);
-    setError(null);
-    try {
-      await props.hostClient.dispatch({
-        type: "thread.icon.set",
-        threadId: props.threadId,
-        icon,
-        idempotencyKey: mutationIdempotencyKey("thread-icon"),
-      });
-      setClosing(true);
-    } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "The icon could not be changed.");
-    } finally {
-      inFlight.current = false;
-      setSaving(false);
-    }
+    if (change.running) return;
+    chosen.current = icon;
+    if ((await change.run(icon)).kind === "confirmed") setClosing(true);
   };
   return (
     <PickerSheet
       title="Change icon"
       closing={closing}
-      error={error}
+      line={change.line}
+      onDismissLine={change.dismiss}
       onClose={props.onClose}
       onDismiss={props.onDismiss}
     >
@@ -104,7 +115,7 @@ export function TaskIconPicker(props: {
         task
         color={mark.color}
         value={mark.icon}
-        disabled={saving}
+        disabled={change.running}
         onChange={(icon) => void choose(icon)}
       />
     </PickerSheet>
