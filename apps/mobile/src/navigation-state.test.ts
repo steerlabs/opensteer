@@ -5,6 +5,7 @@ import {
   StackRouter,
   type NavigationAction,
 } from "@react-navigation/native";
+import { PendingDestination } from "./pending-destination.js";
 import { SideMemory } from "./side-memory.js";
 import { personalRouteInvalid } from "./side-memory-validity.js";
 import type { HostSnapshot } from "@opensteer/client/host";
@@ -22,12 +23,10 @@ vi.mock("@react-navigation/native", async () => {
 
 import { describe, expect, it, vi } from "vitest";
 import {
+  applicationLinkState,
   deploymentRoot,
   deploymentsRoot,
-  linkedSelectionFailureIsCurrent,
-  selectionMayReconcileLinkedRoot,
   selectionRootTransition,
-  startupRoot,
   threadReturn,
   threadRoot,
 } from "./navigation-state.js";
@@ -83,40 +82,6 @@ describe("mobile root navigation", () => {
         },
       ],
     });
-  });
-
-  it("does not let a remembered selection erase a linked thread while selection catches up", () => {
-    expect(
-      selectionMayReconcileLinkedRoot({
-        linkedDeploymentId: "dep_two",
-        selectionDeploymentId: "dep_one",
-      }),
-    ).toBe(false);
-    expect(
-      selectionMayReconcileLinkedRoot({
-        linkedDeploymentId: "dep_two",
-        selectionDeploymentId: "dep_two",
-      }),
-    ).toBe(true);
-  });
-
-  it("lets only the newest failed link release its protected root", () => {
-    expect(
-      linkedSelectionFailureIsCurrent({
-        currentAttempt: 2,
-        failedAttempt: 1,
-        failedDeploymentId: "dep_one",
-        linkedDeploymentId: "dep_two",
-      }),
-    ).toBe(false);
-    expect(
-      linkedSelectionFailureIsCurrent({
-        currentAttempt: 2,
-        failedAttempt: 2,
-        failedDeploymentId: "dep_two",
-        linkedDeploymentId: "dep_two",
-      }),
-    ).toBe(true);
   });
 
   it("moves a hydrated catalog directly into its selected deployment", () => {
@@ -186,52 +151,6 @@ describe("mobile root navigation", () => {
         deploymentId: null,
       }),
     ).toEqual(deploymentsRoot());
-  });
-});
-
-describe("a pairing link at startup", () => {
-  const pairing = { code: `osp_${"a".repeat(43)}`, origin: "https://mac.tailnet.ts.net" };
-
-  it("opens the pairing form over the computer startup selected on its own", () => {
-    expect(startupRoot({ destination: null, pairing, selectedDeploymentId: "dep_one" })).toEqual({
-      index: 1,
-      routes: [
-        { name: "Home", params: { deploymentId: "dep_one" } },
-        { name: "AddPersonal", params: pairing },
-      ],
-    });
-  });
-
-  it("opens the pairing form over the first run when nothing is selected", () => {
-    expect(startupRoot({ destination: null, pairing, selectedDeploymentId: null })).toEqual({
-      index: 1,
-      routes: [{ name: "Deployments" }, { name: "AddPersonal", params: pairing }],
-    });
-  });
-
-  it("keeps the pairing form in front while a startup selection catches up", () => {
-    expect(
-      selectionRootTransition({
-        activeRouteName: "AddPersonal",
-        baseDeploymentId: null,
-        baseRouteName: "Deployments",
-        deploymentId: "dep_one",
-      }),
-    ).toBe("defer");
-  });
-
-  it("starts where the selection or link says when there is no pairing link", () => {
-    expect(
-      startupRoot({ destination: null, pairing: null, selectedDeploymentId: "dep_one" }),
-    ).toEqual(deploymentRoot("dep_one"));
-    const destination = { deploymentId: "dep_one", threadId: "thr_one" };
-    expect(
-      startupRoot({
-        destination: threadRoot(destination),
-        pairing: null,
-        selectedDeploymentId: null,
-      }),
-    ).toEqual(threadRoot(destination));
   });
 });
 
@@ -380,8 +299,12 @@ describe("warm mobile sides on the native stack router", () => {
     f.resume("tasks");
     expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "Thread"]);
     f.push({ name: "Settings", params: {} });
+    f.push({ name: "JoinTeam", params: { link: "old sheet" } });
     f.apply(f.memory.enter(f.state(), reply));
     expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "TeamThread"]);
+    f.back();
+    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "Thread"]);
+    f.enter(reply);
     f.resume("tasks");
     expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "Thread"]);
   });
@@ -483,5 +406,236 @@ describe("warm mobile sides on the native stack router", () => {
     f.enter(channel);
     f.resume("tasks");
     expect(f.state().routes.at(-1)?.params).toEqual(page.params);
+  });
+});
+
+describe("pending external destinations", () => {
+  function fixture(
+    resolve: (url: string, current: () => boolean) => Promise<ReturnType<typeof threadRoot> | null>,
+  ) {
+    const present = vi.fn();
+    const failed = vi.fn();
+    const receive = vi.fn(() => false);
+    const pending = new PendingDestination({ resolve, present, failed, receive });
+    return { pending, present, failed, receive };
+  }
+  const destination = threadRoot({ deploymentId: "new", threadId: "notified" });
+
+  it("hydrates before reading and makes a cold tap the first stack, acknowledging only at navigator readiness", async () => {
+    const resolve = vi.fn(async () => destination);
+    const f = fixture(resolve);
+    const acknowledged = vi.fn();
+    const tap = f.pending.submit("tap").then(acknowledged);
+    expect(resolve).not.toHaveBeenCalled();
+    f.pending.hydrated();
+    const fallback = vi.fn(() => deploymentRoot("remembered"));
+    const initial = f.pending.initialState(fallback);
+    await vi.waitFor(async () => expect(await initial).toEqual(destination));
+    expect(fallback).not.toHaveBeenCalled();
+    expect(f.present).not.toHaveBeenCalled();
+    expect(acknowledged).not.toHaveBeenCalled();
+    f.pending.ready();
+    await vi.waitFor(() => tap);
+    expect(acknowledged).toHaveBeenCalledOnce();
+    expect(f.present).not.toHaveBeenCalled();
+  });
+
+  it("delivers OAuth callbacks immediately without cancelling the destination waiting on sign-in", async () => {
+    const resolve = Promise.withResolvers<ReturnType<typeof threadRoot>>();
+    const present = vi.fn();
+    const receive = vi.fn((url: string) => (url === "callback" ? ("callback" as const) : false));
+    const pending = new PendingDestination({
+      receive,
+      resolve: () => resolve.promise,
+      present,
+      failed: vi.fn(),
+    });
+    pending.hydrated();
+    pending.ready();
+    const tap = pending.submit("team");
+    const sheet = pending.capture();
+    await pending.submit("callback");
+    expect(sheet()).toBe(true);
+    resolve.resolve(destination);
+    await vi.waitFor(() => tap);
+    expect(present).toHaveBeenCalledWith(destination);
+  });
+
+  it("routes warm/background taps immediately after readiness and invalidates old join-sheet work", async () => {
+    const f = fixture(async () => destination);
+    f.pending.hydrated();
+    f.pending.ready();
+    const first = f.pending.submit("first");
+    await vi.waitFor(() => first);
+    const oldSheet = f.pending.capture();
+    const second = f.pending.submit("second");
+    await vi.waitFor(() => second);
+    expect(f.present.mock.calls).toEqual([[destination], [destination]]);
+    expect(oldSheet()).toBe(false);
+  });
+
+  it("lets B become the initial stack while A is unresolved, and ignores A's late destination", async () => {
+    const a = Promise.withResolvers<ReturnType<typeof threadRoot>>();
+    const resolve = vi.fn((url: string) =>
+      url === "a" ? a.promise : Promise.resolve(destination),
+    );
+    const f = fixture(resolve);
+    f.pending.hydrated();
+    const tapA = f.pending.submit("a");
+    const initial = f.pending.initialState(() => deploymentsRoot());
+    await vi.waitFor(() => expect(resolve).toHaveBeenCalledWith("a", expect.any(Function)));
+    const tapB = f.pending.submit("b");
+    await vi.waitFor(async () => expect(await initial).toEqual(destination));
+    f.pending.ready();
+    await vi.waitFor(() => tapB);
+    a.resolve(threadRoot({ deploymentId: "old", threadId: "a" }));
+    await a.promise;
+    await vi.waitFor(() => tapA);
+    expect(f.present).not.toHaveBeenCalled();
+    expect(f.failed).not.toHaveBeenCalled();
+  });
+
+  it("cannot show a stale failure or clear the newer pending tap", async () => {
+    const a = Promise.withResolvers<ReturnType<typeof threadRoot>>();
+    const b = Promise.withResolvers<ReturnType<typeof threadRoot>>();
+    const resolve = vi.fn((url: string) => (url === "a" ? a.promise : b.promise));
+    const f = fixture(resolve);
+    f.pending.hydrated();
+    f.pending.ready();
+    const tapA = f.pending.submit("a");
+    await vi.waitFor(() => expect(resolve).toHaveBeenCalledWith("a", expect.any(Function)));
+    const acknowledgedB = vi.fn();
+    const tapB = f.pending.submit("b").then(acknowledgedB);
+    a.reject(new Error("old failure"));
+    await vi.waitFor(() => tapA);
+    expect(acknowledgedB).not.toHaveBeenCalled();
+    b.resolve(destination);
+    await vi.waitFor(() => tapB);
+    expect(f.failed).not.toHaveBeenCalled();
+    expect(f.present.mock.calls).toEqual([[destination]]);
+  });
+
+  it("protects the linked Deployment from stale selection and Account restore, then permits a real account change", async () => {
+    const f = fixture(async () => destination);
+    f.pending.account(null);
+    f.pending.hydrated();
+    f.pending.ready();
+    const tap = f.pending.submit("new");
+    await vi.waitFor(() => tap);
+    expect(f.pending.mayReconcileSelection("remembered")).toBe(false);
+    expect(f.pending.account("restored-account")).toBe(false);
+    expect(f.pending.mayReconcileSelection("remembered")).toBe(false);
+    expect(f.pending.mayReconcileSelection("new")).toBe(true);
+    expect(f.pending.account("another-account")).toBe(true);
+  });
+
+  it("reports a routing failure and rejects the acknowledgment so the OS response remains retryable", async () => {
+    const error = new Error("navigation refused");
+    const f = fixture(async () => {
+      throw error;
+    });
+    f.pending.hydrated();
+    f.pending.ready();
+    await expect(f.pending.submit("tap")).rejects.toThrow(error);
+    expect(f.failed).toHaveBeenCalledWith(error);
+    expect(f.present).not.toHaveBeenCalled();
+  });
+});
+
+describe("external link stacks", () => {
+  const teamId = "dep_team";
+  const team = {
+    teamId,
+    origin: "https://team.example",
+    name: "Team",
+    onPhone: true,
+    state: "offline" as const,
+    detail: null,
+    session: null,
+    userId: null,
+  };
+  const teams = { team: () => team, teamAt: () => team, computersIn: () => ["personal-in-team"] };
+
+  it.each([null, "personal"])(
+    "offers pairing over the hydrated startup root (%s)",
+    (selectedDeploymentId) => {
+      const offer = { origin: "https://mac.example", code: `osp_${"a".repeat(43)}` };
+      const select = vi.fn(async () => undefined);
+      const state = applicationLinkState(
+        { kind: "pairing", offer },
+        { selectedDeploymentId, select, teams },
+      );
+      expect(state).toEqual({
+        index: 1,
+        routes: [
+          selectedDeploymentId === null
+            ? { name: "Deployments" }
+            : { name: "Home", params: { deploymentId: selectedDeploymentId } },
+          { name: "AddPersonal", params: offer },
+        ],
+      });
+      expect(select).not.toHaveBeenCalled();
+    },
+  );
+
+  it("opens a member's channel/thread without a JoinTeam sheet or waiting for personal selection", () => {
+    const connection = Promise.withResolvers<void>();
+    const select = vi.fn(() => connection.promise);
+    const state = applicationLinkState(
+      {
+        kind: "team",
+        origin: team.origin,
+        page: "unused",
+        target: { kind: "message", channelId: "channel", messageId: "42" },
+      } as never,
+      { selectedDeploymentId: "unrelated", select, teams },
+    );
+    expect(state).toEqual({
+      index: 1,
+      routes: [
+        { name: "Home", params: { deploymentId: "personal-in-team" } },
+        { name: "TeamChannel", params: { teamId, channelId: "channel", messageId: "42" } },
+      ],
+    });
+    expect(select).toHaveBeenCalledWith("personal-in-team");
+    connection.resolve();
+  });
+
+  it("opens the notice's team even when origin lookup would return another team", () => {
+    const state = applicationLinkState(
+      { kind: "team-notice", origin: team.origin, teamId, noticeId: "notice" },
+      {
+        selectedDeploymentId: "personal-in-team",
+        select: async () => undefined,
+        teams: { ...teams, teamAt: () => ({ ...team, teamId: "wrong-team" }) },
+      },
+    );
+    expect(state.routes.at(-1)).toEqual({ name: "TeamNotices", params: { teamId } });
+  });
+
+  it("replaces the old Deployment and leaves a useful Back destination", () => {
+    const select = vi.fn(async () => undefined);
+    const state = applicationLinkState(
+      { kind: "open", deploymentId: "new", threadId: "task", requestId: null },
+      { selectedDeploymentId: "old", select, teams },
+    );
+    const router = StackRouter({ initialRouteName: "Home" });
+    const options = {
+      routeNames: ["Home", "Thread", "Settings"],
+      routeParamList: {},
+      routeGetIdList: {},
+    };
+    const opened = router.getRehydratedState(
+      { index: state.index ?? 0, routes: state.routes },
+      options,
+    );
+    const back = router.getStateForAction(opened, CommonActions.goBack(), options);
+    expect(opened.routes.map(({ name, params }) => ({ name, params }))).toEqual([
+      { name: "Home", params: { deploymentId: "new" } },
+      { name: "Thread", params: { deploymentId: "new", threadId: "task" } },
+    ]);
+    expect(back?.routes.map(({ name, params }) => ({ name, params }))).toEqual([
+      { name: "Home", params: { deploymentId: "new" } },
+    ]);
   });
 });

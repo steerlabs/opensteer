@@ -12,7 +12,10 @@ import {
   parseMobileSetupCode,
   parseMobileThreadDeepLink,
   type MobilePairingDeepLink,
+  type TeamPageLink,
 } from "@opensteer/core";
+import type { TopLevelTarget } from "./top-level.js";
+import { intentOf, type MobileTeam, type TeamLinkIntent } from "./team/mobile-teams.js";
 import { parseAgentConnectionDeepLink } from "@opensteer/protocol";
 
 /**
@@ -38,6 +41,7 @@ import { parseAgentConnectionDeepLink } from "@opensteer/protocol";
  * opens that team's notices.
  */
 export type ApplicationLinkOutcome =
+  | { readonly kind: "pairing"; readonly offer: MobilePairingDeepLink }
   | { readonly kind: "needs-you"; readonly deploymentId: string }
   | { readonly kind: "ignore" }
   | {
@@ -52,7 +56,12 @@ export type ApplicationLinkOutcome =
       readonly messageId?: string;
       readonly threadId: string;
     }
-  | { readonly kind: "team"; readonly page: string; readonly origin: string }
+  | {
+      readonly kind: "team";
+      readonly page: string;
+      readonly origin: string;
+      readonly target: TeamPageLink["target"];
+    }
   | {
       readonly kind: "team-notice";
       readonly origin: string;
@@ -65,8 +74,11 @@ export function resolveApplicationLink(
   url: string,
   knownDeploymentIds: readonly string[],
 ): ApplicationLinkOutcome {
+  const pairing = parseMobilePairingDeepLink(url);
+  if (pairing !== null) return { kind: "pairing", offer: pairing };
   const team = parseTeamPageAppLink(url, "mobile");
-  if (team !== null) return { kind: "team", origin: team.origin, page: teamPageUrl(team) };
+  if (team !== null)
+    return { kind: "team", origin: team.origin, page: teamPageUrl(team), target: team.target };
   const notice = parseTeamNoticeLink(url);
   if (notice !== null) return { kind: "team-notice", ...notice };
   const agent = parseAgentConnectionDeepLink(url, opensteerMobileClient.applicationId);
@@ -110,20 +122,6 @@ export function routeComputerLink(url: string, open: (deploymentId: string) => v
   const destination = parseMobileOpenDeepLink(url);
   if (destination === null) return false;
   open(destination.deploymentId);
-  return true;
-}
-
-/**
- * A pairing link carries a one-time code, so it only ever fills in the pairing
- * form: `offer` shows it to the person, who decides whether to connect.
- */
-export function routePairingLink(
-  url: string,
-  offer: (link: MobilePairingDeepLink) => void,
-): boolean {
-  const link = parseMobilePairingDeepLink(url);
-  if (link === null) return false;
-  offer(link);
   return true;
 }
 
@@ -179,4 +177,74 @@ export function computerForTeam(input: {
   if (input.computersInTeam.length === 0) return null;
   if (input.shown !== null && input.computersInTeam.includes(input.shown)) return null;
   return input.computersInTeam[0] ?? null;
+}
+
+export async function resolveRefreshedApplicationLink(
+  url: string,
+  ports: {
+    readonly knownDeployments: () => Promise<readonly string[]>;
+    readonly refreshDirectory: () => Promise<void>;
+  },
+): Promise<ApplicationLinkOutcome> {
+  const outcome = resolveApplicationLink(url, await ports.knownDeployments());
+  if (outcome.kind !== "unknown-deployment") return outcome;
+  await ports.refreshDirectory();
+  return resolveApplicationLink(url, await ports.knownDeployments());
+}
+
+/** Held team identities are pinned by discovery; a link's origin cannot select a different team. */
+export function teamLinkTarget(
+  outcome: Extract<ApplicationLinkOutcome, { kind: "team" | "team-notice" }>,
+  team: Pick<MobileTeam, "teamId" | "origin" | "onPhone" | "state"> | null,
+): TopLevelTarget {
+  if (outcome.kind === "team-notice") {
+    if (team === null || !team.onPhone || team.teamId !== outcome.teamId)
+      throw new Error(
+        "That team is not on this phone. Add the team, then open the notification again.",
+      );
+    if (team.origin !== outcome.origin)
+      throw new Error("That notification's team address does not match the team on this phone.");
+    return { name: "TeamNotices", params: { teamId: outcome.teamId } };
+  }
+  if (team === null || !team.onPhone || team.state === "join" || team.state === "removed")
+    return { name: "JoinTeam", params: { link: outcome.page } };
+  const intent = intentOf({ origin: outcome.origin, target: outcome.target });
+  if (intent.kind === "invite" || intent.kind === "agent-link")
+    return { name: "JoinTeam", params: { link: outcome.page } };
+  return teamPlaceTarget(team.teamId, intent);
+}
+
+/** Message links land on the channel; its screen resolves replies and access once. */
+export function teamPlaceTarget(
+  teamId: string,
+  intent: Exclude<TeamLinkIntent, { kind: "invite" | "agent-link" }>,
+): TopLevelTarget {
+  switch (intent.kind) {
+    case "open":
+      return intent.threadRootId
+        ? {
+            name: "TeamThread",
+            params: {
+              teamId,
+              channelId: intent.channelId,
+              rootId: intent.threadRootId,
+              ...(intent.messageId ? { replyId: intent.messageId } : {}),
+            },
+          }
+        : {
+            name: "TeamChannel",
+            params: {
+              teamId,
+              channelId: intent.channelId,
+              ...(intent.messageId ? { messageId: intent.messageId } : {}),
+            },
+          };
+    case "knowledge-topic":
+      return { name: "TeamKnowledge", params: { teamId, topicId: intent.topicId } };
+    case "knowledge-note":
+      return {
+        name: "TeamNote",
+        params: { teamId, topicId: intent.topicId, noteId: intent.noteId },
+      };
+  }
 }

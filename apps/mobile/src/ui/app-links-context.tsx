@@ -1,5 +1,5 @@
 import { createContext, useContext } from "react";
-import type { PairingOffer } from "../navigation-state.js";
+import type { MobilePairingDeepLink } from "@opensteer/core";
 
 /**
  * The app root's answers to a computer's codes, for a screen that reads one
@@ -7,10 +7,11 @@ import type { PairingOffer } from "../navigation-state.js";
  * scanned code and a tapped link supersede earlier links in the same way.
  */
 export interface AppLinks {
+  readonly captureNavigationIntent: () => () => boolean;
   /** Opens a computer from its Connect code, through the Account. */
   readonly openComputer: (deploymentId: string) => void;
   /** Fills in the pairing form for the person to confirm. Never pairs on its own. */
-  readonly offerPairing: (offer: PairingOffer) => void;
+  readonly offerPairing: (offer: MobilePairingDeepLink) => void;
 }
 
 const AppLinksContext = createContext<AppLinks | null>(null);

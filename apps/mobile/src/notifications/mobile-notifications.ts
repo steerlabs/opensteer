@@ -1,9 +1,5 @@
-import type { MobileNotificationPort } from "./notification-port.js";
-import {
-  shouldPresentNotification,
-  type NotificationDestination,
-  type VisibleThread,
-} from "./notification-routing.js";
+import type { MobileNotificationPort, OpenedNotification } from "./notification-port.js";
+import { shouldPresentNotification, type VisibleThread } from "./notification-routing.js";
 import type { NotificationsIntro } from "./notifications-intro.js";
 import type { PushRegistration } from "./push-registration.js";
 
@@ -53,7 +49,7 @@ export class MobileNotifications {
   }
 
   /** Every notification tap, including the one that cold-started the process. */
-  onOpened(listener: (destination: NotificationDestination) => void): () => void {
+  onOpened(listener: (notification: OpenedNotification) => Promise<void> | void): () => void {
     return this.#port.onOpened(listener);
   }
 

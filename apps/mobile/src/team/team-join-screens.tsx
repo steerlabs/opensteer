@@ -6,6 +6,8 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import * as Linking from "expo-linking";
 import { useEffect, useState, type ReactNode } from "react";
 import { AppState, StyleSheet, TextInput, View } from "react-native";
+import { teamPlaceTarget } from "../links.js";
+import { useAppLinks } from "../ui/app-links-context.js";
 import { enterSide } from "../navigation-ref.js";
 import type { RootParamList } from "../navigation.js";
 import { color, radius, space, type } from "../theme.js";
@@ -238,13 +240,17 @@ function OpenPlace(props: {
   const { intent } = props;
   const navigation = useNavigation<Navigation>();
   const teams = useMobileTeams();
+  const { captureNavigationIntent } = useAppLinks();
   const [failure, setFailure] = useState<"unavailable" | "offline" | null>(null);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    let current = true;
+    let mounted = true;
+    const intentCurrent = captureNavigationIntent();
+    const current = (): boolean => mounted && intentCurrent();
     setFailure(null);
     const open = async () => {
       const located = await teams.locate(intent.origin);
+      if (!current()) return;
       let teamId: string;
       if (located.kind === "held") {
         teamId = located.team.teamId;
@@ -254,45 +260,12 @@ function OpenPlace(props: {
         await teams.signIn(located.verified, null);
         teamId = located.verified.discovery.deploymentId;
       }
-      if (!current) return;
-      const destination = await teams.pageDestination(teamId, intent);
-      if (!current) return;
-      switch (destination.kind) {
-        case "thread":
-          enterSide({
-            name: "TeamThread",
-            params: {
-              teamId,
-              channelId: destination.channelId,
-              rootId: destination.rootId,
-              ...(destination.replyId === null ? {} : { replyId: destination.replyId }),
-            },
-          });
-          break;
-        case "channel":
-          enterSide({
-            name: "TeamChannel",
-            params: {
-              teamId,
-              channelId: destination.channelId,
-              ...(destination.messageId === null ? {} : { messageId: destination.messageId }),
-            },
-          });
-          break;
-        case "knowledge-topic":
-          enterSide({ name: "TeamKnowledge", params: { teamId, topicId: destination.topicId } });
-          break;
-        case "knowledge-note":
-          enterSide({
-            name: "TeamNote",
-            params: { teamId, topicId: destination.topicId, noteId: destination.noteId },
-          });
-          break;
-      }
+      if (!current()) return;
+      enterSide(teamPlaceTarget(teamId, intent));
     };
     void open().catch(
       (error: unknown) =>
-        current &&
+        current() &&
         setFailure(
           !(error instanceof TeamAccessError) && readFailure(error) === "offline"
             ? "offline"
@@ -300,9 +273,9 @@ function OpenPlace(props: {
         ),
     );
     return () => {
-      current = false;
+      mounted = false;
     };
-  }, [attempt, intent, teams]);
+  }, [attempt, captureNavigationIntent, intent, teams]);
   return failure === null ? (
     <View style={styles.sheet}>
       <AppText role="secondary" tone="muted">

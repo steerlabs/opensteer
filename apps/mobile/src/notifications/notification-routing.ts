@@ -1,13 +1,5 @@
-import {
-  parseMobileThreadDeepLink,
-  parseMobileNeedsYouDeepLink,
-  parseTeamPageAppLink,
-  type DeploymentId,
-  type RequestId,
-  type ThreadId,
-} from "@opensteer/core";
+import { parseMobileThreadDeepLink } from "@opensteer/core";
 import { z } from "zod";
-import { parseTeamNoticeLink } from "../links.js";
 
 /**
  * The only field of a push payload this app reads. Everything else the Account
@@ -17,56 +9,20 @@ import { parseTeamNoticeLink } from "../links.js";
  */
 const NotificationPayloadSchema = z.looseObject({ deepLink: z.string().min(1).max(2_048) });
 
-/**
- * Where a notification points, read from the one field that may say so.
- *
- * A push payload carries `deploymentId`, `threadId`, `requestId` and `kind`
- * beside the link, and none of them is consulted here. The link is the whole
- * destination and it is parsed by the same reader the operating system's own
- * deep links go through, so a notification cannot address a screen a typed URL
- * could not. It is a destination and never an authority: the app still attaches
- * to the Deployment, authenticates, and reads current state before it shows
- * anything, and nothing here approves, denies or answers a Request.
- */
-export type NotificationDestination =
-  | { readonly kind: "needs-you"; readonly deepLink: string; readonly deploymentId: DeploymentId }
-  | {
-      readonly kind: "thread";
-      readonly deepLink: string;
-      readonly deploymentId: DeploymentId;
-      readonly requestId: RequestId | null;
-      readonly messageId?: string;
-      readonly threadId: ThreadId;
-    }
-  /**
-   * A team's message or notice. Its link names the team's page, never a
-   * personal Thread id; the app asks the team before showing anything.
-   */
-  | { readonly kind: "team"; readonly deepLink: string; readonly origin: string };
-
 /** The notification payload, as much of it as this app will look at. */
 export interface NotificationData {
   readonly data?: unknown;
 }
 
-export function notificationDestination(payload: NotificationData): NotificationDestination | null {
+export function notificationDeepLink(payload: NotificationData): string | null {
   const parsed = NotificationPayloadSchema.safeParse(payload.data);
-  if (!parsed.success) return null;
-  const { deepLink } = parsed.data;
-  const team = parseTeamPageAppLink(deepLink, "mobile") ?? parseTeamNoticeLink(deepLink);
-  if (team !== null) return { kind: "team", deepLink, origin: team.origin };
-  const needsYou = parseMobileNeedsYouDeepLink(deepLink);
-  if (needsYou) return { kind: "needs-you", deepLink, deploymentId: needsYou.deploymentId };
-  const link = parseMobileThreadDeepLink(deepLink);
-  if (link === null) return null;
-  return {
-    kind: "thread",
-    deepLink,
-    deploymentId: link.deploymentId,
-    requestId: link.requestId,
-    ...(link.messageId ? { messageId: link.messageId } : {}),
-    threadId: link.threadId,
-  };
+  return parsed.success ? parsed.data.deepLink : null;
+}
+
+/** Only presentation and dismissal need to recognize the Thread; taps pass the URL unchanged. */
+export function notificationThread(payload: NotificationData) {
+  const deepLink = notificationDeepLink(payload);
+  return deepLink === null ? null : parseMobileThreadDeepLink(deepLink);
 }
 
 /** The Thread the person is looking at right now, or none. */
@@ -91,8 +47,8 @@ export function shouldPresentNotification(
   atLatest: boolean,
 ): boolean {
   if (visible === null || !atLatest) return true;
-  const destination = notificationDestination(payload);
-  if (destination === null || destination.kind !== "thread") return true;
+  const destination = notificationThread(payload);
+  if (destination === null) return true;
   return !(
     destination.deploymentId === visible.deploymentId && destination.threadId === visible.threadId
   );
@@ -117,8 +73,8 @@ export async function dismissThreadNotifications(input: {
   readonly visible: VisibleThread;
 }): Promise<void> {
   for (const notification of await input.presented()) {
-    const destination = notificationDestination(notification.payload);
-    if (destination === null || destination.kind !== "thread") continue;
+    const destination = notificationThread(notification.payload);
+    if (destination === null) continue;
     if (
       destination.deploymentId !== input.visible.deploymentId ||
       destination.threadId !== input.visible.threadId
