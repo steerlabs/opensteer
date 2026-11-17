@@ -623,15 +623,20 @@ function CandidateList({
   return (
     <div className="iphone-setup__choices">
       {candidates.map((candidate) => {
-        const unknown = !candidate.trusted;
+        const unknown = candidate.trust === "untrusted";
+        const checking = candidate.trust === "checking";
         const title = unknown
           ? "An iPhone that hasn’t trusted this Mac yet"
-          : candidate.name || "iPhone";
-        const facts = unknown
-          ? "Its name shows once you tap Trust on it."
-          : [candidate.model, candidate.osVersion && `iOS ${candidate.osVersion}`]
-              .filter(Boolean)
-              .join(", ");
+          : checking
+            ? "iPhone"
+            : candidate.name || "iPhone";
+        const facts = checking
+          ? "Checking this iPhone…"
+          : unknown
+            ? "Its name shows once you tap Trust on it."
+            : [candidate.model, candidate.osVersion && `iOS ${candidate.osVersion}`]
+                .filter(Boolean)
+                .join(", ");
         const leading = (
           <span className="option-row__glyph option-row__glyph--outline">
             <Icon name="phone" />
@@ -650,7 +655,7 @@ function CandidateList({
               framed
               key={candidate.candidateId}
               leading={leading}
-              note={`${said.title}. ${said.detail}`}
+              note={checking ? undefined : `${said.title}. ${said.detail}`}
               title={title}
             />
           );

@@ -162,7 +162,7 @@ func HelloResult(boot string) Hello {
 }
 
 type Candidate struct {
-	Trusted      bool          `json:"trusted"`
+	Trust        string        `json:"trust"`
 	LocalPhoneID string        `json:"localPhoneId"`
 	NativeEpoch  uint64        `json:"nativeEpoch"`
 	Name         string        `json:"name"`

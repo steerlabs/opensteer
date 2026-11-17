@@ -138,7 +138,7 @@ func TestColdRosterPassivelyIdentifiesTrustedPhones(t *testing.T) {
 			r := awaitInspection(t, ctx, updates, "trusted phones were not identified")
 			trusted := 0
 			for _, c := range r.Candidates {
-				if c.Trusted {
+				if c.Trust == "trusted" {
 					trusted++
 				}
 			}
@@ -150,7 +150,7 @@ func TestColdRosterPassivelyIdentifiesTrustedPhones(t *testing.T) {
 	r := waitForIdentified(0)
 	trusted := 0
 	for _, c := range r.Candidates {
-		if c.Trusted {
+		if c.Trust == "trusted" {
 			trusted++
 			if c.Name != "Known phone" || c.Model != "iPhoneTest" || c.OSVersion != "27.1" {
 				t.Fatal("trusted candidate missing identity")
@@ -169,7 +169,7 @@ func TestColdRosterPassivelyIdentifiesTrustedPhones(t *testing.T) {
 	}
 	trusted = 0
 	for _, c := range waitForIdentified(m.roster().Revision).Candidates {
-		if c.Trusted {
+		if c.Trust == "trusted" {
 			trusted++
 		}
 	}

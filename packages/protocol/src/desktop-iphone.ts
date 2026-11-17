@@ -159,7 +159,7 @@ export const DesktopIphoneSetupStatusSchema = z.strictObject({
     .array(
       DesktopIphoneSetupPhoneSchema.extend({
         candidateId: z.uuid(),
-        trusted: z.boolean(),
+        trust: z.enum(["trusted", "untrusted", "checking"]),
         reason: DesktopIphoneSetupReasonSchema.nullable(),
       }),
     )

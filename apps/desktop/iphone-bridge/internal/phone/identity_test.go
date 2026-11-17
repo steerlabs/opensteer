@@ -95,11 +95,11 @@ func TestRosterTrustUsesPairingRatherThanMetadata(t *testing.T) {
 	m := NewManager(context.Background(), nil, nil)
 	defer m.Close()
 	m.phones["candidate"] = &localPhone{id: "candidate", entry: ios.DeviceEntry{DeviceID: 1}, inspection: Inspection{Pairing: "unknown", Model: "iPhoneFixture"}}
-	if m.roster().Candidates[0].Trusted {
+	if m.roster().Candidates[0].Trust == "trusted" {
 		t.Fatal("unpaired phone was trusted because it had metadata")
 	}
 	m.phones["candidate"].inspection = Inspection{Pairing: "paired"}
-	if !m.roster().Candidates[0].Trusted {
+	if m.roster().Candidates[0].Trust != "trusted" {
 		t.Fatal("paired phone needed metadata to be trusted")
 	}
 }

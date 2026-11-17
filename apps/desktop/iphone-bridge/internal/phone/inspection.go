@@ -131,6 +131,7 @@ func (m *Manager) inspectCandidates(inspector passiveInspector) {
 				valid := m.phones[p.id] == p && p.epoch == job.ref.NativeEpoch && p.entry.DeviceID == entry.DeviceID && ctx.Err() == nil && !m.closed
 				if valid {
 					p.inspection = inspection
+					p.unpaired = inspectionTrust(inspection) == "untrusted"
 					m.revision++
 				}
 				m.mu.Unlock()
@@ -174,4 +175,25 @@ func inspectionComplete(inspection Inspection, err error) bool {
 		return true
 	}
 	return false
+}
+
+func inspectionTrust(inspection Inspection) string {
+	if inspection.Pairing == "paired" {
+		return "trusted"
+	}
+	switch inspection.Reason {
+	case wire.TrustRequired, wire.TrustDenied, wire.PairingRevoked:
+		return "untrusted"
+	}
+	return "checking"
+}
+
+func (p *localPhone) trust() string {
+	if p.inspection.Pairing == "paired" {
+		return "trusted"
+	}
+	if p.unpaired {
+		return "untrusted"
+	}
+	return "checking"
 }
