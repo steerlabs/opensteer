@@ -142,6 +142,8 @@ export function PrimaryButton(props: {
   readonly onPress: () => void;
   /** The platform's large capsule, for the one action a whole screen leads to. */
   readonly prominent?: boolean;
+  /** Busy keeps the label: an attempt the screen itself reports, such as Try again. */
+  readonly quietBusy?: boolean;
 }): ReactNode {
   const disabled = props.disabled === true || props.busy === true;
   return (
@@ -159,7 +161,7 @@ export function PrimaryButton(props: {
         disabled && styles.buttonDisabled,
       ]}
     >
-      {props.busy === true ? (
+      {props.busy === true && props.quietBusy !== true ? (
         <ActivityIndicator color={color.inkOnEmber} />
       ) : (
         <Text

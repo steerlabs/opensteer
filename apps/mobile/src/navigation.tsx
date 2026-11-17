@@ -113,6 +113,7 @@ import { TeamTopicAccessScreen, TeamTopicFormScreen } from "./team/knowledge-for
 import { color } from "./theme.js";
 import { AroundScreen } from "./thread/around-sheet.js";
 import { QuietlyMovedScreen } from "./threads/quietly-moved-sheet.js";
+import { PublishHeaderClearance } from "./ui/header-clearance.js";
 import { Pane } from "./ui/pane.js";
 import { thisPhoneNoun } from "./computers/phone-noun.js";
 
@@ -145,6 +146,7 @@ function ScreenLayout(props: {
     <>
       {props.modal ? <Pane>{content}</Pane> : content}
       {props.modal ? null : <TopLevelMenu />}
+      {props.modal ? null : <PublishHeaderClearance />}
       <SheetAnchor active={focused} level={1} />
     </>
   );
