@@ -3,7 +3,8 @@ import { itemView } from "./personal-sync-store.js";
 import { sql, type Kysely, type Transaction } from "kysely";
 import {
   type DeploymentId,
-  type MessageId,
+  MessageIdSchema,
+  ExecutionNodeIdSchema,
   type RunId,
   type ThreadId,
   nonTerminalRunStatuses,
@@ -12,18 +13,26 @@ import { z } from "zod";
 import { checkoutSession } from "./connection.js";
 import { publishedMessagePredicate } from "./message-visibility.js";
 import { runOfflineSettlement } from "./personal-transaction.js";
+import {
+  createPersonalTranscriptOrderIndexes,
+  dropPersonalTranscriptOrderIndexes,
+} from "./personal-state-schema.js";
 import { finalizeRunTransaction } from "./run-finalization.js";
 import { threadPathLinks } from "./store-primitives.js";
 import type { DatabaseSchema } from "./schema.js";
 import {
-  importLegacyActivity,
-  readLegacyActivityBatch,
-  type LegacyImportCounts,
+  convertLegacyActivityBatch,
+  legacyAttemptIdPattern,
+  legacyRunIdPattern,
 } from "./personal-state-upgrade-activity.js";
 
 export const personalCurrentStateMigrationName = "0029_personal_current_state";
 
 const batchSize = 500;
+const messageBatchSize = 2_000;
+const verifyBatchSize = 1_500;
+const messageIdPattern = z.toJSONSchema(MessageIdSchema, { io: "input" }).pattern!;
+const nodeIdPattern = z.toJSONSchema(ExecutionNodeIdSchema, { io: "input" }).pattern!;
 const settlementBatchSize = 128;
 const messageWhitespace =
   "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff";
@@ -67,6 +76,7 @@ type UpgradeCursor = z.infer<typeof cursorSchema>;
 type CanonicalKind = (typeof canonicalKinds)[number];
 type Tx = Transaction<DatabaseSchema>;
 type Source = { readonly id: DeploymentId; readonly sequence: string; readonly cutAt: Date };
+type Deployment = { readonly id: DeploymentId; readonly kind: string };
 
 const initialCursor: UpgradeCursor = {
   stage: "settle",
@@ -227,34 +237,25 @@ async function deriveMessages(tx: Tx, cursor: UpgradeCursor): Promise<UpgradeCur
   const key = cursor.key
     ? z.tuple([z.string(), z.string()]).parse(JSON.parse(cursor.key))
     : ["", "0"];
-  const page = await sql<{ id: MessageId; threadId: ThreadId; sequence: string }>`
-    select id,thread_id,sequence from messages where (thread_id,sequence) > (${key[0]},${key[1]}::bigint)
-      order by thread_id,sequence limit ${batchSize}
-  `.execute(tx);
-  const last = page.rows.at(-1);
-  if (!last) return stage(cursor, "run");
-  const ids = page.rows.map((row) => row.id);
-  await tx
-    .selectFrom("messages")
-    .select("id")
-    .where("id", "in", ids)
-    .orderBy("id")
-    .forNoKeyUpdate()
-    .execute();
-  await sql`
-    update messages m set published=${publishedMessagePredicate("input")}
-    from messages source left join thread_inputs input on input.message_id=source.id
-    where source.id=m.id and m.id=any(${ids}::text[])
-  `.execute(tx);
-  await sql`select id from transcript_items where id=any(${ids}::text[]) order by id for no key update`.execute(
-    tx,
-  );
-  await sql`
-    insert into transcript_items(id,thread_id,run_id,kind,position,visible,is_turn_start,created_at,message_id,view)
-    with derived as (
+  const page = await sql<{ threadId: ThreadId; sequence: string; count: number }>`
+    with page as materialized (
+      select id,thread_id,sequence from messages
+      where (thread_id,sequence) > (${key[0]},${key[1]}::bigint)
+      order by thread_id,sequence limit ${messageBatchSize}
+    ), source as materialized (
+      select m.id, ${publishedMessagePredicate("input")} as published
+      from messages m join page using (id)
+      left join thread_inputs input on input.message_id=m.id
+      where m.published is distinct from ${publishedMessagePredicate("input")}
+      order by m.id for no key update of m
+    ), publication as (
+      update messages m set published=source.published from source
+      where m.id=source.id
+      returning m.id,m.published
+    ), derived as (
       select m.id,m.thread_id,m.sequence,coalesce(m.run_id,seed.id) as run_id,m.kind,m.author,
         m.revision,m.created_at, input.policy,
-        m.published,
+        coalesce(publication.published,m.published) as published,
         seed.id is not null and input.state in ('pending','claimed') or marker.id is not null as admitted,
         seed.id is not null as is_seed,
         exists (
@@ -267,13 +268,14 @@ async function deriveMessages(tx: Tx, cursor: UpgradeCursor): Promise<UpgradeCur
           select left(part->>'text',200) from jsonb_array_elements(m.content) part
           where part->>'type' = 'text' and btrim(part->>'text',${messageWhitespace}) <> '' limit 1
         ),'') as preview
-      from messages m left join thread_inputs input on input.message_id=m.id
+      from messages m join page using (id)
+      left join publication on publication.id=m.id
+      left join thread_inputs input on input.message_id=m.id
       left join transcript_items marker on marker.id=m.id
       left join lateral (
         select id from runs where seed_input_id=m.id and thread_id=m.thread_id
         order by run_ordinal desc limit 1
       ) seed on true
-      where m.id=any(${ids}::text[])
     ), cards as (
       select *, (
         has_content and (published or coalesce(admitted,false))
@@ -283,21 +285,27 @@ async function deriveMessages(tx: Tx, cursor: UpgradeCursor): Promise<UpgradeCur
       ) as shown,
       ${cursor.position}::bigint + row_number() over(order by thread_id,sequence) as fallback
       from derived
+    ), written as (
+      insert into transcript_items(id,thread_id,run_id,kind,position,visible,is_turn_start,created_at,message_id,view)
+      select id,thread_id,run_id,'message',case when shown then fallback end,shown,
+          shown and kind='input' and policy is distinct from 'report'
+            and (author->>'kind'='human' or run_id is null or is_seed),
+          created_at,id,jsonb_build_object('author',author->>'kind','preview',preview,'published',published,
+            'edited',revision>0,'truncated',length(preview)=200)
+        from cards
+        order by id
+        on conflict (id) do update set position=excluded.position,visible=excluded.visible,
+          is_turn_start=excluded.is_turn_start,view=excluded.view,run_id=excluded.run_id
     )
-    select id,thread_id,run_id,'message',case when shown then fallback end,shown,
-        shown and kind='input' and policy is distinct from 'report'
-          and (author->>'kind'='human' or run_id is null or is_seed),
-        created_at,id,jsonb_build_object('author',author->>'kind','preview',preview,'published',published,
-          'edited',revision>0,'truncated',length(preview)=200)
-      from cards
-      order by id
-      on conflict (id) do update set position=excluded.position,visible=excluded.visible,
-        is_turn_start=excluded.is_turn_start,view=excluded.view,run_id=excluded.run_id
+    select thread_id,sequence,(select count(*)::int from page) as count
+    from page order by thread_id desc,sequence desc limit 1
   `.execute(tx);
+  const last = page.rows[0];
+  if (!last) return stage(cursor, "run");
   return {
     ...cursor,
     key: JSON.stringify([last.threadId, last.sequence]),
-    position: (BigInt(cursor.position) + BigInt(page.rows.length)).toString(),
+    position: (BigInt(cursor.position) + BigInt(last.count)).toString(),
   };
 }
 
@@ -519,44 +527,75 @@ async function deriveAttentionLinks(tx: Tx, source: Source, cursor: UpgradeCurso
 }
 
 async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
-  const cards = await tx
-    .selectFrom("transcriptItems")
-    .select([
-      "id",
-      "threadId",
-      "kind",
-      "revision",
-      "position",
-      "runId",
-      "attemptId",
-      "nodeId",
-      "isTurnStart",
-      "createdAt",
-      "view",
-      "messageId",
-      "toolCallId",
-      "requestId",
-      "executionNodeId",
-      "delegationId",
-      "appId",
-      "blockId",
-      "bindingGeneration",
-      "visible",
-    ])
-    .where("id", ">", cursor.key)
-    .orderBy("id")
-    .limit(batchSize)
-    .execute();
+  // The table constrains ordered card fields. Read just the preview for
+  // common card shapes once their remaining wire fields are known valid.
+  const page = (
+    await sql<{
+      lastId: string | null;
+      previews: { id: string; view: unknown }[] | null;
+      fullIds: string[];
+    }>`
+      with page as materialized (
+        select id,view,not visible or (
+          (
+            (kind='message' and id=message_id and id collate "C" ~* ${messageIdPattern})
+            or (kind='reasoning' and octet_length(id) between 1 and 600
+              and octet_length(block_id) between 1 and 255)
+          )
+            and (run_id is null or run_id collate "C" ~* ${legacyRunIdPattern})
+            and (attempt_id is null or attempt_id collate "C" ~* ${legacyAttemptIdPattern})
+            and (node_id is null or node_id collate "C" ~* ${nodeIdPattern})
+            and created_at >= '0001-01-01 00:00:00+00'::timestamptz
+            and created_at < '10000-01-01 00:00:00+00'::timestamptz
+        ) as preview_only
+        from transcript_items where id > ${cursor.key} order by id limit ${verifyBatchSize}
+      )
+      select (select max(id) from page) as last_id,
+        (select json_agg(preview) from (
+          select distinct on (view) id,view from page where preview_only order by view,id
+        ) preview) as previews,
+        array(select id from page where preview_only is not true) as full_ids
+    `.execute(tx)
+  ).rows[0]!;
+  for (const preview of page.previews ?? []) {
+    if (!TranscriptItemPreviewSchema.safeParse(preview.view).success)
+      throw new Error(`Personal conversion parity check failed at card ${preview.id}`);
+  }
+  const cards = page.fullIds.length
+    ? await tx
+        .selectFrom("transcriptItems")
+        .select([
+          "id",
+          "threadId",
+          "kind",
+          "revision",
+          "position",
+          "runId",
+          "attemptId",
+          "nodeId",
+          "isTurnStart",
+          "createdAt",
+          "view",
+          "messageId",
+          "toolCallId",
+          "requestId",
+          "executionNodeId",
+          "delegationId",
+          "appId",
+          "blockId",
+          "bindingGeneration",
+        ])
+        .where(sql<boolean>`id=any(${page.fullIds}::text[])`)
+        .execute()
+    : [];
   for (const card of cards) {
     try {
-      if (card.visible) itemView(card);
-      else TranscriptItemPreviewSchema.parse(card.view);
+      itemView(card);
     } catch {
       throw new Error(`Personal conversion parity check failed at card ${card.id}`);
     }
   }
-  const last = cards.at(-1);
-  if (last) return { ...cursor, key: last.id };
+  if (page.lastId) return { ...cursor, key: page.lastId };
   const parity = (
     await sql<{
       canonical: string;
@@ -616,6 +655,7 @@ async function verifyConversion(tx: Tx, cursor: UpgradeCursor) {
 }
 
 async function dropOldState(tx: Tx) {
+  await createPersonalTranscriptOrderIndexes(tx);
   await sql`drop table deployment_events,thread_state_pending;
     alter table threads drop column projected_input_queue_paused;
     alter table client_sync_state drop column upgrade_cursor`.execute(tx);
@@ -623,18 +663,8 @@ async function dropOldState(tx: Tx) {
 
 async function convertBatch(
   tx: Tx,
-): Promise<{ stage: UpgradeCursor["stage"]; done: boolean } | null> {
-  const schema = (
-    await sql<{
-      legacy: boolean;
-    }>`select to_regclass('deployment_events') is not null as legacy`.execute(tx)
-  ).rows[0];
-  if (!schema?.legacy) return null;
-  const deployment = (
-    await sql<{ id: DeploymentId; kind: string }>`
-    select id,deployment_shape->>'kind' as kind from deployments where singleton_key='primary' limit 1
-  `.execute(tx)
-  ).rows[0];
+  deployment: Deployment | null,
+): Promise<{ stage: UpgradeCursor["stage"]; done: boolean }> {
   if (deployment?.kind !== "personal") {
     const unexpected = (
       await sql<{ present: boolean }>`select
@@ -677,16 +707,20 @@ async function convertBatch(
       next = await deriveMessages(tx, cursor);
       break;
     case "ledger": {
-      const page = await readLegacyActivityBatch(tx, source.id, cursor.key || "0", source.sequence);
-      const last = page.at(-1);
-      if (!last) {
+      const page = await convertLegacyActivityBatch(
+        tx,
+        source.id,
+        cursor.key || "0",
+        source.sequence,
+        cursor.reserved,
+      );
+      if (!page.through) {
         next = stage(cursor, "close-tools");
       } else {
-        const imported = await importLegacyActivity(tx, page, cursor.reserved);
-        const counts: LegacyImportCounts = { ...cursor.counts };
-        for (const key of Object.keys(counts) as (keyof LegacyImportCounts)[])
-          counts[key] += imported[key];
-        next = { ...cursor, key: last.sequence, counts };
+        const counts = { ...cursor.counts };
+        for (const key of Object.keys(counts) as (keyof typeof counts)[])
+          counts[key] += page.counts[key];
+        next = { ...cursor, key: page.through, counts };
       }
       break;
     }
@@ -764,14 +798,28 @@ export async function completePersonalStateConversion(
   signal: AbortSignal,
   options?: { readonly afterBatch?: (stage: UpgradeCursor["stage"]) => void },
 ): Promise<void> {
+  signal.throwIfAborted();
+  const startup = (
+    await sql<{ legacy: boolean; deployment: Deployment | null; unready: boolean }>`
+      select to_regclass('deployment_events') is not null as legacy, (
+        select json_build_object('id',id,'kind',deployment_shape->>'kind')
+        from deployments where singleton_key='primary'
+      ) as deployment, exists(select 1 from client_sync_state where not ready) as unready
+    `.execute(database)
+  ).rows[0]!;
+  if (!startup.legacy) return;
+  // An unready database from an earlier binary may already have these indexes.
+  if (startup.deployment?.kind === "personal" && startup.unready) {
+    signal.throwIfAborted();
+    await dropPersonalTranscriptOrderIndexes(database);
+  }
   for (;;) {
     signal.throwIfAborted();
     const batch = await database.transaction().execute(async (tx) => {
-      const result = await convertBatch(tx);
+      const result = await convertBatch(tx, startup.deployment);
       signal.throwIfAborted();
       return result;
     });
-    if (!batch) return;
     options?.afterBatch?.(batch.stage);
     if (batch.done) break;
   }

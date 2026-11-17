@@ -264,8 +264,10 @@ const retainedStateDdl = `
     add column latest_place jsonb check (opensteer_valid_place(latest_place)),
     add column removed_at timestamptz;
 
-  alter table messages add column published boolean not null default false,
+  -- Existing messages are usually published. The converter corrects exceptions.
+  alter table messages add column published boolean not null default true,
     add unique (id,run_id,thread_id);
+  alter table messages alter column published set default false;
   alter table runs
     add column revision bigint not null default 0 check (revision >= 0),
     add column latest_place jsonb check (opensteer_valid_place(latest_place)),
@@ -381,13 +383,6 @@ const retainedStateDdl = `
   create unique index transcript_app on transcript_items(thread_id,app_id) where app_id is not null;
   create unique index transcript_reasoning on transcript_items(run_id,attempt_id,binding_generation,node_id,block_id)
     nulls not distinct where kind = 'reasoning';
-  create index transcript_root on transcript_items(thread_id,position desc,id desc) where visible and node_id is null;
-  create index transcript_node on transcript_items(node_id,position desc,id desc) where visible and node_id is not null;
-  create index transcript_run_place on transcript_items(run_id,position desc,id desc) where visible and kind = 'place';
-  create index transcript_root_activity on transcript_items(thread_id,position desc,id desc)
-    where visible and node_id is null and kind in ('message','tool','place','app','request','node');
-  create index transcript_node_activity on transcript_items(node_id,position desc,id desc)
-    where visible and node_id is not null and kind in ('node-message','tool');
   create index transcript_thread on transcript_items(thread_id);
   create index transcript_run_sources on transcript_items(run_id);
   create index transcript_attempt on transcript_items(attempt_id);
@@ -447,6 +442,30 @@ const retainedStateDdl = `
   create index personal_attention_expiry on personal_attention(expires_at,id) where kind = 'team-ask';
   create index personal_attention_thread on personal_attention(thread_id) where thread_id is not null;
 `;
+
+const transcriptOrderIndexes = {
+  transcript_root:
+    "on transcript_items(thread_id,position desc,id desc) where visible and node_id is null",
+  transcript_node:
+    "on transcript_items(node_id,position desc,id desc) where visible and node_id is not null",
+  transcript_run_place:
+    "on transcript_items(run_id,position desc,id desc) where visible and kind = 'place'",
+  transcript_root_activity: `on transcript_items(thread_id,position desc,id desc)
+    where visible and node_id is null and kind in ('message','tool','place','app','request','node')`,
+  transcript_node_activity: `on transcript_items(node_id,position desc,id desc)
+    where visible and node_id is not null and kind in ('node-message','tool')`,
+};
+
+export async function dropPersonalTranscriptOrderIndexes(database: Kysely<DatabaseSchema>) {
+  await sql`drop index if exists ${sql.join(Object.keys(transcriptOrderIndexes).map((name) => sql.id(name)))}`.execute(
+    database,
+  );
+}
+
+export async function createPersonalTranscriptOrderIndexes(database: Kysely<DatabaseSchema>) {
+  for (const [name, definition] of Object.entries(transcriptOrderIndexes))
+    await sql`create index if not exists ${sql.id(name)} ${sql.raw(definition)}`.execute(database);
+}
 
 const currentStateIndexes = `
   alter table delegations add column cancellation_root_id text
