@@ -41,17 +41,26 @@ export function personalScopeKey(scope: PersonalReadScope): PersonalScopeKey {
   }
 }
 
+const scopedReadTransactions = new WeakSet<Read>();
+
 export function withPersonalSyncRead<Result>(
   database: Database,
   action: (tx: Read) => Promise<Result>,
 ) {
-  return database.isTransaction
-    ? action(database as Read)
-    : database
-        .transaction()
-        .setIsolationLevel("repeatable read")
-        .setAccessMode("read only")
-        .execute(action);
+  if (database.isTransaction) {
+    const tx = database as Read;
+    if (!scopedReadTransactions.has(tx))
+      throw new Error("Personal sync reads require their own repeatable-read cut");
+    return action(tx);
+  }
+  return database
+    .transaction()
+    .setIsolationLevel("repeatable read")
+    .setAccessMode("read only")
+    .execute(async (tx) => {
+      scopedReadTransactions.add(tx);
+      return action(tx);
+    });
 }
 
 export async function authorizedSyncState(tx: Read, viewerId: UserId) {
@@ -344,11 +353,12 @@ export function readTranscriptPage(
             .limit(Math.floor((limit - 1) / 2))
             .execute()
         : [];
+    const maxTurns = Math.max(1, input.maxTurns ?? Number.MAX_SAFE_INTEGER);
     const newerSelected = itemWindow(
       newer,
       newer.length,
       Math.floor(maxBytes / 2),
-      input.maxTurns ?? Number.MAX_SAFE_INTEGER,
+      maxTurns - Number(anchor?.isTurnStart ?? false),
     );
     const newerBytes = newerSelected.reduce(
       (size, row) => size + Buffer.byteLength(JSON.stringify(row)) + 1,
@@ -358,7 +368,7 @@ export function readTranscriptPage(
     const candidates = anchor
       ? await query
           .where(sql<boolean>`(position,id) <= (${anchor.position}::bigint,${anchor.id})`)
-          .limit(limit - newer.length + 1)
+          .limit(limit - newerSelected.length + 1)
           .execute()
       : await query
           .$if(cursor !== undefined, (part) =>
@@ -372,8 +382,7 @@ export function readTranscriptPage(
       candidates,
       limit - newerSelected.length,
       maxBytes - newerBytes,
-      (input.maxTurns ?? Number.MAX_SAFE_INTEGER) -
-        newerSelected.filter((row) => row.isTurnStart).length,
+      maxTurns - newerSelected.filter((row) => row.isTurnStart).length,
     );
     const oldest = rows.at(-1);
     const hasMore = candidates.length > rows.length;
@@ -421,7 +430,25 @@ export function readTranscriptItem(
     if (input.expectedRevision !== undefined && item.revision !== input.expectedRevision)
       return { kind: "revision-conflict" as const, revision: item.revision };
     let body: unknown = null;
+    const tooLarge = () => ({
+      kind: "item" as const,
+      item: itemView(item),
+      body: null,
+      truncated: true,
+    });
     if (item.messageId) {
+      const fits = await tx
+        .selectFrom("messages")
+        .select(
+          sql<boolean>`octet_length(jsonb_build_array(author,content,quote,origin)::text) <= 1000000`.as(
+            "fits",
+          ),
+        )
+        .where("id", "=", item.messageId)
+        .where("threadId", "=", item.threadId)
+        .executeTakeFirst();
+      if (!fits) return { kind: "unavailable" as const };
+      if (!fits.fits) return tooLarge();
       body = await tx
         .selectFrom("messages")
         .select(["author", "content", "quote", "revision", "editedAt", "origin", "kind"])
@@ -429,8 +456,23 @@ export function readTranscriptItem(
         .where("threadId", "=", item.threadId)
         .executeTakeFirstOrThrow();
     } else if (item.toolCallId) {
-      const tool = await tx
+      const toolScope = tx
         .selectFrom("toolCalls")
+        .where("id", "=", item.toolCallId)
+        .where("threadId", "=", item.threadId)
+        .where(
+          sql<boolean>`run_id is not distinct from ${item.runId} and attempt_id is not distinct from ${item.attemptId} and node_id is not distinct from ${item.nodeId}`,
+        );
+      const fits = await toolScope
+        .select(
+          sql<boolean>`octet_length(jsonb_build_array(integration,arguments,output)::text) <= 1000000`.as(
+            "fits",
+          ),
+        )
+        .executeTakeFirst();
+      if (!fits) return { kind: "unavailable" as const };
+      if (!fits.fits) return tooLarge();
+      const tool = await toolScope
         .select([
           "tool",
           "integration",
@@ -441,14 +483,14 @@ export function readTranscriptItem(
           "startedAt",
           "completedAt",
         ])
-        .where("id", "=", item.toolCallId)
-        .where("threadId", "=", item.threadId)
         .executeTakeFirstOrThrow();
       const { output, ...facts } = tool;
       const images = await tx
         .selectFrom("toolOutputImages")
         .select(["id", "mediaType", "generated"])
         .where("toolCallId", "=", item.toolCallId)
+        .where("threadId", "=", item.threadId)
+        .where(sql<boolean>`node_id is not distinct from ${item.nodeId}`)
         .orderBy("imageIndex")
         .limit(8)
         .execute();
@@ -466,8 +508,6 @@ export function readTranscriptItem(
       ).body;
     }
     const response = { kind: "item" as const, item: itemView(item), body, truncated: false };
-    return Buffer.byteLength(JSON.stringify(response)) <= 1024 * 1024
-      ? response
-      : { ...response, body: null, truncated: true };
+    return Buffer.byteLength(JSON.stringify(response)) <= 1024 * 1024 ? response : tooLarge();
   });
 }

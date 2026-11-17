@@ -1,6 +1,8 @@
+import { createId } from "@opensteer/core";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { sql } from "kysely";
 import { expect, test } from "vitest";
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, installPersonalMutationHooks } from "./personal-mutation.js";
 import { createPersonalStateFixture } from "./personal-state.test-support.js";
 import {
   authorizedSyncState,
@@ -114,19 +116,33 @@ test("a scope that exceeds its commit budget gets one invalidation", async () =>
     };
     let built = 0;
     await commitPersonalMutation(database, async (_tx, mutation) => {
-      for (let i = 0; i < 100; i++)
+      for (let i = 0; i < 100; i++) {
+        const id = createId("thread");
         mutation.change(
           {
             scopeKey: "shell",
             entityKind: "task",
-            entityId: `task-${i}`,
+            entityId: id,
             operation: "upsert",
           },
           () => {
             built++;
-            return { title: "a".repeat(6000) };
+            return {
+              id,
+              title: "•",
+              revision: mutation.sequence,
+              status: "idle",
+              purpose: "task",
+              askedAt: mutation.state.now.toISOString(),
+              doneAt: null,
+              pendingRequestCount: 0,
+              lastReplyPreview: "\u0001".repeat(1050),
+              failurePreview: null,
+              latestRunCompletedAt: null,
+            };
           },
         );
+      }
     });
     expect(built).toBeLessThan(12);
     expect(
@@ -143,6 +159,79 @@ test("a scope that exceeds its commit budget gets one invalidation", async () =>
       }),
     ).toMatchObject({ kind: "snapshot-required", reason: "scope-invalidated" });
   } finally {
+    await fixture.close();
+  }
+});
+
+test("retention rounds up to a complete commit and purges old scope cursors", async () => {
+  const fixture = await createPersonalStateFixture("retention-rounded");
+  const { database, run } = fixture;
+  const removeHooks = installPersonalMutationHooks(database, {
+    wake() {},
+    suspend: () => ({ committed() {}, rolledBack() {} }),
+    onFailure(error) {
+      throw error;
+    },
+  });
+  try {
+    const initial = await database
+      .selectFrom("clientSyncState")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    await sql`insert into client_changes(deployment_id,sequence,scope_key,ordinal,entity_kind,entity_id,operation,payload,created_at)
+      select ${run.deploymentId}, n+${initial.sequence}::bigint, 'shell', i, 'task', 'fixture-'||i, 'remove', '{}', clock_timestamp()
+      from generate_series(1,32) n cross join generate_series(0,127) i`.execute(database);
+    await database
+      .updateTable("clientSyncState")
+      .set({
+        sequence: (BigInt(initial.sequence) + 32n).toString(),
+        retainedChangeCount: 4096,
+      })
+      .execute();
+    await commitPersonalMutation(database, async (_tx, mutation) => {
+      mutation.change({
+        scopeKey: "shell",
+        operation: "remove",
+        entityKind: "task",
+        entityId: "tail",
+      });
+    });
+    const point = await database
+      .selectFrom("clientSyncState")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    expect(point.prunedThroughSequence).toBe((BigInt(initial.sequence) + 1n).toString());
+    expect(point.retainedChangeCount).toBe(3969);
+    const purged = await commitPersonalMutation(database, async (_tx, mutation) => {
+      mutation.purge(`thread:${run.threadId}`);
+      return mutation.sequence;
+    });
+    const read = (afterSequence: string) =>
+      readPersonalScopeCut(database, {
+        viewerId: run.userId,
+        scope: { kind: "shell" },
+        cursor: {
+          deploymentId: point.deploymentId,
+          viewerId: run.userId,
+          epoch: point.epoch,
+          scopeKey: "shell",
+          afterSequence,
+        },
+        snapshot: async () => {
+          throw new Error("Expected replay negotiation");
+        },
+      });
+    expect(await read(point.sequence)).toMatchObject({
+      kind: "snapshot-required",
+      reason: "cursor-unavailable",
+    });
+    expect(await read(purged)).toMatchObject({
+      kind: "replay",
+      state: { retainedChangeCount: 0 },
+      commits: [],
+    });
+  } finally {
+    removeHooks();
     await fixture.close();
   }
 });

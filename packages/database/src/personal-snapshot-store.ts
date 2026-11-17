@@ -7,7 +7,7 @@ import {
 import { sql } from "kysely";
 import { boundedSerializedPrefix } from "./message-window.js";
 import type { PersonalMutationTransaction } from "./personal-mutation.js";
-import { readAttentionKeys } from "./personal-attention-store.js";
+import { readAttentionKeys, requireFreshPersonalAttention } from "./personal-attention-store.js";
 import {
   type authorizedSyncState,
   drawableItems,
@@ -37,48 +37,6 @@ function taskView(task: Task) {
   };
 }
 
-async function attentionPreview(
-  tx: Tx,
-  entry: Awaited<ReturnType<typeof readAttentionKeys>>[number],
-) {
-  if (entry.requestId) {
-    const request = await tx
-      .selectFrom("requests")
-      .select(["originatingThreadId", "revision"])
-      .select(sql<string>`left(presentation->>'title',192)`.as("title"))
-      .where("id", "=", entry.requestId)
-      .executeTakeFirstOrThrow();
-    return {
-      id: entry.id,
-      kind: entry.kind,
-      threadId: request.originatingThreadId,
-      revision: request.revision,
-      title: utf8Prefix(request.title || "Request", 240),
-    };
-  }
-  const request = await tx
-    .selectFrom("personalTeamRequests")
-    .select("localTaskId")
-    .select(sql<string>`left(presentation->>'title',192)`.as("title"))
-    .select(sql<string>`left(blocked_reason,160)`.as("reason"))
-    .where("teamDeploymentId", "=", entry.teamDeploymentId!)
-    .where("requestId", "=", entry.teamRequestId!)
-    .executeTakeFirstOrThrow();
-  const revision = await tx
-    .selectFrom("personalAttention")
-    .select("revision")
-    .where("id", "=", entry.id)
-    .executeTakeFirstOrThrow();
-  return {
-    id: entry.id,
-    kind: entry.kind,
-    threadId: request.localTaskId,
-    revision: revision.revision,
-    title: utf8Prefix(request.title || "Team ask", 240),
-    ...(request.reason ? { preview: utf8Prefix(request.reason, 500) } : {}),
-  };
-}
-
 export async function buildPersonalShellSnapshot(
   tx: Tx,
   state: SyncState,
@@ -89,9 +47,15 @@ export async function buildPersonalShellSnapshot(
     viewerId,
     ...(selectedThreadId ? { selectedThreadId } : {}),
   });
-  const selected = (await readAttentionKeys(tx, { limit: 20 })).slice(0, 20);
-  const attention = [];
-  for (const entry of selected) attention.push(await attentionPreview(tx, entry));
+  await requireFreshPersonalAttention(tx);
+  const attention = (await readAttentionKeys(tx, { limit: 20 })).slice(0, 20).map((entry) => ({
+    id: entry.id,
+    kind: entry.kind,
+    threadId: entry.threadId,
+    revision: entry.revision,
+    title: utf8Prefix(entry.title || (entry.kind === "request" ? "Request" : "Team ask"), 240),
+    ...(entry.blockedReason ? { preview: utf8Prefix(entry.blockedReason, 500) } : {}),
+  }));
   const { pendingRequestCount, needsYouCount, unreadTaskCount } = state;
   return PersonalShellSnapshotSchema.parse({
     deploymentId: state.deploymentId,

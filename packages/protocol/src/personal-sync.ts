@@ -218,22 +218,55 @@ function upsert<Kind extends z.infer<typeof entityKind>, Value extends z.ZodType
   });
 }
 
-export const PersonalChangeSchema = z.union([
-  z.strictObject({ ...change, operation: z.literal("remove"), entityKind }),
-  z.strictObject({
-    ...change,
-    operation: z.literal("invalidate"),
-    entityKind: z.literal("collection"),
-    value: z.strictObject({ revision: PersonalRevisionSchema.optional() }),
-  }),
-  upsert("task", task),
-  upsert("visit", visit),
-  upsert("attention", attention),
-  upsert("thread", task),
-  upsert("run-queue", queue),
-  upsert("request", request),
-  upsert("item", TranscriptItemSchema),
-]);
+export const PersonalChangeSchema = z
+  .union([
+    z.strictObject({ ...change, operation: z.literal("remove"), entityKind }),
+    z.strictObject({
+      ...change,
+      operation: z.literal("invalidate"),
+      entityKind: z.literal("collection"),
+      value: z.strictObject({ revision: PersonalRevisionSchema.optional() }),
+    }),
+    upsert("task", task),
+    upsert("visit", visit),
+    upsert("attention", attention),
+    upsert("thread", task),
+    upsert("run-queue", queue),
+    upsert("request", request),
+    upsert("item", TranscriptItemSchema),
+  ])
+  .refine((row) => {
+    if (row.operation !== "upsert") return true;
+    if ("id" in row.value) return row.entityId === row.value.id;
+    if (row.entityKind === "visit") return row.entityId === row.value.threadId;
+    return true;
+  });
+
+function changeMatchesScope(
+  row: z.infer<typeof PersonalChangeSchema>,
+  scope: z.infer<typeof PersonalScopeSchema>,
+) {
+  if (row.entityKind === "collection") return true;
+  if (scope.kind === "shell")
+    return (
+      row.entityKind === "task" || row.entityKind === "visit" || row.entityKind === "attention"
+    );
+  switch (row.entityKind) {
+    case "thread":
+      return row.entityId === scope.threadId;
+    case "request":
+      return row.operation !== "upsert" || row.value.threadId === scope.threadId;
+    case "run-queue":
+      return scope.kind === "thread";
+    case "item":
+      return (
+        row.operation !== "upsert" ||
+        row.value.nodeId === (scope.kind === "node" ? scope.nodeId : null)
+      );
+    default:
+      return false;
+  }
+}
 
 const durableAddress = {
   ...address,
@@ -257,75 +290,81 @@ const liveText = {
   offset: z.int().nonnegative(),
   totalLength: z.int().nonnegative(),
 };
-export const ScopedHostMessageSchema = z.discriminatedUnion("type", [
-  z
-    .strictObject({
-      type: z.literal("host.snapshot"),
+export const ScopedHostMessageSchema = z
+  .discriminatedUnion("type", [
+    z
+      .strictObject({
+        type: z.literal("host.snapshot"),
+        ...durableAddress,
+        snapshot: z.union([PersonalShellSnapshotSchema, PersonalDetailSnapshotSchema]),
+      })
+      .refine(
+        (value) =>
+          (value.scope.kind === "shell") === "tasks" in value.snapshot &&
+          utf8ByteLength(JSON.stringify(value)) <= (value.scope.kind === "shell" ? 96 : 128) * 1024,
+      ),
+    z
+      .strictObject({
+        type: z.literal("host.changes"),
+        ...durableAddress,
+        fromSequence: PersonalRevisionSchema,
+        changes: z.array(PersonalChangeSchema).max(128),
+      })
+      .refine(
+        (frame) =>
+          (frame.fromSequence.length < frame.throughSequence.length ||
+            (frame.fromSequence.length === frame.throughSequence.length &&
+              frame.fromSequence < frame.throughSequence)) &&
+          frame.changes.every(
+            (row, index) =>
+              row.sequence === frame.throughSequence &&
+              changeMatchesScope(row, frame.scope) &&
+              (index === 0 || row.ordinal > frame.changes[index - 1]!.ordinal),
+          ) &&
+          utf8ByteLength(JSON.stringify(frame)) <= 64 * 1024,
+      ),
+    z.strictObject({ type: z.literal("host.synchronized"), ...durableAddress }),
+    z.strictObject({
+      type: z.literal("host.snapshot-required"),
       ...durableAddress,
-      snapshot: z.union([PersonalShellSnapshotSchema, PersonalDetailSnapshotSchema]),
-    })
-    .refine(
-      (value) =>
-        (value.scope.kind === "shell") === "tasks" in value.snapshot &&
-        utf8ByteLength(JSON.stringify(value)) <= (value.scope.kind === "shell" ? 96 : 128) * 1024,
-    ),
-  z
-    .strictObject({
-      type: z.literal("host.changes"),
-      ...durableAddress,
-      fromSequence: PersonalRevisionSchema,
-      changes: z.array(PersonalChangeSchema).max(128),
-    })
-    .refine(
-      (frame) =>
-        (frame.fromSequence.length < frame.throughSequence.length ||
-          (frame.fromSequence.length === frame.throughSequence.length &&
-            frame.fromSequence < frame.throughSequence)) &&
-        frame.changes.every(
-          (row, index) =>
-            row.sequence === frame.throughSequence &&
-            (index === 0 || row.ordinal > frame.changes[index - 1]!.ordinal),
-        ) &&
-        utf8ByteLength(JSON.stringify(frame)) <= 64 * 1024,
-    ),
-  z.strictObject({ type: z.literal("host.synchronized"), ...durableAddress }),
-  z.strictObject({
-    type: z.literal("host.snapshot-required"),
-    ...durableAddress,
-    reason: z.enum([
-      "scope-changed",
-      "cursor-unavailable",
-      "scope-invalidated",
-      "replay-overflow",
-      "pressure",
-    ]),
-  }),
-  z.strictObject({
-    type: z.literal("host.removed"),
-    ...address,
-    scope: detailScope,
-    reason: z.literal("unavailable"),
-  }),
-  z.strictObject({
-    type: z.literal("host.resource"),
-    ...address,
-    subscriptionId: z.literal("shell"),
-    kind: PersonalResourceKindSchema,
-    revision: PersonalRevisionSchema,
-    view: PersonalResourceViewSchema,
-  }),
-  z
-    .strictObject({
-      type: z.literal("host.live"),
-      ...liveAddress,
-      update: z.discriminatedUnion("operation", [
-        z.strictObject({ operation: z.literal("append"), ...liveText }),
-        z.strictObject({ operation: z.literal("replace"), ...liveText, incomplete: z.boolean() }),
-        z.strictObject({ operation: z.literal("close") }),
+      reason: z.enum([
+        "scope-changed",
+        "cursor-unavailable",
+        "scope-invalidated",
+        "replay-overflow",
+        "pressure",
       ]),
-    })
-    .refine((value) => utf8ByteLength(JSON.stringify(value)) <= 16 * 1024),
-]);
+    }),
+    z.strictObject({
+      type: z.literal("host.removed"),
+      ...address,
+      scope: detailScope,
+      reason: z.literal("unavailable"),
+    }),
+    z.strictObject({
+      type: z.literal("host.resource"),
+      ...address,
+      subscriptionId: z.literal("shell"),
+      kind: PersonalResourceKindSchema,
+      revision: PersonalRevisionSchema,
+      view: PersonalResourceViewSchema,
+    }),
+    z
+      .strictObject({
+        type: z.literal("host.live"),
+        ...liveAddress,
+        update: z.discriminatedUnion("operation", [
+          z.strictObject({ operation: z.literal("append"), ...liveText }),
+          z.strictObject({ operation: z.literal("replace"), ...liveText, incomplete: z.boolean() }),
+          z.strictObject({ operation: z.literal("close") }),
+        ]),
+      })
+      .refine((value) => utf8ByteLength(JSON.stringify(value)) <= 16 * 1024),
+  ])
+  .refine(
+    (frame) =>
+      !("scope" in frame) || (frame.scope.kind === "shell") === (frame.subscriptionId === "shell"),
+  );
 
 export type PersonalScope = z.infer<typeof PersonalScopeSchema>;
 export type PersonalResumeCursor = z.infer<typeof PersonalResumeCursorSchema>;

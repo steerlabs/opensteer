@@ -1,6 +1,6 @@
 import { sql } from "kysely";
 import { expect, test } from "vitest";
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, installPersonalMutationHooks } from "./personal-mutation.js";
 import { advancePersonalRunFinish, beginPersonalRunFinish } from "./personal-run-state.js";
 import {
   acceptPersonalRunnerStatement,
@@ -12,6 +12,24 @@ import { interruptPersonalToolCalls } from "./personal-tool-calls.js";
 test("a finishing Run resumes its bounded work and only acknowledges an exact terminal statement after the final batch", async () => {
   const fixture = await createPersonalStateFixture("bounded-finalization");
   const { database, run, attemptId } = fixture;
+  let fenced = false;
+  const disconnect = installPersonalMutationHooks(database, {
+    wake() {},
+    onFailure(error) {
+      throw error;
+    },
+    suspend(scopes) {
+      expect(scopes.has(`thread:${run.threadId}`)).toBe(true);
+      return {
+        committed() {
+          fenced = true;
+        },
+        rolledBack() {
+          throw new Error("Unexpected rollback");
+        },
+      };
+    },
+  });
   try {
     await sql`insert into tool_calls(id,thread_id,run_id,call_id,origin,tool,arguments,status,started_at)
       select 'fixture-call-'||n,${run.threadId},${run.runId},'harness:fixture-'||n,'host-harness',
@@ -40,22 +58,39 @@ test("a finishing Run resumes its bounded work and only acknowledges an exact te
       emittedAt: new Date().toISOString(),
     };
     const digest = runnerStatementDigest(statement).toString("hex");
-    await commitPersonalMutation(database, (tx, mutation) =>
-      beginPersonalRunFinish(tx, mutation, {
-        runId: run.runId,
-        intent: {
-          attemptId,
-          bindingGeneration: run.bindingGeneration,
-          outcome: "interrupted",
-          completedAt: statement.emittedAt,
-          replyMessageId: null,
-          statement: { ordinal: 1, runnerId: run.runnerId, runnerBootId: run.runnerBootId, digest },
-        },
-      }),
-    );
+    await database
+      .updateTable("commands")
+      .set({ status: "unknown" })
+      .where("id", "=", run.turn.command.id)
+      .execute();
+    await expect(
+      commitPersonalMutation(database, (tx, mutation) =>
+        acceptPersonalRunnerStatement(tx, mutation, statement, async (reported) => {
+          expect(reported.toString("hex")).toBe(digest);
+          await beginPersonalRunFinish(tx, mutation, {
+            runId: run.runId,
+            intent: {
+              attemptId,
+              bindingGeneration: run.bindingGeneration,
+              outcome: "interrupted",
+              completedAt: statement.emittedAt,
+              replyMessageId: null,
+              statement: {
+                ordinal: 1,
+                runnerId: run.runnerId,
+                runnerBootId: run.runnerBootId,
+                digest,
+              },
+            },
+          });
+          return "applied";
+        }),
+      ),
+    ).resolves.toEqual({ finishing: true });
+    expect(fenced).toBe(true);
     const observedBatchSizes: number[] = [];
-    let ack: Awaited<ReturnType<typeof acceptPersonalRunnerStatement>> | undefined;
-    const advance = () =>
+    const crash = new Error("Host stopped before final commit");
+    const advance = (failure?: Error) =>
       commitPersonalMutation(database, (tx, mutation) =>
         advancePersonalRunFinish(tx, mutation, run.runId, {
           async settle(children) {
@@ -98,23 +133,27 @@ test("a finishing Run resumes its bounded work and only acknowledges an exact te
             await interruptPersonalToolCalls(tx, mutation, run.runId, tools);
           },
           async finalize(intent) {
-            ack = await acceptPersonalRunnerStatement(tx, mutation, statement, async () => {
-              await tx
-                .updateTable("runs")
-                .set({
-                  status: intent.outcome,
-                  completedAt: new Date(intent.completedAt),
-                  runnerSafetyTerminal: true,
-                })
-                .where("id", "=", run.runId)
-                .execute();
-              return "applied";
-            });
+            await tx
+              .updateTable("runs")
+              .set({
+                status: intent.outcome,
+                completedAt: new Date(intent.completedAt),
+                runnerSafetyTerminal: true,
+              })
+              .where("id", "=", run.runId)
+              .execute();
+            if (failure) throw failure;
           },
         }),
       );
     expect(await advance()).toBe("more");
-    expect(ack).toBeUndefined();
+    expect(
+      await database
+        .selectFrom("commands")
+        .select("status")
+        .where("id", "=", run.turn.command.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "failed" });
     expect(
       await database.selectFrom("runnerEventReceipts").select("ordinal").limit(1).execute(),
     ).toEqual([]);
@@ -129,6 +168,13 @@ test("a finishing Run resumes its bounded work and only acknowledges an exact te
     });
     await expect(
       commitPersonalMutation(database, (tx, mutation) =>
+        acceptPersonalRunnerStatement(tx, mutation, statement, async () => {
+          throw new Error("A pending retry reached the apply callback");
+        }),
+      ),
+    ).resolves.toEqual({ finishing: true });
+    await expect(
+      commitPersonalMutation(database, (tx, mutation) =>
         acceptPersonalRunnerStatement(
           tx,
           mutation,
@@ -139,11 +185,22 @@ test("a finishing Run resumes its bounded work and only acknowledges an exact te
         ),
       ),
     ).rejects.toThrow("The Run is finishing");
+    await expect(advance(crash)).rejects.toBe(crash);
+    expect(
+      await database.selectFrom("runnerEventReceipts").select("ordinal").limit(1).execute(),
+    ).toEqual([]);
     expect(await advance()).toBe("settled");
-    expect(ack).toEqual({ throughOrdinal: 1, replayed: false });
-    expect(observedBatchSizes).toHaveLength(2);
+    await expect(
+      commitPersonalMutation(database, (tx, mutation) =>
+        acceptPersonalRunnerStatement(tx, mutation, statement, async () => {
+          throw new Error("A final retry reached the apply callback");
+        }),
+      ),
+    ).resolves.toEqual({ throughOrdinal: 1, replayed: true });
+    expect(observedBatchSizes).toHaveLength(3);
     expect(observedBatchSizes[0]).toBe(128);
     expect(observedBatchSizes[1]).toBeLessThan(128);
+    expect(observedBatchSizes[2]).toBe(observedBatchSizes[1]);
     expect(
       await database
         .selectFrom("toolCalls")
@@ -160,6 +217,7 @@ test("a finishing Run resumes its bounded work and only acknowledges an exact te
       .executeTakeFirstOrThrow();
     expect(receipt.reportedDigest.toString("hex")).toBe(digest);
   } finally {
+    disconnect();
     await fixture.close();
   }
 });

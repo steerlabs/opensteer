@@ -1,6 +1,7 @@
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { DeploymentId } from "@opensteer/core";
-import { withDatabaseTransaction } from "./connection.js";
+import { PersonalChangeSchema } from "@opensteer/protocol/personal-sync";
+import { isTransactionConflict, withDatabaseTransaction } from "./connection.js";
 import { inheritExecutionClock } from "./personal-transaction.js";
 import type {
   ClientChangeOperation,
@@ -34,6 +35,29 @@ interface ChangeIdentity {
 interface Change extends ChangeIdentity {
   readonly payload: Record<string, unknown>;
   readonly bytes: number;
+}
+
+function postgresJsonOverhead(value: unknown): number {
+  if (Array.isArray(value))
+    return (
+      Math.max(0, value.length - 1) +
+      value.reduce<number>((size, item) => size + postgresJsonOverhead(item), 0)
+    );
+  if (value === null || typeof value !== "object") return 0;
+  const entries = Object.values(value);
+  return (
+    Math.max(0, entries.length * 2 - 1) +
+    entries.reduce<number>((size, item) => size + postgresJsonOverhead(item), 0)
+  );
+}
+
+function validChangeScope(identity: ChangeIdentity) {
+  const kind = identity.entityKind;
+  if (kind === "collection") return true;
+  if (identity.scopeKey === "shell")
+    return kind === "task" || kind === "visit" || kind === "attention";
+  if (kind === "thread" || kind === "item" || kind === "request") return true;
+  return kind === "run-queue" && identity.scopeKey.startsWith("thread:");
 }
 
 interface CommitNotice {
@@ -115,19 +139,41 @@ class Mutation {
       this.#boundCommit();
       return;
     }
-    const payload = build();
-    const bytes =
-      Buffer.byteLength(
-        JSON.stringify({
-          sequence: this.sequence,
-          ordinal: maxCommitRows - 1,
-          entityKind: identity.entityKind,
-          entityId: identity.entityId,
-          operation: identity.operation,
-          value: payload,
-        }),
-      ) + 1;
-    if (bytes > maxChangeBytes) {
+    const { scopeKey: _scopeKey, ...address } = identity;
+    const parsed = PersonalChangeSchema.safeParse({
+      ...address,
+      sequence: this.sequence,
+      ordinal: maxCommitRows - 1,
+      ...(identity.operation === "remove" ? {} : { value: build() }),
+    });
+    if (!parsed.success || !validChangeScope(identity)) {
+      this.#invalidate(scope);
+      this.#boundCommit();
+      return;
+    }
+    const change = parsed.data;
+    const payload = "value" in change ? change.value : {};
+    const viewId =
+      "id" in payload
+        ? payload.id
+        : change.entityKind === "visit" && "threadId" in payload
+          ? payload.threadId
+          : null;
+    const scopeMismatch =
+      change.operation === "upsert" &&
+      change.entityKind === "item" &&
+      scope !==
+        (change.value.nodeId
+          ? `node:${change.value.nodeId}`
+          : scope.startsWith("thread:")
+            ? scope
+            : null);
+    const bytes = Buffer.byteLength(JSON.stringify(change)) + 1;
+    if (
+      (viewId !== null && viewId !== identity.entityId) ||
+      scopeMismatch ||
+      Buffer.byteLength(JSON.stringify(payload)) + postgresJsonOverhead(payload) > maxChangeBytes
+    ) {
       this.#invalidate(scope);
       this.#boundCommit();
       return;
@@ -215,7 +261,9 @@ class Mutation {
     const state = this.state;
     const { deploymentId } = state;
     const head = this.hasVisibleChange ? this.sequence : state.sequence;
-    const changes = Array.from(this.#scopes.values()).flatMap((scope) => [...scope.values()]);
+    const changes = this.#privacyPurge
+      ? []
+      : Array.from(this.#scopes.values()).flatMap((scope) => [...scope.values()]);
     const at = new Date(Math.max(state.now.getTime(), state.lastCommitAt.getTime()));
     let floor = state.prunedThroughSequence;
     let count = state.retainedChangeCount;
@@ -226,7 +274,7 @@ class Mutation {
     const earliest = keep.select("createdAt").orderBy("sequence").orderBy("ordinal").limit(1);
     const oldestBefore = count > 0 ? await earliest.executeTakeFirstOrThrow() : undefined;
     if (this.#reset || this.#privacyPurge) {
-      floor = this.#reset ? head : state.sequence;
+      floor = head;
     } else {
       const overshoot = count + changes.length - retainedRows;
       const countCut =
@@ -261,15 +309,7 @@ class Mutation {
         .deleteFrom("clientChanges")
         .where("deploymentId", "=", deploymentId)
         .where("sequence", "<=", floor);
-      // FOR UPDATE: this prefix is about to be deleted under the deployment fence.
-      await keep
-        .select("ordinal")
-        .where("sequence", "<=", floor)
-        .orderBy("sequence")
-        .orderBy("ordinal")
-        .forUpdate()
-        .execute();
-      count -= (await prefix.returning("sequence").execute()).length;
+      count -= Number((await prefix.executeTakeFirst()).numDeletedRows);
     }
     for (const write of this.#receipts) await write(head);
     if (changes.length) {
@@ -369,7 +409,6 @@ export async function commitPersonalMutation<Result>(
       const state = await tx
         .selectFrom("clientSyncState")
         .selectAll()
-        .select(sql<Date>`clock_timestamp()`.as("now"))
         .forNoKeyUpdate()
         .limit(1)
         .executeTakeFirstOrThrow();
@@ -380,16 +419,27 @@ export async function commitPersonalMutation<Result>(
         .forNoKeyUpdate()
         .limit(1)
         .execute();
-      const mutation = new Mutation(state);
+      const clock = await tx
+        .selectNoFrom(sql<Date>`clock_timestamp()`.as("now"))
+        .executeTakeFirstOrThrow();
+      const mutation = new Mutation({ ...state, now: clock.now });
       active.set(tx, mutation);
       const result = await action(tx, mutation);
       const notice = await mutation.write(tx);
-      if (mutation.authorityScopes.size) suspended = listener?.suspend?.(mutation.authorityScopes);
+      if (mutation.authorityScopes.size) {
+        if (!listener?.suspend)
+          throw new Error("Personal authority mutation has no dispatch fence");
+        suspended = listener.suspend(mutation.authorityScopes);
+      }
       return { result, notice, mutation };
     },
     undefined,
     (error) => {
-      if (suspended) notify(listener, "authority", () => suspended?.rolledBack());
+      if (suspended)
+        notify(listener, "authority", () => {
+          if (isTransactionConflict(error)) suspended?.rolledBack();
+          else suspended?.committed();
+        });
       suspended = undefined;
       return retryDiscovery?.(error) ?? false;
     },

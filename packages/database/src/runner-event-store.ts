@@ -1,7 +1,8 @@
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { recoverLostRunTransaction } from "./run-recovery.js";
 import { contentSaysSomething, isPlaceContentPart } from "@opensteer/core";
-import { isRecord } from "@opensteer/shared/isRecord";
+import { storableJson } from "./storable-json.js";
+export { storableText } from "./storable-json.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { isConstraintViolation } from "./connection.js";
 import { type DeploymentEventRow, type RunRow, type DatabaseSchema } from "./schema.js";
@@ -815,25 +816,6 @@ async function projectRunPhase(
   return [];
 }
 
-/**
- * The same JSON value as PostgreSQL can store it. jsonb refuses half of a
- * surrogate pair and U+0000 in any text, keys included: the one is made
- * well-formed and the other becomes U+FFFD, as in tool output.
- */
-function storableJson<Value>(value: Value): Value {
-  return JSON.parse(
-    JSON.stringify(value, (_key, item: unknown) => {
-      if (typeof item === "string") return storableText(item);
-      if (!isRecord(item)) return item;
-      return Object.fromEntries(
-        Object.entries(item).map(([key, entry]) => [storableText(key), entry]),
-      );
-    }),
-  ) as Value;
-}
-export function storableText(text: string): string {
-  return text.toWellFormed().replaceAll("\u0000", "\uFFFD");
-}
 async function latestRunEvent(
   transaction: Transaction<DatabaseSchema>,
   runId: RunRow["id"],

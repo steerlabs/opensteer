@@ -8,6 +8,7 @@ import type {
   RequestId,
   RunAttemptId,
   RunId,
+  RunFailure,
   RunnerId,
   TabId,
   TeamAgentRequestId,
@@ -21,7 +22,7 @@ import {
   type PersonalResourceRevisions,
 } from "@opensteer/protocol/resources";
 export type { PersonalResourceKind } from "@opensteer/protocol/resources";
-import { sql, type Generated, type Transaction } from "kysely";
+import { sql, type Generated, type Kysely } from "kysely";
 import type { DatabaseSchema, Timestamp } from "./schema.js";
 
 export type PersonalScopeKey = "shell" | `thread:${string}` | `node:${string}`;
@@ -45,6 +46,7 @@ export interface FinishIntent {
   readonly outcome: "completed" | "failed" | "interrupted";
   readonly completedAt: string;
   readonly replyMessageId: MessageId | null;
+  readonly failure?: RunFailure;
   readonly statement?: {
     readonly ordinal: number;
     readonly runnerId: RunnerId;
@@ -497,6 +499,8 @@ const currentStateIndexes = `
   create index threads_removed on threads(id) where removed_at is not null;
   create index threads_last_reply_source on threads(last_reply_message_id) where last_reply_message_id is not null;
   create index messages_current_published on messages(thread_id,sequence desc) where published;
+  create index runs_current_queue on runs(thread_id,run_ordinal)
+    where status in ('queued','starting','running','waiting');
   create index runs_current_latest on runs(thread_id,run_ordinal desc) where maintenance is null;
   create index runs_session_started on runs(provider_session_id,run_ordinal) where started_at is not null;
   create index runs_thread_started on runs(thread_id,run_ordinal) where started_at is not null;
@@ -507,7 +511,7 @@ const currentStateIndexes = `
   create index provider_sessions_prior_reference on provider_sessions(thread_id,id) where provider_session_reference is not null;
   create index commands_execution_proof on commands(run_id,type,id) where run_id is not null;
   create index commands_unclaimed_execute on commands(run_id,id) where type = 'run.execute' and attempts = 0;
-  create index commands_current_run on commands(run_id,id) where run_id is not null and status in ('pending','dispatched');
+  create index commands_current_run on commands(run_id,id) where run_id is not null and status in ('pending','dispatched','unknown');
   create index commands_task_adoption on commands(thread_id,id) where type in ('thread.rename','thread.done.set','thread.archive');
   create index requests_current_run on requests(originating_run_id,id) where status = 'pending';
   create index requests_current_run_end on requests(originating_run_id,id)
@@ -516,6 +520,8 @@ const currentStateIndexes = `
   create index requests_current_node on requests(originating_node_id,id) where status = 'pending' and originating_node_id is not null;
   create index run_attempts_binding on run_attempts(run_id,binding_generation,id);
   create index execution_nodes_current_run on execution_nodes(run_id,id) where status = 'running';
+  create index execution_nodes_current_root on execution_nodes(run_id,id)
+    where status = 'running' and parent_node_id is null;
   create index execution_nodes_current_parent on execution_nodes(parent_node_id,id) where status = 'running';
   create index grants_current_run on grants(run_id,id) where status = 'active';
   create index thread_inputs_current_steer on thread_inputs(run_id,message_id)
@@ -547,7 +553,7 @@ const currentStateIndexes = `
   create index apps_run on apps(run_id);
 `;
 
-export async function applyPersonalStateSchema(transaction: Transaction<DatabaseSchema>) {
+export async function applyPersonalStateSchema(transaction: Kysely<DatabaseSchema>) {
   await sql.raw(retainedStateDdl).execute(transaction);
   await sql.raw(currentStateIndexes).execute(transaction);
 }

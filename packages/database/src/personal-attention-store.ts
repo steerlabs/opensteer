@@ -1,7 +1,17 @@
-import type { DeploymentId, RequestId, TeamAgentRequestId, ThreadId } from "@opensteer/core";
-import { sql, type Insertable } from "kysely";
-import type { PersonalMutation, PersonalMutationTransaction } from "./personal-mutation.js";
-import type { PersonalAttentionTable } from "./personal-state-schema.js";
+import {
+  OpensteerError,
+  type DeploymentId,
+  type RequestId,
+  type TeamAgentRequestId,
+  type ThreadId,
+} from "@opensteer/core";
+import { sql, type Kysely, type Insertable } from "kysely";
+import {
+  commitPersonalMutation,
+  type PersonalMutation,
+  type PersonalMutationTransaction,
+} from "./personal-mutation.js";
+import type { PersonalAttentionTable, PersonalStateSchema } from "./personal-state-schema.js";
 
 type Tx = PersonalMutationTransaction;
 const liveLinkStates = ["active", "unreachable", "needs_update"] as const;
@@ -209,28 +219,71 @@ export async function refreshLatestRunCompletion(
   threadId: ThreadId,
   before: number,
 ) {
-  await tx
+  const completion = sql<Date | null>`(select case when status in ('completed','interrupted','failed') then completed_at end
+      from runs where thread_id=${threadId} and maintenance is null order by run_ordinal desc limit 1)`;
+  const changed = await tx
     .updateTable("threads")
-    .set({
-      latestRunCompletedAt: sql<Date | null>`(select case when status in ('completed','interrupted','failed') then completed_at end
-      from runs where thread_id=${threadId} and maintenance is null order by run_ordinal desc limit 1)`,
-      revision: mutation.sequence,
-    })
+    .set({ latestRunCompletedAt: completion, revision: mutation.sequence })
     .where("id", "=", threadId)
-    .execute();
+    .where(sql<boolean>`latest_run_completed_at is distinct from ${completion}`)
+    .executeTakeFirst();
   const delta = (await unreadTaskContribution(tx, threadId)) - before;
-  if (delta) {
-    mutation.count("unreadTaskCount", delta);
-    mutation.change(
-      {
-        scopeKey: "shell",
-        entityKind: "collection",
-        entityId: "unread-tasks",
-        operation: "invalidate",
-      },
-      () => ({ revision: mutation.sequence }),
-    );
+  if (delta) mutation.count("unreadTaskCount", delta);
+  if (delta || changed.numUpdatedRows > 0n) {
+    for (const scopeKey of ["shell", `thread:${threadId}`] as const)
+      mutation.change(
+        { scopeKey, entityKind: "collection", entityId: "task-summary", operation: "invalidate" },
+        () => ({ revision: mutation.sequence }),
+      );
   }
+}
+
+export async function requireFreshPersonalAttention(tx: Tx) {
+  const due = await sql`select 1 from personal_attention a join personal_team_links link
+    on link.team_deployment_id=a.team_deployment_id
+    where a.kind='team-ask' and a.expires_at<=transaction_timestamp()
+      and link.state in (${sql.join(liveLinkStates)}) limit 1`.execute(tx);
+  if (due.rows.length)
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Team approval expiry is being applied",
+      retryable: true,
+    });
+}
+
+export function settleExpiredPersonalAttention(database: Kysely<PersonalStateSchema>) {
+  return commitPersonalMutation(database, async (tx, mutation) => {
+    const due = await tx
+      .selectFrom("personalAttention")
+      .select(["id", "teamDeploymentId", "teamRequestId"])
+      .where(sql<boolean>`kind='team-ask' and expires_at<=${mutation.state.now}`)
+      .orderBy("expiresAt")
+      .orderBy("id")
+      .limit(128)
+      .execute();
+    if (!due.length) return 0;
+    await tx
+      .selectFrom("personalTeamLinks")
+      .select("id")
+      .where("teamDeploymentId", "in", [...new Set(due.map((entry) => entry.teamDeploymentId!))])
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
+    await tx
+      .selectFrom("personalAttention")
+      .select("id")
+      .where(
+        "id",
+        "in",
+        due.map((entry) => entry.id),
+      )
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
+    for (const entry of due)
+      await refreshTeamAskAttention(tx, mutation, entry.teamDeploymentId!, entry.teamRequestId!);
+    return due.length;
+  });
 }
 
 export async function readAttentionKeys(
@@ -252,21 +305,35 @@ export async function readAttentionKeys(
       requestId: RequestId | null;
       teamDeploymentId: DeploymentId | null;
       teamRequestId: TeamAgentRequestId | null;
+      threadId: ThreadId | null;
+      revision: string;
+      title: string | null;
+      blockedReason: string | null;
     }>`
-    select id,kind,request_id,team_deployment_id,team_request_id,
-      to_char(sort_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as at
-    from (
+    with selected as materialized (
       (select id,kind,request_id,team_deployment_id,team_request_id,sort_at from personal_attention
        where kind in ('request','failed-ask') ${seek} order by sort_at desc,id desc limit ${limit})
       union all
       (select ask.id,ask.kind,ask.request_id,ask.team_deployment_id,ask.team_request_id,ask.sort_at
        from personal_team_links link cross join lateral (
          select id,kind,request_id,team_deployment_id,team_request_id,sort_at from personal_attention
-         where team_deployment_id=link.team_deployment_id and kind='team-ask' ${seek}
+         where team_deployment_id=link.team_deployment_id and kind='team-ask'
+          and expires_at > transaction_timestamp() ${seek}
          order by sort_at desc,id desc limit ${limit}
        ) ask where link.approval_attention_count>0 and link.state in (${sql.join(liveLinkStates)})
       )
-    ) selected order by sort_at desc,id desc limit ${limit}
+      order by sort_at desc,id desc limit ${limit}
+    )
+    select selected.id,selected.kind,selected.request_id,selected.team_deployment_id,selected.team_request_id,
+      to_char(selected.sort_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as at,
+      attention.thread_id,coalesce(request.revision,attention.revision) as revision,
+      left(coalesce(request.presentation->>'title',mirror.presentation->>'title'),192) as title,
+      left(mirror.blocked_reason,160) as blocked_reason
+    from selected join personal_attention attention on attention.id=selected.id
+    left join requests request on request.id=selected.request_id
+    left join personal_team_requests mirror
+      on (mirror.team_deployment_id,mirror.request_id)=(selected.team_deployment_id,selected.team_request_id)
+    order by selected.sort_at desc,selected.id desc
   `.execute(tx)
   ).rows;
 }

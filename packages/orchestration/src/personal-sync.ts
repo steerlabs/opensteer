@@ -1,8 +1,9 @@
-import type {
-  PersonalResumeCursor,
-  PersonalScope,
-  ScopedClientMessage,
-  ScopedHostMessage,
+import {
+  ScopedHostMessageSchema,
+  type PersonalResumeCursor,
+  type PersonalScope,
+  type ScopedClientMessage,
+  type ScopedHostMessage,
 } from "@opensteer/protocol/personal-sync";
 import type { PersonalResourceKind } from "@opensteer/protocol/resources";
 
@@ -32,7 +33,7 @@ interface PersonalSyncPort {
     signal: AbortSignal,
     anchorItemId?: string,
   ): Promise<ScopeCut>;
-  send(encoded: string, guard: () => boolean, signal: AbortSignal): Promise<boolean>;
+  send(encoded: string, dispatchGuard: () => boolean, signal: AbortSignal): Promise<boolean>;
   readResources?(
     interests: readonly PersonalResourceKind[],
     installed: Watch["installed"],
@@ -57,6 +58,7 @@ interface Subscription {
   bytes: number;
   changes: number;
   acknowledged: bigint;
+  dispatchedThrough: bigint | null;
   sending: boolean;
   synchronized: boolean;
   needsRepair: boolean;
@@ -75,6 +77,7 @@ export class PersonalSyncSocket {
   readonly #fences = new Set<(scope: PersonalScope) => boolean>();
   #head = 0n;
   #closed = false;
+  #initialShellReady = true;
   #pressureTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(port: PersonalSyncPort) {
@@ -83,6 +86,7 @@ export class PersonalSyncSocket {
 
   attach(request: Extract<ScopedClientMessage, { type: "client.attach" }>) {
     const { selected, ...shell } = request;
+    this.#initialShellReady = false;
     this.subscribe(
       {
         type: "client.subscribe",
@@ -116,6 +120,8 @@ export class PersonalSyncSocket {
       this.close("Too many node subscriptions");
       return;
     }
+    const prior = this.#subscriptions.get(request.subscriptionId);
+    const watch = resources ?? (request.scope.kind === "shell" ? prior?.resources : undefined);
     const current: Subscription = {
       request,
       controller: new AbortController(),
@@ -125,13 +131,14 @@ export class PersonalSyncSocket {
       bytes: 0,
       changes: 0,
       acknowledged: 0n,
+      dispatchedThrough: null,
       sending: false,
       synchronized: false,
       needsRepair: false,
       pauseCount: [...this.#fences].filter((matches) => matches(request.scope)).length,
-      ...(resources ? { resources: { ...resources, dirty: true } } : {}),
+      ...(watch ? { resources: { ...watch, dirty: true } } : {}),
     };
-    this.#subscriptions.get(request.subscriptionId)?.controller.abort();
+    prior?.controller.abort();
     this.#generations.set(request.subscriptionId, request.generation);
     this.#subscriptions.set(request.subscriptionId, current);
     this.#schedule(current);
@@ -148,10 +155,8 @@ export class PersonalSyncSocket {
   ack(input: Address & { readonly throughSequence: string }) {
     const current = this.#subscriptions.get(input.subscriptionId);
     if (!current || current.request.generation !== input.generation) return;
-    const sent =
-      current.credit.findLast((credit) => credit.durable)?.through ?? current.cursor?.afterSequence;
     const through = BigInt(input.throughSequence);
-    if (!sent || through > BigInt(sent)) {
+    if (current.dispatchedThrough === null || through > current.dispatchedThrough) {
       this.close("Acknowledgement is ahead of delivered state");
       return;
     }
@@ -185,6 +190,17 @@ export class PersonalSyncSocket {
       if (current.resources) current.resources.dirty = true;
       this.#schedule(current);
     }
+  }
+
+  suspendAuthority(scopes: ReadonlySet<string>) {
+    return this.suspend((scope) => {
+      if (scopes.has("deployment")) return true;
+      if (scope.kind === "shell") return scopes.has("shell");
+      return (
+        scopes.has(`thread:${scope.threadId}`) ||
+        (scope.kind === "node" && scopes.has(`node:${scope.nodeId}`))
+      );
+    });
   }
 
   suspend(matches: (scope: PersonalScope) => boolean) {
@@ -231,7 +247,13 @@ export class PersonalSyncSocket {
   }
 
   #schedule(current: Subscription) {
-    if (!this.#matches(current) || current.pauseCount > 0 || current.sending || current.needsRepair)
+    if (
+      !this.#matches(current) ||
+      current.pauseCount > 0 ||
+      current.sending ||
+      current.needsRepair ||
+      (!this.#initialShellReady && current.request.subscriptionId !== "shell")
+    )
       return;
     if (
       current.synchronized &&
@@ -284,7 +306,13 @@ export class PersonalSyncSocket {
         scope: request.scope,
         throughSequence: cut.throughSequence,
       });
-      if (sent) current.synchronized = true;
+      if (sent) {
+        current.synchronized = true;
+        if (request.subscriptionId === "shell" && !this.#initialShellReady) {
+          this.#initialShellReady = true;
+          this.#reschedule();
+        }
+      }
     }
     if (current.synchronized) await this.#sendResources(current);
   }
@@ -323,7 +351,25 @@ export class PersonalSyncSocket {
   async #send(current: Subscription, frame: ScopedHostMessage, stillCurrent = () => true) {
     const guard = () => this.#matches(current) && current.pauseCount === 0 && stillCurrent();
     if (!guard()) return false;
-    const encoded = JSON.stringify(frame);
+    const parsed = ScopedHostMessageSchema.safeParse(frame);
+    if (!parsed.success) {
+      if (frame.type !== "host.changes") throw new Error("Invalid personal sync frame");
+      const sent = await this.#send(
+        current,
+        {
+          type: "host.snapshot-required",
+          subscriptionId: frame.subscriptionId,
+          scope: frame.scope,
+          generation: frame.generation,
+          throughSequence: frame.throughSequence,
+          reason: "replay-overflow",
+        },
+        stillCurrent,
+      );
+      if (sent) current.needsRepair = true;
+      return false;
+    }
+    const encoded = JSON.stringify(parsed.data);
     const bytes = Buffer.byteLength(encoded);
     const changes = frame.type === "host.changes" ? frame.changes.length : 0;
     let socketBytes = [...this.#subscriptions.values()].reduce(
@@ -365,7 +411,19 @@ export class PersonalSyncSocket {
     let sent = false;
     try {
       const signal = AbortSignal.any([current.controller.signal, AbortSignal.timeout(5000)]);
-      sent = await this.#port.send(encoded, guard, signal);
+      sent = await this.#port.send(
+        encoded,
+        () => {
+          if (!guard()) return false;
+          if (durable || frame.type === "host.synchronized") {
+            const through = BigInt(frame.throughSequence);
+            if (current.dispatchedThrough === null || through > current.dispatchedThrough)
+              current.dispatchedThrough = through;
+          }
+          return true;
+        },
+        signal,
+      );
       if (!sent && guard()) this.close("Personal sync transport did not dispatch a frame");
       return sent && this.#matches(current);
     } finally {
@@ -378,7 +436,8 @@ export class PersonalSyncSocket {
           current.changes -= changes;
         }
       }
-      if (this.#releaseCredits(current)) this.#reschedule();
+      if (this.#releaseCredits(current) || !durable || !sent || !this.#matches(current))
+        this.#reschedule();
     }
   }
 }

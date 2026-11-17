@@ -147,3 +147,187 @@ test("cannot dispatch an old generation after replacing the same slot", async ()
     socket.close("test finished");
   }
 });
+
+test("holds selected detail until the initial shell is dispatched", async () => {
+  const shellStarted = Promise.withResolvers<void>();
+  const releaseShell = Promise.withResolvers<void>();
+  const detailSent = Promise.withResolvers<void>();
+  const sent: string[] = [];
+  const selected = { kind: "thread" as const, threadId: createId("thread") };
+  const socket = new PersonalSyncSocket({
+    async read(requested) {
+      if (requested.kind === "shell") {
+        shellStarted.resolve();
+        await deadline(releaseShell.promise, "Shell cut was not released");
+        return {
+          throughSequence: "1",
+          cursor,
+          frames: [{ type: "host.snapshot", scope, snapshot, throughSequence: "1" }],
+        };
+      }
+      return {
+        throughSequence: "1",
+        cursor: null,
+        frames: [{ type: "host.removed", scope: selected, reason: "unavailable" }],
+      };
+    },
+    async send(raw, guard) {
+      if (!guard()) return false;
+      const frame = ScopedHostMessageSchema.parse(JSON.parse(raw));
+      sent.push(frame.type);
+      if (frame.type === "host.removed") detailSent.resolve();
+      return true;
+    },
+    close() {},
+  });
+  try {
+    socket.attach({
+      type: "client.attach",
+      apiVersion: 62,
+      generation: 1,
+      interests: [],
+      installed: {},
+      selected: { generation: 1, scope: selected, subscriptionId: "detail:0" },
+    });
+    await deadline(shellStarted.promise, "Shell cut never started");
+    expect(sent).toEqual([]);
+    releaseShell.resolve();
+    await deadline(detailSent.promise, "Detail did not dispatch after the shell");
+    expect(sent).toEqual(["host.snapshot", "host.synchronized", "host.removed"]);
+  } finally {
+    releaseShell.resolve();
+    socket.close("test finished");
+  }
+});
+
+test("rejects a guessed acknowledgement before the durable frame dispatches", async () => {
+  const reserved = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const closed = vi.fn();
+  const socket = new PersonalSyncSocket({
+    read: async () => ({
+      throughSequence: "1",
+      cursor,
+      frames: [{ type: "host.snapshot", scope, snapshot, throughSequence: "1" }],
+    }),
+    async send(_raw, dispatch) {
+      reserved.resolve();
+      await deadline(release.promise, "Transport did not release");
+      return dispatch();
+    },
+    close: closed,
+  });
+  try {
+    socket.subscribe({ ...subscription(1), cursor });
+    await deadline(reserved.promise, "Durable frame did not reserve credit");
+    socket.ack({ subscriptionId: "shell", generation: 1, throughSequence: "1" });
+    expect(closed).toHaveBeenCalledWith("Acknowledgement is ahead of delivered state");
+  } finally {
+    release.resolve();
+    socket.close("test finished");
+  }
+});
+
+test("a thread authority change fences a held node-only dispatch", async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const finished = Promise.withResolvers<boolean>();
+  const node = {
+    kind: "node" as const,
+    threadId: createId("thread"),
+    nodeId: createId("executionNode"),
+  };
+  const close = vi.fn();
+  const socket = new PersonalSyncSocket({
+    async read() {
+      return {
+        throughSequence: "1",
+        cursor: null,
+        frames: [{ type: "host.removed", scope: node, reason: "unavailable" }],
+      };
+    },
+    async send(_raw, dispatch) {
+      entered.resolve();
+      await deadline(release.promise, "Node transport was never released");
+      const ok = dispatch();
+      finished.resolve(ok);
+      return ok;
+    },
+    close,
+  });
+  try {
+    socket.subscribe({
+      type: "client.subscribe",
+      subscriptionId: "detail:1",
+      generation: 1,
+      scope: node,
+    });
+    await deadline(entered.promise, "Node frame was never built");
+    const fence = socket.suspendAuthority(new Set([`thread:${node.threadId}`]));
+    fence.committed();
+    release.resolve();
+    expect(await deadline(finished.promise, "Node dispatch did not settle")).toBe(false);
+    expect(close).toHaveBeenCalledWith("Personal authority changed");
+  } finally {
+    release.resolve();
+    socket.close("test finished");
+  }
+});
+
+test("shell repair keeps resource interests for the replacement generation", async () => {
+  const repair = Promise.withResolvers<void>();
+  const updated = Promise.withResolvers<void>();
+  const socket = new PersonalSyncSocket({
+    async read(_scope, after) {
+      if (after?.afterSequence === "0")
+        return {
+          throughSequence: "1",
+          cursor: null,
+          frames: [
+            {
+              type: "host.snapshot-required",
+              scope,
+              throughSequence: "1",
+              reason: "cursor-unavailable",
+            },
+          ],
+        };
+      return {
+        throughSequence: "1",
+        cursor,
+        frames: [{ type: "host.snapshot", scope, snapshot, throughSequence: "1" }],
+      };
+    },
+    async readResources(interests) {
+      return interests.map((kind) => ({
+        kind,
+        revision: "1",
+        view: { entries: [], complete: true, hasMore: false },
+      }));
+    },
+    async send(raw, guard) {
+      if (!guard()) return false;
+      const frame = ScopedHostMessageSchema.parse(JSON.parse(raw));
+      if (frame.type === "host.snapshot-required") repair.resolve();
+      if (frame.type === "host.resource" && frame.generation === 2 && frame.kind === "settings")
+        updated.resolve();
+      return true;
+    },
+    close() {},
+  });
+  try {
+    socket.attach({
+      type: "client.attach",
+      apiVersion: 62,
+      generation: 1,
+      interests: ["settings"],
+      installed: {},
+      cursor: { ...cursor, afterSequence: "0" },
+    });
+    await deadline(repair.promise, "Expired shell did not ask for repair");
+    socket.subscribe(subscription(2));
+    await deadline(updated.promise, "Replacement shell lost its settings watch");
+  } finally {
+    socket.close("test finished");
+  }
+});

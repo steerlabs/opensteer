@@ -53,3 +53,52 @@ test("a change frame cannot mix commits or carry a body through an item preview"
     }).success,
   ).toBe(false);
 });
+
+test("rejects a change addressed to a sibling node or a different item ID", () => {
+  const threadId = createId("thread");
+  const nodeId = createId("executionNode");
+  const item = {
+    kind: "tool",
+    id: "tool:scope",
+    toolCallId: "scope",
+    revision: "2",
+    position: "1",
+    runId: createId("run"),
+    attemptId: createId("runAttempt"),
+    nodeId,
+    isTurnStart: false,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    view: { status: "completed" },
+  };
+  const row = {
+    operation: "upsert",
+    entityKind: "item",
+    entityId: item.id,
+    sequence: "2",
+    ordinal: 0,
+    value: item,
+  };
+  const frame = {
+    type: "host.changes",
+    subscriptionId: "detail:0",
+    generation: 1,
+    scope: { kind: "node", threadId, nodeId },
+    fromSequence: "1",
+    throughSequence: "2",
+    changes: [row],
+  };
+  expect(ScopedHostMessageSchema.safeParse(frame).success).toBe(true);
+  expect(ScopedHostMessageSchema.safeParse({ ...frame, subscriptionId: "shell" }).success).toBe(
+    false,
+  );
+  expect(
+    ScopedHostMessageSchema.safeParse({
+      ...frame,
+      scope: { ...frame.scope, nodeId: createId("executionNode") },
+    }).success,
+  ).toBe(false);
+  expect(
+    ScopedHostMessageSchema.safeParse({ ...frame, changes: [{ ...row, entityId: "tool:other" }] })
+      .success,
+  ).toBe(false);
+});

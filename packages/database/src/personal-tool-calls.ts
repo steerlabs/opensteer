@@ -12,17 +12,24 @@ import type { PersonalMutation, PersonalMutationTransaction } from "./personal-m
 import { personalArgumentDigest } from "./personal-runner-receipts.js";
 import type { ToolCallTable } from "./personal-state-schema.js";
 import { retainedToolImages, toolCallId, transcriptPreview } from "./transcript-store.js";
+import { itemView } from "./personal-sync-store.js";
+import { storableJson } from "./storable-json.js";
 
 type ToolKey = Pick<
   ToolCallTable,
   "threadId" | "runId" | "attemptId" | "bindingGeneration" | "nodeId" | "callId" | "origin"
 >;
 type Transaction = PersonalMutationTransaction;
+type ToolResult = { readonly output: ToolOutput; readonly isError: boolean };
+export interface HostToolEffectHandle {
+  readonly toolCallId: string;
+  readonly origin: Exclude<ToolKey["origin"], "runner">;
+}
 
 async function lockToolScope(tx: Transaction, key: ToolKey) {
   const run = await tx
     .selectFrom("runs")
-    .select(["threadId", "finishIntent", "status"])
+    .select(["threadId", "finishIntent", "status", "bindingGeneration"])
     .where("id", "=", key.runId)
     .forNoKeyUpdate()
     .executeTakeFirst();
@@ -43,33 +50,57 @@ async function lockToolScope(tx: Transaction, key: ToolKey) {
       .where("id", "=", key.nodeId)
       .where("runId", "=", key.runId)
       .where("attemptId", "=", key.attemptId)
+      .where("status", "=", "running")
+      .forNoKeyUpdate()
       .executeTakeFirst();
     if (!node)
       throw new OpensteerError({ code: "forbidden", message: "Tool call is outside its node" });
   }
   if (key.origin === "runner") {
     if (
-      !key.attemptId ||
       key.bindingGeneration === null ||
       key.callId.startsWith("harness:") ||
       key.callId.startsWith("computer:")
     )
       throw new OpensteerError({ code: "conflict", message: "Invalid Runner tool call identity" });
-    const attempt = await tx
-      .selectFrom("runAttempts")
-      .select("id")
-      .where("id", "=", key.attemptId)
-      .where("runId", "=", key.runId)
-      .where("bindingGeneration", "=", key.bindingGeneration)
-      .where("status", "=", "current")
-      .where("endedAt", "is", null)
-      .executeTakeFirst();
-    if (!attempt)
-      throw new OpensteerError({ code: "conflict", message: "Tool call binding has ended" });
   } else {
     const namespace = key.origin === "host-harness" ? "harness:" : "computer:";
     if (!key.callId.startsWith(namespace))
       throw new OpensteerError({ code: "conflict", message: "Invalid Host tool call identity" });
+  }
+  if (
+    key.bindingGeneration !== run.bindingGeneration ||
+    (key.bindingGeneration === null && key.attemptId !== null)
+  )
+    throw new OpensteerError({ code: "conflict", message: "Tool call binding has ended" });
+  if (key.bindingGeneration !== null) {
+    const attempt =
+      key.attemptId &&
+      (await tx
+        .selectFrom("runAttempts")
+        .select("id")
+        .where("id", "=", key.attemptId)
+        .where("runId", "=", key.runId)
+        .where("bindingGeneration", "=", key.bindingGeneration)
+        .where("status", "=", "current")
+        .where("endedAt", "is", null)
+        .forNoKeyUpdate()
+        .executeTakeFirst());
+    if (!attempt)
+      throw new OpensteerError({ code: "conflict", message: "Tool call binding has ended" });
+    if (key.origin !== "runner") {
+      const grant = await tx
+        .selectFrom("grants")
+        .select("id")
+        .where("runId", "=", key.runId)
+        .where("attemptId", "=", attempt.id)
+        .where("bindingGeneration", "=", key.bindingGeneration)
+        .where(sql<boolean>`status='active'`)
+        .limit(1)
+        .executeTakeFirst();
+      if (!grant)
+        throw new OpensteerError({ code: "forbidden", message: "Tool call grant has ended" });
+    }
   }
   return run;
 }
@@ -110,7 +141,6 @@ async function storeToolCard(
   const view = transcriptPreview({
     title: call.tool?.name,
     status: call.status,
-    preview: call.output?.text,
   });
   const row = await tx
     .insertInto("transcriptItems")
@@ -146,6 +176,7 @@ async function storeToolCard(
     },
     () => ({
       ...row,
+      createdAt: row.createdAt.toISOString(),
       id,
       kind: "tool",
       runId: call.runId,
@@ -184,13 +215,14 @@ export async function startPersonalToolCall(
     : null;
   const id = toolCallId(input);
   const existing = await currentCall(tx, id);
-  const args = JSON.stringify(input.arguments) ?? "null";
+  const normalized = storableJson(input.arguments ?? null);
+  const args = JSON.stringify(normalized);
   if (Buffer.byteLength(args) > 480 * 1024)
     throw new OpensteerError({
       code: "resource_exhausted",
       message: "Tool arguments exceed their retained limit",
     });
-  const digest = personalArgumentDigest(JSON.parse(args));
+  const digest = personalArgumentDigest(normalized);
   if (existing) {
     if (
       existing.origin !== input.origin ||
@@ -204,8 +236,14 @@ export async function startPersonalToolCall(
     const matches = (existing.argumentDigest ?? personalArgumentDigest(existing.arguments)).equals(
       digest,
     );
-    if (input.origin !== "runner" && matches) return { call: existing, started: false };
     requireToolAdmission(run);
+    if (input.origin !== "runner" && matches)
+      return {
+        call: existing,
+        started: false,
+        outcome:
+          existing.status === "completed" ? ("result" as const) : ("outcome-unknown" as const),
+      };
     if (existing.status !== "open")
       throw new OpensteerError({ code: "conflict", message: "Tool call has already finished" });
     if (existing.provisional && !input.provisional) {
@@ -266,19 +304,55 @@ export async function startPersonalToolCall(
     .returningAll()
     .executeTakeFirstOrThrow();
   await storeToolCard(tx, mutation, call, position);
-  return { call, started: true };
+  const handle: HostToolEffectHandle | undefined =
+    input.origin === "runner" ? undefined : { toolCallId: call.id, origin: input.origin };
+  return { call, started: true, handle };
 }
 
 export async function completePersonalToolCall(
   tx: Transaction,
   mutation: PersonalMutation,
-  input: ToolKey & {
-    readonly output: ToolOutput;
-    readonly isError: boolean;
-  },
+  input: ToolKey & ToolResult & { readonly origin: "runner" },
+) {
+  return completeToolCall(tx, mutation, toolCallId(input), input);
+}
+
+export async function completePersonalHostToolCall(
+  tx: Transaction,
+  mutation: PersonalMutation,
+  handle: HostToolEffectHandle,
+  result: ToolResult,
+) {
+  const call = await tx
+    .selectFrom("toolCalls")
+    .select([
+      "id",
+      "threadId",
+      "runId",
+      "attemptId",
+      "bindingGeneration",
+      "nodeId",
+      "callId",
+      "origin",
+    ])
+    .where("id", "=", handle.toolCallId)
+    .where("origin", "=", handle.origin)
+    .executeTakeFirst();
+  if (!call)
+    throw new OpensteerError({
+      code: "not_found",
+      message: "The admitted tool effect is unavailable",
+    });
+  return completeToolCall(tx, mutation, call.id, { ...call, ...result });
+}
+
+async function completeToolCall(
+  tx: Transaction,
+  mutation: PersonalMutation,
+  id: string,
+  input: ToolKey & ToolResult,
 ) {
   const run = await lockToolScope(tx, input);
-  const id = toolCallId(input);
   const call = await currentCall(tx, id);
   if (call?.origin && call.origin !== input.origin)
     throw new OpensteerError({
@@ -287,6 +361,11 @@ export async function completePersonalToolCall(
     });
   if (call?.status === "completed" || call?.status === "interrupted")
     return { call, completed: false };
+  if (!call && input.origin !== "runner")
+    throw new OpensteerError({
+      code: "not_found",
+      message: "The admitted tool effect is unavailable",
+    });
   requireToolAdmission(run);
   const output = ToolOutputSchema.parse(input.output);
   const order = await allocatePosition(tx, input, mutation.sequence);
@@ -348,27 +427,38 @@ export async function interruptPersonalToolCalls(
     .forNoKeyUpdate()
     .execute();
   if (!current.length) return;
-  const calls = await tx
+  const callIds = current.map(({ id }) => id);
+  await tx
     .updateTable("toolCalls")
     .set({ status: "interrupted", completedAt: mutation.state.now })
-    .where(
-      "id",
-      "in",
-      current.map(({ id }) => id),
-    )
-    .returningAll()
+    .where("id", "in", callIds)
     .execute();
-  const cards = await tx
+  const cardIds = callIds.map((id) => `tool:${id}`);
+  await tx
     .selectFrom("transcriptItems")
-    .select(["id", "toolCallId", "position"])
-    .where(
-      "id",
-      "in",
-      calls.map(({ id }) => `tool:${id}`),
-    )
+    .select("id")
+    .where("id", "in", cardIds)
     .orderBy("id")
     .forNoKeyUpdate()
     .execute();
-  const position = new Map(cards.map((row) => [row.toolCallId, row.position]));
-  for (const call of calls) await storeToolCard(tx, mutation, call, position.get(call.id)!);
+  const cards = await tx
+    .updateTable("transcriptItems")
+    .set({
+      revision: mutation.sequence,
+      view: sql`jsonb_strip_nulls(jsonb_build_object('title',view->'title','status','interrupted'))`,
+    })
+    .where("id", "in", cardIds)
+    .returningAll()
+    .execute();
+  for (const card of cards) {
+    mutation.change(
+      {
+        scopeKey: card.nodeId ? `node:${card.nodeId}` : `thread:${card.threadId}`,
+        entityKind: "item",
+        entityId: card.id,
+        operation: "upsert",
+      },
+      () => itemView(card),
+    );
+  }
 }

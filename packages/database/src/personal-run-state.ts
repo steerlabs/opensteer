@@ -1,5 +1,7 @@
 import {
   OpensteerError,
+  RunFailureSchema,
+  utf8Prefix,
   type CommandId,
   type ExecutionNodeId,
   type GrantId,
@@ -12,6 +14,9 @@ import {
 import { sql } from "kysely";
 import type { PersonalMutation, PersonalMutationTransaction } from "./personal-mutation.js";
 import { uncertainEarlierRun, type FinishIntent } from "./personal-state-schema.js";
+
+import { recordFinishedRunnerStatement } from "./personal-runner-receipts.js";
+import { storableText } from "./storable-json.js";
 
 type Tx = PersonalMutationTransaction;
 
@@ -105,7 +110,7 @@ export async function readFinishChildren(tx: Tx, runId: RunId) {
       .selectFrom("commands")
       .select("id")
       .where("runId", "=", runId)
-      .where(sql<boolean>`status in ('pending','dispatched')`)
+      .where(sql<boolean>`status in ('pending','dispatched','unknown')`)
       .orderBy("id")
       .limit(limit)
       .execute(),
@@ -174,12 +179,11 @@ export async function beginPersonalRunFinish(
     const previous = run.finishIntent.statement;
     const submitted = input.intent.statement;
     if (
-      previous &&
-      (!submitted ||
-        previous.runnerId !== submitted.runnerId ||
-        previous.runnerBootId !== submitted.runnerBootId ||
-        previous.ordinal !== submitted.ordinal ||
-        previous.digest !== submitted.digest)
+      run.finishIntent.outcome !== input.intent.outcome ||
+      previous?.runnerId !== submitted?.runnerId ||
+      previous?.runnerBootId !== submitted?.runnerBootId ||
+      previous?.ordinal !== submitted?.ordinal ||
+      previous?.digest !== submitted?.digest
     )
       throw new OpensteerError({
         code: "conflict",
@@ -187,9 +191,40 @@ export async function beginPersonalRunFinish(
       });
     return run.finishIntent;
   }
+  if (
+    input.intent.replyMessageId &&
+    (input.intent.outcome !== "completed" ||
+      !(await tx
+        .selectFrom("messages")
+        .select("id")
+        .where("id", "=", input.intent.replyMessageId)
+        .where("runId", "=", run.id)
+        .where("threadId", "=", run.threadId)
+        .where("kind", "=", "assistant")
+        .where("addressedToUserId", "is", null)
+        .executeTakeFirst()))
+  )
+    throw new OpensteerError({
+      code: "conflict",
+      message: "The completion reply no longer belongs to this Run",
+    });
+  const failure =
+    input.intent.outcome === "failed" ? RunFailureSchema.parse(input.intent.failure) : null;
+  const intent = {
+    ...input.intent,
+    ...(failure
+      ? {
+          failure: {
+            ...failure,
+            code: utf8Prefix(storableText(failure.code), 128),
+            message: utf8Prefix(storableText(failure.message), 768),
+          },
+        }
+      : {}),
+  };
   await tx
     .updateTable("runs")
-    .set({ finishIntent: input.intent, revision: mutation.sequence })
+    .set({ finishIntent: intent, revision: mutation.sequence })
     .where("id", "=", input.runId)
     .execute();
   mutation.fence(`thread:${run.threadId}`);
@@ -202,7 +237,7 @@ export async function beginPersonalRunFinish(
     },
     () => ({ revision: mutation.sequence }),
   );
-  return input.intent;
+  return intent;
 }
 
 export async function advancePersonalRunFinish(
@@ -244,6 +279,7 @@ export async function advancePersonalRunFinish(
   )
     throw new Error("The finishing Run still has unsettled children");
   await actions.finalize(run.finishIntent);
+  await recordFinishedRunnerStatement(tx, mutation, runId, run.finishIntent);
   await tx
     .updateTable("runs")
     .set({ finishIntent: null, revision: mutation.sequence })

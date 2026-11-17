@@ -96,6 +96,17 @@ export function describeTranscriptMessage(input: {
   };
 }
 
+export function normalizeToolImagePath(path: string): string | null {
+  if (
+    path.length > 1024 ||
+    !isAbsolute(path) ||
+    /\p{Cc}/u.test(path) ||
+    path.split(/[/\\]/u).includes("..")
+  )
+    return null;
+  return normalize(path);
+}
+
 export function outputImagePathHash(path: string): Buffer {
   return createHash("sha256").update(path).digest();
 }
@@ -106,8 +117,8 @@ export function retainedToolImages(
   completionOrder: string,
 ): Insertable<ToolOutputImageTable>[] {
   return images.flatMap((image, imageIndex) => {
-    if (!isAbsolute(image.path) || image.path.includes("\u0000")) return [];
-    const path = normalize(image.path);
+    const path = normalizeToolImagePath(image.path);
+    if (!path) return [];
     return [
       {
         id: `${call.id}:${imageIndex}`,

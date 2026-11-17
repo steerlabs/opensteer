@@ -1,4 +1,3 @@
-import { isAbsolute, normalize } from "node:path";
 import { OpensteerError, type ExecutionNodeId, type ThreadId, type UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { PersonalStateSchema, ToolOutputImageTable } from "./personal-state-schema.js";
@@ -7,7 +6,7 @@ import {
   authorizedSyncState,
   withPersonalSyncRead,
 } from "./personal-sync-store.js";
-import { outputImagePathHash } from "./transcript-store.js";
+import { normalizeToolImagePath, outputImagePathHash } from "./transcript-store.js";
 
 type ImageScope = {
   readonly viewerId: UserId;
@@ -33,13 +32,7 @@ export async function resolvePersonalToolImages(
     await authorizedSyncState(tx, input.viewerId);
     if (!(await authorizedDetail(tx, input.viewerId, scopeOf(input)))) return [];
     const keys = [
-      ...new Set(
-        input.paths.flatMap((path) =>
-          isAbsolute(path) && !/\p{Cc}/u.test(path) && !path.split(/[/\\]/u).includes("..")
-            ? [normalize(path)]
-            : [],
-        ),
-      ),
+      ...new Set(input.paths.map(normalizeToolImagePath).filter((path) => path !== null)),
     ].map((path) => ({ path, hash: outputImagePathHash(path).toString("hex") }));
     if (!keys.length) return [];
     const byNode = input.nodeId ? sql`image.node_id=${input.nodeId}` : sql`image.node_id is null`;
@@ -48,6 +41,8 @@ export async function resolvePersonalToolImages(
       from jsonb_to_recordset(${JSON.stringify(keys)}::jsonb) as key(path text,hash text)
       cross join lateral (
         select image.id,image.path,image.media_type,image.generated from tool_output_images image
+        join tool_calls call on call.id=image.tool_call_id and call.thread_id=image.thread_id
+          and call.node_id is not distinct from image.node_id
         where image.thread_id=${input.threadId} and ${byNode}
           and image.path_hash=decode(key.hash,'hex') and image.path=key.path
         order by image.completion_order desc,image.image_index desc limit 1
@@ -65,13 +60,21 @@ export async function readPersonalToolImage(
     await authorizedSyncState(tx, input.viewerId);
     if (!(await authorizedDetail(tx, input.viewerId, scopeOf(input)))) return null;
     const query = tx
-      .selectFrom("toolOutputImages")
-      .select(["id", "path", "mediaType", "generated"])
-      .where("id", "=", input.imageId)
-      .where("threadId", "=", input.threadId);
+      .selectFrom("toolOutputImages as image")
+      .innerJoin("toolCalls as call", (join) =>
+        join
+          .onRef("call.id", "=", "image.toolCallId")
+          .onRef("call.threadId", "=", "image.threadId")
+          .on(sql<boolean>`call.node_id is not distinct from image.node_id`),
+      )
+      .select(["image.id", "image.path", "image.mediaType", "image.generated"])
+      .where("image.id", "=", input.imageId)
+      .where("image.threadId", "=", input.threadId);
     return (
       (await (
-        input.nodeId ? query.where("nodeId", "=", input.nodeId) : query.where("nodeId", "is", null)
+        input.nodeId
+          ? query.where("image.nodeId", "=", input.nodeId)
+          : query.where("image.nodeId", "is", null)
       ).executeTakeFirst()) ?? null
     );
   });
