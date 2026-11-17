@@ -4965,8 +4965,18 @@ export class MockHostClient implements HostClient {
       {
         dispatch: (command) => this.dispatch(command),
         leases: this.#editLeases,
-        // The mock's snapshot is its Host, so it always holds the version taken.
-        readRevision: async () => undefined,
+        readRevision: async (threadId, messageId, expectedRevision, leaseId) => {
+          const held = this.#state
+            .loadThreadInputQueue(threadId)
+            .items.find(({ message }) => message.id === messageId);
+          if (
+            !held ||
+            held.lease?.leaseId !== leaseId ||
+            (held.message.edit?.revision ?? 0) !== expectedRevision
+          )
+            throw mockConflict("This waiting message changed.");
+          return held.message.content;
+        },
         now: () => Date.now(),
       },
       threadId,

@@ -57,7 +57,9 @@ export function computerReadiness(input: {
       case "unsupported":
         return reason;
       case "driver-update-required":
-        return "needs-update";
+        return machine.status === "updating" || machine.status === "update-pending"
+          ? machine.status
+          : "needs-update";
       case "setup-required":
       case "trust-required":
       case "developer-mode-required":
