@@ -17,11 +17,9 @@ import { testRpcData } from "../server/test-host-api-request.js";
 import {
   connectComputerAppMachine,
   integrationGateway,
-  operation,
   startFakeDesktop,
-  toolText,
-  toolReadiness,
 } from "../computer-apps/computer-apps.test-support.js";
+import { failureMessage, pluginCall } from "../runtime/computer-apps.test-support.js";
 import {
   connectCallerMachine,
   configurePersonalRemoteAccess,
@@ -239,16 +237,13 @@ integration("MCP servers on a computer", () => {
       );
       const gateway = await integrationGateway(run.integrationTools);
       closers.unshift(() => gateway.close());
-      const search = () => gateway.call("integration_search", { query: "notes" });
+      const listed = async () =>
+        JSON.stringify((await gateway.call("plugin_search", { query: "echo" })).items).includes(
+          'tools[\\"notes-fixture\\"].echo',
+        );
       const call = async (name: string, args: Record<string, unknown>) =>
-        gateway.callRaw("integration_call", {
-          arguments: args,
-          ...operation(await search(), name).address,
-        });
-      await waitForCondition(
-        async () => toolReadiness(await search(), "echo").code === "READY",
-        30_000,
-      );
+        pluginResult(await pluginCall(gateway, `tools["notes-fixture"].${name}`, args));
+      await waitForCondition(listed, 30_000);
       expect(said(await call("echo", { text: "hello" }))).toBe("echo: hello");
       expect(said(await call("note", { text: "buy milk" }))).toBe("noted");
       expect(await readFile(fixture.notesFile, "utf8")).toBe("buy milk\n");
@@ -308,14 +303,13 @@ integration("MCP servers on a computer", () => {
       if (running === null) throw new Error("The server is running");
       await computer.disconnectModule();
       await waitForCondition(async () => !alive(running), 15_000);
-      const offline = toolReadiness(await search(), "echo");
-      expect(offline.code).toBe("INTEGRATION_UNAVAILABLE");
-      expect(offline.detail).toContain("Studio Mac");
-      await computer.reconnectModule();
-      await waitForCondition(
-        async () => toolReadiness(await search(), "echo").code === "READY",
-        30_000,
+      const offline = JSON.stringify(
+        await gateway.call("plugin_search", { namespace: "notes-fixture" }),
       );
+      expect(offline).toContain("Studio Mac");
+      expect(await listed()).toBe(false);
+      await computer.reconnectModule();
+      await waitForCondition(listed, 30_000);
       expect(said(await call("echo", { text: "back" }))).toBe("echo: back");
       record("offline and back", offline);
 
@@ -738,10 +732,17 @@ integration("MCP servers on a computer", () => {
   );
 });
 
-type GatewayResult = Awaited<ReturnType<Awaited<ReturnType<typeof integrationGateway>>["callRaw"]>>;
-/** What a call answered: integration_call carries the server's own result as structured content. */
-function said(result: GatewayResult): string {
-  return toolText(result.structuredContent ?? result);
+/** A plugin call as the old tests read a tool result: its text, and whether it failed. */
+function pluginResult(result: Awaited<ReturnType<typeof pluginCall>>) {
+  return result.failure === undefined
+    ? {
+        isError: false,
+        text: typeof result.value === "string" ? result.value : JSON.stringify(result.value),
+      }
+    : { isError: true, text: failureMessage(result.failure) };
+}
+function said(result: ReturnType<typeof pluginResult>): string {
+  return result.text;
 }
 
 async function readText(file: string): Promise<string | null> {

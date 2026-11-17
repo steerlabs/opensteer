@@ -115,6 +115,13 @@ A connection is pinned to one Runner, and its person-approved access caps every 
 owner approval. Offline computers keep their connections. A lost write answer is an unknown outcome
 and is never retried ([ComputerAppHub](../apps/host/src/computer-apps/computer-app-hub.ts)).
 
+Agents reach approved data apps and local servers as providers in the plugin tool namespace, one
+per connection or server, so a program can mix them with cloud plugins
+([local providers](../apps/host/src/plugins/local-providers.ts)). Each listing and call is read live
+for the caller behind the engine's execution, under the device approval, the connection ceiling, the
+Run ceiling and the person's per-plugin agent access. An unavailable provider lists no tools and
+says why; a call never moves to another computer that has the same app.
+
 Only the computer's current owner approves new or broader access, unblocks apps and enables
 automatic app approval, which is Mac-only, from any signed-in device. Review verifies GUI identity
 and the deny list with the target helper; an unavailable helper leaves the request pending.
@@ -139,10 +146,12 @@ An approved server's changed launch on the same computer keeps consent unless it
 names, because personal agents already run as that OS user without isolation. Team servers run no
 agents or plugin servers. A new, moved or declined server always asks.
 
-Local-server packages retain their existing snapshots, launch consent and Settings controls. The
-sandboxed plugin tools do not register or update these packages.
+Agents register a server with `local_server_add` (name, computer, launch or loopback URL, secret
+names, an optional device and an optional Agent home folder whose snapshot the computer fetches by
+digest). It is stored as the plugin record local servers already use, so registration adds no
+approval of its own: the launch review above decides, and the same name updates it.
 
-Program servers declare secret names, never values, in their plugin metadata. The owner supplies
+Program servers declare secret names, never values, at registration. The owner supplies
 values through consent; new names require review, and consent and values belong to one computer.
 Lists, Requests and snapshots never contain them. Delivery exposes them only to the approved
 launch, and transport output must redact them. This protects chat and agent context, not a
@@ -153,18 +162,21 @@ supervisor (a process group, or a Job on Windows); ending a session, stream or R
 tree, including descendants of launchers such as `npx`. Every computer whose Runner offers
 integrations runs them, with or without native app providers. A malformed or stalled transport ends that session, not the integrations stream.
 
-MCP form elicitation belongs to one in-flight Run call and only works on engines qualified to hold
-it. The answer goes only to that call, never to engine context or durable events. Restart cancels
-pending input because its waiter no longer exists
-([integration input](../apps/host/src/local-servers/server-input.ts)).
+MCP form elicitation names no tool call, so calls on one shared session take turns and a question
+belongs to the one call in flight. It becomes a `plugin.input` Request on the calling plugin
+execution, answered only by the person; the answer goes only to that call, never to engine context
+or durable events, and answered values are redacted from what the server returns
+([server input](../apps/host/src/local-servers/server-input.ts)). A question waits at most as long
+as the call's own deadline.
 
 ## Devices that run no Opensteer
 
-A TV, speaker or light is reached by an agent-made plugin whose server runs on a computer on its
-network. `extensions["com.opensteer"].device` lists the plugin under Devices instead of Plugins and
-names its installation; the agent writes it, so it grants and proves nothing. The plugin records the
-nearest listed task whose agent last installed it, from the Run's claims, and shows it only to the personal owner. The owner removes plugins. It deletes the plugin's data, such as a pairing, on the Host and on every computer that ran
-its servers. A computer that was offline or predates `pluginDataRemoval` keeps a pending deletion until
+A TV, speaker or light is reached by an agent-registered local server on a computer on its network.
+Its `device` lists it under Devices and names it; the agent writes it, so it grants and proves
+nothing. The registration records the nearest listed task whose agent last registered it, from the
+Run's claims, and shows it only to the personal owner. Removing it, by the owner or a full-access
+agent with `local_server_remove`, deletes its data, such as a pairing, on the Host and on every
+computer that ran it. A computer that was offline or predates `pluginDataRemoval` keeps a pending deletion until
 it reconnects and confirms. Removal can't unpair the device itself or stop a same-user shell from
 reaching it.
 

@@ -323,6 +323,12 @@ export class LocalServerService {
     } catch (error) {
       return refusal(await this.#refusal(callable, server, error));
     }
+    let release: () => void;
+    try {
+      release = await this.inputRequests.turn(upstream.client, signal);
+    } catch {
+      return refusal("The call was cancelled before it started.");
+    }
     const call = this.inputRequests.start(
       upstream.client,
       callable,
@@ -370,6 +376,7 @@ export class LocalServerService {
       );
     } finally {
       await this.inputRequests.finish(upstream.client, call);
+      release();
     }
   }
 
@@ -384,7 +391,7 @@ export class LocalServerService {
       return `${title} was removed or changed; find its tools again.`;
     }
     if (!server.runnerId || !server.runnerName) {
-      return `${title} has no computer to run on. Install its plugin again, choosing one.`;
+      return `${title} has no computer to run on. Register it again with local_server_add, choosing one.`;
     }
     if (!(error instanceof ComputerMcpSessionError)) {
       return `${title} did not start on ${server.runnerName}: ${safeMessage(error, safeMessageOptions)}`;
@@ -468,7 +475,7 @@ export class LocalServerService {
     if (!transport.runnerId) {
       throw refused(
         "conflict",
-        "No computer runs this MCP server; install its plugin again, choosing one.",
+        "No computer runs this MCP server; register it again with local_server_add, choosing one.",
       );
     }
     // Every open is held in the pool before it gets here, so a removal or

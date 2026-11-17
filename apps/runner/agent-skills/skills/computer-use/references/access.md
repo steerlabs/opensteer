@@ -4,7 +4,9 @@
 policy) with its approved apps; search again with a Mac's `computerId` and an optional `query` to list
 its installed apps, each with its `status`, `pending`, `inUse`, `heldByTask` and `callable` facts. Follow response-level `guidance.computers`; compatibility facts `computerToolEnabled` and `computerUseVersion` identify updates needed. "Android phone" lists phones the same
 way; follow `guidance.phones`. When the task names no app ("add this to my calendar"), look at what is installed and ask the
-person only if it is genuinely ambiguous.
+person only if it is genuinely ambiguous. Calendar, Contacts, Reminders and Messages data on an
+approved Mac or iPhone is quicker and safer through their plugin tools (`plugin_search`) than by
+operating the app.
 
 Which Mac: an app or phone included with the person's message names its computer; use that one.
 Otherwise use the Mac the person names. With several Macs and none named, ask: the Mac this task

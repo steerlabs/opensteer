@@ -1368,7 +1368,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "Find plugin tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with plugins and linked accounts listed once. Pass a path to plugin_call or plugin_describe, or use tools.<plugin>.<tool>() in plugin_execute. Omit query to list a namespace. Read the following page by passing next as the whole input; null ends paging.",
+    "description": "Find plugin tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with plugins and linked accounts listed once. Pass a path to plugin_call or plugin_describe, or use tools.<plugin>.<tool>() in plugin_execute. Omit query to list a namespace. Read the following page by passing next as the whole input; null ends paging. Approved device data apps (Calendar, Contacts, Reminders, Messages, iPhone Location and Photos) and local servers are plugins too, named like calendar-<computer>; an unavailable one says why.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -1767,6 +1767,183 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "type": "object",
     },
     "name": "plugin_account_request",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+    ],
+    "description": "Register, or update by the same name, an MCP server that runs on one of the person's computers: a program to launch, or a loopback URL that computer serves. The person reviews the exact launch and computer and enters declared secrets; its tools then appear in plugin_search under its name. folder is a package inside Agent home whose snapshot that computer runs: start its program with ./path, and use \${PLUGIN_ROOT} and \${PLUGIN_DATA} in args, env or cwd. Declare secrets by name only, never values. device marks a TV, speaker or light it controls. A changed launch on the same computer keeps approval unless it adds secrets.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "description": "Computer that runs it; omit to keep its computer, or for a new one the computer hosting tasks.",
+          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "description": {
+          "maxLength": 500,
+          "type": "string",
+        },
+        "device": {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "tv",
+                "speaker",
+                "light",
+                "camera",
+                "other",
+              ],
+              "type": "string",
+            },
+            "name": {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string",
+            },
+          },
+          "required": [
+            "name",
+            "kind",
+          ],
+          "type": "object",
+        },
+        "folder": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string",
+        },
+        "launch": {
+          "additionalProperties": false,
+          "properties": {
+            "args": {
+              "items": {
+                "maxLength": 32768,
+                "type": "string",
+              },
+              "maxItems": 256,
+              "type": "array",
+            },
+            "command": {
+              "description": "One executable on PATH, or ./path inside folder.",
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string",
+            },
+            "cwd": {
+              "description": "./, \${PLUGIN_ROOT} or \${PLUGIN_DATA}.",
+              "maxLength": 4096,
+              "type": "string",
+            },
+            "env": {
+              "additionalProperties": {
+                "maxLength": 32768,
+                "type": "string",
+              },
+              "description": "Non-secret settings only.",
+              "propertyNames": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string",
+              },
+              "type": "object",
+            },
+            "secrets": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "description": {
+                    "maxLength": 240,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "name": {
+                    "description": "Environment variable the program reads.",
+                    "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$",
+                    "type": "string",
+                  },
+                  "title": {
+                    "maxLength": 80,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "name",
+                  "title",
+                ],
+                "type": "object",
+              },
+              "maxItems": 16,
+              "minItems": 1,
+              "type": "array",
+            },
+          },
+          "required": [
+            "command",
+          ],
+          "type": "object",
+        },
+        "name": {
+          "description": "Lowercase letters, digits and single hyphens; its tools are found under this name.",
+          "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+          "type": "string",
+        },
+        "url": {
+          "description": "http://127.0.0.1:<port>/… or another loopback URL on that computer.",
+          "format": "uri",
+          "type": "string",
+        },
+      },
+      "required": [
+        "name",
+      ],
+      "type": "object",
+    },
+    "name": "local_server_add",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "description": "List registered local servers: computer, whether the person approved them there, and the path its tools have in plugin_search. Never shows launch details or secrets.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object",
+    },
+    "name": "local_server_list",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+    ],
+    "description": "Remove a local server and its data, such as a device pairing, on the Host and on every computer that ran it. A computer that is offline removes it when it reconnects.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Lowercase letters, digits and single hyphens; its tools are found under this name.",
+          "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+          "type": "string",
+        },
+      },
+      "required": [
+        "name",
+      ],
+      "type": "object",
+    },
+    "name": "local_server_remove",
   },
   {
     "access": "read",

@@ -12,6 +12,8 @@ import {
   type ToolSearchInput,
   type ToolSearchPage,
 } from "@opensteer/plugin-engine-sdk/core";
+import { UserFacingError } from "@opensteer/plugin-engine-utils/user-facing-error";
+import type { ElicitationHandler } from "apps/contracts";
 import { CurrentMcpExecution, type McpBackend } from "@opensteer/plugin-engine-mcp";
 import { GrantId, restrictMcpBackend, type Grant } from "@opensteer/plugin-engine-mcp-auth";
 import type { engineAccounts } from "./engine-accounts.js";
@@ -24,6 +26,27 @@ import {
   type PluginJson,
 } from "./engine-protocol.js";
 
+/**
+ * A device or local-server tool's own refusal or failure. Its text is written by the Host for the
+ * agent (offline computer, missing approval, unconfirmed write), never a service's raw reply.
+ */
+export const HostToolFailed = UserFacingError.define({
+  tag: "HostToolFailed",
+  status: 422,
+  fields: { explanation: Schema.String },
+  presentation: ({ explanation }) => ({
+    title: "Local tool unavailable",
+    description: explanation,
+    recovery: { action: "Follow the explanation.", instructions: explanation },
+    retryable: false,
+  }),
+  recorded: () => "Host tool failed",
+});
+const hostFailure = (error: Error) =>
+  error instanceof PluginServiceError && error.code === "tool"
+    ? new HostToolFailed({ explanation: error.message })
+    : error;
+
 export interface EngineHostCallbacks {
   authorize(input: {
     operation: string;
@@ -32,12 +55,15 @@ export interface EngineHostCallbacks {
     execution?: string;
   }): Effect.Effect<PluginAuthorizationResult, Error>;
   providers(): Effect.Effect<PluginHostProvider[], Error>;
-  call(input: {
-    execution: string;
-    plugin: string;
-    tool: string;
-    input: PluginJson;
-  }): Effect.Effect<PluginJson, Error>;
+  call(
+    input: {
+      execution: string;
+      plugin: string;
+      tool: string;
+      input: PluginJson;
+    },
+    elicitation: ElicitationHandler | undefined,
+  ): Effect.Effect<PluginJson, Error>;
 }
 export function compositeBackend(
   engine: PluginEngine,
@@ -63,6 +89,11 @@ export function compositeBackend(
     });
   const provider = (app: string) =>
     Effect.map(host.providers(), (providers) => providers.find((provider) => provider.id === app));
+  // An unavailable provider lists nothing; its sentence reaches the agent as the namespace's reason.
+  const available = (local: PluginHostProvider) =>
+    local.unavailable === undefined
+      ? Effect.succeed(local)
+      : Effect.fail(new HostToolFailed({ explanation: local.unavailable }));
   const version = (provider: PluginHostProvider) => VersionId.make(provider.version);
   const hostTools = (provider: PluginHostProvider) =>
     provider.tools.map((tool) =>
@@ -146,13 +177,15 @@ export function compositeBackend(
       Effect.gen(function* () {
         yield* checked("listTools", input.app);
         const local = yield* provider(input.app);
-        if (local)
+        if (local) {
+          yield* available(local);
           return {
             version: version(local),
             accounts: { app: {}, user: {} },
             items: hostTools(local),
             routers: [],
           };
+        }
         return yield* engine.tools.list(
           { ...input, accounts: yield* accounts.accounts(input.app, input.version) },
           options,
@@ -163,12 +196,14 @@ export function compositeBackend(
         yield* checked("searchableTools", input.app);
         const local = yield* provider(input.app);
         if (local)
-          return {
-            listing: ToolSearchListing.make(`host:${local.id}:${local.version}`),
-            version: version(local),
-            accounts: { app: {}, user: {} },
-            routers: [],
-          };
+          return yield* available(local).pipe(
+            Effect.as({
+              listing: ToolSearchListing.make(`host:${local.id}:${local.version}`),
+              version: version(local),
+              accounts: { app: {}, user: {} },
+              routers: [],
+            }),
+          );
         return yield* engine.tools.searchable(
           { ...input, accounts: yield* accounts.accounts(input.app, input.version) },
           options,
@@ -209,6 +244,7 @@ export function compositeBackend(
         yield* checked("callTool", input.app, input.tool);
         const local = yield* provider(input.app);
         if (local) {
+          yield* available(local);
           const current = hostTools(local).find((tool) => tool.name === input.tool);
           if (
             !current ||
@@ -229,12 +265,17 @@ export function compositeBackend(
             );
           return {
             status: "completed",
-            value: yield* host.call({
-              execution,
-              plugin: input.app,
-              tool: input.tool,
-              input: JsonSchema.parse(input.input ?? null),
-            }),
+            value: yield* host
+              .call(
+                {
+                  execution,
+                  plugin: input.app,
+                  tool: input.tool,
+                  input: JsonSchema.parse(input.input ?? null),
+                },
+                options?.elicitation,
+              )
+              .pipe(Effect.mapError(hostFailure)),
           };
         }
         return yield* engine.tools.call(

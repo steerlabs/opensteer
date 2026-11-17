@@ -13,6 +13,8 @@ import type { RunId, TeamAgentRequestId, ThreadId } from "@opensteer/core";
 export type { AgentToolHandlers, ToolCall, ToolInput } from "./types.js";
 import type { AgentToolHandlers, ToolCall } from "./types.js";
 import type { PluginToolHandlers } from "./plugins.js";
+import { localServerToolHandlers } from "./local-servers.js";
+import type { LocalServerRegistry } from "../../local-servers/local-server-registry.js";
 export function agentToolHandlers(options: {
   readonly administration: AdministrationToolHandlers;
   readonly product: ProductToolHandlers;
@@ -21,6 +23,7 @@ export function agentToolHandlers(options: {
   readonly apps: Pick<AppService, "publish" | "list" | "start" | "stop" | "delete">;
   readonly tabs: TabToolHandlers;
   readonly plugins?: PluginToolHandlers;
+  readonly localServers?: LocalServerRegistry;
   readonly team?: TeamToolPort;
   readonly knowledge?: TeamKnowledgePort;
   /** Whether a Run may still use its owner's personal context, rechecked per call. */
@@ -36,6 +39,7 @@ export function agentToolHandlers(options: {
   const handlers: Partial<AgentToolHandlers> = {
     ...administrationToolHandlers(options.administration),
     ...options.plugins?.handlers(),
+    ...(options.localServers ? localServerToolHandlers(options.localServers) : {}),
     ...appToolHandlers(options.apps),
     tab_list: (c) => options.tabs.tab_list(c),
     tab_open: (c) => options.tabs.tab_open(c),

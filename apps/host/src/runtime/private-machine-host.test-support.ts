@@ -1,3 +1,4 @@
+import { builtPluginEngine } from "./machine-access-protocol.test-support.js";
 import { createDatabase } from "@opensteer/database";
 import { sql } from "kysely";
 import { parseHostConfig, type HostConfig } from "@opensteer/config";
@@ -132,7 +133,10 @@ export async function startPrivateMachineHost(
   };
   try {
     const owned = await ownTestDatabaseProducer(databaseUrl, async () => {
-      const created = await createHostRuntime(config, options);
+      const created = await createHostRuntime(config, {
+        ...options,
+        pluginEngine: builtPluginEngine,
+      });
       if (created.kind !== "personal") {
         await created.close();
         throw new Error("Expected Personal Host");

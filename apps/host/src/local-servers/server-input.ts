@@ -113,6 +113,7 @@ interface IntegrationInputOptions {
 export class IntegrationInput {
   readonly #secrets = new WeakMap<Client, string[]>();
   readonly #calls = new Map<Client, Set<InputCall>>();
+  readonly #turns = new Map<Client, Promise<void>>();
   readonly #waiters = new Map<RequestId, InputWaiter>();
   readonly #options: IntegrationInputOptions;
   constructor(options: IntegrationInputOptions) {
@@ -127,8 +128,15 @@ export class IntegrationInput {
       if (params.mode === "url" || params.task)
         return decline("Only flat form input during a tool call is supported.");
       const calls = this.#calls.get(client);
-      // A late elicitation can only be matched to the single currently active call.
+      // MCP elicitation names no tool call, so calls on one session take turns (see `turn`) and
+      // a question belongs to the single call in flight.
       const call = calls?.size === 1 ? calls.values().next().value : undefined;
+      if (call?.caller.elicit && !call.signal.aborted) {
+        const pending = this.#forward(call, params, extra.signal);
+        call.pending.add(pending);
+        void pending.finally(() => call.pending.delete(pending)).catch(() => undefined);
+        return pending;
+      }
       if (!call?.caller.run || call.signal.aborted)
         return decline("Device input requires a single active call from a Run.");
       const pending = this.#elicit(call, params, extra.signal);
@@ -136,6 +144,59 @@ export class IntegrationInput {
       void pending.finally(() => call.pending.delete(pending)).catch(() => undefined);
       return pending;
     });
+  }
+
+  /**
+   * Wait for this session's earlier calls, so a server's question always has one call to belong
+   * to. Returns the release; an abandoned wait releases at once.
+   */
+  async turn(client: Client, signal?: AbortSignal): Promise<() => void> {
+    const previous = this.#turns.get(client) ?? Promise.resolve();
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const next = previous.then(() => promise);
+    this.#turns.set(client, next);
+    void next.then(() => {
+      if (this.#turns.get(client) === next) this.#turns.delete(client);
+    });
+    if (signal) {
+      const aborted = new Promise<never>((_, reject) => {
+        const abort = () => reject(signal.reason ?? new Error("Call cancelled"));
+        if (signal.aborted) abort();
+        else signal.addEventListener("abort", abort, { once: true });
+      });
+      aborted.catch(() => undefined);
+      try {
+        await Promise.race([previous, aborted]);
+      } catch (error) {
+        resolve();
+        throw error;
+      }
+    } else await previous;
+    return resolve;
+  }
+
+  /** The person answers in Needs you through the calling plugin execution; the answer goes only to this call. */
+  async #forward(call: InputCall, params: FormParams, signal: AbortSignal): Promise<ElicitResult> {
+    call.extend();
+    try {
+      const answer = await call.caller.elicit!(
+        JSON.parse(
+          JSON.stringify({
+            mode: "form",
+            message: call.redactor().redactText(params.message),
+            requestedSchema: params.requestedSchema,
+          }),
+        ),
+        AbortSignal.any([call.signal, signal]),
+      );
+      if (answer.action === "accept" && answer.content)
+        call.remember(Object.values(answer.content).map(String));
+      return answer.action === "accept"
+        ? { action: "accept", content: (answer.content ?? {}) as ElicitResult["content"] }
+        : { action: answer.action };
+    } catch {
+      return { action: "cancel" };
+    }
   }
 
   start(

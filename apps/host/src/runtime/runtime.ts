@@ -2,8 +2,10 @@ import { PluginAuthority } from "../plugins/plugin-authority.js";
 import { PluginExecutions } from "../plugins/plugin-executions.js";
 import { PluginAgentStore } from "@opensteer/database";
 import { PluginToolHandlers } from "../mcp/handlers/plugins.js";
+import { LocalProviders } from "../plugins/local-providers.js";
+import { LocalServerRegistry } from "../local-servers/local-server-registry.js";
 import { pluginSourceFiles, exportPluginSource } from "../plugins/plugin-source.js";
-import { PluginService } from "../plugins/plugin-service.js";
+import { PluginService, PluginServiceError } from "../plugins/plugin-service.js";
 import { TabStore, AgentToolActivityStore, appendHostDeploymentEvent } from "@opensteer/database";
 import { TabService } from "../tabs/tab-service.js";
 import { NativeTabTargets } from "../computer-use/native-tab-targets.js";
@@ -447,6 +449,11 @@ export interface TeamHostRuntime {
   listen(): Promise<string>;
 }
 export interface HostRuntimeOptions {
+  /** Where the plugin engine fetches packages and its catalog; tests point it at a fixture. */
+  readonly pluginEngine?: Pick<
+    import("../plugins/plugin-service.js").PluginServiceOptions,
+    "npmRegistry" | "catalogUrl" | "selfOrigin" | "limits" | "processEntry" | "bridge"
+  >;
   readonly teamPartnerNetwork?: import("../team-partners/service.js").TeamPartnerNetwork;
   /** How long a stopping team Host stays reachable while load balancers drop it; tests shorten it. */
   readonly teamDrainDelayMs?: number;
@@ -534,6 +541,7 @@ export async function createHostRuntime(
   let taskQuestions: TaskQuestionNotices | undefined;
   let pluginService: PluginService | undefined;
   let pluginExecutions: PluginExecutions | undefined;
+  let localProviders: LocalProviders | undefined;
   let pluginChangeNotices: PluginChangeNotices | undefined;
   try {
     // A team database is served by several Host processes at once; a personal one by exactly one.
@@ -1077,6 +1085,12 @@ export async function createHostRuntime(
       dataDirectory,
       owner: "personal",
       authorize: (input) => pluginAuthority.authorize(input),
+      providers: async (caller) => (await localProviders?.providers(caller)) ?? [],
+      providerCall: async (input, signal, elicit) => {
+        if (!localProviders)
+          throw new PluginServiceError("unavailable", "Local tools are starting");
+        return localProviders.call(input, signal, elicit);
+      },
       onExecution: (execution) => pluginExecutions?.report(execution),
       onState: (state) => {
         if (state.status === "restarting" || state.status === "unavailable")
@@ -1086,6 +1100,7 @@ export async function createHostRuntime(
       },
       credentialKey,
       origin: config.canonicalOrigin.origin,
+      ...options.pluginEngine,
     });
     void pluginService.start().catch(() => undefined);
     credentialKey.fill(0);
@@ -1703,7 +1718,15 @@ export async function createHostRuntime(
     // Before accepting installs: their data folder can precede the plugin transaction.
     await localServers.recoverPluginData();
     await localServers.inputRequests.recover();
+    localProviders = new LocalProviders({
+      store: integrationPlatformStore,
+      devices,
+      localServers,
+      authority: pluginAuthority,
+    });
+    const providerNames = localProviders;
     pluginExecutions = new PluginExecutions({
+      localName: (context, plugin) => providerNames.name(context, plugin),
       service: pluginService,
       store,
       records: pluginAgentStore,
@@ -2677,6 +2700,11 @@ export async function createHostRuntime(
       handlers: agentToolHandlers({
         administration,
         plugins: pluginTools,
+        localServers: new LocalServerRegistry({
+          platform: integrationPlatform,
+          localServers,
+          files: async () => files,
+        }),
         apps,
         tabs: new TabToolHandlers(tabs),
         product: productHandlers,

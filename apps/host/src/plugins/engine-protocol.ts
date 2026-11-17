@@ -321,6 +321,8 @@ export const HostProviderSchema = z.strictObject({
   slug: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u),
   version: id,
   tools: z.array(HostToolSchema),
+  /** Why the provider cannot be used now, as a sentence the agent can act on. It then lists no tools. */
+  unavailable: z.string().min(1).max(2000).optional(),
 });
 export type PluginHostProvider = z.infer<typeof HostProviderSchema>;
 export const callbackOperations = {
@@ -348,6 +350,8 @@ export const EngineErrorSchema = z.strictObject({
     "invalid",
     "consent-changed",
     "engine",
+    // A host tool's own failure; its message is written for the agent.
+    "tool",
   ]),
   message: z.string(),
   tag: z.string().optional(),
@@ -404,6 +408,9 @@ export const HostMessageSchema = z.union([
   z.strictObject({ type: z.literal("callbackError"), id, error: EngineErrorSchema }),
   z.strictObject({ type: z.literal("stop") }),
   z.strictObject({ type: z.literal("streamPull"), id }),
+  // A host provider call in flight asks the person a question through the engine's execution.
+  z.strictObject({ type: z.literal("elicit"), id, callback: id, request: object }),
+  z.strictObject({ type: z.literal("elicitCancel"), id }),
 ]);
 export const EngineMessageSchema = z.union([
   z.strictObject({ type: z.literal("diagnostic"), phase: z.string() }),
@@ -421,4 +428,6 @@ export const EngineMessageSchema = z.union([
     error: z.string().optional(),
   }),
   z.strictObject({ type: z.literal("execution"), execution: ExecutionSchema }),
+  z.strictObject({ type: z.literal("elicitResult"), id, response: answer }),
+  z.strictObject({ type: z.literal("elicitError"), id, error: EngineErrorSchema }),
 ]);

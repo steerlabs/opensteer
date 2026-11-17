@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { parseHostConfig } from "@opensteer/config";
 import {
   createId,
@@ -83,6 +84,11 @@ export interface MachineAccessWireHost extends MachineAccessHost {
   readonly hostingRunnerEnrollmentToken: string;
   readonly ownerEnvironmentId: EnvironmentId;
 }
+/** Test Hosts run the engine the integration launcher built, not its TypeScript source. */
+export const builtPluginEngine = {
+  processEntry: new URL("../../dist/plugin-engine.js", import.meta.url),
+  bridge: fileURLToPath(new URL("../../dist/plugin-engine-bridge.json", import.meta.url)),
+};
 export async function startMachineAccessWireHost(
   databaseUrl: string,
   options: {
@@ -94,6 +100,7 @@ export async function startMachineAccessWireHost(
     readonly deploymentName?: string;
     readonly runCapabilityLifetimeSeconds?: number;
     readonly executionClock?: import("./runtime.js").HostRuntimeOptions["executionClock"];
+    readonly pluginEngine?: import("./runtime.js").HostRuntimeOptions["pluginEngine"];
   } = {},
 ): Promise<MachineAccessWireHost> {
   return ownTestDatabaseProducer(databaseUrl, async () => {
@@ -141,6 +148,7 @@ export async function startMachineAccessWireHost(
           ? { runCapabilityLifetimeSeconds: options.runCapabilityLifetimeSeconds }
           : {}),
         ...(options.executionClock ? { executionClock: options.executionClock } : {}),
+        pluginEngine: { ...builtPluginEngine, ...options.pluginEngine },
       });
       if (created.kind !== "personal")
         throw new Error("Personal wire fixture constructed a team Host");

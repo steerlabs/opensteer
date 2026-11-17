@@ -31,6 +31,15 @@ export type {
   PluginJson,
 } from "./engine-protocol.js";
 
+/** Ask the person a form question for the provider call in flight, through its own execution. */
+export type PluginElicit = (
+  request: Record<string, PluginJson>,
+  signal: AbortSignal,
+) => Promise<PluginAnswer>;
+export type PluginAnswer = {
+  action: "accept" | "decline" | "cancel";
+  content?: Record<string, PluginJson> | undefined;
+};
 export interface PluginServiceOptions {
   readonly deployment: "personal" | "team";
   readonly databaseUrl: string;
@@ -54,6 +63,7 @@ export interface PluginServiceOptions {
   readonly providerCall?: (
     input: PluginCaller & { execution: string; plugin: string; tool: string; input: PluginJson },
     signal: AbortSignal,
+    elicit: PluginElicit,
   ) => Promise<PluginJson>;
   readonly eventAuthorize?: (
     input: Record<string, PluginJson>,
@@ -93,6 +103,10 @@ export class PluginService {
   readonly #options: PluginServiceOptions;
   readonly #pending = new Map<string, Pending>();
   readonly #callbacks = new Map<string, AbortController>();
+  readonly #elicits = new Map<
+    string,
+    { resolve(value: PluginAnswer): void; reject(error: Error): void }
+  >();
   readonly #pulls = new Map<
     string,
     {
@@ -352,6 +366,11 @@ export class PluginService {
         void this.#callback(child, message);
       } else if (message.type === "callbackCancel") {
         this.#callbacks.get(message.id)?.abort();
+      } else if (message.type === "elicitResult" || message.type === "elicitError") {
+        const pending = this.#elicits.get(message.id);
+        this.#elicits.delete(message.id);
+        if (message.type === "elicitResult") pending?.resolve(message.response);
+        else pending?.reject(new PluginServiceError(message.error.code, message.error.message));
       } else {
         const pending = this.#pending.get(message.id);
         if (!pending) return;
@@ -380,6 +399,8 @@ export class PluginService {
       for (const pull of this.#pulls.values()) pull.reject(error);
       this.#pulls.clear();
       for (const callback of this.#callbacks.values()) callback.abort();
+      for (const elicit of this.#elicits.values()) elicit.reject(error);
+      this.#elicits.clear();
       for (const execution of this.#executions.values())
         if (["running", "waiting", "answered"].includes(execution.state))
           this.#report({
@@ -452,6 +473,34 @@ export class PluginService {
   #send(child: ChildProcess, value: unknown) {
     if (child.connected) child.send(HostMessageSchema.parse(value), () => {});
   }
+  #elicit(
+    child: ChildProcess,
+    callback: string,
+    request: Record<string, PluginJson>,
+    signal: AbortSignal,
+  ): Promise<PluginAnswer> {
+    return new Promise((resolve, reject) => {
+      const id = randomUUID();
+      const abort = () => {
+        if (!this.#elicits.delete(id)) return;
+        this.#send(child, { type: "elicitCancel", id });
+        reject(new PluginServiceError("cancelled", "The question was cancelled"));
+      };
+      this.#elicits.set(id, {
+        resolve: (value) => {
+          signal.removeEventListener("abort", abort);
+          resolve(value);
+        },
+        reject: (error) => {
+          signal.removeEventListener("abort", abort);
+          reject(error);
+        },
+      });
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+      else this.#send(child, { type: "elicit", id, callback, request });
+    });
+  }
   async #callback(
     child: ChildProcess,
     message: Extract<ReturnType<typeof EngineMessageSchema.parse>, { type: "callback" }>,
@@ -487,6 +536,7 @@ export class PluginService {
         result = await this.#options.providerCall(
           callbackOperations.providerCall.input.parse(message.input),
           controller.signal,
+          (request, signal) => this.#elicit(child, message.id, request, signal),
         );
       } else
         result =
@@ -508,7 +558,10 @@ export class PluginService {
         id: message.id,
         error: {
           code: error instanceof PluginServiceError ? error.code : "engine",
-          message: error instanceof PluginServiceError ? error.message : "Host callback failed",
+          message:
+            error instanceof PluginServiceError
+              ? error.message.slice(0, 4000)
+              : "Host callback failed",
         },
       });
     } finally {

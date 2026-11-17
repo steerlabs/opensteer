@@ -47,11 +47,11 @@ export type LocalMcpSecretsUpdate = (current: Buffer | null) => Promise<Buffer |
 const waitingSentence = "Waiting for approval on the computer that runs it.";
 const startingSentence = "Starting on the computer that runs it.";
 const declinedSentence =
-  "The computer's owner declined running it there. Install the plugin again to ask again.";
+  "The computer's owner declined running it there. Register it again with local_server_add to ask again.";
 const noOwnerSentence =
-  "Nobody can approve it on that computer: it has no owner to ask. Install the plugin again, choosing a Mac of yours.";
+  "Nobody can approve it on that computer: it has no owner to ask. Register it again with local_server_add, choosing a Mac of yours.";
 const removedSentence =
-  "The computer that ran it was removed. Install the plugin again, choosing another computer.";
+  "The computer that ran it was removed. Register it again with local_server_add, choosing another computer.";
 
 /**
  * The MCP servers a computer runs for its Deployment, and the approval each

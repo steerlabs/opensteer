@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { Effect, Cause } from "effect";
+import { Effect, Cause, Schema } from "effect";
+import { FormElicitation, type ElicitationHandler } from "apps/contracts";
 import {
   EngineMessageSchema,
   HostMessageSchema,
@@ -17,7 +18,11 @@ if (!process.send) throw new Error("Plugin engine must be started by its Host ov
 const send = (value: unknown) => {
   if (process.connected) process.send?.(EngineMessageSchema.parse(value), () => {});
 };
-const callbacks = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
+const callbacks = new Map<
+  string,
+  { resolve(value: unknown): void; reject(error: Error): void; elicitation?: ElicitationHandler }
+>();
+const elicitations = new Map<string, AbortController>();
 const requests = new Map<string, AbortController>();
 const streams = new Map<string, AsyncIterator<Uint8Array>>();
 let engine: Awaited<ReturnType<typeof startEngine>> | undefined;
@@ -40,6 +45,7 @@ const errorData = (error: unknown) => {
 const callback = <K extends PluginCallback>(
   operation: K,
   input: z.infer<(typeof callbackOperations)[K]["input"]>,
+  elicitation?: ElicitationHandler,
 ): Effect.Effect<z.infer<(typeof callbackOperations)[K]["output"]>, Error> =>
   Effect.tryPromise({
     try: (signal) =>
@@ -64,6 +70,7 @@ const callback = <K extends PluginCallback>(
             signal.removeEventListener("abort", abort);
             reject(error);
           },
+          ...(elicitation ? { elicitation } : {}),
         });
         send({
           type: "callback",
@@ -143,6 +150,47 @@ process.on("message", (raw: unknown) => {
         pending?.reject(
           new PluginServiceError(message.error.code, message.error.message, message.error.tag),
         );
+      return;
+    }
+    if (message.type === "elicit") {
+      // Only the provider call that is still waiting may ask, and only through its own handler.
+      const handler = callbacks.get(message.callback)?.elicitation;
+      const request = Schema.decodeUnknownOption(FormElicitation)(message.request);
+      if (!handler || request._tag === "None") {
+        send({
+          type: "elicitError",
+          id: message.id,
+          error: { code: "invalid", message: "This call cannot ask the person for input" },
+        });
+        return;
+      }
+      const controller = new AbortController();
+      elicitations.set(message.id, controller);
+      try {
+        const response = await Effect.runPromise(handler(request.value, controller.signal));
+        send({
+          type: "elicitResult",
+          id: message.id,
+          response: {
+            action: response.action,
+            ...(response.action === "accept" && response.content
+              ? { content: JSON.parse(JSON.stringify(response.content)) }
+              : {}),
+          },
+        });
+      } catch {
+        send({
+          type: "elicitError",
+          id: message.id,
+          error: { code: "cancelled", message: "The question ended without an answer" },
+        });
+      } finally {
+        elicitations.delete(message.id);
+      }
+      return;
+    }
+    if (message.type === "elicitCancel") {
+      elicitations.get(message.id)?.abort();
       return;
     }
     if (message.type === "streamPull") {

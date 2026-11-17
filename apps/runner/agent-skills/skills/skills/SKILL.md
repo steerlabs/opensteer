@@ -55,9 +55,9 @@ and optional skills under skills/<name>/SKILL.md. Read opensteer:plugins before 
 one. Deploy a folder in Agent home with opensteer_plugin_install using source:"folder"; include
 pluginId for a new version. The folder is a draft, and the deployed version is the truth.
 
-Loose procedures and scripts can remain ordinary Agent home skills. Device and local MCP server
-packages still use their own registration and launch-consent flow in Settings; the sandboxed
-plugin installer does not register plugin.json/mcp.json packages or grant device access.
+Loose procedures and scripts can remain ordinary Agent home skills. A local MCP server, such as
+one for a device, is registered with `local_server_add` and approved by the person on its
+computer (opensteer:devices); the sandboxed plugin installer does not run local servers.
 
 ## Hand repeated work to a delegated task
 

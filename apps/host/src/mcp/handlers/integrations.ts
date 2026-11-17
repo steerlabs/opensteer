@@ -204,6 +204,7 @@ export class IntegrationToolHandlers {
     const resolution = resolveOperation(reachable, input.operation, input.account);
     const callable =
       describedOperation(resolution) ?? (await this.#refuseOperation(scope, input, resolution));
+    if (isLocalTool(callable)) throw refused("bad_request", localToolSentence);
     const stored = await this.#platform.store.getToolSchemas(callable.tool.id);
     if (
       !stored ||
@@ -286,6 +287,7 @@ export class IntegrationToolHandlers {
       )
     )
       throw refused("bad_request", computerUseToolRequiredSentence);
+    if (isLocalTool(selected)) throw refused("bad_request", localToolSentence);
     return selected;
   }
 
@@ -579,12 +581,9 @@ export class IntegrationToolHandlers {
     const matchingOperations = searchCallableTools(
       callable.filter(
         (operation) =>
-          !(
-            operation.server.transport.type === "computer" &&
-            [computerUseDefinitionId, androidPhoneDefinitionId].includes(
-              operation.server.transport.definitionId,
-            )
-          ) && callableToolMatchesProvider(operation, provider, definitionById),
+          operation.server.transport.type !== "computer" &&
+          !isLocalTool(operation) &&
+          callableToolMatchesProvider(operation, provider, definitionById),
       ),
       query,
     );
@@ -615,6 +614,10 @@ export class IntegrationToolHandlers {
       (entry) =>
         ![computerUseDefinitionId, androidPhoneDefinitionId].includes(
           installationDefinitionId(entry.installation) ?? "",
+        ) &&
+        // Device data apps and local servers are plugin tools; their approvals stay requestable.
+        !entry.servers.some(
+          ({ transport }) => transport.type === "computer" || transport.type === "runner",
         ),
     );
     const matches = searched.slice(offset, offset + limit);
@@ -843,6 +846,14 @@ export class IntegrationToolHandlers {
         : {}),
       ...(concerned(androidPhoneDefinitionId)
         ? { phones: phones.length ? phoneSearchGuidance : noPhone }
+        : {}),
+      ...(this.#definitions.some(
+        (definition) =>
+          concerns(definition) &&
+          isComputerAppDefinition(definition) &&
+          ![computerUseDefinitionId, androidPhoneDefinitionId].includes(definition.id),
+      )
+        ? { deviceApps: deviceAppSearchGuidance }
         : {}),
     };
     const output = {
@@ -1490,6 +1501,18 @@ function callableToolMatchesProvider(
   return requirement.kind === "provider" && requirement.provider === provider;
 }
 
+const deviceAppSearchGuidance =
+  'An approved device data app is a plugin tool: use plugin_search. One that is not listed there needs the person: call integration_request with its catalog definitionId as integration (or as catalog when not installed) and access "read" or "read-write". A listed one that only reads names its account in its refusal.';
+const localToolSentence =
+  "Device data apps and local MCP servers are plugin tools: find them with plugin_search and call them with plugin_call or plugin_execute.";
+/** A device data app or a computer's MCP server, reached through the plugin tools instead. */
+function isLocalTool({ server }: CallableIntegrationTool): boolean {
+  return (
+    server.transport.type === "runner" ||
+    (server.transport.type === "computer" &&
+      ![computerUseDefinitionId, androidPhoneDefinitionId].includes(server.transport.definitionId))
+  );
+}
 function installationDefinitionId(installation: IntegrationInstallation): string | null {
   const provenanceId = installation.provenance.definitionId;
   if (typeof provenanceId === "string") return provenanceId;

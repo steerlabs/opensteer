@@ -761,7 +761,7 @@ export class IntegrationPlatformService {
       throw new OpensteerError({
         code: "bad_request",
         message:
-          "A server on a computer's own loopback runs on that computer: install it in an Agent Plugin, choosing the computer that runs it.",
+          "A server on a computer's own loopback runs on that computer: register it with local_server_add, choosing the computer that runs it.",
       });
     }
     const installationId = createIntegrationId("installation");

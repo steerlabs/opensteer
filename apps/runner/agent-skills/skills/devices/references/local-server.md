@@ -1,60 +1,50 @@
-# Plugin shape
+# Local server
 
-A device plugin is a folder in Agent home, named for the device:
+A device's server is a folder in Agent home, named for the device:
 
 ```text
 main-bedroom-apple-tv/
-  plugin.json
-  mcp.json
   server.py
   skills/main-bedroom-apple-tv/SKILL.md
 ```
 
-`plugin.json` declares the device. `kind` is `tv`, `speaker`, `light`, `camera` or `other`; the name
-is what the person calls it.
+Register it on the computer that reaches the device:
 
 ```json
 {
-  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "main-bedroom-apple-tv",
   "description": "Play, pause, open apps and power for the Apple TV in Main Bedroom.",
-  "extensions": {
-    "com.opensteer": { "device": { "name": "Main Bedroom Apple TV", "kind": "tv" } }
-  }
+  "computerId": "rnr_…",
+  "folder": "main-bedroom-apple-tv",
+  "launch": {
+    "command": "uvx",
+    "args": [
+      "--python",
+      "3.13",
+      "--with",
+      "mcp>=2,<3",
+      "--with",
+      "pyatv",
+      "--with",
+      "srptools<1",
+      "python",
+      "${PLUGIN_ROOT}/server.py"
+    ],
+    "env": { "PATH": "/opt/homebrew/bin:/usr/bin:/bin", "DEVICE_ADDRESS": "192.168.1.10" }
+  },
+  "device": { "name": "Main Bedroom Apple TV", "kind": "tv" }
 }
 ```
 
-`mcp.json` starts the server on the computer that reaches the device:
+That computer runs a snapshot of the folder, so register again after changing it. A server already
+listening on that computer's loopback takes `url` instead of `launch`. `kind` is `tv`, `speaker`,
+`light`, `camera` or `other`; the device name is what the person calls it. A password or token is
+declared in `launch.secrets` by its environment variable name and entered by the person.
 
-```json
-{
-  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
-  "mcpServers": {
-    "apple-tv": {
-      "type": "stdio",
-      "command": "uvx",
-      "args": [
-        "--python",
-        "3.13",
-        "--with",
-        "mcp>=2,<3",
-        "--with",
-        "pyatv",
-        "--with",
-        "srptools<1",
-        "python",
-        "${PLUGIN_ROOT}/server.py"
-      ],
-      "env": { "PATH": "/opt/homebrew/bin:/usr/bin:/bin", "DEVICE_ADDRESS": "192.168.1.10" }
-    }
-  }
-}
-```
-
-- `command` is a bare executable or a `./` path inside the plugin. The server starts with a minimal
+- `command` is a bare executable or a `./` path inside the folder. The server starts with a minimal
   environment, so set `PATH` in `env` to the directory `command -v` shows for the launcher.
 - Write state to the folder named by the `PLUGIN_DATA` environment variable. It survives updates and
-  is deleted from that computer when the person removes the plugin.
+  is deleted from that computer when the server is removed.
 - Give each action its own plainly named tool, such as `pause` or `launch_app`, that returns the
   device's new state. Mark reads as read-only.
 - Test the server the way its computer will start it: launch the exact `command` and `args` from

@@ -38,6 +38,7 @@ export class PluginExecutions {
     notify: () => void;
     onError: (error: unknown) => void;
     onStopped: (stop: NonNullable<Awaited<ReturnType<OpensteerStore["stopHeldRun"]>>>) => void;
+    localName?: (context: PluginCaller, plugin: string) => Promise<string | undefined>;
   };
   constructor(options: PluginExecutions["options"]) {
     this.options = options;
@@ -172,10 +173,15 @@ export class PluginExecutions {
       const invocation = object.parse(interaction.invocation ?? interaction.tool);
       const pluginId = z.string().parse(invocation.app);
       const tool = z.string().parse(invocation.tool);
-      const detail = await this.options.service.detail(
-        { plugin: pluginId },
-        { caller: "personal", mode: "automatic" },
-      );
+      // A local provider (device app or local server) is not an engine plugin; the Host names it.
+      const local = await this.options.localName?.(this.#context(row), pluginId);
+      const detail =
+        local === undefined
+          ? await this.options.service.detail(
+              { plugin: pluginId },
+              { caller: "personal", mode: "automatic" },
+            )
+          : { plugin: { name: local } };
       const settings = await this.options.records.settings(caller.userId);
       const plugin = {
         id: pluginId,
