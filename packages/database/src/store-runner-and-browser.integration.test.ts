@@ -1473,12 +1473,8 @@ describeStore("PostgreSQL store", (it) => {
         source: { kind: "human" },
         content: [{ type: "text", text: key }],
       });
+      // thread_inputs ranks before messages in the lock order.
       await replica(async (tx) => {
-        await tx
-          .updateTable("messages")
-          .set({ createdAt: at(created) })
-          .where("id", "=", message.id)
-          .execute();
         await tx
           .updateTable("threadInputs")
           .set({
@@ -1487,6 +1483,11 @@ describeStore("PostgreSQL store", (it) => {
             deliveredAt: input.state === "delivered" ? at(input.at) : null,
           })
           .where("messageId", "=", message.id)
+          .execute();
+        await tx
+          .updateTable("messages")
+          .set({ createdAt: at(created) })
+          .where("id", "=", message.id)
           .execute();
       });
       return message.id;
