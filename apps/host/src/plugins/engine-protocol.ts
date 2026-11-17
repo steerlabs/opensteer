@@ -408,7 +408,11 @@ export const operations = {
     input: plugin,
     output: z.strictObject({ plugin: id, version: id, digest: id, files }),
   },
-  resourcesRead: { input: plugin_resources.input, output: JsonSchema },
+  // `outputs` is the Host's decision that this caller may read run outputs, not the agent's.
+  resourcesRead: {
+    input: plugin_resources.input.extend({ outputs: z.boolean() }),
+    output: JsonSchema,
+  },
   resourcesUpdate: {
     input: opensteer_plugin_resource_update.input.extend({ key: id.optional() }),
     output: JsonSchema,

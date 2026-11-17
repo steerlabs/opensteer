@@ -1,9 +1,10 @@
 import { CurrentPluginRequest } from "./engine-authority.js";
-import { detailSection, detailPreview } from "./engine-detail.js";
+import { agentDefinitions, detailSection, detailPreview, previewOutput } from "./engine-detail.js";
 import {
   backgroundResourceChanges,
   engineOAuthAttempt,
-  ownerWorkflowRunIds,
+  scheduledRunPage,
+  workflowRunPage,
 } from "./engine-storage.js";
 import { pluginNamespace } from "./provider-names.js";
 import { folderSkills } from "apps/skills";
@@ -1283,28 +1284,44 @@ export async function startEngine(
             const input = operations.resourcesRead.input.parse(raw);
             const app = AppId.make(input.pluginId);
             yield* engine.apps.get({ app, owner });
+            // Definitions come once, with the first page; later pages carry history alone.
             const definitions = (operation: "workflows.list" | "schedules.definitions") =>
-              manage({ operation, input: { app } }).pipe(Effect.catch(() => Effect.succeed(null)));
+              input.cursor
+                ? Effect.succeed({})
+                : manage({ operation, input: { app } }).pipe(
+                    Effect.map((value) => ({ definitions: agentDefinitions(value) })),
+                    Effect.catch(() => Effect.succeed({ definitions: null })),
+                  );
+            const cursor = input.cursor ? { cursor: input.cursor } : {};
             if (input.resource === "workflows") {
-              const page = yield* manage({
-                operation: "workflowRuns.list",
-                input: {
-                  app,
-                  limit: 10,
-                  includeOutput: true,
-                  ...(input.cursor ? { cursor: input.cursor } : {}),
-                },
-              });
+              const page = yield* workflowRunPage(composed.sql, { app, limit: 10, ...cursor });
               return {
-                ...z.record(z.string(), JsonSchema).parse(page),
-                definitions: yield* definitions("workflows.list"),
+                items: yield* Effect.forEach(page.runs, (run) =>
+                  input.outputs && (run.status === "complete" || run.status === "errored")
+                    ? engine.apps.workflowRuns
+                        .get({
+                          app,
+                          run: Schema.decodeUnknownSync(WorkflowTarget.fields.run)(run.id),
+                        })
+                        .pipe(Effect.map(previewOutput))
+                    : Effect.succeed(run),
+                ),
+                ...(page.next ? { next: page.next } : {}),
+                ...(yield* definitions("workflows.list")),
               };
             }
             if (input.resource === "webhooks") return yield* engine.webhooks.list({ app });
+            const page = yield* scheduledRunPage(composed.sql, {
+              app,
+              owner,
+              limit: 20,
+              ...cursor,
+            });
             return {
-              definitions: yield* definitions("schedules.definitions"),
-              schedules: yield* engine.schedules.list({ app, owner }),
-              runs: yield* engine.schedules.runs({ app, owner }),
+              ...(yield* definitions("schedules.definitions")),
+              ...(input.cursor ? {} : { schedules: yield* engine.schedules.list({ app, owner }) }),
+              runs: page.runs,
+              ...(page.next ? { next: page.next } : {}),
             };
           }
           case "resourcesUpdate": {
@@ -1471,7 +1488,12 @@ export async function startEngine(
         case "schedules.runNow":
           return decode(ScheduleInputs.runNow).pipe(Effect.flatMap(engine.schedules.runNow));
         case "schedules.runs":
-          return decode(ScheduleInputs.runs).pipe(Effect.flatMap(engine.schedules.runs));
+          return scheduledRunPage(composed.sql, {
+            app: String(input.input.app),
+            owner,
+            limit: z.coerce.number().int().min(1).max(100).catch(50).parse(input.input.limit),
+            pending: input.input.pending === true,
+          }).pipe(Effect.map((page) => page.runs));
         case "schedules.approval":
           return decode(ScheduleInputs.approval).pipe(Effect.flatMap(engine.schedules.approval));
         case "schedules.answer":
@@ -1484,28 +1506,14 @@ export async function startEngine(
           return Effect.gen(function* () {
             const app = AppId.make(String(input.input.app));
             yield* engine.apps.get({ app, owner });
-            const page = yield* ownerWorkflowRunIds(composed.sql, input.input);
+            const page = yield* workflowRunPage(composed.sql, input.input);
             return {
-              items: yield* Effect.forEach(page.ids, (id) =>
+              items: yield* Effect.forEach(page.runs, (run) =>
                 engine.apps.workflowRuns
-                  .get({
-                    app,
-                    run: Schema.decodeUnknownSync(WorkflowTarget.fields.run)(id),
-                  })
+                  .get({ app, run: Schema.decodeUnknownSync(WorkflowTarget.fields.run)(run.id) })
                   .pipe(
                     Effect.map((run) =>
-                      run.status === "complete"
-                        ? {
-                            ...run,
-                            output:
-                              input.input.includeOutput === true
-                                ? {
-                                    preview: JSON.stringify(run.output).slice(0, 512),
-                                    truncated: JSON.stringify(run.output).length > 512,
-                                  }
-                                : null,
-                          }
-                        : run,
+                      run.status === "complete" ? { ...run, output: null } : run,
                     ),
                   ),
               ),

@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { keysetPage } from "./keyset-page.js";
 import { pluginDetailPageMax, pluginDetailPreview } from "@opensteer/protocol";
-import { operations } from "./engine-protocol.js";
-import type { z } from "zod";
+import { jsonBytes, operations } from "./engine-protocol.js";
+import { z } from "zod";
 
 type Detail = z.infer<typeof operations.detail.output>;
 export function detailSection(
@@ -76,4 +76,26 @@ export function detailPreview(raw: unknown): Detail {
       )
       .slice(0, pluginDetailPreview.versions),
   };
+}
+
+const definitionsMax = 25;
+const definitionBytes = 8_192;
+const definitionList = z.array(z.looseObject({ name: z.string() }));
+/** Declarations an agent reads beside history: the first few, each small, without output schemas. */
+export function agentDefinitions(raw: unknown) {
+  const parsed = definitionList.safeParse(JSON.parse(JSON.stringify(raw ?? null)));
+  if (!parsed.success) return null;
+  return parsed.data
+    .slice(0, definitionsMax)
+    .map(({ outputSchema: _outputSchema, ...entry }) =>
+      jsonBytes(entry) <= definitionBytes
+        ? entry
+        : { name: entry.name.slice(0, 240), truncated: true },
+    );
+}
+/** A finished run as an agent reads it: a short preview of its output, never the whole value. */
+export function previewOutput<R extends { status: string }>(run: R) {
+  if (!("output" in run)) return run;
+  const text = JSON.stringify(run.output) ?? "null";
+  return { ...run, output: { preview: text.slice(0, 512), truncated: text.length > 512 } };
 }

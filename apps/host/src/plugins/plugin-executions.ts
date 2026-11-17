@@ -202,14 +202,16 @@ export class PluginExecutions {
               { caller: "personal", mode: "automatic" },
             )
           : { plugin: { name: local } };
-      const settings = await this.options.records.settings(caller.userId);
+      const version = String(invocation.version);
+      const [settings, authors] = await Promise.all([
+        this.options.records.settings(caller.userId),
+        this.options.records.versionAuthors(caller.userId, [{ pluginId, version }]),
+      ]);
       const plugin = {
         id: pluginId,
         name: detail.plugin.name.slice(0, 240),
         author:
-          settings.find((s) => s.pluginId === pluginId)?.versionAuthors[
-            String(invocation.version)
-          ] ??
+          authors.get(`${pluginId}\u0000${version}`) ??
           settings.find((s) => s.pluginId === pluginId)?.author ??
           ("agent" as const),
       };

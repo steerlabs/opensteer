@@ -5,6 +5,9 @@ import type { SqlClient } from "effect/sql";
 import type { ReactiveStore } from "@opensteer/plugin-engine-reactivity";
 import { z } from "zod";
 import pg from "pg";
+import { sql, type Kysely } from "kysely";
+import type { DatabaseSchema } from "@opensteer/database";
+import { pluginOwnerId } from "./engine-protocol.js";
 
 export type EngineDemand = { busy: boolean; dueInMs: number | null };
 
@@ -65,6 +68,22 @@ export async function engineActiveVersions(
   });
 }
 
+/** A completed install's saved result for this key, or null; read before any source is gathered. */
+export async function engineInstallReceipt(database: Kysely<DatabaseSchema>, key: string) {
+  const present = await sql<{
+    present: boolean;
+  }>`select to_regclass('plugin_engine.opensteer_resource_creations') is not null as present`.execute(
+    database,
+  );
+  if (!present.rows[0]?.present) return null;
+  const { rows } = await sql<{
+    result: unknown;
+  }>`select result from plugin_engine.opensteer_resource_creations where owner = ${pluginOwnerId} and key = ${key} and kind = 'plugin'`.execute(
+    database,
+  );
+  return rows[0]?.result ?? null;
+}
+
 export const engineOAuthAttempt = (sql: SqlClient.SqlClient, connection: string) =>
   sql<{
     id: string;
@@ -98,59 +117,108 @@ export function backgroundResourceChanges(
   );
 }
 
-const workflowPage = z.object({
+const historyPage = z.object({
   app: z.string().min(1),
   workflow: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: z.string().optional(),
+  live: z.boolean().optional(),
 });
-const workflowCursor = z.object({
-  filter: z.string(),
-  live: z.number().int().min(0).max(1),
-  at: z.string().datetime(),
-  id: z.string(),
-});
-export function ownerWorkflowRunIds(sql: SqlClient.SqlClient, raw: unknown) {
+const historyCursor = z.object({ filter: z.string(), at: z.string().min(1), id: z.string() });
+const iso = (column: string) => `to_char(${column}, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
+const live = "status not in ('complete', 'errored', 'terminated')";
+
+/**
+ * Newest first on (creation time, id), which never change, so a run that finishes between pages
+ * is never read twice. `live` adds up to up to half a page of unfinished runs to the first page, so a
+ * long-lived run older than the first page still shows; a later page can repeat one of those.
+ */
+export function workflowRunPage(sql: SqlClient.SqlClient, raw: unknown) {
   return Effect.gen(function* () {
-    const input = yield* Effect.try(() => workflowPage.parse(raw));
-    const filter = createHash("sha256")
-      .update(JSON.stringify([input.app, input.workflow ?? null]))
-      .digest("hex");
-    const cursor = yield* Effect.try(() =>
-      input.cursor
-        ? workflowCursor.parse(JSON.parse(Buffer.from(input.cursor, "base64url").toString()))
-        : undefined,
-    );
-    if (cursor && cursor.filter !== filter)
-      return yield* Effect.fail(new Error("Workflow cursor belongs to another listing"));
-    const rows = yield* sql<{
-      id: string;
-      live: number;
-      created_at: Date;
-    }>`select id, case when status in ('queued', 'running') then 0 else 1 end as live, created_at
+    const input = yield* Effect.try(() => historyPage.parse(raw));
+    const filter = digest(["workflows", input.app, input.workflow ?? null]);
+    const cursor = yield* readCursor(input.cursor, filter);
+    const workflow = input.workflow ?? null;
+    const lane =
+      input.live && !cursor
+        ? yield* sql<WorkflowRunRow>`select ${sql.literal(workflowColumns)}
+            from plugin_engine_workflow_runs where app = ${input.app}
+              and (${workflow}::text is null or name = ${workflow}) and ${sql.literal(live)}
+            order by created_at desc, id desc limit ${Math.floor(input.limit / 2)}`
+        : [];
+    const rows = yield* sql<WorkflowRunRow>`select ${sql.literal(workflowColumns)}
       from plugin_engine_workflow_runs where app = ${input.app}
-        and (${input.workflow ?? null}::text is null or name = ${input.workflow ?? null})
-        and (${cursor?.id ?? null}::text is null or (case when status in ('queued', 'running') then 0 else 1 end > ${cursor?.live ?? 0})
-          or (case when status in ('queued', 'running') then 0 else 1 end = ${cursor?.live ?? 0} and (created_at, id) < (${cursor?.at ?? new Date(0).toISOString()}::timestamp, ${cursor?.id ?? ""})))
-      order by live asc, created_at desc, id desc limit ${input.limit + 1}`;
-    const page = rows.slice(0, input.limit);
-    const last = page.at(-1);
+        and (${workflow}::text is null or name = ${workflow})
+        and (${cursor?.id ?? null}::text is null
+          or (created_at, id) < (${cursor?.at ?? null}::timestamp, ${cursor?.id ?? ""}))
+      order by created_at desc, id desc limit ${input.limit - lane.length + 1}`;
+    const page = rows.slice(0, input.limit - lane.length);
+    const shown = new Set(lane.map(({ id }) => id));
     return {
-      ids: page.map(({ id }) => id),
-      next:
-        rows.length > input.limit && last
-          ? Buffer.from(
-              JSON.stringify({
-                filter,
-                live: last.live,
-                at: new Date(last.created_at).toISOString(),
-                id: last.id,
-              }),
-            ).toString("base64url")
-          : undefined,
+      runs: [...lane, ...page.filter(({ id }) => !shown.has(id))].map(workflowRun),
+      next: nextCursor(rows.length > page.length, page.at(-1), filter),
     };
   });
 }
+
+/** One page of scheduled runs, newest first on their immutable start time and id, each bounded. */
+export function scheduledRunPage(
+  sql: SqlClient.SqlClient,
+  raw: { app: string; owner: string; limit: number; pending?: boolean; cursor?: string },
+) {
+  return Effect.gen(function* () {
+    const filter = digest(["schedules", raw.app, raw.owner, raw.pending === true]);
+    const cursor = yield* readCursor(raw.cursor, filter);
+    const rows = yield* sql<{ id: string; at: string }>`select id, schedule_id as "scheduleId",
+        app, owner, name, status, ${sql.literal(iso("scheduled_at"))} as "scheduledAt",
+        ${sql.literal(iso("started_at"))} as "startedAt", ${sql.literal(iso("finished_at"))} as "finishedAt",
+        request_id as "requestId", ${sql.literal(iso("expires_at"))} as "expiresAt",
+        left(failure, 1000) as failure, started_at::text as at
+      from plugin_engine_scheduled_runs where app = ${raw.app} and owner = ${raw.owner}
+        and (${raw.pending === true} = false or status = 'awaiting-approval')
+        and (${cursor?.id ?? null}::text is null
+          or (started_at, id) < (${cursor?.at ?? null}::timestamp, ${cursor?.id ?? ""}))
+      order by started_at desc, id desc limit ${raw.limit + 1}`;
+    const page = rows.slice(0, raw.limit);
+    return {
+      runs: page.map(({ at: _at, ...run }) => run),
+      next: nextCursor(rows.length > page.length, page.at(-1), filter),
+    };
+  });
+}
+
+type WorkflowRunRow = {
+  id: string;
+  app: string;
+  version: string;
+  workflow: string;
+  status: string;
+  createdAt: string;
+  failure: string | null;
+  at: string;
+};
+// `at` is the key's own text, which casts back to the exact stored timestamp.
+const workflowColumns = `id, app, deployment as version, name as workflow, status, failure,
+  ${iso("created_at")} as "createdAt", created_at::text as at`;
+const workflowRun = ({ at: _at, failure, ...run }: WorkflowRunRow) => ({
+  ...run,
+  ...(run.status === "errored" ? { error: failure ?? "errored" } : {}),
+});
+const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const readCursor = (raw: string | undefined, filter: string) =>
+  Effect.gen(function* () {
+    if (!raw) return undefined;
+    const cursor = yield* Effect.try(() =>
+      historyCursor.parse(JSON.parse(Buffer.from(raw, "base64url").toString())),
+    );
+    if (cursor.filter !== filter)
+      return yield* Effect.fail(new Error("History cursor belongs to another listing"));
+    return cursor;
+  });
+const nextCursor = (more: boolean, last: { id: string; at: string } | undefined, filter: string) =>
+  more && last
+    ? Buffer.from(JSON.stringify({ filter, at: last.at, id: last.id })).toString("base64url")
+    : undefined;
 
 export const migrateEngineProduct = (sql: SqlClient.SqlClient) =>
   sql
@@ -183,8 +251,29 @@ const engineStorageColumns = {
   plugin_engine_apps: ["id", "active_deployment"],
   plugin_engine_accounts: ["id"],
   plugin_engine_schedules: ["id", "enabled", "active_run", "next_at", "approval_mode"],
-  plugin_engine_scheduled_runs: ["id", "status", "failure", "expires_at"],
-  plugin_engine_workflow_runs: ["id", "app", "name", "status", "failure", "created_at"],
+  plugin_engine_scheduled_runs: [
+    "id",
+    "schedule_id",
+    "app",
+    "owner",
+    "name",
+    "status",
+    "scheduled_at",
+    "started_at",
+    "finished_at",
+    "request_id",
+    "failure",
+    "expires_at",
+  ],
+  plugin_engine_workflow_runs: [
+    "id",
+    "app",
+    "deployment",
+    "name",
+    "status",
+    "failure",
+    "created_at",
+  ],
   plugin_engine_event_deliveries: ["status", "next_at"],
   plugin_engine_webhook_sources: [
     "id",

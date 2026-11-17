@@ -65,7 +65,12 @@ export async function handlePluginOAuthCommand(
       };
     case "plugin.authorization.begin":
       return {
-        ...(await oauth.begin(command.input, owner, requireSurface(context))),
+        ...(await oauth.begin(
+          command.input,
+          owner,
+          requireSurface(context),
+          JSON.stringify([owner, command.type, command.idempotencyKey]),
+        )),
         type: command.type,
       };
     case "plugin.authorization.return":

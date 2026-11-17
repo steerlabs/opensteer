@@ -11,7 +11,7 @@ import {
   authorizationTerminalStatuses,
   waitForAuthorizationAttempt,
 } from "../host/authorization-attempt.js";
-import { HostClientRequestError, type HostClient } from "../host/client.js";
+import { HostClientRequestError, isHostRefusal, type HostClient } from "../host/client.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "../host/host-session-client.js";
 
 /**
@@ -434,8 +434,8 @@ export class PluginSignInFlow {
     let started: PluginOAuthStart;
     try {
       const route = await launch.route();
-      const result = await this.#client.dispatch({
-        type: "plugin.authorization.begin",
+      const command = {
+        type: "plugin.authorization.begin" as const,
         idempotencyKey: mutationIdempotencyKey(`plugin-auth-begin:${choices.connection}`),
         input: {
           connection: choices.connection,
@@ -448,7 +448,14 @@ export class PluginSignInFlow {
           ...(route.finish ? { finish: route.finish } : {}),
           ...(route.appReturnPort === undefined ? {} : { appReturnPort: route.appReturnPort }),
         },
-      });
+      };
+      // An answer lost on a weak link is asked for again as the same command; the Host
+      // returns the attempt it already started.
+      const result = await this.#client
+        .dispatch(command)
+        .catch((error: unknown) =>
+          isHostRefusal(error) ? Promise.reject(error) : this.#client.dispatch(command),
+        );
       if (result.type !== "plugin.authorization.begin")
         throw new Error("The Host answered a different command.");
       started = result;

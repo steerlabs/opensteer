@@ -230,7 +230,16 @@ function setup(
     }),
   };
   const store = {
-    settings: vi.fn(async () => [...settings.values()]),
+    settings: vi.fn(async () => [...settings.values()].map(({ versionAuthors: _, ...row }) => row)),
+    versionAuthors: vi.fn(
+      async (_owner: UserId, versions: readonly { pluginId: string; version: string }[]) =>
+        new Map(
+          versions.flatMap(({ pluginId, version }) => {
+            const author = settings.get(pluginId)?.versionAuthors[version];
+            return author ? [[`${pluginId}\u0000${version}`, author] as const] : [];
+          }),
+        ),
+    ),
     setAccess: vi.fn(
       async (_owner: UserId, pluginId: string, access: "all" | "read-only" | "off") => {
         settings.set(pluginId, {

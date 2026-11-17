@@ -11,6 +11,8 @@ import type { PluginExecutions } from "../../plugins/plugin-executions.js";
 import type { LocalProviders } from "../../plugins/local-providers.js";
 import { operations, type PluginConsent, type PluginInput } from "../../plugins/engine-protocol.js";
 import { keysetPage } from "../../plugins/keyset-page.js";
+import { engineInstallReceipt } from "../../plugins/engine-storage.js";
+import { pluginNamespace } from "../../plugins/provider-names.js";
 
 export class PluginToolHandlers {
   readonly options: {
@@ -132,25 +134,18 @@ export class PluginToolHandlers {
     const context = this.options.authority.admit(c.caller);
     await this.options.authority.assert(context, "install", c.input.pluginId);
     const i = c.input;
-    const input = operations.install.input.parse({
-      ...(i.source === "folder"
-        ? {
-            ...(await this.options.folder(c.caller, z.string().min(1).parse(i.directory))),
-            ...(i.pluginId ? { plugin: i.pluginId } : {}),
-            ...(i.name ? { name: i.name } : {}),
-          }
-        : i.source === "catalog"
-          ? { kind: "catalog", id: i.catalogId }
-          : { kind: i.source, url: i.url, name: i.name }),
-      key: JSON.stringify([
-        c.caller.userId,
-        c.caller.key,
-        "opensteer_plugin_install",
-        c.operationKey,
-      ]),
-    });
-    await c.checkLive?.();
-    const result = await this.options.service.install(input, context, c.signal);
+    const key = JSON.stringify([
+      c.caller.userId,
+      c.caller.key,
+      "opensteer_plugin_install",
+      c.operationKey,
+    ]);
+    // A repeat answers from its receipt before the folder is read, so a moved draft cannot hide it.
+    const receipt =
+      i.source === "folder" ? await engineInstallReceipt(this.options.store.database, key) : null;
+    const result = receipt
+      ? installedView(operations.install.output.parse(receipt))
+      : await this.#install(c, context, key);
     if (result.status === "installed")
       await this.options.settings.recordInstall(
         c.caller.userId,
@@ -167,6 +162,27 @@ export class PluginToolHandlers {
           }
         : {}),
     };
+  }
+  async #install(
+    c: ToolCall<"opensteer_plugin_install">,
+    context: ReturnType<PluginAuthority["admit"]>,
+    key: string,
+  ) {
+    const i = c.input;
+    const input = operations.install.input.parse({
+      ...(i.source === "folder"
+        ? {
+            ...(await this.options.folder(c.caller, z.string().min(1).parse(i.directory))),
+            ...(i.pluginId ? { plugin: i.pluginId } : {}),
+            ...(i.name ? { name: i.name } : {}),
+          }
+        : i.source === "catalog"
+          ? { kind: "catalog", id: i.catalogId }
+          : { kind: i.source, url: i.url, name: i.name }),
+      key,
+    });
+    await c.checkLive?.();
+    return this.options.service.install(input, context, c.signal);
   }
   async export(c: ToolCall<"opensteer_plugin_export">) {
     const context = this.options.authority.admit(c.caller);
@@ -203,12 +219,14 @@ export class PluginToolHandlers {
     const owner = { caller: "personal", mode: "automatic" as const };
     const consent = await this.options.service.reviewAccountLink(target, owner, c.signal);
     const detail = await this.options.service.detail({ plugin: target.plugin }, owner, c.signal);
-    const provenance = (await this.options.settings.settings(caller.userId)).find(
-      (s) => s.pluginId === target.plugin,
-    );
+    const version = detail.plugin.activeVersion;
     const author =
-      (detail.plugin.activeVersion
-        ? provenance?.versionAuthors[detail.plugin.activeVersion]
+      (version
+        ? (
+            await this.options.settings.versionAuthors(caller.userId, [
+              { pluginId: target.plugin, version },
+            ])
+          ).get(`${target.plugin}\u0000${version}`)
         : undefined) ?? "agent";
     await this.options.authority.assert(context, "account-request", target.plugin);
     const created = await this.options.store.requests.create({
@@ -333,8 +351,18 @@ export class PluginToolHandlers {
         };
       },
       plugin_skills: (c) => o.service.skills(c.input, o.authority.admit(c.caller), c.signal),
-      plugin_resources: (c) =>
-        o.service.resourcesRead(c.input, o.authority.admit(c.caller), c.signal),
+      // The person's own agent reads its plugins' outputs across tasks; an external connection,
+      // or any caller of a plugin turned off, reads what ran, when and how it ended.
+      plugin_resources: async (c) => {
+        const access = (await o.settings.settings(c.caller.userId)).find(
+          (s) => s.pluginId === c.input.pluginId,
+        )?.access;
+        return o.service.resourcesRead(
+          { ...c.input, outputs: c.caller.kind !== "connection" && access !== "off" },
+          o.authority.admit(c.caller),
+          c.signal,
+        );
+      },
       opensteer_plugin_resource_update: async (c) => {
         await c.checkLive?.();
         const result = await o.service.resourcesUpdate(
@@ -384,4 +412,11 @@ export class PluginToolHandlers {
     for (const name of Object.keys(handlers) as (keyof AgentToolHandlers)[]) scope(name);
     return handlers;
   }
+}
+
+/** A saved install result as the engine answers it, with the plugin's namespaced slug. */
+function installedView(result: z.infer<typeof operations.install.output>) {
+  return result.status === "installed"
+    ? { ...result, plugin: { ...result.plugin, slug: pluginNamespace(result.plugin.slug) } }
+    : result;
 }
