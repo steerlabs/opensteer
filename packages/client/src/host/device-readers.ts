@@ -3,23 +3,27 @@ import {
   DeviceIntegrationConnectionSummaryViewSchema,
   DeviceComputerAppSetupRequestViewSchema,
 } from "@opensteer/integration-core";
-import { hostApi } from "@opensteer/protocol";
+import {
+  ComputerAppSetupListResponseSchema,
+  IntegrationDashboardResponseSchema,
+  hostApi,
+} from "@opensteer/protocol";
 
 const connections = z
   .array(
     z.union([
       DeviceIntegrationConnectionSummaryViewSchema,
-      hostApi["integrations.get"].success.shape.connections.element,
+      IntegrationDashboardResponseSchema.shape.connections.element,
     ]),
   )
   .max(1000);
-const dashboard = hostApi["integrations.get"].success.extend({ connections });
-const setup = hostApi["integration.computer.setup.list"].success.extend({
+const dashboard = IntegrationDashboardResponseSchema.extend({ connections });
+const setup = ComputerAppSetupListResponseSchema.extend({
   requests: z
     .array(
       z.union([
         DeviceComputerAppSetupRequestViewSchema,
-        hostApi["integration.computer.setup.list"].success.shape.requests.element,
+        ComputerAppSetupListResponseSchema.shape.requests.element,
       ]),
     )
     .max(1000),
