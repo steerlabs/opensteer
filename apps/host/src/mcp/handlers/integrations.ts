@@ -249,21 +249,24 @@ export class IntegrationToolHandlers {
         signal,
       );
     } catch (error) {
-      const inventory = await this.#platform.listDiscoveryInventory({
-        ...discoveryRequester(scope),
-        target: {
-          connectionId: callable.grant.connectionId,
-          access:
-            integrationToolEffect(callable.tool.annotations) === "read" ? "read" : "read-write",
-        },
-      });
-      const entry = inventory.find(
-        ({ installation }) => installation.id === callable.installation.id,
-      );
-      const readiness = entry?.readiness.servers.find(
-        ({ serverId }) => serverId === callable.server.id,
-      );
-      const blocked = integrationBlocked(readiness, callable.installation.name);
+      const blocked = await this.#platform
+        .listDiscoveryInventory({
+          ...discoveryRequester(scope),
+          target: {
+            connectionId: callable.grant.connectionId,
+            access:
+              integrationToolEffect(callable.tool.annotations) === "read" ? "read" : "read-write",
+          },
+        })
+        .then((inventory) =>
+          integrationBlocked(
+            inventory
+              .find(({ installation }) => installation.id === callable.installation.id)
+              ?.readiness.servers.find(({ serverId }) => serverId === callable.server.id),
+            callable.installation.name,
+          ),
+        )
+        .catch(() => undefined);
       if (blocked) {
         if (error instanceof IntegrationAuthorizationRequiredError)
           throw new ToolBlockedError(blocked);

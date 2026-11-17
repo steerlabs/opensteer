@@ -794,6 +794,52 @@ describe("Opensteer MCP integration access classes", () => {
     });
   });
 
+  it("keeps the original failure when its readiness recheck fails", async () => {
+    const entry = inventoryEntry({ readinessCode: "REAUTHORIZATION_REQUIRED" });
+    const callable = callableTool({
+      entry,
+      effect: "write",
+      name: "issues.create",
+      title: "Create issue",
+    });
+    const { handler, store } = await createHarness({
+      inventory: [entry],
+      callableTools: [callable],
+      callTool: vi.fn(async () => {
+        throw new OpensteerError({
+          code: "harness_error",
+          message: "Outcome unknown. Check whether it happened before trying again.",
+          next: "Check the issue list before retrying.",
+          retryable: false,
+        });
+      }),
+    });
+    vi.mocked(store.listDiscoveryInventory).mockRejectedValueOnce(new Error("inventory down"));
+    expect(
+      result(
+        await handler(
+          {
+            params: {
+              name: "integration_call",
+              arguments: {
+                operation: "issues.create",
+                account: callable.grant.connectionId,
+                arguments: {},
+              },
+            },
+          },
+          callExtra("uncertain-write-recheck-failed"),
+        ),
+      ),
+    ).toMatchObject({
+      error: {
+        code: "harness_error",
+        message: expect.stringContaining("Check whether it happened"),
+        next: "Check the issue list before retrying.",
+      },
+    });
+  });
+
   it("blocks computer targets for callers without a Run", async () => {
     const { handler } = await createHarness({
       inventory: [],
