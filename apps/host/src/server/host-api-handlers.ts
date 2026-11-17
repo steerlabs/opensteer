@@ -1,3 +1,9 @@
+import {
+  handlePluginOAuthCommand,
+  isPluginOAuthCommand,
+  pluginOAuthHandlers,
+} from "../plugins/plugin-oauth-routes.js";
+import type { PluginOAuthService } from "../plugins/plugin-oauth-service.js";
 import { createSettingsReadHandlers } from "./settings-read-handlers.js";
 import type { ComputerViewService } from "../computer-use/computer-view-service.js";
 import { OpensteerError, RunnerIdSchema } from "@opensteer/core";
@@ -24,7 +30,7 @@ import {
   handleIntegrationAuthorizationCommand,
   type IntegrationAuthorizationCommand,
   type IntegrationAuthorizationRpcOptions,
-} from "../integrations/integration-authorization-routes.js";
+} from "../access/integration-authorization-routes.js";
 import {
   handleIntegrationPlatformCommand,
   type IntegrationPlatformCommand,
@@ -131,6 +137,7 @@ export function createHostApiHandlers(
   ) => Promise<HostApiCommandOutput>,
   computerViews?: ComputerViewService,
   plugins?: PluginOwnerApi,
+  pluginOAuth?: PluginOAuthService,
 ): Omit<
   HostApiHandlers,
   | "personal.remoteAccess.get"
@@ -139,6 +146,7 @@ export function createHostApiHandlers(
   | `team.${string}`
 > {
   return {
+    ...pluginOAuthHandlers(pluginOAuth),
     "plugins.overview.get": async (_input, context) => {
       const machines = await coreHandlers["machines.list"]({}, context);
       if (!machines.ok) return machines;
@@ -267,6 +275,13 @@ export function createHostApiHandlers(
           ),
         );
       }
+      // Plugin account sign-in.
+      if (isPluginOAuthCommand(command))
+        return rpcSuccess(
+          hostApi["commands.dispatch"].success.parse(
+            await handlePluginOAuthCommand(pluginOAuth, command, context),
+          ),
+        );
       if (isTriggerCommand(command)) {
         const output = await handleTriggerCommand(triggers, command, context);
         return rpcSuccess(hostApi["commands.dispatch"].success.parse(output));

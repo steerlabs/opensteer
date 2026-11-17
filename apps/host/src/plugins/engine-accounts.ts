@@ -3,6 +3,8 @@ import { Effect, Option, Schema } from "effect";
 import type { SqlClient } from "effect/sql";
 import {
   AccountId,
+  AccountConnectionTargetChanged,
+  OAuthBrokerFailed,
   AppId,
   BlobKey,
   OwnerId,
@@ -39,14 +41,26 @@ const canonical = (value: unknown): string =>
   );
 
 export const migrateEngineProduct = (sql: SqlClient.SqlClient) =>
-  sql.unsafe(`
+  sql
+    .unsafe(
+      `
   CREATE TABLE IF NOT EXISTS opensteer_account_links (
     app text NOT NULL REFERENCES plugin_engine_apps(id) ON DELETE CASCADE,
     requirement text NOT NULL, scope text NOT NULL CHECK (scope IN ('app', 'user')),
     account text NOT NULL REFERENCES plugin_engine_accounts(id) ON DELETE CASCADE,
     consent text NOT NULL, created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (app, requirement, scope, account)
-  )`);
+  )`,
+    )
+    .pipe(
+      Effect.andThen(
+        sql.unsafe(`
+  CREATE TABLE IF NOT EXISTS opensteer_oauth_connections (
+    connection text PRIMARY KEY, app text NOT NULL, requirement text NOT NULL,
+    scope text NOT NULL, consent text NOT NULL, owner_user_id text, local_attempt text, account_binding jsonb
+  )`),
+      ),
+    );
 
 export function engineAccounts(options: {
   sql: SqlClient.SqlClient;
@@ -302,6 +316,116 @@ export function engineAccounts(options: {
           .map((account) => account.id),
       );
     });
+  const validateBinding = (generation: string) =>
+    sql`
+    select link.subject from public.personal_remote_account_link link
+    join public.personal_settings settings on settings.singleton_key = 'personal'
+    join public.users owner on owner.id = settings.owner_id and owner.disabled_at is null
+    where link.singleton_key = 'opensteer-account' and link.state = 'active'
+      and link.link_generation = ${generation}
+      and exists (select 1 from opensteer_oauth_connections pin where pin.owner_user_id = owner.id
+        and pin.account_binding->>'linkGeneration' = link.link_generation
+        and pin.account_binding->>'issuer' = link.issuer and pin.account_binding->>'subject' = link.subject)
+    for share of link, settings, owner
+  `.pipe(
+      Effect.flatMap((rows) =>
+        rows.length === 1
+          ? Effect.void
+          : Effect.fail(new OAuthBrokerFailed({ reason: "binding_changed" })),
+      ),
+      Effect.mapError(() => new OAuthBrokerFailed({ reason: "binding_changed" })),
+    );
+  const validateConnectionBinding = (connection: string) =>
+    Effect.gen(function* () {
+      const pins = yield* sql<{
+        owner: string;
+        binding: { issuer: string; subject: string; linkGeneration: string } | null;
+      }>`select owner_user_id as owner, account_binding as binding from opensteer_oauth_connections where connection = ${connection}`;
+      const pin = pins[0];
+      if (!pin?.owner) return yield* Effect.fail(new StorageError());
+      yield* sql.unsafe("LOCK TABLE public.personal_remote_account_link IN SHARE MODE");
+      const owners =
+        yield* sql`select owner.id from public.personal_settings settings join public.users owner on owner.id = settings.owner_id and owner.disabled_at is null where settings.singleton_key = 'personal' and owner.id = ${pin.owner} for share of settings, owner`;
+      const links = yield* sql<{
+        issuer: string;
+        subject: string;
+        generation: string;
+      }>`select issuer, subject, link_generation as generation from public.personal_remote_account_link where singleton_key = 'opensteer-account' and state = 'active' for share`;
+      const current = links[0];
+      if (
+        owners.length !== 1 ||
+        (pin.binding
+          ? !current ||
+            current.issuer !== pin.binding.issuer ||
+            current.subject !== pin.binding.subject ||
+            current.generation !== pin.binding.linkGeneration
+          : current !== undefined)
+      )
+        return yield* Effect.fail(new StorageError());
+    });
+  const pinConnection = (input: {
+    connection: string;
+    ownerUserId: string;
+    localId: string;
+    account: { issuer: string; subject: string; linkGeneration: string } | null;
+  }) =>
+    sql`update opensteer_oauth_connections set local_attempt = ${input.localId}, owner_user_id = ${input.ownerUserId}, account_binding = ${input.account === null ? null : JSON.stringify(input.account)}::jsonb where connection = ${input.connection}`.pipe(
+      Effect.as(null),
+    );
+  const connectionReview = (connection: string) =>
+    sql<{ app: string; requirement: string; scope: "app" | "user"; consent: string }>`
+    select app, requirement, scope, consent from opensteer_oauth_connections where connection = ${connection}
+  `.pipe(
+      Effect.flatMap((rows) =>
+        rows[0] ? Effect.succeed(rows[0]) : Effect.fail(new StorageError()),
+      ),
+    );
+  const prepare = (input: { plugin: string; requirement: string; scope: "app" | "user" }) =>
+    Effect.gen(function* () {
+      const sdk = yield* engine;
+      return yield* sdk[StorageHost].transaction(
+        Effect.gen(function* () {
+          yield* lock(AppId.make(input.plugin));
+          const consent = yield* review(input);
+          const connection = yield* sdk.accountConnections.create({
+            owner,
+            target: {
+              app: AppId.make(input.plugin),
+              requirement: input.requirement,
+              scope: input.scope,
+            },
+          });
+          yield* sql`insert into opensteer_oauth_connections (connection, app, requirement, scope, consent)
+        values (${connection.id}, ${input.plugin}, ${input.requirement}, ${input.scope}, ${canonical(consent)})`;
+          return {
+            connection: connection.id,
+            consent,
+            callbackProvider: Object.values(connection.provider.definition.auth).some(
+              (method) => method.type === "oauth2" && "discover" in method,
+            )
+              ? ("mcp" as const)
+              : ("plugin" as const),
+          };
+        }),
+      );
+    });
+  const reviewedConnection = (connection: string, consent?: PluginConsent) =>
+    Effect.gen(function* () {
+      const pinned = yield* connectionReview(connection);
+      const current = yield* review({
+        plugin: pinned.app,
+        requirement: pinned.requirement,
+        scope: pinned.scope,
+      });
+      if (
+        canonical(current) !== pinned.consent ||
+        (consent && canonical(consent) !== pinned.consent)
+      )
+        return yield* Effect.fail(
+          new PluginServiceError("consent-changed", "Plugin declaration changed since review"),
+        );
+      return pinned;
+    });
   const hooks: ResourceLifecycle = {
     userLinks: ({ app, subject }) =>
       subject !== owner
@@ -345,14 +469,52 @@ export function engineAccounts(options: {
     connectionCompleting: () => Effect.void,
     appCreated: (app) => (app.owner === owner ? Effect.void : Effect.fail(new StorageError())),
     appRemoving: () => Effect.void,
-    // OAuth completion must commit a reviewed link through this hook in the account adapter.
-    appAccountConnected: () => Effect.fail(new StorageError()),
+    appAccountConnected: (input) =>
+      Effect.gen(function* () {
+        const claim =
+          yield* sql`select attempt.id from public.integration_auth_attempts attempt join opensteer_oauth_connections pin on pin.local_attempt = attempt.id where pin.connection = ${input.connection} and attempt.status = 'claimed' and attempt.expires_at > clock_timestamp() for update of attempt`.pipe(
+            storage,
+          );
+        if (claim.length !== 1) return yield* Effect.fail(new StorageError());
+        yield* validateConnectionBinding(input.connection).pipe(storage);
+        const pinned = yield* connectionReview(input.connection).pipe(storage);
+        if (
+          pinned.app !== input.app ||
+          pinned.requirement !== input.requirement ||
+          pinned.scope !== input.scope
+        )
+          return yield* Effect.fail(
+            new AccountConnectionTargetChanged({ app: input.app, requirement: input.requirement }),
+          );
+        yield* link({
+          plugin: input.app,
+          requirement: input.requirement,
+          scope: input.scope,
+          account: input.account.id,
+          consent: ConsentSchema.parse(JSON.parse(pinned.consent)),
+        }).pipe(
+          Effect.mapError(
+            () =>
+              new AccountConnectionTargetChanged({
+                app: input.app,
+                requirement: input.requirement,
+              }),
+          ),
+        );
+        yield* sql`update public.integration_auth_attempts set status = 'completed', completed_at = clock_timestamp(), encrypted_payload = ${Buffer.from("erased")} where id = (select local_attempt from opensteer_oauth_connections where connection = ${input.connection}) and status = 'claimed'`.pipe(
+          storage,
+        );
+      }),
     accountCreated: (account) =>
       account.owner === owner ? Effect.void : Effect.fail(new StorageError()),
     accountRemoving: () => Effect.void,
   };
   return {
     hooks,
+    validateBinding,
+    prepare,
+    pinConnection,
+    reviewedConnection,
     accounts,
     resolved,
     review,

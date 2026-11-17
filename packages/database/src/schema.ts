@@ -1941,6 +1941,13 @@ export interface AgentConnectionTable {
 }
 
 export interface DatabaseSchema {
+  pluginOauthRecords: {
+    id: string;
+    ownerUserId: UserId;
+    expiresAt: NullableTimestamp;
+    begunAt: NullableTimestamp;
+    encryptedPayload: Buffer;
+  };
   pluginAgentSettings: {
     ownerUserId: UserId;
     pluginId: string;

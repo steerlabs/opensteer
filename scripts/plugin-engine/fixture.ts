@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { cp, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -52,6 +52,7 @@ export async function pluginFixtureRegistry(
   directory: string,
   waiting?: () => void,
   catalogFiles?: ReturnType<typeof pluginFixtureFiles>,
+  handle?: (request: IncomingMessage, response: ServerResponse) => boolean,
 ) {
   await cp(resolve("vendor/plugin-engine/apps/dist"), join(directory, "package"), {
     recursive: true,
@@ -63,6 +64,7 @@ export async function pluginFixtureRegistry(
   const tarball = await readFile(archive);
   let origin = "";
   const server = createServer((request, response) => {
+    if (handle?.(request, response)) return;
     if (request.url === "/apps") {
       response.setHeader("content-type", "application/json");
       response.end(

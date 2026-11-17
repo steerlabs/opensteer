@@ -47,6 +47,7 @@ export interface IntegrationAuthAttemptLifecycle {
     readonly flow: IntegrationAuthAttemptFlow;
     readonly id: IntegrationAuthAttemptId;
     readonly ownerUserId: UserId;
+    readonly state?: string;
     readonly payload: (state: string) => Promise<AuthorizationPayload>;
     readonly surface: IntegrationAuthAttemptSurface;
   }): Promise<{
@@ -127,6 +128,7 @@ export class DefaultIntegrationAuthAttemptLifecycle implements IntegrationAuthAt
     readonly flow: IntegrationAuthAttemptFlow;
     readonly id: IntegrationAuthAttemptId;
     readonly ownerUserId: UserId;
+    readonly state?: string;
     readonly payload: (state: string) => Promise<AuthorizationPayload>;
     readonly surface: IntegrationAuthAttemptSurface;
   }): Promise<{
@@ -135,7 +137,7 @@ export class DefaultIntegrationAuthAttemptLifecycle implements IntegrationAuthAt
     readonly launchTicket: string;
     readonly state: string;
   }> {
-    const state = randomSecret();
+    const state = input.state ?? randomSecret();
     const launchTicket = randomSecret();
     const now = this.#now();
     await this.#store.deleteExpiredAuthAttempts(now);

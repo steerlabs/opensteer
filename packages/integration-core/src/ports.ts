@@ -67,6 +67,7 @@ export type IntegrationAuthAttemptFailureReason =
   | "expired"
   | "grant-rejected"
   | "invalid-provider-response"
+  | "plugin-declaration-changed"
   | "provider-exchange-failed"
   | "provider-identity-already-connected"
   | "scope-escalation"

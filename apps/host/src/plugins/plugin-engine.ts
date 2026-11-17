@@ -7,6 +7,7 @@ import {
   callbackOperations,
   JsonSchema,
   PluginServiceError,
+  PluginBrokerError,
   type PluginOperation,
   type PluginCallback,
 } from "./engine-protocol.js";
@@ -34,7 +35,13 @@ const errorData = (error: unknown) => {
     : {
         code: "engine" as const,
         message: "Plugin engine operation failed",
-        ...(failure instanceof Error ? { tag: failure.name } : {}),
+        ...(failure !== null &&
+        typeof failure === "object" &&
+        "_tag" in failure &&
+        typeof failure._tag === "string" &&
+        /^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(failure._tag)
+          ? { tag: failure._tag }
+          : {}),
       };
 };
 const callback = <K extends PluginCallback>(
@@ -141,7 +148,9 @@ process.on("message", (raw: unknown) => {
       if (message.type === "callbackResult") pending?.resolve(message.result);
       else
         pending?.reject(
-          new PluginServiceError(message.error.code, message.error.message, message.error.tag),
+          message.error.brokerReason
+            ? new PluginBrokerError(message.error.brokerReason)
+            : new PluginServiceError(message.error.code, message.error.message, message.error.tag),
         );
       return;
     }

@@ -13,8 +13,8 @@ import {
   accountReturnPort,
   IntegrationAccountBindingSchema,
   validateIntegrationAccountBinding,
-} from "./integration-account-binding.js";
-import { integrationAuthAttemptLifetimeMilliseconds } from "./integration-auth-attempt-service.js";
+} from "../access/integration-account-binding.js";
+import { integrationAuthAttemptLifetimeMilliseconds } from "../access/integration-auth-attempt-service.js";
 import type { HostedOAuthOptions } from "./integration-service.js";
 import { randomBytes } from "node:crypto";
 import { isLoopbackHostname } from "@opensteer/core";
@@ -72,7 +72,7 @@ import {
 } from "@opensteer/core";
 import type { IntegrationPlatformStore } from "@opensteer/database";
 import { z } from "zod";
-import type { IntegrationAuthAttemptLifecycle } from "./integration-auth-attempt-service.js";
+import type { IntegrationAuthAttemptLifecycle } from "../access/integration-auth-attempt-service.js";
 import type { IntegrationConnectionConnected } from "./integration-service.js";
 import { canonicalAuthorizationRequired, type HostSessionSurface } from "../identity/auth.js";
 

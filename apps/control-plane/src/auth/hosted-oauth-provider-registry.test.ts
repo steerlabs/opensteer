@@ -17,7 +17,7 @@ const application = {
 describe("broker provider registry", () => {
   it("boots a provider absent from the catalog and derives relay availability from configuration", () => {
     const broker = new HostedOAuthBrokerService({
-      applications: [application],
+      applications: [{ ...application, placement: { hosts: ["api.example.test"] } }],
       issuer: new URL("https://accounts.example.test"),
       attemptContextEncryptionKey: Buffer.alloc(32, 4).toString("base64url"),
       store: {} as never,
@@ -25,6 +25,7 @@ describe("broker provider registry", () => {
     expect(broker.metadata()).toMatchObject({
       callbackRelayProviders: [application.provider],
       providerRevisions: { [application.provider]: 73 },
+      pluginProviders: { [application.provider]: { placement: { hosts: ["api.example.test"] } } },
       pluginOAuth: 1,
       pluginCallbackRelay: 1,
     });
@@ -52,6 +53,9 @@ describe("broker provider registry", () => {
 
   it.each([
     { revision: 0 },
+    { placement: { hosts: [] } },
+    { placement: { hosts: ["https://api.example.test"] } },
+    { placement: { hosts: ["api.example.test"], header: "authorization\r\nX-Secret" } },
     { oauth: { ...application.oauth, extraAuthorizeParams: { scope: "admin" } } },
     { clientSecret: "" },
     { allowedScopes: [] },
