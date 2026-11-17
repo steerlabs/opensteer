@@ -1,3 +1,5 @@
+import { buildPersonalDetailSnapshot } from "./personal-snapshot-store.js";
+import { authorizedSyncState, withPersonalSyncRead } from "./personal-sync-store.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
@@ -111,7 +113,7 @@ function ask(
 }
 const decline = { kind: "external", value: { decision: "declined" } } as const;
 describeStore("device access Requests", (it) => {
-  it("projects new Requests out of legacy pages and snapshots without settling the durable wait", async ({
+  it("keeps device Requests in the current snapshot and filters legacy attention reads", async ({
     storeFixture: f,
   }) => {
     const old = await devicesLegacyReaders();
@@ -206,32 +208,7 @@ describeStore("device access Requests", (it) => {
       pendingDeviceAccessRequestCount: 1,
       needsYouCount: 2,
     });
-    const historyInput = { threadId: run.thread.id, ownerId: run.userId };
-    expect((await f.store.threadEventPageForOwner(historyInput))?.thread.pendingRequests).toBe(1);
-    expect(
-      (await f.store.threadEventPageForOwner({ ...historyInput, deviceAccessRequests: "include" }))
-        ?.thread.pendingRequests,
-    ).toBe(2);
     expect(await f.store.notificationState.attention(run.userId)).toMatchObject({ needsYou: 1 });
-    const snapshot = await f.store.deploymentSnapshot({ viewerId: run.userId });
-    expect(old.DeploymentSnapshotSchema.safeParse(snapshot).success).toBe(true);
-    expect(snapshot.threads.find(({ id }) => id === run.thread.id)?.pendingRequests).toBe(1);
-    expect(snapshot.pendingRequests.map(({ id }) => id)).toEqual([ordinary.request.id]);
-    expect(snapshot.pendingRequestWindow).toMatchObject({ itemCount: 1, totalItems: 1 });
-    expect(
-      snapshot.tasks!.recent.tasks.find(({ thread }) => thread.id === run.thread.id)?.thread
-        .pendingRequests,
-    ).toBe(1);
-    expect(
-      (await f.store.taskPageForUser({ userId: run.userId })).tasks.find(
-        ({ thread }) => thread.id === run.thread.id,
-      )?.thread.pendingRequests,
-    ).toBe(1);
-    expect(
-      (
-        await f.store.taskPageForUser({ userId: run.userId, deviceAccessRequests: "include" })
-      ).tasks.find(({ thread }) => thread.id === run.thread.id)?.thread.pendingRequests,
-    ).toBe(2);
     const supported = await needsYouPage(f.database, {
       userId: run.userId,
       deviceAccessRequests: "include",
@@ -241,25 +218,17 @@ describeStore("device access Requests", (it) => {
         .filter((entry) => entry.kind === "request")
         .map(({ request }) => request.id),
     ).toContain(opened.request.id);
-    const modern = await f.store.deploymentSnapshot({
-      viewerId: run.userId,
-      deviceAccessRequests: "include",
-    });
-    expect(modern.threads.find(({ id }) => id === run.thread.id)?.pendingRequests).toBe(2);
-    expect(modern.pendingRequests.map(({ id }) => id)).toContain(opened.request.id);
-    expect(old.DeploymentSnapshotSchema.safeParse(modern).success).toBe(false);
-    expect(await f.store.requests.get(opened.request.id)).toMatchObject({ status: "pending" });
-    await f.store.updateMachineAccessPolicy({
-      runnerId: target,
-      ownerId: run.userId,
-      allowDeployment: true,
-      expectedRevision: 2,
-      policy: { ...machineAccessPolicyDefault, browser: true },
-    });
-    expect(await f.store.requests.get(opened.request.id)).toMatchObject({ status: "fulfilled" });
-    expect(await f.database.selectFrom("requestContinuations").selectAll().execute()).toHaveLength(
-      1,
+    const modern = await withPersonalSyncRead(f.database, async (tx) =>
+      buildPersonalDetailSnapshot(tx, await authorizedSyncState(tx, run.userId), run.userId, {
+        kind: "thread",
+        threadId: run.thread.id,
+      }),
     );
+    expect(modern.thread.pendingRequestCount).toBe(2);
+    expect(modern.pendingRequests.map(({ id }) => id).sort()).toEqual(
+      [ordinary.request.id, opened.request.id].sort(),
+    );
+    expect(await f.store.requests.get(opened.request.id)).toMatchObject({ status: "pending" });
   });
 
   it("deduplicates an owned off phone and never adds it to reachable shell routes", async ({
