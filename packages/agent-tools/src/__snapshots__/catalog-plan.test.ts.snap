@@ -1608,7 +1608,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "callers": [
       "run",
     ],
-    "description": "Configure a declared schedule, run it now, start or stop a workflow, or remove a webhook subscription. Read plugin_resources first for current identities; cursor paging keeps every live workflow reachable. Starting a workflow needs a unique key: reusing that key recovers the same start. Manual provider cleanup and its confirmation, scheduled approval answers, webhook secret setup and account links remain person-only.",
+    "description": "Configure a declared schedule, run it now, start or stop a workflow, or remove a webhook subscription. Read plugin_resources first for current identities; cursor paging keeps every live workflow reachable. Starting a workflow needs a unique key: reusing that key recovers the same start. Manual provider cleanup and its confirmation, scheduled approval settings and answers, webhook secret setup and account links remain person-only.",
     "input": {
       "$defs": {
         "__schema0": {
@@ -1653,13 +1653,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
               "properties": {
                 "action": {
                   "const": "schedule.configure",
-                  "type": "string",
-                },
-                "approvalMode": {
-                  "enum": [
-                    "browser",
-                    "automatic",
-                  ],
                   "type": "string",
                 },
                 "enabled": {
