@@ -178,7 +178,7 @@ function LocalToolContent({ tool }: { readonly tool: PluginLocalToolView }) {
               <span className="card__row-title">{manage.label}</span>
               <span className="card__row-detail">
                 {manage.kind === "device"
-                  ? "What this computer lets agents read and change"
+                  ? "What this device lets agents read and change"
                   : "Where it runs, its launch review and secrets"}
               </span>
             </span>

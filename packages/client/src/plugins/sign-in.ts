@@ -81,18 +81,12 @@ export function pluginSignInChoices(
     const scopes = strings(setup.scopes);
     const base = { method: entry.method, review: entry.review, scopes };
     if (entry.oneClick) {
-      const firstParty =
-        setup.firstParty && typeof setup.firstParty === "object" && !Array.isArray(setup.firstParty)
-          ? text(setup.firstParty.label)
-          : null;
       options.push({
         ...base,
         key: `${entry.method}:one-click`,
         kind: "one-click",
         label: `Sign in with ${providerName}`,
-        detail: firstParty
-          ? `Uses ${firstParty}, Opensteer's own app. The account stays on this computer.`
-          : "Uses Opensteer's own app. The account stays on this computer.",
+        detail: "Uses Opensteer's own app. The account stays on this computer.",
         client: null,
         savedApp: null,
       });
