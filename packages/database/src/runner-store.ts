@@ -3,7 +3,7 @@ import {
   lockDeviceRemovalInTransaction,
   clearRemovedDeviceStopsInTransaction,
 } from "./device-removal-store.js";
-import type { DeviceId, DeviceDriverIdentity } from "@opensteer/core";
+import { DeviceIdSchema, type DeviceId, type DeviceDriverIdentity } from "@opensteer/core";
 import { upsertSelfDeviceInTransaction, getSelfDeviceId } from "./device-inventory-store.js";
 import { isDeepStrictEqual } from "node:util";
 import { canonicalRunnerPublicKeyPem } from "@opensteer/runner-auth";
@@ -1122,7 +1122,7 @@ export async function revokeRunner(
             .where("sessionId", "in", closedBrowserSessions)
             .execute(databaseOperationOptions());
         }
-        const removals = [];
+        const removals = [await revokeComputerConnectionsInTransaction(transaction, { runnerId })];
         for (const deviceId of deviceEffects.removedDeviceIds)
           removals.push(await revokeComputerConnectionsInTransaction(transaction, { deviceId }));
         const revokedComputerConnections = {
@@ -1182,22 +1182,22 @@ export async function revokeRunner(
           reason: "resource-deleted",
           resolvedAt: revokedAt,
         });
-        if (deviceEffects.removedDeviceIds.length)
-          await transaction
-            .selectFrom("authSessions")
-            .select("id")
-            .where("deviceId", "in", deviceEffects.removedDeviceIds)
-            .orderBy("id")
-            // FOR UPDATE: These bound sessions are deleted below.
-            .forUpdate()
-            .execute();
-        const endedSessions = deviceEffects.removedDeviceIds.length
-          ? await transaction
-              .deleteFrom("authSessions")
-              .where("deviceId", "in", deviceEffects.removedDeviceIds)
-              .returning("id")
-              .execute()
-          : [];
+        const sessionTargets = [
+          ...new Set([DeviceIdSchema.parse(runnerId), ...deviceEffects.removedDeviceIds]),
+        ];
+        await transaction
+          .selectFrom("authSessions")
+          .select("id")
+          .where("deviceId", "in", sessionTargets)
+          .orderBy("id")
+          // FOR UPDATE: These bound sessions are deleted below.
+          .forUpdate()
+          .execute();
+        const endedSessions = await transaction
+          .deleteFrom("authSessions")
+          .where("deviceId", "in", sessionTargets)
+          .returning("id")
+          .execute();
         return {
           ...deviceEffects,
           endedSessionIds: endedSessions.map((row) => row.id),

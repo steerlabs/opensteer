@@ -10,7 +10,7 @@ import {
   requireDeviceSelfRunnerId,
 } from "./device-inventory-store.js";
 import { deviceOwnershipIn } from "./machine-ownership.js";
-import { isPhoneDisplayDefinitionId, type DeviceId } from "@opensteer/core";
+import { DeviceIdSchema, isPhoneDisplayDefinitionId, type DeviceId } from "@opensteer/core";
 import {
   lockDeploymentEvents,
   withPersonalReadTransaction,
@@ -520,7 +520,8 @@ export interface UninstallIntegrationMutation {
 export type RevokeComputerConnectionSelector =
   | { readonly connectionId: IntegrationConnectionId; readonly ownerUserId: UserId }
   | { readonly installationId: IntegrationInstallationId }
-  | { readonly deviceId: DeviceId };
+  | { readonly deviceId: DeviceId }
+  | { readonly runnerId: RunnerId };
 
 /** What a removal took back, so a caller can end the sessions that were using it. */
 export interface RemovedComputerApp {
@@ -571,6 +572,8 @@ export async function revokeComputerConnectionsInTransaction(
       .where("integrationConnections.ownerUserId", "=", selector.ownerUserId);
   } else if ("deviceId" in selector) {
     query = query.where(computerConnectionDeviceId, "=", selector.deviceId);
+  } else if ("runnerId" in selector) {
+    query = query.where("integrationConnections.runnerId", "=", selector.runnerId);
   } else {
     query = query.where("integrationServers.installationId", "=", selector.installationId);
   }
@@ -604,9 +607,10 @@ export async function revokeComputerConnectionsInTransaction(
   // the whole-computer and whole-installation selectors are wider than one
   // `(deviceId, definitionId, appKey)`.
   const revokedSetupRequestIds = await (async (): Promise<readonly string[]> => {
-    if ("deviceId" in selector) {
+    if ("deviceId" in selector || "runnerId" in selector) {
       return deleteComputerAppSetupRequestsInTransaction(transaction, {
-        deviceId: selector.deviceId,
+        deviceId:
+          "deviceId" in selector ? selector.deviceId : DeviceIdSchema.parse(selector.runnerId),
       });
     }
     if ("installationId" in selector) {
