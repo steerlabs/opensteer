@@ -33,6 +33,14 @@ test("wakes independent device generations after a PostgreSQL resource-only comm
           ...(cursor ? { cursor } : {}),
           snapshot: (tx, state) => buildPersonalShellSnapshot(tx, state, run.userId, run.threadId),
         });
+        const shellProgress = {
+          counts: {
+            pendingRequestCount: cut.state.pendingRequestCount,
+            needsYouCount: cut.state.needsYouCount,
+            unreadTaskCount: cut.state.unreadTaskCount,
+          },
+          resourceRevisions: cut.state.resourceRevisions,
+        };
         const throughSequence = cut.state.sequence;
         const next = {
           deploymentId: cut.state.deploymentId,
@@ -45,12 +53,14 @@ test("wakes independent device generations after a PostgreSQL resource-only comm
           return {
             throughSequence,
             cursor: next,
+            shellProgress,
             frames: [{ type: "host.snapshot", scope, throughSequence, snapshot: cut.snapshot }],
           };
         if (cut.kind === "replay")
           return {
             throughSequence,
             cursor: next,
+            shellProgress,
             frames: cut.commits.map((change) => ({
               ...change,
               type: "host.changes" as const,

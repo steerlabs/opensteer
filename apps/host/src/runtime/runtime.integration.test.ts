@@ -552,7 +552,7 @@ integration("Host vertical slice", () => {
     expect(welcome).toMatchObject({ connectionGeneration: 2, runnerId, type: "host.welcome" });
   });
 
-  it("converges after Runner invalidation's first catalog recapture fails", async () => {
+  it("refreshes a catalog after Runner invalidation's first recapture fails", async () => {
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-invalidation-recovery-"));
     const hostPort = await freePort();
     runtime = await createHostRuntime(
@@ -655,26 +655,15 @@ integration("Host vertical slice", () => {
     );
     await expect.poll(() => capture.mock.calls.length, { timeout: 10_000 }).toBeGreaterThan(0);
     expect(await catalogs()).toEqual([]);
-    const heartbeat = setInterval(
-      () =>
-        runnerSocket?.send(
-          JSON.stringify({
-            ...fence,
-            activeRunIds: [],
-            activeTriggerOccurrenceIds: [],
-            activeWatchActivationIds: [],
-            sentAt: new Date().toISOString(),
-            type: "runner.heartbeat",
-          }),
-        ),
-      5_000,
-    );
     try {
-      await expect
-        .poll(async () => (await catalogs())[0]?.catalog.status, { interval: 250, timeout: 45_000 })
-        .toBe("ready");
+      await testRpcData(
+        `http://127.0.0.1:${hostPort}`,
+        "harness.catalog.refresh",
+        { environmentId, harnessInstanceId: stored.harnessInstanceId },
+        { headers: authorization(accessToken) },
+      );
+      expect((await catalogs())[0]?.catalog.status).toBe("ready");
     } finally {
-      clearInterval(heartbeat);
       stopCatalogResponder();
     }
     const artifactDirectory =
