@@ -4,7 +4,7 @@ import { act, type ReactElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
-import type { HostClient, HostSnapshot } from "@opensteer/client/host";
+import type { HostClient, TranscriptFixtureSnapshot } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { tabStoreFixture } from "@opensteer/client/test-support";
 import { headerFontScaleLimit } from "../theme.js";
@@ -329,7 +329,7 @@ async function world(options: { readonly automations?: "absent" } = {}) {
       return () => release();
     },
     snapshot: () => current,
-    move(next: HostSnapshot) {
+    move(next: TranscriptFixtureSnapshot) {
       act(() => {
         current = next;
         listeners.forEach((listener) => listener());

@@ -3537,30 +3537,27 @@ describe("MobileClient other computers' attention", () => {
       }),
     );
 
-  it.each([false, true])(
-    "opts raw attention into device Requests only after capability verification (%s)",
-    async (devices) => {
-      const input = vi.fn(async () => ({ ok: true, data: { needsYou: 1, unread: false } }));
-      const port = testPort({
-        held: true,
-        verification: { status: "compatible", capabilities: devices ? ["devices-v1"] : [] },
-        configureClient: (host) => {
-          Object.defineProperty(host, "rpc", {
-            value: new Proxy(host.rpc, {
-              get: (rpc, key) => (key === "attention.get" ? input : Reflect.get(rpc, key)),
-            }),
-          });
-        },
-      });
-      const { client } = open(port.factory);
-      await client.catalog.upsertAndSelect(connectComputer(1));
-      await client.catalog.upsert(otherComputer());
-      await client.initialize();
-      await client.readAttention(otherId);
-      expect(input).toHaveBeenCalledWith(devices ? { deviceAccessRequests: "include" } : {});
-      client.dispose();
-    },
-  );
+  it.each([false, true])("reads scoped attention for a verified computer (%s)", async (devices) => {
+    const input = vi.fn(async () => ({ ok: true, data: { needsYou: 1, unread: false } }));
+    const port = testPort({
+      held: true,
+      verification: { status: "compatible", capabilities: devices ? ["devices-v1"] : [] },
+      configureClient: (host) => {
+        Object.defineProperty(host, "rpc", {
+          value: new Proxy(host.rpc, {
+            get: (rpc, key) => (key === "attention.get" ? input : Reflect.get(rpc, key)),
+          }),
+        });
+      },
+    });
+    const { client } = open(port.factory);
+    await client.catalog.upsertAndSelect(connectComputer(1));
+    await client.catalog.upsert(otherComputer());
+    await client.initialize();
+    await client.readAttention(otherId);
+    expect(input).toHaveBeenCalledWith({});
+    client.dispose();
+  });
 
   it("reads another computer once, leaves the selection alone, and never reads the shown one", async () => {
     const port = testPort({ held: true });

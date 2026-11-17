@@ -13,7 +13,7 @@ import {
   taskAfter,
   taskList,
   taskUnderWay,
-  type HostSnapshot,
+  type TranscriptFixtureSnapshot,
   type TaskRow,
 } from "@opensteer/client/host";
 import {
@@ -50,7 +50,7 @@ import {
 } from "./workspace.interaction.test-support.js";
 import { composerText, rewrite } from "../composer-editor.test-support.js";
 /** The task that handed work to another, which the mock's family and task line belong to. */
-function delegating(source: { getSnapshot(): HostSnapshot }): string {
+function delegating(source: { getSnapshot(): TranscriptFixtureSnapshot }): string {
   const assignment = Object.values(source.getSnapshot().assignments)[0];
   if (!assignment) throw new Error("The mock hands out no work");
   return assignment.parentThreadId;
@@ -434,7 +434,7 @@ describe("the Needs you pill", () => {
       };
       const getSnapshot = source.getSnapshot.bind(source);
       const page = getSnapshot().needsYou!;
-      let current: HostSnapshot = {
+      let current: TranscriptFixtureSnapshot = {
         ...getSnapshot(),
         needsYou: { ...page, count: page.count + 1, window: { ...page.window, hasMore: true } },
       };
@@ -518,7 +518,7 @@ describe("sidebar Tasks until Done", () => {
   });
 
   it("moves on to the next task when the open one is marked Done, and stays for any other", async () => {
-    const doable = (snapshot: HostSnapshot) => {
+    const doable = (snapshot: TranscriptFixtureSnapshot) => {
       const list = taskList(snapshot);
       return [...list.working, ...list.ready].filter(
         (item) => item.canBeDone && !taskUnderWay(heldThread(snapshot, item.threadId)!),
@@ -917,8 +917,8 @@ describe("a channel and back", () => {
     await mount((source) => {
       const missingId = createId("thread");
       const read = source.getSnapshot.bind(source);
-      let held: HostSnapshot | null = null;
-      let published: HostSnapshot | null = null;
+      let held: TranscriptFixtureSnapshot | null = null;
+      let published: TranscriptFixtureSnapshot | null = null;
       vi.spyOn(source, "getSnapshot").mockImplementation(() => {
         const next = read();
         if (next !== held) {
@@ -990,8 +990,8 @@ describe("a channel and back", () => {
           channelId: mockTeamChannelId,
           threadRootId: TeamMessageIdSchema.parse("1"),
         };
-        let held: HostSnapshot | null = null,
-          published: HostSnapshot | null = null;
+        let held: TranscriptFixtureSnapshot | null = null,
+          published: TranscriptFixtureSnapshot | null = null;
         Object.defineProperty(source, "getSnapshot", {
           value: () => {
             const snapshot = originalRead();

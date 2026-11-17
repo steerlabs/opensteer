@@ -160,7 +160,7 @@ test.each([false, true])(
     const client = new HttpHostClient({
       baseUrl: "http://composition.test",
       capabilities: ["browser-target-control-v1"],
-      refreshIntervalMs: 0,
+
       webSocketFactory: (url) => {
         const socket = new Socket();
         sockets.push({ url, socket });

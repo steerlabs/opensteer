@@ -1,6 +1,7 @@
 import type { ClientLifecycle, HttpHostClientOptions } from "@opensteer/client/host";
 import {
   HttpHostClient,
+  createPersonalStreamCache,
   type BrowserPreferencesStorage,
   type WebSocketClient,
 } from "@opensteer/client/host";
@@ -30,14 +31,27 @@ export interface BrowserHostClientOptions {
  * so this is the one place the web app hands them over.
  */
 export function createBrowserHostClient(options: BrowserHostClientOptions): HttpHostClient {
+  const baseUrl = options.baseUrl ?? window.location.origin;
+  const key = `opensteer.personal-stream.v62:${new URL(baseUrl).origin}`;
+  const streamCache = createPersonalStreamCache({
+    exists: async () => window.sessionStorage.getItem(key) !== null,
+    read: async () => window.sessionStorage.getItem(key),
+    write: async (state, isCurrent) => {
+      if (isCurrent()) window.sessionStorage.setItem(key, state);
+    },
+    remove: async () => {
+      window.sessionStorage.removeItem(key);
+    },
+  });
   return new HttpHostClient({
     ...(options.assetRoute ? { assetRoute: options.assetRoute } : {}),
     ...(options.desktopMedia ? { desktopMedia: true } : {}),
-    deviceAccessRequests: "include",
+
     ...(options.passkeys ? { passkeys: options.passkeys } : {}),
     ...(options.iphoneSetup ? { iphoneSetup: options.iphoneSetup } : {}),
     capabilities: options.capabilities ?? null,
-    baseUrl: options.baseUrl ?? window.location.origin,
+    baseUrl,
+    streamCache,
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.bufferedResponses === undefined
       ? {}

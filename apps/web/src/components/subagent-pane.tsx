@@ -1,3 +1,4 @@
+import { useThreadTranscript } from "@opensteer/client/react";
 import {
   Suspense,
   lazy,
@@ -92,9 +93,14 @@ export function SubagentPane({
   threadTitle: string;
 }) {
   const { hostClient, snapshot: shown } = useShell();
+  const { entries } = useThreadTranscript(hostClient, threadId);
   const snapshot = useMemo(
-    () => (live ? shown : { ...shown, connection: "offline" as const }),
-    [live, shown],
+    () => ({
+      ...shown,
+      connection: live ? shown.connection : ("offline" as const),
+      transcripts: { [threadId]: entries },
+    }),
+    [entries, live, shown, threadId],
   );
   const { detail, watch } = useNodeDetail(hostClient, threadId, nodeId);
   const summary =
@@ -493,10 +499,11 @@ function PaneFooter({
   threadId: string;
   view: SubagentDetail;
 }) {
-  const { snapshot } = useShell();
+  const { hostClient } = useShell();
+  const { requests } = useThreadTranscript(hostClient, threadId);
   const engine = useContext(AgentEngine);
   const { card } = view;
-  const items = useDockedRequests(threadId, snapshot.requests[threadId] ?? noRequests, false);
+  const items = useDockedRequests(threadId, requests, false);
   const own = card.requestId
     ? items.filter((item) => item.surface.request.id === card.requestId)
     : [];
@@ -537,5 +544,3 @@ function PaneFooter({
     </div>
   );
 }
-
-const noRequests: readonly never[] = [];

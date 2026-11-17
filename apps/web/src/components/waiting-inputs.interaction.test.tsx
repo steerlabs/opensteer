@@ -228,7 +228,7 @@ async function press(target: Pick<Element, "dispatchEvent">, key: string) {
 
 describe("WaitingInputs", () => {
   it("keeps one image read when a queued message is taken before download finishes", async () => {
-    const client = new HttpHostClient({ baseUrl: "http://127.0.0.1", refreshIntervalMs: 0 });
+    const client = new HttpHostClient({ baseUrl: "http://127.0.0.1" });
     const bytes = {
       ok: true as const,
       data: {

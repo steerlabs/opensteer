@@ -12,40 +12,18 @@ that returns Connect app origins ships. The Account never hosts a person's Deplo
 
 ## API compatibility
 
-Phones, Agent Phones, Runners, open windows, personal Opensteer and team servers update on their
-own schedules, so each API is a window, not an exact match
-([authority.ts](../packages/deployment-authority/src/authority.ts)). Refusing a peer is the last
-resort: a person whose phone updated before their Mac loses their Mac.
+Personal clients and personal Opensteer use the same exact API version. Personal v62
+attaches shell and the selected conversation on one socket. Each scope can
+resume from a complete checkpoint for the same Deployment, viewer and epoch.
+A scope whose checkpoint is missing, expired or invalid gets a fresh snapshot
+on that socket. The Host rechecks the session and scope before delivering state.
 
-- Each side has a current version and the oldest it still serves. A personal caller states both
-  (`x-opensteer-api-version` carries its minimum, `x-opensteer-api-current` its current; a socket
-  carries them in its URL) and is served the lower of the two current versions while the windows
-  overlap. A personal descriptor advertises the Host's minimum as `apiVersion` and its current as
-  `currentApiVersion`. A peer from before the window states and advertises one version, which the
-  minimum fields keep matching while the minimum holds. A team peer states only its current
-  version and serves any peer at or above its own minimum; a newer team peer adapts down.
-- Changes are additive by default and keep the version: new commands, reads, optional fields, and
-  frame types, union members and enum values a reader is never sent. A Host parses requests
-  strictly; replies and frames are read tolerantly where a reader can be. A personal realtime
-  reader does not skip a frame it cannot read, it resubscribes to repair it, so a Host sends a new
-  personal frame type, member or value only to callers that ask for it or are new enough to read
-  it. Two things stay strict everywhere: signed discovery documents, and inputs whose
-  dropped field would change an answer or authorize something, such as an approval of words a
-  person never saw. An older caller is refused that one operation, never the connection.
-- Move a current version only for a change an older peer would misread, and then serve older
-  callers the shape they read; the personal [wire guard](../packages/protocol/src/personal-wire.test.ts)
-  compares every personal schema with the one recorded at the minimum. Bootstrap tells a caller
-  the version it is served before it reads any state, and each realtime sync names the version its
-  state was read at; saved state read at another version is replaced by a snapshot, never resumed
-  or refused.
-- Raise a minimum only for a security reason or once published Stable already speaks the new
-  minimum; the [Stable floor guard](../.github/scripts/ci-stable-api.mjs) enforces both, and an
-  exception needs an explicit guard change and Tim's approval.
-- A refusal names the side that is behind: "Update Opensteer" for the app or personal Opensteer,
-  and the team server for a team below a peer's minimum.
+Team peers continue to state their current version and serve peers at or above
+their minimum. A newer team peer adapts down. The team wire guard records the
+schemas each team reader understands. [Team wire guard](../packages/protocol/src/team-wire.test.ts)
 
-[The team wire guard](../packages/protocol/src/team-wire.test.ts) holds a snapshot of every team
-schema as its reader parses it and fails on a non-additive change unless the version moves.
+The Stable floor guard enforces release compatibility. Personal v62 is an
+explicit cutover that requires a coordinated upgrade. [Stable floor guard](../.github/scripts/ci-stable-api.mjs)
 
 ## Route selection and lifetime
 
@@ -60,16 +38,15 @@ sockets, but a fence-closed socket still reports its close so its owner can reco
 
 An ordinary RPC failure is an operation error, not evidence the Deployment is offline. Timeouts
 abort without replay, cancellation wins, and an authentication refusal acts when headers arrive.
-Availability follows bootstrap, authentication, network and realtime; cancellation and stale fences
-never claim the Host was unreachable. Deadlines and size limits live in the transport.
+Availability follows the shell subscription, authentication, network and realtime.
+Cancellation and stale fences never claim the Host was unreachable. Deadlines and size limits live in the transport.
 
 ## What a person is told
 
-Brief reconnects keep the Connected presentation and resume from the cursor, while answering
-Requests still needs a synchronized Host. Hidden surfaces must not accrue outage time. Report
-connection state without moving content. The personal event stream decides the personal
-connection; team transports retry quietly and independently.
-[The lifecycle](../packages/client/src/host/lifecycle.ts) owns presentation timing.
+The personal shell decides the connection state. Conversation actions need a
+synchronized detail scope. Backgrounded clients release detail subscriptions
+and resume the scopes their foreground views still observe. The team transport
+retries independently.
 
 A phone can report the same network path after an actual move. Probe unchanged paths before
 replacing sockets; a failed probe invalidates the whole path.

@@ -157,7 +157,7 @@ it("uses authorized hidden-worker events on the real page and HTTP client, ignor
   const read = vi.fn(() => ({ ...seed, anchorThread: worker }));
   http = new HttpHostClient({
     baseUrl: "http://127.0.0.1",
-    refreshIntervalMs: 0,
+
     reconnectBaseDelayMs: 1,
     reconnectMaxDelayMs: 1,
     fetch: async (input) => {

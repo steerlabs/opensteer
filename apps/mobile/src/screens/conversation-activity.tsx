@@ -1,3 +1,4 @@
+import { useThreadTranscript } from "@opensteer/client/react";
 import { TranscriptImageContext } from "@opensteer/client/react";
 import {
   conversationActivityTurn,
@@ -85,18 +86,15 @@ function useRunLoad(
   threadId: string,
   run: { readonly anchorMessageId: string; readonly runId: string } | null,
   found: boolean,
+  synchronized: boolean,
 ): { readonly state: RunLoad; readonly retry: () => void } {
   const [state, setState] = useState<RunLoad>(run === null || found ? "loaded" : "loading");
   const [attempt, setAttempt] = useState(0);
   const foundNow = useRef(found);
   foundNow.current = found;
-  useEffect(
-    () => (run === null ? undefined : hostClient.observeThread(threadId)),
-    [hostClient, run, threadId],
-  );
   const anchor = run?.anchorMessageId ?? null;
   useEffect(() => {
-    if (anchor === null || foundNow.current) return;
+    if (!synchronized || anchor === null || foundNow.current) return;
     let current = true;
     setState("loading");
     hostClient.loadTranscriptAround(threadId, anchor).then(
@@ -106,7 +104,7 @@ function useRunLoad(
     return () => {
       current = false;
     };
-  }, [anchor, attempt, hostClient, threadId]);
+  }, [anchor, attempt, hostClient, synchronized, threadId]);
   return { state, retry: () => setAttempt((count) => count + 1) };
 }
 
@@ -123,7 +121,7 @@ function ReplyActivity(props: {
   const { snapshot } = useHostSnapshot(hostClient);
   const queue = useThreadInputQueue(hostClient, threadId);
   const thread = snapshot.threads.find(({ id }) => id === threadId) ?? null;
-  const entries = snapshot.transcripts[threadId];
+  const { entries, synchronized } = useThreadTranscript(hostClient, threadId);
   const inputQueuePaused = thread?.inputQueuePaused ?? false;
   // The conversation's own turns, so a key its rows hand over finds its reply.
   const groups = useMemo(
@@ -149,7 +147,7 @@ function ReplyActivity(props: {
       ),
     [groups, run, turnKey],
   );
-  const load = useRunLoad(hostClient, threadId, run, activity !== null);
+  const load = useRunLoad(hostClient, threadId, run, activity !== null, synchronized);
   const environment = snapshot.environments.find(({ id }) => id === thread?.environmentId);
   const engine = threadEngine(snapshot, threadId);
   const live = showsHostLive(snapshot) && environment?.status === "connected";

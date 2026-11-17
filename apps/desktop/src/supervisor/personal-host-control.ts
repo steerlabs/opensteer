@@ -13,7 +13,6 @@ import {
   PersonalHostAccountUnlinkStepRequestSchema,
   ResumePersonalHostAccountLinkRequestSchema,
   PublishPersonalConnectProjectionRequestSchema,
-  type hostApi,
   type HostApiClient,
   type ConfigurePersonalRemoteAccessRequest,
   type PublishPersonalConnectProjectionRequest,
@@ -122,8 +121,6 @@ export class PersonalHostBootstrapRefusedError extends Error {
     this.name = "PersonalHostBootstrapRefusedError";
   }
 }
-
-type PersonalHostBootstrap = z.output<(typeof hostApi)["bootstrap.get"]["success"]>;
 
 const personalVersionHeaders = apiVersionHeaders("personal");
 
@@ -273,7 +270,10 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     signal: AbortSignal,
   ): Promise<void> {
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
-    await this.#readBootstrap(deploymentId, origin, signal);
+    const result = await this.#withDeadline(signal, (deadline) =>
+      this.#hostApi(deploymentId, origin)["personal.shell.get"]({}, { signal: deadline }),
+    );
+    if (!result.ok) throw bootstrapRefusal(result.error);
   }
 
   async claimOwner(
@@ -303,10 +303,11 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     const environmentId = EnvironmentIdSchema.parse(environmentIdInput);
     const runnerId = RunnerIdSchema.parse(runnerIdInput);
     while (true) {
-      const snapshot = await this.#pollBootstrap(deploymentId, origin, signal);
-      const environment = snapshot?.environments.find(
-        (candidate) => candidate.id === environmentId,
-      );
+      const resource = await this.#pollResource(deploymentId, origin, "environment", signal);
+      const environment =
+        resource?.kind === "environment"
+          ? resource.environments.find((candidate) => candidate.id === environmentId)
+          : undefined;
       if (environment?.connected && environment.runnerId === runnerId) return;
       await delay(this.#pollIntervalMs, signal);
     }
@@ -323,12 +324,13 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     const environmentId = EnvironmentIdSchema.parse(environmentIdInput);
     const runtimeId = RuntimeIdSchema.parse(runtimeIdInput);
     while (true) {
-      const snapshot = await this.#pollBootstrap(deploymentId, origin, signal);
+      const resource = await this.#pollResource(deploymentId, origin, "browser-placement", signal);
       // The environment binding is enrolled, not claimed, so readiness can
       // never be satisfied by some other connected computer that happens to
       // advertise the same runtime id.
       if (
-        snapshot?.browser.placements.some(
+        resource?.kind === "browser-placement" &&
+        resource.placements.some(
           (placement) =>
             placement.runtimeId === runtimeId &&
             placement.environmentIds.includes(environmentId) &&
@@ -347,31 +349,33 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
    * refused has already settled the question, and the refusal propagates
    * rather than becoming a wait that only the caller's abort can end.
    */
-  async #pollBootstrap(
+  async #pollResource(
     deploymentId: string,
     origin: string,
+    kind: "environment" | "browser-placement",
     signal: AbortSignal,
-  ): Promise<PersonalHostBootstrap | null> {
+  ) {
     throwIfAborted(signal, "Personal setup was cancelled.");
     try {
-      return await this.#readBootstrap(deploymentId, origin, signal);
+      return await this.#withDeadline(signal, async (deadline) => {
+        const rpc = this.#hostApi(deploymentId, origin);
+        const summary = await rpc["resources.get"]({ kind }, { signal: deadline });
+        if (!summary.ok) throw bootstrapRefusal(summary.error);
+        const detail = await rpc["resources.detail.get"](
+          { kind, expectedRevision: summary.data.revision },
+          { signal: deadline },
+        );
+        if (!detail.ok) {
+          if (detail.error.code === "conflict") return null;
+          throw bootstrapRefusal(detail.error);
+        }
+        return detail.data.data;
+      });
     } catch (error) {
       throwIfAborted(signal, "Personal setup was cancelled.");
       if (error instanceof PersonalHostBootstrapRefusedError) throw error;
       return null;
     }
-  }
-
-  async #readBootstrap(
-    deploymentId: string,
-    origin: string,
-    signal: AbortSignal,
-  ): Promise<PersonalHostBootstrap> {
-    const result = await this.#withDeadline(signal, (deadline) =>
-      this.#hostApi(deploymentId, origin)["bootstrap.get"]({}, { signal: deadline }),
-    );
-    if (result.ok) return result.data;
-    throw bootstrapRefusal(result.error);
   }
 
   #hostApi(deploymentId: string, origin: string): HostApiClient {
@@ -818,7 +822,7 @@ function bootstrapRefusal(error: {
   readonly reason?: string | undefined;
   readonly retryable: boolean;
 }): Error {
-  const message = `Personal Host refused bootstrap.get (${error.code}): ${error.message}`;
+  const message = `Personal Host refused the setup read (${error.code}): ${error.message}`;
   // A bare server fault carries no reason; every named, non-retryable failure is final.
   if (error.retryable || (error.code === "internal" && error.reason === undefined))
     return new Error(message);

@@ -1,5 +1,4 @@
 import { unwrapRpcResult } from "@opensteer/client/host";
-import { BootstrapNoticeDiagnostics } from "@opensteer/shared/bootstrapDiagnostics";
 import { forEachBoundedResponseChunk, readBoundedText } from "@opensteer/shared/boundedJson";
 import { streamBoundedResponse } from "@opensteer/shared/responseStream";
 import { ensurePrivateDirectory, setPrivateFileMode } from "@opensteer/shared/privateFiles";
@@ -169,7 +168,6 @@ export class DesktopHostTransport extends HostTransport {
   #openingBinary = 0;
   #selectedDeploymentId: DeploymentId | null = null;
   #disposed = false;
-  readonly #bootstrapDiagnostics = new BootstrapNoticeDiagnostics();
 
   constructor(options: {
     readonly catalog: Pick<
@@ -290,20 +288,6 @@ export class DesktopHostTransport extends HostTransport {
    */
   async request(input: unknown): Promise<DesktopHostHttpResponse> {
     const request = DesktopHostHttpRequestSchema.parse(input);
-    if (request.path.split("?")[0] === "/v1/rpc/bootstrap.get") {
-      const diagnostic = this.#bootstrapDiagnostics.report(request.headers.bootstrapDiagnostics);
-      if (diagnostic) {
-        try {
-          this.#log?.("host.bootstrap.loop", {
-            windowMs: diagnostic.windowMs,
-            triggers: diagnostic.triggers,
-            starts: diagnostic.starts,
-          });
-        } catch {
-          /* Diagnostics cannot prevent a read. */
-        }
-      }
-    }
     const path = request.path.split("?")[0];
     const summary =
       (path === "/v1/rpc/attention.get" && request.method === "POST") ||

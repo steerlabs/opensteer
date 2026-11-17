@@ -1,3 +1,4 @@
+import { useThreadTranscript } from "@opensteer/client/react";
 import {
   canRespondToRequests,
   samePlaceAgents,
@@ -8,7 +9,6 @@ import {
   type PlaceAgent,
   type PlaceAgents,
   type ThreadWatch,
-  type TranscriptEntry,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import * as Haptics from "expo-haptics";
@@ -152,6 +152,7 @@ export function usePlaceStatusRow(props: {
   readonly threadId: string | null;
 }): ReactNode {
   const { agents, hostClient, onAnswer, threadId } = props;
+  const transcript = useThreadTranscript(hostClient, threadId);
   const selectWatch = useCallback(
     (snapshot: HostSnapshot): ThreadWatch | null => {
       const thread =
@@ -159,13 +160,13 @@ export function usePlaceStatusRow(props: {
       return thread === undefined
         ? null
         : threadWatch({
-            entries: snapshot.transcripts[thread.id] ?? noEntries,
-            runQueue: snapshot.runQueue,
+            entries: transcript.entries,
+            runQueue: transcript.runQueue,
             thread,
             waitingRequests: snapshot.waitingRequests,
           });
     },
-    [threadId],
+    [threadId, transcript],
   );
   const watch = useHostSelector(hostClient, selectWatch, sameWatch);
   const selectStops = useCallback(
@@ -218,8 +219,6 @@ export function usePlaceStatusRow(props: {
     [agent, answer, canRespond, stop, stops, watch],
   );
 }
-
-const noEntries: readonly TranscriptEntry[] = [];
 
 function samePlaceAgent(left: PlaceAgent | null, right: PlaceAgent | null): boolean {
   return samePlaceAgents(

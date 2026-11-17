@@ -1,3 +1,4 @@
+import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import type { HostApiClient, RpcResult } from "@opensteer/protocol";
 
@@ -52,6 +53,7 @@ export function createDesktopHostApi(options: {
   return createHttpHostApiClient({
     baseUrl: new URL(origin),
     kind: "personal",
+    personalVersion: scopedPersonalApiVersion,
     fetch: (input, init) =>
       options.fetch(input, {
         ...init,

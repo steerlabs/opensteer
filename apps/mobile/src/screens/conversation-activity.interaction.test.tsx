@@ -2,7 +2,7 @@
 
 import type {
   HostClient,
-  HostSnapshot,
+  TranscriptFixtureSnapshot,
   MessageEntry,
   ReasoningEntry,
   RunEntry,
@@ -269,7 +269,7 @@ const preambleB = wrote("Drafting it now.", runB);
 const draftingB = command(runB, "draft note", true);
 const replying: TranscriptEntry[] = [...answered, askB, ran(runB), preambleB, draftingB];
 
-function snapshotWith(entries: readonly TranscriptEntry[]): HostSnapshot {
+function snapshotWith(entries: readonly TranscriptEntry[]): TranscriptFixtureSnapshot {
   return {
     ...base,
     connection: "connected",
@@ -280,7 +280,7 @@ function snapshotWith(entries: readonly TranscriptEntry[]): HostSnapshot {
   };
 }
 
-function fakeHost(initial: HostSnapshot) {
+function fakeHost(initial: TranscriptFixtureSnapshot) {
   let snapshot = initial;
   const listeners = new Set<() => void>();
   const client = {
@@ -295,7 +295,7 @@ function fakeHost(initial: HostSnapshot) {
   harness.hostClient = client;
   return {
     client,
-    move(next: HostSnapshot) {
+    move(next: TranscriptFixtureSnapshot) {
       snapshot = next;
       act(() => {
         for (const listener of listeners) listener();

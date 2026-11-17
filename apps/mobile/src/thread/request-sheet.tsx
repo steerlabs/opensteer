@@ -1,3 +1,4 @@
+import { useThreadTranscript } from "@opensteer/client/react";
 import { setPhoneDisplayAccess } from "@opensteer/client/integrations";
 import {
   browserAccessChoices,
@@ -159,8 +160,9 @@ function SubscribedRequestSheet(props: {
   const navigation = useNavigation();
   const { snapshot } = useHostSnapshot(props.hostClient);
   const { requestId, threadId } = props;
+  const transcript = useThreadTranscript(props.hostClient, threadId);
   const request =
-    (snapshot.requests[threadId] ?? []).find(({ id }) => id === requestId) ??
+    transcript.requests.find(({ id }) => id === requestId) ??
     snapshot.waitingRequests.find(({ request }) => request.id === requestId)?.request ??
     null;
   const pending = request?.status === "pending" ? request : null;
@@ -171,8 +173,8 @@ function SubscribedRequestSheet(props: {
   };
   // Answered elsewhere, withdrawn or admitted: there is nothing left to decide here.
   useEffect(() => {
-    if (pending === null) close.current();
-  }, [pending === null]);
+    if (transcript.synchronized && pending === null) close.current();
+  }, [transcript.synchronized, pending === null]);
   if (pending === null || snapshot.user === null) return null;
   return (
     <SheetForRequest
@@ -208,13 +210,11 @@ function ReferencedRequest(props: {
   const [attempt, setAttempt] = useState(0);
   const [read, setRead] = useState<TargetedRead>({ state: "loading" });
   // The conversation's Requests stay live while it is open, so an answer given here shows.
-  useEffect(() => hostClient.observeThread(threadId), [hostClient, threadId]);
-  const held = useHostSelector(
+  const transcript = useThreadTranscript(hostClient, threadId);
+  const waiting = useHostSelector(
     hostClient,
     (snapshot) =>
-      (snapshot.requests[threadId] ?? []).find(({ id }) => id === requestId) ??
-      snapshot.waitingRequests.find(({ request }) => request.id === requestId)?.request ??
-      null,
+      snapshot.waitingRequests.find(({ request }) => request.id === requestId)?.request ?? null,
   );
   useEffect(() => {
     let current = true;
@@ -231,6 +231,7 @@ function ReferencedRequest(props: {
       current = false;
     };
   }, [attempt, hostClient, requestId, threadId]);
+  const held = transcript.requests.find(({ id }) => id === requestId) ?? waiting;
   if (held?.status === "pending")
     return (
       <SubscribedRequestSheet

@@ -132,7 +132,17 @@ export function useWaitingEdit(
           }
           held.editor = editor;
           setKept((shown) =>
-            shown?.messageId === messageId ? { ...shown, failure: null, phase: "open" } : shown,
+            shown?.messageId === messageId
+              ? {
+                  ...shown,
+                  draft:
+                    editor.content && !shown.draft.dirty
+                      ? openWaitingDraft({ content: editor.content, revision: editor.revision })
+                      : shown.draft,
+                  failure: null,
+                  phase: "open",
+                }
+              : shown,
           );
         },
         (error: unknown) => {

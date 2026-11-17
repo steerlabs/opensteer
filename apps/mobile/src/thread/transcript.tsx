@@ -1,3 +1,4 @@
+import { useTranscriptMessage, useItemText } from "@opensteer/client/react";
 import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
 import { useNavigation } from "@react-navigation/native";
 import { sideMemory } from "../side-memory.js";
@@ -471,7 +472,15 @@ function ReplyBubble(props: {
   readonly onActivity?: (() => void) | undefined;
   readonly onReply: ((message: MessageEntry) => void) | undefined;
 }): ReactNode {
-  const { message, onReply } = props;
+  const scope = useContext(TaskScopeContext);
+  const [expanded, setExpanded] = useState(false);
+  const message = useTranscriptMessage(
+    scope?.hostClient ?? null,
+    scope?.threadId ?? null,
+    props.message,
+    expanded,
+  );
+  const { onReply } = props;
   const parts = useMemo(() => replyParts(message.body), [message.body]);
   const reply = useMemo(
     () => (onReply === undefined ? undefined : () => onReply(message)),
@@ -507,6 +516,11 @@ function ReplyBubble(props: {
       ) : (
         <MessageAttachments attachments={message.attachments ?? []} />
       )}
+      {props.message.previewTruncated && !expanded ? (
+        <Pressable accessibilityRole="button" onPress={() => setExpanded(true)}>
+          <AppText>Read full reply</AppText>
+        </Pressable>
+      ) : null}
       {/* The record of a finished reply; while its Run works, the conversation's header follows it. */}
       {props.turn === undefined || turnState(props.turn) === "settled" ? (
         <ReplySurfaces
@@ -1108,6 +1122,12 @@ function ReasoningRow(props: {
   readonly reasoning: ReasoningEntry;
 }): ReactNode {
   const [open, setOpen] = useState(props.active || props.reasoning.state === "streaming");
+  const scope = useContext(TaskScopeContext);
+  const itemId = props.reasoning.itemId;
+  const liveText = useItemText(
+    scope && itemId ? scope.hostClient.getThreadItemText(scope.threadId) : undefined,
+    itemId,
+  );
   return (
     <View>
       <StepHead
@@ -1119,7 +1139,7 @@ function ReasoningRow(props: {
       {open ? (
         <Animated.View entering={appear} exiting={exit} style={styles.thought}>
           <AppText selectable role="secondary" tone="muted">
-            {props.reasoning.text}
+            {liveText?.text ?? props.reasoning.text}
           </AppText>
         </Animated.View>
       ) : null}
@@ -1265,16 +1285,29 @@ function AssistantMessage(props: {
   readonly answer: boolean;
   readonly message: MessageEntry;
 }): ReactNode {
-  const { body } = props.message;
+  const scope = useContext(TaskScopeContext);
+  const [expanded, setExpanded] = useState(false);
+  const message = useTranscriptMessage(
+    scope?.hostClient ?? null,
+    scope?.threadId ?? null,
+    props.message,
+    expanded,
+  );
+  const { body } = message;
   return (
     // No bubble, and the full measure: an agent's turn is long markdown with
     // headings, lists and code in it, and a bubble around that is a column
     // narrowed for nothing. The side it sits on is what says who wrote it. Its
     // words stay selectable, so holding them selects and its marks sit under it.
     <View style={styles.assistant}>
-      {body ? <Markdown streaming={props.message.streaming === true} text={body} /> : null}
-      <MessageAttachments attachments={props.message.attachments ?? []} />
-      {props.message.streaming === true ? null : (
+      {body ? <Markdown streaming={message.streaming === true} text={body} /> : null}
+      {props.message.previewTruncated && !expanded ? (
+        <Pressable accessibilityRole="button" onPress={() => setExpanded(true)}>
+          <AppText>Read full reply</AppText>
+        </Pressable>
+      ) : null}
+      <MessageAttachments attachments={message.attachments ?? []} />
+      {message.streaming === true ? null : (
         <View style={styles.marks}>
           {props.answer && body ? (
             <CopyMark accessibilityLabel="Copy reply" style={styles.mark} text={body} />
@@ -1327,7 +1360,14 @@ export function Message(props: {
   readonly onOpenThread: (threadId: string) => void;
   readonly viewerUserId: string | null;
 }): ReactNode {
-  const { message, open } = props;
+  const { open } = props;
+  const scope = useContext(TaskScopeContext);
+  const message = useTranscriptMessage(
+    scope?.hostClient ?? null,
+    scope?.threadId ?? null,
+    props.message,
+    open && props.message.messageKind !== "assistant",
+  );
   const preview = useMemo(() => incomingMessagePreview(message), [message]);
   const body = preview.truncated && !open ? preview.text : message.body;
   // What the reader sends rises once, as it is written down here; the Host's
@@ -1359,7 +1399,7 @@ export function Message(props: {
     <MessageFold
       lines={messageFoldLines(message, props.viewerUserId)}
       mine={mine && !props.queued}
-      more={preview.truncated}
+      more={preview.truncated || props.message.previewTruncated === true}
       onToggle={props.onToggle}
       open={open}
     >

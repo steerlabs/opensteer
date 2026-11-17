@@ -19,7 +19,7 @@
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { HostSnapshot, TranscriptEntry } from "@opensteer/client/host";
+import type { TranscriptFixtureSnapshot, TranscriptEntry } from "@opensteer/client/host";
 import type { MockHostClient } from "@opensteer/client/mock";
 import type { ThreadId } from "@opensteer/core";
 import type { BrowserContext, Page } from "playwright-core";
@@ -60,8 +60,8 @@ async function installFixture(context: BrowserContext) {
           return identity;
         },
       });
-      let base: HostSnapshot | undefined;
-      let projected: HostSnapshot | undefined;
+      let base: TranscriptFixtureSnapshot | undefined;
+      let projected: TranscriptFixtureSnapshot | undefined;
       let current = entries;
       let showRequests = false;
       Object.defineProperty(window, "opensteerLargeTranscriptRequests", {
@@ -96,12 +96,12 @@ async function installFixture(context: BrowserContext) {
             },
           });
           Object.defineProperty(value, "getSnapshot", {
-            value: (): HostSnapshot => {
+            value: (): TranscriptFixtureSnapshot => {
               const next = read();
               if (next === base && projected) return projected;
               base = next;
               const ids = new Set([first, second]);
-              const result: HostSnapshot = {
+              const result: TranscriptFixtureSnapshot = {
                 ...next,
                 threads: next.threads.map((thread) =>
                   ids.has(thread.id)

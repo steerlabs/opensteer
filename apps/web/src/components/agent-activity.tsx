@@ -1,8 +1,9 @@
+import { RetainedToolImage } from "./asset-image.js";
 import { TranscriptImageContext } from "@opensteer/client/react";
 import { AssetImage } from "./asset-image.js";
 import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
 import { TeamInputSource } from "../team/task-source-chip.js";
-import { useToolOutput } from "@opensteer/client/react";
+import { useToolOutput, useTranscriptMessage, useItemText } from "@opensteer/client/react";
 import { copyText } from "@opensteer/shared/clipboard";
 import { voiceCallSeed } from "@opensteer/core";
 import { AppCard } from "./apps/app-card.js";
@@ -1014,7 +1015,7 @@ function useActivityAnchor(panelId: string | null, control: RefObject<HTMLElemen
  */
 function ReplyBubble({
   arrived = false,
-  message,
+  message: preview,
   turnKey = null,
 }: {
   /** It replaced its typing on this screen, so it arrives rather than just stands there. */
@@ -1023,6 +1024,10 @@ function ReplyBubble({
   /** The turn it answers, whose Activity it offers; none for a reply no turn wrote. */
   turnKey?: string | null;
 }) {
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
+  const [expanded, setExpanded] = useState(false);
+  const message = useTranscriptMessage(client, threadId, preview, expanded);
   const replyWith = useContext(ReplyWith);
   const openActivity = useContext(OpenActivity);
   const activity = useContext(ActivityOfTurn).get(turnKey ?? "");
@@ -1060,6 +1065,11 @@ function ReplyBubble({
         />
       ))}
       {parts.length === 0 ? <div className="reply__line">{more}</div> : null}
+      {preview.previewTruncated && !expanded ? (
+        <button className="btn" onClick={() => setExpanded(true)} type="button">
+          Read full reply
+        </button>
+      ) : null}
       <MessageAttachments attachments={message.attachments ?? []} />
     </div>
   );
@@ -1804,15 +1814,20 @@ function Reasoning({ entry, active }: { entry: ReasoningEntry; active: boolean }
   // Completed blocks arriving in a live snapshot deserve the same visibility
   // as streamed blocks. Completion and later activity never undo a reader's choice.
   const [open, setOpen] = useState(active || entry.state === "streaming");
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
+  const liveText = useItemText(
+    threadId && entry.itemId ? client?.getThreadItemText(threadId) : undefined,
+    entry.itemId,
+  );
+  const text = liveText?.text ?? entry.text;
   return (
     <div className="trace-thought">
       <StepHead head={activityStepHead(entry)} onToggle={() => setOpen(!open)} open={open} />
       {open ? (
         <div className="trace-step__thought">
-          <Suspense
-            fallback={<p className="md-prose md-prose--plain">{readableMarkdown(entry.text)}</p>}
-          >
-            <Markdown text={entry.text} />
+          <Suspense fallback={<p className="md-prose md-prose--plain">{readableMarkdown(text)}</p>}>
+            <Markdown streaming={liveText !== undefined} text={text} />
           </Suspense>
         </div>
       ) : null}
@@ -1871,6 +1886,9 @@ function ToolDetail({ tool: preview }: { tool: ToolEntry }) {
   return (
     <div className="trace-step__body">
       <TranscriptImageContext value={client && threadId ? { client, threadId } : null}>
+        {detail.images.map((image) => (
+          <RetainedToolImage key={image.id} imageId={image.id} />
+        ))}
         {tool.output?.images?.map((image) => (
           <AssetImage key={image.path} path={image.path} />
         ))}
@@ -2062,13 +2080,18 @@ function ErrorCount({ count }: { count: number }) {
 
 function Reply({
   copyable = false,
-  message,
-  streaming,
+  message: preview,
+  streaming: wasStreaming,
 }: {
   copyable?: boolean;
   message: MessageEntry;
   streaming: boolean;
 }) {
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
+  const [expanded, setExpanded] = useState(false);
+  const message = useTranscriptMessage(client, threadId, preview, expanded);
+  const streaming = wasStreaming || message.streaming === true;
   return (
     <div aria-busy={streaming} className="msg--assistant__body" data-message-id={message.id}>
       {message.body ? (
@@ -2080,7 +2103,12 @@ function Reply({
       ) : null}
       {streaming ? <span aria-hidden className="stream-caret" /> : null}
       <MessageAttachments attachments={message.attachments ?? []} />
-      {copyable && message.body ? (
+      {preview.previewTruncated && !expanded ? (
+        <button className="btn" onClick={() => setExpanded(true)} type="button">
+          Read full reply
+        </button>
+      ) : null}
+      {copyable && !streaming && message.body ? (
         <div className="msg--assistant__marks">
           <CopyMark label="Copy reply" text={message.body} />
         </div>

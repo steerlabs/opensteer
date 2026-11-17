@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { expect, it, vi } from "vitest";
-import type { HostSnapshot } from "@opensteer/client/host";
+import type { TranscriptFixtureSnapshot } from "@opensteer/client/host";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import type { VoiceSnapshot } from "@opensteer/client/voice";
 import { client, mount, settle } from "./workspace/workspace.interaction.test-support.js";
@@ -65,8 +65,11 @@ it("shows what a call asks in the real shell, live on a page with a stable shell
       };
     });
     const real = source.getSnapshot;
-    let copy: { readonly from: HostSnapshot; readonly raised: boolean; to: HostSnapshot } | null =
-      null;
+    let copy: {
+      readonly from: TranscriptFixtureSnapshot;
+      readonly raised: boolean;
+      to: TranscriptFixtureSnapshot;
+    } | null = null;
     // The Voice Thread starts with nothing pending; only its Requests change, as a stable shell ignores.
     vi.spyOn(source, "getSnapshot").mockImplementation(() => {
       const base = real();
@@ -121,7 +124,10 @@ it("keeps the macOS grant on the call after Turn it on resolves the Request and 
       requestId = requests.find(({ payload }) => payload.kind === "device.access")!.id;
       voice = { ...asking, ask: { kind: "request", requestId, others: 0 } };
       const real = source.getSnapshot;
-      let copy: { readonly from: HostSnapshot; readonly to: HostSnapshot } | null = null;
+      let copy: {
+        readonly from: TranscriptFixtureSnapshot;
+        readonly to: TranscriptFixtureSnapshot;
+      } | null = null;
       vi.spyOn(source, "getSnapshot").mockImplementation(() => {
         const base = real();
         // Only the device question is on the call.

@@ -18,6 +18,7 @@ import {
   type HostClient,
   type HostCapabilityReader,
   type BrowserPreferencesStorage,
+  type PersonalStreamCache,
 } from "@opensteer/client/host";
 import { DeploymentIdSchema, type DeploymentId, type MessageOrigin } from "@opensteer/core";
 import type { HostCapability } from "@opensteer/deployment-authority";
@@ -87,6 +88,7 @@ export type MobileHostPortFactory = (input: {
 
 export function createNetworkHostPort(options: {
   readonly browserPreferencesStorage?: BrowserPreferencesStorage;
+  readonly streamCache?: (deploymentId: DeploymentId) => PersonalStreamCache;
   readonly fetch: HostFetch;
   readonly lifecycle: ClientLifecycle;
   readonly now: () => Date;
@@ -143,7 +145,10 @@ export function createNetworkHostPort(options: {
       });
       const client = new HttpHostClient({
         ...(assetRoute ? { assetRoute } : {}),
-        deviceAccessRequests: "include",
+        ...(options.streamCache
+          ? { streamCache: options.streamCache(connection.authority.document.deploymentId) }
+          : {}),
+
         baseUrl: origin,
         ...(options.browserPreferencesStorage
           ? { browserPreferencesStorage: options.browserPreferencesStorage }
@@ -152,6 +157,7 @@ export function createNetworkHostPort(options: {
         fetch: network.fetch,
         lifecycle: options.lifecycle,
         origin: options.origin,
+        prepareSocket: () => authorization.current(),
         webSocketFactory: network.webSocketFactory,
       });
       registerPhoneEnrollmentHost(client, {

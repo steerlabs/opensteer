@@ -10,7 +10,11 @@ import {
   type AssignmentSummary,
   type WaitingRequest,
 } from "@opensteer/core";
-import type { AssignmentEntry, HostSnapshot, TranscriptEntry } from "@opensteer/client/host";
+import type {
+  AssignmentEntry,
+  TranscriptFixtureSnapshot,
+  TranscriptEntry,
+} from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { AppShell } from "./app-shell.js";
 import { HomeRoute } from "./home/home-route.js";
@@ -54,7 +58,7 @@ async function chatWith(
   )!;
   let made = tasks(seeded.assignment);
   const questions = waiting(made);
-  let cache = new WeakMap<HostSnapshot, HostSnapshot>();
+  let cache = new WeakMap<TranscriptFixtureSnapshot, TranscriptFixtureSnapshot>();
   // The Host moving a task on: the next summary, told to whoever reads it.
   const listeners = new Set<() => void>();
   const subscribe = client.subscribe.bind(client);

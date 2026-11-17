@@ -1,3 +1,4 @@
+import { createPersonalStreamCache } from "@opensteer/client/host";
 import { AiSharing } from "@opensteer/client/ai-sharing";
 import { AiSharingProvider } from "./ui/ai-sharing.js";
 import { readAiSharing } from "./client/ai-sharing-storage.js";
@@ -334,6 +335,24 @@ function mobileClient(): MobileRoot {
           browserPreferencesStorage: createBrowsingChoiceStorage(
             new File(`${root}${storeName}/browsing-choices.json`),
           ),
+          streamCache: (deploymentId) => {
+            const directory = `${root}${storeName}/personal-stream-v62`;
+            const path = `${directory}/${deploymentId}.json`;
+            return createPersonalStreamCache({
+              exists: () => privateFiles.fileExists(path),
+              read: async () => {
+                const bytes = await privateFiles.readFile(path, 512 * 1024);
+                return bytes ? new TextDecoder().decode(bytes) : null;
+              },
+              write: async (state, isCurrent) => {
+                await privateFiles.ensureDirectory(directory);
+                if (isCurrent()) await privateFiles.writeFileAtomic(path, state);
+              },
+              remove: async () => {
+                await privateFiles.removeFile(path);
+              },
+            });
+          },
           fetch: mobileHostFetch,
           lifecycle,
           now: () => new Date(),

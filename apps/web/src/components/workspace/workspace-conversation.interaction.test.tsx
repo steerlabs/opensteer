@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter, useNavigate } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import { placeList, type HostSnapshot } from "@opensteer/client/host";
+import { placeList, type TranscriptFixtureSnapshot } from "@opensteer/client/host";
 
 import { type WorkspaceNavigation } from "./navigation.js";
 import { WorkspaceLayout } from "./workspace-layout.js";
@@ -369,7 +369,7 @@ describe("a reply's live picture belongs to its working Run", () => {
 });
 
 /** The task that handed work to another: the mock's task line and its worker belong to it. */
-function delegating(source: { getSnapshot(): HostSnapshot }): string {
+function delegating(source: { getSnapshot(): TranscriptFixtureSnapshot }): string {
   const assignment = Object.values(source.getSnapshot().assignments)[0];
   if (!assignment) throw new Error("The mock hands out no work");
   return assignment.parentThreadId;
@@ -479,7 +479,7 @@ describe("task titles", () => {
     expect(assignment).toBeDefined();
     const worker = assignment.workerThread.id;
     const read = client.getSnapshot;
-    const cache = new WeakMap<HostSnapshot, HostSnapshot>();
+    const cache = new WeakMap<TranscriptFixtureSnapshot, TranscriptFixtureSnapshot>();
     vi.spyOn(client, "getSnapshot").mockImplementation(() => {
       const snapshot = read();
       let held = cache.get(snapshot);
@@ -543,7 +543,7 @@ describe("task titles", () => {
   it("hides rename on a Host without task titles", async () => {
     await mount((source) => {
       const read = source.getSnapshot;
-      const cache = new WeakMap<HostSnapshot, HostSnapshot>();
+      const cache = new WeakMap<TranscriptFixtureSnapshot, TranscriptFixtureSnapshot>();
       vi.spyOn(source, "getSnapshot").mockImplementation(() => {
         const snapshot = read();
         let held = cache.get(snapshot);

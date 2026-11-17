@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from "vitest";
 import { ThreadIdSchema, createId } from "@opensteer/core";
-import type { HostSnapshot } from "@opensteer/client/host";
+import type { TranscriptFixtureSnapshot } from "@opensteer/client/host";
 import type { MockHostClient } from "@opensteer/client/mock";
 import { click, element, history, mount, settle } from "./workspace.interaction.test-support.js";
 
@@ -12,7 +12,7 @@ import { click, element, history, mount, settle } from "./workspace.interaction.
  */
 function withHelper(
   client: MockHostClient,
-  parent: (snapshot: HostSnapshot, task: string) => string,
+  parent: (snapshot: TranscriptFixtureSnapshot, task: string) => string,
 ): { readonly helper: string; readonly task: string } {
   const read = client.getSnapshot.bind(client);
   const base = read();
@@ -30,7 +30,7 @@ function withHelper(
   const unlisted = <Entry extends { readonly thread: { readonly id: string } }>(
     entries: readonly Entry[],
   ) => entries.filter(({ thread }) => thread.id !== helper.id);
-  const cache = new WeakMap<HostSnapshot, HostSnapshot>();
+  const cache = new WeakMap<TranscriptFixtureSnapshot, TranscriptFixtureSnapshot>();
   vi.spyOn(client, "getSnapshot").mockImplementation(() => {
     const snapshot = read();
     let held = cache.get(snapshot);
@@ -102,7 +102,7 @@ describe("a helper's place among the reader's tasks", () => {
 function withFamily(
   client: MockHostClient,
   earlierOnly = false,
-  parentOf: (snapshot: HostSnapshot) => string = (snapshot) => {
+  parentOf: (snapshot: TranscriptFixtureSnapshot) => string = (snapshot) => {
     const workers = new Set<string>(
       Object.values(snapshot.assignments).map(({ workerThread }) => workerThread.id),
     );
@@ -134,7 +134,7 @@ function withFamily(
       })),
   ];
   const first = assignments[0]!;
-  const cache = new WeakMap<HostSnapshot, HostSnapshot>();
+  const cache = new WeakMap<TranscriptFixtureSnapshot, TranscriptFixtureSnapshot>();
   vi.spyOn(client, "getSnapshot").mockImplementation(() => {
     const snapshot = read();
     let held = cache.get(snapshot);

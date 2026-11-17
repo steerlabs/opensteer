@@ -254,9 +254,18 @@ function useInPlaceEdit(
     setKept(openWaitingDraft({ content: input.item.message.content, revision: input.revision }));
     setNotice(null);
     onOpenChange(true);
-    held.opening.catch((error: unknown) => {
-      if (session.current === held) setNotice(isConflict(error) ? "changed" : "failed");
-    });
+    void held.opening.then(
+      (editor) => {
+        if (session.current !== held || !editor.content) return;
+        const source = { content: editor.content, revision: editor.revision };
+        setKept((draft) =>
+          draft?.dirty ? followWaitingDraft(draft, source) : openWaitingDraft(source),
+        );
+      },
+      (error: unknown) => {
+        if (session.current === held) setNotice(isConflict(error) ? "changed" : "failed");
+      },
+    );
   };
 
   /** Ends `held` if it is still the edit open here; a save under way ends it itself. */
