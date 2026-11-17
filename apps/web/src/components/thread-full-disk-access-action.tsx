@@ -1,3 +1,4 @@
+import { deviceMachine } from "@opensteer/client/host";
 import { useState } from "react";
 import type { Request } from "@opensteer/core";
 import {
@@ -51,7 +52,9 @@ export function ThreadFullDiskAccessAction({
     hostsDeployment: machine !== undefined && hostsDeployment(machine),
     hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
     inDesktopApp: desktopBridge !== null,
-    lentByThisDesktop: localExecutionStatus?.runner.runnerId === machineId,
+    lentByThisDesktop:
+      machine !== undefined &&
+      localExecutionStatus?.runner.runnerId === deviceMachine(machine).selfRunnerId,
   });
 
   async function decline() {

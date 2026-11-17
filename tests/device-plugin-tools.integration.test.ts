@@ -119,26 +119,28 @@ integration("device data apps as plugin tools", () => {
     return { host, helper, computer, gateway, calendar, reminders, run };
   }
 
-  it("refuses device plugin access revoked while waiting for Runner admission", async () => {
+  it("refuses device plugin access revoked while waiting for Device admission", async () => {
     const { host, helper, gateway, calendar } = await start();
     const path = await pluginPath(gateway, "list_events", "list_events");
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
-    const original = ComputerAppHub.prototype.withRunnerAdmission;
+    const original = ComputerAppHub.prototype.withDeviceAdmission;
     const admission = vi
-      .spyOn(ComputerAppHub.prototype, "withRunnerAdmission")
-      .mockImplementationOnce(async function (this: ComputerAppHub, runner, work) {
+      .spyOn(ComputerAppHub.prototype, "withDeviceAdmission")
+      .mockImplementationOnce(async function (this: ComputerAppHub, device, work) {
         entered.resolve();
         await withTimeout(release.promise, 10000, {
           timeoutError: () => new Error("Device admission was not released"),
         });
-        return original.call(this, runner, work);
+        return original.call(this, device, work);
       });
     const before = helper.invocations.length;
+    let pending: ReturnType<typeof gateway.call> | undefined;
     try {
-      const pending = gateway.call("plugin_call", {
+      pending = gateway.call("plugin_call", {
         calls: { path, input: { start: "2026-10-01", end: "2026-10-02" } },
       });
+      void pending.catch(() => undefined);
       await withTimeout(entered.promise, 10000, {
         timeoutError: () => new Error("Device call did not enter admission"),
       });
@@ -165,6 +167,14 @@ integration("device data apps as plugin tools", () => {
     } finally {
       release.resolve();
       admission.mockRestore();
+      if (pending)
+        await withTimeout(
+          pending.catch(() => undefined),
+          10_000,
+          {
+            timeoutError: () => new Error("Device call did not drain after admission was released"),
+          },
+        );
     }
   });
 
@@ -251,6 +261,29 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
 
     // The Mac approved Calendar for reading only: a change is refused before it reaches the Mac.
     const createEvent = await pluginPath(gateway, "create_event", "create_event");
+    const discovery = await gateway.call("plugin_search", {
+      namespace: localNamespace("calendar-studio-mac", `app_device_${calendar.connection.id}`),
+    });
+    expect(
+      (discovery.items as { path: string; blocked?: unknown }[]).find(
+        (item) => item.path === listEvents,
+      ),
+    ).not.toHaveProperty("blocked");
+    expect(
+      (discovery.items as { path: string; blocked?: unknown }[]).find(
+        (item) => item.path === createEvent,
+      ),
+    ).toMatchObject({
+      blocked: {
+        code: "access_required",
+        message: expect.stringContaining("allows reading only"),
+        next: expect.stringContaining("app_access_request"),
+      },
+    });
+    const blockedDescription = await gateway.call("plugin_describe", { paths: [createEvent] });
+    expect((blockedDescription.items as { blocked?: unknown }[])[0]).toMatchObject({
+      blocked: { code: "access_required", next: expect.stringContaining('dataApp "calendar"') },
+    });
     let sent = helper.invocations.length;
     const readOnly = await pluginCall(gateway, createEvent, {
       start: "2026-10-01T09:00",
@@ -372,6 +405,17 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
       namespace: localNamespace("calendar-studio-mac", `app_device_${calendar.connection.id}`),
     });
     expect(JSON.stringify(offlineSearch)).toContain("Studio Mac is offline");
+    expect(offlineSearch.unavailableApps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          blocked: {
+            code: "unavailable",
+            message: expect.stringContaining("Studio Mac is offline"),
+            next: "Continue without it and tell the person what the message says.",
+          },
+        }),
+      ]),
+    );
     sent = helper.invocations.length;
     const offline = await pluginCall(gateway, listEvents, {
       end: "2026-10-07",

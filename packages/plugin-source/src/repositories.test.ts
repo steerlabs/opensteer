@@ -214,7 +214,10 @@ for (const backend of backends) {
         // Four code files totalling just under 16 MiB, and a 31.9 MB public file, which a save
         // receives as an upload read from outside the repository.
         const chunk = "x".repeat(4 * 1024 * 1024 - 1024);
-        const large = new Uint8Array(31_900_000).map((_, index) => (index * 7) % 251);
+        const large = Buffer.alloc(
+          31_900_000,
+          Buffer.from(Array.from({ length: 251 }, (_, index) => (index * 7) % 251)),
+        );
         const files = [
           { path: "index.ts", content: chunk },
           ...[1, 2, 3].map((index) => ({ path: `data/part${index}.ts`, content: chunk })),

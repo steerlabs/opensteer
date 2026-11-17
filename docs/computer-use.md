@@ -1,8 +1,10 @@
-# Computer use: agents using Mac apps in the background
+# Computer use: agents using Mac apps and phone screens
 
-[Computers](computers.md#computer-apps) owns app access and [Agent Phone](agent-phone.md) owns
-Android; [iPhone apps](mobile.md#this-iphones-apps) are data-only. Procedures:
-[mac-gui](../.agents/skills/mac-gui/SKILL.md).
+[Computers](computers.md#computer-apps) owns app access. Phones share one
+[display contract](#phone-displays); [Agent Phone](agent-phone.md) owns Android's side and
+[iPhone apps](mobile.md#this-iphones-apps) are data-only. Procedures:
+[mac-gui](../.agents/skills/mac-gui/SKILL.md) and
+[iphone-screen](../.agents/skills/iphone-screen/SKILL.md).
 
 ## Approval model
 
@@ -60,12 +62,15 @@ window by an opaque `win_<uuid>` handle that the helper keeps for each verified 
 incarnation, independently of viewing leases and Run sessions. Titles, PIDs and window numbers never
 identify a window, because each can repeat or change. A destroyed window leaves its tab unavailable
 as “Window closed”. A helper restart cannot prove an old identity, so its tabs become unavailable as
-`window-identity-lost` until the person opens a current window. A phone has at most one tab.
+`window-identity-lost` until the person opens a current window. A phone Device has at most one
+tab; it carries no authority and outlives task sessions, because agents release before replying.
 
 Closing a window or phone tab only removes it from the list; it never closes the window, quits the
 app, stops the phone or stops agent work. Owner views are leases separate from tab membership: a
-lapsed lease leaves the tab asleep, and opening it again views the same window. `computer_use`
-binds a tab with `tab(tabId)`, which grants nothing and never substitutes another window.
+lapsed lease leaves the tab asleep, and opening it again views the same window. A closed tab or
+ended view must not be resurrected by a late response, an agent's action or another viewer's
+renewal. `computer_use` binds a tab with `tab(tabId)`, which grants nothing and never substitutes
+another window.
 
 ## Background input and its limits
 
@@ -135,18 +140,63 @@ can read. One authenticated bridge owns its sessions, and nested deadlines must 
 cleanup time. Native errors must not disclose paths.
 
 Computer control and device data apps share device authority, but expose different operations.
-Plugin providers cannot reach Computer use or Agent Phone control; those belong to `computer_use`.
+Plugin providers cannot reach Computer use or phone screen control; those belong to `computer_use`.
 Its isolated guest has no Node, filesystem, network, process or timers. Handles belong to one Run
 attempt and cannot be saved as authority for another.
-Dispatched mutations are never retried. Stop is durable per Run and Mac across reconnects and
+Dispatched mutations are never retried. Stop is durable per Run and Device across reconnects and
 restarts, and only native `reason: user` records it; remote Stop returns once Host authority is
 withdrawn. The transcript keeps sanitized receipts, never screenshots, AX trees or typed text.
 
 Desktop owns helper lifecycle and OS prompts; the Runner cannot request them, and Mac control needs
 an unlocked Mac. A Mac app's task and owner destinations never merge or substitute, even for the
 same pixels ([renderer contract](../apps/desktop/src/computer-use/RENDERER-CONTRACT.md)): they can
-bind different windows. A phone is one display, so [its tab](agent-phone.md#the-tab) chooses between
-them.
+bind different windows. A phone is one display, so [its tab](#tabs) chooses between them.
+
+## Phone displays
+
+An Android Agent Phone and a Mac-driven iPhone serve one contract
+([phone-display.ts](../packages/protocol/src/phone-display.ts)): observe, act, close and installed
+apps. Catalog identities stay per platform (`android-phone`, `iphone-screen`), so stored Android
+grants need no migration, and Android's wire keeps `packageName` behind an adapter so phones need
+no update. `navigate` takes only a button the Device advertises, and `launch` takes an app
+ID from installed apps, opaque to agents. A tree may be partial: a driver reports what it read,
+never a completeness it lacks. The Host projects the actions each Device currently supports.
+
+The Device owns a phone's authority: approvals, Stops, its one task hold, owner views and tab. The
+driver only decides where work runs. Every frame to a screen driver names the Device and driver
+generation; a mismatch or an unassigned target is refused, never served as the Mac itself. Two
+iPhones on one Mac hold, stop and fail independently. Viewing, person input and the task hold each
+have their own availability and lease; viewing never extends a task's hold.
+
+The owner creates, widens, lowers or disables phone access from any client; agents only request it,
+and there is no phone-side approval. Allow settles the Requests it covers; wider ones stay pending.
+Off ends task sessions and owner views. Lowering to read ends task sessions and withdraws owner
+input at once. Old sessions and tickets cannot revive. Agents cannot operate Opensteer's own UI on
+either phone.
+
+### iPhone screens
+
+A Mac-driven iPhone is its own Device, separate from the [iPhone app](mobile.md#this-iphones-apps)
+on the same phone; nothing links the two. Desktop owns the native lifecycle through a signed Go
+[bridge](../apps/desktop/iphone-bridge), as it owns the Computer Use helper, and the Mac Runner
+serves `iphone-screen` for the Devices assigned to it. The phone's UDID stays in desktop main and
+the bridge; the Runner, renderer and Host see only the Device ID. One Deployment at a time reserves
+a phone on a Mac, so two supervised Deployments cannot both drive it.
+
+- Setup starts over USB and accepts iOS 27 and newer. Afterwards the phone can be driven over the same
+  Wi‑Fi as its Mac; there is no off-network or cellular path.
+- Developer services need Developer Mode and a developer image installed with Xcode on that Mac.
+  Opensteer neither bundles nor downloads one. Desktop main drives setup, watches for Xcode's
+  support files to appear, and follows the same phone through Developer Mode's restart. The
+  renderer makes the phone, Wi-Fi and name decisions and dispatches the prepared Host command;
+  closing setup releases temporary ownership. A dispatched attach stays durable so reopening
+  setup can recover the same operation after a crash. Existing Devices can be set up again
+  without removing them.
+- Opensteer never enters a passcode. A locked screen, unknown lock or foreground app, or an
+  Opensteer-foreground screen hides its content. Setup applies the same gate as runtime; the
+  person unlocks on the phone.
+- Typing, clearing, element-index targets, double tap, wake, person input and live video stay
+  unavailable until qualified on hardware; agents target screenshot pixels.
 
 ## Owner-view wire
 

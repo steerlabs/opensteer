@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { createId, TabIdSchema } from "@opensteer/core";
 import { sql } from "kysely";
 import { expect, it } from "vitest";
@@ -140,7 +141,7 @@ it("keeps person-owned apps and their fixed port through versions, HTML conversi
         kind: "app",
         appId: other.appId,
         ownerId: p.userId,
-        computerId: p.agentHome.computerId,
+        computerId: DeviceIdSchema.parse(p.agentHome.computerId),
         title: "Notes",
         openedBy: "person",
       },

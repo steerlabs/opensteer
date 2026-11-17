@@ -1,3 +1,4 @@
+import { BlockedSchema } from "@opensteer/core";
 import { z } from "zod";
 import { defineAgentTool } from "../registry.js";
 
@@ -29,7 +30,7 @@ export const plugin_search = defineAgentTool({
   access: "read",
   callers: discoveryCallers,
   description:
-    "Find plugin tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with plugins and linked accounts listed once. Pass a path to plugin_call or plugin_describe, or use tools.<plugin>.<tool>() in plugin_execute. Omit query to list a namespace. Read the following page by passing next as the whole input; null ends paging. Approved device data apps (Calendar, Contacts, Reminders, Messages, iPhone Location and Photos) and local servers are plugins too, with stable namespaces returned by discovery; an unavailable one says why.",
+    "Find plugin tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with plugins and linked accounts listed once. Pass a path to plugin_call or plugin_describe, or use tools.<plugin>.<tool>() in plugin_execute. Omit query to list a namespace. Read the following page by passing next as the whole input; null ends paging. Approved device data apps (Calendar, Contacts, Reminders, Messages, iPhone Location and Photos) and local servers are plugins too, with stable namespaces returned by discovery; blocked namespaces and tool items carry code, message and next; follow the target's next step. Read tools remain usable when a write needs more access. A task's ceiling and the person's access are separate.",
   input: searchInput,
   output: z.object({
     items: z.array(
@@ -38,12 +39,15 @@ export const plugin_search = defineAgentTool({
         description: z.string(),
         input: z.string(),
         inputTruncated: z.literal(true).optional(),
+        blocked: BlockedSchema.optional(),
       }),
     ),
     namespaces: z.array(object),
     remaining: z.number(),
     next: searchInput.nullable(),
-    unavailableApps: z.array(object).optional(),
+    unavailableApps: z
+      .array(z.object({ app: id, name: z.string(), reason: z.string(), blocked: BlockedSchema }))
+      .optional(),
   }),
 });
 export const plugin_describe = defineAgentTool({
@@ -55,9 +59,19 @@ export const plugin_describe = defineAgentTool({
     "Read the whole description and TypeScript signature, including input and output types, for exact paths from plugin_search. Unknown paths appear in missing with closest paths.",
   input: z.strictObject({ paths: z.array(id).min(1).max(100) }),
   output: z.object({
-    items: z.array(z.object({ path: id, description: z.string(), signature: z.string() })),
+    items: z.array(
+      z.object({
+        path: id,
+        description: z.string(),
+        signature: z.string(),
+        blocked: BlockedSchema.optional(),
+      }),
+    ),
     namespaces: z.array(object),
     missing: z.array(z.object({ path: id, matches: z.array(z.string()) })),
+    unavailableApps: z
+      .array(z.object({ app: id, name: z.string(), reason: z.string(), blocked: BlockedSchema }))
+      .optional(),
   }),
 });
 const call = z.strictObject({ path: id, input: json });
@@ -111,6 +125,7 @@ export const opensteer_plugin_list = defineAgentTool({
         access: z.enum(["all", "read-only"]),
         status: z.enum(["active", "unavailable"]),
         unavailable: z.string().optional(),
+        blocked: BlockedSchema.optional(),
         toolCount: z.number().int().nonnegative(),
         readOnlyToolCount: z.number().int().nonnegative(),
       }),
@@ -132,6 +147,7 @@ export const opensteer_plugin_list = defineAgentTool({
           z.object({ requirement: z.string(), scope: z.string(), account: z.string() }),
         ),
         status: z.string(),
+        blocked: BlockedSchema.optional(),
       }),
     ),
     cursor: z.string().nullable(),

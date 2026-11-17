@@ -541,6 +541,9 @@ describe("human Passwords settlement", () => {
         integrations: {
           listDiscoveryInventory: async () => [],
           listCallableTools: async () => [],
+          computerAccess: async () => {
+            throw new Error("No computer access fixture");
+          },
           computerUseMachines: async () => [],
           computerUsePhones: async () => [],
         },
@@ -618,6 +621,9 @@ describe("human Passwords settlement", () => {
         integrations: {
           listDiscoveryInventory: async () => [],
           listCallableTools: async () => [],
+          computerAccess: async () => {
+            throw new Error("No computer access fixture");
+          },
           computerUseMachines: async () => [],
           computerUsePhones: async () => [],
         },
@@ -686,12 +692,17 @@ describe("human Passwords settlement", () => {
         const result = await call;
         if (committed) {
           expect(result).toMatchObject({
-            record: { status: "ready", loginRef: h.loginRef(), account: expect.any(String) },
+            record: {
+              status: "fulfilled",
+              loginStatus: "ready",
+              loginRef: h.loginRef(),
+              account: expect.any(String),
+            },
           });
           expect(result?.text).toContain(h.loginRef());
         } else {
           expect(result).toMatchObject({
-            record: { status: "unavailable", reason: "interrupted" },
+            record: { status: "fulfilled", loginStatus: "unavailable", reason: "interrupted" },
             text: expect.stringContaining("stopped"),
           });
           expect(JSON.stringify(result)).not.toContain(h.loginRef());

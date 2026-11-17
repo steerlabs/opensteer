@@ -1,11 +1,12 @@
+import { deviceMachine, visibleDeviceMachines } from "../host/device-projection.js";
+import { computerStatus } from "./computers.js";
 import type { AuthSessionSummary } from "@opensteer/core";
 import {
-  deviceAccess,
   type DesktopDeviceMembership,
   type MachineSummary,
   type OtherDevice,
 } from "@opensteer/protocol";
-import { hostsDeployment, isServiceMachine } from "./computers.js";
+import { hostsDeployment } from "./computers.js";
 
 export type DeviceMembership =
   | {
@@ -54,6 +55,7 @@ export interface DeviceRow {
   readonly sessions: readonly AuthSessionSummary[];
   readonly label: string;
   readonly status: string;
+  readonly capabilitySummary: string | null;
   readonly thisDevice: boolean;
 }
 export interface SignedInDeviceRow {
@@ -73,7 +75,7 @@ export function devicesView(input: {
   readonly hereId: string | null;
   readonly otherDevices?: readonly OtherDevice[];
 }): DevicesView {
-  const machines = input.machines.filter((machine) => !isServiceMachine(machine));
+  const machines = visibleDeviceMachines(input.machines);
   const ids = new Set(machines.map((machine) => machine.id));
   const rank = (machine: MachineSummary) =>
     machine.id === input.hereId ? 0 : isHomeDevice(machine) ? 1 : 2;
@@ -84,15 +86,10 @@ export function devicesView(input: {
         machine,
         sessions: input.sessions.filter((session) => session.deviceId === machine.id),
         label: machine.name,
+        capabilitySummary: machine.phoneDisplay ? "Screen control" : null,
         status: isHomeDevice(machine)
           ? "Home · your agent runs here"
-          : machine.status === "online"
-            ? "Online"
-            : machine.status === "offline"
-              ? "Offline"
-              : machine.status === "pending"
-                ? "Setting up"
-                : "Needs update",
+          : computerStatus(machine).label,
         thisDevice: machine.id === input.hereId,
       })),
     alsoSignedIn: input.sessions
@@ -112,7 +109,7 @@ export function devicesView(input: {
 }
 
 export function isHomeDevice(machine: MachineSummary): boolean {
-  return machine.kind === "home" || hostsDeployment(machine);
+  return hostsDeployment(machine);
 }
 
 export type DeviceCapability = "browser" | "apps" | "files";
@@ -137,31 +134,23 @@ export function deviceAccessRows(
   machine: MachineSummary,
   devicesAvailable: boolean,
 ): readonly DeviceAccessRow[] {
-  const home = isHomeDevice(machine);
-  const granted = (module: MachineSummary["allowedModules"][number]) =>
-    machine.allowedModules.includes(module);
-  const offered: Readonly<Record<DeviceCapability, boolean>> = {
-    browser: home || granted("browser"),
-    apps: granted("integrations") && machine.modules.integrations !== undefined,
-    files: home || (granted("shell") && machine.device?.form !== "phone"),
-  };
-  const policy = machine.access?.policy;
-  const on = policy ? deviceAccess(policy) : null;
-  return deviceCapabilities
-    .filter((capability) => offered[capability])
-    .map((capability): DeviceAccessRow => {
-      if (home && capability !== "apps") return { capability, kind: "fixed", reason: "home" };
-      if (!devicesAvailable && capability !== "files")
-        return { capability, kind: "fixed", reason: "older-host" };
-      return { capability, kind: "switch", on: on?.[capability] ?? null };
-    });
+  const capabilities = deviceMachine(machine).capabilities;
+  if (!capabilities) return [];
+  return deviceCapabilities.flatMap((capability): DeviceAccessRow[] => {
+    const fact = capabilities[capability];
+    if (!fact.supported) return [];
+    if (!fact.configurable) return [{ capability, kind: "fixed", reason: "home" }];
+    if (!devicesAvailable && capability !== "files")
+      return [{ capability, kind: "fixed", reason: "older-host" }];
+    return [{ capability, kind: "switch", on: machine.access ? fact.enabled : null }];
+  });
 }
 
 export function assertDeviceSessionAllowed(
   membership: DesktopDeviceMembership | null | undefined,
 ): void {
   if (membership?.state === "removed" || membership?.state === "leaving")
-    throw new Error("This Mac was removed. Choose Set up again to reconnect.");
+    throw new Error("This Mac was removed. Choose Connect again to reconnect.");
   if (membership?.sessionState === "confirming")
     throw new Error("Waiting for the Runner to confirm this Mac is still a device.");
   if (membership?.sessionState === "sign-in-again")

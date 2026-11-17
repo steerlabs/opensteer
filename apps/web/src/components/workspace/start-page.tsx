@@ -15,7 +15,7 @@ import {
 } from "react";
 import { useNavigate } from "react-router";
 import { z } from "zod";
-import { RunnerIdSchema } from "@opensteer/core";
+import { DeviceIdSchema } from "@opensteer/core";
 import {
   HostClientRequestError,
   approvedAppTarget,
@@ -126,7 +126,11 @@ export function openWorkspaceWebLink(
   });
   rememberBrowsingChoice(scope, choice);
   const show = nav.beginPlaceOperation({ address: url });
-  const target = pageOpenTarget(replyLinkTarget(snapshot, choice, hereId, url), url);
+  const target = pageOpenTarget(
+    replyLinkTarget(snapshot, choice, hereId, url),
+    url,
+    snapshot.machines,
+  );
   void hostClient.openTab(target, { typed: true }).then(
     (tab) => show({ kind: "tab", tabId: tab.tabId }),
     // The start page explains a refusal and offers its way through (a computer, a profile);
@@ -432,9 +436,12 @@ export const StartPage = memo(function StartPage({
         ? { ...action.target, placement }
         : newTabTarget(hostClient.getSnapshot(), action.target.identity, localMachineId);
       rememberBrowsingChoice(scope, choice);
-      const tab = await hostClient.openTab(pageOpenTarget(target, url), {
-        typed: result.kind === "address",
-      });
+      const tab = await hostClient.openTab(
+        pageOpenTarget(target, url, hostClient.getSnapshot().machines),
+        {
+          typed: result.kind === "address",
+        },
+      );
       show({ kind: "tab", tabId: tab.tabId });
     } catch (error) {
       fail(error, result);
@@ -908,7 +915,7 @@ function AppWindows({
                         kind: "open-tab",
                         target: {
                           kind: "window",
-                          computerId: RunnerIdSchema.parse(app.machineId),
+                          computerId: DeviceIdSchema.parse(app.machineId),
                           windowId: window.windowId,
                         },
                       },

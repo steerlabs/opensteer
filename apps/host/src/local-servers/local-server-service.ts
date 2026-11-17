@@ -577,6 +577,7 @@ export class LocalServerService {
         message: "That computer is not part of this Deployment.",
       });
     }
+    await this.#store.requireSelfDeviceId(chosen);
     if ((await this.#store.computerAppRunner(chosen))?.deviceProfile === "iphone")
       throw new OpensteerError({
         code: "forbidden",

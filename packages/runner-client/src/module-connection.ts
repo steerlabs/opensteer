@@ -42,6 +42,7 @@ export interface RunnerModuleStream {
   readonly browserWireVersion?: 2;
   readonly passkeys?: 1;
   readonly loginText?: 1;
+  readonly screenDrivers?: 1;
   readonly passwordSignIn?: 2;
   readonly fence: RunnerAuxiliaryFrameFence;
   /** Present on a browser stream so the relay can verify attach tickets. */
@@ -324,6 +325,7 @@ export class RunnerModuleConnection {
     const welcome = RunnerAuxiliaryWelcomeSchema.parse(parsed);
     const fence = this.#auxiliaryFence.adopt(welcome);
     await this.#options.onStream({
+      ...(welcome.screenDrivers === 1 ? { screenDrivers: 1 } : {}),
       ...(welcome.browserWireVersion ? { browserWireVersion: welcome.browserWireVersion } : {}),
       ...(welcome.passkeys === 1 ? { passkeys: 1 } : {}),
       browserAttachPublicKeys: welcome.browserAttachPublicKeys,

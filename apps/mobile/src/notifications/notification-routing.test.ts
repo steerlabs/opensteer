@@ -13,7 +13,7 @@ import { RequestIdSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import {
   dismissThreadNotifications,
-  notificationDestination,
+  notificationThread,
   shouldPresentNotification,
 } from "./notification-routing.js";
 
@@ -27,22 +27,20 @@ const deepLink = buildMobileThreadDeepLink({ deploymentId, requestId, threadId }
 
 const push = (data: unknown) => ({ data });
 
-describe("notificationDestination", () => {
+describe("notificationThread", () => {
   it("opens a teammate's ask in the task it waits in, and one without a task in Needs you", async () => {
     const inTask = buildMobileThreadDeepLink({ deploymentId, requestId: null, threadId });
-    expect(notificationDestination(push({ deepLink: inTask, kind: "team-ask" }))).toMatchObject({
-      kind: "thread",
+    expect(notificationThread(push({ deepLink: inTask, kind: "team-ask" }))).toMatchObject({
       deploymentId,
       requestId: null,
       threadId,
     });
-    const link = buildMobileNeedsYouDeepLink(deploymentId);
-    const payload = push({ deepLink: link, threadId, deploymentId: otherDeploymentId });
-    expect(notificationDestination(payload)).toEqual({
-      kind: "needs-you",
-      deepLink: link,
-      deploymentId,
+    const payload = push({
+      deepLink: buildMobileNeedsYouDeepLink(deploymentId),
+      threadId,
+      deploymentId: otherDeploymentId,
     });
+    expect(notificationThread(payload)).toBeNull();
     expect(shouldPresentNotification(payload, { deploymentId, threadId }, true)).toBe(true);
     const dismiss = vi.fn();
     await dismissThreadNotifications({
@@ -54,15 +52,15 @@ describe("notificationDestination", () => {
   });
   it("reads the whole destination from the link alone", () => {
     expect(
-      notificationDestination(
+      notificationThread(
         push({ deepLink, deploymentId, kind: "request-opened", requestId, threadId }),
       ),
-    ).toEqual({ kind: "thread", deepLink, deploymentId, requestId, threadId });
+    ).toEqual({ deploymentId, requestId, threadId });
   });
 
   it("ignores the payload's own identifiers when they contradict the link", () => {
     expect(
-      notificationDestination(
+      notificationThread(
         push({
           deepLink,
           deploymentId: otherDeploymentId,
@@ -74,20 +72,18 @@ describe("notificationDestination", () => {
   });
 
   it("refuses a payload with no link, a link of another shape, or no data at all", () => {
-    expect(notificationDestination(push({ deploymentId, threadId }))).toBeNull();
+    expect(notificationThread(push({ deploymentId, threadId }))).toBeNull();
+    expect(notificationThread(push({ deepLink: "https://opensteer.test/threads/x" }))).toBeNull();
     expect(
-      notificationDestination(push({ deepLink: "https://opensteer.test/threads/x" })),
+      notificationThread(push({ deepLink: "com.opensteer.mobile:/deployments/nope" })),
     ).toBeNull();
-    expect(
-      notificationDestination(push({ deepLink: "com.opensteer.mobile:/deployments/nope" })),
-    ).toBeNull();
-    expect(notificationDestination(push(undefined))).toBeNull();
-    expect(notificationDestination({})).toBeNull();
+    expect(notificationThread(push(undefined))).toBeNull();
+    expect(notificationThread({})).toBeNull();
   });
 
   it("refuses a link whose ids are not ids", () => {
     expect(
-      notificationDestination(
+      notificationThread(
         push({ deepLink: `com.opensteer.mobile:/deployments/dep_nope/threads/${threadId}` }),
       ),
     ).toBeNull();
@@ -178,10 +174,10 @@ describe("a team's notifications", () => {
   it("names the team page alone, whatever the payload says beside it", () => {
     for (const link of [message, notice])
       expect(
-        notificationDestination(push({ deepLink: link, deploymentId, threadId, kind: "x" })),
-      ).toEqual({ kind: "team", deepLink: link, origin });
+        notificationThread(push({ deepLink: link, deploymentId, threadId, kind: "x" })),
+      ).toBeNull();
     expect(
-      notificationDestination(
+      notificationThread(
         push({
           deepLink: teamPageAppLink({ origin, target: { kind: "channel", channelId } }, "desktop"),
         }),

@@ -36,6 +36,9 @@ async function setup(storeFixture: StoreFixture, suffix: string) {
     integrations: {
       listDiscoveryInventory: async () => [],
       listCallableTools: async () => [],
+      computerAccess: async () => {
+        throw new Error("No computer access fixture");
+      },
       computerUseMachines: async () => [],
       computerUsePhones: async () => [],
     },

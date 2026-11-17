@@ -1,5 +1,8 @@
 import { expect } from "vitest";
-import { sql } from "kysely";
+import { sql, type Kysely } from "kysely";
+import { createId, type RunnerId, type UserId } from "@opensteer/core";
+import type { DatabaseSchema } from "./schema.js";
+import { requireSelfDeviceId } from "./device-inventory-store.js";
 import {
   IntegrationDefinitionSchema,
   integrationDefinitionSummary,
@@ -9,6 +12,20 @@ import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
 import type { PreparedIntegrationInstallFulfillment } from "./integration-request-store.js";
 import { describeStore } from "./store.integration.test-support.js";
+
+async function calendarDevice(database: Kysely<DatabaseSchema>, runnerId: RunnerId, owner: UserId) {
+  const computer = await database
+    .selectFrom("devices")
+    .selectAll()
+    .where("id", "=", await requireSelfDeviceId(database, runnerId))
+    .executeTakeFirstOrThrow();
+  const id = createId("device");
+  await database
+    .insertInto("devices")
+    .values({ ...computer, id, kind: "computer", ownerKind: "user", ownerUserId: owner })
+    .execute();
+  return id;
+}
 
 function preparedDevice(): PreparedIntegrationInstallFulfillment {
   const definition = IntegrationDefinitionSchema.parse({
@@ -218,8 +235,8 @@ describeStore("Device and local-server access settlement", (it) => {
       for (const candidate of [connectionId, otherConnectionId])
         if (candidate)
           await sql`insert into integration_connections
-        (id,owner_user_id,connection_kind,provider,connection_method,status,display_name,capabilities,integration_definition_id,integration_server_id,computer_access)
-        values(${candidate},${fixture.userId},'computer','apple-calendar','computer','connected','Calendar','[]','apple-calendar',${server.id},'read-write')`.execute(
+        (id,owner_user_id,connection_kind,provider,connection_method,status,display_name,capabilities,integration_definition_id,integration_server_id,device_id,computer_access)
+        values(${candidate},${fixture.userId},'computer','apple-calendar','computer','connected','Calendar','[]','apple-calendar',${server.id},${await calendarDevice(database, fixture.runnerId, fixture.userId)},'read-write')`.execute(
             database,
           );
       const opened = await platform.integrationRequests.createIntegrationAccessRequest({
@@ -330,8 +347,8 @@ describeStore("Device and local-server access settlement", (it) => {
     const connections = [createIntegrationId("connection"), createIntegrationId("connection")];
     for (const connectionId of connections) {
       await sql`insert into integration_connections
-        (id,owner_user_id,connection_kind,provider,connection_method,status,display_name,capabilities,integration_definition_id,integration_server_id,computer_access)
-        values(${connectionId},${fixture.userId},'computer','apple-calendar','computer','connected','Calendar','[]','apple-calendar',${material.servers[0]!.id},'read-write')`.execute(
+        (id,owner_user_id,connection_kind,provider,connection_method,status,display_name,capabilities,integration_definition_id,integration_server_id,device_id,computer_access)
+        values(${connectionId},${fixture.userId},'computer','apple-calendar','computer','connected','Calendar','[]','apple-calendar',${material.servers[0]!.id},${await calendarDevice(database, fixture.runnerId, fixture.userId)},'read-write')`.execute(
         database,
       );
       await platform.createGrant({

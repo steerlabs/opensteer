@@ -1,3 +1,5 @@
+import { legacyComputerTargetToDevice } from "./models.js";
+import { DeviceIdSchema } from "@opensteer/core";
 import { z } from "zod";
 import { McpIdentifierSchema } from "./schema-primitives.js";
 import {
@@ -119,3 +121,43 @@ export const RequestComputerAppSetupSchema = z.discriminatedUnion("kind", [
  */
 export const SetComputerAppConnectionSchema = computerAppSetupInputSchema;
 export type SetComputerAppConnection = z.infer<typeof SetComputerAppConnectionSchema>;
+
+export const DeviceComputerAppSetupRequestSchema = computerAppSetupRequestShapeSchema
+  .omit({ runnerId: true })
+  .extend({ deviceId: DeviceIdSchema })
+  .refine(validComputerAppSetupKind, "Setup request scope must match its kind");
+export type DeviceComputerAppSetupRequest = z.infer<typeof DeviceComputerAppSetupRequestSchema>;
+export const DeviceComputerAppSetupRequestReaderSchema = z.union([
+  DeviceComputerAppSetupRequestSchema,
+  ComputerAppSetupRequestSchema.transform(legacyComputerTargetToDevice),
+]);
+export const DeviceComputerAppSetupRequestViewSchema = ComputerAppSetupRequestViewSchema.omit({
+  runnerId: true,
+}).extend({ deviceId: DeviceIdSchema });
+export const DeviceSetComputerAppConnectionSchema = computerAppSetupInputSchema
+  .omit({ runnerId: true })
+  .extend({ deviceId: DeviceIdSchema });
+export type DeviceSetComputerAppConnection = z.infer<typeof DeviceSetComputerAppConnectionSchema>;
+export const DeviceRequestComputerAppSetupSchema = z.discriminatedUnion("kind", [
+  DeviceSetComputerAppConnectionSchema,
+  computerPolicySetupInputSchema.omit({ runnerId: true }).extend({ deviceId: DeviceIdSchema }),
+]);
+export type DeviceRequestComputerAppSetup = z.infer<typeof DeviceRequestComputerAppSetupSchema>;
+export const DeviceRequestComputerAppSetupReaderSchema = z.union([
+  DeviceRequestComputerAppSetupSchema,
+  RequestComputerAppSetupSchema.transform(legacyComputerTargetToDevice),
+]);
+
+export const DeviceComputerAppSetupReviewRequestViewSchema =
+  ComputerAppSetupReviewRequestViewSchema.omit({ runnerId: true }).extend({
+    deviceId: DeviceIdSchema,
+  });
+export const DeviceSetComputerAppConnectionReaderSchema = z.union([
+  DeviceSetComputerAppConnectionSchema,
+  SetComputerAppConnectionSchema.transform(legacyComputerTargetToDevice),
+]);
+export const DeviceComputerPolicySetupSchema = z.strictObject({
+  deviceId: DeviceIdSchema,
+  appApproval: z.enum(["ask", "automatic"]),
+});
+export type DeviceComputerPolicySetup = z.infer<typeof DeviceComputerPolicySetupSchema>;

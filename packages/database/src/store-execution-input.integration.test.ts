@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import type { StoreFixture } from "./store.integration.test-support.js";
 import {
   AgentEventSchema,
@@ -1717,7 +1718,7 @@ describeStore("PostgreSQL store", (it) => {
         app: "Slack",
         bundleId: "com.tinyspeck.slackmacgap",
         computer: "Alex's MacBook Pro",
-        runnerId: fixture.runnerId,
+        runnerId: DeviceIdSchema.parse(fixture.runnerId),
       },
       effect: "write" as const,
       integration: "Computer use",

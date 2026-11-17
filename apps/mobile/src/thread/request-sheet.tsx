@@ -1,3 +1,4 @@
+import { setPhoneDisplayAccess } from "@opensteer/client/integrations";
 import {
   browserAccessChoices,
   browserAccessGrantable,
@@ -15,7 +16,6 @@ import {
   fullAccessDeclineLabel,
   fullAccessRequestBody,
   isQuestionRequest,
-  mutationIdempotencyKey,
   passwordSignInAccountList,
   passwordSignInAllowRemembers,
   passwordSignInConsent,
@@ -35,6 +35,7 @@ import { isPluginRequest } from "@opensteer/client/plugins";
 import { PluginRequestBody } from "./plugin-request-body.js";
 import { useHostSelector, useHostSnapshot } from "@opensteer/client/react";
 import {
+  isPhoneDisplayDefinitionId,
   requestAgentProposedDetail,
   requestAgentProposedLabel,
   requestOptionDeclines,
@@ -805,27 +806,20 @@ function RequestBody(props: {
           onAllow={() => {
             const { payload } = request;
             if (payload.kind !== "computer.app.access") return;
-            const { access, definitionId, runnerId, setupRequestId } = payload;
+            const { access, definitionId, deviceId, setupRequestId } = payload;
             void responder.attempt("computer-app-allow", { shareWithAi: true }, async () => {
-              if (definitionId !== "android-phone") {
+              if (!isPhoneDisplayDefinitionId(definitionId)) {
                 await props.computerApproval.ask(setupRequestId);
                 return;
               }
-              const result = await props.hostClient.dispatch({
-                idempotencyKey: mutationIdempotencyKey(`phone-request:${request.id}`),
-                input: { access, app: null, definitionId, kind: "app", runnerId },
-                type: "integration.computer.setup.set",
-              });
-              if (result.type !== "integration.computer.setup.set") {
-                throw new Error("Could not confirm your answer was sent.");
-              }
+              await setPhoneDisplayAccess(props.hostClient, { access, definitionId, deviceId });
               responder.admitted();
             });
           }}
           onDecline={() => decline("computer-app-decline")}
           pendingId={session.pendingId}
           reason={reason}
-          runnerId={request.payload.runnerId}
+          deviceId={request.payload.deviceId}
         />
       ) : request.kind === "device.access" && request.payload.kind === "device.access" ? (
         <DeviceAccessBody
@@ -1414,20 +1408,20 @@ function CardUseBody(props: {
 }
 
 /**
- * An agent asked to use an app on a Mac, or the whole screen of an agent
- * phone. Mac approval happens there; phone access can be allowed here.
+ * An agent asked to use an app on a Mac, or the whole screen of a phone.
+ * Mac approval happens there; phone access can be allowed here.
  */
 function ComputerAppAccessBody(props: {
   readonly access: "read" | "read-write";
   readonly canRespond: boolean;
-  readonly definitionId: "android-phone" | "macos-app";
+  readonly definitionId: "android-phone" | "iphone-screen" | "macos-app";
   readonly failure: string | null;
   readonly machines: readonly MachineSummary[];
   readonly onAllow: () => void;
   readonly onDecline: () => void;
   readonly pendingId: string | null;
   readonly reason: string | null;
-  readonly runnerId: string;
+  readonly deviceId: string;
 }): ReactNode {
   // A computer this viewer cannot see is still somewhere; it is just not
   // named. The mobile app is never at the Mac it asks about.
@@ -1435,7 +1429,7 @@ function ComputerAppAccessBody(props: {
     definitionId: props.definitionId,
     machines: props.machines,
     onThatMac: false,
-    runnerId: props.runnerId,
+    deviceId: props.deviceId,
   });
   const locked = !props.canRespond || props.pendingId !== null;
   return (

@@ -1,3 +1,4 @@
+import type { DeviceDriverResolver, DeviceDriverRoute } from "../computer-use/device-drivers.js";
 import {
   HostIntegrationsWindowResolveSchema,
   ComputerUseWindowResolveResultSchema,
@@ -5,7 +6,15 @@ import {
 } from "@opensteer/protocol";
 import { type DisplaySource, type MacWindowTarget } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
-import { OpensteerError, type RunId, type RunnerId } from "@opensteer/core";
+import {
+  DeviceIdSchema,
+  iphoneScreenDefinitionId,
+  OpensteerError,
+  type DeviceId,
+  type DeviceDriverIdentity,
+  type RunId,
+  type RunnerId,
+} from "@opensteer/core";
 import { getDeviceDefinition } from "@opensteer/integration-catalog/devices";
 import {
   localMcpLaunchWithSecrets,
@@ -45,6 +54,8 @@ import {
   type HostIntegrationsOperation,
   type IntegrationsModuleEvent,
   type MachineAppStatus,
+  type RunnerIntegrationsDeviceStatus,
+  type DeviceDriverTarget,
   type McpSessionCloseCode,
   type RunnerAuxiliaryFrameFence,
   type RunnerAuxiliaryRequestId,
@@ -210,21 +221,21 @@ export type ComputerUseOutcome =
  */
 export const computerUseAnswerGraceMs = 6_000;
 
+export type ComputerTargetId = DeviceId | RunnerId;
+
 export interface ComputerUseSendInput {
+  readonly route?: DeviceDriverRoute | undefined;
   readonly requestId?: RunnerAuxiliaryRequestId;
   /** The lesser of the connection's ceiling and the calling grant's access. */
   readonly access: HostIntegrationsComputerUse["access"];
   /** What the Host resolved from the connection; never a caller's argument. */
   readonly app: HostIntegrationsComputerUse["app"];
-  /**
-   * Set only for a computer app that is not the Mac's — an Android phone —
-   * and left off otherwise, so a frame to a Mac stays the frame it always was.
-   */
+  /** Phone displays name their codec; Mac self frames retain their original shape. */
   readonly definitionId?: NonNullable<HostIntegrationsComputerUse["definitionId"]>;
   readonly operation: HostIntegrationsComputerUse["operation"];
   readonly params: HostIntegrationsComputerUse["params"];
   readonly runId: HostIntegrationsComputerUse["runId"];
-  readonly runnerId: RunnerId;
+  readonly runnerId: ComputerTargetId;
   readonly sessionId: HostIntegrationsComputerUse["sessionId"];
   readonly threadTitle: string | null;
   readonly signal?: AbortSignal;
@@ -238,6 +249,10 @@ export interface ComputerUseSend {
 }
 
 export interface PhoneDisplayCapabilityDiagnostic {
+  readonly deviceId?: DeviceId;
+  readonly role?: "self" | "screen";
+  readonly driverGeneration?: number;
+  readonly availabilityReason?: import("@opensteer/protocol").DeviceCapabilityReason | null;
   readonly runnerId: RunnerId;
   readonly connectionGeneration: number;
   readonly protocolVersion: number | null;
@@ -248,6 +263,11 @@ export interface PhoneDisplayCapabilityDiagnostic {
 }
 
 export interface ComputerAppHubOptions {
+  readonly drivers?: DeviceDriverResolver;
+  readonly requireDeviceAgentAccess?: (deviceId: DeviceId) => Promise<void>;
+  readonly onDeviceInvalidated?: (binding: DeviceDriverIdentity) => void;
+  readonly onDeviceInputWithdrawn?: (deviceId: DeviceId) => void;
+  readonly onDeviceRemoved?: (deviceId: DeviceId, removed: boolean) => void;
   readonly requireAgentAccess?: (runnerId: RunnerId) => Promise<void>;
   readonly packageSource?: (
     serverId: IntegrationServerId,
@@ -256,7 +276,7 @@ export interface ComputerAppHubOptions {
   ) => { url: string; token: string } | undefined;
   readonly onPhoneDisplayCapability?: (status: PhoneDisplayCapabilityDiagnostic) => void;
   readonly onDisplayEvent?: (
-    runnerId: RunnerId,
+    runnerId: ComputerTargetId,
     event: Extract<
       IntegrationsModuleEvent,
       {
@@ -289,7 +309,11 @@ export interface ComputerAppHubOptions {
    */
   readonly onRunnerDetached?: (runnerId: RunnerId, reason: RunnerStreamLossReason) => void;
   /** An unsolicited helper event from the current fenced stream. */
-  readonly onComputerUseEvent?: (runnerId: RunnerId, event: ComputerUseHelperEvent) => void;
+  readonly onComputerUseEvent?: (
+    deviceId: ComputerTargetId,
+    event: ComputerUseHelperEvent,
+    route?: DeviceDriverRoute,
+  ) => void;
   /**
    * That computer's `integrations` stream is now the current one. Its Mac is
    * owed the whole approval list, which is how an approval made while it was
@@ -310,6 +334,7 @@ interface PendingInvoke {
 }
 
 interface PendingComputerUse {
+  readonly route?: DeviceDriverRoute | undefined;
   readonly effect: IntegrationToolEffect;
   readonly kind: "computer-use";
   readonly settle: (outcome: ComputerUseOutcome, terminal?: boolean) => void;
@@ -321,6 +346,8 @@ export type PasswordSignInHubEvent =
   PasswordSignInAuthorityEvent | { readonly type: "authority-lost" };
 
 interface AttachedIntegrations {
+  readonly assignments: Map<DeviceId, number>;
+  readonly deviceStatuses: Map<DeviceId, RunnerIntegrationsDeviceStatus>;
   loginText: LoginReceiverKey | null;
   passwordSignIn: boolean;
   readonly pendingPasswords: Map<
@@ -345,7 +372,10 @@ interface AttachedIntegrations {
   >;
   readonly pendingViews: Map<
     RunnerAuxiliaryRequestId,
-    { settle(result: RunnerIntegrationsComputerViewResult["result"]): void }
+    {
+      readonly route?: DeviceDriverRoute | undefined;
+      settle(result: RunnerIntegrationsComputerViewResult["result"]): void;
+    }
   >;
   readonly mcpSessions: Map<string, McpSessionEntry>;
   readonly peer: ComputerAppControlPeer;
@@ -357,7 +387,7 @@ interface AttachedIntegrations {
 /** One attached computer as the computer-app surfaces name it, from its live stream. */
 export interface ComputerAppMachine {
   readonly name: string;
-  readonly runnerId: RunnerId;
+  readonly runnerId: ComputerTargetId;
   readonly status: MachineAppStatus | null;
 }
 
@@ -394,6 +424,202 @@ export class ComputerAppHub {
     this.#options = options;
   }
 
+  selfTarget(runnerId: RunnerId): ComputerTargetId {
+    return (
+      this.#options.drivers
+        ?.bindings()
+        .find((binding) => binding.role === "self" && binding.runnerId === runnerId)?.deviceId ??
+      runnerId
+    );
+  }
+
+  #cachedRoute(target: ComputerTargetId, definitionId?: string): DeviceDriverRoute | undefined {
+    if (!this.#options.drivers) return undefined;
+    try {
+      const binding = this.#options.drivers.binding(
+        DeviceIdSchema.parse(target),
+        definitionId ??
+          (this.#options.drivers
+            .bindings()
+            .some((binding) => binding.deviceId === target && binding.role === "screen")
+            ? iphoneScreenDefinitionId
+            : undefined),
+      );
+      const stream = this.#byRunner.get(binding.runnerId)?.stream;
+      if (!stream || Date.parse(stream.streamLeaseExpiresAt) <= Date.now()) return undefined;
+      if (
+        binding.role === "screen" &&
+        (stream.identity.modules.integrations?.screenDrivers !== 1 ||
+          this.#byRunner.get(binding.runnerId)?.assignments.get(binding.deviceId) !==
+            binding.generation)
+      )
+        return undefined;
+      return { ...binding, auxiliaryFence: { ...stream.fence } };
+    } catch {
+      return undefined;
+    }
+  }
+
+  #targetEntry(target: ComputerTargetId): AttachedIntegrations | undefined {
+    if (!this.#options.drivers) return this.#byRunner.get(target as RunnerId);
+    const route = this.#cachedRoute(target);
+    return route ? this.#byRunner.get(route.runnerId) : undefined;
+  }
+
+  #isScreen(target: ComputerTargetId): boolean {
+    return (
+      this.#options.drivers
+        ?.bindings()
+        .some((binding) => binding.deviceId === target && binding.role === "screen") ?? false
+    );
+  }
+
+  screenDriverConnection(
+    runnerId: RunnerId,
+  ): { readonly connectionGeneration: number; readonly screenDrivers: 1 } | null {
+    const entry = this.#byRunner.get(runnerId);
+    const module = entry?.stream.identity.modules.integrations;
+    return entry &&
+      !this.#closed &&
+      Date.parse(entry.stream.streamLeaseExpiresAt) > Date.now() &&
+      module?.platform === "darwin" &&
+      module.screenDrivers === 1 &&
+      runnerIntegrationsCompatibilityReason(module) === null
+      ? { connectionGeneration: entry.stream.fence.connectionGeneration, screenDrivers: 1 }
+      : null;
+  }
+
+  async captureRoute(
+    target: ComputerTargetId,
+    definitionId?: string,
+  ): Promise<DeviceDriverRoute | undefined> {
+    if (!this.#options.drivers) {
+      if (definitionId === iphoneScreenDefinitionId)
+        throw new OpensteerError({ code: "forbidden", message: "No screen driver is assigned." });
+      return undefined;
+    }
+    await this.#options.drivers.resolve(DeviceIdSchema.parse(target), definitionId);
+    const route = this.#cachedRoute(target, definitionId);
+    if (!route)
+      throw new OpensteerError({
+        code: "runner_offline",
+        message: "The Device driver is offline.",
+      });
+    return route;
+  }
+
+  routeCurrent(route: DeviceDriverRoute): boolean {
+    const entry = this.#byRunner.get(route.runnerId);
+    return (
+      !this.#closed &&
+      !!this.#options.drivers?.current(route) &&
+      !!entry &&
+      sameRunnerAuxiliaryFence(entry.stream.fence, route.auxiliaryFence) &&
+      Date.parse(entry.stream.streamLeaseExpiresAt) > Date.now()
+    );
+  }
+
+  withDeviceAdmission<T>(target: ComputerTargetId, action: () => Promise<T>): Promise<T> {
+    if (!this.#options.drivers) return this.withRunnerAdmission(target as RunnerId, action);
+    return this.#options.drivers.withAdmission(DeviceIdSchema.parse(target), async () => {
+      await this.#options.drivers!.refreshDevice(DeviceIdSchema.parse(target));
+      const route = this.#cachedRoute(target);
+      return route ? this.withRunnerAdmission(route.runnerId, action) : action();
+    });
+  }
+
+  withDeviceAdmissions<T>(ids: readonly ComputerTargetId[], action: () => Promise<T>): Promise<T> {
+    return this.#options.drivers
+      ? this.#options.drivers.withAdmissions(
+          ids.map((id) => DeviceIdSchema.parse(id)),
+          action,
+        )
+      : action();
+  }
+
+  devicesForRunner(runnerId: RunnerId): readonly DeviceId[] {
+    return (
+      this.#options.drivers
+        ?.bindings()
+        .filter((binding) => binding.runnerId === runnerId)
+        .map((binding) => binding.deviceId) ?? []
+    );
+  }
+
+  forgetDevice(deviceId: DeviceId, removed = false): void {
+    for (const binding of this.#options.drivers?.bindings() ?? [])
+      if (binding.deviceId === deviceId) this.invalidateDevice(binding);
+    this.#options.onDeviceRemoved?.(deviceId, removed);
+  }
+
+  deviceStatus(target: ComputerTargetId): RunnerIntegrationsDeviceStatus | null {
+    const route = this.#cachedRoute(target);
+    return route?.role === "screen"
+      ? (this.#byRunner.get(route.runnerId)?.deviceStatuses.get(route.deviceId) ?? null)
+      : null;
+  }
+
+  async refreshDeviceDrivers(): Promise<void> {
+    const drivers = this.#options.drivers;
+    if (!drivers) return;
+    await drivers.refresh();
+    await Promise.all(
+      [...this.#byRunner.values()].map(async (entry) => {
+        if (entry.stream.identity.modules.integrations?.screenDrivers !== 1) return;
+        const assignments = drivers
+          .bindings()
+          .filter(
+            (binding) =>
+              binding.role === "screen" && binding.runnerId === entry.stream.identity.runnerId,
+          );
+        entry.assignments.clear();
+        for (const binding of assignments)
+          entry.assignments.set(binding.deviceId, binding.generation);
+        for (const [id, status] of entry.deviceStatuses)
+          if (entry.assignments.get(id) !== status.driverGeneration)
+            entry.deviceStatuses.delete(id);
+        await this.#sendControl(entry, {
+          ...entry.stream.fence,
+          module: "integrations",
+          type: "host.integrations.device-drivers",
+          retainedDeviceIds: drivers.retainedScreenDeviceIds(entry.stream.identity.runnerId),
+          drivers: assignments.map((binding) => ({
+            deviceId: binding.deviceId,
+            role: "screen",
+            definitionId: iphoneScreenDefinitionId,
+            generation: binding.generation,
+          })),
+        });
+      }),
+    );
+  }
+
+  invalidateDevice(binding: DeviceDriverIdentity, preserveStatus = false): void {
+    for (const entry of this.#byRunner.values()) {
+      if (
+        !preserveStatus &&
+        entry.deviceStatuses.get(binding.deviceId)?.driverGeneration === binding.generation
+      )
+        entry.deviceStatuses.delete(binding.deviceId);
+      for (const [requestId, pending] of entry.pending)
+        if (
+          pending.kind === "computer-use" &&
+          pending.route?.deviceId === binding.deviceId &&
+          pending.route.generation === binding.generation
+        ) {
+          pending.settle(computerUseLoss(pending.effect, "The Device driver changed."), true);
+          void this.#cancel(entry, requestId, pending.route);
+        }
+      for (const pending of entry.pendingViews.values())
+        if (
+          pending.route?.deviceId === binding.deviceId &&
+          pending.route.generation === binding.generation
+        )
+          pending.settle({ kind: "error", code: "ended", message: "The Device driver changed." });
+    }
+    this.#options.onDeviceInvalidated?.(binding);
+  }
+
   // ---- stream ----------------------------------------------------------
 
   attach(peer: ComputerAppControlPeer, stream: RunnerAuxiliaryStream): void {
@@ -404,6 +630,8 @@ export class ComputerAppHub {
     // its own event; this keeps the maps truthful if the order ever differs.
     if (previous && previous.peer !== peer) this.#drop(previous, "superseded");
     const entry: AttachedIntegrations = {
+      assignments: new Map(),
+      deviceStatuses: new Map(),
       apps: [],
       statusReceived: false,
       loginText: null,
@@ -425,6 +653,7 @@ export class ComputerAppHub {
     this.#byRunner.set(runnerId, entry);
     this.#reportPhoneDisplayCapability(entry, "attached");
     this.#options.onChanged(runnerId);
+    void this.refreshDeviceDrivers().catch(() => undefined);
     this.#options.onRunnerAttached?.(runnerId);
   }
 
@@ -473,6 +702,51 @@ export class ComputerAppHub {
         message: "That frame belongs to a superseded integrations stream.",
       });
     }
+    const target = "deviceId" in message ? message.deviceId : undefined;
+    const generation = "driverGeneration" in message ? message.driverGeneration : undefined;
+    let route: DeviceDriverRoute | undefined;
+    if (target !== undefined || generation !== undefined) {
+      if (
+        target === undefined ||
+        generation === undefined ||
+        entry.assignments.get(target) !== generation
+      )
+        return;
+      route = this.#cachedRoute(target, iphoneScreenDefinitionId);
+      if (
+        !route ||
+        route.runnerId !== stream.identity.runnerId ||
+        route.generation !== generation ||
+        !this.routeCurrent(route)
+      )
+        return;
+    }
+    if (message.type === "runner.integrations.device-status") {
+      if (!route) return;
+      const previous = entry.deviceStatuses.get(message.deviceId);
+      entry.deviceStatuses.set(message.deviceId, message);
+      if (message.availability.state !== "ready" && previous?.availability.state === "ready")
+        this.invalidateDevice(route, true);
+      if (previous?.inputVersion === 1 && message.inputVersion !== 1)
+        this.#options.onDeviceInputWithdrawn?.(message.deviceId);
+      if (JSON.stringify(previous) !== JSON.stringify(message)) {
+        this.#options.onChanged(route.runnerId);
+        this.#options.onPhoneDisplayCapability?.({
+          deviceId: route.deviceId,
+          role: "screen",
+          driverGeneration: route.generation,
+          runnerId: route.runnerId,
+          connectionGeneration: stream.fence.connectionGeneration,
+          protocolVersion: stream.identity.modules.integrations?.protocolVersion ?? null,
+          runtimeVersion: stream.identity.runtimeVersion ?? null,
+          state: "reported",
+          displayAvailable: message.displayVersion === 1 && message.availability.state === "ready",
+          reason: null,
+          availabilityReason: message.availability.reason,
+        });
+      }
+      return;
+    }
     if (message.type === "runner.integrations.password-sign-in-result") {
       entry.pendingPasswords.get(message.requestId)?.(message.result);
       return;
@@ -506,7 +780,22 @@ export class ComputerAppHub {
       return;
     }
     if (message.type === "runner.integrations.computer-use-event") {
-      this.#options.onComputerUseEvent?.(stream.identity.runnerId, message.event);
+      if (
+        !route &&
+        this.#options.drivers &&
+        !this.#options.drivers
+          .bindings()
+          .some(
+            (binding) => binding.role === "self" && binding.runnerId === stream.identity.runnerId,
+          )
+      )
+        return;
+      if (!route && stream.identity.modules?.integrations?.platform === "ios") return;
+      this.#options.onComputerUseEvent?.(
+        route?.deviceId ?? this.selfTarget(stream.identity.runnerId),
+        message.event,
+        route,
+      );
       return;
     }
     if (
@@ -534,7 +823,8 @@ export class ComputerAppHub {
       return;
     }
     if (message.type === "runner.integrations.computer-view-result") {
-      entry.pendingViews.get(message.requestId)?.settle(message.result);
+      const pending = entry.pendingViews.get(message.requestId);
+      if (pending && sameRoute(pending.route, route)) pending.settle(message.result);
       return;
     }
     if (
@@ -547,7 +837,10 @@ export class ComputerAppHub {
       message.type === "runner.integrations.display.source-ended" ||
       message.type === "runner.integrations.display.source-changed"
     ) {
-      this.#options.onDisplayEvent?.(stream.identity.runnerId, message);
+      this.#options.onDisplayEvent?.(
+        route?.deviceId ?? this.selfTarget(stream.identity.runnerId),
+        message,
+      );
       return;
     }
     const pending = entry.pending.get(message.requestId);
@@ -559,7 +852,7 @@ export class ComputerAppHub {
     // a frame whose kind does not match the call waiting on that request id is
     // not an answer to it and settles nothing.
     if (message.type === "runner.integrations.computer-use-result") {
-      if (pending.kind !== "computer-use") return;
+      if (pending.kind !== "computer-use" || !sameRoute(pending.route, route)) return;
       pending.settle(computerUseOutcomeForResult(message.result));
       return;
     }
@@ -729,8 +1022,11 @@ export class ComputerAppHub {
   // ---- status ----------------------------------------------------------
 
   /** What one computer reports, or null when it is not attached at all. */
-  status(runnerId: RunnerId): readonly MachineAppStatus[] | null {
-    return this.#byRunner.get(runnerId)?.apps ?? null;
+  status(runnerId: ComputerTargetId): readonly MachineAppStatus[] | null {
+    const status = this.deviceStatus(runnerId);
+    if (this.#isScreen(runnerId))
+      return status ? [{ definitionId: status.definitionId, operations: status.operations }] : null;
+    return this.#targetEntry(runnerId)?.apps ?? null;
   }
 
   loginReceiver(runnerId: RunnerId): LoginReceiverKey | null {
@@ -802,8 +1098,12 @@ export class ComputerAppHub {
     });
   }
 
-  ownerViewSupported(runnerId: RunnerId): boolean {
-    const entry = this.#byRunner.get(runnerId);
+  ownerViewSupported(runnerId: ComputerTargetId): boolean {
+    const entry = this.#targetEntry(runnerId);
+    if (this.#isScreen(runnerId)) {
+      const status = this.deviceStatus(runnerId);
+      return status?.ownerViewVersion === 1 && status.availability.state === "ready";
+    }
     if (entry?.stream.identity.modules.integrations?.platform === "ios") return false;
     if (entry?.stream.identity.modules.integrations?.platform === "android")
       return (
@@ -816,16 +1116,27 @@ export class ComputerAppHub {
     );
   }
 
-  displayUnavailableReason(runnerId: RunnerId): "unsupported" | null {
-    const entry = this.#byRunner.get(runnerId);
-    return entry?.displayAvailable === false ? "unsupported" : null;
+  displayUnavailableReason(
+    target: ComputerTargetId,
+  ): "unsupported" | "locked" | "paused" | "protected" | null {
+    if (this.#isScreen(target)) {
+      const status = this.deviceStatus(target);
+      const reason = status?.availability.reason?.kind;
+      if (reason === "locked" || reason === "paused" || reason === "protected") return reason;
+      return status?.displayVersion === 1 && status.availability.state === "ready"
+        ? null
+        : "unsupported";
+    }
+    return this.#targetEntry(target)?.displayAvailable === false ? "unsupported" : null;
   }
   async ownerWindows(
-    runnerId: RunnerId,
+    runnerId: ComputerTargetId,
     app: ComputerAppIdentity,
     options: { timeoutMs: number; signal?: AbortSignal },
   ): Promise<OwnerWindowInfo[]> {
-    const entry = this.#byRunner.get(runnerId);
+    if (this.#isScreen(runnerId))
+      throw new ComputerAppWindowsError("unsupported", "This Device does not serve Mac windows.");
+    const entry = this.#targetEntry(runnerId);
     if (this.#closed || !entry || Date.parse(entry.stream.streamLeaseExpiresAt) <= Date.now())
       throw new ComputerAppWindowsError("offline", "That computer is offline.");
     if (
@@ -902,11 +1213,13 @@ export class ComputerAppHub {
   }
 
   async resolveWindow(
-    runnerId: RunnerId,
+    runnerId: ComputerTargetId,
     target: { windowId: import("@opensteer/core").WindowId } | { app: ComputerAppIdentity },
     options: { timeoutMs: number; signal?: AbortSignal },
   ): Promise<import("./../computer-use/native-tab-targets.js").NativeWindowQueryResult> {
-    const entry = this.#byRunner.get(runnerId);
+    if (this.#isScreen(runnerId))
+      throw new ComputerAppWindowsError("unsupported", "This Device does not serve Mac windows.");
+    const entry = this.#targetEntry(runnerId);
     if (this.#closed || !entry || Date.parse(entry.stream.streamLeaseExpiresAt) <= Date.now())
       throw new ComputerAppWindowsError("offline", "That computer is offline.");
     if (
@@ -983,15 +1296,24 @@ export class ComputerAppHub {
   }
 
   async sendComputerView(input: {
-    readonly runnerId: RunnerId;
+    readonly route?: DeviceDriverRoute | undefined;
+    readonly runnerId: ComputerTargetId;
     readonly request: Pick<
       HostIntegrationsComputerView,
       "viewId" | "generation" | "leaseDurationMs" | "target" | "operation" | "timeoutMs"
     >;
     readonly signal?: AbortSignal;
   }): Promise<RunnerIntegrationsComputerViewResult["result"]> {
-    const entry = this.#byRunner.get(input.runnerId);
-    if (!entry || !this.ownerViewSupported(input.runnerId))
+    const route = input.route ?? (await this.captureRoute(input.runnerId, undefined));
+    const entry = this.#targetEntry(input.runnerId);
+    if (
+      !entry ||
+      (route &&
+        (route.deviceId !== input.runnerId ||
+          !this.routeCurrent(route) ||
+          (route.role === "screen" && input.request.target.kind !== "phone"))) ||
+      !this.ownerViewSupported(input.runnerId)
+    )
       return {
         kind: "error",
         code: "unsupported",
@@ -1017,7 +1339,7 @@ export class ComputerAppHub {
       };
       const abort = () => {
         answer({ kind: "error", code: "ended", message: "The view read was cancelled." });
-        void this.#cancel(entry, requestId);
+        void this.#cancel(entry, requestId, route);
       };
       const timer = setTimeout(
         () =>
@@ -1029,11 +1351,12 @@ export class ComputerAppHub {
         input.request.timeoutMs + computerUseAnswerGraceMs,
       );
       timer.unref();
-      entry.pendingViews.set(requestId, { settle: finish });
+      entry.pendingViews.set(requestId, { route, settle: finish });
       input.signal?.addEventListener("abort", abort, { once: true });
       void this.#submit(entry, {
         ...entry.stream.fence,
         ...input.request,
+        ...routeTarget(route),
         type: "host.integrations.computer-view",
         version: input.request.target.kind === "app" ? macOwnerViewVersion : 1,
         module: "integrations",
@@ -1058,22 +1381,37 @@ export class ComputerAppHub {
   }
 
   /** Distinguish a missing/expired stream from a live peer without this capability. */
-  displayStream(runnerId: RunnerId):
+  displayStream(runnerId: ComputerTargetId):
     | {
         readonly fence: RunnerAuxiliaryFrameFence & { readonly module: "integrations" };
+        readonly route?: DeviceDriverRoute | undefined;
         readonly mac?: true;
         readonly editingVersion?: 1;
         readonly displayCut?: 1;
         readonly sharedInput?: 1;
         readonly phoneOwnerControl?: 1;
+        readonly phonePower?: 1;
         readonly displayProfile?: 1;
       }
     | "unsupported"
     | null {
-    const stream = this.#byRunner.get(runnerId)?.stream;
+    const route = this.#cachedRoute(runnerId);
+    const stream = this.#targetEntry(runnerId)?.stream;
     if (this.#closed || !stream || Date.parse(stream.streamLeaseExpiresAt) <= Date.now())
       return null;
     const module = stream.identity.modules.integrations;
+    if (route?.role === "screen") {
+      const status = this.deviceStatus(runnerId);
+      return status?.displayVersion === 1 && status.availability.state === "ready"
+        ? {
+            fence: { ...stream.fence, module: "integrations" },
+            route,
+            ...(status.inputVersion === 1 ? { sharedInput: 1 as const } : {}),
+            ...(status.inputVersion === 1 ? { phoneOwnerControl: 1 as const } : {}),
+            ...(status.powerVersion === 1 ? { phonePower: 1 as const } : {}),
+          }
+        : "unsupported";
+    }
     if (module?.platform === "ios") return null;
     if (
       stream.fence.module !== "integrations" ||
@@ -1081,13 +1419,14 @@ export class ComputerAppHub {
         (module?.platform !== "darwin" ||
           module.macWindowVideoVersion !== 1 ||
           !macWindowVideoOwnerViewVersions.includes(
-            this.#byRunner.get(runnerId)?.ownerViewVersion ?? 0,
+            this.#targetEntry(runnerId)?.ownerViewVersion ?? 0,
           ))) ||
-      !this.#byRunner.get(runnerId)?.displayAvailable ||
+      !this.#targetEntry(runnerId)?.displayAvailable ||
       runnerIntegrationsCompatibilityReason(module) !== null
     )
       return "unsupported";
     return {
+      ...(route ? { route } : {}),
       fence: { ...stream.fence, module: stream.fence.module },
       ...(module.platform === "android" && module.sharedInput === 1
         ? { sharedInput: 1 as const }
@@ -1110,11 +1449,11 @@ export class ComputerAppHub {
   }
 
   async resolveDisplay(
-    runnerId: RunnerId,
+    runnerId: ComputerTargetId,
     source: DisplaySource,
     timeoutMs: number,
   ): Promise<MacWindowTarget> {
-    const entry = this.#byRunner.get(runnerId);
+    const entry = this.#targetEntry(runnerId);
     const live = this.displayStream(runnerId);
     if (
       !entry ||
@@ -1130,7 +1469,7 @@ export class ComputerAppHub {
       const finish = (target: MacWindowTarget | null) => {
         if (!entry.displayResolutions.delete(requestId)) return;
         clearTimeout(timer);
-        if (target && this.#byRunner.get(runnerId) === entry) resolve(target);
+        if (target && this.#targetEntry(runnerId) === entry) resolve(target);
         else reject(new Error("Window resolution ended"));
       };
       entry.displayResolutions.set(requestId, finish);
@@ -1157,41 +1496,65 @@ export class ComputerAppHub {
     message: HostIntegrationsOperation,
   ): Promise<boolean> {
     const entry = this.#byRunner.get(fence.runnerId);
-    const live = this.displayStream(fence.runnerId);
+    const target = "deviceId" in message ? message.deviceId : undefined;
+    const live = this.displayStream(target ?? this.selfTarget(fence.runnerId));
     if (
       !entry ||
       !live ||
       live === "unsupported" ||
       !sameRunnerAuxiliaryFence(live.fence, fence) ||
-      !sameRunnerAuxiliaryFence(live.fence, message)
+      !sameRunnerAuxiliaryFence(live.fence, message) ||
+      (live.route?.role === "screen" &&
+        (!("driverGeneration" in message) || message.driverGeneration !== live.route.generation))
     )
       return false;
+    if (live.route?.role === "screen") {
+      const status = this.deviceStatus(live.route.deviceId);
+      if (message.type === "host.integrations.display.input" && status?.inputVersion !== 1)
+        return false;
+      if (message.type === "host.integrations.display.power" && status?.powerVersion !== 1)
+        return false;
+    }
     return this.#sendControl(entry, message);
   }
 
-  appStatus(runnerId: RunnerId, definitionId: string): MachineAppStatus | null {
-    const apps = this.#byRunner.get(runnerId)?.apps;
+  appStatus(runnerId: ComputerTargetId, definitionId: string): MachineAppStatus | null {
+    const device = this.deviceStatus(runnerId);
+    if (device)
+      return definitionId === device.definitionId
+        ? {
+            definitionId,
+            operations: device.operations.map((operation) =>
+              device.availability.state === "ready"
+                ? operation
+                : { ...operation, state: "unavailable" as const },
+            ),
+          }
+        : null;
+    if (this.#isScreen(runnerId)) return null;
+    const apps = this.#targetEntry(runnerId)?.apps;
     return apps?.find((app) => app.definitionId === definitionId) ?? null;
   }
 
   /** An empty first report means unsupported; a new stream has not told us yet. */
   reportsApp(
-    runnerId: RunnerId,
+    runnerId: ComputerTargetId,
     definitionId: string,
   ): "offline" | "connecting" | "absent" | "reported" {
-    const entry = this.#byRunner.get(runnerId);
+    const entry = this.#targetEntry(runnerId);
     if (!entry) return "offline";
+    if (this.#isScreen(runnerId)) return this.deviceStatus(runnerId) ? "reported" : "connecting";
     if (!entry.statusReceived) return "connecting";
     return entry.apps.some((app) => app.definitionId === definitionId) ? "reported" : "absent";
   }
 
-  attached(runnerId: RunnerId): boolean {
-    return this.#byRunner.has(runnerId);
+  attached(runnerId: ComputerTargetId): boolean {
+    return !!this.#targetEntry(runnerId);
   }
 
   /** Offline computers retain pending approvals until they reconnect. */
-  compatibilityReason(runnerId: RunnerId): string | null {
-    const entry = this.#byRunner.get(runnerId);
+  compatibilityReason(runnerId: ComputerTargetId): string | null {
+    const entry = this.#targetEntry(runnerId);
     return entry
       ? runnerIntegrationsCompatibilityReason(entry.stream.identity.modules.integrations)
       : null;
@@ -1203,12 +1566,22 @@ export class ComputerAppHub {
    * again on its next stream, and recording it again changes nothing.
    */
   async acknowledgeComputerUseStop(
-    runnerId: RunnerId,
-    stop: { readonly runId: RunId; readonly sessionId: ComputerUseSessionId },
+    runnerId: ComputerTargetId,
+    stop: {
+      readonly runId: RunId;
+      readonly sessionId: ComputerUseSessionId;
+      readonly route?: DeviceDriverRoute | undefined;
+    },
   ): Promise<boolean> {
-    const entry = this.#byRunner.get(runnerId);
-    if (!entry) return false;
+    const entry = this.#targetEntry(runnerId);
+    if (
+      !entry ||
+      (stop.route && !this.routeCurrent(stop.route)) ||
+      (this.#isScreen(runnerId) && !stop.route)
+    )
+      return false;
     return this.#sendControl(entry, {
+      ...routeTarget(stop.route),
       ...entry.stream.fence,
       module: "integrations",
       runId: stop.runId,
@@ -1223,6 +1596,17 @@ export class ComputerAppHub {
    * that is lending apps or its screen without reading the registry again.
    */
   machinesFor(definitionId: string): readonly ComputerAppMachine[] {
+    if (this.#options.drivers)
+      return this.#options.drivers
+        .bindings()
+        .filter(
+          (binding) => (definitionId === iphoneScreenDefinitionId) === (binding.role === "screen"),
+        )
+        .map((binding) => ({
+          name: this.#options.drivers!.name(binding.deviceId),
+          runnerId: binding.deviceId,
+          status: this.appStatus(binding.deviceId, definitionId),
+        }));
     return [...this.#byRunner.entries()].map(([runnerId, entry]) => ({
       name: entry.stream.identity.name,
       runnerId,
@@ -1364,11 +1748,22 @@ export class ComputerAppHub {
    * nothing and is an ordinary `failed` the caller may try again.
    */
   async sendComputerUse(input: ComputerUseSendInput): Promise<ComputerUseSend> {
-    if (!["installed_apps", "resolve_app", "close"].includes(input.operation))
-      await this.#options.requireAgentAccess?.(input.runnerId);
+    const route = input.route ?? (await this.captureRoute(input.runnerId, input.definitionId));
+    if (
+      route &&
+      (route.deviceId !== input.runnerId ||
+        (route.role === "screen") !== (input.definitionId === iphoneScreenDefinitionId) ||
+        !this.routeCurrent(route))
+    )
+      return settledComputerUse(computerUseOffline("The Device driver changed."));
+    if (!["installed_apps", "resolve_app", "close"].includes(input.operation)) {
+      if (route) await this.#options.requireDeviceAgentAccess?.(route.deviceId);
+      else if (!this.#options.drivers)
+        await this.#options.requireAgentAccess?.(input.runnerId as RunnerId);
+    }
     const effect: IntegrationToolEffect = input.operation === "act" ? "write" : "read";
     if (this.#closed) return settledComputerUse(computerUseOffline("Opensteer is shutting down."));
-    const entry = this.#byRunner.get(input.runnerId);
+    const entry = this.#byRunner.get(route?.runnerId ?? (input.runnerId as RunnerId));
     if (!entry) return settledComputerUse(computerUseOffline("That computer is offline."));
     if (entry.stream.identity.modules?.integrations?.platform === "ios")
       return settledComputerUse({
@@ -1420,7 +1815,7 @@ export class ComputerAppHub {
       if (abandoned || done) return;
       abandoned = true;
       answer(response);
-      void this.#cancel(entry, requestId);
+      void this.#cancel(entry, requestId, route);
     };
     const answer = (result: ComputerUseOutcome) => {
       if (answered) return;
@@ -1452,6 +1847,7 @@ export class ComputerAppHub {
     entry.pending.set(requestId, {
       effect,
       kind: "computer-use",
+      route,
       settle: finish,
     });
     const submission = await this.#submit(entry, {
@@ -1459,6 +1855,7 @@ export class ComputerAppHub {
       module: "integrations",
       access: input.access,
       app: input.app,
+      ...routeTarget(route),
       ...(input.definitionId === undefined ? {} : { definitionId: input.definitionId }),
       operation: input.operation,
       params: input.params,
@@ -1494,7 +1891,7 @@ export class ComputerAppHub {
         abandoned: "deadline" as const,
       };
       finish(response);
-      void this.#cancel(entry, requestId);
+      void this.#cancel(entry, requestId, route);
     }, timeoutMs + computerUseAnswerGraceMs);
     timer.unref();
     input.signal?.addEventListener("abort", onAbort, { once: true });
@@ -1527,19 +1924,30 @@ export class ComputerAppHub {
     }
   }
 
+  async requireDeviceAgentAccess(deviceId: DeviceId): Promise<void> {
+    await this.#options.requireDeviceAgentAccess?.(deviceId);
+  }
+
   async requireAgentAccess(runnerId: RunnerId): Promise<void> {
     await this.#options.requireAgentAccess?.(runnerId);
   }
-  async disableAgentAccess(runnerId: RunnerId): Promise<void> {
-    const entry = this.#byRunner.get(runnerId);
+  async disableAgentAccess(target: ComputerTargetId): Promise<void> {
+    const entry = this.#targetEntry(target);
     if (!entry) return;
+    const screen = this.#isScreen(target);
     const message = "Agent access to apps was turned off.";
     for (const [requestId, pending] of entry.pending) {
-      if (pending.kind === "computer-use")
+      if (pending.kind === "computer-use") {
+        if (screen ? pending.route?.deviceId !== target : pending.route?.role === "screen")
+          continue;
         pending.settle(computerUseLoss(pending.effect, message), true);
-      else pending.settle(lossOutcome(pending.effect, message));
-      void this.#cancel(entry, requestId);
+        void this.#cancel(entry, requestId, pending.route);
+      } else if (!screen) {
+        pending.settle(lossOutcome(pending.effect, message));
+        void this.#cancel(entry, requestId);
+      }
     }
+    if (screen) return;
     for (const [sessionId, session] of entry.mcpSessions) {
       entry.mcpSessions.delete(sessionId);
       const error = new ComputerMcpSessionError("offline", message);
@@ -1677,12 +2085,17 @@ export class ComputerAppHub {
    * already been answered, and a cancel that cannot be delivered says nothing
    * about what the computer did with the call.
    */
-  async #cancel(entry: AttachedIntegrations, requestId: RunnerAuxiliaryRequestId): Promise<void> {
+  async #cancel(
+    entry: AttachedIntegrations,
+    requestId: RunnerAuxiliaryRequestId,
+    route?: DeviceDriverRoute,
+  ): Promise<void> {
     if (this.#byPeer.get(entry.peer.id) !== entry) return;
     const submission = await this.#submit(entry, {
-      ...entry.stream.fence,
+      ...(route?.auxiliaryFence ?? entry.stream.fence),
       module: "integrations",
       requestId,
+      ...routeTarget(route),
       type: "host.integrations.cancel",
     });
     if (submission === "timed-out") this.#dropForSubmissionTimeout(entry, null);
@@ -1727,7 +2140,13 @@ export class ComputerAppHub {
       timer = setTimeout(() => resolve("timed-out"), computerAppSubmitTimeoutMs);
       timer.unref();
     });
-    const sent = entry.peer.send(message).then(
+    let sending: Promise<void>;
+    try {
+      sending = entry.peer.send(message);
+    } catch (error) {
+      sending = Promise.reject(error);
+    }
+    const sent = sending.then(
       () => "sent" as const,
       (error: unknown) =>
         error instanceof ComputerAppSubmissionNotStartedError ? error : ("failed" as const),
@@ -1876,5 +2295,19 @@ function sameAppStatus(
         })
       );
     })
+  );
+}
+
+export function routeTarget(route?: DeviceDriverRoute): Partial<DeviceDriverTarget> {
+  return route?.role === "screen"
+    ? { deviceId: route.deviceId, driverGeneration: route.generation }
+    : {};
+}
+function sameRoute(left?: DeviceDriverRoute, right?: DeviceDriverRoute): boolean {
+  if (left?.role !== "screen" && right?.role !== "screen") return true;
+  return (
+    left?.deviceId === right?.deviceId &&
+    left?.generation === right?.generation &&
+    left?.runnerId === right?.runnerId
   );
 }

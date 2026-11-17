@@ -1,3 +1,11 @@
+import { requestResult } from "../request-result.js";
+import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
+import {
+  savedLoginAgentResult,
+  cardAgentResult,
+  chromeCookiesAgentResult,
+} from "../../browser/agent-request-results.js";
+import { RunnerIdSchema } from "@opensteer/core";
 import type { TabServicePort } from "../../tabs/ports.js";
 import { PersonShowTargetSchema } from "@opensteer/core";
 type DelegationCall = ToolCall<"opensteer_task_delegate"> & {
@@ -363,13 +371,11 @@ export class ProductToolHandlers {
     });
     for (const event of created.events) this.#onEvent(event);
     return requestResult(
-      {
-        kind: "person.question" as const,
-        replayed: created.replayed,
-        requestId: created.request.id,
-        status: created.request.status,
-      },
-      "Question",
+      created.request,
+      created.request.status === "pending"
+        ? requestPendingGuidance
+        : "The question is closed; continue using the delivered answer.",
+      created.replayed,
     );
   }
 
@@ -697,7 +703,7 @@ export class ProductToolHandlers {
             : [],
         ),
       ),
-      this.#store.effectiveMachineOwners(events.flatMap((event) => machineOf(event) ?? [])),
+      this.#store.effectiveDeviceOwners(events.flatMap((event) => machineOf(event) ?? [])),
       Promise.all(requestIds.map((id) => this.#store.requests.get(id))),
       this.#readableMessages(
         caller,
@@ -1356,7 +1362,14 @@ export class ProductToolHandlers {
       site: input.site,
       threadId: claims.threadId,
     });
-    return result.status === "pending" ? requestResult(result, "Card access") : result;
+    const request =
+      "requestId" in result && result.requestId
+        ? await this.#store.requests.get(result.requestId)
+        : await this.#store.requests.findByCallIdentity({
+            callId: operationId(caller, operationKey, "card_request"),
+            originatingRunId: claims.runId,
+          });
+    return cardAgentResult(result, request);
   }
 
   async saved_login_request({ caller, input, operationKey }: ToolCall<"saved_login_request">) {
@@ -1372,9 +1385,14 @@ export class ProductToolHandlers {
       site: input.site,
       threadId: claims.threadId,
     });
-    return result.status === "pending" || result.status === "declined"
-      ? requestResult(result, "Saved login")
-      : result;
+    const request =
+      "requestId" in result && result.requestId
+        ? await this.#store.requests.get(result.requestId)
+        : await this.#store.requests.findByCallIdentity({
+            callId: operationId(caller, operationKey, "saved_login_request"),
+            originatingRunId: claims.runId,
+          });
+    return savedLoginAgentResult(result, request);
   }
 
   async chrome_cookies_request({
@@ -1393,9 +1411,14 @@ export class ProductToolHandlers {
       site: input.site,
       threadId: claims.threadId,
     });
-    return result.status === "pending" || result.status === "declined"
-      ? requestResult(result, "Browser sign-in")
-      : result;
+    const request =
+      "requestId" in result && result.requestId
+        ? await this.#store.requests.get(result.requestId)
+        : await this.#store.requests.findByCallIdentity({
+            callId: operationId(caller, operationKey, "chrome_cookies_request"),
+            originatingRunId: claims.runId,
+          });
+    return chromeCookiesAgentResult(result, request);
   }
 
   async computer_access_request({
@@ -1408,11 +1431,22 @@ export class ProductToolHandlers {
     if (input.access === "full_disk_access") {
       const result = await this.#machineFullDiskAccess.request({
         callId,
-        computerId: input.computerId,
+        computerId: RunnerIdSchema.parse(input.computerId),
         reason: input.reason,
         claims,
       });
-      return requestResult(result, "Full Disk Access");
+      return {
+        ...result,
+        link: result.requestId
+          ? formatReferenceLink(result.requestId, "Full Disk Access")
+          : undefined,
+        next:
+          result.status === "pending"
+            ? requestPendingGuidance
+            : result.status === "fulfilled"
+              ? "Check computer access and continue the task."
+              : "The request is closed. Continue without this access.",
+      };
     }
     await this.#store.admitRunToolCall(
       runAdmission(caller, "computer_access_request", input, callId),
@@ -1424,7 +1458,16 @@ export class ProductToolHandlers {
       reason: input.reason,
       claims,
     });
-    return requestResult(result, "Computer access");
+    return {
+      ...result,
+      link: result.requestId ? formatReferenceLink(result.requestId, "Computer access") : undefined,
+      next:
+        result.status === "pending"
+          ? requestPendingGuidance
+          : result.status === "fulfilled"
+            ? "Check computer access and continue the task."
+            : "The request is closed. Continue without this access.",
+    };
   }
 
   async browser_profile_request({
@@ -1443,7 +1486,16 @@ export class ProductToolHandlers {
       suggestion: input.suggestion,
       threadId: claims.threadId,
     });
-    return requestResult(result, "Browser profile");
+    return {
+      ...result,
+      link: result.requestId ? formatReferenceLink(result.requestId, "Browser profile") : undefined,
+      next:
+        result.status === "pending"
+          ? requestPendingGuidance
+          : result.status === "fulfilled"
+            ? "Use tab_open with the approved profile."
+            : "The request is closed. Continue without this profile.",
+    };
   }
 
   async opensteer_task_send({ caller, input, operationKey }: ToolCall<"opensteer_task_send">) {
@@ -1931,9 +1983,4 @@ function agentRequest(request: Request) {
         )
       : request.settlementProvenance,
   };
-}
-
-function requestResult<T extends { readonly requestId: string | null }>(result: T, title: string) {
-  const id = RequestIdSchema.safeParse(result.requestId);
-  return id.success ? { ...result, link: formatReferenceLink(id.data, title) } : result;
 }

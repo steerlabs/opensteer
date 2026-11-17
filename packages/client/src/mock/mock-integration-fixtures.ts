@@ -214,6 +214,15 @@ export const mockAgentPhoneDefinition = IntegrationDefinitionSummarySchema.parse
   provider: "android-phone",
 });
 
+export const mockIphoneScreenDefinition = IntegrationDefinitionSummarySchema.parse({
+  ...mockAgentPhoneDefinition,
+  id: "iphone-screen",
+  name: "iPhone screen",
+  provider: "iphone-screen",
+  description: "See and control an iPhone screen through its connected Mac.",
+  computerApp: { ...mockAgentPhoneDefinition.computerApp, platforms: ["ios"] },
+});
+
 /** The preview's agent phone, set up over USB and approved on its own screen. */
 export const mockAgentPhoneRunnerId = RunnerIdSchema.parse(
   "rnr_cccccccc-cccc-4ccc-8ccc-cccccccccccc",
@@ -232,6 +241,7 @@ export const mockIntegrationDefinitions: readonly IntegrationDefinitionSummary[]
   ...mockIphoneAppDefinitions,
   mockComputerUseDefinition,
   mockAgentPhoneDefinition,
+  mockIphoneScreenDefinition,
 ];
 
 /** The operations the preview materialises per connection, by effect. */
@@ -490,6 +500,13 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
     definition: mockAgentPhoneDefinition,
     digest: mockIntegrationDigest("android-phone-catalog"),
   });
+  const iphoneScreen = mockComputerAppInstallation({
+    installedBy: ownerUserId,
+    connections: [],
+    createdAt: "2026-10-11T09:00:00.000Z",
+    definition: mockIphoneScreenDefinition,
+    digest: mockIntegrationDigest("iphone-screen-catalog"),
+  });
   const computerUseConnection = (input: {
     readonly access: "read" | "read-write";
     readonly app: (typeof mockComputerUseApps)[keyof typeof mockComputerUseApps];
@@ -541,6 +558,11 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
         definition: mockAgentPhoneDefinition,
         digest: mockIntegrationDigest("android-phone-catalog"),
         installationId: agentPhone.installation.id,
+      },
+      {
+        definition: mockIphoneScreenDefinition,
+        digest: mockIntegrationDigest("iphone-screen-catalog"),
+        installationId: iphoneScreen.installation.id,
       },
     ],
     connections: [
@@ -640,6 +662,7 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
       messages,
       computerUse,
       agentPhone,
+      iphoneScreen,
       mockLocalServerInstallation({
         installationId: mockNotesServer.installationId,
         serverId: mockNotesServer.serverId,

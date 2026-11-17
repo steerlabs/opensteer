@@ -1,3 +1,6 @@
+import { isPhoneDisplayDefinitionId, type DeviceId } from "@opensteer/core";
+import { deviceOwnershipIn } from "./machine-ownership.js";
+import { computerConnectionDeviceId } from "./integration-connections.js";
 import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
 
 import { assertPersonalOwner } from "./private-resource-owner.js";
@@ -11,7 +14,7 @@ import {
   type IntegrationToolMaterial,
   createIntegrationId,
   type IntegrationConnectionId,
-  type IntegrationConnectionSummary,
+  type DeviceIntegrationConnectionSummary as IntegrationConnectionSummary,
   type IntegrationAccess,
   type IntegrationGrant,
   type IntegrationDefinitionSummary,
@@ -26,7 +29,6 @@ import {
   type AgentEvent,
   type RequestId,
   type UserId,
-  type RunnerId,
 } from "@opensteer/core";
 import { type Selectable, type Transaction, sql } from "kysely";
 import type { DatabaseSchema, IntegrationConnectionTable } from "./schema.js";
@@ -34,7 +36,7 @@ import {
   fulfillPendingIntegrationAccessRequestsInTransaction,
   pendingIntegrationAccessRequests,
 } from "./integration-request-fulfillment.js";
-import { machineOwnershipIn } from "./machine-ownership.js";
+import { getDeviceSelfRunnerId } from "./device-inventory-store.js";
 import { integrationConnectionFromRow } from "./integration-connections.js";
 import {
   computerAppScopeOf,
@@ -57,7 +59,7 @@ export interface SetComputerConnectionInput {
   readonly createIfMissing: boolean;
   readonly definitionId: string;
   readonly requestId: string;
-  readonly runnerId: RunnerId;
+  readonly deviceId: DeviceId;
   readonly tools: (connectionId: IntegrationConnectionId) => readonly IntegrationToolMaterial[];
 }
 
@@ -78,8 +80,8 @@ export interface SetComputerConnectionResult {
    * every session's authority as it was.
    */
   readonly sessionReset:
-    | { readonly appKey: string; readonly kind: "app"; readonly runnerId: RunnerId }
-    | { readonly definitionId: string; readonly kind: "display"; readonly runnerId: RunnerId }
+    | { readonly appKey: string; readonly kind: "app"; readonly deviceId: DeviceId }
+    | { readonly definitionId: string; readonly kind: "display"; readonly deviceId: DeviceId }
     | null;
 }
 
@@ -100,7 +102,7 @@ export type AutomaticComputerAppApprovalInput = Omit<
 > & {};
 
 export interface LockedComputer {
-  readonly id: RunnerId;
+  readonly id: DeviceId;
   readonly name: string;
 }
 
@@ -109,16 +111,16 @@ export async function lockComputerOwnerInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: {
     readonly actorUserId: UserId;
-    readonly runnerId: RunnerId;
+    readonly deviceId: DeviceId;
   },
 ): Promise<LockedComputer> {
   const runner = await lockComputerApprovalScopeInTransaction(transaction, {
-    runnerId: input.runnerId,
+    deviceId: input.deviceId,
   });
-  if (runner.revokedAt !== null) {
+  if (runner.removedAt !== null) {
     throw new OpensteerError({ code: "not_found", message: "Computer not found" });
   }
-  const ownership = await machineOwnershipIn(transaction, runner.id);
+  const ownership = await deviceOwnershipIn(transaction, runner.id);
   if (ownership?.effectiveOwner !== input.actorUserId) {
     throw new OpensteerError({
       code: "forbidden",
@@ -145,7 +147,7 @@ export async function computerConnectionTargetInTransaction(
   input: {
     readonly app: ComputerAppIdentity | null;
     readonly definitionId: string;
-    readonly runnerId: RunnerId;
+    readonly deviceId: DeviceId;
   },
 ): Promise<ComputerConnectionTarget> {
   const installedRows = await transaction
@@ -206,16 +208,29 @@ export async function computerConnectionTargetInTransaction(
     app: input.app,
     requiresApp: definition.computerApp?.kind === "gui",
   });
-  const runner = await transaction
-    .selectFrom("runners")
-    .select("moduleDescriptors")
-    .where("id", "=", input.runnerId)
+  const device = await transaction
+    .selectFrom("devices")
+    .select("platform")
+    .where("id", "=", input.deviceId)
     .executeTakeFirstOrThrow();
-  const platform = runner.moduleDescriptors.integrations?.platform;
-  if (platform && !definition.computerApp?.platforms.includes(platform))
+  const selfRunnerId = await getDeviceSelfRunnerId(transaction, input.deviceId);
+  const runner = selfRunnerId
+    ? await transaction
+        .selectFrom("runners")
+        .select("moduleDescriptors")
+        .where("id", "=", selfRunnerId)
+        .executeTakeFirst()
+    : undefined;
+  const platform =
+    runner?.moduleDescriptors.integrations?.platform ??
+    (device.platform === "macos" ? "darwin" : device.platform);
+  if (
+    platform &&
+    !definition.computerApp?.platforms.includes(platform === "windows" ? "win32" : platform)
+  )
     throw new OpensteerError({
       code: "forbidden",
-      message: "This app is not supported on this computer.",
+      message: "This app is not supported on this device.",
     });
   const scope = computerAppScopeOf(input);
   const current = await transaction
@@ -223,7 +238,7 @@ export async function computerConnectionTargetInTransaction(
     .selectAll()
     .where("connectionKind", "=", "computer")
     .where("integrationDefinitionId", "=", input.definitionId)
-    .where("runnerId", "=", input.runnerId)
+    .where(computerConnectionDeviceId, "=", input.deviceId)
     .where("computerAppKey", scope.appKey === null ? "is" : "=", scope.appKey)
     .where("status", "!=", "revoked")
     .forNoKeyUpdate()
@@ -271,7 +286,7 @@ export async function consumeComputerAppApprovalInTransaction(
     .selectFrom("computerAppSetupRequests")
     .selectAll()
     .where("id", "=", input.setupRequestId)
-    .where("runnerId", "=", input.runnerId)
+    .where("runnerId", "=", input.deviceId)
     .where("ownerUserId", "=", input.actorUserId)
     .where("definitionId", "=", input.definitionId)
     .where("kind", "=", "app")
@@ -335,7 +350,7 @@ export async function reviseComputerConnectionInTransaction(
   const widened = current?.computerAccess === "read" && input.access === "read-write";
   if (widened && !input.createIfMissing) throw new ComputerAppNotOfferedError(input.runner.name);
   if (
-    input.definitionId !== "android-phone" &&
+    !isPhoneDisplayDefinitionId(input.definitionId) &&
     (!current || widened || current.computerBlockedAt)
   ) {
     throw new OpensteerError({
@@ -485,7 +500,8 @@ export async function writeComputerConnectionInTransaction(
       id: createIntegrationId("connection"),
       integrationDefinitionId: scope.definitionId,
       ownerUserId: input.ownerUserId,
-      runnerId: scope.runnerId,
+      deviceId: scope.deviceId,
+      runnerId: await getDeviceSelfRunnerId(transaction, scope.deviceId),
       transportKind: null,
     })
     .returningAll()
@@ -645,11 +661,11 @@ export function sessionResetFor(
   const lowered = current.computerAccess === "read-write" && access === "read";
   if (scope.appKey === null) {
     return lowered && target.definition.computerApp?.kind === "display"
-      ? { definitionId: scope.definitionId, kind: "display", runnerId: scope.runnerId }
+      ? { definitionId: scope.definitionId, kind: "display", deviceId: scope.deviceId }
       : null;
   }
   return lowered || !computerAppIdentitiesEqual(storedComputerApp(current), app)
-    ? { appKey: scope.appKey, kind: "app", runnerId: scope.runnerId }
+    ? { appKey: scope.appKey, kind: "app", deviceId: scope.deviceId }
     : null;
 }
 

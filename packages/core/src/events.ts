@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "./devices.js";
 import { TabIdSchema } from "./ids.js";
 import { CompactionReturnHintSchema } from "./idle-compaction.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -21,7 +22,6 @@ import {
   RunIdSchema,
   SequenceSchema,
   RequestIdSchema,
-  RunnerIdSchema,
   ThreadIdSchema,
 } from "./ids.js";
 import {
@@ -87,7 +87,7 @@ export const IntegrationCallSubjectSchema = z.strictObject({
       bundleId: z.string().min(1).max(255),
       computer: z.string().min(1).max(240),
       /** Stable identity for grouping calls when two Macs share a display name. */
-      runnerId: RunnerIdSchema,
+      runnerId: DeviceIdSchema,
     })
     .nullable(),
   effect: z.enum(["read", "write"]),
@@ -98,7 +98,7 @@ export const IntegrationCallSubjectSchema = z.strictObject({
   phone: z
     .strictObject({
       computer: z.string().min(1).max(240),
-      runnerId: RunnerIdSchema,
+      runnerId: DeviceIdSchema,
     })
     .optional(),
   /** The integration's title: "Gmail", "Computer use". */

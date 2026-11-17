@@ -17,7 +17,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentCaller, RunCaller } from "./agent-caller.js";
 import type { AgentToolHandlers } from "./handlers/types.js";
 import { RequestHold } from "./request-hold.js";
-import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 import { ProductToolHandlers } from "./handlers/product.js";
 
@@ -224,73 +223,104 @@ async function connect(url: URL, token: string) {
   return client;
 }
 describe("Opensteer MCP spine", () => {
-  it.each(["pending", "pending-active", "settled", "live", "other-run", "integration"] as const)(
-    "keeps non-held results and pending guidance compatible (%s)",
-    async (state) => {
-      const f = await httpFixture();
-      const requestId = createId("request");
-      Object.assign(f.options.store.requests, {
-        get: vi.fn(async () => ({
-          id: requestId,
-          mode: state === "live" ? "live" : "durable",
-          status: state === "settled" ? "fulfilled" : "pending",
-          originatingRunId: state === "other-run" ? createId("run") : f.run.claims.runId,
-        })),
-      });
-      const pending = { requestId, kind: "browser.access", status: "pending", replayed: false };
-      Object.assign(f.handlers, {
-        saved_login_request: async () => ({
-          status: "pending",
-          site: "https://example.com",
-          requestId,
-          replayed: false,
-        }),
-        browser_profile_request: async () => pending,
-        computer_use: async () => ({
-          content: [{ type: "text", text: JSON.stringify(pending) }],
-          structuredContent: pending,
-        }),
-      });
-      try {
-        let sessionId = "detached-parking-test";
-        if (state === "pending-active") {
-          const initialized = await fetch(f.url, {
-            method: "POST",
-            headers: {
-              authorization: "Bearer run",
-              accept: "application/json, text/event-stream",
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({
-              jsonrpc: "2.0",
-              id: 1,
-              method: "initialize",
-              params: {
-                protocolVersion: "2025-11-25",
-                capabilities: {},
-                clientInfo: { name: "parking", version: "1" },
-              },
-            }),
-          });
-          sessionId = initialized.headers.get("mcp-session-id")!;
-          await initialized.arrayBuffer();
-        }
-        const response = await fetch(f.url, {
+  it.each([
+    "pending",
+    "pending-active",
+    "settled",
+    "live",
+    "other-run",
+    "integration",
+    "program",
+  ] as const)("keeps non-held results and pending guidance compatible (%s)", async (state) => {
+    const f = await httpFixture();
+    const requestId = createId("request");
+    Object.assign(f.options.store.requests, {
+      get: vi.fn(async () => ({
+        id: requestId,
+        mode: state === "live" ? "live" : "durable",
+        status: state === "settled" ? "fulfilled" : "pending",
+        originatingRunId: state === "other-run" ? createId("run") : f.run.claims.runId,
+      })),
+    });
+    const pending = {
+      requestId,
+      kind: "browser.access",
+      status: "pending",
+      replayed: false,
+      next: "The person was asked.",
+    };
+    Object.assign(f.handlers, {
+      saved_login_request: async () => ({
+        status: "pending",
+        site: "https://example.com",
+        kind: "browser.password-sign-in",
+        loginStatus: "pending",
+        next: "The person was asked.",
+        requestId,
+        replayed: false,
+      }),
+      browser_profile_request: async () => pending,
+      plugin_call: async () => ({
+        executionId: "plugin-pending",
+        status: "pending",
+        requestId,
+        next: "The person was asked.",
+      }),
+      computer_use: async () => ({
+        content: [{ type: "text", text: JSON.stringify(pending) }],
+        structuredContent: pending,
+      }),
+    });
+    try {
+      let sessionId = "detached-parking-test";
+      if (state === "pending-active") {
+        const initialized = await fetch(f.url, {
           method: "POST",
           headers: {
             authorization: "Bearer run",
             accept: "application/json, text/event-stream",
             "content-type": "application/json",
-            "mcp-session-id": sessionId,
-            "mcp-protocol-version": "2025-11-25",
           },
           body: JSON.stringify({
             jsonrpc: "2.0",
-            id: "pending-call",
-            method: "tools/call",
-            params:
-              state === "integration"
-                ? { name: "computer_use", arguments: { code: "print(1)" } }
+            id: 1,
+            method: "initialize",
+            params: {
+              protocolVersion: "2025-11-25",
+              capabilities: {},
+              clientInfo: { name: "parking", version: "1" },
+            },
+          }),
+        });
+        sessionId = initialized.headers.get("mcp-session-id")!;
+        await initialized.arrayBuffer();
+      }
+      const response = await fetch(f.url, {
+        method: "POST",
+        headers: {
+          authorization: state === "program" ? "Bearer program" : "Bearer run",
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-session-id": sessionId,
+          "mcp-protocol-version": "2025-11-25",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "pending-call",
+          method: "tools/call",
+          params:
+            state === "program"
+              ? {
+                  name: "plugin_call",
+                  arguments: { calls: { path: "tools.fixture.read", input: {} } },
+                }
+              : state === "integration"
+                ? {
+                    name: "computer_use",
+                    arguments: {
+                      code: "print(1)",
+                    },
+                  }
                 : state === "settled"
                   ? {
                       name: "saved_login_request",
@@ -303,22 +333,21 @@ describe("Opensteer MCP spine", () => {
                         suggestion: { kind: "new", suggestedName: "Personal" },
                       },
                     },
-          }),
-        });
-        const body = await response.json();
-        expect(body.error).toBeUndefined();
-        expect(body.result.isError, JSON.stringify(body)).not.toBe(true);
-        expect(response.headers.get("x-opensteer-request-pending")).toBeNull();
-        if (state.startsWith("pending"))
-          expect(
-            body.result.content.map((part: { text: string }) => part.text).join("\n"),
-          ).toContain(requestPendingGuidance);
-        if (state === "integration") expect(f.options.store.requests.get).not.toHaveBeenCalled();
-      } finally {
-        await f.service.close();
-      }
-    },
-  );
+        }),
+      });
+      const body = await response.json();
+      expect(body.error).toBeUndefined();
+      expect(body.result.isError, JSON.stringify(body)).not.toBe(true);
+      expect(response.headers.get("x-opensteer-request-pending")).toBeNull();
+      if (state.startsWith("pending"))
+        expect(body.result.content.map((part: { text: string }) => part.text).join("\n")).toContain(
+          "The person was asked.",
+        );
+      if (state === "integration") expect(f.options.store.requests.get).not.toHaveBeenCalled();
+    } finally {
+      await f.service.close();
+    }
+  });
   it.each([false, true])(
     "holds a Request until answered, including an early answer (%s)",
     async (early) => {
@@ -342,6 +371,7 @@ describe("Opensteer MCP spine", () => {
         browser_profile_request: async () => ({
           requestId: request.id,
           kind: "browser.access",
+          next: "The person was asked.",
           status: "pending",
           replayed: false,
         }),
@@ -372,8 +402,8 @@ describe("Opensteer MCP spine", () => {
         Object.assign(request, { status: "declined" });
         const result = await call;
         expect(result).toMatchObject({
-          structuredContent: { status: "declined" },
-          content: [expect.anything(), { type: "text", text: "Answered declined" }],
+          structuredContent: { status: "declined", next: "Answered declined" },
+          content: [expect.objectContaining({ type: "text" })],
         });
         expect(f.markToolDelivered).toHaveBeenCalledOnce();
         expect(wait.mock.calls[0]?.[0].limitMs).toBe(requestHoldLimitMs);
@@ -499,6 +529,7 @@ describe("Opensteer MCP spine", () => {
         return {
           requestId: request.id,
           kind: "browser.access",
+          next: "The person was asked.",
           status: "pending",
           replayed: false,
         };

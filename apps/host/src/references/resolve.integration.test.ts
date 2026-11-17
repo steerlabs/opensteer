@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
 import { expect, vi } from "vitest";
 import { AttachmentIdSchema, createId, type ReferenceId, type UserId } from "@opensteer/core";
@@ -382,7 +383,7 @@ describeStore("personal reference handlers", (it) => {
         payload: {
           kind: "device.access",
           reason: "Read files",
-          machineId: run.runnerId,
+          machineId: DeviceIdSchema.parse(run.runnerId),
           machineName: "Mac",
           access: "files",
         },

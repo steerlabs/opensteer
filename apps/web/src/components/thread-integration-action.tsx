@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { IntegrationAccess } from "@opensteer/integration-core";
 import type { Request } from "@opensteer/core";
-import { RunnerIdSchema } from "@opensteer/core";
-import { androidPhoneDefinitionId } from "@opensteer/protocol";
 import { mutationIdempotencyKey, unwrapRpcResult } from "@opensteer/client/host";
 import {
   accessPlan,
@@ -12,10 +10,12 @@ import {
   effectiveIntegrationAccess,
   integrationRequestStillPending,
   resolveIntegrationAccess,
+  setPhoneUseAccess,
   type AccessRequestAccount,
   type ConnectCard,
   type LoadedAccessRequest,
 } from "@opensteer/client/integrations";
+import { isPhoneDisplayDefinitionId, RunnerIdSchema } from "@opensteer/core";
 import { ActionNote } from "./action-rows.js";
 import { useShell } from "./app-shell.js";
 import { ComputerAppPicker } from "./computer-apps/computer-app-picker.js";
@@ -309,9 +309,18 @@ export function ThreadIntegrationAction({
     readonly runnerId: string;
   }) =>
     void run(async () => {
-      if (!plan.definition) throw new Error("This app's description is unavailable.");
-      const computerName =
-        snapshot.machines.find((machine) => machine.id === input.runnerId)?.name ?? "that computer";
+      if (!plan.definition) throw new Error("Computer app definition is unavailable.");
+      const computer = snapshot.machines.find((machine) => machine.id === input.runnerId);
+      const computerName = computer?.name ?? "that computer";
+      // The owner sets a phone's access here; a Mac app is approved on that Mac.
+      if (isPhoneDisplayDefinitionId(plan.definition.id)) {
+        if (!computer) throw new Error("That phone isn’t one of your devices any more.");
+        await setPhoneUseAccess(hostClient, computer, input.access);
+        setComputerSetupNotice(`Agents can now use ${computerName} at the access you chose.`);
+        setReload((value) => value + 1);
+        setPickerOpen(false);
+        return;
+      }
       const command = {
         idempotencyKey: mutationIdempotencyKey(`integration-computer:${plan.definition.id}`),
         input: {
@@ -322,27 +331,16 @@ export function ThreadIntegrationAction({
           runnerId: RunnerIdSchema.parse(input.runnerId),
         },
       };
-      // The owner sets a phone's access here; a Mac app is approved on that Mac.
-      if (plan.definition.id === androidPhoneDefinitionId) {
-        const result = await hostClient.dispatch({
-          ...command,
-          type: "integration.computer.setup.set",
-        });
-        if (result.type !== "integration.computer.setup.set")
-          throw new Error("Phone access did not change.");
-        setComputerSetupNotice(`Agents can now use ${computerName} at the access you chose.`);
-        setReload((value) => value + 1);
-      } else {
-        const result = await hostClient.dispatch({
-          ...command,
-          type: "integration.computer.setup.request",
-        });
-        if (result.type !== "integration.computer.setup.request")
-          throw new Error("The computer did not take the request.");
-        setComputerSetupNotice(
-          `Setup requested. On ${computerName}, open Opensteer → Settings → Devices to approve ${plan.definition.name}.`,
-        );
+      const result = await hostClient.dispatch({
+        ...command,
+        type: "integration.computer.setup.request",
+      });
+      if (result.type !== "integration.computer.setup.request") {
+        throw new Error("Integration computer command mismatch.");
       }
+      setComputerSetupNotice(
+        `Setup requested. On ${computerName}, open Opensteer → Settings → Devices to approve ${plan.definition.name}.`,
+      );
       setPickerOpen(false);
     });
 

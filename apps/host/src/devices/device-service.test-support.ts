@@ -1,3 +1,4 @@
+import { DeviceIntegrationConnectionReaderSchema } from "@opensteer/integration-core";
 import { mkdtemp, rm } from "node:fs/promises";
 import {
   createDeviceServices,
@@ -24,7 +25,13 @@ import {
   integrationSchemaDigest,
 } from "@opensteer/integration-core/digest";
 import { type CallableIntegrationTool, type IntegrationPlatformStore } from "@opensteer/database";
-import { createId, type AgentEvent, type Request } from "@opensteer/core";
+import {
+  DeviceIdSchema,
+  RunnerIdSchema,
+  createId,
+  type AgentEvent,
+  type Request,
+} from "@opensteer/core";
 import { type MachineAppStatus } from "@opensteer/protocol";
 
 import { afterEach, beforeEach, vi } from "vitest";
@@ -126,6 +133,21 @@ export function platform(input: {
     ),
     computerApps: {
       requireAgentAccess: async () => {},
+      requireDeviceAgentAccess: async () => {},
+      deviceStatus: () => null,
+      withDeviceAdmission: async (id, task) =>
+        input.computerApps
+          ? input.computerApps.withRunnerAdmission(RunnerIdSchema.parse(id), task)
+          : task(),
+      withDeviceAdmissions: async (ids, task) => {
+        const enter = (index: number): ReturnType<typeof task> =>
+          ids[index] && input.computerApps
+            ? input.computerApps.withRunnerAdmission(RunnerIdSchema.parse(ids[index]), () =>
+                enter(index + 1),
+              )
+            : task();
+        return enter(0);
+      },
       removePluginData: async () => {},
       reportsApp: () => "offline",
       compatibilityReason: () => null,
@@ -146,7 +168,18 @@ export function platform(input: {
           withRunnerAdmission: vi.fn(async (_runnerId, task) => task()),
         } as Pick<ComputerAppHub, "appStatus" | "attached" | "send" | "withRunnerAdmission">)),
     },
-    ...(input.computerUse ? { computerUse: input.computerUse } : {}),
+    ...(input.computerUse
+      ? {
+          computerUse: Object.assign(input.computerUse, {
+            eligibleInventory:
+              input.computerUse.eligibleInventory ??
+              (async (owner) => ({
+                machines: await input.computerUse!.eligibleMachines(owner, "macos-app"),
+                phones: await input.computerUse!.eligibleMachines(owner, "android-phone"),
+              })),
+          }),
+        }
+      : {}),
     ...(input.nativeTabs ? { nativeTabs: input.nativeTabs } : {}),
     computerToolEnabled: () => true,
     computerUseVersion: () => 2,
@@ -161,14 +194,50 @@ export function platform(input: {
     store: (input.store
       ? {
           connections: { assertOwner: vi.fn(async () => undefined) },
+          getDeviceComputerConnectionForCall: async (
+            params: Parameters<IntegrationPlatformStore["getDeviceComputerConnectionForCall"]>[0],
+          ) => {
+            const found = await input.store?.getComputerConnectionForCall?.(params);
+            return found
+              ? {
+                  ...found,
+                  deviceId: DeviceIdSchema.parse(found.runnerId),
+                  deviceName: found.runnerName,
+                  connection: DeviceIntegrationConnectionReaderSchema.parse(found.connection),
+                }
+              : null;
+          },
+          getDeviceSelfRunnerId: async (id) => RunnerIdSchema.parse(id),
+          requireDeviceSelfRunnerId: async (id) => RunnerIdSchema.parse(id),
+          requireSelfDeviceId: async (id) => DeviceIdSchema.parse(id),
           computerAppRunner: vi.fn(async () => null),
+          listDeviceComputerAppSetupRequests: async () => [],
           listGrants: vi.fn(async () => []),
           // A fake's Request methods serve both stores the platform reads them from.
-          ...(input.store.requests ? { integrationRequests: input.store.requests } : {}),
+          integrationRequests: {
+            listPendingIntegrationAccessRequests: async () => [],
+            ...input.store.requests,
+          },
           ...input.store,
         }
       : {
           connections: { assertOwner: vi.fn(async () => undefined) },
+          getDeviceComputerConnectionForCall: async (
+            params: Parameters<IntegrationPlatformStore["getDeviceComputerConnectionForCall"]>[0],
+          ) => {
+            const found = await input.store?.getComputerConnectionForCall?.(params);
+            return found
+              ? {
+                  ...found,
+                  deviceId: DeviceIdSchema.parse(found.runnerId),
+                  deviceName: found.runnerName,
+                  connection: DeviceIntegrationConnectionReaderSchema.parse(found.connection),
+                }
+              : null;
+          },
+          getDeviceSelfRunnerId: async (id) => RunnerIdSchema.parse(id),
+          requireDeviceSelfRunnerId: async (id) => RunnerIdSchema.parse(id),
+          requireSelfDeviceId: async (id) => DeviceIdSchema.parse(id),
           computerAppRunner: vi.fn(async () => null),
           install: vi.fn(),
           listInstallations: vi.fn(async () => []),

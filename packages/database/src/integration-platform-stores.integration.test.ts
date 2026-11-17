@@ -1,3 +1,5 @@
+import { upsertSelfDeviceInTransaction } from "./device-inventory-store.js";
+import { DeviceIdSchema } from "@opensteer/core";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   personalFixtureOwner,
@@ -406,13 +408,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       await database
         .insertInto("runners")
         .values({
-          accessPolicy: jsonValue({
-            commands: false,
-            forwarding: false,
-            reach: "nobody",
-            shares: [],
-          }),
-          accessPolicyRevision: 1,
           allowedModules: jsonValue(["integrations", "shell"]),
           capabilities: jsonValue([]),
           connectionGeneration: 0,
@@ -431,6 +426,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
           revokedAt: null,
         })
         .executeTakeFirstOrThrow();
+      await upsertSelfDeviceInTransaction(database, runnerId);
       // The owner set computer use up on this Mac, which registered its key.
       if (ownerUserId !== null) {
       }
@@ -862,6 +858,13 @@ integration.sequential("PostgreSQL computer app connections", () => {
       displayName: "Mac lifecycle",
     });
     expect(created.connection).not.toHaveProperty("authorizationDigest");
+    expect(
+      await database
+        .selectFrom("integrationConnections")
+        .select(["runnerId", "deviceId"])
+        .where("id", "=", created.connection.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ runnerId: setup.runnerId, deviceId: setup.runnerId });
     const readTool = await database
       .selectFrom("integrationTools")
       .select(["id", "name"])
@@ -991,7 +994,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       database
         .selectFrom("integrationConnections")
         .select("id")
-        .where("runnerId", "=", setup.runnerId)
+        .where("deviceId", "=", DeviceIdSchema.parse(setup.runnerId))
         .execute(),
     ).resolves.toEqual([]);
   });
@@ -1233,10 +1236,10 @@ integration.sequential("PostgreSQL computer app connections", () => {
     await expect(
       database
         .selectFrom("integrationConnections")
-        .select(["runnerId", "status"])
+        .select(["deviceId", "status"])
         .where("id", "=", connected.connection.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ runnerId: setup.runnerId, status: "revoked" });
+    ).resolves.toEqual({ deviceId: setup.runnerId, status: "revoked" });
   });
 
   it("rejects unavailable definitions and runners outside the effective owner", async ({
@@ -2715,7 +2718,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
         .executeTakeFirstOrThrow();
       const barrier = pauseAfterLock(
         database,
-        (node) => /"name":"runners"/u.test(node) && node.includes("NoKeyUpdate"),
+        (node) =>
+          (decision.startsWith("mcp-") ? /"name":"runners"/u : /"name":"devices"/u).test(node) &&
+          node.includes("NoKeyUpdate"),
       );
       const held = new IntegrationPlatformStore(barrier.database);
       const input = {
@@ -2771,7 +2776,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
           await database
             .selectFrom("integrationConnections")
             .select("id")
-            .where("runnerId", "=", setup.runnerId)
+            .where("deviceId", "=", DeviceIdSchema.parse(setup.runnerId))
             .execute(),
         ).toEqual([]);
         await database.insertInto("authSessions").values(session).execute();
@@ -3072,7 +3077,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     const stored = await database
       .selectFrom("computerUsePolicies")
       .selectAll()
-      .where("runnerId", "=", setup.runnerId)
+      .where("runnerId", "=", DeviceIdSchema.parse(setup.runnerId))
       .executeTakeFirstOrThrow();
     expect(stored).not.toHaveProperty("approval");
     await expect(
@@ -3138,7 +3143,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       await database
         .selectFrom("integrationConnections")
         .select("id")
-        .where("runnerId", "=", setup.runnerId)
+        .where("deviceId", "=", DeviceIdSchema.parse(setup.runnerId))
         .execute(),
     ).toEqual([]);
     const approved = await platform.approveComputerAppAutomatically(input);
@@ -3654,7 +3659,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       database
         .selectFrom("integrationConnections")
         .select("id")
-        .where("runnerId", "=", setup.runnerId)
+        .where("deviceId", "=", DeviceIdSchema.parse(setup.runnerId))
         .where("computerAppKey", "=", "com.apple.notes")
         .executeTakeFirst(),
     ).resolves.toBeUndefined();
@@ -3705,7 +3710,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         access: "read",
         app: notes,
         definitionId: "macos-app",
-        runnerId: setup.runnerId,
+        deviceId: setup.runnerId,
         setupRequestId: opened.setupRequest.id,
       },
       presentation: {
@@ -3750,7 +3755,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       await database
         .selectFrom("integrationConnections")
         .select("id")
-        .where("runnerId", "=", setup.runnerId)
+        .where("deviceId", "=", DeviceIdSchema.parse(setup.runnerId))
         .execute(),
     ).toEqual([]);
     const now = new Date();
@@ -3931,7 +3936,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         appKey: "com.apple.notes",
         connectionId: connection.connection.id,
         definitionId: guiDefinition.id,
-        runnerId: setup.runnerId,
+        deviceId: setup.runnerId,
       },
     ]);
   });
@@ -4502,7 +4507,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       await database
         .updateTable("integrationConnections")
         .set({ computerApp: jsonValue(renamed) })
-        .where("runnerId", "=", test.mac.runnerId)
+        .where("deviceId", "=", DeviceIdSchema.parse(test.mac.runnerId))
         .execute();
       await database
         .updateTable("integrationGrants")
@@ -4560,7 +4565,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       const before = await snapshot();
       const barrier = pauseAfterLock(
         database,
-        (node) => /"name":"runners"/u.test(node) && node.includes("NoKeyUpdate"),
+        (node) => /"name":"devices"/u.test(node) && node.includes("NoKeyUpdate"),
       );
       const held = new IntegrationPlatformStore(barrier.database);
       const outcome = held.setComputerConnection(input).then(
@@ -4779,7 +4784,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
           access: "read-write",
           app: null,
           definitionId: "android-phone",
-          runnerId: setup.phone.phoneId,
+          deviceId: setup.phone.phoneId,
           setupRequestId: opened.setupRequest.id,
         },
         presentation: {
@@ -4899,7 +4904,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
           deploymentId: deployment!.id,
           ownerUserId: run.userId,
           revision: 1,
-          runnerId: setup.phone.phoneId,
+          runnerId: DeviceIdSchema.parse(setup.phone.phoneId),
           updatedAt: new Date(),
         })
         .execute();

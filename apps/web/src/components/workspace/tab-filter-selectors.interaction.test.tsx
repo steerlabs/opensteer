@@ -10,7 +10,7 @@ import {
   type HostSnapshot,
   type TabDeviceChoice,
 } from "@opensteer/client/host";
-import { RunnerIdSchema, TabIdSchema, ThreadIdSchema } from "@opensteer/core";
+import { DeviceIdSchema, TabIdSchema, ThreadIdSchema } from "@opensteer/core";
 import { tabFixture } from "@opensteer/client/test-support";
 import * as tabList from "../../../../../packages/client/src/host/tab-list.js";
 
@@ -20,7 +20,7 @@ it("derives tab matches and device counts only when the tab list changes", () =>
   const base = mock.getSnapshot();
   // Spread over two computers, so the device choice has something to choose between.
   const computers = base.machines.slice(0, 2).map((machine) => ({
-    computerId: RunnerIdSchema.parse(machine.id),
+    computerId: DeviceIdSchema.parse(machine.id),
     name: machine.name,
   }));
   const rows = Array.from({ length: 1200 }, (_, i) =>

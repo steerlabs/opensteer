@@ -1,3 +1,8 @@
+import {
+  DeviceIdSchema,
+  isPhoneDisplayDefinitionId,
+  PhoneDisplayDefinitionIdSchema,
+} from "./devices.js";
 import { z } from "zod";
 import { BrowserSiteSchema } from "./browser-sources.js";
 import { ComputerAppIdentitySchema } from "./computer-app.js";
@@ -424,7 +429,7 @@ const requestPayloadVariants = [
    */
   z.strictObject({
     kind: z.literal("machine.full-disk-access"),
-    machineId: RunnerIdSchema,
+    machineId: DeviceIdSchema,
     machineName: z.string().trim().min(1).max(160),
     reason: RequestReasonSchema,
   }),
@@ -466,14 +471,14 @@ const requestPayloadVariants = [
     .strictObject({
       access: z.enum(["read", "read-write"]),
       app: z.strictObject(computerAppIdentityShape).nullable(),
-      definitionId: z.enum(["macos-app", "android-phone"]),
+      definitionId: z.union([z.literal("macos-app"), PhoneDisplayDefinitionIdSchema]),
       kind: z.literal("computer.app.access"),
       reason: RequestReasonSchema,
-      runnerId: RunnerIdSchema,
+      deviceId: DeviceIdSchema,
       setupRequestId: z.uuid(),
     })
     .superRefine((payload, context) => {
-      if ((payload.app === null) !== (payload.definitionId === "android-phone")) {
+      if ((payload.app === null) !== isPhoneDisplayDefinitionId(payload.definitionId)) {
         context.addIssue({
           code: "custom",
           message: "A Mac app access request names its app; a phone access request names none",
@@ -483,7 +488,7 @@ const requestPayloadVariants = [
     }),
   z.strictObject({
     kind: z.literal("device.access"),
-    machineId: RunnerIdSchema,
+    machineId: DeviceIdSchema,
     machineName: z.string().trim().min(1).max(160),
     access: z.enum(["browser", "apps", "files"]),
     reason: RequestReasonSchema,
@@ -511,8 +516,21 @@ const requestPayloadVariants = [
     interactionId: RequestIdentifierSchema,
   }),
 ] as const;
-export const RequestPayloadSchema = z.discriminatedUnion("kind", requestPayloadVariants);
-const RequestPayloadViewSchema = z.discriminatedUnion("kind", [
+const canonicalRequestPayloadSchema = z.discriminatedUnion("kind", requestPayloadVariants);
+export const LegacyComputerAppAccessPayloadSchema = z
+  .strictObject({ ...requestPayloadVariants[7].shape, runnerId: RunnerIdSchema })
+  .omit({ deviceId: true });
+function normalizeLegacyComputerAccess(value: unknown) {
+  const legacy = LegacyComputerAppAccessPayloadSchema.safeParse(value);
+  if (!legacy.success) return value;
+  const { runnerId, ...payload } = legacy.data;
+  return { ...payload, deviceId: DeviceIdSchema.parse(runnerId) };
+}
+export const RequestPayloadSchema = z.preprocess(
+  normalizeLegacyComputerAccess,
+  canonicalRequestPayloadSchema,
+);
+const canonicalRequestPayloadViewSchema = z.discriminatedUnion("kind", [
   z.object(requestPayloadVariants[0].shape),
   z.object(requestPayloadVariants[1].shape),
   z.object({
@@ -536,6 +554,10 @@ const RequestPayloadViewSchema = z.discriminatedUnion("kind", [
   z.object(requestPayloadVariants[11].shape),
   z.object(requestPayloadVariants[12].shape),
 ]);
+const RequestPayloadViewSchema = z.preprocess(
+  normalizeLegacyComputerAccess,
+  canonicalRequestPayloadViewSchema,
+);
 export type RequestPayload = z.infer<typeof RequestPayloadSchema>;
 
 export const RequestSettlementProvenanceSchema = z.strictObject({

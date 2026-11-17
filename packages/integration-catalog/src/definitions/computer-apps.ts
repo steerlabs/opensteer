@@ -1,4 +1,8 @@
-import { IntegrationDefinitionSchema } from "@opensteer/integration-core/adapter";
+import { IntegrationDefinitionSchema } from "@opensteer/integration-core";
+import {
+  iphoneScreenActParamsJsonSchema,
+  phoneDisplayInstalledAppsParamsJsonSchema,
+} from "@opensteer/protocol/phone-display";
 import { iphoneAppIntegrations } from "./iphone-apps.js";
 
 /**
@@ -1077,6 +1081,60 @@ export const computerAppIntegrations = [
     id: "android-phone",
     name: "Android phone",
     provider: "android-phone",
+  }),
+  IntegrationDefinitionSchema.parse({
+    adapter: "computer",
+    authMethods: [{ id: "computer", kind: "computer", label: "This phone" }],
+    config: {
+      accessLabels: { read: "Can see", readWrite: "Can see and control" },
+      accessSummaries: {
+        read: "Allows seeing the iPhone screen while it is unlocked.",
+        readWrite:
+          "Allows seeing and operating the unlocked iPhone screen through its assigned Mac.",
+      },
+      kind: "display",
+      operations: [
+        {
+          name: "observe",
+          title: "Observe",
+          effect: "read",
+          description:
+            "See the unlocked phone screen. Accessibility elements may be unavailable; use the screenshot when the tree is empty.",
+          inputSchema: { additionalProperties: false, properties: {}, type: "object" },
+          outputSchema: null,
+        },
+        {
+          name: "act",
+          title: "Act",
+          effect: "write",
+          description:
+            "Act on the latest observation, then observe again. Use only advertised actions and navigation buttons. Launch an opaque appId returned by installed_apps. Locked and protected screens cannot be operated.",
+          inputSchema: iphoneScreenActParamsJsonSchema,
+          outputSchema: null,
+        },
+        {
+          name: "release",
+          title: "Release",
+          effect: "read",
+          description: "Let go of the phone so another task can use it.",
+          inputSchema: { additionalProperties: false, properties: {}, type: "object" },
+          outputSchema: null,
+        },
+        {
+          name: "installed_apps",
+          title: "Installed apps",
+          effect: "read",
+          description: "List the phone's launchable apps and opaque app IDs.",
+          inputSchema: phoneDisplayInstalledAppsParamsJsonSchema,
+          outputSchema: null,
+        },
+      ],
+      platforms: ["ios"],
+    },
+    description: "See and operate an unlocked iPhone screen through its assigned Mac.",
+    id: "iphone-screen",
+    name: "iPhone screen",
+    provider: "iphone-screen",
   }),
   ...iphoneAppIntegrations,
 ] as const;

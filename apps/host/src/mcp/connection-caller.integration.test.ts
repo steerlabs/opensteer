@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { gatherComputerAccess } from "../devices/computer-access.js";
 import { DeviceToolHandlers } from "./handlers/devices.js";
 import { IntegrationPlatformStore, type IntegrationRequester } from "@opensteer/database";
 import { AppStore, TriggerStore } from "@opensteer/database";
@@ -181,16 +182,20 @@ async function serveMcp(
   if (!address || typeof address === "string") throw new Error("MCP test did not listen");
   const url = new URL(`http://127.0.0.1:${address.port}${mcpResourcePath}`);
   const integrationStore = new IntegrationPlatformStore(store.database);
+  const platform = {
+    store: integrationStore,
+    listCallableTools: (input: IntegrationRequester) => integrationStore.listCallableTools(input),
+    computerToolEnabled: () => false,
+    computerUseVersion: async () => undefined,
+    computerAppApprovals: {
+      computerUseInventory: async () => ({ machines: [], phones: [] }),
+      computerAppHolders: () => new Map(),
+    },
+  } as unknown as Parameters<typeof gatherComputerAccess>[0];
   const devices = new DeviceToolHandlers({
     devices: {
-      store: integrationStore,
-      listCallableTools: (input: IntegrationRequester) => integrationStore.listCallableTools(input),
-      computerToolEnabled: () => false,
-      computerUseVersion: () => undefined,
-      computerAppApprovals: {
-        computerUseInventory: async () => ({ machines: [], phones: [] }),
-        computerAppHolders: () => new Map(),
-      },
+      ...platform,
+      computerAccess: gatherComputerAccess.bind(undefined, platform),
     } as unknown as ConstructorParameters<typeof DeviceToolHandlers>[0]["devices"],
     access: {} as never,
   });
@@ -600,7 +605,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       "computer_apps",
     ]) {
       const result = await agent.client.callTool({ name, arguments: {} });
-      expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
+      expect(result.isError, `${name}: ${JSON.stringify(result.content)}`).not.toBe(true);
     }
     for (const arguments_ of [{ title: "Renamed" }, { done: true }, { done: false }]) {
       const result = await agent.client.callTool({

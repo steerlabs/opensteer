@@ -1,6 +1,12 @@
+import { DeviceIdSchema } from "@opensteer/core";
+import { phoneUseView } from "../integrations/computer-use.js";
+import { mockIphoneScreenStates } from "./mock-screen-devices.js";
+import { DeviceMachineSummarySchema } from "@opensteer/protocol";
+import { computerTargetId } from "../host/device-projection.js";
 import { describe, expect, it, vi } from "vitest";
 import {
   IntegrationDashboardSchema,
+  DeviceIntegrationConnectionSummarySchema,
   IntegrationPlatformDashboardSchema,
 } from "@opensteer/integration-core";
 
@@ -229,11 +235,16 @@ describe("MockHostClient", () => {
             : kind === "computer-app"
               ? {
                   type: kind,
-                  machineId: createId("runner"),
+                  machineId: DeviceIdSchema.parse(createId("runner")),
                   name: "Notes",
                   app: { bundleId: "com.apple.Notes", teamId: null, displayName: "Notes" },
                 }
-              : { type: kind, machineId: createId("runner"), display: "main", name: "My phone" };
+              : {
+                  type: kind,
+                  machineId: DeviceIdSchema.parse(createId("runner")),
+                  display: "main",
+                  name: "My phone",
+                };
         const thread = await client.createThread({
           ...threadInput(client),
           title: "Keep this seed",
@@ -486,7 +497,11 @@ describe("MockHostClient", () => {
   it("seeds integrations that satisfy the Host dashboard contracts", async () => {
     const client = createClient();
 
-    const dashboard = IntegrationDashboardSchema.parse(await integrations(client));
+    const dashboard = IntegrationDashboardSchema.extend({
+      connections: IntegrationDashboardSchema.shape.connections.element
+        .or(DeviceIntegrationConnectionSummarySchema)
+        .array(),
+    }).parse(await integrations(client));
     const platform = IntegrationPlatformDashboardSchema.parse(await integrationPlatform(client));
 
     expect(platform.catalog.map(({ definition }) => definition.id)).toEqual([
@@ -498,6 +513,7 @@ describe("MockHostClient", () => {
       "apple-messages",
       "macos-app",
       "android-phone",
+      "iphone-screen",
     ]);
     // Only device data apps, computer use, the phone and local servers remain.
     expect(
@@ -515,6 +531,7 @@ describe("MockHostClient", () => {
         // A phone is one connection for its whole screen.
         ["android-phone", "connected"],
         ["macos-app", "connected"],
+        ["iphone-screen", "connected"],
       ],
     );
   });
@@ -1076,5 +1093,69 @@ it("shows a Host return hint and compacts once before the mock human message", a
     ).toBeNull();
   } finally {
     client.dispose();
+  }
+});
+
+it("projects each screen preview as its own Device and preserves both existing phone fixtures", async () => {
+  for (const state of mockIphoneScreenStates) {
+    const client = new MockHostClient({ latencyMs: 0, iphoneScreen: state });
+    try {
+      const snapshot = client.getSnapshot();
+      const phone = snapshot.machines.find(
+        (machine) => machine.phoneDisplay?.definitionId === "iphone-screen",
+      )!;
+      expect(DeviceMachineSummarySchema.parse(phone)).toMatchObject({
+        selfRunnerId: null,
+        allowedModules: [],
+        modules: {},
+        pinnedThreads: 0,
+      });
+      expect(
+        snapshot.machines.some((machine) => machine.id === phone.phoneDisplay?.driver?.runnerId),
+      ).toBe(true);
+      expect(snapshot.machines.some((machine) => machine.device?.platform === "android")).toBe(
+        true,
+      );
+      expect(
+        snapshot.machines.some(
+          (machine) => machine.device?.platform === "ios" && machine.id !== phone.id,
+        ),
+      ).toBe(true);
+      const dashboard = await client.rpc["integrations.get"]({});
+      if (!dashboard.ok) throw new Error(dashboard.error.message);
+      const connection = dashboard.data.connections.find(
+        ({ computer }) => computerTargetId(computer) === phone.id,
+      )!;
+      expect(connection.computer).toMatchObject({
+        deviceId: phone.id,
+        access: state === "read-only" ? "read" : "read-write",
+      });
+      expect(connection.computer).not.toHaveProperty("runnerId");
+      const platform = unwrap(await client.rpc["integration.platform.get"]({}));
+      const projected = phoneUseView({
+        machine: phone,
+        connections: dashboard.data.connections,
+        definitions: platform.catalog.map(({ definition }) => definition),
+        hostConnected: true,
+      });
+      expect(projected?.access).toBe(state === "read-only" ? "read" : "read-write");
+      expect(projected?.canView).toBe(["ready", "read-only", "apps-off"].includes(state));
+      const before = phone.access!.revision;
+      const result = await client.updateMachineAccess({
+        deviceId: phone.id,
+        expectedRevision: before,
+        policy: { ...phone.access!.policy, apps: false },
+      });
+      expect(result).toEqual({ outcome: "updated", revision: before + 1 });
+      expect(
+        await client.updateMachineAccess({
+          deviceId: phone.id,
+          expectedRevision: before,
+          policy: phone.access!.policy,
+        }),
+      ).toEqual({ outcome: "conflict" });
+    } finally {
+      client.dispose();
+    }
   }
 });

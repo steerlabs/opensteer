@@ -1,7 +1,8 @@
-import type { UserId } from "@opensteer/core";
+import { sql } from "kysely";
+import { DeviceIdSchema, type DeviceId, type UserId } from "@opensteer/core";
 import {
-  IntegrationConnectionSummarySchema,
-  type IntegrationConnectionSummary,
+  DeviceIntegrationConnectionSummarySchema,
+  type DeviceIntegrationConnectionSummary,
 } from "@opensteer/integration-core/models";
 import type { Kysely, Selectable } from "kysely";
 import type { DatabaseSchema, IntegrationConnectionTable } from "./schema.js";
@@ -10,7 +11,7 @@ import type { DatabaseSchema, IntegrationConnectionTable } from "./schema.js";
 export async function listIntegrationConnections(
   database: Kysely<DatabaseSchema>,
   ownerUserId: UserId,
-): Promise<readonly IntegrationConnectionSummary[]> {
+): Promise<readonly DeviceIntegrationConnectionSummary[]> {
   const rows = await database
     .selectFrom("integrationConnections")
     .selectAll()
@@ -25,15 +26,18 @@ export async function listIntegrationConnections(
 
 export function integrationConnectionFromRow(
   row: Selectable<IntegrationConnectionTable>,
-): IntegrationConnectionSummary {
-  return IntegrationConnectionSummarySchema.parse({
+): DeviceIntegrationConnectionSummary {
+  const deviceId =
+    row.deviceId ??
+    (row.connectionKind === "computer" && row.runnerId ? DeviceIdSchema.parse(row.runnerId) : null);
+  return DeviceIntegrationConnectionSummarySchema.parse({
     accountIdentifier: row.accountIdentifier,
     computer:
-      row.connectionKind === "computer" && row.computerAccess && row.runnerId
+      row.connectionKind === "computer" && row.computerAccess && deviceId
         ? {
             access: row.computerAccess,
             app: row.computerApp,
-            runnerId: row.runnerId,
+            deviceId,
             blockedAt: row.computerBlockedAt?.toISOString() ?? null,
             policyRevision: row.computerPolicyRevision,
           }
@@ -52,3 +56,5 @@ export function integrationConnectionFromRow(
     updatedAt: row.updatedAt.toISOString(),
   });
 }
+
+export const computerConnectionDeviceId = sql<DeviceId | null>`case when integration_connections.connection_kind='computer' then coalesce(integration_connections.device_id,integration_connections.runner_id) end`;

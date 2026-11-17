@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
 
@@ -18,13 +19,7 @@ import {
   mockComputerUseToolRefs,
   mockComputerUseTurn,
 } from "@opensteer/client/mock";
-import {
-  TabIdSchema,
-  createId,
-  defaultTaskSymbol,
-  ThreadIdSchema,
-  RunnerIdSchema,
-} from "@opensteer/core";
+import { TabIdSchema, createId, defaultTaskSymbol, ThreadIdSchema } from "@opensteer/core";
 import { computerUseStops } from "@opensteer/client/integrations";
 import { mcpPresentationScenarios, mcpPresentationTool } from "@opensteer/client/test-support";
 import {
@@ -591,7 +586,7 @@ it("opens the exact phone from its conversation chip and keeps Stop and the step
       integration: {
         account: "This phone",
         computerApp: null,
-        phone: { computer: machine.name, runnerId: RunnerIdSchema.parse(machine.id) },
+        phone: { computer: machine.name, runnerId: DeviceIdSchema.parse(machine.id) },
         effect: "write",
         integration: "Android phone",
         operation: { name: "act", title: "Act" },
@@ -643,7 +638,7 @@ it("opens the exact phone from its conversation chip and keeps Stop and the step
                 tabFixture({
                   tabId: TabIdSchema.parse("phone-tab"),
                   kind: "phone",
-                  computer: { computerId: RunnerIdSchema.parse(machine.id), name: machine.name },
+                  computer: { computerId: DeviceIdSchema.parse(machine.id), name: machine.name },
                 }),
               ]),
               browserProfiles: [],

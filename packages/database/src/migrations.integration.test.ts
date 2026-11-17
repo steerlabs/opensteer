@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { seedPrivatePublisher } from "./private-publisher.test-support.js";
 import {
   AgentEventViewSchema,
@@ -14,8 +15,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
 import {
   tabsAndAppsMigrationName,
+  deviceDriversMigrationName,
   agentHomeSettingsMigrationName,
-  dropServiceIntegrationsMigrationName,
   dropSpecialistsMigrationName,
   MigrationLineageError,
   migrateToLatest,
@@ -792,8 +793,15 @@ describe("fresh personal/team lineage", () => {
     ]);
   });
   it("drops service integrations and keeps device, messaging and local-server rows", async () => {
-    await migrateToLatest(database, migrationsBefore(dropServiceIntegrationsMigrationName));
-    const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
+    await migrateToLatest(database, {
+      getMigrations: async () =>
+        Object.fromEntries(
+          Object.entries(await migrationProvider().getMigrations()).filter(
+            ([name]) => name <= deviceDriversMigrationName,
+          ),
+        ),
+    });
+    const { userId, runnerId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
     // The storage only databases made before this migration have.
     await sql`create table integration_provider_applications (id text primary key);
       create table mcp_oauth_credentials (connection_id text primary key);
@@ -821,9 +829,11 @@ describe("fresh personal/team lineage", () => {
     const connection = (id: string, kind: string, serverId: string | null) =>
       sql`insert into integration_connections
         (id, owner_user_id, connection_kind, provider, connection_method, status, display_name,
-          capabilities, integration_server_id, granted_scopes)
+          capabilities, integration_server_id, granted_scopes, runner_id, device_id)
         values (${id}, ${userId}, ${kind}, ${kind}, 'computer', 'connected', ${id}, '[]',
-          ${serverId}, '[]')`.execute(database);
+          ${serverId}, '[]', ${kind === "computer" ? runnerId : null}, ${kind === "computer" ? runnerId : null})`.execute(
+        database,
+      );
     const grant = (id: string, installationId: string, connectionId: string | null) =>
       sql`insert into integration_grants
         (access, id, owner_user_id, installation_id, connection_id, alias, is_default, created_by, status)
@@ -1200,9 +1210,9 @@ describe("fresh personal/team lineage", () => {
     );
     await migrateToLatest(database);
     const runner = await database
-      .selectFrom("runners")
+      .selectFrom("devices")
       .select("accessPolicy")
-      .where("id", "=", fixture.runnerId)
+      .where("id", "=", DeviceIdSchema.parse(fixture.runnerId))
       .executeTakeFirstOrThrow();
     expect(runner.accessPolicy).toEqual({ ...original, browser: true, apps: true });
     const columns = await sql<{

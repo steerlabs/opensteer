@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { expect, it } from "vitest";
 import { createId } from "@opensteer/core";
 import { getDeviceDefinition } from "@opensteer/integration-catalog/devices";
@@ -39,7 +40,9 @@ it.each([false, true])(
         listGrants: async () => [
           { installationId, connectionId, status: "active", access: "read" },
         ],
-        getComputerConnectionForCall: async () => ({ runnerId: computerId }),
+        getDeviceComputerConnectionForCall: async () => ({
+          deviceId: DeviceIdSchema.parse(computerId),
+        }),
         integrationRequests: {
           createIntegrationAccessRequest: async (payload: object) => ({
             events: [],
@@ -61,7 +64,7 @@ it.each([false, true])(
       {
         dataApp: "calendar",
         access: "read",
-        computerId: matching ? computerId : createId("runner"),
+        computerId: DeviceIdSchema.parse(matching ? computerId : createId("runner")),
       },
     );
     expect(result).toMatchObject(

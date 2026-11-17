@@ -1,3 +1,5 @@
+import type { IphoneRunnerPort } from "@opensteer/protocol/iphone-bridge";
+import { fixture as iphoneFixture, ownerA, ownerB } from "../iphone/test-support.js";
 import { MacOwnerSourceSchema, DisplayStreamIdSchema } from "@opensteer/protocol";
 import type {
   ComputerUseHelperEvent,
@@ -1047,6 +1049,7 @@ function openAnswer(params: unknown): unknown {
 
 async function bridgeHarness(
   options: {
+    readonly iphone?: IphoneRunnerPort;
     readonly graceMs?: number;
     readonly ownerInputVersion?: 2 | undefined;
     readonly passwords?: PasswordsAuthorityPort;
@@ -1112,6 +1115,7 @@ async function bridgeHarness(
       ...(options.graceMs === undefined ? {} : { graceMs: options.graceMs }),
       ...(options.passwords ? { passwords: options.passwords } : {}),
       helper,
+      ...(options.iphone ? { iphone: options.iphone } : {}),
       now: () => clock.at,
       onDataPermissionRequired: permissionRequired,
       ownership,
@@ -1135,9 +1139,11 @@ async function bridgeHarness(
     token: string | null,
     ownerInputVersion?: number,
     videoProfile?: number,
+    iphoneScreen?: boolean,
   ) => {
     const socket = new WebSocket(url, {
       headers: {
+        ...(iphoneScreen ? { "x-opensteer-iphone-screen": "1" } : {}),
         ...(videoProfile === undefined
           ? {}
           : { "x-opensteer-mac-video-profile": String(videoProfile) }),
@@ -1170,6 +1176,7 @@ async function bridgeHarness(
       closedSockets += 1;
     });
     return {
+      send: (frame: unknown) => socket.send(JSON.stringify(frame)),
       call: async (id: number, method: string, params: unknown, timeoutMs?: number) =>
         new Promise<unknown>((resolvePromise) => {
           pending.set(id, resolvePromise);
@@ -1190,8 +1197,12 @@ async function bridgeHarness(
   return {
     calls,
     closedSockets: () => closedSockets,
-    connect: async (token: string | null, ownerInputVersion?: number, videoProfile?: number) =>
-      await connect(firstBridge.url, token, ownerInputVersion, videoProfile),
+    connect: async (
+      token: string | null,
+      ownerInputVersion?: number,
+      videoProfile?: number,
+      iphoneScreen?: boolean,
+    ) => await connect(firstBridge.url, token, ownerInputVersion, videoProfile, iphoneScreen),
     /** A bridge on the same helper that has not started. */
     createBridge,
     emit: (event: ComputerUseHelperEvent) => {
@@ -1235,3 +1246,43 @@ async function bridgeHarness(
     token: firstBridge.server.token,
   };
 }
+
+it("requires iPhone opt-in and fences slot and generation on the shared bridge", async () => {
+  const phone = await iphoneFixture();
+  cleanups.push(phone.cleanup);
+  await phone.bind();
+  const h = await bridgeHarness({ iphone: phone.service.forSlot(ownerA) });
+  const legacy = await h.connect(h.token);
+  const assignment = {
+    deviceId: phone.deviceId,
+    generation: 1,
+    role: "screen",
+    definitionId: "iphone-screen",
+  };
+  expect(await legacy.call(1, "iphone.targets", { assignments: [assignment] })).toMatchObject({
+    error: { code: "unsupported" },
+  });
+  legacy.close();
+  await vi.waitFor(() => expect(h.closedSockets()).toBe(1), { timeout: 2000 });
+  const connected = await h.connect(h.token, undefined, undefined, true);
+  expect(await connected.call(2, "iphone.targets", { assignments: [assignment] })).toMatchObject({
+    result: { targets: [{ deviceId: phone.deviceId, driverGeneration: 1 }] },
+  });
+  expect(
+    await connected.call(4, "iphone.observe", {
+      deviceId: phone.deviceId,
+      driverGeneration: 2,
+      sessionId: "session",
+      runId: "run",
+      includeScreenshot: true,
+    }),
+  ).toMatchObject({ error: { code: "no-session" } });
+  expect(h.calls).toEqual([]);
+  connected.send({
+    kind: "request",
+    id: 5,
+    method: "iphone.targets",
+    params: { ...ownerB, assignments: [assignment] },
+  });
+  await vi.waitFor(() => expect(h.closedSockets()).toBe(2), { timeout: 1000 });
+});

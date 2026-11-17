@@ -1,3 +1,4 @@
+import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import { validateJsonSchema } from "@opensteer/shared/jsonSchemaValidation";
 import { parseComputerAppConfig } from "@opensteer/integration-core/computer-app";
 import { describe, expect, it } from "vitest";
@@ -9,6 +10,11 @@ describe("device catalog", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  it("keeps the Android display definition digest unchanged", () => {
+    expect(integrationDefinitionDigest(getDeviceDefinition("android-phone"))).toBe(
+      "rEYeiv1bBPbdl6H68nIese0meJZSBKz4jRxYB6qwnTI",
+    );
+  });
   it("publishes only observe and act for the GUI computer app", () => {
     const definition = getDeviceDefinition("macos-app");
     if (!definition) throw new Error("The catalog must define macos-app");

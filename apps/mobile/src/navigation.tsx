@@ -781,7 +781,9 @@ type OpensteerRootParamList = {
   readonly TeamNewMessage: { readonly teamId: string };
   readonly TeamAudit: { readonly teamId: string };
   /** A team page link the person opened or pasted, or none for the paste field. */
-  readonly JoinTeam: { readonly link?: string | undefined } | undefined;
+  readonly JoinTeam:
+    | { readonly link?: string | undefined; readonly externalIntent?: number | undefined }
+    | undefined;
   readonly ConnectOpensteer: { readonly teamId: string };
   readonly DoneTasks: { readonly deploymentId: string };
   readonly QuietlyMoved: { readonly deploymentId: string };

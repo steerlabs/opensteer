@@ -1,11 +1,6 @@
 import { TabIdSchema } from "@opensteer/core";
 import { AppSchema, AppListItemSchema } from "@opensteer/core";
-import {
-  AgentBrowserSessionSummarySchema,
-  ChromeCookiesResultSchema,
-  SavedLoginResultSchema,
-  UseCardResultSchema,
-} from "@opensteer/protocol";
+import { AgentBrowserSessionSummarySchema } from "@opensteer/protocol";
 import { z } from "zod";
 import {
   AppIdSchema,
@@ -303,8 +298,9 @@ export const RequestCreationOutputSchema = z.object({
   link: AgentLinkSchema.optional(),
   kind: RequestKindSchema,
   replayed: z.boolean(),
-  requestId: RequestIdSchema,
-  status: RequestStatusSchema,
+  requestId: RequestIdSchema.nullable(),
+  status: RequestStatusSchema.or(z.literal("blocked")),
+  next: z.string().min(1),
 });
 export const BrowserProfileOutputSchema = z.object({
   id: BrowserProfileIdSchema,
@@ -317,23 +313,39 @@ export const BrowserProfileListOutputSchema = z.object({
   profiles: z.array(BrowserProfileOutputSchema),
   sites: z.array(z.object({ site: z.string() })),
 });
-/** A held or pending Request's result also carries what the Host says about it. */
-const heldGuidance = { guidance: z.string().optional() };
-const [copied, chromePending, chromeDeclined, chromeUnavailable] =
-  ChromeCookiesResultSchema.options;
-export const CopyChromeCookiesOutputSchema = z.discriminatedUnion("status", [
-  copied.extend(heldGuidance),
-  chromePending.extend({ ...heldGuidance, link: AgentLinkSchema.optional() }),
-  chromeDeclined.extend({ ...heldGuidance, link: AgentLinkSchema.optional() }),
-  chromeUnavailable.extend(heldGuidance),
-]);
-const [ready, savedPending, savedDeclined, savedUnavailable] = SavedLoginResultSchema.options;
-export const UseSavedLoginOutputSchema = z.discriminatedUnion("status", [
-  ready.extend(heldGuidance),
-  savedPending.extend({ ...heldGuidance, link: AgentLinkSchema.optional() }),
-  savedDeclined.extend({ ...heldGuidance, link: AgentLinkSchema.optional() }),
-  savedUnavailable.extend(heldGuidance),
-]);
+const BrowserRequestOutputSchema = RequestCreationOutputSchema.omit({ replayed: true }).extend({
+  replayed: z.boolean().optional(),
+  site: z.string(),
+  reason: z.string().optional(),
+});
+export const CopyChromeCookiesOutputSchema = BrowserRequestOutputSchema.extend({
+  cookiesStatus: z.enum(["pending", "declined", "copied", "unavailable"]),
+  sourceName: z.string().optional(),
+  profileName: z.string().nullable().optional(),
+}).refine(
+  ({ cookiesStatus, sourceName, profileName, reason, requestId, status }) =>
+    (cookiesStatus === "copied"
+      ? sourceName !== undefined && profileName !== undefined
+      : sourceName === undefined && profileName === undefined) &&
+    (cookiesStatus === "unavailable" ? reason !== undefined : reason === undefined) &&
+    (requestId !== null || status === (cookiesStatus === "copied" ? "fulfilled" : "blocked")) &&
+    (cookiesStatus !== "pending" || requestId !== null),
+  "Cookie details and request status must match the cookie outcome",
+);
+export const UseSavedLoginOutputSchema = BrowserRequestOutputSchema.extend({
+  loginStatus: z.enum(["pending", "declined", "ready", "unavailable"]),
+  loginRef: z.string().optional(),
+  account: z.string().optional(),
+}).refine(
+  ({ loginStatus, loginRef, account, reason, requestId, status }) =>
+    (loginStatus === "ready"
+      ? loginRef !== undefined && account !== undefined
+      : loginRef === undefined && account === undefined) &&
+    (loginStatus === "unavailable" ? reason !== undefined : reason === undefined) &&
+    (requestId !== null || status === (loginStatus === "ready" ? "fulfilled" : "blocked")) &&
+    (loginStatus !== "pending" || requestId !== null),
+  "Login details and request status must match the login outcome",
+);
 export const BrowserSessionSchema = AgentBrowserSessionSummarySchema;
 export const BrowserSessionListOutputSchema = z.object({ sessions: z.array(BrowserSessionSchema) });
 export const BrowserSessionOpenOutputSchema = z.object({
@@ -539,13 +551,21 @@ export const ThreadReadOutputSchema = z
     "Task history exceeds the agent output byte limit",
   );
 
-const [cardReady, cardPending, cardResolved, cardUnavailable] = UseCardResultSchema.options;
-export const UseCardOutputSchema = z.discriminatedUnion("status", [
-  cardReady,
-  cardPending.extend({ link: AgentLinkSchema.optional() }),
-  cardResolved,
-  cardUnavailable,
-]);
+export const UseCardOutputSchema = BrowserRequestOutputSchema.extend({
+  cardStatus: z.enum(["pending", "declined", "ready", "unavailable", "needs-approval"]),
+  cardRef: z.string().optional(),
+  brand: z.string().optional(),
+  lastFour: z.string().optional(),
+}).refine(
+  ({ cardStatus, cardRef, brand, lastFour, reason, requestId, status }) =>
+    (cardStatus === "ready"
+      ? cardRef !== undefined && brand !== undefined && lastFour !== undefined
+      : cardRef === undefined && brand === undefined && lastFour === undefined) &&
+    (cardStatus === "unavailable" ? reason !== undefined : reason === undefined) &&
+    (requestId !== null || status === (cardStatus === "ready" ? "fulfilled" : "blocked")) &&
+    (cardStatus !== "pending" || requestId !== null),
+  "Card details and request status must match the card outcome",
+);
 export type UseCardOutput = z.infer<typeof UseCardOutputSchema>;
 
 export const AppPublishOutputSchema = z.object({

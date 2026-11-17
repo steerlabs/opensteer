@@ -1,6 +1,6 @@
+import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 import { act } from "react";
-import { RunnerIdSchema } from "@opensteer/core";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
@@ -278,7 +278,7 @@ it("an old app-view close cannot close a reopened generation", async () => {
   )!;
   const tab = await client.openTab({
     kind: "phone",
-    computerId: RunnerIdSchema.parse(phone.machineId),
+    computerId: DeviceIdSchema.parse(phone.machineId),
   });
   const viewer = await client.activateTab(tab.tabId);
   if (viewer.kind !== "phone") throw new Error("Expected a phone viewer");

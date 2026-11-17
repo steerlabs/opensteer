@@ -52,7 +52,7 @@ export class LocalServerRegistry {
   readonly #options: {
     readonly store: IntegrationPlatformStore;
     readonly dataDirectory: string;
-    readonly devices: Pick<DeviceService, "endSessionsForRemovedApps" | "withRunnerAdmissions">;
+    readonly devices: Pick<DeviceService, "endSessionsForRemovedApps" | "withDeviceAdmissions">;
     readonly localServers: Pick<
       LocalServerService,
       | "clients"
@@ -349,11 +349,11 @@ export class LocalServerRegistry {
     readonly requestId: string;
   }) {
     const { store, devices } = this.#options;
-    const runnerIds = await store.listComputerRunnerIdsForInstallation(input.installationId);
-    const mutation = await devices.withRunnerAdmissions(runnerIds, async () => {
+    const runnerIds = await store.listComputerDeviceIdsForInstallation(input.installationId);
+    const mutation = await devices.withDeviceAdmissions(runnerIds, async () => {
       await input.authorize?.();
       const removed = await store.uninstall(input);
-      devices.endSessionsForRemovedApps(removed.removedApps);
+      await devices.endSessionsForRemovedApps(removed.removedApps);
       return removed;
     });
     this.#publish(mutation.requestEvents);

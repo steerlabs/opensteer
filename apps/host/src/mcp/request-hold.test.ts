@@ -44,6 +44,7 @@ function fixture() {
   const input = {
     caller: { claims: { runId: createId("run") } } as RunCaller,
     result: {
+      next: "The person was asked; you will be told when they answer.",
       requestId: request.id,
       status: "pending",
       selectedAuth: "oauth",
@@ -79,7 +80,7 @@ describe("Request hold", () => {
       status: "fulfilled",
       payload: {
         kind: "device.access",
-        machineId: createId("runner"),
+        machineId: createId("device"),
         machineName: "Laptop",
         access: "files",
         reason: "Read project",
@@ -173,7 +174,10 @@ describe("Request hold", () => {
     f.snapshot.steered = true;
     for (const result of await Promise.all([f.hold.wait(f.input), f.hold.wait(f.input)]))
       expect(result).toMatchObject({
-        record: { status: "pending" },
+        record: {
+          status: "pending",
+          next: expect.stringContaining("A private steer released this call"),
+        },
       });
     expect(f.markToolDelivered).not.toHaveBeenCalled();
   });
@@ -224,14 +228,14 @@ describe("Request hold", () => {
     expect(f.markToolDelivered).toHaveBeenCalledOnce();
   });
 
-  it("drops a pending result's instructions from the settled record", async () => {
+  it("replaces a pending next with the settled recommendation", async () => {
     const f = fixture();
     Object.assign(f.snapshot.request, { status: "declined" });
     const held = await f.hold.wait({
       ...f.input,
-      result: { ...f.input.result, guidance: "Wait for it", nextAction: "Ask again" },
+      result: { ...f.input.result, next: "Wait for it" },
     });
     expect(held?.record).not.toHaveProperty("guidance");
-    expect(held?.record).not.toHaveProperty("nextAction");
+    expect(held?.record.next).toContain("declined");
   });
 });

@@ -1,3 +1,10 @@
+import { computerConnectionDeviceId } from "./integration-connections.js";
+import {
+  getDeviceSelfRunnerId,
+  requireSelfDeviceId,
+  requireDeviceSelfRunnerId,
+} from "./device-inventory-store.js";
+import { DeviceIdSchema, type DeviceId } from "@opensteer/core";
 import { lockDeploymentEvents, withPersonalTransaction } from "./personal-transaction.js";
 import { integrationAccountLabel } from "@opensteer/integration-core";
 import {
@@ -163,6 +170,15 @@ export abstract class IntegrationPlatformStoreBase {
     this.database = database;
   }
 
+  async getDeviceSelfRunnerId(deviceId: DeviceId) {
+    return getDeviceSelfRunnerId(this.database, deviceId);
+  }
+  async requireSelfDeviceId(runnerId: RunnerId) {
+    return requireSelfDeviceId(this.database, runnerId);
+  }
+  async requireDeviceSelfRunnerId(deviceId: DeviceId) {
+    return requireDeviceSelfRunnerId(this.database, deviceId);
+  }
   async assertOwner(ownerId: UserId): Promise<void> {
     await assertPersonalOwner(this.database, ownerId);
   }
@@ -297,6 +313,7 @@ export interface UninstallIntegrationMutation {
 export type RevokeComputerConnectionSelector =
   | { readonly connectionId: IntegrationConnectionId; readonly ownerUserId: UserId }
   | { readonly installationId: IntegrationInstallationId }
+  | { readonly deviceId: DeviceId }
   | { readonly runnerId: RunnerId };
 
 /** What a removal took back, so a caller can end the sessions that were using it. */
@@ -305,13 +322,13 @@ export interface RemovedComputerApp {
   readonly appKey: string | null;
   readonly connectionId: IntegrationConnectionId;
   readonly definitionId: string | null;
-  readonly runnerId: RunnerId;
+  readonly deviceId: DeviceId;
 }
 
 export interface RevokeComputerConnectionsMutation {
   readonly cancelledRequestIds: readonly RequestId[];
   readonly connectionIds: readonly IntegrationConnectionId[];
-  /** The apps whose approval this removal took back, `(runnerId, appKey)` and all. */
+  /** The apps whose approval this removal took back, `(deviceId, appKey)` and all. */
   readonly removedApps: readonly RemovedComputerApp[];
   readonly requestEvents: readonly AgentEvent[];
 }
@@ -337,7 +354,7 @@ export async function revokeComputerConnectionsInTransaction(
       "integrationConnections.integrationDefinitionId",
       "integrationConnections.ownerUserId",
       "integrationConnections.integrationServerId",
-      "integrationConnections.runnerId",
+      computerConnectionDeviceId.as("deviceId"),
       "integrationServers.installationId",
     ])
     .where("integrationConnections.connectionKind", "=", "computer")
@@ -346,6 +363,8 @@ export async function revokeComputerConnectionsInTransaction(
     query = query
       .where("integrationConnections.id", "=", selector.connectionId)
       .where("integrationConnections.ownerUserId", "=", selector.ownerUserId);
+  } else if ("deviceId" in selector) {
+    query = query.where(computerConnectionDeviceId, "=", selector.deviceId);
   } else if ("runnerId" in selector) {
     query = query.where("integrationConnections.runnerId", "=", selector.runnerId);
   } else {
@@ -379,11 +398,12 @@ export async function revokeComputerConnectionsInTransaction(
     .execute();
   // Removing an app takes its approval back, and no more than its own: only
   // the whole-computer and whole-installation selectors are wider than one
-  // `(runnerId, definitionId, appKey)`.
+  // `(deviceId, definitionId, appKey)`.
   const revokedSetupRequestIds = await (async (): Promise<readonly string[]> => {
-    if ("runnerId" in selector) {
+    if ("deviceId" in selector || "runnerId" in selector) {
       return deleteComputerAppSetupRequestsInTransaction(transaction, {
-        runnerId: selector.runnerId,
+        deviceId:
+          "deviceId" in selector ? selector.deviceId : DeviceIdSchema.parse(selector.runnerId),
       });
     }
     if ("installationId" in selector) {
@@ -402,10 +422,10 @@ export async function revokeComputerConnectionsInTransaction(
         : [];
     }
     const connection = connections.find(({ id }) => id === selector.connectionId);
-    if (!connection?.runnerId) return [];
+    if (!connection?.deviceId) return [];
     return deleteComputerAppSetupRequestsInTransaction(transaction, {
       appKey: connection.computerAppKey,
-      runnerId: connection.runnerId,
+      deviceId: connection.deviceId,
       ...(connection.integrationDefinitionId === null
         ? {}
         : { definitionId: connection.integrationDefinitionId }),
@@ -440,7 +460,7 @@ export async function revokeComputerConnectionsInTransaction(
     setupRequestIds: revokedSetupRequestIds,
   });
   const removedApps = connections.flatMap((connection): readonly RemovedComputerApp[] =>
-    connection.runnerId === null
+    connection.deviceId === null
       ? []
       : [
           {
@@ -448,7 +468,7 @@ export async function revokeComputerConnectionsInTransaction(
             appKey: connection.computerAppKey,
             connectionId: connection.id,
             definitionId: connection.integrationDefinitionId,
-            runnerId: connection.runnerId,
+            deviceId: connection.deviceId,
           },
         ],
   );
@@ -1111,6 +1131,27 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     return rows.map(installationFromRow);
   }
 
+  async listComputerDeviceIdsForInstallation(
+    installationId: IntegrationInstallationId,
+  ): Promise<readonly DeviceId[]> {
+    const rows = await this.database
+      .selectFrom("integrationConnections")
+      .innerJoin(
+        "integrationServers",
+        "integrationServers.id",
+        "integrationConnections.integrationServerId",
+      )
+      .select(computerConnectionDeviceId.as("deviceId"))
+      .where("integrationServers.installationId", "=", installationId)
+      .where("integrationConnections.connectionKind", "=", "computer")
+      .where("integrationConnections.status", "!=", "revoked")
+      .where(computerConnectionDeviceId, "is not", null)
+      .distinct()
+      .orderBy(computerConnectionDeviceId)
+      .execute();
+    return rows.flatMap(({ deviceId }) => (deviceId ? [deviceId] : []));
+  }
+
   async listComputerRunnerIdsForInstallation(
     installationId: IntegrationInstallationId,
   ): Promise<readonly RunnerId[]> {
@@ -1121,13 +1162,18 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
         "integrationServers.id",
         "integrationConnections.integrationServerId",
       )
-      .select("integrationConnections.runnerId")
+      .innerJoin("deviceDrivers", (join) =>
+        join.on("deviceDrivers.deviceId", "=", computerConnectionDeviceId),
+      )
+      .select("deviceDrivers.runnerId")
+      .where("deviceDrivers.role", "=", "self")
+      .where("deviceDrivers.detachedAt", "is", null)
       .distinct()
       .where("integrationServers.installationId", "=", installationId)
       .where("integrationConnections.connectionKind", "=", "computer")
       .where("integrationConnections.status", "!=", "revoked")
-      .where("integrationConnections.runnerId", "is not", null)
-      .orderBy("integrationConnections.runnerId", "asc")
+      .where("deviceDrivers.runnerId", "is not", null)
+      .orderBy("deviceDrivers.runnerId", "asc")
       .execute();
     const servers = await this.database
       .selectFrom("integrationServers")
@@ -1247,6 +1293,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
               connectionRequirement: server.connectionRequirement,
               connections,
               hasAccess: hasInstallationAccess,
+              runAccess: requesterAccess.runAccess,
               installationStatus: installation.status,
               requiredAccess:
                 input.target?.access ??
@@ -1279,6 +1326,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
                   connectionRequirement: server.connectionRequirement,
                   connections,
                   hasAccess: hasInstallationAccess,
+                  runAccess: requesterAccess.runAccess,
                   installationStatus: installation.status,
                   requiredAccess: input.target?.access ?? "read",
                   requiredConnectionId: input.target?.connectionId ?? null,

@@ -86,10 +86,11 @@ it("retries a failed read at sixty seconds, never sooner", async () => {
   expect(rpc).toHaveBeenCalledTimes(2);
 });
 it("does not ask an offline Mac or an Android phone for Mac icons", async () => {
-  const { owner, machine, rpc, change } = await setup();
+  const { owner, machine, machines, rpc, change } = await setup();
   change({ machines: [{ ...machine, status: "offline" }] });
   expect(await owner.read(machine.id, identity)).toBeNull();
-  change({ machines: [{ ...machine, device: { ...machine.device!, platform: "android" } }] });
-  expect(await owner.read(machine.id, identity)).toBeNull();
+  const phone = machines.find((candidate) => candidate.name === "Pixel 7")!;
+  change({ machines: [phone] });
+  expect(await owner.read(phone.id, identity)).toBeNull();
   expect(rpc).not.toHaveBeenCalled();
 });

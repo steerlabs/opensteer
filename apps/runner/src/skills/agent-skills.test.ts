@@ -82,7 +82,7 @@ describe("Runner Agent Skills", () => {
       "Use Opensteer SSH access for another computer’s files, commands or forwarded ports.",
     );
     expect(computerUseMetadata.description).toBe(
-      "Operate desktop app windows and Agent Phones through computer_use when the task needs their interfaces.",
+      "Operate desktop app windows and phone screens (Android Agent Phones and Mac-driven iPhones) through computer_use when the task needs their interfaces.",
     );
     for (const metadata of [computerMetadata, computerUseMetadata, integrationMetadata]) {
       expect(Array.from(metadata.description).length).toBeLessThanOrEqual(1_024);
@@ -94,7 +94,7 @@ describe("Runner Agent Skills", () => {
       expect(catalog).toContain(metadata.description);
     }
     expect(computers).toContain(
-      "Use opensteer:computer-use to see or operate Mac app interfaces and Agent Phones.",
+      "Use opensteer:computer-use to see or operate Mac app interfaces and phone screens (Android Agent Phones and Mac-driven iPhones).",
     );
     expect(computerUse).toContain(
       "not by reading an app's private data files or using AppleScript, `screencapture`, SSH or synthetic events.",

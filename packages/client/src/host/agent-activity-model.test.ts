@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
   BrowserSurfaceIdSchema,
@@ -1660,7 +1661,11 @@ describe("a Computer use turn", () => {
       'Clicked "Save"',
     ]);
 
-    const mini = { ...mockComputerUseSlack, computer: "Mac mini", runnerId: createId("runner") };
+    const mini = {
+      ...mockComputerUseSlack,
+      computer: "Mac mini",
+      runnerId: DeviceIdSchema.parse(createId("runner")),
+    };
     const twoMacs = workRows([
       computerStep("observe"),
       computerStep("act"),
@@ -1693,7 +1698,7 @@ describe("a Computer use turn", () => {
 });
 
 describe("Computer use on a phone", () => {
-  const pixel = { computer: "Pixel 7", runnerId: createId("runner") };
+  const pixel = { computer: "Pixel 7", runnerId: DeviceIdSchema.parse(createId("runner")) };
   const observation =
     "Observation 4cf039beba5b8d92 of Pixel 7 — 12 elements. Screenshot 1080×2400 px; all coordinates are screenshot pixels.";
   function phoneStep(
@@ -1813,7 +1818,7 @@ describe("Computer use on a phone", () => {
   });
 
   it("keeps phones with the same name and a Mac in the same turn apart", () => {
-    const other = { ...pixel, runnerId: createId("runner") };
+    const other = { ...pixel, runnerId: DeviceIdSchema.parse(createId("runner")) };
     const entries = [
       phoneStep("observe"),
       phoneStep("act"),

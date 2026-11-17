@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { WindowIdSchema, OpensteerError } from "@opensteer/core";
 import { productToolOutput } from "./tool-output.js";
 import {
@@ -121,7 +122,7 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     sessionsForRunner: vi.fn<
       import("../computer-use/computer-use-service.js").ComputerUseService["sessionsForRunner"]
     >(() => []),
-    authorizeDisplay: vi.fn(async () => f.runnerId),
+    authorizeDisplay: vi.fn(async () => ({ deviceId: DeviceIdSchema.parse(f.runnerId) })),
   };
   const threads = new ThreadService({
     store,
@@ -557,14 +558,14 @@ describeStore("agents answering task questions", (it) => {
       "device.access": {
         kind: "device.access",
         reason,
-        machineId: s.f.runnerId,
+        machineId: DeviceIdSchema.parse(s.f.runnerId),
         machineName: "Mac",
         access: "files",
       },
       "machine.full-disk-access": {
         kind: "machine.full-disk-access",
         reason,
-        machineId: s.f.runnerId,
+        machineId: DeviceIdSchema.parse(s.f.runnerId),
         machineName: "Mac",
       },
       "computer.app.access": {
@@ -573,7 +574,7 @@ describeStore("agents answering task questions", (it) => {
         access: "read",
         app: null,
         definitionId: "android-phone",
-        runnerId: s.f.runnerId,
+        deviceId: DeviceIdSchema.parse(s.f.runnerId),
         setupRequestId: randomUUID(),
       },
       "plugin.account": {
@@ -915,7 +916,10 @@ async function place(
     {
       id,
       ownerId: f.userId,
-      computerId: value.kind === "browser" ? f.runnerId : value.machineId,
+      computerId:
+        value.kind === "browser"
+          ? await storeFixture.store.requireSelfDeviceId(f.runnerId)
+          : value.machineId,
       kind: value.kind === "browser" ? "page" : value.kind === "app" ? "window" : "phone",
       title,
       openedBy: "person",
@@ -1563,33 +1567,28 @@ describeStore("shaped agent task tools", (it) => {
       mode: "wait",
       timeoutMs: 2_000,
     });
+    const created =
+      Promise.withResolvers<Awaited<ReturnType<CommandService["delegateAdmittedThread"]>>>();
+    const delegate = s.commands.delegateAdmittedThread.bind(s.commands);
+    vi.spyOn(s.commands, "delegateAdmittedThread").mockImplementationOnce((request) => {
+      const result = delegate(request);
+      void result.then(created.resolve, created.reject);
+      return result;
+    });
     const pending = s.product.opensteer_task_delegate({
       caller: s.caller,
       input,
       operationKey: randomUUID(),
     });
-    let assignmentId: typeof s.assignmentId | undefined;
-    await vi.waitFor(
-      async () => {
-        const row = await storeFixture.database
-          .selectFrom("delegations")
-          .selectAll()
-          .where("parentRunId", "=", s.f.run.id)
-          .where("id", "!=", s.assignmentId)
-          .executeTakeFirst();
-        expect(row, "wait-mode delegation never created its delegation").toBeDefined();
-        assignmentId = row!.id;
-      },
-      { timeout: 1000 },
-    );
-    const row = await storeFixture.database
-      .selectFrom("delegations")
-      .select(["childRunId", "childThreadId"])
-      .where("id", "=", assignmentId!)
-      .executeTakeFirstOrThrow();
+    void pending.catch(created.reject);
+    const delegated = await withTimeout(created.promise, 1000, {
+      timeoutError: () => new Error("wait-mode delegation never committed its delegation"),
+    });
+    const assignmentId = delegated.assignment.id;
+    expect(assignmentId).not.toBe(s.assignmentId);
     const { terminal } = await storeFixture.runDelegatedTurn(
       s.f,
-      { id: row.childRunId, threadId: row.childThreadId },
+      { id: delegated.run.id, threadId: delegated.thread.id },
       {
         replies: ["84"],
         end: "completed",
@@ -1602,7 +1601,7 @@ describeStore("shaped agent task tools", (it) => {
       status: "completed",
       wait: { status: "settled" },
     });
-    expect(await storeFixture.store.drainAssignmentReturn(assignmentId!)).toEqual([]);
+    expect(await storeFixture.store.drainAssignmentReturn(assignmentId)).toEqual([]);
   });
 
   it("returns a task's Request promptly and reads it without exposing its payload", async ({
@@ -1716,8 +1715,8 @@ describeStore("shaped agent task tools", (it) => {
       runtimeId: "test",
     });
     const values: PlaceIdentity[] = [
-      { kind: "app", machineId: nativeRunner, appKey: "com.apple.finder" },
-      { kind: "phone", machineId: nativeRunner, display: "main" },
+      { kind: "app", machineId: DeviceIdSchema.parse(nativeRunner), appKey: "com.apple.finder" },
+      { kind: "phone", machineId: DeviceIdSchema.parse(nativeRunner), display: "main" },
       { kind: "browser", sessionId, surfaceId: BrowserSurfaceIdSchema.parse("shared") },
       {
         kind: "browser",
@@ -2221,7 +2220,7 @@ describeStore("shaped agent task tools", (it) => {
       {
         id: tabId,
         ownerId: f.userId,
-        computerId: f.runnerId,
+        computerId: DeviceIdSchema.parse(f.runnerId),
         kind: "page",
         title: "Guest",
         url: "https://example.com",

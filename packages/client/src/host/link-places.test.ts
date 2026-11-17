@@ -1,11 +1,16 @@
+import { profileHomeChoice } from "./browser-profile-settings.js";
+import { deviceMachine } from "./device-projection.js";
+import { mockIphoneScreenDevice } from "../mock/mock-screen-devices.js";
 import { tabFixture, tabStoreFixture } from "../test-support/tab-fixtures.js";
 import type { MachineSummary } from "@opensteer/protocol";
-import { BrowserProfileIdSchema, RunnerIdSchema, TabIdSchema, type Tab } from "@opensteer/core";
+import { BrowserProfileIdSchema, DeviceIdSchema, TabIdSchema, type Tab } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import type { HostSnapshot } from "./client.js";
 import {
   linkOnComputerNetwork,
   linkPlaces,
+  pageOpenTarget,
+  browsingOn,
   newTabProfiles,
   newTabTarget,
   recentProfileOn,
@@ -43,7 +48,7 @@ let tabs = 0;
 function page(runnerId: string, profileId: string | null, updatedAt: string): Tab {
   return tabFixture({
     tabId: TabIdSchema.parse(`page-${++tabs}`),
-    computer: { computerId: RunnerIdSchema.parse(runnerId), name: runnerId },
+    computer: { computerId: DeviceIdSchema.parse(runnerId), name: runnerId },
     profile: profileId
       ? {
           profileId: BrowserProfileIdSchema.parse(profileId),
@@ -244,4 +249,23 @@ describe("new tab", () => {
     for (const url of ["http://localhost:5173/", "http://192.168.1.20/", "http://nas.local/"])
       expect(replyLinkTarget(snapshot, guest, studio, url)).toEqual({ identity: guest });
   });
+});
+
+it("keeps browser placement and homes on the projected self Runner", () => {
+  const legacy = machine(phone, "My phone");
+  const projected = { ...deviceMachine(legacy), id: "dev_00000000-0000-4000-8000-00000000000f" };
+  const screen = mockIphoneScreenDevice();
+  const snapshot = world({ machines: [projected, deviceMachine(machine(mini, "Home")), screen] });
+  const input = browsingOn(snapshot, projected.id);
+  expect(input).toEqual({
+    identity: { kind: "guest" },
+    placement: { kind: "runner", runnerId: phone },
+  });
+  expect(profileHomeChoice(snapshot, projected.id)?.options).toEqual(
+    expect.arrayContaining([expect.objectContaining({ id: phone, here: true })]),
+  );
+  expect(pageOpenTarget(input, "https://example.com", snapshot.machines)).toMatchObject({
+    computerId: projected.id,
+  });
+  expect(() => browsingOn(snapshot, screen.id)).toThrow("cannot host browser pages");
 });

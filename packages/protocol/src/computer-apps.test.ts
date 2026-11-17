@@ -421,3 +421,162 @@ describe("computer approval review privacy", () => {
     expect(JSON.stringify(http)).not.toContain("127.0.0.1");
   });
 });
+
+describe("screen driver routing tuples", () => {
+  it("preserves target generations on owner, display, cancellation and Stop frames", () => {
+    const route = { deviceId: "dev_00000000-0000-4000-8000-000000000005", driverGeneration: 3 };
+    const sessionId = "cus_00000000-0000-4000-8000-000000000006";
+    const streamId = "dsp_00000000-0000-4000-8000-000000000007";
+    const viewId = "cvw_00000000-0000-4000-8000-000000000008";
+    const source = { kind: "owner-view", viewId, generation: 2 };
+    const display = { display: "main", streamId };
+    const requests = [
+      { type: "host.integrations.cancel", requestId: "request-1" },
+      { type: "host.integrations.computer-use-stop-recorded", runId: createId("run"), sessionId },
+      {
+        type: "host.integrations.computer-view",
+        version: 1,
+        viewId,
+        generation: 2,
+        leaseDurationMs: 30000,
+        target: { kind: "phone", display: "main" },
+        operation: "open",
+        requestId: "view-1",
+        timeoutMs: 10000,
+      },
+      {
+        type: "host.integrations.display.start",
+        ...display,
+        dataTicket: "fixture.ticket.value",
+        revision: 1,
+        sources: [source],
+        maxLongSide: 1280,
+        maxFps: 30,
+      },
+      { type: "host.integrations.display.demand", ...display, revision: 2, sources: [source] },
+      { type: "host.integrations.display.stop", ...display },
+      { type: "host.integrations.display.refresh", ...display },
+      {
+        type: "host.integrations.display.input",
+        streamId,
+        source,
+        geometry: 1,
+        sequence: 1,
+        events: [{ kind: "text", insert: "fixture" }],
+      },
+      { type: "host.integrations.display.input-reset", streamId, source },
+      { type: "host.integrations.display.power", streamId, source, sequence: 2, action: "wake" },
+    ];
+    const events = [
+      {
+        type: "runner.integrations.computer-use-event",
+        event: {
+          event: "session.stopped",
+          params: { reason: "user", runId: createId("run"), sessionId },
+        },
+      },
+      {
+        type: "runner.integrations.computer-view-result",
+        requestId: "view-1",
+        result: {
+          kind: "ok",
+          value: { viewId, generation: 2, state: "ready", captureTargetId: null },
+        },
+      },
+      {
+        type: "runner.integrations.display.state",
+        ...display,
+        state: "live",
+        generation: 1,
+        width: 390,
+        height: 844,
+        rotation: 0,
+      },
+      {
+        type: "runner.integrations.display.source-ended",
+        ...display,
+        source,
+        reason: "owner-ended",
+      },
+      {
+        type: "runner.integrations.display.input-result",
+        streamId,
+        source,
+        geometry: 1,
+        sequence: 1,
+        outcome: "dispatched",
+      },
+      {
+        type: "runner.integrations.display.power-result",
+        streamId,
+        source,
+        sequence: 2,
+        outcome: "dispatched",
+      },
+      {
+        type: "runner.integrations.display.clipboard",
+        streamId,
+        source,
+        geometry: 1,
+        sequence: 3,
+        outcome: "empty",
+      },
+    ];
+    for (const [schema, frames] of [
+      [HostToIntegrationsModuleMessageSchema, requests],
+      [IntegrationsModuleEventSchema, events],
+    ] as const) {
+      for (const frame of frames) {
+        const routed = { ...fence, ...route, ...frame };
+        expect(schema.parse(routed)).toEqual(routed);
+        expect(schema.safeParse({ ...routed, deviceId: undefined }).success).toBe(false);
+        expect(schema.safeParse({ ...routed, driverGeneration: undefined }).success).toBe(false);
+        expect(schema.parse({ ...fence, ...frame })).toEqual({ ...fence, ...frame });
+      }
+    }
+  });
+});
+
+it("negotiates screen drivers independently of Android4 and Mac6", async () => {
+  const {
+    RunnerIntegrationsModuleSchema,
+    runnerSupportsScreenDrivers,
+    runnerIntegrationsProtocolVersion,
+    androidIntegrationsProtocolVersion,
+  } = await import("./runner.js");
+  const { RunnerAuxiliaryWelcomeSchema } = await import("./runner-auxiliary.js");
+  expect(runnerIntegrationsProtocolVersion).toBe(6);
+  expect(androidIntegrationsProtocolVersion).toBe(4);
+  const baseline = { platform: "darwin", protocolVersion: 6 };
+  expect(RunnerIntegrationsModuleSchema.parse(baseline)).toEqual(baseline);
+  expect(runnerSupportsScreenDrivers(RunnerIntegrationsModuleSchema.parse(baseline))).toBe(false);
+  expect(
+    runnerSupportsScreenDrivers(
+      RunnerIntegrationsModuleSchema.parse({ ...baseline, screenDrivers: 1 }),
+    ),
+  ).toBe(true);
+  expect(
+    runnerSupportsScreenDrivers(
+      RunnerIntegrationsModuleSchema.parse({ ...baseline, screenDrivers: 2 }),
+    ),
+  ).toBe(false);
+  expect(
+    RunnerIntegrationsModuleSchema.safeParse({
+      platform: "android",
+      protocolVersion: 4,
+      screenDrivers: 1,
+    }).success,
+  ).toBe(false);
+  const welcome = {
+    ...fence,
+    screenDrivers: 1,
+    type: "host.auxiliary.welcome",
+    heartbeatIntervalMs: 1000,
+    serverTime: "2026-10-01T00:00:00Z",
+    streamLeaseExpiresAt: "2026-10-01T00:01:00Z",
+  };
+  expect(RunnerAuxiliaryWelcomeSchema.parse(welcome)).toEqual(welcome);
+  expect(RunnerAuxiliaryWelcomeSchema.safeParse({ ...welcome, module: "browser" }).success).toBe(
+    false,
+  );
+});

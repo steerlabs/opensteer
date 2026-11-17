@@ -18,7 +18,16 @@ import {
 // it lives here because the web image type-checks apps/web without desktop sources.
 async function deliveryFixture() {
   const client = {
-    getSnapshot: () => ({ deploymentId: createId("deployment"), user: { id: createId("user") } }),
+    getSnapshot: () => ({
+      deploymentId: createId("deployment"),
+      user: { id: createId("user") },
+      machines: [
+        {
+          id: "dev_88888888-8888-4888-8888-888888888888",
+          selfRunnerId: "rnr_88888888-8888-4888-8888-888888888888",
+        },
+      ],
+    }),
     dispatch: async (
       _input: import("../packages/protocol/src/host-api.js").HostApiCommandInput,
     ): Promise<import("../packages/protocol/src/host-api.js").HostApiCommandOutput> => {
@@ -148,7 +157,7 @@ it("replays the bound request after a renderer reload even when the remembered p
   try {
     expect(fixture.opened.mock.calls[0]![0]).toMatchObject({
       type: "tab.open",
-      target: { kind: "page", guest: true, computerId: fixture.scope.target().placement?.runnerId },
+      target: { kind: "page", guest: true, computerId: "dev_88888888-8888-4888-8888-888888888888" },
     });
     fixture.stop();
     fixture.scope.target = () => ({

@@ -1,8 +1,9 @@
 import {
   computerForTeam,
+  resolveRefreshedApplicationLink,
+  teamLinkTarget,
   parseTeamNoticeLink,
   routeComputerLink,
-  routePairingLink,
   routeSetupCode,
 } from "./links.js";
 import {
@@ -22,7 +23,7 @@ import {
   ThreadIdSchema,
 } from "@opensteer/core";
 import { readTeamLinkIntent } from "./team/mobile-teams.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { agentConnectionDeepLink } from "@opensteer/protocol";
 import { resolveApplicationLink } from "./links.js";
 
@@ -184,12 +185,10 @@ describe("codes a computer shows", () => {
   });
 
   it("takes an operating-system pairing link to the form and nothing else", () => {
-    const offered: unknown[] = [];
-    expect(
-      routePairingLink(buildMobilePairingDeepLink(pairing), (link) => offered.push(link)),
-    ).toBe(true);
-    expect(routePairingLink(link(), (value) => offered.push(value))).toBe(false);
-    expect(offered).toEqual([pairing]);
+    expect(resolveApplicationLink(buildMobilePairingDeepLink(pairing), [])).toEqual({
+      kind: "pairing",
+      offer: pairing,
+    });
   });
 });
 
@@ -216,6 +215,7 @@ describe("team links", () => {
       kind: "team",
       origin,
       page: `${origin}/invite/${"S".repeat(32)}#${"v_Q-".repeat(8)}`,
+      target: invite.target,
     });
     if (outcome.kind !== "team") throw new Error("Not a team link");
     expect(readTeamLinkIntent(outcome.page)).toEqual({
@@ -241,7 +241,12 @@ describe("team links", () => {
     const messageId = "42";
     const message = handoff({ origin, target: { kind: "message", channelId, messageId } as never });
     const outcome = resolveApplicationLink(message, []);
-    expect(outcome).toEqual({ kind: "team", origin, page: `${origin}/c/${channelId}/m/42` });
+    expect(outcome).toEqual({
+      kind: "team",
+      origin,
+      page: `${origin}/c/${channelId}/m/42`,
+      target: { kind: "message", channelId, messageId },
+    });
     if (outcome.kind !== "team") throw new Error("Not a team link");
     expect(readTeamLinkIntent(outcome.page)).toEqual({
       kind: "open",
@@ -313,5 +318,74 @@ describe("team links", () => {
     expect(computerForTeam({ shown: null, computersInTeam: [mini] })).toBe(mini);
     // A team none of this person's computers is known to be in: join from the one in front.
     expect(computerForTeam({ shown: laptop, computersInTeam: [] })).toBeNull();
+  });
+});
+
+describe("directory discovery for an external destination", () => {
+  it.each([true, false])(
+    "refreshes once before accepting or rejecting an unknown deployment (found: %s)",
+    async (found) => {
+      let known: readonly string[] = [];
+      const refreshDirectory = vi.fn(async () => {
+        known = found ? [deploymentId] : [];
+      });
+      const outcome = await resolveRefreshedApplicationLink(link(), {
+        knownDeployments: async () => known,
+        refreshDirectory,
+      });
+      expect(refreshDirectory).toHaveBeenCalledTimes(1);
+      expect(outcome.kind).toBe(found ? "open" : "unknown-deployment");
+      if (outcome.kind === "unknown-deployment") expect(outcome.detail).toContain("Add it");
+    },
+  );
+});
+
+describe("direct team destinations", () => {
+  const origin = "https://chat.acme.example";
+  const teamId = otherDeploymentId;
+  const team = { teamId, origin, onPhone: true, state: "offline" as const };
+  const channelId = TeamChannelIdSchema.parse("tch_0192f4a1-6666-4000-8000-000000000006");
+
+  it("opens members' messages and reply threads directly, leaving message lookup to the screen", () => {
+    for (const state of ["offline", "signed-out", "loading", "live"] as const) {
+      const outcome = resolveApplicationLink(
+        teamPageAppLink(
+          { origin, target: { kind: "message", channelId, messageId: "42" } as never },
+          "mobile",
+        ),
+        [],
+      );
+      if (outcome.kind !== "team") throw new Error("Expected team");
+      expect(teamLinkTarget(outcome, { ...team, state }, 7)).toEqual({
+        name: "TeamChannel",
+        params: { teamId, channelId, messageId: "42" },
+      });
+      expect(teamLinkTarget(outcome, null, 7)).toEqual({
+        name: "JoinTeam",
+        params: { link: outcome.page, externalIntent: 7 },
+      });
+      const reply = {
+        ...outcome,
+        target: { kind: "thread" as const, channelId, threadRootId: "41", messageId: "42" },
+      } as typeof outcome;
+      expect(teamLinkTarget(reply, { ...team, state }, 7)).toEqual({
+        name: "TeamThread",
+        params: { teamId, channelId, rootId: "41", replyId: "42" },
+      });
+    }
+  });
+
+  it("uses the notice's team identity and visibly refuses missing or contradictory teams", () => {
+    const url = `com.opensteer.mobile:/team-notice?${new URLSearchParams({ origin, teamId, noticeId: "tnt_0192f4a1-7777-4000-8000-000000000007" })}`;
+    const outcome = resolveApplicationLink(url, []);
+    if (outcome.kind !== "team-notice") throw new Error("Expected notice");
+    expect(teamLinkTarget(outcome, team, 7)).toEqual({ name: "TeamNotices", params: { teamId } });
+    expect(() => teamLinkTarget(outcome, null, 7)).toThrow("not on this phone");
+    expect(() => teamLinkTarget(outcome, { ...team, teamId: deploymentId }, 7)).toThrow(
+      "not on this phone",
+    );
+    expect(() => teamLinkTarget(outcome, { ...team, origin: "https://other.example" }, 7)).toThrow(
+      "does not match",
+    );
   });
 });

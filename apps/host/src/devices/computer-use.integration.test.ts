@@ -1,3 +1,4 @@
+import { upsertSelfDeviceInTransaction } from "@opensteer/database";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { createDeviceServices } from "../devices/device-services.test-support.js";
 import { createPersonalRunFixturePort } from "@opensteer/database/test-support/personal-run";
@@ -68,8 +69,6 @@ integration.sequential("Host computer-use approval transactions", () => {
     await database
       .insertInto("runners")
       .values({
-        accessPolicy: sql`'{"commands":false,"forwarding":false,"reach":"nobody","shares":[]}'::jsonb`,
-        accessPolicyRevision: 1,
         allowedModules: sql`'["integrations"]'::jsonb`,
         capabilities: sql`'[]'::jsonb`,
         connectionGeneration: 0,
@@ -88,6 +87,7 @@ integration.sequential("Host computer-use approval transactions", () => {
         revokedAt: null,
       })
       .execute();
+    await upsertSelfDeviceInTransaction(database, runnerId);
     // The desktop's approval key, which the owner registered on this Mac; the
     // Runner's own key above signs nothing the Host accepts as consent.
 
@@ -130,6 +130,15 @@ integration.sequential("Host computer-use approval transactions", () => {
         new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
       ),
       computerApps: {
+        deviceStatus: () => null,
+        withDeviceAdmission: async (_id, action) => {
+          const next = admission.next;
+          admission.next = undefined;
+          await next?.();
+          return action();
+        },
+        withDeviceAdmissions: async (_ids, action) => action(),
+        requireDeviceAgentAccess: async () => {},
         requireAgentAccess: async () => {},
         removePluginData: async () => {},
         compatibilityReason: () => null,
@@ -144,12 +153,7 @@ integration.sequential("Host computer-use approval transactions", () => {
         attached: () => true,
         machinesFor: () => [],
         openMcpSession: vi.fn(),
-        withRunnerAdmission: async (_runner, action) => {
-          const next = admission.next;
-          admission.next = undefined;
-          await next?.();
-          return action();
-        },
+        withRunnerAdmission: async (_runner, action) => action(),
         send: vi.fn(),
       },
       computerUse,
@@ -242,8 +246,6 @@ integration.sequential("Host computer-use approval transactions", () => {
 
     expect(requested).toMatchObject({
       status: "pending",
-      nextAction:
-        "Approval for Alex's Mac is pending; the owner can allow or decline from any Opensteer app. Pending grants no access; do not poll, repeat or route around the Request.",
     });
     const [setup] = await test.persistence.listComputerAppSetupRequests(test.task.userId);
     expect(setup).toMatchObject({ runnerId: test.input.runnerId, ownerUserId: test.task.userId });
@@ -268,7 +270,7 @@ integration.sequential("Host computer-use approval transactions", () => {
     expect(connection?.displayName).toBe("Notes on Alex's Mac");
     expect(
       await test.service.devices.computerAppApprovals.requestComputerAppAccess(test.input),
-    ).toMatchObject({ status: "already-available" });
+    ).toMatchObject({ status: "fulfilled" });
     expect(
       (
         await test.service.listCallableTools({

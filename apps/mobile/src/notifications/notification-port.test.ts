@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createExpoNotificationPort,
   type ExpoNotificationsLike,
@@ -186,5 +186,91 @@ describe("preview notification response identity", () => {
     }
     expect(destinations).toHaveLength(2);
     expect(destinations[0]).not.toBe(destinations[1]);
+  });
+});
+
+describe("notification response consumption", () => {
+  function response(identifier: string, deepLink = "com.opensteer.mobile:/unrecognized") {
+    return {
+      actionIdentifier: "expo.modules.notifications.actions.DEFAULT",
+      notification: { request: { identifier, content: { data: { deepLink } } } },
+    };
+  }
+
+  function fixture() {
+    const { expo, instance } = port({ androidPushConfigured: true, platform: "ios" });
+    let retained: ReturnType<typeof response> | null = response("a");
+    let emit!: Parameters<ExpoNotificationsLike["addNotificationResponseReceivedListener"]>[0];
+    const order: string[] = [];
+    expo.notifications.addNotificationResponseReceivedListener = (listener) => {
+      order.push("subscribe");
+      emit = listener;
+      return { remove() {} };
+    };
+    expo.notifications.getLastNotificationResponse = () => {
+      order.push("read");
+      return retained;
+    };
+    const clear = vi.fn(() => {
+      retained = null;
+    });
+    expo.notifications.clearLastNotificationResponse = clear;
+    return {
+      instance,
+      order,
+      clear,
+      emit: (value: ReturnType<typeof response>) => {
+        retained = value;
+        emit(value);
+      },
+    };
+  }
+
+  it("subscribes before reading and acknowledges only after navigation, deduping older responses too", async () => {
+    const f = fixture();
+    const navigation = Promise.withResolvers<void>();
+    const route = vi.fn(() => navigation.promise);
+    f.instance.onOpened(route);
+    f.emit(response("a"));
+    expect(f.order.slice(0, 2)).toEqual(["subscribe", "read"]);
+    expect(route).toHaveBeenCalledTimes(1);
+    expect(route.mock.calls[0]).toEqual([
+      { identifier: "a", deepLink: "com.opensteer.mobile:/unrecognized" },
+    ]);
+    expect(f.clear).not.toHaveBeenCalled();
+    navigation.resolve();
+    await vi.waitFor(() => expect(f.clear).toHaveBeenCalledTimes(1));
+    f.emit(response("b"));
+    await vi.waitFor(() => expect(route).toHaveBeenCalledTimes(2));
+    f.emit(response("a"));
+    expect(route).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a failed route available for another delivery", async () => {
+    const f = fixture();
+    const route = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("navigation failed"))
+      .mockResolvedValue(undefined);
+    f.instance.onOpened(route);
+    await vi.waitFor(() => expect(route).toHaveBeenCalledTimes(1));
+    await route.mock.results[0]!.value.catch(() => undefined);
+    expect(f.clear).not.toHaveBeenCalled();
+    f.emit(response("a"));
+    await vi.waitFor(() => expect(f.clear).toHaveBeenCalledTimes(1));
+    expect(route).toHaveBeenCalledTimes(2);
+  });
+
+  it("never clears a newer retained response when an older route completes", async () => {
+    const f = fixture();
+    const a = Promise.withResolvers<void>();
+    const b = Promise.withResolvers<void>();
+    f.instance.onOpened(({ identifier }) => (identifier === "a" ? a.promise : b.promise));
+    f.emit(response("b"));
+    a.resolve();
+    await a.promise;
+    expect(f.clear).not.toHaveBeenCalled();
+    b.resolve();
+    await vi.waitFor(() => expect(f.clear).toHaveBeenCalledTimes(1));
   });
 });

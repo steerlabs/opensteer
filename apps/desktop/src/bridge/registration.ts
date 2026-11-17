@@ -1,3 +1,4 @@
+import { iphoneHandlers } from "./methods/iphone.js";
 import { handleOldPersonalData, handleStartFresh } from "./methods/personal-data-reset.js";
 import { teamLinkDelivery } from "./methods/team-links.js";
 import {
@@ -280,6 +281,8 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   for (const [channel, handler] of passkeyHandlers(context)) register(channel, handler);
   for (const [channel, handler] of dictationHandlers(context)) register(channel, handler);
   for (const [channel, handler] of viewerClipboardHandlers(context)) register(channel, handler);
+  const iphone = iphoneHandlers(context);
+  for (const [channel, handler] of iphone.handlers) register(channel, handler);
   for (const [channel, handler] of downloadsHandlers(context)) register(channel, handler);
   for (const [channel, handler] of updatesHandlers(context)) register(channel, handler);
   for (const [channel, handler] of deploymentUpdatesHandlers(context)) register(channel, handler);
@@ -407,7 +410,8 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
         integrationSubscription?.sender === event.sender &&
         integrationSubscription.generation === input.generation
       )
-        detachIntegrationSubscription();
+        iphone.dispose();
+      detachIntegrationSubscription();
       return;
     }
     detachIntegrationSubscription();

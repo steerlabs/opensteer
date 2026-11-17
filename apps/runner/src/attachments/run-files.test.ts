@@ -230,10 +230,10 @@ it("removes stale helper scratch at integration startup", async () => {
   await mkdir(join(files.scratchRoot, "old"), { recursive: true });
   await writeFile(join(files.scratchRoot, "old", "photo"), "bytes");
   const { prepareIntegrationsModule } = await import("../computer-apps/prepare.js");
-  const prepared = prepareIntegrationsModule({
+  const prepared = await prepareIntegrationsModule({
     dataDirectory: files.options.dataDirectory,
     platform: "linux",
   });
-  prepared?.close?.();
+  await prepared?.close?.();
   await expect(stat(files.scratchRoot)).rejects.toMatchObject({ code: "ENOENT" });
 });

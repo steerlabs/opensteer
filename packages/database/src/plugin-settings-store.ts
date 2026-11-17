@@ -19,6 +19,7 @@ import {
 import { sql, type Kysely } from "kysely";
 import { isDeepStrictEqual } from "node:util";
 import type { DatabaseSchema } from "./schema.js";
+import { getSelfDeviceId } from "./device-inventory-store.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import {
@@ -101,7 +102,7 @@ export class PluginSettingsStore {
 
   private async snapshot(
     owner: UserId,
-    availableRunnerIds?: ReadonlySet<string>,
+    availableDeviceIds?: ReadonlySet<string>,
     opening?: PluginTarget,
   ) {
     await requirePersonalOwner(this.database, owner);
@@ -171,8 +172,8 @@ export class PluginSettingsStore {
             ? ["needs-sign-in" as const]
             : []),
           ...(installation.status !== "active" ? ["invalid-installation" as const] : []),
-          ...(availableRunnerIds &&
-          accounts.some((row) => row.runnerId && !availableRunnerIds.has(row.runnerId))
+          ...(availableDeviceIds &&
+          accounts.some((row) => row.deviceId && !availableDeviceIds.has(row.deviceId))
             ? ["waiting-device" as const]
             : []),
         ],
@@ -304,9 +305,9 @@ export class PluginSettingsStore {
     });
   }
 
-  async overview(owner: UserId, availableRunnerIds?: ReadonlySet<string>) {
+  async overview(owner: UserId, availableDeviceIds?: ReadonlySet<string>) {
     return PluginsOverviewViewSchema.parse({
-      rows: (await this.snapshot(owner, availableRunnerIds)).rows,
+      rows: (await this.snapshot(owner, availableDeviceIds)).rows,
     });
   }
 
@@ -352,28 +353,35 @@ export class PluginSettingsStore {
         devices.map((plugin) => plugin.id),
       )
       .execute();
-    return devices.map((plugin) => {
-      const own = servers.filter(
-        (row) =>
-          row.pluginId === plugin.id &&
-          (row.status !== "disabled" || row.updatedAt > row.installationUpdatedAt),
-      );
-      const runner = own.find((row) => row.transport.type === "runner")?.transport.runnerId;
-      const machine = machines.find((row) => row.id === runner);
-      return {
-        pluginId: plugin.id,
-        ...pluginDeviceFromManifest(plugin.manifest)!,
-        computer: machine
-          ? {
-              id: RunnerIdSchema.parse(machine.id),
-              name: machine.name.slice(0, 120),
-              status: machine.status,
-            }
-          : null,
-        issue: own.find((row) => row.status !== "active")?.statusDetail?.slice(0, 1000) ?? null,
-        setupThreadId: plugin.setupThreadId,
-      };
-    });
+    return Promise.all(
+      devices.map(async (plugin) => {
+        const own = servers.filter(
+          (row) =>
+            row.pluginId === plugin.id &&
+            (row.status !== "disabled" || row.updatedAt > row.installationUpdatedAt),
+        );
+        const transport = own.find((row) => row.transport.type === "runner")?.transport;
+        const runner =
+          transport?.type === "runner" && typeof transport.runnerId === "string"
+            ? RunnerIdSchema.parse(transport.runnerId)
+            : null;
+        const selfDevice = runner ? await getSelfDeviceId(this.database, runner) : null;
+        const machine = machines.find((row) => row.id === selfDevice);
+        return {
+          pluginId: plugin.id,
+          ...pluginDeviceFromManifest(plugin.manifest)!,
+          computer: machine
+            ? {
+                id: runner!,
+                name: machine.name.slice(0, 120),
+                status: machine.status,
+              }
+            : null,
+          issue: own.find((row) => row.status !== "active")?.statusDetail?.slice(0, 1000) ?? null,
+          setupThreadId: plugin.setupThreadId,
+        };
+      }),
+    );
   }
 }
 

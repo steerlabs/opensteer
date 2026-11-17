@@ -31,7 +31,11 @@ export async function openDesktopWebLink(
   const link = DesktopWebLinkSchema.parse(value);
   const result = await client.dispatch({
     type: "tab.open",
-    target: pageOpenTarget(placement ? { identity, placement } : { identity }, link.url),
+    target: pageOpenTarget(
+      placement ? { identity, placement } : { identity },
+      link.url,
+      client.getSnapshot().machines,
+    ),
     idempotencyKey: `desktop-web-link:${link.id}`,
   });
   if (result.type !== "tab.open") throw new Error("Unexpected tab open result.");

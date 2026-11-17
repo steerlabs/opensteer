@@ -143,7 +143,7 @@ function Fixture() {
         onEnlarge={null}
         shown={display.picture !== null}
       />
-      <PhoneControlBar display={display} />
+      <PhoneControlBar display={display} phone={null} />
     </section>
   );
 }

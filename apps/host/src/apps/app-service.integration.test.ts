@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import Fastify from "fastify";
 import { createChannelId, slackChannelProviderManifest } from "@opensteer/channel-core";
 import { once } from "node:events";
@@ -1152,7 +1153,7 @@ describeStore("app lifecycle admission", (it) => {
             id: createId("tab"),
             ownerId: f.userId,
             kind: "app",
-            computerId: f.runnerId,
+            computerId: DeviceIdSchema.parse(f.runnerId),
             appId,
             title: "App",
             openedBy: "person",
@@ -1164,7 +1165,7 @@ describeStore("app lifecycle admission", (it) => {
             id: createId("tab"),
             ownerId: f.userId,
             kind: "phone",
-            computerId: f.runnerId,
+            computerId: DeviceIdSchema.parse(f.runnerId),
             title: "Phone",
             openedBy: "person",
           },

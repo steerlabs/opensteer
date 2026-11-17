@@ -1,3 +1,8 @@
+import {
+  iphoneRunnerMethodSchema,
+  iphoneRunnerParams,
+  iphoneRunnerEventSchema,
+} from "./iphone-bridge.js";
 import { WindowIdSchema, TabIdSchema, RunnerIdSchema } from "@opensteer/core";
 import { ComputerViewSchema } from "./computer-view.js";
 import { DeviceRefusalContextSchema } from "./devices.js";
@@ -1235,6 +1240,7 @@ export const ComputerUseBridgeMethodSchema = z.enum([
   ...ComputerUseHelperMethodSchema.exclude(["hello"]).options,
   "passwords.control",
   "passwords.capabilities",
+  ...iphoneRunnerMethodSchema.options,
 ]);
 export type ComputerUseBridgeMethod = z.infer<typeof ComputerUseBridgeMethodSchema>;
 
@@ -1252,6 +1258,7 @@ export function computerUseRequestMayHaveEffect(method: string, params: unknown)
     method === "display.input" ||
     method === "display.input-reset" ||
     method === "session.act" ||
+    method === "iphone.perform" ||
     method === "imessage.send" ||
     method === "view.open" ||
     method === "view.activate"
@@ -1283,13 +1290,23 @@ export const computerUseBridgePasswordsResults = {
 
 const bridgeRequestIdSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 
-export const ComputerUseBridgeRequestSchema = z.strictObject({
-  id: bridgeRequestIdSchema,
-  kind: z.literal("request"),
-  method: ComputerUseBridgeMethodSchema,
-  params: z.json(),
-  timeoutMs: ComputerUseTimeoutMsSchema.optional(),
-});
+export const ComputerUseBridgeRequestSchema = z
+  .strictObject({
+    id: bridgeRequestIdSchema,
+    kind: z.literal("request"),
+    method: ComputerUseBridgeMethodSchema,
+    params: z.json(),
+    timeoutMs: ComputerUseTimeoutMsSchema.optional(),
+  })
+  .superRefine((request, context) => {
+    const method = iphoneRunnerMethodSchema.safeParse(request.method);
+    if (method.success && !iphoneRunnerParams[method.data].safeParse(request.params).success)
+      context.addIssue({
+        code: "custom",
+        path: ["params"],
+        message: "Invalid iPhone request parameters",
+      });
+  });
 export type ComputerUseBridgeRequest = z.infer<typeof ComputerUseBridgeRequestSchema>;
 
 /**
@@ -1312,7 +1329,7 @@ export type ComputerUseBridgeResponse = z.infer<typeof ComputerUseBridgeResponse
  * approval answered, or the person at the Mac answered macOS about a grant,
  * so every app's readiness is read again now rather than on its next round.
  */
-export const ComputerUseBridgeEventSchema = z.discriminatedUnion("event", [
+const MacComputerUseBridgeEventSchema = z.discriminatedUnion("event", [
   z.strictObject({
     event: z.literal("passwords.event"),
     kind: z.literal("event"),
@@ -1324,6 +1341,10 @@ export const ComputerUseBridgeEventSchema = z.discriminatedUnion("event", [
   z.strictObject({ ...computerUseEventVariants[3].shape, kind: z.literal("event") }),
   z.strictObject({ ...computerUseEventVariants[4].shape, kind: z.literal("event") }),
   z.strictObject({ event: z.literal("grants.changed"), kind: z.literal("event") }),
+]);
+export const ComputerUseBridgeEventSchema = z.union([
+  MacComputerUseBridgeEventSchema,
+  iphoneRunnerEventSchema,
 ]);
 export type ComputerUseBridgeEvent = z.infer<typeof ComputerUseBridgeEventSchema>;
 

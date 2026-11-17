@@ -1,4 +1,5 @@
 import {
+  DeviceIdSchema,
   createId,
   emptyExecutionPreferences,
   HarnessIdSchema,
@@ -515,7 +516,7 @@ describeStore("PostgreSQL store", (it) => {
       payload: {
         access: "files" as const,
         kind: "device.access" as const,
-        machineId: fixture.runnerId,
+        machineId: DeviceIdSchema.parse(fixture.runnerId),
         machineName: "Studio Mac",
         reason: "The schedule needs it",
       },

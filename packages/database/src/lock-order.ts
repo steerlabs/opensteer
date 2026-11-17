@@ -112,6 +112,8 @@ export const databaseLockOrder = [
   // Enrollment and Runner ownership precede integration and execution authority.
   "runner_enrollments",
   "runners",
+  "devices",
+  "device_drivers",
   "computer_use_approval_keys",
   // Installation and sorted Servers establish the parents of Connections and Tools.
   "advisory:installation",

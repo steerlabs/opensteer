@@ -102,6 +102,8 @@ describe("a popup follows the viewer whose input opened it", () => {
       surfaceId: page.popups()[0]?.id,
     });
 
+    // The first popup can suppress background painting of the root in headless Chromium.
+    await page.ledger.binding(page.id)!.cdp.send("Page.bringToFront");
     await page.read(
       page.id,
       `window.frameReady = false;

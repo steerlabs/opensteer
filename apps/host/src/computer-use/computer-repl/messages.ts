@@ -33,6 +33,7 @@ export const ReplRequestSchema = z
     operation: z.enum([
       "apps",
       "phones",
+      "installedApps",
       "tab",
       "windows",
       "bind",
@@ -65,6 +66,7 @@ export const ReplFailureSchema = z.object({
   capability: DeviceRefusalContextSchema.shape.capability.optional(),
   code: z.string(),
   message: z.string(),
+  next: z.string().nullable().optional(),
   performed: z.array(z.string()).default([]),
 });
 export type ReplFailure = z.infer<typeof ReplFailureSchema>;
@@ -75,6 +77,7 @@ export function boundedReplFailure(error: ReplFailure): ReplFailure {
     ...(error.capability ? { capability: error.capability } : {}),
     code: utf8Prefix(error.code, 128),
     message: utf8Prefix(error.message, 8192),
+    ...(error.next ? { next: utf8Prefix(error.next, 2000) } : {}),
     performed: error.performed.slice(0, 160).map((receipt) => utf8Prefix(receipt, 2048)),
   };
 }

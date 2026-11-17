@@ -1,6 +1,6 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { BrowserSurfaceIdSchema, TeamMessageIdSchema } from "@opensteer/core";
 import {
-  RunnerIdSchema,
   SequenceSchema,
   createId,
   type AgentEventView as AgentEvent,
@@ -309,7 +309,7 @@ describe("foldTranscriptEvent", () => {
         app: "Slack",
         bundleId: "com.tinyspeck.slackmacgap",
         computer: "Alex's Mac",
-        runnerId: createId("runner"),
+        runnerId: DeviceIdSchema.parse(createId("runner")),
       },
       effect: "write" as const,
       integration: "Computer use",
@@ -546,7 +546,7 @@ describe("foldTranscriptEvent", () => {
       mode: "durable",
       payload: {
         kind: "machine.full-disk-access",
-        machineId: RunnerIdSchema.parse(createId("runner")),
+        machineId: DeviceIdSchema.parse(createId("runner")),
         machineName: "Mac mini",
         reason: "Messages and Mail are needed for the inbox sweep",
       },
@@ -581,7 +581,7 @@ describe("foldTranscriptEvent", () => {
         access: "read",
         app: null,
         definitionId: "android-phone",
-        runnerId: RunnerIdSchema.parse(createId("runner")),
+        deviceId: DeviceIdSchema.parse(createId("runner")),
         setupRequestId: "setup",
 
         reason: "Read the screen",

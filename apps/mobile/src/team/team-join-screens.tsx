@@ -6,6 +6,8 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import * as Linking from "expo-linking";
 import { useEffect, useState, type ReactNode } from "react";
 import { AppState, StyleSheet, TextInput, View } from "react-native";
+import { teamPlaceTarget } from "../links.js";
+import { useAppLinks } from "../ui/app-links-context.js";
 import { enterSide } from "../navigation-ref.js";
 import type { RootParamList } from "../navigation.js";
 import { color, radius, space, type } from "../theme.js";
@@ -34,9 +36,13 @@ const downloadPage = "https://opensteer.com/download";
  * Opensteer. Without a link it is the paste field Settings and Welcome open.
  */
 export function JoinTeamScreen(
-  props: StaticScreenProps<{ readonly link?: string | undefined } | undefined>,
+  props: StaticScreenProps<
+    { readonly link?: string | undefined; readonly externalIntent?: number | undefined } | undefined
+  >,
 ): ReactNode {
   const [link, setLink] = useState<string | null>(props.route.params?.link ?? null);
+  const externalIntent =
+    link === props.route.params?.link ? props.route.params?.externalIntent : undefined;
   if (link === null) return <PasteLink onLink={setLink} />;
   const intent = readTeamLinkIntent(link);
   if (intent === null)
@@ -46,7 +52,7 @@ export function JoinTeamScreen(
         onLink={setLink}
       />
     );
-  return <FollowLink intent={intent} key={link} link={link} />;
+  return <FollowLink externalIntent={externalIntent} intent={intent} key={link} link={link} />;
 }
 
 function PasteLink(props: {
@@ -95,11 +101,15 @@ function PasteLink(props: {
   );
 }
 
-function FollowLink(props: { readonly intent: TeamLinkIntent; readonly link: string }): ReactNode {
+function FollowLink(props: {
+  readonly externalIntent: number | undefined;
+  readonly intent: TeamLinkIntent;
+  readonly link: string;
+}): ReactNode {
   const { intent } = props;
   if (intent.kind === "invite") return <Invite intent={intent} link={props.link} />;
   if (intent.kind === "agent-link") return <AgentLink intent={intent} />;
-  return <OpenPlace intent={intent} />;
+  return <OpenPlace externalIntent={props.externalIntent} intent={intent} />;
 }
 
 /**
@@ -233,18 +243,30 @@ function inviteFailure(error: unknown, host: string, team: TeamTileView): Invite
 
 /** A team page, opened once the team says the reader may see it. */
 function OpenPlace(props: {
+  readonly externalIntent: number | undefined;
   readonly intent: Exclude<TeamLinkIntent, { kind: "invite" | "agent-link" }>;
 }): ReactNode {
-  const { intent } = props;
+  const { externalIntent, intent } = props;
   const navigation = useNavigation<Navigation>();
   const teams = useMobileTeams();
+  const { captureNavigationIntent } = useAppLinks();
   const [failure, setFailure] = useState<"unavailable" | "offline" | null>(null);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    let current = true;
+    let mounted = true;
+    const intentCurrent = captureNavigationIntent(externalIntent);
+    // A newer link that doesn't replace the stack (a Connect code) must not leave this sheet spinning.
+    const current = (): boolean => {
+      if (!mounted) return false;
+      if (intentCurrent()) return true;
+      mounted = false;
+      navigation.goBack();
+      return false;
+    };
     setFailure(null);
     const open = async () => {
       const located = await teams.locate(intent.origin);
+      if (!current()) return;
       let teamId: string;
       if (located.kind === "held") {
         teamId = located.team.teamId;
@@ -254,45 +276,12 @@ function OpenPlace(props: {
         await teams.signIn(located.verified, null);
         teamId = located.verified.discovery.deploymentId;
       }
-      if (!current) return;
-      const destination = await teams.pageDestination(teamId, intent);
-      if (!current) return;
-      switch (destination.kind) {
-        case "thread":
-          enterSide({
-            name: "TeamThread",
-            params: {
-              teamId,
-              channelId: destination.channelId,
-              rootId: destination.rootId,
-              ...(destination.replyId === null ? {} : { replyId: destination.replyId }),
-            },
-          });
-          break;
-        case "channel":
-          enterSide({
-            name: "TeamChannel",
-            params: {
-              teamId,
-              channelId: destination.channelId,
-              ...(destination.messageId === null ? {} : { messageId: destination.messageId }),
-            },
-          });
-          break;
-        case "knowledge-topic":
-          enterSide({ name: "TeamKnowledge", params: { teamId, topicId: destination.topicId } });
-          break;
-        case "knowledge-note":
-          enterSide({
-            name: "TeamNote",
-            params: { teamId, topicId: destination.topicId, noteId: destination.noteId },
-          });
-          break;
-      }
+      if (!current()) return;
+      enterSide(teamPlaceTarget(teamId, intent));
     };
     void open().catch(
       (error: unknown) =>
-        current &&
+        current() &&
         setFailure(
           !(error instanceof TeamAccessError) && readFailure(error) === "offline"
             ? "offline"
@@ -300,9 +289,9 @@ function OpenPlace(props: {
         ),
     );
     return () => {
-      current = false;
+      mounted = false;
     };
-  }, [attempt, intent, teams]);
+  }, [attempt, captureNavigationIntent, externalIntent, intent, navigation, teams]);
   return failure === null ? (
     <View style={styles.sheet}>
       <AppText role="secondary" tone="muted">

@@ -25,11 +25,11 @@ import {
   type RequestId,
   type RequestResponse,
   type RunId,
-  type RunnerId,
+  type DeviceId,
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import { androidPhoneDefinitionId } from "@opensteer/protocol";
+import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { computerUseDefinitionId } from "../computer-use/computer-use-service.js";
 import type { DeviceService } from "./device-service.js";
 
@@ -94,7 +94,7 @@ export class AccessRequests {
     asker: AccessAsker,
     input: {
       readonly dataApp: string;
-      readonly computerId?: RunnerId | undefined;
+      readonly computerId?: DeviceId | undefined;
       readonly access: IntegrationAccess;
     },
   ): Promise<AccessRequestOutcome> {
@@ -130,11 +130,11 @@ export class AccessRequests {
     let requestedConnectionId: IntegrationConnectionId | null = null;
     if (input.computerId)
       for (const { connectionId } of installed.accounts) {
-        const connection = await this.#store.getComputerConnectionForCall({
+        const connection = await this.#store.getDeviceComputerConnectionForCall({
           connectionId,
           ownerUserId: asker.requestedBy,
         });
-        if (connection?.runnerId === input.computerId) requestedConnectionId = connectionId;
+        if (connection?.deviceId === input.computerId) requestedConnectionId = connectionId;
       }
     if (input.computerId && requestedConnectionId === null)
       return this.#create(asker, input.access, {
@@ -264,7 +264,7 @@ export class AccessRequests {
       (definition) =>
         isComputerAppDefinition(definition) &&
         definition.id !== computerUseDefinitionId &&
-        definition.id !== androidPhoneDefinitionId,
+        !isPhoneDisplayDefinitionId(definition.id),
     );
   }
 
@@ -300,7 +300,7 @@ export class AccessRequests {
         continue;
       // A computer that only lets agents read cannot answer an ask to change things.
       if (access === "read-write" && grant.connectionId !== null) {
-        const connection = await this.#store.getComputerConnectionForCall({
+        const connection = await this.#store.getDeviceComputerConnectionForCall({
           connectionId: grant.connectionId,
           ownerUserId: asker.requestedBy,
         });

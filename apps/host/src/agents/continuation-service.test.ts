@@ -1,3 +1,7 @@
+import { gatherComputerAccess } from "../devices/computer-access.js";
+import type { DeviceService } from "../devices/device-service.js";
+import { localTargetBlocked } from "../devices/target-blocked.js";
+import { DeviceIdSchema } from "@opensteer/core";
 import type { BrowserSignInRequestResponse } from "@opensteer/protocol/browser-sources";
 import { createBrowserSessionId } from "@opensteer/protocol";
 import { createHash } from "node:crypto";
@@ -49,6 +53,9 @@ describe("ContinuationService", () => {
       await continuationMessage(fulfilled, {
         listDiscoveryInventory: async () => [],
         listCallableTools: async () => [],
+        computerAccess: async () => {
+          throw new Error("No computer access fixture");
+        },
         computerUseMachines: async () => [],
         computerUsePhones: async () => [],
       }),
@@ -62,6 +69,9 @@ describe("ContinuationService", () => {
       await continuationMessage(declined, {
         listDiscoveryInventory: async () => [],
         listCallableTools: async () => [],
+        computerAccess: async () => {
+          throw new Error("No computer access fixture");
+        },
         computerUseMachines: async () => [],
         computerUsePhones: async () => [],
       }),
@@ -349,6 +359,14 @@ describe("continuationMessage", () => {
   });
 });
 describe("continuationMessage", () => {
+  it("derives a held continuation as the originating Run, without exposing other task titles", async () => {
+    const request = computerAppAccessRequest("fulfilled");
+    const own = await continuationMessage(request, withMacs(true, request.originatingRunId!));
+    expect(own).toContain("Notes on Alex's Mac is ready.");
+    const other = await continuationMessage(request, withMacs(true, createId("run")));
+    expect(other).toContain("in use by another task");
+    expect(other).not.toContain("Private holder title");
+  });
   it("tells the agent each answer to its question, chosen or typed", async () => {
     const question = PendingRequestSchema.parse({
       callId: crypto.randomUUID(),
@@ -396,6 +414,9 @@ describe("continuationMessage", () => {
     const inventory = {
       listDiscoveryInventory: async () => [],
       listCallableTools: async () => [],
+      computerAccess: async () => {
+        throw new Error("No computer access fixture");
+      },
       computerUseMachines: async () => [],
       computerUsePhones: async () => [],
     };
@@ -561,7 +582,7 @@ describe("continuationMessage", () => {
   it("does not claim access when the Mac has been removed", async () => {
     await expect(
       continuationMessage(computerAppAccessRequest("fulfilled"), withMacs(false)),
-    ).resolves.toContain("is no longer available to this task. Continue without it.");
+    ).resolves.toContain("is unavailable. Use computer_apps");
   });
   it("reports a missing personal grant after fulfillment", async () => {
     const request = fulfilledRequest("integration.access");
@@ -576,7 +597,7 @@ describe("continuationMessage", () => {
         ),
       ),
     ).toBe(
-      `Request ${request.id} was fulfilled. Gmail read access was granted for connectionless operations. Your Opensteer still holds no access grant (No personal grant).`,
+      `Request ${request.id} was fulfilled. Gmail read access was granted for connectionless operations. ${blockedText("ACCESS_GRANT_REQUIRED")}`,
     );
   });
   it("names the connected account once the access grant is verified", async () => {
@@ -611,7 +632,7 @@ describe("continuationMessage", () => {
         ),
       ),
     ).toBe(
-      `Request ${request.id} was fulfilled. Gmail read access was granted for connectionless operations. The fulfilled target is not usable (Missing gmail.modify).`,
+      `Request ${request.id} was fulfilled. Gmail read access was granted for connectionless operations. ${blockedText("REAUTHORIZATION_REQUIRED")}`,
     );
   });
   it("never claims access to an installation that has left the inventory", async () => {
@@ -624,6 +645,9 @@ describe("continuationMessage", () => {
 function inventory(...entries: readonly InventoryEntry[]): IntegrationInventorySource {
   return {
     listDiscoveryInventory: async () => [...entries],
+    computerAccess: async () => {
+      throw new Error("No computer access fixture");
+    },
     computerUseMachines: async () => [],
     computerUsePhones: async () => [],
     listCallableTools: async () => [],
@@ -702,9 +726,44 @@ function computerAppAccessRequest(status: "declined" | "fulfilled") {
     status,
   });
 }
-function withMacs(named: boolean): IntegrationInventorySource {
+function withMacs(
+  named: boolean,
+  holdingRunId?: Request["originatingRunId"],
+): IntegrationInventorySource {
   return {
     ...inventory(),
+    async computerAccess(input, run) {
+      return gatherComputerAccess(
+        {
+          computerAppApprovals: {
+            computerUseInventory: async () => ({
+              machines: await this.computerUseMachines(input.ownerUserId),
+              phones: await this.computerUsePhones(input.ownerUserId),
+            }),
+            computerAppHolders: () =>
+              new Map(
+                holdingRunId
+                  ? [
+                      [
+                        "com.apple.notes",
+                        { runId: holdingRunId, threadTitle: "Private holder title" },
+                      ],
+                    ]
+                  : [],
+              ),
+          },
+          store: {
+            listDeviceComputerAppSetupRequests: async () => [],
+            integrationRequests: { listPendingIntegrationAccessRequests: async () => [] },
+          },
+          listCallableTools: this.listCallableTools,
+          computerToolEnabled: () => true,
+          computerUseVersion: () => 2,
+        } as unknown as DeviceService,
+        input,
+        run,
+      );
+    },
     computerUseMachines: async () =>
       named
         ? [
@@ -722,7 +781,8 @@ function withMacs(named: boolean): IntegrationInventorySource {
                   connectionId: macConnectionId,
                 },
               ],
-              runnerId: macRunnerId,
+              deviceId: DeviceIdSchema.parse(macRunnerId),
+              definitionId: "macos-app",
             },
           ]
         : [],
@@ -925,4 +985,10 @@ function payloadFor(kind: "browser.access" | "integration.access" | "machine.ful
         reason: "Read Mail",
       };
   }
+}
+
+function blockedText(code: IntegrationReadiness["code"], detail?: string) {
+  const current = entry({ code, ...(detail === undefined ? {} : { detail }) });
+  const blocked = localTargetBlocked(current.readiness.servers[0], current.installation.name)!;
+  return `${blocked.message} ${blocked.next}`;
 }

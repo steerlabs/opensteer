@@ -383,6 +383,7 @@ export const operations = {
       items: z.array(z.strictObject({ path: id, description: z.string(), signature: z.string() })),
       namespaces: z.array(object),
       missing: z.array(z.strictObject({ path: id, matches: z.array(z.string()) })),
+      unavailableApps: z.array(object).optional(),
     }),
   },
   call: {

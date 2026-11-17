@@ -1,4 +1,6 @@
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { upsertSelfDeviceInTransaction } from "@opensteer/database";
+import { DeviceIdSchema } from "@opensteer/core";
 import { personalTestExecution } from "../mcp/personal-execution.test-support.js";
 import {
   createDeviceServices,
@@ -93,10 +95,7 @@ import {
 import type { RunCapabilityClaims } from "../agents/run-capability.js";
 
 import { ComputerAppHub, type ComputerAppControlPeer } from "../computer-apps/computer-app-hub.js";
-import {
-  computerUseBusyNextStep,
-  ComputerUseService,
-} from "../computer-use/computer-use-service.js";
+import { ComputerUseService } from "../computer-use/computer-use-service.js";
 import { NativeTabTargets } from "../computer-use/native-tab-targets.js";
 import { ComputerViewService } from "../computer-use/computer-view-service.js";
 import { TabService } from "../tabs/tab-service.js";
@@ -301,7 +300,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           app: "Notes",
           bundleId: apps.notes.bundleId,
           computer: mac,
-          runnerId: world.macId,
+          runnerId: DeviceIdSchema.parse(world.macId),
         },
         effect: "read" as const,
         integration: "Computer use",
@@ -592,6 +591,17 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       expect(JSON.stringify(rows)).not.toContain('"hello"');
       const discovery = json(await gateway.call("computer_apps", { query: "Android phone" }));
       expect(JSON.stringify(discovery)).not.toContain("toolRef");
+      const listed = await gateway.call("computer_use", {
+        code: 'const [entry]=await phones(); const p=await phone("Pixel 8"); return [entry.definitionId, entry.platform, entry.navigation, entry.access, await p.installedApps({query:"mess"})]',
+      });
+      expect(listed.isError, JSON.stringify(listed)).toBeUndefined();
+      expect(JSON.parse(text(listed).split("\n").at(-1)!)).toEqual([
+        "android-phone",
+        "android",
+        ["back", "home", "recents", "notifications", "quickSettings"],
+        "read-write",
+        { apps: [{ label: "Messages", appId: "com.google.android.apps.messaging" }], total: 1 },
+      ]);
       const initialTabs = await world.tabStore.snapshot(world.owner.userId);
       expect(initialTabs.rows).toHaveLength(1);
       const nativeTab = initialTabs.rows[0]!;
@@ -690,7 +700,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           .filter((row) => row.type === "text")
           .map((row) => row.text)
           .join("\n"),
-      ).toContain("busy");
+      ).toContain("in_use:");
       cancellation.abort();
       const cancelled = await pending;
       expect(cancelled.isError).toBe(true);
@@ -1394,16 +1404,11 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           .filter((row) => row.type === "text")
           .map((row) => row.text)
           .join("\n"),
-      ).toContain(`incompatible-version: Update Opensteer on ${mac} to let agents use its apps.`);
+      ).toContain(`update_required: ${mac} needs an Opensteer update.`);
       expect(world.fakeMac.frames.filter((frame) => frame.operation === "windows")).toEqual([]);
       const search = json(await gateway.call("computer_apps", { query: "Computer use" }));
-      expect(macRow(search).computers[0]).toMatchObject({ computerUseVersion: 1 });
-      expect(macRow(search).computers[0]!.apps).toEqual([
-        expect.objectContaining({ callable: false }),
-      ]);
-      expect(search.guidance.computers).toContain(
-        "computerUseVersion other than 2: update Opensteer on that Mac",
-      );
+      expect(macRow(search).computers[0]).toMatchObject({ blocked: { code: "update_required" } });
+      expect(search.computers).toHaveLength(1);
     } finally {
       await world.close();
     }
@@ -1671,8 +1676,18 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         store: new OpensteerStore(database),
       });
       const content: ContentPart[] = [
-        { type: "computer-app", machineId: world.macId, app: apps.notes, name: mac },
-        { type: "phone", machineId: world.phoneId!, display: "main", name: phone },
+        {
+          type: "computer-app",
+          machineId: DeviceIdSchema.parse(world.macId),
+          app: apps.notes,
+          name: mac,
+        },
+        {
+          type: "phone",
+          machineId: DeviceIdSchema.parse(world.phoneId!),
+          display: "main",
+          name: phone,
+        },
       ];
       const scope = {
         ownerId: world.owner.userId,
@@ -1793,7 +1808,14 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       await expect(
         places.assertUsable({
           ...scope,
-          parts: [{ type: "phone", machineId: world.phoneId!, name: phone, display: "other" }],
+          parts: [
+            {
+              type: "phone",
+              machineId: DeviceIdSchema.parse(world.phoneId!),
+              name: phone,
+              display: "other",
+            },
+          ],
         }),
       ).rejects.toMatchObject({ code: "bad_request" });
       const other = await world.startRun("Other task");
@@ -1825,7 +1847,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       // its sender must own them, and the agent finds out at use whether it may use them.
       const unapproved: ContentPart = {
         type: "computer-app",
-        machineId: world.macId,
+        machineId: DeviceIdSchema.parse(world.macId),
         app: apps.calendar,
         name: mac,
       };
@@ -1849,13 +1871,20 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       ).toEqual(approvalsBefore);
       const stranger = await send(
         run.threadId,
-        [{ type: "computer-app", machineId: createId("runner"), app: apps.notes, name: mac }],
+        [{ type: "computer-app", machineId: createId("device"), app: apps.notes, name: mac }],
         "native-place-stranger",
       );
       expect(stranger.statusCode, stranger.body).toBe(403);
       const wrongDisplay = await send(
         run.threadId,
-        [{ type: "phone", machineId: world.phoneId!, name: phone, display: "other" }],
+        [
+          {
+            type: "phone",
+            machineId: DeviceIdSchema.parse(world.phoneId!),
+            name: phone,
+            display: "other",
+          },
+        ],
         "native-place-wrong-display",
       );
       expect(wrongDisplay.statusCode, wrongDisplay.body).toBe(400);
@@ -2277,27 +2306,36 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     const catalog = json(await a.call("computer_apps", { query: "Computer use" }));
     const row = catalog;
     expect(row).toMatchObject({
-      computers: [
-        { computerId: world.macId, name: mac, state: "ready", appApproval: "ask", apps: [] },
-      ],
+      computers: [{ computerId: world.macId, name: mac, apps: [] }],
     });
 
     // 2. Search with computerId: installed apps, each with its own next step.
     const installed = json(await a.call("computer_apps", { computerId: world.macId }));
     expect(installed).toMatchObject({ total: 4, nextCursor: null });
-    expect(installed.apps).toContainEqual({
+    expect(JSON.stringify(installed)).not.toContain("teamId");
+    expect(JSON.stringify(installed)).not.toContain("iconPng");
+    const page = json(
+      await a.call("computer_apps", { computerId: world.macId, limit: 2, cursor: "1" }),
+    );
+    expect(page).toMatchObject({
+      total: 4,
+      nextCursor: "3",
+      computer: { apps: expect.any(Array) },
+    });
+    expect(page.computer.apps).toHaveLength(2);
+    expect(installed.computer.apps).toContainEqual({
       name: "Notes",
       bundleId: "com.apple.Notes",
-      status: "not-approved",
-      callable: false,
+      blocked: expect.objectContaining({ code: "access_required" }),
     });
-    expect(installed.guidance.computers).toContain(
-      "Call computer_apps with computerId to list installed apps",
-    );
     const filtered = json(
       await a.call("computer_apps", { computerId: world.macId, query: "note", limit: 1 }),
     );
-    expect(filtered).toMatchObject({ total: 1, nextCursor: null, apps: [{ name: "Notes" }] });
+    expect(filtered).toMatchObject({
+      total: 1,
+      nextCursor: null,
+      computer: { apps: [{ name: "Notes" }] },
+    });
 
     // 3. Request under ask: pending, and the Mac is told to review it now.
     const pending = await a.call("app_access_request", {
@@ -2312,7 +2350,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       kind: "computer.app.access",
       status: "pending",
       replayed: false,
-      nextAction: `Approval for ${mac} is pending; the owner can allow or decline from any Opensteer app. Pending grants no access; do not poll, repeat or route around the Request.`,
+      next: expect.stringContaining("Nothing is granted until they answer"),
     });
     const [setup] = await world.persistence.listComputerAppSetupRequests(world.owner.userId);
     expect(setup).toMatchObject({
@@ -2322,14 +2360,12 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     });
     await vi.waitFor(() => expect(world.fakeMac.reviews).toEqual([setup!.id]));
 
-    // Searching again while it waits must not invite a second request.
+    // Discovery reports pending access while the owner has not answered.
     const waiting = json(await a.call("computer_apps", { computerId: world.macId }));
-    expect(waiting.apps.find(({ name }: { name: string }) => name === "Notes")).toEqual({
+    expect(waiting.computer.apps.find(({ name }: { name: string }) => name === "Notes")).toEqual({
       name: "Notes",
       bundleId: "com.apple.Notes",
-      status: "not-approved",
-      pending: "mac",
-      callable: false,
+      blocked: expect.objectContaining({ code: "access_pending" }),
     });
 
     // 4. The person allows it on the Mac, which signs and consumes the request.
@@ -2339,24 +2375,19 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
 
     // 5. The continuation names the app selector the model will use.
     const approved = json(await a.call("computer_apps", { computerId: world.macId }));
-    const notes = approved.apps.find(({ name }: { name: string }) => name === "Notes");
+    const notes = approved.computer.apps.find(({ name }: { name: string }) => name === "Notes");
     expect(notes).toEqual({
       name: "Notes",
       bundleId: "com.apple.Notes",
-      status: "approved",
+
       access: "read-write",
-      callable: true,
     });
     expect(await continuationMessage(fulfilled, inventorySource(world.platform))).toBe(
-      `Request ${fulfilled.id} was fulfilled. Notes on ${mac} is ready. Use app("Notes", {computer: "Alex's Mac"}) in computer_use. Continue.`,
+      `Request ${fulfilled.id} was fulfilled. Notes on ${mac} is ready. Use app("Notes", {computer:"Alex's Mac"}) in computer_use.`,
     );
 
     expect(notes).not.toHaveProperty("toolRefs");
-    expect(notes).not.toHaveProperty("nextAction");
-    expect(approved.guidance.computers).toContain("With callable:true, use app() in computer_use");
-    expect(approved.guidance.computers).toContain(
-      "do not poll, repeat or route around the Request",
-    );
+    expect(notes).not.toHaveProperty("next");
     const [legacy] = await world.platform.listCallableTools({
       ownerUserId: world.owner.userId,
 
@@ -2414,20 +2445,20 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       text(await a.call("computer_use", { code: "await w.observe({screenshot:true})" })),
     ).toContain("Observation obs-3");
 
-    // 8. A second task finds the app held, by name, in search and in the call.
+    // 8. A second task finds the app held without seeing the holding task's title.
     const runB = await world.startRun("Weekly review");
     const b = await world.gateway(runB);
     const held = json(await b.call("computer_apps", { computerId: world.macId }));
-    expect(held.apps.find(({ name }: { name: string }) => name === "Notes")).toMatchObject({
-      status: "approved",
-      inUse: true,
-      callable: false,
-      heldByTask: "Shopping list",
-    });
+    expect(held.computer.apps.find(({ name }: { name: string }) => name === "Notes")).toMatchObject(
+      {
+        blocked: expect.objectContaining({
+          code: "in_use",
+          message: `Notes on ${mac} is in use by another task.`,
+        }),
+      },
+    );
     expect(await b.call("computer_use", { code: 'await (await app("Notes")).window()' })).toEqual(
-      refusal(
-        `busy: This app is already being used by another task. (Task: Shopping list) ${computerUseBusyNextStep}`,
-      ),
+      refusal(`in_use: Notes on ${mac} is in use by another task.`),
     );
 
     // 9. Stop on the Mac ends every session there; the next call says so.
@@ -2512,7 +2543,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const request = await world.requestById(requestId);
       expect(request.status).toBe("fulfilled");
       expect(await continuationMessage(request, inventorySource(world.platform))).toBe(
-        `Request ${requestId} was fulfilled. ${app} on ${mac} is ready. Use app(${JSON.stringify(app)}, {computer: ${JSON.stringify(mac)}}) in computer_use. Continue.`,
+        `Request ${requestId} was fulfilled. ${app} on ${mac} is ready. Use app(${JSON.stringify(app)}, {computer:${JSON.stringify(mac)}}) in computer_use.`,
       );
     }
     // Both Threads share the wider personal grant, independent of ask order.
@@ -2563,7 +2594,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     await world.automaticOnMac();
     const catalog = json(await a.call("computer_apps", { query: "Computer use" }));
     expect(macRow(catalog)).toMatchObject({
-      computers: [{ appApproval: "automatic", computerToolEnabled: true, computerUseVersion: 2 }],
+      computers: [{ computerId: world.macId, apps: expect.any(Array) }],
     });
 
     // A new app is fulfilled in the same result and its handle works at once.
@@ -2575,9 +2606,13 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         reason: "Add the dentist appointment.",
       }),
     );
-    expect(calendar).toEqual({
+    expect(calendar).toMatchObject({
+      computerId: world.macId,
+      computer: mac,
+      app: { displayName: "Calendar", bundleId: "com.apple.iCal" },
+      kind: "computer.app.access",
+      requestId: null,
       status: "fulfilled",
-      nextAction: "Use computer_use to see and operate approved apps and phones.",
     });
     expect(
       text(
@@ -2595,9 +2630,10 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         reason: "Read the draft.",
       }),
     );
-    expect(textEdit).toEqual({
+    expect(textEdit).toMatchObject({
+      kind: "computer.app.access",
+      requestId: null,
       status: "fulfilled",
-      nextAction: "Use computer_use to see and operate approved apps and phones.",
     });
     const reviews = world.fakeMac.reviews.length;
     const widen = json(
@@ -2610,7 +2646,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(widen).toMatchObject({
       kind: "computer.app.access",
       status: "pending",
-      nextAction: `Approval for ${mac} is pending; the owner can allow or decline from any Opensteer app. Pending grants no access; do not poll, repeat or route around the Request.`,
+      next: expect.stringContaining("Nothing is granted until they answer"),
     });
     await vi.waitFor(() => expect(world.fakeMac.reviews).toHaveLength(reviews + 1));
     expect(await world.appAccess()).toMatchObject({ TextEdit: "read" });
@@ -2650,8 +2686,6 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(readyCatalog.computers[0]!.apps).toContainEqual(
       expect.objectContaining({
         name: "Notes",
-        status: "approved",
-        callable: true,
       }),
     );
 
@@ -2674,32 +2708,26 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       ),
     );
     expect(await a.call("computer_use", { code: 'await app("Calendar")' })).toEqual(
-      refusal(
-        "app-not-allowed: No approved app matches Calendar. Call computer_apps, then app_access_request for access.",
-      ),
+      refusal(`blocked_by_owner: Calendar on ${mac} is blocked by its owner.`),
     );
     const listing = json(await a.call("computer_apps", { computerId: world.macId }));
-    expect(listing.apps).toEqual([
+    expect(listing.computer.apps).toEqual([
       expect.objectContaining({
         name: "Notes",
-        callable: true,
       }),
       {
         name: "Calendar",
         bundleId: "com.apple.iCal",
-        status: "blocked",
-        callable: false,
+        blocked: expect.objectContaining({ code: "blocked_by_owner" }),
       },
       expect.objectContaining({
         name: "TextEdit",
         access: "read",
-        callable: true,
       }),
       {
         name: "1Password",
         bundleId: "com.1password.1password",
-        status: "not-approved",
-        callable: false,
+        blocked: expect.objectContaining({ code: "access_required" }),
       },
     ]);
 
@@ -2714,7 +2742,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(await world.appAccess()).toEqual(before);
     expect(
       macRow(json(await a.call("computer_apps", { query: "Computer use" }))).computers[0],
-    ).toMatchObject({ appApproval: "ask" });
+    ).toMatchObject({ computerId: world.macId });
 
     const runD = await world.startRun("More notes");
     // Several Macs and no runnerId: the refusal names each with its id.
@@ -2747,19 +2775,22 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(await world.persistence.listComputerAppSetupRequests(world.owner.userId)).toEqual(
       setupRequests,
     );
-    expect(await a.call("computer_apps", { computerId: world.macId })).toEqual(
-      toolRefusal(
-        "conflict",
-        `${mac} is offline. Wait for it to reconnect before calling computer_apps with this computerId again.`,
-      ),
-    );
+    const offlineSearch = json(await a.call("computer_apps", { computerId: world.macId }));
     const offlineCatalog = json(await a.call("computer_apps", { query: "Computer use" }));
-    expect(macRow(offlineCatalog).computers[0]).toMatchObject({ state: "offline" });
-    expect(offlineCatalog.guidance.computers).toContain("state offline: wait for it to return");
+    expect(macRow(offlineCatalog).computers[0]).toMatchObject({
+      blocked: { code: "computer_offline" },
+    });
+    expect(offlineSearch.computer.blocked).toEqual(macRow(offlineCatalog).computers[0]!.blocked);
+    expect(offlineSearch).not.toHaveProperty("apps");
     expect(JSON.stringify(offlineCatalog)).not.toContain("toolRef");
-    expect(await a.call("computer_use", { code: 'await (await app("Notes")).windows()' })).toEqual(
-      refusal(`offline: ${mac} is offline. Notes will work again when it is back.`),
-    );
+    expect(
+      await a.call("computer_use", { code: 'await (await app("Notes")).windows()' }),
+    ).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: { ...macRow(offlineCatalog).computers[0]!.blocked, performed: [] },
+      },
+    });
 
     // A Trigger occurrence has no Run for a session to belong to.
     await world.fakeMac.attach();
@@ -2867,9 +2898,45 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect(fakePhone.lists).toEqual([]);
     await world.allowPhoneFromClient(setup);
     const row = await phoneRow(gateway);
-    expect(row.phones[0]).toMatchObject({ approval: "approved", access });
+    expect(row.phones[0]).toMatchObject({ access });
     expect(row.phones[0]).not.toHaveProperty("toolRefs");
   }
+
+  it("keeps a connected phone visible without a personal grant and returns one blocker on every surface", async () => {
+    const world = await createWorld(database, { phone: true });
+    try {
+      const { phoneId } = phoneOf(world);
+      const run = await world.startRun("Find calendar");
+      const gateway = await world.gateway(run);
+      await grantedPhone(world, gateway, "read-write");
+      const connection = await world.phoneConnection();
+      const grant = (await world.persistence.listGrants({ ownerUserId: world.owner.userId })).find(
+        (entry) => entry.connectionId === connection.id,
+      )!;
+      await world.platform.devices.revokeGrant({
+        grantId: grant.id,
+        ownerUserId: world.owner.userId,
+        requestId: "incident-revoke",
+      });
+      const row = (await phoneRow(gateway)).phones[0]!;
+      expect(row).toMatchObject({
+        computerId: phoneId,
+        blocked: {
+          code: "access_required",
+          next: expect.stringContaining(`computerId:${JSON.stringify(phoneId)}`),
+        },
+      });
+      expect(row).not.toHaveProperty("access");
+      const listed = await gateway.call("computer_use", { code: "print(await phones())" });
+      expect(text(listed)).toContain(JSON.stringify(row.blocked));
+      const selected = await gateway.call("computer_use", {
+        code: `await phone(${JSON.stringify(phoneId)})`,
+      });
+      expect(selected.structuredContent).toMatchObject({ error: row.blocked });
+    } finally {
+      await world.close();
+    }
+  });
 
   it("reasserts each call's authenticated executing Runner when reusing an attempt", async () => {
     const world = await createWorld(database, { phone: true });
@@ -3107,7 +3174,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       { runId: run.runId, bindingGeneration: replacement.bindingGeneration },
     ]);
     expect(await world.store.activeComputerUseStops()).toEqual([
-      { runId: run.runId, runnerId: phoneId },
+      { runId: run.runId, deviceId: DeviceIdSchema.parse(phoneId) },
     ]);
     await expect(world.computerUse.prepare(target, replacement)).rejects.toMatchObject({
       code: "stopped-by-user",
@@ -3117,13 +3184,15 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       hub: world.hub,
       authorizer: world.store,
       listMachines: async () => [],
-      machineOwners: (ids) => world.store.effectiveMachineOwners(ids),
+      machineOwners: (ids) =>
+        world.store.effectiveDeviceOwners(ids.map((id) => DeviceIdSchema.parse(id))),
       onSessionsChanged: () => undefined,
       threadTitle: async () => "Replacement",
       stops: {
-        initial: await world.store.activeComputerUseStops(),
+        initial: await selfStops(world.store),
         clear: (id) => world.store.clearComputerUseStops(id),
-        record: (runId, runnerId) => world.store.recordComputerUseStop({ runId, runnerId }),
+        record: (runId, runnerId) =>
+          world.store.recordComputerUseStop({ runId, deviceId: DeviceIdSchema.parse(runnerId) }),
       },
     });
     await expect(restarted.prepare(target, replacement)).rejects.toMatchObject({
@@ -3155,7 +3224,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect(stopped.runId).toBe(run.runId);
     await vi.waitFor(() => expect(fakePhone.stopsRecorded).toEqual([stopped]));
     expect(await world.store.activeComputerUseStops()).toEqual([
-      { runId: run.runId, runnerId: phoneId },
+      { runId: run.runId, deviceId: DeviceIdSchema.parse(phoneId) },
     ]);
     // Reported again after a lost acknowledgement: recorded once, acknowledged again.
     fakePhone.reportStop(stopped);
@@ -3191,7 +3260,10 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       await gateway.call("computer_apps", { computerId: phoneId, query: "Messages" }),
     );
     expect(result.apps).toEqual([
-      { label: "Messages", packageName: "com.google.android.apps.messaging" },
+      {
+        label: "Messages",
+        appId: "com.google.android.apps.messaging",
+      },
     ]);
     expect(fakePhone.frames.at(-1)).toMatchObject({
       definitionId: "android-phone",
@@ -3256,11 +3328,14 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const run = await world.startRun("Discover computers");
     const gateway = await world.gateway(run);
     const inventory = vi.spyOn(world.computerUse, "eligibleInventory");
-    const policy = vi.spyOn(world.persistence, "getComputerUsePolicy");
+    const policy = vi.spyOn(world.persistence, "getDeviceComputerUsePolicy");
     await gateway.call("computer_apps", { query: "Computer use" });
     expect(inventory).toHaveBeenCalledTimes(1);
     expect(policy).toHaveBeenCalledTimes(1);
-    expect(policy).toHaveBeenCalledWith({ runnerId: world.macId, ownerUserId: world.owner.userId });
+    expect(policy).toHaveBeenCalledWith({
+      deviceId: DeviceIdSchema.parse(world.macId),
+      ownerUserId: world.owner.userId,
+    });
     inventory.mockClear();
     policy.mockClear();
     const invalidApp = await gateway.call("app_access_request", {
@@ -3272,7 +3347,10 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect(invalidApp.isError).toBe(true);
     expect(inventory).toHaveBeenCalledTimes(1);
     expect(policy).toHaveBeenCalledTimes(1);
-    expect(policy).toHaveBeenCalledWith({ runnerId: world.macId, ownerUserId: world.owner.userId });
+    expect(policy).toHaveBeenCalledWith({
+      deviceId: DeviceIdSchema.parse(world.macId),
+      ownerUserId: world.owner.userId,
+    });
     inventory.mockClear();
     policy.mockClear();
     const invalidPhone = await gateway.call("app_access_request", {
@@ -3283,7 +3361,10 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect(invalidPhone.isError).toBe(true);
     expect(inventory).toHaveBeenCalledTimes(1);
     expect(policy).toHaveBeenCalledTimes(1);
-    expect(policy).toHaveBeenCalledWith({ runnerId: world.macId, ownerUserId: world.owner.userId });
+    expect(policy).toHaveBeenCalledWith({
+      deviceId: DeviceIdSchema.parse(world.macId),
+      ownerUserId: world.owner.userId,
+    });
     await world.close();
   });
 
@@ -3305,7 +3386,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     ],
   ] as const)(
     "shows %s phone readiness through the gateway",
-    async (state, sentence, readiness) => {
+    async (state, _sentence, readiness) => {
       const world = await createWorld(database, { phone: true });
       const { fakePhone } = phoneOf(world);
       const run = await world.startRun("Readiness");
@@ -3316,9 +3397,17 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         fakePhone.state = state;
         await fakePhone.attach();
       }
-      const result = json(await gateway.call("computer_apps", { query: "Android phone" }));
-      expect(result.guidance.phones).toContain(sentence);
-      expect((await phoneRow(gateway)).phones[0]).toMatchObject({ state, callable: false });
+      json(await gateway.call("computer_apps", { query: "Android phone" }));
+      expect((await phoneRow(gateway)).phones[0]).toMatchObject({
+        blocked: {
+          code:
+            state === "offline"
+              ? "computer_offline"
+              : state === "permission-required"
+                ? "permission_required"
+                : "paused",
+        },
+      });
       const entries = await world.platform.listDiscoveryInventory({
         ownerUserId: world.owner.userId,
         threadId: run.threadId,
@@ -3362,14 +3451,14 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
               "Locked: no",
               "Secure lock: no",
               "Foreground app: none",
-              'The screen is off, so there is nothing to see. Act with {"type":"wake"} to turn it on.',
+              'The screen is off, so there is nothing to see. If this Device advertises wake, act with {"type":"wake"}; otherwise ask the person to turn it on.',
             ]
           : [
               "Screen: on",
               "Locked: no",
               "Secure lock: no",
               "Foreground app: Opensteer Agent Phone (com.opensteer.agentphone)",
-              'The Opensteer Agent Phone app is in front. Agents may not see or operate it, so nothing of the screen is shared. Act with {"type":"navigate","to":"home"}, or launch another app, to continue.',
+              "The Opensteer app is in front. Agents may not see or operate it, so nothing of the screen is shared. Use an advertised navigation button, or launch an app returned by installed_apps, to continue.",
             ],
       );
       await world.close();
@@ -3401,13 +3490,9 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         reason: "Check the phone",
       }),
     );
-    expect(request.status).toBe("already-available");
+    expect(request).toMatchObject({ requestId: null, status: "fulfilled" });
     const refused = await phoneCode(gatewayB, "await p.observe()");
-    expect(refused).toEqual(
-      refusal(
-        `busy: ${phone} is already being used by another task. (Task: First display holder) ${computerUseBusyNextStep}`,
-      ),
-    );
+    expect(refused).toEqual(refusal(`in_use: ${phone} is in use by another task.`));
     expect(fakePhone.received("observe")).toBe(1);
     resume();
     expect((await pending).isError).toBeUndefined();
@@ -3427,17 +3512,15 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       ...(await phoneRow(a)),
       phones: [
         {
-          approval: "not-approved",
-          callable: false,
-          computerToolEnabled: true,
+          blocked: expect.objectContaining({ code: "access_required" }),
           name: phone,
           computerId: phoneId,
-          state: "ready",
+          definitionId: "android-phone",
         },
       ],
     });
     expect(json(await a.call("computer_apps", { computerId: phoneId }))).toMatchObject({
-      apps: [{ label: "Messages", packageName: "com.google.android.apps.messaging" }],
+      apps: [{ label: "Messages", appId: "com.google.android.apps.messaging" }],
       total: 1,
     });
     expect(
@@ -3450,7 +3533,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     ).toEqual(
       toolRefusal(
         "invalid_input",
-        `${phone} is an Android phone, which is asked for whole: call app_access_request {computerId, access, reason} without app.`,
+        `${phone} is a phone, which is asked for whole: call app_access_request {computerId, access, reason} without app.`,
       ),
     );
 
@@ -3464,7 +3547,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     );
     expect(pending).toMatchObject({
       kind: "computer.app.access",
-      nextAction: `Approval is pending; the owner can allow or decline from any Opensteer app. Pending grants no access; do not poll, repeat or route around the Request.`,
+      next: expect.stringContaining("Nothing is granted until they answer"),
       replayed: false,
       status: "pending",
     });
@@ -3483,7 +3566,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       ),
     ).toEqual([]);
     expect((await phoneRow(a)).phones[0]).toMatchObject({
-      approval: "pending",
+      blocked: { code: "access_pending" },
     });
 
     // 3. The owner allows it from a client; the continuation names the phone() handle.
@@ -3493,16 +3576,15 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const granted = (await phoneRow(a)).phones[0]!;
     expect(granted).toEqual({
       access: "read-write",
-      approval: "approved",
+
       name: phone,
-      callable: true,
-      computerToolEnabled: true,
+
       computerId: phoneId,
-      state: "ready",
+      definitionId: "android-phone",
     });
     expect(granted).not.toHaveProperty("toolRefs");
     expect(await continuationMessage(fulfilled, inventorySource(world.platform))).toBe(
-      `Request ${fulfilled.id} was fulfilled. ${phone} is ready. Use phone(${JSON.stringify(phone)}) in computer_use. Release it when you are done so another task can use it. Continue.`,
+      `Request ${fulfilled.id} was fulfilled. ${phone} is ready. Use phone(${JSON.stringify(phoneId)}) in computer_use.`,
     );
 
     const [row] = await world.platform.listCallableTools({
@@ -3549,7 +3631,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const summary = world.computerUse.sessionsForRunner(phoneId)[0]!;
     const phonePart: ContentPart = {
       type: "phone",
-      machineId: phoneId,
+      machineId: DeviceIdSchema.parse(phoneId),
       display: "main",
       name: phone,
     };
@@ -3615,19 +3697,18 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         }),
       );
       // The phone already covers this task’s ask, so it comes straight back.
-      expect(asked).toMatchObject({ status: "already-available" });
+      expect(asked).toMatchObject({ requestId: null, status: "fulfilled" });
       expect(asked).not.toHaveProperty("toolRefs");
     })();
     expect((await phoneRow(b)).phones[0]).toMatchObject({
-      inUse: true,
-      callable: false,
-      heldByTask: "Text the driver",
+      blocked: expect.objectContaining({
+        code: "in_use",
+        message: `${phone} is in use by another task.`,
+      }),
     });
     const framesBefore = fakePhone.frames.length;
     expect(await phoneCode(b, "await p.observe()")).toEqual(
-      refusal(
-        `busy: ${phone} is already being used by another task. (Task: Text the driver) ${computerUseBusyNextStep}`,
-      ),
+      refusal(`in_use: ${phone} is in use by another task.`),
     );
     expect(fakePhone.frames).toHaveLength(framesBefore);
 
@@ -3807,7 +3888,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     });
 
     const lowered = (await phoneRow(gateway)).phones[0]!;
-    expect(lowered).toMatchObject({ access: "read", approval: "approved" });
+    expect(lowered).toMatchObject({ access: "read" });
     expect(lowered).not.toHaveProperty("toolRefs");
     expect(text(await phoneCode(gateway, "await p.observe()"))).toContain(`Looked at ${phone}`);
     expect(await phoneCode(gateway, 'await p.act([{ type: "wake" }])')).toEqual(
@@ -3845,9 +3926,12 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     release();
     fakePhone.gate = null;
 
-    expect(await phoneCode(gateway, "await p.observe()")).toEqual(
-      refusal(`offline: ${phone} is offline. It will work again when it is back.`),
-    );
+    const offline = json(await gateway.call("computer_apps", { query: "Android phone" }));
+    const blocked = offline.phones[0].blocked;
+    expect(await phoneCode(gateway, "await p.observe()")).toMatchObject({
+      isError: true,
+      structuredContent: { error: { ...blocked, performed: [] } },
+    });
 
     await fakePhone.attach();
     fakePhone.gate = new Promise<void>((resolve) => {
@@ -3877,7 +3961,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         computerId: runnerId,
       });
     const unknown = (runnerId: string) =>
-      `No Android phone set up for agents has computerId ${runnerId}. computer_apps lists your phones and their computerIds.`;
+      `No phone display set up for agents has computerId ${runnerId}. Call computer_apps to list your phones and their computerIds.`;
 
     expect(await ask(strangers)).toEqual(toolRefusal("invalid_input", unknown(strangers)));
     const nobody = createId("runner");
@@ -3910,7 +3994,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       });
     await set("read");
     expect(await world.phoneConnection()).toMatchObject({
-      computer: { access: "read", app: null, runnerId: phoneId },
+      computer: { access: "read", app: null, deviceId: phoneId },
     });
     await set("read-write");
     expect(await world.phoneConnection()).toMatchObject({ computer: { access: "read-write" } });
@@ -3936,6 +4020,7 @@ const tree = '[0] window "Groceries" (0,0 1200×900)\n  [1] button "New Note" (2
 /** What the continuation outbox reads, served by the platform under test. */
 function inventorySource(platform: DeviceServicesTestHarness): IntegrationInventorySource {
   return {
+    computerAccess: (input, run) => platform.devices.computerAccess(input, run),
     computerUseMachines: (ownerUserId) =>
       platform.devices.computerAppApprovals.computerUseMachines(ownerUserId),
     computerUsePhones: (ownerUserId) =>
@@ -3960,11 +4045,11 @@ function refusal(message: string) {
 
 interface CatalogRow {
   readonly computers: readonly {
-    readonly appApproval: string;
+    readonly blocked?: { readonly code: string };
     readonly apps: readonly {
       readonly name: string;
-      readonly status: string;
-      readonly callable: boolean;
+      readonly access?: string;
+      readonly blocked?: { readonly code: string };
     }[];
   }[];
   readonly definitionId: string;
@@ -3979,31 +4064,21 @@ function macRow(search: {
 /** The JSON a model reads from a successful result's text block. */
 function json(result: ToolResult) {
   const value = JSON.parse(text(result));
-  if (value.computer || value.computers?.length) {
-    for (const rule of [
-      "app_access_request {computerId, app, access, reason}",
-      "blocked: only the computer owner can unblock it from any Opensteer app",
-      "pending:mac waits for its owner",
-      "do not poll, repeat or route around the Request",
-      "Pending grants no access; do not poll, repeat or route around the Request",
-      "do not retry in a loop",
-      "permission-required",
-      "appApproval:automatic",
-    ])
-      expect(value.guidance.computers).toContain(rule);
-  }
-  if (value.phones?.length) {
-    for (const rule of [
-      "app_access_request {computerId, access, reason}",
-      "owner approves from any Opensteer app",
-      "approval:pending",
-      "do not poll, repeat or route around the Request",
-      "do not retry in a loop",
-      "permission-required",
-      "release when done",
-      "request read-write",
-    ])
-      expect(value.guidance.phones).toContain(rule);
+  const targets = [
+    ...(value.computer?.apps ?? []),
+    ...(value.computers ?? []).flatMap((computer: { apps: unknown[] }) => computer.apps),
+    ...(value.phones ?? []),
+    ...(value.apps ?? []).filter((app: { bundleId?: string }) => app.bundleId),
+    ...(value.catalog ?? []).flatMap(
+      (row: {
+        phones?: { access?: string; blocked?: { next: string } }[];
+        computers?: { apps: { access?: string; blocked?: { next: string } }[] }[];
+      }) => [...(row.phones ?? []), ...(row.computers ?? []).flatMap((computer) => computer.apps)],
+    ),
+  ];
+  for (const target of targets) {
+    expect(Boolean(target.access) !== Boolean(target.blocked)).toBe(true);
+    if (target.blocked) expect(target.blocked.next.length).toBeGreaterThan(0);
   }
   return value;
 }
@@ -4924,8 +4999,6 @@ async function createWorld(
     await database
       .insertInto("runners")
       .values({
-        accessPolicy: sql`'{"commands":false,"forwarding":false,"reach":"nobody","shares":[]}'::jsonb`,
-        accessPolicyRevision: 1,
         allowedModules: sql`'["integrations"]'::jsonb`,
         capabilities: sql`'[]'::jsonb`,
         connectionGeneration: 0,
@@ -4950,6 +5023,7 @@ async function createWorld(
         revokedAt: null,
       })
       .execute();
+    await upsertSelfDeviceInTransaction(database, runnerId);
     if (options.ownerUserId)
       await database
         .insertInto("runnerEnrollments")
@@ -5020,7 +5094,8 @@ async function createWorld(
         const platform = moduleDescriptors.integrations?.platform;
         return platform ? [{ name, platform, runnerId: id }] : [];
       }),
-    machineOwners: (runnerIds) => store.effectiveMachineOwners(runnerIds),
+    machineOwners: (runnerIds) =>
+      store.effectiveDeviceOwners(runnerIds.map((id) => DeviceIdSchema.parse(id))),
     onSessionsChanged: () => undefined,
     onAuthorityRevoked: ({ runId, bindingGeneration }) =>
       platform.devices.resetComputerGeneration(runId, bindingGeneration),
@@ -5046,8 +5121,9 @@ async function createWorld(
     authorizer: store,
     stops: {
       clear: (runId) => store.clearComputerUseStops(runId),
-      initial: await store.activeComputerUseStops(),
-      record: (runId, runnerId) => store.recordComputerUseStop({ runId, runnerId }),
+      initial: await selfStops(store),
+      record: (runId, runnerId) =>
+        store.recordComputerUseStop({ runId, deviceId: DeviceIdSchema.parse(runnerId) }),
     },
     sweepIntervalMs: 3_600_000,
     threadTitle: async (threadId, ownerUserId) =>
@@ -5064,15 +5140,16 @@ async function createWorld(
   const computerViews = new ComputerViewService({
     hub,
     connections: (ownerId) => connections.listConnections(ownerId),
-    owners: (ids) => store.effectiveMachineOwners(ids),
+    owners: (ids) => store.effectiveDeviceOwners(ids.map((id) => DeviceIdSchema.parse(id))),
     changed: () => undefined,
   });
   const nativeTabs = new NativeTabTargets({
     views: computerViews,
     connections: (ownerId) => connections.listConnections(ownerId),
     owns: async (ownerId, computerId) =>
-      (await store.effectiveMachineOwners([computerId])).get(computerId)?.effectiveOwner ===
-      ownerId,
+      (await store.effectiveDeviceOwners([DeviceIdSchema.parse(computerId)])).get(
+        DeviceIdSchema.parse(computerId),
+      )?.effectiveOwner === ownerId,
     connected: (computerId) => hub.attached(computerId),
     queryWindow: (computerId, target) =>
       hub.resolveWindow(computerId, target, { timeoutMs: 1_000 }),
@@ -5082,6 +5159,7 @@ async function createWorld(
   });
   const tabs = new TabService({
     store: tabStore,
+    devices: store,
     nativeTargets: nativeTabs,
     pages: {
       open: vi.fn(),
@@ -5093,7 +5171,7 @@ async function createWorld(
     apps: { get: vi.fn() },
     computer: async (ownerId, computerId, db) => ({
       ...(await tabComputer(ownerId, computerId, db)),
-      connected: hub.attached(computerId),
+      connected: hub.attached(await store.requireDeviceSelfRunnerId(computerId)),
     }),
     canRead: canReadTab,
     canReadTask: async () => true,
@@ -5114,12 +5192,16 @@ async function createWorld(
       return row.kind === "window"
         ? {
             kind: "window",
-            computerId: row.computerId,
+            computerId: await store.requireDeviceSelfRunnerId(row.computerId),
             windowId: row.windowId!,
             app: row.windowApp!,
             tabGeneration: row.generation,
           }
-        : { kind: "phone", computerId: row.computerId, tabGeneration: row.generation };
+        : {
+            kind: "phone",
+            computerId: await store.requireDeviceSelfRunnerId(row.computerId),
+            tabGeneration: row.generation,
+          };
     },
     listConnections: (ownerUserId) => connections.listConnections(ownerUserId),
     secretVault: new AesGcmSecretVault(
@@ -5134,7 +5216,7 @@ async function createWorld(
     isRunnerConnected: (runnerId) =>
       (runnerId !== macId && runnerId !== phoneId) || hub.attached(runnerId),
     computerToolEnabled: async () => executionCapability.on,
-    computerUseVersion: () => macVersion.value,
+    computerUseVersion: (runnerId) => (hub.attached(runnerId) ? macVersion.value : undefined),
     ...(options.computerReplTime ? { computerReplTime: options.computerReplTime } : {}),
     mcpImageContent: async () => imageGate.on,
     onDeploymentEvent: () => undefined,
@@ -5167,7 +5249,7 @@ async function createWorld(
   await fakePhone?.attach();
   /** The person on the Mac allows one approval; throws with the Host's refusal. */
   const allowOnMac = async (
-    setup: import("@opensteer/integration-core/computer-app-setup").ComputerAppSetupRequest,
+    setup: Pick<import("@opensteer/integration-core").ComputerAppSetupRequest, "id">,
   ) => {
     const outcome = await fakeMac.answer(setup.id, {
       setupRequestId: setup.id,
@@ -5535,4 +5617,13 @@ function describeFakeAction(action: unknown): string {
   if (type === "type") return `Typed "${text ?? ""}"`;
   if (type === "click") return `Clicked element ${target?.index ?? "?"}`;
   return `Performed ${type}`;
+}
+
+async function selfStops(store: OpensteerStore) {
+  const result = [];
+  for (const stop of await store.activeComputerUseStops()) {
+    const runnerId = await store.getDeviceSelfRunnerId(stop.deviceId);
+    if (runnerId) result.push({ runId: stop.runId, runnerId });
+  }
+  return result;
 }

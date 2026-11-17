@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { HostToClientMessageSchema } from "@opensteer/protocol";
 import { browserRows } from "./browser-rows.test-support.js";
 import {
@@ -119,7 +120,7 @@ async function setup(surfaceState = true) {
     {
       id: BrowserSurfaceIdSchema.parse("page-integration"),
       ownerId: host.ownerId,
-      computerId: phone.runnerId,
+      computerId: DeviceIdSchema.parse(phone.runnerId),
       kind: "page",
       title: "Integration page",
       url: "about:blank",

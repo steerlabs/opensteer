@@ -1,3 +1,5 @@
+import { DEVICE_DRIVERS_SQL, deviceDriversMigrationName } from "./device-model-migration.js";
+export { deviceDriversMigrationName } from "./device-model-migration.js";
 import { TABS_AND_APPS_SQL, tabsAndAppsMigrationName } from "./tabs-apps-migration.js";
 export { tabsAndAppsMigrationName } from "./tabs-apps-migration.js";
 import { localMachineOwnerEmail } from "@opensteer/core";
@@ -86,7 +88,7 @@ const MESSAGE_ORIGIN_SQL = `
 alter table messages add column origin jsonb;
 `;
 /** Databases created from the current baseline never had this storage. */
-export const dropSpecialistsMigrationName = "0028_drop_specialists_contract";
+export const dropSpecialistsMigrationName = "0029_drop_specialists_contract";
 const DROP_SPECIALISTS_SQL = `
 drop table if exists specialists;
 alter table threads drop column if exists specialist_id;
@@ -99,7 +101,7 @@ delete from plugin_owner_settings where target->>'kind' = 'specialist';
  * only they could answer. Computer, messaging and local-server rows stay. Databases created from
  * the current baseline never had the dropped storage.
  */
-export const dropServiceIntegrationsMigrationName = "0031_drop_service_integrations_contract";
+export const dropServiceIntegrationsMigrationName = "0032_drop_service_integrations_contract";
 const DROP_SERVICE_INTEGRATIONS_SQL = `
 create temporary table service_servers on commit drop as
   select id from integration_servers where transport->>'type' not in ('computer', 'runner');
@@ -424,17 +426,22 @@ export function migrationProvider(): MigrationProvider {
             await sql.raw(MESSAGE_ORIGIN_SQL).execute(database);
           },
         },
+        [deviceDriversMigrationName]: {
+          async up(database) {
+            await sql.raw(DEVICE_DRIVERS_SQL).execute(database);
+          },
+        },
         [dropSpecialistsMigrationName]: {
           async up(database) {
             await sql.raw(DROP_SPECIALISTS_SQL).execute(database);
           },
         },
-        "0029_plugin_host": {
+        "0030_plugin_host": {
           async up(database) {
             await sql.raw(PLUGIN_HOST_SQL).execute(database);
           },
         },
-        "0030_plugin_oauth": {
+        "0031_plugin_oauth": {
           async up(database) {
             await sql
               .raw(

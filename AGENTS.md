@@ -3,9 +3,9 @@
 Opensteer turns a person's computer into an agent workstation they steer from
 their phone. A Host (`apps/host`, with its own PostgreSQL) runs on their
 computer. Runners drive the coding agents they already pay for (Claude Code,
-Codex, Grok, Antigravity, Muse Code, Cursor, OpenCode, Pi), plus browsers, apps
-and shells. Web, desktop (Electron) and mobile (Expo) clients connect to it
-locally or from anywhere.
+Codex, Grok, Antigravity, Muse Code, Cursor, OpenCode, Pi), plus browsers, apps,
+shells and phone screens. Web, desktop (Electron) and mobile (Expo) clients
+connect to it locally or from anywhere.
 It's an early alpha.
 
 ## What we never compromise on
@@ -49,8 +49,11 @@ of you, say so plainly and get sign-off before breaking it.
 - **personal Opensteer**: one person's private Host, agent and tasks on their computer.
   A **team server** is a self-hosted Host for shared chat and knowledge; it runs no agents.
   **Deployment** means one Host identity, with kind `personal` or `team`.
-- **Host**: `apps/host`. **Runner**: a process offering the modules its computer's grant allows.
-  **Computer**: one enrolled Runner identity; tasks run only on the hosting computer.
+- **Host**: `apps/host`. **Runner**: keyed Opensteer software offering the modules its grant
+  allows. **Device**: what a person controls (a computer, phone or Mac-driven iPhone);
+  approvals, Stops and views belong to it. A **driver** is a Runner serving a Device as
+  `self` or as its `screen`.
+  **Computer**: a Device with its own Runner; tasks run only on the hosting computer.
 - **task**: a private durable agent conversation. Every task works in the **agent home folder**
   (`~/Opensteer` on the hosting computer, fixed at first boot). A **Run** is one turn.
   **Voice** is a separate spoken entry. **Needs you** shows pending person decisions.
@@ -79,9 +82,7 @@ of you, say so plainly and get sign-off before breaking it.
 2. **Killing by pattern.** Many agents and dev stacks share this Mac. Never
    `pkill -f`, `killall` or kill a PID found by matching a name or path. Stop
    only processes you started, by the PID you captured.
-3. **Driving the real screen.** Anything that drives the screen, keyboard,
-   windows or Electron runs in a disposable VM (`pnpm test:vm`), never on the
-   host. Emulators and USB phones have one owner at a time.
+3. **Sharing devices.** Emulators and USB phones have one owner at a time.
 4. **Handling key material.** Signing certificates, notarization keys and
    release credentials are Tim's. Agents never read, export or rotate them.
 5. **Leaving things running.** Stop every server, database, emulator, `adb`

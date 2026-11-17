@@ -1,6 +1,6 @@
 import { DeviceRefusalContextSchema } from "@opensteer/protocol";
 import type { AgentToolAccess, AgentToolFailure } from "@opensteer/agent-tools";
-import { OpensteerError } from "@opensteer/core";
+import { ToolBlockedError, OpensteerError } from "@opensteer/core";
 import { formatIssues } from "@opensteer/shared/validationIssues";
 import { z } from "zod";
 import { ComputerMcpSessionError } from "../computer-apps/computer-app-hub.js";
@@ -16,6 +16,7 @@ export const internalToolFailureCode = "internal";
  * retry is safe follows the tool: the Host never repeats an uncertain effect.
  */
 export function agentToolFailure(error: unknown, access: AgentToolAccess): AgentToolFailure {
+  if (error instanceof ToolBlockedError) return error.blocked;
   if (error instanceof PluginServiceError)
     return {
       code:
