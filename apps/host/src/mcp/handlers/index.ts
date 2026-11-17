@@ -4,7 +4,7 @@ import { administrationToolHandlers, type AdministrationToolHandlers } from "./a
 import type { AppService } from "../../apps/app-service.js";
 
 import type { ProductToolHandlers } from "./product.js";
-import type { IntegrationToolHandlers } from "./integrations.js";
+import type { DeviceToolHandlers } from "./devices.js";
 import type { TriggerToolHandlers } from "./triggers.js";
 import type { TeamKnowledgePort, TeamToolPort } from "../team-tool-port.js";
 import { knowledgeToolHandlers, teamToolHandlers } from "./team.js";
@@ -18,7 +18,7 @@ import type { LocalServerRegistry } from "../../local-servers/local-server-regis
 export function agentToolHandlers(options: {
   readonly administration: AdministrationToolHandlers;
   readonly product: ProductToolHandlers;
-  readonly integrations: IntegrationToolHandlers;
+  readonly devices: DeviceToolHandlers;
   readonly triggers: TriggerToolHandlers;
   readonly apps: Pick<AppService, "publish" | "list" | "start" | "stop" | "delete">;
   readonly tabs: TabToolHandlers;
@@ -34,7 +34,7 @@ export function agentToolHandlers(options: {
   ) => Promise<TeamAgentRequestId | null>;
 }): Partial<AgentToolHandlers> {
   const p = options.product,
-    i = options.integrations,
+    d = options.devices,
     t = options.triggers;
   const handlers: Partial<AgentToolHandlers> = {
     ...administrationToolHandlers(options.administration),
@@ -119,20 +119,9 @@ export function agentToolHandlers(options: {
     opensteer_automation_control: async (c) => t.write(c),
     opensteer_automation_list: async (c) => await t.read(c),
     opensteer_automation_create: async (c) => await t.write(c),
-    integration_search: async (c) => await i.integration_search(c),
-    integration_describe: async (c) => await i.integration_describe(c),
-    integration_call: Object.assign(
-      async (c: ToolCall<"integration_call">) => await i.integration_call(c),
-      {
-        authorize: async (c: ToolCall<"integration_call">) => {
-          await i.authorizeCall(c);
-        },
-      },
-    ),
-    computer_use: async (c) => await i.computer_use(c),
-    integration_request: async (c) => await i.integration_request(c),
-    app_access_request: async (c) => await i.app_access_request(c),
-    custom_integration_request: async (c) => await i.custom_integration_request(c),
+    computer_use: async (c) => await d.computer_use(c),
+    computer_apps: async (c) => await d.computer_apps(c),
+    app_access_request: async (c) => await d.app_access_request(c),
     ...teamToolHandlers({ port: options.team, personalContext: options.personalContextForRun }),
     ...knowledgeToolHandlers({
       port: options.knowledge,

@@ -6,7 +6,7 @@ import {
 import type { PluginOAuthService } from "../plugins/plugin-oauth-service.js";
 import { createSettingsReadHandlers } from "./settings-read-handlers.js";
 import type { ComputerViewService } from "../computer-use/computer-view-service.js";
-import { OpensteerError, RunnerIdSchema } from "@opensteer/core";
+import { OpensteerError } from "@opensteer/core";
 import { requireSession } from "./rpc-context.js";
 import {
   hostApi,
@@ -17,25 +17,14 @@ import {
   type HostApiServerContext,
   type PluginCommand,
 } from "@opensteer/protocol";
-import { listedPluginRow } from "../integrations/catalog-presentation.js";
 import type { IdentityRpcHandlers } from "../identity/identity-routes.js";
 import { handleTriggerCommand } from "../triggers/trigger-routes.js";
 import type { TriggerService } from "../triggers/trigger-service.js";
 import {
-  handleIntegrationCommand,
-  type IntegrationCommand,
-  type IntegrationRpcOptions,
-} from "../integrations/integration-routes.js";
-import {
-  handleIntegrationAuthorizationCommand,
-  type IntegrationAuthorizationCommand,
-  type IntegrationAuthorizationRpcOptions,
-} from "../access/integration-authorization-routes.js";
-import {
-  handleIntegrationPlatformCommand,
-  type IntegrationPlatformCommand,
-  type IntegrationPlatformRpcOptions,
-} from "../integrations/integration-platform-routes.js";
+  handleDeviceCommand,
+  type DeviceCommand,
+  type DeviceRpcOptions,
+} from "../devices/device-routes.js";
 import { handleChannelCommand, type ChannelCommand } from "../channels/channel-handlers.js";
 import { isPluginCommand, type PluginOwnerApi } from "../plugins/plugin-owner-api.js";
 import type { ChannelService } from "../channels/channel-service.js";
@@ -51,18 +40,11 @@ export function createHostApiHandlers(
   identityHandlers: IdentityRpcHandlers,
   triggerHandlers: Pick<HostApiHandlers, "triggers.get" | "triggers.list">,
   triggers: TriggerService,
-  integrationHandlers: Pick<
+  deviceHandlers: Pick<
     HostApiHandlers,
-    "integrations.get" | "integration.repositoryAccess.check"
-  >,
-  integrations: IntegrationRpcOptions,
-  integrationAuthorizationHandlers: Pick<HostApiHandlers, "integration.authorization.get">,
-  integrationAuthorization: IntegrationAuthorizationRpcOptions,
-  integrationPlatformHandlers: Pick<
-    HostApiHandlers,
-    | "integration.grants.list"
-    | "plugin.list"
+    | "integrations.get"
     | "integration.platform.get"
+    | "integration.grants.list"
     | "integration.computer.apps.installed"
     | "integration.computer.session.stop"
     | "integration.computer.setup.review"
@@ -70,7 +52,7 @@ export function createHostApiHandlers(
     | "integration.computer.policy.get"
     | "integration.server.secrets.list"
   >,
-  integrationPlatform: IntegrationPlatformRpcOptions,
+  devices: DeviceRpcOptions,
   channelHandlers: Pick<HostApiHandlers, "channel.connection.check" | "channels.get">,
   channels: ChannelService,
   browserSourceHandlers: Pick<
@@ -150,7 +132,7 @@ export function createHostApiHandlers(
     "plugins.overview.get": async (_input, context) => {
       const machines = await coreHandlers["machines.list"]({}, context);
       if (!machines.ok) return machines;
-      const overview = await integrationPlatform.platform.store.settings.overview(
+      const overview = await devices.devices.store.settings.overview(
         requireSession(context).user.id,
         new Set(
           machines.data.machines
@@ -158,61 +140,10 @@ export function createHostApiHandlers(
             .map((machine) => machine.id),
         ),
       );
-      return rpcSuccess({ ...overview, rows: overview.rows.map(listedPluginRow) });
-    },
-    "plugins.detail.get": async (input, context) => {
-      const machines = await coreHandlers["machines.list"]({}, context);
-      if (!machines.ok) return machines;
-      const detail = await integrationPlatform.platform.store.settings.detail(
-        requireSession(context).user.id,
-        input.target,
-        new Set(machines.data.machines.filter((m) => m.status === "online").map((m) => m.id)),
-      );
-      detail.row = listedPluginRow(detail.row);
-      const runnerIds = new Set<string>([
-        ...detail.devices.map((d) => d.runnerId),
-        ...detail.accounts.flatMap((account) => (account.runnerId ? [account.runnerId] : [])),
-      ]);
-      if (runnerIds.size) {
-        for (const machine of machines.data.machines.filter((entry) => runnerIds.has(entry.id))) {
-          const definitionId =
-            input.target.kind === "device-app" ? input.target.definitionId : null;
-          for (const app of machine.apps ?? []) {
-            if (app.definitionId !== definitionId) continue;
-            for (const operation of app.operations)
-              detail.permissions.push({
-                label: `${machine.name}: ${operation.operation}`.slice(0, 120),
-                layer: "os-permission",
-                state:
-                  machine.status !== "online"
-                    ? "unknown"
-                    : operation.state === "ready"
-                      ? "allowed"
-                      : operation.state === "permission-required"
-                        ? "denied"
-                        : "unknown",
-              });
-          }
-        }
-        detail.devices = machines.data.machines
-          .filter((machine) => runnerIds.has(machine.id))
-          .map((machine) => ({
-            runnerId: RunnerIdSchema.parse(machine.id),
-            name: machine.name.slice(0, 120),
-            status: machine.status,
-          }));
-      }
-      return rpcSuccess(hostApi["plugins.detail.get"].success.parse(detail));
+      return rpcSuccess(overview);
     },
     ...createSettingsReadHandlers({
-      otherDevices: (owner, machines) =>
-        integrationPlatform.platform.store.settings.otherDevices(owner, machines),
-      catalog: () => integrationPlatform.platform.settingsCatalog(),
-      requests: (owner) =>
-        integrationPlatform.platform.store.requests.waitingOnUserPage({
-          userId: owner,
-          limit: 100,
-        }),
+      otherDevices: (owner, machines) => devices.devices.store.settings.otherDevices(owner, machines),
       machines: coreHandlers["machines.list"],
     }),
     "computer.app.windows": async (input, context) => {
@@ -234,9 +165,7 @@ export function createHostApiHandlers(
     ...(plugins?.reads() ?? pluginsUnavailable()),
     ...identityHandlers,
     ...triggerHandlers,
-    ...integrationHandlers,
-    ...integrationAuthorizationHandlers,
-    ...integrationPlatformHandlers,
+    ...deviceHandlers,
     ...channelHandlers,
     ...browserSourceHandlers,
     ...coreHandlers,
@@ -286,27 +215,8 @@ export function createHostApiHandlers(
         const output = await handleTriggerCommand(triggers, command, context);
         return rpcSuccess(hostApi["commands.dispatch"].success.parse(output));
       }
-      if (isIntegrationCommand(command)) {
-        const output = await handleIntegrationCommand(integrations, command, context);
-        return rpcSuccess(hostApi["commands.dispatch"].success.parse(output));
-      }
-      if (
-        command.type === "integration.authorization.cancel" ||
-        command.type === "integration.authorization.return"
-      ) {
-        const output = await handleIntegrationAuthorizationCommand(
-          integrationAuthorization,
-          command,
-          context,
-        );
-        return rpcSuccess(hostApi["commands.dispatch"].success.parse(output));
-      }
-      if (isIntegrationPlatformCommand(command)) {
-        const output = await handleIntegrationPlatformCommand(
-          integrationPlatform,
-          command,
-          context,
-        );
+      if (isDeviceCommand(command)) {
+        const output = await handleDeviceCommand(devices, command, context);
         return rpcSuccess(hostApi["commands.dispatch"].success.parse(output));
       }
       if (isChannelCommand(command)) {
@@ -337,9 +247,7 @@ export type CoreCommand = Exclude<
   HostApiCommand,
   | Extract<HostApiCommand, { type: `computer.view.${string}` | "phone.tab.close" }>
   | TriggerCommand
-  | IntegrationCommand
-  | IntegrationAuthorizationCommand
-  | IntegrationPlatformCommand
+  | DeviceCommand
   | ChannelCommand
   | BrowserSourceCommand
   | PluginCommand
@@ -372,30 +280,10 @@ function isTriggerCommand(command: HostApiCommand): command is TriggerCommand {
   return command.type.startsWith("trigger.");
 }
 
-function isIntegrationCommand(command: HostApiCommand): command is IntegrationCommand {
+function isDeviceCommand(command: HostApiCommand): command is DeviceCommand {
   switch (command.type) {
-    case "integration.apiKey.connect":
-    case "integration.authorization.begin":
-    case "integration.applicationSourceDefault.set":
-    case "integration.disconnect":
-    case "integration.providerApplication.save":
-    case "integration.providerApplication.status.set":
-      return true;
-    default:
-      return false;
-  }
-}
-
-function isIntegrationPlatformCommand(
-  command: HostApiCommand,
-): command is IntegrationPlatformCommand {
-  switch (command.type) {
-    case "plugin.update":
     case "plugin.remove":
-    case "plugin.activation.set":
-    case "plugin.list":
-    case "plugin.install":
-    case "integration.catalog.install":
+    case "integration.disconnect":
     case "integration.computer.setup.request":
     case "integration.computer.setup.cancel":
     case "integration.computer.setup.set":
@@ -404,11 +292,7 @@ function isIntegrationPlatformCommand(
     case "integration.computer.app.block":
     case "integration.grant.create":
     case "integration.grant.revoke":
-    case "integration.mcp.authorization.begin":
-    case "integration.mcp.disconnect":
-    case "integration.remoteMcp.install":
     case "integration.server.secrets.set":
-    case "integration.uninstall":
       return true;
     default:
       return false;

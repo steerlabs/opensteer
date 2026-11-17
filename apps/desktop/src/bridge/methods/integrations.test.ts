@@ -45,7 +45,7 @@ it("drops unknown returns, queues registered returns before renderer subscriptio
   wrong();
   const detach = returns.attach(started, deliver);
   await returns.settled();
-  expect(deliver).toHaveBeenCalledWith({ ...callback, kind: "plugin" });
+  expect(deliver).toHaveBeenCalledWith(callback);
   await returns.forget(started);
   expect(returns.accept(url)).toBe(false);
   detach();
@@ -76,7 +76,7 @@ it("registers before browser launch and refuses another attached Deployment", as
   } as unknown as IpcMainInvokeEvent;
   const open = (input: unknown) =>
     handleOpenIntegrationAuthorization(context)(event, { bridgeToken: "b".repeat(43), input });
-  await expect(open({ ...started, kind: "plugin", launchTicket: "t".repeat(43) })).resolves.toEqual(
+  await expect(open({ ...started, launchTicket: "t".repeat(43) })).resolves.toEqual(
     {
       opened: true,
     },
@@ -84,7 +84,6 @@ it("registers before browser launch and refuses another attached Deployment", as
   await expect(
     open({
       ...started,
-      kind: "plugin",
       deploymentId: createId("deployment"),
       launchTicket: "t".repeat(43),
     }),

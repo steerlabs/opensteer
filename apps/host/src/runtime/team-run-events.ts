@@ -92,7 +92,7 @@ function stepKind(event: AgentEvent): StepKind | null {
   if (event.data.integration) return "used_integration";
   if (/^browser(?:_|$)/u.test(name)) return "browsed";
   if (name === "opensteer_team_read" || name === "opensteer_team_search") return "searched_team";
-  if (/^(?:computer_use|integration_call)$/u.test(name)) return "used_integration";
+  if (name === "computer_use") return "used_integration";
   if (/^(?:Bash|PowerShell|exec_command|shell|shell_run|run_command|execute)$/u.test(name))
     return "ran_commands";
   if (/^(?:Read|read_file|read|Glob|Grep|glob|grep)$/u.test(name)) return "read_files";

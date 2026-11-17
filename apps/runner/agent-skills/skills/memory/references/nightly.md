@@ -56,8 +56,8 @@ reserved for the person.
 ## Prepare tomorrow
 
 Check commitments the person or their agents made against real sources such as calendar and
-mail. Discover connected operations with `integration_search` (`limit: 20` or less) and the
-person's device Calendar, Reminders and Messages with `plugin_search`, then call the relevant
+mail. Discover connected mail plugins and the person's device Calendar, Reminders and Messages
+with `plugin_search`, then call the relevant
 operations. Prepare for tomorrow's meetings and draft replies that would
 help; drafts only, never sent. Write morning notes in `memory/passes/nightly.md` for the first
 light pass after the person wakes: what to surface, where the drafts are, which are ready to offer for the person's yes, and what not to raise

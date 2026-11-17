@@ -26,9 +26,6 @@ export interface ConnectCardAction {
   readonly label: string;
 }
 
-/** Said of an access Request for an account Opensteer no longer connects itself. */
-export const integrationRequestRetiredDetail =
-  "Accounts are connected through Plugins now. Decline this request and ask the agent again.";
 
 /**
  * An access Request for a device data app or a local server, as both cards show
@@ -65,7 +62,6 @@ export function connectCard(input: {
   const selected = plan?.selectedAccount ?? null;
   const serverChoices = accessServerChoices(loaded);
   const upgrade = plan ? computerAccessUpgrade(plan, grantedAccess) : null;
-  const retired = plan?.requirement.kind === "provider" || plan?.requirement.kind === "mcp-oauth";
   let phase: ConnectCardPhase = "ask";
   let form: ConnectCardForm | null = null;
   let primary: ConnectCardAction | null = { kind: "connect", label: "Connect" };
@@ -91,7 +87,7 @@ export function connectCard(input: {
     const installed = matchingInstallationForManifest(loaded.platform, loaded.request.manifest);
     if (!catalog) {
       phase = "unavailable";
-      error = integrationRequestRetiredDetail;
+      error = "This device app is no longer offered. Decline this request and ask the agent again.";
       primary = null;
     } else if (!loaded.dashboard.isAdministrator && installed === null) {
       phase = "needs-admin";
@@ -107,10 +103,6 @@ export function connectCard(input: {
   } else if (plan === null) {
     phase = "unavailable";
     error = "What this request asks for is no longer installed.";
-    primary = null;
-  } else if (retired) {
-    phase = "unavailable";
-    error = integrationRequestRetiredDetail;
     primary = null;
   } else if (plan.requestedAccountMissing) {
     phase = "unavailable";

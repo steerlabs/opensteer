@@ -453,8 +453,6 @@ export class ChannelStore {
         .insertInto("integrationConnections")
         .values({
           accountIdentifier: null,
-          applicationSource: null,
-          authMethodId: null,
           capabilities: jsonValue(input.connection.capabilities ?? []),
           computerAccess: null,
           runnerId: input.connection.runnerId,
@@ -464,12 +462,10 @@ export class ChannelStore {
           displayName: input.connection.displayName,
           externalIdentityId,
           externalTenantId: input.connection.externalTenantId ?? null,
-          grantedScopes: jsonValue([]),
           id: createChannelId("connection"),
           integrationDefinitionId: null,
           ownerUserId: input.createdBy,
           provider: input.connection.provider,
-          providerApplicationId: null,
           sourceConnectionId: input.connection.sourceConnectionId ?? null,
           status: "pending",
           statusDetail: "Checking messaging provider setup",

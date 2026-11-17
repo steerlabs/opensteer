@@ -39,7 +39,7 @@ const digest = "a".repeat(43);
 const providerTool: EffectiveGrantTool = {
   ...IntegrationToolSchema.parse({
     annotations: { readOnlyHint: true },
-    connectionId: null,
+    connectionId,
     description: "Provider tool",
     id: "itl_00000000-0000-4000-8000-000000000006",
     name: "provider_tool",
@@ -48,17 +48,13 @@ const providerTool: EffectiveGrantTool = {
     status: "active",
     title: "Provider tool",
   }),
-  connectionRequirement: {
-    definitionId: "google-gmail",
-    kind: "provider",
-    provider: "google",
-    providerApplicationRequired: true,
-  },
+  connectionRequirement: { definitionId: "apple-calendar", kind: "computer" },
   installationId: installation.id,
   serverStatus: "active",
 };
 const connectionlessTool: EffectiveGrantTool = {
   ...providerTool,
+  connectionId: null,
   connectionRequirement: { kind: "none" },
   id: IntegrationToolSchema.shape.id.parse("itl_00000000-0000-4000-8000-000000000007"),
   name: "connectionless_tool",
@@ -72,15 +68,13 @@ const writeTool: EffectiveGrantTool = {
   title: "Write tool",
 };
 const connected: EffectiveGrantConnection = {
-  applicationSourceAvailable: true,
-  computerAccess: null,
-  connectionKind: "provider-account",
-  definitionId: "google-gmail",
-  displayName: "Primary account",
+  computerAccess: "read-write",
+  connectionKind: "computer",
+  definitionId: "apple-calendar",
+  displayName: "Studio Mac",
   id: connectionId,
   integrationServerId: null,
   ownerUserId,
-  provider: "google",
   status: "connected",
 };
 const computerReadTool: EffectiveGrantTool = {
@@ -103,7 +97,6 @@ const computerConnection: EffectiveGrantConnection = {
   connectionKind: "computer",
   definitionId: "apple-messages",
   displayName: "Mac mini",
-  provider: "apple-messages",
 };
 
 describe("resolveEffectiveGrants", () => {
@@ -160,10 +153,10 @@ describe("resolveEffectiveGrants", () => {
     expect(result.tools).toEqual([]);
   });
 
-  it("does not expose disabled inventory or unusable provider authority", () => {
+  it("does not expose disabled inventory or a computer connection that needs attention", () => {
     const result = resolveEffectiveGrants(
       fixture({
-        connections: [{ ...connected, applicationSourceAvailable: false }],
+        connections: [{ ...connected, status: "needs-attention" }],
         installations: [{ ...installation, status: "disabled" }],
         storedGrants: [],
         tools: [connectionlessTool, providerTool],

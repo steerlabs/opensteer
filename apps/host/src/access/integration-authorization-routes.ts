@@ -2,20 +2,9 @@ import { renderBrowserPage, statusPageBody } from "@opensteer/shared/browserPage
 import {
   integrationAuthorizationBrowserReturn,
   IntegrationAuthorizationAttemptIdSchema,
-  IntegrationOAuthAttemptIdSchema,
-  McpOAuthAttemptIdSchema,
 } from "@opensteer/integration-core";
 import type { IntegrationAuthAttemptFailureReason } from "@opensteer/integration-core/ports";
-import { oauthAuthorizationResponseState } from "@opensteer/integration-auth";
 import { OpensteerError, type DeploymentId } from "@opensteer/core";
-import {
-  hostApi,
-  rpcSuccess,
-  type HostApiCommand,
-  type HostApiCommandOutput,
-  type HostApiHandlers,
-  type HostApiServerContext,
-} from "@opensteer/protocol";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { unversionedRoute } from "../server/unversioned-route.js";
 import { z } from "zod";
@@ -24,8 +13,6 @@ import {
   integrationAuthAttemptLifetimeMilliseconds,
   type IntegrationAuthAttemptLifecycle,
 } from "../access/integration-auth-attempt-service.js";
-import type { McpOAuthService } from "../integrations/mcp-oauth-service.js";
-import type { IntegrationService } from "../integrations/integration-service.js";
 
 const AttemptParamsSchema = z.strictObject({
   attemptId: IntegrationAuthorizationAttemptIdSchema,
@@ -39,82 +26,6 @@ export interface IntegrationAuthorizationRpcOptions {
   readonly authenticator: HostAuthenticator;
   readonly deploymentId: DeploymentId;
   readonly plugins?: import("../plugins/plugin-oauth-service.js").PluginOAuthService;
-  readonly integrations?: IntegrationService;
-  readonly mcpOauth?: McpOAuthService;
-}
-
-export function createIntegrationAuthorizationRpcHandlers(
-  options: IntegrationAuthorizationRpcOptions,
-): Pick<HostApiHandlers, "integration.authorization.get"> {
-  return {
-    "integration.authorization.get": async ({ attemptId }, context) => {
-      const ownerUserId = requireOwner(context);
-      const status =
-        options.integrations && IntegrationOAuthAttemptIdSchema.safeParse(attemptId).success
-          ? await options.integrations.authorizationStatus({
-              attemptId: IntegrationOAuthAttemptIdSchema.parse(attemptId),
-              ownerUserId,
-            })
-          : options.mcpOauth && McpOAuthAttemptIdSchema.safeParse(attemptId).success
-            ? await options.mcpOauth.authorizationStatus({
-                attemptId: McpOAuthAttemptIdSchema.parse(attemptId),
-                ownerUserId,
-              })
-            : await options.attempts.status({ id: attemptId, ownerUserId });
-      if (!status) throw unavailableAttempt();
-      return rpcSuccess(
-        hostApi["integration.authorization.get"].success.parse({
-          connectionId: "connectionId" in status ? status.connectionId : null,
-          expiresAt: status.expiresAt.toISOString(),
-          failureCode: "failureCode" in status ? status.failureCode : null,
-          status: status.status,
-        }),
-      );
-    },
-  };
-}
-
-export type IntegrationAuthorizationCommand = Extract<
-  HostApiCommand,
-  { readonly type: "integration.authorization.cancel" | "integration.authorization.return" }
->;
-
-export async function handleIntegrationAuthorizationCommand(
-  options: IntegrationAuthorizationRpcOptions,
-  command: IntegrationAuthorizationCommand,
-  context: HostApiServerContext,
-): Promise<HostApiCommandOutput> {
-  const ownerUserId = requireOwner(context);
-  let status;
-  if (command.type === "integration.authorization.return") {
-    const providerId = IntegrationOAuthAttemptIdSchema.safeParse(command.attemptId);
-    const mcpId = McpOAuthAttemptIdSchema.safeParse(command.attemptId);
-    status =
-      providerId.success && options.integrations
-        ? await options.integrations.returnAuthorization({
-            attemptId: providerId.data,
-            ownerUserId,
-            returnProof: command.returnProof,
-          })
-        : mcpId.success && options.mcpOauth
-          ? await options.mcpOauth.returnAuthorization({
-              attemptId: mcpId.data,
-              ownerUserId,
-              returnProof: command.returnProof,
-            })
-          : null;
-  } else {
-    await options.attempts.cancel({ id: command.attemptId, ownerUserId });
-    status = await options.attempts.status({ id: command.attemptId, ownerUserId });
-  }
-  if (!status) throw unavailableAttempt();
-  return {
-    connectionId: status.connectionId,
-    expiresAt: status.expiresAt.toISOString(),
-    failureCode: status.failureCode ?? null,
-    status: status.status,
-    type: command.type,
-  };
 }
 
 export function registerIntegrationAuthorizationRoutes(
@@ -171,7 +82,7 @@ interface OAuthCallbackOutcome {
 }
 
 /**
- * Registers one provider or MCP OAuth callback. The step order is security-bearing: read the opaque
+ * Registers one sign-in callback. The step order is security-bearing: read the opaque
  * state, identify the attempt, require the launch cookie, then claim the attempt (which spends the
  * state exactly once) before any response validation or token exchange runs.
  */
@@ -189,12 +100,10 @@ export function registerOAuthCallbackRoute<Id, Prepared>(
       readonly state: string;
     }) => Promise<OAuthCallbackOutcome>;
     readonly identify: (state: string) => Promise<unknown>;
-    readonly kind: "mcp" | "provider";
     readonly path: string;
     readonly prepare: (request: FastifyRequest) => Prepared;
   },
 ): void {
-  const label = options.kind === "mcp" ? "MCP" : "Integration";
   // The provider redirects the person's browser here.
   app.get(options.path, { config: unversionedRoute }, async (request, reply) => {
     options.authenticator.requireCanonicalSurface(request.headers);
@@ -202,7 +111,7 @@ export function registerOAuthCallbackRoute<Id, Prepared>(
     const parameters = new URL(request.url, "https://opensteer.invalid").searchParams;
     let state: string;
     try {
-      state = oauthAuthorizationResponseState(parameters);
+      state = callbackState(parameters);
     } catch {
       return failIntegrationAuthorizationBrowser(reply);
     }
@@ -225,7 +134,7 @@ export function registerOAuthCallbackRoute<Id, Prepared>(
       if (result.status === "failed") {
         request.log.warn(
           { attemptId, failureReason: result.failureReason ?? "exchange-failed" },
-          `${label} authorization callback failed`,
+          "Sign-in callback failed",
         );
       }
       return finishIntegrationAuthorizationBrowser(reply, {
@@ -238,7 +147,7 @@ export function registerOAuthCallbackRoute<Id, Prepared>(
         surface: result.surface,
       });
     } catch {
-      request.log.warn({ attemptId }, `${label} authorization callback failed`);
+      request.log.warn({ attemptId }, "Sign-in callback failed");
       clearIntegrationAuthorizationBinding(
         reply,
         String(attemptId),
@@ -337,6 +246,14 @@ export function failIntegrationAuthorizationBrowser(
     .send(resultPage(false, failureCode));
 }
 
+/** The one opaque state value that locates an attempt; provider extensions are read later. */
+function callbackState(parameters: URLSearchParams): string {
+  const states = parameters.getAll("state");
+  if (states.length !== 1 || !/^[A-Za-z0-9_-]{43}$/u.test(states[0]!))
+    throw new TypeError("The sign-in response state is invalid");
+  return states[0]!;
+}
+
 /** Whether the stored authorization sends the browser back to this Host's own origin. */
 function returnsToHost(authorizationUrl: string, publicOrigin: string): boolean {
   const redirect = new URL(authorizationUrl).searchParams.get("redirect_uri");
@@ -395,16 +312,9 @@ function resultPage(
   });
 }
 
-function requireOwner(context: HostApiServerContext) {
-  if (!context.session) {
-    throw new OpensteerError({ code: "unauthorized", message: "Authentication required" });
-  }
-  return context.session.user.id;
-}
-
 function unavailableAttempt(): OpensteerError {
   return new OpensteerError({
     code: "not_found",
-    message: "Integration authorization is invalid, expired, or already used",
+    message: "This sign-in is invalid, expired, or already used",
   });
 }

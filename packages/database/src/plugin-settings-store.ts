@@ -11,7 +11,6 @@ import { pluginDeviceFromManifest } from "@opensteer/integration-core/models";
 import {
   PluginTargetSchema,
   PluginsOverviewViewSchema,
-  PluginDetailViewSchema,
   SettingsPluginEnableCommandSchema,
   PluginPlacementSummarySchema,
   type PluginTarget,
@@ -33,7 +32,6 @@ import {
 export function pluginTargetKey(input: PluginTarget): string {
   const target = PluginTargetSchema.parse(input);
   switch (target.kind) {
-    case "service":
     case "device-app":
       return JSON.stringify([target.kind, target.definitionId]);
     case "plugin":
@@ -156,24 +154,17 @@ export class PluginSettingsStore {
       const ownGrants = grants.filter((row) => row.installationId === installation.id);
       const saved = settings.find(
         (row) =>
-          (row.target.kind === "service" || row.target.kind === "device-app") &&
-          row.target.definitionId === definitionId,
+          row.target.kind === "device-app" && row.target.definitionId === definitionId,
       );
-      const adding =
-        (opening?.kind === "service" || opening?.kind === "device-app") &&
-        opening.definitionId === definitionId;
+      const adding = opening?.kind === "device-app" && opening.definitionId === definitionId;
       if (!accounts.length && !ownGrants.length && !saved && !adding) continue;
-      const device =
-        accounts.some((row) => row.connectionKind === "computer") ||
-        saved?.target.kind === "device-app" ||
-        Boolean(definition?.computerApp);
-      const target: PluginTarget = { kind: device ? "device-app" : "service", definitionId };
+      const target: PluginTarget = { kind: "device-app", definitionId };
       rows.push({
         target,
         title: installation.title.slice(0, 120),
         description: installation.description.slice(0, 320) || null,
         source: { kind: installation.sourceKind, version: installation.version },
-        tags: [device ? "devices" : "accounts"],
+        tags: ["devices"],
         placement: placement(target),
         accountCount: accounts.length,
         issues: [
@@ -181,8 +172,7 @@ export class PluginSettingsStore {
             ? ["needs-sign-in" as const]
             : []),
           ...(installation.status !== "active" ? ["invalid-installation" as const] : []),
-          ...(device &&
-          availableRunnerIds &&
+          ...(availableRunnerIds &&
           accounts.some((row) => row.runnerId && !availableRunnerIds.has(row.runnerId))
             ? ["waiting-device" as const]
             : []),
@@ -264,13 +254,12 @@ export class PluginSettingsStore {
             };
           }
         }
-        const detail = await new PluginSettingsStore(tx, this.inventory).detail(
+        const row = await new PluginSettingsStore(tx, this.inventory).row(
           owner,
           command.target,
-          undefined,
           command.enabled,
         );
-        if (detail.row.placement.revision !== command.expectedRevision)
+        if (row.placement.revision !== command.expectedRevision)
           throw new OpensteerError({
             code: "conflict",
             message: "Plugin setting changed; read it again",
@@ -322,80 +311,14 @@ export class PluginSettingsStore {
     });
   }
 
-  async detail(
-    owner: UserId,
-    target: PluginTarget,
-    availableRunnerIds?: ReadonlySet<string>,
-    adding = false,
-  ) {
-    const snapshot = await this.snapshot(owner, availableRunnerIds, adding ? target : undefined);
+  /** One target's row as the overview lists it; `adding` lists one with no setting yet. */
+  async row(owner: UserId, target: PluginTarget, adding = false): Promise<PluginRow> {
+    const snapshot = await this.snapshot(owner, undefined, adding ? target : undefined);
     const row = snapshot.rows.find(
       (row) => pluginTargetKey(row.target) === pluginTargetKey(target),
     );
     if (!row) throw new OpensteerError({ code: "not_found", message: "Plugin is unavailable" });
-    const service = target.kind === "service" || target.kind === "device-app";
-    const plugin =
-      target.kind === "plugin"
-        ? snapshot.packages.find((row) => row.id === target.pluginId)
-        : undefined;
-    const installations = snapshot.installations.filter((installation) =>
-      plugin
-        ? installation.pluginId === plugin.id
-        : service &&
-          (installation.manifest.definition &&
-          typeof installation.manifest.definition === "object" &&
-          "id" in installation.manifest.definition
-            ? installation.manifest.definition.id
-            : installation.name) === target.definitionId,
-    );
-    const ids = new Set(installations.map((row) => row.id));
-    const accounts = service
-      ? snapshot.connections.filter((row) => row.integrationDefinitionId === target.definitionId)
-      : [];
-    const grants = snapshot.grants.filter((row) => ids.has(row.installationId));
-    const contents: { name: string; kind: "skill" | "tool" }[] = snapshot.tools
-      .filter((row) => ids.has(row.installationId))
-      .map((row) => ({ name: row.name.slice(0, 120), kind: "tool" }));
-    for (const skill of Array.isArray(plugin?.manifest.skills) ? plugin.manifest.skills : []) {
-      const name =
-        typeof skill === "string"
-          ? skill
-          : typeof skill === "object" &&
-              skill !== null &&
-              "name" in skill &&
-              typeof skill.name === "string"
-            ? skill.name
-            : null;
-      if (name) contents.push({ name: name.slice(0, 120), kind: "skill" });
-    }
-    if (target.kind === "skill") contents.push({ name: target.fullName, kind: "skill" });
-    return PluginDetailViewSchema.parse({
-      row,
-      installationIds: [...ids],
-      grants: grants.map((row) => ({
-        ...row,
-        createdAt: row.createdAt.toISOString(),
-        updatedAt: row.updatedAt.toISOString(),
-        revokedAt: row.revokedAt?.toISOString() ?? null,
-      })),
-      accounts: accounts.map((row) => ({
-        connectionId: row.id,
-        displayName: row.displayName,
-        status: row.status,
-        statusReason: row.statusReason,
-        access: row.computerAccess,
-        runnerId: row.runnerId,
-      })),
-      devices: [],
-      permissions: grants.map((row) => ({
-        label: row.access,
-        layer: "personal-grant",
-        state: "allowed",
-      })),
-      contents,
-      setupThreadId: plugin?.setupThreadId ?? null,
-      sourceFolder: typeof plugin?.source.directory === "string" ? plugin.source.directory : null,
-    });
+    return row;
   }
 
   async otherDevices(

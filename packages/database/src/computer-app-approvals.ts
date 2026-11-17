@@ -384,7 +384,6 @@ async function grantComputerAppInTransaction(
     installationId: input.installationId,
     isDefault: existing?.isDefault ?? false,
     ownerUserId: input.ownerUserId,
-    providerAuthorizations: {},
   });
 }
 

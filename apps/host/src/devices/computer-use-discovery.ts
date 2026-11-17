@@ -25,10 +25,7 @@ export function computerToolRefs(
   return refs;
 }
 
-/**
- * Every computer-use ask has this one shape. The ordinary `integration` form
- * names no app, so it can neither add an app nor say which one to grant.
- */
+/** Every computer-use ask for a Mac app has this one shape. */
 export const computerAppRequestShape = "app_access_request {computerId, app, access, reason}";
 
 /** A phone is asked for whole, so its ask names the phone and no app. */
@@ -39,7 +36,7 @@ export const noPhone =
 
 /** A `computerId` that names none of this person's phones set up for agents. */
 export function unknownPhone(computerId: string): string {
-  return `No Android phone set up for agents has computerId ${computerId}. Search "Android phone" with integration_search to list your phones and their computerIds.`;
+  return `No Android phone set up for agents has computerId ${computerId}. computer_apps lists your phones and their computerIds.`;
 }
 
 export const noComputerUseMac =
@@ -51,7 +48,7 @@ export const noComputerUseMac =
  * the same way, by reading the ids again.
  */
 export function unknownComputerUseMac(computerId: string): string {
-  return `No Mac set up for computer use has computerId ${computerId}. Search "Computer use" with integration_search to list your Macs and their computerIds.`;
+  return `No Mac set up for computer use has computerId ${computerId}. computer_apps lists your Macs and their computerIds.`;
 }
 
 export function computerUseNextAction(machine: {

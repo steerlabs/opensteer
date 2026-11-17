@@ -15,6 +15,7 @@ import type {
   CallableIntegrationTool,
   CreateIntegrationGrantInput,
   InstallIntegrationInput,
+  IntegrationDiscoveryRequester,
   IntegrationPlatformStore,
   IntegrationRequester,
 } from "@opensteer/database";
@@ -47,8 +48,6 @@ import type {
   IntegrationConnectionSummary,
   IntegrationGrant,
   IntegrationInstallation,
-  IntegrationProviderAuthorization,
-  IntegrationProvider,
   IntegrationReadiness,
   IntegrationServer,
 } from "@opensteer/integration-core/models";
@@ -127,7 +126,7 @@ export interface EngineCapabilityQuery extends RunToolContext {
   readonly ownerUserId: UserId;
 }
 
-/** What `callTool`, the rpc surface and `integration_request` need of sessions. */
+/** What `callTool`, the rpc surface and `app_access_request` need of sessions. */
 export type ComputerUseGateway = ComputerUseApprovalGateway &
   Pick<
     ComputerUseService,
@@ -175,9 +174,6 @@ export class DeviceService {
   readonly #listConnections: (
     ownerUserId: UserId,
   ) => Promise<readonly IntegrationConnectionSummary[]>;
-  readonly #providerAuthorizations: (
-    ownerUserId: UserId,
-  ) => Promise<Readonly<Record<IntegrationProvider, IntegrationProviderAuthorization>>>;
   readonly #computerApps: Pick<
     ComputerAppHub,
     "appStatus" | "attached" | "send" | "requireAgentAccess" | "withRunnerAdmission"
@@ -212,13 +208,6 @@ export class DeviceService {
     readonly listConnections: (
       ownerUserId: UserId,
     ) => Promise<readonly IntegrationConnectionSummary[]>;
-    /**
-     * The owner's provider authorizations, which the store's callable-tool
-     * listing reads for every kind of installation.
-     */
-    readonly providerAuthorizations: (
-      ownerUserId: UserId,
-    ) => Promise<Readonly<Record<IntegrationProvider, IntegrationProviderAuthorization>>>;
     readonly computerApps: Pick<
       ComputerAppHub,
       | "appStatus"
@@ -271,7 +260,6 @@ export class DeviceService {
     readonly isRunnerConnected: (runnerId: RunnerId) => boolean;
     readonly store: IntegrationPlatformStore;
   }) {
-    this.#providerAuthorizations = options.providerAuthorizations;
     this.#listConnections = options.listConnections;
     this.#computerApps = options.computerApps;
     this.#definitions = options.definitions;
@@ -329,10 +317,12 @@ export class DeviceService {
   }
 
   async listCallableTools(input: IntegrationRequester) {
-    return this.#store.listCallableTools({
-      ...input,
-      providerAuthorizations: await this.#providerAuthorizations(input.ownerUserId),
-    });
+    return this.#store.listCallableTools(input);
+  }
+
+  /** Every installation as this requester's agents see it, with what makes each unusable now. */
+  async listDiscoveryInventory(input: IntegrationDiscoveryRequester) {
+    return this.withAvailability(await this.#store.listDiscoveryInventory(input), input);
   }
 
   /**
@@ -498,9 +488,8 @@ export class DeviceService {
     );
   }
 
-  async createGrant(input: Omit<CreateIntegrationGrantInput, "providerAuthorizations">) {
-    const providerAuthorizations = await this.#providerAuthorizations(input.ownerUserId);
-    const create = () => this.#store.createGrant({ ...input, providerAuthorizations });
+  async createGrant(input: CreateIntegrationGrantInput) {
+    const create = () => this.#store.createGrant(input);
     if (!input.connectionId) return create();
     const computer = await this.#store.getComputerConnectionForCall({
       connectionId: input.connectionId,
@@ -586,10 +575,7 @@ export class DeviceService {
         retryable: true,
       });
     const ownerUserId = UserIdSchema.parse(callable.grant.ownerUserId);
-    const [placement, providerAuthorizations] = await Promise.all([
-      this.#store.getComputerConnectionForCall({ connectionId, ownerUserId }),
-      this.#providerAuthorizations(ownerUserId),
-    ]);
+    const placement = await this.#store.getComputerConnectionForCall({ connectionId, ownerUserId });
     if (!placement) throw new IntegrationAuthorizationRequiredError(callable);
     const admit = <Result>(
       send: (
@@ -601,11 +587,7 @@ export class DeviceService {
         await this.#computerApps.requireAgentAccess(placement.runnerId);
         const [connection, authority] = await Promise.all([
           this.#store.getComputerConnectionForCall({ connectionId, ownerUserId }),
-          this.#store.listCallableTools({
-            ownerUserId,
-            providerAuthorizations,
-            threadId: caller.threadId,
-          }),
+          this.#store.listCallableTools({ ownerUserId, threadId: caller.threadId }),
         ]);
         const current = authority.find(
           (candidate) =>
@@ -1560,7 +1542,6 @@ export class DeviceService {
     const summary = integrationDefinitionSummary(definition, null);
     const digest = integrationDefinitionDigest(definition);
     return {
-      adapterSnapshot: null,
       computerConnectionTools: (connectionId: IntegrationConnectionId, access: IntegrationAccess) =>
         computerAppTools(definition, access, connectionId),
       installation: {

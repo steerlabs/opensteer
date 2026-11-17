@@ -15,6 +15,7 @@ import { createDatabase } from "./connection.js";
 import {
   tabsAndAppsMigrationName,
   agentHomeSettingsMigrationName,
+  dropServiceIntegrationsMigrationName,
   dropSpecialistsMigrationName,
   MigrationLineageError,
   migrateToLatest,
@@ -789,6 +790,117 @@ describe("fresh personal/team lineage", () => {
       { target: skill },
     ]);
   });
+  it("drops service integrations and keeps device, messaging and local-server rows", async () => {
+    await migrateToLatest(database, migrationsBefore(dropServiceIntegrationsMigrationName));
+    const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
+    // The storage only databases made before this migration have.
+    await sql`create table integration_provider_applications (id text primary key);
+      create table mcp_oauth_credentials (connection_id text primary key);
+      create table integration_application_source_defaults (provider text primary key);
+      alter table integration_connections add column provider_application_id text,
+        add column application_source jsonb, add column auth_method_id text,
+        add column authorization_digest text, add column granted_scopes jsonb;
+      alter table integration_installations add column adapter_snapshot jsonb;
+      alter table integration_auth_attempts add column result_connection_id text;
+      alter table integration_connections drop constraint integration_connections_connection_kind_check;
+      alter table integration_installations drop constraint integration_installations_source_kind_check`.execute(
+      database,
+    );
+    const installation = (id: string, sourceKind: string, pluginId: string | null) =>
+      sql`insert into integration_installations
+        (id, name, title, description, plugin_id, source_kind, trust, manifest, provenance, status, revision)
+        values (${id}, ${id}, ${id}, '', ${pluginId}, ${sourceKind}, 'built-in', '{}', '{}', 'active', 1)`.execute(
+        database,
+      );
+    const server = (id: string, installationId: string, transport: object, requirement: object) =>
+      sql`insert into integration_servers
+        (id, installation_id, name, transport, connection_requirement, status, tool_generation)
+        values (${id}, ${installationId}, 'default', ${JSON.stringify(transport)}::jsonb,
+          ${JSON.stringify(requirement)}::jsonb, 'active', 1)`.execute(database);
+    const connection = (id: string, kind: string, serverId: string | null) =>
+      sql`insert into integration_connections
+        (id, owner_user_id, connection_kind, provider, connection_method, status, display_name,
+          capabilities, integration_server_id, granted_scopes)
+        values (${id}, ${userId}, ${kind}, ${kind}, 'computer', 'connected', ${id}, '[]',
+          ${serverId}, '[]')`.execute(database);
+    const grant = (id: string, installationId: string, connectionId: string | null) =>
+      sql`insert into integration_grants
+        (access, id, owner_user_id, installation_id, connection_id, alias, is_default, created_by, status)
+        values ('read', ${id}, ${userId}, ${installationId}, ${connectionId}, ${id}, false, ${userId},
+          'active')`.execute(database);
+    await installation("device", "built-in", null);
+    await server("device-server", "device", { type: "computer", definitionId: "apple-calendar" }, {
+      kind: "computer",
+      definitionId: "apple-calendar",
+    });
+    await installation("local", "plugin", "local-plugin");
+    await server(
+      "local-server",
+      "local",
+      { type: "runner", runnerId: null, launch: { type: "stdio", command: "./tv" } },
+      { kind: "none" },
+    );
+    await installation("gmail", "built-in", null);
+    await server("gmail-server", "gmail", { type: "adapter", adapter: "openapi", definitionId: "gmail" }, {
+      kind: "provider",
+      definitionId: "gmail",
+      provider: "google",
+      providerApplicationRequired: true,
+    });
+    await installation("remote", "remote-mcp", null);
+    await server(
+      "remote-server",
+      "remote",
+      { type: "streamable-http", url: "https://mcp.example.test", headers: {} },
+      { kind: "mcp-oauth" },
+    );
+    await connection("computer-connection", "computer", "device-server");
+    await connection("channel-connection", "channel", null);
+    await connection("google-account", "provider-account", null);
+    await connection("mcp-account", "mcp-oauth", "remote-server");
+    await sql`insert into mcp_oauth_credentials values ('mcp-account');
+      insert into integration_provider_applications values ('google-app')`.execute(database);
+    await grant("device-grant", "device", "computer-connection");
+    await grant("local-grant", "local", null);
+    await grant("gmail-grant", "gmail", "google-account");
+    await grant("remote-grant", "remote", "mcp-account");
+    await sql`insert into plugin_owner_settings (owner_user_id, target_key, target, enabled, revision)
+      values (${userId}, '["service","gmail"]', '{"kind":"service","definitionId":"gmail"}', false, 1),
+        (${userId}, '["device-app","apple-calendar"]', '{"kind":"device-app","definitionId":"apple-calendar"}', false, 1)`.execute(
+      database,
+    );
+
+    await migrateToLatest(database);
+
+    const ids = async (table: string) =>
+      (await sql<{ id: string }>`select id from ${sql.table(table)} order by id`.execute(database))
+        .rows.map(({ id }) => id);
+    expect(await ids("integration_installations")).toEqual(["device", "local"]);
+    expect(await ids("integration_servers")).toEqual(["device-server", "local-server"]);
+    expect(await ids("integration_connections")).toEqual([
+      "channel-connection",
+      "computer-connection",
+    ]);
+    expect(await ids("integration_grants")).toEqual(["device-grant", "local-grant"]);
+    expect(
+      await database.selectFrom("pluginOwnerSettings").select("targetKey").execute(),
+    ).toEqual([{ targetKey: '["device-app","apple-calendar"]' }]);
+    expect(
+      (
+        await sql`select table_name, column_name from information_schema.columns where table_schema='public'
+          and (table_name in ('integration_provider_applications', 'mcp_oauth_credentials', 'integration_application_source_defaults')
+            or column_name in ('provider_application_id', 'application_source', 'auth_method_id', 'authorization_digest', 'granted_scopes', 'adapter_snapshot', 'result_connection_id'))`.execute(
+          database,
+        )
+      ).rows,
+    ).toEqual([]);
+    await expect(
+      sql`insert into integration_connections
+        (id, owner_user_id, connection_kind, provider, connection_method, status, display_name, capabilities)
+        values ('late-account', ${userId}, 'provider-account', 'google', 'computer', 'connected',
+          'Late', '[]')`.execute(database),
+    ).rejects.toThrow("integration_connections_connection_kind_check");
+  });
   it("upgrades existing queued inputs with fresh context disabled in the table and work view", async () => {
     await migrateToLatest(database, migrationsBefore("0005_thread_input_fresh_context"));
     const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
@@ -1093,8 +1205,8 @@ describe("fresh personal/team lineage", () => {
         .insertInto("pluginOwnerSettings")
         .values({
           ownerUserId: owner,
-          targetKey: '["service","records"]',
-          target: { kind: "service", definitionId: "records" },
+          targetKey: '["device-app","apple-calendar"]',
+          target: { kind: "device-app", definitionId: "apple-calendar" },
           enabled: true,
           revision: 1,
         })

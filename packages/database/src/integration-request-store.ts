@@ -11,7 +11,6 @@ import {
   type RequestId,
   type RequestPayload,
   type RequestResponse,
-  type ThreadId,
   type UserId,
 } from "@opensteer/core";
 import {
@@ -20,13 +19,11 @@ import {
   IntegrationConnectionRequirementSchema,
   IntegrationInstallManifestSchema,
   IntegrationInstallationSchema,
-  integrationInstallManifestSummary,
   type IntegrationAccess,
   type IntegrationGrant,
   type IntegrationConnectionId,
   type IntegrationInstallManifest,
   type IntegrationInstallationId,
-  type IntegrationProviderAuthorization,
   type IntegrationServerId,
 } from "@opensteer/integration-core";
 import { sql, type Kysely, type Transaction } from "kysely";
@@ -46,14 +43,11 @@ import { appendHostDeploymentEvent } from "./deployment-events.js";
 import {
   enqueueContinuation,
   integrationAccessRequestInput,
-  integrationInstallDisplayName,
   lockAndValidateIntegrationAccessResources,
   type IntegrationAccessRequestInput,
   lockActiveDurableRequestAuthority,
-  requestOriginOf,
   terminalEvents,
   type RequestMutation,
-  type RequestOriginInput,
   type RequestStore,
 } from "./request-store.js";
 
@@ -68,12 +62,6 @@ interface ResolvedIntegrationAccessRequest {
   readonly events: readonly AgentEvent[];
   readonly request: Request;
   readonly grant: IntegrationGrant | null;
-}
-interface ResolvedIntegrationInstallRequest {
-  readonly events: readonly AgentEvent[];
-  readonly installation: InstallIntegrationMutation["installation"] | null;
-  readonly request: Request;
-  readonly requestEvents: readonly AgentEvent[];
 }
 interface BoundIntegrationAccessInstallation {
   readonly installation: InstallIntegrationMutation["installation"];
@@ -102,89 +90,22 @@ export interface PreparedIntegrationInstallFulfillment {
  */
 export class IntegrationRequestStore {
   readonly #database: Kysely<DatabaseSchema>;
-  readonly #requests: Pick<RequestStore, "create" | "pendingTriggerEquivalent">;
+  readonly #requests: Pick<RequestStore, "create">;
 
   constructor(
     database: Kysely<DatabaseSchema>,
-    requests: Pick<RequestStore, "create" | "pendingTriggerEquivalent">,
+    requests: Pick<RequestStore, "create">,
   ) {
     this.#database = database;
     this.#requests = requests;
   }
 
-  async createIntegrationInstallRequest(
-    input: {
-      readonly callId: string;
-      readonly manifest: IntegrationInstallManifest;
-      readonly originatingThreadId: ThreadId;
-      readonly reason: string;
-      readonly requestedBy: UserId;
-    } & RequestOriginInput,
-  ): Promise<RequestMutation> {
-    const manifest = IntegrationInstallManifestSchema.parse(input.manifest);
-    const equivalent = await this.#requests.pendingTriggerEquivalent(input, {
-      kind: "integration.install",
-      ...(manifest.kind === "catalog"
-        ? {
-            definitionId: manifest.definition.id,
-          }
-        : {
-            proposalDigest: manifest.proposal.digest,
-          }),
-    });
-    if (equivalent) return equivalent;
-    return this.#requests.create({
-      ...requestOriginOf(input),
-      callId: input.callId,
-      integrationDetail: {
-        access: null,
-        installationId: null,
-        manifest,
-        requestedConnectionId: null,
-        requestedServerId: null,
-      },
-      kind: "integration.install",
-      mode: "durable",
-      originatingThreadId: input.originatingThreadId,
-      payload: {
-        kind: "integration.install",
-        manifest: RequestJsonObjectSchema.parse(integrationInstallManifestSummary(manifest)),
-        reason: input.reason,
-      },
-      presentation: {
-        ...(manifest.kind === "proposal"
-          ? {
-              agentProposed: true,
-            }
-          : {}),
-        detail: input.reason,
-        kind: "choice",
-        options: [
-          {
-            hint: "reject-once",
-            id: "declined",
-            label: "Not now",
-          },
-          {
-            hint: "confirm",
-            id: "installed",
-            label: "Install",
-          },
-        ],
-        risk: "high",
-        title: `Install ${integrationInstallDisplayName(manifest)}?`,
-      },
-      requestedBy: input.requestedBy,
-      requiredActor: "owner",
-    });
-  }
   async createIntegrationAccessRequest(
     input: IntegrationAccessRequestInput,
   ): Promise<RequestMutation> {
     return this.#requests.create(await integrationAccessRequestInput(this.#database, input));
   }
   async resolveIntegrationAccessRequest(input: {
-    readonly providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>;
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
@@ -336,8 +257,7 @@ export class IntegrationRequestStore {
           connectionId: decision.connectionId,
           installationId: row.detailInstallationId,
           ownerUserId: input.resolvedBy,
-          providerAuthorizations: input.providerAuthorizations,
-          requestedAccess: row.detailAccess,
+            requestedAccess: row.detailAccess,
           requestedServerId: row.detailRequestedServerId,
         });
       }
@@ -347,8 +267,7 @@ export class IntegrationRequestStore {
               ...decision,
               installationId: row.detailInstallationId,
               ownerUserId: input.resolvedBy,
-              providerAuthorizations: input.providerAuthorizations,
-              requestedServerId: row.detailRequestedServerId,
+                    requestedServerId: row.detailRequestedServerId,
             })
           : null;
       // Resource and grant fences precede Request projection; a changed discovery
@@ -491,155 +410,6 @@ export class IntegrationRequestStore {
       };
     });
   }
-  async resolveIntegrationInstallRequest(input: {
-    readonly preparedFulfillment?: PreparedIntegrationInstallFulfillment;
-    readonly requestId: RequestId;
-    readonly resolvedBy: UserId;
-    readonly settlementSessionId?: string;
-    readonly response: RequestResponse;
-  }): Promise<ResolvedIntegrationInstallRequest> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
-      const observed = await transaction
-        .selectFrom("requests")
-        .innerJoin(
-          "integrationRequestDetails",
-          "integrationRequestDetails.requestId",
-          "requests.id",
-        )
-        .selectAll("requests")
-        .select("integrationRequestDetails.manifest as detailManifest")
-        .where("requests.id", "=", input.requestId)
-        .executeTakeFirst();
-      if (
-        !observed ||
-        observed.kind !== "integration.install" ||
-        observed.status !== "pending" ||
-        !observed.detailManifest
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Installation Request is no longer pending",
-        });
-      }
-      const observedRequest = requestFromRow(observed);
-      await lockActiveDurableRequestAuthority(transaction, observedRequest);
-      const response = RequestResponseSchema.parse(input.response);
-      if (response.kind !== "choice" || !["installed", "declined"].includes(response.optionId)) {
-        throw new OpensteerError({
-          code: "bad_request",
-          message: "Installation decision is invalid",
-        });
-      }
-      const fulfilled = response.optionId === "installed";
-      if (fulfilled !== (input.preparedFulfillment !== undefined)) {
-        throw new OpensteerError({
-          code: "bad_request",
-          message: fulfilled
-            ? "Installation fulfillment requires prepared installation material"
-            : "A declined installation cannot carry installation material",
-        });
-      }
-      if (input.preparedFulfillment) {
-        await lockIntegrationInstallationIdentityInTransaction(
-          transaction,
-          input.preparedFulfillment.material.installation,
-        );
-      }
-      const row = await transaction
-        .selectFrom("requests")
-        .innerJoin(
-          "integrationRequestDetails",
-          "integrationRequestDetails.requestId",
-          "requests.id",
-        )
-        .selectAll("requests")
-        .select("integrationRequestDetails.manifest as detailManifest")
-        .where("requests.id", "=", input.requestId)
-        .forNoKeyUpdate("requests")
-        .executeTakeFirst();
-      if (
-        !row ||
-        row.kind !== "integration.install" ||
-        row.status !== "pending" ||
-        !row.detailManifest
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Installation Request is no longer pending",
-        });
-      }
-      await requirePersonalOwner(transaction, input.resolvedBy);
-      if (
-        input.preparedFulfillment &&
-        !isDeepStrictEqual(
-          IntegrationInstallManifestSchema.parse(row.detailManifest),
-          IntegrationInstallManifestSchema.parse(input.preparedFulfillment.approvalManifest),
-        )
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Prepared installation does not match the approved manifest",
-        });
-      }
-      const installationMutation = input.preparedFulfillment
-        ? await installIntegrationInTransaction(transaction, {
-            ...input.preparedFulfillment.material,
-            actorUserId: input.resolvedBy,
-            requestId: input.requestId,
-          })
-        : null;
-      const now = new Date();
-      const resolvedRow = await transaction
-        .updateTable("requests")
-        .set({
-          resolvedAt: now,
-          resolvedBy: input.resolvedBy,
-          settlementProvenance: await readRequestSettlementProvenance(
-            transaction,
-            input.resolvedBy,
-            input.settlementSessionId,
-          ),
-          response: jsonValue(response),
-          status: fulfilled ? "fulfilled" : "declined",
-        })
-        .where("id", "=", input.requestId)
-        .where("status", "=", "pending")
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      const request = requestFromRow(resolvedRow);
-      await enqueueContinuation(transaction, request, now);
-      await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-      return {
-        events: await terminalEvents(transaction, request),
-        installation: installationMutation?.installation ?? null,
-        request,
-        requestEvents: installationMutation?.requestEvents ?? [],
-      };
-    });
-  }
-  async loadIntegrationInstallManifest(input: {
-    readonly requestId: RequestId;
-    readonly resolvedBy: UserId;
-    readonly settlementSessionId?: string;
-  }): Promise<IntegrationInstallManifest> {
-    await requirePersonalOwner(this.#database, input.resolvedBy);
-    const row = await this.#database
-      .selectFrom("requests")
-      .innerJoin("integrationRequestDetails", "integrationRequestDetails.requestId", "requests.id")
-      .innerJoin("users", (join) => join.on("users.id", "=", input.resolvedBy))
-      .select("integrationRequestDetails.manifest")
-      .where("requests.id", "=", input.requestId)
-      .where("requests.kind", "=", "integration.install")
-      .where("requests.status", "=", "pending")
-      .executeTakeFirst();
-    if (!row?.manifest) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Installation Request is unavailable or the personal owner is required",
-      });
-    }
-    return IntegrationInstallManifestSchema.parse(row.manifest);
-  }
   async loadIntegrationAccessInstallManifest(input: {
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
@@ -702,11 +472,9 @@ export class IntegrationRequestStore {
         .selectFrom("integrationInstallations")
         .selectAll()
         .where("status", "=", "active")
-        .where("sourceKind", "=", manifest.kind === "catalog" ? "built-in" : "proposed")
+        .where("sourceKind", "=", "built-in")
         .where(
-          manifest.kind === "catalog"
-            ? sql<boolean>`integration_installations.provenance ->> 'definitionId' = ${manifest.definition.id}`
-            : sql<boolean>`integration_installations.provenance ->> 'artifactDigest' = ${manifest.proposal.digest}`,
+          sql<boolean>`integration_installations.provenance ->> 'definitionId' = ${manifest.definition.id}`,
         )
         .execute();
       const candidate = candidates.find((row) =>
@@ -1017,7 +785,6 @@ export class IntegrationRequestStore {
 
 function currentIntegrationMatchesPrepared(
   current: {
-    readonly adapterSnapshot: unknown;
     readonly description: string;
     readonly manifest: unknown;
     readonly name: string;
@@ -1040,8 +807,7 @@ function currentIntegrationMatchesPrepared(
     current.trust === installation.trust &&
     current.version === installation.version &&
     isDeepStrictEqual(current.manifest, installation.manifest) &&
-    isDeepStrictEqual(current.provenance, installation.provenance) &&
-    isDeepStrictEqual(current.adapterSnapshot, prepared.adapterSnapshot)
+    isDeepStrictEqual(current.provenance, installation.provenance)
   );
 }
 function installedIntegrationMatchesReviewedManifest(
@@ -1058,24 +824,12 @@ function installedIntegrationMatchesReviewedManifest(
   const provenance = RequestJsonObjectSchema.safeParse(installation.provenance);
   const installedManifest = RequestJsonObjectSchema.safeParse(installation.manifest);
   if (!provenance.success || !installedManifest.success) return false;
-  if (reviewed.kind === "catalog") {
-    return (
-      installation.sourceKind === "built-in" &&
-      installation.version === reviewed.digest &&
-      provenance.data.definitionId === reviewed.definition.id &&
-      provenance.data.definitionDigest === reviewed.digest &&
-      isDeepStrictEqual(installedManifest.data.definition, reviewed.definition)
-    );
-  }
-  const summary = integrationInstallManifestSummary(reviewed);
-  if (summary.kind !== "proposal") throw new Error("Invalid proposal summary");
   return (
-    installation.sourceKind === "proposed" &&
-    installation.version === reviewed.proposal.digest &&
-    provenance.data.artifactDigest === reviewed.proposal.digest &&
-    provenance.data.proposalKind === reviewed.proposal.kind &&
-    isDeepStrictEqual(provenance.data.source, summary.proposal.source) &&
-    isDeepStrictEqual(installedManifest.data.proposal, summary.proposal)
+    installation.sourceKind === "built-in" &&
+    installation.version === reviewed.digest &&
+    provenance.data.definitionId === reviewed.definition.id &&
+    provenance.data.definitionDigest === reviewed.digest &&
+    isDeepStrictEqual(installedManifest.data.definition, reviewed.definition)
   );
 }
 function integrationInstallationFromRequestRow(row: {
@@ -1205,7 +959,7 @@ async function withAuthoritativeIntegrationAccount(
     .select(["accountIdentifier", "displayName"])
     .where("id", "=", connectionId)
     .where("ownerUserId", "=", ownerUserId)
-    .where("connectionKind", "in", ["provider-account", "computer", "mcp-oauth"])
+    .where("connectionKind", "=", "computer")
     .executeTakeFirst();
   if (!account) return response;
   return {
@@ -1222,7 +976,6 @@ async function validateIntegrationAccessFulfillmentConnection(
     readonly connectionId: IntegrationConnectionId;
     readonly installationId: IntegrationInstallationId;
     readonly ownerUserId: UserId;
-    readonly providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>;
     readonly requestedAccess: IntegrationAccess;
     readonly requestedServerId: IntegrationServerId | null;
   },
@@ -1245,7 +998,6 @@ async function validateIntegrationAccessFulfillmentConnection(
     connectionId: input.connectionId,
     installationId: input.installationId,
     ownerUserId: input.ownerUserId,
-    providerAuthorizations: input.providerAuthorizations,
     requestedServerId: input.requestedServerId,
   });
   if (!usable) {
@@ -1325,7 +1077,6 @@ async function createPersonalIntegrationGrantForRequest(
   input: Extract<IntegrationAccessDecision, { alias: string }> & {
     readonly installationId: IntegrationInstallationId;
     readonly ownerUserId: UserId;
-    readonly providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>;
     readonly requestedServerId: IntegrationServerId | null;
   },
 ): Promise<IntegrationGrant> {
@@ -1348,7 +1099,6 @@ async function createPersonalIntegrationGrantForRequest(
         connectionId: input.connectionId,
         installationId: input.installationId,
         ownerUserId: input.ownerUserId,
-        providerAuthorizations: input.providerAuthorizations,
         requestedServerId: input.requestedServerId,
       }));
     if (!requestedServer || (requiresConnection ? !usable : input.connectionId !== null)) {
@@ -1366,6 +1116,5 @@ async function createPersonalIntegrationGrantForRequest(
     installationId: input.installationId,
     isDefault: input.isDefault,
     ownerUserId: input.ownerUserId,
-    providerAuthorizations: input.providerAuthorizations,
   });
 }

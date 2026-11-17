@@ -67,18 +67,18 @@ export function hostServerTestDependencies(
     harnessAuthenticationCoordinator: inert(),
     liveRuns: { threadFrames: () => [] },
     integrations: {
+      access: inert(),
       authAttempts: inert(),
       continuations: inert(),
-      dashboard: inert(),
+      definitions: [],
       devices: {
         computerAppApprovals: {
           computerUsePolicy: async () => ({ appApproval: "ask", approvalKeyId: null }),
         },
       } as unknown as HostServerDependencies["integrations"]["devices"],
+      listConnections: async () => [],
       localServers: inert(),
-      mcpOauth: inert(),
-      platform: inert(),
-      service: inert(),
+      localServerRegistry: inert(),
       skills: inert(),
     },
     // Not inert: every command that touches a computer tells the connected
@@ -91,9 +91,9 @@ export function hostServerTestDependencies(
     store: inert(),
     triggers: {
       controlTokens: inert(),
-      service: inert(),
       watchBrowserTokens: inert(),
       watchPrograms: inert(),
+      service: inert(),
     },
     ...overrides,
     agentTools: Object.assign(

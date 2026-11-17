@@ -123,9 +123,9 @@ export async function resolveResourceAccess(
       .where("id", "=", input.resource.id as DatabaseSchema["integrationConnections"]["id"])
       .where("ownerUserId", "=", input.ownerUserId)
       .executeTakeFirst();
-    if (resource?.integrationDefinitionId)
+    if (resource?.connectionKind === "computer" && resource.integrationDefinitionId)
       policyAllowed = await pluginPolicyAllows(database, input.ownerUserId, {
-        kind: resource.connectionKind === "computer" ? "device-app" : "service",
+        kind: "device-app",
         definitionId: resource.integrationDefinitionId,
       });
   }

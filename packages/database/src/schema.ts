@@ -99,18 +99,14 @@ import type {
 import type {
   ComputerAppIdentity,
   IntegrationAccess,
-  IntegrationApplicationSource,
   IntegrationConnectionMethod,
   IntegrationGrantId,
   IntegrationInstallationId,
   IntegrationInstallManifest,
-  IntegrationProvider,
-  IntegrationProviderApplicationId,
   IntegrationServerId,
   IntegrationToolId,
   LocalMcpServerSetup,
 } from "@opensteer/integration-core";
-import type { IntegrationAdapterSnapshot } from "@opensteer/integration-core/adapter";
 import type {
   IntegrationAuthAttemptFailureReason,
   IntegrationAuthAttemptFlow,
@@ -1532,14 +1528,11 @@ interface PrincipalTable {
 
 export interface IntegrationConnectionTable {
   accountIdentifier: string | null;
-  applicationSource: JsonColumn<IntegrationApplicationSource | null>;
-  authMethodId: string | null;
-  authorizationDigest: string | null;
   id: IntegrationConnectionId;
   ownerUserId: UserId;
   credentialId: CredentialId | null;
   credentialGeneration: Generated<number>;
-  connectionKind: "provider-account" | "channel" | "computer" | "mcp-oauth";
+  connectionKind: "channel" | "computer";
   computerAccess: IntegrationAccess | null;
   /**
    * Which app this computer connection names, for a definition whose
@@ -1557,14 +1550,12 @@ export interface IntegrationConnectionTable {
   computerPolicyRevision: Generated<number | null>;
   provider: string;
   integrationServerId: IntegrationServerId | null;
-  providerApplicationId: IntegrationProviderApplicationId | null;
   connectionMethod: IntegrationConnectionMethod;
   status: "pending" | "connected" | "needs-attention" | "paused" | "revoked";
   displayName: string;
   externalIdentityId: string | null;
   externalTenantId: string | null;
   capabilities: JsonColumn<readonly string[]>;
-  grantedScopes: JsonColumn<readonly string[]>;
   integrationDefinitionId: string | null;
   /**
    * For a channel connection, the messaging service currently assigned to it
@@ -1585,13 +1576,6 @@ export interface IntegrationConnectionTable {
   updatedAt: Timestamp;
 }
 
-interface IntegrationApplicationSourceDefaultTable {
-  provider: string;
-  sourceKind: "deployment-oauth" | "hosted-oauth";
-  updatedAt: Timestamp;
-  updatedBy: UserId;
-}
-
 interface IntegrationAuthAttemptTable {
   id: IntegrationAuthAttemptId;
   flow: IntegrationAuthAttemptFlow;
@@ -1604,7 +1588,6 @@ interface IntegrationAuthAttemptTable {
   status: "pending" | "launched" | "claimed" | "completed" | "failed";
   surface: "desktop" | "native" | "web";
   failureReason: IntegrationAuthAttemptFailureReason | null;
-  resultConnectionId: IntegrationConnectionId | null;
   expiresAt: Timestamp;
   launchedAt: NullableTimestamp;
   claimedAt: NullableTimestamp;
@@ -1623,41 +1606,14 @@ interface IntegrationAuthorityGenerationTable {
   updatedAt: Timestamp;
 }
 
-interface McpOAuthCredentialTable {
-  connectionId: IntegrationConnectionId;
-  encryptedState: Buffer;
-  encryptionKeyVersion: number;
-  revision: number;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-
-export interface IntegrationProviderApplicationTable {
-  id: IntegrationProviderApplicationId;
-  provider: IntegrationProvider;
-  displayName: string;
-  clientId: string;
-  encryptedSecrets: Buffer;
-  encryptionKeyVersion: number;
-  installationUrl: Generated<string | null>;
-  ownerUserId: UserId | null;
-  revision: number;
-  status: "active" | "disabled";
-  createdBy: UserId;
-  updatedBy: UserId;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-
 export interface IntegrationInstallationTable {
-  adapterSnapshot: JsonColumn<IntegrationAdapterSnapshot> | null;
   id: IntegrationInstallationId;
   name: string;
   title: string;
   description: string;
   version: string | null;
   pluginId: Generated<string | null>;
-  sourceKind: "plugin" | "built-in" | "proposed" | "remote-mcp";
+  sourceKind: "plugin" | "built-in";
   trust: "built-in" | "verified-publisher" | "administrator-approved";
   manifest: JsonColumn<Readonly<Record<string, unknown>>>;
   provenance: JsonColumn<Readonly<Record<string, unknown>>>;
@@ -2255,12 +2211,10 @@ export interface DatabaseSchema {
   browserSignIns: BrowserSignInTable;
   credentialAccessAudit: CredentialAccessAuditTable;
   principals: PrincipalTable;
-  integrationProviderApplications: IntegrationProviderApplicationTable;
   integrationAuthAttempts: IntegrationAuthAttemptTable;
   integrationAuthorityGenerations: IntegrationAuthorityGenerationTable;
   integrationAuthorityPending: IntegrationAuthorityPendingTable;
   integrationConnections: IntegrationConnectionTable;
-  integrationApplicationSourceDefaults: IntegrationApplicationSourceDefaultTable;
   integrationInstallations: IntegrationInstallationTable;
   integrationServers: IntegrationServerTable;
   integrationServerSecrets: IntegrationServerSecretTable;
@@ -2301,7 +2255,6 @@ export interface DatabaseSchema {
   };
 
   integrationGrants: IntegrationGrantTable;
-  mcpOAuthCredentials: McpOAuthCredentialTable;
   channelAccounts: ChannelAccountTable;
   channelAccessGrants: ChannelAccessGrantTable;
   channelBindings: ChannelBindingTable;

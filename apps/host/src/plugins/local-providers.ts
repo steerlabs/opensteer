@@ -8,6 +8,7 @@ import { integrationToolEffect } from "@opensteer/integration-core/effect";
 import type { IntegrationInstallation } from "@opensteer/integration-core";
 import { androidPhoneDefinitionId } from "@opensteer/protocol";
 import { computerUseDefinitionId } from "../computer-use/computer-use-service.js";
+import { dataAppName } from "../devices/access-requests.js";
 import type { DeviceService } from "../devices/device-service.js";
 import type { LocalServerService } from "../local-servers/local-server-service.js";
 import type { AgentCaller } from "../mcp/agent-caller.js";
@@ -36,9 +37,14 @@ type Located = PluginHostProvider & {
   readonly serverId: string;
   readonly connectionId: string | null;
   readonly transport: "computer" | "runner";
+  /** What app_access_request names this provider by: a data app's name or a server's. */
+  readonly requestName: string;
 };
-const requestAccess = (installation: string, account: string) =>
-  `call integration_request with integration "${installation}", account "${account}" and access "read-write"; do not retry this call until it is fulfilled`;
+/** How an agent asks for more of a provider: the data app on its computer, or the server by name. */
+const requestAccess = (provider: Pick<Located, "kind" | "computer" | "requestName">) =>
+  provider.kind === "device-app"
+    ? `call app_access_request with dataApp "${provider.requestName}"${provider.computer ? `, computerId "${provider.computer.id}"` : ""} and access "read-write"; do not retry this call until it is fulfilled`
+    : `call app_access_request with server "${provider.requestName}" and access "read-write"; do not retry this call until it is fulfilled`;
 
 interface LocalProvidersOptions {
   readonly store: IntegrationPlatformStore;
@@ -64,6 +70,7 @@ export class LocalProviders {
         serverId: _s,
         connectionId: _c,
         transport: _t,
+        requestName: _r,
         ...provider
       }) => provider,
     );
@@ -98,11 +105,11 @@ export class LocalProviders {
     if (!tool || !callable) {
       if (tool?.readOnly === false && provider.connectionId && access.get(provider.connectionId))
         throw failure(
-          `${provider.name} allows reading only. To ${input.tool}, ${requestAccess(provider.installationName, provider.connectionId)}.`,
+          `${provider.name} allows reading only. To ${input.tool}, ${requestAccess(provider)}.`,
         );
       if (tool?.readOnly === false)
         throw failure(
-          `This task may only read through ${provider.name}. To ${input.tool}, call integration_request with integration "${provider.installationName}"${provider.connectionId ? `, account "${provider.connectionId}"` : ""} and access "read-write"; do not retry this call until it is fulfilled.`,
+          `This task may only read through ${provider.name}. To ${input.tool}, ${requestAccess(provider)}.`,
         );
       throw failure(`${provider.name} has no tool ${input.tool} now; search again.`);
     }
@@ -169,9 +176,9 @@ export class LocalProviders {
             };
     const [inventory, callables] = await Promise.all([
       store
-        .listDiscoveryInventory({ ...requester, providerAuthorizations: {} })
+        .listDiscoveryInventory(requester)
         .then((entries) => this.#options.devices.withAvailability(entries, requester)),
-      store.listCallableTools({ ...requester, providerAuthorizations: {} }),
+      store.listCallableTools(requester),
     ]);
     const readOnlyConnections = new Map<string, boolean>();
     const located: Located[] = [];
@@ -211,7 +218,7 @@ export class LocalProviders {
               provider({
                 id: `app_device_${account.connectionId}`,
                 kind: "device-app",
-                base: definition.id.replace(/^(?:apple|iphone)-/u, ""),
+                base: dataAppName(definition),
                 computer: { id: connection.runnerId, name: connection.runnerName },
                 name: `${entry.installation.title} on ${connection.runnerName}`,
                 installationId: entry.installation.id,
@@ -219,13 +226,17 @@ export class LocalProviders {
                 serverId: server.id,
                 connectionId: account.connectionId,
                 transport: "computer",
+                requestName: dataAppName(definition),
                 unavailable: ready
                   ? undefined
                   : (state?.detail ??
                     `${entry.installation.title} is unavailable on ${connection.runnerName}.`),
                 tools: definition.config.operations.map((operation) => ({
                   name: operation.name,
-                  description: `${operation.title}. ${operation.description}`.slice(0, 2000),
+                  description: `${operation.title}. ${skillReference(operation.description)}`.slice(
+                    0,
+                    2000,
+                  ),
                   inputSchema: JSON.parse(JSON.stringify(operation.inputSchema)),
                   readOnly: operation.effect === "read",
                 })),
@@ -267,13 +278,14 @@ export class LocalProviders {
               serverId: server.id,
               connectionId: null,
               transport: "runner",
+              requestName: serverName(entry.installation),
               unavailable:
                 !state || state.code === "READY"
                   ? runnerId
                     ? undefined
                     : `${entry.installation.title} has no computer to run on. Register it again, choosing one.`
                   : state.code === "ACCESS_GRANT_REQUIRED"
-                    ? `${entry.installation.title} needs the person's access: call integration_request with integration "${entry.installation.name}" and access "read" or "read-write".`
+                    ? `${entry.installation.title} needs the person's access: call app_access_request with server "${serverName(entry.installation)}" and access "read" or "read-write".`
                     : (state.detail ??
                       `${entry.installation.title} is waiting for the person to approve it on its computer. Do not retry until they do.`),
               tools: listed,
@@ -318,6 +330,7 @@ function provider(input: {
   serverId: string;
   connectionId: string | null;
   transport: "computer" | "runner";
+  requestName: string;
   unavailable: string | undefined;
   tools: PluginHostProvider["tools"];
 }): Located {
@@ -338,8 +351,17 @@ function provider(input: {
     serverId: input.serverId,
     connectionId: input.connectionId,
     transport: input.transport,
+    requestName: input.requestName,
     ...(input.unavailable ? { unavailable: input.unavailable } : {}),
   };
+}
+
+/**
+ * The Messages definition's pinned text still names the skill its reference lived in; the
+ * reference is now in opensteer:plugins, and the definition's digest cannot change.
+ */
+function skillReference(description: string): string {
+  return description.replace("reference in opensteer:integrations", "reference in opensteer:plugins");
 }
 
 /** A registered server's own name, which registration keeps unique per person. */

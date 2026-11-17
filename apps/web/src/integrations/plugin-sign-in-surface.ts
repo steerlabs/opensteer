@@ -54,7 +54,6 @@ export function pluginSignInSurface(
             )
               throw new Error("Reconnect to this computer before signing in.");
             await bridge.openIntegrationAuthorization({
-              kind: "plugin",
               attemptId: started.attemptId,
               launchTicket: started.launchTicket,
               deploymentId: DeploymentIdSchema.parse(snapshot.deploymentId),

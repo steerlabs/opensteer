@@ -32,11 +32,9 @@ export const RequestKindSchema = z.enum([
   "browser.sign-in",
   "browser.password-sign-in",
   "integration.access",
-  "integration.install",
   "machine.full-disk-access",
   "device.access",
   "computer.app.access",
-  "integration.input",
   "plugin.account",
   "plugin.approval",
   "plugin.input",
@@ -185,8 +183,8 @@ export function requestFormAnswersProblem(
 }
 
 /**
- * Set when the title names something an agent proposed, such as an integration
- * it researched, rather than something Opensteer vouches for. The title stays
+ * Set when the title names something an agent proposed, such as a plugin it
+ * wrote, rather than something Opensteer vouches for. The title stays
  * the plain name and every surface shows the provenance beside it, so a name
  * like `Gmail — approved by your administrator` never reads as Opensteer's own
  * words.
@@ -294,13 +292,12 @@ export type RequestPresentation = z.infer<typeof RequestPresentationSchema>;
 
 /**
  * What a surface shows beside the title of a Request whose subject an agent
- * proposed, and beside the proposed integration itself wherever it is listed.
+ * proposed.
  */
 export const requestAgentProposedLabel = "Proposed by an agent";
 
 /**
- * What the label means, for its tooltip and the proposed integration's own page.
- * Only an integration is ever proposed by an agent.
+ * What the label means, for its tooltip.
  */
 export const requestAgentProposedDetail =
   "An agent proposed this integration; it isn’t part of Opensteer’s reviewed catalog.";
@@ -418,11 +415,6 @@ const requestPayloadVariants = [
     requestedConnectionId: IntegrationIdentifierSchema.nullable(),
     requestedServerId: IntegrationIdentifierSchema.nullable(),
   }),
-  z.strictObject({
-    kind: z.literal("integration.install"),
-    manifest: RequestJsonObjectSchema,
-    reason: RequestReasonSchema,
-  }),
   /**
    * An agent needs macOS Full Disk Access on one lent Mac. The machine's name
    * is copied in at creation so the card and the continuation read the name the
@@ -489,16 +481,6 @@ const requestPayloadVariants = [
         });
       }
     }),
-  /**
-   * A computer-run MCP server asked the person for values during a tool call,
-   * such as the code a TV shows while pairing. The answer goes only to that
-   * server's waiting call: never to the agent, the Request row or an event.
-   */
-  z.strictObject({
-    installationId: IntegrationIdentifierSchema,
-    kind: z.literal("integration.input"),
-    serverId: IntegrationIdentifierSchema,
-  }),
   z.strictObject({
     kind: z.literal("device.access"),
     machineId: RunnerIdSchema,
@@ -541,20 +523,18 @@ const RequestPayloadViewSchema = z.discriminatedUnion("kind", [
   z.object(requestPayloadVariants[4].shape),
   z.object(requestPayloadVariants[5].shape),
   z.object(requestPayloadVariants[6].shape),
-  z.object(requestPayloadVariants[7].shape),
   z.object({
-    ...requestPayloadVariants[8].shape,
+    ...requestPayloadVariants[7].shape,
     app: z.object(computerAppIdentityShape).nullable(),
   }),
+  z.object(requestPayloadVariants[8].shape),
   z.object(requestPayloadVariants[9].shape),
-  z.object(requestPayloadVariants[10].shape),
-  z.object(requestPayloadVariants[11].shape),
   z.object({
-    ...requestPayloadVariants[12].shape,
+    ...requestPayloadVariants[10].shape,
     consent: PluginAccountConsentViewSchema,
   }),
-  z.object(requestPayloadVariants[13].shape),
-  z.object(requestPayloadVariants[14].shape),
+  z.object(requestPayloadVariants[11].shape),
+  z.object(requestPayloadVariants[12].shape),
 ]);
 export type RequestPayload = z.infer<typeof RequestPayloadSchema>;
 
@@ -681,7 +661,7 @@ function validateRequestInvariants(
     context.addIssue({
       code: "custom",
       message:
-        "An integration access Request targets exactly one installed integration or install manifest",
+        "An access Request targets exactly one installed app or server, or one device app to install",
       path: ["payload", "installationId"],
     });
   }
@@ -882,11 +862,9 @@ export function requestIsAgentAnswerable(
     "browser.sign-in": false,
     "browser.password-sign-in": false,
     "integration.access": false,
-    "integration.install": false,
     "machine.full-disk-access": false,
     "device.access": false,
     "computer.app.access": false,
-    "integration.input": false,
     "plugin.account": false,
     "plugin.approval": false,
     "plugin.input": false,

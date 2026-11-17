@@ -18,7 +18,7 @@ import { z } from "zod";
 import type { PasswordSignInContinuationState } from "../browser/password-sign-in-service.js";
 import type { ComputerAppApprovalService } from "../devices/computer-app-approval-service.js";
 import { computerToolRefs } from "../devices/computer-use-discovery.js";
-import type { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
+import type { DeviceService } from "../devices/device-service.js";
 const defaultIntervalMs = 5_000;
 const cancelledContinuationReason = "Continuation delivery was cancelled by Thread input admission";
 const triggerOriginatedContinuationReason =
@@ -36,7 +36,7 @@ type ThreadInputDisposition = Awaited<
  * outbox reads the installed state rather than assuming the approval worked.
  */
 export type IntegrationInventorySource = Pick<
-  IntegrationPlatformService,
+  DeviceService,
   "listDiscoveryInventory" | "listCallableTools"
 > &
   Pick<ComputerAppApprovalService, "computerUseMachines" | "computerUsePhones">;
@@ -271,32 +271,8 @@ const IntegrationAccessAccountSchema = z.strictObject({
   displayName: z.string().trim().min(1),
 });
 
-/**
- * The public projection stored on the Request payload. It is read back loosely
- * because only the identity fields that locate the resulting installation
- * matter here.
- */
-const InstallManifestSummarySchema = z.discriminatedUnion("kind", [
-  z.object({
-    definition: z.object({
-      id: z.string().min(1),
-      name: z.string().min(1),
-    }),
-    kind: z.literal("catalog"),
-  }),
-  z.object({
-    kind: z.literal("proposal"),
-    proposal: z.object({
-      digest: z.string().min(1),
-    }),
-  }),
-]);
-type InstallManifestSummary = z.infer<typeof InstallManifestSummarySchema>;
 const CatalogProvenanceSchema = z.object({
   definitionId: z.string().min(1),
-});
-const ProposalProvenanceSchema = z.object({
-  artifactDigest: z.string().min(1),
 });
 export async function continuationMessage(
   request: Request,
@@ -334,8 +310,6 @@ export async function continuationMessage(
         ? `Request ${request.id} was fulfilled. ${access} access is now on for ${machineName} (${machineId}). This continuation Run rebuilds computer routes. Per-app, profile or OS authorization may still be needed. Continue the task using this Run's inventory.`
         : `Request ${request.id} was declined (Not now). Continue without ${access} on ${machineName} (${machineId}); do not request it again in this task.`;
     }
-    case "integration.input":
-      throw new Error("Device input returns inside its tool call and cannot have a continuation");
     case "person.question":
       return personQuestionContinuation(request);
     case "machine.full-disk-access": {
@@ -486,34 +460,6 @@ export async function continuationMessage(
           return `${receipt} The integration is not usable: ${state.detail ?? "the integration is unavailable"}.`;
       }
     }
-    case "integration.install": {
-      if (request.status === "declined") {
-        return `Request ${request.id} was declined by the user. Continue the task without this integration and do not propose it again unless the user asks.`;
-      }
-      const manifest = InstallManifestSummarySchema.safeParse(
-        request.payload.kind === "integration.install" ? request.payload.manifest : undefined,
-      );
-      if (!manifest.success) {
-        return `Request ${request.id} was approved, but the approved manifest cannot be read back, so the result is unverified. Call integration_search now to see what is actually installed and continue from there.`;
-      }
-      const entry = (await inventoryFor(request, integrations)).find((candidate) =>
-        installedFromManifest(candidate, manifest.data),
-      );
-      if (!entry) {
-        return `Request ${request.id} was approved, but ${manifestName(manifest.data)} is not present in the current integration inventory. Call integration_search now to see what is actually installed and continue from there.`;
-      }
-      const state = integrationState(entry);
-      switch (state.disposition) {
-        case "ready":
-          return `Request ${request.id} was fulfilled. ${entry.installation.title} is installed and ready. Call integration_search now to pick up its tools and continue the task.`;
-        case "needs-grant":
-          return `Request ${request.id} was fulfilled. ${entry.installation.title} is installed and its account connection works, but your Opensteer holds no access grant yet${detailClause(state.detail)}. Call integration_search now, then call integration_request with this integration and the access class the task needs.`;
-        case "needs-account":
-          return `Request ${request.id} was fulfilled. ${entry.installation.title} is installed but has no connected account${detailClause(state.detail)}. Call integration_request now for the account connection, then continue the task.`;
-        case "blocked":
-          return `Request ${request.id} was fulfilled, but ${entry.installation.title} installed in an unusable state: ${state.detail ?? "the integration is unavailable"}. ${state.remedy}`;
-      }
-    }
     case "computer.app.access": {
       if (request.payload.kind !== "computer.app.access")
         throw new Error("Computer app access Request payload is invalid");
@@ -601,31 +547,6 @@ function inventoryFor(
     threadId: request.originatingThreadId,
   });
 }
-function manifestName(manifest: InstallManifestSummary): string {
-  return manifest.kind === "catalog" ? manifest.definition.name : "the proposed integration";
-}
-
-/**
- * An installation records where it came from rather than which Request created
- * it, so a catalog install is located by its definition and a proposal by the
- * digest of the artifact that was approved.
- */
-function installedFromManifest(
-  entry: IntegrationInventoryEntry,
-  manifest: InstallManifestSummary,
-): boolean {
-  const { provenance, sourceKind } = entry.installation;
-  if (manifest.kind === "catalog") {
-    return (
-      sourceKind === "built-in" &&
-      CatalogProvenanceSchema.safeParse(provenance).data?.definitionId === manifest.definition.id
-    );
-  }
-  return (
-    sourceKind === "proposed" &&
-    ProposalProvenanceSchema.safeParse(provenance).data?.artifactDigest === manifest.proposal.digest
-  );
-}
 type IntegrationState =
   | {
       readonly detail: string | null;
@@ -696,13 +617,6 @@ function readinessState(readiness: IntegrationReadiness): IntegrationState {
       return {
         detail,
         disposition: "needs-account",
-      };
-    case "ADMIN_CONFIGURATION_REQUIRED":
-      return {
-        detail,
-        disposition: "blocked",
-        remedy:
-          "Request access through integration_request; the connection UI offers supported personal-app setup and identifies any administrator prerequisite.",
       };
     case "INTEGRATION_UNAVAILABLE":
       return {

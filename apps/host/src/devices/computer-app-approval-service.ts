@@ -71,7 +71,7 @@ import {
   unknownPhone,
 } from "./computer-use-discovery.js";
 
-/** What the approval surfaces and `integration_request` need of sessions. */
+/** What the approval surfaces and `app_access_request` need of sessions. */
 export type ComputerUseApprovalGateway = Pick<
   ComputerUseService,
   | "closeForConnection"
