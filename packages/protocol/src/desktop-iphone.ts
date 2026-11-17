@@ -13,6 +13,10 @@ export const DesktopIphoneSetupReasonSchema = z.enum([
   "bridge-signature-invalid",
   "bridge-protocol-mismatch",
   "unsupported-mac",
+  /** Xcode isn't installed on this Mac. */
+  "xcode-missing",
+  /** Xcode is installed but hasn't installed its iPhone support yet (open it once). */
+  "xcode-setup-required",
   "no-phone",
   "unsupported-device",
   "restart-required",
@@ -42,17 +46,53 @@ export const DesktopIphoneSetupReasonSchema = z.enum([
   "wifi-identity-mismatch",
 ]);
 export type DesktopIphoneSetupReason = z.infer<typeof DesktopIphoneSetupReasonSchema>;
-export const DesktopIphoneSetupStepSchema = z.enum([
-  "choose",
+/**
+ * The person-facing checklist, in order. Setup on the Mac drives itself through it: each stage
+ * is worked on by Opensteer, waits for the person (and keeps checking, so it moves on by itself
+ * once they've done it), or asks them to decide something in the dialog.
+ */
+export const DesktopIphoneSetupStageSchema = z.enum([
+  /** This Mac has the bridge and Xcode's iPhone support; checked before asking for a phone. */
+  "mac",
+  /** An iPhone is plugged in with a data cable; the person picks one only when there are several. */
+  "connect",
+  /** The person taps Trust on the iPhone and enters its passcode. */
   "trust",
+  /** Developer Mode is on (Opensteer reveals the switch, the person turns it on and restarts). */
   "developer-mode",
+  /** Opensteer mounts Apple's developer files and takes a first look at the screen. */
   "prepare",
-  "observe",
+  /** The person chooses whether to also control it over the same Wi‑Fi. */
   "wifi",
-  "attach",
-  "confirm",
+  /** The person names it and adds it; Opensteer adds it to the Host and waits for this Mac to take it on. */
+  "add",
   "done",
 ]);
+export type DesktopIphoneSetupStage = z.infer<typeof DesktopIphoneSetupStageSchema>;
+/**
+ * - working: Opensteer is doing the stage; nothing to press.
+ * - waiting: the person must do something on the iPhone or this Mac (see `reason`). Setup keeps
+ *   checking and continues by itself; `retry` only checks again now.
+ * - decide: the dialog asks the person to choose (`action` says what).
+ * - blocked: the stage failed in a way checking again won't fix by itself; `action` says how out.
+ * - done: the iPhone was added and this Mac took it on.
+ */
+export const DesktopIphoneSetupStateSchema = z.enum(["working", "waiting", "decide", "blocked", "done"]);
+export const DesktopIphoneSetupActionSchema = z.enum([
+  /** Open Xcode's page in the Mac App Store. */
+  "get-xcode",
+  /** Open Xcode so it finishes installing its iPhone support. */
+  "open-xcode",
+  "choose-phone",
+  "choose-wifi",
+  "name-phone",
+  /** Run the blocked stage again. */
+  "retry",
+  /** Cancel and begin again from the start. */
+  "start-over",
+  "none",
+]);
+export type DesktopIphoneSetupAction = z.infer<typeof DesktopIphoneSetupActionSchema>;
 export const DesktopIphoneSetupBeginSchema = z.strictObject({
   deploymentId: DeploymentIdSchema,
   target: IphoneScreenAttachCommandSchema.shape.target.optional(),
@@ -61,13 +101,17 @@ export const DesktopIphoneSetupIdSchema = z.strictObject({ setupId: z.uuid() });
 export const DesktopIphoneSetupChooseSchema = DesktopIphoneSetupIdSchema.extend({
   candidateId: z.uuid(),
 });
-export const DesktopIphoneSetupAdvanceSchema = DesktopIphoneSetupIdSchema.extend({
-  step: z.enum(["trust", "developer-mode", "prepare", "observe", "attach"]),
+/** Runs one of the Mac-side helper actions the status offers (`get-xcode`, `open-xcode`). */
+export const DesktopIphoneSetupHelpSchema = DesktopIphoneSetupIdSchema.extend({
+  action: z.enum(["get-xcode", "open-xcode"]),
+});
+/** Prepares the Host command that adds the iPhone under `name` (ignored when setting up an existing one). */
+export const DesktopIphoneSetupAddSchema = DesktopIphoneSetupIdSchema.extend({
   name: z.string().trim().min(1).max(120).optional(),
 });
 export const DesktopIphoneWifiActionSchema = z.enum(["enable", "disable", "pair"]);
 export const DesktopIphoneSetupWifiSchema = DesktopIphoneSetupIdSchema.extend({
-  action: z.enum([...DesktopIphoneWifiActionSchema.options, "skip"]),
+  choice: z.enum(["wifi", "usb-only"]),
 });
 export const DesktopIphoneWifiInputSchema = z.strictObject({
   deploymentId: DeploymentIdSchema,
@@ -87,39 +131,39 @@ export const DesktopIphoneSetupCompleteSchema = DesktopIphoneSetupIdSchema.exten
 export const DesktopIphoneSetupFailureSchema = DesktopIphoneSetupIdSchema.extend({
   reason: DesktopIphoneSetupReasonSchema,
 });
+export const DesktopIphoneSetupPhoneSchema = z.strictObject({
+  name: z.string().max(160),
+  model: z.string().max(160),
+  osVersion: z.string().max(160),
+});
 export const DesktopIphoneSetupStatusSchema = z.strictObject({
   setupId: z.uuid(),
   deploymentId: DeploymentIdSchema,
-  step: DesktopIphoneSetupStepSchema,
+  stage: DesktopIphoneSetupStageSchema,
+  state: DesktopIphoneSetupStateSchema,
+  /** Why setup waits or is blocked; null while working, deciding or done. */
   reason: DesktopIphoneSetupReasonSchema.nullable(),
-  recoverable: z.boolean(),
-  personAction: z.enum([
-    "choose-phone",
-    "unlock-and-trust",
-    "enable-developer-mode",
-    "install-developer-image",
-    "choose-wifi",
-    "continue",
-    "retry",
-    "none",
-  ]),
+  /** The one thing the dialog offers for this state. */
+  action: DesktopIphoneSetupActionSchema,
+  /** USB iPhones on this Mac; `reason` is set only when that phone can't be chosen. */
   candidates: z
     .array(
-      z.strictObject({
+      DesktopIphoneSetupPhoneSchema.extend({
         candidateId: z.uuid(),
-        name: z.string().max(160),
-        model: z.string().max(160),
-        osVersion: z.string().max(160),
         reason: DesktopIphoneSetupReasonSchema.nullable(),
       }),
     )
     .max(64),
+  /** The iPhone this setup works on, once chosen. */
+  phone: DesktopIphoneSetupPhoneSchema.nullable(),
+  /** The name to prefill when adding. */
+  suggestedName: z.string().max(120).nullable(),
   attachCommand: IphoneScreenAttachCommandSchema.nullable(),
   /** The Device this setup adds or sets up again; `existing` keeps that Device's name. */
-  target: IphoneScreenAttachCommandSchema.shape.target.nullable().default(null),
+  target: IphoneScreenAttachCommandSchema.shape.target.nullable(),
   deviceId: z.string().max(128).nullable(),
   driverGeneration: z.number().int().positive().nullable(),
-  wifiEnabled: z.boolean().default(false),
+  wifiEnabled: z.boolean(),
 });
 export type DesktopIphoneSetupStatus = z.infer<typeof DesktopIphoneSetupStatusSchema>;
 export interface DesktopIphoneSetupBridge {
@@ -139,9 +183,10 @@ export interface DesktopIphoneSetupBridge {
   ): Promise<z.infer<typeof DesktopIphoneDetachStatusSchema>[]>;
   begin(input: z.infer<typeof DesktopIphoneSetupBeginSchema>): Promise<DesktopIphoneSetupStatus>;
   choose(input: z.infer<typeof DesktopIphoneSetupChooseSchema>): Promise<DesktopIphoneSetupStatus>;
-  advance(
-    input: z.infer<typeof DesktopIphoneSetupAdvanceSchema>,
-  ): Promise<DesktopIphoneSetupStatus>;
+  /** Prepares `attachCommand` for the renderer to dispatch to the Host; then `complete` or `failed`. */
+  add(input: z.infer<typeof DesktopIphoneSetupAddSchema>): Promise<DesktopIphoneSetupStatus>;
+  help(input: z.infer<typeof DesktopIphoneSetupHelpSchema>): Promise<DesktopIphoneSetupStatus>;
+  retry(input: z.infer<typeof DesktopIphoneSetupIdSchema>): Promise<DesktopIphoneSetupStatus>;
   complete(
     input: z.infer<typeof DesktopIphoneSetupCompleteSchema>,
   ): Promise<DesktopIphoneSetupStatus>;
