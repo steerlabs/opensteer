@@ -2910,6 +2910,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       ).filter(
         (request) =>
           request.originatingThreadId === input.threadId &&
+          (!input.review || input.review.some(({ id }) => id === request.id)) &&
           (input.requestId !== undefined || request.status === "pending") &&
           (input.deviceAccessRequests === "include" || request.kind !== "device.access"),
       );

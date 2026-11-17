@@ -2352,11 +2352,20 @@ const hostApiGroup4 = defineRpc({
       .strictObject({
         threadId: ThreadIdSchema,
         requestId: RequestIdSchema.optional(),
+        review: z
+          .array(z.strictObject({ id: RequestIdSchema, revision: PersonalRevisionSchema }))
+          .min(1)
+          .max(20)
+          .refine((requests) => new Set(requests.map(({ id }) => id)).size === requests.length)
+          .optional(),
         deviceAccessRequests: z.literal("include").optional(),
       })
       .extend(durablePageInputSchema.shape)
       .refine(
-        (input) => !input.requestId || (input.before === undefined && input.limit === undefined),
+        (input) =>
+          !(input.requestId && input.review) &&
+          (!(input.requestId || input.review) ||
+            (input.before === undefined && input.limit === undefined)),
         "A targeted Request read cannot page",
       ),
     z.object({

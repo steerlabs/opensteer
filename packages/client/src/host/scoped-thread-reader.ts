@@ -46,6 +46,9 @@ export interface ThreadViewSource {
 type Overlay = "requests" | "tools" | "nodes";
 type OverlayRead = Awaited<ReturnType<HostApiClient["thread.overlays.page"]>>;
 type OverlayPage = Extract<OverlayRead, { ok: true }>["data"];
+type RequestSummaries = NonNullable<
+  ReturnType<ObservedDetail["transcript"]["getSnapshot"]>["snapshot"]
+>["pendingRequests"];
 
 export class TranscriptBodies {
   readonly #entries = new Map<string, { value: TranscriptItemResult; size: number }>();
@@ -90,7 +93,8 @@ export class ScopedThreadReader implements ThreadViewSource {
   readonly #cards = new WeakMap<TranscriptItem, TranscriptEntry | undefined>();
   readonly #overlayReads = new Map<Overlay, number>();
   #queue: { generation: number; promise: Promise<ThreadInputQueue> } | undefined;
-  #requestCut: unknown;
+  #requestCut: RequestSummaries | undefined;
+  readonly #reviewedRevisions = new Map<string, string>();
   #historyRead = 0;
   #rows: ReadonlyMap<string, TranscriptItem> | undefined;
   #liveRows: ReadonlyMap<string, TranscriptItem> | undefined;
@@ -174,6 +178,8 @@ export class ScopedThreadReader implements ThreadViewSource {
       (state.synchronized && this.#requestGeneration !== state.generation);
     if (requestChanged) {
       this.#requestCut = pending;
+      if (this.#requestGeneration !== state.generation || !state.synchronized)
+        this.#reviewedRevisions.clear();
       if (state.synchronized) this.#requestGeneration = state.generation;
       if (state.synchronized && pending?.length)
         void this.#readRequests(pending, state.generation).catch(() => undefined);
@@ -189,7 +195,12 @@ export class ScopedThreadReader implements ThreadViewSource {
     const requests = !state.synchronized
       ? emptyThreadView.requests
       : requestChanged
-        ? this.#view.requests.filter((request) => pending?.some(({ id }) => id === request.id))
+        ? this.#view.requests.filter((request) =>
+            pending?.some(
+              ({ id, revision }) =>
+                id === request.id && revision === this.#reviewedRevisions.get(id),
+            ),
+          )
         : this.#view.requests;
     if (
       entries !== this.#view.entries ||
@@ -214,20 +225,26 @@ export class ScopedThreadReader implements ThreadViewSource {
     }
   }
 
-  async #readRequests(
-    pending: NonNullable<
-      ReturnType<ObservedDetail["transcript"]["getSnapshot"]>["snapshot"]
-    >["pendingRequests"],
-    generation: number,
-  ) {
+  async #readRequests(pending: RequestSummaries, generation: number) {
     const signal = this.#detail.controller?.signal;
     if (!signal) return;
-    const { requests } = unwrapRpcResult(
-      await this.#rpc["thread.requests.list"](
-        { threadId: this.#detail.scope.threadId, limit: 20 },
-        { signal },
-      ),
+    const { threadId } = this.#detail.scope;
+    const held = new Map(this.#view.requests.map((request) => [request.id, request]));
+    const missing = pending.filter(
+      ({ id, revision }) => !held.has(id) || revision !== this.#reviewedRevisions.get(id),
     );
+    if (!missing.length) return;
+    const reads = [];
+    for (let i = 0; i < missing.length; i += 20) {
+      const review = missing.slice(i, i + 20).map(({ id, revision }) => ({ id, revision }));
+      reads.push(
+        this.#rpc["thread.requests.list"]({ threadId, review }, { signal }).then((result) => ({
+          review,
+          result,
+        })),
+      );
+    }
+    const results = await Promise.all(reads);
     const state = this.#detail.transcript.getSnapshot();
     if (
       signal.aborted ||
@@ -235,9 +252,27 @@ export class ScopedThreadReader implements ThreadViewSource {
       state.snapshot?.pendingRequests !== pending
     )
       return;
+    const requests = new Map(this.#view.requests.map((request) => [request.id, request]));
+    for (const { review, result } of results) {
+      if (!result.ok) continue;
+      for (const request of result.data.requests)
+        if (
+          request.status === "pending" &&
+          request.originatingThreadId === threadId &&
+          review.some(({ id }) => id === request.id)
+        )
+          requests.set(request.id, request);
+    }
+    this.#reviewedRevisions.clear();
+    const reviewed = pending.flatMap(({ id, revision }) => {
+      const request = requests.get(id);
+      if (!request) return [];
+      this.#reviewedRevisions.set(id, revision);
+      return [request];
+    });
     this.#publish({
       ...this.#view,
-      requests: requests.filter((request) => pending.some(({ id }) => id === request.id)),
+      requests: reviewed,
     });
   }
 

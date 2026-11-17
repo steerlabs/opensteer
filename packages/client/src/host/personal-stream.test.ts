@@ -403,6 +403,75 @@ test("drops an item read overtaken by a durable removal and retries an older que
   reader.dispose();
 });
 
+test("reviews the exact pending Request revision and drops the reviewed card when its revision changes", async () => {
+  const f = fixture();
+  f.syncShell();
+  f.syncDetail();
+  const earlier = Promise.withResolvers<unknown>();
+  const later = Promise.withResolvers<unknown>();
+  const readRequests = vi
+    .fn()
+    .mockReturnValueOnce(earlier.promise)
+    .mockReturnValueOnce(later.promise);
+  const rpc = {
+    "thread.requests.list": readRequests,
+    "thread.inputQueue.get": async () => ({
+      ok: true,
+      data: { threadId, revision: "1", paused: false, steerRunId: null, items: [] },
+    }),
+  } as unknown as import("@opensteer/protocol").HostApiClient;
+  const reader = new ScopedThreadReader(f.detail, rpc, new TranscriptBodies());
+  const change = (fromSequence: string, throughSequence: string) =>
+    f.stream.receive({
+      ...f.address,
+      type: "host.changes",
+      fromSequence,
+      throughSequence,
+      changes: [
+        {
+          entityKind: "request",
+          entityId: requestId,
+          ordinal: 0,
+          sequence: throughSequence,
+          operation: "upsert",
+          value: {
+            id: requestId,
+            revision: throughSequence,
+            status: "pending",
+            kind: "person.question",
+            title: "Question",
+            threadId,
+          },
+        },
+      ],
+    });
+  const result = (callId: string) => ({
+    ok: true,
+    data: {
+      requests: [{ id: requestId, originatingThreadId: threadId, status: "pending", callId }],
+    },
+  });
+  expect(change("1", "2")).toBe(true);
+  expect(readRequests).toHaveBeenNthCalledWith(
+    1,
+    { threadId, review: [{ id: requestId, revision: "2" }] },
+    expect.anything(),
+  );
+  earlier.resolve(result("first"));
+  await vi.waitFor(() => expect(reader.getSnapshot().requests[0]?.callId).toBe("first"));
+
+  expect(change("2", "3")).toBe(true);
+  expect(reader.getSnapshot().requests).toEqual([]);
+  expect(readRequests).toHaveBeenNthCalledWith(
+    2,
+    { threadId, review: [{ id: requestId, revision: "3" }] },
+    expect.anything(),
+  );
+  later.resolve(result("updated"));
+  await vi.waitFor(() => expect(reader.getSnapshot().requests[0]?.callId).toBe("updated"));
+  reader.dispose();
+});
+
 test("retains the moved item's anchor across a history reset and refuses a response that omits it", async () => {
   const f = fixture();
   f.syncShell();
