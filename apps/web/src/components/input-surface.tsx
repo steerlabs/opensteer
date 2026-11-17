@@ -1,4 +1,6 @@
 import { browserNoticeDismissals } from "./usage-notice.js";
+import { isPluginRequest } from "@opensteer/client/plugins";
+import { ThreadPluginAction } from "./plugins/plugin-request-action.js";
 import { useCompactionOffer } from "@opensteer/client/react";
 import { cardUseTitle } from "@opensteer/client/host";
 import { threadMark, type TaskMark as ResolvedTaskMark } from "@opensteer/client/host";
@@ -695,6 +697,9 @@ function ActionBody({
   if (request.kind === "computer.app.access") {
     return <ThreadComputerAppAccessAction disabled={disabled} request={request} />;
   }
+  if (isPluginRequest(request)) {
+    return <ThreadPluginAction disabled={disabled} request={request} />;
+  }
 
   const respond = (response: RequestResponse, busyId: string) => {
     if (pendingId || disabled) return;
@@ -798,7 +803,7 @@ function requestIcon(request: Request): IconName {
     return "key";
   }
   if (request.kind.startsWith("browser.")) return "browser";
-  if (request.kind.startsWith("integration.")) {
+  if (request.kind.startsWith("integration.") || request.kind.startsWith("plugin.")) {
     return "puzzle";
   }
   return "shield";

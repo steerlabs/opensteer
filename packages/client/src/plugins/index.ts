@@ -228,6 +228,19 @@ export function pluginEngineNotice(
   return null;
 }
 
+/** A refused read that means the engine is unavailable, as the state to show instead of an error. */
+export function pluginEngineRefusal(error: unknown): PluginEngineStateView | null {
+  return typeof error === "object" &&
+    error !== null &&
+    "reason" in error &&
+    error.reason === "plugin-engine-unavailable"
+    ? {
+        status: "unavailable",
+        ...("message" in error && typeof error.message === "string" ? { reason: error.message } : {}),
+      }
+    : null;
+}
+
 export const pluginAccessChoices: readonly {
   readonly value: PluginAccess;
   readonly label: string;
@@ -255,16 +268,18 @@ export function pluginConsentLines(input: {
   readonly consent: PluginConsentView;
   readonly author: PluginAuthor;
   readonly pluginName: string;
-  readonly providerName: string;
+  /** Null where only the requirement is known, as on a Request card. */
+  readonly providerName: string | null;
 }): readonly { readonly key: string; readonly text: string }[] {
   const { consent } = input;
   const sites = consent.sites.map((site) => site.replace(/^https?:\/\//u, ""));
+  const credential = input.providerName ? `your ${input.providerName} credential` : "the credential";
   return [
     {
       key: "sites",
       text: sites.length
-        ? `Your ${input.providerName} credential may only be sent to ${listText(sites)}.`
-        : `${input.pluginName} doesn't say which sites your ${input.providerName} credential may go to.`,
+        ? `${credential[0]!.toUpperCase()}${credential.slice(1)} may only be sent to ${listText(sites)}.`
+        : `${input.pluginName} doesn't say which sites ${credential} may go to.`,
     },
     {
       key: "credential",

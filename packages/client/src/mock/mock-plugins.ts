@@ -474,12 +474,19 @@ export class MockPlugins {
   }
   #setEngine(engine: PluginEngineStateView) {
     this.engine = engine;
-    for (const listener of this.#engineListeners) listener(engine);
+    // A frame arrives after the read that caused it went out, as over a socket.
+    setTimeout(() => {
+      for (const listener of this.#engineListeners) listener(engine);
+    }, 0);
   }
   /** The first read starts the engine, which takes a moment, as the real one does. */
   async #ready() {
     if (this.scenario === "unavailable")
-      throw refusal("conflict", "The plugin engine is unavailable.", "plugin-engine-unavailable");
+      throw refusal(
+        "conflict",
+        "The plugin engine stopped three times in a row.",
+        "plugin-engine-unavailable",
+      );
     if (this.scenario === "error") throw refusal("conflict", "The plugin engine answered with an error.");
     if (this.#started) return;
     this.#started = true;
