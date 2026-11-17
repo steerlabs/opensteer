@@ -10,11 +10,9 @@ vi.mock("react-native-reanimated", async () => ({
 vi.mock("../ui/motion.js", () => ({ move: undefined }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 vi.mock("@opensteer/client/react", () => ({
-  useConnectionNotice: () => null,
+  useClientConnection: () => ({ readyRevision: 1 }),
   useHostSnapshot: (client: { getSnapshot: () => unknown }) => ({
     snapshot: client.getSnapshot(),
-    loadError: null,
-    reload: vi.fn(),
   }),
 }));
 vi.mock("react-native", () => ({
@@ -45,11 +43,10 @@ vi.mock("react-native", () => ({
 }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
-  Notice: () => null,
-  SecondaryButton: () => null,
   SectionLabel: () => null,
-  StatusDot: () => null,
 }));
+vi.mock("../ui/placeholder.js", () => ({ PlaceholderRows: () => null }));
+vi.mock("../ui/connection-live.js", () => ({ refreshNow: vi.fn() }));
 vi.mock("../ui/screen.js", () => ({ useListContentInsets: () => ({ paddingHorizontal: 16 }) }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("./task-row.js", () => ({
@@ -57,9 +54,6 @@ vi.mock("./task-row.js", () => ({
   TaskRowView: ({ row }: { row: { title: string } }) => <span data-task>{row.title}</span>,
   taskTextInset: 12,
   taskTime: () => "",
-}));
-vi.mock("../client/mobile-client.js", () => ({
-  operationDetail: (_error: unknown, fallback: string) => fallback,
 }));
 import { TasksPane } from "./tasks-pane.js";
 
@@ -85,7 +79,6 @@ it("keeps search pagination available without claiming unread pages have no matc
           deploymentId="test"
           hostClient={client}
           onOpenTask={() => undefined}
-          onSignIn={async () => undefined}
           query="older task"
         />,
       ),
@@ -142,13 +135,7 @@ it("moves a task only when a person asks it for something", async () => {
   const root = createRoot(node);
   const render = () =>
     root.render(
-      <TasksPane
-        deploymentId="test"
-        hostClient={client}
-        query=""
-        onOpenTask={() => {}}
-        onSignIn={async () => {}}
-      />,
+      <TasksPane deploymentId="test" hostClient={client} query="" onOpenTask={() => {}} />,
     );
   try {
     await act(async () => render());

@@ -175,9 +175,6 @@ vi.mock("../ui/primitives.js", () => ({
     <button onClick={props.onPress}>{props.label}</button>
   ),
 }));
-vi.mock("../client/mobile-client.js", () => ({
-  operationDetail: (_error: unknown, fallback: string) => fallback,
-}));
 vi.mock("@react-navigation/native", () => ({
   useFocusEffect: (effect: () => void | (() => void)) => useEffect(effect, [effect]),
   useNavigation: () => ({
@@ -189,6 +186,7 @@ vi.mock("@react-navigation/native", () => ({
 }));
 vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileClient: () => ({ signIn: vi.fn() }),
+  useSelectedHostClient: () => null,
   useMobileState: () => ({ selection: { deploymentId: "test", hostClient: harness.client } }),
 }));
 import { setTaskDone, TaskRowState, TaskRowView } from "./task-row.js";

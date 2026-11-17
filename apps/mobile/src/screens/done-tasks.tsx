@@ -13,6 +13,7 @@ import { StyleSheet, View } from "react-native";
 import type { RootParamList } from "../navigation.js";
 import { TasksPane } from "../threads/tasks-pane.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
+import { Gated } from "../ui/connection-gate.js";
 import { Screen } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 
@@ -22,28 +23,28 @@ export type DoneTasksScreenProps = StaticScreenProps<{ readonly deploymentId: st
 export function DoneTasksScreen(props: DoneTasksScreenProps): ReactNode {
   const { deploymentId } = props.route.params;
   const navigation = useNavigation<NativeStackNavigationProp<RootParamList>>();
-  const client = useMobileClient();
   const hostClient = useAttachedHost(deploymentId);
-  const signIn = useCallback(() => client.signIn(deploymentId), [client, deploymentId]);
   const openTask = useCallback(
     (threadId: string): void => navigation.navigate("Thread", { deploymentId, threadId }),
     [deploymentId, navigation],
   );
-  if (hostClient === null) return <DeploymentGate deploymentId={deploymentId} />;
   return (
-    <Screen edgeToEdge>
-      <SeeQuietMoves hostClient={hostClient} />
-      <View style={styles.list}>
-        <TasksPane
-          deploymentId={deploymentId}
-          done
-          hostClient={hostClient}
-          onOpenTask={openTask}
-          onSignIn={signIn}
-          query=""
-        />
-      </View>
-    </Screen>
+    <Gated gate={hostClient === null ? <DeploymentGate deploymentId={deploymentId} /> : null}>
+      {hostClient === null ? null : (
+        <Screen edgeToEdge>
+          <SeeQuietMoves hostClient={hostClient} />
+          <View style={styles.list}>
+            <TasksPane
+              deploymentId={deploymentId}
+              done
+              hostClient={hostClient}
+              onOpenTask={openTask}
+              query=""
+            />
+          </View>
+        </Screen>
+      )}
+    </Gated>
   );
 }
 

@@ -1,24 +1,12 @@
-import {
-  connectionNotice,
-  type ClientConnection,
-  type ClientConnectionState,
-} from "@opensteer/client/connections";
+import type { ClientConnection } from "@opensteer/client/connections";
 import {
   clientIssueActions,
   presentClientIssue,
   type ClientIssue,
 } from "@opensteer/client/feedback";
 import { useClientConnection } from "@opensteer/client/react";
-import { useIsFocused } from "@react-navigation/native";
 import * as Linking from "expo-linking";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useSyncExternalStore,
-  type ReactNode,
-} from "react";
+import { useCallback, useMemo, useRef, useSyncExternalStore, type ReactNode } from "react";
 import type { MobileClient } from "../client/mobile-client.js";
 import { navigationRef } from "../navigation-ref.js";
 import { routeSide, type SideId } from "../side-memory.js";
@@ -28,6 +16,14 @@ import { useMobileTeams, useTeamsSnapshot } from "../team/team-context.js";
 import { deploymentMark, type DeploymentMark } from "../threads/deployment-identity.js";
 import { ConnectionPillView, type ConnectionPillNotice } from "./connection-pill.js";
 import { useMobileClient, useMobileState } from "./mobile-client-context.js";
+import {
+  connectionIssueKey,
+  downloadPage,
+  gated,
+  retryConnection,
+  shellIssue,
+  subscribeGates,
+} from "./connection-live.js";
 
 /**
  * The shell's one voice for each connection the person is using: the pill,
@@ -44,9 +40,6 @@ export interface ShellSession {
   readonly connection: ClientConnection;
   readonly signIn: () => Promise<void>;
 }
-
-/** Where a person gets a newer Opensteer. */
-export const downloadPage = "https://opensteer.com/download";
 
 /** The open computer's session, then each team this phone holds a session for. */
 export function useShellSessions(): readonly ShellSession[] {
@@ -94,35 +87,6 @@ async function signInTeam(teams: MobileTeams, teamId: string): Promise<void> {
   await teams.select(teamId);
 }
 
-/**
- * Connections a person asked to try now, until that attempt ends: the pill
- * says "Reconnecting…" at once instead of the reason the last attempt failed.
- */
-const asked = new WeakSet<ClientConnection>();
-
-/** A person's own retry: it skips the quiet hold, and the shell says it is trying. */
-export function retryConnection(connection: ClientConnection): void {
-  asked.add(connection);
-  connection.retry();
-}
-
-/**
- * What the shell says about a connection right now, or null while it says
- * nothing (connected, or inside the quiet hold).
- */
-export function shellIssue(state: ClientConnectionState, connection: ClientConnection) {
-  const issue = connectionNotice(state);
-  if (!state.trying) asked.delete(connection);
-  if (
-    issue?.code === "connection" &&
-    issue.reason === "unreachable" &&
-    state.trying &&
-    asked.has(connection)
-  )
-    return { ...issue, reason: "reconnecting" } satisfies ClientIssue;
-  return issue;
-}
-
 /** What the person can do from the pill or the sheet about one issue. */
 export function shellAction(
   issue: ClientIssue,
@@ -137,10 +101,6 @@ export function shellAction(
   return null;
 }
 
-export function connectionIssueKey(issue: ClientIssue): string {
-  return `${issue.code}:${issue.reason ?? ""}`;
-}
-
 const amberCodes = new Set<ClientIssue["code"]>([
   "sign-in",
   "update-app",
@@ -148,36 +108,6 @@ const amberCodes = new Set<ClientIssue["code"]>([
   "web-outdated",
   "access-lost",
 ]);
-
-/** Gates explaining a focused route; while any is up, the pill steps aside. */
-const gates = new Set<object>();
-const gateListeners = new Set<() => void>();
-const subscribeGates = (listener: () => void) => {
-  gateListeners.add(listener);
-  return () => gateListeners.delete(listener);
-};
-const gated = () => gates.size > 0;
-function changedGates(): void {
-  for (const listener of gateListeners) listener();
-}
-
-/**
- * Said by a screen while it shows a gate, or a sheet that already explains the
- * connection: the pill would only repeat it.
- */
-export function useShellGate(shown: boolean): void {
-  const focused = useIsFocused();
-  useEffect(() => {
-    if (!shown || !focused) return;
-    const token = {};
-    gates.add(token);
-    changedGates();
-    return () => {
-      gates.delete(token);
-      changedGates();
-    };
-  }, [focused, shown]);
-}
 
 /** The side the person is looking at, from the focused route: the open computer or a team. */
 function useFocusedSide(): SideId {

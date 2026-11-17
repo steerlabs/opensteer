@@ -1,7 +1,8 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
+import { presentClientIssue } from "@opensteer/client/feedback";
 import Animated from "react-native-reanimated";
 import { move } from "../ui/motion.js";
 import { SavedTasks } from "./saved-tasks.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
 import {
   doneTaskList,
   listedRowThreadId,
@@ -324,7 +325,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   );
   useDoneList(hostClient);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
-  const [earlierFailure, setEarlierFailure] = useState<string | null>(null);
+  const [earlierFailed, setEarlierFailed] = useState(false);
   const heading = useRef<TextInstance>(null);
   const retained = useRetainedScroll(props.scroll);
   const mobileTeams = useMobileTeams();
@@ -376,12 +377,10 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   const loadEarlier = useCallback(() => {
     if (hostClient === null || loadingEarlier) return;
     setLoadingEarlier(true);
-    setEarlierFailure(null);
+    setEarlierFailed(false);
     void hostClient
       .loadEarlierTasks()
-      .catch((error: unknown) =>
-        setEarlierFailure(presentActionFailure(error, "Earlier tasks could not be loaded.")),
-      )
+      .catch(() => setEarlierFailed(true))
       .finally(() => setLoadingEarlier(false));
   }, [hostClient, loadingEarlier]);
   const needsPage = useSyncExternalStore(
@@ -496,7 +495,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           ) : null}
           {model === null || list === null || deploymentId === null ? null : !model.loaded ? (
             <View style={styles.loading}>
-              <ActivityIndicator color={color.muted} />
+              <PlaceholderRows />
             </View>
           ) : (
             <>
@@ -544,11 +543,11 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
                   )}
                 </Pressable>
               )}
-              {earlierFailure === null ? null : (
-                <AppText role="caption" style={styles.empty} tone="danger">
-                  {earlierFailure}
+              {earlierFailed ? (
+                <AppText role="caption" style={styles.empty} tone="muted">
+                  {presentClientIssue({ code: "read-failed", resource: "earlier tasks" }).title}
                 </AppText>
-              )}
+              ) : null}
               {doneCount === 0 && moved.length === 0 ? null : (
                 <DoneLine
                   count={doneCount}
@@ -1100,7 +1099,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     width: touchTarget,
   },
-  loading: { alignItems: "flex-start", paddingHorizontal: space[12], paddingVertical: space[12] },
+  loading: { paddingHorizontal: space[12], paddingVertical: space[12] },
   more: {
     cursor: "pointer",
     alignItems: "flex-start",

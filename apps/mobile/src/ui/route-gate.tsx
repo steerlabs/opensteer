@@ -17,7 +17,7 @@ import {
   retryConnection,
   shellIssue,
   useShellGate,
-} from "./connection-shell.js";
+} from "./connection-live.js";
 
 /** Before a connection exists: connecting, quietly, to a computer not yet named. */
 const unstarted: ClientConnectionState = {

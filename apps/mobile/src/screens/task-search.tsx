@@ -6,7 +6,7 @@ import type { SearchBarCommands, SearchBarTextEventData } from "react-native-scr
 import type { RootParamList } from "../navigation.js";
 import { color } from "../theme.js";
 import { TasksPane } from "../threads/tasks-pane.js";
-import { useMobileClient } from "../ui/mobile-client-context.js";
+import { Gated } from "../ui/connection-gate.js";
 import { Screen } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 
@@ -25,12 +25,10 @@ export type TaskSearchScreenProps = StaticScreenProps<{ readonly deploymentId: s
 export function TaskSearchScreen(props: TaskSearchScreenProps): ReactNode {
   const { deploymentId } = props.route.params;
   const navigation = useNavigation<NativeStackNavigationProp<RootParamList>>();
-  const client = useMobileClient();
   const hostClient = useAttachedHost(deploymentId);
   const [query, setQuery] = useState("");
   const searchBar = useRef<SearchBarCommands>(null);
 
-  const signIn = useCallback(() => client.signIn(deploymentId), [client, deploymentId]);
   const openTask = useCallback(
     (threadId: string): void => navigation.navigate("Thread", { deploymentId, threadId }),
     [deploymentId, navigation],
@@ -76,20 +74,21 @@ export function TaskSearchScreen(props: TaskSearchScreenProps): ReactNode {
     [navigation],
   );
 
-  if (hostClient === null) return <DeploymentGate deploymentId={deploymentId} />;
-
   return (
-    <Screen edgeToEdge>
-      <View style={styles.list}>
-        <TasksPane
-          deploymentId={deploymentId}
-          hostClient={hostClient}
-          onOpenTask={openTask}
-          onSignIn={signIn}
-          query={query}
-        />
-      </View>
-    </Screen>
+    <Gated gate={hostClient === null ? <DeploymentGate deploymentId={deploymentId} /> : null}>
+      {hostClient === null ? null : (
+        <Screen edgeToEdge>
+          <View style={styles.list}>
+            <TasksPane
+              deploymentId={deploymentId}
+              hostClient={hostClient}
+              onOpenTask={openTask}
+              query={query}
+            />
+          </View>
+        </Screen>
+      )}
+    </Gated>
   );
 }
 

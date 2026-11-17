@@ -16,13 +16,8 @@ import {
 } from "react";
 import { DeploymentMarkView } from "../threads/deployment-mark.js";
 import { ConnectionDetails, type ConnectionDetailsSession } from "../ui/connection-details.js";
-import {
-  shellAction,
-  shellIssue,
-  useShellGate,
-  useShellSessions,
-  type ShellSession,
-} from "../ui/connection-shell.js";
+import { shellIssue, useShellGate } from "../ui/connection-live.js";
+import { shellAction, useShellSessions, type ShellSession } from "../ui/connection-shell.js";
 
 export type ConnectionSheetScreenProps = StaticScreenProps<{ readonly session: string }>;
 
