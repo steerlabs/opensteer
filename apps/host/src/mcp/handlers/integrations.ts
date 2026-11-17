@@ -5,7 +5,6 @@ import {
 } from "@opensteer/agent-tools/integrations";
 
 import {
-  computerAppIdentityKey,
   integrationAccountLabel,
   integrationDefinitionSummary,
   integrationSearchTerms,
@@ -602,27 +601,11 @@ export class IntegrationToolHandlers {
                     computerId: machine.runnerId,
                     name: machine.name,
                     ...access.machine(machine),
-                    apps: [
-                      ...machine.apps.map((app) => ({
-                        name: app.name,
-                        bundleId: app.bundleId,
-                        ...access.app(machine, { displayName: app.name, bundleId: app.bundleId }),
-                      })),
-                      ...access.onMacRequests
-                        .filter(
-                          (request) =>
-                            request.runnerId === machine.runnerId &&
-                            !machine.apps.some(
-                              (app) =>
-                                app.bundleId.toLowerCase() === computerAppIdentityKey(request.app),
-                            ),
-                        )
-                        .map(({ app }) => ({
-                          name: app.displayName,
-                          bundleId: app.bundleId,
-                          ...access.app(machine, app),
-                        })),
-                    ],
+                    apps: access.appEntries(machine).map(({ name, bundleId, access, blocked }) => ({
+                      name,
+                      bundleId,
+                      ...(blocked ? { blocked } : { access }),
+                    })),
                   })),
                 }
               : definition.id === androidPhoneDefinitionId

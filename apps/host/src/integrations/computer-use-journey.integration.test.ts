@@ -2403,7 +2403,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       text(await a.call("computer_use", { code: "await w.observe({screenshot:true})" })),
     ).toContain("Observation obs-3");
 
-    // 8. A second task finds the app held, by name, in search and in the call.
+    // 8. A second task finds the app held without seeing the holding task's title.
     const runB = await world.startRun("Weekly review");
     const b = await world.gateway(runB);
     const held = json(await b.call("integration_search", { computerId: world.macId }));
@@ -2411,12 +2411,12 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       {
         blocked: expect.objectContaining({
           code: "in_use",
-          message: expect.stringContaining("Shopping list"),
+          message: `Notes on ${mac} is in use by another task.`,
         }),
       },
     );
     expect(await b.call("computer_use", { code: 'await (await app("Notes")).window()' })).toEqual(
-      refusal(`in_use: Notes on ${mac} is in use by another task (Shopping list).`),
+      refusal(`in_use: Notes on ${mac} is in use by another task.`),
     );
 
     // 9. Stop on the Mac ends every session there; the next call says so.
@@ -3460,9 +3460,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     );
     expect(request).toMatchObject({ requestId: null, status: "fulfilled" });
     const refused = await phoneCode(gatewayB, "await p.observe()");
-    expect(refused).toEqual(
-      refusal(`in_use: ${phone} is in use by another task (First display holder).`),
-    );
+    expect(refused).toEqual(refusal(`in_use: ${phone} is in use by another task.`));
     expect(fakePhone.received("observe")).toBe(1);
     resume();
     expect((await pending).isError).toBeUndefined();
@@ -3677,12 +3675,12 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect((await phoneRow(b)).phones[0]).toMatchObject({
       blocked: expect.objectContaining({
         code: "in_use",
-        message: expect.stringContaining("Text the driver"),
+        message: `${phone} is in use by another task.`,
       }),
     });
     const framesBefore = fakePhone.frames.length;
     expect(await phoneCode(b, "await p.observe()")).toEqual(
-      refusal(`in_use: ${phone} is in use by another task (Text the driver).`),
+      refusal(`in_use: ${phone} is in use by another task.`),
     );
     expect(fakePhone.frames).toHaveLength(framesBefore);
 

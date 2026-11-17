@@ -1,5 +1,5 @@
 import type { CallableIntegrationTool, IntegrationRequester } from "@opensteer/database";
-import type { RunnerId } from "@opensteer/core";
+import type { RunId, RunnerId } from "@opensteer/core";
 import { computerAppIdentityKey } from "@opensteer/integration-core";
 import { androidPhoneDefinitionId } from "@opensteer/protocol";
 import type { RunCapabilityClaims } from "../agents/run-capability.js";
@@ -23,7 +23,7 @@ export async function gatherComputerAccess(
     | "computerToolEnabled"
     | "computerUseVersion"
   >,
-  input: IntegrationRequester,
+  input: IntegrationRequester & { readonly runId?: RunId },
   run?: RunCapabilityClaims<string>,
   callableTools?: readonly CallableIntegrationTool[],
 ) {
@@ -51,7 +51,7 @@ export async function gatherComputerAccess(
   );
   const held = (runnerId: RunnerId, key: string) => {
     const holder = holders.get(runnerId)?.get(key);
-    return holder && holder.runId !== run?.runId ? holder : null;
+    return !!holder && holder.runId !== (run?.runId ?? input.runId);
   };
   const versions = new Map(
     inventory.machines.map(
@@ -135,7 +135,6 @@ export async function gatherComputerAccess(
           ...app(machine, request.app),
         })),
     ],
-    onMacRequests,
     app,
     phone,
     machine: (machine: (typeof inventory.machines)[number]) =>

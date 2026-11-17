@@ -14,7 +14,7 @@ const phone: PhoneDiscoveryFacts = {
   canAct: false,
   pendingPhoneAccess: false,
   pendingPersonalGrant: false,
-  heldByAnotherRun: null,
+  heldByAnotherRun: false,
 };
 describe("computer access", () => {
   it("ignores this Run's holding and reports a different Run's holding", async () => {
@@ -60,7 +60,7 @@ describe("computer access", () => {
     const other = await gatherComputerAccess(platform, input, run);
     expect(other.phone(other.phones[0]!).blocked).toMatchObject({
       code: "in_use",
-      message: expect.stringContaining("Calendar"),
+      message: "Pixel is in use by another task.",
     });
   });
   it("lists pending Mac apps without a bindable connection id and keeps version facts explicit", async () => {
@@ -114,11 +114,8 @@ describe("computer access", () => {
   });
   it.each([
     [{ pendingPhoneAccess: true, phone: { ...phone.phone, state: "offline" } }, "computer_offline"],
-    [
-      { phone: { ...phone.phone, state: "offline" }, heldByAnotherRun: { threadTitle: "Other" } },
-      "computer_offline",
-    ],
-    [{ callable: true, heldByAnotherRun: { threadTitle: "Other" } }, "in_use"],
+    [{ phone: { ...phone.phone, state: "offline" }, heldByAnotherRun: true }, "computer_offline"],
+    [{ callable: true, heldByAnotherRun: true }, "in_use"],
     [{ phone: { ...phone.phone, computerToolEnabled: false } }, "update_required"],
   ])("uses the most specific phone blocker", (overrides, code) => {
     expect(phoneDiscovery({ ...phone, ...overrides }).blocked?.code).toBe(code);
@@ -140,7 +137,7 @@ describe("computer access", () => {
       callable: true,
       pendingOnMac: true,
       pendingPersonalGrant: false,
-      heldByAnotherRun: { threadTitle: "Other" },
+      heldByAnotherRun: true,
     };
     expect(computerAppDiscovery(facts).blocked?.code).toBe("blocked_by_owner");
     expect(computerAppDiscovery({ ...facts, approval: null }).blocked?.code).toBe(
@@ -153,7 +150,7 @@ describe("computer access", () => {
       ...facts,
       approval: null,
       machine: { ...facts.machine, state: "ready" },
-      heldByAnotherRun: null,
+      heldByAnotherRun: false,
     };
     expect(computerAppDiscovery(ready)).toEqual({ access: "read" });
     expect(computerAppDiscovery({ ...ready, callable: false }).blocked?.code).toBe(

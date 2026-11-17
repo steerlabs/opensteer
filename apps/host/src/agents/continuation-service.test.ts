@@ -357,6 +357,14 @@ describe("ContinuationService", () => {
   });
 });
 describe("continuationMessage", () => {
+  it("derives a held continuation as the originating Run, without exposing other task titles", async () => {
+    const request = computerAppAccessRequest("fulfilled");
+    const own = await continuationMessage(request, withMacs(true, request.originatingRunId!));
+    expect(own).toContain("Notes on Alex's Mac is ready.");
+    const other = await continuationMessage(request, withMacs(true, createId("run")));
+    expect(other).toContain("in use by another task");
+    expect(other).not.toContain("Private holder title");
+  });
   it("tells the agent each answer to its question, chosen or typed", async () => {
     const question = PendingRequestSchema.parse({
       callId: crypto.randomUUID(),
@@ -844,7 +852,10 @@ function computerAppAccessRequest(status: "declined" | "fulfilled") {
     status,
   });
 }
-function withMacs(named: boolean): IntegrationInventorySource {
+function withMacs(
+  named: boolean,
+  holdingRunId?: Request["originatingRunId"],
+): IntegrationInventorySource {
   return {
     ...inventory(),
     async computerAccess(input, run) {
@@ -855,7 +866,17 @@ function withMacs(named: boolean): IntegrationInventorySource {
               machines: await this.computerUseMachines(input.ownerUserId),
               phones: await this.computerUsePhones(input.ownerUserId),
             }),
-            computerAppHolders: () => new Map(),
+            computerAppHolders: () =>
+              new Map(
+                holdingRunId
+                  ? [
+                      [
+                        "com.apple.notes",
+                        { runId: holdingRunId, threadTitle: "Private holder title" },
+                      ],
+                    ]
+                  : [],
+              ),
           },
           store: {
             listComputerAppSetupRequests: async () => [],

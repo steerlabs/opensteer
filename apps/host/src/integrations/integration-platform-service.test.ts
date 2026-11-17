@@ -4319,6 +4319,38 @@ describe("IntegrationPlatformService computer use gateway", () => {
     }
   });
 
+  it("preserves the owner blocker when a phone's bound connection becomes unusable", async () => {
+    const f = guiFixture({ phone: true, operation: "observe" });
+    const who = runCaller(context);
+    const inventory = await f.service.computerAppApprovals.computerUseInventory(
+      who.run!.requestedBy,
+    );
+    vi.spyOn(f.service, "listCallableTools").mockResolvedValue([]);
+    vi.spyOn(f.service.computerAppApprovals, "computerUseInventory").mockResolvedValue({
+      ...inventory,
+      phones: inventory.phones.map((phone) => ({
+        ...phone,
+        connectionId: f.callable.grant.connectionId!,
+        connection: null,
+        blockedByOwner: true,
+      })),
+    });
+    try {
+      const access = await f.service.computerAccess(
+        { ownerUserId: who.run!.requestedBy, threadId: who.threadId },
+        who.run!,
+      );
+      const state = access.phone(access.phones[0]!);
+      await expect(operate(f.service, f.callable, {}, who)).rejects.toMatchObject({
+        reason: state.blocked!.code,
+        message: state.blocked!.message,
+        next: state.blocked!.next,
+      });
+    } finally {
+      await f.service.close();
+    }
+  });
+
   it.each([false, true])(
     "uses the listing blocker when a granted target goes offline (phone=%s)",
     async (phone) => {

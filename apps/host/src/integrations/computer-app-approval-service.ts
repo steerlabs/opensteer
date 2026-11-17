@@ -779,6 +779,7 @@ export class ComputerAppApprovalService {
         );
         return {
           ...phone,
+          ...(connection ? { connectionId: connection.id } : {}),
           blockedByOwner: !!connection?.computer?.blockedAt,
           connection:
             connection?.computer && !connection.computer.blockedAt
