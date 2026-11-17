@@ -1,9 +1,9 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { useNavigation } from "@react-navigation/native";
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
 import { SymbolView, type SFSymbol } from "expo-symbols";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { resetToDeployment, resetToDeployments } from "../navigation-ref.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
@@ -96,7 +96,9 @@ export function AddDeploymentScreen(): ReactNode {
       else resetToDeployment(deploymentId);
     } catch (error: unknown) {
       if (!flowIsCurrent(generation, expectedSelection)) return;
-      setFailure(operationDetail(error, "Your Opensteer Account list could not be refreshed."));
+      setFailure(
+        presentActionFailure(error, "Your Opensteer Account list could not be refreshed."),
+      );
     } finally {
       if (mounted.current && accountFlowGeneration.current === generation) setRefreshing(false);
     }
@@ -131,7 +133,7 @@ export function AddDeploymentScreen(): ReactNode {
         ) {
           return;
         }
-        setFailure(operationDetail(error, "Your Opensteer Account could not be reached."));
+        setFailure(presentActionFailure(error, "Your Opensteer Account could not be reached."));
       })
       .finally(() => {
         if (mounted.current && accountFlowGeneration.current === generation) {

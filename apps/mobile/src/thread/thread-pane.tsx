@@ -1,3 +1,8 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
+import { useConnectionNotice } from "@opensteer/client/react";
+import { hostMessageOutbox, projectMessageOutbox } from "@opensteer/client/host";
+import { useOptionalMessageOutbox } from "@opensteer/client/react";
+import { presentMessageDelivery, presentDeliveryActions } from "@opensteer/client/feedback";
 import { TranscriptImageContext } from "@opensteer/client/react";
 import { readTail, type TailReading } from "@opensteer/shared/tailFollow";
 import { useThreadVisits } from "@opensteer/client/react";
@@ -76,7 +81,6 @@ import { canRespondToRequests, showsHostLive } from "@opensteer/client/host";
 import type { ThreadDraftQuote } from "../client/thread-drafts.js";
 import type { ArtifactContentPart, ContentPart } from "@opensteer/core";
 import { useOpenPlace, useShowTab } from "../tabs/viewer-open.js";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { useAppForeground } from "../ui/foreground.js";
@@ -135,9 +139,6 @@ import {
   transcriptSpacing,
 } from "./transcript.js";
 import { bubble } from "./bubble.js";
-import { OwedMessageStatus } from "./owed-message.js";
-import { isOwedMessage, owedMessageEntry, reconcileOwed } from "./owed-message-model.js";
-import { usePendingDeliveryPhase } from "./send-pending-message.js";
 import type { ThreadMutationOwner } from "./thread-mutation-gate.js";
 import { useThreadMutation } from "./thread-mutation-registry.js";
 import { UsageNotice } from "./usage-notice.js";
@@ -321,13 +322,17 @@ export function ThreadPane(props: ThreadPaneProps): ReactNode {
   );
   // Keep the shared hook's load/retry lifecycle, using its store equality support.
   const state = useHostSnapshot(props.hostClient, isEqual);
+  const loadError = useConnectionNotice(props.hostClient.connection);
+  const reload = useCallback(async () => {
+    props.hostClient.connection.retry();
+  }, [props.hostClient]);
   const selection = useMemo(() => select(state.snapshot), [select, state.snapshot]);
   return (
     <ThreadPaneForUser
       {...props}
       key={`${props.deploymentId}:${state.snapshot.user?.id ?? "signed-out"}:${props.threadId}`}
-      loadError={state.loadError}
-      reload={state.reload}
+      loadError={loadError}
+      reload={reload}
       snapshot={selection}
     />
   );
@@ -405,11 +410,7 @@ function ThreadPaneForUser(
   const [returning, setReturning] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const pendingMutationOwner = (): ThreadMutationOwner | null =>
-    viewerUserId !== null &&
-    client.drafts.readPending(props.deploymentId, viewerUserId, props.threadId) !== null
-      ? "message"
-      : null;
+  const pendingMutationOwner = (): ThreadMutationOwner | null => null;
   // One gate per Thread, shared with the settings sheet: it is a sibling route
   // in the native stack, so no context of this pane's can reach it, and an
   // execution change still in flight has to keep Send blocked all the same.
@@ -519,40 +520,21 @@ function ThreadPaneForUser(
   // the next turn, so it is drawn there at once and the Host's copy takes its
   // place; sent behind a turn at work it waits, and the bar holds it as the
   // tray will. Where it stands is decided once, so it never jumps between them.
-  useSyncExternalStore(client.drafts.subscribe, client.drafts.getVersion);
-  const owedCommand =
-    viewerUserId === null
-      ? null
-      : client.drafts.readPending(props.deploymentId, viewerUserId, threadId);
-  const owedPlace =
-    owedCommand === null || viewerUserId === null
-      ? null
-      : reconcileOwed(entries, owedCommand, viewerUserId, conversational || activity === "idle");
-  const owed = owedPlace?.drawn === true ? owedCommand : null;
-  const owedEntry = useMemo(
-    () => (owed === null || viewerUserId === null ? null : owedMessageEntry(owed, viewerUserId)),
-    [owed, viewerUserId],
-  );
-  const owedPhase = usePendingDeliveryPhase(
-    client.drafts,
-    props.deploymentId,
-    viewerUserId,
-    threadId,
-  );
-  const retryOwed = useRef<(() => void) | null>(null);
-  const retryPending = useCallback(() => retryOwed.current?.(), []);
-  // In work, a message waiting behind the current turn stands in the tray
-  // above the composer until a Run takes it. A conversation has no tray: what
-  // the reader just sent is drawn as sent.
+  const outbox = hostMessageOutbox(props.hostClient);
+  const outboxState = useOptionalMessageOutbox(outbox);
   const conversation = useMemo(
     () =>
       withoutOwnAssignment(
-        visibleTranscript(owedEntry === null ? entries : [...entries, owedEntry], inputQueue, {
-          conversation: conversational,
-        }),
+        visibleTranscript(
+          outboxState && viewerUserId
+            ? projectMessageOutbox(outboxState, threadId, entries, viewerUserId)
+            : entries,
+          inputQueue,
+          { conversation: conversational },
+        ),
         threadId,
       ),
-    [conversational, entries, inputQueue, owedEntry, threadId],
+    [conversational, entries, inputQueue, outboxState, threadId, viewerUserId],
   );
   const inputQueuePaused = thread?.inputQueuePaused ?? false;
   // What this client holds of the account is current only while it is live.
@@ -640,7 +622,7 @@ function ThreadPaneForUser(
     setHistorical(true);
     follow(false);
     void hostClient.loadTranscriptAround(threadId, anchorMessageId).catch((error: unknown) => {
-      setFailure(operationDetail(error, "That update could not be opened."));
+      setFailure(presentActionFailure(error, "That update could not be opened."));
     });
   }, [anchorMessageId, follow, hostClient, threadId]);
 
@@ -662,7 +644,7 @@ function ThreadPaneForUser(
         scrollToLatest(false);
       })
       .catch((error: unknown) => {
-        setFailure(operationDetail(error, "The latest activity could not be loaded."));
+        setFailure(presentActionFailure(error, "The latest activity could not be loaded."));
       })
       .finally(() => setReturning(false));
   }, [follow, hostClient, props.onAnchorReleased, returning, scrollToLatest, threadId]);
@@ -710,7 +692,7 @@ function ThreadPaneForUser(
     void hostClient
       .loadEarlierTranscript(threadId)
       .catch((error: unknown) => {
-        setFailure(operationDetail(error, "Earlier activity could not be loaded."));
+        setFailure(presentActionFailure(error, "Earlier activity could not be loaded."));
       })
       .finally(() => {
         paging.current = false;
@@ -981,20 +963,49 @@ function ThreadPaneForUser(
           {item.outcome === null ? null : (
             <TaskOutcomeLine onOpenThread={openSource} outcome={item.outcome} />
           )}
-          {item.group.kind === "message" && isOwedMessage(item.group.entry.id) && owed !== null ? (
-            <OwedMessageStatus
-              idempotencyKey={owed.idempotencyKey}
-              onRetry={canRespond ? retryPending : null}
-              state={!canRespond ? "offline" : (owedPhase ?? "idle")}
-            />
+          {item.group.kind === "message" && item.group.entry.localDelivery ? (
+            <View>
+              <AppText role="caption" tone="muted">
+                {presentMessageDelivery(
+                  item.group.entry.localDelivery.phase,
+                  item.group.entry.localDelivery.issue,
+                )}
+              </AppText>
+              {item.group.entry.localDelivery.phase === "rejected" ? (
+                <View style={{ flexDirection: "row", gap: 12 }}>
+                  <Pressable
+                    onPress={() => void outbox?.restoreDraft(item.group.key).catch(() => undefined)}
+                  >
+                    <AppText role="caption" tone="ember">
+                      {presentDeliveryActions().edit}
+                    </AppText>
+                  </Pressable>
+                  {item.group.entry.localDelivery.issue?.code !== "unconfirmed" ? (
+                    <Pressable
+                      onPress={() => void outbox?.discard(item.group.key).catch(() => undefined)}
+                    >
+                      <AppText role="caption" tone="ember">
+                        {presentDeliveryActions().delete}
+                      </AppText>
+                    </Pressable>
+                  ) : null}
+                </View>
+              ) : !item.group.entry.localDelivery.attempted ? (
+                <Pressable
+                  onPress={() => void outbox?.discard(item.group.key).catch(() => undefined)}
+                >
+                  <AppText role="caption" tone="ember">
+                    {presentDeliveryActions().discard}
+                  </AppText>
+                </Pressable>
+              ) : null}
+            </View>
           ) : null}
         </>
       ),
     [
       canRespond,
-      owed,
-      owedPhase,
-      retryPending,
+      outbox,
       anchorMessageId,
       conversational,
       hostClient,
@@ -1534,10 +1545,6 @@ function ThreadPaneForUser(
                   mutationGate={mutationGate}
                   // Once the Host's copy has taken its place, a send that then
                   // fails is the bar's to offer again, as for any held message.
-                  owedInline={
-                    owedPlace?.inline === true && (owed !== null || owedPhase === "sending")
-                  }
-                  retryRef={retryOwed}
                   conversationActions={actionsBesidePage}
                   page={companion?.page ?? null}
                   onChangeModel={openSettings}

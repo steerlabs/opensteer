@@ -809,6 +809,7 @@ export const DesktopAccessSchema = z.enum(["owner", "native", "connect", "privat
 export type DesktopAccess = z.infer<typeof DesktopAccessSchema>;
 
 export const DesktopDeploymentSummarySchema = z.strictObject({
+  authorityKey: z.string().min(1).max(512).optional(),
   access: DesktopAccessSchema.nullable(),
   activeOrigin: DesktopAccessOriginSchema,
   canonicalOrigin: CanonicalOriginSchema,
@@ -1148,6 +1149,25 @@ export const DesktopHostTransportFailureSchema = z.strictObject({
       "cancelled",
       "unreachable",
     ]),
+    failure: z
+      .object({
+        classification: z.enum(["blocked", "transient"]),
+        kind: z.enum([
+          "cancelled",
+          "transport",
+          "session",
+          "rejection",
+          "service",
+          "protocol",
+          "local",
+          "unexpected",
+        ]),
+        provenance: z.enum(["transport", "host", "proxy", "protocol", "local"]),
+        code: z.string().max(120),
+        reason: z.string().max(255),
+        retryable: z.boolean(),
+      })
+      .optional(),
   }),
 });
 export type DesktopHostTransportFailure = z.infer<typeof DesktopHostTransportFailureSchema>;

@@ -1,10 +1,10 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { canRespondToRequests, type HostClient, type HostSnapshot } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import type { BrowserHistoryEntry } from "@opensteer/protocol";
 import type { StaticScreenProps } from "@react-navigation/native";
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Alert, FlatList, Image, StyleSheet, View } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, space } from "../theme.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
@@ -120,7 +120,7 @@ function HistoryList({
     setFailure(null);
     void operation()
       .catch((error: unknown) =>
-        setFailure(operationDetail(error, "Browsing history could not be changed.")),
+        setFailure(presentActionFailure(error, "Browsing history could not be changed.")),
       )
       .finally(() => setBusy(false));
   };

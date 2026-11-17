@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { cancelDeviceSetup, withDeviceSwitch } from "@opensteer/client/computers";
 import {
   computerConnectionsOn,
@@ -28,7 +29,6 @@ import { StackActions, useNavigation, type StaticScreenProps } from "@react-navi
 import { tabRoute } from "../browser/surface-route.js";
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Linking, Platform } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
 import { useComputerUseData } from "../computers/use-computer-use-data.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
@@ -127,7 +127,7 @@ function DevicePage(props: {
     setFailure(null);
     void operation()
       .then(() => (refresh ? props.hostClient.refresh() : undefined))
-      .catch((error: unknown) => setFailure(operationDetail(error, fallback)))
+      .catch((error: unknown) => setFailure(presentActionFailure(error, fallback)))
       .finally(() => {
         busy.current = false;
       });
@@ -559,7 +559,9 @@ function DevicePage(props: {
                             .signOut(props.deploymentId)
                             .then(resetToDeployments)
                             .catch((error: unknown) =>
-                              setFailure(operationDetail(error, "Signing out did not finish.")),
+                              setFailure(
+                                presentActionFailure(error, "Signing out did not finish."),
+                              ),
                             );
                           return;
                         }

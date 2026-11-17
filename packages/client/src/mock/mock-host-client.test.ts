@@ -709,7 +709,13 @@ describe("MockHostClient", () => {
           }),
         }),
       ]);
-      await vi.runAllTimersAsync();
+      let settled = false;
+      void sending.then(() => {
+        settled = true;
+      });
+      await vi.waitFor(() => expect(settled, "the mock send never settled").toBe(true), {
+        timeout: 2000,
+      });
       await sending;
       expect(unwrap(await client.rpc["thread.live.get"]({ threadId: thread.id })).runs).toEqual([]);
     } finally {

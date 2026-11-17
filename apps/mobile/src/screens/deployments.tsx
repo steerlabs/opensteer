@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { hostsDeployment } from "@opensteer/client/computers";
 import type { AccountDeploymentDirectoryUnavailable } from "@opensteer/client/connections";
@@ -21,7 +22,6 @@ import {
   StyleSheet,
   View,
 } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import {
@@ -421,7 +421,9 @@ export function DeploymentsScreen(): ReactNode {
     void client
       .refreshDirectory()
       .catch((error: unknown) => {
-        setFailure(operationDetail(error, "Your Opensteer Account list could not be refreshed."));
+        setFailure(
+          presentActionFailure(error, "Your Opensteer Account list could not be refreshed."),
+        );
       })
       .finally(() => setRefreshing(false));
   }, [client]);
@@ -472,7 +474,7 @@ export function DeploymentsScreen(): ReactNode {
         .openDeployment(row.deploymentId)
         .then(openSelected)
         .catch((error: unknown) => {
-          const detail = operationDetail(error, "That deployment could not be opened.");
+          const detail = presentActionFailure(error, "That deployment could not be opened.");
           // Selection resets the navigation tree before Host OAuth finishes.
           // An alert survives that reset, so a cancelled browser or rejected
           // callback does not disappear with this screen's local state.
@@ -510,7 +512,7 @@ export function DeploymentsScreen(): ReactNode {
       setFailure(null);
       void runDeploymentRecovery(client, navigation, row).catch((error: unknown) => {
         if (!mounted.current || !navigation.isFocused()) return;
-        setFailure(operationDetail(error, "Sign-in did not finish. Try again."));
+        setFailure(presentActionFailure(error, "Sign-in did not finish. Try again."));
       });
     },
     [client, navigation],
@@ -546,7 +548,7 @@ export function DeploymentsScreen(): ReactNode {
     })()
       .catch((error: unknown) => {
         if (!accountFlowIsCurrent(generation, expectedSelection)) return;
-        setFailure(operationDetail(error, "Your Opensteer Account could not be reached."));
+        setFailure(presentActionFailure(error, "Your Opensteer Account could not be reached."));
       })
       .finally(() => {
         if (mounted.current && accountFlowGeneration.current === generation) {
@@ -572,7 +574,7 @@ export function DeploymentsScreen(): ReactNode {
                   if (client.getSnapshot().selection.deploymentId === null) resetToDeployments();
                 })
                 .catch((error: unknown) => {
-                  setFailure(operationDetail(error, "That deployment could not be removed."));
+                  setFailure(presentActionFailure(error, "That deployment could not be removed."));
                 });
             },
             style: "destructive",
@@ -598,7 +600,7 @@ export function DeploymentsScreen(): ReactNode {
               setFailure(null);
               void client.signOut(row.deploymentId).catch((error: unknown) => {
                 setFailure(
-                  operationDetail(error, "Signing out of that deployment did not finish."),
+                  presentActionFailure(error, "Signing out of that deployment did not finish."),
                 );
               });
             },

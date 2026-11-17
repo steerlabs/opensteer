@@ -65,11 +65,14 @@ never claim the Host was unreachable. Deadlines and size limits live in the tran
 
 ## What a person is told
 
-Brief reconnects keep the Connected presentation and resume from the cursor, while answering
-Requests still needs a synchronized Host. Hidden surfaces must not accrue outage time. Report
-connection state without moving content. The personal event stream decides the personal
-connection; team transports retry quietly and independently.
-[The lifecycle](../packages/client/src/host/lifecycle.ts) owns presentation timing.
+Each desired personal or team session has one portable
+[connection controller](../packages/client/src/connections/connection-controller.ts). Platform
+lifecycle ports report visibility and network facts; protocol drivers report synchronized leases.
+Automatic interruptions stay quiet for five foreground seconds across retries, including OS
+offline and failed first attachment. Background resets that clock. A failed person-initiated retry
+and authoritative sign-out, access or version refusals show immediately. Content stays in place;
+answering Requests still requires actual synchronization. Resource errors do not create another
+connection notice, and retained reads lose their data only when authority is lost or changes.
 
 A phone can report the same network path after an actual move. Probe unchanged paths before
 replacing sockets; a failed probe invalidates the whole path.
@@ -200,9 +203,10 @@ silent wakes rare is the waker's job, since each costs scan reads.
 ## Personal process recovery and diagnostics
 
 A stopped Personal stack still belongs to its computer; route access does not establish local
-supervision. The [connection supervisor](../apps/desktop/src/connections/connection-supervisor.ts)
-tracks the attached Deployment, and [process supervision](../apps/desktop/src/supervisor) owns local
-services. Recovery replaces only the failed component and reads the committed manifest, so a retry
+supervision. The renderer’s shared controller owns session recovery; main’s
+[attachment observer](../apps/desktop/src/connections/connection-attachment.ts) performs one-shot
+authentication and observes its result. [Process supervision](../apps/desktop/src/supervisor) owns
+local services. Recovery replaces only the failed component and reads the committed manifest, so a retry
 cannot undo a failed update. Repair-required authority, release, keychain, port and directory
 failures never trigger blind restart, and classification uses typed failures, never child output.
 Child logs are bounded, private and credential-redacted. Socket diagnostics never persist endpoint

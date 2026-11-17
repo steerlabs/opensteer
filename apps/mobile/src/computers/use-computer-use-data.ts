@@ -1,7 +1,7 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import type { HostClient } from "@opensteer/client/host";
 import { loadComputerUseData, type ComputerUseData } from "@opensteer/client/integrations";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { operationDetail } from "../client/mobile-client.js";
 
 /**
  * What the block reads besides the machine: the approved apps and the pending
@@ -35,7 +35,7 @@ export function useComputerUseData(
       setError(null);
     } catch (reason) {
       if (source.active && current === source.request) {
-        setError(operationDetail(reason, "Computer use could not be loaded."));
+        setError(presentActionFailure(reason, "Computer use could not be loaded."));
       }
       throw reason;
     }

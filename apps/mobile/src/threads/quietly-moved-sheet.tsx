@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import {
   doneTaskList,
   quietlyMoved,
@@ -23,7 +24,6 @@ import {
   StyleSheet,
   View,
 } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { openTopLevel } from "../top-level.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
@@ -99,7 +99,7 @@ function QuietlyMoved(props: {
           AccessibilityInfo.announceForAccessibility(`${row.title} moved back to Tasks`);
         },
         (error: unknown) =>
-          Alert.alert("Task not moved back", operationDetail(error, "Try again.")),
+          Alert.alert("Task not moved back", presentActionFailure(error, "Try again.")),
       )
       .finally(() => busy(row.threadId, false));
   };

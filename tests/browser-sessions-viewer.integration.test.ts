@@ -488,7 +488,6 @@ run("Browser Sessions through a whole deployment", () => {
     expect(catalog.tabs).toHaveLength(9);
     const client = new HttpHostClient({
       baseUrl: stack.hostOrigin,
-      refreshIntervalMs: 0,
       fetch: (input, init) => {
         const headers = new Headers(init?.headers);
         headers.set("cookie", stack.sessionCookie);
@@ -634,7 +633,6 @@ run("Browser Sessions through a whole deployment", () => {
       firstDecision,
       surviving,
       secondDecision,
-      refreshIntervalMs: 0,
       isolatedReaderWriteFailure: writerFailures === 1 && failedReaderClosed,
     });
   }, 120_000);

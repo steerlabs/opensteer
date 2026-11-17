@@ -1,9 +1,9 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { useIdleCompactionSettings } from "@opensteer/client/react";
 import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import { harnessDriverLabel } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
 import { useMemo, useState, type ReactNode } from "react";
-import { operationDetail } from "../client/mobile-client.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { AiSettingsForm } from "./settings-ai-form.js";
 import { useAiAccounts } from "./settings-ai-accounts.js";
@@ -70,7 +70,7 @@ export function AiSettingsController(): ReactNode {
           .then(() => hostClient.refresh())
           .catch((error: unknown) =>
             setEngineUpdateError({
-              detail: operationDetail(error, "Update failed. Try again."),
+              detail: presentActionFailure(error, "Update failed. Try again."),
               key: `${environmentId}:${driverKind}`,
             }),
           )

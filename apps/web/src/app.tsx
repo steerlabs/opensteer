@@ -1,3 +1,5 @@
+import { useCallback } from "react";
+import { useConnectionNotice } from "@opensteer/client/react";
 import { lazy, Suspense } from "react";
 import { subscribeIntegrationAuthorizationReturns } from "./integrations/integration-authorization.js";
 import { useEffect, useRef, useState } from "react";
@@ -111,7 +113,11 @@ export function App({
     readonly world: MockTeamWorld;
   } | null;
 }) {
-  const { loadError, reload, snapshot } = useHostSnapshot(hostClient, sameAppGateSnapshot);
+  const { snapshot } = useHostSnapshot(hostClient, sameAppGateSnapshot);
+  const loadError = useConnectionNotice(hostClient.connection);
+  const reload = useCallback(async () => {
+    hostClient.connection.retry();
+  }, [hostClient]);
   useEffect(
     () =>
       desktopBridge

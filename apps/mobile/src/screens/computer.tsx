@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { computerTargetId } from "@opensteer/client/host";
 import { SettingsDeviceCapabilities } from "./settings-device-capabilities.js";
 import { ComputerSetupApprovals } from "../computers/computer-app-approval.js";
@@ -31,7 +32,6 @@ import { useLayoutEffect, useMemo, useState, useRef, useEffect, type ReactNode }
 import { StyleSheet } from "react-native";
 import { tabRoute } from "../browser/surface-route.js";
 import { TabTargetSchema } from "@opensteer/core";
-import { operationDetail } from "../client/mobile-client.js";
 import { useLeaveSheets } from "./leave-sheets.js";
 
 import { useComputerUseData } from "../computers/use-computer-use-data.js";
@@ -91,7 +91,7 @@ export function ComputerScreen(props: ComputerScreenProps): ReactNode {
                   .openDeployment(deploymentId)
                   .catch((error: unknown) =>
                     setFailure(
-                      operationDetail(error, "That deployment still could not be opened."),
+                      presentActionFailure(error, "That deployment still could not be opened."),
                     ),
                   )
                   .finally(() => setOpening(false));
@@ -142,7 +142,8 @@ function ComputerDetail(props: {
           StackActions.push("WorkspaceBrowser", tabRoute(props.deploymentId, tab.tabId)),
         );
     } catch (error) {
-      if (mounted.current) setOpenFailure(operationDetail(error, "The phone could not be opened."));
+      if (mounted.current)
+        setOpenFailure(presentActionFailure(error, "The phone could not be opened."));
     } finally {
       if (mounted.current) setOpeningPhone(false);
     }

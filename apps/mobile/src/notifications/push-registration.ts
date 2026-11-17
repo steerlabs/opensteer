@@ -1,5 +1,5 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import {
-  clientPublicDetail,
   DeviceLimitReachedError,
   PushNotConfiguredError,
   type PrivateFilesystem,
@@ -262,7 +262,7 @@ export class PushRegistration {
       .catch(async (error: unknown) => {
         this.#publishFailure(
           await this.#load(),
-          clientPublicDetail(error, "This phone could not turn on notifications."),
+          presentActionFailure(error, "This phone could not turn on notifications."),
         );
       });
   }
@@ -344,7 +344,7 @@ export class PushRegistration {
     } catch (error) {
       this.#publishFailure(
         file,
-        clientPublicDetail(
+        presentActionFailure(
           error,
           "This phone could not get a push token from the operating system.",
         ),
@@ -365,7 +365,7 @@ export class PushRegistration {
       }
       this.#publishFailure(
         file,
-        clientPublicDetail(error, "This phone could not register for notifications."),
+        presentActionFailure(error, "This phone could not register for notifications."),
       );
       return;
     }

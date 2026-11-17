@@ -1,4 +1,10 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { connectionNotice } from "@opensteer/client/connections";
+import {
+  presentClientIssue,
+  clientIssueActions,
+  type ClientIssue,
+} from "@opensteer/client/feedback";
+import { useSyncExternalStore, type ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { color, controlFontScaleLimit, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
@@ -9,8 +15,7 @@ import type { ConnectionBannerView } from "./team-models.js";
 /**
  * One line under the bar when a team, or the reader's own Opensteer, can't be
  * reached right now. Never a modal: what is loaded stays readable under it,
- * and sends wait in order. The parent shows it only after two seconds, so a
- * blip draws nothing.
+ * and sends wait in order. The session owns when this becomes visible.
  */
 export function ConnectionBanner(props: { readonly banner: ConnectionBannerView }): ReactNode {
   const { banner } = props;
@@ -57,39 +62,38 @@ export function ConnectionBanner(props: { readonly banner: ConnectionBannerView 
   );
 }
 
-/**
- * One line per team, shown only once a reconnect has taken two seconds. Never a modal.
- * "Can't reach" waits for the session's own deadline, so a server swap reads as nothing.
- */
+const noSubscribe = () => () => {};
+const noSnapshot = () => null;
 export function useConnectionBanner(
   team: MobileTeam | null,
-  snapshot: Pick<TeamSessionSnapshot, "connection" | "unreachable" | "versionRefusal">,
+  _snapshot: Pick<TeamSessionSnapshot, "connection" | "unreachable" | "versionRefusal">,
   retry: () => void,
 ): ConnectionBannerView | null {
-  const connected = snapshot.connection === "connected";
-  const [late, setLate] = useState(false);
-  useEffect(() => {
-    if (connected) {
-      setLate(false);
-      return;
-    }
-    const timer = setTimeout(() => setLate(true), 2_000);
-    return () => clearTimeout(timer);
-  }, [connected]);
-  const name = team?.name ?? "the team";
-  const update = snapshot.versionRefusal ?? team?.state;
-  if (update === "update-app")
-    return { text: `Update Opensteer to keep using ${name}`, tone: "amber", action: null };
-  if (update === "update-server")
-    return { text: `${name}'s server needs an update`, tone: "amber", action: null };
-  if (connected) return null;
-  if (snapshot.unreachable)
-    return {
-      text: `Can't reach ${name}`,
-      tone: "danger",
-      action: { label: "Try again", onPress: retry },
-    };
-  return late ? { text: `Reconnecting to ${name}…`, tone: "muted", action: null } : null;
+  const connection = team?.session?.connection;
+  const state = useSyncExternalStore(
+    connection?.subscribe ?? noSubscribe,
+    connection?.getSnapshot ?? noSnapshot,
+    connection?.getSnapshot ?? noSnapshot,
+  );
+  const issue: ClientIssue | null = state
+    ? connectionNotice(state)
+    : team?.state === "update-app" || team?.state === "update-server" || team?.state === "removed"
+      ? {
+          code: team.state === "removed" ? "access-lost" : team.state,
+          target: "team",
+          name: team.name,
+        }
+      : null;
+  if (!issue) return null;
+  const copy = presentClientIssue(issue);
+  return {
+    text: copy.title,
+    tone: issue.code === "connection" ? "muted" : "amber",
+    action:
+      copy.action === "retry"
+        ? { label: clientIssueActions.retry, onPress: connection?.retry ?? retry }
+        : null,
+  };
 }
 
 const styles = StyleSheet.create({

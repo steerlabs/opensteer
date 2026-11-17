@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import {
   HostClientRequestError,
   newTabProfiles,
@@ -28,7 +29,6 @@ import {
 } from "react";
 import { ActivityIndicator, Pressable, SectionList, StyleSheet, View } from "react-native";
 import { tabRoute } from "../browser/surface-route.js";
-import { operationDetail } from "../client/mobile-client.js";
 import { MacAppIcon } from "../computers/app-mark.js";
 import { useHereDeviceId } from "../computers/here-device.js";
 import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
@@ -112,7 +112,7 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
         if (mounted.current)
           setApproved({
             kind: "failed",
-            detail: operationDetail(error, "Your apps could not be listed."),
+            detail: presentActionFailure(error, "Your apps could not be listed."),
           });
       },
     );
@@ -207,7 +207,7 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
                 phone,
                 target: name,
               })
-            : operationDetail(error, `${name} didn’t open.`),
+            : presentActionFailure(error, `${name} didn’t open.`),
         );
       } finally {
         if (mounted.current) setOpening(null);

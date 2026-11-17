@@ -1,9 +1,9 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { useState, type ReactNode } from "react";
 import { ActivityIndicator, Modal, StyleSheet, View } from "react-native";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Notice, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { color, space } from "../theme.js";
-import { operationDetail } from "../client/mobile-client.js";
 
 /** Visible above any selected computer: a link must never silently disappear. */
 export function OpenComputer(): ReactNode {
@@ -14,7 +14,9 @@ export function OpenComputer(): ReactNode {
   if (pending === null) return null;
   const run = (operation: () => Promise<void>): void => {
     setFailure(null);
-    void operation().catch((error: unknown) => setFailure(operationDetail(error, "Try again.")));
+    void operation().catch((error: unknown) =>
+      setFailure(presentActionFailure(error, "Try again.")),
+    );
   };
   return (
     <Modal

@@ -1,3 +1,7 @@
+import { hostApi } from "@opensteer/protocol";
+import type { MessageOutboxOptions } from "@opensteer/client/host";
+import { messageDraftParts, type StoredMessage } from "@opensteer/client/host";
+import type { ClientScope } from "@opensteer/client/connections";
 import type { PrivateFilesystem } from "@opensteer/client/connections";
 import {
   CompactionSendChoiceSchema,
@@ -28,7 +32,7 @@ import { z } from "zod";
  * showing; the file is loaded once at startup and written behind the reads.
  */
 
-const maxPendingCommands = 48;
+const maxTaskStartRecords = 48;
 const maxDraftCharacters = 16_000;
 // A hard file cap covers escaped text, keys and metadata, and is the only bound
 // on how many drafts a phone keeps. Drafts and messages share it: a write past
@@ -78,6 +82,7 @@ const BrowserPageSchema = ContentPartSchema.refine(
 // file written before them still parses, and an older release, which refuses
 // fields it does not know, loses the file only once a draft uses one.
 const DraftSchema = LegacyDraftSchema.extend({
+  recoveredSendKeys: z.array(z.string().max(255)).max(40).optional(),
   page: BrowserPageSchema.optional(),
   quote: DraftQuoteSchema.optional(),
   userId: z.string().min(1).max(200),
@@ -95,7 +100,7 @@ const PendingArtifactSchema = z.strictObject({
   mediaType: z.string().min(1).max(255),
   sizeBytes: z.number().int().min(0).optional(),
 });
-const LegacyPendingCommandSchema = z.strictObject({
+const LegacyTaskStartRecordSchema = z.strictObject({
   attachments: z.array(PendingArtifactSchema).max(20).optional(),
   createdAt: z.string().min(1).max(40),
   idempotencyKey: z.string().min(1).max(200),
@@ -110,7 +115,7 @@ const LegacyPendingCommandSchema = z.strictObject({
  * exactly, so a creation whose answer was lost is answered with the Thread the
  * Host already made rather than making a second one.
  */
-const PendingThreadStartSchema = z.strictObject({
+const TaskStartParametersSchema = z.strictObject({
   accessMode: ThreadAccessModeSchema,
   environmentId: z.string().min(1).max(200),
   harnessInstanceId: z.string().min(1).max(200),
@@ -119,7 +124,7 @@ const PendingThreadStartSchema = z.strictObject({
   generateTitle: z.literal(true).optional(),
   title: z.string().min(1).max(200),
 });
-const PendingCommandSchema = LegacyPendingCommandSchema.extend({
+const TaskStartRecordSchema = LegacyTaskStartRecordSchema.extend({
   compaction: CompactionSendChoiceSchema.optional(),
   browserPage: BrowserPageSchema.optional(),
   // Every message is sent to be queued. A `steer` record is one an earlier
@@ -128,7 +133,7 @@ const PendingCommandSchema = LegacyPendingCommandSchema.extend({
   // Part of what was sent: a replay under the same key must quote the same
   // source, or it is a different message.
   quotedMessageId: z.string().min(1).max(200).optional(),
-  start: PendingThreadStartSchema.optional(),
+  start: TaskStartParametersSchema.optional(),
   userId: z.string().min(1).max(200),
 })
   .refine((command) => command.text.trim().length > 0 || (command.attachments?.length ?? 0) > 0)
@@ -141,7 +146,7 @@ const PendingCommandSchema = LegacyPendingCommandSchema.extend({
 
 const DraftFileSchema = z.strictObject({
   drafts: z.record(z.string().min(1).max(200), DraftSchema),
-  pending: z.record(z.string().min(1).max(200), PendingCommandSchema),
+  pending: z.record(z.string().min(1).max(200), TaskStartRecordSchema),
   schemaVersion: z.literal(4),
 });
 
@@ -169,7 +174,7 @@ const HeldSteerSchema = z.strictObject({
 });
 const SteeringDraftFileSchema = z.strictObject({
   drafts: z.record(z.string().min(1).max(200), DraftSchema),
-  pending: z.record(z.string().min(1).max(200), PendingCommandSchema),
+  pending: z.record(z.string().min(1).max(200), TaskStartRecordSchema),
   pendingSteers: z.record(z.string().min(1).max(200), HeldSteerSchema),
   schemaVersion: z.literal(3),
 });
@@ -177,8 +182,8 @@ const SteeringDraftFileSchema = z.strictObject({
 export type ThreadDraft = z.infer<typeof DraftSchema>;
 export type ThreadDraftQuote = z.infer<typeof DraftQuoteSchema>;
 export type DraftAttachment = NonNullable<ThreadDraft["attachments"]>[number];
-export type PendingCommand = z.infer<typeof PendingCommandSchema>;
-export type PendingThreadStart = z.infer<typeof PendingThreadStartSchema>;
+export type TaskStartRecord = z.infer<typeof TaskStartRecordSchema>;
+export type TaskStartParameters = z.infer<typeof TaskStartParametersSchema>;
 
 const newTaskKeyPrefix = "new-task:";
 
@@ -202,7 +207,7 @@ export function sameDraftSummary(left: DraftSummary, right: DraftSummary): boole
 }
 
 /** What a composer knows; the store stamps the time it was claimed. */
-export type PendingCommandInput = Omit<PendingCommand, "createdAt" | "delivery" | "userId">;
+export type TaskStartInput = Omit<TaskStartRecord, "createdAt" | "delivery" | "userId">;
 
 /**
  * A schema 3 file without its steering decisions. Typing no longer answers an
@@ -217,7 +222,7 @@ export type PendingCommandInput = Omit<PendingCommand, "createdAt" | "delivery" 
  */
 function withoutSteeringDecisions(file: z.infer<typeof SteeringDraftFileSchema>): {
   readonly drafts: Map<string, ThreadDraft>;
-  readonly pending: Map<string, PendingCommand>;
+  readonly pending: Map<string, TaskStartRecord>;
 } {
   const drafts = new Map(Object.entries(file.drafts));
   const pending = new Map(Object.entries(file.pending));
@@ -227,7 +232,7 @@ function withoutSteeringDecisions(file: z.infer<typeof SteeringDraftFileSchema>)
     if (together && ((draft.attachments?.length ?? 0) > 0 || draft.quote !== undefined)) continue;
     pending.set(
       entryKey,
-      PendingCommandSchema.parse({
+      TaskStartRecordSchema.parse({
         createdAt: held.createdAt,
         delivery: "queue",
         idempotencyKey: held.messageIdempotencyKey,
@@ -242,6 +247,8 @@ function withoutSteeringDecisions(file: z.infer<typeof SteeringDraftFileSchema>)
 }
 
 export interface ThreadDraftStore {
+  readonly legacyMessages: NonNullable<MessageOutboxOptions["legacy"]>;
+  restoreMessage(scope: ClientScope, entry: StoredMessage): Promise<"restored" | "occupied">;
   /** A stable external-store snapshot for every mounted view of these drafts. */
   getVersion(): number;
   subscribe(listener: () => void): () => void;
@@ -252,14 +259,14 @@ export interface ThreadDraftStore {
    * caller awaits it before dispatching: a command that is not on disk has not
    * been sent.
    */
-  claimPending(
+  claimTaskStart(
     deploymentId: string,
     userId: string,
     threadId: string,
-    command: PendingCommandInput,
+    command: TaskStartInput,
   ): Promise<void>;
   /** Clears only the command that was acknowledged or definitively refused. */
-  clearPending(
+  clearTaskStart(
     deploymentId: string,
     userId: string,
     threadId: string,
@@ -269,7 +276,7 @@ export interface ThreadDraftStore {
   discardDraft(deploymentId: string, userId: string, threadId: string): Promise<void>;
   readDraft(deploymentId: string, userId: string, threadId: string): ThreadDraft | null;
   readDraftSummary(deploymentId: string, userId: string): DraftSummary;
-  readPending(deploymentId: string, userId: string, threadId: string): PendingCommand | null;
+  readTaskStart(deploymentId: string, userId: string, threadId: string): TaskStartRecord | null;
   writeDraft(deploymentId: string, userId: string, threadId: string, text: string): Promise<void>;
   /** Attaches or removes the update this draft answers. Null clears it. */
   writeDraftQuote(
@@ -305,7 +312,7 @@ export function createThreadDraftStore(options: {
   ) => void | Promise<void>;
 }): ThreadDraftStore {
   let drafts = new Map<string, ThreadDraft>();
-  let pending = new Map<string, PendingCommand>();
+  let pending = new Map<string, TaskStartRecord>();
   let loaded: Promise<void> | null = null;
   let version = 0;
   const listeners = new Set<() => void>();
@@ -356,7 +363,7 @@ export function createThreadDraftStore(options: {
     userId: string,
     fields: DraftFields,
   ): void => {
-    if (draftEmpty(fields)) nextDrafts.delete(entryKey);
+    if (draftEmpty(fields) && !fields.recoveredSendKeys?.length) nextDrafts.delete(entryKey);
     else
       nextDrafts.set(
         entryKey,
@@ -371,7 +378,7 @@ export function createThreadDraftStore(options: {
   const mutate = (
     change: (
       nextDrafts: Map<string, ThreadDraft>,
-      nextPending: Map<string, PendingCommand>,
+      nextPending: Map<string, TaskStartRecord>,
     ) => void,
   ): Promise<void> =>
     writes.run(async () => {
@@ -397,7 +404,7 @@ export function createThreadDraftStore(options: {
       publish();
     });
 
-  return {
+  const store: ThreadDraftStore = {
     getVersion: () => version,
     subscribe(listener): () => void {
       listeners.add(listener);
@@ -468,12 +475,88 @@ export function createThreadDraftStore(options: {
       return loaded;
     },
 
-    async claimPending(deploymentId, userId, threadId, command): Promise<void> {
+    legacyMessages: {
+      load: async (scope) => {
+        await store.load();
+        return [...pending.entries()].flatMap(([entryKey, entry]) => {
+          if (
+            !entryKey.startsWith(`${scope.deploymentId}:${scope.viewerId}:`) ||
+            entry.userId !== scope.viewerId ||
+            entry.start ||
+            entry.threadId.startsWith(newTaskKeyPrefix)
+          )
+            return [];
+          const command = hostApi["commands.dispatch"].payload.parse({
+            type: "thread.sendMessage",
+            threadId: entry.threadId,
+            idempotencyKey: entry.idempotencyKey,
+            delivery: entry.delivery,
+            content: [
+              ...(entry.text ? [{ type: "text", text: entry.text }] : []),
+              ...(entry.browserPage ? [entry.browserPage] : []),
+              ...(entry.attachments ?? []),
+            ],
+            ...(entry.quotedMessageId ? { quotedMessageId: entry.quotedMessageId } : {}),
+            ...(entry.compaction ? { compaction: entry.compaction } : {}),
+          });
+          if (command.type !== "thread.sendMessage") throw new Error("Invalid saved message.");
+          return [
+            { command, ...(entry.localUris ? { localAttachmentUris: entry.localUris } : {}) },
+          ];
+        });
+      },
+      remove: async (scope, id) => {
+        const entry = [...pending.values()].find(
+          (entry) => entry.userId === scope.viewerId && entry.idempotencyKey === id,
+        );
+        if (entry)
+          await store.clearTaskStart(scope.deploymentId, scope.viewerId, entry.threadId, id);
+      },
+    },
+    async restoreMessage(scope, entry) {
+      let outcome: "restored" | "occupied" = "occupied";
+      await mutate((nextDrafts) => {
+        const entryKey = key(scope.deploymentId, scope.viewerId, entry.command.threadId);
+        const held = nextDrafts.get(entryKey);
+        if (held?.recoveredSendKeys?.includes(entry.localId)) {
+          outcome = "restored";
+          return;
+        }
+        if (held && draftHasContent(held)) return;
+        const parts = messageDraftParts(entry.command.content);
+        putDraft(nextDrafts, entryKey, scope.viewerId, {
+          text: parts.body,
+          attachments: parts.attachments.map((part, index) => ({
+            attachmentId: part.artifactId,
+            localUri: entry.localAttachmentUris?.[index] ?? null,
+            mediaType: part.mediaType,
+            name: part.name,
+            sizeBytes: part.sizeBytes ?? 0,
+            status: "ready" as const,
+          })),
+          page: parts.places.find((part) => part.type === "browser-page"),
+          ...(entry.command.quotedMessageId
+            ? {
+                quote: {
+                  messageId: entry.command.quotedMessageId,
+                  attribution: "Quoted message",
+                  excerpt: "",
+                },
+              }
+            : {}),
+          recoveredSendKeys: [...(held?.recoveredSendKeys ?? []), entry.localId].slice(-40),
+        });
+        outcome = "restored";
+      });
+      return outcome;
+    },
+
+    async claimTaskStart(deploymentId, userId, threadId, command): Promise<void> {
       const entryKey = key(deploymentId, userId, threadId);
       const claimedTextEdit = textEdits.get(entryKey);
       const claimedQuoteEdit = quoteEdits.get(entryKey);
       const claimedPageEdit = pageEdits.get(entryKey);
-      const entry = PendingCommandSchema.parse({
+      const entry = TaskStartRecordSchema.parse({
         compaction: command.compaction,
         attachments: command.attachments,
         browserPage: command.browserPage,
@@ -508,7 +591,7 @@ export function createThreadDraftStore(options: {
           }
           return;
         }
-        if (nextPending.size >= maxPendingCommands) {
+        if (nextPending.size >= maxTaskStartRecords) {
           throw new Error(
             "Too many messages are awaiting acknowledgement. Retry those messages first.",
           );
@@ -545,7 +628,7 @@ export function createThreadDraftStore(options: {
       }
     },
 
-    async clearPending(deploymentId, userId, threadId, expectedIdempotencyKey): Promise<boolean> {
+    async clearTaskStart(deploymentId, userId, threadId, expectedIdempotencyKey): Promise<boolean> {
       let cleared = false;
       await mutate((_nextDrafts, nextPending) => {
         const entryKey = key(deploymentId, userId, threadId);
@@ -590,7 +673,7 @@ export function createThreadDraftStore(options: {
       return { threadIds };
     },
 
-    readPending(deploymentId, userId, threadId): PendingCommand | null {
+    readTaskStart(deploymentId, userId, threadId): TaskStartRecord | null {
       const entry = pending.get(key(deploymentId, userId, threadId)) ?? null;
       // A record whose Thread does not match the one it is filed under is a
       // file another release or another device wrote; it is not this Thread's
@@ -695,18 +778,21 @@ export function createThreadDraftStore(options: {
       }
     },
   };
+  return store;
 }
 
 /** What a draft holds, apart from whose it is and when it last changed. */
 interface DraftFields {
+  readonly recoveredSendKeys?: readonly string[];
   readonly attachments: ThreadDraft["attachments"] | undefined;
-  readonly page: ThreadDraft["page"] | undefined;
-  readonly quote: ThreadDraft["quote"] | undefined;
+  readonly page?: ThreadDraft["page"] | undefined;
+  readonly quote?: ThreadDraft["quote"] | undefined;
   readonly text: string;
 }
 
 function draftFields(draft: ThreadDraft | undefined): DraftFields {
   return {
+    ...(draft?.recoveredSendKeys ? { recoveredSendKeys: draft.recoveredSendKeys } : {}),
     attachments: draft?.attachments,
     page: draft?.page,
     quote: draft?.quote,

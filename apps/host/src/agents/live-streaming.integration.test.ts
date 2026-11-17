@@ -137,7 +137,6 @@ integration("live streaming across the deployment", () => {
         readonly fetch: typeof globalThis.fetch;
         readonly reconnectBaseDelayMs: number;
         readonly reconnectMaxDelayMs: number;
-        readonly refreshIntervalMs: number;
         readonly webSocketFactory: (url: string) => unknown;
       }) => LiveClient;
     };
@@ -154,7 +153,6 @@ integration("live streaming across the deployment", () => {
       },
       reconnectBaseDelayMs: 20,
       reconnectMaxDelayMs: 100,
-      refreshIntervalMs: 0,
       webSocketFactory: (url) => {
         const socket = new WebSocket(url, {
           headers: {

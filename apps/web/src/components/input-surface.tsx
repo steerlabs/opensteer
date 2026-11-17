@@ -1,3 +1,6 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
+import { hostMessageOutbox } from "@opensteer/client/host";
+import { ClientOperationError } from "@opensteer/client/connections";
 import { browserNoticeDismissals } from "./usage-notice.js";
 import { useCompactionOffer } from "@opensteer/client/react";
 import { cardUseTitle } from "@opensteer/client/host";
@@ -25,7 +28,7 @@ import { DeviceGrantDock } from "./workspace/device-grant-follow-ups.js";
 import { useComposerContext } from "./workspace/composer-context.js";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 import { TaskMark, TaskBadge } from "./workspace/task-mark.js";
-import { sendMessageCommand, usePendingSends } from "./pending-sends.js";
+import { sendMessageCommand } from "./pending-sends.js";
 import { VoiceButton, VoiceDock } from "./voice.js";
 import { ThreadBrowserRequestAction } from "./thread-browser-access-action.js";
 import { ThreadBrowserSignInAction } from "./thread-browser-sign-in-action.js";
@@ -124,9 +127,7 @@ export function InputSurface({
   const placeContext = useMemo(() => ({ context, hostClient }), [context, hostClient]);
   // The signed-in deployment and user the Host confirmed are what every kept
   // message and staged file belongs to; until both are known nothing is sent.
-  const durable = usePendingSends(
-    deploymentId && userId ? { deploymentId, threadId, userId } : null,
-  );
+  const outbox = hostMessageOutbox(hostClient);
   const attachmentTarget =
     deploymentId && draftKey ? { client: hostClient, scope: draftKey, deploymentId } : null;
 
@@ -147,7 +148,12 @@ export function InputSurface({
     }: ComposerSubmission,
   ): Promise<void> => {
     if (!body.trim() && attachments.length === 0 && places.length === 0 && !content?.length) return;
-    await hostClient.dispatch(
+    if (!outbox)
+      throw new ClientOperationError("Message storage is unavailable.", "blocked", {
+        kind: "local",
+        reason: "storage-unavailable",
+      });
+    await outbox.enqueue(
       sendMessageCommand(threadId, {
         attachments,
         ...(compaction ? { compaction } : {}),
@@ -226,7 +232,7 @@ export function InputSurface({
           variant={variant}
           placeContext={placeContext}
           attachments={attachmentTarget}
-          disabled={disabled}
+          disabled={false}
           readOnly={readOnly}
           footerExtras={footerExtras}
           inputRef={inputRef}
@@ -237,7 +243,6 @@ export function InputSurface({
           // Beside anything but a question, what is typed is an ordinary message.
           onSend={sendMessage}
           onStop={onStop}
-          pendingSends={"sends" in durable ? durable.sends : null}
           placeholder={placeholder}
           recipient={recipient}
           references={(query) => personalReferenceCandidates(hostClient, query)}
@@ -245,7 +250,7 @@ export function InputSurface({
           running={running}
           stopping={stopping}
           {...(stopLabel === undefined ? {} : { stopLabel })}
-          sendBlocked={"unavailable" in durable ? durable.unavailable : null}
+          sendBlocked={outbox ? null : presentClientIssue({ code: "storage-unavailable" }).title}
           voice={voice ? <VoiceButton /> : undefined}
         />
       </div>

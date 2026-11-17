@@ -1,3 +1,4 @@
+import { hostMessageOutbox } from "@opensteer/client/host";
 import {
   memo,
   useEffect,
@@ -32,12 +33,7 @@ import { ComposerEditor, type ComposerEditorControl } from "./composer-editor.js
 import { personalReferenceCandidates, useReferencePicker } from "./composer-reference-picker.js";
 import { Icon, type IconName } from "./icon.js";
 import { EditedMark } from "./message-revisions.js";
-import {
-  forgetPending,
-  sendMessageCommand,
-  unanswered,
-  type PendingSendsState,
-} from "./pending-sends.js";
+import { sendMessageCommand } from "./pending-sends.js";
 import { TeamInputSource } from "../team/task-source-chip.js";
 
 /** A longer list shows what is next in line and folds the rest. */
@@ -56,7 +52,6 @@ export const WaitingInputs = memo(function WaitingInputs({
   inputs,
   onError,
   paused,
-  pendingSends,
   resumable,
   threadId,
   viewerUserId,
@@ -68,7 +63,6 @@ export const WaitingInputs = memo(function WaitingInputs({
   readonly onError: (error: unknown) => void;
   readonly paused: boolean;
   /** Where words sent as a new message are kept until the Host answers them, as the composer's are. */
-  readonly pendingSends: PendingSendsState;
   /** The Host runs this task's queue again on Resume: not while it is archived. */
   readonly resumable: boolean;
   readonly threadId: string;
@@ -150,7 +144,6 @@ export const WaitingInputs = memo(function WaitingInputs({
               input={input}
               key={input.messageId}
               onOpenChange={(open) => setOpen(input.messageId, open)}
-              pendingSends={pendingSends}
               position={`${index + 1} of ${rows.length}`}
               viewerUserId={viewerUserId}
             />
@@ -210,7 +203,6 @@ function useInPlaceEdit(
   client: HostClient,
   input: WaitingInput,
   gone: boolean,
-  pendingSends: PendingSendsState,
   onOpenChange: (open: boolean) => void,
   trigger: RefObject<HTMLButtonElement | null>,
 ) {
@@ -334,8 +326,8 @@ function useInPlaceEdit(
   const sendAsNew = async (): Promise<void> => {
     const held = session.current;
     if (!held || !draft) return;
-    if ("unavailable" in pendingSends) throw new Error(pendingSends.unavailable);
-    const { sends } = pendingSends;
+    const outbox = hostMessageOutbox(client);
+    if (!outbox) throw new Error("Message storage is unavailable.");
     let submission = held.sending;
     if (!submission) {
       const current = await typed();
@@ -348,22 +340,10 @@ function useInPlaceEdit(
         content,
         idempotencyKey: mutationIdempotencyKey("message"),
       };
-      sends.claim(submission);
       held.sending = submission;
     }
-    try {
-      await client.dispatch(sendMessageCommand(input.threadId, submission));
-    } catch (error) {
-      if (unanswered(error)) {
-        if (session.current === held) setNotice("unconfirmed");
-        return;
-      }
-      held.sending = null;
-      forgetPending(sends, submission.idempotencyKey);
-      throw error;
-    }
+    await outbox.enqueue(sendMessageCommand(input.threadId, submission));
     held.sending = null;
-    forgetPending(sends, submission.idempotencyKey);
     finish(held);
   };
 
@@ -418,7 +398,6 @@ function WaitingRow({
   gone,
   input,
   onOpenChange,
-  pendingSends,
   position,
   viewerUserId,
 }: {
@@ -431,12 +410,11 @@ function WaitingRow({
   readonly gone: boolean;
   readonly input: WaitingInput;
   readonly onOpenChange: (open: boolean) => void;
-  readonly pendingSends: PendingSendsState;
   readonly position: string;
   readonly viewerUserId: string | null;
 }) {
   const trigger = useRef<HTMLButtonElement | null>(null);
-  const edit = useInPlaceEdit(client, input, gone, pendingSends, onOpenChange, trigger);
+  const edit = useInPlaceEdit(client, input, gone, onOpenChange, trigger);
   const [deciding, setDeciding] = useState<"approve" | "decline" | null>(null);
   const id = input.messageId;
   const otherDevice = input.lease.kind === "other" ? input.lease.deviceLabel : null;

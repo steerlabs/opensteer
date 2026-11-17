@@ -1,3 +1,4 @@
+import { failureProvenance } from "../connections/operation-error.js";
 import type { ClientCommandInput } from "./device-commands.js";
 import type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";
 import type { TabsClient } from "./tabs-contract.js";
@@ -274,6 +275,12 @@ export interface RunQueueEntry {
 }
 
 export interface MessageEntry {
+  readonly localDelivery?: {
+    readonly phase: "waiting" | "sending" | "rejected";
+    readonly attempted: boolean;
+    readonly issue?: import("../feedback/client-issue.js").ClientIssue;
+  };
+  readonly clientSendKey?: string;
   teamSource?: TeamSource | null;
   addressedToUserId?: string;
   /** False for work drawn for its sender before the Run has received it. */
@@ -1056,6 +1063,10 @@ export type TeamAskDecision =
   | { readonly decision: "decline"; readonly requestId: string; readonly teamId: string };
 
 export interface HostClient extends TabsClient {
+  readonly connection: import("../connections/connection-controller.js").ClientConnection;
+  openConnection(
+    attempt: import("../connections/connection-controller.js").ConnectionAttempt,
+  ): Promise<import("../connections/connection-controller.js").ConnectionLease>;
   /**
    * What this device's own activation of a tab bound — its page session, its
    * view of a window or phone, or its app — until the tab leaves the list.
@@ -1191,7 +1202,10 @@ export interface HostClient extends TabsClient {
     expectedVersion: string | null,
   ): Promise<{ readonly applied: boolean }>;
 
-  dispatch(command: ClientCommandInput): Promise<HostApiCommandOutput>;
+  dispatch(
+    command: ClientCommandInput,
+    options?: { readonly preserveOrigin?: boolean },
+  ): Promise<HostApiCommandOutput>;
   /** Where a message sent now comes from; `dispatch` adds it to `thread.sendMessage`. */
   messageOrigin?(): import("@opensteer/core").MessageOrigin | undefined;
   dispose(): void;
@@ -1380,18 +1394,24 @@ export class HostClientRequestError extends Error {
    */
   readonly reason: string | undefined;
   readonly status: number;
+  readonly retryable: boolean;
+  readonly provenance: import("../connections/operation-error.js").ClientFailureProvenance;
 
   constructor(options: {
     readonly code: string;
     readonly message: string;
     readonly reason?: string;
     readonly status: number;
+    readonly retryable?: boolean;
+    readonly provenance?: import("../connections/operation-error.js").ClientFailureProvenance;
   }) {
     super(options.message);
     this.name = "HostClientRequestError";
     this.code = options.code;
     this.reason = options.reason;
     this.status = options.status;
+    this.retryable = options.retryable ?? options.status >= 500;
+    this.provenance = options.provenance ?? failureProvenance(options.reason ?? "");
   }
 }
 
@@ -1403,6 +1423,7 @@ export class HostClientRequestError extends Error {
 export function isHostRefusal(error: unknown): boolean {
   return (
     error instanceof HostClientRequestError &&
+    error.provenance === "host" &&
     error.status < 500 &&
     error.status !== 408 &&
     error.status !== 429

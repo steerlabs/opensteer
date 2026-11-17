@@ -1,3 +1,4 @@
+import { initializeBrowserMessageOutbox } from "./host/message-outbox.js";
 import { AppErrorBoundary } from "./components/app-error-boundary.js";
 import { DictationContext } from "./components/dictation.js";
 import { StrictMode } from "react";
@@ -242,6 +243,7 @@ async function renderOpensteer(): Promise<void> {
                       : {}),
                   }),
                 });
+              initializeBrowserMessageOutbox(client);
               // The preview's own client, for journeys that count what the page sends.
               Object.assign(window, { opensteerMock: client });
               if (desktopScenario) return attachMockDesktop(client, desktopScenario);

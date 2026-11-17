@@ -304,6 +304,34 @@ describe("DesktopHostTransport", () => {
     transport.dispose();
   });
 
+  it("preserves a 401 observation even when its body times out", async () => {
+    vi.useFakeTimers();
+    const selected = deployment("Home", "https://home.connect.opensteer.test");
+    const sessionEnded = vi.fn();
+    const transport = desktopHostTransport({
+      catalog: catalogStore([selected], selected.authority.document.deploymentId),
+      sessions: { sessionEnded, recoverUnauthorized: async () => "blocked" },
+      network: {
+        openWebSocket: () => socket(),
+        request: async () => new Response(new ReadableStream({ start() {} }), { status: 401 }),
+      },
+    });
+    try {
+      const result = expect(
+        transport.request({ headers: {}, method: "GET", path: "/v1/rpc/bootstrap.get" }),
+      ).rejects.toMatchObject({
+        failure: { code: "unauthorized", kind: "session", provenance: "host", retryable: false },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sessionEnded).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(20_000);
+      await result;
+    } finally {
+      transport.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("notifies session loss before a renderer can recover the closed realtime socket", async () => {
     const selected = deployment("Home", "https://home.connect.opensteer.test");
     let networkEvents: HostNetworkSocketEvents | undefined;

@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import {
   canContinueThreadOnPlacement,
   routeOnAccount,
@@ -35,7 +36,6 @@ import {
   View,
 } from "react-native";
 import { canRespondToRequests } from "@opensteer/client/host";
-import { operationDetail } from "../client/mobile-client.js";
 import {
   color,
   material,
@@ -411,7 +411,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
         })
         .catch((error: unknown) => {
           if (mounted.current) {
-            setFailure(operationDetail(error, "That change could not be applied."));
+            setFailure(presentActionFailure(error, "That change could not be applied."));
           }
         })
         .finally(() => {
@@ -522,7 +522,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
         })
         .catch((error: unknown) => {
           if (mounted.current)
-            setFailure(operationDetail(error, "That access mode could not be applied."));
+            setFailure(presentActionFailure(error, "That access mode could not be applied."));
         })
         .finally(() => {
           mutationInFlight.current = false;
@@ -816,7 +816,7 @@ function ModelPickerList(
     })()
       .catch((error: unknown) => {
         if (mounted.current)
-          props.onFailure(operationDetail(error, "Models could not be refreshed."));
+          props.onFailure(presentActionFailure(error, "Models could not be refreshed."));
       })
       .finally(() => {
         refreshing.current = false;
@@ -1295,7 +1295,7 @@ function SubscribedNewThread(props: {
           acceptedChoice.current = null;
           if (mounted.current) {
             setChosen(null);
-            setFailure(operationDetail(error, "That choice could not be remembered."));
+            setFailure(presentActionFailure(error, "That choice could not be remembered."));
           }
           return null;
         },
@@ -1353,7 +1353,8 @@ function SubscribedNewThread(props: {
         },
         (error: unknown) => {
           acceptedChoice.current = null;
-          if (mounted.current) setFailure(operationDetail(error, "Access could not be changed."));
+          if (mounted.current)
+            setFailure(presentActionFailure(error, "Access could not be changed."));
           return null;
         },
       );

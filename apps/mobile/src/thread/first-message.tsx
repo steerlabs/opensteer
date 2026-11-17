@@ -1,3 +1,4 @@
+import { hostMessageOutbox } from "@opensteer/client/host";
 import { VoiceDock, VoiceMic } from "../voice/controls.js";
 import { useVoiceAvailable } from "../voice/use-voice-value.js";
 import type { ComposerEditorHandle } from "@opensteer/client/references";
@@ -34,8 +35,8 @@ import { useIsFocused } from "@react-navigation/native";
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 import type {
-  PendingCommand,
-  PendingThreadStart,
+  TaskStartRecord,
+  TaskStartParameters,
   ThreadDraftQuote,
   ThreadDraftStore,
 } from "../client/thread-drafts.js";
@@ -229,10 +230,10 @@ export async function claimFirstMessage(input: {
   readonly idempotencyKey: string;
   readonly quote: ThreadDraftQuote | null;
   readonly staged: DraftAttachments;
-  readonly start?: PendingThreadStart;
+  readonly start?: TaskStartParameters;
   readonly text: string;
   readonly userId: string;
-}): Promise<PendingCommand> {
+}): Promise<TaskStartRecord> {
   const carried = input.staged.items;
   const attachments = carried.flatMap((item) => {
     const part = draftAttachmentPart(item);
@@ -241,7 +242,7 @@ export async function claimFirstMessage(input: {
   if (attachments.length !== carried.length) {
     throw new Error("Waiting for your files to finish uploading.");
   }
-  await input.drafts.claimPending(input.deploymentId, input.userId, input.draftKey, {
+  await input.drafts.claimTaskStart(input.deploymentId, input.userId, input.draftKey, {
     ...(attachments.length > 0
       ? { attachments, localUris: carried.map((item) => item.localUri) }
       : {}),
@@ -254,7 +255,7 @@ export async function claimFirstMessage(input: {
     text: input.text,
     threadId: input.draftKey,
   });
-  const claimed = input.drafts.readPending(input.deploymentId, input.userId, input.draftKey);
+  const claimed = input.drafts.readTaskStart(input.deploymentId, input.userId, input.draftKey);
   if (claimed === null) throw new Error("Your message was not saved on this phone.");
   input.staged.release(carried.map(attachmentKey));
   return claimed;
@@ -271,7 +272,8 @@ export async function claimFirstMessage(input: {
  * Thread now owes it.
  */
 export async function handOverFirstMessage(input: {
-  readonly claimed: PendingCommand;
+  readonly claimed: TaskStartRecord;
+  readonly hostClient: HostClient;
   readonly deploymentId: string;
   readonly draftKey: string;
   readonly drafts: ThreadDraftStore;
@@ -285,28 +287,33 @@ export async function handOverFirstMessage(input: {
   readonly onReady: () => void | Promise<void>;
   readonly threadId: string;
   readonly userId: string;
-}): Promise<PendingCommand> {
+}): Promise<TaskStartRecord> {
   const { claimed, deploymentId, drafts, threadId, userId } = input;
   const threadFiles: AttachmentDraftScope = { deploymentId, threadId, userId };
   const firstUris = claimed.localUris;
   const threadUris =
     firstUris === undefined ? undefined : await copyFiles(input.files, threadFiles, firstUris);
-  await drafts.claimPending(deploymentId, userId, threadId, {
-    ...(claimed.attachments === undefined
-      ? {}
-      : { attachments: claimed.attachments, localUris: threadUris }),
-    ...(claimed.browserPage === undefined ? {} : { browserPage: claimed.browserPage }),
-    idempotencyKey: claimed.idempotencyKey,
-    ...(claimed.quotedMessageId === undefined ? {} : { quotedMessageId: claimed.quotedMessageId }),
-    text: claimed.text,
-    threadId,
-  });
-  // The Thread owes it now, so the first message's record has done its job,
-  // and only the Thread's copies of the files are referenced from here on.
-  const owed = drafts.readPending(deploymentId, userId, threadId);
-  if (owed === null) throw new Error("Your message was not saved on this phone.");
+  const outbox = hostMessageOutbox(input.hostClient);
+  if (!outbox) throw new Error("Message storage is unavailable.");
+  await outbox.enqueue(
+    {
+      type: "thread.sendMessage",
+      threadId,
+      delivery: claimed.delivery,
+      idempotencyKey: claimed.idempotencyKey,
+      content: [
+        ...(claimed.text ? [{ type: "text" as const, text: claimed.text }] : []),
+        ...(claimed.browserPage ? [claimed.browserPage] : []),
+        ...(claimed.attachments ?? []),
+      ],
+      ...(claimed.compaction ? { compaction: claimed.compaction } : {}),
+      ...(claimed.quotedMessageId ? { quotedMessageId: claimed.quotedMessageId } : {}),
+    },
+    threadUris ? { localAttachmentUris: threadUris } : undefined,
+  );
+  const owed = { ...claimed, threadId, ...(threadUris ? { localUris: threadUris } : {}) };
   await input.onReady();
-  const cleared = await drafts.clearPending(
+  const cleared = await drafts.clearTaskStart(
     deploymentId,
     userId,
     input.draftKey,

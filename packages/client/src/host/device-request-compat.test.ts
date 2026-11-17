@@ -37,7 +37,6 @@ it.each([
         return transport.fetch(input, init);
       },
       webSocketFactory: transport.connect,
-      refreshIntervalMs: 0,
     });
     try {
       await client.load();

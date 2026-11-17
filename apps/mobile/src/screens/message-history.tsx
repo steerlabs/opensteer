@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import {
   formatClockTime,
   messageRevisionRows,
@@ -15,7 +16,6 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { Markdown } from "../markdown/markdown.js";
 import { color, space, touchTarget } from "../theme.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
@@ -84,7 +84,7 @@ function History(props: {
         setHasMore(page.hasMore);
       } catch (error) {
         if (mounted.current)
-          setFailure(operationDetail(error, "This message’s versions couldn’t be loaded."));
+          setFailure(presentActionFailure(error, "This message’s versions couldn’t be loaded."));
       } finally {
         if (mounted.current) setLoading(false);
       }

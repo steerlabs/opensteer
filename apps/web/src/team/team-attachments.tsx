@@ -328,6 +328,7 @@ export function TeamsProvider({
             const options = desktopTeamSession({
               bridge,
               origin: team.origin,
+              name: team.name,
               scope,
               owner,
               notify: (entry, current) =>
@@ -389,6 +390,7 @@ export function TeamsProvider({
             desktopTeamSession({
               bridge,
               origin: team.origin,
+              name: team.name,
               scope: { teamDeploymentId: teamId, userId: "pending" },
               owner,
             }),

@@ -131,11 +131,11 @@ export class TeamPartnerSettings {
 
   constructor(session: TeamSessionClient) {
     this.#session = session;
-    this.links = new PagedList(async (after) => {
+    this.links = new PagedList(session, async (after) => {
       const page = teamRpcResult(await session.rpc["team.partners.list"](after ? { after } : {}));
       return { items: page.links, nextCursor: page.nextCursor };
     });
-    this.invites = new PagedList(async (after) => {
+    this.invites = new PagedList(session, async (after) => {
       const page = teamRpcResult(
         await session.rpc["team.partner.invites.list"](after ? { after } : {}),
       );

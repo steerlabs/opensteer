@@ -122,6 +122,32 @@ describe("Desktop Host renderer adapter", () => {
     expect(replacement.readyState).toBe(1);
   });
 
+  it.each([true, false])(
+    "preserves refusal metadata and accepts older main replies (metadata: %s)",
+    async (metadata) => {
+      const failure = {
+        classification: "blocked" as const,
+        kind: "session" as const,
+        provenance: "host" as const,
+        code: "unauthorized",
+        reason: "sign-in-required",
+        retryable: false,
+      };
+      const bridge = {
+        hostRequest: async () => ({
+          ok: false as const,
+          error: { code: "unreachable" as const, ...(metadata ? { failure } : {}) },
+        }),
+      } as unknown as OpensteerDesktopBridge;
+      const request = createDesktopHostFetch(bridge, "https://home.test", deploymentId);
+      await expect(request("https://home.test/v1/rpc/bootstrap.get")).rejects.toMatchObject({
+        failure: metadata
+          ? failure
+          : { kind: "transport", provenance: "transport", retryable: true },
+      });
+    },
+  );
+
   it("converts selected-origin fetches into typed bridge requests", async () => {
     const hostRequest = vi.fn(async () => ({
       ok: true,

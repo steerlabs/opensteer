@@ -73,7 +73,12 @@ export function createMockHostPort(
       authorization: async (connection) => (signedIn(connection) ? "Bearer mock" : null),
       held: async (connection) => signedIn(connection),
     },
-    attach: ({ connection }) => attach(connection),
+    attach: ({ connection, connectionController, clientScope }) => {
+      const client = attach(connection);
+      if (client instanceof MockHostClient && connectionController)
+        client.adoptConnection(connectionController, clientScope);
+      return client;
+    },
     desktopUpdates: ({ deploymentId }) =>
       options.hosts?.get(deploymentId)?.desktopUpdates ?? new MockDesktopUpdates(),
     verifyEpoch: async () => ({ status: "compatible", capabilities: [] }),

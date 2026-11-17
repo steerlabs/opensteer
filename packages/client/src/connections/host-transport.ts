@@ -285,12 +285,15 @@ export class HostTransport {
         controller.abort(new HostTransportError("deployment-changed"));
       }
       deadline.reset(request.timeoutMs ?? hostResponseHeadersTimeoutMs);
+      let unauthorizedObserved = false;
       try {
         let response = await deadline.wait(this.#send(resolved, request, controller.signal));
         const onProgress = () => {
           if (!appStream) deadline.reset(hostResponseStallTimeoutMs);
         };
         deadline.pause();
+        unauthorizedObserved = response.status === 401 && request.credentials !== "omit";
+        if (unauthorizedObserved) this.#sessions?.sessionEnded?.(selected);
         onProgress();
         if (
           response.status === 401 &&
@@ -307,6 +310,7 @@ export class HostTransport {
             deadline,
           );
         }
+        unauthorizedObserved = response.status === 401 && request.credentials !== "omit";
         assertCurrent();
         const result = await deadline.wait(
           read(response, { signal: controller.signal, onProgress }),
@@ -317,6 +321,14 @@ export class HostTransport {
         if (owner?.signal.aborted)
           throw new HostTransportError("deployment-changed", { cause: error });
         if (request.signal?.aborted) throw request.signal.reason ?? error;
+        if (unauthorizedObserved)
+          throw new HostTransportError("unreachable", {
+            code: "unauthorized",
+            reason: "sign-in-required",
+            retryable: false,
+            provenance: "host",
+            kind: "session",
+          });
         if (controller.signal.aborted) {
           throw controller.signal.reason instanceof Error
             ? controller.signal.reason

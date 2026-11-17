@@ -290,7 +290,7 @@ describe("PushRegistration", () => {
     await fixture.registration.start();
     expect(fixture.registration.getSnapshot()).toMatchObject({
       status: "unavailable",
-      detail: "This build has no push entitlement",
+      detail: "Couldn't confirm this change.",
     });
     expect(fixture.registry.registrations).toEqual([]);
   });
@@ -346,7 +346,7 @@ describe("PushRegistration", () => {
     await registration.start();
 
     expect(registration.getSnapshot()).toEqual({
-      detail: "The Opensteer Account rejected the notification registration.",
+      detail: "Couldn't confirm this change.",
       preferences: { approvalsEnabled: true, runOutcomesEnabled: true },
       status: "unavailable",
     });

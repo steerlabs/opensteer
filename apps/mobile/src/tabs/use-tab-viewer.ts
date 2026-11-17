@@ -1,10 +1,10 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import type { HostClient } from "@opensteer/client/host";
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
 import type { TabId } from "@opensteer/core";
 import type { TabViewer } from "@opensteer/protocol";
 import { useCallback, useEffect, useState, type RefObject } from "react";
-import { operationDetail } from "../client/mobile-client.js";
 import { useAppForeground } from "../ui/foreground.js";
 
 export type TabViewerState =
@@ -59,7 +59,7 @@ export function useTabViewer(
         if (current)
           setAnswer({
             state: {
-              error: operationDetail(error, "This tab could not open."),
+              error: presentActionFailure(error, "This tab could not open."),
               status: "failed",
             },
             tabId,

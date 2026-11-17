@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import {
   browserSignInProblemCopy,
@@ -14,7 +15,6 @@ import type {
 import * as Haptics from "expo-haptics";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AccessibilityInfo, ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { ChromeChoice, ChromeChoices } from "./chrome-sign-in-parts.js";
@@ -161,7 +161,7 @@ export function ChromeSignInAction(props: {
     } catch (error) {
       show(
         {
-          fix: operationDetail(error, "Try again."),
+          fix: presentActionFailure(error, "Try again."),
           kind: "problem",
           title: "Sign-in didn’t finish",
         },

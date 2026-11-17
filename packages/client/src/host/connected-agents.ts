@@ -1,3 +1,6 @@
+import { createClientRead, type ClientRead } from "../reads/client-read.js";
+import { createClientActionFamily, type ClientAction } from "../actions/client-action.js";
+import { presentClientIssue, type ClientIssue } from "../feedback/client-issue.js";
 import type { IdentityConfig, ThreadAccessMode } from "@opensteer/core";
 import {
   agentConnectionMcpPath,
@@ -14,103 +17,109 @@ import { formatRelativeTime } from "./thread-list-model.js";
 export interface ConnectedAgentsSnapshot {
   readonly connections: readonly AgentConnection[] | null;
   readonly error: string | null;
+  readonly issue: ClientIssue | null;
   readonly pending: string | null;
 }
+const resources = new WeakMap<HostClient, ConnectedAgentsClient>();
+export function connectedAgentsClient(client: HostClient): ConnectedAgentsClient {
+  let resource = resources.get(client);
+  if (!resource) {
+    resource = new ConnectedAgentsClient(client);
+    resources.set(client, resource);
+  }
+  return resource;
+}
 export class ConnectedAgentsClient {
-  readonly #client: Pick<
-    HostClient,
-    "rpc" | "dispatch" | "subscribe" | "getSnapshot" | "subscribeConnectionsChanged"
-  >;
+  readonly read: ClientRead<readonly AgentConnection[]>;
   readonly #listeners = new Set<() => void>();
-  #state: ConnectedAgentsSnapshot = { connections: null, error: null, pending: null };
-  #controller: AbortController | null = null;
-  #read = 0;
-  #owner: string | null = null;
+  readonly #revokes: ReturnType<typeof createClientActionFamily<string, void>>;
+  #state: ConnectedAgentsSnapshot = { connections: null, error: null, issue: null, pending: null };
+  #release: (() => void) | null = null;
+  #starts = 0;
+  #action: ClientAction<string, void> | null = null;
   constructor(
     client: Pick<
       HostClient,
-      "rpc" | "dispatch" | "subscribe" | "getSnapshot" | "subscribeConnectionsChanged"
+      | "connection"
+      | "rpc"
+      | "dispatch"
+      | "subscribe"
+      | "getSnapshot"
+      | "subscribeConnectionsChanged"
     >,
   ) {
-    this.#client = client;
+    this.read = createClientRead(client, {
+      key: "connected-agents",
+      label: "connected agents",
+      read: async (signal) =>
+        unwrapRpcResult(await client.rpc["connections.list"]({}, { signal })).connections,
+      subscribeInvalidation: (listener) => client.subscribeConnectionsChanged(listener),
+    });
+    this.#revokes = createClientActionFamily(client, {
+      label: "revoke",
+      done: "revoked",
+      thing: "this agent",
+      execute: async (connectionId) => {
+        await client.dispatch({
+          type: "connection.revoke",
+          connectionId,
+          idempotencyKey: mutationIdempotencyKey("connection-revoke"),
+        });
+      },
+      reconcile: async (connectionId) => {
+        const { connections } = unwrapRpcResult(await client.rpc["connections.list"]({}));
+        return connections.some((row) => row.id === connectionId)
+          ? null
+          : { kind: "confirmed", value: undefined };
+      },
+    });
   }
-  getSnapshot = () => this.#state;
-  subscribe = (listener: () => void) => {
+  getSnapshot = (): ConnectedAgentsSnapshot => this.#state;
+  subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
     return () => {
       this.#listeners.delete(listener);
     };
   };
-  #set(patch: Partial<ConnectedAgentsSnapshot>) {
-    this.#state = { ...this.#state, ...patch };
-    for (const listener of this.#listeners) listener();
-  }
-  start(): () => void {
-    const controller = new AbortController();
-    this.#controller?.abort();
-    this.#controller = controller;
-    let connection = this.#client.getSnapshot().connection;
-    const observe = () => {
-      const snapshot = this.#client.getSnapshot();
-      const owner = snapshot.session === "authenticated" ? (snapshot.user?.id ?? null) : null;
-      const changed = owner !== this.#owner;
-      if (changed) {
-        this.#owner = owner;
-        ++this.#read;
-        this.#set({ connections: null, error: null, pending: null });
-      }
-      if (owner && (changed || (snapshot.connection === "connected" && connection !== "connected")))
-        void this.refresh();
-      connection = snapshot.connection;
+  #changed = (): void => {
+    const read = this.read.getSnapshot(),
+      action = this.#action?.getSnapshot();
+    const issue = action?.issue ?? read.issue;
+    this.#state = {
+      connections: read.status === "ready" ? read.data : null,
+      issue,
+      error: issue ? presentClientIssue(issue).title : null,
+      pending: action?.running ? this.#state.pending : null,
     };
-    const unsubscribe = this.#client.subscribe(observe);
-    const detachChanges = this.#client.subscribeConnectionsChanged(() => void this.refresh());
-    const previousOwner = this.#owner;
-    observe();
-    if (this.#owner && this.#owner === previousOwner) void this.refresh();
-    return () => {
-      controller.abort();
-      unsubscribe();
-      detachChanges();
-    };
-  }
-  refresh = async (): Promise<void> => {
-    const signal = this.#controller?.signal;
-    if (!signal || signal.aborted || !this.#owner) return;
-    const read = ++this.#read;
-    try {
-      const result = unwrapRpcResult(await this.#client.rpc["connections.list"]({}, { signal }));
-      if (!signal.aborted && read === this.#read)
-        this.#set({ connections: result.connections, error: null });
-    } catch {
-      if (!signal.aborted && read === this.#read)
-        this.#set({ error: "Connected agents could not be loaded." });
-    }
+    this.#listeners.forEach((listener) => listener());
   };
-  revoke = async (connectionId: string): Promise<void> => {
-    const signal = this.#controller?.signal;
-    if (!signal || signal.aborted || !this.#owner || this.#state.pending) return;
-    const owner = this.#owner;
-    this.#set({ pending: connectionId, error: null });
-    // A response started before revocation cannot put the removed row back.
-    ++this.#read;
-    try {
-      await this.#client.dispatch({
-        type: "connection.revoke",
-        connectionId,
-        idempotencyKey: mutationIdempotencyKey("connection-revoke"),
-      });
-      if (!signal.aborted && this.#owner === owner) {
-        ++this.#read;
-        this.#set({
-          connections: this.#state.connections?.filter((row) => row.id !== connectionId) ?? null,
-        });
+  start(): () => void {
+    if (this.#starts++ === 0) {
+      this.#release = this.read.subscribe(this.#changed);
+      this.#changed();
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (--this.#starts === 0) {
+        this.#release?.();
+        this.#release = null;
       }
-    } catch {
-      if (!signal.aborted && this.#owner === owner)
-        this.#set({ error: "The agent could not be revoked. Refresh and try again." });
+    };
+  }
+  refresh = (): Promise<void> => (this.#release ? this.read.refresh() : Promise.resolve());
+  revoke = async (connectionId: string): Promise<void> => {
+    const action = this.#revokes.for(connectionId);
+    this.#action = action;
+    this.#state = { ...this.#state, pending: connectionId };
+    const release = action.subscribe(this.#changed);
+    try {
+      const outcome = await action.run(connectionId);
+      if (outcome.kind === "confirmed") this.read.invalidate();
     } finally {
-      if (!signal.aborted && this.#owner === owner) this.#set({ pending: null });
+      release();
+      this.#changed();
     }
   };
 }

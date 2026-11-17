@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import { AiSharing } from "@opensteer/client/ai-sharing";
 import { AiSharingProvider } from "./ui/ai-sharing.js";
 import { readAiSharing } from "./client/ai-sharing-storage.js";
@@ -51,7 +52,7 @@ import { createTransportNetwork } from "./platform/host-network.js";
 import { createNetworkHostPort } from "./client/host-port.js";
 import { createMockHostPort } from "./client/mock-host-port.js";
 import { OpenComputer } from "./screens/open-computer.js";
-import { MobileClient, operationDetail } from "./client/mobile-client.js";
+import { MobileClient } from "./client/mobile-client.js";
 import { forgetDraftFiles } from "./thread/draft-attachments.js";
 import {
   mockDeploymentConnections,
@@ -314,6 +315,9 @@ function mobileClient(): MobileRoot {
         port.signedInSubject,
       );
   const client: MobileClient = new MobileClient({
+    afterMessageSent: () => {
+      void notifications.registration.sync();
+    },
     notificationPreviews: previews,
     lifecycle,
     ...(!configuration.mock ? { savedViewStore: createExpoSavedViews(storeName) } : {}),
@@ -323,6 +327,7 @@ function mobileClient(): MobileRoot {
     quietSeenFilePath: `${root}${storeName}/quiet-seen.json`,
     draftsFilePath: `${root}${storeName}/drafts-v3.json`,
     forgetDraftFiles,
+    forgetMessageFiles: forgetDraftFiles,
     usageNoticesFilePath: `${root}${storeName}/usage-notices.json`,
     fetch: (input, init) => globalThis.fetch(input as RequestInfo, init),
     hostPort: configuration.mock
@@ -615,7 +620,7 @@ export function App(): ReactNode {
       })
       .catch((error: unknown) => {
         setStartupFailure({
-          detail: operationDetail(error, "Opensteer could not read this device's storage."),
+          detail: presentActionFailure(error, "Opensteer could not read this device's storage."),
           title: "This device's storage did not answer",
         });
       });
@@ -630,11 +635,6 @@ export function App(): ReactNode {
   useEffect(() => {
     if (startupRefusal !== null) return;
     teams.start();
-    // No team socket while nobody looks; the team in front reconnects on return.
-    const state = AppState.addEventListener("change", (next) =>
-      teams.foreground(next === "active"),
-    );
-    return () => state.remove();
   }, [teams]);
 
   useEffect(() => {

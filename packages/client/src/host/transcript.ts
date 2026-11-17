@@ -1172,6 +1172,7 @@ export function toMessageEntry(
   );
   return {
     ...(input?.teamSource ? { teamSource: input.teamSource } : {}),
+    ...(message.clientSendKey ? { clientSendKey: message.clientSendKey } : {}),
     author: message.author,
     ...(message.addressedToUserId ? { addressedToUserId: message.addressedToUserId } : {}),
     sequence: message.sequence,

@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import type { HostClient } from "@opensteer/client/host";
 import {
   AttachmentIdSchema,
@@ -16,7 +17,6 @@ import {
 } from "react-native";
 import { TranscriptImageContext } from "@opensteer/client/react";
 import { ImageHold, personalImageSource } from "../images/image-actions.js";
-import { operationDetail } from "../client/mobile-client.js";
 import { shareChatAttachment } from "../platform/attachment-draft-files.js";
 import { color, material, radius, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
@@ -204,7 +204,7 @@ function SentChip(props: {
       .catch((error: unknown) =>
         Alert.alert(
           "Attachment not opened",
-          operationDetail(error, "This attachment could not be read."),
+          presentActionFailure(error, "This attachment could not be read."),
         ),
       )
       .finally(() => setOpening(false));

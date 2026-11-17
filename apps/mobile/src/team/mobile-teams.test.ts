@@ -113,7 +113,23 @@ function fixture(
   let owner = new TeamRuntimeOwner(null);
   const identities = new Set<() => void>();
   let entryGeneration = 0;
+  let visibility: "foreground" | "background" = "foreground";
+  const foregroundListeners = new Set<() => void>(),
+    backgroundListeners = new Set<() => void>();
+  const lifecycle = {
+    getSnapshot: () => ({ network: "online" as const, visibility }),
+    onForeground: (fn: () => void) => {
+      foregroundListeners.add(fn);
+      return () => foregroundListeners.delete(fn);
+    },
+    onBackground: (fn: () => void) => {
+      backgroundListeners.add(fn);
+      return () => backgroundListeners.delete(fn);
+    },
+    onNetworkChange: () => () => {},
+  };
   const client = {
+    lifecycle,
     oauth: {
       teamRuntime: () => owner,
       subscribeAccountIdentityChanges: (listener: () => void) => {
@@ -159,6 +175,14 @@ function fixture(
   });
   return {
     teams,
+    background: () => {
+      visibility = "background";
+      backgroundListeners.forEach((fn) => fn());
+    },
+    foreground: () => {
+      visibility = "foreground";
+      foregroundListeners.forEach((fn) => fn());
+    },
     hosts,
     signOut,
     releaseAcme,
@@ -262,12 +286,12 @@ describe("the one team socket a phone keeps", () => {
   it("does not reconnect in the background when a selection lands late", async () => {
     const f = fixture();
     const acme = f.teams.select(mockTeamId);
-    f.teams.foreground(false);
+    f.background();
     f.releaseAcme();
     await acme;
     expect(f.sockets()[mockTeamId] ?? 0).toBe(0);
     // Back in front, the team that was on screen is the one connected again.
-    f.teams.foreground(true);
+    f.foreground();
     await vi.waitFor(() => expect(f.sockets()[mockTeamId], "Acme never reconnected").toBe(1), {
       timeout: 2_000,
     });

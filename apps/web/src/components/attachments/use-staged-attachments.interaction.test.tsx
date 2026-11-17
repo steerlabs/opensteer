@@ -3,7 +3,6 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HostClientRequestError, type HostClient } from "@opensteer/client/host";
-import { Composer, type PendingSends } from "../composer.js";
 import { composerDrafts } from "../composer-drafts.js";
 import {
   discardAllStagedFiles,
@@ -74,42 +73,5 @@ describe("a saved file checked against the Host", () => {
         ),
     );
     expect(files.items[0]).toMatchObject({ retryable: false, status: "failed" });
-  });
-});
-
-describe("a message held for sending", () => {
-  it("keeps its files to itself after a reload, out of the tray and the draft", async () => {
-    const part = {
-      artifactId: "file-1",
-      mediaType: "text/plain",
-      name: "notes.txt",
-      type: "artifact",
-    } as const;
-    composerDrafts.update(scope, {
-      files: [{ mediaType: part.mediaType, name: part.name, part, sizeBytes: 3 }],
-    });
-    const held: PendingSends = {
-      claim: vi.fn(),
-      clear: vi.fn(),
-      discard: vi.fn(),
-      read: () => ({ attachments: [part], body: "Sent", idempotencyKey: "message-1" }),
-    };
-    const client = { getAttachment: () => new Promise(() => {}) } as unknown as HostClient;
-    const node = document.createElement("div");
-    root = createRoot(node);
-    await act(async () =>
-      root?.render(
-        <Composer
-          attachments={{ client, scope, deploymentId: "deployment" }}
-          draftKey={scope}
-          onSend={async () => {}}
-          pendingSends={held}
-          placeholder="Reply…"
-        />,
-      ),
-    );
-
-    expect(composerDrafts.read(scope)).toBeNull();
-    expect(node.querySelector(".attachment-tray")).toBeNull();
   });
 });

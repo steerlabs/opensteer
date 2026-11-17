@@ -76,9 +76,14 @@ describe("HTTP Host rpc response parsing", () => {
       ok: false,
       error: { code: "not_found", reason: "unknown-method" },
     });
-    await expect(answering("<html>", 502)["auth.config"]({})).resolves.toMatchObject({
+    for (const status of [502, 503, 504])
+      await expect(answering("<html>", status)["auth.config"]({})).resolves.toMatchObject({
+        ok: false,
+        error: { code: "internal", reason: "proxy-unavailable", retryable: true },
+      });
+    await expect(answering("<html>", 200)["auth.config"]({})).resolves.toMatchObject({
       ok: false,
-      error: { code: "internal" },
+      error: { reason: "invalid-response", retryable: false },
     });
   });
 });
@@ -283,7 +288,7 @@ it("asks for sign-in as soon as a refusal's headers arrive, even if its body sta
     await vi.advanceTimersByTimeAsync(20_000);
     await expect(pending).resolves.toMatchObject({
       ok: false,
-      error: { reason: "transport-timed-out", retryable: true },
+      error: { code: "unauthorized", reason: "sign-in-required", retryable: false },
     });
   } finally {
     vi.useRealTimers();

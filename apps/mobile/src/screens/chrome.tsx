@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import {
   browserSiteLabel,
   canRespondToRequests,
@@ -16,7 +17,6 @@ import type {
 import { useIsFocused, type StaticScreenProps } from "@react-navigation/native";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { AccessibilityInfo, Alert, AppState, ScrollView, StyleSheet, View } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import {
@@ -72,7 +72,7 @@ export function ChromeScreen({ route }: StaticScreenProps<ChromeDestination>): R
                   .openDeployment(deploymentId)
                   .catch((error: unknown) =>
                     setFailure(
-                      operationDetail(error, "That deployment still could not be opened."),
+                      presentActionFailure(error, "That deployment still could not be opened."),
                     ),
                   )
                   .finally(() => setOpening(false));
@@ -125,7 +125,7 @@ function ChromeSettings(props: {
       setState(unwrapRpcResult(await hostClient.rpc["browser.sources.get"]({})));
       setLoadError(null);
     } catch (error) {
-      setLoadError(operationDetail(error, "Chrome could not be loaded."));
+      setLoadError(presentActionFailure(error, "Chrome could not be loaded."));
     }
   }, [hostClient]);
 
@@ -299,7 +299,9 @@ function SourceRow(props: {
         setDraft(null);
         props.onChanged(`Renamed to ${name}.`);
       })
-      .catch((error: unknown) => setFailure(operationDetail(error, "The name did not change.")))
+      .catch((error: unknown) =>
+        setFailure(presentActionFailure(error, "The name did not change.")),
+      )
       .finally(() => setBusy(null));
   };
 
@@ -321,7 +323,9 @@ function SourceRow(props: {
               })
               .then(() => props.onChanged(`${source.name} disconnected.`))
               .catch((error: unknown) =>
-                setFailure(operationDetail(error, `${source.name} is still connected. Try again.`)),
+                setFailure(
+                  presentActionFailure(error, `${source.name} is still connected. Try again.`),
+                ),
               )
               .finally(() => setBusy(null));
           },
@@ -452,7 +456,7 @@ function SiteRow(props: {
               props.onRemoved(`${domain} removed. Your agent asks before using it again.`),
             )
             .catch((error: unknown) =>
-              setFailure(operationDetail(error, `${domain} is still allowed. Try again.`)),
+              setFailure(presentActionFailure(error, `${domain} is still allowed. Try again.`)),
             )
             .finally(() => setBusy(false));
         }}

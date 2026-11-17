@@ -1,3 +1,9 @@
+import { hostMessageOutbox } from "@opensteer/client/host";
+import {
+  presentMessageDelivery,
+  presentDeliveryActions,
+  presentActionFailure,
+} from "@opensteer/client/feedback";
 import { TranscriptImageContext } from "@opensteer/client/react";
 import { AssetImage } from "./asset-image.js";
 import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
@@ -2223,6 +2229,13 @@ function OwnMessage({
   steered: boolean;
   viewerUserId: string | null;
 }) {
+  const client = useContext(TranscriptHostClientContext);
+  const outbox = client ? hostMessageOutbox(client) : null;
+  const [deliveryError, setDeliveryError] = useState<string | null>(null);
+  const labels = presentDeliveryActions();
+  const deliveryAction = (work: Promise<unknown>) => {
+    void work.catch((error) => setDeliveryError(presentActionFailure(error)));
+  };
   const [open, setOpen] = useState(reveal !== null);
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
@@ -2263,6 +2276,41 @@ function OwnMessage({
         </div>
       ) : null}
       {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}
+      {message.localDelivery ? (
+        <p role="status">
+          {presentMessageDelivery(message.localDelivery.phase, message.localDelivery.issue)}
+          {outbox && message.localDelivery.phase === "rejected" ? (
+            <>
+              <button
+                type="button"
+                onClick={() =>
+                  deliveryAction(outbox.restoreDraft(message.clientSendKey ?? message.id))
+                }
+              >
+                {labels.edit}
+              </button>
+              {message.localDelivery.issue?.code !== "unconfirmed" ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    deliveryAction(outbox.discard(message.clientSendKey ?? message.id))
+                  }
+                >
+                  {labels.delete}
+                </button>
+              ) : null}
+            </>
+          ) : outbox && !message.localDelivery.attempted ? (
+            <button
+              type="button"
+              onClick={() => deliveryAction(outbox.discard(message.clientSendKey ?? message.id))}
+            >
+              {labels.discard}
+            </button>
+          ) : null}
+          {deliveryError}
+        </p>
+      ) : null}
       {message.delivery ? (
         <p className="form-actions__error" role="alert">
           {message.delivery.reason}

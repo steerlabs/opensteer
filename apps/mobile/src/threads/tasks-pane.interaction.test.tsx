@@ -10,6 +10,7 @@ vi.mock("react-native-reanimated", async () => ({
 vi.mock("../ui/motion.js", () => ({ move: undefined }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 vi.mock("@opensteer/client/react", () => ({
+  useConnectionNotice: () => null,
   useHostSnapshot: (client: { getSnapshot: () => unknown }) => ({
     snapshot: client.getSnapshot(),
     loadError: null,

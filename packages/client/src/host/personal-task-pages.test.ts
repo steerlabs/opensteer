@@ -44,7 +44,6 @@ async function fixture(
       capabilities: ["quiet-tasks-v1"],
       fetch: fetchOverride?.(host) ?? host.fetch,
       webSocketFactory: host.connect,
-      refreshIntervalMs: 0,
       ...(lifecycle && { lifecycle }),
     });
   cleanups.push(() => {

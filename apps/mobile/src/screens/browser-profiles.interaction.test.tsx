@@ -316,7 +316,8 @@ describe("mobile browser profiles", () => {
     await typeName("Travel");
     dispatch.mockRejectedValueOnce(new Error("Try again later"));
     await press("Create profile");
-    expect(text()).toContain("Try again later");
+    expect(text()).toContain("Couldn't confirm this change.");
+    expect(text()).not.toContain("Try again later");
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "browser.profile.create",

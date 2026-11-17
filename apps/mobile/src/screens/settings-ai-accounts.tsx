@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import {
   accountSource,
   aiEngineAccountRow,
@@ -12,7 +13,6 @@ import {
 import { useHostSelector } from "@opensteer/client/react";
 import { useState, type ReactNode } from "react";
 import { Alert } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import type { AiAccountAction, AiAccountsForm } from "./settings-form.types.js";
 import { useAccountSignIn } from "./use-account-sign-in.js";
 
@@ -95,7 +95,7 @@ export function useAiAccounts(host: HostClient): {
     setError(null);
     void operation()
       .catch((cause: unknown) =>
-        setError(operationDetail(cause, "That did not finish. Try again.")),
+        setError(presentActionFailure(cause, "That did not finish. Try again.")),
       )
       .finally(() => setBusyId(null));
   };

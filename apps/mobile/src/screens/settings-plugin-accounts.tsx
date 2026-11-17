@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import type { NativeSettingsSection, NativeSettingsRow } from "./native-settings-page.types.js";
 import {
   canRespondToRequests,
@@ -32,7 +33,6 @@ import {
   StyleSheet,
   View,
 } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { color, space, touchTarget } from "../theme.js";
 import { IntegrationIcon } from "../ui/integration-icon.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
@@ -139,7 +139,7 @@ function ConnectedApps(props: {
       setLoadError(null);
       return dashboard;
     } catch (reason) {
-      if (current()) setLoadError(operationDetail(reason, "Connections could not be loaded."));
+      if (current()) setLoadError(presentActionFailure(reason, "Connections could not be loaded."));
       return null;
     }
   }, [hostClient, hostName, current]);
@@ -170,7 +170,7 @@ function ConnectedApps(props: {
         void AccessibilityInfo.announceForAccessibility(message);
       }
     } catch (reason) {
-      if (current()) setError(operationDetail(reason, "That did not finish. Try again."));
+      if (current()) setError(presentActionFailure(reason, "That did not finish. Try again."));
     } finally {
       if (current()) setBusy(null);
     }

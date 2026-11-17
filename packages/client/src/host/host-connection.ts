@@ -1,3 +1,8 @@
+import {
+  presentClientIssue,
+  connectedLabel,
+  presentConnectionStarting,
+} from "../feedback/client-issue.js";
 import type { HostSnapshot } from "./client.js";
 
 type ConnectionState = Pick<HostSnapshot, "connection" | "session" | "network">;
@@ -9,7 +14,7 @@ export interface HostConnectionLine {
   readonly tone: "green" | "amber" | "red" | "muted";
 }
 
-const connected: HostConnectionLine = { action: "none", label: "Connected", tone: "green" };
+const connected: HostConnectionLine = { action: "none", label: connectedLabel, tone: "green" };
 
 /**
  * Platform reachability is evidence of being offline; an RPC failure is not.
@@ -17,23 +22,43 @@ const connected: HostConnectionLine = { action: "none", label: "Connected", tone
  * interruption has lasted, because decisions are what `canRespondToRequests` gates.
  */
 export function describeHostConnection(snapshot: ConnectionSnapshot | null): HostConnectionLine {
-  if (snapshot === null) return { action: "none", label: "Connecting…", tone: "muted" };
+  if (snapshot === null)
+    return { action: "none", label: presentConnectionStarting(), tone: "muted" };
   if (snapshot.session === "authentication-required") {
-    return { action: "sign-in", label: "Signed out", tone: "amber" };
+    return {
+      action: "sign-in",
+      label: presentClientIssue({ code: "sign-in" }).title,
+      tone: "amber",
+    };
   }
-  if (snapshot.session === "authenticated" && !snapshot.connectionInterrupted) return connected;
+  if (!snapshot.connectionInterrupted)
+    return snapshot.session === "authenticated"
+      ? connected
+      : { action: "none", label: presentConnectionStarting(), tone: "muted" };
   if (snapshot.network === "offline") {
-    return { action: "none", label: "Offline", tone: "muted" };
+    return {
+      action: "none",
+      label: presentClientIssue({ code: "connection", reason: "offline" }).title,
+      tone: "muted",
+    };
   }
   if (snapshot.connection === "offline") {
-    return { action: "retry", label: "Unavailable", tone: "muted" };
+    return {
+      action: "retry",
+      label: presentClientIssue({ code: "connection", reason: "unreachable" }).title,
+      tone: "muted",
+    };
   }
   if (snapshot.session === "checking") {
-    return { action: "none", label: "Connecting…", tone: "muted" };
+    return { action: "none", label: presentConnectionStarting(), tone: "muted" };
   }
   return snapshot.connection === "connected"
     ? connected
-    : { action: "retry", label: "Reconnecting…", tone: "muted" };
+    : {
+        action: "retry",
+        label: presentClientIssue({ code: "connection", reason: "reconnecting" }).title,
+        tone: "muted",
+      };
 }
 
 /** What is drawn as live stays drawn through a drop nobody is being told about. */

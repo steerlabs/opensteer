@@ -1,5 +1,5 @@
+import { presentActionFailure } from "../feedback/client-issue.js";
 import type { ComputerUseSessionSummary } from "@opensteer/protocol";
-import { clientPublicDetail } from "../connections/operation-error.js";
 import type { HostClient, HostSnapshot } from "../host/client.js";
 import { stopComputerUseSession } from "./computer-use.js";
 
@@ -108,7 +108,7 @@ export class ComputerUseStops {
             "failed",
             deadline.signal.aborted
               ? "Opensteer didn’t answer."
-              : clientPublicDetail(error, "Opensteer couldn’t stop it."),
+              : presentActionFailure(error, "Opensteer couldn’t stop it."),
           ),
       )
       .finally(() => clearTimeout(timer));

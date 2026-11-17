@@ -148,50 +148,6 @@ export function pluginAccountRows(detail: PluginDetailView) {
   }));
 }
 
-/** A visible page owns one reader. Invalidation bursts collapse into one trailing read. */
-export function createSettingsRead<T>(
-  read: () => Promise<T>,
-  publish: (value: T) => void,
-  fail: (reason: unknown) => void,
-) {
-  let generation = 0;
-  let running = false;
-  let dirty = false;
-  let disposed = false;
-  async function refresh() {
-    if (disposed) return;
-    dirty = true;
-    if (running) return;
-    running = true;
-    try {
-      while (dirty && !disposed) {
-        dirty = false;
-        const own = generation;
-        try {
-          const value = await read();
-          if (!disposed && own === generation) publish(value);
-        } catch (error) {
-          if (!disposed && own === generation) fail(error);
-        }
-      }
-    } finally {
-      running = false;
-    }
-  }
-  return {
-    refresh,
-    reconnect() {
-      generation++;
-      return refresh();
-    },
-    dispose() {
-      disposed = true;
-      generation++;
-      dirty = false;
-    },
-  };
-}
-
 /** Local machine identity is supplied by the platform, never inferred from a session. */
 export function settingsDeviceRows<T extends { id: string; name: string }>(
   devices: readonly T[],

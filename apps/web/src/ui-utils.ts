@@ -16,9 +16,7 @@ export function fromLivePage(event: {
   );
 }
 
-export function actionErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Opensteer couldn’t complete that action.";
-}
+export { presentActionFailure as actionErrorMessage } from "@opensteer/client/feedback";
 
 /**
  * Whether this window is in front of the person: visible *and* holding focus.

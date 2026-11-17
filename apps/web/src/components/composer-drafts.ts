@@ -46,6 +46,7 @@ const DraftSchema = z.object({
   quote: QuoteSchema.nullable().catch(null),
   /** Why a send was refused after its composer closed, until the draft is opened. */
   refusal: z.string().optional(),
+  recoveredSendKeys: z.array(z.string().max(255)).max(40).optional(),
   text: z.string(),
   updatedAt: z.number(),
 });
@@ -70,6 +71,7 @@ export interface ComposerDraftScope {
 
 /** Something a closed composer still owed its draft, such as a send refused after it left. */
 export interface ReturnedToDraft {
+  readonly files?: readonly DraftFile[];
   readonly edit: (text: string) => string;
   readonly places?: readonly PlaceContentPart[];
   readonly quote?: z.infer<typeof QuoteSchema> | null;
@@ -235,7 +237,10 @@ export function createComposerDraftStore(
 
   const clear = (key: string): void => {
     if (read(key) === null) return;
-    remove(key);
+    const recoveredSendKeys = read(key)?.recoveredSendKeys;
+    if (recoveredSendKeys?.length)
+      write(key, { text: "", files: [], quote: null, updatedAt: now(), recoveredSendKeys });
+    else remove(key);
     publish();
   };
 
@@ -301,9 +306,17 @@ export function createComposerDraftStore(
     read,
 
     /** Lays a discarded draft back down, exactly as it was. */
-    restore(key: string, draft: ComposerDraft): void {
-      write(key, draft);
+    restore(key: string, draft: ComposerDraft): boolean {
+      const saved = write(key, draft);
+      if (saved)
+        receivers.get(key)?.({
+          edit: () => draft.text,
+          files: draft.files,
+          ...(draft.places ? { places: draft.places } : {}),
+          quote: draft.quote,
+        });
       publish();
+      return saved;
     },
 
     /**
@@ -355,7 +368,9 @@ export function createComposerDraftStore(
       };
       if (!holdsContent(draft)) {
         if (current === null) return true;
-        remove(key);
+        if (draft.recoveredSendKeys?.length)
+          write(key, { ...draft, text: "", files: [], places: [], quote: null, updatedAt: now() });
+        else remove(key);
         if (!open || refusal !== undefined) publish();
         return true;
       }

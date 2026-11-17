@@ -1,9 +1,9 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import type { AccountProfile } from "@opensteer/control-plane-protocol";
 import { normalizePersonName } from "@opensteer/core";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Platform } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { useMobileTeams } from "../team/team-context.js";
 import { useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
@@ -107,7 +107,7 @@ export function YourNameScreen(props: StaticScreenProps<YourNameParams>): ReactN
         setDraft(null);
         setError(conflict);
       })
-      .catch((reason: unknown) => setError(operationDetail(reason, "Your name wasn’t saved.")))
+      .catch((reason: unknown) => setError(presentActionFailure(reason, "Your name wasn’t saved.")))
       .finally(() => setSaving(false));
   };
 

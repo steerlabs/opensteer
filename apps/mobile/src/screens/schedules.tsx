@@ -1,3 +1,4 @@
+import { presentClientIssue, clientReadPlaceholderLabel } from "@opensteer/client/feedback";
 import {
   schedulesClient,
   sectionAutomations,
@@ -12,15 +13,7 @@ import {
   useNavigation,
   type StaticScreenProps,
 } from "@react-navigation/native";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 import { headerActions } from "../navigation-header.js";
 import { color, space } from "../theme.js";
@@ -82,10 +75,7 @@ function SchedulesForHost(props: {
  * for. Only ever Host answers for this reader, since each reader remounts.
  */
 export function useShownSchedule<T>(state: ScheduleState<T>): T | null {
-  const held = useRef<T | null>(null);
-  if (state.status === "ready") held.current = state.data;
-  else if (state.status === "error" || state.status === "unavailable") held.current = null;
-  return state.status === "ready" ? state.data : held.current;
+  return state.status === "ready" ? state.data : null;
 }
 
 /** The read the Host refused or failed, as one notice with the way on from it. */
@@ -94,7 +84,7 @@ export function ScheduleProblem(props: {
   readonly state: ScheduleState<unknown>;
 }): ReactNode {
   const { state } = props;
-  if (state.status === "unavailable") {
+  if (state.issue?.reason === "unknown-method") {
     return (
       <Notice
         detail="This Host doesn’t offer automations. Update Opensteer on the computer it runs on to see them here."
@@ -103,8 +93,14 @@ export function ScheduleProblem(props: {
       />
     );
   }
-  if (state.status === "offline") {
-    return <Notice detail={state.error ?? ""} title="Offline" tone="neutral" />;
+  if (state.issue?.code === "access-lost") {
+    const copy = presentClientIssue(state.issue);
+    return <Notice title={copy.title} detail={copy.detail ?? ""} tone="neutral" />;
+  }
+  if (state.status === "waiting") {
+    return (
+      <ActivityIndicator accessibilityLabel={clientReadPlaceholderLabel} color={color.muted} />
+    );
   }
   return (
     <Notice
@@ -206,7 +202,7 @@ function ScheduleList(props: {
   return (
     <AutomationList
       banner={
-        state.status === "offline" ? (
+        state.status === "waiting" ? (
           <ScheduleProblem onRetry={() => void reload()} state={state} />
         ) : null
       }

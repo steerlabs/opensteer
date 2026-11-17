@@ -645,6 +645,7 @@ export const MessageSchema = z.strictObject(messageShape).superRefine(validateMe
 export const MessageViewSchema = z
   .object({
     ...messageShape,
+    clientSendKey: z.string().min(1).max(255).optional(),
     author: MessageAuthorViewSchema,
     addressedToUserId: UserIdSchema.optional(),
     /**

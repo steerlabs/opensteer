@@ -1,3 +1,14 @@
+import { observeRpcAuthentication } from "../host/host-api-client.js";
+import { presentActionFailure } from "../feedback/client-issue.js";
+import {
+  createConnectionController,
+  type ConnectionAttempt,
+  type ConnectionLease,
+  type ConnectionController,
+} from "../connections/connection-controller.js";
+import { classifyClientFailure } from "../connections/operation-error.js";
+import { HostTransportError } from "../connections/host-transport-error.js";
+import type { ClientLifecycle } from "../host/lifecycle.js";
 import { mergeTeamPeople, type TeamRemotePeople } from "./shared-channels.js";
 import type { TeamRuntimeOwner } from "./team-runtime-owner.js";
 import type { AccountProfileRelay } from "./account-profile-relay.js";
@@ -91,6 +102,10 @@ export interface TeamSessionSnapshot {
   readonly memberUpdates?: Readonly<Record<string, TeamMember>>;
 }
 export interface TeamSessionOptions {
+  readonly lifecycle?: ClientLifecycle;
+  readonly name?: string;
+  readonly loginId?: string;
+  readonly authorityKey?: string;
   readonly owner?: TeamRuntimeOwner;
   readonly scope: TeamCacheScope;
   readonly rpc: HostApiClient;
@@ -117,12 +132,9 @@ function refusedSend(error: unknown): error is OpensteerError {
   );
 }
 
-const healthyConnectionMs = 30_000;
 /** Longer than a planned server swap, so a swap never reads as out of reach. */
-const unreachableAfterMs = 5_000;
 /** WebSocket close codes the team server sends: a planned restart, or a refusal. */
 const restartingCloseCode = 1012;
-const refusedCloseCode = 1008;
 const memberNamesBound = 1_000;
 
 export type TeamVersionRefusal = "update-app" | "update-server";
@@ -135,6 +147,12 @@ export function teamVersionRefusal(reason: string | null | undefined): TeamVersi
 }
 
 export class TeamSessionClient {
+  readonly #loginId = globalThis.crypto.randomUUID();
+  readonly connection: ConnectionController;
+  readonly #releaseAuthentication: () => void;
+  #synchronize: ((key: string) => void) | null = null;
+  #needsRevalidation = false;
+  readonly #probeAnswers = new Set<() => void>();
   readonly rpc: HostApiClient;
   readonly owner: TeamRuntimeOwner | undefined;
   readonly #controller = new AbortController();
@@ -176,20 +194,16 @@ export class TeamSessionClient {
   #searchGeneration = 0;
   #persist: Promise<void> = Promise.resolve();
   #reconnecting: Promise<void> | null = null;
-  #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  #unreachableTimer: ReturnType<typeof setTimeout> | null = null;
   #opened = false;
   /** The names revision last caught up to (null: read again); renames in between arrive as frames. */
   #namesRevision: string | null | undefined;
   #namesRead = 0;
-  #connected = false;
   #removed = false;
   #removal: Promise<void> | null = null;
   #disposed = false;
   #loading: Promise<void> | null = null;
   #stateRevision = 0;
   readonly #editedDrafts = new Set<string>();
-  #attempt = 0;
   #typingAt = new Map<string, number>();
   #presenceAt = -Infinity;
   #files = new Map<string, Blob>();
@@ -206,7 +220,24 @@ export class TeamSessionClient {
       ? AbortSignal.any([options.owner.signal, this.#controller.signal])
       : this.#controller.signal;
     this.#options = options;
+    this.connection = createConnectionController({
+      driver: { connect: (attempt) => this.openConnection(attempt) },
+      ...(options.lifecycle ? { lifecycle: options.lifecycle } : {}),
+      ...(options.random ? { random: options.random } : {}),
+      presentation: { name: options.name ?? null, target: "team", route: "private-network" },
+    });
+    this.connection.subscribe(() => {
+      const state = this.connection.getSnapshot();
+      if (
+        (state.showInterruption && state.issue?.code === "connection") !==
+        this.#snapshot.unreachable
+      )
+        this.#update({ unreachable: state.showInterruption && state.issue?.code === "connection" });
+    });
     this.rpc = options.owner ? options.owner.rpc(options.rpc) : options.rpc;
+    this.#releaseAuthentication = observeRpcAuthentication(options.rpc, () => {
+      void this.remove("sign-in").catch(() => undefined);
+    });
     this.#releaseOwner = options.owner?.own(() => this.dispose());
     this.#releaseProfiles = options.profiles?.subscribe(() => void this.#relayProfile());
   }
@@ -318,134 +349,161 @@ export class TeamSessionClient {
         });
     }
     await this.#loading;
+    this.connection.setPresentation({
+      ...this.connection.getSnapshot(),
+      name: this.#snapshot.bootstrap?.teamName ?? this.connection.getSnapshot().name,
+    });
     if (connect) this.connect();
     void this.#relayProfile();
   }
   connect(): void {
-    if (this.#removed || this.#disposed || this.#socket) return;
-    // From rest (first connect, or after disconnecting) the deadline starts with this attempt.
-    const resting = !this.#connected;
-    if (resting) this.#startUnreachable(true);
-    this.#connected = true;
-    this.#update({
-      connection: "connecting",
-      error: null,
-      ...(resting ? { unreachable: false } : {}),
+    if (!this.#removed && !this.#disposed) {
+      if (this.connection.getSnapshot().phase === "blocked") this.connection.retry();
+      else this.connection.start();
+    }
+  }
+  async openConnection(attempt: ConnectionAttempt): Promise<ConnectionLease> {
+    attempt.signal.throwIfAborted();
+    if (!this.#snapshot.bootstrap) await this.load(false);
+    else if (this.#needsRevalidation && !(await this.#revalidate())) {
+      if (this.#removed)
+        throw new OpensteerError({ code: "unauthorized", message: "Sign in to continue." });
+      if (this.#snapshot.versionRefusal)
+        throw new OpensteerError({
+          code: "bad_request",
+          reason:
+            this.#snapshot.versionRefusal === "update-app" ? "client-too-old" : "host-too-old",
+          message: "An update is needed.",
+        });
+      throw new HostTransportError("unreachable");
+    }
+    attempt.signal.throwIfAborted();
+    attempt.acceptScope({
+      authorityKey: this.#options.authorityKey ?? this.scope.teamDeploymentId,
+      deploymentId: this.scope.teamDeploymentId,
+      viewerId: this.scope.userId,
+      loginId: this.#options.loginId ?? this.owner?.id ?? this.#loginId,
     });
-    const socket = this.#options.connect();
-    this.#socket = socket;
-    let openedAt: number | undefined;
-    socket.addEventListener("open", () => {
-      if (this.#socket !== socket) return;
-      openedAt = Date.now();
-      this.#clearUnreachable();
-      const resumed = this.#opened;
-      this.#opened = true;
-      this.#update({
-        connection: "connected",
-        unreachable: false,
-        ...(resumed ? { resumedGeneration: this.#snapshot.resumedGeneration + 1 } : {}),
+    return new Promise((resolve, reject) => {
+      const required = new Set([
+        "sidebar",
+        ...[this.#snapshot.channel, this.#snapshot.thread].flatMap((view) =>
+          view ? [teamScopeKey(view.scope)] : [],
+        ),
+      ]);
+      let admitted = false;
+      let finish!: (failure: ReturnType<typeof classifyClientFailure>) => void;
+      const closed = new Promise<ReturnType<typeof classifyClientFailure>>((done) => {
+        finish = done;
       });
-      this.#subscribe(null);
-      if (this.#snapshot.channel) this.#subscribe(this.#snapshot.channel);
-      if (this.#snapshot.thread) this.#subscribe(this.#snapshot.thread);
-      void this.reconcilePending().catch((error: unknown) =>
+      const release = () => {
+        attempt.signal.removeEventListener("abort", abort);
+        this.#synchronize = null;
+      };
+      const close = () => {
+        release();
+        const current = this.#socket;
+        this.#socket = null;
+        current?.close();
+        this.#update({ connection: "offline", typing: {}, presence: {} });
+      };
+      const fail = (error: unknown) => {
+        close();
+        attempt.fail?.(classifyClientFailure(error));
+        if (admitted) finish(classifyClientFailure(error));
+        else reject(error);
+      };
+      const abort = () => fail(attempt.signal.reason);
+      const socket = this.#options.connect();
+      this.#socket = socket;
+      let progressAt = Date.now();
+      const lease: ConnectionLease = {
+        closed,
+        lastProgressAt: () => progressAt,
+        close,
+        probe: (signal) =>
+          new Promise<void>((done, refused) => {
+            const answered = () => {
+              signal.removeEventListener("abort", cancelled);
+              this.#probeAnswers.delete(answered);
+              done();
+            };
+            const cancelled = () => {
+              this.#probeAnswers.delete(answered);
+              refused(signal.reason);
+            };
+            signal.addEventListener("abort", cancelled, { once: true });
+            this.#probeAnswers.add(answered);
+            this.#subscribe(null);
+          }),
+      };
+      attempt.signal.addEventListener("abort", abort, { once: true });
+      this.#synchronize = (key) => {
+        required.delete(key);
+        if (required.size || admitted || this.#socket !== socket) return;
+        admitted = true;
+        this.#needsRevalidation = false;
+        const resumed = this.#opened;
+        this.#opened = true;
         this.#update({
-          error: error instanceof Error ? error.message : "Could not confirm sent messages.",
-        }),
-      );
-    });
-    socket.addEventListener("message", (event) => {
-      if (this.#socket !== socket || typeof event.data !== "string") return;
-      try {
-        if (event.data.length > 512 * 1024) throw new Error("Team frame exceeds its byte bound.");
-        const frame = readTeamFrame(TeamServerFrameViewSchema, JSON.parse(event.data));
-        if (frame) this.receive(frame);
-      } catch {
-        this.#update({
-          channel: this.#fresh(this.#snapshot.channel),
-          thread: this.#fresh(this.#snapshot.thread),
-          error: "Team synchronization needs a fresh snapshot.",
+          connection: "connected",
+          error: null,
+          ...(resumed ? { resumedGeneration: this.#snapshot.resumedGeneration + 1 } : {}),
         });
-        socket.close();
-        closed();
-      }
-    });
-    const closed = (code?: number) => {
-      if (this.#socket !== socket) return;
-      this.#socket = null;
-      this.#connectionGeneration++;
-      this.#update({ connection: "offline", typing: {}, presence: {} });
-      if (!this.#connected || this.#removed) return;
-      this.#startUnreachable();
-      // A socket that opens and fails at once keeps backing off.
-      if (openedAt !== undefined && Date.now() - openedAt >= healthyConnectionMs) this.#attempt = 0;
-      if (code === refusedCloseCode) this.#recheck();
-      else this.#reconnectLater(code !== restartingCloseCode);
-    };
-    socket.addEventListener("close", (event) => closed(event.code));
-    socket.addEventListener("error", () => {
-      socket.close();
-      closed();
-    });
-  }
-  /** One deadline from the first attempt or close; failed attempts after it never push it back. */
-  #startUnreachable(fresh = false): void {
-    if (!fresh && (this.#unreachableTimer || this.#snapshot.unreachable)) return;
-    this.#clearUnreachable();
-    this.#unreachableTimer = setTimeout(() => {
-      this.#unreachableTimer = null;
-      this.#update({ unreachable: true });
-    }, unreachableAfterMs);
-  }
-  #clearUnreachable(): void {
-    if (this.#unreachableTimer) clearTimeout(this.#unreachableTimer);
-    this.#unreachableTimer = null;
-  }
-  /** A refused socket: ask now why, so a revocation or version refusal shows at once. */
-  #recheck(): void {
-    const generation = this.#connectionGeneration;
-    void this.#revalidate().then((revalidated) => {
-      if (
-        generation !== this.#connectionGeneration ||
-        !this.#connected ||
-        this.#removed ||
-        this.#disposed
-      )
-        return;
-      // Still backed off: a server that keeps refusing the socket is not asked in a tight loop.
-      this.#reconnectLater(!revalidated);
-    });
-  }
-  /**
-   * Jittered, and before revalidating: a restarted team server must not receive
-   * every member's bootstrap and socket in the same instant. A failed
-   * revalidation waits for the next step rather than opening a doomed socket.
-   * A planned restart skips the check: nothing about the viewer changed.
-   */
-  #reconnectLater(revalidate = true): void {
-    const generation = this.#connectionGeneration;
-    const current = () =>
-      generation === this.#connectionGeneration &&
-      this.#connected &&
-      !this.#removed &&
-      !this.#disposed;
-    const ceiling = Math.min(12_000, 300 * 2 ** Math.min(this.#attempt++, 6));
-    this.#reconnectTimer = setTimeout(
-      () => {
-        this.#reconnectTimer = null;
-        if (!revalidate) {
-          if (current()) this.connect();
-          return;
+        attempt.admit?.(lease);
+        resolve(lease);
+        void this.reconcilePending().catch(() => undefined);
+      };
+      this.#update({ connection: "connecting", error: null });
+      socket.addEventListener("open", () => {
+        if (this.#socket !== socket) return;
+        this.#subscribe(null);
+        if (this.#snapshot.channel) this.#subscribe(this.#snapshot.channel);
+        if (this.#snapshot.thread) this.#subscribe(this.#snapshot.thread);
+      });
+      socket.addEventListener("message", (event) => {
+        if (this.#socket !== socket || typeof event.data !== "string") return;
+        try {
+          if (event.data.length > 512 * 1024) throw new Error("Team frame exceeds its byte bound.");
+          const frame = readTeamFrame(TeamServerFrameViewSchema, JSON.parse(event.data));
+          if (frame) {
+            progressAt = Date.now();
+            this.receive(frame);
+          }
+        } catch {
+          this.#needsRevalidation = true;
+          fail(new HostTransportError("unreachable"));
         }
-        void this.#revalidate().then((revalidated) => {
-          if (!current()) return;
-          if (revalidated) this.connect();
-          else this.#reconnectLater();
-        });
-      },
-      (ceiling * (1 + (this.#options.random ?? Math.random)())) / 2,
-    );
+      });
+      socket.addEventListener("close", (event) => {
+        if (this.#socket !== socket) return;
+        this.#connectionGeneration++;
+        this.#needsRevalidation = event.code !== restartingCloseCode;
+        if (event.code === 1008) {
+          void this.#revalidate().then((accepted) => {
+            if (accepted) fail(new HostTransportError("unreachable"));
+            else
+              fail(
+                new OpensteerError({
+                  code: this.#removed ? "unauthorized" : "bad_request",
+                  message: "Access needs to be checked.",
+                  ...(this.#snapshot.versionRefusal
+                    ? {
+                        reason:
+                          this.#snapshot.versionRefusal === "update-app"
+                            ? "client-too-old"
+                            : "host-too-old",
+                      }
+                    : {}),
+                }),
+              );
+          }, fail);
+        } else fail(new HostTransportError("unreachable"));
+      });
+      socket.addEventListener("error", () => {
+        if (this.#socket === socket) fail(new HostTransportError("unreachable"));
+      });
+    });
   }
   async #bootstrap() {
     try {
@@ -536,9 +594,6 @@ export class TeamSessionClient {
       return false;
     }
   }
-  #fresh(view: TeamTimeline | null): TeamTimeline | null {
-    return view ? emptyTeamTimeline(view.subscriptionId, view.generation, view.scope) : null;
-  }
   #subscribe(view: TeamTimeline | null): void {
     this.#send({
       type: "team.subscribe",
@@ -607,7 +662,7 @@ export class TeamSessionClient {
             this.#snapshot.thread?.generation === thread.generation
           )
             this.#update({
-              error: error instanceof Error ? error.message : "Could not open thread.",
+              error: presentActionFailure(error),
             });
         });
     } else
@@ -809,6 +864,7 @@ export class TeamSessionClient {
             [view]: next,
           });
           this.#applyRecipients(frame.cut.agentRecipients);
+          this.#synchronize?.(teamScopeKey(frame.cut.scope));
           if (
             frame.cut.type === "snapshot" &&
             held.anchorId &&
@@ -828,6 +884,8 @@ export class TeamSessionClient {
           });
         this.#applySidebar(frame.sidebar);
         this.#catchUpNames(frame.sidebar.namesRevision);
+        this.#synchronize?.("sidebar");
+        for (const answer of this.#probeAnswers) answer();
         break;
       }
       case "team.sidebar.dirty":
@@ -1127,7 +1185,7 @@ export class TeamSessionClient {
     if (this.#snapshot.connection === "connected")
       void this.#transmit(pending, this.#lifetime).catch((error: unknown) =>
         this.#update({
-          error: error instanceof Error ? error.message : "Could not confirm sent message.",
+          error: presentActionFailure(error),
         }),
       );
     return pending.command.clientMessageId;
@@ -1164,7 +1222,7 @@ export class TeamSessionClient {
     this.#update({
       pending: this.#snapshot.pending.map((row) =>
         ids.has(row.command.clientMessageId)
-          ? { ...row, failure: error.message.slice(0, 2048) }
+          ? { ...row, failure: presentActionFailure(error) }
           : row,
       ),
     });
@@ -1409,17 +1467,23 @@ export class TeamSessionClient {
   }
   disconnect(): void {
     this.#connectionGeneration++;
-    this.#connected = false;
-    if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
-    this.#reconnectTimer = null;
-    this.#clearUnreachable();
+    this.connection.stop();
     const socket = this.#socket;
     this.#socket = null;
+    this.#synchronize = null;
     socket?.close();
-    this.#update({ connection: "offline", unreachable: true, typing: {}, presence: {} });
+    this.#update({ connection: "offline", typing: {}, presence: {} });
   }
   remove(ended: TeamSessionSnapshot["ended"] = "removed"): Promise<void> {
-    if (this.#removal) return this.#removal;
+    if (this.#removal) {
+      if (ended !== "sign-in" && this.#snapshot.ended === "sign-in") {
+        this.#update({ ended });
+        this.#removal = this.#removal
+          .catch(() => undefined)
+          .then(() => this.#options.persistence.remove(this.scope));
+      }
+      return this.#removal;
+    }
     this.#removal = this.#persist
       .catch(() => undefined)
       .then(() =>
@@ -1429,6 +1493,7 @@ export class TeamSessionClient {
     this.#controller.abort(new Error("Team session ended."));
     this.#lifetime++;
     this.disconnect();
+    this.connection.invalidateScope();
     this.#files.clear();
     this.#fileBytes = 0;
     this.#searchInput = null;
@@ -1457,7 +1522,9 @@ export class TeamSessionClient {
     if (this.#disposed) return;
     void this.remove("sign-in");
     this.#disposed = true;
+    this.connection.dispose();
     this.#releaseOwner?.();
+    this.#releaseAuthentication();
     this.#releaseProfiles?.();
     this.#listeners.clear();
   }

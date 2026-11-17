@@ -690,7 +690,11 @@ export function AppShell({
         });
         // The new Thread's own composer sends it, exactly as kept, when it
         // opens: one path for the first try, a lost answer and a refusal.
-        claimFirstMessage({ deploymentId, threadId: thread.id, userId: user.id }, message);
+        await claimFirstMessage(
+          hostClient,
+          { deploymentId, threadId: thread.id, userId: user.id },
+          message,
+        );
         return thread;
       } catch (error) {
         throw new Error(actionErrorMessage(error));

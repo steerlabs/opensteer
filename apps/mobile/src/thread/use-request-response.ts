@@ -1,3 +1,4 @@
+import { presentActionFailure } from "@opensteer/client/feedback";
 import type { CardChoice } from "@opensteer/protocol";
 import {
   browserSiteLabel,
@@ -13,7 +14,6 @@ import type { BrowserSignInDecision } from "@opensteer/protocol/browser-sources"
 import * as Haptics from "expo-haptics";
 import { useEffect, useRef } from "react";
 import { AccessibilityInfo } from "react-native";
-import { operationDetail } from "../client/mobile-client.js";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { authenticatePasswordApproval } from "./password-approval-auth.js";
 import { nextRequestSubmission } from "./request-form-model.js";
@@ -28,7 +28,7 @@ export const unconfirmedDetail = "Could not confirm your answer was sent.";
 
 function requestFailureDetail(error: unknown): string {
   return error instanceof HostClientRequestError
-    ? operationDetail(error, unconfirmedDetail)
+    ? presentActionFailure(error, unconfirmedDetail)
     : unconfirmedDetail;
 }
 

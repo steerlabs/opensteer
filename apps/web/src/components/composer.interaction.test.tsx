@@ -111,7 +111,7 @@ describe("composer connection transitions", () => {
     );
     expect(send).toHaveBeenCalledWith(words, expect.anything());
     expect(field.value).toBe(words);
-    expect(node.textContent).toContain("Not sent");
+    expect(node.textContent).toContain("Couldn't confirm");
     render(true);
     expect(field.readOnly).toBe(true);
     expect(node.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled).toBe(

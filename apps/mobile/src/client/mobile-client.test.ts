@@ -107,7 +107,7 @@ function testPort(options: {
             },
             held: async () => options.held,
           },
-    attach: ({ connection, origin, capabilities }) => {
+    attach: ({ connection, origin, capabilities, connectionController, clientScope }) => {
       capabilityReaders.push(capabilities);
       const deploymentId = connection.authority.document.deploymentId;
       attached.push({ deploymentId, origin });
@@ -116,6 +116,7 @@ function testPort(options: {
       // No latency: `connected` is a real crossing these tests wait for.
       const hostClient = new MockHostClient({ latencyMs: 0 });
       options.configureClient?.(hostClient);
+      if (connectionController) hostClient.adoptConnection(connectionController, clientScope);
       const release = hostClient.dispose.bind(hostClient);
       hostClient.dispose = () => {
         disposed.push(deploymentId);
@@ -441,6 +442,7 @@ function open(
   privateFiles: PrivateFilesystem = new MemoryPrivateFilesystem(),
   options: {
     readonly notificationPreviews?: NotificationPreviews;
+    readonly lifecycle?: MobileClientOptions["lifecycle"];
     readonly accountOrigin?: string | null;
     readonly fetch?: MobileClientOptions["fetch"];
     readonly iphoneApps?: MobileClientOptions["iphoneApps"];
@@ -452,6 +454,7 @@ function open(
   const opened: string[] = [];
   const client = new MobileClient({
     ...(options.notificationPreviews ? { notificationPreviews: options.notificationPreviews } : {}),
+    ...(options.lifecycle ? { lifecycle: options.lifecycle } : {}),
     accountOrigin: options.accountOrigin ?? null,
     catalogFilePath: "/private/deployments.json",
     quietSeenFilePath: "/private/quiet-seen.json",
@@ -1803,7 +1806,7 @@ describe("MobileClient Account directory state", () => {
     await settle();
 
     expect(client.getSnapshot().directory).toEqual({
-      detail: "The Account directory did not answer.",
+      detail: "Couldn't load your computers.",
       status: "error",
       unavailable: [],
     });
@@ -3248,7 +3251,11 @@ describe("MobileClient version verification", () => {
     expect(client.getSnapshot().selection.row?.status).toBe("offline");
     options.verification = { status: "compatible", capabilities: [] };
     await client.foregrounded();
-    expect(port.attached).toHaveLength(1);
+    await vi.waitFor(
+      () =>
+        expect(port.attached, "The first attachment did not recover on foreground").toHaveLength(1),
+      { timeout: 1000 },
+    );
     client.dispose();
   });
 });
@@ -4373,4 +4380,59 @@ it("retains a cold computer intent above the remembered selection", async () => 
   });
   expect(client.getSnapshot().selection.deploymentId).toBe(serverId);
   client.dispose();
+});
+
+it("does not let a cancelled first verification revoke the foreground attachment", async () => {
+  const port = testPort({ held: true });
+  const late = deferred<HostEpochAgreement>();
+  let attempts = 0;
+  const foreground = new Set<() => void>(),
+    background = new Set<() => void>();
+  const { client } = open(
+    (context) => ({
+      ...port.factory(context),
+      verifyEpoch: async () =>
+        ++attempts === 1 ? late.promise : { status: "compatible", capabilities: [] },
+    }),
+    undefined,
+    {
+      lifecycle: {
+        getSnapshot: () => ({ visibility: "foreground", network: "online" }),
+        onForeground: (listener) => {
+          foreground.add(listener);
+          return () => foreground.delete(listener);
+        },
+        onBackground: (listener) => {
+          background.add(listener);
+          return () => background.delete(listener);
+        },
+        onNetworkChange: () => () => {},
+      },
+    },
+  );
+  try {
+    await client.catalog.upsertAndSelect(
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
+    );
+    const initialized = client.initialize();
+    await vi.waitFor(() => expect(attempts, "first verification never started").toBe(1));
+    background.forEach((listener) => listener());
+    foreground.forEach((listener) => listener());
+    await vi.waitFor(() =>
+      expect(
+        client.getSnapshot().selection.session?.connection.getSnapshot().phase,
+        "foreground attachment never became ready",
+      ).toBe("ready"),
+    );
+    const admitted = client.getSnapshot().selection.hostClient;
+    expect(admitted).not.toBeNull();
+    late.resolve("identity-mismatch");
+    await initialized;
+    await settle();
+    expect(client.getSnapshot().selection.hostClient).toBe(admitted);
+    expect(client.getSnapshot().selection.session?.connection.getSnapshot().phase).toBe("ready");
+  } finally {
+    late.resolve("unreachable");
+    client.dispose();
+  }
 });

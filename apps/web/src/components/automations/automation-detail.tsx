@@ -1,3 +1,4 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
 import {
   useCallback,
   useMemo,
@@ -59,7 +60,7 @@ function AutomationDetail({ triggerId }: { readonly triggerId: string }) {
   const state = useSyncExternalStore(resource.subscribe, resource.getSnapshot);
   const detail = state.data?.definition ?? null;
   const error = state.error;
-  const missing = state.status === "error" && state.errorCode === "not_found";
+  const missing = state.status === "failed" && state.issue.code === "access-lost";
 
   return (
     <div className="page">
@@ -206,7 +207,11 @@ function AutomationView({
   const runNow = () =>
     act(async () => {
       const schedules = schedulesClient(client);
-      await schedules.act(trigger.id, "run", undefined, { requestedFrom: "web" });
+      const outcome = await schedules.act(trigger.id, "run", undefined, { requestedFrom: "web" });
+      if (outcome.kind !== "confirmed") {
+        if (outcome.issue) toast.error(presentClientIssue(outcome.issue).title);
+        return "";
+      }
       return "Running now";
     });
 

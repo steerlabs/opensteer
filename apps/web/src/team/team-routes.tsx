@@ -155,6 +155,7 @@ function TeamSearchPage({ view }: { readonly view: TeamView }) {
           nextCursor: page.hasMore ? (page.channels.at(-1)?.id ?? null) : null,
         })),
     `search-channels:${view.team.teamId}:${view.snapshot.sidebar?.accessRevision ?? ""}`,
+    view.client,
   );
   const channels = directory.items
     .filter((channel) => channel.can.read)
