@@ -491,7 +491,7 @@ describe("LocalRunnerService", () => {
         await running.service.reconcile();
         expect(running.fork).toHaveBeenCalledOnce();
         await expect(running.service.start(startInput(target.deploymentId))).rejects.toThrow(
-          "Set up again",
+          "Connect again",
         );
       }
     },
@@ -694,7 +694,7 @@ describe("LocalRunnerService", () => {
     await removing;
     expect(clear).toHaveBeenCalledWith(first.deploymentId);
     await expect(running.service.assertSessionAllowed(first.deploymentId)).rejects.toThrow(
-      "Set up again",
+      "Connect again",
     );
     await expect(running.service.bindDeviceSession(first.deploymentId)).rejects.toThrow(
       "not an active device",
@@ -958,7 +958,7 @@ describe("LocalRunnerService", () => {
         (await running.service.status(target.deploymentId)).membership?.state === "removed",
     );
     await expect(running.service.assertSessionAllowed(target.deploymentId)).rejects.toThrow(
-      "Set up again",
+      "Connect again",
     );
     await running.service.shutdown();
     running.service.dispose();
@@ -1952,7 +1952,7 @@ describe("LocalRunnerService", () => {
     expect(relaunched.fork).not.toHaveBeenCalled();
     await expect(relaunched.service.status(target.deploymentId)).resolves.toMatchObject({
       runner: {
-        detail: "Finish setting up this Mac to join this Opensteer.",
+        detail: "This Mac isn’t connected to this Opensteer yet.",
         state: "failed",
       },
     });

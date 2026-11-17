@@ -32,7 +32,7 @@ final class NotificationService: UNNotificationServiceExtension {
         fields, key: record["key"], marker: store.marker(), recordMarker: record["marker"] ?? "")
       content.title = text.title
       content.body = text.body
-      content.threadIdentifier = dep + ":" + (fields["threadId"] ?? "")
+      content.threadIdentifier = dep + ":" + (fields["threadId"] ?? fields["channelId"] ?? fields["noticeId"] ?? "")
       finish(content)
     } catch { finish(original) }
   }

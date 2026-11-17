@@ -10,6 +10,32 @@ final class PreviewTests: XCTestCase {
     ).standardized
     return try JSONDecoder().decode([String: String].self, from: Data(contentsOf: root))
   }
+  func testAllDestinationsDecryptWithoutNativeRouteInterpretation() throws {
+    let fixture = try fixture()
+    let key = fixture["key"]!
+    let keyId = fixture["keyId"]!
+    for (kind, path) in [
+      ("team-message", "channels/channel"), ("team-notice", "notices/notice"),
+      ("request-opened", "needs-you"), ("future-kind", "future"),
+    ] {
+      var fields = fixture
+      fields["threadId"] = nil
+      fields["kind"] = kind
+      fields["deepLink"] = "com.opensteer.mobile:/deployments/\(fields["deploymentId"]!)/\(path)"
+      let box = try AES.GCM.seal(
+        Data(fixture["plaintext"]!.utf8),
+        using: SymmetricKey(data: Preview.decode(key, count: 32...32)),
+        nonce: AES.GCM.Nonce(data: Preview.decode(fixture["nonce"]!, count: 12...12)),
+        authenticating: Preview.aad(fields, keyId: keyId))
+      fields["preview"] = String(data: try Preview.json([
+        "version": 1, "keyId": keyId, "nonce": fixture["nonce"]!,
+        "ciphertext": Preview.encode(box.ciphertext + box.tag),
+      ]), encoding: .utf8)!
+      XCTAssertEqual(try Preview.open(
+        fields, key: key, marker: "install", recordMarker: "install",
+        now: Date(timeIntervalSince1970: 0)).body, "Build passed. You can review it.")
+    }
+  }
   func testSharedVectorAndRejections() throws {
     var f = try fixture()
     let key = f["key"]!

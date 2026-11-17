@@ -1,3 +1,5 @@
+import { computerForTeam, teamLinkTarget, type ApplicationLinkOutcome } from "./links.js";
+import type { MobileTeams } from "./team/mobile-teams.js";
 import type { InitialState } from "@react-navigation/native";
 
 export interface ThreadDestination {
@@ -26,39 +28,6 @@ const modalWorkRoutes: ReadonlySet<string> = new Set([
   "NotificationsIntro",
   "Settings",
 ]);
-
-/** A computer's address and one-time code, waiting for the person to confirm them. */
-export interface PairingOffer {
-  readonly code: string;
-  readonly origin: string;
-}
-
-/**
- * A linked Thread is already the intended root while its Deployment selection
- * catches up. Only that matching publication may resume normal reconciliation;
- * an older remembered selection must not replace the destination stack.
- */
-export function selectionMayReconcileLinkedRoot(input: {
-  readonly linkedDeploymentId: string | null;
-  readonly selectionDeploymentId: string | null;
-}): boolean {
-  return (
-    input.linkedDeploymentId === null || input.linkedDeploymentId === input.selectionDeploymentId
-  );
-}
-
-/** A failed link may release its protected root only while it is still newest. */
-export function linkedSelectionFailureIsCurrent(input: {
-  readonly currentAttempt: number;
-  readonly failedAttempt: number;
-  readonly failedDeploymentId: string;
-  readonly linkedDeploymentId: string | null;
-}): boolean {
-  return (
-    input.currentAttempt === input.failedAttempt &&
-    input.linkedDeploymentId === input.failedDeploymentId
-  );
-}
 
 /**
  * What a newly published client selection means for the visible root.
@@ -143,30 +112,6 @@ export function deploymentsRoot(): InitialState {
 }
 
 /**
- * The first stack after storage hydrates. A pairing link opens its form over
- * whatever would have been shown, including a single computer startup opened
- * on its own, so the link is answered before anything else is.
- */
-export function startupRoot(input: {
-  /** A Thread or agent link's stack, which replaces the remembered one. */
-  readonly destination: InitialState | null;
-  readonly pairing: PairingOffer | null;
-  readonly selectedDeploymentId: string | null;
-}): InitialState {
-  const base =
-    input.destination ??
-    (input.selectedDeploymentId === null
-      ? deploymentsRoot()
-      : deploymentRoot(input.selectedDeploymentId));
-  if (input.pairing === null) return base;
-  const routes = [
-    ...base.routes,
-    { name: "AddPersonal", params: { code: input.pairing.code, origin: input.pairing.origin } },
-  ];
-  return { index: routes.length - 1, routes };
-}
-
-/**
  * How a sheet over a Deployment's work reaches one of its Threads: back to it
  * when it is the Thread already beneath, and otherwise back to the screen
  * beneath the sheets and forward to it, so no Thread is ever pushed over a
@@ -182,4 +127,60 @@ export function threadReturn(
     params.threadId === destination.threadId
     ? "pop-to"
     : "push-from-top";
+}
+
+/** Builds the stack before starting any personal Host connection. Team reads are independent. */
+export function applicationLinkState(
+  outcome: Exclude<ApplicationLinkOutcome, { kind: "ignore" | "unknown-deployment" }>,
+  ports: {
+    /** Stamped on a link-opened sheet so a newer link supersedes it even before it mounts. */
+    readonly externalIntent: number;
+    readonly selectedDeploymentId: string | null;
+    readonly select: (deploymentId: string) => Promise<void>;
+    readonly teams: Pick<MobileTeams, "team" | "teamAt" | "computersIn">;
+  },
+): InitialState {
+  let deploymentId = ports.selectedDeploymentId;
+  let state: InitialState;
+  if (outcome.kind === "pairing") {
+    const base = deploymentId === null ? deploymentsRoot() : deploymentRoot(deploymentId);
+    return {
+      index: base.routes.length,
+      routes: [...base.routes, { name: "AddPersonal", params: outcome.offer }],
+    };
+  }
+  if (outcome.kind === "team" || outcome.kind === "team-notice") {
+    const team =
+      outcome.kind === "team-notice"
+        ? ports.teams.team(outcome.teamId)
+        : ports.teams.teamAt(outcome.origin);
+    const target = teamLinkTarget(outcome, team, ports.externalIntent);
+    const move =
+      team === null
+        ? null
+        : computerForTeam({
+            shown: deploymentId,
+            computersInTeam: ports.teams.computersIn(team.teamId),
+          });
+    deploymentId = move ?? deploymentId;
+    const base = deploymentId === null ? deploymentsRoot() : deploymentRoot(deploymentId);
+    state = { index: base.routes.length, routes: [...base.routes, target] };
+    if (move === null) return state;
+  } else {
+    deploymentId = outcome.deploymentId;
+    state =
+      outcome.kind === "authorize-agent"
+        ? agentAuthorizationRoot(deploymentId, outcome.requestId)
+        : outcome.kind === "needs-you"
+          ? needsYouRoot(deploymentId)
+          : threadRoot({
+              deploymentId,
+              threadId: outcome.threadId,
+              ...(outcome.messageId === undefined ? {} : { messageId: outcome.messageId }),
+              ...(outcome.requestId === null ? {} : { requestId: outcome.requestId }),
+            });
+  }
+  // The destination's gate shows connection failures; a dead Host cannot delay navigation.
+  if (deploymentId !== null) void ports.select(deploymentId).catch(() => undefined);
+  return state;
 }
