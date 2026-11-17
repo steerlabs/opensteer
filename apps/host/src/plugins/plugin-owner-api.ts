@@ -1,4 +1,13 @@
 import { z } from "zod";
+import {
+  ownerManagementResults,
+  EngineScheduledRunSchema,
+  EngineScheduledApprovalSchema,
+  EngineWorkflowRunSchema,
+  EngineWorkflowRunPageSchema,
+  EngineWebhookSetupSchema,
+  EngineWebhookSchema,
+} from "./engine-feature-schemas.js";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import {
   PluginIconSchema,
@@ -23,6 +32,7 @@ import type { PluginAgentStore } from "@opensteer/database";
 import { requireSession } from "../server/rpc-context.js";
 import {
   PluginServiceError,
+  ConsentSchema,
   type PluginCaller,
   type PluginConsent,
   type PluginJson,
@@ -57,6 +67,11 @@ type Service = Pick<
 
 export interface PluginOwnerApiOptions {
   readonly service: Service;
+  readonly pages?: import("./plugin-pages.js").PluginPages;
+  readonly webhooks?: {
+    service: Pick<PluginService, "webhook" | "readStream">;
+    origin: () => Promise<string | undefined>;
+  };
   readonly settings: Pick<
     PluginAgentStore,
     "settings" | "setAccess" | "recordInstall" | "recordActivation"
@@ -121,8 +136,7 @@ const requirementSchema = z.object({
 type Requirement = z.infer<typeof requirementSchema>;
 function requirements(plugin: { requirements: { accounts: Record<string, unknown> } }) {
   return Object.entries(plugin.requirements.accounts).flatMap(([name, value]) => {
-    const parsed = requirementSchema.safeParse(value);
-    return parsed.success ? [[name, parsed.data] as const] : [];
+    return [[name, requirementSchema.parse(value)] as const];
   });
 }
 
@@ -161,18 +175,11 @@ function summary(
   };
 }
 
-function list(value: PluginJson | undefined, key?: string): unknown[] {
-  if (Array.isArray(value)) return value;
-  if (key && value && typeof value === "object" && Array.isArray((value as never)[key]))
-    return (value as Record<string, unknown[]>)[key]!;
-  return [];
-}
 function each<T>(values: unknown[], schema: z.ZodType<T>, max: number): T[] {
   const result: T[] = [];
   for (const value of values) {
     if (result.length >= max) break;
-    const parsed = schema.safeParse(value);
-    if (parsed.success) result.push(parsed.data);
+    result.push(schema.parse(value));
   }
   return result;
 }
@@ -184,65 +191,13 @@ const iso = (value: unknown) => {
 const clip = (value: unknown, max: number) =>
   typeof value === "string" ? value.slice(0, max) : "";
 
-const scheduleSchema = z.object({
-  name: z.string().min(1),
-  tool: z.string().min(1),
-  timing: z.union([
-    z.object({ kind: z.literal("interval"), milliseconds: z.number().int().positive() }),
-    z.object({
-      kind: z.literal("cron"),
-      calendar: z.object({ expression: z.string(), timezone: z.string() }),
-    }),
-  ]),
-  settings: z
-    .object({
-      id: z.string(),
-      enabled: z.boolean(),
-      approvalMode: z.enum(["automatic", "browser"]),
-      nextAt: z.unknown(),
-      activeRun: z.string().nullable(),
-      accountRequired: z.string().optional(),
-    })
-    .nullable(),
-});
-const webhookSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  status: z.enum(["pending", "setup-required", "active", "stopping", "disabled", "stopped"]),
-  failure: z.enum(["register", "unregister"]).nullable(),
-  sourceAccount: z.string().min(1),
-  callbackUrl: z.string(),
-  createdAt: z.unknown(),
-});
-const webhookView = (w: z.infer<typeof webhookSchema>) => ({
+const webhookView = (w: z.infer<typeof EngineWebhookSchema>) => ({
   id: w.id,
   name: w.name.slice(0, 240),
   status: w.status,
   failure: w.failure,
   account: w.sourceAccount,
-  createdAt: iso(w.createdAt),
-});
-const workflowSchema = z.object({
-  name: z.string().min(1),
-  description: z.string().optional(),
-  inputSchema: z.record(z.string(), z.json()),
-});
-const scheduledRunSchema = z.object({
-  id: z.string().min(1),
-  name: z.string(),
-  status: pluginReads["plugins.schedule.runs"].output.shape.runs.element.shape.status,
-  scheduledAt: z.unknown(),
-  finishedAt: z.unknown(),
-  expiresAt: z.unknown(),
-  failure: z.string().nullable(),
-});
-const workflowRunSchema = z.object({
-  id: z.string().min(1),
-  workflow: z.string().min(1),
-  status: pluginReads["plugins.workflow.runs"].output.shape.runs.element.shape.status,
-  createdAt: z.string(),
-  failure: z.object({ message: z.string().optional() }).optional(),
-  error: z.string().optional(),
+  createdAt: w.createdAt,
 });
 
 /** Engine refusals keep their meaning on the wire; an engine that is starting says so. */
@@ -258,7 +213,12 @@ function hostError(error: unknown): never {
             : "conflict";
     throw new OpensteerError({
       code,
-      message: error.message.slice(0, 1_000) || "The plugin engine refused this.",
+      message:
+        error.tag === "AppWebhooksActive"
+          ? "Remove this plugin's webhook subscriptions before removing the plugin."
+          : error.tag === "AppWorkflowsActive"
+            ? "Stop this plugin's workflow runs before removing the plugin."
+            : error.message.slice(0, 1_000) || "The plugin engine refused this.",
       reason:
         error.code === "unavailable"
           ? "plugin-engine-unavailable"
@@ -272,10 +232,18 @@ function hostError(error: unknown): never {
 
 export class PluginOwnerApi {
   readonly #options: PluginOwnerApiOptions;
+  readonly pages: PluginOwnerApiOptions["pages"];
+  readonly webhooks: PluginOwnerApiOptions["webhooks"];
+  #gateway: import("../apps/app-gateway.js").AppGateway | undefined;
+  gateway(gateway: import("../apps/app-gateway.js").AppGateway) {
+    this.#gateway = gateway;
+  }
   /** Retried commands from a weak connection resolve to the first attempt's result. */
   readonly #recent = new Map<string, Promise<PluginCommandResult>>();
   constructor(options: PluginOwnerApiOptions) {
     this.#options = options;
+    this.pages = options.pages;
+    this.webhooks = options.webhooks;
   }
 
   async #owner(context: HostApiServerContext) {
@@ -292,6 +260,15 @@ export class PluginOwnerApi {
   }
   #call<T>(promise: Promise<T>): Promise<T> {
     return promise.catch(hostError);
+  }
+
+  async #webhookIssue(urls: readonly string[]) {
+    const origin = await this.webhooks?.origin();
+    if (!origin)
+      return "No public callback address is currently available. Webhooks cannot be received; enable Connect or use a public Host address.";
+    return urls.some((url) => new URL(url).origin !== origin)
+      ? "This webhook uses a previous public address. Remove it and reconnect its source to register the current address."
+      : null;
   }
 
   async installed(userId: UserId, signal?: AbortSignal) {
@@ -403,11 +380,7 @@ export class PluginOwnerApi {
     const skills =
       detail.skills === null
         ? null
-        : each(
-            list(detail.skills, "skills"),
-            z.object({ name: z.string().min(1), description: z.string().optional() }),
-            100,
-          ).map((skill) => ({
+        : detail.skills.skills.slice(0, 100).map((skill) => ({
             name: skill.name.slice(0, 240),
             description: (skill.description ?? "").slice(0, 2_000),
           }));
@@ -417,11 +390,9 @@ export class PluginOwnerApi {
       tools,
       toolCount: detail.tools?.items.length ?? 0,
       skills,
-      versions: each(
-        list(detail.versions),
-        z.object({ id: z.string().min(1), createdAt: z.unknown() }),
-        500,
-      )
+      versions: z
+        .array(z.object({ id: z.string().min(1), createdAt: z.iso.datetime() }))
+        .parse(detail.versions)
         .sort((a, b) => (iso(b.createdAt) ?? "").localeCompare(iso(a.createdAt) ?? ""))
         .slice(0, pluginVersionsMax)
         .map((version) => ({
@@ -430,7 +401,7 @@ export class PluginOwnerApi {
           active: version.id === plugin.activeVersion,
           author: authorOf(row, version.id),
         })),
-      schedules: each(list(detail.schedules), scheduleSchema, 50).map((schedule) => ({
+      schedules: detail.schedules.slice(0, 50).map((schedule) => ({
         name: schedule.name.slice(0, 240),
         tool: schedule.tool.slice(0, 240),
         timing:
@@ -455,16 +426,31 @@ export class PluginOwnerApi {
       workflows:
         detail.workflows === null
           ? null
-          : each(list(detail.workflows), workflowSchema, 50).map((workflow) => ({
+          : detail.workflows.slice(0, 50).map((workflow) => ({
               name: workflow.name.slice(0, 240),
               description: workflow.description?.slice(0, 2_000) ?? null,
               inputSchema: workflow.inputSchema,
             })),
-      webhooks: each(list(detail.webhooks), webhookSchema, 50).map(webhookView),
+      webhooks: detail.webhooks.slice(0, 50).map(webhookView),
+      backgroundUnavailable:
+        row?.access === "off"
+          ? "This plugin is off. Its schedules, webhooks and workflows cannot run."
+          : requirementViews.some((r) => r.links.some((link) => !link.current))
+            ? "Review and link the changed account declaration before this plugin can run."
+            : null,
+      webhookUnavailable: await this.#webhookIssue(
+        detail.webhooks.map((webhook) => webhook.callbackUrl),
+      ),
       page: detail.hasPage
         ? {
             url: null,
-            unavailable: "Plugin pages can't be opened from Opensteer yet.",
+            reference: { kind: "plugin", pluginId },
+            unavailable:
+              row?.access === "off"
+                ? "Turn this plugin on to open its page."
+                : this.pages
+                  ? null
+                  : "Plugin pages are unavailable on this Host.",
           }
         : null,
     };
@@ -592,6 +578,20 @@ export class PluginOwnerApi {
   reads(): Pick<HostApiHandlers, keyof typeof pluginReads> {
     const service = this.#options.service;
     return {
+      "plugins.page.view": async (input, context) => {
+        const session = await this.#owner(context);
+        if (!this.pages)
+          throw new OpensteerError({ code: "not_found", message: "Plugin pages are unavailable" });
+        const view = await this.pages.view(session.user.id, input.pluginId, input.theme);
+        const entryUrl = this.#gateway?.entryUrl(
+          input.pluginId,
+          session,
+          input.theme,
+          context.headers,
+          "plugin",
+        );
+        return rpcSuccess({ ...view, ...(entryUrl ? { entryUrl } : {}) });
+      },
       "plugins.installed.list": async (_input, context) => {
         const session = await this.#owner(context);
         return rpcSuccess(await this.installed(session.user.id));
@@ -640,8 +640,9 @@ export class PluginOwnerApi {
       },
       "plugins.schedule.runs": async (input, context) => {
         await this.#owner(context);
-        const runs = each(
-          list(
+        const runs = z
+          .array(EngineScheduledRunSchema)
+          .parse(
             await this.#call(
               service.manage(
                 {
@@ -651,27 +652,22 @@ export class PluginOwnerApi {
                 owner,
               ),
             ),
-          ),
-          scheduledRunSchema,
-          pluginRunsMax,
-        );
+          )
+          .slice(0, pluginRunsMax);
         return rpcSuccess({
           runs: await Promise.all(
             runs.map(async (run) => {
               let approval = null;
               if (run.status === "awaiting-approval") {
-                const pending = z
-                  .object({ invocation: z.object({ tool: z.string().min(1), input: z.json() }) })
-                  .safeParse(
-                    await service
-                      .manage({ operation: "schedules.approval", input: { run: run.id } }, owner)
-                      .catch(() => null),
-                  );
-                if (pending.success)
-                  approval = {
-                    tool: pending.data.invocation.tool.slice(0, 240),
-                    arguments: pending.data.invocation.input,
-                  };
+                const pending = EngineScheduledApprovalSchema.parse(
+                  await this.#call(
+                    service.manage(
+                      { operation: "schedules.approval", input: { run: run.id } },
+                      owner,
+                    ),
+                  ),
+                );
+                approval = { tool: pending.invocation.tool, arguments: pending.invocation.input };
               }
               return {
                 id: run.id,
@@ -689,68 +685,62 @@ export class PluginOwnerApi {
       },
       "plugins.workflow.runs": async (input, context) => {
         await this.#owner(context);
-        const page = z
-          .object({ items: z.array(z.unknown()), next: z.string().optional() })
-          .catch({ items: [] })
-          .parse(
-            await this.#call(
-              service.manage(
-                {
-                  operation: "workflowRuns.list",
-                  input: {
-                    app: input.pluginId,
-                    limit: String(pluginRunsMax),
-                    ...(input.workflow ? { workflow: input.workflow } : {}),
-                    ...(input.cursor ? { cursor: input.cursor } : {}),
-                  },
+        const page = EngineWorkflowRunPageSchema.parse(
+          await this.#call(
+            service.manage(
+              {
+                operation: "workflowRuns.list",
+                input: {
+                  app: input.pluginId,
+                  limit: String(pluginRunsMax),
+                  ...(input.workflow ? { workflow: input.workflow } : {}),
+                  ...(input.cursor ? { cursor: input.cursor } : {}),
                 },
-                owner,
-              ),
+              },
+              owner,
             ),
-          );
+          ),
+        );
         return rpcSuccess({
-          runs: each(page.items, workflowRunSchema, pluginRunsMax).map((run) => ({
+          runs: page.items.slice(0, pluginRunsMax).map((run) => ({
             id: run.id,
             workflow: run.workflow.slice(0, 240),
             status: run.status,
             createdAt: run.createdAt.slice(0, 64),
-            failure: (run.failure?.message ?? run.error ?? null)?.slice(0, 1_000) ?? null,
+            failure:
+              (run.status === "errored" ? (run.failure?.message ?? run.error) : null)?.slice(
+                0,
+                1_000,
+              ) ?? null,
           })),
           cursor: page.next && page.next.length <= 512 ? page.next : null,
         });
       },
       "plugins.webhook.setup.get": async (input, context) => {
         await this.#owner(context);
-        const setup = z
-          .object({
-            step: z.enum(["configure", "remove", "done"]),
-            subscription: webhookSchema,
-            instructions: z.string().optional(),
-            revision: z.string().optional(),
-            stateSchema: z.record(z.string(), z.json()).optional(),
-            signingSecret: z
-              .object({ source: z.string(), value: z.string().optional() })
-              .optional(),
-          })
-          .parse(
-            await this.#call(
-              service.manage(
-                {
-                  operation: "webhookSetup.read",
-                  input: { app: input.pluginId, subscription: input.webhookId },
-                },
-                owner,
-              ),
+        const setup = EngineWebhookSetupSchema.parse(
+          await this.#call(
+            service.manage(
+              {
+                operation: "webhookSetup.read",
+                input: { app: input.pluginId, subscription: input.webhookId },
+              },
+              owner,
             ),
-          );
+          ),
+        );
         return rpcSuccess({
+          unavailable: await this.#webhookIssue([setup.subscription.callbackUrl]),
           step: setup.step,
           webhook: webhookView(setup.subscription),
           callbackUrl: setup.subscription.callbackUrl.slice(0, 2_048),
-          instructions: setup.instructions?.slice(0, 8_000) ?? null,
-          revision: setup.revision?.slice(0, 200) ?? null,
-          stateSchema: setup.stateSchema ?? null,
-          signingSecret: setup.signingSecret?.value?.slice(0, 1_000) ?? null,
+          instructions: setup.step !== "done" ? setup.instructions.slice(0, 8_000) : null,
+          revision: setup.step === "configure" ? setup.revision.slice(0, 200) : null,
+          stateSchema: setup.step === "configure" ? setup.stateSchema : null,
+          signingSecret:
+            setup.step === "configure" && "value" in setup.signingSecret
+              ? setup.signingSecret.value.slice(0, 1_000)
+              : null,
         });
       },
     };
@@ -776,8 +766,12 @@ export class PluginOwnerApi {
   ): Promise<PluginCommandResult> {
     const { service, settings } = this.#options;
     const changed = () => this.#options.changed(userId);
-    const manage = (operation: Parameters<Service["manage"]>[0]["operation"], input: object) =>
-      this.#call(service.manage({ operation, input: input as Record<string, PluginJson> }, owner));
+    const manage = async (operation: keyof typeof ownerManagementResults, input: object) =>
+      ownerManagementResults[operation].parse(
+        await this.#call(
+          service.manage({ operation, input: input as Record<string, PluginJson> }, owner),
+        ),
+      );
     switch (command.type) {
       case "plugins.install": {
         const source = command.source;
@@ -887,7 +881,7 @@ export class PluginOwnerApi {
         changed();
         return { type: command.type };
       case "plugins.workflow.start": {
-        const run = z.object({ id: z.string().min(1).max(240) }).parse(
+        const run = EngineWorkflowRunSchema.parse(
           await manage("workflowRuns.start", {
             app: command.pluginId,
             workflow: command.workflow,
@@ -899,6 +893,14 @@ export class PluginOwnerApi {
       }
       case "plugins.workflow.stop":
         await manage("workflowRuns.stop", { app: command.pluginId, run: command.runId });
+        return { type: command.type };
+      case "plugins.webhook.remove":
+      case "plugins.webhook.removal.confirm":
+        await manage(
+          command.type === "plugins.webhook.remove" ? "webhooks.remove" : "webhooks.confirmRemoval",
+          { app: command.pluginId, subscription: command.webhookId },
+        );
+        changed();
         return { type: command.type };
       case "plugins.webhook.setup.complete":
         await manage("webhookSetup.complete", {
@@ -941,14 +943,7 @@ export class PluginOwnerApi {
       plugin: input.pluginId,
       requirement: input.requirement,
       scope: input.scope,
-      consent: z
-        .object({
-          digest: z.string(),
-          sites: z.array(z.string()),
-          credential: z.enum(["sealed", "value"]),
-        })
-        .catch(input.consent)
-        .parse(consent),
+      consent: ConsentSchema.parse(consent),
       settlementSessionId: sessionId,
     });
   }

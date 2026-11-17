@@ -20,10 +20,20 @@ const demand = `SELECT
   ) - (now() AT TIME ZONE 'UTC')) * 1000 AS due_in_ms`;
 
 /** Background work the engine has saved, read without the engine running. */
-export async function engineDemand(databaseUrl: string): Promise<EngineDemand> {
+async function readEngineState<T>(
+  databaseUrl: string,
+  read: (client: pg.Client) => Promise<T>,
+): Promise<T> {
   const client = new pg.Client({ connectionString: databaseUrl });
   await client.connect();
   try {
+    return await read(client);
+  } finally {
+    await client.end();
+  }
+}
+export async function engineDemand(databaseUrl: string): Promise<EngineDemand> {
+  return readEngineState(databaseUrl, async (client) => {
     if (!(await client.query<{ present: boolean }>(present)).rows[0]?.present)
       return { busy: false, dueInMs: null };
     const row = (await client.query<{ busy: boolean; due_in_ms: string | null }>(demand)).rows[0];
@@ -31,7 +41,20 @@ export async function engineDemand(databaseUrl: string): Promise<EngineDemand> {
       busy: row?.busy ?? true,
       dueInMs: row?.due_in_ms == null ? null : Number(row.due_in_ms),
     };
-  } finally {
-    await client.end();
-  }
+  });
+}
+
+/** The database, rather than a cache commit, decides which skill version a Run may pin. */
+export async function engineActiveVersions(
+  databaseUrl: string,
+): Promise<ReadonlyMap<string, string>> {
+  return readEngineState(databaseUrl, async (client) => {
+    if (!(await client.query<{ present: boolean }>(present)).rows[0]?.present) return new Map();
+    const rows = await client.query<{ id: string; active_deployment: string | null }>(
+      "SELECT id, active_deployment FROM plugin_engine.plugin_engine_apps WHERE active_deployment IS NOT NULL",
+    );
+    return new Map(
+      rows.rows.flatMap((row) => (row.active_deployment ? [[row.id, row.active_deployment]] : [])),
+    );
+  });
 }

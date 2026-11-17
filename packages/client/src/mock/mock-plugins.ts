@@ -1103,6 +1103,10 @@ export class MockPlugins {
 
   reads(): Pick<HostApiHandlers, keyof typeof pluginReads> {
     return {
+      // A mock Host serves no plugin pages.
+      "plugins.page.view": async () => {
+        throw refusal("not_found", "This plugin's page isn't available in mock mode");
+      },
       "plugins.installed.list": async () => {
         const local = this.scenario === "empty" ? [] : this.local();
         // Local tools never wait on the engine, so they still list while it is unavailable.
@@ -1352,6 +1356,8 @@ export class MockPlugins {
         this.#changed();
         return { type: command.type };
       case "plugins.webhook.setup.complete":
+      case "plugins.webhook.remove":
+      case "plugins.webhook.removal.confirm":
         return { type: command.type };
     }
   }

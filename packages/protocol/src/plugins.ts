@@ -207,10 +207,13 @@ export const InstalledPluginViewSchema = z.object({
   schedules: z.array(PluginScheduleViewSchema).max(50),
   workflows: z.array(PluginWorkflowViewSchema).max(50).nullable(),
   webhooks: z.array(PluginWebhookViewSchema).max(50),
+  webhookUnavailable: text(500).nullable().optional(),
+  backgroundUnavailable: text(500).nullable().optional(),
   /** The plugin's own page; null when it has none. */
   page: z
     .object({
       url: z.string().max(2048).nullable(),
+      reference: z.object({ kind: z.literal("plugin"), pluginId: PluginIdSchema }).optional(),
       /** Why the page cannot be opened from here yet. */
       unavailable: text(500).nullable(),
     })
@@ -329,6 +332,7 @@ export const PluginWorkflowRunViewSchema = z.object({
 export type PluginWorkflowRunView = z.infer<typeof PluginWorkflowRunViewSchema>;
 
 export const PluginWebhookSetupViewSchema = z.object({
+  unavailable: text(500).nullable().optional(),
   step: z.enum(["configure", "remove", "done"]),
   webhook: PluginWebhookViewSchema,
   callbackUrl: z.string().max(2_048),
@@ -341,6 +345,10 @@ export const PluginWebhookSetupViewSchema = z.object({
 export type PluginWebhookSetupView = z.infer<typeof PluginWebhookSetupViewSchema>;
 
 export const pluginReads = {
+  "plugins.page.view": {
+    input: z.strictObject({ pluginId: PluginIdSchema, theme: z.enum(["light", "dark"]) }),
+    output: z.object({ path: z.string().min(1).max(4096), entryUrl: z.url().max(4096).optional() }),
+  },
   "plugins.installed.list": { input: z.strictObject({}), output: PluginsInstalledViewSchema },
   "plugins.get": {
     input: z.strictObject({ pluginId: PluginIdSchema }),
@@ -465,6 +473,18 @@ export const PluginCommandSchema = z.discriminatedUnion("type", [
     runId: name,
   }),
   z.strictObject({
+    type: z.literal("plugins.webhook.remove"),
+    idempotencyKey,
+    pluginId: PluginIdSchema,
+    webhookId: name,
+  }),
+  z.strictObject({
+    type: z.literal("plugins.webhook.removal.confirm"),
+    idempotencyKey,
+    pluginId: PluginIdSchema,
+    webhookId: name,
+  }),
+  z.strictObject({
     type: z.literal("plugins.webhook.setup.complete"),
     idempotencyKey,
     pluginId: PluginIdSchema,
@@ -497,5 +517,7 @@ export const PluginCommandResultSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("plugins.workflow.start"), runId: name }),
   z.object({ type: z.literal("plugins.workflow.stop") }),
   z.object({ type: z.literal("plugins.webhook.setup.complete") }),
+  z.object({ type: z.literal("plugins.webhook.remove") }),
+  z.object({ type: z.literal("plugins.webhook.removal.confirm") }),
 ]);
 export type PluginCommandResult = z.infer<typeof PluginCommandResultSchema>;

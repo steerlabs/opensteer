@@ -511,6 +511,8 @@ export function engineAccounts(options: {
   };
   return {
     hooks,
+    standing: (app: AppId) =>
+      options.authorizeBackground(app).pipe(Effect.andThen(accounts(app)), Effect.asVoid),
     validateBinding,
     prepare,
     pinConnection,

@@ -58,24 +58,30 @@ export function enginePages(
                 ),
               );
       const response = Effect.gen(function* () {
-        if (path === routes.versionPath)
+        if (path === routes.versionPath) {
+          if (incoming.method !== "GET") return HttpServerResponse.empty({ status: 405 });
+          yield* accounts.standing(app);
           return HttpServerResponse.stream(
             database.reactivity.subscribe(read).pipe(
-              Stream.mapEffect(({ value }) =>
-                accounts
-                  .accounts(app)
-                  .pipe(
-                    Effect.as(
-                      `event: version\ndata: ${JSON.stringify({ version: value.activeVersion })}\n\n`,
-                    ),
-                  ),
+              Stream.map(
+                ({ value }) =>
+                  `event: version\ndata: ${JSON.stringify({ version: value.activeVersion, deployment: value.activeVersion })}\n\n`,
               ),
+              Stream.merge(
+                Stream.tick("15 seconds").pipe(
+                  Stream.drop(1),
+                  Stream.map(() => ": heartbeat\n\n"),
+                ),
+              ),
+              Stream.mapEffect((frame) => accounts.standing(app).pipe(Effect.as(frame))),
+              Stream.catch(() => Stream.make("event: revoked\ndata: {}\n\n")),
               Stream.encodeText,
             ),
-            { contentType: "text/event-stream" },
+            { contentType: "text/event-stream", headers: { "x-accel-buffering": "no" } },
           );
-        if (path.startsWith(routes.assetsPath + "/")) {
-          const [version, ...rest] = path.slice(routes.assetsPath.length + 1).split("/");
+        }
+        if (path.startsWith(routes.assetsPath)) {
+          const [version, ...rest] = path.slice(routes.assetsPath.length).split("/");
           const retained = yield* engine.apps.version({
             app,
             version: Schema.decodeUnknownSync(VersionId)(version),
@@ -88,6 +94,8 @@ export function enginePages(
           );
         }
         if ([routes.queryPath, routes.mutatePath, routes.subscribePath].includes(path)) {
+          if (incoming.method !== "POST") return HttpServerResponse.empty({ status: 405 });
+          yield* accounts.standing(app);
           const body = yield* incoming.json;
           const payload = yield* Schema.decodeUnknownEffect(
             Schema.Struct({ version: VersionId, name: Schema.String, input: Schema.Json }),
@@ -102,8 +110,15 @@ export function enginePages(
           const stream = yield* engine.appData.subscribe(selection);
           return HttpServerResponse.stream(
             stream.pipe(
-              Stream.mapEffect((value) =>
-                accounts.accounts(app).pipe(Effect.as(`data: ${JSON.stringify(value)}\n\n`)),
+              Stream.map(({ value }) => ({ type: "snapshot" as const, value })),
+              Stream.merge(
+                Stream.tick("15 seconds").pipe(
+                  Stream.drop(1),
+                  Stream.map(() => ({ type: "heartbeat" as const })),
+                ),
+              ),
+              Stream.mapEffect((frame) =>
+                accounts.standing(app).pipe(Effect.as(`data: ${JSON.stringify(frame)}\n\n`)),
               ),
               Stream.encodeText,
             ),
@@ -121,6 +136,17 @@ export function enginePages(
           asset: (path) => asset(current.build, path),
         });
       }).pipe(Effect.provideService(HttpServerRequest.HttpServerRequest, incoming));
-      return HttpServerResponse.toWeb(yield* response);
+      return HttpServerResponse.toWeb(
+        yield* response.pipe(
+          Effect.catch(() =>
+            Effect.succeed(
+              HttpServerResponse.jsonUnsafe(
+                { _tag: "UiFailed", reason: "operation_failed" },
+                { status: 422 },
+              ),
+            ),
+          ),
+        ),
+      );
     });
 }

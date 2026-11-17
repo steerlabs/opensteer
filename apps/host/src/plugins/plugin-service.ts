@@ -1,3 +1,5 @@
+import { PluginSkillCache } from "./plugin-skill-cache.js";
+import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { fork, type ChildProcess } from "node:child_process";
 import { hkdfSync, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -52,6 +54,7 @@ export interface PluginServiceOptions {
   readonly owner: string;
   readonly credentialKey: Uint8Array;
   readonly origin: string;
+  readonly webhookOrigin?: () => Promise<string | undefined>;
   readonly bridge?: string;
   readonly processEntry?: URL;
   readonly catalogUrl?: string;
@@ -110,6 +113,8 @@ interface Pending {
 
 /** Host-owned Promise boundary. Its callbacks are the only route back to Host authority and tools. */
 export class PluginService {
+  readonly skillCache: PluginSkillCache;
+  readonly #versionChanges = new MutationQueue();
   readonly #config: EngineInit;
   readonly #options: PluginServiceOptions;
   readonly #pending = new Map<string, Pending>();
@@ -149,6 +154,7 @@ export class PluginService {
   readonly #idleMs: number;
   constructor(options: PluginServiceOptions) {
     this.#options = options;
+    this.skillCache = new PluginSkillCache(options.dataDirectory, options.databaseUrl);
     this.#idleMs = options.idleMs ?? 300_000;
     const source = import.meta.url.endsWith(".ts");
     this.#config = {
@@ -179,6 +185,9 @@ export class PluginService {
       ...(options.npmRegistry === undefined ? {} : { npmRegistry: options.npmRegistry }),
       ...(options.selfOrigin === undefined ? {} : { selfOrigin: options.selfOrigin }),
     };
+  }
+  webhookOrigin(): Promise<string | undefined> {
+    return this.#options.webhookOrigin?.() ?? Promise.resolve(undefined);
   }
   state(): PluginServiceState {
     return { ...this.#state };
@@ -547,6 +556,7 @@ export class PluginService {
                   .parse(message.input)
                   .caller.startsWith(this.#options.owner + ":"),
             };
+      else if (message.operation === "webhookOrigin") result = (await this.webhookOrigin()) ?? null;
       else if (message.operation === "providers")
         result =
           (await this.#options.providers?.(
@@ -593,7 +603,17 @@ export class PluginService {
       this.#touch();
     }
   }
-  async request<K extends PluginOperation>(
+  request<K extends PluginOperation>(
+    operation: K,
+    input: PluginInput<K>,
+    context: PluginCaller,
+    signal?: AbortSignal,
+  ): Promise<PluginOutput<K>> {
+    return operation === "install" || operation === "activate" || operation === "remove"
+      ? this.#versionChanges.run(() => this.#request(operation, input, context, signal))
+      : this.#request(operation, input, context, signal);
+  }
+  async #request<K extends PluginOperation>(
     operation: K,
     input: PluginInput<K>,
     context: PluginCaller,
@@ -634,7 +654,45 @@ export class PluginService {
         reject(error);
       }
     }).finally(() => this.#touch());
-    return operations[operation].output.parse(result) as PluginOutput<K>;
+    const parsed = operations[operation].output.parse(result) as PluginOutput<K>;
+    if (operation === "list") {
+      const plugins = await Promise.all(
+        operations.list.output.parse(parsed).map(async (plugin) => ({
+          ...plugin,
+          ...((await this.skillCache.get(plugin.id))?.hasPage
+            ? { page: { kind: "plugin" as const, pluginId: plugin.id } }
+            : {}),
+        })),
+      );
+      return operations.list.output.parse(plugins) as PluginOutput<K>;
+    }
+    if (operation === "install") {
+      const installed = operations.install.output.parse(parsed);
+      if (installed.status === "installed") await this.#cacheVersion(installed.plugin.id, signal);
+    } else if (operation === "activate") {
+      await this.#cacheVersion(operations.activate.input.parse(input).plugin, signal);
+    } else if (operation === "remove") {
+      await this.skillCache.remove(operations.remove.input.parse(input).plugin);
+    }
+    return parsed;
+  }
+  async #cacheVersion(plugin: string, signal?: AbortSignal) {
+    const context: PluginCaller = { caller: this.#options.owner, mode: "automatic" };
+    const [bundle, source, plugins] = await Promise.all([
+      this.skillFiles({ plugin }, context, signal),
+      this.export({ plugin }, context, signal),
+      this.list({}, context, signal),
+    ]);
+    const current = plugins.find((entry) => entry.id === plugin);
+    if (!current) throw new PluginServiceError("invalid", "Plugin disappeared during activation");
+    await this.skillCache.record(
+      current,
+      bundle,
+      source.some((file) => file.path === "ui/index.html"),
+    );
+  }
+  discardStream(id: string): void {
+    if (this.#child) this.#send(this.#child, { type: "cancel", id });
   }
   async *readStream(id: string, signal?: AbortSignal): AsyncIterable<Uint8Array> {
     const child = this.#child;

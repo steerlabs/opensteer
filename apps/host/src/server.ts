@@ -1,3 +1,4 @@
+import { registerPluginWebhookRoutes } from "./plugins/plugin-webhook-routes.js";
 import { registerPluginOAuthRoutes } from "./plugins/plugin-oauth-routes.js";
 import type { TabService } from "./tabs/tab-service.js";
 import type { AgentToolActivityStore, DatabaseSchema } from "@opensteer/database";
@@ -486,6 +487,7 @@ export async function createHostServer(
         return (
           hasAppAuthority(request.headers) ||
           path.startsWith("/media/") ||
+          path.startsWith("/hooks/v1/plugins/") ||
           path.startsWith("/v1/integration-authorizations/") ||
           path === "/v1/plugin-oauth/callback" ||
           path.startsWith("/v1/integrations/oauth/callback/") ||
@@ -496,12 +498,14 @@ export async function createHostServer(
   });
   const appGateway = new AppGateway({
     apps: dependencies.apps,
+    ...(dependencies.plugins?.pages ? { plugins: dependencies.plugins.pages } : {}),
     identity: dependencies.authenticator.identity,
     signingKey: dependencies.appOriginSigningKey,
     canonicalOrigin: dependencies.discovery.document.canonicalOrigin,
     realOrigins: dependencies.appRealOrigins,
   });
   appGateway.installHttp(app);
+  dependencies.plugins?.gateway(appGateway);
   dependencies.assets?.register(app);
   installPersonalVersionGate(app);
   installHostHttpBoundary(app);
@@ -565,7 +569,18 @@ export async function createHostServer(
     }
   >();
   const realtimeSocketSessions = new WeakMap<object, AuthenticatedSession>();
-  registerAppRoutes(app, dependencies.apps);
+  registerAppRoutes(app, dependencies.apps, dependencies.plugins?.pages);
+  if (dependencies.plugins?.webhooks)
+    registerPluginWebhookRoutes(app, {
+      ...dependencies.plugins.webhooks,
+      admit: (address) =>
+        consumeAnonymousRateLimit(
+          dependencies.store.database,
+          `plugin-webhook:${address}`,
+          120,
+          new Date(),
+        ),
+    });
   registerIdentityRoutes(app, dependencies.authenticator, {
     ...(dependencies.accountAdoption
       ? { acknowledgeAccountAdoption: dependencies.accountAdoption.acknowledge }

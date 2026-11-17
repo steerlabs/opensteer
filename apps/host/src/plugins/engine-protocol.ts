@@ -1,6 +1,12 @@
 import { PluginAccountConsentSchema } from "@opensteer/core";
 import { PluginOAuthClientChoiceSchema } from "@opensteer/protocol";
 import { z } from "zod";
+import {
+  EngineSkillCatalogSchema,
+  EngineScheduleSchema,
+  EngineWebhookSchema,
+  EngineWorkflowSchema,
+} from "./engine-feature-schemas.js";
 
 export const JsonSchema = z.json();
 export type PluginJson = z.infer<typeof JsonSchema>;
@@ -61,6 +67,7 @@ export const PluginSummarySchema = z.object({
   name: id,
   slug: id,
   activeVersion: z.string().nullable(),
+  page: z.strictObject({ kind: z.literal("plugin"), pluginId: id }).optional(),
 });
 export const PluginSchema = PluginSummarySchema.extend({
   requirements: z
@@ -192,12 +199,12 @@ export const operations = {
     output: z.strictObject({
       plugin: PluginSchema,
       tools: toolIndex.nullable(),
-      skills: JsonSchema,
+      skills: EngineSkillCatalogSchema.nullable(),
       links: z.array(object),
-      versions: JsonSchema,
-      schedules: JsonSchema,
-      webhooks: JsonSchema,
-      workflows: JsonSchema,
+      versions: z.array(VersionSchema),
+      schedules: z.array(EngineScheduleSchema),
+      webhooks: z.array(EngineWebhookSchema),
+      workflows: z.array(EngineWorkflowSchema).nullable(),
       hasPage: z.boolean(),
     }),
   },
@@ -484,6 +491,7 @@ export const callbackOperations = {
     output: JsonSchema,
   },
   eventAuthorize: { input: object, output: z.boolean() },
+  webhookOrigin: { input: z.strictObject({}), output: z.url().nullable() },
 } as const;
 export type PluginCallback = keyof typeof callbackOperations;
 export const EngineErrorSchema = z.strictObject({
