@@ -40,7 +40,7 @@
       "candidates": [
         {
           "localPhoneId": "fixture-phone",
-          "trusted": false,
+          "trust": "checking",
           "nativeEpoch": 3,
           "name": "iPhone",
           "model": "",

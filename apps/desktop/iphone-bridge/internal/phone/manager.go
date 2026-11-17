@@ -34,6 +34,7 @@ type localPhone struct {
 	sessionID       string
 	pairing         *ios.PairingAttempt
 	inspection      Inspection
+	unpaired        bool
 	readinessReason wire.Reason
 	routeCtx        context.Context
 	routeCancel     context.CancelFunc
@@ -145,6 +146,7 @@ func (m *Manager) Call(ctx context.Context, r wire.Request) (interface{}, error)
 			}
 			m.mu.Lock()
 			phone.inspection = inspection
+			phone.unpaired = inspectionTrust(inspection) == "untrusted"
 			m.revision++
 			m.mu.Unlock()
 			if m.publish != nil {
@@ -431,6 +433,7 @@ func (m *Manager) reconcile() error {
 			phone.epoch++
 			phone.readinessReason = ""
 			phone.inspection = Inspection{}
+			phone.unpaired = false
 			if phone.routeCancel != nil {
 				phone.routeCancel()
 			}
@@ -557,7 +560,7 @@ func (m *Manager) roster() wire.Roster {
 		} else if p.readinessReason != "" {
 			caps = unavailableCapabilities(p.readinessReason)
 		}
-		r.Candidates = append(r.Candidates, wire.Candidate{Trusted: p.inspection.Pairing == "paired", LocalPhoneID: p.id, NativeEpoch: p.epoch, Name: name, Model: p.inspection.Model, OSVersion: p.inspection.OSVersion, Build: p.inspection.Build, Transport: transport, Reason: candidateReason(p, reason), Capabilities: &caps})
+		r.Candidates = append(r.Candidates, wire.Candidate{Trust: p.trust(), LocalPhoneID: p.id, NativeEpoch: p.epoch, Name: name, Model: p.inspection.Model, OSVersion: p.inspection.OSVersion, Build: p.inspection.Build, Transport: transport, Reason: candidateReason(p, reason), Capabilities: &caps})
 	}
 	sort.Slice(r.Candidates, func(i, j int) bool { return r.Candidates[i].LocalPhoneID < r.Candidates[j].LocalPhoneID })
 	return r

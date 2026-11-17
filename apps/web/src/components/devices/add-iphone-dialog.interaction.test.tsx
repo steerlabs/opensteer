@@ -268,3 +268,15 @@ it("retries a failed Host attach with the original command and finishes", async 
     deviceId: mockIphoneScreenDeviceId,
   });
 });
+
+it("shows checking trust without calling the phone untrusted", async () => {
+  const port = setupPort("choose-checking");
+  await render(port);
+  expect(text()).toContain("Checking this iPhone…");
+  expect(text()).not.toContain("hasn’t trusted this Mac");
+  await click("iPhone");
+  expect(port.choose).toHaveBeenCalledWith({
+    setupId: port.current!.setupId,
+    candidateId: mockIphoneSetupCandidates.checking.candidateId,
+  });
+});

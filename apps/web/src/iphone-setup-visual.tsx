@@ -17,6 +17,7 @@ import "@fontsource-variable/fraunces/wght.css";
 import "./styles/index.css";
 
 // `?scene=<name>` holds the dialog at one setup state; `?scene=journey` plays a whole setup;
+// `?scene=choose-checking` shows a phone whose trust is still being checked.
 // `?scene=xcode-installing` holds the App Store wait; `?scene=wifi-local-network` offers Settings.
 // `?existing` fixes the mock Work iPhone instead; `?scene=on-mac` is the card shown where setup can't run.
 const search = new URLSearchParams(location.search);

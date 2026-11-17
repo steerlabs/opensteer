@@ -66,7 +66,7 @@ export class FakeIphoneNative implements IphoneNativeTransport {
         osVersion: "27.0",
         build: "test",
         transport: "usb" as const,
-        trusted: true,
+        trust: "trusted",
         reason: null,
       },
     ],

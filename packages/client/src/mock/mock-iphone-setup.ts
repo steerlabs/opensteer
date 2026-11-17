@@ -16,7 +16,7 @@ const deploymentId = DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-00000
 
 export const mockIphoneSetupCandidates = {
   sam: {
-    trusted: true,
+    trust: "trusted",
     candidateId: "33333333-3333-4333-8333-333333333333",
     name: "Sam’s iPhone",
     model: "iPhone 17 Pro",
@@ -25,15 +25,23 @@ export const mockIphoneSetupCandidates = {
   },
   // A phone that hasn't trusted this Mac yet tells it nothing but that it's an iPhone.
   untrusted: {
-    trusted: false,
+    trust: "untrusted",
     candidateId: "44444444-4444-4444-8444-444444444444",
     name: "iPhone",
     model: "",
     osVersion: "",
     reason: null,
   },
+  checking: {
+    trust: "checking",
+    candidateId: "66666666-6666-4666-8666-666666666666",
+    name: "iPhone",
+    model: "",
+    osVersion: "",
+    reason: null,
+  },
   old: {
-    trusted: true,
+    trust: "trusted",
     candidateId: "55555555-5555-4555-8555-555555555555",
     name: "Kitchen iPhone",
     model: "iPhone 12",
@@ -61,7 +69,17 @@ export const mockIphoneSetupScenes = {
     stage: "connect",
     state: "decide",
     action: "choose-phone",
-    candidates: Object.values(mockIphoneSetupCandidates),
+    candidates: [
+      mockIphoneSetupCandidates.sam,
+      mockIphoneSetupCandidates.untrusted,
+      mockIphoneSetupCandidates.old,
+    ],
+  },
+  "choose-checking": {
+    stage: "connect",
+    state: "decide",
+    action: "choose-phone",
+    candidates: [mockIphoneSetupCandidates.checking],
   },
   connecting: { stage: "connect", state: "working", phone },
   trust: { stage: "trust", state: "waiting", reason: "trust-required", phone },

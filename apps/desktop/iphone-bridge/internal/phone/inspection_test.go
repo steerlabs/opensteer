@@ -325,8 +325,58 @@ func TestManagerCloseCancelsAndAwaitsPassiveInspection(t *testing.T) {
 		if err := awaitInspection(t, ctx, closed, "shutdown never finished"); err != nil {
 			t.Fatal(err)
 		}
-		if m.roster().Candidates[0].Trusted {
+		if m.roster().Candidates[0].Trust == "trusted" {
 			t.Fatal("shutdown applied a late inspection result")
 		}
 	})
+}
+
+func TestCandidateTrustWaitsForDefinitiveInspection(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		inspection Inspection
+		err        error
+		want       string
+	}{
+		{"paired", Inspection{Pairing: "paired"}, nil, "trusted"},
+		{"trust required", Inspection{}, wire.Fail(wire.TrustRequired), "untrusted"},
+		{"trust denied", Inspection{}, wire.Fail(wire.TrustDenied), "untrusted"},
+		{"pairing revoked", Inspection{}, wire.Fail(wire.PairingRevoked), "untrusted"},
+		{"transient", Inspection{}, wire.Fail(wire.NativeServiceFailed), "checking"},
+		{"unsupported", Inspection{}, wire.Fail(wire.ProtocolUnsupported), "checking"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestManager(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			release := make(chan struct{})
+			defer func() { cancel(); m.Close() }()
+			m.usb = &inspectionUSB{inspect: func(attempt context.Context, _ ios.DeviceEntry) (Inspection, error) {
+				select {
+				case <-release:
+					return tc.inspection, tc.err
+				case <-attempt.Done():
+					return Inspection{}, attempt.Err()
+				}
+			}}
+			updates := make(chan wire.Roster, 8)
+			m.publish = func(r wire.Roster) { updates <- r }
+			m.inventory.Replace([]ios.DeviceEntry{inspectionDevice(1)})
+			if err := m.reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			if got := m.roster().Candidates[0].Trust; got != "checking" {
+				t.Fatalf("before inspection: %s", got)
+			}
+			close(release)
+			// Reconcile may publish the initial roster before inspection completes.
+			r := awaitInspection(t, ctx, updates, "initial roster never published")
+			for r.Revision <= 1 {
+				r = awaitInspection(t, ctx, updates, "inspection result never published")
+			}
+			if got := r.Candidates[0].Trust; got != tc.want {
+				t.Fatalf("after inspection: got %s, want %s", got, tc.want)
+			}
+		})
+	}
 }

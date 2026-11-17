@@ -167,7 +167,7 @@ it("detects missing Xcode before any phone, opens the offered helper, and resume
   ).toMatchObject({ imageHandle: "fresh" });
 });
 
-it("waits for a USB roster event and automatically chooses the only usable phone", async () => {
+it("waits for a USB roster event and automatically chooses the only usable phone while trust is checking", async () => {
   const f = await harness();
   const candidate = f.native.roster.candidates[0]!;
   f.native.roster = { revision: 2, candidates: [] };
@@ -179,7 +179,7 @@ it("waits for a USB roster event and automatically chooses the only usable phone
   });
   expect(vi.getTimerCount()).toBe(0);
   const ready = stage(f, initial.setupId, "wifi");
-  f.native.roster = { revision: 3, candidates: [candidate] };
+  f.native.roster = { revision: 3, candidates: [{ ...candidate, trust: "checking" }] };
   f.native.publish();
   await ready;
 });
@@ -191,14 +191,14 @@ it("offers several usable phones, preserves candidate IDs, and reserves only the
     ...f.native.roster.candidates[0]!,
     localPhoneId: "other",
     name: "Other phone",
-    trusted: false,
+    trust: "untrusted",
   });
   f.native.roster.revision++;
   f.native.publish();
   const initial = await f.setup.begin(ownerA);
   const choice = await stage(f, initial.setupId, "connect");
   expect(choice).toMatchObject({ state: "decide", action: "choose-phone", reason: null });
-  expect(choice.candidates.map((c) => c.trusted)).toEqual([true, false]);
+  expect(choice.candidates.map((c) => c.trust)).toEqual(["trusted", "untrusted"]);
   const next = until(
     f.setup,
     initial.setupId,

@@ -575,7 +575,7 @@ export class IphoneSetup {
           t.candidates.set(candidateId, c.localPhoneId);
           return {
             candidateId,
-            trusted: c.trusted,
+            trust: c.trust,
             name: clean(c.name),
             model: clean(c.model),
             osVersion: clean(c.osVersion),

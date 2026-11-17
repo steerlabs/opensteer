@@ -58,7 +58,7 @@
       "candidates": [
         {
           "localPhoneId": "fixture-phone",
-          "trusted": false,
+          "trust": "checking",
           "nativeEpoch": 2,
           "name": "Test iPhone 한글",
           "transport": "usb",
