@@ -1,5 +1,5 @@
-import { HostClientRequestError, type HostClient } from "@opensteer/client/host";
 import { HostTransportError } from "@opensteer/client/connections";
+import { HostClientRequestError, type HostClient } from "@opensteer/client/host";
 import { mockAccountSubject, type TeamConnectionIntent } from "@opensteer/client/team";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import { DeploymentIdSchema } from "@opensteer/core";

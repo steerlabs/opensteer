@@ -1,3 +1,4 @@
+import { presentClientIssue } from "@opensteer/client/feedback";
 import {
   computerAppAccessLabel,
   type IntegrationAccess,
@@ -662,8 +663,9 @@ export const iphoneTaskScope =
   "Allowing lasts until you change it, not only for this task. Your other tasks can use it too.";
 
 /** An unknown change, in its sheet and under its row. */
-export function iphoneUnknownChange(name: string, label: string): string {
-  return `Opensteer may or may not have ${label} for ${name}. Checking reads it again; nothing is asked twice.`;
+export function iphoneUnknownChange(name: string): string {
+  return presentClientIssue({ code: "unconfirmed", happened: `access for ${name} was changed` })
+    .title;
 }
 
 export function iphoneDisclosure(opensteer: string): string {

@@ -1,3 +1,4 @@
+import { testHostConnection } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 
 import type { ReactNode } from "react";
@@ -43,7 +44,8 @@ vi.mock("@react-navigation/native", () => ({
   useIsFocused: () => true,
   useNavigation: () => ({ navigate: vi.fn() }),
 }));
-vi.mock("@opensteer/client/react", () => ({
+vi.mock("@opensteer/client/react", async (load) => ({
+  ...(await load<typeof import("@opensteer/client/react")>()),
   useHostSelector: (client: { getSnapshot: () => unknown }, select: (value: unknown) => unknown) =>
     select(client.getSnapshot()),
 }));
@@ -97,10 +99,14 @@ vi.mock("react-native", () => ({
     children?: ReactNode;
   }) => <div aria-label={accessibilityLabel}>{children}</div>,
 }));
-vi.mock("../client/mobile-client.js", () => ({
-  operationDetail: (error: unknown, fallback: string) =>
-    error instanceof Error ? error.message : fallback,
-}));
+vi.mock(
+  "../ui/action-line.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).actionLine,
+);
+vi.mock(
+  "../ui/placeholder.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).placeholder,
+);
 vi.mock("../theme.js", () => ({ color: {}, radius: {}, space: {}, touchTarget: 44 }));
 vi.mock("../ui/screen.js", () => ({
   Screen: ({ children }: { children?: ReactNode }) => <main>{children}</main>,
@@ -257,12 +263,19 @@ function host(online = true, owned = true) {
   history.setScope({ deploymentId: "deployment-a", userId: "user-a" });
   const snapshot = {
     connection: online ? "connected" : "disconnected",
+    deploymentId: "deployment-a",
     network: online ? "online" : "offline",
     session: "authenticated",
     user: { id: "user-a" },
     browserProfiles: owned ? [{ id: "bpr_work", name: "Work", revision: 1 }] : [],
   };
-  state.hostClient = { browserHistory: history, getSnapshot: () => snapshot };
+  const client = {
+    browserHistory: history,
+    getSnapshot: () => snapshot,
+    subscribe: () => () => undefined,
+  };
+  Object.assign(client, { connection: testHostConnection(client as never) });
+  state.hostClient = client;
   return {
     get,
     remove,
@@ -308,19 +321,21 @@ describe("mobile browsing history", () => {
     expect(text()).not.toContain("No browsing history yet.");
   });
 
-  it("disables mutations while disconnected and does not fetch", async () => {
-    const { get, history, icons } = host(false);
+  it("keeps what was read while disconnected, and answers a tap without sending it", async () => {
+    const { history, remove } = host(false);
     history.ports.get = async () => ({
       entries: [entry("https://cached.example/", "Cached")],
       icons: [],
     });
     await history.load("bpr_work");
     await render();
-    expect(text()).toContain("Not connected");
-    expect(get).not.toHaveBeenCalled();
-    expect(icons).not.toHaveBeenCalled();
-    expect(button("Clear browsing history").disabled).toBe(true);
-    expect(button("Remove from history").disabled).toBe(true);
+    expect(text()).toContain("Cached");
+    expect(text()).not.toContain("Not connected");
+    expect(button("Remove from history").disabled).toBe(false);
+    await press("Remove from history");
+    expect(remove).not.toHaveBeenCalled();
+    expect(text()).toContain("Not changed. You're offline.");
+    expect(text()).toContain("Cached");
   });
 
   it("does not load a Guest or granted profile absent from the owner catalog", async () => {
@@ -335,24 +350,22 @@ describe("mobile browsing history", () => {
     const { get } = host();
     get.mockRejectedValueOnce(new Error("Host unreachable"));
     await render();
-    expect(text()).toContain("Browsing history couldn’t be loaded");
+    expect(text()).toContain("Couldn't load browsing history.");
     expect(text()).not.toContain("No browsing history yet.");
     await press("Try again");
     expect(get).toHaveBeenCalledTimes(2);
     expect(text()).toContain("Newest");
-    expect(text()).not.toContain("couldn’t be loaded");
+    expect(text()).not.toContain("Couldn't load");
   });
 
-  it("keeps a failed refresh visible over rows already shown", async () => {
+  it("keeps the rows already shown through a failed reread, saying nothing", async () => {
     const { get, history } = host();
     await render();
     expect(text()).toContain("Newest");
     get.mockRejectedValueOnce(new Error("Host unreachable"));
     await act(async () => history.changed("bpr_work"));
     expect(text()).toContain("Newest");
-    expect(text()).toContain("Browsing history couldn’t be loaded");
-    await press("Try again");
-    expect(text()).not.toContain("couldn’t be loaded");
+    expect(text()).not.toContain("Couldn't load");
   });
 
   it("tells apart pages that share a title, in the row and its remove control", async () => {
@@ -382,7 +395,7 @@ describe("mobile browsing history", () => {
     remove.mockRejectedValueOnce(new Error("Try again later"));
     await render();
     await press("Remove from history");
-    expect(text()).toContain("Couldn't confirm this change.");
+    expect(text()).toContain("Couldn't confirm it went through.");
     expect(text()).not.toContain("Try again later");
   });
 });

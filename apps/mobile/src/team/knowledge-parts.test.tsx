@@ -12,16 +12,40 @@ vi.mock("react-native", () => ({
 }));
 vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ bottom: 0 }) }));
 vi.mock("../ui/primitives.js", () => ({}));
+vi.mock("../ui/action-line.js", () => ({}));
+vi.mock("../ui/placeholder.js", () => ({}));
 import { useFocusedRead } from "./knowledge-parts.js";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 it("never shows Account A's private note while Account B's read is pending", async () => {
-  const a = {} as TeamSessionClient,
-    b = {} as TeamSessionClient;
+  const ready = (viewerId: string) => {
+    const state = {
+      phase: "ready",
+      network: "online",
+      visibility: "foreground",
+      scope: { authorityKey: "team", deploymentId: "team", viewerId, loginId: viewerId },
+      epoch: 1,
+      readyRevision: 1,
+      showInterruption: false,
+      issue: null,
+      trying: false,
+      pathRevision: 0,
+      lastConnectedAt: null,
+      name: null,
+      target: "team",
+      route: null,
+    };
+    return {
+      connection: { getSnapshot: () => state, subscribe: () => () => {}, retry: () => {} },
+    } as unknown as TeamSessionClient;
+  };
+  const a = ready("account-a"),
+    b = ready("account-b");
   const pending = Promise.withResolvers<string>();
   function Note({ session }: { session: TeamSessionClient | null }) {
     const read = useFocusedRead(
       session,
       (team) => (team === a ? Promise.resolve("Private note A") : pending.promise),
+      "note",
       "note",
     );
     return <p>{read.value}</p>;

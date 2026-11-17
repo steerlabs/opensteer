@@ -1,3 +1,4 @@
+import { testHostConnection } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 
 import type { HostClient } from "@opensteer/client/host";
@@ -50,10 +51,6 @@ vi.mock("react-native", () => ({
     accessibilityLabel?: string;
     children?: ReactNode;
   }) => <div aria-label={accessibilityLabel}>{children}</div>,
-}));
-vi.mock("../client/mobile-client.js", () => ({
-  operationDetail: (error: unknown, fallback: string) =>
-    error instanceof Error ? error.message : fallback,
 }));
 vi.mock("../ui/symbol.js", () => ({
   Symbol: ({ name }: { name: string }) => <i data-symbol={name} />,
@@ -187,13 +184,14 @@ describe("ComputerUseBlock on the phone", () => {
     expect(maybeButton("Block Safari")).toBeNull();
   });
 
-  it("says in the row why a change did not happen", async () => {
+  it("says in the row that a lost answer couldn't be confirmed, never the raw error", async () => {
     const dispatch = vi.fn(async () => {
       throw new Error("Studio is offline.");
     });
     await mount({ dispatch, view: view({ apps: [row(notes)] }) });
     await click(button("Remove Notes"));
-    expect(text()).toContain("Couldn't confirm this change.");
+    expect(text()).toContain("Couldn't confirm it went through.");
+    expect(text()).not.toContain("Studio is offline.");
     expect(button("Remove Notes").disabled).toBe(false);
   });
 
@@ -249,7 +247,7 @@ describe("ComputerUseBlock on the phone", () => {
       });
       const control = button(action);
       await click(control);
-      expect(control.parentElement?.textContent).toContain("Couldn't confirm this change.");
+      expect(control.parentElement?.textContent).toContain("Couldn't confirm it went through.");
       expect(control.disabled).toBe(false);
     },
   );
@@ -266,22 +264,22 @@ describe("ComputerUseBlock on the phone", () => {
     await click(button("Add app"));
     await click(button("Can see"));
     expect(maybeButton("Close")).toBeNull();
-    expect(text()).toContain("Couldn't confirm this change.");
+    expect(text()).toContain("Couldn't confirm it went through.");
     expect(installed).toHaveBeenCalledOnce();
     expect(button("Add app").disabled).toBe(false);
   });
 
-  it("holds every control while the Host is unreachable", async () => {
+  it("answers a tap while the computer can't be reached, without sending it", async () => {
     const dispatch = vi.fn();
     await mount({
       canRespond: false,
       dispatch,
       view: view({ appApproval: "automatic", apps: [row(notes)] }),
     });
-    expect(button("Block Notes").disabled).toBe(true);
-    expect(radio("Ask for each app").disabled).toBe(true);
+    expect(button("Block Notes").disabled).toBe(false);
     await click(radio("Ask for each app"));
     expect(dispatch).not.toHaveBeenCalled();
+    expect(text()).toContain("Not changed. Can't reach your computer.");
   });
 });
 
@@ -318,6 +316,7 @@ async function mount(input: MountInput): Promise<void> {
     },
     subscribe: () => () => undefined,
   } as unknown as HostClient;
+  Object.assign(hostClient, { connection: testHostConnection(hostClient) });
   await act(async () =>
     root.render(
       <ComputerUseBlock

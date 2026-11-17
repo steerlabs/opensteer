@@ -1,4 +1,3 @@
-import { HostClientRequestError } from "@opensteer/client/host";
 import type { ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
 import { color, space } from "../theme.js";
@@ -50,19 +49,3 @@ const styles = StyleSheet.create({
     padding: space[24],
   },
 });
-
-/** How a read for a linked destination failed: gone or forbidden, out of reach, or otherwise. */
-export function readFailure(error: unknown): "unavailable" | "offline" | "failed" {
-  if (error instanceof HostClientRequestError) {
-    if (error.status === 403 || error.status === 404) return "unavailable";
-    if (
-      error.reason === "transport-unreachable" ||
-      error.reason === "transport-timed-out" ||
-      error.code === "runner_offline" ||
-      error.code === "timeout"
-    )
-      return "offline";
-    return "failed";
-  }
-  return error instanceof TypeError ? "offline" : "failed";
-}

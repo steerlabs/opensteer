@@ -1,6 +1,7 @@
 import { clientIssue } from "@opensteer/client/feedback";
 import { useClientConnection } from "@opensteer/client/react";
-import { ActionLine, issueLine, type ActionLineValue } from "../ui/action-line.js";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { issueLine } from "../ui/client-feedback.js";
 import { notSentIssue } from "../ui/connection-live.js";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { provisionalThreadTitle, type BrowserPageContentPart, type UserId } from "@opensteer/core";

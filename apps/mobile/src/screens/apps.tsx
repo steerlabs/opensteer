@@ -4,7 +4,8 @@ import {
   type HostClient,
   type HostSnapshot,
 } from "@opensteer/client/host";
-import type { AppsList } from "@opensteer/client/host";
+import type { AppAction, AppsList } from "@opensteer/client/host";
+import { presentClientIssue } from "@opensteer/client/feedback";
 import { useAppsList, useHostSelector } from "@opensteer/client/react";
 import type { App } from "@opensteer/core";
 import {
@@ -19,7 +20,9 @@ import { tabRoute } from "../browser/surface-route.js";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { NativeMenu } from "../thread/composer-menu.js";
 import { useAppForeground } from "../ui/foreground.js";
-import { AppText, Field, Notice, SecondaryButton } from "../ui/primitives.js";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
+import { AppText, Field, SecondaryButton } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
 import { confirmDestructive } from "./confirm.js";
@@ -52,11 +55,7 @@ function AttachedApps(props: {
   if (reader === null)
     return (
       <Screen>
-        <Notice
-          title="Connecting…"
-          detail="Your apps appear once you are signed in."
-          tone="neutral"
-        />
+        <PlaceholderRows />
       </Screen>
     );
   // Nothing one person was shown is ever shown to another.
@@ -96,12 +95,17 @@ function AppsForReader(props: {
         ListEmptyComponent={
           apps === null ? (
             state.error === null ? (
-              <View style={styles.empty}>
-                <AppText role="bodyMedium" tone="muted">
-                  Finding apps…
-                </AppText>
-              </View>
-            ) : undefined
+              <PlaceholderRows />
+            ) : (
+              <ActionLine
+                line={{
+                  key: "apps-failed",
+                  text: presentClientIssue({ code: "read-failed", resource: "apps" }).title,
+                  tone: "muted",
+                  link: { label: "Try again", onPress: () => void list.reload() },
+                }}
+              />
+            )
           ) : (
             <View style={styles.empty}>
               <AppText role="bodyMedium">No apps yet</AppText>
@@ -112,30 +116,21 @@ function AppsForReader(props: {
           )
         }
         ListHeaderComponent={
-          state.error === null && state.notices.length === 0 ? undefined : (
+          state.notices.length === 0 ? undefined : (
             <View style={styles.notices}>
-              {state.error === null ? null : (
-                <Notice
-                  action={{ label: "Try again", onPress: () => void list.reload() }}
-                  detail={state.error}
-                  title="Apps could not be loaded"
-                />
-              )}
               {/* An app the Host stopped listing still says how its last action went. */}
               {state.notices.map((notice) =>
                 notice.message === null ? (
-                  <Notice
-                    detail="Waiting for its computer to answer."
-                    key={notice.appId}
-                    title={appNoticeTitle(notice)}
-                    tone="neutral"
-                  />
+                  <AppText key={notice.appId} role="caption" tone="muted">
+                    {appNoticeTitle(notice)}
+                  </AppText>
                 ) : (
-                  <Notice
-                    action={{ label: "Dismiss", onPress: () => list.dismissFailure(notice.appId) }}
-                    detail={notice.message}
+                  <ActionLine
                     key={notice.appId}
-                    title={appNoticeTitle(notice)}
+                    line={appActionLine(notice.name, notice.action, () => {
+                      void list.reload();
+                      list.dismissFailure(notice.appId);
+                    })}
                   />
                 ),
               )}
@@ -145,7 +140,7 @@ function AppsForReader(props: {
         renderItem={({ item }) => (
           <AppRow
             app={item}
-            failure={state.failures.get(item.appId)?.message ?? null}
+            failed={state.failures.get(item.appId)?.action ?? null}
             hostClient={hostClient}
             list={list}
             onOpenTab={openTab}
@@ -158,6 +153,30 @@ function AppsForReader(props: {
   );
 }
 
+const doneWords: Record<AppAction, string> = {
+  rename: "renamed",
+  start: "started",
+  stop: "stopped",
+  delete: "deleted",
+  open: "opened",
+};
+
+/**
+ * An app action that didn't come back as done. The list keeps no reason that
+ * is safe to show, so it says only that it couldn't confirm; Check reads the
+ * list again, which shows the app as it really is.
+ */
+function appActionLine(name: string, action: AppAction, check: () => void): ActionLineValue {
+  return {
+    key: `${action}:${name}`,
+    text: presentClientIssue({ code: "unconfirmed", happened: `“${name}” was ${doneWords[action]}` })
+      .title,
+    tone: "muted",
+    link: { label: "Check", onPress: check },
+    haptic: "warning",
+  };
+}
+
 const stateWords: Record<App["state"], string> = {
   failed: "Failed",
   offline: "Computer offline",
@@ -167,8 +186,8 @@ const stateWords: Record<App["state"], string> = {
 
 const AppRow = memo(function AppRow(props: {
   readonly app: App;
-  /** The last action's failure, kept until the next action or a dismissal. */
-  readonly failure: string | null;
+  /** The last action whose answer never came, kept until the next action or Check. */
+  readonly failed: AppAction | null;
   readonly hostClient: HostClient;
   readonly list: AppsList;
   readonly onOpenTab: (tabId: Parameters<typeof tabRoute>[1]) => void;
@@ -328,12 +347,14 @@ const AppRow = memo(function AppRow(props: {
           />
         ) : null}
       </View>
-      {props.failure === null ? null : (
-        <Pressable accessibilityRole="button" onPress={() => list.dismissFailure(app.appId)}>
-          <AppText role="caption" tone="danger">
-            {props.failure}
-          </AppText>
-        </Pressable>
+      {props.failed === null ? null : (
+        <ActionLine
+          line={appActionLine(app.name, props.failed, () => {
+            void list.reload();
+            list.dismissFailure(app.appId);
+          })}
+          numberOfLines={2}
+        />
       )}
     </View>
   );

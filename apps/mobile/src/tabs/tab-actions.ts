@@ -1,23 +1,32 @@
 import type { HostClient } from "@opensteer/client/host";
 import type { TabId } from "@opensteer/core";
-import { refusal, type ItemActionWords } from "../ui/item-action.js";
+import { refusal, type ScreenActionSpec } from "../ui/client-feedback.js";
+
+type Work = () => Promise<unknown>;
+const runWork = (work: Work) => work();
+const words = (label: string, done: string, happened: string): ScreenActionSpec<Work, unknown> => ({
+  label,
+  done,
+  happened,
+  execute: runWork,
+});
 
 /**
- * What each action on a tab or group is called when it is said how it went,
- * and the key that ties the menu running it to the row saying so.
+ * Each action on a tab or group, as it is said how it went; the key ties the
+ * menu running it to the row saying so.
  */
-export const tabActionWords = {
-  close: { done: "closed", label: "close", thing: "this tab" },
-  move: { done: "moved", label: "move", thing: "this tab" },
-  open: { done: "opened", label: "open", thing: "this tab" },
-  reopen: { done: "reopened", label: "reopen", thing: "this tab" },
-  reopenLast: { done: "reopened", label: "reopen", thing: "a closed tab" },
-  newTab: { done: "opened", label: "open", thing: "a new tab" },
-  changeGroup: { done: "changed", label: "change", thing: "this group" },
-  closeGroup: { done: "closed", label: "close", thing: "these tabs" },
-} as const satisfies Readonly<Record<string, ItemActionWords>>;
+export const tabActionSpecs = {
+  close: words("close this tab", "closed", "this tab closed"),
+  move: words("move this tab", "moved", "this tab moved"),
+  open: words("open this tab", "opened", "this tab opened"),
+  reopen: words("reopen this tab", "reopened", "this tab reopened"),
+  reopenLast: words("reopen a closed tab", "reopened", "a closed tab reopened"),
+  newTab: words("open a new tab", "opened", "a new tab opened"),
+  changeGroup: words("change this group", "changed", "this group changed"),
+  closeGroup: words("close these tabs", "closed", "these tabs closed"),
+} as const;
 
-export type TabActionKind = keyof typeof tabActionWords;
+export type TabActionKind = keyof typeof tabActionSpecs;
 
 export function tabActionKey(kind: TabActionKind, id: string): string {
   return `tab-action:${kind}:${id}`;

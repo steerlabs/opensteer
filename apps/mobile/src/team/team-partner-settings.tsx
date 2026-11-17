@@ -1,7 +1,6 @@
 import { ChannelShares } from "./channel-shares.js";
 import { useTeamPartnerSettings } from "@opensteer/client/react";
 import {
-  partnerActionError,
   partnerInviteStatus,
   partnerLinkDetail,
   partnerLinkStatus,
@@ -11,7 +10,6 @@ import {
 import { useIsFocused, type StaticScreenProps } from "@react-navigation/native";
 import { useEffect, type ReactNode } from "react";
 import {
-  ActivityIndicator,
   Alert,
   AppState,
   Pressable,
@@ -27,7 +25,6 @@ import { useCopy } from "../ui/copy-mark.js";
 import {
   AppText,
   Field,
-  Notice,
   PrimaryButton,
   RowGroup,
   SecondaryButton,
@@ -35,24 +32,17 @@ import {
 } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 import { GroupNote } from "./settings-rows.js";
+import { clientIssueActions } from "@opensteer/client/feedback";
+import { ActionLine } from "../ui/action-line.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
 import { useTeamSession } from "./team-context.js";
+import { TeamWaiting } from "./team-feedback.js";
 
 export function TeamPartnerSettingsScreen(
   props: StaticScreenProps<{ readonly teamId: string }>,
 ): ReactNode {
-  const { session, failure } = useTeamSession(props.route.params.teamId);
-  if (!session)
-    return (
-      <Screen>
-        <View style={styles.page}>
-          {failure ? (
-            <Notice title="This team didn’t answer" detail={failure} />
-          ) : (
-            <ActivityIndicator color={color.muted} />
-          )}
-        </View>
-      </Screen>
-    );
+  const { session } = useTeamSession(props.route.params.teamId);
+  if (!session) return <TeamWaiting />;
   return <PartnerSettings session={session} />;
 }
 
@@ -92,12 +82,8 @@ function PartnerSettings({ session }: { readonly session: TeamSessionClient }): 
         <AppText role="secondary" tone="muted">
           Connect another team, then choose which channels to share with it.
         </AppText>
-        {state.error ? (
-          <Notice
-            action={{ label: "Try again", onPress: () => void model.refresh() }}
-            detail={state.error}
-            title="Partner teams didn’t load"
-          />
+        {state.error && policy === null ? (
+          <ReadFailed refresh={model.refresh} resource="sharing" />
         ) : null}
         {policy && policy.canPropose === undefined ? (
           <GroupNote>Update this team’s Opensteer server to manage partner teams.</GroupNote>
@@ -140,14 +126,14 @@ function PartnerSettings({ session }: { readonly session: TeamSessionClient }): 
                   </Pressable>
                 ))}
             </RowGroup>
-          ) : (
-            <ActivityIndicator color={color.muted} />
+          ) : state.error ? null : (
+            <PlaceholderRows count={2} />
           )}
           {error("policy")}
         </View>
         <View style={styles.group}>
           <SectionLabel>Linked teams</SectionLabel>
-          {links.first === null && !links.error ? <ActivityIndicator color={color.muted} /> : null}
+          {links.first === null && !links.error ? <PlaceholderRows count={2} /> : null}
           {links.first !== null && links.items.length === 0 ? (
             <GroupNote>No partner teams yet.</GroupNote>
           ) : null}
@@ -214,12 +200,8 @@ function PartnerSettings({ session }: { readonly session: TeamSessionClient }): 
               </View>
             ))}
           </RowGroup>
-          {links.error ? (
-            <Notice
-              action={{ label: "Try again", onPress: () => void model.refresh() }}
-              detail={partnerActionError(links.error)}
-              title="Partner teams didn’t load"
-            />
+          {links.error && links.first === null ? (
+            <ReadFailed refresh={model.refresh} resource="partner teams" />
           ) : null}
           {links.nextCursor ? (
             <SecondaryButton
@@ -323,12 +305,8 @@ function PartnerSettings({ session }: { readonly session: TeamSessionClient }): 
                 )),
             ]}
           </RowGroup>
-          {invites.error ? (
-            <Notice
-              action={{ label: "Try again", onPress: () => void model.refresh() }}
-              detail={partnerActionError(invites.error)}
-              title="Invites didn’t load"
-            />
+          {invites.error && invites.first === null ? (
+            <ReadFailed refresh={model.refresh} resource="invites" />
           ) : null}
           {invites.nextCursor ? (
             <SecondaryButton
@@ -387,6 +365,23 @@ function PartnerSettings({ session }: { readonly session: TeamSessionClient }): 
         ) : null}
       </ScrollView>
     </Screen>
+  );
+}
+
+/** Only when nothing ever arrived: what was loaded stays, and the connection is the pill's. */
+function ReadFailed(props: {
+  readonly resource: string;
+  readonly refresh: () => Promise<unknown>;
+}): ReactNode {
+  return (
+    <ActionLine
+      line={{
+        key: props.resource,
+        text: `Couldn't load ${props.resource}.`,
+        tone: "muted",
+        link: { label: clientIssueActions.tryAgain, onPress: () => void props.refresh() },
+      }}
+    />
   );
 }
 

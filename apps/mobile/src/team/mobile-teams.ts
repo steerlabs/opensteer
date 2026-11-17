@@ -508,11 +508,7 @@ class MobileTeamRuntime {
         await this.#rememberUser(teamId, userId);
       } catch (error) {
         if (error instanceof HostClientRequestError && bootstrapMembershipRefused(error))
-          this.#setState(
-            teamId,
-            error.reason === "not-a-member" ? "join" : "removed",
-            error.message,
-          );
+          this.#setState(teamId, error.reason === "not-a-member" ? "join" : "removed", null);
         else this.#fail(teamId, error);
         throw error;
       }
@@ -957,7 +953,8 @@ class MobileTeamRuntime {
   }
 
   #fail(teamId: string, error: unknown): void {
-    this.#setState(teamId, teamFailure(error), error instanceof Error ? error.message : null);
+    // The state says what happened; an error's own words never reach a screen.
+    this.#setState(teamId, teamFailure(error), null);
   }
 
   async #loadMemo(): Promise<void> {

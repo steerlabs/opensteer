@@ -1,4 +1,3 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
 import {
   accountSource,
   aiEngineAccountRow,
@@ -13,8 +12,14 @@ import {
 import { useHostSelector } from "@opensteer/client/react";
 import { useState, type ReactNode } from "react";
 import { Alert } from "react-native";
+import { notDone, settingsFooter, useScreenAction } from "../ui/client-feedback.js";
 import type { AiAccountAction, AiAccountsForm } from "./settings-form.types.js";
 import { useAccountSignIn } from "./use-account-sign-in.js";
+
+interface AccountInput {
+  readonly environmentId: string;
+  readonly harnessInstanceId: string;
+}
 
 type Accounts = Pick<HostSnapshot, "environments" | "harnesses">;
 
@@ -45,11 +50,63 @@ export function useAiAccounts(host: HostClient): {
   const [requestedEnvironment, setRequestedEnvironment] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [signInFailure, setSignInFailure] = useState<string | null>(null);
   const signIn = useAccountSignIn(host, (outcome) => {
     setConfirmation(outcome.kind === "done" ? outcome.message : null);
-    setError(outcome.kind === "failed" ? outcome.message : null);
+    setSignInFailure(outcome.kind === "failed" ? outcome.message : null);
   });
+  const hasHarness = (id: string) => host.getSnapshot().harnesses.find((row) => row.id === id);
+  const refreshModels = useScreenAction(host, "harness-catalog-refresh", {
+    label: "refresh the models",
+    done: "refreshed",
+    happened: "the models were refreshed",
+    execute: async (input: AccountInput) => {
+      unwrapRpcResult(await host.rpc["harness.catalog.refresh"](input));
+      // The new models arrive with the next snapshot; a failed reload doesn't undo the refresh.
+      void host.refresh().catch(() => undefined);
+    },
+    // Refreshing a catalog changes nothing else, so checking is asking again.
+    reconcile: async (input) => {
+      unwrapRpcResult(await host.rpc["harness.catalog.refresh"](input));
+      return { kind: "confirmed", value: undefined };
+    },
+  });
+  const makeDefault = useScreenAction(host, "harness-default", {
+    label: "change the default account",
+    done: "changed",
+    happened: "the default account changed",
+    execute: async (input: AccountInput) => {
+      await host.dispatch({
+        ...input,
+        idempotencyKey: mutationIdempotencyKey(`harness-default:${input.harnessInstanceId}`),
+        type: "harness.default.set",
+      });
+    },
+    reconcile: async (input) =>
+      hasHarness(input.harnessInstanceId)?.isDefault === true
+        ? { kind: "confirmed", value: undefined }
+        : notDone({ label: "change", done: "changed" }),
+  });
+  const remove = useScreenAction(host, "harness-delete", {
+    label: "remove the account",
+    done: "removed",
+    happened: "the account was removed",
+    execute: async (input: AccountInput) => {
+      await host.dispatch({
+        ...input,
+        idempotencyKey: mutationIdempotencyKey(`harness-delete:${input.harnessInstanceId}`),
+        type: "harness.delete",
+      });
+    },
+    reconcile: async (input) =>
+      hasHarness(input.harnessInstanceId)
+        ? notDone({ label: "remove", done: "removed" })
+        : { kind: "confirmed", value: undefined },
+  });
+  const actionLine = refreshModels.line ?? makeDefault.line ?? remove.line;
+  const line = signInFailure
+    ? { text: signInFailure, tone: "danger" as const }
+    : (settingsFooter(actionLine) ?? null);
   const environment =
     environments.find(({ id }) => id === requestedEnvironment) ?? environments[0] ?? null;
   const groups = environment
@@ -88,16 +145,19 @@ export function useAiAccounts(host: HostClient): {
         }))
     : [];
 
-  const run = (id: string, operation: () => Promise<unknown>): void => {
+  const run = (
+    id: string,
+    action: { readonly run: (input: AccountInput) => Promise<unknown> },
+    input: AccountInput,
+  ): void => {
     if (busyId !== null) return;
     setBusyId(id);
     setConfirmation(null);
-    setError(null);
-    void operation()
-      .catch((cause: unknown) =>
-        setError(presentActionFailure(cause, "That did not finish. Try again.")),
-      )
-      .finally(() => setBusyId(null));
+    setSignInFailure(null);
+    refreshModels.dismiss();
+    makeDefault.dismiss();
+    remove.dismiss();
+    void action.run(input).finally(() => setBusyId(null));
   };
 
   const onAction: AiAccountsForm["onAction"] = (harnessInstanceId, action) => {
@@ -112,7 +172,7 @@ export function useAiAccounts(host: HostClient): {
     switch (action.id) {
       case "sign-in":
         setConfirmation(null);
-        setError(null);
+        setSignInFailure(null);
         signIn.signIn({
           environmentId,
           harnessInstanceId,
@@ -124,22 +184,10 @@ export function useAiAccounts(host: HostClient): {
         });
         return;
       case "refresh-models":
-        run(harnessInstanceId, async () => {
-          unwrapRpcResult(
-            await host.rpc["harness.catalog.refresh"]({ environmentId, harnessInstanceId }),
-          );
-          await host.refresh();
-        });
+        run(harnessInstanceId, refreshModels, { environmentId, harnessInstanceId });
         return;
       case "make-default":
-        run(harnessInstanceId, () =>
-          host.dispatch({
-            environmentId,
-            harnessInstanceId,
-            idempotencyKey: mutationIdempotencyKey(`harness-default:${harnessInstanceId}`),
-            type: "harness.default.set",
-          }),
-        );
+        run(harnessInstanceId, makeDefault, { environmentId, harnessInstanceId });
         return;
       case "remove":
         Alert.alert(
@@ -152,15 +200,7 @@ export function useAiAccounts(host: HostClient): {
           [
             { style: "cancel", text: "Cancel" },
             {
-              onPress: () =>
-                run(harnessInstanceId, () =>
-                  host.dispatch({
-                    environmentId,
-                    harnessInstanceId,
-                    idempotencyKey: mutationIdempotencyKey(`harness-delete:${harnessInstanceId}`),
-                    type: "harness.delete",
-                  }),
-                ),
+              onPress: () => run(harnessInstanceId, remove, { environmentId, harnessInstanceId }),
               style: "destructive",
               text: "Remove",
             },
@@ -174,7 +214,7 @@ export function useAiAccounts(host: HostClient): {
     form: {
       busyId,
       confirmation,
-      error,
+      line,
       groups: groups.map(({ accounts, engine }) => ({
         addable: engine.addable,
         driverKind: engine.driverKind,
@@ -202,7 +242,7 @@ export function useAiAccounts(host: HostClient): {
         const engine = groups.find((group) => group.engine.driverKind === driverKind)?.engine;
         if (!engine || !environment) return;
         setConfirmation(null);
-        setError(null);
+        setSignInFailure(null);
         signIn.addAccount(engine, environment);
       },
       onChooseLocation: setRequestedEnvironment,

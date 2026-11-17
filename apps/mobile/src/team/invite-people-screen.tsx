@@ -3,22 +3,18 @@ import { createId } from "@opensteer/core";
 import type { TeamCurrentInvite, TeamInviteExpiryDays } from "@opensteer/protocol";
 import type { StaticScreenProps } from "@react-navigation/native";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  Pressable,
-  ScrollView,
-  Share,
-  StyleSheet,
-  View,
-} from "react-native";
+import { Alert, Pressable, ScrollView, Share, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Path, Rect } from "react-native-svg";
 import { encode } from "uqr";
-import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
+import { controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
 import { useCopy } from "../ui/copy-mark.js";
-import { AppText, Notice, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
+import { clientIssueActions } from "@opensteer/client/feedback";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
+import { AppText, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { useTeamSession } from "./team-context.js";
+import { teamOutcome, teamOutcomeLine } from "./team-feedback.js";
 
 const expiryChoices: readonly TeamInviteExpiryDays[] = [1, 7, 30];
 
@@ -53,7 +49,7 @@ type InviteState =
   | { readonly kind: "current"; readonly invite: TeamCurrentInvite }
   /** A team server older than reusable invites: one link per person. */
   | { readonly kind: "single-use"; readonly url: string | null }
-  | { readonly kind: "failed"; readonly detail: string };
+  | { readonly kind: "failed" };
 
 /**
  * The team's one reusable invite: the link, Share and Copy, a code for a phone beside you,
@@ -67,6 +63,7 @@ export function TeamInvitesScreen(
   const insets = useSafeAreaInsets();
   const [state, setState] = useState<InviteState>({ kind: "loading" });
   const [busy, setBusy] = useState(false);
+  const [line, setLine] = useState<ActionLineValue | null>(null);
   const { copied, copy } = useCopy();
   const name = snapshot.bootstrap?.teamName ?? team?.name ?? "your team";
 
@@ -101,14 +98,7 @@ export function TeamInvitesScreen(
   useEffect(() => {
     if (session === null) return;
     let current = true;
-    void load().catch(
-      (error: unknown) =>
-        current &&
-        setState({
-          kind: "failed",
-          detail: error instanceof Error ? error.message : "The invite wasn't made.",
-        }),
-    );
+    void load().catch(() => current && setState({ kind: "failed" }));
     return () => {
       current = false;
     };
@@ -117,11 +107,11 @@ export function TeamInvitesScreen(
   }, [session]);
 
   const run = (work: () => Promise<void>): void => {
+    if (session === null) return;
     setBusy(true);
-    void work()
-      .catch((error: unknown) =>
-        Alert.alert("That didn't work", error instanceof Error ? error.message : undefined),
-      )
+    setLine(null);
+    void teamOutcome(session, { label: "make a new link", done: "made" }, work)
+      .then((outcome) => setLine(teamOutcomeLine(outcome)))
       .finally(() => setBusy(false));
   };
 
@@ -138,12 +128,21 @@ export function TeamInvitesScreen(
         </AppText>
       </View>
       {state.kind === "loading" ? (
-        <ActivityIndicator color={color.muted} style={styles.loading} />
+        <PlaceholderRows count={2} />
       ) : state.kind === "failed" ? (
-        <Notice
-          action={{ label: "Try again", onPress: () => run(load) }}
-          detail={state.detail}
-          title="No invite yet"
+        <ActionLine
+          line={{
+            key: "invite",
+            text: "Couldn't load the invite.",
+            tone: "muted",
+            link: {
+              label: clientIssueActions.tryAgain,
+              onPress: () => {
+                setState({ kind: "loading" });
+                void load().catch(() => setState({ kind: "failed" }));
+              },
+            },
+          }}
         />
       ) : (
         <>
@@ -260,6 +259,9 @@ export function TeamInvitesScreen(
                 }
                 tone="danger"
               />
+              {line === null ? null : (
+                <ActionLine line={line} numberOfLines={2} onDismiss={() => setLine(null)} />
+              )}
             </>
           ) : null}
         </>
@@ -293,7 +295,6 @@ const styles = StyleSheet.create({
     paddingLeft: space[12],
     paddingRight: space[4],
   },
-  loading: { marginVertical: space[40] },
   page: { alignSelf: "center", gap: space[18], maxWidth: 560, padding: space[20], width: "100%" },
   segment: {
     alignItems: "center",

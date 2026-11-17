@@ -11,7 +11,13 @@ import type { ReactNode } from "react";
 import { color } from "../theme.js";
 import { ExternalAgentMark } from "./external-agent-mark.js";
 import { externalAgentsLead } from "@opensteer/client/host";
-import { Chevron, ErrorText, Footer, Lines } from "./settings-form-primitives.ios.js";
+import {
+  Chevron,
+  Footer,
+  LineFooter,
+  Lines,
+  PlaceholderRow,
+} from "./settings-form-primitives.ios.js";
 import type { ExternalAgentsFormProps } from "./settings-external-agents-form.types.js";
 
 const secondary = foregroundStyle({ type: "hierarchical", style: "secondary" });
@@ -24,8 +30,14 @@ export function ExternalAgentsForm(props: ExternalAgentsFormProps): ReactNode {
           {externalAgentsLead}
         </Text>
       </Section>
-      {props.connections.length === 0 ? null : (
-        <Section title="Connected">
+      {props.connections.length === 0 && !props.loading && props.line === null ? null : (
+        <Section
+          title="Connected"
+          {...(props.line === null ? {} : { footer: <LineFooter footer={props.line} /> })}
+        >
+          {props.loading && props.line === null
+            ? [0, 1, 2].map((index) => <PlaceholderRow key={index} label="Not loaded yet" />)
+            : null}
           {props.connections.map((connection) => (
             <SwipeActions key={connection.id}>
               <Button
@@ -92,11 +104,6 @@ export function ExternalAgentsForm(props: ExternalAgentsFormProps): ReactNode {
           </Button>
         ))}
       </Section>
-      {props.error === null ? null : (
-        <Section>
-          <ErrorText detail={props.error} />
-        </Section>
-      )}
     </>
   );
 }

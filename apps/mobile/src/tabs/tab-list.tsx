@@ -28,9 +28,9 @@ import { color, radius, space, touchTarget } from "../theme.js";
 import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
 import { NeedsYouTag } from "../threads/task-row.js";
 import { RowSubtitle } from "../ui/action-line.js";
-import { itemAction, useItemAction } from "../ui/item-action.js";
+import { screenAction, useScreenAction } from "../ui/client-feedback.js";
 import { AppText, Field, SecondaryButton } from "../ui/primitives.js";
-import { closeTabs, tabActionKey, tabActionWords, type TabActionKind } from "./tab-actions.js";
+import { closeTabs, tabActionKey, tabActionSpecs, type TabActionKind } from "./tab-actions.js";
 import { Symbol } from "../ui/symbol.js";
 import { MacAppIcon } from "../computers/app-mark.js";
 import { TabPicture } from "../screens/tab-picture.js";
@@ -102,7 +102,7 @@ export function TabList(props: TabListProps): ReactNode {
   // Each tab's and group's own action: the row says how it went, after the menu is gone.
   const act = useCallback(
     (kind: TabActionKind, id: string, work: () => Promise<unknown>) =>
-      void itemAction(client, tabActionKey(kind, id), tabActionWords[kind]).run(work),
+      void screenAction(client, tabActionKey(kind, id), tabActionSpecs[kind]).run(work),
     [client],
   );
   const [moving, setMoving] = useState<Moving | null>(null);
@@ -444,15 +444,15 @@ const GroupHead = memo(function GroupHead(props: {
 }): ReactNode {
   const { group } = props;
   const count = group.tabIds.length;
-  const change = useItemAction(
+  const change = useScreenAction(
     props.hostClient,
     tabActionKey("changeGroup", group.groupId),
-    tabActionWords.changeGroup,
+    tabActionSpecs.changeGroup,
   );
-  const closing = useItemAction(
+  const closing = useScreenAction(
     props.hostClient,
     tabActionKey("closeGroup", group.groupId),
-    tabActionWords.closeGroup,
+    tabActionSpecs.closeGroup,
   );
   const busy = change.running || closing.running;
   const line = change.line ?? closing.line;
@@ -549,8 +549,8 @@ const TabRow = memo(function TabRow(props: TabRowProps & { readonly place: Place
       ? props.moving.tabId === tab.tabId
       : props.moving.group.tabIds.includes(tab.tabId));
   const title = tabTitle(tab);
-  const closing = useItemAction(hostClient, tabActionKey("close", tab.tabId), tabActionWords.close);
-  const moved = useItemAction(hostClient, tabActionKey("move", tab.tabId), tabActionWords.move);
+  const closing = useScreenAction(hostClient, tabActionKey("close", tab.tabId), tabActionSpecs.close);
+  const moved = useScreenAction(hostClient, tabActionKey("move", tab.tabId), tabActionSpecs.move);
   const busy = closing.running || moved.running;
   // An action on this tab answers in the subtitle's place, so the row keeps its height.
   const line = closing.line ?? moved.line;

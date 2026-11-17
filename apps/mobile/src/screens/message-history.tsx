@@ -1,4 +1,4 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
+import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import {
   formatClockTime,
   messageRevisionRows,
@@ -19,6 +19,8 @@ import {
 import { Markdown } from "../markdown/markdown.js";
 import { color, space, touchTarget } from "../theme.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
+import { ActionLine } from "../ui/action-line.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { useContentInsets } from "../ui/pane.js";
 import { useGutter } from "../ui/screen.js";
@@ -83,8 +85,13 @@ function History(props: {
         );
         setHasMore(page.hasMore);
       } catch (error) {
-        if (mounted.current)
-          setFailure(presentActionFailure(error, "This message’s versions couldn’t be loaded."));
+        if (mounted.current && clientIssue(error, { operation: "read", label: "versions" }))
+          setFailure(
+            presentClientIssue({
+              code: "read-failed",
+              resource: before === undefined ? "this message's versions" : "earlier versions",
+            }).title,
+          );
       } finally {
         if (mounted.current) setLoading(false);
       }
@@ -115,11 +122,11 @@ function History(props: {
         <AppText role="title">Edit history</AppText>
         <AppText role="caption" tone="muted">
           {rows === null
-            ? "Loading…"
+            ? ""
             : `${rows.length}${hasMore ? "+" : ""} ${rows.length === 1 ? "version" : "versions"}`}
         </AppText>
       </View>
-      {rows === null && loading ? <ActivityIndicator color={color.muted} /> : null}
+      {rows === null && failure === null ? <PlaceholderRows count={2} /> : null}
       {rows?.map((row, index) => (
         <View key={row.revision} style={[styles.row, index > 0 && styles.rowSeparated]}>
           <RevisionHead row={row} />
@@ -128,11 +135,14 @@ function History(props: {
         </View>
       ))}
       {failure === null ? null : (
-        <View accessibilityRole="alert">
-          <AppText role="caption" tone="danger">
-            {failure}
-          </AppText>
-        </View>
+        <ActionLine
+          line={{
+            key: failure,
+            text: failure,
+            tone: "muted",
+            link: rows === null ? { label: "Try again", onPress: () => void load() } : null,
+          }}
+        />
       )}
       {hasMore || (failure !== null && rows !== null) ? (
         <Pressable

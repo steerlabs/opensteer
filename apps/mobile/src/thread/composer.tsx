@@ -1,7 +1,8 @@
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import { hostMessageOutbox } from "@opensteer/client/host";
 import { clientIssue, presentActionFailure, presentClientIssue } from "@opensteer/client/feedback";
-import { ActionLine, issueLine, type ActionLineValue } from "../ui/action-line.js";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { issueLine } from "../ui/client-feedback.js";
 import { notSent, notSentIssue, useConnectionReady } from "../ui/connection-live.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import type { ComposerEditorHandle } from "@opensteer/client/references";

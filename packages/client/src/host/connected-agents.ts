@@ -56,9 +56,9 @@ export class ConnectedAgentsClient {
       subscribeInvalidation: (listener) => client.subscribeConnectionsChanged(listener),
     });
     this.#revokes = createClientActionFamily(client, {
-      label: "revoke",
+      label: "revoke this agent",
       done: "revoked",
-      thing: "this agent",
+      happened: "this agent was revoked",
       execute: async (connectionId) => {
         await client.dispatch({
           type: "connection.revoke",

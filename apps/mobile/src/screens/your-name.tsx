@@ -82,7 +82,11 @@ export function YourNameScreen(props: StaticScreenProps<YourNameParams>): ReactN
     setSaving(true);
     setError(null);
     // Each answer carries the name now stored, so a refused save shows the newer one.
-    const saved: Promise<{ applied: boolean; name: string | null; version: string | null }> =
+    const saved: Promise<{
+      applied: boolean;
+      name: string | null;
+      version: string | null;
+    }> | null =
       target === "owner" && host !== null
         ? host.setOwnerName(name, base.version).then(({ applied }) => {
             profiles?.changed();
@@ -96,7 +100,12 @@ export function YourNameScreen(props: StaticScreenProps<YourNameParams>): ReactN
                 setAccount(profile);
                 return { applied, name: profile.name, version: String(profile.revision) };
               })
-          : Promise.reject(new Error("Sign in to your Opensteer Account to set your name."));
+          : null;
+    if (saved === null) {
+      setSaving(false);
+      setError("Sign in to your Opensteer Account to set your name.");
+      return;
+    }
     void saved
       .then(({ applied, name: current, version }) => {
         if (applied) {

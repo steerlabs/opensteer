@@ -446,7 +446,8 @@ it.each(["ios", "android"])(
     await input("Link code", "ABCDEFGH");
     const retained = row("Link account");
     const dispatch = vi.spyOn(host, "dispatch");
-    state.host = null;
+    // The selection moving away stops this Host's connection; a retained row can't send.
+    host.connection.stop();
     if (retained.kind !== "button") throw new Error("Missing link action");
     await act(async () => retained.onPress());
     expect(dispatch).not.toHaveBeenCalled();
@@ -604,7 +605,11 @@ it.each(["ios", "android"])(
       .mockResolvedValue({ type: "integration.server.secrets.set" } as never);
     await press("Change secrets");
     await press("Save");
-    expect(rows().some((row) => row.label === "Enter a new value to change.")).toBe(true);
+    expect(
+      [...state.pages.values()].some((page) =>
+        page.sections.some((section) => section.footer?.text === "Enter a new value to change."),
+      ),
+    ).toBe(true);
     const field = row("Camera password");
     expect(field.kind === "input" && field.secure).toBe(true);
     await input("Camera password", "new-secret");

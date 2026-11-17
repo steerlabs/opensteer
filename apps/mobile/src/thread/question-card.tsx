@@ -29,6 +29,7 @@ import {
   type,
 } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
+import { ActionLine } from "../ui/action-line.js";
 import { Symbol } from "../ui/symbol.js";
 import { AnswerPill, AnswerRow } from "./answer-pill.js";
 import { AskerByline, useRequestAsker } from "./asker-byline.js";
@@ -318,9 +319,7 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
             </AppText>
           )}
           {session.failure === null ? null : (
-            <AppText role="caption" tone={session.failure.tone}>
-              {session.failure.text}
-            </AppText>
+            <ActionLine line={session.failure} numberOfLines={2} />
           )}
         </View>
       )}

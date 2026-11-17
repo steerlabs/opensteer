@@ -16,7 +16,8 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("@react-navigation/native", () => ({ useIsFocused: () => true }));
-vi.mock("@opensteer/client/react", () => ({
+vi.mock("@opensteer/client/react", async (actual) => ({
+  ...(await actual<typeof import("@opensteer/client/react")>()),
   useHostSelector: (client: { getSnapshot: () => unknown }, select: (value: unknown) => unknown) =>
     select(client.getSnapshot()),
 }));
@@ -52,10 +53,10 @@ vi.mock("react-native", () => ({
   StyleSheet: { create: (styles: object) => styles },
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
 }));
-vi.mock("../client/mobile-client.js", () => ({
-  operationDetail: (error: unknown, fallback: string) =>
-    error instanceof Error ? error.message : fallback,
+vi.mock("../ui/action-line.js", () => ({
+  ActionLine: ({ line }: { line: { text: string } }) => <p>{line.text}</p>,
 }));
+vi.mock("../ui/placeholder.js", () => ({ PlaceholderRows: () => null }));
 vi.mock("../theme.js", () => ({ color: {}, space: {}, touchTarget: 44 }));
 vi.mock("../ui/screen.js", () => ({
   Screen: ({ children }: { children?: ReactNode }) => <main>{children}</main>,
@@ -289,8 +290,7 @@ describe("Connected apps on the phone", () => {
     );
     await vi.waitFor(() => expect(cancel()).toBeDefined());
     await act(async () => cancel()?.click());
-    await vi.waitFor(() => expect(cancel()).toBeUndefined());
-    expect(container.textContent).not.toContain("That did not finish");
+    await vi.waitFor(() => expect(container.textContent).toContain("Authorization was cancelled."));
     expect(begin.mock.calls[0]?.[0].signal.aborted).toBe(true);
     expect(cancel()).toBeUndefined();
   });

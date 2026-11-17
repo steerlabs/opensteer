@@ -10,6 +10,7 @@ import {
   space,
   touchTarget,
 } from "../theme.js";
+import { MessageDelivery } from "../thread/message-delivery.js";
 import { AppText } from "../ui/primitives.js";
 import { MessageAttachments } from "./attachments.js";
 import { MessageBody } from "./message-body.js";
@@ -62,7 +63,6 @@ export const MessageRow = memo(
     const agent = message.author.kind === "agent" ? message.author.agent : null;
     const person = message.author.kind === "person" ? message.author.person : agent!.owner;
     const name = agent?.byline ?? person.name;
-    const unsent = message.send.kind === "failed";
     return (
       <Pressable
         accessibilityHint="Hold for actions"
@@ -88,12 +88,19 @@ export const MessageRow = memo(
                   External · {person.externalTeam}
                 </AppText>
               ) : null}
-              <SendStateLabel message={message} />
+              <AppText
+                maxFontSizeMultiplier={controlFontScaleLimit}
+                numberOfLines={1}
+                role="caption"
+                style={styles.time}
+              >
+                {message.time}
+              </AppText>
             </View>
           )}
-          <View style={unsent ? styles.unsentBody : undefined}>
+          <Delivery actions={actions} message={message}>
             <MessageBody mentions={message.mentions} text={message.text} />
-          </View>
+          </Delivery>
           {message.edited ? (
             <AppText role="caption" tone="muted">
               (edited)
@@ -103,25 +110,9 @@ export const MessageRow = memo(
             attachments={message.attachments}
             onOpen={(attachmentId) => actions.onOpenAttachment(message.id, attachmentId)}
           />
-          {message.continued && message.send.kind !== "sent" ? (
-            <SendStateLabel message={message} />
-          ) : null}
-          {message.send.kind === "failed" || message.send.kind === "retryable" ? (
+          {message.send.kind === "retryable" ? (
             <View style={styles.unsent}>
-              <AppText role="caption" style={styles.unsentReason} tone="danger">
-                {message.send.kind === "retryable"
-                  ? message.send.reason
-                  : `Not sent: ${message.send.reason}`}
-              </AppText>
-              {message.send.kind === "retryable" ? (
-                <TextAction
-                  label="Try again"
-                  onPress={() => actions.onUnsent(message.id, "retry")}
-                />
-              ) : (
-                <TextAction label="Edit" onPress={() => actions.onUnsent(message.id, "edit")} />
-              )}
-              <TextAction label="Delete" onPress={() => actions.onUnsent(message.id, "delete")} />
+              <TextAction label="Try again" onPress={() => actions.onUnsent(message.id, "retry")} />
             </View>
           ) : null}
           {message.askStatuses?.map((status) => (
@@ -263,26 +254,33 @@ function AskDecisionControl(props: {
   );
 }
 
-/** The time, or what is keeping the message from being sent. */
-function SendStateLabel(props: { readonly message: MessageView }): ReactNode {
-  const { send, time } = props.message;
-  const words =
-    send.kind === "sending"
-      ? "Sending…"
-      : send.kind === "queued"
-        ? "Waiting for connection · sends when you're back"
-        : send.kind === "retryable"
-          ? "Unconfirmed"
-          : time;
+/**
+ * A message this phone still holds, drawn where the delivered one will stand,
+ * through the team's own ordered delivery: waiting, sending, refused, or sent
+ * with its answer lost.
+ */
+function Delivery(props: {
+  readonly actions: MessageRowActions;
+  readonly message: MessageView;
+  readonly children: ReactNode;
+}): ReactNode {
+  const { actions, message } = props;
+  const send = message.send;
+  if (send.kind === "sent") return props.children;
   return (
-    <AppText
-      maxFontSizeMultiplier={controlFontScaleLimit}
-      numberOfLines={1}
-      role="caption"
-      style={send.kind === "queued" ? styles.queued : styles.time}
+    <MessageDelivery
+      // The team's owner takes back only refused messages: a waiting one offers nothing.
+      attempted
+      copy={send.kind === "retryable" ? { waiting: "Couldn't confirm this message sent." } : {}}
+      onAction={(action) => actions.onUnsent(message.id, action === "edit" ? "edit" : "delete")}
+      phase={send.kind === "failed" ? "rejected" : send.kind === "sending" ? "sending" : "waiting"}
+      // The team's delivery owner keeps presented words, not the refusal's reason.
+      rejection={send.kind === "failed" ? "Not sent. The team didn't accept it." : null}
+      showStatus
+      since={send.since}
     >
-      {words}
-    </AppText>
+      {props.children}
+    </MessageDelivery>
   );
 }
 
@@ -484,7 +482,6 @@ const styles = StyleSheet.create({
   // The edge takes two points of the row's own inset, so the words stay put.
   pinned: { borderLeftColor: color.amber, borderLeftWidth: 2, paddingLeft: space[12] },
   pressed: { backgroundColor: "rgba(255, 255, 255, 0.03)" },
-  queued: { color: color.amber, flexShrink: 1 },
   // The count reads whole; the fact beside it gives way.
   replies: { color: color.ember, flexShrink: 0, fontWeight: "700" },
   row: {
@@ -520,6 +517,4 @@ const styles = StyleSheet.create({
     gap: space[12],
     marginTop: 2,
   },
-  unsentBody: { opacity: 0.6 },
-  unsentReason: { flexBasis: "100%" },
 });

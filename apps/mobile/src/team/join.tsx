@@ -178,10 +178,10 @@ export function JoinSheetBody(props: {
       return (
         <Outcome
           action={{ label: "Try again", onPress: props.onRetry, primary: true }}
-          detail={`${invite.host} didn't answer. Check you're online, or on the network the team uses, then try again.`}
+          detail="Make sure it's on and connected to the internet."
           icon="exclamationmark.circle"
           team={null}
-          title="Can't reach the team"
+          title={`Can't reach ${invite.host}`}
         />
       );
     case "failed":

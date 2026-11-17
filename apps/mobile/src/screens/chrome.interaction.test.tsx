@@ -3,21 +3,24 @@
 import type { ReactNode } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { testHostConnection } from "@opensteer/client/test-support";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
   alert: null as null | { buttons: { onPress?: () => void; text: string }[]; message: string },
   hostClient: null as unknown,
+  announce: vi.fn(async (_message: string) => undefined),
 }));
 
 vi.mock("@react-navigation/native", () => ({ useIsFocused: () => true }));
-vi.mock("@opensteer/client/react", () => ({
+vi.mock("@opensteer/client/react", async (load) => ({
+  ...(await load<typeof import("@opensteer/client/react")>()),
   useHostSelector: (client: { getSnapshot: () => unknown }, select: (value: unknown) => unknown) =>
     select(client.getSnapshot()),
 }));
 vi.mock("react-native", () => ({
   Platform: { OS: "ios", Version: "26" },
-  AccessibilityInfo: { announceForAccessibility: vi.fn(async () => undefined) },
+  AccessibilityInfo: { announceForAccessibility: state.announce },
   Alert: {
     alert: (_title: string, message: string, buttons: { onPress?: () => void; text: string }[]) => {
       state.alert = { buttons, message };
@@ -34,10 +37,14 @@ vi.mock("react-native", () => ({
     children?: ReactNode;
   }) => <div aria-label={accessibilityLabel}>{children}</div>,
 }));
-vi.mock("../client/mobile-client.js", () => ({
-  operationDetail: (error: unknown, fallback: string) =>
-    error instanceof Error ? error.message : fallback,
-}));
+vi.mock(
+  "../ui/action-line.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).actionLine,
+);
+vi.mock(
+  "../ui/placeholder.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).placeholder,
+);
 vi.mock("../ui/screen.js", () => ({
   Screen: ({ children }: { children?: ReactNode }) => <main>{children}</main>,
   useListContentInsets: () => ({}),
@@ -116,16 +123,21 @@ function grant(site: string, lastSignedInAt: string | null = null) {
 function host(sources: readonly object[], sites: readonly object[] = []) {
   const dispatch = vi.fn(async (command: { type: string }) => ({ type: command.type }));
   const get = vi.fn(async () => ({ data: { sites, sources }, ok: true }));
-  state.hostClient = {
-    dispatch,
-    getSnapshot: () => ({
-      connection: "connected",
-      network: "online",
-      session: "authenticated",
-      user: { id: "user-a" },
-    }),
-    rpc: { "browser.sources.get": get },
+  const snapshot = {
+    connection: "connected",
+    deploymentId: "deployment-a",
+    network: "online",
+    session: "authenticated",
+    user: { id: "user-a" },
   };
+  const client = {
+    dispatch,
+    getSnapshot: () => snapshot,
+    rpc: { "browser.sources.get": get },
+    subscribe: () => () => undefined,
+  };
+  Object.assign(client, { connection: testHostConnection(client as never) });
+  state.hostClient = client;
   return { dispatch, get };
 }
 
@@ -134,6 +146,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) act(() => root.unmount());
   document.body.replaceChildren();
   state.alert = null;
+  state.announce.mockClear();
 });
 
 async function flush(): Promise<void> {
@@ -229,7 +242,7 @@ describe("mobile Chrome", () => {
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ sourceId: laptop, type: "browser.source.revoke" }),
     );
-    expect(text()).toContain("Work laptop disconnected.");
+    expect(state.announce).toHaveBeenCalledWith("Work laptop disconnected.");
     expect(get.mock.calls.length).toBeGreaterThan(1);
   });
 
@@ -261,6 +274,8 @@ describe("mobile Chrome", () => {
         type: "browser.site.remove",
       }),
     );
-    expect(text()).toContain("github.com removed. Your agent asks before using it again.");
+    expect(state.announce).toHaveBeenCalledWith(
+      "github.com removed. Your agent asks before using it again.",
+    );
   });
 });

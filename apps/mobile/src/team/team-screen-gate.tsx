@@ -1,9 +1,16 @@
-import { Fragment, useState, type ReactNode } from "react";
-import { ActivityIndicator, Alert, StyleSheet, View } from "react-native";
+import type { ClientConnectionState } from "@opensteer/client/connections";
+import {
+  clientIssueActions,
+  presentClientIssue,
+  presentConnectionGate,
+  type ClientIssue,
+} from "@opensteer/client/feedback";
+import { useNavigation } from "@react-navigation/native";
+import { Fragment, useState, useSyncExternalStore, type ReactNode } from "react";
 import { TeamReferenceProvider } from "../markdown/reference-navigation.js";
-import { color, space } from "../theme.js";
-import { Notice, PrimaryButton } from "../ui/primitives.js";
-import { Screen } from "../ui/screen.js";
+import { ConnectionGate } from "../ui/connection-gate.js";
+import { useShellGate } from "../ui/shell-gate.js";
+import type { MobileTeam } from "./mobile-teams.js";
 import { useMobileTeams, useTeamSession, useTeamsSnapshot } from "./team-context.js";
 
 /** The navigator applies this to every route with a team, including sheets and nested notes. */
@@ -56,9 +63,7 @@ function AccountTeamScreen({
   readonly teamId: string;
   readonly children: ReactNode;
 }): ReactNode {
-  const teams = useMobileTeams();
-  const { team, snapshot, failure } = useTeamSession(teamId);
-  const [busy, setBusy] = useState(false);
+  const { team, snapshot } = useTeamSession(teamId);
   const state = team?.state;
   if ((state === "live" || state === "offline" || state === "loading") && snapshot.bootstrap)
     return team ? (
@@ -68,58 +73,131 @@ function AccountTeamScreen({
     ) : (
       <Fragment>{children}</Fragment>
     );
-  const name = team?.name ?? "this team";
-  const signIn = state === "signed-out";
-  const title =
-    state === "removed"
-      ? `You're no longer in ${name}`
-      : state === "join"
-        ? "Join this team"
-        : state === "update-app"
-          ? "Update Opensteer"
-          : state === "update-server"
-            ? "Team server needs an update"
-            : signIn
-              ? `Sign in to ${name}`
-              : `${name} didn't answer`;
-  const detail =
-    failure ??
-    (state === "removed" || state === "join"
-      ? "Ask a team member for a new invite."
-      : state === "update-app"
-        ? "Install the latest Opensteer app to open this team."
-        : state === "update-server"
-          ? "Ask the team administrator to update the server."
-          : "Try again when you're connected.");
-  const attempt = () => {
+  return <TeamGate team={team} teamId={teamId} />;
+}
+
+const noSubscribe = () => () => {};
+const noState = () => null;
+
+/**
+ * The one explanation while a team screen has nothing to show: connecting is a
+ * muted line, then the team's own state in the shared presenter's words.
+ */
+function TeamGate(props: { readonly team: MobileTeam | null; readonly teamId: string }): ReactNode {
+  const { team, teamId } = props;
+  const teams = useMobileTeams();
+  const navigation = useNavigation();
+  const [busy, setBusy] = useState(false);
+  // The gate explains this team's connection; the pill would only repeat it.
+  useShellGate(true);
+  const connection = team?.session?.connection ?? null;
+  const live = useSyncExternalStore(
+    connection?.subscribe ?? noSubscribe,
+    connection?.getSnapshot ?? noState,
+    connection?.getSnapshot ?? noState,
+  );
+  const name = team?.name ?? null;
+  const back = navigation.canGoBack()
+    ? { label: "Back", onPress: () => navigation.goBack() }
+    : null;
+  const remove = {
+    label: "Remove from this phone",
+    onPress: () => void teams.forget(teamId).catch(() => undefined),
+  };
+  const attempt = (work: () => Promise<unknown>) => () => {
     setBusy(true);
-    void (signIn ? teams.addToPhone(teamId).then(() => teams.select(teamId)) : teams.select(teamId))
-      .catch((error: unknown) =>
-        Alert.alert("Team couldn't open", error instanceof Error ? error.message : undefined),
-      )
+    // What happened shows as the team's state, which redraws this gate.
+    void work()
+      .catch(() => undefined)
       .finally(() => setBusy(false));
   };
+  const state = team?.state ?? "loading";
+  if (state === "join")
+    return (
+      <ConnectionGate
+        detail="Ask a team member for a new invite."
+        primary={remove}
+        secondary={back}
+        stateKey="join"
+        symbol="signed-out"
+        title="Join this team"
+      />
+    );
+  const issue: ClientIssue | null =
+    state === "removed"
+      ? { code: "access-lost" }
+      : state === "update-app" || state === "update-server"
+        ? { code: state }
+        : state === "signed-out"
+          ? { code: "sign-in" }
+          : live?.showInterruption
+            ? live.issue
+            : state === "offline"
+              ? { code: "connection", reason: "unreachable" }
+              : null;
+  const copy =
+    state === "removed"
+      ? presentClientIssue({ code: "access-lost", target: "team", ...(name ? { name } : {}) })
+      : presentConnectionGate({
+          ...(live ?? connectingState),
+          issue,
+          showInterruption: issue !== null,
+          name,
+          target: "team",
+        });
+  const key = issue === null ? "connecting" : `${issue.code}:${issue.reason ?? ""}`;
+  if (issue === null)
+    return <ConnectionGate detail={copy.title} stateKey="connecting" symbol={null} title={null} />;
+  const primary =
+    copy.action === "sign-in"
+      ? {
+          label: clientIssueActions.signIn,
+          busy,
+          onPress: attempt(() => teams.addToPhone(teamId).then(() => teams.select(teamId))),
+        }
+      : issue.code === "connection" || issue.code === "update-server"
+        ? {
+            label: clientIssueActions.tryAgain,
+            busy,
+            onPress:
+              connection === null ? attempt(() => teams.select(teamId)) : () => connection.retry(),
+          }
+        : state === "removed"
+          ? (back ?? remove)
+          : null;
   return (
-    <Screen>
-      <View style={styles.center}>
-        {state === "loading" && failure === null ? (
-          <ActivityIndicator color={color.muted} />
-        ) : (
-          <>
-            <Notice title={title} detail={detail} tone="neutral" />
-            {signIn || state === "offline" || !state ? (
-              <PrimaryButton busy={busy} label={signIn ? "Sign in" : "Retry"} onPress={attempt} />
-            ) : null}
-            <PrimaryButton
-              label="Remove from this phone"
-              onPress={() => void teams.forget(teamId)}
-            />
-          </>
-        )}
-      </View>
-    </Screen>
+    <ConnectionGate
+      detail={copy.detail ?? ""}
+      primary={primary}
+      secondary={state === "removed" ? (back === null ? null : remove) : back}
+      stateKey={key}
+      symbol={
+        issue.code === "connection"
+          ? issue.reason === "offline"
+            ? "offline"
+            : "computer"
+          : issue.code === "update-app" || issue.code === "update-server"
+            ? "update"
+            : "signed-out"
+      }
+      title={copy.title}
+    />
   );
 }
-const styles = StyleSheet.create({
-  center: { flex: 1, justifyContent: "center", padding: space[24], gap: space[16] },
-});
+
+const connectingState: ClientConnectionState = {
+  phase: "connecting",
+  network: "unknown",
+  visibility: "foreground",
+  scope: null,
+  epoch: 0,
+  readyRevision: 0,
+  showInterruption: false,
+  issue: null,
+  trying: true,
+  pathRevision: 0,
+  lastConnectedAt: null,
+  name: null,
+  target: "team",
+  route: null,
+};

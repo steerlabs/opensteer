@@ -154,6 +154,10 @@ vi.mock("../ui/motion.js", () => ({
   move: undefined,
 }));
 vi.mock("../ui/sheet.js", () => ({ Sheet: () => null }));
+vi.mock(
+  "../ui/action-line.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).actionLine,
+);
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Notice: (props: {
@@ -1205,21 +1209,23 @@ describe("an app's card and its tab", () => {
     }
   });
 
-  it("says so when the Host refuses the tab, shows nothing and can try again", async () => {
+  it("can't confirm a lost open, checks the tab list and can try again", async () => {
     const f = await mount();
     try {
       f.openTab.mockRejectedValueOnce(new Error("This Host cannot open app tabs."));
       await act(async () => press(f.container, "Open"));
       expect(f.tabs.show).not.toHaveBeenCalled();
-      // Said in the app's own words, never the exception's.
-      const alert = f.container.querySelector('[role="alert"]')?.textContent ?? "";
-      expect(alert).toContain("This app could not open as a tab");
-      expect(alert).not.toContain("This Host cannot open app tabs.");
+      const line = () => f.container.querySelector('[data-role="action-line"]')?.textContent ?? "";
+      expect(line()).toContain("Couldn't confirm this app opened.");
+      expect(line()).not.toContain("This Host cannot open app tabs.");
       expect(frame(f.container)).not.toBeNull();
 
+      // No tab for the app: the check says it wasn't opened, and offers another go.
+      await act(async () => press(f.container, "Check"));
+      expect(line()).toContain("Not opened.");
       await act(async () => press(f.container, "Try again"));
       expect(f.tabs.show).toHaveBeenCalledTimes(1);
-      expect(f.container.querySelector('[role="alert"]')).toBeNull();
+      expect(line()).toBe("");
     } finally {
       f.client.dispose();
     }

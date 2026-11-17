@@ -1,3 +1,4 @@
+import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import { Pressable, StyleSheet, View } from "react-native";
 import { AppText, CodeBlock, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { Sheet } from "../ui/sheet.js";
@@ -203,7 +204,8 @@ export function ComputerSetupApprovals(props: {
       await approval.ask(id);
       await props.onChanged();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Couldn't review this approval.");
+      const issue = clientIssue(reason, { operation: "action", label: "review this approval" });
+      if (issue !== null) setError(presentClientIssue(issue).title);
     } finally {
       setBusy(null);
     }

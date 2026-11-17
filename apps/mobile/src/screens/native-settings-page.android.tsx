@@ -14,12 +14,14 @@ import {
   InputRow,
   LinkRow,
   MenuRow,
+  PlaceholderRow,
   PrimaryButton,
   SectionHeader,
   SettingsHost,
   SettingsList,
   StatusRow,
   ToggleRow,
+  UnknownToggleRow,
 } from "./settings-form-primitives.android.js";
 
 export function NativeSettingsPage(props: NativeSettingsPageProps): ReactNode {
@@ -54,6 +56,7 @@ export function NativeSettingsPage(props: NativeSettingsPageProps): ReactNode {
           open && section.footer ? (
             <Footer
               key={`${section.key}:footer`}
+              link={section.footer.link ?? null}
               text={section.footer.text}
               tone={section.footer.tone}
             />
@@ -108,7 +111,10 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
       return <StatusRow detail={row.detail} label={row.label} steps={row.steps} tone={row.tone} />;
     case "primary":
       return <PrimaryButton disabled={row.disabled} label={row.label} onPress={row.onPress} />;
+    case "placeholder":
+      return <PlaceholderRow label={row.label} />;
     case "toggle":
+      if (row.value === null) return <UnknownToggleRow detail={row.detail} title={row.label} />;
       return (
         <ToggleRow
           detail={row.detail}

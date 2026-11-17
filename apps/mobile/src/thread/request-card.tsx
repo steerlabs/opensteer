@@ -23,6 +23,7 @@ import {
   type,
 } from "../theme.js";
 import { AppText, monoFontFamily, StatusDot } from "../ui/primitives.js";
+import { ActionLine } from "../ui/action-line.js";
 import { Symbol } from "../ui/symbol.js";
 import { AnswerPill, AnswerRow } from "./answer-pill.js";
 import { AskerByline, useRequestAsker } from "./asker-byline.js";
@@ -108,9 +109,7 @@ function ConnectCard(props: RequestCardProps): ReactNode {
       <IntegrationConnectCard
         hostClient={props.hostClient}
         request={request}
-        disabled={
-          !props.canRespond || props.surface.denied !== null || request.status !== "pending"
-        }
+        disabled={props.surface.denied !== null || request.status !== "pending"}
         disabledReason={props.disabledReason ?? props.surface.denied}
         canStartResponse={props.canStartResponse}
         mutationGate={props.mutationGate}
@@ -204,7 +203,6 @@ function AnswerCard(props: RequestCardProps): ReactNode {
 
   // While this card's own answer is in flight the busy control already says so.
   const reason = session.pendingId === null ? props.disabledReason : null;
-  // Offline, the answers stay: a tap says it didn't go out, under them.
   const locked = session.pendingId !== null;
 
   const send = (choice: CardChoice): void => {
@@ -287,9 +285,7 @@ function AnswerCard(props: RequestCardProps): ReactNode {
             </AppText>
           )}
           {session.failure === null ? null : (
-            <AppText role="caption" tone={session.failure.tone}>
-              {session.failure.text}
-            </AppText>
+            <ActionLine line={session.failure} numberOfLines={2} />
           )}
         </View>
       )}

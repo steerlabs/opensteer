@@ -22,9 +22,10 @@ export interface ClientAction<I, O> {
 }
 export interface ClientActionSpec<I, O> {
   readonly key: string;
+  /** Says the action in the presenter's words; see ClientIssue's action, done and happened. */
   readonly label: string;
   readonly done?: string;
-  readonly thing?: string;
+  readonly happened?: string;
   readonly execute: (input: I, signal: AbortSignal) => Promise<O>;
   readonly reconcile?: (input: I, signal: AbortSignal) => Promise<ActionOutcome<O> | null>;
 }
@@ -94,7 +95,7 @@ class SessionClientAction<I, O> implements ClientAction<I, O> {
         code: "not-sent",
         action: this.#spec.label,
         ...(this.#spec.done ? { done: this.#spec.done } : {}),
-        ...(this.#spec.thing ? { thing: this.#spec.thing } : {}),
+        ...(this.#spec.happened ? { happened: this.#spec.happened } : {}),
         reason: state.network === "offline" ? "offline" : "unreachable",
         ...(state.name ? { name: state.name } : {}),
       },
@@ -134,7 +135,7 @@ class SessionClientAction<I, O> implements ClientAction<I, O> {
                 issue: issue && {
                   ...issue,
                   ...(this.#spec.done ? { done: this.#spec.done } : {}),
-                  ...(this.#spec.thing ? { thing: this.#spec.thing } : {}),
+                  ...(this.#spec.happened ? { happened: this.#spec.happened } : {}),
                 },
               };
             },

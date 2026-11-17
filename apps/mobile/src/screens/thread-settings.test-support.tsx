@@ -317,6 +317,10 @@ vi.mock("../ui/primitives.js", () => ({
     </button>
   ),
 }));
+vi.mock(
+  "../ui/action-line.js",
+  async () => (await import("../../test-support/action-line-mocks.js")).actionLine,
+);
 const usageNotices = createUsageNoticeDismissals({ read: () => [], write: () => undefined });
 const mobile = vi.hoisted(() => ({ hostClient: null as HostClient | null }));
 vi.mock("../ui/mobile-client-context.js", () => ({

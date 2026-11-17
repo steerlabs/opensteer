@@ -1,3 +1,4 @@
+import { classifyClientFailure } from "@opensteer/client/connections";
 import type { HostClient } from "@opensteer/client/host";
 import {
   refTarget,
@@ -18,7 +19,6 @@ import { isRecord } from "@opensteer/shared/isRecord";
 import type { MobileClient } from "../client/mobile-client.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { ReferenceNavigationContext, type ReferenceNavigation } from "./reference-context.js";
-import { readFailure } from "../ui/unavailable-state.js";
 
 /** An open that a newer open, or another Deployment's selection, made moot. */
 class Superseded extends Error {
@@ -52,7 +52,14 @@ function currentHost(
   return selection.hostClient;
 }
 
-function cannotOpen(): void {
+/**
+ * An open that failed for its own reasons. One the connection stopped says
+ * nothing here: the connection indicator is the one place that speaks of it.
+ */
+function cannotOpen(error?: unknown): void {
+  const kind = classifyClientFailure(error).kind;
+  if (kind === "transport" || kind === "service" || kind === "session" || kind === "cancelled")
+    return;
   Alert.alert("Couldn't open this", "Try again.");
 }
 
@@ -188,9 +195,13 @@ export function PersonalReferenceProvider(props: {
       } catch (error) {
         if (error instanceof Superseded || controller.signal.aborted) return;
         // A stale positive the Host now refuses becomes the same unavailable chip.
-        if (link.kind === "reference" && host !== null && readFailure(error) === "unavailable")
+        if (
+          link.kind === "reference" &&
+          host !== null &&
+          classifyClientFailure(error).kind === "rejection"
+        )
           host.references.unavailable(link.reference.id);
-        else cannotOpen();
+        else cannotOpen(error);
       } finally {
         release();
         if (current.current === controller) current.current = null;

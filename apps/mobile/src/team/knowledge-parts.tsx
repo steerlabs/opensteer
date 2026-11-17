@@ -2,74 +2,42 @@ import { unwrapRpcResult } from "@opensteer/client/host";
 import type { TeamSessionClient } from "@opensteer/client/team";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import { useFocusEffect } from "@react-navigation/native";
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type ReactNode,
-} from "react";
-import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
+import { useCallback, useRef, type ReactNode } from "react";
+import { Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { color, space } from "../theme.js";
-import { AppText, Notice } from "../ui/primitives.js";
-import { failureWords } from "./knowledge-model.js";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
+import { readLine, useScreenRead } from "../ui/client-feedback.js";
+import { PlaceholderRows } from "../ui/placeholder.js";
+import { AppText } from "../ui/primitives.js";
 
 /**
- * Reads once each time the screen comes into view, and again when `key`
- * changes or `reload` is called. The last answer stays on screen meanwhile:
- * knowledge has no live stream, so coming back to a screen is the refresh.
+ * Read through the shared read owner, and again each time the screen comes
+ * back into view or `reload` is called: knowledge has no live stream, so
+ * coming back to a screen is the refresh. The last answer stays meanwhile.
  */
 export function useFocusedRead<Value>(
   session: TeamSessionClient | null,
   read: (session: TeamSessionClient) => Promise<Value>,
   key: string,
+  label: string,
 ): {
   readonly value: Value | null;
-  readonly failure: string | null;
+  readonly line: ActionLineValue | null;
   readonly reload: () => void;
 } {
-  const [answer, setAnswer] = useState<{
-    session: TeamSessionClient;
-    key: string;
-    value: Value;
-  } | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
-  const [generation, setGeneration] = useState(0);
-  const reader = useRef(read);
-  reader.current = read;
-  useFocusEffect(
-    useCallback(() => {
-      if (session === null) return;
-      let current = true;
-      void reader.current(session).then(
-        (next) => {
-          if (!current) return;
-          setAnswer({ session, key, value: next });
-          setFailure(null);
-        },
-        (error: unknown) => current && setFailure(failureWords(error, "The team didn't answer.")),
-      );
-      return () => {
-        current = false;
-      };
-    }, [session, key, generation]),
-  );
-  const reload = useCallback(() => setGeneration((next) => next + 1), []);
-  return {
-    value: answer?.session === session && answer.key === key ? answer.value : null,
-    failure,
-    reload,
-  };
+  const state = useScreenRead<Value>(session, {
+    key: `knowledge:${label}:${key}`,
+    label,
+    read: session === null ? null : () => read(session),
+  });
+  const reload = state.refresh;
+  useReloadOnReturn(reload);
+  return { value: state.data, line: readLine(state, reload), reload };
 }
 
-/**
- * Calls `reload` when the screen comes back into view, not on its first
- * appearance (the read is already under way then), and when the team's
- * socket comes back after a close: what changed meanwhile was never streamed.
- */
-export function useReloadOnReturn(session: TeamSessionClient | null, reload: () => void): void {
+/** Calls `reload` when the screen comes back into view, not on its first appearance. */
+export function useReloadOnReturn(reload: () => void): void {
   const latest = useRef(reload);
   latest.current = reload;
   const seen = useRef(false);
@@ -79,18 +47,6 @@ export function useReloadOnReturn(session: TeamSessionClient | null, reload: () 
       seen.current = true;
     }, []),
   );
-  const subscribe = useCallback(
-    (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
-    [session],
-  );
-  const readResumed = useCallback(() => session?.getSnapshot().resumedGeneration ?? 0, [session]);
-  const resumed = useSyncExternalStore(subscribe, readResumed, readResumed);
-  const shown = useRef(resumed);
-  useEffect(() => {
-    if (shown.current === resumed) return;
-    shown.current = resumed;
-    latest.current();
-  }, [resumed]);
 }
 
 export async function teamCommand(
@@ -108,14 +64,11 @@ export function viewerOf(session: TeamSessionClient | null): string {
   return session?.getSnapshot().bootstrap?.member.userId ?? "";
 }
 
-export function Loading(props: { readonly failure: string | null }): ReactNode {
+/** Content not here yet: still rows, or the one line saying it didn't load. */
+export function Loading(props: { readonly line: ActionLineValue | null }): ReactNode {
   return (
     <View style={styles.center}>
-      {props.failure === null ? (
-        <ActivityIndicator accessibilityLabel="Loading" color={color.muted} />
-      ) : (
-        <Notice detail={props.failure} title="This didn't load" tone="neutral" />
-      )}
+      {props.line === null ? <PlaceholderRows count={5} /> : <ActionLine line={props.line} />}
     </View>
   );
 }

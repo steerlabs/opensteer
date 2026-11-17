@@ -1,8 +1,9 @@
-import { presentActionFailure } from "@opensteer/client/feedback";
+import { clientIssue } from "@opensteer/client/feedback";
 import { useState, type ReactNode } from "react";
 import { ActivityIndicator, Modal, StyleSheet, View } from "react-native";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
-import { AppText, Notice, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
+import { ActionLine } from "../ui/action-line.js";
+import { AppText, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { color, space } from "../theme.js";
 
 /** Visible above any selected computer: a link must never silently disappear. */
@@ -12,11 +13,12 @@ export function OpenComputer(): ReactNode {
   const [failure, setFailure] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
   if (pending === null) return null;
-  const run = (operation: () => Promise<void>): void => {
+  const run = (operation: () => Promise<void>, failed: string): void => {
     setFailure(null);
-    void operation().catch((error: unknown) =>
-      setFailure(presentActionFailure(error, "Try again.")),
-    );
+    void operation().catch((error: unknown) => {
+      // Nothing to say to someone who cancelled.
+      if (clientIssue(error, { operation: "action", label: failed }) !== null) setFailure(failed);
+    });
   };
   return (
     <Modal
@@ -38,7 +40,7 @@ export function OpenComputer(): ReactNode {
                 } finally {
                   setSigningIn(false);
                 }
-              });
+              }, "Couldn't sign in. Try again.");
             }}
           />
         ) : pending.status === "finding" ? (
@@ -57,18 +59,27 @@ export function OpenComputer(): ReactNode {
             </AppText>
             <PrimaryButton
               label="Try again"
-              onPress={() => run(() => client.retryOpenComputer())}
+              onPress={() =>
+                run(() => client.retryOpenComputer(), "Couldn't look for your computer. Try again.")
+              }
             />
             {pending.status === "not-listed" ? (
               <SecondaryButton
                 label="Use a different account"
-                onPress={() => run(() => client.signOutAccount())}
+                onPress={() => run(() => client.signOutAccount(), "Couldn't sign out. Try again.")}
               />
             ) : null}
           </>
         )}
         {failure || account.account.detail ? (
-          <Notice title="Account" detail={failure ?? account.account.detail ?? ""} />
+          <ActionLine
+            line={{
+              key: failure ?? account.account.detail ?? "",
+              text: failure ?? account.account.detail ?? "",
+              tone: "muted",
+            }}
+            numberOfLines={2}
+          />
         ) : null}
         <SecondaryButton label="Cancel" onPress={() => client.cancelOpenComputer()} />
       </View>
