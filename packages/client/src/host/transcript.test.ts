@@ -9,7 +9,13 @@ import { describe, expect, it } from "vitest";
 import { mockBrowserSignInRequest } from "../mock/mock-chrome-sign-ins.js";
 import type { TranscriptEntry } from "./client.js";
 import { LiveStreamLedger } from "./live-progress.js";
-import { requestReceipt, visibleTranscript } from "./transcript.js";
+import { conversationTurn, groupTranscriptEntries } from "./agent-activity-model.js";
+import {
+  requestReceipt,
+  threadInputDelivery,
+  visibleTranscript,
+  withEditedMessage,
+} from "./transcript.js";
 
 const now = "2026-08-09T20:00:00.000Z";
 const environmentId = createId("environment");
@@ -162,6 +168,127 @@ describe("visibleTranscript", () => {
     const visible = visibleTranscript(entries, queue([queued(queuedId)]));
     expect(visible.map((entry) => entry.id)).toEqual([shownId, `run:${runId}`]);
   });
+
+  it("draws human waiting bubbles once in queue order and keeps placement after the visible reply", () => {
+    const automationId = createId("message");
+    const firstId = createId("message");
+    const nextRun = createId("run");
+    const automation = queued(automationId);
+    const author = {
+      kind: "trigger" as const,
+      displayName: "Nightly",
+      occurrenceId: createId("triggerOccurrence"),
+      source: "schedule" as const,
+      triggerId: createId("trigger"),
+    };
+    const waiting = queue([
+      { ...automation, message: { ...automation.message, author } },
+      queued(firstId),
+      queued(queuedId),
+    ]);
+    const pending = entries.find((entry) => entry.id === queuedId);
+    if (pending?.kind !== "message") throw new Error("Missing waiting message");
+    const reply = {
+      ...pending,
+      id: createId("message"),
+      runId,
+      messageKind: "assistant" as const,
+      body: "Thursday is clear.",
+    };
+    const held = [
+      entries[0]!,
+      entries[1]!,
+      pending,
+      reply,
+      { ...pending, id: automationId, author },
+      { ...pending, id: firstId },
+    ];
+    const edit = { editedAt: now, ownerEdited: true as const, revision: 1 };
+    const revised = {
+      ...queued(queuedId).message,
+      content: [{ type: "text" as const, text: "And Friday afternoon?" }],
+      edit,
+    };
+    const edited = withEditedMessage(held, revised, edit);
+    expect(withEditedMessage([reply], revised, edit)).toEqual([reply]);
+    const projected = visibleTranscript(edited, waiting, { conversation: true });
+    expect(projected.map(({ id }) => id)).toEqual([
+      shownId,
+      `run:${runId}`,
+      reply.id,
+      firstId,
+      queuedId,
+    ]);
+    expect(projected.at(-1)).toMatchObject({ id: queuedId, body: "And Friday afternoon?", edit });
+    const placed = { ...projected.at(-1)!, runId: nextRun };
+    if (placed.kind !== "message") throw new Error("Missing placed message");
+    const order = [entries[0]!, entries[1]!, reply, placed];
+    for (const input of [waiting, queue([])]) {
+      expect(visibleTranscript(order, input, { conversation: true }).map(({ id }) => id)).toEqual(
+        order.map(({ id }) => id),
+      );
+    }
+    expect(placed).toMatchObject({
+      id: queuedId,
+      body: "And Friday afternoon?",
+      edit,
+      runId: nextRun,
+    });
+  });
+
+  it("keeps the waiting slot separate from a message that joined the running Run", () => {
+    const pending = entries.find((entry) => entry.id === queuedId);
+    if (pending?.kind !== "message") throw new Error("Missing waiting message");
+    const tool: TranscriptEntry = {
+      id: "calendar",
+      kind: "tool",
+      callId: "calendar",
+      runId,
+      createdAt: now,
+      tool: null,
+      state: "running",
+      streamText: "",
+      output: undefined,
+      arguments: {},
+      integration: null,
+      isError: false,
+    };
+    const joined = { ...pending, runId };
+    const groups = groupTranscriptEntries(
+      visibleTranscript([entries[0]!, entries[1]!, tool, joined], queue([]), {
+        conversation: true,
+      }),
+    );
+    expect(
+      groups.map((group) => (group.kind === "turn" ? group.turn.runId : group.entry.id)),
+    ).toEqual([shownId, runId, queuedId, runId]);
+    const tail = groups.at(-1);
+    expect(tail?.kind === "turn" ? conversationTurn(tail.turn).composing : false).toBe(true);
+  });
+});
+
+it("labels refused, uncertain and stopped delivery, and clears it when confirmed", () => {
+  expect(
+    threadInputDelivery({ state: "cancelled", policy: "steer", cancelReason: "steer-refused" }),
+  ).toEqual({ status: "failed", reason: "Steer was not delivered: steer refused." });
+  for (const policy of ["steer", "queue"] as const)
+    expect(threadInputDelivery({ state: "unknown", policy, cancelReason: null })).toEqual({
+      status: "unconfirmed",
+      reason: "Message delivery could not be confirmed.",
+    });
+  expect(
+    threadInputDelivery({ state: "delivered", policy: "steer", cancelReason: null }),
+  ).toBeNull();
+  for (const [cancelReason, reason] of [
+    ["stopped", "Not sent: you stopped the reply."],
+    ["run-ended-before-start", "Not sent: run ended before start."],
+    ["run-ended-delivery-unknown", "Steer was not delivered: run ended delivery unknown."],
+    [null, "Not sent."],
+  ] as const)
+    expect(threadInputDelivery({ state: "cancelled", policy: "queue", cancelReason })).toEqual({
+      status: "failed",
+      reason,
+    });
 });
 
 describe("a Chrome sign-in's receipt", () => {

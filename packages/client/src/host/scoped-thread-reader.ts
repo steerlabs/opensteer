@@ -14,7 +14,12 @@ import type { RunQueueEntry, TranscriptEntry } from "./client.js";
 import { unwrapRpcResult } from "./host-session-client.js";
 import type { ObservedDetail } from "./scoped-personal-stream.js";
 import { transcriptCard } from "./transcript-item-view.js";
-import type { VersionedInputQueue } from "./thread-transcript-store.js";
+import {
+  displayedItemIds,
+  finalizedItemText,
+  type ThreadTranscriptStore,
+  type VersionedInputQueue,
+} from "./thread-transcript-store.js";
 
 export interface ThreadViewState {
   readonly entries: readonly TranscriptEntry[];
@@ -113,6 +118,7 @@ export class ScopedThreadReader implements ThreadViewSource {
   readonly #release: () => void;
   readonly #listeners = new Set<() => void>();
   readonly #cards = new WeakMap<TranscriptItem, TranscriptEntry | undefined>();
+  readonly #liveCards = new WeakMap<TranscriptItem, TranscriptEntry | undefined>();
   readonly #overlayReads = new Map<Overlay, number>();
   #queue: { generation: number; promise: Promise<ThreadInputQueue> } | undefined;
   #queueFailure: { generation: number; revision: string; error: unknown } | undefined;
@@ -144,6 +150,7 @@ export class ScopedThreadReader implements ThreadViewSource {
   };
 
   dispose() {
+    this.#historyRead++;
     this.#release();
     this.#listeners.clear();
   }
@@ -166,11 +173,13 @@ export class ScopedThreadReader implements ThreadViewSource {
         if (state.items.get(id) !== item) this.#bodies.remove(this.#bodyKey(id));
       this.#rows = state.items;
       this.#liveRows = state.liveItems;
-      entries = [...state.ids, ...state.liveItems.keys()].flatMap((id) => {
-        const item = state.items.get(id) ?? state.liveItems.get(id);
+      entries = displayedItemIds(state).flatMap((id) => {
+        const durable = state.items.get(id);
+        const item = durable ?? state.liveItems.get(id);
         if (!item) return [];
-        if (!this.#cards.has(item)) this.#cards.set(item, transcriptCard(item));
-        return this.#cards.get(item) ?? [];
+        const cards = durable ? this.#cards : this.#liveCards;
+        if (!cards.has(item)) cards.set(item, transcriptCard(item, undefined, !durable));
+        return cards.get(item) ?? [];
       });
     }
     const queue =
@@ -427,7 +436,7 @@ export class ScopedThreadReader implements ThreadViewSource {
         !page.items.some((item) => item.kind === "message" && item.messageId === aroundMessageId)
       )
         throw new Error("The requested message is unavailable.");
-      this.#detail.transcript.installPage(page, generation, mode);
+      this.#installPage(page, generation, mode);
       return;
     }
     const anchor = this.#detail.anchor ?? before?.beforeId ?? after?.beforeId;
@@ -443,13 +452,21 @@ export class ScopedThreadReader implements ThreadViewSource {
       reset = await this.#page(signal, null, aroundMessageId);
     }
     if (current() && reset.kind === "page")
-      this.#detail.transcript.installPage(
+      this.#installPage(
         reset,
         generation,
         aroundMessageId || (anchor && reset.items.some(({ id }) => id === anchor))
           ? "around"
           : "latest",
       );
+  }
+
+  #installPage(...args: Parameters<ThreadTranscriptStore["installPage"]>) {
+    if (!this.#detail.transcript.installPage(...args)) return;
+    for (const item of args[0].items) {
+      const current = this.#detail.transcript.getSnapshot().items.get(item.id);
+      if (finalizedItemText(current)) this.#detail.text.finishItem(item.id);
+    }
   }
 
   async #page(

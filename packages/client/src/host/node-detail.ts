@@ -38,11 +38,7 @@ export interface NodeDetailSnapshot {
   readonly error: string | null;
 }
 
-/**
- * Hold while the read-only transcript is visible. Two holders of the same
- * subagent share one watch and what it has loaded; another subagent's watch
- * replaces it.
- */
+/** Hold while visible. Holders of the same subagent share its scoped history. */
 export interface NodeDetailSubscription {
   getSnapshot(): NodeDetailSnapshot;
   subscribe(listener: () => void): () => void;

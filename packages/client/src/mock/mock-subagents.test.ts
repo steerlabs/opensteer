@@ -153,7 +153,7 @@ it("stops a mock workflow with its members while other subagents keep working", 
   expect(client.getSnapshot().runQueue).toEqual(before.runQueue);
 });
 
-it("installs a node subject and live text with no observed root transcript", async () => {
+it("shares the scoped subject, ordered cards and live text until the last node holder releases", async () => {
   const mock = new MockHostClient({ latencyMs: 0, places: "absent" });
   const root = mock.getSnapshot().threads.find(({ title }) => title === "Subagents everywhere")!;
   const subject = mock
@@ -163,12 +163,29 @@ it("installs a node subject and live text with no observed root transcript", asy
     );
   if (subject?.kind !== "node") throw new Error("Missing node fixture");
   const transport = new MockPersonalHost(mock);
+  let failure: "internal" | "forbidden" | undefined;
   const network = new HttpHostClient({
     baseUrl: "http://mock-host",
-    fetch: transport.fetch,
+    fetch: (url, options) =>
+      failure && new URL(String(url)).pathname.endsWith("/node.items.page")
+        ? Promise.resolve(
+            Response.json(
+              {
+                ok: false,
+                error: {
+                  code: failure,
+                  message: "Node page refused",
+                  retryable: failure === "internal",
+                },
+              },
+              { status: failure === "forbidden" ? 403 : 500 },
+            ),
+          )
+        : transport.fetch(url, options),
     webSocketFactory: transport.connect,
   });
   const watch = network.watchNode(root.id, subject.nodeId);
+  const second = network.watchNode(root.id, subject.nodeId);
   try {
     await network.load();
     await vi.waitFor(() => expect(watch.getSnapshot().node?.title).toBe(subject.title));
@@ -189,6 +206,16 @@ it("installs a node subject and live text with no observed root transcript", asy
     )
       throw new Error("Missing node subscription");
     const previous = watch.getSnapshot();
+    expect(second.getSnapshot()).toEqual(previous);
+    expect(
+      socket.sent
+        .map((frame) => JSON.parse(frame))
+        .filter(({ type, scope }) => type === "client.subscribe" && scope?.kind === "node"),
+    ).toHaveLength(1);
+    second.release();
+    second.release();
+    expect(second.getSnapshot()).toMatchObject({ status: "closed", node: null, entries: [] });
+    expect(watch.getSnapshot()).toBe(previous);
     const runId = RunIdSchema.parse(subject.runId);
     const attemptId = createId("runAttempt");
     const afterSequence = network.deploymentPosition()!;
@@ -256,7 +283,40 @@ it("installs a node subject and live text with no observed root transcript", asy
     expect(final.entries.at(-1)).toMatchObject({ id: item.id, text: "Complete" });
     expect(final.entries[0]).toBe(previous.entries[0]);
     expect(network.getThreadItemText(root.id, subject.nodeId)?.get(item.id)).toBeUndefined();
+    failure = "internal";
+    watch.retry();
+    await vi.waitFor(() =>
+      expect(watch.getSnapshot()).toMatchObject({ status: "error", error: expect.any(String) }),
+    );
+    failure = "forbidden";
+    watch.retry();
+    await vi.waitFor(() =>
+      expect(watch.getSnapshot()).toMatchObject({
+        status: "missing",
+        node: null,
+        entries: [],
+        error: null,
+      }),
+    );
+    failure = undefined;
+    watch.retry();
+    await vi.waitFor(() =>
+      expect(watch.getSnapshot()).toMatchObject({
+        status: "ready",
+        node: { title: subject.title },
+        entries: expect.arrayContaining([previous.entries[0]]),
+      }),
+    );
+    watch.release();
+    expect(watch.getSnapshot()).toMatchObject({ status: "closed", node: null, entries: [] });
+    expect(socket.sent.map((frame) => JSON.parse(frame))).toContainEqual(
+      expect.objectContaining({
+        type: "client.unsubscribe",
+        subscriptionId: subscription.subscriptionId,
+      }),
+    );
   } finally {
+    second.release();
     watch.release();
     network.dispose();
     transport.dispose();

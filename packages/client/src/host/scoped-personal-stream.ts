@@ -26,7 +26,7 @@ import {
   type PersonalStreamCache,
   type PersonalStreamCheckpoint,
 } from "./personal-stream-cache.js";
-import { ThreadTranscriptStore } from "./thread-transcript-store.js";
+import { finalizedItemText, ThreadTranscriptStore } from "./thread-transcript-store.js";
 
 type DetailScope = Exclude<PersonalScope, { kind: "shell" }>;
 type DetailId = Extract<ScopedClientMessage, { type: "client.live.resync" }>["subscriptionId"];
@@ -515,7 +515,7 @@ export class ScopedPersonalStream {
     if (frame.type === "host.changes")
       for (const change of frame.changes) {
         if (change.entityKind !== "item") continue;
-        if (change.operation === "remove" || finalizedText(change.value))
+        if (change.operation === "remove" || finalizedItemText(change.value))
           detail.text.finishItem(change.entityId);
       }
     const stale = detail.transcript.getSnapshot().stale;
@@ -539,7 +539,7 @@ export class ScopedPersonalStream {
     if (
       !synchronized ||
       through === null ||
-      (frame.update.operation !== "close" && finalizedText(items.get(frame.itemId)))
+      (frame.update.operation !== "close" && finalizedItemText(items.get(frame.itemId)))
     )
       return;
     const result = detail.text.apply(frame, through);
@@ -547,7 +547,11 @@ export class ScopedPersonalStream {
       for (const id of detail.transcript.getSnapshot().liveItems.keys())
         if (id !== frame.itemId && !detail.text.get(id))
           detail.transcript.liveItem(undefined, id, true);
-      detail.transcript.liveItem(frame.item, frame.itemId, frame.update.operation === "close");
+      detail.transcript.liveItem(
+        detail.text.item(frame.itemId),
+        frame.itemId,
+        !detail.text.get(frame.itemId)?.text,
+      );
     }
     if (result === "repair") this.#resync(frame);
     if (result === "barrier") {
@@ -796,18 +800,4 @@ export class ScopedPersonalStream {
 function withoutSession(snapshot: import("zod").infer<typeof PersonalShellSnapshotSchema>) {
   const { session: _session, ...state } = snapshot;
   return state;
-}
-
-function finalizedText(item: import("@opensteer/protocol/transcript").TranscriptItem | undefined) {
-  if (!item) return false;
-  switch (item.kind) {
-    case "message":
-    case "reasoning":
-    case "node-message":
-      return true;
-    case "tool":
-      return item.view.status !== "running";
-    default:
-      return false;
-  }
 }
