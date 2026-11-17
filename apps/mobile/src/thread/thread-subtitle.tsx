@@ -1,6 +1,7 @@
 import { Pressable, StyleSheet, View, type StyleProp, type TextStyle } from "react-native";
 import { taskMark, type ThreadSummary } from "@opensteer/client/host";
 import { color, headerFontScaleLimit, space, touchTarget } from "../theme.js";
+import { ActionLine, type ActionLineValue } from "../ui/action-line.js";
 import { BarControl } from "../ui/bar-control.js";
 import { barNameFloor } from "../ui/bar-title.js";
 import { AppText } from "../ui/primitives.js";
@@ -67,8 +68,11 @@ export function ThreadSubtitle(props: {
   readonly connectionLabel: string | null;
   readonly onRetry?: (() => void) | undefined;
   readonly task: Pick<TaskHeading, "moving" | "tone" | "word"> | null;
+  /** How a menu action on it went, in this line's place while it is worth saying. */
+  readonly line?: ActionLineValue | null;
 }) {
   const { task } = props;
+  if (props.line) return <ActionLine line={props.line} numberOfLines={1} />;
   if (props.placeName === null && props.connectionLabel === null && task === null) return null;
   return (
     <View accessibilityLiveRegion="polite" style={styles.row}>

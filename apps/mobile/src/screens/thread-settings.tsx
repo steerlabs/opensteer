@@ -64,6 +64,7 @@ import { useThreadMutation } from "../thread/thread-mutation-registry.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { SheetBarButton } from "../ui/sheet-bar.js";
 import { ActionLine } from "../ui/action-line.js";
+import { unreadyIssue } from "../ui/client-feedback.js";
 import { AppText, Notice, PrimaryButton, SecondaryButton, SwitchRow } from "../ui/primitives.js";
 import { useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { EngineMark } from "../thread/settings/engine-mark.js";
@@ -1455,13 +1456,8 @@ class SettingsChanged extends Error {}
 
 /** Known before anything is sent: the computer can't be reached right now. */
 function notSent(session: ClientSession): string | null {
-  const state = session.connection.getSnapshot();
-  if (state.phase === "ready" && state.network !== "offline") return null;
-  return presentClientIssue({
-    code: "not-sent",
-    reason: state.network === "offline" ? "offline" : "unreachable",
-    ...(state.name ? { name: state.name } : {}),
-  }).title;
+  const issue = unreadyIssue(session, "changed");
+  return issue === null ? null : presentClientIssue(issue).title;
 }
 
 /** A change that didn't land, in the sheet's own words or the shared outcome words. */

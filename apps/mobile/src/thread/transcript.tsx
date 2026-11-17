@@ -50,6 +50,8 @@ import Animated, { LayoutAnimationConfig } from "react-native-reanimated";
 import { CodeLines, Markdown, PlainProse } from "../markdown/markdown.js";
 import { ReferenceVisibility } from "../markdown/reference-context.js";
 import { color, material, radius, space, touchTarget, type } from "../theme.js";
+import { ActionLine } from "../ui/action-line.js";
+import { useScreenAction } from "../ui/client-feedback.js";
 import { CopyMark } from "../ui/copy-mark.js";
 import { appear, bubblePop, bubbleRise, exit } from "../ui/motion.js";
 import { AppText, StatusDot, TypingDots, monoFontFamily } from "../ui/primitives.js";
@@ -2038,8 +2040,12 @@ function TeamInputSource({ source }: { readonly source: TeamSource }): ReactNode
 function CompactionDivider({ run }: { readonly run: RunEntry }): ReactNode {
   const scope = useContext(TaskScopeContext);
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const stop = useScreenAction(scope?.hostClient ?? null, `stop-summary:${run.id}`, {
+    label: "stop summarizing",
+    done: "stopped",
+    happened: "summarizing stopped",
+    execute: () => (scope ? scope.hostClient.stopRun(scope.threadId) : Promise.resolve()),
+  });
   if (!run.compaction) return null;
   return (
     <View
@@ -2069,22 +2075,16 @@ function CompactionDivider({ run }: { readonly run: RunEntry }): ReactNode {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Stop summarizing conversation"
-          disabled={busy}
-          onPress={() => {
-            setBusy(true);
-            void scope.hostClient
-              .stopRun(scope.threadId)
-              .catch((e: unknown) =>
-                setError(e instanceof Error ? e.message : "Could not stop summary."),
-              )
-              .finally(() => setBusy(false));
-          }}
+          disabled={stop.running}
+          onPress={() => void stop.run(undefined)}
           style={{ minHeight: touchTarget, justifyContent: "center" }}
         >
           <AppText role="caption">Stop</AppText>
         </Pressable>
       ) : null}
-      {error ? <AppText role="caption">{error}</AppText> : null}
+      {stop.line === null || run.compaction.status !== "running" ? null : (
+        <ActionLine line={stop.line} numberOfLines={2} onDismiss={stop.dismiss} />
+      )}
     </View>
   );
 }

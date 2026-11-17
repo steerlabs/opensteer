@@ -103,6 +103,22 @@ export function settingsFooter(line: ActionLineValue | null): NativeSettingsFoot
   };
 }
 
+/**
+ * Known before anything is sent: this session can't reach its computer or
+ * team right now, so `done` ("opened") won't happen. Null when it can.
+ */
+export function unreadyIssue(session: ClientSession, done: string): ClientIssue | null {
+  const state = session.connection.getSnapshot();
+  if (state.phase === "ready" && state.network !== "offline") return null;
+  return {
+    code: "not-sent",
+    done,
+    reason: state.network === "offline" ? "offline" : "unreachable",
+    target: state.target,
+    ...(state.name ? { name: state.name } : {}),
+  };
+}
+
 /** A reconcile's answer when a check found the action was not done. */
 export function notDone(spec: {
   readonly label: string;

@@ -86,8 +86,8 @@ vi.mock("../ui/pane.js", () => ({
 vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileClient: () => ({ drafts: {} }),
 }));
-vi.mock("../client/mobile-client.js", () => ({
-  operationDetail: (_error: unknown, fallback: string) => fallback,
+vi.mock("../ui/action-line.js", () => ({
+  ActionLine: ({ line }: { readonly line: { readonly text: string } }) => <p>{line.text}</p>,
 }));
 vi.mock("../markdown/markdown.js", () => ({
   Markdown: ({ text }: { readonly text: string }) => <p>{text}</p>,

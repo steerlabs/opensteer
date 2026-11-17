@@ -21,7 +21,7 @@ import {
   type Turn,
   type TurnAgents,
 } from "@opensteer/client/host";
-import { useActionReview, useHostSelector } from "@opensteer/client/react";
+import { useHostSelector } from "@opensteer/client/react";
 import { MenuView } from "@expo/ui/community/menu";
 import {
   createContext,
@@ -32,7 +32,7 @@ import {
   useRef,
   type ReactNode,
 } from "react";
-import { AccessibilityInfo, Alert, Pressable, StyleSheet, View } from "react-native";
+import { AccessibilityInfo, Pressable, StyleSheet, View } from "react-native";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { ActionReviewSheet } from "../ui/action-review.js";
 import { AgentOrb } from "../team/team-marks.js";
@@ -48,7 +48,11 @@ import {
   type AgentScope,
 } from "./subagent-rows.js";
 import { heldSelector } from "./agent-select.js";
-import { failureWords } from "../ui/client-feedback.js";
+import {
+  assignmentStopTarget,
+  useAssignmentStopLine,
+  useReviewedStop,
+} from "./reviewed-stop.js";
 
 /** What task and subagent cards need from the pane that owns the Host client. */
 export interface TaskScope {
@@ -291,6 +295,11 @@ function TaskCardRow(props: {
     requester: assignmentRequester(assignment, snapshot),
     title: card.title,
   });
+  const stopLine = useAssignmentStopLine(hostClient, {
+    assignmentId: assignment.id,
+    open: presentation.open,
+    title: card.title,
+  });
   const canStop = presentation.open && presentation.stopBlocked === null;
   const onAccessibilityAction = useCallback(
     (name: string) => {
@@ -328,6 +337,7 @@ function TaskCardRow(props: {
           accessibilityActions={canStop ? stopAction : noActions}
           card={card}
           compact={props.compact === true}
+          line={stopLine}
           noun={props.noun === true}
           onAccessibilityAction={onAccessibilityAction}
           owner={taskOwner(assignment)}
@@ -482,10 +492,14 @@ export function useAssignmentStop(
   hostClient: HostClient,
   task: { readonly assignmentId: string; readonly requester: string; readonly title: string },
 ) {
-  const { review, ask, dismiss } = useActionReview(hostClient);
   const { assignmentId, requester, title } = task;
+  const { review, request, dismiss, confirm } = useReviewedStop(
+    hostClient,
+    assignmentStopTarget(assignmentId, title),
+    { kind: "stop-assignment", assignmentId },
+  );
   return {
-    ask: () => ask({ kind: "stop-assignment", assignmentId }),
+    ask: request,
     sheet: (
       <ActionReviewSheet
         review={review}
@@ -494,14 +508,7 @@ export function useAssignmentStop(
         confirmLabel="Stop task"
         cancelLabel="Keep working"
         onClose={dismiss}
-        onError={(error) => {
-          const words = failureWords(error, {
-            label: `stop ${title}`,
-            done: "stopped",
-            happened: `${title} stopped`,
-          });
-          if (words !== null) Alert.alert(words);
-        }}
+        onConfirm={confirm}
       />
     ),
   };
