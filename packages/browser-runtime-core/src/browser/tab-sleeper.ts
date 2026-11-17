@@ -1,5 +1,6 @@
 import { totalmem } from "node:os";
 import type { BrowserSurfaceId, BrowserSessionState } from "@opensteer/protocol/browser";
+import type { BrowserRendererUsage } from "./backend.js";
 import type { SurfaceLedger, TabRecord } from "./surface-ledger.js";
 
 const quietMs = 10_000;
@@ -15,6 +16,16 @@ const budgetReleaseShare = 0.85;
 const restoreBudgetBytes = 64 * 1024 ** 2;
 const sleepsPerPass = 8;
 const concurrentSleeps = 4;
+const rendererSampleMs = 30_000;
+const rendererRecheckMs = 1_000;
+
+export interface TabSleepPass {
+  readonly livePages: number;
+  readonly rendererProcesses: number;
+  readonly rendererBytes: number;
+  readonly attempted: number;
+  readonly slept: number;
+}
 
 export interface SleepHost {
   readonly key: string;
@@ -29,6 +40,8 @@ interface TabSleeperOptions {
   readonly hostCost?: "process" | "partition" | undefined;
   readonly hosts?: () => readonly SleepHost[];
   readonly retireHost?: (key: string) => Promise<void>;
+  readonly rendererUsage?: (() => BrowserRendererUsage) | undefined;
+  readonly onPass?: ((pass: TabSleepPass) => void) | undefined;
 }
 
 interface SleepSession {
@@ -49,6 +62,8 @@ export class TabSleeper {
   private readonly nextProbe = new WeakMap<TabRecord, number>();
   private running = false;
   private closed = false;
+  private rendererUsage: BrowserRendererUsage | null = null;
+  private nextRendererSample = 0;
 
   private releasing = false;
   private readonly options: TabSleeperOptions;
@@ -81,7 +96,8 @@ export class TabSleeper {
     );
   }
   private overBudget(pendingPages = 0): boolean {
-    const estimate = this.estimate() - pendingPages * pageEstimateBytes;
+    const estimate =
+      this.rendererUsage?.bytes ?? this.estimate() - pendingPages * pageEstimateBytes;
     const budget = this.budget();
     if (estimate > budget) this.releasing = true;
     if (estimate <= budget * budgetReleaseShare) this.releasing = false;
@@ -256,13 +272,14 @@ export class TabSleeper {
     if (this.closed || this.running) return;
     this.trimRestore();
     const now = Date.now();
-    const budget = this.overBudget();
+    const budget = !this.options.rendererUsage && this.overBudget();
     let earliest = Infinity;
     for (const [id, session] of this.sessions) {
       const links = this.openerLinks(session);
       const cutoff = this.readCutoff(session);
       for (const record of session.ledger.policyRecords()) {
         if (!record.live) continue;
+        if (this.options.rendererUsage) earliest = Math.min(earliest, this.nextRendererSample);
         const reason = this.blocked(id, record, now, links);
         if (reason && reason !== "quiet") continue;
         earliest = Math.min(
@@ -289,13 +306,21 @@ export class TabSleeper {
   private async pass(): Promise<void> {
     this.running = true;
     let attempted = 0;
+    let slept = 0;
+    let livePages = 0;
     const pending = new Set<Promise<void>>();
     try {
+      if (this.options.rendererUsage) {
+        this.nextRendererSample = Date.now() + rendererSampleMs;
+        this.rendererUsage = this.options.rendererUsage();
+        this.overBudget();
+      }
       const candidates = [...this.sessions].flatMap(([id, session]) =>
         [...session.ledger.policyRecords()]
           .filter((record) => record.live)
           .map((record) => ({ id, session, record })),
       );
+      livePages = candidates.length;
       candidates.sort(
         (a, b) =>
           this.category(a.session, a.record) - this.category(b.session, b.record) ||
@@ -310,11 +335,18 @@ export class TabSleeper {
           this.blocked(id, record, Date.now())
         )
           continue;
-        if (this.deadline(session, record) > Date.now() && !this.overBudget(pending.size)) continue;
+        if (
+          this.deadline(session, record) > Date.now() &&
+          // A page can share its process, so measure again before asking another
+          // page to sleep under pressure.
+          ((this.rendererUsage && attempted > 0) || !this.overBudget(pending.size))
+        )
+          continue;
         const sleeping = session.ledger
           .sleep(record.id, (next) => this.blocked(id, next, Date.now()))
           .then((committed) => {
-            if (!committed) this.nextProbe.set(record, Date.now() + quietMs);
+            if (committed) slept++;
+            else this.nextProbe.set(record, Date.now() + quietMs);
             this.trimRestore();
           })
           .finally(() => pending.delete(sleeping));
@@ -330,7 +362,16 @@ export class TabSleeper {
       }
     } finally {
       this.running = false;
+      if (this.rendererUsage && this.releasing && (slept > 0 || attempted >= sleepsPerPass))
+        this.nextRendererSample = Date.now() + rendererRecheckMs;
       this.poke(attempted >= sleepsPerPass ? 1_000 : 0);
+      this.options.onPass?.({
+        livePages,
+        rendererProcesses: this.rendererUsage?.processes ?? 0,
+        rendererBytes: this.rendererUsage?.bytes ?? 0,
+        attempted,
+        slept,
+      });
     }
   }
 

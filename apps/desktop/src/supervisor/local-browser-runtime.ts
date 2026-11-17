@@ -79,6 +79,8 @@ export async function startLocalBrowserRuntime(
     : {};
   const runtime = new BrowserRuntime({
     memoryBudgetBytes: browserMemoryBudgetBytes(process.env.OPENSTEER_BROWSER_MEMORY_BUDGET_MB),
+    onSleepPass: (counts) =>
+      diagnostics.append(`${JSON.stringify({ event: "browser.sleep.pass", ...counts })}\n`),
     onOpenTiming: (timing) =>
       diagnostics.append(
         `${JSON.stringify({ event: "browser.session.open.timing", ...timing })}\n`,

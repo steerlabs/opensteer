@@ -74,6 +74,52 @@ describe("TabSleeper", () => {
       await f.close();
     }
   });
+  it("resamples renderer memory while tabs are idle and sleeps agent leftovers first", async () => {
+    const budget = 100 * 1024 ** 2;
+    let usage = { processes: 1, bytes: budget / 2 };
+    const onPass = vi.fn();
+    const f = await fixture({
+      memoryBudgetBytes: budget,
+      rendererUsage: () => usage,
+      onPass,
+    });
+    try {
+      const person = await f.ledger.openSurface();
+      const pinned = await f.ledger.openSurface();
+      f.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: [],
+        viewed: [],
+        pinned: [pinned.id],
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(f.record.live).not.toBeNull();
+      expect(f.ledger.stateOf(person.id)).toBe("live");
+      const sleep = f.ledger.sleep.bind(f.ledger);
+      vi.spyOn(f.ledger, "sleep").mockImplementation(async (id, blocked) => {
+        const committed = await sleep(id, blocked);
+        if (committed) usage = { processes: 1, bytes: budget / 2 };
+        return committed;
+      });
+      usage = { processes: 6, bytes: budget * 2 };
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(f.record.live).toBeNull();
+      expect(f.ledger.stateOf(person.id)).toBe("live");
+      expect(f.ledger.stateOf(pinned.id)).toBe("live");
+      expect(f.ledger.sleep).toHaveBeenCalledExactlyOnceWith(f.record.id, expect.any(Function));
+      expect(onPass).toHaveBeenLastCalledWith({
+        livePages: 3,
+        rendererProcesses: 6,
+        rendererBytes: budget * 2,
+        attempted: 1,
+        slept: 1,
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(f.ledger.stateOf(person.id)).toBe("live");
+    } finally {
+      await f.close();
+    }
+  });
   it.each([
     "unknown",
     "keepAwake",

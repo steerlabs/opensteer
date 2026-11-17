@@ -66,8 +66,8 @@ export interface BrowserPage {
   /**
    * Observes compositing after geometry acknowledgement, outside its lock.
    * Electron cannot identify the metrics revision of those pixels: an already
-   * composed frame of this page can satisfy it, without a duration bound if
-   * rendering stalls. Cancellation never waits for paint; no timeout is readiness.
+   * composed frame of this page can satisfy it. Cancellation and timeout reject
+   * the wait without waiting on the renderer.
    */
   settleRendering?(signal?: AbortSignal): Promise<void>;
   /**
@@ -209,8 +209,15 @@ export interface LocalProfileEngine {
   release(directory: string): Promise<"released" | "retained-until-exit">;
 }
 
+export interface BrowserRendererUsage {
+  readonly processes: number;
+  readonly bytes: number;
+}
+
 export interface BrowserLauncher {
   readonly hostCost?: "process" | "partition";
+  /** Engine-wide census includes shared renderers, subframes, and workers. */
+  rendererUsage?(): BrowserRendererUsage;
   /** Completes engine initialization before the runtime advertises placement. */
   prepare?(): Promise<void>;
   /** Cancellation covers acquisition; the shared runtime owns the admitted host's lifetime. */
