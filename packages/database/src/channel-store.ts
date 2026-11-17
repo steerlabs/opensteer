@@ -587,7 +587,7 @@ export class ChannelStore {
     readonly ownerUserId: UserId;
   }): Promise<ChannelBinding> {
     const accessPolicy = ChannelAccessPolicySchema.parse(input.accessPolicy);
-    return commitPersonalMutation(this.#database, async (transaction) => {
+    const binding = await commitPersonalMutation(this.#database, async (transaction, mutation) => {
       const binding = await ownedBinding(transaction, input.bindingId, input.ownerUserId);
       await assertPersonalOwner(transaction, input.ownerUserId);
       if (binding.revision !== input.expectedRevision) {
@@ -614,9 +614,16 @@ export class ChannelStore {
           message: "Channel access policy changed while it was being edited",
         });
       }
-      await cancelStaleChannelInputs(transaction, input.bindingId, row.revision, now);
+      mutation.change({
+        scopeKey: "shell",
+        entityKind: "collection",
+        entityId: "channels",
+        operation: "invalidate",
+      });
       return channelBindingFromRow(row);
     });
+    await drainRevokedChannelInputs(this.#database, input.bindingId);
+    return binding;
   }
 
   async reviewAccess(input: {
@@ -626,7 +633,7 @@ export class ChannelStore {
     readonly externalUserId: string;
     readonly ownerUserId: UserId;
   }): Promise<ChannelAccessGrant> {
-    return commitPersonalMutation(this.#database, async (transaction) => {
+    const grant = await commitPersonalMutation(this.#database, async (transaction, mutation) => {
       await ownedBinding(transaction, input.bindingId, input.ownerUserId);
       await assertPersonalOwner(transaction, input.ownerUserId);
       const grant = await transaction
@@ -669,18 +676,12 @@ export class ChannelStore {
           message: "Channel access request changed while it was being reviewed",
         });
       }
-      const identity = await transaction
-        .selectFrom("channelIdentities")
-        .select("principalId")
-        .where("accountId", "=", row.accountId)
-        .where("externalUserId", "=", row.externalUserId)
-        .executeTakeFirstOrThrow();
-      await cancelChannelInputsForPrincipal(
-        transaction,
-        input.bindingId,
-        identity.principalId,
-        now,
-      );
+      mutation.change({
+        scopeKey: "shell",
+        entityKind: "collection",
+        entityId: "channels",
+        operation: "invalidate",
+      });
       if (row.requestIngressId) {
         const text =
           input.decision === "approved"
@@ -698,6 +699,8 @@ export class ChannelStore {
       }
       return channelAccessGrantFromRow(row);
     });
+    await drainRevokedChannelInputs(this.#database, input.bindingId);
+    return grant;
   }
 
   async setConnectionStatus(
@@ -2422,52 +2425,69 @@ async function ownedBinding(
   return binding;
 }
 
-async function cancelStaleChannelInputs(
-  transaction: Transaction<DatabaseSchema>,
-  bindingId: ChannelBindingId,
-  currentRevision: number,
-  now: Date,
+export async function drainRevokedChannelInputs(
+  database: Kysely<DatabaseSchema>,
+  bindingId?: ChannelBindingId,
 ): Promise<void> {
-  const cancelled = await transaction
-    .updateTable("threadInputs")
-    .set({
-      cancelReason: "channel-access-changed",
-      state: "cancelled",
-      updatedAt: now,
-    })
-    .where("state", "in", ["pending", "unknown"])
-    .where(sql<boolean>`authority_source ->> 'kind' = 'channel-ingress'`)
-    .where(sql<boolean>`authority_source ->> 'bindingId' = ${bindingId}`)
-    .where(
-      sql<boolean>`coalesce((authority_source ->> 'bindingRevision')::integer, 0) < ${currentRevision}`,
-    )
-    .returning(["threadId", "messageId"])
-    .execute();
-  for (const row of cancelled) await refreshInputQueue(transaction, row.threadId, row.messageId);
-}
-
-async function cancelChannelInputsForPrincipal(
-  transaction: Transaction<DatabaseSchema>,
-  bindingId: ChannelBindingId,
-  principalId: string,
-  now: Date,
-): Promise<void> {
-  const cancelled = await transaction
-    .updateTable("threadInputs")
-    .set({
-      cancelReason: "channel-access-changed",
-      state: "cancelled",
-      updatedAt: now,
-    })
-    .where("state", "in", ["pending", "unknown"])
-    .where(sql<boolean>`authority_source ->> 'kind' = 'channel-ingress'`)
-    .where(sql<boolean>`authority_source ->> 'bindingId' = ${bindingId}`)
-    .where(sql<boolean>`authority_source ->> 'principalId' = ${principalId}`)
-    .where(sql<boolean>`authority_source -> 'access' ->> 'mode' = 'approved'`)
-    .where(sql<boolean>`authority_source -> 'access' ? 'grantRevision'`)
-    .returning(["threadId", "messageId"])
-    .execute();
-  for (const row of cancelled) await refreshInputQueue(transaction, row.threadId, row.messageId);
+  for (;;) {
+    const retired = await commitPersonalMutation(database, async (tx) => {
+      const rows = await tx
+        .selectFrom("threadInputs")
+        .innerJoin("channelBindings", (join) =>
+          join.on(sql<boolean>`thread_inputs.authority_source->>'bindingId' = channel_bindings.id`),
+        )
+        .select(["threadInputs.messageId", "threadInputs.threadId"])
+        .where(sql<boolean>`thread_inputs.state in ('pending','unknown')`)
+        .where(sql<boolean>`thread_inputs.authority_source->>'kind' = 'channel-ingress'`)
+        .$if(bindingId !== undefined, (query) => query.where("channelBindings.id", "=", bindingId!))
+        .where(
+          sql<boolean>`
+          coalesce((thread_inputs.authority_source->>'bindingRevision')::integer, 0) < channel_bindings.revision
+          or (
+            thread_inputs.authority_source->'access'->>'mode' = 'approved'
+            and exists (
+              select 1 from channel_identities identity
+              join channel_access_grants grant_row
+                on grant_row.binding_id = channel_bindings.id
+                and grant_row.external_user_id = identity.external_user_id
+              where identity.account_id = channel_bindings.account_id
+                and identity.principal_id = thread_inputs.actor_principal_id
+                and (thread_inputs.authority_source->'access'->>'grantRevision')::integer < grant_row.revision
+            )
+          )
+        `,
+        )
+        .orderBy("channelBindings.id")
+        .orderBy("threadInputs.messageId")
+        .limit(32)
+        .execute();
+      if (!rows.length) return 0;
+      await tx
+        .selectFrom("threads")
+        .select("id")
+        .where(
+          "id",
+          "in",
+          rows.map(({ threadId }) => threadId),
+        )
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
+      const cancelled = await tx
+        .updateTable("threadInputs")
+        .set({ state: "cancelled", cancelReason: "channel-access-changed", updatedAt: new Date() })
+        .where(
+          "messageId",
+          "in",
+          rows.map(({ messageId }) => messageId),
+        )
+        .returning(["threadId", "messageId"])
+        .execute();
+      for (const row of cancelled) await refreshInputQueue(tx, row.threadId, row.messageId);
+      return cancelled.length;
+    });
+    if (!retired) return;
+  }
 }
 
 function channelAccountFromRow(row: Selectable<ChannelAccountTable>): ChannelAccount {

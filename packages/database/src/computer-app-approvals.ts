@@ -1,9 +1,8 @@
 import { ResolvedRequestSchema } from "@opensteer/core";
-import { publishExecutionRequest } from "./execution-changes.js";
+import { refreshRequestState } from "./request-persistence.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
 import {
   OpensteerError,
-  type AgentEvent,
   type RequestId,
   type RequestSettlementProvenance,
   type DeviceId,
@@ -21,7 +20,6 @@ import {
   type IntegrationInstallationId,
 } from "@opensteer/integration-core";
 import { sql, type Kysely, type Transaction } from "kysely";
-import { assignmentActivityEventsForRun } from "./assignment-store.js";
 import {
   computerAppScopeOf,
   computerAppSetupRequestMatches,
@@ -63,13 +61,11 @@ export async function lockComputerApprovalScopeInTransaction(
 
 export interface ComputerAppAccessSettlement {
   readonly grants: readonly IntegrationGrant[];
-  readonly requestEvents: readonly AgentEvent[];
   readonly requestIds: readonly RequestId[];
 }
 
 export const emptyComputerAppAccessSettlement: ComputerAppAccessSettlement = {
   grants: [],
-  requestEvents: [],
   requestIds: [],
 };
 
@@ -208,7 +204,6 @@ export async function declineComputerAppAccessRequestsInTransaction(
     readonly settlementActor?: RequestSettlementProvenance | null;
   },
 ): Promise<ComputerAppAccessSettlement> {
-  const requestEvents: AgentEvent[] = [];
   const requestIds: RequestId[] = [];
   for (const row of await linkedPendingRequests(transaction, input.setupRequestIds)) {
     const resolved = await resolveComputerAppAccessRequest(
@@ -218,10 +213,9 @@ export async function declineComputerAppAccessRequestsInTransaction(
       input.settlementActor,
     );
     if (!resolved) continue;
-    requestEvents.push(...resolved.events);
     requestIds.push(resolved.requestId);
   }
-  return { grants: [], requestEvents, requestIds };
+  return { grants: [], requestIds };
 }
 
 /** The connection an approval produced or a change left, as a settlement reads it. */
@@ -252,7 +246,6 @@ export async function settleComputerAppApprovalInTransaction(
 ): Promise<ComputerAppAccessSettlement & { readonly reissuedSetupRequestId: string | null }> {
   const { connection } = input;
   const waiting = await lockComputerAppSetupRequestInTransaction(transaction, input.scope);
-  const requestEvents: AgentEvent[] = [];
   const requestIds: RequestId[] = [];
   let wanted: IntegrationAccess | null = input.alsoGrant?.access ?? null;
   const want = (access: IntegrationAccess) => {
@@ -312,7 +305,6 @@ export async function settleComputerAppApprovalInTransaction(
     const declined = await declineComputerAppAccessRequestsInTransaction(transaction, {
       setupRequestIds: [waiting.id],
     });
-    requestEvents.push(...declined.requestEvents);
     requestIds.push(...declined.requestIds);
   } else if (waiting) {
     // An approval for another identity of this app — re-signed, renamed — or
@@ -334,7 +326,6 @@ export async function settleComputerAppApprovalInTransaction(
         input.settlementActor,
       );
       if (!resolved) continue;
-      requestEvents.push(...resolved.events);
       requestIds.push(resolved.requestId);
     }
     const usedUp =
@@ -363,7 +354,7 @@ export async function settleComputerAppApprovalInTransaction(
       reissuedSetupRequestId = reissued.id;
     }
   }
-  return { grants, reissuedSetupRequestId, requestEvents, requestIds };
+  return { grants, reissuedSetupRequestId, requestIds };
 }
 
 async function grantComputerAppInTransaction(
@@ -404,7 +395,7 @@ async function resolveComputerAppAccessRequest(
   row: RequestRow,
   connectionId: IntegrationConnectionId | null,
   settlementActor?: RequestSettlementProvenance | null,
-): Promise<{ readonly events: readonly AgentEvent[]; readonly requestId: RequestId } | null> {
+): Promise<{ readonly requestId: RequestId } | null> {
   const observed = requestFromRow(row);
   const now = new Date();
   const resolvedRow = await transaction
@@ -439,13 +430,6 @@ async function resolveComputerAppAccessRequest(
     })
     .onConflict((conflict) => conflict.column("requestId").doNothing())
     .execute();
-  await publishExecutionRequest(transaction, request);
-  return {
-    events: [
-      ...(request.originatingRunId
-        ? await assignmentActivityEventsForRun(transaction, request.originatingRunId)
-        : []),
-    ],
-    requestId: request.id,
-  };
+  await refreshRequestState(transaction, request.id);
+  return { requestId: request.id };
 }

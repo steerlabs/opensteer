@@ -1,9 +1,9 @@
 import { requireSelfDeviceId } from "./device-inventory-store.js";
 import { deviceOwnershipIn } from "./machine-ownership.js";
 import type { DeviceId } from "@opensteer/core";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { fulfillDeviceAccessRequestsInTransaction } from "./request-store.js";
-import { type AgentEvent, deploymentPolicy } from "@opensteer/core";
+import { type RequestId, deploymentPolicy } from "@opensteer/core";
 import { withDatabaseTransaction } from "./connection.js";
 import { type CommandRow, type DatabaseSchema } from "./schema.js";
 import {
@@ -281,7 +281,7 @@ export async function updateDeviceAccessPolicy(
       readonly outcome: "updated";
       readonly replayed: boolean;
       readonly revision: number;
-      readonly requestEvents: readonly AgentEvent[];
+      readonly fulfilledRequestIds: readonly RequestId[];
       readonly changed: {
         readonly shell: boolean;
         readonly browser: boolean;
@@ -294,7 +294,7 @@ export async function updateDeviceAccessPolicy(
     policy: input.policy,
     ...(input.legacyRunnerId ? { runnerId: input.legacyRunnerId } : { deviceId: input.deviceId }),
   };
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     if (input.idempotency) {
       const { key, requestedBy } = input.idempotency;
       await lockCommandIdempotency(transaction, requestedBy, key);
@@ -312,7 +312,7 @@ export async function updateDeviceAccessPolicy(
           | { readonly outcome: "updated"; readonly revision: number };
         return result.outcome === "conflict"
           ? { ...result, replayed: true }
-          : { ...result, changed: noPolicyChanges, requestEvents: [], replayed: true };
+          : { ...result, changed: noPolicyChanges, fulfilledRequestIds: [], replayed: true };
       }
     }
     const stored = await transaction
@@ -402,11 +402,18 @@ export async function updateDeviceAccessPolicy(
         type: "machine.access.update",
       });
     }
+    if (updated) {
+      mutation.bumpResource("machine");
+      if (changed.browser) {
+        mutation.bumpResource("browser-placement");
+        mutation.bumpResource("browser-availability");
+      }
+    }
     return result.outcome === "updated"
       ? {
           ...result,
           replayed: false,
-          requestEvents: await fulfillDeviceAccessRequestsInTransaction(
+          fulfilledRequestIds: await fulfillDeviceAccessRequestsInTransaction(
             transaction,
             input.deviceId,
             policy,

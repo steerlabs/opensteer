@@ -1,3 +1,4 @@
+import { assignmentWasCancelled } from "./execution-authority.js";
 import {
   OpensteerError,
   IntegrationCallSubjectSchema,
@@ -30,12 +31,14 @@ export interface HostToolEffectHandle {
 async function lockToolScope(tx: Transaction, key: ToolKey) {
   const run = await tx
     .selectFrom("runs")
-    .select(["threadId", "finishIntent", "status", "bindingGeneration"])
+    .select(["threadId", "finishIntent", "status", "bindingGeneration", "assignmentId"])
     .where("id", "=", key.runId)
     .forNoKeyUpdate()
     .executeTakeFirst();
   if (!run || run.threadId !== key.threadId)
     throw new OpensteerError({ code: "forbidden", message: "Tool call is outside its Run" });
+  if (await assignmentWasCancelled(tx, run.assignmentId))
+    throw new OpensteerError({ code: "forbidden", message: "Tool call assignment was cancelled" });
   const thread = await tx
     .selectFrom("threads")
     .select(["id", "removedAt"])

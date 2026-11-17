@@ -2,10 +2,11 @@ import {
   SequenceSchema,
   deriveThreadStatus,
   nonTerminalRunStatuses,
-  utf8Prefix,
   type RunId,
   type ThreadId,
 } from "@opensteer/core";
+import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
+import { taskLineMaxLength } from "@opensteer/protocol";
 import { sql, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
@@ -49,6 +50,7 @@ export async function publishThreadSummary(tx: Tx, threadId: ThreadId): Promise<
         "lastReplyPreview",
         "failurePreview",
         "latestRunCompletedAt",
+        "latestPlace",
         "listed",
         "removedAt",
       ])
@@ -77,7 +79,7 @@ export async function publishThreadSummary(tx: Tx, threadId: ThreadId): Promise<
     } else {
       mutation.change(
         { scopeKey: threadScope, entityKind: "thread", entityId: threadId, operation: "upsert" },
-        () => view,
+        () => ({ ...view, latestPlace: row.latestPlace }),
       );
     }
     if (row.listed && row.status !== "archived" && !row.removedAt) {
@@ -113,7 +115,7 @@ export async function publishRunQueue(tx: Tx, threadId: ThreadId, runId?: RunId)
       .executeTakeFirstOrThrow();
     const runs = await tx
       .selectFrom("runs")
-      .select(["id", "status", "revision"])
+      .select(["id", "status", "revision", "latestPlace"])
       .select(sql<boolean>`finish_intent is not null`.as("finishing"))
       .where("threadId", "=", threadId)
       .where(sql<boolean>`status in ('queued','starting','running','waiting')`)
@@ -166,6 +168,7 @@ export async function projectThreadState(
       .selectFrom("runs")
       .select(["status", "maintenance", "failure"])
       .where("threadId", "=", threadId)
+      .where("maintenance", "is", null)
       .orderBy("runOrdinal", "desc")
       .limit(1)
       .executeTakeFirst();
@@ -179,7 +182,8 @@ export async function projectThreadState(
             lastRunFailed: failed,
           });
     const failure = last?.failure;
-    const failurePreview = failed && failure ? utf8Prefix(failure.message, 1120) : null;
+    const failurePreview =
+      failed && failure ? plainTextExcerpt(failure.message, taskLineMaxLength) : null;
     const { pending } = await tx
       .selectNoFrom([
         sql<number>`((select count(*) from requests where originating_thread_id = ${threadId} and status = 'pending')

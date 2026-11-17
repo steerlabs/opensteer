@@ -1,3 +1,4 @@
+import { OpensteerError } from "@opensteer/core";
 import type { DatabaseSchema } from "./schema.js";
 import type { ThreadId, UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
@@ -6,7 +7,7 @@ import { authorizedSyncState, withPersonalSyncRead } from "./personal-sync-store
 
 export type TaskWindow = "recent" | "active" | "done";
 
-type TaskCursor = {
+type TaskBoundary = {
   readonly at: string;
   readonly id: ThreadId;
 };
@@ -40,7 +41,7 @@ function taskWindow(
     readonly viewerId: UserId;
     readonly window: TaskWindow;
     readonly limit: number;
-    readonly before?: TaskCursor;
+    readonly before?: TaskBoundary;
   },
 ) {
   const key = input.window === "done" ? "done_at" : "asked_at";
@@ -75,11 +76,17 @@ export function readPersonalTaskPage(
     readonly viewerId: UserId;
     readonly window: TaskWindow;
     readonly limit?: number;
-    readonly before?: TaskCursor;
+    readonly before?: TaskBoundary & { readonly window: TaskWindow };
   },
 ) {
   return withPersonalSyncRead(database, async (tx) => {
     const state = await authorizedSyncState(tx, input.viewerId);
+    if (input.before && input.before.window !== input.window) {
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Task cursor belongs to another window",
+      });
+    }
     const limit = Math.max(1, Math.min(input.limit ?? 25, 50));
     const candidates = await taskWindow(tx, { ...input, limit: limit + 1 });
     let bytes = 1024;
@@ -95,7 +102,7 @@ export function readPersonalTaskPage(
       tasks,
       hasMore,
       revision: state.sequence,
-      nextBefore: hasMore && last ? { at: last.cursorAt, id: last.id } : null,
+      nextBefore: hasMore && last ? { at: last.cursorAt, id: last.id, window: input.window } : null,
     };
   });
 }
@@ -120,7 +127,7 @@ export async function readInitialTaskWindows(
   >();
   let bytes = 1024;
   function add(rows: readonly (typeof recent)[number][]) {
-    const admitted: TaskCursor[] = [];
+    const admitted: TaskBoundary[] = [];
     for (const { cursorAt, ...row } of rows) {
       if (!tasks.has(row.id)) {
         const size = Buffer.byteLength(JSON.stringify(row)) + 1;

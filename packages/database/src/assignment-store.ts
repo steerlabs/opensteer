@@ -4,6 +4,7 @@ import { publishThreadCard } from "./message-visibility.js";
 import { transcriptPreview } from "./transcript-store.js";
 import { invalidateThreadCollection } from "./thread-status.js";
 import { refreshInputQueue } from "./waiting-inputs.js";
+import { assignmentWasCancelled } from "./execution-authority.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 
 import { revokeRunGrants, type RevokedRunGrant } from "./run-grants.js";
@@ -27,6 +28,7 @@ import {
   idempotencyConflict,
   jsonValue,
   lockCommandIdempotency,
+  lockThreadRow,
   principalIdForUser,
   type ChannelLinks,
 } from "./store-primitives.js";
@@ -228,11 +230,14 @@ export async function runAssignmentAcceptsRequests(
   const assignment = await transaction
     .selectFrom("runs")
     .innerJoin("delegations", "delegations.id", "runs.assignmentId")
-    .select("delegations.status")
+    .select(["delegations.id", "delegations.status"])
     .where("runs.id", "=", runId)
     .forShare("delegations")
     .executeTakeFirst();
-  return !assignment || assignment.status === "open";
+  return (
+    !assignment ||
+    (assignment.status === "open" && !(await assignmentWasCancelled(transaction, assignment.id)))
+  );
 }
 export const assignmentClosedToRequestsMessage =
   "This task is no longer open, so it cannot ask for anything new";
@@ -432,8 +437,6 @@ export interface CancelAssignmentResult extends AssignmentMutationResult {
   readonly revokedGrants: readonly RevokedRunGrant[];
 }
 
-/** The tree gained work between its snapshot and its locks; retry the whole transaction. */
-export const assignmentTreeChangedReason = "assignment-tree-changed";
 interface ObservedAssignment {
   readonly createdBy: UserId;
 }
@@ -515,7 +518,6 @@ export async function assignmentTreeThreadIds(
 export async function cancelAssignmentInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: CancelAssignmentInput,
-  links: ChannelLinks,
 ): Promise<CancelAssignmentResult> {
   const observed = await transaction
     .selectFrom("delegations")
@@ -562,186 +564,16 @@ export async function cancelAssignmentInTransaction(
       wasDuplicate: true,
     };
   }
-  // See ./lock-order.ts. Fence every Run that could extend this tree or
-  // queue work into it, including the actor, as one ordered set. Admission
-  // revalidates the actor after cancellation, within this same transaction.
-  const openTree = async (): Promise<AssignmentId[]> => {
-    const result = await sql<{
-      id: AssignmentId;
-    }>`
-      with recursive tree as (
-        select id from public.delegations where id = ${input.assignmentId} and status = 'open'
-        union all
-        select child.id from public.delegations as child
-          join tree on child.parent_assignment_id = tree.id
-          where child.status = 'open'
-      ) select id from tree order by id
-    `.execute(transaction);
-    return result.rows.map(({ id }) => id);
-  };
-  const treeRuns = (assignmentIds: readonly AssignmentId[]) =>
-    transaction
-      .selectFrom("runs")
-      .select(["id", "status", "threadId", "environmentId"])
-      .where("assignmentId", "in", [...assignmentIds])
-      .where("status", "in", nonTerminalRunStatuses)
-      .$if(input.actorRunId !== undefined, (query) => query.where("id", "<>", input.actorRunId!))
-      .orderBy("id", "asc");
-  const ids = await openTree();
-  if (!ids.includes(input.assignmentId)) {
-    throw new OpensteerError({
-      code: "conflict",
-      message: "Delegation is already finished",
-    });
-  }
-  const discoveredRunIds = (await treeRuns(ids).execute()).map(({ id }) => id);
-  const fenceRunIds = [
-    ...new Set([...discoveredRunIds, ...(input.actorRunId ? [input.actorRunId] : [])]),
-  ];
-  const fencedRuns = fenceRunIds.length
-    ? await transaction
-        .selectFrom("runs")
-        .select(["bindingGeneration", "id", "status", "threadId", "environmentId"])
-        .where("id", "in", fenceRunIds)
-        .orderBy("id", "asc")
-        .forNoKeyUpdate()
-        .execute()
-    : [];
-  await requireCancelScope(transaction, input);
-  // The fence returns each Run as it stands after any wait: one that finished
-  // meanwhile needs no interrupt, and a command for it would never settle.
-  const lockedRuns = fencedRuns.filter(
-    ({ id, status }) =>
-      id !== input.actorRunId && (nonTerminalRunStatuses as readonly string[]).includes(status),
-  );
-  const linked = await transaction
-    .selectFrom("delegations")
-    .innerJoin("threads as worker", "worker.id", "delegations.childThreadId")
-    .innerJoin("threads as parent", "parent.id", "delegations.parentThreadId")
-    .select(["worker.id as workerThreadId"])
-    .where("delegations.id", "in", ids)
-    .execute();
-  await requireCancelOwner(transaction, observed, input.requestedBy, true);
-  // Holding the worker Threads means no Run can be queued into the tree now.
-  await transaction
-    .selectFrom("threads")
-    .select("id")
-    .where(
-      "id",
-      "in",
-      linked.map(({ workerThreadId }) => workerThreadId),
-    )
-    .orderBy("id", "asc")
-    .forNoKeyUpdate()
-    .execute();
-  await lockRunProjectionRows(transaction, {
-    runIds: lockedRuns.map(({ id }) => id),
-    threadIds: linked.map(({ workerThreadId }) => workerThreadId),
-    assignmentIds: ids,
-  });
-  await transaction
-    .selectFrom("delegations")
-    .select("id")
-    .where("id", "in", ids)
-    .orderBy("id", "asc")
-    .forNoKeyUpdate()
-    .execute();
-  // Anything committed between the snapshot and these locks is visible now.
-  // New work cannot be locked out of order, so the whole transaction retries.
-  const lockedRunIds = new Set(lockedRuns.map(({ id }) => id));
-  const currentIds = await openTree();
-  const currentRuns = await treeRuns(currentIds).execute();
-  if (!isDeepStrictEqual(currentIds, ids) || currentRuns.some(({ id }) => !lockedRunIds.has(id))) {
-    throw new OpensteerError({
-      code: "conflict",
-      message: "The task changed while it was being stopped. Try again.",
-      reason: assignmentTreeChangedReason,
-      retryable: true,
-    });
-  }
   const now = new Date();
-  // The return stays pending: delivery tells the parent with a passive report.
-  const updatedRows = await cancelAssignmentRowsInTransaction(transaction, ids, now);
-
-  const cancelledInputs = await transaction
-    .updateTable("threadInputs")
-    .set({
-      cancelReason: "assignment-cancelled",
-      state: "cancelled",
-      updatedAt: now,
-    })
-    .where("assignmentId", "in", ids)
-    .where("state", "=", "pending")
-    .returningAll()
+  const [target] = await cancelAssignmentRowsInTransaction(transaction, [input.assignmentId], now);
+  if (!target)
+    throw new OpensteerError({ code: "conflict", message: "Delegation is already finished" });
+  await transaction
+    .updateTable("delegations")
+    .set({ cancellationPending: true })
+    .where("id", "=", target.id)
     .execute();
-  for (const row of cancelledInputs) {
-    await refreshInputQueue(transaction, row.threadId, row.messageId);
-  }
-  // Live and durable alike: nothing the stopped work asked for stays open.
-  const pendingRequests = await transaction
-    .selectFrom("requests")
-    .innerJoin("runs", "runs.id", "requests.originatingRunId")
-    .select("requests.id")
-    .where("runs.assignmentId", "in", ids)
-    .where("requests.status", "=", "pending")
-    .execute();
-  await cancelPending(transaction, {
-    reason: "source-closed",
-    resolvedAt: now,
-    requestIds: pendingRequests.map(({ id }) => id),
-  });
-  const actorRun = input.actorRunId
-    ? await transaction
-        .selectFrom("runs")
-        .select(["bindingGeneration", "id", "status", "threadId", "environmentId"])
-        .where("id", "=", input.actorRunId)
-        .where("assignmentId", "in", ids)
-        .where("status", "in", nonTerminalRunStatuses)
-        .executeTakeFirst()
-    : undefined;
-  const interruptCommands: CommandRow[] = [];
-  for (const run of actorRun ? [...lockedRuns, actorRun] : lockedRuns) {
-    // An unbound Run has never reached a Runner and now never will.
-    if (run.status === "queued" || (run.status === "starting" && run.bindingGeneration === null)) {
-      await finalizeRunTransaction(transaction, {
-        completedAt: now,
-        links,
-        queuedInputCancellation: "activation-input",
-        requestCancellationReason: "source-closed",
-        runId: run.id,
-        source: "host",
-        status: "interrupted",
-      });
-      continue;
-    }
-    const command = await transaction
-      .insertInto("commands")
-      .values({
-        actorPrincipalId: await principalIdForUser(transaction, input.requestedBy),
-        authoritySource: jsonValue({
-          assignmentId: input.assignmentId,
-          kind: "assignment-cancel",
-        }),
-        dispatcherId: null,
-        environmentId: run.environmentId,
-        id: createId("command"),
-        idempotencyKey: `assignment-cancel:${input.assignmentId}:${run.id}`,
-        lastError: null,
-        payload: jsonValue({
-          runId: run.id,
-          threadId: run.threadId,
-          type: "run.interrupt",
-        }),
-        requestedBy: input.requestedBy,
-        runId: run.id,
-        status: "pending",
-        threadId: run.threadId,
-        type: "run.interrupt",
-      })
-      .returningAll()
-      .executeTakeFirstOrThrow();
-    interruptCommands.push(command);
-  }
+  await publishAssignmentSummaries(transaction, target, true);
   await transaction
     .insertInto("commands")
     .values({
@@ -763,33 +595,185 @@ export async function cancelAssignmentInTransaction(
       type: "assignment.cancel",
     })
     .executeTakeFirstOrThrow();
-  const terminalRows = await transaction
-    .selectFrom("delegations")
-    .selectAll()
-    .where(
-      "id",
-      "in",
-      updatedRows.map(({ id }) => id),
-    )
-    .orderBy("id", "asc")
-    .execute();
-  for (const row of terminalRows) {
-    await publishAssignmentSummaries(transaction, row, true);
-  }
-  const target = terminalRows.find(({ id }) => id === input.assignmentId);
-  if (!target)
-    throw new OpensteerError({
-      code: "internal",
-      message: "Cancelled Assignment is missing",
+  return {
+    assignment: await assignmentSummaryInTransaction(transaction, target),
+    interruptCommands: [],
+    revokedGrants: [],
+    wasDuplicate: false,
+  };
+}
+
+export async function drainAssignmentCancellation(
+  database: Kysely<DatabaseSchema>,
+  links: ChannelLinks,
+  root?: AssignmentId,
+): Promise<Pick<CancelAssignmentResult, "interruptCommands" | "revokedGrants">> {
+  const interruptCommands: CommandRow[] = [];
+  const revokedGrants: RevokedRunGrant[] = [];
+  for (;;) {
+    const next = await commitPersonalMutation(database, async (tx) => {
+      const assignment = await tx
+        .selectFrom("delegations")
+        .selectAll()
+        .where(sql<boolean>`cancellation_pending`)
+        .$if(root !== undefined, (query) =>
+          query.where(sql<boolean>`id in (
+          with recursive tree(id) as (
+            select id from delegations where id = ${root}
+            union
+            select child.id from delegations child join tree on child.parent_assignment_id = tree.id
+            where child.status = 'cancelled'
+          ) select id from tree
+        )`),
+        )
+        .orderBy("id")
+        .limit(1)
+        .executeTakeFirst();
+      if (!assignment) return null;
+      const now = new Date();
+      const children = await tx
+        .selectFrom("delegations")
+        .select("id")
+        .where("parentAssignmentId", "=", assignment.id)
+        .where(sql<boolean>`status = 'open'`)
+        .orderBy("id")
+        .limit(16)
+        .execute();
+      if (children.length) {
+        const rows = await cancelAssignmentRowsInTransaction(
+          tx,
+          children.map(({ id }) => id),
+          now,
+        );
+        await tx
+          .updateTable("delegations")
+          .set({ cancellationPending: true })
+          .where(
+            "id",
+            "in",
+            rows.map(({ id }) => id),
+          )
+          .execute();
+        for (const child of rows) await publishAssignmentSummaries(tx, child, true);
+        return {};
+      }
+
+      const inputs = await tx
+        .selectFrom("threadInputs")
+        .select("messageId")
+        .where("assignmentId", "=", assignment.id)
+        .where(sql<boolean>`state = 'pending'`)
+        .orderBy("messageId")
+        .limit(16)
+        .execute();
+      if (inputs.length) {
+        const rows = await tx
+          .updateTable("threadInputs")
+          .set({ state: "cancelled", cancelReason: "assignment-cancelled", updatedAt: now })
+          .where(
+            "messageId",
+            "in",
+            inputs.map(({ messageId }) => messageId),
+          )
+          .returning(["threadId", "messageId"])
+          .execute();
+        for (const row of rows) await refreshInputQueue(tx, row.threadId, row.messageId);
+        return {};
+      }
+
+      const pending = await tx
+        .selectFrom("requests")
+        .innerJoin("runs", "runs.id", "requests.originatingRunId")
+        .select("requests.id")
+        .where("requests.originatingThreadId", "=", assignment.childThreadId)
+        .where("runs.assignmentId", "=", assignment.id)
+        .where(sql<boolean>`requests.status = 'pending'`)
+        .orderBy("requests.id")
+        .limit(16)
+        .execute();
+      if (pending.length) {
+        await cancelPending(tx, {
+          reason: "source-closed",
+          resolvedAt: now,
+          requestIds: pending.map(({ id }) => id),
+        });
+        return {};
+      }
+
+      const run = await tx
+        .selectFrom("runs")
+        .select(["id", "status", "bindingGeneration", "threadId", "environmentId", "requestedBy"])
+        .where("threadId", "=", assignment.childThreadId)
+        .where("assignmentId", "=", assignment.id)
+        .where("status", "in", nonTerminalRunStatuses)
+        .where("finishIntent", "is", null)
+        .where(({ not, exists, selectFrom }) =>
+          not(
+            exists(
+              selectFrom("commands")
+                .select("id")
+                .whereRef("runId", "=", "runs.id")
+                .where("type", "=", "run.interrupt")
+                .where("status", "in", ["pending", "dispatched", "succeeded"]),
+            ),
+          ),
+        )
+        .orderBy("id")
+        .limit(1)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!run) {
+        await tx
+          .updateTable("delegations")
+          .set({ cancellationPending: false })
+          .where("id", "=", assignment.id)
+          .execute();
+        return {};
+      }
+      await lockThreadRow(tx, run.threadId);
+      await lockRunProjectionRows(tx, { runIds: [run.id], threadIds: [run.threadId] });
+      if (
+        run.status === "queued" ||
+        (run.status === "starting" && run.bindingGeneration === null)
+      ) {
+        await finalizeRunTransaction(tx, {
+          completedAt: now,
+          links,
+          queuedInputCancellation: "activation-input",
+          requestCancellationReason: "source-closed",
+          runId: run.id,
+          source: "host",
+          status: "interrupted",
+        });
+        return {};
+      }
+      const command = await tx
+        .insertInto("commands")
+        .values({
+          actorPrincipalId: await principalIdForUser(tx, run.requestedBy),
+          authoritySource: jsonValue({ assignmentId: assignment.id, kind: "assignment-cancel" }),
+          dispatcherId: null,
+          environmentId: run.environmentId,
+          id: createId("command"),
+          idempotencyKey: `assignment-cancel:${assignment.id}:${run.id}`,
+          lastError: null,
+          payload: jsonValue({ runId: run.id, threadId: run.threadId, type: "run.interrupt" }),
+          requestedBy: run.requestedBy,
+          runId: run.id,
+          status: "pending",
+          threadId: run.threadId,
+          type: "run.interrupt",
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      const grants = await revokeRunGrants(tx, [run.id], "assignment-cancelled");
+      return { command, grants };
     });
-  const assignment = await assignmentSummaryInTransaction(transaction, target);
-  // Cancelled work loses its tools now, while its interrupts are delivered.
-  const revokedGrants = await revokeRunGrants(
-    transaction,
-    interruptCommands.flatMap(({ runId }) => (runId ? [runId] : [])),
-    "assignment-cancelled",
-  );
-  return { assignment, interruptCommands, revokedGrants, wasDuplicate: false };
+    if (!next) break;
+    if (next.command) interruptCommands.push(next.command);
+    if (next.grants) revokedGrants.push(...next.grants);
+  }
+  return { interruptCommands, revokedGrants };
 }
 
 /** The caller reserves the complete Assignment tree before mutating it. */

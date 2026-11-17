@@ -60,7 +60,6 @@ import {
   threadFromRow,
 } from "./thread-row-mappers.js";
 import { readRunThreadState } from "./run-thread-state.js";
-import { type DurableWindowReadOptions } from "./snapshot-store.js";
 import { newestMessageWindow } from "./message-window.js";
 
 import { channelRunAuthorityIsCurrent } from "./channel-execution.js";
@@ -333,7 +332,7 @@ export function loadRunThreadState(
 export async function loadRunDispatchContext(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
-  options: DurableWindowReadOptions = {},
+  options: { readonly maxItems?: number; readonly maxBytes?: number } = {},
 ): Promise<RunDispatchContext> {
   const maxHistoryItems = boundedWindowLimit(options.maxItems, runHistoryMaxMessages);
   const maxHistoryBytes = boundedWindowBytes(options.maxBytes, runHistoryMaxSerializedBytes);
