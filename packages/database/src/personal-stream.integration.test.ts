@@ -1,12 +1,12 @@
 import { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
 import { readTranscriptOverlays } from "./personal-overlay-store.js";
-import { createId } from "@opensteer/core";
+import { RequestSchema, createId, type Request } from "@opensteer/core";
 import { sql } from "kysely";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, test } from "vitest";
 import { commitPersonalMutation, installPersonalMutationHooks } from "./personal-mutation.js";
 import { refreshRequestAttention } from "./personal-attention-store.js";
-import { requestInsert } from "./request-persistence.js";
+import { refreshRequestState, requestInsert } from "./request-persistence.js";
 import { liveRequest, pendingEvent } from "./store.integration.test-support.js";
 import { acceptPersonalRunnerStatement } from "./personal-runner-receipts.js";
 import { createPersonalStateFixture } from "./personal-state.test-support.js";
@@ -645,6 +645,116 @@ test("keeps pending Requests in the overlay and writes one terminal receipt when
       item: stopped,
       body: { kind: "tool", arguments: { target: "test" } },
     });
+  } finally {
+    await f.close();
+  }
+});
+
+test("projects the exact decision and provenance on compact Request receipts", async () => {
+  const f = await createPersonalStateFixture("receipt-decisions");
+  const { database, run } = f;
+  const resolvedAt = "2026-05-01T00:00:02.000Z";
+  const createdAt = "2026-05-01T00:00:00.000Z";
+  const allow = { id: "allow", label: "Publish", hint: "confirm" } as const;
+  const decline = { id: "decline", label: "Decline", hint: "reject-once" } as const;
+  const cancel = { id: "cancel", label: "Cancel", hint: "cancel" } as const;
+  const provenance = { sessionId: "fixture-device", deviceLabel: "iPhone" };
+  const choice = (optionId: string) => ({ kind: "choice", optionId }) as const;
+  const external = (decision?: string) =>
+    ({ kind: "external", ...(decision ? { value: { decision } } : {}) }) as const;
+  const variants: readonly [string, Partial<Request>][] = [
+    [
+      "Cancelled · source-closed",
+      { status: "cancelled", cancellationReason: "source-closed", resolvedBy: null },
+    ],
+    ["Declined", { status: "declined", response: choice(decline.id) }],
+    [
+      "Declined · Cancel",
+      {
+        status: "declined",
+        response: choice(cancel.id),
+        presentation: { kind: "choice", title: "Publish?", options: [allow, decline, cancel] },
+      },
+    ],
+    ["Fulfilled · Publish", { status: "fulfilled", response: choice(allow.id) }],
+    [
+      "Answered by Research lead",
+      {
+        kind: "harness.input",
+        status: "fulfilled",
+        response: choice(allow.id),
+        resolvedBy: null,
+        settlementProvenance: {
+          kind: "agent",
+          title: "Research lead",
+          runId: createId("run"),
+          threadId: createId("thread"),
+        },
+      },
+    ],
+    ["Withdrawn", { status: "withdrawn" }],
+    ["Declined", { status: "declined", response: external("declined") }],
+    ["Allowed", { status: "fulfilled", response: external("fulfilled") }],
+    ["Fulfilled", { status: "fulfilled", response: external() }],
+    [
+      "Allowed on iPhone",
+      { status: "fulfilled", response: external("fulfilled"), settlementProvenance: provenance },
+    ],
+    [
+      "Declined on iPhone",
+      { status: "declined", response: external("declined"), settlementProvenance: provenance },
+    ],
+  ];
+  try {
+    const expected = [];
+    for (const [preview, variant] of variants) {
+      const id = createId("request");
+      const kind = variant.kind ?? "person.question";
+      const live = kind === "harness.input";
+      const request = RequestSchema.parse({
+        id,
+        callId: id,
+        cancellationReason: null,
+        createdAt,
+        kind,
+        mode: live ? "live" : "durable",
+        originatingOccurrenceId: null,
+        originatingRunId: run.runId,
+        originatingThreadId: run.threadId,
+        payload: { kind },
+        presentation: { kind: "choice", title: "Publish?", options: [allow, decline] },
+        requestedBy: run.userId,
+        requiredActor: "requester",
+        resolvedAt,
+        resolvedBy: run.userId,
+        response: null,
+        ...variant,
+      });
+      await commitPersonalMutation(database, async (tx) => {
+        await tx.insertInto("requests").values(requestInsert(request)).execute();
+        await refreshRequestState(tx, request.id);
+      });
+      expected.push({
+        id: `request:${id}`,
+        requestId: id,
+        requestKind: kind,
+        createdAt: resolvedAt,
+        ...(live ? { waitedSince: createdAt } : {}),
+        view: { title: "Publish?", status: request.status, preview },
+      });
+    }
+    const page = await readTranscriptPage(database, {
+      viewerId: run.userId,
+      scope: { kind: "thread", threadId: run.threadId },
+    });
+    if (page.kind !== "page") throw new Error("Expected Request receipt history");
+    const receipts = page.items.filter((item) => item.kind === "request");
+    expect(receipts).toHaveLength(variants.length);
+    for (const receipt of expected) {
+      const item = receipts.find(({ id }) => id === receipt.id);
+      expect(item).toMatchObject(receipt);
+      if (receipt.waitedSince === undefined) expect(item?.waitedSince).toBeUndefined();
+    }
   } finally {
     await f.close();
   }

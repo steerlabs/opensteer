@@ -427,6 +427,11 @@ describeStore("Assignment result delivery", (it) => {
   }) => {
     const s = await deliveryFixture(storeFixture, "return-history");
     const task = await s.delegate("Sales Agent");
+    await s.database
+      .updateTable("delegations")
+      .set({ objective: "Inspect the available integrations." })
+      .where("id", "=", task.assignment.id)
+      .executeTakeFirstOrThrow();
     await task.settle("Inspection complete.");
     await s.store.drainAssignmentReturn(task.assignment.id);
     const [result] = await s.returns();
@@ -439,11 +444,16 @@ describeStore("Assignment result delivery", (it) => {
     if (page.kind !== "page") throw new Error("Expected parent history");
     expect(page.items.filter((item) => item.kind === "assignment")).toEqual([
       expect.objectContaining({
+        id: `delegation:${task.assignment.id}`,
         delegationId: task.assignment.id,
+        runId: s.f.run.id,
+        view: { title: "Sales Agent", status: "completed", preview: "Inspection complete." },
         assignment: expect.objectContaining({
           status: "completed",
+          returnStatus: "delivered",
           initialRunId: task.run.id,
           workerThread: expect.objectContaining({ title: "Sales Agent", id: task.thread.id }),
+          objectivePreview: "Inspect the available integrations.",
           resultPreview: "Inspection complete.",
         }),
       }),
